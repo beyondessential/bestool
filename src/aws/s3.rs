@@ -18,7 +18,7 @@ use tokio::fs::metadata;
 use tracing::{debug, info, instrument};
 
 use crate::{
-	actions::Context,
+	actions::{context::Cleanup, upload::UploadId, Context},
 	file_chunker::{FileChunker, DEFAULT_CHUNK_SIZE},
 };
 
@@ -56,6 +56,13 @@ pub async fn multipart_upload(
 	let Some(upload_id) = mp.upload_id else {
 		bail!("No upload ID returned from S3");
 	};
+	let upload_id = UploadId {
+		bucket: bucket.to_string(),
+		key: key.to_string(),
+		id: upload_id,
+		parts: chunker.chunks() as i32,
+	};
+	ctx.add_cleanup(Cleanup::MultiPartUpload(upload_id.clone()));
 
 	info!(
 		"Uploading {} ({} bytes) to s3://{}/{}",
@@ -96,7 +103,7 @@ pub async fn multipart_upload(
 						.key(key)
 						.checksum_algorithm(checksum)
 						.part_number(part_no)
-						.upload_id(upload_id)
+						.upload_id(upload_id.id)
 						.send()
 						.await
 						.into_diagnostic()?;
@@ -121,7 +128,7 @@ pub async fn multipart_upload(
 				.abort_multipart_upload()
 				.bucket(bucket)
 				.key(&*key)
-				.upload_id(upload_id)
+				.upload_id(upload_id.id)
 				.send()
 				.await
 				.into_diagnostic()?;
@@ -139,7 +146,7 @@ pub async fn multipart_upload(
 			.abort_multipart_upload()
 			.bucket(bucket)
 			.key(&*key)
-			.upload_id(upload_id)
+			.upload_id(upload_id.id)
 			.send()
 			.await
 			.into_diagnostic()?;
@@ -152,7 +159,7 @@ pub async fn multipart_upload(
 		.complete_multipart_upload()
 		.bucket(bucket)
 		.key(&*key)
-		.upload_id(upload_id)
+		.upload_id(upload_id.id)
 		.multipart_upload(parts.build())
 		.send()
 		.await
