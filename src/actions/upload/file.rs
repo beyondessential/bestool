@@ -1,7 +1,18 @@
-use std::path::PathBuf;
+use std::{
+	borrow::Cow,
+	path::{Path, PathBuf}, sync::{atomic::{Ordering, AtomicU32}, Arc}, num::NonZeroU64,
+};
 
+use aws_sdk_s3::{
+	types::{builders::CompletedMultipartUploadBuilder, ChecksumAlgorithm, CompletedPart},
+	Client as S3Client,
+};
 use clap::{Parser, ValueHint};
-use miette::{bail, Result};
+use indicatif::ProgressBar;
+use miette::{bail, IntoDiagnostic, Result};
+use tracing::{debug, error, info, instrument, warn};
+
+use crate::{actions::Context, aws::{self, MINIMUM_MULTIPART_PART_SIZE}, file_chunker::FileChunker};
 
 use super::UploadArgs;
 
@@ -43,11 +54,7 @@ pub struct FileArgs {
 	///
 	/// This may also contain the key, if given in s3://bucket/key format. See the `--key` option
 	/// for semantics of the key portion.
-	#[arg(
-		long,
-		value_name = "BUCKET",
-		required_unless_present = "pre_auth",
-	)]
+	#[arg(long, value_name = "BUCKET", required_unless_present = "pre_auth")]
 	pub bucket: Option<String>,
 
 	/// Pathname in the bucket to upload to.
@@ -99,19 +106,35 @@ pub struct FileArgs {
 	pub aws_region: Option<String>,
 }
 
-pub async fn run(_args: UploadArgs, mut subargs: FileArgs) -> Result<()> {
-	if let Some(token) = subargs.pre_auth {
-		if subargs.files.len() > 1 {
+crate::aws::standard_aws_args!(FileArgs);
+
+pub async fn run(mut ctx: Context<UploadArgs, FileArgs>) -> Result<()> {
+	if let Some(token) = ctx.args_sub.pre_auth {
+		if ctx.args_sub.files.len() > 1 {
 			bail!("Cannot upload multiple files with a pre-auth token");
 		}
 
-		let Some(file) = subargs.files.pop() else {
+		let Some(file) = ctx.args_sub.files.pop() else {
 			bail!("No file to upload");
 		};
 
 		with_preauth(token, file).await
+	} else if let Some(bucket) = ctx.args_sub.bucket.as_deref() {
+		let (bucket, key) = if bucket.starts_with("s3://") {
+			if let Some((bucket, key)) = bucket[5..].split_once('/') {
+				(bucket, key)
+			} else {
+				(bucket, "/")
+			}
+		} else if let Some(key) = ctx.args_sub.key.as_deref() {
+			(bucket, key)
+		} else {
+			bail!("No key specified");
+		};
+
+		with_aws(ctx.clone(), bucket, key).await
 	} else {
-		with_aws().await
+		bail!("No bucket or pre-auth token specified");
 	}
 }
 

@@ -27,7 +27,7 @@ pub struct Args {
 	/// Set diagnostic log level
 	///
 	/// This enables diagnostic logging, which is useful for investigating bugs. Use multiple
-	/// times to increase verbosity. Goes up to '-vvvv'.
+	/// times to increase verbosity. Goes up to '-vvvvv'.
 	///
 	/// You may want to use with '--log-file' to avoid polluting your terminal.
 	///

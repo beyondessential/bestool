@@ -1,6 +1,8 @@
 use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result};
 
+use crate::actions::Context;
+
 use super::TamanuArgs;
 
 /// Find Tamanu installations.
@@ -21,8 +23,8 @@ pub struct FindArgs {
 	pub with_version: bool,
 }
 
-pub async fn run(args: TamanuArgs, subargs: FindArgs) -> Result<()> {
-	let mut versions = if let Some(root) = args.root {
+pub async fn run(ctx: Context<TamanuArgs, FindArgs>) -> Result<()> {
+	let mut versions = if let Some(root) = ctx.args_top.root {
 		if let Some(version) = crate::roots::version_of_root(&root)? {
 			vec![(version, root.canonicalize().into_diagnostic()?)]
 		} else {
@@ -32,16 +34,16 @@ pub async fn run(args: TamanuArgs, subargs: FindArgs) -> Result<()> {
 		crate::roots::find_versions()?
 	};
 
-	if subargs.asc {
+	if ctx.args_sub.asc {
 		versions.reverse();
 	}
 
-	if let Some(count) = subargs.count {
+	if let Some(count) = ctx.args_sub.count {
 		versions.truncate(count);
 	}
 
 	for (version, root) in versions {
-		if subargs.with_version {
+		if ctx.args_sub.with_version {
 			println!("[{version}] {}", root.display());
 		} else {
 			println!("{}", root.display());

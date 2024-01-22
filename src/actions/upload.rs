@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use miette::Result;
 
+use super::Context;
+
 pub mod file;
 pub mod preauth;
 
@@ -18,9 +20,9 @@ pub enum UploadAction {
 	Preauth(preauth::PreauthArgs),
 }
 
-pub async fn run(args: UploadArgs) -> Result<()> {
-	match args.action.clone() {
-		UploadAction::File(subargs) => file::run(args, subargs).await,
-		UploadAction::Preauth(subargs) => preauth::run(args, subargs).await,
+pub async fn run(ctx: Context<UploadArgs>) -> Result<()> {
+	match ctx.args_top.action.clone() {
+		UploadAction::File(subargs) => file::run(ctx.with_sub(subargs)).await,
+		UploadAction::Preauth(subargs) => preauth::run(ctx.with_sub(subargs)).await,
 	}
 }
