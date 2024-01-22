@@ -56,6 +56,14 @@ impl<A, B> Context<A, B> {
 				.expect("data bar template invalid")
 		))
 	}
+
+	pub fn erased(&self) -> Context<(), ()> {
+		Context::<(), ()> {
+			args_top: (),
+			args_sub: (),
+			progress: self.progress.clone(),
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
