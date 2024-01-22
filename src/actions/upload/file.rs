@@ -14,7 +14,7 @@ use crate::{
 	},
 };
 
-use super::{decode_token, UploadArgs};
+use super::{token::decode_token, UploadArgs};
 
 /// Upload a file to AWS S3.
 ///
@@ -54,7 +54,7 @@ pub struct FileArgs {
 	///
 	/// This may also contain the key, if given in s3://bucket/key format. See the `--key` option
 	/// for semantics of the key portion.
-	#[arg(long, value_name = "BUCKET", required_unless_present = "token")]
+	#[arg(long, value_name = "BUCKET", required_unless_present_any = &["token", "token_file"])]
 	pub bucket: Option<String>,
 
 	/// Pathname in the bucket to upload to.

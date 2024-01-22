@@ -9,7 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
 
-use super::upload::UploadId;
+use super::upload::token::UploadId;
 
 #[derive(Clone, Debug)]
 pub struct Context<A = (), B = ()> {
@@ -92,7 +92,7 @@ impl<A, B> Context<A, B> {
 		self.cleanups.read().unwrap().push(cleanup);
 	}
 
-	// TODO: clean up on ctrl-c
+	#[allow(dead_code)] // TODO: clean up on ctrl-c
 	pub fn process_cleanups(&self) -> Vec<Cleanup> {
 		let mut guard = self.cleanups.write().unwrap();
 		let locked = guard.deref_mut();
