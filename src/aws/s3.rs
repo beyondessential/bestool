@@ -1,9 +1,10 @@
 use std::{
 	borrow::Cow,
+	mem::take,
 	num::NonZeroU64,
 	path::Path,
 	sync::{
-		atomic::{AtomicU32, Ordering},
+		atomic::{AtomicU32, AtomicUsize, Ordering},
 		Arc,
 	},
 };
@@ -18,7 +19,11 @@ use tokio::fs::metadata;
 use tracing::{debug, info, instrument};
 
 use crate::{
-	actions::{context::Cleanup, upload::UploadId, Context},
+	actions::{
+		context::Cleanup,
+		upload::{Token, UploadId},
+		Context,
+	},
 	file_chunker::{FileChunker, DEFAULT_CHUNK_SIZE},
 };
 
@@ -164,6 +169,89 @@ pub async fn multipart_upload(
 		.send()
 		.await
 		.into_diagnostic()?;
+	progress.tick();
+	progress.abandon(); // finish, leaving the completed bar in place
+
+	Ok(())
+}
+
+#[instrument(skip(ctx, token))]
+pub async fn token_upload(ctx: Context, mut token: Token, file: &Path) -> Result<()> {
+	debug!("Loading file {}", file.display());
+	let mut chunker = FileChunker::new(file).await?;
+	// UNWRAP: DEFAULT_CHUNK_SIZE is non-zero
+	let token_parts = token.id.parts as u64;
+	chunker.chunk_size = NonZeroU64::new(
+		(chunker.len() / (token_parts - (token_parts / 10))).max(DEFAULT_CHUNK_SIZE.get()),
+	)
+	.unwrap();
+	chunker.min_chunk_size = MINIMUM_MULTIPART_PART_SIZE;
+
+	info!(
+		chunk_size=%chunker.chunk_size,
+		upload_id=?token.id,
+		"Uploading {} ({} bytes) to s3://{}/{}",
+		file.display(),
+		chunker.len(),
+		token.id.bucket,
+		token.id.key
+	);
+	let progress = ctx.data_bar(chunker.len());
+	progress.set_message(file.display().to_string());
+	progress.tick();
+
+	let parts = Arc::<[_]>::from(take(&mut token.parts).into_boxed_slice());
+	let part_i = Arc::new(AtomicUsize::new(0));
+
+	while let Some((bytes, _)) =
+		match chunker
+			.with_next_chunk(&{
+				let upload_id = token.id.clone();
+				let parts = parts.clone();
+				let part_i = part_i.clone();
+
+				move |bytes| {
+					let upload_id = upload_id.clone();
+					let parts = parts.clone();
+					let part_i = part_i.load(Ordering::SeqCst);
+					let part_no = part_i as i32 + 1;
+
+					async move {
+						let Some(part) = parts.get(part_i) else {
+							bail!("Used all of the parts in the token, but still have chunks to upload!");
+						};
+
+						debug!(bytes = bytes.len(), "uploading a chunk");
+						// client
+						// 	.upload_part()
+						// 	.body(bytes.into())
+						// 	.bucket(upload_id.bucket)
+						// 	.key(upload_id.key)
+						// 	.checksum_algorithm(checksum)
+						// 	.part_number(part_no)
+						// 	.upload_id(upload_id.id)
+						// 	.send()
+						// 	.await
+						// 	.into_diagnostic()?;
+
+						Ok(())
+					}
+				}
+			})
+			.await
+		{
+			Ok(res) => res,
+			Err(err) => {
+				debug!(?err, "error sending chunk, stopping upload");
+				return Err(err);
+			}
+		} {
+		if part_i.fetch_add(1, Ordering::SeqCst) as u64 >= token_parts {
+			bail!("Used all of the parts in the token, but still have chunks to upload!");
+		}
+		progress.inc(bytes);
+	}
+
 	progress.tick();
 	progress.abandon(); // finish, leaving the completed bar in place
 
