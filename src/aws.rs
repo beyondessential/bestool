@@ -6,6 +6,8 @@ use aws_config::{
 };
 use aws_credential_types::Credentials;
 
+pub mod upload;
+
 /// The minimum size of a part in a multipart upload (excluding the last part).
 ///
 /// This is a hard limit imposed by S3. It is not possible to upload a part smaller than this,
