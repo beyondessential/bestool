@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags-ignore:
+      - "*"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_UNSTABLE_SPARSE_REGISTRY: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - macos
+          - ubuntu
+          - windows
+        command:
+          - test
+          - clippy
+          - build --release
+
+    name: ${{ matrix.platform }} / ${{ matrix.command }}
+    runs-on: "${{ matrix.platform }}-latest"
+
+    steps:
+      - if: matrix.command == 'build --release' && github.ref_type == 'pull_request'
+        run: exit # skip release builds on PRs
+
+      - uses: actions/checkout@v4
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+
+      # https://github.com/actions/cache/issues/752
+      - if: runner.os == 'Windows'
+        name: Use GNU tar
+        shell: cmd
+        run: |
+          echo "Adding GNU tar to PATH"
+          echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+
+      - if: runner.os == 'Linux'
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
+
+      - name: Cargo caching
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+            ${{ runner.os }}-cargo-
+
+      - name: Compilation caching
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-target-stable-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: cargo ${{ matrix.command }}
+
+      - if: runner.os == 'Linux' && startsWith(matrix.command, 'build --release')
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-musl
+
+      - if: startsWith(matrix.command, 'build --release')
+        uses: actions/upload-artifact@v4
+        with:
+          name: bestool-${{ runner.os }}-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            target/release/bestool
+            target/release/bestool.exe
+            target/x86_64-unknown-linux-musl/release/bestool
+            target/aarch64-unknown-linux-musl/release/bestool
+
+  tests-pass:
+    if: always()
+    name: Tests pass
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
