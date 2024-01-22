@@ -88,11 +88,11 @@ impl<A, B> Context<A, B> {
 		}
 	}
 
-	// TODO: clean up on ctrl-c
 	pub fn add_cleanup(&self, cleanup: Cleanup) {
 		self.cleanups.read().unwrap().push(cleanup);
 	}
 
+	// TODO: clean up on ctrl-c
 	pub fn process_cleanups(&self) -> Vec<Cleanup> {
 		let mut guard = self.cleanups.write().unwrap();
 		let locked = guard.deref_mut();
