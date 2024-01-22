@@ -9,7 +9,7 @@ use crate::{
 	actions::Context,
 	aws::{
 		self,
-		upload::{multipart_upload, singlepart_upload},
+		s3::{multipart_upload, singlepart_upload, parse_bucket_and_key},
 	},
 };
 
@@ -119,18 +119,7 @@ pub async fn run(mut ctx: Context<UploadArgs, FileArgs>) -> Result<()> {
 
 		with_preauth(token, file).await
 	} else if let Some(bucket) = ctx.args_sub.bucket.as_deref() {
-		let (bucket, key) = if bucket.starts_with("s3://") {
-			if let Some((bucket, key)) = bucket[5..].split_once('/') {
-				(bucket, key)
-			} else {
-				(bucket, "/")
-			}
-		} else if let Some(key) = ctx.args_sub.key.as_deref() {
-			(bucket, key)
-		} else {
-			bail!("No key specified");
-		};
-
+		let (bucket, key) = parse_bucket_and_key(bucket, ctx.args_sub.key.as_deref())?;
 		with_aws(ctx.clone(), bucket, key).await
 	} else {
 		bail!("No bucket or pre-auth token specified");
