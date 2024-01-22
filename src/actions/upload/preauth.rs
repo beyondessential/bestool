@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument};
 
 use crate::{
 	actions::{
-		upload::{encode_token, UploadId},
+		upload::token::{encode_token, UploadId},
 		Context,
 	},
 	aws::{self, s3::parse_bucket_and_key, MINIMUM_MULTIPART_PART_SIZE},

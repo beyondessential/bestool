@@ -22,7 +22,7 @@ use tracing::{debug, info, instrument};
 use crate::{
 	actions::{
 		context::Cleanup,
-		upload::{Token, UploadId},
+		upload::token::{Token, UploadId},
 		Context,
 	},
 	file_chunker::{FileChunker, DEFAULT_CHUNK_SIZE},
