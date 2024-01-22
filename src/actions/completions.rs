@@ -3,6 +3,8 @@ use clap_complete::{Generator, Shell};
 
 use miette::Result;
 
+use super::Context;
+
 /// Generate a shell completions script.
 ///
 /// Provides a completions script or configuration for the given shell.
@@ -34,7 +36,7 @@ pub enum ShellCompletion {
 	Zsh,
 }
 
-pub async fn run(args: CompletionsArgs) -> Result<()> {
+pub async fn run(ctx: Context<CompletionsArgs>) -> Result<()> {
 	fn generate(generator: impl Generator) {
 		let mut cmd = crate::args::Args::command();
 		clap_complete::generate(
@@ -45,7 +47,7 @@ pub async fn run(args: CompletionsArgs) -> Result<()> {
 		);
 	}
 
-	match args.shell {
+	match ctx.args_top.shell {
 		ShellCompletion::Bash => generate(Shell::Bash),
 		ShellCompletion::Elvish => generate(Shell::Elvish),
 		ShellCompletion::Fish => generate(Shell::Fish),

@@ -1,13 +1,15 @@
 use clap::Parser;
 use miette::Result;
 
+use crate::actions::Context;
+
 use super::UploadArgs;
 
 /// Generate a pre-auth token to upload a file.
 ///
 /// This MUST be run from your local, trusted computer, using WriteAccess or AdminAccess to the
 /// account that contains the desired destination bucket. It will generate a pre-auth token that
-/// allows anyone to upload a file to the specified bucket and key, without needing any AWS
+/// allows anyone to upload a file to the specified bucket and key, without them needing any AWS
 /// credentials.
 ///
 /// When creating a token, you specify the maximum number of parts the file can be split into,
@@ -19,7 +21,7 @@ use super::UploadArgs;
 /// If the uploader runs out of parts to use before the file is fully uploaded, it will fail and a
 /// new token will have to be generated with a higher number of parts.
 ///
-/// Tokens also have an expiry date. By default, tokens expire after 1 HOUR. You can specify a
+/// Tokens also have an expiry date. By default, tokens expire after 6 HOURS. You can specify a
 /// longer or shorter expiry time with `--expiry`. Be careful with short expiry times! The token
 /// must remain valid for the entire duration of the upload, and if the upload takes longer than the
 /// token is valid, it will fail and will need to be retried from scratch, using a new token.
@@ -49,7 +51,7 @@ pub struct PreauthArgs {
 	/// Expiry duration of the token.
 	///
 	/// This is the duration for which the token will be valid. It can be specified in seconds, or
-	/// with a suffix like `m` for minutes, `h` for hours, or `d` for days. The default is 1 hour.
+	/// with a suffix like `m` for minutes, `h` for hours, or `d` for days. The default is 6 hours.
 	///
 	/// Be careful with short expiry times! The token must remain valid for the entire duration of
 	/// the upload, and if the upload takes longer than the token is valid, it will fail and will
@@ -57,10 +59,10 @@ pub struct PreauthArgs {
 	///
 	/// Longer expiries are more convenient, but also more dangerous, as they give more time for an
 	/// attacker to use the token to upload files to your bucket. In general, stick with a few hours
-	/// for use on a call, or 24 hours for giving to someone else. Automated use with small files on
-	/// reliable connections can use shorter expiries.
-	#[arg(long, value_name = "DURATION")]
-	pub expiry: Option<String>,
+	/// for use on a call, or a few days for giving to someone else. Automated use with small files
+	/// on reliable connections can use shorter expiries.
+	#[arg(long, value_name = "DURATION", default_value = "6h")]
+	pub expiry: String,
 
 	/// Maximum number of parts the file can be split into.
 	///
@@ -109,6 +111,8 @@ pub struct PreauthArgs {
 	pub aws_region: Option<String>,
 }
 
-pub async fn run(_args: UploadArgs, _subargs: PreauthArgs) -> Result<()> {
+crate::aws::standard_aws_args!(PreauthArgs);
+
+pub async fn run(_ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
 	Ok(())
 }

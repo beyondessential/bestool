@@ -4,6 +4,8 @@ use clap::{Parser, Subcommand};
 use miette::{miette, IntoDiagnostic, Result};
 use node_semver::Version;
 
+use super::Context;
+
 pub mod config;
 pub mod find;
 
@@ -25,10 +27,10 @@ pub enum TamanuAction {
 	Find(find::FindArgs),
 }
 
-pub async fn run(args: TamanuArgs) -> Result<()> {
-	match args.action.clone() {
-		TamanuAction::Config(subargs) => config::run(args, subargs).await,
-		TamanuAction::Find(subargs) => find::run(args, subargs).await,
+pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
+	match ctx.args_top.action.clone() {
+		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
+		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,
 	}
 }
 
