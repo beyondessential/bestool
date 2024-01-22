@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use aws_sdk_s3::Client as S3Client;
 use clap::{Parser, ValueHint};
 use miette::{bail, Result};
-use tracing::{error, warn};
+use tracing::{error, warn, instrument};
 
 use crate::{
 	actions::Context,
@@ -107,6 +107,7 @@ pub struct FileArgs {
 
 crate::aws::standard_aws_args!(FileArgs);
 
+#[instrument(skip(ctx))]
 pub async fn run(mut ctx: Context<UploadArgs, FileArgs>) -> Result<()> {
 	if let Some(token) = ctx.args_sub.pre_auth {
 		if ctx.args_sub.files.len() > 1 {
