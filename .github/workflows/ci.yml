@@ -54,8 +54,10 @@ jobs:
 
       - if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y musl musl-dev musl-tools gcc-aarch64-linux-gnu
           rustup target add x86_64-unknown-linux-musl
-          rustup target add aarch64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-gnu
 
       - if: runner.os == 'macOS'
         run: |
@@ -84,7 +86,7 @@ jobs:
       - if: runner.os == 'Linux' && startsWith(matrix.command, 'build --release')
         run: |
           cargo build --release --target x86_64-unknown-linux-musl
-          cargo build --release --target aarch64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-gnu
 
       - if: runner.os == 'macOS' && startsWith(matrix.command, 'build --release')
         run: |
@@ -99,7 +101,7 @@ jobs:
             target/release/bestool
             target/release/bestool.exe
             target/x86_64-unknown-linux-musl/release/bestool
-            target/aarch64-unknown-linux-musl/release/bestool
+            target/aarch64-unknown-linux-gnu/release/bestool
             target/aarch64-apple-darwin/release/bestool
 
   tests-pass:
