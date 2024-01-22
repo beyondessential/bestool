@@ -2,6 +2,7 @@
 name = "bestool"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "UNLICENSED"
