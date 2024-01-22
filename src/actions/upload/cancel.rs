@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use aws_sdk_s3::Client as S3Client;
 use clap::Parser;
-use miette::{IntoDiagnostic, Result};
+use miette::{miette, IntoDiagnostic, Result};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{info, instrument};
 
@@ -70,28 +70,32 @@ crate::aws::standard_aws_args!(CancelArgs);
 
 #[instrument(skip(ctx))]
 pub async fn run(ctx: Context<UploadArgs, CancelArgs>) -> Result<()> {
-	let token = if let Some(token) = ctx.args_sub.token.clone() {
-		token
+	let id = if let Some(upload_id) = ctx.args_sub.upload_id.as_deref() {
+		upload_id.parse().map_err(|err| miette!("{}", err))?
 	} else {
-		let mut file = File::open(&ctx.args_sub.token_file)
-			.await
-			.into_diagnostic()?;
-		let mut token = String::new();
-		file.read_to_string(&mut token).await.into_diagnostic()?;
-		token
-	};
+		let token = if let Some(token) = ctx.args_sub.token.clone() {
+			token
+		} else {
+			let mut file = File::open(&ctx.args_sub.token_file)
+				.await
+				.into_diagnostic()?;
+			let mut token = String::new();
+			file.read_to_string(&mut token).await.into_diagnostic()?;
+			token
+		};
 
-	let token = decode_token(&token)?;
+		decode_token(&token)?.id
+	};
 
 	let aws = aws::init(&ctx.args_sub).await;
 	let client = S3Client::new(&aws);
 
-	info!(?token.id, "Cancelling multipart upload");
+	info!(?id, "Cancelling multipart upload");
 	client
 		.abort_multipart_upload()
-		.bucket(token.id.bucket)
-		.key(token.id.key)
-		.upload_id(token.id.id)
+		.bucket(id.bucket)
+		.key(id.key)
+		.upload_id(id.id)
 		.send()
 		.await
 		.into_diagnostic()?;

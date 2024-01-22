@@ -7,7 +7,10 @@ use tokio::{fs::File, io::AsyncWriteExt};
 use tracing::{debug, info, instrument};
 
 use crate::{
-	actions::{Context, upload::{encode_token, UploadId}},
+	actions::{
+		upload::{encode_token, UploadId},
+		Context,
+	},
 	aws::{self, s3::parse_bucket_and_key, MINIMUM_MULTIPART_PART_SIZE},
 	file_chunker::DEFAULT_CHUNK_SIZE,
 };
@@ -169,10 +172,14 @@ pub async fn run(ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
 		}
 	} else {
 		unreachable!("clap should enforce one of max_parts or approximate_size");
-	}).into_diagnostic()?;
+	})
+	.into_diagnostic()?;
 
 	if ctx.args_sub.token_file.exists() {
-		bail!("Token file {:?} already exists, not overwriting", ctx.args_sub.token_file);
+		bail!(
+			"Token file {:?} already exists, not overwriting",
+			ctx.args_sub.token_file
+		);
 	}
 
 	info!(
@@ -241,7 +248,9 @@ pub async fn run(ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
 	progress.inc(1);
 
 	progress.set_message(format!("write to {}", ctx.args_sub.token_file.display()));
-	let mut file = File::create(&ctx.args_sub.token_file).await.into_diagnostic()?;
+	let mut file = File::create(&ctx.args_sub.token_file)
+		.await
+		.into_diagnostic()?;
 	file.write_all(token.as_bytes()).await.into_diagnostic()?;
 	progress.inc(1);
 
