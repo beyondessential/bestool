@@ -1,17 +1,14 @@
-use std::{
-	env::var,
-	fs::File,
-	io::{stderr, Write},
-	sync::Mutex,
-};
+use std::{env::var, fs::File, sync::Mutex};
 
 use clap::Subcommand;
 use miette::{IntoDiagnostic, Result};
 use tokio::fs::metadata;
-use tracing::{info, trace, warn, Metadata};
-use tracing_subscriber::fmt::MakeWriter;
+use tracing::{info, trace, warn};
+
+pub use context::Context;
 
 pub mod completions;
+pub mod context;
 pub mod tamanu;
 pub mod upload;
 
@@ -31,60 +28,6 @@ pub async fn run() -> Result<()> {
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		(Action::Upload(args), ctx) => upload::run(ctx.with_top(args)).await,
-	}
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct Context<A = (), B = ()> {
-	pub args_top: A,
-	pub args_sub: B,
-	pub progress: indicatif::MultiProgress,
-}
-
-impl Context {
-	pub fn new() -> Self {
-		Self {
-			args_top: (),
-			args_sub: (),
-			progress: indicatif::MultiProgress::new(),
-		}
-	}
-}
-
-impl<A, B> Context<A, B> {
-	pub fn with_top<C>(self, args_top: C) -> Context<C, B> {
-		Context::<C, B> {
-			args_top,
-			args_sub: self.args_sub,
-			progress: self.progress,
-		}
-	}
-
-	pub fn with_sub<C>(self, args_sub: C) -> Context<A, C> {
-		Context::<A, C> {
-			args_top: self.args_top,
-			args_sub,
-			progress: self.progress,
-		}
-	}
-
-	pub fn take_top(self) -> (A, Context<(), B>) {
-		(
-			self.args_top,
-			Context::<(), B> {
-				args_top: (),
-				args_sub: self.args_sub,
-				progress: self.progress,
-			},
-		)
-	}
-
-	pub fn data_bar(&self, len: u64) -> indicatif::ProgressBar {
-		self.progress.add(indicatif::ProgressBar::new(len).with_style(
-			indicatif::ProgressStyle::default_bar()
-				.template("[{bar:20.cyan/blue}] {wide_msg} {bytes}/{total_bytes} [{bytes_per_sec}] ({eta})")
-				.expect("data bar template invalid")
-		))
 	}
 }
 
@@ -156,29 +99,4 @@ async fn init() -> Result<Context<Action>> {
 	}
 
 	Ok(ctx.with_top(args.action))
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ProgressLogWriter(indicatif::MultiProgress);
-
-impl Write for ProgressLogWriter {
-	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-		self.0.suspend(|| stderr().write(buf))
-	}
-
-	fn flush(&mut self) -> std::io::Result<()> {
-		self.0.suspend(|| stderr().flush())
-	}
-}
-
-impl<'w, A, B> MakeWriter<'w> for Context<A, B> {
-	type Writer = ProgressLogWriter;
-
-	fn make_writer(&'w self) -> Self::Writer {
-		ProgressLogWriter(self.progress.clone())
-	}
-
-	fn make_writer_for(&'w self, _meta: &Metadata<'_>) -> Self::Writer {
-		ProgressLogWriter(self.progress.clone())
-	}
 }
