@@ -29,15 +29,11 @@ jobs:
         command:
           - test
           - clippy
-          - build --release
 
     name: ${{ matrix.platform }} / ${{ matrix.command }}
     runs-on: "${{ matrix.platform }}-latest"
 
     steps:
-      - if: matrix.command == 'build --release' && github.ref_type == 'pull_request'
-        run: exit # skip release builds on PRs
-
       - uses: actions/checkout@v4
       - name: Configure toolchain
         run: |
@@ -58,6 +54,12 @@ jobs:
           sudo apt-get install -y musl musl-dev musl-tools gcc-aarch64-linux-gnu
           rustup target add x86_64-unknown-linux-musl
           rustup target add aarch64-unknown-linux-gnu
+          rustup target add aarch64-unknown-linux-musl
+
+      - if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - if: runner.os == 'macOS'
         run: |
@@ -92,17 +94,93 @@ jobs:
         run: |
           cargo build --release --target aarch64-apple-darwin
 
-      - if: startsWith(matrix.command, 'build --release')
-        uses: actions/upload-artifact@v4
+  build:
+    if: github.ref_type != 'pull_request'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - macos
+          - ubuntu
+          - windows
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-msvc
+          - aarch64-apple-darwin
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+
+    name: Build / ${{ matrix.target }}
+    runs-on: >
+      ${{ contains(matrix.target, 'linux') && 'ubuntu' || (
+        contains(matrix.target, 'windows') && 'windows' || (
+          contains(matrix.target, 'darwin') && 'macos' ||
+            'ubuntu'
+        )
+      ) }}-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup target add ${{ matrix.target }}
+          rustup default stable
+
+      # https://github.com/actions/cache/issues/752
+      - if: runner.os == 'Windows'
+        name: Use GNU tar
+        shell: cmd
+        run: |
+          echo "Adding GNU tar to PATH"
+          echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get install -y musl musl-dev musl-tools
+      - if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
         with:
-          name: bestool-${{ runner.os }}-${{ github.sha }}
+          tool: cross
+
+      - name: Cargo caching
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+            ${{ runner.os }}-cargo-
+
+      - name: Compilation caching
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
+        run: cross build --release --target ${{ matrix.target }}
+      - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bestool-${{ matrix.target }}-${{ github.sha }}
           if-no-files-found: error
           path: |
             target/release/bestool
             target/release/bestool.exe
-            target/x86_64-unknown-linux-musl/release/bestool
-            target/aarch64-unknown-linux-gnu/release/bestool
-            target/aarch64-apple-darwin/release/bestool
+            target/*/release/bestool
+            target/*/release/bestool.exe
 
   tests-pass:
     if: always()
