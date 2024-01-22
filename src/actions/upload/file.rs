@@ -9,11 +9,13 @@ use std::{
 };
 
 use aws_sdk_s3::{
+	primitives::ByteStream,
 	types::{builders::CompletedMultipartUploadBuilder, ChecksumAlgorithm, CompletedPart},
 	Client as S3Client,
 };
 use clap::{Parser, ValueHint};
 use miette::{bail, IntoDiagnostic, Result};
+use tokio::fs::metadata;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
@@ -321,16 +323,35 @@ async fn multipart_upload(
 }
 
 async fn singlepart_upload(
-	_ctx: Context<UploadArgs, FileArgs>,
+	ctx: Context<UploadArgs, FileArgs>,
 	bucket: &str,
 	key: &str,
-	file: &Path,
-	_client: &S3Client,
+	path: &Path,
+	client: &S3Client,
 ) -> Result<()> {
-	let key = resolve_key(key, file);
+	let key = resolve_key(key, path);
+	let meta = metadata(path).await.into_diagnostic()?;
+	let file = ByteStream::from_path(path).await.into_diagnostic()?;
 
-	info!("Uploading {} to s3://{}/{}", file.display(), bucket, key);
-	todo!("singlepart upload")
+	let progress = ctx.data_bar(meta.len());
+	progress.set_message(path.display().to_string());
+	progress.tick();
+
+	info!("Uploading {} to s3://{}/{}", path.display(), bucket, key);
+	client
+		.put_object()
+		.body(file)
+		.bucket(bucket)
+		.key(&*key)
+		.checksum_algorithm(ChecksumAlgorithm::Sha256)
+		.metadata("Uploader", crate::APP_NAME)
+		.send()
+		.await
+		.into_diagnostic()?;
+	progress.inc(meta.len());
+	progress.abandon(); // finish, leaving the completed bar in place
+
+	Ok(())
 }
 
 fn resolve_key<'key>(key: &'key str, file: &Path) -> Cow<'key, str> {
