@@ -1,4 +1,4 @@
-use std::{io::{stderr, Write}, sync::Arc};
+use std::{io::{stderr, Write}, sync::{Arc, RwLock}, mem::swap, ops::DerefMut};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
@@ -11,7 +11,7 @@ pub struct Context<A = (), B = ()> {
 	pub args_top: A,
 	pub args_sub: B,
 	pub progress: MultiProgress,
-	cleanups: Arc<boxcar::Vec<Cleanup>>,
+	cleanups: Arc<RwLock<boxcar::Vec<Cleanup>>>,
 }
 
 impl Context {
@@ -20,7 +20,7 @@ impl Context {
 			args_top: (),
 			args_sub: (),
 			progress: MultiProgress::new(),
-			cleanups: Arc::new(boxcar::Vec::new()),
+			cleanups: Arc::new(RwLock::new(boxcar::Vec::new())),
 		}
 	}
 }
@@ -83,7 +83,15 @@ impl<A, B> Context<A, B> {
 
 	// TODO: clean up on ctrl-c
 	pub fn add_cleanup(&self, cleanup: Cleanup) {
-		self.cleanups.push(cleanup);
+		self.cleanups.read().unwrap().push(cleanup);
+	}
+
+	pub fn process_cleanups(&self) -> Vec<Cleanup> {
+		let mut guard = self.cleanups.write().unwrap();
+		let locked = guard.deref_mut();
+		let mut retrieved = boxcar::Vec::new();
+		swap(locked, &mut retrieved);
+		retrieved.into_iter().collect()
 	}
 }
 
