@@ -15,6 +15,7 @@ use aws_sdk_s3::{
 	Client as S3Client,
 };
 use miette::{bail, IntoDiagnostic, Result};
+use reqwest::Method;
 use tokio::fs::metadata;
 use tracing::{debug, info, instrument};
 
@@ -177,6 +178,8 @@ pub async fn multipart_upload(
 
 #[instrument(skip(ctx, token))]
 pub async fn token_upload(ctx: Context, mut token: Token, file: &Path) -> Result<()> {
+	let client = reqwest::Client::new();
+
 	debug!("Loading file {}", file.display());
 	let mut chunker = FileChunker::new(file).await?;
 	// UNWRAP: DEFAULT_CHUNK_SIZE is non-zero
@@ -206,15 +209,14 @@ pub async fn token_upload(ctx: Context, mut token: Token, file: &Path) -> Result
 	while let Some((bytes, _)) =
 		match chunker
 			.with_next_chunk(&{
-				let upload_id = token.id.clone();
+				let client = client.clone();
 				let parts = parts.clone();
 				let part_i = part_i.clone();
 
 				move |bytes| {
-					let upload_id = upload_id.clone();
+					let client = client.clone();
 					let parts = parts.clone();
 					let part_i = part_i.load(Ordering::SeqCst);
-					let part_no = part_i as i32 + 1;
 
 					async move {
 						let Some(part) = parts.get(part_i) else {
@@ -222,17 +224,20 @@ pub async fn token_upload(ctx: Context, mut token: Token, file: &Path) -> Result
 						};
 
 						debug!(bytes = bytes.len(), "uploading a chunk");
-						// client
-						// 	.upload_part()
-						// 	.body(bytes.into())
-						// 	.bucket(upload_id.bucket)
-						// 	.key(upload_id.key)
-						// 	.checksum_algorithm(checksum)
-						// 	.part_number(part_no)
-						// 	.upload_id(upload_id.id)
-						// 	.send()
-						// 	.await
-						// 	.into_diagnostic()?;
+						let mut request = client.request(
+							match part.method.to_ascii_uppercase().as_str() {
+								"GET" => Method::GET,
+								"PATCH" => Method::PATCH,
+								"POST" => Method::POST,
+								"PUT" => Method::PUT,
+								_ => bail!("Invalid/unknown HTTP method in token: {}", part.method),
+							},
+							&part.uri,
+						);
+						for (key, value) in &part.headers {
+							request = request.header(key, value);
+						}
+						request.body(bytes).send().await.into_diagnostic()?;
 
 						Ok(())
 					}
