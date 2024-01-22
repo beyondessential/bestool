@@ -1,0 +1,56 @@
+[package]
+name = "bestool"
+version = "0.1.0"
+edition = "2021"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "UNLICENSED"
+description = "BES Deployment tooling"
+keywords = ["bes", "tamanu", "tupaia"]
+categories = ["command-line-utilities"]
+repository = "https://github.com/beyondessential/ops"
+
+[dependencies]
+chrono = "0.4.31"
+clap = { version = "4.4.16", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
+clap_complete = "4.4.6"
+clap_complete_nushell = "4.4.2"
+dirs = "5.0.1"
+duct = "0.13.7"
+glob = "0.3.1"
+json5 = "0.4.1"
+leon = "2.0.1"
+leon-macros = "1.0.0"
+miette = { version = "5.10.0", features = ["fancy"] }
+mimalloc = "0.1.39"
+node-semver = "2.1.0"
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+tokio = { version = "1.35.1", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+
+[build-dependencies]
+build-data = "0.1.5"
+windows_exe_info = { version = "0.4.1", features = ["manifest"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 1024
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
+
+[profile.release.build-override]
+opt-level = 0
+codegen-units = 1024
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
