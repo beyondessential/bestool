@@ -57,6 +57,10 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           rustup target add aarch64-unknown-linux-musl
 
+      - if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin
+
       - name: Cargo caching
         uses: actions/cache@v4
         with:
@@ -82,6 +86,10 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl
           cargo build --release --target aarch64-unknown-linux-musl
 
+      - if: runner.os == 'macOS' && startsWith(matrix.command, 'build --release')
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+
       - if: startsWith(matrix.command, 'build --release')
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +100,7 @@ jobs:
             target/release/bestool.exe
             target/x86_64-unknown-linux-musl/release/bestool
             target/aarch64-unknown-linux-musl/release/bestool
+            target/aarch64-apple-darwin/release/bestool
 
   tests-pass:
     if: always()
