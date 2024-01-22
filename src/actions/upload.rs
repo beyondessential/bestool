@@ -1,7 +1,8 @@
 use std::{
 	collections::BTreeMap,
+	fmt,
 	io::{Read, Write},
-	str::FromStr, fmt,
+	str::FromStr,
 };
 
 use aws_sdk_s3::presigning::PresignedRequest;
@@ -57,11 +58,13 @@ impl FromStr for UploadId {
 	type Err = String;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let [bucket, key, id, parts] = <[&str; 4]>::try_from(s
-			.splitn(4, '|')
-			.collect::<Vec<&str>>()
-			)
-			.map_err(|parts| format!("not enough |-separated parts: expected 4, got {}", parts.len()))?;
+		let [bucket, key, id, parts] =
+			<[&str; 4]>::try_from(s.splitn(4, '|').collect::<Vec<&str>>()).map_err(|parts| {
+				format!(
+					"not enough |-separated parts: expected 4, got {}",
+					parts.len()
+				)
+			})?;
 
 		if bucket.is_empty() || key.is_empty() || id.is_empty() || parts.is_empty() {
 			return Err("Invalid upload ID (empty parts)".to_string());
@@ -109,10 +112,7 @@ pub struct TokenPart {
 }
 
 #[instrument(skip(parts), level = "debug")]
-pub fn encode_token(
-	upload_id: &UploadId,
-	parts: &[PresignedRequest],
-) -> Result<String> {
+pub fn encode_token(upload_id: &UploadId, parts: &[PresignedRequest]) -> Result<String> {
 	let token = Token {
 		version: 0,
 		id: upload_id.clone(),

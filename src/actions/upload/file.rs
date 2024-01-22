@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use aws_sdk_s3::Client as S3Client;
 use clap::{Parser, ValueHint};
 use miette::{bail, Result};
-use tracing::{error, warn, instrument};
+use tracing::{error, instrument, warn};
 
 use crate::{
 	actions::Context,
 	aws::{
 		self,
-		s3::{multipart_upload, singlepart_upload, parse_bucket_and_key},
+		s3::{multipart_upload, parse_bucket_and_key, singlepart_upload},
 	},
 };
 

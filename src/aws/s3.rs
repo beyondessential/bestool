@@ -212,7 +212,10 @@ pub fn resolve_key<'key>(key: &'key str, file: &Path) -> Cow<'key, str> {
 ///
 /// If the bucket starts with `s3://`, the `s3://` is stripped off.
 /// If the bucket includes a key, it is split out and returned.
-pub fn parse_bucket_and_key<'a>(bucket: &'a str, key: Option<&'a str>) -> Result<(&'a str, &'a str)> {
+pub fn parse_bucket_and_key<'a>(
+	bucket: &'a str,
+	key: Option<&'a str>,
+) -> Result<(&'a str, &'a str)> {
 	Ok(if bucket.starts_with("s3://") {
 		if let Some((bucket, key)) = bucket[5..].split_once('/') {
 			(bucket, key)
