@@ -15,6 +15,7 @@ repository = "https://github.com/beyondessential/ops"
 aws-config = "1.1.2"
 aws-credential-types = { version = "1.1.2", features = ["hardcoded-credentials"] }
 aws-sdk-s3 = "1.12.0"
+boxcar = "0.2.4"
 bytes = "1.5.0"
 chrono = "0.4.31"
 clap = { version = "4.4.18", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
