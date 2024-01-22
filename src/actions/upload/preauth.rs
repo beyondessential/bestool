@@ -1,7 +1,7 @@
 use clap::Parser;
 use miette::Result;
 
-use crate::actions::Context;
+use crate::{actions::Context, aws::s3::parse_bucket_and_key};
 
 use super::UploadArgs;
 
@@ -21,7 +21,7 @@ use super::UploadArgs;
 /// If the uploader runs out of parts to use before the file is fully uploaded, it will fail and a
 /// new token will have to be generated with a higher number of parts.
 ///
-/// Tokens also have an expiry date. By default, tokens expire after 6 HOURS. You can specify a
+/// Tokens also have an expiry date. By default, tokens expire after 2 HOURS. You can specify a
 /// longer or shorter expiry time with `--expiry`. Be careful with short expiry times! The token
 /// must remain valid for the entire duration of the upload, and if the upload takes longer than the
 /// token is valid, it will fail and will need to be retried from scratch, using a new token.
@@ -51,18 +51,19 @@ pub struct PreauthArgs {
 	/// Expiry duration of the token.
 	///
 	/// This is the duration for which the token will be valid. It can be specified in seconds, or
-	/// with a suffix like `m` for minutes, `h` for hours, or `d` for days. The default is 6 hours.
+	/// with a suffix like `m` for minutes, `h` for hours, or `d` for days. The default is 2 hours.
 	///
 	/// Be careful with short expiry times! The token must remain valid for the entire duration of
 	/// the upload, and if the upload takes longer than the token is valid, it will fail and will
-	/// need to be retried from scratch, using a new token.
+	/// need to be retried from scratch, using a new token. You can't issue a token valid for longer
+	/// than your own credentials are; this is mostly an issue when using temporary (eg SSO) creds.
 	///
 	/// Longer expiries are more convenient, but also more dangerous, as they give more time for an
-	/// attacker to use the token to upload files to your bucket. In general, stick with a few hours
-	/// for use on a call, or a few days for giving to someone else. Automated use with small files
-	/// on reliable connections can use shorter expiries.
-	#[arg(long, value_name = "DURATION", default_value = "6h")]
-	pub expiry: String,
+	/// attacker to use the token to upload files to your bucket. On the whole, though, this is a
+	/// pretty hard token to misuse: the worst that can happen is someone uploading a huge file to
+	/// your bucket, incurring you transfer and storage costs.
+	#[arg(long, value_name = "DURATION", default_value = "2h")]
+	pub expiry: humantime::Duration,
 
 	/// Maximum number of parts the file can be split into.
 	///
@@ -113,6 +114,8 @@ pub struct PreauthArgs {
 
 crate::aws::standard_aws_args!(PreauthArgs);
 
-pub async fn run(_ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
+pub async fn run(ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
+	let (bucket, key) = parse_bucket_and_key(&ctx.args_sub.bucket, ctx.args_sub.key.as_deref())?;
+
 	Ok(())
 }

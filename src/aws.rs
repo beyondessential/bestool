@@ -6,7 +6,7 @@ use aws_config::{
 };
 use aws_credential_types::Credentials;
 
-pub mod upload;
+pub mod s3;
 
 /// The minimum size of a part in a multipart upload (excluding the last part).
 ///
