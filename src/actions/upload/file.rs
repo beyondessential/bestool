@@ -14,7 +14,7 @@ use crate::{
 	},
 };
 
-use super::{decode_token, UploadArgs};
+use super::{token::decode_token, UploadArgs};
 
 /// Upload a file to AWS S3.
 ///
