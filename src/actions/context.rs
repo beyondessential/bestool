@@ -1,4 +1,9 @@
-use std::{io::{stderr, Write}, sync::{Arc, RwLock}, mem::swap, ops::DerefMut};
+use std::{
+	io::{stderr, Write},
+	mem::swap,
+	ops::DerefMut,
+	sync::{Arc, RwLock},
+};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
@@ -57,11 +62,13 @@ impl<A, B> Context<A, B> {
 	}
 
 	pub fn bar(&self, len: u64) -> ProgressBar {
-		self.progress.add(ProgressBar::new(len).with_style(
-			ProgressStyle::default_bar()
-				.template("[{bar:.green/blue}] {wide_msg} {human_pos}/{human_len} ({eta})")
-				.expect("bar template invalid")
-		))
+		self.progress.add(
+			ProgressBar::new(len).with_style(
+				ProgressStyle::default_bar()
+					.template("[{bar:.green/blue}] {wide_msg} {human_pos}/{human_len} ({eta})")
+					.expect("bar template invalid"),
+			),
+		)
 	}
 
 	pub fn data_bar(&self, len: u64) -> ProgressBar {
