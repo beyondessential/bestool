@@ -110,7 +110,7 @@ jobs:
           - aarch64-unknown-linux-musl
 
     name: Build / ${{ matrix.target }}
-    runs-on: >
+    runs-on: >-
       ${{ contains(matrix.target, 'linux') && 'ubuntu' || (
         contains(matrix.target, 'windows') && 'windows' || (
           contains(matrix.target, 'darwin') && 'macos' ||
