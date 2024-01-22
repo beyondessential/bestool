@@ -4,6 +4,8 @@ use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result, WrapErr};
 use tracing::{debug, instrument};
 
+use crate::actions::Context;
+
 use super::{find_tamanu, TamanuArgs};
 
 /// Find and print the current Tamanu config.
@@ -34,24 +36,24 @@ pub struct ConfigArgs {
 	pub raw: bool,
 }
 
-pub async fn run(args: TamanuArgs, subargs: ConfigArgs) -> Result<()> {
-	let (_, root) = find_tamanu(&args)?;
+pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
+	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let config = if subargs.defaults {
+	let config = if ctx.args_sub.defaults {
 		merge_json(
-			package_config(&root, &subargs.package, "default.json5")?,
-			package_config(&root, &subargs.package, "local.json5")?,
+			package_config(&root, &ctx.args_sub.package, "default.json5")?,
+			package_config(&root, &ctx.args_sub.package, "local.json5")?,
 		)
 	} else {
-		package_config(&root, &subargs.package, "local.json5")?
+		package_config(&root, &ctx.args_sub.package, "local.json5")?
 	};
 
-	let value = if let Some(key) = &subargs.key {
+	let value = if let Some(key) = &ctx.args_sub.key {
 		let mut value = &config;
 		for part in key.split('.') {
 			value = match value.get(part) {
 				Some(value) => value,
-				None if subargs.or_null => &serde_json::Value::Null,
+				None if ctx.args_sub.or_null => &serde_json::Value::Null,
 				None => bail!("key not found: {:?}", key),
 			};
 		}
@@ -62,7 +64,7 @@ pub async fn run(args: TamanuArgs, subargs: ConfigArgs) -> Result<()> {
 
 	println!(
 		"{}",
-		match (subargs, value.as_str()) {
+		match (ctx.args_sub, value.as_str()) {
 			(ConfigArgs { raw: true, .. }, Some(string)) => {
 				string.into()
 			}
