@@ -43,8 +43,12 @@ pub struct FileArgs {
 	///
 	/// This may also contain the key, if given in s3://bucket/key format. See the `--key` option
 	/// for semantics of the key portion.
-	#[arg(long, value_name = "BUCKET", required = true)]
-	pub bucket: String,
+	#[arg(
+		long,
+		value_name = "BUCKET",
+		required_unless_present = "pre_auth",
+	)]
+	pub bucket: Option<String>,
 
 	/// Pathname in the bucket to upload to.
 	///
@@ -67,7 +71,7 @@ pub struct FileArgs {
 	/// Using this option, you can upload a file without AWS credentials. Note that pre-auth tokens
 	/// are time-limited: if you try to use an expired token, the upload will fail; more critically,
 	/// if the upload takes longer than the token's lifetime, the upload will also fail.
-	#[arg(long, value_name = "TOKEN", conflicts_with_all = &["bucket", "key", "aws_*"])]
+	#[arg(long, value_name = "TOKEN", conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"])]
 	pub pre_auth: Option<String>,
 
 	/// AWS Access Key ID.
