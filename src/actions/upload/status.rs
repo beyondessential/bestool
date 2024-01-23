@@ -23,7 +23,12 @@ use super::UploadArgs;
 #[derive(Debug, Clone, Parser)]
 pub struct StatusArgs {
 	/// File which contains the token to query.
-	#[arg(long, value_name = "FILENAME", default_value = "token.txt", required_unless_present_any = &["token", "upload_id"])]
+	#[arg(
+		long,
+		value_name = "FILENAME",
+		default_value = "token.txt",
+		required_unless_present_any = &["token", "upload_id"],
+	)]
 	pub token_file: PathBuf,
 
 	/// Token value.
@@ -38,7 +43,11 @@ pub struct StatusArgs {
 	///
 	/// This is the Upload ID to query. If not specified here, it will be taken from `--token` or
 	/// `--token-file`.
-	#[arg(long, value_name = "UPLOAD_ID", conflicts_with_all = &["token", "token_file"])]
+	#[arg(
+		long,
+		value_name = "UPLOAD_ID",
+		conflicts_with_all = &["token", "token_file"],
+	)]
 	pub upload_id: Option<String>,
 
 	#[command(flatten)]
