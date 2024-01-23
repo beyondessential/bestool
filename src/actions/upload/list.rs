@@ -5,7 +5,7 @@ use tracing::{info, instrument};
 
 use crate::{
 	actions::Context,
-	aws::{self, AwsArgsFragment},
+	aws::{self, AwsArgs},
 };
 
 use super::UploadArgs;
@@ -23,7 +23,7 @@ pub struct ListArgs {
 	pub bucket: String,
 
 	#[command(flatten)]
-	pub aws: AwsArgsFragment,
+	pub aws: AwsArgs,
 }
 
 #[instrument(skip(ctx))]

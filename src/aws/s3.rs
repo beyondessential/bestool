@@ -1,10 +1,9 @@
 use std::{
 	borrow::Cow,
-	mem::take,
 	num::NonZeroU64,
 	path::Path,
 	sync::{
-		atomic::{AtomicU32, AtomicUsize, Ordering},
+		atomic::{AtomicU32, Ordering},
 		Arc,
 	},
 };
@@ -15,16 +14,11 @@ use aws_sdk_s3::{
 	Client as S3Client,
 };
 use miette::{bail, IntoDiagnostic, Result};
-use reqwest::Method;
 use tokio::fs::metadata;
 use tracing::{debug, info, instrument};
 
 use crate::{
-	actions::{
-		context::Cleanup,
-		upload::token::{Token, UploadId},
-		Context,
-	},
+	actions::{context::Cleanup, upload::UploadId, Context},
 	file_chunker::{FileChunker, DEFAULT_CHUNK_SIZE},
 };
 
@@ -66,7 +60,6 @@ pub async fn multipart_upload(
 		bucket: bucket.to_string(),
 		key: key.to_string(),
 		id: upload_id,
-		parts: chunker.chunks() as i32,
 	};
 	ctx.add_cleanup(Cleanup::MultiPartUpload(upload_id.clone()));
 
@@ -176,93 +169,6 @@ pub async fn multipart_upload(
 	Ok(())
 }
 
-#[instrument(skip(ctx, token))]
-pub async fn token_upload(ctx: Context, mut token: Token, file: &Path) -> Result<()> {
-	let client = reqwest::Client::new();
-
-	debug!("Loading file {}", file.display());
-	let mut chunker = FileChunker::new(file).await?;
-	// UNWRAP: DEFAULT_CHUNK_SIZE is non-zero
-	let token_parts = token.id.parts as u64;
-	chunker.chunk_size = NonZeroU64::new(
-		(chunker.len() / (token_parts - (token_parts / 10))).max(DEFAULT_CHUNK_SIZE.get()),
-	)
-	.unwrap();
-	chunker.min_chunk_size = MINIMUM_MULTIPART_PART_SIZE;
-
-	info!(
-		chunk_size=%chunker.chunk_size,
-		upload_id=?token.id,
-		"Uploading {} ({} bytes) to s3://{}/{}",
-		file.display(),
-		chunker.len(),
-		token.id.bucket,
-		token.id.key
-	);
-	let progress = ctx.data_bar(chunker.len());
-	progress.set_message(file.display().to_string());
-	progress.tick();
-
-	let parts = Arc::<[_]>::from(take(&mut token.parts).into_boxed_slice());
-	let part_i = Arc::new(AtomicUsize::new(0));
-
-	while let Some((bytes, _)) =
-		match chunker
-			.with_next_chunk(&{
-				let client = client.clone();
-				let parts = parts.clone();
-				let part_i = part_i.clone();
-
-				move |bytes| {
-					let client = client.clone();
-					let parts = parts.clone();
-					let part_i = part_i.load(Ordering::SeqCst);
-
-					async move {
-						let Some(part) = parts.get(part_i) else {
-							bail!("Used all of the parts in the token, but still have chunks to upload!");
-						};
-
-						debug!(bytes = bytes.len(), "uploading a chunk");
-						let mut request = client.request(
-							match part.method.to_ascii_uppercase().as_str() {
-								"GET" => Method::GET,
-								"PATCH" => Method::PATCH,
-								"POST" => Method::POST,
-								"PUT" => Method::PUT,
-								_ => bail!("Invalid/unknown HTTP method in token: {}", part.method),
-							},
-							&part.uri,
-						);
-						for (key, value) in &part.headers {
-							request = request.header(key, value);
-						}
-						request.body(bytes).send().await.into_diagnostic()?;
-
-						Ok(())
-					}
-				}
-			})
-			.await
-		{
-			Ok(res) => res,
-			Err(err) => {
-				debug!(?err, "error sending chunk, stopping upload");
-				return Err(err);
-			}
-		} {
-		if part_i.fetch_add(1, Ordering::SeqCst) as u64 >= token_parts {
-			bail!("Used all of the parts in the token, but still have chunks to upload!");
-		}
-		progress.inc(bytes);
-	}
-
-	progress.tick();
-	progress.abandon(); // finish, leaving the completed bar in place
-
-	Ok(())
-}
-
 pub async fn singlepart_upload(
 	ctx: Context,
 	bucket: &str,
@@ -320,7 +226,7 @@ pub fn parse_bucket_and_key<'a>(
 		if let Some((bucket, key)) = bucket[5..].split_once('/') {
 			(bucket, key)
 		} else {
-			(bucket, "/")
+			(bucket, "")
 		}
 	} else if let Some(key) = key {
 		(bucket, key)

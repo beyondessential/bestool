@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU64};
+use std::num::NonZeroU64;
 
 use aws_config::{
 	default_provider::credentials::Builder, AppName, BehaviorVersion, ConfigLoader, Region,
@@ -8,6 +8,7 @@ use aws_credential_types::Credentials;
 use clap::Parser;
 
 pub mod s3;
+pub mod token;
 
 /// The minimum size of a part in a multipart upload (excluding the last part).
 ///
@@ -16,21 +17,14 @@ pub mod s3;
 ///
 /// Also see: <https://stackoverflow.com/questions/19376136/amazon-s3-your-proposed-upload-is-smaller-than-the-minimum-allowed-size>.
 ///
-/// In practice "5 MiB" is not even enough, it must be a little more than that.
+/// In practice "5 MiB" is not even enough, it must be a little more than that; we use 6 MiB.
 // SAFETY: hardcoded
 pub const MINIMUM_MULTIPART_PART_SIZE: NonZeroU64 =
 	unsafe { NonZeroU64::new_unchecked(6 * 1024 * 1024) };
 
-/// Implement this trait on an Args struct to be able to use it as an AWS credential source.
-pub trait AwsArgs {
-	/// Get the AWS Access Key ID.
-	fn aws_access_key_id(&self) -> Option<Cow<'_, str>>;
-	fn aws_secret_access_key(&self) -> Option<Cow<'_, str>>;
-	fn aws_region(&self) -> Option<Cow<'_, str>>;
-}
-
+/// Include this struct as `#[command(flatten)]` in an Args struct so it can host AWS credentials.
 #[derive(Debug, Clone, Parser)]
-pub struct AwsArgsFragment {
+pub struct AwsArgs {
 	/// AWS Access Key ID.
 	///
 	/// This is the AWS Access Key ID to use for authentication. If not specified here, it will be
@@ -54,37 +48,72 @@ pub struct AwsArgsFragment {
 	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
 	#[arg(long, value_name = "REGION")]
 	pub aws_region: Option<String>,
+
+	/// AWS Session Token.
+	///
+	/// This is the AWS Session Token to use for authentication using temporary credentials. If not
+	/// specified here, it will be taken from the environment variable `AWS_SESSION_TOKEN` if exists.
+	#[arg(long, value_name = "SESSION_TOKEN")]
+	pub aws_session_token: Option<String>,
+
+	/// AWS Delegated Identity Token.
+	///
+	/// This is a Base64-encoded JSON structure containing an access key id, secret key, session
+	/// token, and expiry time. It can be generated using `delegate` subcommands or other tooling.
+	/// It is used as a more convenient way to pass AWS credentials to `bestool` when using
+	/// temporary credentials.
+	#[arg(long, value_name = "TOKEN")]
+	pub aws_delegated: Option<token::DelegatedToken>,
 }
 
-standard_aws_args!(AwsArgsFragment);
-
-macro_rules! standard_aws_args {
-	($args:ident) => {
-		impl crate::aws::AwsArgs for $args {
-			fn aws_access_key_id(&self) -> Option<::std::borrow::Cow<'_, str>> {
-				self.aws_access_key_id
+impl AwsArgs {
+	fn aws_access_key_id(&self) -> Option<::std::borrow::Cow<'_, str>> {
+		self.aws_access_key_id
+			.as_deref()
+			.map(::std::borrow::Cow::Borrowed)
+			.or_else(|| {
+				self.aws_delegated
 					.as_ref()
-					.map(|s| ::std::borrow::Cow::Borrowed(s.as_str()))
-			}
+					.map(|t| ::std::borrow::Cow::Owned(t.access_key_id.clone()))
+			})
+	}
 
-			fn aws_secret_access_key(&self) -> Option<::std::borrow::Cow<'_, str>> {
-				self.aws_secret_access_key
+	fn aws_secret_access_key(&self) -> Option<::std::borrow::Cow<'_, str>> {
+		self.aws_secret_access_key
+			.as_deref()
+			.map(::std::borrow::Cow::Borrowed)
+			.or_else(|| {
+				self.aws_delegated
 					.as_ref()
-					.map(|s| ::std::borrow::Cow::Borrowed(s.as_str()))
-			}
+					.map(|t| ::std::borrow::Cow::Owned(t.secret_access_key.clone()))
+			})
+	}
 
-			fn aws_region(&self) -> Option<::std::borrow::Cow<'_, str>> {
-				self.aws_region
+	fn aws_region(&self) -> Option<::std::borrow::Cow<'_, str>> {
+		self.aws_region
+			.as_deref()
+			.or_else(|| {
+				self.aws_delegated
 					.as_ref()
-					.map(|s| ::std::borrow::Cow::Borrowed(s.as_str()))
-			}
-		}
-	};
+					.and_then(|t: &token::DelegatedToken| t.region.as_deref())
+			})
+			.map(::std::borrow::Cow::Borrowed)
+	}
+
+	fn aws_session_token(&self) -> Option<::std::borrow::Cow<'_, str>> {
+		self.aws_session_token
+			.as_deref()
+			.or_else(|| {
+				self.aws_delegated
+					.as_ref()
+					.and_then(|t| t.session_token.as_deref())
+			})
+			.map(::std::borrow::Cow::Borrowed)
+	}
 }
-pub(crate) use standard_aws_args;
 
 /// Get AWS config from the environment, or credentials files, or ambient, etc.
-pub async fn init(args: &dyn AwsArgs) -> SdkConfig {
+pub async fn init(args: &AwsArgs) -> SdkConfig {
 	let mut config = ConfigLoader::default()
 		.behavior_version(BehaviorVersion::v2023_11_09())
 		.app_name(AppName::new(crate::APP_NAME).unwrap());
@@ -93,8 +122,10 @@ pub async fn init(args: &dyn AwsArgs) -> SdkConfig {
 		// instead of having only the keys as credentials provider, we set up a full provider chain
 		// and add these credentials to it, so that we can still use ambient credentials, regions,
 		// sessions, etc.
-		let mut chain = Builder::default()
-			.with_custom_credential_source("args", Credentials::from_keys(key_id, secret, None));
+		let mut chain = Builder::default().with_custom_credential_source(
+			"args",
+			Credentials::from_keys(key_id, secret, args.aws_session_token().map(Into::into)),
+		);
 		if let Some(region) = args.aws_region() {
 			chain = chain.region(Region::new(region.into_owned()));
 		}
