@@ -88,17 +88,28 @@ pub async fn run(ctx: Context<UploadArgs, StatusArgs>) -> Result<()> {
 	};
 
 	let aws = aws::init(&ctx.args_sub).await;
-	let _client = S3Client::new(&aws);
+	let client = S3Client::new(&aws);
 
 	info!(?id, "Querying multipart upload status");
-	// client
-	// 	.abort_multipart_upload()
-	// 	.bucket(id.bucket)
-	// 	.key(id.key)
-	// 	.upload_id(id.id)
-	// 	.send()
-	// 	.await
-	// 	.into_diagnostic()?;
+	let mut parts = client
+		.list_parts()
+		.bucket(id.bucket)
+		.key(id.key)
+		.upload_id(id.id)
+		.into_paginator()
+		.items()
+		.send();
+
+	let mut parts_remaining = id.parts;
+	while let Some(part) = parts.next().await {
+		parts_remaining -= 1;
+		let part = part.into_diagnostic()?;
+		eprintln!("{part:?}");
+	}
+
+	if parts_remaining > 0 {
+		eprintln!("{} parts remaining", parts_remaining);
+	}
 
 	Ok(())
 }
