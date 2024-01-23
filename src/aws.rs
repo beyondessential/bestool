@@ -5,6 +5,7 @@ use aws_config::{
 	SdkConfig,
 };
 use aws_credential_types::Credentials;
+use clap::Parser;
 
 pub mod s3;
 
@@ -27,6 +28,35 @@ pub trait AwsArgs {
 	fn aws_secret_access_key(&self) -> Option<Cow<'_, str>>;
 	fn aws_region(&self) -> Option<Cow<'_, str>>;
 }
+
+#[derive(Debug, Clone, Parser)]
+pub struct AwsArgsFragment {
+	/// AWS Access Key ID.
+	///
+	/// This is the AWS Access Key ID to use for authentication. If not specified here, it will be
+	/// taken from the environment variable `AWS_ACCESS_KEY_ID`, or from the AWS credentials file
+	/// (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
+	#[arg(long, value_name = "KEY_ID")]
+	pub aws_access_key_id: Option<String>,
+
+	/// AWS Secret Access Key.
+	///
+	/// This is the AWS Secret Access Key to use for authentication. If not specified here, it will
+	/// be taken from the environment variable `AWS_SECRET_ACCESS_KEY`, or from the AWS credentials
+	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
+	#[arg(long, value_name = "SECRET_KEY")]
+	pub aws_secret_access_key: Option<String>,
+
+	/// AWS Region.
+	///
+	/// This is the AWS Region to use for authentication and for the bucket. If not specified here,
+	/// it will be taken from the environment variable `AWS_REGION`, or from the AWS credentials
+	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
+	#[arg(long, value_name = "REGION")]
+	pub aws_region: Option<String>,
+}
+
+standard_aws_args!(AwsArgsFragment);
 
 macro_rules! standard_aws_args {
 	($args:ident) => {

@@ -9,8 +9,7 @@ use tracing::{error, instrument, warn};
 use crate::{
 	actions::Context,
 	aws::{
-		self,
-		s3::{multipart_upload, parse_bucket_and_key, singlepart_upload, token_upload},
+		self, s3::{multipart_upload, parse_bucket_and_key, singlepart_upload, token_upload}, AwsArgsFragment
 	},
 };
 
@@ -88,32 +87,9 @@ pub struct FileArgs {
 	#[arg(long, value_name = "TOKEN", required_unless_present_any = &["token_file", "bucket", "key"], conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"])]
 	pub token: Option<String>,
 
-	/// AWS Access Key ID.
-	///
-	/// This is the AWS Access Key ID to use for authentication. If not specified here, it will be
-	/// taken from the environment variable `AWS_ACCESS_KEY_ID`, or from the AWS credentials file
-	/// (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "KEY_ID")]
-	pub aws_access_key_id: Option<String>,
-
-	/// AWS Secret Access Key.
-	///
-	/// This is the AWS Secret Access Key to use for authentication. If not specified here, it will
-	/// be taken from the environment variable `AWS_SECRET_ACCESS_KEY`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "SECRET_KEY")]
-	pub aws_secret_access_key: Option<String>,
-
-	/// AWS Region.
-	///
-	/// This is the AWS Region to use for authentication and for the bucket. If not specified here,
-	/// it will be taken from the environment variable `AWS_REGION`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "REGION")]
-	pub aws_region: Option<String>,
+	#[command(flatten)]
+	pub aws: AwsArgsFragment,
 }
-
-crate::aws::standard_aws_args!(FileArgs);
 
 #[instrument(skip(ctx))]
 pub async fn run(mut ctx: Context<UploadArgs, FileArgs>) -> Result<()> {
@@ -147,7 +123,7 @@ pub async fn run(mut ctx: Context<UploadArgs, FileArgs>) -> Result<()> {
 }
 
 pub async fn with_aws(ctx: Context<UploadArgs, FileArgs>, bucket: &str, key: &str) -> Result<()> {
-	let aws = aws::init(&ctx.args_sub).await;
+	let aws = aws::init(&ctx.args_sub.aws).await;
 	let client = S3Client::new(&aws);
 
 	let (first, files) = {
