@@ -8,7 +8,7 @@ use tracing::{info, instrument};
 
 use crate::{
 	actions::{upload::token::decode_token, Context},
-	aws,
+	aws::{self, AwsArgsFragment},
 };
 
 use super::UploadArgs;
@@ -41,32 +41,9 @@ pub struct CancelArgs {
 	#[arg(long, value_name = "UPLOAD_ID", conflicts_with_all = &["token", "token_file"])]
 	pub upload_id: Option<String>,
 
-	/// AWS Access Key ID.
-	///
-	/// This is the AWS Access Key ID to use for authentication. If not specified here, it will be
-	/// taken from the environment variable `AWS_ACCESS_KEY_ID`, or from the AWS credentials file
-	/// (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "KEY_ID")]
-	pub aws_access_key_id: Option<String>,
-
-	/// AWS Secret Access Key.
-	///
-	/// This is the AWS Secret Access Key to use for authentication. If not specified here, it will
-	/// be taken from the environment variable `AWS_SECRET_ACCESS_KEY`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "SECRET_KEY")]
-	pub aws_secret_access_key: Option<String>,
-
-	/// AWS Region.
-	///
-	/// This is the AWS Region to use for authentication and for the bucket. If not specified here,
-	/// it will be taken from the environment variable `AWS_REGION`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "REGION")]
-	pub aws_region: Option<String>,
+	#[command(flatten)]
+	pub aws: AwsArgsFragment,
 }
-
-crate::aws::standard_aws_args!(CancelArgs);
 
 #[instrument(skip(ctx))]
 pub async fn run(ctx: Context<UploadArgs, CancelArgs>) -> Result<()> {
@@ -87,7 +64,7 @@ pub async fn run(ctx: Context<UploadArgs, CancelArgs>) -> Result<()> {
 		decode_token(&token)?.id
 	};
 
-	let aws = aws::init(&ctx.args_sub).await;
+	let aws = aws::init(&ctx.args_sub.aws).await;
 	let client = S3Client::new(&aws);
 
 	info!(?id, "Cancelling multipart upload");

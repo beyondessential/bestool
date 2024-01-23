@@ -11,7 +11,7 @@ use crate::{
 		upload::token::{encode_token, UploadId},
 		Context,
 	},
-	aws::{self, s3::parse_bucket_and_key, MINIMUM_MULTIPART_PART_SIZE},
+	aws::{self, s3::parse_bucket_and_key, AwsArgsFragment, MINIMUM_MULTIPART_PART_SIZE},
 	file_chunker::DEFAULT_CHUNK_SIZE,
 };
 
@@ -118,32 +118,9 @@ pub struct PreauthArgs {
 	#[arg(long, value_name = "FILENAME", default_value = "token.txt")]
 	pub token_file: PathBuf,
 
-	/// AWS Access Key ID.
-	///
-	/// This is the AWS Access Key ID to use for authentication. If not specified here, it will be
-	/// taken from the environment variable `AWS_ACCESS_KEY_ID`, or from the AWS credentials file
-	/// (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "KEY_ID")]
-	pub aws_access_key_id: Option<String>,
-
-	/// AWS Secret Access Key.
-	///
-	/// This is the AWS Secret Access Key to use for authentication. If not specified here, it will
-	/// be taken from the environment variable `AWS_SECRET_ACCESS_KEY`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "SECRET_KEY")]
-	pub aws_secret_access_key: Option<String>,
-
-	/// AWS Region.
-	///
-	/// This is the AWS Region to use for authentication and for the bucket. If not specified here,
-	/// it will be taken from the environment variable `AWS_REGION`, or from the AWS credentials
-	/// file (usually `~/.aws/credentials`), or from ambient credentials (eg EC2 instance profile).
-	#[arg(long, value_name = "REGION")]
-	pub aws_region: Option<String>,
+	#[command(flatten)]
+	pub aws: AwsArgsFragment,
 }
-
-crate::aws::standard_aws_args!(PreauthArgs);
 
 #[instrument(skip(ctx))]
 pub async fn run(ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
@@ -186,7 +163,7 @@ pub async fn run(ctx: Context<UploadArgs, PreauthArgs>) -> Result<()> {
 		"Generating pre-auth token for s3://{}/{} ({} parts)",
 		bucket, key, parts
 	);
-	let aws = aws::init(&ctx.args_sub).await;
+	let aws = aws::init(&ctx.args_sub.aws).await;
 	let client = S3Client::new(&aws);
 
 	let progress = ctx.bar((parts as u64) + 3);
