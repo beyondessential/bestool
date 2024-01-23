@@ -23,7 +23,12 @@ use super::UploadArgs;
 #[derive(Debug, Clone, Parser)]
 pub struct CancelArgs {
 	/// File which contains the token to cancel.
-	#[arg(long, value_name = "FILENAME", default_value = "token.txt", required_unless_present_any = &["token", "upload_id"])]
+	#[arg(
+		long,
+		value_name = "FILENAME",
+		default_value = "token.txt",
+		required_unless_present_any = &["token", "upload_id"],
+	)]
 	pub token_file: PathBuf,
 
 	/// Token value.

@@ -9,7 +9,9 @@ use tracing::{error, instrument, warn};
 use crate::{
 	actions::Context,
 	aws::{
-		self, s3::{multipart_upload, parse_bucket_and_key, singlepart_upload, token_upload}, AwsArgsFragment
+		self,
+		s3::{multipart_upload, parse_bucket_and_key, singlepart_upload, token_upload},
+		AwsArgsFragment,
 	},
 };
 
@@ -53,7 +55,11 @@ pub struct FileArgs {
 	///
 	/// This may also contain the key, if given in s3://bucket/key format. See the `--key` option
 	/// for semantics of the key portion.
-	#[arg(long, value_name = "BUCKET", required_unless_present_any = &["token", "token_file"])]
+	#[arg(
+		long,
+		value_name = "BUCKET",
+		required_unless_present_any = &["token", "token_file"],
+	)]
 	pub bucket: Option<String>,
 
 	/// Pathname in the bucket to upload to.
@@ -77,14 +83,24 @@ pub struct FileArgs {
 	/// Using this option, you can upload a file without AWS credentials. Note that pre-auth tokens
 	/// are time-limited: if you try to use an expired token, the upload will fail; more critically,
 	/// if the upload takes longer than the token's lifetime, the upload will also fail.
-	#[arg(long, value_name = "FILENAME", required_unless_present_any = &["token", "bucket", "key"], conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"])]
+	#[arg(
+		long,
+		value_name = "FILENAME",
+		required_unless_present_any = &["token", "bucket", "key"],
+		conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"],
+	)]
 	pub token_file: Option<PathBuf>,
 
 	/// Pre-auth token to use as a string.
 	///
 	/// Same as `--token-file` but passing the token as a string on the command-line. Generally you
 	/// should prefer using `--token-file`, as tokens are generally too long to pass as arguments.
-	#[arg(long, value_name = "TOKEN", required_unless_present_any = &["token_file", "bucket", "key"], conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"])]
+	#[arg(
+		long,
+		value_name = "TOKEN",
+		required_unless_present_any = &["token_file", "bucket", "key"],
+		conflicts_with_all = &["bucket", "key", "aws_access_key_id", "aws_secret_access_key", "aws_region"],
+	)]
 	pub token: Option<String>,
 
 	#[command(flatten)]

@@ -3,7 +3,10 @@ use clap::Parser;
 use miette::Result;
 use tracing::{info, instrument};
 
-use crate::{actions::Context, aws::{self, AwsArgsFragment}};
+use crate::{
+	actions::Context,
+	aws::{self, AwsArgsFragment},
+};
 
 use super::UploadArgs;
 
