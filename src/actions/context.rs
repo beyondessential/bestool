@@ -9,7 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
 
-use super::upload::token::UploadId;
+use super::upload::UploadId;
 
 #[derive(Clone, Debug)]
 pub struct Context<A = (), B = ()> {
