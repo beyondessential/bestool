@@ -12,17 +12,17 @@ use super::WifisetupArgs;
 /// connected over wifi, as this may disconnect you.
 #[derive(Debug, Clone, Parser)]
 pub struct ForgetArgs {
-	/// Name of the connection profile.
+	/// SSID of the wifi network to forget.
 	///
-	/// Either this or `--id` must be provided.
-	#[arg(long, value_name = "NAME", required_unless_present = "id")]
-	pub name: Option<String>,
+	/// Obtain it using `bestool wifisetup known`.
+	#[arg(long, value_name = "SSID")]
+	pub ssid: String,
 
-	/// UUID of the connection profile.
+	/// Which interface to change.
 	///
-	/// Either this or `--name` must be provided.
-	#[arg(long, value_name = "UUID", required_unless_present = "name")]
-	pub id: Option<String>,
+	/// By default, all interfaces are affected.
+	#[arg(long)]
+	pub interface: Option<String>,
 }
 
 #[instrument(skip(ctx))]
