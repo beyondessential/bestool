@@ -43,7 +43,7 @@ walkdir = "2.4.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = { version = "0.9.7", optional = true }
-networkmanager = { version = "0.4.1", optional = true }
+networkmanager = { package = "passcod-networkmanager", version = "0.5.1", optional = true }
 
 [build-dependencies]
 build-data = "0.1.5"
