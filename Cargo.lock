@@ -555,8 +555,8 @@ dependencies = [
  "leon-macros",
  "miette",
  "mimalloc",
- "networkmanager",
  "node-semver",
+ "passcod-networkmanager",
  "serde",
  "serde_json",
  "tokio",
@@ -1516,17 +1516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "networkmanager"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c7a94a505f4bdf5c605ade8a131f7487bbb80170ac27051ba569aa21598cd8"
-dependencies = [
- "dbus",
- "num-derive",
- "num-traits",
-]
-
-[[package]]
 name = "node-semver"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1692,6 +1681,18 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-targets 0.48.5",
+]
+
+[[package]]
+name = "passcod-networkmanager"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a5beb75d1d16554f32f6b7e09768ef1bb7f9afa138c417314a56300bfdf814f"
+dependencies = [
+ "dbus",
+ "num-derive",
+ "num-traits",
+ "thiserror",
 ]
 
 [[package]]
