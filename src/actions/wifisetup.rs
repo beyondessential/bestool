@@ -8,7 +8,7 @@ pub mod scan;
 pub mod connect;
 pub mod forget;
 
-/// Configure wifi (using NetowrkManager).
+/// Configure wifi (using NetworkManager).
 #[derive(Debug, Clone, Parser)]
 pub struct WifisetupArgs {
 	/// Wifisetup subcommand

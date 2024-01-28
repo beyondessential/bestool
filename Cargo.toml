@@ -12,10 +12,10 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/ops"
 
 [dependencies]
-aws-config = "1.1.2"
-aws-credential-types = { version = "1.1.2", features = ["hardcoded-credentials"] }
-aws-sdk-s3 = "1.12.0"
-aws-sdk-sts = "1.11.0"
+aws-config = { version = "1.1.2", optional = true }
+aws-credential-types = { version = "1.1.2", features = ["hardcoded-credentials"], optional = true }
+aws-sdk-s3 = { version = "1.12.0", optional = true }
+aws-sdk-sts = { version = "1.11.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"] }
 boxcar = "0.2.4"
 bytes = "1.5.0"
@@ -41,9 +41,24 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 walkdir = "2.4.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = { version = "0.9.7", optional = true }
+networkmanager = { version = "0.4.1", optional = true }
+
 [build-dependencies]
 build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
+
+[features]
+default = ["tamanu", "upload", "wifisetup"]
+
+## Common dep groups (not meant to be used directly)
+aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
+
+## Subcommands
+tamanu = []
+upload = ["aws"]
+wifisetup = ["dep:dbus", "dep:networkmanager"]
 
 [profile.release]
 lto = true
