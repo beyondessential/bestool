@@ -9,15 +9,21 @@ pub use context::Context;
 
 pub mod completions;
 pub mod context;
+#[cfg(feature = "tamanu")]
 pub mod tamanu;
+#[cfg(feature = "upload")]
 pub mod upload;
+#[cfg(all(target_os = "linux", feature = "wifisetup"))]
 pub mod wifisetup;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Action {
 	Completions(completions::CompletionsArgs),
+	#[cfg(feature = "tamanu")]
 	Tamanu(tamanu::TamanuArgs),
+	#[cfg(feature = "upload")]
 	Upload(upload::UploadArgs),
+	#[cfg(all(target_os = "linux", feature = "wifisetup"))]
 	Wifisetup(wifisetup::WifisetupArgs),
 }
 
@@ -28,8 +34,11 @@ pub async fn run() -> Result<()> {
 
 	match ctx.take_top() {
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
+		#[cfg(feature = "tamanu")]
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
+		#[cfg(feature = "upload")]
 		(Action::Upload(args), ctx) => upload::run(ctx.with_top(args)).await,
+		#[cfg(all(target_os = "linux", feature = "wifisetup"))]
 		(Action::Wifisetup(args), ctx) => wifisetup::run(ctx.with_top(args)).await,
 	}
 }
