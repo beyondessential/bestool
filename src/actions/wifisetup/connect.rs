@@ -8,11 +8,8 @@ use super::WifisetupArgs;
 
 /// Create a wifi connection.
 ///
-/// This creates a new connection profile. The wifi network doesn't need to be currently
+/// This creates a new connection profile if needed. The wifi network doesn't need to be currently
 /// broadcasting; it will be used the next time the device is in range.
-///
-/// If either `--name` or `--id` is provided, and a matching connection profile already exists, it
-/// will be updated with the new settings. Otherwise, a new profile will be created.
 #[derive(Debug, Clone, Parser)]
 pub struct ConnectArgs {
 	/// SSID of the wifi network.
@@ -27,17 +24,11 @@ pub struct ConnectArgs {
 	#[arg(long, value_name = "PASSWORD")]
 	pub password: String,
 
-	/// Name of the connection profile.
+	/// Which interface to use.
 	///
-	/// If a profile with this name already exists, it will be updated with the new settings.
-	#[arg(long, value_name = "NAME")]
-	pub name: Option<String>,
-
-	/// UUID of the connection profile.
-	///
-	/// If a profile with this UUID already exists, it will be updated with the new settings.
-	#[arg(long, value_name = "UUID")]
-	pub id: Option<String>,
+	/// By default, the interface is autodetected.
+	#[arg(long)]
+	pub interface: Option<String>,
 }
 
 #[instrument(skip(ctx))]
