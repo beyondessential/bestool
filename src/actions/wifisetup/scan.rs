@@ -2,27 +2,24 @@ use std::collections::BTreeMap;
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, miette};
-use networkmanager::{devices::{Any, Device, Wireless}, NetworkManager};
+use networkmanager::{devices::Wireless, NetworkManager};
 use tracing::instrument;
 
 use crate::actions::Context;
 
-use super::WifisetupArgs;
+use super::{devices, WifisetupArgs};
 
 /// Scan for wifi networks.
 ///
-/// This scans for wifi networks and prints the results to stdout. Use `--json` for machine-readable
-/// output.
+/// This scans for wifi networks and prints the results to stdout.
+/// Use `--json` for machine-readable output.
 #[derive(Debug, Clone, Parser)]
 pub struct ScanArgs {
 	/// Print output in JSON format.
 	///
 	/// Like the human-friendly output, one line is printed per network:
 	///
-	/// {"ssid": "MyNetwork", "aps": [{"bssid":"00:11:22:33:44:55", "strength": 50, "frequency": 5785, "bitrate": 270000}], "generation": 5, "security": "wpa2", "profile": "uuid"}
-	///
-	/// The "profile" field is only present if the network is already configured, and is the UUID of
-	/// the connection profile.
+	/// {"ssid": "MyNetwork", "aps": [{"bssid":"00:11:22:33:44:55", "strength": 50, "frequency": 5785, "bitrate": 270000}]}
 	#[arg(long)]
 	pub json: bool,
 
@@ -44,20 +41,8 @@ pub struct ScanArgs {
 pub async fn run(ctx: Context<WifisetupArgs, ScanArgs>) -> Result<()> {
 	let nm = NetworkManager::new().into_diagnostic()?;
 
-	let mut devs = nm
-		.get_devices()
-		.into_diagnostic()?
-		.into_iter()
-		.filter_map(|dev| match dev {
-			Device::WiFi(dev) => Some(dev),
-			_ => None,
-		});
-
-	let dev = if let Some(iface) = ctx.args_sub.interface.clone() {
-		devs.find(|dev| dev.interface().map_or(false, |name| name == iface))
-	} else {
-		devs.next()
-	}.ok_or_else(|| miette!("No wifi device found"))?;
+	let devs = devices(&nm, ctx.args_sub.interface.as_deref())?;
+	let dev = devs.first().ok_or_else(|| miette!("No wifi device found"))?;
 
 	let mut aps = BTreeMap::<String, Vec<Ap>>::new();
 	for ap in dev.get_all_access_points().into_diagnostic()? {

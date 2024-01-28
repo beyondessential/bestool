@@ -1685,9 +1685,9 @@ dependencies = [
 
 [[package]]
 name = "passcod-networkmanager"
-version = "0.5.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a5beb75d1d16554f32f6b7e09768ef1bb7f9afa138c417314a56300bfdf814f"
+checksum = "4fbdfc0b48a7ca6df618f75d05ee118447815c27d7b24ec48c3c3457db4d353f"
 dependencies = [
  "dbus",
  "num-derive",
