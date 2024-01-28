@@ -61,6 +61,7 @@ impl<A, B> Context<A, B> {
 		)
 	}
 
+	#[allow(dead_code)]
 	pub fn bar(&self, len: u64) -> ProgressBar {
 		self.progress.add(
 			ProgressBar::new(len).with_style(

@@ -11,12 +11,14 @@ pub mod completions;
 pub mod context;
 pub mod tamanu;
 pub mod upload;
+pub mod wifisetup;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Action {
 	Completions(completions::CompletionsArgs),
 	Tamanu(tamanu::TamanuArgs),
 	Upload(upload::UploadArgs),
+	Wifisetup(wifisetup::WifisetupArgs),
 }
 
 pub async fn run() -> Result<()> {
@@ -28,6 +30,7 @@ pub async fn run() -> Result<()> {
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		(Action::Upload(args), ctx) => upload::run(ctx.with_top(args)).await,
+		(Action::Wifisetup(args), ctx) => wifisetup::run(ctx.with_top(args)).await,
 	}
 }
 
