@@ -1,6 +1,6 @@
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
-use networkmanager::{NetworkManager};
+use networkmanager::NetworkManager;
 use tracing::instrument;
 
 use crate::actions::Context;
