@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use clap::Parser;
-use miette::{IntoDiagnostic, Result, miette};
-use networkmanager::{devices::Wireless, NetworkManager};
+use miette::{miette, IntoDiagnostic, Result};
+use networkmanager::NetworkManager;
 use tracing::instrument;
 
 use crate::actions::Context;
@@ -39,19 +39,24 @@ pub struct ScanArgs {
 
 #[instrument(skip(ctx))]
 pub async fn run(ctx: Context<WifisetupArgs, ScanArgs>) -> Result<()> {
-	let nm = NetworkManager::new().into_diagnostic()?;
+	let nm = NetworkManager::new().await.into_diagnostic()?;
 
-	let devs = devices(&nm, ctx.args_sub.interface.as_deref())?;
-	let dev = devs.first().ok_or_else(|| miette!("No wifi device found"))?;
+	let devs = devices(&nm, ctx.args_sub.interface.as_deref()).await?;
+	let dev = devs
+		.first()
+		.ok_or_else(|| miette!("No wifi device found"))?;
 
-	let mut aps = BTreeMap::<String, Vec<Ap>>::new();
-	for ap in dev.get_all_access_points().into_diagnostic()? {
-		let ssid = ap.ssid().into_diagnostic()?;
-		let ap = Ap::try_from(ap)?;
+	let mut aps = BTreeMap::<Vec<u8>, Vec<Ap>>::new();
+	for ap in dev.get_all_access_points().await.into_diagnostic()? {
+		let ssid = ap.ssid().await.into_diagnostic()?;
+		let ap = Ap::load(ap).await?;
 		aps.entry(ssid).or_default().push(ap);
 	}
 
-	let aps = aps.into_iter().map(|(ssid, aps)| WifiNetwork { ssid, aps }).collect::<Vec<_>>();
+	let aps = aps
+		.into_iter()
+		.map(|(ssid, aps)| WifiNetwork { ssid, aps })
+		.collect::<Vec<_>>();
 
 	if ctx.args_sub.json {
 		for ap in aps {
@@ -61,10 +66,14 @@ pub async fn run(ctx: Context<WifisetupArgs, ScanArgs>) -> Result<()> {
 				}
 
 				for ap in ap.aps {
-					println!("{}", serde_json::to_string(&WifiNetwork {
-						ssid: "".into(),
-						aps: vec![ap],
-					}).into_diagnostic()?);
+					println!(
+						"{}",
+						serde_json::to_string(&WifiNetwork {
+							ssid: "".into(),
+							aps: vec![ap],
+						})
+						.into_diagnostic()?
+					);
 				}
 			} else {
 				println!("{}", serde_json::to_string(&ap).into_diagnostic()?);
@@ -79,7 +88,8 @@ pub async fn run(ctx: Context<WifisetupArgs, ScanArgs>) -> Result<()> {
 
 				println!("\nHidden Networks:");
 			} else {
-				println!("\nSSID: {}", ap.ssid);
+				let ssid = String::from_utf8_lossy(&ap.ssid);
+				println!("\nSSID: {ssid}");
 			}
 
 			for ap in ap.aps {
@@ -94,13 +104,17 @@ pub async fn run(ctx: Context<WifisetupArgs, ScanArgs>) -> Result<()> {
 	Ok(())
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(
+	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Ord, PartialOrd, Hash,
+)]
 pub struct WifiNetwork {
-	pub ssid: String,
+	pub ssid: Vec<u8>,
 	pub aps: Vec<Ap>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(
+	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Ord, PartialOrd, Hash,
+)]
 pub struct Ap {
 	pub bssid: String,
 	pub strength: u8,
@@ -108,15 +122,13 @@ pub struct Ap {
 	pub bitrate: u32,
 }
 
-impl TryFrom<networkmanager::AccessPoint> for Ap {
-	type Error = miette::Report;
-
-	fn try_from(ap: networkmanager::AccessPoint) -> Result<Self> {
+impl Ap {
+	async fn load(ap: networkmanager::device::wireless::AccessPoint) -> Result<Self> {
 		Ok(Self {
-			bssid: ap.hw_address().into_diagnostic()?,
-			strength: ap.strength().into_diagnostic()?,
-			frequency: ap.frequency().into_diagnostic()?,
-			bitrate: ap.max_bitrate().into_diagnostic()?,
+			bssid: ap.bssid().await.into_diagnostic()?,
+			strength: ap.strength().await.into_diagnostic()?,
+			frequency: ap.frequency().await.into_diagnostic()?,
+			bitrate: ap.max_bitrate().await.into_diagnostic()?,
 		})
 	}
 }

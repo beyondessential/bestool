@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
-license = "UNLICENSED"
+license = "PROPRIETARY"
 description = "BES Deployment tooling"
 keywords = ["bes", "tamanu", "tupaia"]
 categories = ["command-line-utilities"]
@@ -42,15 +42,14 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 walkdir = "2.4.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-dbus = { version = "0.9.7", optional = true }
-networkmanager = { package = "passcod-networkmanager", version = "0.6.0", optional = true }
+networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
 
 [build-dependencies]
 build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["tamanu", "upload", "wifisetup"]
+default = ["tamanu", "upload"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
@@ -58,7 +57,7 @@ aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3", "dep:aws-
 ## Subcommands
 tamanu = []
 upload = ["aws"]
-wifisetup = ["dep:dbus", "dep:networkmanager"]
+wifisetup = ["dep:networkmanager"]
 
 [profile.release]
 lto = true
