@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use networkmanager::{
-	devices::{Any, Device, WiFiDevice},
-	NetworkManager,
+	device::wireless::WirelessDevice, NetworkManager
 };
 
 use super::Context;
@@ -40,21 +39,24 @@ pub async fn run(ctx: Context<WifisetupArgs>) -> Result<()> {
 	}
 }
 
-pub fn devices(nm: &NetworkManager, interface: Option<&str>) -> Result<Vec<WiFiDevice>> {
-	let devs = nm
+pub async fn devices(nm: &NetworkManager, interface: Option<&str>) -> Result<Vec<WirelessDevice>> {
+	let mut devs = Vec::new();
+	for dev in nm
 		.get_devices()
+		.await
 		.into_diagnostic()?
-		.into_iter()
-		.filter_map(|dev| match dev {
-			Device::WiFi(dev) => Some(dev),
-			_ => None,
-		});
+		{
+			if let Some(wdev) = dev.to_wireless().await.into_diagnostic()? {
+				devs.push((dev.interface().await.into_diagnostic()?, wdev));
+			}
+		}
 
 	if let Some(iface) = interface {
-		Ok(devs
-			.filter(|dev| dev.interface().map_or(false, |name| name == iface))
+		Ok(devs.into_iter()
+			.filter(|(name, _)| name == iface)
+			.map(|(_, dev)| dev)
 			.collect())
 	} else {
-		Ok(devs.collect())
+		Ok(devs.into_iter().map(|(_, dev)| dev).collect())
 	}
 }
