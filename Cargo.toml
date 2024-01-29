@@ -50,7 +50,7 @@ networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1",
 
 [build-dependencies]
 build-data = "0.1.5"
-windows_exe_info = { version = "0.4.1", features = ["manifest"] }
+windows_exe_info = { version = "0.4.2", features = ["manifest"] }
 
 [features]
 default = ["dyndns", "tamanu", "upload"]
