@@ -455,12 +455,11 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sts"
-version = "1.11.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "262a6d40c8e11eea633ba541a39745cebfcee9c1683020cee63413048b5c6188"
+checksum = "1a591f8c7e6a621a501b2b5d2e88e1697fcb6274264523a6ad4d5959889a41ce"
 dependencies = [
  "aws-credential-types",
- "aws-http",
  "aws-runtime",
  "aws-smithy-async",
  "aws-smithy-http",
@@ -581,9 +580,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-query"
-version = "0.60.3"
+version = "0.60.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aff02ae2ee7968bbce2983ffb5ce529d24f4848532300f398347bde8c2196974"
+checksum = "bda4b1dfc9810e35fba8a620e900522cd1bd4f9578c446e82f49d1ce41d2e9f9"
 dependencies = [
  "aws-smithy-types",
  "urlencoding",
