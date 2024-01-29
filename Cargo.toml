@@ -19,7 +19,7 @@ aws-sdk-sts = { version = "1.11.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"] }
 boxcar = "0.2.4"
 bytes = "1.5.0"
-chrono = "0.4.31"
+chrono = "0.4.33"
 clap = { version = "4.4.18", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = "4.4.8"
 clap_complete_nushell = "4.4.2"
