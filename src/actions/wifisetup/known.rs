@@ -1,6 +1,6 @@
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
-use networkmanager::{devices::Any, NetworkManager};
+use networkmanager::{NetworkManager};
 use tracing::instrument;
 
 use crate::actions::Context;
@@ -21,10 +21,10 @@ pub struct KnownArgs {
 
 #[instrument(skip(ctx))]
 pub async fn run(ctx: Context<WifisetupArgs, KnownArgs>) -> Result<()> {
-	let nm = NetworkManager::new().into_diagnostic()?;
-	let devs = devices(&nm, ctx.args_sub.interface.as_deref())?;
+	let nm = NetworkManager::new().await.into_diagnostic()?;
+	let devs = devices(&nm, ctx.args_sub.interface.as_deref()).await?;
 
-	for conn in nm.settings().into_diagnostic()?.list_connections().into_diagnostic()? {
+	for conn in nm.settings().list_connections().await.into_diagnostic()? {
 		dbg!(conn);
 	}
 
