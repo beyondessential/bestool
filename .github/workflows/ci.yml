@@ -71,6 +71,9 @@ jobs:
 
   build:
     if: github.ref_type != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
 
     strategy:
       fail-fast: false
