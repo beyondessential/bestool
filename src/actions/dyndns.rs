@@ -156,7 +156,7 @@ pub async fn run(mut ctx: Context<DyndnsArgs>) -> Result<()> {
 				},
 				set.resource_records()
 					.iter()
-					.map(|record| record.value.as_ref())
+					.map(|record| record.value.as_str())
 					.collect::<Vec<_>>()
 					.join(", ")
 			);
