@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.2.0] - 2024-02-09
+## [0.3.0] - 2024-02-09
 
 
 - **Bugfix:** clap test - ([5b55a96](https://github.com/beyondessential/bestool/commit/5b55a96904836ab23b581e71bca2d5eb1a95ac58))
