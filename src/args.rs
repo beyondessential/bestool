@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 use clap::{ArgAction, Parser, ValueEnum, ValueHint};
 use tracing::{debug, warn};
@@ -76,7 +76,13 @@ pub fn get_args() -> Args {
 	}
 
 	debug!("parsing arguments");
-	let args = Args::parse();
+	let mut args = Args::parse();
+
+	// https://no-color.org/
+	if env::var("NO_COLOR").is_ok() {
+		debug!("NO_COLOR environment variable set, ignoring --color option");
+		args.color = ColourMode::Never;
+	}
 
 	debug!(?args, "got arguments");
 	args
