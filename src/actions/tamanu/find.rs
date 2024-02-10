@@ -25,13 +25,13 @@ pub struct FindArgs {
 
 pub async fn run(ctx: Context<TamanuArgs, FindArgs>) -> Result<()> {
 	let mut versions = if let Some(root) = ctx.args_top.root {
-		if let Some(version) = crate::roots::version_of_root(&root)? {
+		if let Some(version) = super::roots::version_of_root(&root)? {
 			vec![(version, root.canonicalize().into_diagnostic()?)]
 		} else {
 			bail!("no version found in explicit root {root:?}");
 		}
 	} else {
-		crate::roots::find_versions()?
+		super::roots::find_versions()?
 	};
 
 	if ctx.args_sub.asc {

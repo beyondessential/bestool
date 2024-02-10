@@ -31,8 +31,8 @@ humantime = "2.1.0"
 indicatif = { version = "0.17.7", features = ["tokio"] }
 ip_network = { version = "0.4.1", optional = true }
 json5 = "0.4.1"
-leon = "2.0.1"
-leon-macros = "1.0.0"
+leon = { version = "2.0.1", optional = true }
+leon-macros = { version = "1.0.0", optional = true }
 local-ip-address = { version = "0.5.7", optional = true }
 miette = { version = "5.10.0", features = ["fancy"] }
 mimalloc = "0.1.39"
@@ -61,10 +61,9 @@ aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep
 ## Subcommands
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 tamanu = []
+tamanu = ["dep:leon", "dep:leon-macros"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]
-local-ip-address = ["dep:local-ip-address"]
-ip_network = ["dep:ip_network"]
 
 [profile.release]
 lto = true
