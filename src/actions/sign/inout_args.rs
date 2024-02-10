@@ -28,7 +28,7 @@ pub(crate) fn inout_files(inoutput: Vec<PathBuf>, files: &Vec<PathBuf>) -> Resul
 					template
 						.render(&[
 							("filename", f.to_string_lossy().as_ref()),
-							("n", (n + 1).to_string().as_ref()),
+							("num", (n + 1).to_string().as_ref()),
 						])
 						.map(PathBuf::from)
 				})
