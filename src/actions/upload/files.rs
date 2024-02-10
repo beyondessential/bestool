@@ -115,7 +115,7 @@ pub async fn run(mut ctx: Context<UploadArgs, FilesArgs>) -> Result<()> {
 
 	let (first, files) = {
 		let (left, right) = files.split_at(1);
-		let Some(left) = left.get(0) else {
+		let Some(left) = left.first() else {
 			bail!("No files to upload");
 		};
 

@@ -82,7 +82,7 @@ pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::Value> {
 	fn inner(path: &Path) -> Result<serde_json::Value> {
 		debug!(?path, "opening config file");
-		let mut file = File::open(&path).into_diagnostic()?;
+		let mut file = File::open(path).into_diagnostic()?;
 
 		let mut contents = String::new();
 		let bytes = file.read_to_string(&mut contents).into_diagnostic()?;
@@ -103,17 +103,14 @@ fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::
 
 #[instrument(level = "debug")]
 fn merge_json(mut base: serde_json::Value, mut overlay: serde_json::Value) -> serde_json::Value {
-	match (base.as_object_mut(), overlay.as_object_mut()) {
-		(Some(base), Some(overlay)) => {
-			for (key, value) in overlay {
-				if let Some(base_value) = base.get_mut(key) {
-					*base_value = merge_json(base_value.clone(), value.clone());
-				} else {
-					base.insert(key.clone(), value.clone());
-				}
+	if let (Some(base), Some(overlay)) = (base.as_object_mut(), overlay.as_object_mut()) {
+		for (key, value) in overlay {
+			if let Some(base_value) = base.get_mut(key) {
+				*base_value = merge_json(base_value.clone(), value.clone());
+			} else {
+				base.insert(key.clone(), value.clone());
 			}
 		}
-		_ => {}
 	}
 	base
 }

@@ -47,14 +47,14 @@ impl SecretKeyArgs {
 	fn from_string(s: &str, password: Option<String>) -> Result<SecretKey> {
 		// try parsing as the raw key as base64 first
 		if let Ok(key) = Base64::decode_vec(s) {
-			return Ok(SecretKey::from_bytes(&key).into_diagnostic()?);
+			return SecretKey::from_bytes(&key).into_diagnostic();
 		}
 
 		// then as the full minisign key file
-		Ok(SecretKeyBox::from_string(s)
+		SecretKeyBox::from_string(s)
 			.into_diagnostic()?
 			.into_secret_key(password)
-			.into_diagnostic()?)
+			.into_diagnostic()
 	}
 }
 
@@ -96,14 +96,14 @@ impl PublicKeyArgs {
 	fn from_string(s: &str) -> Result<PublicKey> {
 		// try parsing as the raw key as base64 first
 		if let Ok(key) = Base64::decode_vec(s) {
-			return Ok(PublicKey::from_bytes(&key).into_diagnostic()?);
+			return PublicKey::from_bytes(&key).into_diagnostic();
 		}
 
 		// then as the full minisign key file
-		Ok(PublicKeyBox::from_string(s)
+		PublicKeyBox::from_string(s)
 			.into_diagnostic()?
 			.into_public_key()
-			.into_diagnostic()?)
+			.into_diagnostic()
 	}
 }
 
