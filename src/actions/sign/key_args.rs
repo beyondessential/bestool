@@ -3,10 +3,10 @@ use std::{fs::read_to_string, path::PathBuf};
 use base64ct::{Base64, Encoding};
 use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result};
-use minisign::{SecretKey, SecretKeyBox};
+use minisign::{PublicKey, PublicKeyBox, SecretKey, SecretKeyBox};
 
 #[derive(Debug, Clone, Parser)]
-pub(crate) struct KeyArgs {
+pub(crate) struct SecretKeyArgs {
 	/// The secret key to sign with.
 	///
 	/// Prefer to use `--key-file` or `--key-env` instead of this.
@@ -42,7 +42,7 @@ pub(crate) struct KeyArgs {
 	pub password_prompt: bool,
 }
 
-impl KeyArgs {
+impl SecretKeyArgs {
 	pub fn read(&self) -> Result<SecretKey> {
 		let password = self.read_password()?;
 		self.read_key(password)
@@ -98,6 +98,56 @@ impl KeyArgs {
 		Ok(SecretKeyBox::from_string(s)
 			.into_diagnostic()?
 			.into_secret_key(password)
+			.into_diagnostic()?)
+	}
+}
+
+
+#[derive(Debug, Clone, Parser)]
+pub(crate) struct PublicKeyArgs {
+	/// The public key to check signatures with.
+	///
+	/// Prefer to use `--key-file` or `--key-env` instead of this.
+	#[arg(long, value_name = "KEY", required_unless_present_any = &["key_file", "key_env"])]
+	pub key: Option<String>,
+
+	/// The public key, read from a file.
+	#[arg(long, value_name = "FILE", required_unless_present_any = &["key", "key_env"])]
+	pub key_file: Option<PathBuf>,
+
+	/// The public key, read from an environment variable.
+	#[arg(long, value_name = "ENVVAR", required_unless_present_any = &["key", "key_file"])]
+	pub key_env: Option<String>,
+}
+
+impl PublicKeyArgs {
+	pub fn read(&self) -> Result<PublicKey> {
+		match &self {
+			Self { key: Some(key), .. } => Self::from_string(key),
+			Self {
+				key_env: Some(env), ..
+			} => Self::from_string(&std::env::var(env).into_diagnostic()?),
+			Self {
+				key_file: Some(file),
+				..
+			} => {
+				// we'll always assume it's a full minisign key file
+				PublicKey::from_file(file).into_diagnostic()
+			}
+			_ => bail!("exactly one of --key, --key-file, or --key-env must be provided"),
+		}
+	}
+
+	fn from_string(s: &str) -> Result<PublicKey> {
+		// try parsing as the raw key as base64 first
+		if let Ok(key) = Base64::decode_vec(s) {
+			return Ok(PublicKey::from_bytes(&key).into_diagnostic()?);
+		}
+
+		// then as the full minisign key file
+		Ok(PublicKeyBox::from_string(s)
+			.into_diagnostic()?
+			.into_public_key()
 			.into_diagnostic()?)
 	}
 }
