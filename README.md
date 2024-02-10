@@ -38,3 +38,36 @@ The above URLs are for the current release. If you want to always get the latest
 | Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-apple-darwin/bestool) |
 | Mac | Intel pre-2014 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-apple-darwin/bestool) |
 
+
+## Development
+
+Install [rust](https://rustup.rs), clone the repo, then run:
+
+```console
+$ cargo check
+```
+
+To run the tool:
+
+```console
+$ cargo run -- --help
+```
+
+To build the tool like for production:
+
+```console
+$ cargo build --release
+```
+
+Commits should follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format.
+Types are listed in the [cliff.toml](./cliff.toml#L62-L78) file.
+
+### Releasing
+
+To make a release, install [cargo-release](https://github.com/crate-ci/cargo-release) and [git-cliff](https://git-cliff.org/), then:
+
+```console
+$ git switch main
+$ git pull
+$ cargo release minor --execute
+```
