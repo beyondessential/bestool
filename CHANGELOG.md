@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.4.0](https://github.com/beyondessential/bestool/compare/v0.3.0..0.4.0) - 2024-02-10
+
+
+- **Documentation:** Add downloads for the current version - ([0096050](https://github.com/beyondessential/bestool/commit/0096050a07238e83f3b2058fb2f8a06f732976ac))
+- **Documentation:** Provide links to latest URLs - ([d1b6d85](https://github.com/beyondessential/bestool/commit/d1b6d85d222073c24a0fcb86b26d50063896b746))
+- **Documentation:** Add development guide - ([2a48820](https://github.com/beyondessential/bestool/commit/2a488205c09e3546fcc0e844ab2fd4f3c888394a))
+- **Feature:** support NO_COLOR (https://no-color.org) - ([8d78d83](https://github.com/beyondessential/bestool/commit/8d78d8317e41824575c4f4b1318ca672e55f8de4))
+
+### Deps
+
+- **Deps:** bump clap_complete_nushell from 4.4.2 to 4.5.0 (#10) - ([2305cb0](https://github.com/beyondessential/bestool/commit/2305cb05f70711a309bdc8719371f6afd68fa3cc))
+- **Deps:** bump aws-sdk-route53 from 1.13.0 to 1.13.1 (#11) - ([4203344](https://github.com/beyondessential/bestool/commit/4203344c04f7b0be56b0bf1382f16009fcfa1a81))
+- **Deps:** bump serde_json from 1.0.111 to 1.0.113 (#12) - ([bcfb3eb](https://github.com/beyondessential/bestool/commit/bcfb3eb1711b3147d53eaf2b3a998b5082507b11))
+- **Deps:** bump clap_complete from 4.4.9 to 4.5.0 (#13) - ([b2822cc](https://github.com/beyondessential/bestool/commit/b2822cc55b4fbf67a7621a7ac6bd00ac28c4c768))
+
+### Sign
+
+- **Feature:** Add sign command - ([1957417](https://github.com/beyondessential/bestool/commit/1957417e90816d9b239d25d49d910234578d4387))
+- **Feature:** Add check command - ([b8af9e0](https://github.com/beyondessential/bestool/commit/b8af9e075c2f65905f8894375a786dd662e3d47e))
+- **Feature:** Add keygen command - ([e243510](https://github.com/beyondessential/bestool/commit/e243510a52cf443c30b80710873558837f21cf5a))
+- **Refactor:** Extract --output file resolving to reuse into check - ([d87620d](https://github.com/beyondessential/bestool/commit/d87620d1f12fc1c9d3cc1f34956939355852cd8c))
+
+### Tamanu
+
+- **Refactor:** Move roots so tamanu deps can be optional - ([87e5b6d](https://github.com/beyondessential/bestool/commit/87e5b6db5086f7b0fa61ff070b2a23546527c247))
+
+---
 ## [0.3.0] - 2024-02-09
 
 
