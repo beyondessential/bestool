@@ -33,11 +33,9 @@ pub fn find_roots() -> Result<Vec<PathBuf>> {
 	for template in KNOWN_ROOTS {
 		let pattern = template.render(&[("home", &home)])?;
 		debug!(?pattern, "searching for root in pattern");
-		for entry in glob::glob(&pattern).into_diagnostic()? {
-			if let Ok(path) = entry {
-				trace!(?path, "found possible root");
-				paths.push(path);
-			}
+		for path in glob::glob(&pattern).into_diagnostic()?.flatten() {
+			trace!(?path, "found possible root");
+			paths.push(path);
 		}
 	}
 

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use leon::Template;
 use miette::{bail, Result};
 
-pub(crate) fn inout_files(inoutput: Vec<PathBuf>, files: &Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+pub(crate) fn inout_files(inoutput: Vec<PathBuf>, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
 	Ok(if inoutput.is_empty() {
 		files
 			.iter()

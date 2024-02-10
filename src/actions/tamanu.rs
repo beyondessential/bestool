@@ -37,7 +37,7 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 
 pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
 	if let Some(root) = &args.root {
-		let version = roots::version_of_root(&root)?
+		let version = roots::version_of_root(root)?
 			.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
 		Ok((version, root.canonicalize().into_diagnostic()?))
 	} else {

@@ -77,6 +77,7 @@ pub async fn multipart_upload(
 	let mut parts = CompletedMultipartUploadBuilder::default();
 	let part_no = Arc::new(AtomicU32::new(1));
 
+	#[allow(clippy::blocks_in_conditions)]
 	while let Some((bytes, part)) = match chunker
 		.with_next_chunk(&{
 			let client = client.clone();
@@ -222,8 +223,8 @@ pub fn parse_bucket_and_key<'a>(
 	bucket: &'a str,
 	key: Option<&'a str>,
 ) -> Result<(&'a str, &'a str)> {
-	Ok(if bucket.starts_with("s3://") {
-		if let Some((bucket, key)) = bucket[5..].split_once('/') {
+	Ok(if let Some(stripped) = bucket.strip_prefix("s3://") {
+		if let Some((bucket, key)) = stripped.split_once('/') {
 			(bucket, key)
 		} else {
 			(bucket, "")
