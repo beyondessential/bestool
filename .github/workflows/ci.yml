@@ -80,7 +80,6 @@ jobs:
       matrix:
         target:
           - x86_64-apple-darwin
-          - x86_64h-apple-darwin
           - x86_64-unknown-linux-gnu
           - x86_64-unknown-linux-musl
           - x86_64-pc-windows-msvc
@@ -182,7 +181,7 @@ jobs:
           dest="s3://bes-ops-tools/bestool/gha/"
           if [[ ${{ matrix.target }} == "x86_64-unknown-linux-gnu" ]]; then
             dest="$dest/Linux-X64"
-          elif [[ ${{ matrix.target }} == "x86_64h-apple-darwin" ]]; then
+          elif [[ ${{ matrix.target }} == "x86_64-apple-darwin" ]]; then
             dest="$dest/macOS-X64"
           elif [[ ${{ matrix.target }} == "x86_64-pc-windows-msvc" ]]; then
             dest="$dest/Windows-X64"
