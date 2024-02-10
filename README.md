@@ -38,6 +38,15 @@ The above URLs are for the current release. If you want to always get the latest
 | Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-apple-darwin/bestool) |
 | Mac | Intel pre-2014 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-apple-darwin/bestool) |
 
+### In GitHub Actions
+
+```yaml
+- name: Download bestool
+  shell: bash
+  run: |
+    curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
+    [[ -f bestool ]] && chmod +x bestool
+```
 
 ## Development
 
