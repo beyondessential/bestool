@@ -7,7 +7,7 @@ use miette::{bail, Context as _, IntoDiagnostic, Result};
 use minisign::sign;
 use tracing::debug;
 
-use super::{Context, KeyArgs, SignArgs};
+use super::{inout_args::inout_files, key_args::KeyArgs, Context, SignArgs};
 
 /// Sign a file or data with a secret key.
 #[derive(Debug, Clone, Parser)]
@@ -54,41 +54,7 @@ pub async fn run(ctx: Context<SignArgs, FilesArgs>) -> Result<()> {
 	} = ctx.args_sub;
 	let sk = key.read()?;
 
-	let output_names = if output.is_empty() {
-		files
-			.iter()
-			.map(|f| {
-				let mut ext = f.extension().unwrap_or_default().to_string_lossy().to_string();
-				ext.push_str(".sig");
-				f.with_extension(ext)
-			})
-			.collect()
-	} else if output.len() == 1 {
-		let maybe_template = output[0].to_string_lossy();
-		let template = Template::parse(&maybe_template)?;
-		if template.has_any_of_keys(&["filename", "n"]) {
-			files
-				.iter()
-				.enumerate()
-				.map(|(n, f)| {
-					template
-						.render(&[
-							("filename", f.to_string_lossy().as_ref()),
-							("n", (n + 1).to_string().as_ref()),
-						])
-						.map(PathBuf::from)
-				})
-				.collect::<Result<Vec<_>, _>>()?
-		} else if files.len() == 1 {
-			output
-		} else {
-			bail!("a single --output must be a template if signing multiple files");
-		}
-	} else if output.len() == files.len() {
-		output
-	} else {
-		bail!("output file count does not match input file count");
-	};
+	let output_names = inout_files(output, &files)?;
 
 	let comment = if let Some(comment) = comment.as_ref() {
 		Some(Template::parse(comment)?)
