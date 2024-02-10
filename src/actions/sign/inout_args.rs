@@ -8,13 +8,13 @@ pub(crate) fn inout_files(inoutput: Vec<PathBuf>, files: &[PathBuf]) -> Result<V
 		files
 			.iter()
 			.map(|f| {
-				let mut ext = f
-					.extension()
-					.unwrap_or_default()
-					.to_string_lossy()
-					.to_string();
-				ext.push_str(".sig");
-				f.with_extension(ext)
+				f.with_extension(if let Some(ext) = f.extension() {
+					let mut ext = ext.to_string_lossy().to_string();
+					ext.push_str(".sig");
+					ext
+				} else {
+					"sig".into()
+				})
 			})
 			.collect()
 	} else if inoutput.len() == 1 {
