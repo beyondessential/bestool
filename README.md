@@ -44,6 +44,26 @@ The above URLs are for the current release. If you want to always get the latest
   run: |
     curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
     [[ -f bestool ]] && chmod +x bestool
+
+- name: Use bestool
+  shell: bash
+  run: |
+    bestool=bestool
+    [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
+    ./$bestool --version # or something more useful
+```
+
+Or combined:
+
+```yaml
+- name: Download bestool
+  shell: bash
+  run: |
+    bestool=bestool
+    [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
+    curl -Lo $bestool https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
+    [[ -f bestool ]] && chmod +x bestool
+    ./$bestool --version # or something more useful
 ```
 
 ## Development
