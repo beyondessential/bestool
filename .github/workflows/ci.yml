@@ -89,10 +89,10 @@ jobs:
 
     name: Build / ${{ matrix.target }}
     runs-on: >-
-      ${{ contains(matrix.target, 'linux') && 'ubuntu' || (
-        contains(matrix.target, 'windows') && 'windows' || (
-          contains(matrix.target, 'darwin') && 'macos' ||
-            'ubuntu'
+      ${{ contains(matrix.target, 'linux') && 'ubuntu-latest' || (
+        contains(matrix.target, 'windows') && 'windows-latest' || (
+          contains(matrix.target, 'darwin') && 'macos-14' ||
+            'ubuntu-latest'
         )
       ) }}-latest
 
