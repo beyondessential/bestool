@@ -184,6 +184,7 @@ jobs:
           elif [[ ${{ matrix.target }} == "x86_64-apple-darwin" ]]; then
             dest="$dest/macOS-X64"
           elif [[ ${{ matrix.target }} == "x86_64-pc-windows-msvc" ]]; then
+            src="$src.exe"
             dest="$dest/Windows-X64"
           elif [[ ${{ matrix.target }} == "aarch64-apple-darwin" ]]; then
             dest="$dest/macOS-ARM64"
