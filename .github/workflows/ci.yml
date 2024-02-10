@@ -139,6 +139,8 @@ jobs:
 
       - name: Sign build
         shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
           bestool=bestool
           [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
