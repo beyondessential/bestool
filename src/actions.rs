@@ -11,6 +11,8 @@ pub mod completions;
 pub mod context;
 #[cfg(feature = "dyndns")]
 pub mod dyndns;
+#[cfg(feature = "sign")]
+pub mod sign;
 #[cfg(feature = "tamanu")]
 pub mod tamanu;
 #[cfg(feature = "upload")]
@@ -23,6 +25,8 @@ pub enum Action {
 	Completions(completions::CompletionsArgs),
 	#[cfg(feature = "dyndns")]
 	Dyndns(dyndns::DyndnsArgs),
+	#[cfg(feature = "sign")]
+	Sign(sign::SignArgs),
 	#[cfg(feature = "tamanu")]
 	Tamanu(tamanu::TamanuArgs),
 	#[cfg(feature = "upload")]
@@ -40,6 +44,8 @@ pub async fn run() -> Result<()> {
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
 		#[cfg(feature = "dyndns")]
 		(Action::Dyndns(args), ctx) => dyndns::run(ctx.with_top(args)).await,
+		#[cfg(feature = "sign")]
+		(Action::Sign(args), ctx) => sign::run(ctx.with_top(args)).await,
 		#[cfg(feature = "tamanu")]
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		#[cfg(feature = "upload")]
