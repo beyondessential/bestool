@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.4.0](https://github.com/beyondessential/bestool/compare/v0.3.0..0.4.0) - 2024-02-10
+## [0.4.1](https://github.com/beyondessential/bestool/compare/v0.4.0..0.4.1) - 2024-02-10
+
+
+- **Repo:** try harder to avoid that "chore" type - ([acca607](https://github.com/beyondessential/bestool/commit/acca6074d04016d33c94a96aa72d09fb01e8d89f))
+
+---
+## [0.4.0](https://github.com/beyondessential/bestool/compare/v0.3.0..v0.4.0) - 2024-02-10
 
 
 - **Documentation:** Add downloads for the current version - ([0096050](https://github.com/beyondessential/bestool/commit/0096050a07238e83f3b2058fb2f8a06f732976ac))
