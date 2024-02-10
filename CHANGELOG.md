@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.4.3](https://github.com/beyondessential/bestool/compare/v0.4.2..0.4.3) - 2024-02-10
+
+
+- **Documentation:** Show how to use bestool in GHA - ([e5fee6b](https://github.com/beyondessential/bestool/commit/e5fee6b516b07ef76fad02cb5b935fcef0853009))
+
+### Sign
+
+- **Bugfix:** Replace {n} placeholder with {num} - ([edd2633](https://github.com/beyondessential/bestool/commit/edd2633f33ea2672c3b2e6e72479b42a609cacd1))
+- **Bugfix:** Signatures filenames would use foo..sig if the input didn't have an extension - ([88e5beb](https://github.com/beyondessential/bestool/commit/88e5bebce6b886f81387897ef8430c4e9d4ddc5e))
+
+---
 ## [0.4.1](https://github.com/beyondessential/bestool/compare/v0.4.0..v0.4.1) - 2024-02-10
 
 
