@@ -56,14 +56,18 @@ pub async fn run(ctx: Context<SignArgs, CheckArgs>) -> Result<()> {
 		if !sigfile.exists() {
 			error!(?infile, ?sigfile, "signature file does not exist");
 			errors += 1;
-			if !quiet { eprintln!("checked {infile:?}: MISSING SIG") };
+			if !quiet {
+				eprintln!("checked {infile:?}: MISSING SIG")
+			};
 			continue;
 		}
 
 		if let Err(error) = check_file(infile, &sigfile, &pk, quiet) {
 			error!(?infile, ?sigfile, "checking error: {error}");
 			errors += 1;
-			if !quiet { eprintln!("checked {infile:?}: BAD") };
+			if !quiet {
+				eprintln!("checked {infile:?}: BAD")
+			};
 		}
 	}
 
@@ -89,8 +93,7 @@ fn check_file(
 		.into_diagnostic()
 		.wrap_err(format!("failed reading signature from {sigfile:?}"))?;
 
-	verify(pk, &signature, reader, true, false, false)
-		.into_diagnostic()?;
+	verify(pk, &signature, reader, true, false, false).into_diagnostic()?;
 
 	if !quiet {
 		let comment = signature.trusted_comment().into_diagnostic()?;

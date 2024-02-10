@@ -58,7 +58,6 @@ impl SecretKeyArgs {
 	}
 }
 
-
 #[derive(Debug, Clone, Parser)]
 pub(crate) struct PublicKeyArgs {
 	/// The public key to check signatures with.
