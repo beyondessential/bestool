@@ -94,7 +94,7 @@ jobs:
           contains(matrix.target, 'darwin') && 'macos-14' ||
             'ubuntu-latest'
         )
-      ) }}-latest
+      ) }}
 
     steps:
       - uses: actions/checkout@v4
