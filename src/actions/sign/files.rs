@@ -28,7 +28,7 @@ pub struct FilesArgs {
 	/// If provided, and multiple files are being signed, this must be provided as many times as
 	/// there are input files, or once but include one of the two following placeholders, in which
 	/// case it is treated as a template: `{filename}` will be replaced with the input filename, and
-	/// `{n}` will be replaced with an incrementing number (from 1).
+	/// `{num}` will be replaced with an incrementing number (from 1).
 	#[arg(long, value_name = "FILE")]
 	pub output: Vec<PathBuf>,
 
@@ -39,8 +39,8 @@ pub struct FilesArgs {
 	/// in the same way as the signed file itself upon verification.
 	///
 	/// If this contains any of the following placeholders, they will be replaced: `{filename}` with
-	/// the input filename, `{n}` with an incrementing number (from 1), `{keyid}` with the key ID of
-	/// the signing key, and `{timestamp}` with the current date and time in RFC3339 format.
+	/// the input filename, `{num}` with an incrementing number (from 1), `{keyid}` with the key ID
+	/// of the signing key, and `{timestamp}` with the current date and time in RFC3339 format.
 	#[arg(long, value_name = "COMMENT")]
 	pub comment: Option<String>,
 }
@@ -99,7 +99,7 @@ async fn sign_file(
 		.map(|t| {
 			t.render(&[
 				("filename", file.to_string_lossy().as_ref()),
-				("n", (n + 1).to_string().as_ref()),
+				("num", (n + 1).to_string().as_ref()),
 				("keyid", keyid),
 				("timestamp", now),
 			])

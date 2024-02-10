@@ -28,7 +28,7 @@ pub struct CheckArgs {
 	/// If provided, and multiple files are being checked, this must be provided as many times as
 	/// there are input files, or once but include one of the two following placeholders, in which
 	/// case it is treated as a template: `{filename}` will be replaced with the input filename, and
-	/// `{n}` will be replaced with an incrementing number (from 1).
+	/// `{num}` will be replaced with an incrementing number (from 1).
 	#[arg(long, value_name = "FILE")]
 	pub sig_file: Vec<PathBuf>,
 
