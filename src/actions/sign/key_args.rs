@@ -21,57 +21,13 @@ pub(crate) struct SecretKeyArgs {
 	#[arg(long, value_name = "ENVVAR", required_unless_present_any = &["key", "key_file"])]
 	pub key_env: Option<String>,
 
-	/// The password in plain text to decrypt the secret key, if it's encrypted.
-	///
-	/// Prefer to use `--password-file` or `--password-env` instead of this.
-	#[arg(long, value_name = "KEY", conflicts_with_all = &["password_file", "password_env"])]
-	pub password: Option<String>,
-
-	/// The secret key's password, read from a file.
-	#[arg(long, value_name = "FILE", conflicts_with_all = &["password", "password_env"])]
-	pub password_file: Option<PathBuf>,
-
-	/// The secret key's password, read from an environment variable.
-	#[arg(long, value_name = "ENVVAR", conflicts_with_all = &["password", "password_file"])]
-	pub password_env: Option<String>,
-
-	/// Prompt for the password interactively.
-	///
-	/// Do not use this in scripts or CI.
-	#[arg(long)]
-	pub password_prompt: bool,
+	#[command(flatten)]
+	pub password: PasswordArgs,
 }
 
 impl SecretKeyArgs {
 	pub fn read(&self) -> Result<SecretKey> {
-		let password = self.read_password()?;
-		self.read_key(password)
-	}
-
-	fn read_password(&self) -> Result<Option<String>> {
-		// TODO: zero-box the password to avoid it lingering in memory
-		match &self {
-			Self {
-				password_prompt: true,
-				..
-			} => Ok(None),
-			Self {
-				password: Some(pass),
-				..
-			} => Ok(Some(pass.into())),
-			Self {
-				password_env: Some(env),
-				..
-			} => std::env::var(env).into_diagnostic().map(Some),
-			Self {
-				password_file: Some(file),
-				..
-			} => read_to_string(file).into_diagnostic().map(Some),
-			_ => Ok(Some("".into())), // no password
-		}
-	}
-
-	fn read_key(&self, password: Option<String>) -> Result<SecretKey> {
+		let password = self.password.read()?;
 		match &self {
 			Self { key: Some(key), .. } => Self::from_string(key, password),
 			Self {
@@ -149,5 +105,53 @@ impl PublicKeyArgs {
 			.into_diagnostic()?
 			.into_public_key()
 			.into_diagnostic()?)
+	}
+}
+
+#[derive(Debug, Clone, Parser)]
+pub(crate) struct PasswordArgs {
+	/// The secret key's password in plain text.
+	///
+	/// Prefer to use `--password-file` or `--password-env` instead of this.
+	#[arg(long, value_name = "KEY", conflicts_with_all = &["password_file", "password_env"])]
+	pub password: Option<String>,
+
+	/// The secret key's password, read from a file.
+	#[arg(long, value_name = "FILE", conflicts_with_all = &["password", "password_env"])]
+	pub password_file: Option<PathBuf>,
+
+	/// The secret key's password, read from an environment variable.
+	#[arg(long, value_name = "ENVVAR", conflicts_with_all = &["password", "password_file"])]
+	pub password_env: Option<String>,
+
+	/// Prompt for the password interactively.
+	///
+	/// Do not use this in scripts or CI.
+	#[arg(long)]
+	pub password_prompt: bool,
+}
+
+impl PasswordArgs {
+	pub fn read(&self) -> Result<Option<String>> {
+		// TODO: zero-box the password to avoid it lingering in memory
+		match &self {
+			Self {
+				password_prompt: true,
+				..
+			} => Ok(None),
+			Self {
+				password: Some(pass),
+				..
+			} => Ok(Some(pass.into())),
+			Self {
+				password_env: Some(env),
+				..
+			} => std::env::var(env).into_diagnostic().map(Some),
+			Self {
+				password_file: Some(file),
+				..
+			} => read_to_string(file).into_diagnostic().map(Some),
+			_ => Ok(Some("".into())), // no password
+		}
 	}
 }

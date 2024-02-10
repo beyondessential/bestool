@@ -8,7 +8,7 @@ use tracing::{debug, error};
 
 use super::{inout_args::inout_files, key_args::PublicKeyArgs, Context, SignArgs};
 
-/// Sign a file or data with a secret key.
+/// Check a file against a public key and signature.
 #[derive(Debug, Clone, Parser)]
 pub struct CheckArgs {
 	/// A file to check.
