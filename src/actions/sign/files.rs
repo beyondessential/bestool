@@ -7,7 +7,7 @@ use miette::{bail, Context as _, IntoDiagnostic, Result};
 use minisign::sign;
 use tracing::debug;
 
-use super::{inout_args::inout_files, key_args::KeyArgs, Context, SignArgs};
+use super::{inout_args::inout_files, key_args::SecretKeyArgs, Context, SignArgs};
 
 /// Sign a file or data with a secret key.
 #[derive(Debug, Clone, Parser)]
@@ -18,7 +18,7 @@ pub struct FilesArgs {
 	pub files: Vec<PathBuf>,
 
 	#[command(flatten)]
-	pub key: KeyArgs,
+	pub key: SecretKeyArgs,
 
 	/// The output file to write the signature to.
 	///
