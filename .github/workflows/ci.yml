@@ -161,6 +161,18 @@ jobs:
             aws s3 cp "$src" "$dest" --no-progress
           fi
 
+      - name: Upload latest
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          src="target/${{ matrix.target }}/release/bestool"
+          dest="s3://bes-ops-tools/bestool/latest/${{ matrix.target }}/"
+          if [[ ${{ runner.os }} == "Windows" ]]; then
+            aws s3 cp "$src".exe "$dest" --no-progress
+          else
+            aws s3 cp "$src" "$dest" --no-progress
+          fi
+
   tests-pass:
     if: always()
     name: Tests pass
