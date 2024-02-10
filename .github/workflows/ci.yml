@@ -149,7 +149,7 @@ jobs:
           role-to-assume: arn:aws:iam::143295493206:role/gha-ops-scripts-s3
           role-session-name: GHA@BEStool=Build
 
-      - name: Upload
+      - name: Upload versioned
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
