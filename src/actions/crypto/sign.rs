@@ -9,9 +9,9 @@ use tracing::debug;
 
 use super::{inout_args::inout_files, key_args::SecretKeyArgs, Context, SignArgs};
 
-/// Sign a file or data with a secret key.
+/// Sign files with a secret key.
 #[derive(Debug, Clone, Parser)]
-pub struct FilesArgs {
+pub struct SignArgs {
 	/// A file to sign.
 	///
 	/// You can provide this multiple times to sign multiple files.
@@ -45,8 +45,8 @@ pub struct FilesArgs {
 	pub comment: Option<String>,
 }
 
-pub async fn run(ctx: Context<SignArgs, FilesArgs>) -> Result<()> {
-	let FilesArgs {
+pub async fn run(ctx: Context<SignArgs, SignArgs>) -> Result<()> {
+	let SignArgs {
 		files,
 		key,
 		output,
