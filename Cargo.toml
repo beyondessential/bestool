@@ -40,6 +40,7 @@ mimalloc = "0.1.39"
 minisign = { version = "0.7.6", optional = true }
 node-semver = "2.1.0"
 regex = "1.10.3"
+secrecy = { version = "0.8.0", optional = true }
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.113"
 tokio = { version = "1.35.1", features = ["full"] }
@@ -62,7 +63,7 @@ aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep
 
 ## Subcommands
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
-crypto = ["dep:hex", "dep:leon", "dep:minisign"]
+crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 tamanu = ["dep:leon", "dep:leon-macros"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]

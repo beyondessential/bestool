@@ -4,6 +4,7 @@ use base64ct::{Base64, Encoding};
 use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result};
 use minisign::{PublicKey, PublicKeyBox, SecretKey, SecretKeyBox};
+use secrecy::{ExposeSecret, SecretString};
 
 #[derive(Debug, Clone, Parser)]
 pub(crate) struct SecretKeyArgs {
@@ -29,16 +30,22 @@ impl SecretKeyArgs {
 	pub fn read(&self) -> Result<SecretKey> {
 		let password = self.password.read()?;
 		match &self {
-			Self { key: Some(key), .. } => Self::from_string(key, password),
+			Self { key: Some(key), .. } => {
+				Self::from_string(key, password.map(|sec| sec.expose_secret().clone()))
+			}
 			Self {
 				key_env: Some(env), ..
-			} => Self::from_string(&std::env::var(env).into_diagnostic()?, password),
+			} => Self::from_string(
+				&std::env::var(env).into_diagnostic()?,
+				password.map(|sec| sec.expose_secret().clone()),
+			),
 			Self {
 				key_file: Some(file),
 				..
 			} => {
 				// we'll always assume it's a full minisign key file
-				SecretKey::from_file(file, password).into_diagnostic()
+				SecretKey::from_file(file, password.map(|sec| sec.expose_secret().clone()))
+					.into_diagnostic()
 			}
 			_ => bail!("exactly one of --key, --key-file, or --key-env must be provided"),
 		}
@@ -131,26 +138,35 @@ pub(crate) struct PasswordArgs {
 }
 
 impl PasswordArgs {
-	pub fn read(&self) -> Result<Option<String>> {
-		// TODO: zero-box the password to avoid it lingering in memory
+	pub fn read(&self) -> Result<Option<SecretString>> {
 		match &self {
 			Self {
 				password_prompt: true,
 				..
 			} => Ok(None),
+
 			Self {
 				password: Some(pass),
 				..
-			} => Ok(Some(pass.into())),
+			} => Ok(Some(SecretString::new(pass.into()))),
+
 			Self {
 				password_env: Some(env),
 				..
-			} => std::env::var(env).into_diagnostic().map(Some),
+			} => std::env::var(env)
+				.into_diagnostic()
+				.map(SecretString::new)
+				.map(Some),
+
 			Self {
 				password_file: Some(file),
 				..
-			} => read_to_string(file).into_diagnostic().map(Some),
-			_ => Ok(Some("".into())), // no password
+			} => read_to_string(file)
+				.into_diagnostic()
+				.map(SecretString::new)
+				.map(Some),
+
+			_ => Ok(Some(SecretString::new("".into()))), // no password
 		}
 	}
 }
