@@ -9,10 +9,10 @@ pub use context::Context;
 
 pub mod completions;
 pub mod context;
-#[cfg(feature = "dyndns")]
-pub mod dyndns;
 #[cfg(feature = "crypto")]
 pub mod crypto;
+#[cfg(feature = "dyndns")]
+pub mod dyndns;
 #[cfg(feature = "tamanu")]
 pub mod tamanu;
 #[cfg(feature = "upload")]
