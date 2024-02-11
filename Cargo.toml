@@ -55,14 +55,14 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["dyndns", "sign", "tamanu", "upload"]
+default = ["dyndns", "crypto", "tamanu", "upload"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
 
 ## Subcommands
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
-sign = ["dep:hex", "dep:leon", "dep:minisign"]
+crypto = ["dep:hex", "dep:leon", "dep:minisign"]
 tamanu = ["dep:leon", "dep:leon-macros"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]
