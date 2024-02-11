@@ -5,7 +5,7 @@ use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result};
 use minisign::KeyPair;
 
-use super::{key_args::PasswordArgs, Context, SignArgs};
+use super::{key_args::PasswordArgs, Context, CryptoArgs};
 
 /// Generate a new keypair.
 #[derive(Debug, Clone, Parser)]
@@ -41,7 +41,7 @@ pub struct KeygenArgs {
 	pub force: bool,
 }
 
-pub async fn run(ctx: Context<SignArgs, KeygenArgs>) -> Result<()> {
+pub async fn run(ctx: Context<CryptoArgs, KeygenArgs>) -> Result<()> {
 	let KeygenArgs {
 		secret_key,
 		public_key,

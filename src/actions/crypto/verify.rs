@@ -6,14 +6,14 @@ use miette::{bail, Context as _, IntoDiagnostic, Result};
 use minisign::{verify, SignatureBox};
 use tracing::{debug, error};
 
-use super::{inout_args::inout_files, key_args::PublicKeyArgs, Context, SignArgs};
+use super::{inout_args::inout_files, key_args::PublicKeyArgs, Context, CryptoArgs};
 
-/// Check a file against a public key and signature.
+/// Verify a file against a public key and signature.
 #[derive(Debug, Clone, Parser)]
-pub struct CheckArgs {
-	/// A file to check.
+pub struct VerifyArgs {
+	/// A file to verify.
 	///
-	/// You can provide this multiple times to check multiple files; in this case, the signatures
+	/// You can provide this multiple times to verify multiple files; in this case, the signatures
 	/// must be provided via `--sig-file`.
 	pub files: Vec<PathBuf>,
 
@@ -25,7 +25,7 @@ pub struct CheckArgs {
 	/// If not provided at all, the signature will be read from the same file as the input, with a
 	/// `.sig` extension appended.
 	///
-	/// If provided, and multiple files are being checked, this must be provided as many times as
+	/// If provided, and multiple files are being verified, this must be provided as many times as
 	/// there are input files, or once but include one of the two following placeholders, in which
 	/// case it is treated as a template: `{filename}` will be replaced with the input filename, and
 	/// `{num}` will be replaced with an incrementing number (from 1).
@@ -40,8 +40,8 @@ pub struct CheckArgs {
 	pub quiet: bool,
 }
 
-pub async fn run(ctx: Context<SignArgs, CheckArgs>) -> Result<()> {
-	let CheckArgs {
+pub async fn run(ctx: Context<CryptoArgs, VerifyArgs>) -> Result<()> {
+	let VerifyArgs {
 		files,
 		key,
 		sig_file,
@@ -57,28 +57,28 @@ pub async fn run(ctx: Context<SignArgs, CheckArgs>) -> Result<()> {
 			error!(?infile, ?sigfile, "signature file does not exist");
 			errors += 1;
 			if !quiet {
-				eprintln!("checked {infile:?}: MISSING SIG")
+				eprintln!("verified {infile:?}: MISSING SIG")
 			};
 			continue;
 		}
 
-		if let Err(error) = check_file(infile, &sigfile, &pk, quiet) {
+		if let Err(error) = verify_file(infile, &sigfile, &pk, quiet) {
 			error!(?infile, ?sigfile, "checking error: {error}");
 			errors += 1;
 			if !quiet {
-				eprintln!("checked {infile:?}: BAD")
+				eprintln!("verified {infile:?}: BAD")
 			};
 		}
 	}
 
 	if errors > 0 {
-		bail!("failed to check {errors} files");
+		bail!("failed to verify {errors} files");
 	}
 
 	Ok(())
 }
 
-fn check_file(
+fn verify_file(
 	infile: &PathBuf,
 	sigfile: &PathBuf,
 	pk: &minisign::PublicKey,
@@ -98,9 +98,9 @@ fn check_file(
 	if !quiet {
 		let comment = signature.trusted_comment().into_diagnostic()?;
 		if comment.is_empty() {
-			eprintln!("checked {infile:?}: OK");
+			eprintln!("verified {infile:?}: OK");
 		} else {
-			eprintln!("checked {infile:?}: OK ({comment})");
+			eprintln!("verified {infile:?}: OK ({comment})");
 		}
 	}
 

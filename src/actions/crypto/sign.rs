@@ -7,7 +7,7 @@ use miette::{bail, Context as _, IntoDiagnostic, Result};
 use minisign::sign;
 use tracing::debug;
 
-use super::{inout_args::inout_files, key_args::SecretKeyArgs, Context, SignArgs};
+use super::{inout_args::inout_files, key_args::SecretKeyArgs, Context, CryptoArgs};
 
 /// Sign files with a secret key.
 #[derive(Debug, Clone, Parser)]
@@ -45,7 +45,7 @@ pub struct SignArgs {
 	pub comment: Option<String>,
 }
 
-pub async fn run(ctx: Context<SignArgs, SignArgs>) -> Result<()> {
+pub async fn run(ctx: Context<CryptoArgs, SignArgs>) -> Result<()> {
 	let SignArgs {
 		files,
 		key,
