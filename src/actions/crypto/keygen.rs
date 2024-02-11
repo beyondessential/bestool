@@ -4,6 +4,7 @@ use clap::Parser;
 
 use miette::{bail, IntoDiagnostic, Result};
 use minisign::KeyPair;
+use secrecy::ExposeSecret;
 
 use super::{key_args::PasswordArgs, Context, CryptoArgs};
 
@@ -68,7 +69,7 @@ pub async fn run(ctx: Context<CryptoArgs, KeygenArgs>) -> Result<()> {
 		secret_file,
 		public_file,
 		description.as_deref(),
-		password,
+		password.map(|sec| sec.expose_secret().clone()),
 	)
 	.into_diagnostic()
 	.map(drop)
