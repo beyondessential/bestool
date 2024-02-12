@@ -18,6 +18,7 @@ aws-sdk-route53 = { version = "1.13.1", optional = true }
 aws-sdk-s3 = { version = "1.12.0", optional = true }
 aws-sdk-sts = { version = "1.11.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"] }
+binstalk-downloader = { version = "0.10.0", optional = true }
 boxcar = "0.2.4"
 bytes = "1.5.0"
 chrono = "0.4.31"
@@ -64,7 +65,7 @@ aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep
 ## Subcommands
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
-tamanu = ["dep:leon", "dep:leon-macros"]
+tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]
 
