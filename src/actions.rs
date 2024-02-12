@@ -13,6 +13,8 @@ pub mod context;
 pub mod crypto;
 #[cfg(feature = "dyndns")]
 pub mod dyndns;
+#[cfg(feature = "self-update")]
+pub mod self_update;
 #[cfg(feature = "tamanu")]
 pub mod tamanu;
 #[cfg(feature = "upload")]
@@ -27,6 +29,8 @@ pub enum Action {
 	Dyndns(dyndns::DyndnsArgs),
 	#[cfg(feature = "crypto")]
 	Crypto(crypto::CryptoArgs),
+	#[cfg(feature = "self-update")]
+	SelfUpdate(self_update::SelfUpdateArgs),
 	#[cfg(feature = "tamanu")]
 	Tamanu(tamanu::TamanuArgs),
 	#[cfg(feature = "upload")]
@@ -46,6 +50,8 @@ pub async fn run() -> Result<()> {
 		(Action::Dyndns(args), ctx) => dyndns::run(ctx.with_top(args)).await,
 		#[cfg(feature = "crypto")]
 		(Action::Crypto(args), ctx) => crypto::run(ctx.with_top(args)).await,
+		#[cfg(feature = "self-update")]
+		(Action::SelfUpdate(args), ctx) => self_update::run(ctx.with_top(args)).await,
 		#[cfg(feature = "tamanu")]
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		#[cfg(feature = "upload")]

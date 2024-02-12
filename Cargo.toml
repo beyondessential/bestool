@@ -25,6 +25,7 @@ chrono = "0.4.31"
 clap = { version = "4.4.18", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = "4.5.0"
 clap_complete_nushell = "4.5.0"
+detect-targets = { version = "0.1.15", optional = true }
 dirs = "5.0.1"
 duct = "0.13.7"
 glob = "0.3.1"
@@ -42,6 +43,7 @@ minisign = { version = "0.7.6", optional = true }
 node-semver = "2.1.0"
 regex = "1.10.3"
 secrecy = { version = "0.8.0", optional = true }
+self-replace = { version = "1.3.7", optional = true }
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.113"
 tokio = { version = "1.35.1", features = ["full"] }
@@ -57,7 +59,7 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["dyndns", "crypto", "tamanu", "upload"]
+default = ["dyndns", "crypto", "self-update", "tamanu", "upload"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
@@ -65,6 +67,7 @@ aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep
 ## Subcommands
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
+self-update = ["dep:binstalk-downloader", "dep:detect-targets", "dep:self-replace"]
 tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]

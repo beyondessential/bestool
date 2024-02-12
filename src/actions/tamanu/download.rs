@@ -1,7 +1,11 @@
-use std::{iter, num::{NonZeroU16, NonZeroU64}, path::PathBuf};
+use std::{
+	iter,
+	num::{NonZeroU16, NonZeroU64},
+	path::PathBuf,
+};
 
 use binstalk_downloader::{
-	download::{Download, PkgFmt::Tzstd},
+	download::{Download, PkgFmt},
 	remote::{Client, Url},
 };
 use clap::{Parser, ValueEnum};
@@ -82,7 +86,10 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 	)
 	.into_diagnostic()?;
 	let download = Download::new(client, Url::parse(&url).into_diagnostic()?);
-	download.and_extract(Tzstd, into).await.into_diagnostic()?;
+	download
+		.and_extract(PkgFmt::Tzstd, into)
+		.await
+		.into_diagnostic()?;
 
 	Ok(())
 }
