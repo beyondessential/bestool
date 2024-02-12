@@ -55,11 +55,16 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 	} = ctx.args_sub;
 
 	let url = format!(
-		"https://servers.ops.tamanu.io/{version}/{kind}-{version}-windows.tar.zst",
+		"https://servers.ops.tamanu.io/{version}/{kind}-{version}{platform}.tar.zst",
 		kind = match kind {
 			ServerKind::Central => "central",
 			ServerKind::Facility => "facility",
 			ServerKind::Web => "web",
+		},
+		platform = if kind == ServerKind::Web {
+			""
+		} else {
+			"-windows"
 		},
 	);
 
