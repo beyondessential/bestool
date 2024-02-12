@@ -131,21 +131,20 @@ jobs:
       - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }}
 
-      # - name: Download bestool
-      #   shell: bash
-      #   run: |
-      #     curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
-      #     [[ -f bestool ]] && chmod +x bestool
+      - name: Download bestool
+        shell: bash
+        run: |
+          curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
+          [[ -f bestool ]] && chmod +x bestool
 
-      # - name: Sign build
-      #   shell: bash
-      #   env:
-      #     SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-      #   run: |
-      #     bestool=bestool
-      #     [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
-      #     ./$bestool sign files --key-env SIGNING_KEY --output '{filename}.sig' --comment 'builder=gha ref=${{ github.ref }} commit=${{ github.sha }} ts={timestamp}' target/*/release/$bestool || true
-      #     [[ -f $bestool.sig ]] || ./$bestool crypto sign --key-env SIGNING_KEY --output '{filename}.sig' --comment 'builder=gha ref=${{ github.ref }} commit=${{ github.sha }} ts={timestamp}' target/*/release/$bestool
+      - name: Sign build
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          bestool=bestool
+          [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
+          ./$bestool crypto sign --key-env SIGNING_KEY --output '{filename}.sig' --comment 'builder=gha ref=${{ github.ref }} commit=${{ github.sha }} ts={timestamp}' target/*/release/$bestool
 
       - uses: actions/upload-artifact@v4
         with:
