@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.5.0](https://github.com/beyondessential/bestool/compare/v0.4.3..0.5.0) - 2024-02-12
+## [0.5.1](https://github.com/beyondessential/bestool/compare/v0.5.0..0.5.1) - 2024-02-12
+
+
+
+### Tamanu
+
+- **Bugfix:** Web package doesn't have a platform - ([9f65771](https://github.com/beyondessential/bestool/commit/9f657719139214b7246326c676205cb45bf1fabe))
+
+---
+## [0.5.0](https://github.com/beyondessential/bestool/compare/v0.4.3..v0.5.0) - 2024-02-12
 
 
 
