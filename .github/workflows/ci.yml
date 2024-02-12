@@ -175,10 +175,10 @@ jobs:
           dest="s3://bes-ops-tools/bestool/${version}/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
             aws s3 cp "$src".exe "$dest" --no-progress
-            aws s3 cp "$src".exe.sig "$dest" --no-progress
+            aws s3 cp "$src".exe.sig "$dest" --no-progress || true
           else
             aws s3 cp "$src" "$dest" --no-progress
-            aws s3 cp "$src".sig "$dest" --no-progress
+            aws s3 cp "$src".sig "$dest" --no-progress || true
           fi
 
       - name: Upload latest
@@ -189,10 +189,10 @@ jobs:
           dest="s3://bes-ops-tools/bestool/latest/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
             aws s3 cp "$src".exe "$dest" --no-progress
-            aws s3 cp "$src".exe.sig "$dest" --no-progress
+            aws s3 cp "$src".exe.sig "$dest" --no-progress || true
           else
             aws s3 cp "$src" "$dest" --no-progress
-            aws s3 cp "$src".sig "$dest" --no-progress
+            aws s3 cp "$src".sig "$dest" --no-progress || true
           fi
 
       - name: Upload for GHA
@@ -216,7 +216,7 @@ jobs:
             exit 0
           fi
           aws s3 cp "$src" "$dest" --no-progress
-          aws s3 cp "$src".sig "$dest".sig --no-progress
+          aws s3 cp "$src".sig "$dest".sig --no-progress || true
 
   tests-pass:
     if: always()
