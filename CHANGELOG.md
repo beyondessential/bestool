@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.4.3](https://github.com/beyondessential/bestool/compare/v0.4.2..0.4.3) - 2024-02-10
+## [0.5.0](https://github.com/beyondessential/bestool/compare/v0.4.3..0.5.0) - 2024-02-12
+
+
+
+### Crypto
+
+- **Bugfix:** zero the password after handling - ([b59c632](https://github.com/beyondessential/bestool/commit/b59c632050dc7d498945c8072023f4cf938e2a2e))
+- **Refactor:** Rename sign command to crypto - ([6aa4835](https://github.com/beyondessential/bestool/commit/6aa48355084db2cb6b507fec60b7fec5a2a1fb86))
+- **Refactor:** Rename check subcommand to verify - ([e70f589](https://github.com/beyondessential/bestool/commit/e70f58981a20d085dd0609793edba92a2b2d27e9))
+
+### Tamanu
+
+- **Feature:** Add download subcommand - ([7368b75](https://github.com/beyondessential/bestool/commit/7368b75bcb8db9f5927c6a9751dec3c1057d24a5))
+
+---
+## [0.4.3](https://github.com/beyondessential/bestool/compare/v0.4.2..v0.4.3) - 2024-02-10
 
 
 - **Documentation:** Show how to use bestool in GHA - ([e5fee6b](https://github.com/beyondessential/bestool/commit/e5fee6b516b07ef76fad02cb5b935fcef0853009))
