@@ -1,7 +1,7 @@
 use aws_sdk_s3::Client as S3Client;
 use clap::Parser;
 use miette::Result;
-use tracing::{info, instrument};
+use tracing::{debug, instrument};
 
 use crate::{
 	actions::Context,
@@ -31,7 +31,7 @@ pub async fn run(ctx: Context<UploadArgs, ListArgs>) -> Result<()> {
 	let aws = aws::init(&ctx.args_sub.aws).await;
 	let _client = S3Client::new(&aws);
 
-	info!("Listing ongoing multipart upload");
+	debug!("Listing ongoing multipart upload");
 	// client
 	// 	.abort_multipart_upload()
 	// 	.bucket(id.bucket)

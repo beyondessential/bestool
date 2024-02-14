@@ -3,7 +3,7 @@ use std::{env::var, fs::File, sync::Mutex};
 use clap::Subcommand;
 use miette::{IntoDiagnostic, Result};
 use tokio::fs::metadata;
-use tracing::{info, trace, warn};
+use tracing::{debug, trace, warn};
 
 pub use context::Context;
 pub mod context;
@@ -47,7 +47,7 @@ pub enum Action {
 
 pub async fn run() -> Result<()> {
 	let ctx = init().await?;
-	info!(version=%env!("CARGO_PKG_VERSION"), "starting up");
+	debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
 	trace!(?ctx, "context");
 
 	match ctx.take_top() {
@@ -93,7 +93,7 @@ async fn init() -> Result<Context<Action>> {
 
 	if log_on {
 		warn!("ignoring logging options from args");
-	} else if verbosity > 0 {
+	} else {
 		let log_file = if let Some(file) = &args.log_file {
 			let is_dir = metadata(&file).await.map_or(false, |info| info.is_dir());
 			let path = if is_dir {
@@ -112,15 +112,14 @@ async fn init() -> Result<Context<Action>> {
 		};
 
 		let mut builder = tracing_subscriber::fmt().with_env_filter(match verbosity {
-			0 => unreachable!("checked by if earlier"),
-			1 => "warn",
-			2 => "info",
-			3 => "info,bestool=debug",
-			4 => "debug",
+			0 => "info",
+			1 => "info,bestool=debug",
+			2 => "debug",
+			3 => "debug,bestool=trace",
 			_ => "trace",
 		});
 
-		if verbosity > 2 {
+		if verbosity > 0 {
 			use tracing_subscriber::fmt::format::FmtSpan;
 			builder = builder.with_span_events(FmtSpan::NEW | FmtSpan::CLOSE);
 		}
@@ -132,7 +131,7 @@ async fn init() -> Result<Context<Action>> {
 		} else {
 			builder.with_writer(ctx.clone()).try_init()
 		} {
-			Ok(_) => info!("logging initialised"),
+			Ok(_) => debug!("logging initialised"),
 			Err(e) => eprintln!("Failed to initialise logging, continuing with none\n{e}"),
 		}
 	}
