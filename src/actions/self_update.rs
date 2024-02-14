@@ -55,7 +55,7 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
 	let detected_targets = detected_targets.get().await;
 
-	let dir = temp_dir.unwrap_or_else(|| std::env::temp_dir());
+	let dir = temp_dir.unwrap_or_else(std::env::temp_dir);
 	let filename = format!(
 		"bestool{ext}",
 		ext = if cfg!(windows) { ".exe" } else { "" }
