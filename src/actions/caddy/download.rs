@@ -96,6 +96,11 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 		return Ok(());
 	}
 
+	if !path.exists() {
+		info!(?path, "creating directory");
+		std::fs::create_dir_all(&path).into_diagnostic()?;
+	}
+
 	info!(%url, "downloading");
 	Download::new(client, url.clone())
 		.and_extract(
