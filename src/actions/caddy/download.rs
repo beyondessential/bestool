@@ -1,5 +1,4 @@
 use std::{
-	fs::{set_permissions, Permissions},
 	iter,
 	num::{NonZeroU16, NonZeroU64},
 	path::PathBuf,
@@ -119,7 +118,10 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 
 	#[cfg(unix)]
 	if !target.contains("windows") {
-		use std::os::unix::fs::PermissionsExt;
+		use std::{
+			fs::{set_permissions, Permissions},
+			os::unix::fs::PermissionsExt,
+		};
 		info!(path=?fullpath, "marking as executable");
 		set_permissions(&fullpath, Permissions::from_mode(0o755)).into_diagnostic()?;
 	}
