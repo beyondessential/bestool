@@ -6,9 +6,10 @@ use tokio::fs::metadata;
 use tracing::{info, trace, warn};
 
 pub use context::Context;
-
-pub mod completions;
 pub mod context;
+
+#[cfg(feature = "completions")]
+pub mod completions;
 #[cfg(feature = "crypto")]
 pub mod crypto;
 #[cfg(feature = "dyndns")]
@@ -24,6 +25,7 @@ pub mod wifisetup;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Action {
+	#[cfg(feature = "completions")]
 	Completions(completions::CompletionsArgs),
 	#[cfg(feature = "dyndns")]
 	Dyndns(dyndns::DyndnsArgs),
@@ -45,6 +47,7 @@ pub async fn run() -> Result<()> {
 	trace!(?ctx, "context");
 
 	match ctx.take_top() {
+		#[cfg(feature = "completions")]
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
 		#[cfg(feature = "dyndns")]
 		(Action::Dyndns(args), ctx) => dyndns::run(ctx.with_top(args)).await,
