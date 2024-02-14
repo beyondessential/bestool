@@ -2,7 +2,7 @@ use aws_sdk_s3::{types::BucketVersioningStatus, Client as S3Client};
 use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result};
 use serde_json::json;
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::{
 	actions::Context,
@@ -89,7 +89,7 @@ pub async fn run(ctx: Context<UploadArgs, DelegateArgs>) -> Result<()> {
 	let aws = aws::init(&ctx.args_sub.aws).await;
 
 	if !ctx.args_sub.allow_non_versioned {
-		info!("Checking bucket is versioned");
+		debug!("Checking bucket is versioned");
 		let client = S3Client::new(&aws);
 		match client
 			.get_bucket_versioning()
@@ -106,7 +106,7 @@ pub async fn run(ctx: Context<UploadArgs, DelegateArgs>) -> Result<()> {
 	}
 
 	if !ctx.args_sub.allow_wilcards {
-		info!("Checking key is not a wildcard");
+		debug!("Checking key is not a wildcard");
 		if key.contains('*') {
 			bail!(
 				"Key contains a wildcard, this can be dangerous. Use --allow-wildcards to bypass."
