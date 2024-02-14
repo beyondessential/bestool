@@ -8,6 +8,8 @@ use tracing::{info, trace, warn};
 pub use context::Context;
 pub mod context;
 
+#[cfg(feature = "caddy")]
+pub mod caddy;
 #[cfg(feature = "completions")]
 pub mod completions;
 #[cfg(feature = "crypto")]
@@ -25,6 +27,8 @@ pub mod wifisetup;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Action {
+	#[cfg(feature = "caddy")]
+	Caddy(caddy::CaddyArgs),
 	#[cfg(feature = "completions")]
 	Completions(completions::CompletionsArgs),
 	#[cfg(feature = "dyndns")]
@@ -47,6 +51,8 @@ pub async fn run() -> Result<()> {
 	trace!(?ctx, "context");
 
 	match ctx.take_top() {
+		#[cfg(feature = "caddy")]
+		(Action::Caddy(args), ctx) => caddy::run(ctx.with_top(args)).await,
 		#[cfg(feature = "completions")]
 		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
 		#[cfg(feature = "dyndns")]
