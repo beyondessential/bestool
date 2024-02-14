@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.6.0](https://github.com/beyondessential/bestool/compare/v0.5.5..0.6.0) - 2024-02-14
+## [0.6.1](https://github.com/beyondessential/bestool/compare/v0.6.0..0.6.1) - 2024-02-14
+
+
+- **Feature:** Print info logs by default - ([24a71fc](https://github.com/beyondessential/bestool/commit/24a71fccd33868deb4c89a73cd965f46522d2f76))
+
+### Caddy
+
+- **Bugfix:** Make downloaded caddy executable on unix - ([3b35c25](https://github.com/beyondessential/bestool/commit/3b35c258380416ab8bb55a373f43fb7db4b8f5d0))
+- **Feature:** Add configure-tamanu command - ([01f8fed](https://github.com/beyondessential/bestool/commit/01f8fed2d8d873243ecb3498baf76c60f23bc0d2))
+
+---
+## [0.6.0](https://github.com/beyondessential/bestool/compare/v0.5.5..v0.6.0) - 2024-02-14
 
 
 - **Feature:** Add self-update command - ([292f649](https://github.com/beyondessential/bestool/commit/292f6490f818ab32da87de2c2502b48d29cbe4ef))
