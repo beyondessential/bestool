@@ -1,4 +1,5 @@
 use std::{
+	fs::{set_permissions, Permissions},
 	iter,
 	num::{NonZeroU16, NonZeroU64},
 	path::PathBuf,
@@ -11,7 +12,7 @@ use binstalk_downloader::{
 use clap::Parser;
 use detect_targets::get_desired_targets;
 use miette::{bail, IntoDiagnostic, Result};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::actions::Context;
 
@@ -72,7 +73,7 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 			},
 		))
 		.into_diagnostic()?;
-		info!(url=%try_url, "trying URL");
+		debug!(url=%try_url, "trying URL");
 		if client
 			.remote_gettable(try_url.clone())
 			.await
@@ -97,25 +98,31 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 	}
 
 	if !path.exists() {
-		info!(?path, "creating directory");
+		debug!(?path, "creating directory");
 		std::fs::create_dir_all(&path).into_diagnostic()?;
 	}
 
-	info!(%url, "downloading");
+	let fullpath = path.join(format!(
+		"caddy{}",
+		if target.contains("windows") {
+			".exe"
+		} else {
+			""
+		}
+	));
+
+	info!(%url, path=?fullpath, "downloading");
 	Download::new(client, url.clone())
-		.and_extract(
-			PkgFmt::Bin,
-			path.join(format!(
-				"caddy{}",
-				if target.contains("windows") {
-					".exe"
-				} else {
-					""
-				}
-			)),
-		)
+		.and_extract(PkgFmt::Bin, &fullpath)
 		.await
 		.into_diagnostic()?;
+
+	#[cfg(unix)]
+	if !target.contains("windows") {
+		use std::os::unix::fs::PermissionsExt;
+		info!(path=?fullpath, "marking as executable");
+		set_permissions(&fullpath, Permissions::from_mode(0o755)).into_diagnostic()?;
+	}
 
 	Ok(())
 }
