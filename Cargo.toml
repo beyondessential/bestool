@@ -59,12 +59,13 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["completions", "crypto", "dyndns", "self-update", "tamanu", "upload"]
+default = ["caddy", "completions", "crypto", "dyndns", "self-update", "tamanu", "upload"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
 
 ## Subcommands
+caddy = ["dep:binstalk-downloader", "dep:detect-targets"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
