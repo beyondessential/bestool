@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.6.0](https://github.com/beyondessential/bestool/compare/v0.5.5..0.6.0) - 2024-02-14
+
+
+- **Feature:** Add self-update command - ([292f649](https://github.com/beyondessential/bestool/commit/292f6490f818ab32da87de2c2502b48d29cbe4ef))
+- **Feature:** Add caddy command - ([281525c](https://github.com/beyondessential/bestool/commit/281525ccc51a67459b944e7ef2cccdc5de1bb3aa))
+
+### Caddy
+
+- **Bugfix:** Create download path folder if non-extant - ([99d4d6b](https://github.com/beyondessential/bestool/commit/99d4d6bbea1c675fd70060de27f4d4236e01c65c))
+
+### Completions
+
+- **Feature:** Make completions command optional - ([e29aaf1](https://github.com/beyondessential/bestool/commit/e29aaf1ca3957cbcb97fb011456fdd43cd3f18dc))
+
+---
 ## [0.5.1](https://github.com/beyondessential/bestool/compare/v0.5.0..v0.5.1) - 2024-02-12
 
 
