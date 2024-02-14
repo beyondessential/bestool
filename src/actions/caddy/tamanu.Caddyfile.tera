@@ -1,0 +1,65 @@
+{
+	admin localhost:2019
+
+	{% if windows %}
+	storage file_system {
+		root "C:\caddy"
+	}
+
+	log {
+		output file "C:\caddy\logs\caddy.log"
+	}
+	{% endif %}
+
+	{% if has_email %}
+	email {{email}}
+	{% endif %}
+
+	{% if has_zero_ssl %}
+	cert_issuer zerossl {{zerossl_api_key}}
+	cert_issuer acme
+	{% endif %}
+}
+
+:80, {{domain}} {
+	{% if has_email %}
+	tls {{email}}
+	{% endif %}
+
+	{% if windows %}
+	root * "C:\tamanu\tamanu-web-{{web_version}}"
+	{% else %}
+	root * "/var/lib/tamanu/tamanu-web-{{web_version}}"
+	{% endif %}
+
+	file_server {
+		precompressed zstd br gzip
+	}
+
+	handle_errors {
+		{% if windows %}
+		@custom_err file "C:\tamanu\tamanu-web-{{web_version}}\resources\errors\{err.status_code}.html"
+		{% else %}
+		@custom_err file "/var/lib/tamanu/tamanu-web-{{web_version}}/resources/errors/{err.status_code}.html"
+		{% endif %}
+
+		handle @custom_err {
+			rewrite * {file_match.relative}
+			file_server
+		}
+	}
+
+	encode zstd gzip
+
+	reverse_proxy /v1/* localhost:{{api_port}} {
+		transport http {
+			keepalive 65s
+		}
+	}
+
+	reverse_proxy /api/* localhost:{{api_port}} {
+		transport http {
+			keepalive 65s
+		}
+	}
+}

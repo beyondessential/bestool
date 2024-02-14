@@ -18,7 +18,7 @@ use crate::actions::Context;
 
 use super::CaddyArgs;
 
-/// Find Tamanu installations.
+/// Download caddy.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// Version to download.
