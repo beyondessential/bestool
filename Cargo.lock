@@ -785,7 +785,7 @@ dependencies = [
  "indicatif",
  "ip_network",
  "json5",
- "leon",
+ "leon 2.0.1",
  "leon-macros",
  "local-ip-address",
  "miette",
@@ -2302,12 +2302,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "leon-macros"
-version = "1.0.0"
+name = "leon"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a71b238868c7d4ee447c23ececce376bba9a3c0cb8938631fd0f50c5832a94e"
+checksum = "84c3b041bc7fc6148676f44d98d0fbe783d2225a130c5098fad895b5d457bf17"
 dependencies = [
- "leon",
+ "thiserror",
+]
+
+[[package]]
+name = "leon-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ed14fade5dad52f258459e462a4f59931d3e5b8f02754a05b49a2cea77c6aa"
+dependencies = [
+ "leon 3.0.0",
  "proc-macro2",
  "quote",
  "syn 2.0.48",
