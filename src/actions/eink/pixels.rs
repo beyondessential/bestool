@@ -2,7 +2,7 @@ use std::io::Read;
 
 use bitvec::vec::BitVec;
 
-use super::io::EinkIo;
+use super::chip::Chip;
 
 #[derive(Clone, Debug)]
 pub struct Pixels {
@@ -23,9 +23,8 @@ impl Pixels {
 		}
 	}
 
-	pub fn new_for(display: &EinkIo) -> Self {
-		let (width, height) = display.dimensions();
-		Self::new(width, height)
+	pub fn new_for(chip: Chip) -> Self {
+		Self::new(chip.width(), chip.height())
 	}
 
 	/// Set a pixel.
@@ -47,6 +46,7 @@ impl Pixels {
 	/// # Panics
 	///
 	/// Panics if the coordinates are out of bounds.
+	#[allow(dead_code)] // provided for completeness, not actually used here
 	pub fn get(&self, x: u16, y: u16) -> bool {
 		let idx = (y * self.width + x) as usize;
 		*self.data.get(idx).as_deref().unwrap()

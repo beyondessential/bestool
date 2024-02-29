@@ -9,6 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
 
+#[cfg(feature = "upload")]
 use super::upload::UploadId;
 
 #[derive(Clone, Debug)]
@@ -130,5 +131,6 @@ impl<'w, A, B> MakeWriter<'w> for Context<A, B> {
 
 #[derive(Debug, Clone)]
 pub enum Cleanup {
+	#[cfg(feature = "upload")]
 	MultiPartUpload(UploadId),
 }
