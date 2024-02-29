@@ -66,7 +66,7 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "dyndns", "eink", "self-update", "tamanu", "upload"]
+default = ["caddy", "completions", "crypto", "self-update", "tamanu", "upload"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
