@@ -1,3 +1,5 @@
+#![allow(dead_code)] // unused for now
+
 /// LUT for a single colour refresh
 ///
 /// From WaveShare source.
@@ -16,7 +18,7 @@ pub const MONOCHROME: [u8; 153] = [
 
 /// LUT for a fast partial refresh
 ///
-/// From <https://github.com/marko-pi/parallel/blob/main/SSD1680.py>
+/// From <https://github.com/WeActStudio/WeActStudio.EpaperModule/blob/master/Example/EpaperModuleTest_AT32F403A/Epaper/epaper.c>
 pub const PARTIAL: [u8; 153] = [
 	0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

@@ -83,8 +83,8 @@ upload = ["aws"]
 wifisetup = ["dep:networkmanager"]
 
 [profile.release]
-lto = true
-codegen-units = 1
+# lto = true
+# codegen-units = 1
 strip = "symbols"
 
 [profile.dev.build-override]

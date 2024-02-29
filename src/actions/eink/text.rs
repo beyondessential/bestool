@@ -113,8 +113,8 @@ pub async fn run(ctx: Context<EinkArgs, TextArgs>) -> Result<()> {
 
 	let mut layout = Layout::new(fontdue::layout::CoordinateSystem::PositiveYUp);
 	layout.reset(&LayoutSettings {
-		max_width: Some(ctx.args_top.width as f32),
-		max_height: Some(ctx.args_top.height as f32),
+		max_width: Some(ctx.args_top.chip.width() as f32),
+		max_height: Some(ctx.args_top.chip.height() as f32),
 		horizontal_align: ctx.args_sub.align_h.into(),
 		vertical_align: ctx.args_sub.align_v.into(),
 		line_height: ctx.args_sub.line_height,

@@ -2,8 +2,11 @@ use clap::{Parser, Subcommand};
 
 use miette::Result;
 
+use self::chip::Chip;
+
 use super::Context;
 
+mod chip;
 mod fill;
 mod io;
 mod pixels;
@@ -13,6 +16,9 @@ mod text;
 /// Control an E-ink screen.
 ///
 /// This is made for WeAct Studio's e-paper displays, connected over SPI to a Raspberry Pi.
+///
+/// You'll want to set up SPI's buffer size by adding `spidev.bufsiz=32768` to
+/// `/boot/firmware/cmdline.txt`, otherwise you'll get "Message too long" errors.
 #[derive(Debug, Clone, Parser)]
 pub struct EinkArgs {
 	/// Eink subcommand
@@ -43,17 +49,12 @@ pub struct EinkArgs {
 	#[arg(long, default_value = "2000000")]
 	pub frequency: u32,
 
-	/// Vertical resolution of the display.
+	/// Display underlying chip.
 	///
-	/// The default is for the 1.54" (50mm) display.
-	#[arg(long, default_value = "200")]
-	pub height: u16,
-
-	/// Horizontal resolution of the display.
-	///
-	/// The default is for the 1.54" (50mm) display.
-	#[arg(long, default_value = "200")]
-	pub width: u16,
+	/// The 1.54" (50mm) 200x200 display uses SSD1681, while the 2.13" (74mm) 176x296 displays use
+	/// the SSD1680.
+	#[arg(long, default_value = "SSD1681")]
+	pub chip: Chip,
 
 	/// Whether this is a three-colour display (two chromas).
 	///
@@ -63,7 +64,7 @@ pub struct EinkArgs {
 
 	/// Perform a partial update.
 	///
-	/// This is faster, but may leave ghosting on the display. Monochrome only.
+	/// This is faster, but may leave ghosting and a grain pattern on the display. Monochrome only.
 	#[arg(long, conflicts_with = "bichromic")]
 	pub partial: bool,
 }
