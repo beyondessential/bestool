@@ -839,10 +839,10 @@ dependencies = [
  "indicatif",
  "ip_network",
  "json5",
- "leon",
+ "leon 3.0.1",
  "leon-macros",
  "local-ip-address",
- "miette",
+ "miette 5.10.0",
  "mimalloc",
  "minisign",
  "node-semver",
@@ -2410,7 +2410,16 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52df920dfe9751d43501ff2ee12dd81c457d9e810d3f64b5200ee461fe73800b"
 dependencies = [
- "miette",
+ "thiserror",
+]
+
+[[package]]
+name = "leon"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d82a8693bd856b8b0596b6abed75d494ba6ca04b8e1b12be3a2ab947c305d8b1"
+dependencies = [
+ "miette 7.1.0",
  "thiserror",
 ]
 
@@ -2420,7 +2429,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a71b238868c7d4ee447c23ececce376bba9a3c0cb8938631fd0f50c5832a94e"
 dependencies = [
- "leon",
+ "leon 2.0.1",
  "proc-macro2",
  "quote",
  "syn 2.0.48",
@@ -2592,7 +2601,7 @@ dependencies = [
  "backtrace",
  "backtrace-ext",
  "is-terminal",
- "miette-derive",
+ "miette-derive 5.10.0",
  "once_cell",
  "owo-colors",
  "supports-color",
@@ -2605,10 +2614,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "miette"
+version = "7.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baed61d13cc3723ee6dbed730a82bfacedc60a85d81da2d77e9c3e8ebc0b504a"
+dependencies = [
+ "miette-derive 7.1.0",
+ "thiserror",
+ "unicode-width",
+]
+
+[[package]]
 name = "miette-derive"
 version = "5.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+]
+
+[[package]]
+name = "miette-derive"
+version = "7.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f301c3f54f98abc6c212ee722f5e5c62e472a334415840669e356f04850051ec"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2721,7 +2752,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84f390c1756333538f2aed01cf280a56bc683e199b9804a504df6e7320d40116"
 dependencies = [
  "bytecount",
- "miette",
+ "miette 5.10.0",
  "nom",
  "serde",
  "thiserror",
