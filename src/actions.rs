@@ -16,6 +16,8 @@ pub mod completions;
 pub mod crypto;
 #[cfg(feature = "dyndns")]
 pub mod dyndns;
+#[cfg(feature = "eink")]
+pub mod eink;
 #[cfg(feature = "self-update")]
 pub mod self_update;
 #[cfg(feature = "tamanu")]
@@ -35,6 +37,8 @@ pub enum Action {
 	Dyndns(dyndns::DyndnsArgs),
 	#[cfg(feature = "crypto")]
 	Crypto(crypto::CryptoArgs),
+	#[cfg(feature = "eink")]
+	Eink(eink::EinkArgs),
 	#[cfg(feature = "self-update")]
 	SelfUpdate(self_update::SelfUpdateArgs),
 	#[cfg(feature = "tamanu")]
@@ -59,6 +63,8 @@ pub async fn run() -> Result<()> {
 		(Action::Dyndns(args), ctx) => dyndns::run(ctx.with_top(args)).await,
 		#[cfg(feature = "crypto")]
 		(Action::Crypto(args), ctx) => crypto::run(ctx.with_top(args)).await,
+		#[cfg(feature = "eink")]
+		(Action::Eink(args), ctx) => eink::run(ctx.with_top(args)).await,
 		#[cfg(feature = "self-update")]
 		(Action::SelfUpdate(args), ctx) => self_update::run(ctx.with_top(args)).await,
 		#[cfg(feature = "tamanu")]
