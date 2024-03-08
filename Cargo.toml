@@ -2,7 +2,6 @@
 name = "bestool"
 version = "0.6.1"
 edition = "2021"
-publish = false
 rust-version = "1.76.0"
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
