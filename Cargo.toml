@@ -6,7 +6,7 @@ publish = false
 rust-version = "1.76.0"
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
-license = "UNLICENSED"
+license = "GPL-3.0-or-later"
 description = "BES Deployment tooling"
 keywords = ["bes", "tamanu", "tupaia"]
 categories = ["command-line-utilities"]
