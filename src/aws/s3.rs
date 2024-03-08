@@ -224,14 +224,53 @@ pub fn parse_bucket_and_key<'a>(
 	key: Option<&'a str>,
 ) -> Result<(&'a str, &'a str)> {
 	Ok(if let Some(stripped) = bucket.strip_prefix("s3://") {
-		if let Some((bucket, key)) = stripped.split_once('/') {
-			(bucket, key)
+		if let Some((stripped_bucket, split_key)) = stripped.split_once('/') {
+			(stripped_bucket, key.unwrap_or(split_key))
+		} else if let Some(key) = key {
+			(stripped, key)
 		} else {
-			(bucket, "")
+			(stripped, "")
 		}
 	} else if let Some(key) = key {
 		(bucket, key)
 	} else {
 		bail!("No key specified");
 	})
+}
+
+#[test]
+fn test_parse_bucket_and_no_key() {
+	assert!(parse_bucket_and_key("separate-bucket", None).is_err());
+}
+
+#[test]
+fn test_parse_bucket_and_separate_key() {
+	assert_eq!(
+		parse_bucket_and_key("separate-bucket", Some("and/key")).unwrap(),
+		("separate-bucket", "and/key"),
+	);
+}
+
+#[test]
+fn test_parse_bucket_and_separate_key_with_prefix() {
+	assert_eq!(
+		parse_bucket_and_key("s3://separate-bucket", Some("and/key")).unwrap(),
+		("separate-bucket", "and/key"),
+	);
+}
+
+#[test]
+fn test_parse_bucket_and_included_key() {
+	assert_eq!(
+		parse_bucket_and_key("s3://bucket/and/key", None).unwrap(),
+		("bucket", "and/key"),
+	);
+}
+
+#[test]
+fn test_parse_bucket_and_both_keys() {
+	assert_eq!(
+		parse_bucket_and_key("s3://bucket/and/key", Some("other/key")).unwrap(),
+		("bucket", "other/key"),
+	);
 }
