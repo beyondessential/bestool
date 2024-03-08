@@ -26,7 +26,7 @@ body = """
 	{% else -%}
         - **{{commit.group | striptags | trim | upper_first}}:** \
 			{% if commit.breaking %} [**⚠️ breaking ⚠️**] {% endif %}\
-			{{ commit.message }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
+			{{ commit.message | upper_first }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
 	{% endif -%}
 {% endfor -%}
 
@@ -35,7 +35,7 @@ body = """
     {% for commit in commits | sort(attribute="group") %}
         - **{{commit.group | striptags | trim | upper_first}}:** \
 			{% if commit.breaking %} [**⚠️ breaking ⚠️**] {% endif %}\
-            {{ commit.message }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
+            {{ commit.message | upper_first }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
     {%- endfor -%}
     {% raw %}\n{% endraw %}\
 {% endfor %}\n
