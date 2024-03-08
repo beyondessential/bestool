@@ -5,7 +5,31 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.6.1](https://github.com/beyondessential/bestool/compare/v0.6.0..0.6.1) - 2024-02-14
+## [0.7.0](https://github.com/beyondessential/bestool/compare/v0.6.1..0.7.0) - 2024-03-08
+
+
+- **Deps:** Upgrade all deps (#21) - ([6996788](https://github.com/beyondessential/bestool/commit/6996788190510cb6dd642ff985d8c8763814d038))
+- **Documentation:** Add contributing.md and code of conduct - ([88725b0](https://github.com/beyondessential/bestool/commit/88725b0ecf10a2c64d0fdc351cdbf050296dc9c6))
+- **Repo:** Open source with GPLv3! - ([548cade](https://github.com/beyondessential/bestool/commit/548cade46b286bbba4ef3370b7427ba29dc2199e))
+- **Repo:** Add `tweak` conventional prefix - ([88725b0](https://github.com/beyondessential/bestool/commit/88725b0ecf10a2c64d0fdc351cdbf050296dc9c6))
+- **Repo:** Add `wip` conventional prefix - ([88725b0](https://github.com/beyondessential/bestool/commit/88725b0ecf10a2c64d0fdc351cdbf050296dc9c6))
+- **Repo:** Enable publishing - ([6b83dbe](https://github.com/beyondessential/bestool/commit/6b83dbe5cce925f3fe55d6c2dfd29b6a7ff18231))
+- **Repo:** Fix parsing conventional commit types - ([79828db](https://github.com/beyondessential/bestool/commit/79828db5c885419043b7dbe8af64aca57af328a4))
+- **Repo:** Normalise change line casing - ([b76ba9d](https://github.com/beyondessential/bestool/commit/b76ba9df2be391b3b8f2da01fb85fdafec873cc1))
+
+### Eink
+
+- **Feature:** Add eink subcommand - ([1750320](https://github.com/beyondessential/bestool/commit/17503203d99430fdd7097f5ab84c8f485a1817e5))
+- **Feature:** Disable eink and dyndns by default - ([5200bd4](https://github.com/beyondessential/bestool/commit/5200bd4e36a6818eb663fb5405e12cbf5146b940))
+- **WIP:** Text support - ([f2aa3a1](https://github.com/beyondessential/bestool/commit/f2aa3a1c0a87fd02981da526c607db89dd1df85a))
+- **WIP:** Really don't understand what's up with this - ([c22a7cc](https://github.com/beyondessential/bestool/commit/c22a7cc05f8c2e2e057ca5226a5ed4217130475c))
+
+### Upload
+
+- **Test:** Add tests and fix handling of bucket/key arguments - ([818b274](https://github.com/beyondessential/bestool/commit/818b274c94583a962e7d3b8150cfd13885e7a9ae))
+
+---
+## [0.6.1](https://github.com/beyondessential/bestool/compare/v0.6.0..v0.6.1) - 2024-02-14
 
 
 - **Feature:** Print info logs by default - ([24a71fc](https://github.com/beyondessential/bestool/commit/24a71fccd33868deb4c89a73cd965f46522d2f76))
@@ -46,7 +70,7 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 
 ### Crypto
 
-- **Bugfix:** zero the password after handling - ([b59c632](https://github.com/beyondessential/bestool/commit/b59c632050dc7d498945c8072023f4cf938e2a2e))
+- **Bugfix:** Zero the password after handling - ([b59c632](https://github.com/beyondessential/bestool/commit/b59c632050dc7d498945c8072023f4cf938e2a2e))
 - **Refactor:** Rename sign command to crypto - ([6aa4835](https://github.com/beyondessential/bestool/commit/6aa48355084db2cb6b507fec60b7fec5a2a1fb86))
 - **Refactor:** Rename check subcommand to verify - ([e70f589](https://github.com/beyondessential/bestool/commit/e70f58981a20d085dd0609793edba92a2b2d27e9))
 
@@ -69,7 +93,7 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 ## [0.4.1](https://github.com/beyondessential/bestool/compare/v0.4.0..v0.4.1) - 2024-02-10
 
 
-- **Repo:** try harder to avoid that "chore" type - ([acca607](https://github.com/beyondessential/bestool/commit/acca6074d04016d33c94a96aa72d09fb01e8d89f))
+- **Repo:** Try harder to avoid that "chore" type - ([acca607](https://github.com/beyondessential/bestool/commit/acca6074d04016d33c94a96aa72d09fb01e8d89f))
 
 ---
 ## [0.4.0](https://github.com/beyondessential/bestool/compare/v0.3.0..v0.4.0) - 2024-02-10
@@ -78,14 +102,14 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 - **Documentation:** Add downloads for the current version - ([0096050](https://github.com/beyondessential/bestool/commit/0096050a07238e83f3b2058fb2f8a06f732976ac))
 - **Documentation:** Provide links to latest URLs - ([d1b6d85](https://github.com/beyondessential/bestool/commit/d1b6d85d222073c24a0fcb86b26d50063896b746))
 - **Documentation:** Add development guide - ([2a48820](https://github.com/beyondessential/bestool/commit/2a488205c09e3546fcc0e844ab2fd4f3c888394a))
-- **Feature:** support NO_COLOR (https://no-color.org) - ([8d78d83](https://github.com/beyondessential/bestool/commit/8d78d8317e41824575c4f4b1318ca672e55f8de4))
+- **Feature:** Support NO_COLOR (https://no-color.org) - ([8d78d83](https://github.com/beyondessential/bestool/commit/8d78d8317e41824575c4f4b1318ca672e55f8de4))
 
 ### Deps
 
-- **Deps:** bump clap_complete_nushell from 4.4.2 to 4.5.0 (#10) - ([2305cb0](https://github.com/beyondessential/bestool/commit/2305cb05f70711a309bdc8719371f6afd68fa3cc))
-- **Deps:** bump aws-sdk-route53 from 1.13.0 to 1.13.1 (#11) - ([4203344](https://github.com/beyondessential/bestool/commit/4203344c04f7b0be56b0bf1382f16009fcfa1a81))
-- **Deps:** bump serde_json from 1.0.111 to 1.0.113 (#12) - ([bcfb3eb](https://github.com/beyondessential/bestool/commit/bcfb3eb1711b3147d53eaf2b3a998b5082507b11))
-- **Deps:** bump clap_complete from 4.4.9 to 4.5.0 (#13) - ([b2822cc](https://github.com/beyondessential/bestool/commit/b2822cc55b4fbf67a7621a7ac6bd00ac28c4c768))
+- **Deps:** Bump clap_complete_nushell from 4.4.2 to 4.5.0 (#10) - ([2305cb0](https://github.com/beyondessential/bestool/commit/2305cb05f70711a309bdc8719371f6afd68fa3cc))
+- **Deps:** Bump aws-sdk-route53 from 1.13.0 to 1.13.1 (#11) - ([4203344](https://github.com/beyondessential/bestool/commit/4203344c04f7b0be56b0bf1382f16009fcfa1a81))
+- **Deps:** Bump serde_json from 1.0.111 to 1.0.113 (#12) - ([bcfb3eb](https://github.com/beyondessential/bestool/commit/bcfb3eb1711b3147d53eaf2b3a998b5082507b11))
+- **Deps:** Bump clap_complete from 4.4.9 to 4.5.0 (#13) - ([b2822cc](https://github.com/beyondessential/bestool/commit/b2822cc55b4fbf67a7621a7ac6bd00ac28c4c768))
 
 ### Sign
 
@@ -102,7 +126,7 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 ## [0.3.0] - 2024-02-09
 
 
-- **Bugfix:** clap test - ([5b55a96](https://github.com/beyondessential/bestool/commit/5b55a96904836ab23b581e71bca2d5eb1a95ac58))
+- **Bugfix:** Clap test - ([5b55a96](https://github.com/beyondessential/bestool/commit/5b55a96904836ab23b581e71bca2d5eb1a95ac58))
 - **Deps:** Update deps - ([f8fe1d5](https://github.com/beyondessential/bestool/commit/f8fe1d5b7e2b01a94774b1c33e919b4194859cb1))
 - **Feature:** Add progress bars - ([ccafe2c](https://github.com/beyondessential/bestool/commit/ccafe2cbc8420d7980e6702ab65895e63e72c79d))
 - **Feature:** Make it possible to turn commands off at compile time - ([1bad1dc](https://github.com/beyondessential/bestool/commit/1bad1dcd1453ae9e12edfebdb91a4d638d4ceec3))
