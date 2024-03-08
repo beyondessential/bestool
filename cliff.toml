@@ -62,10 +62,11 @@ link_parsers = [
 commit_parsers = [
   { message = "^feat", group = "Feature" },
   { message = "^fix", group = "Bugfix" },
+  { message = "^tweak", group = "Tweak" },
   { message = "^doc", group = "Documentation" },
   { message = "^perf", group = "Performance" },
   { message = "^refactor", group = "Refactor" },
-  { message = "^draft", group = "WIP" },
+  { message = "^draft|wip", group = "WIP" },
   { message = "^style", group = "Style" },
   { message = "^test", group = "Test" },
   { message = "^deps", group = "Deps" },
