@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.7.0](https://github.com/beyondessential/bestool/compare/v0.6.1..0.7.0) - 2024-03-08
+## [0.8.0](https://github.com/beyondessential/bestool/compare/v0.7.0..0.8.0) - 2024-03-15
+
+
+
+### Crypto
+
+- **Feature:** Add hash subcommand - ([10f1054](https://github.com/beyondessential/bestool/commit/10f105464c133d8e32571b555925ed9b8ad8e2d6))
+
+---
+## [0.7.0](https://github.com/beyondessential/bestool/compare/v0.6.1..v0.7.0) - 2024-03-08
 
 
 - **Deps:** Upgrade all deps (#21) - ([6996788](https://github.com/beyondessential/bestool/commit/6996788190510cb6dd642ff985d8c8763814d038))
@@ -123,7 +132,7 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 - **Refactor:** Move roots so tamanu deps can be optional - ([87e5b6d](https://github.com/beyondessential/bestool/commit/87e5b6db5086f7b0fa61ff070b2a23546527c247))
 
 ---
-## [0.3.0] - 2024-02-09
+## [0.3.0](https://github.com/beyondessential/bestool/compare/v0.2.0..v0.3.0) - 2024-02-09
 
 
 - **Bugfix:** Clap test - ([5b55a96](https://github.com/beyondessential/bestool/commit/5b55a96904836ab23b581e71bca2d5eb1a95ac58))
