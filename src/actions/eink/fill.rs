@@ -43,7 +43,10 @@ pub async fn run(ctx: Context<EinkArgs, FillArgs>) -> Result<()> {
 
 			let mut fill = Pixels::new_for(ctx.args_top.chip);
 			fill.fill(true);
-			eink.display_bichrome(Pixels::new_for(ctx.args_top.chip).as_reader(), fill.as_reader())?;
+			eink.display_bichrome(
+				Pixels::new_for(ctx.args_top.chip).as_reader(),
+				fill.as_reader(),
+			)?;
 		}
 		Colour::Bands => {
 			let mut fill = Pixels::new_for(ctx.args_top.chip);
@@ -76,5 +79,5 @@ pub enum Colour {
 	White,
 	Black,
 	Red,
-	Bands
+	Bands,
 }

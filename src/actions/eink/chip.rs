@@ -1,4 +1,3 @@
-
 /// Eink display chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Chip {
