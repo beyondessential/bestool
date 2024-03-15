@@ -9,8 +9,8 @@ use super::Context;
 mod chip;
 mod fill;
 mod io;
-mod pixels;
 mod lut;
+mod pixels;
 mod text;
 
 /// Control an E-ink screen.
