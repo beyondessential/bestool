@@ -886,9 +886,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b742e65cca7e08ea9ac88e2bd6756ab5f5ac3c83860e1cad5c3edee0481c85ef"
+checksum = "00ecb1cfa7922572a3f582883fcb4d42cf04eee98f947e15b7f9cfa773d8797f"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -3466,9 +3466,9 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
 name = "reqwest"
-version = "0.11.24"
+version = "0.11.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6920094eb85afde5e4a138be3f2de8bbdf28000f0029e72c45025a56b042251"
+checksum = "78bf93c4af7a8bb7d879d51cebe797356ff10ae8516ace542b5182d9dcac10b2"
 dependencies = [
  "async-compression",
  "base64",
