@@ -84,7 +84,6 @@ jobs:
           - x86_64-unknown-linux-musl
           - x86_64-pc-windows-msvc
           - aarch64-apple-darwin
-          - aarch64-unknown-linux-gnu
           - aarch64-unknown-linux-musl
 
     name: Build / ${{ matrix.target }}
@@ -209,7 +208,7 @@ jobs:
             dest="$dest/Windows-X64"
           elif [[ ${{ matrix.target }} == "aarch64-apple-darwin" ]]; then
             dest="$dest/macOS-ARM64"
-          elif [[ ${{ matrix.target }} == "aarch64-unknown-linux-gnu" ]]; then
+          elif [[ ${{ matrix.target }} == "aarch64-unknown-linux-musl" ]]; then
             dest="$dest/Linux-ARM64"
           else
             exit 0
