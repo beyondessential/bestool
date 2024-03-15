@@ -21,6 +21,7 @@ base64ct = { version = "1.6.0", features = ["std"] }
 binstalk-downloader = { version = "0.10.0", optional = true }
 bitflags = { version = "2.4.2", optional = true }
 bitvec = { version = "1.0.1", optional = true }
+blake3 = "1.5.1"
 boxcar = "0.2.4"
 bytes = "1.5.0"
 chrono = "0.4.35"
@@ -40,6 +41,7 @@ json5 = "0.4.1"
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 local-ip-address = { version = "0.6.1", optional = true }
+merkle_hash = "3.6.1"
 miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.39"
 minisign = { version = "0.7.6", optional = true }
