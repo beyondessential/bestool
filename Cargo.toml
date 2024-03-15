@@ -56,7 +56,7 @@ serde_json = "1.0.114"
 tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.57"
 tokio = { version = "1.35.1", features = ["full"] }
-tracing = "0.1.40"
+tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 walkdir = "2.5.0"
 
