@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.8.0](https://github.com/beyondessential/bestool/compare/v0.7.0..0.8.0) - 2024-03-15
+## [0.8.1](https://github.com/beyondessential/bestool/compare/v0.8.0..0.8.1) - 2024-03-21
+
+
+- **Deps:** Explicit tracing-attributes to get aarch64-gnu to build - ([e542265](https://github.com/beyondessential/bestool/commit/e54226576aac6ea7099f61fa7e090aeb27b23279))
+- **Feature:** Control log colour usage with --color - ([eaccc33](https://github.com/beyondessential/bestool/commit/eaccc337f3d6ad7cd817c1f8c82c7ee07efef358))
+- **Feature:** Enable ansi colours on windows - ([21d9155](https://github.com/beyondessential/bestool/commit/21d9155e538c6313c7a68c290b325c4f525a0de1))
+- **Repo:** Remove broken aarch64-gnu build - ([0587e2b](https://github.com/beyondessential/bestool/commit/0587e2b1d8032f54e7326f64ebadd97ae54ffbac))
+
+---
+## [0.8.0](https://github.com/beyondessential/bestool/compare/v0.7.0..v0.8.0) - 2024-03-15
 
 
 
