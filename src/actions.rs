@@ -5,6 +5,8 @@ use miette::{IntoDiagnostic, Result};
 use tokio::fs::metadata;
 use tracing::{debug, trace, warn};
 
+use crate::args::ColourMode;
+
 pub use context::Context;
 pub mod context;
 
@@ -124,6 +126,12 @@ async fn init() -> Result<Context<Action>> {
 			3 => "debug,bestool=trace",
 			_ => "trace",
 		});
+
+		match args.color {
+			ColourMode::Never => { builder = builder.with_ansi(false); }
+			ColourMode::Always => { builder = builder.with_ansi(true); }
+			ColourMode::Auto => {}
+		}
 
 		if verbosity > 0 {
 			use tracing_subscriber::fmt::format::FmtSpan;
