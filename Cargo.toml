@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 description = "BES Deployment tooling"
 keywords = ["bes", "tamanu", "tupaia"]
 categories = ["command-line-utilities"]
-repository = "https://github.com/beyondessential/ops"
+repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 aws-config = { version = "1.1.7", optional = true }
@@ -105,3 +105,7 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 incremental = false
+
+[package.metadata.binstall]
+pkg-url = "https://tools.ops.tamanu.io/bestool/{ version }/{ target }/{ name }{ binary-ext }"
+pkg-fmt = "bin"
