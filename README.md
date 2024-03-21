@@ -62,6 +62,18 @@ Or combined:
     ./$bestool --version # or something more useful
 ```
 
+### With [Binstall](https://github.com/cargo-bins/cargo-binstall)
+
+```console
+$ cargo binstall bestool
+```
+
+### With cargo (compiling)
+
+```console
+$ cargo install bestool
+```
+
 ## Development
 
 Install [rust](https://rustup.rs), clone the repo, then run:
