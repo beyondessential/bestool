@@ -19,6 +19,14 @@ Current release: 0.8.2
 | Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/x86_64-apple-darwin/bestool) |
 | Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/aarch64-apple-darwin/bestool) |
 
+### Self-update
+
+If you already have bestool, it can self-update to the latest version:
+
+```console
+$ bestool self-update
+```
+
 ### Always-latest URLs
 
 The above URLs are for the current release. If you want to always get the latest version, you can use the following URLs:
