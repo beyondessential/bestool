@@ -25,7 +25,7 @@ blake3 = "1.5.1"
 boxcar = "0.2.4"
 bytes = "1.5.0"
 chrono = "0.4.35"
-clap = { version = "4.5.2", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
+clap = { version = "4.5.3", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 detect-targets = { version = "0.1.15", optional = true }
