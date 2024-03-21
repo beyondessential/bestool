@@ -57,7 +57,7 @@ tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.57"
 tokio = { version = "1.35.1", features = ["full"] }
 tracing = { version = "0.1.40", features = ["attributes"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 walkdir = "2.5.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
