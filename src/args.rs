@@ -82,6 +82,9 @@ pub fn get_args() -> Args {
 	if env::var("NO_COLOR").is_ok() {
 		debug!("NO_COLOR environment variable set, ignoring --color option");
 		args.color = ColourMode::Never;
+	} else if enable_ansi_support::enable_ansi_support().is_err() {
+		debug!("failed to enable colour support on Windows, disabling colour");
+		args.color = ColourMode::Never;
 	}
 
 	debug!(?args, "got arguments");
