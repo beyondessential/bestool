@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.8.3](https://github.com/beyondessential/bestool/compare/v0.8.2..0.8.3) - 2024-03-22
+## [0.8.4](https://github.com/beyondessential/bestool/compare/v0.8.3..0.8.4) - 2024-03-22
+
+
+
+### Self-update
+
+- **Feature:** Print version after upgrading - ([f5b0cd1](https://github.com/beyondessential/bestool/commit/f5b0cd1ed94cca4562c0a46b8e080a5970e45593))
+
+---
+## [0.8.3](https://github.com/beyondessential/bestool/compare/v0.8.2..v0.8.3) - 2024-03-22
 
 
 - **Documentation:** Mention self-update in readme - ([0b5dd83](https://github.com/beyondessential/bestool/commit/0b5dd832e882a465d3ae71ddb06ccd5b590ef501))
