@@ -77,6 +77,6 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	info!(?dest, "downloaded, self-upgrading");
-	upgrade::upgrade(&dest).map_err(|err| miette!("upgrade: {err:?}"))?;
+	upgrade::run_upgrade(&dest, true, &vec!["--version"]).map_err(|err| miette!("upgrade: {err:?}"))?;
 	Ok(())
 }
