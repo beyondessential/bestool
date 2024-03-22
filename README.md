@@ -8,16 +8,16 @@ See `bestool <subcommand> --help` for extensive help.
 
 ## Download
 
-Current release: 0.8.2
+Current release: 0.8.3
 
 | Platform | Variant | Download |
 | -------- | ------- | -------- |
-| Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/0.8.2/x86_64-pc-windows-msvc/bestool.exe) |
-| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/x86_64-unknown-linux-gnu/bestool) |
-| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/x86_64-unknown-linux-musl/bestool) |
-| Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/aarch64-unknown-linux-musl/bestool) |
-| Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/x86_64-apple-darwin/bestool) |
-| Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.2/aarch64-apple-darwin/bestool) |
+| Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/0.8.3/x86_64-pc-windows-msvc/bestool.exe) |
+| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.3/x86_64-unknown-linux-gnu/bestool) |
+| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/0.8.3/x86_64-unknown-linux-musl/bestool) |
+| Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.3/aarch64-unknown-linux-musl/bestool) |
+| Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/0.8.3/x86_64-apple-darwin/bestool) |
+| Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/0.8.3/aarch64-apple-darwin/bestool) |
 
 ### Self-update
 
