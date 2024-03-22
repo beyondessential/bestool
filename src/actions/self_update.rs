@@ -11,7 +11,7 @@ use binstalk_downloader::{
 	remote::{Client, Url},
 };
 use detect_targets::{get_desired_targets, TARGET};
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, miette, Result};
 use tracing::info;
 
 use super::Context;
@@ -76,9 +76,7 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()?;
 
-	info!(?dest, "downloaded, self-updating");
-	self_replace::self_replace(&dest).into_diagnostic()?;
-	std::fs::remove_file(&dest).into_diagnostic()?;
-
+	info!(?dest, "downloaded, self-upgrading");
+	upgrade::upgrade(&dest).map_err(|err| miette!("upgrade: {err:?}"))?;
 	Ok(())
 }
