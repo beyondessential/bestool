@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.8.2](https://github.com/beyondessential/bestool/compare/v0.8.1..0.8.2) - 2024-03-21
+## [0.8.3](https://github.com/beyondessential/bestool/compare/v0.8.2..0.8.3) - 2024-03-22
+
+
+- **Documentation:** Mention self-update in readme - ([0b5dd83](https://github.com/beyondessential/bestool/commit/0b5dd832e882a465d3ae71ddb06ccd5b590ef501))
+
+### Self-update
+
+- **Bugfix:** Try to self-update better - ([8c5815e](https://github.com/beyondessential/bestool/commit/8c5815e1670e3dff8a03f09c7b3390ff7320ceda))
+
+---
+## [0.8.2](https://github.com/beyondessential/bestool/compare/v0.8.1..v0.8.2) - 2024-03-21
 
 
 - **Feature:** Enable installing with Binstall - ([b1c5cde](https://github.com/beyondessential/bestool/commit/b1c5cdee1d03ca587f0a643ed18497d739ce073c))
