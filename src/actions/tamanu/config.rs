@@ -79,7 +79,7 @@ pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 }
 
 #[instrument(level = "debug")]
-fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::Value> {
+pub fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::Value> {
 	fn inner(path: &Path) -> Result<serde_json::Value> {
 		debug!(?path, "opening config file");
 		let mut file = File::open(path).into_diagnostic()?;
@@ -102,7 +102,7 @@ fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::
 }
 
 #[instrument(level = "debug")]
-fn merge_json(mut base: serde_json::Value, mut overlay: serde_json::Value) -> serde_json::Value {
+pub fn merge_json(mut base: serde_json::Value, mut overlay: serde_json::Value) -> serde_json::Value {
 	if let (Some(base), Some(overlay)) = (base.as_object_mut(), overlay.as_object_mut()) {
 		for (key, value) in overlay {
 			if let Some(base_value) = base.get_mut(key) {

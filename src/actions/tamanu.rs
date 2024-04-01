@@ -10,6 +10,7 @@ pub mod config;
 pub mod download;
 pub mod find;
 pub mod roots;
+pub mod psql;
 
 /// Interact with Tamanu.
 #[derive(Debug, Clone, Parser)]
@@ -28,6 +29,7 @@ pub enum TamanuAction {
 	Config(config::ConfigArgs),
 	Download(download::DownloadArgs),
 	Find(find::FindArgs),
+	Psql(psql::PsqlArgs),
 }
 
 pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
@@ -35,6 +37,7 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,
+		TamanuAction::Psql(subargs) => psql::run(ctx.with_sub(subargs)).await,
 	}
 }
 
