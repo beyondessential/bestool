@@ -26,6 +26,8 @@ pub mod self_update;
 pub mod tamanu;
 #[cfg(feature = "upload")]
 pub mod upload;
+#[cfg(feature = "walg")]
+pub mod walg;
 #[cfg(all(target_os = "linux", feature = "wifisetup"))]
 pub mod wifisetup;
 
@@ -47,6 +49,8 @@ pub enum Action {
 	Tamanu(tamanu::TamanuArgs),
 	#[cfg(feature = "upload")]
 	Upload(upload::UploadArgs),
+	#[cfg(feature = "walg")]
+	WalG(walg::WalgArgs),
 	#[cfg(all(target_os = "linux", feature = "wifisetup"))]
 	Wifisetup(wifisetup::WifisetupArgs),
 }
@@ -73,6 +77,8 @@ pub async fn run() -> Result<()> {
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		#[cfg(feature = "upload")]
 		(Action::Upload(args), ctx) => upload::run(ctx.with_top(args)).await,
+		#[cfg(feature = "walg")]
+		(Action::WalG(args), ctx) => walg::run(ctx.with_top(args)).await,
 		#[cfg(all(target_os = "linux", feature = "wifisetup"))]
 		(Action::Wifisetup(args), ctx) => wifisetup::run(ctx.with_top(args)).await,
 	}
@@ -128,8 +134,12 @@ async fn init() -> Result<Context<Action>> {
 		});
 
 		match args.color {
-			ColourMode::Never => { builder = builder.with_ansi(false); }
-			ColourMode::Always => { builder = builder.with_ansi(true); }
+			ColourMode::Never => {
+				builder = builder.with_ansi(false);
+			}
+			ColourMode::Always => {
+				builder = builder.with_ansi(true);
+			}
 			ColourMode::Auto => {}
 		}
 
