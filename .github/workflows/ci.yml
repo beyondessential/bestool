@@ -136,15 +136,6 @@ jobs:
           curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
           [[ -f bestool ]] && chmod +x bestool
 
-      - name: Sign build
-        shell: bash
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-        run: |
-          bestool=bestool
-          [[ ${{ runner.os }} == "Windows" ]] && bestool=bestool.exe
-          ./$bestool crypto sign --key-env SIGNING_KEY --output '{filename}.sig' --comment 'builder=gha ref=${{ github.ref }} commit=${{ github.sha }} ts={timestamp}' target/*/release/$bestool
-
       - uses: actions/upload-artifact@v4
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}
@@ -152,9 +143,7 @@ jobs:
           retention-days: 7
           path: |
             target/*/release/bestool
-            target/*/release/bestool.sig
             target/*/release/bestool.exe
-            target/*/release/bestool.exe.sig
 
       - name: Configure AWS Credentials
         if: startsWith(github.ref, 'refs/tags/v')
@@ -173,10 +162,8 @@ jobs:
           dest="s3://bes-ops-tools/bestool/${version}/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
             aws s3 cp "$src".exe "$dest" --no-progress
-            aws s3 cp "$src".exe.sig "$dest" --no-progress || true
           else
             aws s3 cp "$src" "$dest" --no-progress
-            aws s3 cp "$src".sig "$dest" --no-progress || true
           fi
 
       - name: Upload latest
@@ -187,10 +174,8 @@ jobs:
           dest="s3://bes-ops-tools/bestool/latest/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
             aws s3 cp "$src".exe "$dest" --no-progress
-            aws s3 cp "$src".exe.sig "$dest" --no-progress || true
           else
             aws s3 cp "$src" "$dest" --no-progress
-            aws s3 cp "$src".sig "$dest" --no-progress || true
           fi
 
       - name: Upload for GHA
@@ -214,7 +199,6 @@ jobs:
             exit 0
           fi
           aws s3 cp "$src" "$dest" --no-progress
-          aws s3 cp "$src".sig "$dest".sig --no-progress || true
 
   tests-pass:
     if: always()
