@@ -69,20 +69,22 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "self-update", "tamanu", "upload"]
+default = ["caddy", "completions", "crypto", "self-update", "tamanu", "upload", "walg"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
+download = ["dep:binstalk-downloader", "dep:detect-targets"]
 
 ## Subcommands
-caddy = ["dep:binstalk-downloader", "dep:detect-targets", "dep:tera"]
+caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 eink = ["dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-self-update = ["dep:binstalk-downloader", "dep:detect-targets", "dep:upgrade"]
-tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros"]
+self-update = ["download", "dep:upgrade"]
+tamanu = ["download", "dep:leon", "dep:leon-macros"]
 upload = ["aws"]
+walg = ["download"]
 wifisetup = ["dep:networkmanager"]
 
 [profile.release]
