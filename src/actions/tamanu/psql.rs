@@ -4,9 +4,10 @@ use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic, Result};
 use tracing::{debug, instrument};
 
+use crate::actions::Context;
+
 use super::config::{merge_json, package_config};
 use super::{find_tamanu, TamanuArgs};
-use crate::actions::Context;
 
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
@@ -84,6 +85,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 fn find_psql() -> Result<String> {
 	// On Windows, find `psql` assuming the standard instllation using the instller
 	// because PATH on Windows is not reliable.
+	// See https://github.com/rust-lang/rust/issues/37519
 	let root = "C:\\Program Files\\PostgreSQL";
 	if cfg!(windows) {
 		let version = fs::read_dir(root)
