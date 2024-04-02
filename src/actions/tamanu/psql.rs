@@ -1,13 +1,12 @@
 use std::fs;
 
 use clap::Parser;
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, Context as _, IntoDiagnostic, Result};
+use tracing::{debug, instrument};
 
 use super::config::{merge_json, package_config};
 use super::{find_tamanu, TamanuArgs};
 use crate::actions::Context;
-
-use tracing::{debug, instrument};
 
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
@@ -25,10 +24,23 @@ pub struct PsqlArgs {
 	pub username: Option<String>,
 }
 
+/// The Tamanu config only describing the part `psql` needs
+#[derive(serde::Deserialize, Debug)]
+struct Config {
+	db: Db,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct Db {
+	name: String,
+	username: String,
+	password: String,
+}
+
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let config = if ctx.args_sub.defaults {
+	let config_value = if ctx.args_sub.defaults {
 		merge_json(
 			package_config(&root, &ctx.args_sub.package, "default.json5")?,
 			package_config(&root, &ctx.args_sub.package, "local.json5")?,
@@ -37,18 +49,15 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		package_config(&root, &ctx.args_sub.package, "local.json5")?
 	};
 
-	let db = config
-		.get("db")
-		.ok_or_else(|| miette!("key 'db' not found"))?;
-	let name = try_get_string_key(db, "name")?;
+	let config: Config = serde_json::from_value(config_value)
+		.into_diagnostic()
+		.wrap_err("parsing of Tamanu config failed")?;
+	let name = config.db.name;
 	let (username, password) = if let Some(ref username) = ctx.args_sub.username {
 		// Rely on `psql` password prompt by making the password parameter empty.
 		(username.as_str(), "")
 	} else {
-		(
-			try_get_string_key(db, "username")?,
-			try_get_string_key(db, "password")?,
-		)
+		(config.db.username.as_str(), config.db.password.as_str())
 	};
 
 	// By default, consoles on Windows use a different codepage from other parts of the system.
@@ -59,20 +68,16 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
 	}
 
+	let psql_path = find_psql().wrap_err("failed to find psql executable")?;
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
-	duct::cmd!(find_psql()?, "--dbname", name, "--username", username,)
+	duct::cmd!(psql_path, "--dbname", name, "--username", username,)
 		.env("PGPASSWORD", password)
 		.env("PSQL_HISTORY", root.with_file_name("psql.history"))
 		.run()
-		.into_diagnostic()?;
+		.into_diagnostic()
+		.wrap_err("failed to execute psql")?;
 
 	Ok(())
-}
-
-fn try_get_string_key<'a>(db: &'a tera::Value, key: &str) -> Result<&'a str> {
-	db.get(key)
-		.and_then(|u| u.as_str())
-		.ok_or_else(|| miette!("key 'db.{key}' not found or string"))
 }
 
 #[instrument(level = "debug")]
