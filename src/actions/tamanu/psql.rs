@@ -16,6 +16,10 @@ pub struct PsqlArgs {
 	/// Include defaults
 	#[arg(short = 'D', long)]
 	pub defaults: bool,
+
+	/// If given, this overwrites the username in the config and prompts for a password
+	#[arg(short, long)]
+	pub username: Option<String>,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
@@ -33,15 +37,13 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let db = config
 		.get("db")
 		.ok_or_else(|| miette!("key 'db' not found"))?;
-	fn try_get_string_key<'a>(db: &'a tera::Value, key: &str) -> Result<&'a str> {
-		db
-			.get(key)
-			.and_then(|u| u.as_str())
-			.ok_or_else(|| miette!("key 'db.{key}' not found or string"))
-	}
 	let name = try_get_string_key(db, "name")?;
-	let username = try_get_string_key(db, "username")?;
-	let password = try_get_string_key(db, "password")?;
+	let (username, password) = if let Some(ref username) = ctx.args_sub.username {
+		// Rely on `psql` password prompt by making this empty.
+		(username.as_str(), "")
+	} else {
+		(try_get_string_key(db, "username")?, try_get_string_key(db, "password")?)
+	};
 
 	duct::cmd!(
 		"psql",
@@ -61,4 +63,11 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	.into_diagnostic()?;
 
 	Ok(())
+}
+
+fn try_get_string_key<'a>(db: &'a tera::Value, key: &str) -> Result<&'a str> {
+	db
+		.get(key)
+		.and_then(|u| u.as_str())
+		.ok_or_else(|| miette!("key 'db.{key}' not found or string"))
 }
