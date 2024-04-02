@@ -877,7 +877,6 @@ dependencies = [
  "node-semver",
  "passcod-networkmanager",
  "regex",
- "rpassword",
  "rppal",
  "rust-fontconfig",
  "secrecy",
