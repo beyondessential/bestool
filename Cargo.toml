@@ -65,6 +65,9 @@ rpassword = "7.3.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.54.0", features = ["Win32_System_Console"] }
+
 [build-dependencies]
 build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
