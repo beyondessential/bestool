@@ -64,12 +64,13 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 	let mut url = None;
 	for target in detected_targets {
 		let try_url = Url::parse(&format!(
-			"https://tools.ops.tamanu.io/caddy/{version}/caddy-{target}{ext}",
+			"https://tools.ops.tamanu.io/caddy/{version}/caddy-{target}{ext}?bust={date}",
 			ext = if target.contains("windows") {
 				".exe"
 			} else {
 				""
 			},
+			date = chrono::Utc::now(),
 		))
 		.into_diagnostic()?;
 		debug!(url=%try_url, "trying URL");

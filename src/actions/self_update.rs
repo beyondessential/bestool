@@ -63,11 +63,12 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 	let dest = dir.join(&filename);
 
 	let url = format!(
-		"https://tools.ops.tamanu.io/bestool/{version}/{target}/{filename}",
+		"https://tools.ops.tamanu.io/bestool/{version}/{target}/{filename}?bust={date}",
 		target = detected_targets
 			.first()
 			.cloned()
 			.unwrap_or_else(|| TARGET.into()),
+		date = chrono::Utc::now(),
 	);
 	info!(url = %url, "downloading");
 
