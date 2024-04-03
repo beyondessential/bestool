@@ -15,9 +15,9 @@ use tracing::{debug, info};
 
 use crate::actions::Context;
 
-use super::CaddyArgs;
+use super::WalgArgs;
 
-/// Download caddy.
+/// Download WAL-G.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// Version to download.
@@ -41,7 +41,7 @@ pub struct DownloadArgs {
 	pub target: Option<String>,
 }
 
-pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
+pub async fn run(ctx: Context<WalgArgs, DownloadArgs>) -> Result<()> {
 	let DownloadArgs {
 		version,
 		path,
@@ -64,7 +64,7 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 	let mut url = None;
 	for target in detected_targets {
 		let try_url = Url::parse(&format!(
-			"https://tools.ops.tamanu.io/caddy/{version}/caddy-{target}{ext}?bust={date}",
+			"https://tools.ops.tamanu.io/wal-g/{version}/wal-g-{target}{ext}?bust={date}",
 			ext = if target.contains("windows") {
 				".exe"
 			} else {
@@ -86,7 +86,7 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 
 	let Some((target, url)) = url else {
 		bail!(
-			"no valid URL found for caddy {} on {}",
+			"no valid URL found for wal-g {} on {}",
 			version,
 			detected_targets.join(", ")
 		);
@@ -103,7 +103,7 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 	}
 
 	let fullpath = path.join(format!(
-		"caddy{}",
+		"wal-g{}",
 		if target.contains("windows") {
 			".exe"
 		} else {

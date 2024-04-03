@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.8.4"
+version = "0.9.1"
 edition = "2021"
 rust-version = "1.76.0"
 
@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-aws-config = { version = "1.1.7", optional = true }
+aws-config = { version = "1.1.9", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.16.0", optional = true }
 aws-sdk-s3 = { version = "1.17.0", optional = true }
@@ -23,7 +23,7 @@ bitflags = { version = "2.4.2", optional = true }
 bitvec = { version = "1.0.1", optional = true }
 blake3 = "1.5.1"
 boxcar = "0.2.4"
-bytes = "1.5.0"
+bytes = "1.6.0"
 chrono = "0.4.35"
 clap = { version = "4.5.2", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
@@ -47,16 +47,16 @@ miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.39"
 minisign = { version = "0.7.6", optional = true }
 node-semver = "2.1.0"
-regex = "1.10.3"
+regex = "1.10.4"
 rppal = { version = "0.17.1", optional = true }
 rust-fontconfig = { version = "0.1.7", optional = true }
 secrecy = { version = "0.8.0", optional = true }
 upgrade = { version = "1.1.1", optional = true }
 serde = { version = "1.0.197", features = ["derive"] }
-serde_json = "1.0.114"
+serde_json = "1.0.115"
 tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.57"
-tokio = { version = "1.35.1", features = ["full"] }
+tokio = { version = "1.37.0", features = ["full"] }
 tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 walkdir = "2.5.0"
@@ -72,20 +72,22 @@ build-data = "0.1.5"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "self-update", "tamanu", "upload"]
+default = ["caddy", "completions", "crypto", "self-update", "tamanu", "upload", "walg"]
 
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
+download = ["dep:binstalk-downloader", "dep:detect-targets"]
 
 ## Subcommands
-caddy = ["dep:binstalk-downloader", "dep:detect-targets", "dep:tera"]
+caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 eink = ["dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-self-update = ["dep:binstalk-downloader", "dep:detect-targets", "dep:upgrade"]
-tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros", "dep:windows"]
+self-update = ["download", "dep:upgrade"]
+tamanu = ["download", "dep:leon", "dep:leon-macros", "dep:windows"]
 upload = ["aws"]
+walg = ["download"]
 wifisetup = ["dep:networkmanager"]
 
 [profile.release]
