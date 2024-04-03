@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::{fs, path::PathBuf};
 
@@ -61,7 +62,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let config: Config = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
-	let name = config.db.name;
+	let name = &config.db.name;
 	let (username, password) = if let Some(ref username) = ctx.args_sub.username {
 		// Rely on `psql` password prompt by making the password parameter empty.
 		(username.as_str(), "")
@@ -103,7 +104,7 @@ fn find_package(root: impl AsRef<Path>) -> Result<String> {
 }
 
 #[instrument(level = "debug")]
-fn find_psql() -> Result<PathBuf> {
+fn find_psql() -> Result<OsString> {
 	// On Windows, find `psql` assuming the standard instllation using the instller
 	// because PATH on Windows is not reliable.
 	// See https://github.com/rust-lang/rust/issues/37519
@@ -133,7 +134,8 @@ fn find_psql() -> Result<PathBuf> {
 
 		Ok([root, version.as_str(), r"bin\psql.exe"]
 			.iter()
-			.collect::<PathBuf>())
+			.collect::<PathBuf>()
+			.into_os_string())
 	} else {
 		Ok("psql".into())
 	}
