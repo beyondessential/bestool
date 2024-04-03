@@ -107,8 +107,8 @@ fn find_psql() -> Result<PathBuf> {
 	// On Windows, find `psql` assuming the standard instllation using the instller
 	// because PATH on Windows is not reliable.
 	// See https://github.com/rust-lang/rust/issues/37519
-	let root = r"C:\Program Files\PostgreSQL";
 	if cfg!(windows) {
+		let root = r"C:\Program Files\PostgreSQL";
 		let version = fs::read_dir(root)
 			.into_diagnostic()?
 			.inspect(|res| debug!(?res, "reading PostgreSQL installation"))
