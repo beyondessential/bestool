@@ -1,4 +1,7 @@
-use std::fs;
+use std::{
+	fs,
+	path::PathBuf,
+};
 
 use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic, Result};
@@ -82,11 +85,11 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 }
 
 #[instrument(level = "debug")]
-fn find_psql() -> Result<String> {
+fn find_psql() -> Result<PathBuf> {
 	// On Windows, find `psql` assuming the standard instllation using the instller
 	// because PATH on Windows is not reliable.
 	// See https://github.com/rust-lang/rust/issues/37519
-	let root = "C:\\Program Files\\PostgreSQL";
+	let root = r"C:\Program Files\PostgreSQL";
 	if cfg!(windows) {
 		let version = fs::read_dir(root)
 			.into_diagnostic()?
@@ -96,17 +99,22 @@ fn find_psql() -> Result<String> {
 					dir.file_name()
 						.into_string()
 						.ok()
-						.and_then(|name| name.parse::<u32>().ok())
+						.filter(|name| name.parse::<u32>().is_ok())
 				})
 				.transpose()
 			})
 			// Use `u32::MAX` in case of `Err` so that we always catch IO errors.
-			.max_by_key(|res| res.as_ref().cloned().unwrap_or(u32::MAX))
+			.max_by_key(|res| {
+				res.as_ref()
+					.cloned()
+					.map(|n| n.parse::<u32>().unwrap())
+					.unwrap_or(u32::MAX)
+			})
 			.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
 			.into_diagnostic()?;
 
-		Ok(format!("{root}\\{version}\\bin\\psql.exe"))
+		Ok([root, version.as_str(), r"bin\psql.exe"].iter().collect::<PathBuf>())
 	} else {
-		Ok("psql".to_string())
+		Ok("psql".into())
 	}
 }
