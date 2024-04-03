@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.9.0](https://github.com/beyondessential/bestool/compare/v0.8.4..0.9.0) - 2024-04-03
+## [0.9.1](https://github.com/beyondessential/bestool/compare/v0.9.0..0.9.1) - 2024-04-03
+
+
+- **Tweak:** Use cache-busting URLs for downloads - ([91e3fe0](https://github.com/beyondessential/bestool/commit/91e3fe0644e86e4aed92f11191bca04837dcebca))
+
+---
+## [0.9.0](https://github.com/beyondessential/bestool/compare/v0.8.4..v0.9.0) - 2024-04-03
 
 
 - **Deps:** Bump tokio from 1.36.0 to 1.37.0 (#31) - ([4990d11](https://github.com/beyondessential/bestool/commit/4990d11d6758ea62eda64e9e2720c2bfba7bb07f))
