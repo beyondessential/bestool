@@ -14,12 +14,17 @@ use super::{find_tamanu, TamanuArgs};
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
 pub struct PsqlArgs {
-	/// Package to look at. By default, the command finds installed version automatically
-	/// If both central and facility server were present, there's no guarantee which server this picks
+	/// Package to load config from.
+	///
+	/// By default, this command looks for the most recent installed version of Tamanu and tries to
+	/// look for an appropriate config. If both central and facility servers are present and
+	/// configured, it will pick one arbitrarily.
 	#[arg(short, long)]
 	pub package: Option<String>,
 
-	/// If given, this overwrites the username in the config and prompts for a password
+	/// Connect to postgres with a different username.
+	///
+	/// This may prompt for a password depending on your local settings and pg_hba config.
 	#[arg(short, long)]
 	pub username: Option<String>,
 }
