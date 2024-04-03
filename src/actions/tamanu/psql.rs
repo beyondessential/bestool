@@ -19,10 +19,6 @@ pub struct PsqlArgs {
 	#[arg(short, long)]
 	pub package: Option<String>,
 
-	/// Include defaults
-	#[arg(short = 'D', long)]
-	pub defaults: bool,
-
 	/// If given, this overwrites the username in the config and prompts for a password
 	#[arg(short, long)]
 	pub username: Option<String>,
@@ -50,14 +46,10 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	};
 	info!(?package, "using");
 
-	let config_value = if ctx.args_sub.defaults {
-		merge_json(
-			package_config(&root, &package, "default.json5")?,
-			package_config(&root, &package, "local.json5")?,
-		)
-	} else {
-		package_config(&root, &package, "local.json5")?
-	};
+	let config_value = merge_json(
+		package_config(&root, &package, "default.json5")?,
+		package_config(&root, &package, "local.json5")?,
+	);
 
 	let config: Config = serde_json::from_value(config_value)
 		.into_diagnostic()
