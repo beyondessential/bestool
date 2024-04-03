@@ -111,6 +111,9 @@ pub fn merge_json(mut base: serde_json::Value, mut overlay: serde_json::Value) -
 				base.insert(key.clone(), value.clone());
 			}
 		}
+	} else {
+		// If either or both of `base` and `overlay` are scalar values, it must be safe to simply overwrite the base.
+		base = overlay
 	}
 	base
 }
