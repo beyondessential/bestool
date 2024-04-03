@@ -1,11 +1,9 @@
-use std::{
-	fs,
-	path::PathBuf,
-};
+use std::path::Path;
+use std::{fs, path::PathBuf};
 
 use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic, Result};
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::actions::Context;
 
@@ -15,9 +13,10 @@ use super::{find_tamanu, TamanuArgs};
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
 pub struct PsqlArgs {
-	/// Package to look at
+	/// Package to look at. By default, the command finds installed version automatically
+	/// If both central and facility server were present, there's no guarantee which server this picks
 	#[arg(short, long)]
-	pub package: String,
+	pub package: Option<String>,
 
 	/// Include defaults
 	#[arg(short = 'D', long)]
@@ -44,13 +43,19 @@ struct Db {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
+	let package = match ctx.args_sub.package {
+		Some(package) => package,
+		None => find_package(&root)?,
+	};
+	info!(?package, "using");
+
 	let config_value = if ctx.args_sub.defaults {
 		merge_json(
-			package_config(&root, &ctx.args_sub.package, "default.json5")?,
-			package_config(&root, &ctx.args_sub.package, "local.json5")?,
+			package_config(&root, &package, "default.json5")?,
+			package_config(&root, &package, "local.json5")?,
 		)
 	} else {
-		package_config(&root, &ctx.args_sub.package, "local.json5")?
+		package_config(&root, &package, "local.json5")?
 	};
 
 	let config: Config = serde_json::from_value(config_value)
@@ -84,6 +89,19 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	Ok(())
 }
 
+fn find_package(root: impl AsRef<Path>) -> Result<String> {
+	fs::read_dir(root.as_ref().join("packages"))
+		.into_diagnostic()?
+		.filter_map(|res| res.map(|d| d.file_name().into_string().ok()).transpose())
+		.find(|res| {
+			res.as_ref()
+				.map(|dir_name| dir_name == "central-server" || dir_name == "facility-server")
+				.unwrap_or(true)
+		})
+		.ok_or_else(|| miette!("Tamanu servers not found"))?
+		.into_diagnostic()
+}
+
 #[instrument(level = "debug")]
 fn find_psql() -> Result<PathBuf> {
 	// On Windows, find `psql` assuming the standard instllation using the instller
@@ -113,7 +131,9 @@ fn find_psql() -> Result<PathBuf> {
 			.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
 			.into_diagnostic()?;
 
-		Ok([root, version.as_str(), r"bin\psql.exe"].iter().collect::<PathBuf>())
+		Ok([root, version.as_str(), r"bin\psql.exe"]
+			.iter()
+			.collect::<PathBuf>())
 	} else {
 		Ok("psql".into())
 	}
