@@ -65,7 +65,7 @@ walkdir = "2.5.0"
 networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.54.0", features = ["Win32_System_Console"] }
+windows = { version = "0.54.0", features = ["Win32_System_Console"] , optional = true }
 
 [build-dependencies]
 build-data = "0.1.5"
@@ -84,7 +84,7 @@ crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
 eink = ["dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
 self-update = ["dep:binstalk-downloader", "dep:detect-targets", "dep:upgrade"]
-tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros"]
+tamanu = ["dep:binstalk-downloader", "dep:leon", "dep:leon-macros", "dep:windows"]
 upload = ["aws"]
 wifisetup = ["dep:networkmanager"]
 
