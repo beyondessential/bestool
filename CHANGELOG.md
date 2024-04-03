@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.8.4](https://github.com/beyondessential/bestool/compare/v0.8.3..0.8.4) - 2024-03-22
+## [0.9.0](https://github.com/beyondessential/bestool/compare/v0.8.4..0.9.0) - 2024-04-03
+
+
+- **Deps:** Bump tokio from 1.36.0 to 1.37.0 (#31) - ([4990d11](https://github.com/beyondessential/bestool/commit/4990d11d6758ea62eda64e9e2720c2bfba7bb07f))
+- **Deps:** Bump serde_json from 1.0.114 to 1.0.115 (#30) - ([50886ce](https://github.com/beyondessential/bestool/commit/50886ce3e58c870df7a989a7ec5d441fe9120cb4))
+- **Deps:** Bump aws-config from 1.1.8 to 1.1.9 (#29) - ([2993755](https://github.com/beyondessential/bestool/commit/29937555a38a362b37e11a55cfc61d189baa2686))
+- **Deps:** Bump regex from 1.10.3 to 1.10.4 (#28) - ([89b5cc2](https://github.com/beyondessential/bestool/commit/89b5cc2c126c9dcdff462a506196e966bdbfa9c4))
+- **Deps:** Bump bytes from 1.5.0 to 1.6.0 (#27) - ([de1c979](https://github.com/beyondessential/bestool/commit/de1c9791638ebc6ab0fae57514e4e6d89a3f22aa))
+
+### Wal-g
+
+- **Feature:** Add wal-g download command - ([ea0290e](https://github.com/beyondessential/bestool/commit/ea0290e3cfda4ad67bec3f6ec9a81e985a96e5d3))
+
+---
+## [0.8.4](https://github.com/beyondessential/bestool/compare/v0.8.3..v0.8.4) - 2024-03-22
 
 
 
