@@ -165,6 +165,7 @@ jobs:
           else
             aws s3 cp "$src" "$dest" --no-progress
           fi
+          aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths /bestool/${version}
 
       - name: Upload latest
         if: startsWith(github.ref, 'refs/tags/v')
@@ -177,6 +178,7 @@ jobs:
           else
             aws s3 cp "$src" "$dest" --no-progress
           fi
+          aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths /bestool/latest
 
       - name: Upload for GHA
         if: startsWith(github.ref, 'refs/tags/v')
@@ -199,6 +201,7 @@ jobs:
             exit 0
           fi
           aws s3 cp "$src" "$dest" --no-progress
+          aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths /bestool/gha
 
   tests-pass:
     if: always()
