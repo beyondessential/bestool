@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.9.1](https://github.com/beyondessential/bestool/compare/v0.9.0..0.9.1) - 2024-04-03
+## [0.10.0](https://github.com/beyondessential/bestool/compare/v0.9.1..0.10.0) - 2024-04-04
+
+
+
+### Tamanu
+
+- **Feature:** KAM-10: add psql command (#33) - ([1a54017](https://github.com/beyondessential/bestool/commit/1a54017ab4494bdd00c93c79cb320109a6752075))
+
+---
+## [0.9.1](https://github.com/beyondessential/bestool/compare/v0.9.0..v0.9.1) - 2024-04-03
 
 
 - **Tweak:** Use cache-busting URLs for downloads - ([91e3fe0](https://github.com/beyondessential/bestool/commit/91e3fe0644e86e4aed92f11191bca04837dcebca))
