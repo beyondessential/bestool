@@ -29,7 +29,7 @@ use super::{download::ServerKind, find_existing_version, find_tamanu, TamanuArgs
 /// currently running, then download the desired newer version, unpack it, copy config across,
 /// install dependencies, and perform readiness checks.
 #[derive(Debug, Clone, Parser)]
-pub struct PrepareUpgrade {
+pub struct PrepareUpgradeArgs {
 	/// Version to update to.
 	#[arg(value_name = "VERSION")]
 	pub version: Version,
@@ -48,8 +48,8 @@ pub struct PrepareUpgrade {
 	pub force: bool,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, PrepareUpgrade>) -> Result<()> {
-	let PrepareUpgrade {
+pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
+	let PrepareUpgradeArgs {
 		version: new_version,
 		package: _,
 		force,

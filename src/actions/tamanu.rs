@@ -36,7 +36,7 @@ pub enum TamanuAction {
 	Download(download::DownloadArgs),
 	Find(find::FindArgs),
 	#[cfg(windows)]
-	PrepareUpgrade(prepare_upgrade::PrepareUpgrade),
+	PrepareUpgrade(prepare_upgrade::PrepareUpgradeArgs),
 	Psql(psql::PsqlArgs),
 }
 
