@@ -45,14 +45,14 @@ pub struct PrepareUpgradeArgs {
 
 	/// Force installing older Tamanu
 	#[arg(long)]
-	pub force: bool,
+	pub force_downgrade: bool,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	let PrepareUpgradeArgs {
 		version: new_version,
 		package: _,
-		force,
+		force_downgrade,
 	} = ctx.args_sub;
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
@@ -89,7 +89,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		bail!("`PreUpgrade-Tamanu` only support upgrading from/to versions from 2.0.0 onwards");
 	}
 
-	if !force && (new_version <= existing_version) {
+	if !force_downgrade && (new_version <= existing_version) {
 		bail!("the specified version is older than or equal to the installed version");
 	}
 
