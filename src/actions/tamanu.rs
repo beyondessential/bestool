@@ -13,6 +13,7 @@ use super::Context;
 pub mod config;
 pub mod download;
 pub mod find;
+#[cfg(windows)]
 pub mod prepare_upgrade;
 pub mod psql;
 pub mod roots;
@@ -34,6 +35,7 @@ pub enum TamanuAction {
 	Config(config::ConfigArgs),
 	Download(download::DownloadArgs),
 	Find(find::FindArgs),
+	#[cfg(windows)]
 	PrepareUpgrade(prepare_upgrade::PrepareUpgrade),
 	Psql(psql::PsqlArgs),
 }
@@ -43,6 +45,7 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,
+		#[cfg(windows)]
 		TamanuAction::PrepareUpgrade(subargs) => prepare_upgrade::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Psql(subargs) => psql::run(ctx.with_sub(subargs)).await,
 	}
@@ -72,6 +75,7 @@ pub fn find_package(root: impl AsRef<Path>) -> Result<String> {
 		.into_diagnostic()?
 }
 
+#[cfg(windows)]
 pub fn find_existing_version() -> Result<Version> {
 	#[derive(serde::Deserialize, Debug)]
 	struct Process {
