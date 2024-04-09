@@ -36,9 +36,10 @@ pub struct PrepareUpgrade {
 
 	/// Package to upgrade.
 	///
-	/// By default, this command looks for the most recent installed version of Tamanu.
-	/// If both central and facility servers are present and
-	/// configured, it will pick one arbitrarily.
+	/// By default, this command detects which server is installed.
+	///
+	/// If both central and facility servers are present, it will error and you'll have to specify
+	/// this option.
 	#[arg(short, long)]
 	pub package: Option<String>,
 
