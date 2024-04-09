@@ -21,7 +21,13 @@ use crate::actions::{
 
 use super::{download::ServerKind, find_existing_version, find_tamanu, TamanuArgs};
 
-/// Setup new Tamanu instllation without taking down the existing one
+/// Perform pre-upgrade tasks.
+///
+/// This will not incur downtime.
+///
+/// This command will detect which server is installed (Facility or Central) and which version is
+/// currently running, then download the desired newer version, unpack it, copy config across,
+/// install dependencies, and perform readiness checks.
 #[derive(Debug, Clone, Parser)]
 pub struct PrepareUpgrade {
 	/// Version to update to.
