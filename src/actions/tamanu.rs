@@ -1,7 +1,11 @@
-use std::path::PathBuf;
+use std::{
+	fs,
+	path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand};
-use miette::{miette, IntoDiagnostic, Result};
+use itertools::Itertools;
+use miette::{miette, Context as _, IntoDiagnostic, Result};
 use node_semver::Version;
 
 use super::Context;
@@ -9,8 +13,9 @@ use super::Context;
 pub mod config;
 pub mod download;
 pub mod find;
-pub mod roots;
+pub mod prepare_upgrade;
 pub mod psql;
+pub mod roots;
 
 /// Interact with Tamanu.
 #[derive(Debug, Clone, Parser)]
@@ -29,6 +34,7 @@ pub enum TamanuAction {
 	Config(config::ConfigArgs),
 	Download(download::DownloadArgs),
 	Find(find::FindArgs),
+	PrepareUpgrade(prepare_upgrade::PrepareUpgrade),
 	Psql(psql::PsqlArgs),
 }
 
@@ -37,6 +43,7 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,
+		TamanuAction::PrepareUpgrade(subargs) => prepare_upgrade::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Psql(subargs) => psql::run(ctx.with_sub(subargs)).await,
 	}
 }
@@ -52,4 +59,41 @@ pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
 			.next()
 			.ok_or_else(|| miette!("no tamanu discovered, use --root"))
 	}
+}
+
+pub fn find_package(root: impl AsRef<Path>) -> Result<String> {
+	fs::read_dir(root.as_ref().join("packages"))
+		.into_diagnostic()?
+		.filter_map_ok(|e| e.file_name().into_string().ok())
+		.process_results(|mut iter| {
+			iter.find(|dir_name| dir_name == "central-server" || dir_name == "facility-server")
+				.ok_or_else(|| miette!("Tamanu servers not found"))
+		})
+		.into_diagnostic()?
+}
+
+pub fn find_existing_version() -> Result<Version> {
+	#[derive(serde::Deserialize, Debug)]
+	struct Process {
+		name: String,
+		pm2_env: Pm2Env,
+	}
+
+	#[derive(serde::Deserialize, Debug)]
+	struct Pm2Env {
+		version: Version,
+	}
+
+	let reader = duct::cmd!("pwsh", "-Command", "pm2.ps1 jlist")
+		.reader()
+		.into_diagnostic()
+		.wrap_err("failed to run pm2")?;
+	let processes: Vec<Process> = serde_json::from_reader(reader).into_diagnostic()?;
+
+	Ok(processes
+		.into_iter()
+		.find(|p| p.name == "tamanu-api-server" || p.name == "tamanu-http-server")
+		.ok_or_else(|| miette!("there's no live Tamanu running"))?
+		.pm2_env
+		.version)
 }

@@ -1,11 +1,11 @@
 use std::ffi::OsString;
-use std::path::Path;
 use std::{fs, path::PathBuf};
 
 use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic, Result};
 use tracing::{debug, info, instrument};
 
+use crate::actions::tamanu::find_package;
 use crate::actions::Context;
 
 use super::config::{merge_json, package_config};
@@ -85,19 +85,6 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		.wrap_err("failed to execute psql")?;
 
 	Ok(())
-}
-
-fn find_package(root: impl AsRef<Path>) -> Result<String> {
-	fs::read_dir(root.as_ref().join("packages"))
-		.into_diagnostic()?
-		.filter_map(|res| res.map(|d| d.file_name().into_string().ok()).transpose())
-		.find(|res| {
-			res.as_ref()
-				.map(|dir_name| dir_name == "central-server" || dir_name == "facility-server")
-				.unwrap_or(true)
-		})
-		.ok_or_else(|| miette!("Tamanu servers not found"))?
-		.into_diagnostic()
 }
 
 #[instrument(level = "debug")]
