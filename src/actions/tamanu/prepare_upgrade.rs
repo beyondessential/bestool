@@ -14,8 +14,8 @@ use tracing::{info, warn};
 use crate::actions::Context;
 
 use super::{
-	download::{download, make_url, ServerKind},
-	find_existing_version, find_package, find_tamanu, TamanuArgs,
+	download::{download, make_url, ApiServerKind},
+	find_existing_version, find_package, find_tamanu, ServerKind, TamanuArgs,
 };
 
 /// Perform pre-upgrade tasks.
@@ -38,7 +38,7 @@ pub struct PrepareUpgradeArgs {
 	/// If both central and facility servers are present, it will error and you'll have to specify
 	/// this option.
 	#[arg(short, long)]
-	pub package: Option<String>,
+	pub kind: Option<ServerKind>,
 
 	/// Force installing older Tamanu
 	#[arg(long)]
@@ -48,23 +48,18 @@ pub struct PrepareUpgradeArgs {
 pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	let PrepareUpgradeArgs {
 		version: new_version,
-		package,
+		kind,
 		force_downgrade,
 	} = ctx.args_sub;
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let existing_version = find_existing_version()?;
 
-	let package = match package {
-		Some(package) => package,
+	let kind = match kind {
+		Some(kind) => kind,
 		None => find_package(&root)?,
 	};
-	info!(?package, "using");
-	let kind = match package.as_str() {
-		"central-server" => ServerKind::Central,
-		"facility-server" => ServerKind::Facility,
-		_ => bail!("package {package} not recognised"),
-	};
+	info!(?kind, "using");
 
 	// Assumptions here are that `root` is already canonicalised and all Windows installations have an upper root that can house multiple versioned Tamanu roots.
 	let upper_root = root
@@ -88,12 +83,12 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	}
 
 	if !new_root.exists() {
-		let url = make_url(kind, new_version.to_string())?;
+		let url = make_url(kind.into(), new_version.to_string())?;
 		download(url, upper_root).await?;
 	}
 
 	if !new_web_root.exists() {
-		let url = make_url(ServerKind::Web, new_version.to_string())?;
+		let url = make_url(ApiServerKind::Web, new_version.to_string())?;
 		download(url, upper_root).await?;
 	}
 
@@ -103,7 +98,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("failed to run yarn")?;
 
-	let config_path = ["packages", &package, "config", "local.json5"]
+	let config_path = ["packages", kind.package_name(), "config", "local.json5"]
 		.iter()
 		.collect::<PathBuf>();
 	let existing_config = existing_root.join(&config_path);
@@ -113,7 +108,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 
 	info!("checking the new version is runnable");
 	duct::cmd!("node", "dist", "help")
-		.dir(&new_root.join("packages").join(&package))
+		.dir(&new_root.join("packages").join(kind.package_name()))
 		.run()
 		.into_diagnostic()?;
 

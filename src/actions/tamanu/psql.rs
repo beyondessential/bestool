@@ -9,7 +9,7 @@ use crate::actions::Context;
 
 use super::{
 	config::{merge_json, package_config},
-	find_package, find_tamanu, TamanuArgs,
+	find_package, find_tamanu, ServerKind, TamanuArgs,
 };
 
 /// Connect to Tamanu's db via `psql`.
@@ -21,7 +21,7 @@ pub struct PsqlArgs {
 	/// look for an appropriate config. If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
 	#[arg(short, long)]
-	pub package: Option<String>,
+	pub kind: Option<ServerKind>,
 
 	/// Connect to postgres with a different username.
 	///
@@ -46,15 +46,15 @@ struct Db {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let package = match ctx.args_sub.package {
-		Some(package) => package,
+	let kind = match ctx.args_sub.kind {
+		Some(kind) => kind,
 		None => find_package(&root)?,
 	};
-	info!(?package, "using");
+	info!(?kind, "using");
 
 	let config_value = merge_json(
-		package_config(&root, &package, "default.json5")?,
-		package_config(&root, &package, "local.json5")?,
+		package_config(&root, kind.package_name(), "default.json5")?,
+		package_config(&root, kind.package_name(), "local.json5")?,
 	);
 
 	let config: Config = serde_json::from_value(config_value)

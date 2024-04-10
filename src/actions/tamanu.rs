@@ -1,11 +1,12 @@
 use std::{
 	fs,
 	path::{Path, PathBuf},
+	str::FromStr,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{miette, Context as _, IntoDiagnostic, Result};
+use miette::{bail, miette, Context as _, IntoDiagnostic, Result};
 use node_semver::Version;
 
 use super::Context;
@@ -51,6 +52,36 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 	}
 }
 
+/// What kind of server to interact with.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ServerKind {
+	/// Central server
+	Central,
+
+	/// Facility server
+	Facility,
+}
+
+impl ServerKind {
+	pub fn package_name(&self) -> &'static str {
+		match self {
+			Self::Central => "central-server",
+			Self::Facility => "facility-server",
+		}
+	}
+}
+
+impl FromStr for ServerKind {
+	type Err = miette::Error;
+	fn from_str(s: &str) -> Result<Self> {
+		match s {
+			"central-server" => Ok(Self::Central),
+			"facility-server" => Ok(Self::Facility),
+			_ => bail!("invalid server kind"),
+		}
+	}
+}
+
 pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
 	if let Some(root) = &args.root {
 		let version = roots::version_of_root(root)?
@@ -64,12 +95,12 @@ pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
 	}
 }
 
-pub fn find_package(root: impl AsRef<Path>) -> Result<String> {
+pub fn find_package(root: impl AsRef<Path>) -> Result<ServerKind> {
 	fs::read_dir(root.as_ref().join("packages"))
 		.into_diagnostic()?
 		.filter_map_ok(|e| e.file_name().into_string().ok())
 		.process_results(|mut iter| {
-			iter.find(|dir_name| dir_name == "central-server" || dir_name == "facility-server")
+			iter.find_map(|dir_name| dir_name.parse::<ServerKind>().ok())
 				.ok_or_else(|| miette!("Tamanu servers not found"))
 		})
 		.into_diagnostic()?
