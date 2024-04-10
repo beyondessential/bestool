@@ -115,7 +115,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	if has_non_deterministic_migrations(&existing_root, &new_root)? {
-		println!("Warning: the upgrade may contain (a) non-deterministic migration(s).");
+		warn!("The upgrade may contain non-deterministic migrations: check that's what you expect.");
 	}
 
 	Ok(())
