@@ -48,13 +48,6 @@ jobs:
           echo "Adding GNU tar to PATH"
           echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
 
-      # Avoids depending on vcruntime*.dll, which is not present in e.g. nanoserver
-      - if: runner.os == 'Windows'
-        name: Statically link crt
-        shell: bash
-        run: |
-          echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
-
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -117,6 +110,13 @@ jobs:
         run: |
           echo "Adding GNU tar to PATH"
           echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+
+      # Avoids depending on vcruntime*.dll, which is not present in e.g. nanoserver
+      - if: runner.os == 'Windows'
+        name: Statically link crt
+        shell: bash
+        run: |
+          echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
 
       - if: runner.os == 'Linux'
         run: sudo apt-get update
