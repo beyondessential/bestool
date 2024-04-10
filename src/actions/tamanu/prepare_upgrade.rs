@@ -9,17 +9,14 @@ use itertools::Itertools;
 use miette::{bail, IntoDiagnostic, Result, WrapErr};
 use node_semver::Version;
 use regex::Regex;
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::actions::{
-	tamanu::{
-		download::{download, make_url},
-		find_package,
-	},
-	Context,
+use crate::actions::Context;
+
+use super::{
+	download::{download, make_url, ServerKind},
+	find_existing_version, find_package, find_tamanu, TamanuArgs,
 };
-
-use super::{download::ServerKind, find_existing_version, find_tamanu, TamanuArgs};
 
 /// Perform pre-upgrade tasks.
 ///

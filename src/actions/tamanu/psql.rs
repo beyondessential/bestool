@@ -5,11 +5,12 @@ use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic, Result};
 use tracing::{debug, info, instrument};
 
-use crate::actions::tamanu::find_package;
 use crate::actions::Context;
 
-use super::config::{merge_json, package_config};
-use super::{find_tamanu, TamanuArgs};
+use super::{
+	config::{merge_json, package_config},
+	find_package, find_tamanu, TamanuArgs,
+};
 
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
