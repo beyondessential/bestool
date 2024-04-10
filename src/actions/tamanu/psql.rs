@@ -9,7 +9,7 @@ use crate::actions::Context;
 
 use super::{
 	config::{merge_json, package_config},
-	find_package, find_tamanu, ServerKind, TamanuArgs,
+	find_package, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
 /// Connect to Tamanu's db via `psql`.
@@ -21,7 +21,7 @@ pub struct PsqlArgs {
 	/// look for an appropriate config. If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
 	#[arg(short, long)]
-	pub kind: Option<ServerKind>,
+	pub kind: Option<ApiServerKind>,
 
 	/// Connect to postgres with a different username.
 	///

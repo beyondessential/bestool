@@ -54,7 +54,7 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 
 /// What kind of server to interact with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum ServerKind {
+pub enum ApiServerKind {
 	/// Central server
 	Central,
 
@@ -62,7 +62,7 @@ pub enum ServerKind {
 	Facility,
 }
 
-impl ServerKind {
+impl ApiServerKind {
 	pub fn package_name(&self) -> &'static str {
 		match self {
 			Self::Central => "central-server",
@@ -71,7 +71,7 @@ impl ServerKind {
 	}
 }
 
-impl FromStr for ServerKind {
+impl FromStr for ApiServerKind {
 	type Err = miette::Error;
 	fn from_str(s: &str) -> Result<Self> {
 		match s {
@@ -95,12 +95,12 @@ pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
 	}
 }
 
-pub fn find_package(root: impl AsRef<Path>) -> Result<ServerKind> {
+pub fn find_package(root: impl AsRef<Path>) -> Result<ApiServerKind> {
 	fs::read_dir(root.as_ref().join("packages"))
 		.into_diagnostic()?
 		.filter_map_ok(|e| e.file_name().into_string().ok())
 		.process_results(|mut iter| {
-			iter.find_map(|dir_name| dir_name.parse::<ServerKind>().ok())
+			iter.find_map(|dir_name| dir_name.parse::<ApiServerKind>().ok())
 				.ok_or_else(|| miette!("Tamanu servers not found"))
 		})
 		.into_diagnostic()?

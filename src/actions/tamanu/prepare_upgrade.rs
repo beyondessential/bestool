@@ -14,8 +14,8 @@ use tracing::{info, warn};
 use crate::actions::Context;
 
 use super::{
-	download::{download, make_url, ApiServerKind},
-	find_existing_version, find_package, find_tamanu, ServerKind, TamanuArgs,
+	download::{download, make_url, ServerKind},
+	find_existing_version, find_package, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
 /// Perform pre-upgrade tasks.
@@ -38,7 +38,7 @@ pub struct PrepareUpgradeArgs {
 	/// If both central and facility servers are present, it will error and you'll have to specify
 	/// this option.
 	#[arg(short, long)]
-	pub kind: Option<ServerKind>,
+	pub kind: Option<ApiServerKind>,
 
 	/// Force installing older Tamanu
 	#[arg(long)]
@@ -88,7 +88,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	}
 
 	if !new_web_root.exists() {
-		let url = make_url(ApiServerKind::Web, new_version.to_string())?;
+		let url = make_url(ServerKind::Web, new_version.to_string())?;
 		download(url, upper_root).await?;
 	}
 

@@ -13,14 +13,14 @@ use miette::{IntoDiagnostic, Result};
 
 use crate::actions::Context;
 
-use super::{ServerKind, TamanuArgs};
+use super::{ApiServerKind, TamanuArgs};
 
 /// Find Tamanu installations.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// What to download.
 	#[arg(value_name = "KIND")]
-	pub kind: ApiServerKind,
+	pub kind: ServerKind,
 
 	/// Version to download.
 	#[arg(value_name = "VERSION")]
@@ -39,7 +39,7 @@ pub struct DownloadArgs {
 
 /// What kind of server to download.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum ApiServerKind {
+pub enum ServerKind {
 	/// Central server
 	Central,
 
@@ -50,11 +50,11 @@ pub enum ApiServerKind {
 	Web,
 }
 
-impl From<ServerKind> for ApiServerKind {
-	fn from(value: ServerKind) -> Self {
+impl From<ApiServerKind> for ServerKind {
+	fn from(value: ApiServerKind) -> Self {
 		match value {
-			ServerKind::Central => Self::Central,
-			ServerKind::Facility => Self::Facility,
+			ApiServerKind::Central => Self::Central,
+			ApiServerKind::Facility => Self::Facility,
 		}
 	}
 }
@@ -77,15 +77,15 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 	download(url, into).await
 }
 
-pub fn make_url(kind: ApiServerKind, version: String) -> Result<Url> {
+pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
 	let url_string = format!(
 		"https://servers.ops.tamanu.io/{version}/{kind}-{version}{platform}.tar.zst",
 		kind = match kind {
-			ApiServerKind::Central => "central",
-			ApiServerKind::Facility => "facility",
-			ApiServerKind::Web => "web",
+			ServerKind::Central => "central",
+			ServerKind::Facility => "facility",
+			ServerKind::Web => "web",
 		},
-		platform = if kind == ApiServerKind::Web {
+		platform = if kind == ServerKind::Web {
 			""
 		} else {
 			"-windows"
