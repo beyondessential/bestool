@@ -67,7 +67,9 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	};
 
 	// Assumptions here are that `root` is already canonicalised and all Windows installations have an upper root that can house multiple versioned Tamanu roots.
-	let upper_root = root.parent().expect(r"the tamanu root isn't canonicalised, it's the root directory");
+	let upper_root = root
+		.parent()
+		.expect(r"the tamanu root isn't canonicalised, it's the root directory");
 	let existing_root = upper_root.join(format!("release-v{existing_version}"));
 	let new_root = upper_root.join(format!("release-v{new_version}"));
 	let new_web_root = upper_root.join(format!("tamanu-web-{new_version}"));
@@ -112,7 +114,9 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	if has_non_deterministic_migrations(&existing_root, &new_root)? {
-		warn!("The upgrade may contain non-deterministic migrations: check that's what you expect.");
+		warn!(
+			"The upgrade may contain non-deterministic migrations: check that's what you expect."
+		);
 	}
 
 	Ok(())
