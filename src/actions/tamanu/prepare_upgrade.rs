@@ -79,8 +79,12 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		bail!("version is too low, bestool doesn't support Tamanu <2.0.0");
 	}
 
-	if !force_downgrade && (new_version <= existing_version) {
-		bail!("the specified version is older than or equal to the installed version");
+	if new_version == existing_version {
+		bail!("version {new_version} is already installed");
+	}
+
+	if !force_downgrade && (new_version < existing_version) {
+		bail!("refusing to downgrade (from {existing_version} to {new_version}) without `--force-downgrade`");
 	}
 
 	if !new_root.exists() {
