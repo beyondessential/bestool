@@ -51,14 +51,14 @@ pub struct PrepareUpgradeArgs {
 pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	let PrepareUpgradeArgs {
 		version: new_version,
-		package: _,
+		package,
 		force_downgrade,
 	} = ctx.args_sub;
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let existing_version = find_existing_version()?;
 
-	let package = match ctx.args_sub.package {
+	let package = match package {
 		Some(package) => package,
 		None => find_package(&root)?,
 	};
