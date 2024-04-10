@@ -126,7 +126,7 @@ fn has_non_deterministic_migrations(
 	existing_root: impl AsRef<Path>,
 	new_root: impl AsRef<Path>,
 ) -> Result<bool> {
-	let re = Regex::new(r"NON_DETERMINISTIC += +true").unwrap();
+	let re = Regex::new(r"NON_DETERMINISTIC\s*=\s*true").unwrap();
 	let existing_migrations: HashSet<_> = fs::read_dir(
 		existing_root
 			.as_ref()
