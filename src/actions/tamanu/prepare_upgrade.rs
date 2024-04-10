@@ -77,7 +77,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 
 	let minimum_version = Version::parse("2.0.0").unwrap();
 	if existing_version < minimum_version || new_version < minimum_version {
-		bail!("`PreUpgrade-Tamanu` only support upgrading from/to versions from 2.0.0 onwards");
+		bail!("version is too low, bestool doesn't support Tamanu <2.0.0");
 	}
 
 	if !force_downgrade && (new_version <= existing_version) {
