@@ -69,20 +69,11 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		_ => bail!("package {package} not recognised"),
 	};
 
-	// FIXME: this may not support for Linux as directory structures are different
-	// `root` should have a parent.
-	let existing_root = root
-		.parent()
-		.unwrap()
-		.join(format!("release-v{existing_version}"));
-	let new_root = root
-		.parent()
-		.unwrap()
-		.join(format!("release-v{new_version}"));
-	let new_web_root = root
-		.parent()
-		.unwrap()
-		.join(format!("tamanu-web-{new_version}"));
+	// Assumptions here are that `root` is already canonicalised and all Windows installations have an upper root that can house multiple versioned Tamanu roots.
+	let upper_root = root.parent().expect(r"the tamanu root isn't canonicalised, it's the root directory");
+	let existing_root = upper_root.join(format!("release-v{existing_version}"));
+	let new_root = upper_root.join(format!("release-v{new_version}"));
+	let new_web_root = upper_root.join(format!("tamanu-web-{new_version}"));
 
 	let minimum_version = Version::parse("2.0.0").unwrap();
 	if existing_version < minimum_version || new_version < minimum_version {
@@ -95,14 +86,12 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 
 	if !new_root.exists() {
 		let url = make_url(kind, new_version.to_string())?;
-		// FIXME: this may not support for Linux as directory structures are different
-		download(url, root.parent().unwrap()).await?;
+		download(url, upper_root).await?;
 	}
 
 	if !new_web_root.exists() {
 		let url = make_url(ServerKind::Web, new_version.to_string())?;
-		// FIXME: this may not support for Linux as directory structures are different
-		download(url, root.parent().unwrap()).await?;
+		download(url, upper_root).await?;
 	}
 
 	duct::cmd!("pwsh", "-Command", "yarn")
