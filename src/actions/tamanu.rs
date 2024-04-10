@@ -1,12 +1,11 @@
 use std::{
 	fs,
 	path::{Path, PathBuf},
-	str::FromStr,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{bail, miette, Context as _, IntoDiagnostic, Result};
+use miette::{miette, Context as _, IntoDiagnostic, Result};
 use node_semver::Version;
 
 use super::Context;
@@ -56,9 +55,11 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ApiServerKind {
 	/// Central server
+	#[value(alias("central-server"))]
 	Central,
 
 	/// Facility server
+	#[value(alias("facility-server"))]
 	Facility,
 }
 
@@ -67,17 +68,6 @@ impl ApiServerKind {
 		match self {
 			Self::Central => "central-server",
 			Self::Facility => "facility-server",
-		}
-	}
-}
-
-impl FromStr for ApiServerKind {
-	type Err = miette::Error;
-	fn from_str(s: &str) -> Result<Self> {
-		match s {
-			"central-server" => Ok(Self::Central),
-			"facility-server" => Ok(Self::Facility),
-			_ => bail!("invalid server kind"),
 		}
 	}
 }
@@ -100,7 +90,7 @@ pub fn find_package(root: impl AsRef<Path>) -> Result<ApiServerKind> {
 		.into_diagnostic()?
 		.filter_map_ok(|e| e.file_name().into_string().ok())
 		.process_results(|mut iter| {
-			iter.find_map(|dir_name| dir_name.parse::<ApiServerKind>().ok())
+			iter.find_map(|dir_name| ApiServerKind::from_str(&dir_name, false).ok())
 				.ok_or_else(|| miette!("Tamanu servers not found"))
 		})
 		.into_diagnostic()?
