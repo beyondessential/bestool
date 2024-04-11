@@ -130,7 +130,7 @@ pub async fn add_key(ctx: Context<SshArgs, AddKeyArgs>) -> Result<()> {
 		return Ok(());
 	}
 
-	if !data.ends_with('\n') {
+	if !data.ends_with('\n') && !data.is_empty() {
 		data.push('\n');
 	}
 
