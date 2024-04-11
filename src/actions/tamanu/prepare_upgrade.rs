@@ -18,6 +18,8 @@ use super::{
 	find_existing_version, find_package, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
+pub const UPGRADED_SIGNAL_NAME: &str = ".bestool_upgraded";
+
 /// Perform pre-upgrade tasks.
 ///
 /// This will not incur downtime.
@@ -117,6 +119,8 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 			"The upgrade may contain non-deterministic migrations: check that's what you expect."
 		);
 	}
+
+	fs::File::create(new_root.join(UPGRADED_SIGNAL_NAME)).into_diagnostic()?;
 
 	Ok(())
 }
