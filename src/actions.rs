@@ -22,6 +22,8 @@ pub mod dyndns;
 pub mod eink;
 #[cfg(feature = "self-update")]
 pub mod self_update;
+#[cfg(feature = "ssh")]
+pub mod ssh;
 #[cfg(feature = "tamanu")]
 pub mod tamanu;
 #[cfg(feature = "upload")]
@@ -45,6 +47,8 @@ pub enum Action {
 	Eink(eink::EinkArgs),
 	#[cfg(feature = "self-update")]
 	SelfUpdate(self_update::SelfUpdateArgs),
+	#[cfg(feature = "ssh")]
+	Ssh(ssh::SshArgs),
 	#[cfg(feature = "tamanu")]
 	Tamanu(tamanu::TamanuArgs),
 	#[cfg(feature = "upload")]
@@ -73,6 +77,8 @@ pub async fn run() -> Result<()> {
 		(Action::Eink(args), ctx) => eink::run(ctx.with_top(args)).await,
 		#[cfg(feature = "self-update")]
 		(Action::SelfUpdate(args), ctx) => self_update::run(ctx.with_top(args)).await,
+		#[cfg(feature = "ssh")]
+		(Action::Ssh(args), ctx) => ssh::run(ctx.with_top(args)).await,
 		#[cfg(feature = "tamanu")]
 		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
 		#[cfg(feature = "upload")]
