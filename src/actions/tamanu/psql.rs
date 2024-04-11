@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::path::Path;
 use std::{fs, path::PathBuf};
 
 use clap::Parser;
@@ -8,8 +7,10 @@ use tracing::{debug, info, instrument};
 
 use crate::actions::Context;
 
-use super::config::{merge_json, package_config};
-use super::{find_tamanu, TamanuArgs};
+use super::{
+	config::{merge_json, package_config},
+	find_package, find_tamanu, ApiServerKind, TamanuArgs,
+};
 
 /// Connect to Tamanu's db via `psql`.
 #[derive(Debug, Clone, Parser)]
@@ -20,7 +21,7 @@ pub struct PsqlArgs {
 	/// look for an appropriate config. If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
 	#[arg(short, long)]
-	pub package: Option<String>,
+	pub kind: Option<ApiServerKind>,
 
 	/// Connect to postgres with a different username.
 	///
@@ -45,15 +46,15 @@ struct Db {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let package = match ctx.args_sub.package {
-		Some(package) => package,
+	let kind = match ctx.args_sub.kind {
+		Some(kind) => kind,
 		None => find_package(&root)?,
 	};
-	info!(?package, "using");
+	info!(?kind, "using");
 
 	let config_value = merge_json(
-		package_config(&root, &package, "default.json5")?,
-		package_config(&root, &package, "local.json5")?,
+		package_config(&root, kind.package_name(), "default.json5")?,
+		package_config(&root, kind.package_name(), "local.json5")?,
 	);
 
 	let config: Config = serde_json::from_value(config_value)
@@ -85,19 +86,6 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		.wrap_err("failed to execute psql")?;
 
 	Ok(())
-}
-
-fn find_package(root: impl AsRef<Path>) -> Result<String> {
-	fs::read_dir(root.as_ref().join("packages"))
-		.into_diagnostic()?
-		.filter_map(|res| res.map(|d| d.file_name().into_string().ok()).transpose())
-		.find(|res| {
-			res.as_ref()
-				.map(|dir_name| dir_name == "central-server" || dir_name == "facility-server")
-				.unwrap_or(true)
-		})
-		.ok_or_else(|| miette!("Tamanu servers not found"))?
-		.into_diagnostic()
 }
 
 #[instrument(level = "debug")]
