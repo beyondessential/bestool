@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 rust-version = "1.76.0"
 
@@ -14,8 +14,8 @@ repository = "https://github.com/beyondessential/bestool"
 [dependencies]
 aws-config = { version = "1.1.9", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
-aws-sdk-route53 = { version = "1.16.0", optional = true }
-aws-sdk-s3 = { version = "1.17.0", optional = true }
+aws-sdk-route53 = { version = "1.19.0", optional = true }
+aws-sdk-s3 = { version = "1.21.0", optional = true }
 aws-sdk-sts = { version = "1.15.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"] }
 binstalk-downloader = { version = "0.10.0", optional = true }
@@ -24,8 +24,8 @@ bitvec = { version = "1.0.1", optional = true }
 blake3 = "1.5.1"
 boxcar = "0.2.4"
 bytes = "1.6.0"
-chrono = "0.4.35"
-clap = { version = "4.5.2", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
+chrono = "0.4.37"
+clap = { version = "4.5.4", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 detect-targets = { version = "0.1.15", optional = true }
