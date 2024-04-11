@@ -1,7 +1,7 @@
 use std::{
 	iter,
 	num::{NonZeroU16, NonZeroU64},
-	path::PathBuf,
+	path::{Path, PathBuf},
 };
 
 use binstalk_downloader::{
@@ -13,7 +13,7 @@ use miette::{IntoDiagnostic, Result};
 
 use crate::actions::Context;
 
-use super::TamanuArgs;
+use super::{ApiServerKind, TamanuArgs};
 
 /// Find Tamanu installations.
 #[derive(Debug, Clone, Parser)]
@@ -50,6 +50,15 @@ pub enum ServerKind {
 	Web,
 }
 
+impl From<ApiServerKind> for ServerKind {
+	fn from(value: ApiServerKind) -> Self {
+		match value {
+			ApiServerKind::Central => Self::Central,
+			ApiServerKind::Facility => Self::Facility,
+		}
+	}
+}
+
 pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 	let DownloadArgs {
 		kind,
@@ -58,7 +67,18 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		url_only,
 	} = ctx.args_sub;
 
-	let url = format!(
+	let url = make_url(kind, version)?;
+
+	if url_only {
+		println!("{}", url);
+		return Ok(());
+	}
+
+	download(url, into).await
+}
+
+pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
+	let url_string = format!(
 		"https://servers.ops.tamanu.io/{version}/{kind}-{version}{platform}.tar.zst",
 		kind = match kind {
 			ServerKind::Central => "central",
@@ -72,11 +92,10 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		},
 	);
 
-	if url_only {
-		println!("{}", url);
-		return Ok(());
-	}
+	Url::parse(&url_string).into_diagnostic()
+}
 
+pub async fn download(url: Url, into: impl AsRef<Path>) -> Result<()> {
 	let client = Client::new(
 		crate::APP_NAME,
 		None,
@@ -85,7 +104,7 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		iter::empty(),
 	)
 	.into_diagnostic()?;
-	let download = Download::new(client, Url::parse(&url).into_diagnostic()?);
+	let download = Download::new(client, url);
 	download
 		.and_extract(PkgFmt::Tzstd, into)
 		.await

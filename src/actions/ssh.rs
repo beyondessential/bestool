@@ -149,7 +149,7 @@ pub async fn add_key(ctx: Context<SshArgs, AddKeyArgs>) -> Result<()> {
 	file.seek(SeekFrom::Start(0)).await.into_diagnostic()?;
 	file.set_len(0).await.into_diagnostic()?;
 	file.write_all(data.as_bytes()).await.into_diagnostic()?;
-	info!(bytes=data.as_bytes().len(), "wrote new file");
+	info!(bytes = data.as_bytes().len(), "wrote new file");
 
 	debug!("unlock file");
 	file.unlock().into_diagnostic()?;
