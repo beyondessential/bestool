@@ -94,7 +94,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		download(url, upper_root).await?;
 	}
 
-	duct::cmd!("yarn", "--prod")
+	duct::cmd!("cmd", "/C", "yarn", "--prod")
 		.dir(&new_root)
 		.run()
 		.into_diagnostic()
