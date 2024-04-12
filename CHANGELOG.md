@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.12.2](https://github.com/beyondessential/bestool/compare/v0.12.1..0.12.2) - 2024-04-12
+## [0.12.2](https://github.com/beyondessential/bestool/compare/v0.12.1..v0.12.2) - 2024-04-12
 
 
 - **Bugfix:** Run pm2 with cmd - ([76aa4dd](https://github.com/beyondessential/bestool/commit/76aa4ddc7355396c4e40c0ccf160ea85e37724e7))
