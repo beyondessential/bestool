@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.11.0](https://github.com/beyondessential/bestool/compare/v0.10.1..0.11.0) - 2024-04-12
+
+
+- **Deps:** Bump clap from 4.5.3 to 4.5.4 (#34) - ([5978537](https://github.com/beyondessential/bestool/commit/5978537ae46f9d216f421fd055e384c131b0e264))
+- **Deps:** Bump aws-sdk-route53 from 1.18.0 to 1.19.0 (#37) - ([f4efe59](https://github.com/beyondessential/bestool/commit/f4efe590bd2ab721d92a1c758ac1179506241cd5))
+- **Deps:** Bump aws-sdk-s3 from 1.20.0 to 1.21.0 (#35) - ([a9bed49](https://github.com/beyondessential/bestool/commit/a9bed49318df81cadae1ccd950ca0b3a3807767b))
+- **Deps:** Bump chrono from 0.4.35 to 0.4.37 (#36) - ([36f42fd](https://github.com/beyondessential/bestool/commit/36f42fd37c9efbca66bd8863cdb58ff437c7c066))
+- **Deps:** Bump h2 from 0.3.25 to 0.3.26 (#41) - ([8053f5c](https://github.com/beyondessential/bestool/commit/8053f5cc753ab94742bce663a43a8faedae150ee))
+
+### Ssh
+
+- **Feature:** Add add-key command (#39) - ([761d0f4](https://github.com/beyondessential/bestool/commit/761d0f473e96fa01ed0a622e61c00c6b0cf559d7))
+
+### Tamanu
+
+- **Feature:** KAM-197: add prepare-upgrade (#38) - ([015439d](https://github.com/beyondessential/bestool/commit/015439d29d9326e9cd1f4f3a3aa6a067b488e3d5))
+
+---
 ## [0.10.0](https://github.com/beyondessential/bestool/compare/v0.9.1..v0.10.0) - 2024-04-04
 
 
