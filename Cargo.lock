@@ -891,6 +891,7 @@ dependencies = [
  "node-semver",
  "passcod-networkmanager",
  "regex",
+ "reqwest",
  "rppal",
  "rust-fontconfig",
  "secrecy",

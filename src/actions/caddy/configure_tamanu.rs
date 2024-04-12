@@ -19,7 +19,7 @@ fn test_caddyfile_template() {
 		.unwrap();
 }
 
-const DEFAULT_CADDYFILE_PATH: &str = if cfg!(windows) {
+pub const DEFAULT_CADDYFILE_PATH: &str = if cfg!(windows) {
 	r"C:\Caddy\Caddyfile"
 } else {
 	"/etc/caddy/Caddyfile"
