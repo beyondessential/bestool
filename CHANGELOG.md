@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.12.0](https://github.com/beyondessential/bestool/compare/v0.11.0..0.12.0) - 2024-04-12
+## [0.12.1](https://github.com/beyondessential/bestool/compare/v0.12.0..0.12.1) - 2024-04-12
+
+
+
+### Tamanu
+
+- **Bugfix:** Run pm2 directly - ([aa33ff4](https://github.com/beyondessential/bestool/commit/aa33ff483cbc12be68ff86485078889ca8af4418))
+
+---
+## [0.12.0](https://github.com/beyondessential/bestool/compare/v0.11.0..v0.12.0) - 2024-04-12
 
 
 
