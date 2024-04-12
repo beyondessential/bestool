@@ -77,7 +77,7 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 		re.replace_all(&old_caddyfile, format!(r#"C:\tamanu\tamanu-web-{version}"#));
 	fs::write(&caddyfile_path, new_caddyfile.as_bytes()).into_diagnostic()?;
 
-	// Caddy reccomend against using config files and the API at the same time.
+	// Caddy recommends against using config files and the API at the same time.
 	// This uses the API anyways because this is only a temporary change.
 	// See also https://caddyserver.com/docs/getting-started#api-vs-config-files
 	info!("switch Caddy to upgrading mode");
