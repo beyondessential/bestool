@@ -17,6 +17,8 @@ pub mod find;
 pub mod prepare_upgrade;
 pub mod psql;
 pub mod roots;
+#[cfg(windows)]
+pub mod upgrade;
 
 /// Interact with Tamanu.
 #[derive(Debug, Clone, Parser)]
@@ -38,6 +40,8 @@ pub enum TamanuAction {
 	#[cfg(windows)]
 	PrepareUpgrade(prepare_upgrade::PrepareUpgradeArgs),
 	Psql(psql::PsqlArgs),
+	#[cfg(windows)]
+	Upgrade(upgrade::UpgradeArgs),
 }
 
 pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
@@ -48,6 +52,8 @@ pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 		#[cfg(windows)]
 		TamanuAction::PrepareUpgrade(subargs) => prepare_upgrade::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Psql(subargs) => psql::run(ctx.with_sub(subargs)).await,
+		#[cfg(windows)]
+		TamanuAction::Upgrade(subargs) => upgrade::run(ctx.with_sub(subargs)).await,
 	}
 }
 
