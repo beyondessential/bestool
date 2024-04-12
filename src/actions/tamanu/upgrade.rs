@@ -94,7 +94,7 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 		.into_diagnostic()?;
 	let caddyjson = caddyjson
 		.get("result")
-		.ok_or_else(|| miette!("unexpected responce body from Caddy API"))?;
+		.ok_or_else(|| miette!("unexpected response body from Caddy API"))?;
 
 	let mut caddyjson_upgrading = caddyjson.clone();
 	caddyjson_upgrading
