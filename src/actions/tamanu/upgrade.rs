@@ -135,7 +135,7 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()?;
 
-	duct::cmd!("pm2", "delete", "all")
+	duct::cmd!("cmd", "/C", "pm2", "delete", "all")
 		.run()
 		.into_diagnostic()
 		.wrap_err("failed to run pm2")?;
@@ -147,7 +147,7 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	info!("starting the server");
-	duct::cmd!("pm2", "start", "pm2.config.cjs")
+	duct::cmd!("cmd", "/C", "pm2", "start", "pm2.config.cjs")
 		.dir(&new_root)
 		.run()
 		.into_diagnostic()
@@ -165,11 +165,11 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 		.wrap_err("the Tamanu server failed to correctly startup")?;
 	info!(?healthcheck_response);
 
-	duct::cmd!("pm2", "logs", "--nostream")
+	duct::cmd!("cmd", "/C", "pm2", "logs", "--nostream")
 		.run()
 		.into_diagnostic()?;
 
-	duct::cmd!("pm2", "save")
+	duct::cmd!("cmd", "/C", "pm2", "save")
 		.run()
 		.into_diagnostic()
 		.wrap_err("failed to run pm2")?;

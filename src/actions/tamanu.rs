@@ -117,7 +117,7 @@ pub fn find_existing_version() -> Result<Version> {
 		version: Version,
 	}
 
-	let reader = duct::cmd!("pm2", "jlist")
+	let reader = duct::cmd!("cmd", "/C", "pm2", "jlist")
 		.reader()
 		.into_diagnostic()
 		.wrap_err("failed to run pm2")?;
