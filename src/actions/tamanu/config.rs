@@ -102,7 +102,10 @@ pub fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_js
 }
 
 #[instrument(level = "debug")]
-pub fn merge_json(mut base: serde_json::Value, mut overlay: serde_json::Value) -> serde_json::Value {
+pub fn merge_json(
+	mut base: serde_json::Value,
+	mut overlay: serde_json::Value,
+) -> serde_json::Value {
 	if let (Some(base), Some(overlay)) = (base.as_object_mut(), overlay.as_object_mut()) {
 		for (key, value) in overlay {
 			if let Some(base_value) = base.get_mut(key) {

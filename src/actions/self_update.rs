@@ -11,7 +11,7 @@ use binstalk_downloader::{
 	remote::{Client, Url},
 };
 use detect_targets::{get_desired_targets, TARGET};
-use miette::{IntoDiagnostic, miette, Result};
+use miette::{miette, IntoDiagnostic, Result};
 use tracing::info;
 
 use super::Context;
@@ -78,6 +78,7 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	info!(?dest, "downloaded, self-upgrading");
-	upgrade::run_upgrade(&dest, true, &vec!["--version"]).map_err(|err| miette!("upgrade: {err:?}"))?;
+	upgrade::run_upgrade(&dest, true, &vec!["--version"])
+		.map_err(|err| miette!("upgrade: {err:?}"))?;
 	Ok(())
 }

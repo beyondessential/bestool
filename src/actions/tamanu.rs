@@ -5,7 +5,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{miette, Context as _, IntoDiagnostic, Result};
+use miette::{miette, IntoDiagnostic, Result};
 use node_semver::Version;
 
 use super::Context;
@@ -98,6 +98,8 @@ pub fn find_package(root: impl AsRef<Path>) -> Result<ApiServerKind> {
 
 #[cfg(windows)]
 pub fn find_existing_version() -> Result<Version> {
+	use miette::WrapErr;
+
 	#[derive(serde::Deserialize, Debug)]
 	struct Process {
 		name: String,
