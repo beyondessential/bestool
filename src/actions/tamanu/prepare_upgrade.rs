@@ -18,7 +18,7 @@ use super::{
 	find_existing_version, find_package, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
-pub const UPGRADED_SIGNAL_NAME: &str = ".bestool_upgraded";
+pub const UPGRADED_SIGNAL_NAME: &str = ".bestool_preupgraded";
 
 /// Perform pre-upgrade tasks.
 ///
