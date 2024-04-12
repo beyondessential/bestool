@@ -16,12 +16,10 @@ use super::{
 ///
 /// This will incur downtime.
 ///
-/// This command will detect which server is installed (Facility or Central) and which version is
-/// currently running, then download the desired newer version, unpack it, copy config across,
-/// install dependencies, and perform readiness checks.
-/// This command will checks if ready to upgrade, updates caddy configuration to new web folder,
-/// switches caddy to upgrade mode (always return 526 code for external connections),
-/// take down running API servers, run migrations, start new API servers, does healthcheck, switch caddy back to normal mode
+/// `bestool tamanu pre-upgrade` must be run before this command.
+///
+/// This command will switch the server to upgrade mode, take down API servers, migrate the database,
+/// start new API servers, upgrade the frontend, healthcheck, and finally switch out of upgrade mode.
 #[derive(Debug, Clone, Parser)]
 pub struct UpgradeArgs {
 	/// Version to update to.
