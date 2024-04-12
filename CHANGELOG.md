@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.11.0](https://github.com/beyondessential/bestool/compare/v0.10.1..0.11.0) - 2024-04-12
+## [0.12.0](https://github.com/beyondessential/bestool/compare/v0.11.0..0.12.0) - 2024-04-12
+
+
+
+### Tamanu
+
+- **Feature:** KAM-198: add `upgrade` command (#40) - ([495bca8](https://github.com/beyondessential/bestool/commit/495bca8031634d2ab8410b9944790aed452a8314))
+
+---
+## [0.11.0](https://github.com/beyondessential/bestool/compare/v0.10.1..v0.11.0) - 2024-04-12
 
 
 - **Deps:** Bump clap from 4.5.3 to 4.5.4 (#34) - ([5978537](https://github.com/beyondessential/bestool/commit/5978537ae46f9d216f421fd055e384c131b0e264))
