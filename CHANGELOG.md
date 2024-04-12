@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.12.4](https://github.com/beyondessential/bestool/compare/v0.12.3..0.12.4) - 2024-04-12
+
+
+- **Bugfix:** Run yarn with cmd - ([3e292ef](https://github.com/beyondessential/bestool/commit/3e292ef4d5c5f396db636356befa455dc1e33a8f))
+
+---
 ## [0.12.2](https://github.com/beyondessential/bestool/compare/v0.12.1..v0.12.2) - 2024-04-12
 
 
