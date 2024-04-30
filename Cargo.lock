@@ -5241,11 +5241,10 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "upgrade"
-version = "1.1.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3e2c2f2070505a0ef4324aba39ced8d228079de14401275eb019b72f48686bf"
+checksum = "8eaacda03a70eac4c3026c3fbfebb808ac87ad3732e5bb016c8e1d8098a79e16"
 dependencies = [
- "anyhow",
  "reportme",
  "self-replace",
 ]

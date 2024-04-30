@@ -63,7 +63,7 @@ thiserror = "1.0.59"
 tokio = { version = "1.37.0", features = ["full"] }
 tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
-upgrade = { version = "1.1.1", optional = true }
+upgrade = { version = "2.0.0", optional = true }
 walkdir = "2.5.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
