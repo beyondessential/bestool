@@ -1,8 +1,11 @@
-use std::{env::var, fs::File, sync::Mutex};
+use std::{
+	env::var,
+	fs::{metadata, File},
+	sync::Mutex,
+};
 
 use clap::Subcommand;
 use miette::{IntoDiagnostic, Result};
-use tokio::fs::metadata;
 use tracing::{debug, trace, warn};
 
 use crate::args::ColourMode;
@@ -10,87 +13,72 @@ use crate::args::ColourMode;
 pub use context::Context;
 pub mod context;
 
-#[cfg(feature = "caddy")]
-pub mod caddy;
-#[cfg(feature = "completions")]
-pub mod completions;
-#[cfg(feature = "crypto")]
-pub mod crypto;
-#[cfg(feature = "dyndns")]
-pub mod dyndns;
-#[cfg(feature = "eink")]
-pub mod eink;
-#[cfg(feature = "self-update")]
-pub mod self_update;
-#[cfg(feature = "ssh")]
-pub mod ssh;
-#[cfg(feature = "tamanu")]
-pub mod tamanu;
-#[cfg(feature = "upload")]
-pub mod upload;
-#[cfg(feature = "walg")]
-pub mod walg;
-#[cfg(all(target_os = "linux", feature = "wifisetup"))]
-pub mod wifisetup;
+#[macro_export]
+macro_rules! subcommands {
+	(
+		[$argtype:ty => $ctxcode:block]
+		$(
+			#[$meta:meta]
+			$modname:ident => $enumname:ident($argname:ident)
+		),+
+	) => {
+		$(
+			#[$meta]
+			pub mod $modname;
+		)*
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum Action {
+		#[derive(Debug, Clone, Subcommand)]
+		pub enum Action {
+			$(
+				#[$meta]
+				$enumname($modname::$argname),
+			)*
+		}
+
+		pub async fn run(ctx: $argtype) -> Result<()> {
+			let ctxfn = $ctxcode;
+			match ctxfn(ctx)? {
+				$(
+					#[$meta]
+					(Action::$enumname(args), ctx) => $modname::run(ctx.with_top(args)).await,
+				)*
+			}
+		}
+	};
+}
+pub(crate) use subcommands;
+
+subcommands! {
+	[() => {|_ctx: ()| -> Result<(Action, Context<()>)> {
+		let ctx = init()?;
+		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
+		trace!(?ctx, "context");
+		Ok(ctx.take_top())
+	}}]
+
 	#[cfg(feature = "caddy")]
-	Caddy(caddy::CaddyArgs),
+	caddy => Caddy(CaddyArgs),
 	#[cfg(feature = "completions")]
-	Completions(completions::CompletionsArgs),
-	#[cfg(feature = "dyndns")]
-	Dyndns(dyndns::DyndnsArgs),
+	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
-	Crypto(crypto::CryptoArgs),
-	#[cfg(feature = "eink")]
-	Eink(eink::EinkArgs),
+	crypto => Crypto(CryptoArgs),
+	#[cfg(feature = "dyndns")]
+	dyndns => Dyndns(DyndnsArgs),
+	#[cfg(feature = "__iti")]
+	iti => Iti(ItiArgs),
 	#[cfg(feature = "self-update")]
-	SelfUpdate(self_update::SelfUpdateArgs),
+	self_update => SelfUpdate(SelfUpdateArgs),
 	#[cfg(feature = "ssh")]
-	Ssh(ssh::SshArgs),
+	ssh => Ssh(SshArgs),
 	#[cfg(feature = "tamanu")]
-	Tamanu(tamanu::TamanuArgs),
+	tamanu => Tamanu(TamanuArgs),
 	#[cfg(feature = "upload")]
-	Upload(upload::UploadArgs),
+	upload => Upload(UploadArgs),
 	#[cfg(feature = "walg")]
-	WalG(walg::WalgArgs),
-	#[cfg(all(target_os = "linux", feature = "wifisetup"))]
-	Wifisetup(wifisetup::WifisetupArgs),
+	walg => WalG(WalgArgs)
 }
 
-pub async fn run() -> Result<()> {
-	let ctx = init().await?;
-	debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
-	trace!(?ctx, "context");
-
-	match ctx.take_top() {
-		#[cfg(feature = "caddy")]
-		(Action::Caddy(args), ctx) => caddy::run(ctx.with_top(args)).await,
-		#[cfg(feature = "completions")]
-		(Action::Completions(args), ctx) => completions::run(ctx.with_top(args)).await,
-		#[cfg(feature = "dyndns")]
-		(Action::Dyndns(args), ctx) => dyndns::run(ctx.with_top(args)).await,
-		#[cfg(feature = "crypto")]
-		(Action::Crypto(args), ctx) => crypto::run(ctx.with_top(args)).await,
-		#[cfg(feature = "eink")]
-		(Action::Eink(args), ctx) => eink::run(ctx.with_top(args)).await,
-		#[cfg(feature = "self-update")]
-		(Action::SelfUpdate(args), ctx) => self_update::run(ctx.with_top(args)).await,
-		#[cfg(feature = "ssh")]
-		(Action::Ssh(args), ctx) => ssh::run(ctx.with_top(args)).await,
-		#[cfg(feature = "tamanu")]
-		(Action::Tamanu(args), ctx) => tamanu::run(ctx.with_top(args)).await,
-		#[cfg(feature = "upload")]
-		(Action::Upload(args), ctx) => upload::run(ctx.with_top(args)).await,
-		#[cfg(feature = "walg")]
-		(Action::WalG(args), ctx) => walg::run(ctx.with_top(args)).await,
-		#[cfg(all(target_os = "linux", feature = "wifisetup"))]
-		(Action::Wifisetup(args), ctx) => wifisetup::run(ctx.with_top(args)).await,
-	}
-}
-
-async fn init() -> Result<Context<Action>> {
+fn init() -> Result<Context<Action>> {
 	let ctx = Context::new();
 
 	let mut log_on = false;
@@ -115,7 +103,7 @@ async fn init() -> Result<Context<Action>> {
 		warn!("ignoring logging options from args");
 	} else {
 		let log_file = if let Some(file) = &args.log_file {
-			let is_dir = metadata(&file).await.map_or(false, |info| info.is_dir());
+			let is_dir = metadata(&file).map_or(false, |info| info.is_dir());
 			let path = if is_dir {
 				let filename = format!(
 					"bestool.{}.log",

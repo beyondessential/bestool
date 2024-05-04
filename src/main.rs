@@ -6,5 +6,5 @@ fn main() -> miette::Result<()> {
 		.enable_all()
 		.build()
 		.unwrap()
-		.block_on(async { bestool::run().await })
+		.block_on(async { bestool::run(()).await })
 }
