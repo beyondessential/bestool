@@ -18,6 +18,8 @@ super::subcommands! {
 
 	#[cfg(feature = "iti-eink")]
 	eink => Eink(EinkArgs),
+	#[cfg(feature = "iti-lcd")]
+	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-wifisetup")]
 	wifisetup => WifiSetup(WifisetupArgs)
 }
