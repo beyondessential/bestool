@@ -41,7 +41,7 @@ pub struct LcdArgs {
 	pub ce: u8,
 
 	/// SPI frequency in Hz.
-	#[arg(long, default_value = "10000000")]
+	#[arg(long, default_value = "20000000")]
 	pub frequency: u32,
 
 	/// Red channel for the solid color.
@@ -58,6 +58,7 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 	let LcdArgs { red, green, blue, .. } = ctx.args_top;
 	let mut lcd = io::LcdIo::new(&ctx.args_top)?;
 	lcd.init()?;
+	lcd.probe_buffer_length()?;
 
 	let mut image = lcd.image();
 	image.solid(Rgb565::new(red, green, blue));

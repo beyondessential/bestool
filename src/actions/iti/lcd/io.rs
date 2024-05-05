@@ -31,6 +31,7 @@ pub struct LcdIo {
 	reset: OutputPin,
 	width: u16,
 	height: u16,
+	buffer: Vec<u8>,
 }
 
 impl LcdIo {
@@ -74,6 +75,7 @@ impl LcdIo {
 			reset,
 			width: 300,
 			height: 240,
+			buffer: Vec::with_capacity(4092),
 		})
 	}
 
@@ -239,14 +241,94 @@ impl LcdIo {
 		Ok(())
 	}
 
+	/// Probe how many bytes we can send at once.
+	pub fn probe_buffer_length(&mut self) -> Result<(), LcdIoError> {
+		self.flush_buffer()?;
+
+		let mut n = 2048;
+
+		// increase exponentially until we hit the limit
+		loop {
+			let data = vec![0; n];
+			let result = self.write_data(&data);
+			self.command(Command::Nop)?;
+			n *= 2;
+			match result {
+				Ok(_) => {}
+				Err(LcdIoError::Spi(rppal::spi::Error::Io(_))) => {
+					break;
+				}
+				Err(e) => {
+					return Err(e);
+				}
+			}
+		}
+
+		// decrease linearly until we can send again
+		loop {
+			n -= 64;
+			let data = vec![0; n];
+			let result = self.write_data(&data);
+			self.command(Command::Nop)?;
+			match result {
+				Ok(_) => {
+					break;
+				}
+				Err(LcdIoError::Spi(rppal::spi::Error::Io(_))) => {
+					continue;
+				}
+				Err(e) => {
+					return Err(e);
+				}
+			}
+		}
+
+		tracing::debug!(n, "probed max usable spi buffer length");
+		self.buffer = Vec::with_capacity(n);
+		Ok(())
+	}
+
+	pub fn clear_buffer(&mut self) {
+		self.buffer.clear();
+	}
+
+	pub fn flush_buffer(&mut self) -> Result<(), LcdIoError> {
+		if self.buffer.is_empty() {
+			return Ok(());
+		}
+
+		let new = Vec::with_capacity(self.buffer.capacity());
+		let buf = std::mem::replace(&mut self.buffer, new);
+		self.write_data(&buf)?;
+		Ok(())
+	}
+
+	pub fn write_data_buffered(&mut self, bytes: &[u8]) -> Result<(), LcdIoError> {
+		let remaining = self.buffer.capacity() - self.buffer.len();
+		if bytes.len() > remaining {
+			self.flush_buffer()?;
+		}
+
+		for chunk in bytes.chunks(self.buffer.capacity()) {
+			self.buffer.extend_from_slice(chunk);
+			if self.buffer.len() == self.buffer.capacity() {
+				self.flush_buffer()?;
+			}
+		}
+
+		Ok(())
+	}
+
 	/// Write an image to the screen.
 	#[instrument(level = "trace", skip(self))]
 	pub fn print(&mut self, image: &SimpleImage) -> Result<(), LcdIoError> {
 		self.set_window((0, 0), (image.width, image.height))?;
 		self.command(Command::MemoryWrite)?;
+		self.clear_buffer();
 		for line in &image.data().chunks((image.width as usize) * 2) {
-			self.write_data(&line.collect::<Vec<u8>>())?;
+			self.write_data_buffered(&line.collect::<Vec<u8>>())?;
 		}
+		self.flush_buffer()?;
 		self.command(Command::Nop)?;
 		Ok(())
 	}
