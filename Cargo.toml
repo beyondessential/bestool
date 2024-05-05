@@ -31,6 +31,7 @@ clap_complete_nushell = { version = "4.5.1", optional = true }
 detect-targets = { version = "0.1.15", optional = true }
 dirs = "5.0.1"
 duct = "0.13.7"
+embedded-graphics = { version = "0.8.1", optional = true }
 enable-ansi-support = "0.2.1"
 fontdue = { version = "0.8.0", optional = true }
 fs4 = { version = "0.8.2", features = ["tokio"], optional = true }
@@ -99,7 +100,7 @@ walg = ["download"]
 ## Iti subcommands
 __iti = []
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:bitflags", "dep:rppal"]
+iti-lcd = ["__iti", "dep:bitflags", "dep:embedded-graphics", "dep:rppal"]
 iti-wifisetup = ["__iti", "dep:networkmanager"]
 
 [profile.release]
