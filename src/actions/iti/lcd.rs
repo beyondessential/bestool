@@ -64,5 +64,15 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 	image.solid(Rgb565::new(red, green, blue));
 	lcd.print(&image)?;
 
+	use embedded_graphics::{
+		mono_font::{ascii::FONT_10X20, MonoTextStyle},
+		pixelcolor::Rgb565,
+		prelude::*,
+		text::Text,
+	};
+
+	let style = MonoTextStyle::new(&FONT_10X20, Rgb565::BLACK);
+	Text::new("Hello Rust!", Point::new(50, 50), style).draw(&mut lcd)?;
+
 	Ok(())
 }
