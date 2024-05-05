@@ -886,6 +886,7 @@ dependencies = [
  "enable-ansi-support",
  "fontdue",
  "fs4",
+ "gfx-xtra",
  "glob",
  "hex",
  "humantime",
@@ -2096,6 +2097,15 @@ dependencies = [
  "libc",
  "wasi",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gfx-xtra"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c225362a754915b99b0e180b8169525ed096956d16da5a07b1c51fbb54239ee0"
+dependencies = [
+ "embedded-graphics",
 ]
 
 [[package]]

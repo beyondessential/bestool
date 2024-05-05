@@ -1,4 +1,4 @@
-use bitvec::{BitArr, bitarr};
+use bitvec::BitArr;
 use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

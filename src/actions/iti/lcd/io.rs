@@ -40,8 +40,8 @@ pub struct LcdIo {
 	reset: OutputPin,
 	width: u16,
 	height: u16,
-	x_offset: u16,
-	y_offset: u16,
+	pub(crate) x_offset: u16,
+	pub(crate) y_offset: u16,
 	buffer: Vec<u8>,
 }
 

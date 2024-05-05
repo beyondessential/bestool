@@ -1,5 +1,4 @@
 use clap::Parser;
-use embedded_graphics::pixelcolor::Rgb565;
 use miette::Result;
 
 use crate::actions::Context;
@@ -7,6 +6,7 @@ use crate::actions::Context;
 mod commands;
 mod helpers;
 mod io;
+mod orient;
 mod simple;
 
 /// Control an LCD screen.
@@ -71,10 +71,15 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 		text::Text,
 	};
 
-	let style = MonoTextStyle::new(&FONT_10X20, Rgb565::BLACK);
+	use orient::{Angle, Oriented};
+	let mut display = Oriented::new(&mut lcd, Angle::Degrees180);
+
+	display.clear(Rgb565::BLACK)?;
+
+	let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 	for x in 0..6 {
 		for y in 0..13 {
-			Text::new("Rust!", Point::new(x * 50, y * 20), style).draw(&mut lcd)?;
+			Text::new("Rust!", Point::new(x * 20, y * 20), style).draw(&mut display)?;
 		}
 	}
 
