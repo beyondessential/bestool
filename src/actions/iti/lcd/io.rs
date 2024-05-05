@@ -1,6 +1,15 @@
 use std::{thread::sleep, time::Duration};
 
-use embedded_graphics::pixelcolor::{raw::{RawData, RawU16}, Rgb565};
+use embedded_graphics::{
+	draw_target::DrawTarget,
+	primitives::Rectangle,
+	geometry::{Dimensions, Point, Size},
+	pixelcolor::{
+		raw::{RawData, RawU16},
+		Rgb565,
+	},
+	Pixel,
+};
 use itertools::Itertools;
 use rppal::{
 	gpio::{Gpio, Level, OutputPin},
@@ -8,7 +17,7 @@ use rppal::{
 };
 use tracing::{instrument, trace};
 
-use super::{LcdArgs, commands::*, helpers::*, simple::*};
+use super::{commands::*, helpers::*, simple::*, LcdArgs};
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("I/O error")]
@@ -111,7 +120,7 @@ impl LcdIo {
 				| MemoryAddressingControl::COL_ORDER_BTT
 				| MemoryAddressingControl::ROW_COL_INVERT
 		} | MemoryAddressingControl::H_REFRESH_RTL)
-		.bits()])?;
+			.bits()])?;
 
 		self.command(Command::InterfacePixelFormat)?;
 		self.write_data(&[COLMOD_RGB_65K << 4 | COLMOD_16BPP])?;
@@ -173,7 +182,8 @@ impl LcdIo {
 	/// Turn the backlight on or off.
 	#[instrument(level = "trace", skip(self))]
 	pub fn backlight(&mut self, on: bool) {
-		self.backlight.write(if on { Level::High } else { Level::Low });
+		self.backlight
+			.write(if on { Level::High } else { Level::Low });
 	}
 
 	/// Send a command.
@@ -215,7 +225,11 @@ impl LcdIo {
 	}
 
 	/// Set the area of the screen to draw to.
-	pub(crate) fn set_window(&mut self, start: (u16, u16), end: (u16, u16)) -> Result<(), LcdIoError> {
+	pub(crate) fn set_window(
+		&mut self,
+		start: (u16, u16),
+		end: (u16, u16),
+	) -> Result<(), LcdIoError> {
 		if (start.0 > end.0) || (start.1 > end.1) {
 			return Err(LcdIoError::Io(std::io::Error::new(
 				std::io::ErrorKind::InvalidInput,
@@ -319,7 +333,7 @@ impl LcdIo {
 		Ok(())
 	}
 
-	/// Write an image to the screen.
+	/// Write an image to the screen, buffered.
 	#[instrument(level = "trace", skip(self))]
 	pub fn print(&mut self, image: &SimpleImage) -> Result<(), LcdIoError> {
 		self.set_window((0, 0), (image.width, image.height))?;
@@ -333,13 +347,51 @@ impl LcdIo {
 		Ok(())
 	}
 
-	/// Write a pixel to the screen.
+	/// Write a pixel to the screen, unbuffered.
 	#[instrument(level = "trace", skip(self))]
 	pub fn pixel(&mut self, x: u16, y: u16, colour: Rgb565) -> Result<(), LcdIoError> {
+		if x >= self.width || y >= self.height {
+			return Err(LcdIoError::Io(std::io::Error::new(
+				std::io::ErrorKind::InvalidInput,
+				"pixel out of bounds",
+			)));
+		}
+
 		self.set_window((x, y), (x, y))?;
 		self.command(Command::MemoryWrite)?;
 		self.write_data(&RawU16::from(colour).into_inner().to_be_bytes())?;
 		self.command(Command::Nop)?;
 		Ok(())
 	}
+}
+
+impl Dimensions for LcdIo {
+	fn bounding_box(&self) -> Rectangle {
+		Rectangle::new(Point::new(0, 0), Size::new(self.width.into(), self.height.into()))
+	}
+}
+
+impl DrawTarget for LcdIo {
+	type Color = Rgb565;
+	type Error = LcdIoError;
+
+	fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+	where
+		I: IntoIterator<Item = Pixel<Self::Color>>,
+	{
+		for Pixel(coord, color) in pixels.into_iter() {
+			let Ok(x) = u16::try_from(coord.x) else { continue };
+			let Ok(y) = u16::try_from(coord.y) else { continue };
+
+			if x >= self.width || y >= self.height {
+				continue;
+			}
+
+			self.pixel(x, y, color)?;
+		}
+
+		Ok(())
+	}
+
+	// TODO: implement other methods to accelerate rendering
 }
