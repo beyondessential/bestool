@@ -1,26 +1,81 @@
+use bitvec::{BitArr, bitarr};
 use tracing::{debug, instrument};
 
-bitflags::bitflags! {
-	/// Represents the memory addressing control bits.
-	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-	pub struct MemoryAddressingControl: u8 {
-		const ROW_ORDER_TTB   = 0b00000000;
-		const ROW_ORDER_BTT   = 0b10000000;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MemoryAccessControl(BitArr!(for 8, in u8));
 
-		const COL_ORDER_TTB   = 0b00000000;
-		const COL_ORDER_BTT   = 0b01000000;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Vertical {
+	TopToBottom,
+	BottomToTop,
+}
 
-		const ROW_COL_NORMAL  = 0b00000000;
-		const ROW_COL_INVERT  = 0b00100000;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Horizontal {
+	LeftToRight,
+	RightToLeft,
+}
 
-		const V_REFRESH_TTB   = 0b00000000;
-		const V_REFRESH_BTT   = 0b00010000;
+impl MemoryAccessControl {
+	pub fn row_order(mut self, direction: Vertical) -> Self {
+		self.0.set(0, match direction {
+			Vertical::TopToBottom => false,
+			Vertical::BottomToTop => true,
+		});
+		self
+	}
 
-		const COLOR_ORDER_RGB = 0b00000000;
-		const COLOR_ORDER_BGR = 0b00001000;
+	pub fn col_order(mut self, direction: Horizontal) -> Self {
+		self.0.set(1, match direction {
+			Horizontal::LeftToRight => false,
+			Horizontal::RightToLeft => true,
+		});
+		self
+	}
 
-		const H_REFRESH_LTR   = 0b00000000;
-		const H_REFRESH_RTL   = 0b00000100;
+	pub fn normal(mut self) -> Self {
+		self.0.set(2, false);
+		self
+	}
+
+	pub fn inverted(mut self) -> Self {
+		self.0.set(2, true);
+		self
+	}
+
+	/// Vertical refresh order (aka Line Address Order).
+	pub fn v_refresh(mut self, direction: Vertical) -> Self {
+		self.0.set(3, match direction {
+			Vertical::TopToBottom => false,
+			Vertical::BottomToTop => true,
+		});
+		self
+	}
+
+	/// Horizontal refresh order (aka Data Latch Order).
+	pub fn h_refresh(mut self, direction: Horizontal) -> Self {
+		self.0.set(5, match direction {
+			Horizontal::LeftToRight => false,
+			Horizontal::RightToLeft => true,
+		});
+		self
+	}
+
+	pub fn rgb(mut self) -> Self {
+		self.0.set(4, false);
+		self
+	}
+
+	pub fn bgr(mut self) -> Self {
+		self.0.set(4, true);
+		self
+	}
+}
+
+impl From<MemoryAccessControl> for u8 {
+	fn from(control: MemoryAccessControl) -> u8 {
+		let arr: [u8; 1] = control.0.into_inner();
+		arr[0]
 	}
 }
 

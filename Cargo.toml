@@ -100,7 +100,7 @@ walg = ["download"]
 ## Iti subcommands
 __iti = []
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:bitflags", "dep:embedded-graphics", "dep:rppal"]
+iti-lcd = ["__iti", "dep:bitvec", "dep:embedded-graphics", "dep:rppal"]
 iti-wifisetup = ["__iti", "dep:networkmanager"]
 
 [profile.release]

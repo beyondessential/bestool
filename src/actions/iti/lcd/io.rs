@@ -2,12 +2,12 @@ use std::{thread::sleep, time::Duration};
 
 use embedded_graphics::{
 	draw_target::DrawTarget,
-	primitives::Rectangle,
 	geometry::{Dimensions, Point, Size},
 	pixelcolor::{
 		raw::{RawData, RawU16},
 		Rgb565,
 	},
+	primitives::Rectangle,
 	Pixel,
 };
 use itertools::Itertools;
@@ -40,6 +40,8 @@ pub struct LcdIo {
 	reset: OutputPin,
 	width: u16,
 	height: u16,
+	x_offset: u16,
+	y_offset: u16,
 	buffer: Vec<u8>,
 }
 
@@ -82,8 +84,10 @@ impl LcdIo {
 			backlight,
 			dc,
 			reset,
-			width: 300,
+			width: 280,
 			height: 240,
+			x_offset: 20,
+			y_offset: 0,
 			buffer: Vec::with_capacity(4092),
 		})
 	}
@@ -112,15 +116,8 @@ impl LcdIo {
 		sleep(Duration::from_millis(120)); // wait past cancel period
 
 		self.spi.write(&vec![0xaa; 3])?;
-		self.command(Command::MemoryAddressingControl)?;
-		self.write_data(&[(if self.width > self.height {
-			MemoryAddressingControl::empty()
-		} else {
-			MemoryAddressingControl::ROW_ORDER_BTT
-				| MemoryAddressingControl::COL_ORDER_BTT
-				| MemoryAddressingControl::ROW_COL_INVERT
-		} | MemoryAddressingControl::H_REFRESH_RTL)
-			.bits()])?;
+		self.command(Command::MemoryAccessControl)?;
+		self.write_data(&[MemoryAccessControl::default().into()])?;
 
 		self.command(Command::InterfacePixelFormat)?;
 		self.write_data(&[COLMOD_RGB_65K << 4 | COLMOD_16BPP])?;
@@ -246,11 +243,11 @@ impl LcdIo {
 
 		// if this doesn't work, let's have another look at the c driver code
 		self.command(Command::ColumnAddressSet)?;
-		self.write_data(&start.0.to_be_bytes())?;
-		self.write_data(&end.0.to_be_bytes())?;
+		self.write_data(&(self.x_offset + start.0).to_be_bytes())?;
+		self.write_data(&(self.x_offset + end.0).to_be_bytes())?;
 		self.command(Command::RowAddressSet)?;
-		self.write_data(&start.1.to_be_bytes())?;
-		self.write_data(&end.1.to_be_bytes())?;
+		self.write_data(&(self.y_offset + start.1).to_be_bytes())?;
+		self.write_data(&(self.y_offset + end.1).to_be_bytes())?;
 
 		Ok(())
 	}
@@ -367,7 +364,10 @@ impl LcdIo {
 
 impl Dimensions for LcdIo {
 	fn bounding_box(&self) -> Rectangle {
-		Rectangle::new(Point::new(0, 0), Size::new(self.width.into(), self.height.into()))
+		Rectangle::new(
+			Point::new(0, 0),
+			Size::new(self.width.into(), self.height.into()),
+		)
 	}
 }
 
@@ -380,8 +380,12 @@ impl DrawTarget for LcdIo {
 		I: IntoIterator<Item = Pixel<Self::Color>>,
 	{
 		for Pixel(coord, color) in pixels.into_iter() {
-			let Ok(x) = u16::try_from(coord.x) else { continue };
-			let Ok(y) = u16::try_from(coord.y) else { continue };
+			let Ok(x) = u16::try_from(coord.x) else {
+				continue;
+			};
+			let Ok(y) = u16::try_from(coord.y) else {
+				continue;
+			};
 
 			if x >= self.width || y >= self.height {
 				continue;

@@ -12,7 +12,7 @@ pub enum Command {
 	/// This command does nothing, and can be used to terminate a data stream early.
 	Nop = 0x00,
 
-	/// Memory addressing control (MADCTL).
+	/// Memory access control (MADCTL).
 	///
 	/// 6 bits: MY, MX, MV, ML, BGR, MH.
 	/// - MY: row address order (0=ttb, 1=btt)
@@ -21,7 +21,7 @@ pub enum Command {
 	/// - ML: vertical refresh order (0=ttb, 1=btt)
 	/// - BGR: RGB/BGR order (0=RGB, 1=BGR)
 	/// - MH: horizontal refresh order (0=ltr, 1=rtl)
-	MemoryAddressingControl = 0x36,
+	MemoryAccessControl = 0x36,
 
 	/// Interface pixel format (COLMOD).
 	///

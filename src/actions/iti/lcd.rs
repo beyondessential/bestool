@@ -72,7 +72,11 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 	};
 
 	let style = MonoTextStyle::new(&FONT_10X20, Rgb565::BLACK);
-	Text::new("Hello Rust!", Point::new(50, 50), style).draw(&mut lcd)?;
+	for x in 0..6 {
+		for y in 0..13 {
+			Text::new("Rust!", Point::new(x * 50, y * 20), style).draw(&mut lcd)?;
+		}
+	}
 
 	Ok(())
 }
