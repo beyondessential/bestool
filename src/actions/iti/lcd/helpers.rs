@@ -80,12 +80,12 @@ impl From<MemoryAccessControl> for u8 {
 }
 
 pub const COLMOD_RGB_65K: u8 = 0b0101;
-pub const COLMOD_RGB_262K: u8 = 0b0110;
+// pub const COLMOD_RGB_262K: u8 = 0b0110;
 
-pub const COLMOD_12BPP: u8 = 0b0011;
+// pub const COLMOD_12BPP: u8 = 0b0011;
 pub const COLMOD_16BPP: u8 = 0b0101;
-pub const COLMOD_18BPP: u8 = 0b0110;
-pub const COLMOD_16M_TRUNC: u8 = 0b0111;
+// pub const COLMOD_18BPP: u8 = 0b0110;
+// pub const COLMOD_16M_TRUNC: u8 = 0b0111;
 
 /// Helper function to set the gate voltages.
 ///

@@ -40,9 +40,10 @@ pub struct LcdIo {
 	reset: OutputPin,
 	width: u16,
 	height: u16,
-	pub(crate) x_offset: u16,
-	pub(crate) y_offset: u16,
+	x_offset: u16,
+	y_offset: u16,
 	buffer: Vec<u8>,
+	awake: bool,
 }
 
 impl LcdIo {
@@ -89,6 +90,7 @@ impl LcdIo {
 			x_offset: 20,
 			y_offset: 0,
 			buffer: Vec::with_capacity(4092),
+			awake: false,
 		})
 	}
 
@@ -183,6 +185,16 @@ impl LcdIo {
 			.write(if on { Level::High } else { Level::Low });
 	}
 
+	/// Turn the display on or off.
+	#[instrument(level = "trace", skip(self))]
+	pub fn display(&mut self, on: bool) -> Result<(), LcdIoError> {
+		if on {
+			self.command(Command::DisplayOn)
+		} else {
+			self.command(Command::DisplayOff)
+		}
+	}
+
 	/// Send a command.
 	#[instrument(level = "trace", skip(self))]
 	pub fn command(&mut self, command: Command) -> Result<(), LcdIoError> {
@@ -203,16 +215,24 @@ impl LcdIo {
 	/// Go to sleep.
 	#[instrument(level = "trace", skip(self))]
 	pub fn sleep(&mut self) -> Result<(), LcdIoError> {
-		self.command(Command::Sleep)?;
-		sleep(Duration::from_millis(5));
+		if self.awake {
+			self.command(Command::Sleep)?;
+			sleep(Duration::from_millis(5));
+			self.awake = false;
+		}
+
 		Ok(())
 	}
 
 	/// Wake up from sleep.
 	#[instrument(level = "trace", skip(self))]
 	pub fn wake(&mut self) -> Result<(), LcdIoError> {
-		self.command(Command::WakeUp)?;
-		sleep(Duration::from_millis(120));
+		if !self.awake {
+			self.command(Command::WakeUp)?;
+			sleep(Duration::from_millis(120));
+			self.awake = true;
+		}
+
 		Ok(())
 	}
 
@@ -332,8 +352,8 @@ impl LcdIo {
 
 	/// Write an image to the screen, buffered.
 	#[instrument(level = "trace", skip(self))]
-	pub fn print(&mut self, image: &SimpleImage) -> Result<(), LcdIoError> {
-		self.set_window((0, 0), (image.width, image.height))?;
+	pub fn print(&mut self, origin: (u16, u16), image: &SimpleImage) -> Result<(), LcdIoError> {
+		self.set_window(origin, (image.width, image.height))?;
 		self.command(Command::MemoryWrite)?;
 		self.clear_buffer();
 		for line in &image.data().chunks((image.width as usize) * 2) {
@@ -397,5 +417,50 @@ impl DrawTarget for LcdIo {
 		Ok(())
 	}
 
-	// TODO: implement other methods to accelerate rendering
+	fn fill_contiguous<I>(&mut self, area: &Rectangle, pixels: I) -> Result<(), Self::Error>
+	where
+		I: IntoIterator<Item = Self::Color>,
+	{
+		let Ok(x) = u16::try_from(area.top_left.x) else {
+			return Ok(());
+		};
+		let Ok(y) = u16::try_from(area.top_left.y) else {
+			return Ok(());
+		};
+		let Ok(w) = u16::try_from(area.size.width) else {
+			return Ok(());
+		};
+		let Ok(h) = u16::try_from(area.size.height) else {
+			return Ok(());
+		};
+
+		let mut image = self.image();
+		image.pixels = pixels
+			.into_iter()
+			.map(|c| RawU16::from(c).into_inner())
+			.collect();
+		image.resize(w, h);
+
+		self.print((x, y), &image)
+	}
+
+	fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+		let Ok(x) = u16::try_from(area.top_left.x) else {
+			return Ok(());
+		};
+		let Ok(y) = u16::try_from(area.top_left.y) else {
+			return Ok(());
+		};
+		let Ok(w) = u16::try_from(area.size.width) else {
+			return Ok(());
+		};
+		let Ok(h) = u16::try_from(area.size.height) else {
+			return Ok(());
+		};
+
+		let mut image = self.image();
+		image.resize(w, h);
+		image.solid(color);
+		self.print((x, y), &image)
+	}
 }

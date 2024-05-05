@@ -16,7 +16,7 @@ use embedded_graphics::{
 pub struct SimpleImage {
 	pub(crate) width: u16,  // readonly
 	pub(crate) height: u16, // readonly
-	pixels: Vec<u16>,
+	pub(crate) pixels: Vec<u16>,
 }
 
 impl SimpleImage {

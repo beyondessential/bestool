@@ -1,4 +1,5 @@
 use clap::Parser;
+use embedded_graphics::Drawable;
 use miette::Result;
 
 use crate::actions::Context;
@@ -6,7 +7,7 @@ use crate::actions::Context;
 mod commands;
 mod helpers;
 mod io;
-mod orient;
+mod json;
 mod simple;
 
 /// Control an LCD screen.
@@ -43,43 +44,39 @@ pub struct LcdArgs {
 	/// SPI frequency in Hz.
 	#[arg(long, default_value = "20000000")]
 	pub frequency: u32,
-
-	/// Red channel for the solid color.
-	pub red: u8,
-
-	/// Green channel for the solid color.
-	pub green: u8,
-
-	/// Blue channel for the solid color.
-	pub blue: u8,
 }
 
 pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
-	let LcdArgs { red, green, blue, .. } = ctx.args_top;
+	let lines = std::io::stdin().lines();
+
 	let mut lcd = io::LcdIo::new(&ctx.args_top)?;
 	lcd.init()?;
 	lcd.probe_buffer_length()?;
 
-	let mut image = lcd.image();
-	image.solid(Rgb565::new(red, green, blue));
-	lcd.print(&image)?;
+	for line in lines {
+		let screen: json::Screen = match line
+			.map_err(|err| err.to_string())
+			.and_then(|line| serde_json::from_str(&line).map_err(|err| err.to_string()))
+		{
+			Ok(screen) => screen,
+			Err(err) => {
+				eprintln!("error parsing JSON line: {err}");
+				continue;
+			}
+		};
 
-	use embedded_graphics::{
-		mono_font::{ascii::FONT_10X20, MonoTextStyle},
-		pixelcolor::Rgb565,
-		prelude::*,
-		text::Text,
-	};
+		if !screen.off {
+			lcd.display(true)?;
+			lcd.backlight(true);
+			lcd.wake()?;
+		}
 
-	use orient::{Angle, Oriented};
-	let mut display = Oriented::new(&mut lcd, Angle::Degrees180);
+		screen.draw(&mut lcd)?;
 
-	display.clear(Rgb565::BLACK)?;
-
-	let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-	for x in 0..6 {
-		for y in 0..13 {
-			Text::new("Rust!", Point::new(x * 20, y * 20), style).draw(&mut display)?;
+		if screen.off {
+			lcd.display(false)?;
+			lcd.backlight(false);
+			lcd.sleep()?;
 		}
 	}
 
