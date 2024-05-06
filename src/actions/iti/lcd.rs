@@ -70,6 +70,10 @@ pub enum LcdAction {
 	///
 	/// This will initiatialize the LCD display, listen for JSON messages on a ZMQ REP socket, and
 	/// update the display based on the contents of the messages.
+	///
+	/// Note that enabling trace-level (`-vvv`) logging will considerably slow down screen updates,
+	/// as it will log every command sent to the screen, which can be considerable for complex
+	/// layouts and text.
 	Serve,
 
 	/// Send an arbitrary JSON message to the display server.
