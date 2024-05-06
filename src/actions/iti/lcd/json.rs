@@ -5,17 +5,14 @@ use embedded_graphics::{
 	primitives::{PrimitiveStyle, Rectangle},
 	text::Text,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Screen {
-	pub background: [u8; 3],
-	#[serde(default)]
-	pub items: Vec<Item>,
-	#[serde(default)]
-	pub off: bool,
-	#[serde(default)]
-	pub clear: bool,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Screen {
+	Clear([u8; 3]),
+	Light(bool),
+	Layout(Vec<Item>),
 }
 
 impl Drawable for Screen {
@@ -26,23 +23,21 @@ impl Drawable for Screen {
 	where
 		D: DrawTarget<Color = Self::Color>,
 	{
-		if self.clear {
-			target.clear(Rgb565::new(
-				self.background[0],
-				self.background[1],
-				self.background[2],
-			))?;
+		use Screen::*;
+		match self {
+			Clear([r, g, b]) => target.clear(Rgb565::new(*r, *g, *b)),
+			Layout(items) => {
+				for item in items {
+					item.draw(target)?;
+				}
+				Ok(())
+			}
+			Light(_) => unreachable!("Light is handled outside of the draw method"),
 		}
-
-		for item in &self.items {
-			item.draw(target)?;
-		}
-
-		Ok(())
 	}
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Item {
 	pub x: i32,
 	pub y: i32,
