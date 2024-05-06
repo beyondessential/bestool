@@ -15,7 +15,7 @@ use rppal::{
 	gpio::{Gpio, Level, OutputPin},
 	spi::{Bus, Mode, SlaveSelect, Spi},
 };
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 use super::{commands::*, helpers::*, simple::*, LcdArgs};
 
@@ -360,7 +360,14 @@ impl LcdIo {
 	/// Write an image to the screen, buffered.
 	#[instrument(level = "trace", skip(self, image))]
 	pub fn print(&mut self, origin: (u16, u16), image: &SimpleImage) -> Result<(), LcdIoError> {
-		self.set_window(origin, (image.width, image.height))?;
+		self.set_window(
+			origin,
+			(
+				origin.0.saturating_add(image.width),
+				origin.1.saturating_add(image.height),
+			),
+		)?;
+
 		self.command(Command::MemoryWrite)?;
 		self.clear_buffer();
 		for line in &image.data().chunks((image.width as usize) * 2) {
@@ -424,6 +431,7 @@ impl DrawTarget for LcdIo {
 		Ok(())
 	}
 
+	#[instrument(level = "trace", skip(self, pixels))]
 	fn fill_contiguous<I>(&mut self, area: &Rectangle, pixels: I) -> Result<(), Self::Error>
 	where
 		I: IntoIterator<Item = Self::Color>,
@@ -451,6 +459,7 @@ impl DrawTarget for LcdIo {
 		self.print((x, y), &image)
 	}
 
+	#[instrument(level = "trace", skip(self))]
 	fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
 		let Ok(x) = u16::try_from(area.top_left.x) else {
 			return Ok(());
