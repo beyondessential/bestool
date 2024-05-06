@@ -14,9 +14,9 @@ repository = "https://github.com/beyondessential/bestool"
 [dependencies]
 aws-config = { version = "1.2.0", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
-aws-sdk-route53 = { version = "1.22.0", optional = true }
+aws-sdk-route53 = { version = "1.23.0", optional = true }
 aws-sdk-s3 = { version = "1.23.0", optional = true }
-aws-sdk-sts = { version = "1.15.0", optional = true }
+aws-sdk-sts = { version = "1.22.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"] }
 binstalk-downloader = { version = "0.10.0", optional = true }
 bitflags = { version = "2.4.2", optional = true }
@@ -49,15 +49,15 @@ leon-macros = { version = "1.0.2", optional = true }
 local-ip-address = { version = "0.6.1", optional = true }
 merkle_hash = "3.6.1"
 miette = { version = "7.2.0", features = ["fancy"] }
-mimalloc = "0.1.39"
+mimalloc = "0.1.41"
 minisign = { version = "0.7.6", optional = true }
 node-semver = "2.1.0"
 regex = "1.10.4"
-reqwest = { version = "0.12.3", features = ["json"], default-features = false }
+reqwest = { version = "0.12.4", features = ["json"], default-features = false }
 rppal = { version = "0.17.1", optional = true }
 rust-fontconfig = { version = "0.1.7", optional = true }
 secrecy = { version = "0.8.0", optional = true }
-serde = { version = "1.0.199", features = ["derive"] }
+serde = { version = "1.0.200", features = ["derive"] }
 serde_json = "1.0.116"
 ssh-key = { version = "0.6.6", optional = true }
 tera = { version = "1.19.1", optional = true }
