@@ -16,6 +16,8 @@ super::subcommands! {
 		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
 	}}]
 
+	#[cfg(feature = "iti-battery")]
+	battery => Battery(BatteryArgs),
 	#[cfg(feature = "iti-eink")]
 	eink => Eink(EinkArgs),
 	#[cfg(feature = "iti-lcd")]
