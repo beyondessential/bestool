@@ -28,6 +28,7 @@ chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
+ctrlc = "3.4.4"
 detect-targets = { version = "0.1.15", optional = true }
 dirs = "5.0.1"
 duct = "0.13.7"
@@ -66,6 +67,7 @@ tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 upgrade = { version = "2.0.0", optional = true }
 walkdir = "2.5.0"
+zmq = "0.10.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }

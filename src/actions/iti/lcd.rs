@@ -1,6 +1,9 @@
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
 use clap::Parser;
 use embedded_graphics::Drawable;
-use miette::Result;
+use miette::{IntoDiagnostic, Result, WrapErr};
+use tracing::{error, info, trace};
 
 use crate::actions::Context;
 
@@ -44,26 +47,70 @@ pub struct LcdArgs {
 	/// SPI frequency in Hz.
 	#[arg(long, default_value = "20000000")]
 	pub frequency: u32,
+
+	/// ZMQ REP socket to listen on for JSON screen updates.
+	#[arg(default_value = "tcp://[::1]:2009")]
+	pub zmq_socket: String,
 }
 
 pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
-	let lines = std::io::stdin().lines();
+	let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).into_diagnostic().wrap_err("ctrlc: set_handler")?;
+
+	let z = zmq::Context::new();
+	let socket = z
+		.socket(zmq::REQ)
+		.into_diagnostic()
+		.wrap_err("zmq: socket(REQ)")?;
+	socket
+		.set_ipv6(true)
+		.into_diagnostic()
+		.wrap_err("zmq: set_ipv6")?;
+	socket
+		.bind(&ctx.args_top.zmq_socket)
+		.into_diagnostic()
+		.wrap_err(format!("zmq: bind({})", ctx.args_top.zmq_socket))?;
+	info!(
+		"ZMQ REP listening on {} for JSON messages",
+		ctx.args_top.zmq_socket
+	);
 
 	let mut lcd = io::LcdIo::new(&ctx.args_top)?;
 	lcd.init()?;
 	lcd.probe_buffer_length()?;
 
-	for line in lines {
-		let screen: json::Screen = match line
-			.map_err(|err| err.to_string())
-			.and_then(|line| serde_json::from_str(&line).map_err(|err| err.to_string()))
-		{
-			Ok(screen) => screen,
-			Err(err) => {
-				eprintln!("error parsing JSON line: {err}");
-				continue;
-			}
+	loop {
+		let mut polls = [socket.as_poll_item(zmq::POLLIN)];
+		let polled = zmq::poll(&mut polls, 1000)
+			.into_diagnostic()
+			.wrap_err("zmq: poll")?;
+		if running.load(Ordering::SeqCst) == false {
+			info!("ctrl-c received, exiting");
+			break;
+		}
+		if polled == 0 || !polls[0].is_readable() {
+			trace!("zmq: no messages (poll timed out)");
+			continue;
+		}
+
+		let Ok(bytes) = socket
+			.recv_bytes(0)
+			.map_err(|err| error!("zmq: failed to recv: {err}"))
+		else {
+			continue;
 		};
+
+		let Ok(screen @ json::Screen { .. }) =
+			serde_json::from_slice(&bytes).map_err(|err| error!("json: failed to parse: {err}"))
+		else {
+			continue;
+		};
+
+		trace!(?screen, "received screen control message");
 
 		if !screen.off {
 			lcd.display(true)?;
