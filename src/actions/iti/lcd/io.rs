@@ -15,7 +15,7 @@ use rppal::{
 	gpio::{Gpio, Level, OutputPin},
 	spi::{Bus, Mode, SlaveSelect, Spi},
 };
-use tracing::{instrument, trace};
+use tracing::{debug, instrument, trace};
 
 use super::{commands::*, helpers::*, simple::*, LcdArgs};
 
@@ -196,18 +196,20 @@ impl LcdIo {
 	}
 
 	/// Send a command.
-	#[instrument(level = "trace", skip(self))]
+	#[instrument(level = "trace", skip(self, command))]
 	pub fn command(&mut self, command: Command) -> Result<(), LcdIoError> {
 		self.set_dc(Level::Low);
+		trace!(byte=%format!("{:02X?}", command as u8), "writing command byte to SPI");
 		self.spi.write(&[command as u8])?;
 		Ok(())
 	}
 
 	/// Write some data.
-	#[instrument(level = "trace", skip(self))]
+	#[instrument(level = "trace", skip(self, bytes))]
 	pub fn write_data(&mut self, bytes: &[u8]) -> Result<(), LcdIoError> {
 		self.set_dc(Level::High);
-		trace!(length = bytes.len(), data=%format!("{bytes:02X?}"), "writing some bytes to SPI");
+		// trace!(length = bytes.len(), data=%format!("{bytes:02X?}"), "writing some bytes to SPI");
+		trace!(length = bytes.len(), "writing some bytes to SPI");
 		self.spi.write(bytes)?;
 		Ok(())
 	}
@@ -242,6 +244,7 @@ impl LcdIo {
 	}
 
 	/// Set the area of the screen to draw to.
+	#[instrument(level = "trace", skip(self))]
 	pub(crate) fn set_window(
 		&mut self,
 		start: (u16, u16),
@@ -273,6 +276,7 @@ impl LcdIo {
 	}
 
 	/// Probe how many bytes we can send at once.
+	#[instrument(level = "trace", skip(self))]
 	pub fn probe_buffer_length(&mut self) -> Result<(), LcdIoError> {
 		self.flush_buffer()?;
 
@@ -319,10 +323,12 @@ impl LcdIo {
 		Ok(())
 	}
 
+	#[instrument(level = "trace", skip(self))]
 	pub fn clear_buffer(&mut self) {
 		self.buffer.clear();
 	}
 
+	#[instrument(level = "trace", skip(self))]
 	pub fn flush_buffer(&mut self) -> Result<(), LcdIoError> {
 		if self.buffer.is_empty() {
 			return Ok(());
@@ -334,6 +340,7 @@ impl LcdIo {
 		Ok(())
 	}
 
+	#[instrument(level = "trace", skip(self, bytes))]
 	pub fn write_data_buffered(&mut self, bytes: &[u8]) -> Result<(), LcdIoError> {
 		let remaining = self.buffer.capacity() - self.buffer.len();
 		if bytes.len() > remaining {
@@ -351,7 +358,7 @@ impl LcdIo {
 	}
 
 	/// Write an image to the screen, buffered.
-	#[instrument(level = "trace", skip(self))]
+	#[instrument(level = "trace", skip(self, image))]
 	pub fn print(&mut self, origin: (u16, u16), image: &SimpleImage) -> Result<(), LcdIoError> {
 		self.set_window(origin, (image.width, image.height))?;
 		self.command(Command::MemoryWrite)?;
