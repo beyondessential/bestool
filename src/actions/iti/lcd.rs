@@ -17,7 +17,7 @@ use crate::actions::Context;
 mod commands;
 mod helpers;
 mod io;
-mod json;
+pub mod json;
 mod simple;
 
 /// Control an LCD screen.
@@ -142,11 +142,11 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 			}))
 			.into_diagnostic()
 			.wrap_err("json: from_str")?;
-			send(ctx, screen)
+			send(&ctx.args_top.zmq_socket, screen)
 		}
-		Clear { red, green, blue } => send(ctx, json::Screen::Clear([red, green, blue])),
-		On => send(ctx, json::Screen::Light(true)),
-		Off => send(ctx, json::Screen::Light(false)),
+		Clear { red, green, blue } => send(&ctx.args_top.zmq_socket, json::Screen::Clear([red, green, blue])),
+		On => send(&ctx.args_top.zmq_socket, json::Screen::Light(true)),
+		Off => send(&ctx.args_top.zmq_socket, json::Screen::Light(false)),
 	}
 }
 
@@ -244,7 +244,7 @@ fn loop_inner(
 			lcd.sleep()?;
 		}
 		otherwise => {
-			info!("updating screen");
+			info!("updating screen {otherwise:?}");
 			otherwise.draw(lcd)?;
 		}
 	}
@@ -257,8 +257,8 @@ fn loop_inner(
 	Ok(ControlFlow::Continue(()))
 }
 
-#[instrument(level = "debug", skip(ctx))]
-pub fn send(ctx: Context<LcdArgs>, screen: json::Screen) -> Result<()> {
+#[instrument(level = "debug")]
+pub fn send(addr: &str, screen: json::Screen) -> Result<()> {
 	let z = zmq::Context::new();
 	let socket = z
 		.socket(zmq::REQ)
@@ -269,9 +269,9 @@ pub fn send(ctx: Context<LcdArgs>, screen: json::Screen) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("zmq: set_ipv6")?;
 	socket
-		.connect(&ctx.args_top.zmq_socket)
+		.connect(addr)
 		.into_diagnostic()
-		.wrap_err(format!("zmq: connect({})", ctx.args_top.zmq_socket))?;
+		.wrap_err(format!("zmq: connect({})", addr))?;
 
 	let bytes = serde_json::to_vec(&screen)
 		.into_diagnostic()
