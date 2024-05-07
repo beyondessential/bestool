@@ -2,7 +2,7 @@ use std::{env::var, fs::metadata, io::stderr, path::PathBuf};
 
 use clap::{ArgAction, Parser, ValueEnum, ValueHint};
 use miette::{bail, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard, rolling};
 
 /// BES Tooling
@@ -23,6 +23,8 @@ use tracing_appender::{non_blocking, non_blocking::WorkerGuard, rolling};
 #[cfg_attr(debug_assertions, command(before_help = "⚠ DEBUG BUILD ⚠"))]
 pub struct Args {
 	/// When to use terminal colours
+	///
+	/// You can also set the NO_COLOR environment variable to disable colours.
 	#[arg(long, default_value = "auto", value_name = "MODE", alias = "colour")]
 	pub color: ColourMode,
 
@@ -61,6 +63,15 @@ pub struct Args {
 	)]
 	pub log_file: Option<PathBuf>,
 
+	/// Omit timestamps in logs
+	///
+	/// This can be useful when running under systemd, to avoid having two timestamps.
+	///
+	/// This option is ignored if the log file is set, or when using $RUST_LOG (as logging is
+	/// initialized before arguments are parsed in that case).
+	#[arg(long)]
+	pub log_timeless: bool,
+
 	/// What to do
 	#[command(subcommand)]
 	pub action: crate::actions::Action,
@@ -83,7 +94,7 @@ pub fn get_args() -> Result<(Args, Option<WorkerGuard>)> {
 	let mut args = Args::parse();
 
 	let log_guard = if !prearg_logs {
-		logging_postargs(&args)?
+		Some(logging_postargs(&args)?)
 	} else {
 		None
 	};
@@ -128,11 +139,7 @@ pub fn logging_preargs() -> bool {
 	log_on
 }
 
-pub fn logging_postargs(args: &Args) -> Result<Option<WorkerGuard>> {
-	if args.verbose == 0 {
-		return Ok(None);
-	}
-
+pub fn logging_postargs(args: &Args) -> Result<WorkerGuard> {
 	let (log_writer, guard) = if let Some(file) = &args.log_file {
 		let is_dir = metadata(&file).map_or(false, |info| info.is_dir());
 		let (dir, filename) = if is_dir {
@@ -180,15 +187,23 @@ pub fn logging_postargs(args: &Args) -> Result<Option<WorkerGuard>> {
 	match if args.log_file.is_some() {
 		builder.json().with_writer(log_writer).try_init()
 	} else if args.verbose > 3 {
-		builder.pretty().with_writer(log_writer).try_init()
+		if args.log_timeless {
+			builder.without_time().with_writer(log_writer).try_init()
+		} else {
+			builder.pretty().with_writer(log_writer).try_init()
+		}
 	} else {
-		builder.with_writer(log_writer).try_init()
+		if args.log_timeless {
+			builder.without_time().with_writer(log_writer).try_init()
+		} else {
+			builder.with_writer(log_writer).try_init()
+		}
 	} {
-		Ok(()) => info!("logging initialised"),
+		Ok(()) => debug!("logging initialised"),
 		Err(e) => eprintln!("Failed to initialise logging, continuing with none\n{e}"),
 	}
 
-	Ok(Some(guard))
+	Ok(guard)
 }
 
 #[test]
