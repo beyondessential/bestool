@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use networkmanager::{device::wireless::WirelessDevice, NetworkManager};
 
-use super::Context;
+use crate::actions::Context;
 
 pub mod connect;
 pub mod forget;

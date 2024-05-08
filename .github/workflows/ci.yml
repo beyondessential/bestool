@@ -133,7 +133,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.target }} --features dyndns
+        run: cross build --release --target ${{ matrix.target }} --features dyndns,iti
       - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }}
 
