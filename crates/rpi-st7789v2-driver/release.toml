@@ -1,0 +1,4 @@
+publish = true
+tag-message = "release: rpi-st7789v2-driver {{version}}"
+pre-release-commit-message = "release: rpi-st7789v2-driver {{version}}"
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}", "--include-path", "."]
