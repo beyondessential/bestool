@@ -28,9 +28,12 @@ chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
+console-subscriber = { version = "0.2.0", optional = true }
+ctrlc = "3.4.4"
 detect-targets = { version = "0.1.15", optional = true }
 dirs = "5.0.1"
 duct = "0.13.7"
+embedded-graphics = { version = "0.8.1", optional = true }
 enable-ansi-support = "0.2.1"
 fontdue = { version = "0.8.0", optional = true }
 fs4 = { version = "0.8.2", features = ["tokio"], optional = true }
@@ -62,9 +65,11 @@ tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.59"
 tokio = { version = "1.37.0", features = ["full"] }
 tracing = { version = "0.1.40", features = ["attributes"] }
+tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 upgrade = { version = "2.0.0", optional = true }
 walkdir = "2.5.0"
+zmq = "0.10.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
@@ -80,6 +85,9 @@ windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 [features]
 default = ["caddy", "completions", "crypto", "self-update", "ssh", "tamanu", "upload", "walg"]
 
+## For debugging
+console-subscriber = ["dep:console-subscriber"]
+
 ## Common dep groups (not meant to be used directly)
 aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
 download = ["dep:binstalk-downloader", "dep:detect-targets"]
@@ -89,13 +97,19 @@ caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
 dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
-eink = ["dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
+iti = ["iti-battery", "iti-lcd"]
 self-update = ["download", "dep:upgrade"]
 ssh = ["dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
 tamanu = ["download", "dep:leon", "dep:leon-macros", "dep:windows"]
 upload = ["aws"]
 walg = ["download"]
-wifisetup = ["dep:networkmanager"]
+
+## Iti subcommands
+iti-battery = ["__iti", "dep:rppal"]
+iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
+iti-lcd = ["__iti", "dep:bitvec", "dep:embedded-graphics", "dep:rppal"]
+iti-wifisetup = ["__iti", "dep:networkmanager"]
+__iti = [] # internal feature to enable the iti subcommand common code
 
 [profile.release]
 lto = true

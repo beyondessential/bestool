@@ -7,7 +7,7 @@ use minisign::{PublicKey, PublicKeyBox, SecretKey, SecretKeyBox};
 use secrecy::{ExposeSecret, SecretString};
 
 #[derive(Debug, Clone, Parser)]
-pub(crate) struct SecretKeyArgs {
+pub struct SecretKeyArgs {
 	/// The secret key to sign with.
 	///
 	/// Prefer to use `--key-file` or `--key-env` instead of this.
@@ -66,7 +66,7 @@ impl SecretKeyArgs {
 }
 
 #[derive(Debug, Clone, Parser)]
-pub(crate) struct PublicKeyArgs {
+pub struct PublicKeyArgs {
 	/// The public key to check signatures with.
 	///
 	/// Prefer to use `--key-file` or `--key-env` instead of this.
@@ -115,7 +115,7 @@ impl PublicKeyArgs {
 }
 
 #[derive(Debug, Clone, Parser)]
-pub(crate) struct PasswordArgs {
+pub struct PasswordArgs {
 	/// The secret key's password in plain text.
 	///
 	/// Prefer to use `--password-file` or `--password-env` instead of this.

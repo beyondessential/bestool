@@ -4,7 +4,7 @@ use miette::Result;
 
 use self::chip::Chip;
 
-use super::Context;
+use crate::actions::Context;
 
 mod chip;
 mod fill;
