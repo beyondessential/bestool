@@ -89,7 +89,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 
 	// https://www.analog.com/media/en/technical-documentation/data-sheets/MAX17048-MAX17049.pdf
 	let vcell = (read(&mut i2c, 0x2)? as f64) * 1.25 / 1000.0 / 16.0;
-	let capacity = ((read(&mut i2c, 0x4)? as f64) / 256.0).clamp(0.0, 100.0);
+	let mut capacity = ((read(&mut i2c, 0x4)? as f64) / 256.0).clamp(0.0, 100.0);
 	let version = read(&mut i2c, 0x8)?;
 
 	let estimates = if let Some(rolling) = rolling {
@@ -101,7 +101,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		}
 		.expect("rolling is always non-empty");
 
-		let rate = (capacity - front)
+		let mut rate = (capacity - front)
 			/ ((rolling.len() as u64 * ctx.args_top.watch.unwrap().as_ref().as_secs()) as f64);
 		let capacity_left = if rate > 0.0 {
 			(100.0 - capacity).abs()
@@ -109,19 +109,62 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			capacity
 		}
 		.clamp(0.0, 100.0);
+
+		if capacity >= 99.0 && rate >= 0.0 {
+			// fudge full capacity if it's close enough and we're "charging"
+			// otherwise we get non-sensical time remaining like "7 days to reach 100%"
+			capacity = 100.0;
+			rate = 0.0;
+		} else if rate.abs() < 0.00025 {
+			// fudge rate if it's close enough to zero
+			rate = 0.0;
+		} else if rate.abs() < 0.005 {
+			// fudge rate to a higher value if it's not zeroish but too low to produce good estimates
+			rate = rate.signum() * 0.005;
+		}
+
+		// TODO: replace the fudging with a better algorithm (e.g. exponential smoothing)
+		//       or better yet, store historical data and calibrate estimates from that.
+
 		let time_remaining = capacity_left / rate.abs();
-		Some((
-			rate,
-			if time_remaining.is_finite() {
-				Some(humantime::Duration::from(Duration::from_secs(
-					time_remaining as _,
-				)))
-			} else {
+		let time_remaining = if time_remaining.is_finite() {
+			let mut dur = Duration::from_secs(time_remaining as _);
+			if dur > Duration::from_secs(6 * 60 * 60) {
+				// clamp time remaining in either direction to 6 hours
+				// we know that the iti doesn't last that long, and doesn't take that long to charge
+				dur = Duration::from_secs(6 * 60 * 60);
+			}
+
+			// only show time remaining if it's more than 5 minutes
+			if dur < Duration::from_secs(5 * 60) {
 				None
-			},
-		))
+			} else {
+				Some(dur)
+			}
+		} else {
+			None
+		};
+
+		Some((rate, time_remaining.map(humantime::Duration::from)))
 	} else {
 		None
+	};
+
+	let status = if let Some((rate, _)) = estimates {
+		if rate > 0.0 {
+			"charging"
+		} else if rate < 0.0 {
+			"discharging"
+		} else {
+			"stable"
+		}
+	} else {
+		if powered {
+			"charging"
+		} else {
+			// "powered" is frequently false-negative so we can't rely on it for discharging
+			"unknown"
+		}
 	};
 
 	if ctx.args_top.json {
@@ -129,12 +172,11 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			println!(
 				"{}",
 				serde_json::json!({
-					"powered": powered,
+					"status": status,
 					"vcell": vcell,
 					"capacity": capacity,
 					"version": version,
 					"rate": rate,
-					"status": if rate > 0.0 { "charging" } else if rate < 0.0 { "discharging" } else { "stable" },
 					"time_remaining": time_remaining.map(|d| d.as_secs()),
 					"time_remaining_pretty": time_remaining.map(|d| d.to_string()),
 				})
@@ -142,26 +184,15 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		} else {
 			println!(
 				"{}",
-				serde_json::json!({ "powered": powered, "vcell": vcell, "capacity": capacity, "version": version })
+				serde_json::json!({ "status": status, "vcell": vcell, "capacity": capacity, "version": version })
 			);
 		}
 	} else {
-		println!("Powered: {}", powered);
 		println!("Version: {}", version);
-		println!("Voltage: {:.2} V", vcell);
+		println!("Voltage: {:.2}V", vcell);
 		println!("Battery: {:.2}%", capacity);
 		if let Some((rate, time_remaining)) = estimates {
-			println!(
-				"Rate: {:.2}%/h ({})",
-				rate * 60.0 * 60.0,
-				if rate > 0.0 {
-					"charging"
-				} else if rate < 0.0 {
-					"discharging"
-				} else {
-					"stable"
-				}
-			);
+			println!("Rate: {:.2}%/h ({status})", rate * 60.0 * 60.0,);
 			if let Some(time_remaining) = time_remaining {
 				println!("Time remaining: {time_remaining}");
 			}
@@ -177,7 +208,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		} else {
 			[255, 255, 255]
 		};
-		let stroke = if capacity < 3.0 {
+		let stroke = if capacity < 3.0 && estimates.map_or(false, |(rate, _)| rate < 0.0) {
 			[255, 255, 255]
 		} else if capacity <= 15.0 {
 			[200, 0, 0]
@@ -193,7 +224,9 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			..Default::default()
 		}];
 
-		let (bg_x, bg_w) = if let Some(time_remaining) = estimates.and_then(|(_, time_remaining)| time_remaining) {
+		let (bg_x, bg_w) = if let Some(time_remaining) =
+			estimates.and_then(|(_, time_remaining)| time_remaining)
+		{
 			items.push(Item {
 				x: 20,
 				y,
