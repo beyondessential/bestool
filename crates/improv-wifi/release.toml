@@ -1,0 +1,4 @@
+publish = true
+tag-message = "release: improv-wifi {{version}}"
+pre-release-commit-message = "release: improv-wifi {{version}}"
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}", "--include-path", "."]

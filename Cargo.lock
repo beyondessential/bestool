@@ -2514,6 +2514,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv-wifi"
+version = "0.1.0"
+dependencies = [
+ "miette 7.2.0",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

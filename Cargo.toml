@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/bestool",
+	"crates/improv-wifi",
 	"crates/rpi-st7789v2-driver",
 ]
 
