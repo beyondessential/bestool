@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! An implementation of [improv-wifi](https://www.improv-wifi.com) for Linux.
 //!
 //! This crate provides an implementation of the Improv Wi-Fi configuration protocol, as a
