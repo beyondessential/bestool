@@ -10,6 +10,7 @@
 //! # Example
 //!
 //! ```no_run
+//! # use embedded_graphics::pixelcolor::Rgb565;
 //! # use rpi_st7789v2_driver::{Driver, Result};
 //! # fn main() -> Result<()> {
 //! let mut lcd = Driver::new(Default::default())?;
@@ -17,7 +18,7 @@
 //! lcd.probe_buffer_length()?;
 //!
 //! let mut image = lcd.image();
-//! image.solid(embedded_graphics::pixelcolor::Rgb565::BLACK);
+//! image.solid(Rgb565::new(255, 0, 255));
 //! lcd.print((0, 0), &image)?;
 //! # Ok(()) }
 //! ```

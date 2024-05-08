@@ -13,8 +13,8 @@ use tracing::{debug, instrument};
 /// # Example
 ///
 /// ```
-/// # use rpi_st7789v2_driver::{MemoryAccessControl, TopToBottom};
-/// let control = MemoryAccessControl::default().row_order(TopToBottom);
+/// # use rpi_st7789v2_driver::{MemoryAccessControl, Vertical};
+/// let control = MemoryAccessControl::default().row_order(Vertical::TopToBottom);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MemoryAccessControl(BitArr!(for 8, in u8));
