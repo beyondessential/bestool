@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! A Raspberry Pi driver for the ST7789V2-based WaveShare 1.69" LCD display.
 //!
 //! This crate provides a high-level interface for controlling a [WaveShare 1.69" LCD display][lcd]
