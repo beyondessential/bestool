@@ -2,4 +2,26 @@
 resolver = "2"
 members = [
 	"crates/bestool",
+	"crates/rpi-st7789v2-driver",
 ]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 1024
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
+
+[profile.release.build-override]
+opt-level = 0
+codegen-units = 1024
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false

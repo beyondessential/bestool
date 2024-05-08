@@ -55,6 +55,7 @@ minisign = { version = "0.7.6", optional = true }
 node-semver = "2.1.0"
 regex = "1.10.4"
 reqwest = { version = "0.12.4", features = ["json"], default-features = false }
+rpi-st7789v2-driver = { version = "0.1.0", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.17.1", optional = true }
 rust-fontconfig = { version = "0.1.7", optional = true }
 secrecy = { version = "0.8.0", optional = true }
@@ -69,7 +70,7 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 upgrade = { version = "2.0.0", optional = true }
 walkdir = "2.5.0"
-zmq = "0.10.0"
+zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
@@ -107,30 +108,9 @@ walg = ["download"]
 ## Iti subcommands
 iti-battery = ["__iti", "dep:rppal"]
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:bitvec", "dep:embedded-graphics", "dep:rppal"]
+iti-lcd = ["__iti", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
 iti-wifisetup = ["__iti", "dep:networkmanager"]
-__iti = [] # internal feature to enable the iti subcommand common code
-
-[profile.release]
-lto = true
-codegen-units = 1
-strip = "symbols"
-
-[profile.dev.build-override]
-opt-level = 0
-codegen-units = 1024
-debug = false
-debug-assertions = false
-overflow-checks = false
-incremental = false
-
-[profile.release.build-override]
-opt-level = 0
-codegen-units = 1024
-debug = false
-debug-assertions = false
-overflow-checks = false
-incremental = false
+__iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 [package.metadata.binstall]
 pkg-url = "https://tools.ops.tamanu.io/bestool/{ version }/{ target }/{ name }{ binary-ext }"

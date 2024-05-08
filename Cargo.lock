@@ -974,6 +974,7 @@ dependencies = [
  "passcod-networkmanager",
  "regex",
  "reqwest 0.12.4",
+ "rpi-st7789v2-driver",
  "rppal",
  "rust-fontconfig",
  "secrecy",
@@ -4291,6 +4292,19 @@ dependencies = [
  "libc",
  "rtoolbox",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "rpi-st7789v2-driver"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "embedded-graphics",
+ "itertools 0.12.1",
+ "miette 7.2.0",
+ "rppal",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

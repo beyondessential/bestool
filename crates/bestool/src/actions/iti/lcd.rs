@@ -10,15 +10,12 @@ use std::{
 use clap::{Parser, Subcommand};
 use embedded_graphics::Drawable;
 use miette::{miette, IntoDiagnostic, Result, WrapErr};
+use rpi_st7789v2_driver::{DriverArgs, Driver};
 use tracing::{error, info, instrument, trace};
 
 use crate::actions::Context;
 
-mod commands;
-mod helpers;
-mod io;
 pub mod json;
-mod simple;
 
 /// Control an LCD screen.
 ///
@@ -62,6 +59,19 @@ pub struct LcdArgs {
 	/// Subcommand
 	#[command(subcommand)]
 	pub action: LcdAction,
+}
+
+impl From<LcdArgs> for DriverArgs {
+	fn from(args: LcdArgs) -> Self {
+		DriverArgs {
+			spi: args.spi,
+			backlight: args.backlight,
+			reset: args.reset,
+			dc: args.dc,
+			ce: args.ce,
+			frequency: args.frequency,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -179,7 +189,7 @@ pub fn serve(ctx: Context<LcdArgs>) -> Result<()> {
 		ctx.args_top.zmq_socket
 	);
 
-	let mut lcd = io::LcdIo::new(&ctx.args_top)?;
+	let mut lcd = Driver::new(ctx.args_top.into())?;
 	lcd.init()?;
 	lcd.probe_buffer_length()?;
 
@@ -203,7 +213,7 @@ pub fn serve(ctx: Context<LcdArgs>) -> Result<()> {
 fn loop_inner(
 	running: Arc<AtomicBool>,
 	socket: &zmq::Socket,
-	lcd: &mut io::LcdIo,
+	lcd: &mut Driver,
 ) -> Result<ControlFlow<()>> {
 	let mut polls = [socket.as_poll_item(zmq::POLLIN)];
 	let polled = zmq::poll(&mut polls, 1000)
