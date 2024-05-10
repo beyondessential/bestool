@@ -19,3 +19,4 @@ miette = { version = "7.2.0", optional = true }
 
 [features]
 miette = ["dep:miette"]
+networkmanager = []
