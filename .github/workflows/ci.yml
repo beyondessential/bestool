@@ -133,9 +133,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.target }} --features dyndns,iti
+        run: cross build -p bestool --release --target ${{ matrix.target }} --features dyndns,iti
       - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build -p bestool --release --target ${{ matrix.target }}
 
       - name: Download bestool
         shell: bash

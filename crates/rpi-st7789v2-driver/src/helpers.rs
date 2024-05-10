@@ -1,15 +1,32 @@
 use bitvec::BitArr;
 use tracing::{debug, instrument};
 
+/// Memory access control settings.
+///
+/// This is a bitfield that controls the display's memory access modes. It is used to set the
+/// direction of the row and column addresses, the refresh order, and the RGB/BGR order.
+///
+/// The default value is `0b00000000`.
+///
+/// See [`Command::MemoryAccessControl`](crate::Command::MemoryAccessControl).
+///
+/// # Example
+///
+/// ```
+/// # use rpi_st7789v2_driver::{MemoryAccessControl, Vertical};
+/// let control = MemoryAccessControl::default().row_order(Vertical::TopToBottom);
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MemoryAccessControl(BitArr!(for 8, in u8));
 
+/// Vertical refresh order values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Vertical {
 	TopToBottom,
 	BottomToTop,
 }
 
+/// Horizontal refresh order values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Horizontal {
 	LeftToRight,
@@ -17,27 +34,37 @@ pub enum Horizontal {
 }
 
 impl MemoryAccessControl {
+	/// Set the row order (direction of the row addresses).
 	pub fn row_order(mut self, direction: Vertical) -> Self {
-		self.0.set(0, match direction {
-			Vertical::TopToBottom => false,
-			Vertical::BottomToTop => true,
-		});
+		self.0.set(
+			0,
+			match direction {
+				Vertical::TopToBottom => false,
+				Vertical::BottomToTop => true,
+			},
+		);
 		self
 	}
 
+	/// Set the column order (direction of the column addresses).
 	pub fn col_order(mut self, direction: Horizontal) -> Self {
-		self.0.set(1, match direction {
-			Horizontal::LeftToRight => false,
-			Horizontal::RightToLeft => true,
-		});
+		self.0.set(
+			1,
+			match direction {
+				Horizontal::LeftToRight => false,
+				Horizontal::RightToLeft => true,
+			},
+		);
 		self
 	}
 
+	/// Don't invert the columns and rows.
 	pub fn normal(mut self) -> Self {
 		self.0.set(2, false);
 		self
 	}
 
+	/// Do invert the columns and rows.
 	pub fn inverted(mut self) -> Self {
 		self.0.set(2, true);
 		self
@@ -45,27 +72,35 @@ impl MemoryAccessControl {
 
 	/// Vertical refresh order (aka Line Address Order).
 	pub fn v_refresh(mut self, direction: Vertical) -> Self {
-		self.0.set(3, match direction {
-			Vertical::TopToBottom => false,
-			Vertical::BottomToTop => true,
-		});
+		self.0.set(
+			3,
+			match direction {
+				Vertical::TopToBottom => false,
+				Vertical::BottomToTop => true,
+			},
+		);
 		self
 	}
 
 	/// Horizontal refresh order (aka Data Latch Order).
 	pub fn h_refresh(mut self, direction: Horizontal) -> Self {
-		self.0.set(5, match direction {
-			Horizontal::LeftToRight => false,
-			Horizontal::RightToLeft => true,
-		});
+		self.0.set(
+			5,
+			match direction {
+				Horizontal::LeftToRight => false,
+				Horizontal::RightToLeft => true,
+			},
+		);
 		self
 	}
 
+	/// Set RGB mode.
 	pub fn rgb(mut self) -> Self {
 		self.0.set(4, false);
 		self
 	}
 
+	/// Set BGR mode.
 	pub fn bgr(mut self) -> Self {
 		self.0.set(4, true);
 		self
@@ -79,18 +114,40 @@ impl From<MemoryAccessControl> for u8 {
 	}
 }
 
+/// Set RGB mode with 65K colours.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
 pub const COLMOD_RGB_65K: u8 = 0b0101;
-// pub const COLMOD_RGB_262K: u8 = 0b0110;
 
-// pub const COLMOD_12BPP: u8 = 0b0011;
+/// Set RGB mode with 262K colours.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
+pub const COLMOD_RGB_262K: u8 = 0b0110;
+
+/// Set 12-bit colour mode.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
+pub const COLMOD_12BPP: u8 = 0b0011;
+
+/// Set 16-bit colour mode.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
 pub const COLMOD_16BPP: u8 = 0b0101;
-// pub const COLMOD_18BPP: u8 = 0b0110;
-// pub const COLMOD_16M_TRUNC: u8 = 0b0111;
+
+/// Set 18-bit colour mode.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
+pub const COLMOD_18BPP: u8 = 0b0110;
+
+/// Set 16M colour mode, truncated.
+///
+/// See [`Command::InterfacePixelFormat`](crate::Command::InterfacePixelFormat).
+pub const COLMOD_16M_TRUNC: u8 = 0b0111;
 
 /// Helper function to set the gate voltages.
 ///
 /// Takes the high and low gate voltages in millivolts, and returns the
-/// corresponding byte to send with [`Command::GateVoltages`].
+/// corresponding byte to send with [`Command::GateVoltages`](crate::Command::GateVoltages).
 #[instrument(level = "debug")]
 pub fn gate_voltages(vgh: u16, vgl: u16) -> u8 {
 	let vghs = if vgh <= 12200 {
@@ -136,7 +193,7 @@ pub fn gate_voltages(vgh: u16, vgl: u16) -> u8 {
 /// Helper function to set the frame rate.
 ///
 /// Takes the frame rate in Hz, and returns the corresponding byte to send with
-/// [`Command::FrameRateControl`].
+/// [`Command::FrameRateControl`](crate::Command::FrameRateControl).
 #[instrument(level = "debug")]
 pub fn frame_rate(rate: u8) -> u8 {
 	let rate = rate.clamp(39, 119);
@@ -181,7 +238,7 @@ pub fn frame_rate(rate: u8) -> u8 {
 /// Helper function to set the power control 1 values.
 ///
 /// Takes the AVDD, AVCL, and VDDS voltage levels in decivolts, and returns the corresponding bytes
-/// to send with [`Command::PowerControl1`].
+/// to send with [`Command::PowerControl1`](crate::Command::PowerControl1).
 #[instrument(level = "debug")]
 pub fn power_control1(avdd: u8, avcl: u8, vdds: u8) -> [u8; 2] {
 	[0b10100100, power_control2(avdd, avcl, vdds)]
@@ -190,7 +247,7 @@ pub fn power_control1(avdd: u8, avcl: u8, vdds: u8) -> [u8; 2] {
 /// Helper function to set the power control 2 values.
 ///
 /// Takes the AVDD, AVCL, and VDDS voltage levels in decivolts, and returns the corresponding byte
-/// to send with [`Command::PowerControl2`].
+/// to send with [`Command::PowerControl2`](crate::Command::PowerControl2).
 #[instrument(level = "debug")]
 pub fn power_control2(avdd: u8, avcl: u8, vdds: u8) -> u8 {
 	let avdd = match avdd.clamp(64, 68) {
@@ -221,7 +278,7 @@ pub fn power_control2(avdd: u8, avcl: u8, vdds: u8) -> u8 {
 /// Helper function to set the gate control values.
 ///
 /// Takes the number of gate lines, the first scan line, and the flags, and returns the
-/// corresponding bytes to send with [`Command::GateControl`].
+/// corresponding bytes to send with [`Command::GateControl`](crate::Command::GateControl).
 #[instrument(level = "debug")]
 pub fn gate_control(gate_lines: u16, first_scan_line: u16, flags: GateFlags) -> [u8; 3] {
 	let nl = ((gate_lines.clamp(8, 320) - 8) / 8) as u8;
@@ -231,6 +288,7 @@ pub fn gate_control(gate_lines: u16, first_scan_line: u16, flags: GateFlags) -> 
 	[nl, scn, flags]
 }
 
+/// Flags for the gate control.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GateFlags {
 	pub mirror: GateMirror,
@@ -238,6 +296,7 @@ pub struct GateFlags {
 	pub scan_direction: GateScanDirection,
 }
 
+/// Whether to mirror the gates.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum GateMirror {
 	#[default]
@@ -245,6 +304,7 @@ pub enum GateMirror {
 	Full,
 }
 
+/// Whether to interlace the gates.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum GateInterlace {
 	#[default]
@@ -252,6 +312,7 @@ pub enum GateInterlace {
 	Progressive,
 }
 
+/// The direction to scan the gates.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum GateScanDirection {
 	#[default]
