@@ -1,0 +1,8 @@
+publish = true
+tag-message = "release: {{version}}"
+pre-release-commit-message = "release: {{version}}"
+pre-release-hook = ["git", "cliff", "-o", "../../CHANGELOG.md", "--tag", "{{version}}", "--include-path", "."]
+pre-release-replacements = [
+  { file = "../../README.md", search = "Current release: [0-9\\.]+", replace = "Current release: {{version}}"},
+  { file = "../../README.md", search = "https://tools.ops.tamanu.io/bestool/[0-9\\.]+/", replace = "https://tools.ops.tamanu.io/bestool/{{version}}/"},
+]

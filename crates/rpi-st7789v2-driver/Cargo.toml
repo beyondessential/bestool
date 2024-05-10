@@ -1,0 +1,27 @@
+[package]
+name = "rpi-st7789v2-driver"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.76.0"
+resolver = "2"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Raspberry-Pi driver for the ST7789V2 TFT display controller (WaveShare 1.69\" 240x280 LCD)"
+keywords = ["embedded-graphics", "waveshare", "st7789v2", "lcd", "raspberry-pi"]
+categories = ["embedded", "hardware-support"]
+repository = "https://github.com/beyondessential/bestool"
+
+[dependencies]
+bitvec = "1.0.1"
+embedded-graphics = "0.8.1"
+itertools = "0.12.1"
+thiserror = "1.0.59"
+tracing = { version = "0.1.40", features = ["attributes"] }
+miette = { version = "7.2.0", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rppal = "0.17.1"
+
+[features]
+miette = ["dep:miette"]

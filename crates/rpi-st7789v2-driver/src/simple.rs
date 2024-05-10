@@ -1,17 +1,25 @@
 use embedded_graphics::{
 	draw_target::DrawTarget,
-	primitives::Rectangle,
 	geometry::{Dimensions, Point, Size},
 	pixelcolor::{
 		raw::{RawData, RawU16},
 		Rgb565,
 	},
+	primitives::Rectangle,
 	Pixel,
 };
 
+impl crate::Driver {
+	/// Get a new image buffer sized for the screen.
+	pub fn image(&self) -> SimpleImage {
+		SimpleImage::new(self.width, self.height)
+	}
+}
+
 /// Simple image buffer.
 ///
-/// For more complex graphics, use the `embedded_graphics` crate.
+/// For more complex graphics, use the [`embedded_graphics`] crate. For convenience, this type also
+/// implements the [`DrawTarget`] trait.
 #[derive(Debug, Clone)]
 pub struct SimpleImage {
 	pub(crate) width: u16,  // readonly
@@ -59,7 +67,10 @@ impl SimpleImage {
 
 impl Dimensions for SimpleImage {
 	fn bounding_box(&self) -> Rectangle {
-		Rectangle::new(Point::new(0, 0), Size::new(self.width.into(), self.height.into()))
+		Rectangle::new(
+			Point::new(0, 0),
+			Size::new(self.width.into(), self.height.into()),
+		)
 	}
 }
 
@@ -72,10 +83,14 @@ impl DrawTarget for SimpleImage {
 		I: IntoIterator<Item = Pixel<Self::Color>>,
 	{
 		for Pixel(coord, color) in pixels.into_iter() {
-			let Ok(x) = u16::try_from(coord.x) else { continue };
-			let Ok(y) = u16::try_from(coord.y) else { continue };
+			let Ok(x) = u16::try_from(coord.x) else {
+				continue;
+			};
+			let Ok(y) = u16::try_from(coord.y) else {
+				continue;
+			};
 			self.pixel(x, y, color);
-        }
+		}
 
 		Ok(())
 	}
