@@ -22,7 +22,7 @@ binstalk-downloader = { version = "0.10.3", optional = true }
 bitflags = { version = "2.4.2", optional = true }
 bitvec = { version = "1.0.1", optional = true }
 blake3 = "1.5.1"
-boxcar = "0.2.4"
+boxcar = "0.2.5"
 bytes = "1.6.0"
 chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
