@@ -1128,9 +1128,9 @@ dependencies = [
 
 [[package]]
 name = "boxcar"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e516014975db8769c0dcd1aba681c21079475fcddf77118bf54f9e2e013f6b29"
+checksum = "510a90332002c1af3317ef6b712f0dab697f30bbe809b86965eac2923c0bca8e"
 
 [[package]]
 name = "brotli"
