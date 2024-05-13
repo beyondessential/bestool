@@ -63,7 +63,7 @@ serde = { version = "1.0.201", features = ["derive"] }
 serde_json = "1.0.117"
 ssh-key = { version = "0.6.6", optional = true }
 tera = { version = "1.19.1", optional = true }
-thiserror = "1.0.59"
+thiserror = "1.0.60"
 tokio = { version = "1.37.0", features = ["full"] }
 tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-appender = "0.2.3"
