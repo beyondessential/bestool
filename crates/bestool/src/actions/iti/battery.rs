@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, time::Duration};
 
 use clap::Parser;
+use folktime::duration::{Duration as Folktime, Style as Folkstyle};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rppal::{gpio::Gpio, i2c::I2c};
 use tokio::time::sleep;
@@ -145,7 +146,19 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			None
 		};
 
-		Some((rate, time_remaining.map(humantime::Duration::from)))
+		Some((
+			rate,
+			time_remaining.map(|dur| {
+				Folktime(
+					dur,
+					if dur > Duration::from_secs(60 * 60) {
+						Folkstyle::TwoUnitsWhole
+					} else {
+						Folkstyle::OneUnitWhole
+					},
+				)
+			}),
+		))
 	} else {
 		None
 	};
@@ -168,7 +181,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 	};
 
 	if ctx.args_top.json {
-		if let Some((rate, time_remaining)) = estimates {
+		if let Some((rate, ref time_remaining)) = estimates {
 			println!(
 				"{}",
 				serde_json::json!({
@@ -177,8 +190,8 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 					"capacity": capacity,
 					"version": version,
 					"rate": rate,
-					"time_remaining": time_remaining.map(|d| d.as_secs()),
-					"time_remaining_pretty": time_remaining.map(|d| d.to_string()),
+					"time_remaining": time_remaining.as_ref().map(|d| d.0.as_secs()),
+					"time_remaining_pretty": time_remaining.as_ref().map(|d| d.to_string()),
 				})
 			);
 		} else {
@@ -191,7 +204,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		println!("Version: {}", version);
 		println!("Voltage: {:.2}V", vcell);
 		println!("Battery: {:.2}%", capacity);
-		if let Some((rate, time_remaining)) = estimates {
+		if let Some((rate, ref time_remaining)) = estimates {
 			println!("Rate: {:.2}%/h ({status})", rate * 60.0 * 60.0,);
 			if let Some(time_remaining) = time_remaining {
 				println!("Time remaining: {time_remaining}");
@@ -201,14 +214,15 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 
 	#[cfg(feature = "iti-lcd")]
 	if let Some(y) = ctx.args_top.update_screen {
-		let fill = if estimates.map_or(false, |(rate, _)| rate > 0.0) {
+		let fill = if estimates.as_ref().map_or(false, |(rate, _)| *rate > 0.0) {
 			[0, 255, 0]
 		} else if capacity < 3.0 {
 			[255, 0, 0]
 		} else {
 			[255, 255, 255]
 		};
-		let stroke = if capacity < 3.0 && estimates.map_or(false, |(rate, _)| rate < 0.0) {
+		let stroke = if capacity < 3.0 && estimates.as_ref().map_or(false, |(rate, _)| *rate < 0.0)
+		{
 			[255, 255, 255]
 		} else if capacity <= 15.0 {
 			[200, 0, 0]
@@ -224,8 +238,9 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			..Default::default()
 		}];
 
-		let (bg_x, bg_w) = if let Some(time_remaining) =
-			estimates.and_then(|(_, time_remaining)| time_remaining)
+		let (bg_x, bg_w) = if let Some(time_remaining) = estimates
+			.as_ref()
+			.and_then(|(_, time_remaining)| time_remaining.as_ref())
 		{
 			items.push(Item {
 				x: 20,

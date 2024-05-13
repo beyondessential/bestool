@@ -953,6 +953,7 @@ dependencies = [
  "duct",
  "embedded-graphics",
  "enable-ansi-support",
+ "folktime",
  "fontdue",
  "fs4",
  "glob",
@@ -2095,6 +2096,12 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "folktime"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62f14fea54ab6277c8628ceca8effb100d22d101e7b0b4a39779ab861d71dbf9"
 
 [[package]]
 name = "fontdue"
