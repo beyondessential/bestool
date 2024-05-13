@@ -94,15 +94,26 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 	let version = read(&mut i2c, 0x8)?;
 
 	let estimates = if let Some(rolling) = rolling {
-		rolling.push_back(capacity);
-		let front = if rolling.len() > 100 {
-			rolling.pop_front()
-		} else {
-			rolling.front().copied()
-		}
-		.expect("rolling is always non-empty");
+		rolling.push_front(capacity);
+		rolling.truncate(100);
+		// [now, interval ago, ..., 99 intervals ago]
 
-		let mut rate = (capacity - front)
+		// look back and find the first time the value changed
+		// that is at least 5 intervals away, data-permitting.
+		let index_to_first_difference = rolling
+			.iter()
+			.scan(rolling.front().unwrap(), |prev, curr| {
+				let pre = *prev;
+				*prev = curr;
+				Some(curr - pre)
+			})
+			.enumerate()
+			.filter(|(n, diff)| *n >= 4.min(rolling.len() - 1) && *diff != 0.0)
+			.next()
+			.map(|(n, _)| n)
+			.unwrap_or(rolling.len() - 1);
+
+		let mut rate = (capacity - rolling.get(index_to_first_difference).unwrap_or(&capacity))
 			/ ((rolling.len() as u64 * ctx.args_top.watch.unwrap().as_ref().as_secs()) as f64);
 		let capacity_left = if rate > 0.0 {
 			(100.0 - capacity).abs()
@@ -111,7 +122,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		}
 		.clamp(0.0, 100.0);
 
-		if capacity >= 99.0 && rate >= 0.0 {
+		if capacity >= 98.5 && rate >= 0.0 {
 			// fudge full capacity if it's close enough and we're "charging"
 			// otherwise we get non-sensical time remaining like "7 days to reach 100%"
 			capacity = 100.0;
@@ -221,7 +232,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		} else {
 			[255, 255, 255]
 		};
-		let stroke = if capacity < 3.0 && estimates.as_ref().map_or(false, |(rate, _)| *rate < 0.0)
+		let stroke = if capacity < 3.0 && estimates.as_ref().map_or(false, |(rate, _)| *rate < -0.0)
 		{
 			[255, 255, 255]
 		} else if capacity <= 15.0 {
@@ -231,26 +242,30 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		};
 
 		let mut items = vec![Item {
-			x: 240,
+			x: 230,
 			y,
 			stroke: Some(stroke),
-			text: Some(format!("{capacity:>2.0}%")),
+			text: Some(format!("{capacity:>3.0}%")),
 			..Default::default()
 		}];
 
-		let (bg_x, bg_w) = if let Some(time_remaining) = estimates
+		let (bg_x, bg_w) = if let Some((rate, time_remaining)) = estimates
 			.as_ref()
-			.and_then(|(_, time_remaining)| time_remaining.as_ref())
+			.and_then(|(rate, time_remaining)| time_remaining.as_ref().map(|d| (rate, d)))
 		{
 			items.push(Item {
 				x: 20,
 				y,
 				stroke: Some(stroke),
-				text: Some(format!("{time_remaining} left")),
+				text: Some(if *rate < -0.0 {
+					format!("{time_remaining} left")
+				} else {
+					format!("full in {time_remaining}")
+				}),
 				..Default::default()
 			});
 			(18, 254)
-		} else if estimates.map_or(false, |(rate, _)| rate == 0.0) {
+		} else if estimates.map_or(false, |(rate, _)| !(rate > 0.0) && !(rate < -0.0)) {
 			// when stable, also erase the time remaining
 			(18, 254)
 		} else {
