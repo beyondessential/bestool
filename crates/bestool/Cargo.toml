@@ -110,6 +110,7 @@ walg = ["download"]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
+iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 iti-wifisetup = ["__iti", "dep:networkmanager"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
