@@ -225,20 +225,20 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 
 	#[cfg(feature = "iti-lcd")]
 	if let Some(y) = ctx.args_top.update_screen {
-		let fill = if estimates.as_ref().map_or(false, |(rate, _)| *rate > 0.0) {
-			[0, 255, 0]
-		} else if capacity < 3.0 {
-			[255, 0, 0]
-		} else {
-			[255, 255, 255]
-		};
-		let stroke = if capacity < 3.0 && estimates.as_ref().map_or(false, |(rate, _)| *rate < -0.0)
-		{
-			[255, 255, 255]
+		const GREEN: [u8; 3] = [0, 255, 0];
+		const RED: [u8; 3] = [255, 0, 0];
+		const DARK_RED: [u8; 3] = [200, 0, 0];
+		const BLACK: [u8; 3] = [0, 0, 0];
+		const WHITE: [u8; 3] = [255, 255, 255];
+
+		let (fill, stroke) = if estimates.as_ref().map_or(false, |(rate, _)| *rate > 0.0) {
+			(GREEN, WHITE)
+		} else if capacity <= 3.0 {
+			(RED, WHITE)
 		} else if capacity <= 15.0 {
-			[200, 0, 0]
+			(WHITE, DARK_RED)
 		} else {
-			[0, 0, 0]
+			(BLACK, WHITE)
 		};
 
 		let mut items = vec![Item {
