@@ -19,7 +19,7 @@ pub struct TemperatureArgs {
 
 	/// Update screen with temperature.
 	///
-	/// Argument is the Y position of the temperature display. The X position is always 20 (left edge).
+	/// Argument is the Y position of the temperature display. The X position is always 240 (right edge).
 	#[cfg(feature = "iti-lcd")]
 	#[arg(long)]
 	pub update_screen: Option<i32>,
@@ -57,14 +57,14 @@ pub async fn once(ctx: Context<TemperatureArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	if ctx.args_top.json {
-			println!(
-				"{}",
-				serde_json::json!({
-					"temperature": temperature,
-				})
-			);
+		println!(
+			"{}",
+			serde_json::json!({
+				"temperature": temperature,
+			})
+		);
 	} else {
-		println!("{:.2}°C", temperature);
+		println!("{:.1}°C", temperature);
 	}
 
 	#[cfg(feature = "iti-lcd")]
@@ -72,30 +72,34 @@ pub async fn once(ctx: Context<TemperatureArgs>) -> Result<()> {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
-		const WHITE: [u8; 3] = [255, 255, 255];
+		const YELLOW: [u8; 3] = [255, 255, 0];
 
-		let (fill, stroke) = if temperature < 60.0 {
-			(GREEN, BLACK)
-		} else if temperature > 80.0 {
-			(RED, BLACK)
-		} else {
-			(WHITE, BLACK)
-		};
-
-		send(&ctx.args_top.zmq_socket, Screen::Layout(vec![Item {
-			x: 18,
-			y: y - 16,
-			width: Some(50),
-			height: Some(20),
-			fill: Some(fill),
-			..Default::default()
-		}, Item {
-			x: 20,
-			y,
-			stroke: Some(stroke),
-			text: Some(format!("{temperature:>3.0}C")),
-			..Default::default()
-		}]))?;
+		send(
+			&ctx.args_top.zmq_socket,
+			Screen::Layout(vec![
+				Item {
+					x: 218,
+					y: y - 16,
+					width: Some(62),
+					height: Some(20),
+					fill: Some(BLACK),
+					..Default::default()
+				},
+				Item {
+					x: 220,
+					y,
+					stroke: Some(if temperature < 60.0 {
+						GREEN
+					} else if temperature > 80.0 {
+						RED
+					} else {
+						YELLOW
+					}),
+					text: Some(format!("{temperature:>5.1}C")),
+					..Default::default()
+				},
+			]),
+		)?;
 	}
 
 	Ok(())
