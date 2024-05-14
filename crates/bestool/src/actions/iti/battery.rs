@@ -266,7 +266,15 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			});
 			(18, 254)
 		} else if estimates.map_or(false, |(rate, _)| !(rate > 0.0) && !(rate < -0.0)) {
-			// when stable, also erase the time remaining
+			if capacity == 100.0 {
+				items.push(Item {
+					x: 20,
+					y,
+					stroke: Some(stroke),
+					text: Some("fully charged".into()),
+					..Default::default()
+				});
+			}
 			(18, 254)
 		} else {
 			(238, 34)
