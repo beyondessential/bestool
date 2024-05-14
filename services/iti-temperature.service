@@ -4,7 +4,7 @@ After=network.target
 Requires=iti-lcd-server.service
 
 [Service]
-ExecStart=/usr/local/bin/bestool --log-timeless iti temperature --watch 10sec --json --update-screen 200
+ExecStart=/usr/local/bin/bestool --log-timeless iti temperature --watch 10sec --json --update-screen 195
 Restart=always
 
 [Install]
