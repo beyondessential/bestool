@@ -24,6 +24,4 @@ super::subcommands! {
 	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-temperature")]
 	temperature => Temperature(TemperatureArgs),
-	#[cfg(feature = "iti-wifisetup")]
-	wifisetup => WifiSetup(WifisetupArgs)
 }

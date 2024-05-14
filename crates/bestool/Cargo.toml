@@ -73,9 +73,6 @@ upgrade = { version = "2.0.0", optional = true }
 walkdir = { version = "2.5.0", optional = true }
 zmq = { version = "0.10.0", optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
-
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.56.0", features = ["Win32_System_Console"] , optional = true }
 windows-acl = { version = "0.3.0", optional = true }
@@ -111,7 +108,6 @@ iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
-iti-wifisetup = ["__iti", "dep:networkmanager"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 [package.metadata.binstall]
