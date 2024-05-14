@@ -232,7 +232,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		const WHITE: [u8; 3] = [255, 255, 255];
 
 		let (fill, stroke) = if estimates.as_ref().map_or(false, |(rate, _)| *rate > 0.0) {
-			(GREEN, WHITE)
+			(GREEN, BLACK)
 		} else if capacity <= 3.0 {
 			(RED, WHITE)
 		} else if capacity <= 15.0 {
