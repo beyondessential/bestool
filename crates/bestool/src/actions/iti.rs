@@ -23,5 +23,5 @@ super::subcommands! {
 	#[cfg(feature = "iti-lcd")]
 	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-temperature")]
-	temperature => Temperature(TemperatureArgs),
+	temperature => Temperature(TemperatureArgs)
 }
