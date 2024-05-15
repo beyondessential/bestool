@@ -1,11 +1,11 @@
 [Unit]
-Description=Iti local time display
+Description=Iti wifi network display
 After=network.target
 Requires=iti-lcd-server.service
 
 [Service]
 ExecStartPre=/bin/sleep 10
-ExecStart=/usr/local/bin/iti-localtime
+ExecStart=/usr/local/bin/iti-lcd-wifi
 Restart=always
 RestartSec=60s
 

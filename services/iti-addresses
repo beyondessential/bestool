@@ -13,7 +13,7 @@ update() {
 			{x:10,y:($y-15),fill:[0,0,0],width:260,height:((. | split("\n") | length)*20)},
 			{x:10,y:$y,stroke:[220,0,220],text:.}
 		]}
-	' | tee /dev/stderr | bestool iti lcd send
+	' | bestool iti lcd send
 }
 
 while true; do

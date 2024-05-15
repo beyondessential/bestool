@@ -11,6 +11,7 @@ ExecStop=-/usr/local/bin/bestool --log-timeless iti lcd off
 ExecStop=/usr/bin/kill -INT $MAINPID
 ExecStop=/usr/bin/sleep 1
 Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
