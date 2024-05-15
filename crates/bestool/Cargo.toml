@@ -63,6 +63,7 @@ secrecy = { version = "0.8.0", optional = true }
 serde = { version = "1.0.201", features = ["derive"] }
 serde_json = "1.0.116"
 ssh-key = { version = "0.6.6", optional = true }
+sysinfo = { version = "0.30.12", optional = true }
 tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.59"
 tokio = { version = "1.37.0", features = ["full"] }
@@ -106,7 +107,7 @@ walg = ["download"]
 ## Iti subcommands
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
+iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 

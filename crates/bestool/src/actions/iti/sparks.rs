@@ -1,7 +1,8 @@
-use std::iter::repeat;
+use std::{collections::VecDeque, iter::repeat, time::Duration};
 
 use clap::Parser;
 use miette::Result;
+use sysinfo::System;
 
 use crate::actions::{
 	iti::lcd::{
@@ -22,6 +23,10 @@ pub struct SparksArgs {
 	#[arg(long, default_value = "27")]
 	pub h: u32,
 
+	/// Refresh interval.
+	#[arg(long, default_value = "10s")]
+	pub interval: humantime::Duration,
+
 	/// ZMQ socket to use for screen updates.
 	#[arg(default_value = "tcp://[::1]:2009")]
 	pub zmq_socket: String,
@@ -38,16 +43,53 @@ const OUTER_WIDTH: u32 = ((MAX_X - MIN_X - GAP) as u32) / 2;
 const INNER_WIDTH: u32 = OUTER_WIDTH - 2;
 
 pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
-	let SparksArgs { y, h, zmq_socket } = ctx.args_top;
+	let mut sys = System::new();
+	sys.refresh_cpu_usage();
+	sys.refresh_memory();
 
-	let cpu = vec![
-		0.1, 0.2, 0.3, 0.10, 0.2, 0.40, 0.2, 0.30, 0.1, 0.2, 0.3, 0.50, 0.55, 0.55, 0.55, 0.85,
-		0.88, 0.90, 0.90, 0.90, 0.60, 0.30, 0.20, 0.20, 0.22, 0.21, 0.15, 0.16, 0.5, 0.2,
-	];
-	let mem = vec![
-		0.1, 0.2, 0.3, 0.10, 0.2, 0.40, 0.2, 0.30, 0.1, 0.2, 0.3, 0.50, 0.55, 0.55, 0.55, 0.85,
-		0.88, 0.90, 0.90, 0.90, 0.60, 0.30, 0.20, 0.20, 0.22, 0.21, 0.15, 0.16, 0.5, 0.2, 1.0,
-	];
+	let mut cpu = VecDeque::new();
+	let mut mem = VecDeque::new();
+
+	let mut interval: Duration = ctx.args_top.interval.into();
+	if interval < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL {
+		interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+	}
+
+	loop {
+		tokio::time::sleep(interval).await;
+		sys.refresh_cpu_usage();
+		sys.refresh_memory();
+
+		let mut cpu_sum = 0.0;
+		let mut cpu_count = 0.0;
+		for cpu in sys.cpus() {
+			cpu_sum += cpu.cpu_usage() / 100.0;
+			cpu_count += 1.0;
+		}
+		cpu.push_front(cpu_sum / cpu_count);
+		cpu.truncate(INNER_WIDTH as _);
+
+		mem.push_front(sys.used_memory() as f32 / sys.total_memory() as f32);
+		mem.truncate(INNER_WIDTH as _);
+
+		render(
+			&ctx.args_top,
+			cpu.iter().rev().copied(),
+			mem.iter().rev().copied(),
+		)?;
+	}
+}
+
+pub fn render(
+	args: &SparksArgs,
+	cpu: impl ExactSizeIterator<Item = f32>,
+	mem: impl ExactSizeIterator<Item = f32>,
+) -> Result<()> {
+	let SparksArgs {
+		y, h, zmq_socket, ..
+	} = args;
+	let y = *y;
+	let h = *h;
 
 	let inner_height = h - 2;
 	let inner_y = y + 1;
@@ -88,14 +130,14 @@ pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
 	];
 
 	items.extend(spark_line(
-		&cpu,
+		cpu,
 		MIN_X + 1,
 		inner_y,
 		inner_height as i32,
 		FG_CPU,
 	));
 	items.extend(spark_line(
-		&mem,
+		mem,
 		MIN_X + (OUTER_WIDTH as i32) + GAP + 1,
 		inner_y,
 		inner_height as i32,
@@ -107,16 +149,16 @@ pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
 	Ok(())
 }
 
-fn spark_line(
-	data: &[f32],
+fn spark_line<'a>(
+	data: impl ExactSizeIterator<Item = f32> + 'a,
 	min_x: i32,
 	min_y: i32,
 	height: i32,
 	colour: [u8; 3],
-) -> impl Iterator<Item = Item> + '_ {
+) -> impl Iterator<Item = Item> + 'a {
 	repeat(0.0)
 		.take((INNER_WIDTH as usize).saturating_sub(data.len()))
-		.chain(data.iter().copied())
+		.chain(data)
 		.map(move |v| {
 			let v = v.clamp(0.0, 1.0);
 			let h = height as f32;
