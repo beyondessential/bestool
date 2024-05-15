@@ -22,6 +22,8 @@ super::subcommands! {
 	eink => Eink(EinkArgs),
 	#[cfg(feature = "iti-lcd")]
 	lcd => Lcd(LcdArgs),
+	#[cfg(feature = "iti-lcd")]
+	sparks => Sparks(SparksArgs),
 	#[cfg(feature = "iti-temperature")]
 	temperature => Temperature(TemperatureArgs)
 }
