@@ -227,7 +227,6 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 	if let Some(y) = ctx.args_top.update_screen {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
-		const DARK_RED: [u8; 3] = [200, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
 		const WHITE: [u8; 3] = [255, 255, 255];
 
@@ -236,7 +235,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		} else if capacity <= 3.0 {
 			(RED, WHITE)
 		} else if capacity <= 15.0 {
-			(WHITE, DARK_RED)
+			(BLACK, RED)
 		} else {
 			(BLACK, WHITE)
 		};
