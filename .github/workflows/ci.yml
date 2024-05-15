@@ -133,15 +133,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
-        run: cross build -p bestool --release --target ${{ matrix.target }} --features dyndns,iti
+        run: cross build -p bestool --profile dist --target ${{ matrix.target }} --features dyndns,iti
       - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build -p bestool --release --target ${{ matrix.target }}
-
-      - name: Download bestool
-        shell: bash
-        run: |
-          curl -Lo ${{ runner.os == 'Windows' && 'bestool.exe' || 'bestool' }} https://tools.ops.tamanu.io/bestool/gha/${{ runner.os }}-${{ runner.arch }}
-          [[ -f bestool ]] && chmod +x bestool
+        run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -149,8 +143,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: |
-            target/*/release/bestool
-            target/*/release/bestool.exe
+            target/*/dist/bestool
+            target/*/dist/bestool.exe
 
       - name: Configure AWS Credentials
         if: startsWith(github.ref, 'refs/tags/v')
