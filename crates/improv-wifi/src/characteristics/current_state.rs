@@ -9,6 +9,7 @@ use bluer::{
 
 const UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268001);
 
+#[derive(Debug)]
 pub struct CurrentState {
 	pub control: CharacteristicControl,
 	pub state: Arc<RwLock<State>>,

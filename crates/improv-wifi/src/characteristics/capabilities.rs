@@ -13,6 +13,7 @@ use bluer::{
 
 const UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268005);
 
+#[derive(Debug)]
 pub struct Capabilities {
 	pub control: CharacteristicControl,
 	pub can_identify: bool,
