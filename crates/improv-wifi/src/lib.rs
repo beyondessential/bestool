@@ -19,10 +19,7 @@
 //! [improv-wifi]: https://www.improv-wifi.com
 //! [NetworkManager]: https://www.networkmanager.dev
 
-use std::{
-	sync::{Arc, RwLock},
-	time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use bluer::{
 	gatt::local::{
@@ -34,7 +31,10 @@ use bluer::{
 };
 use error::Error;
 use status::Status;
-use tokio::sync::broadcast::{channel as broadcast_channel, Sender};
+use tokio::sync::{
+	broadcast::{channel as broadcast_channel, Sender},
+	RwLock,
+};
 
 mod error;
 mod status;
@@ -75,20 +75,20 @@ impl State {
 		Self(Arc::new(RwLock::new(state)))
 	}
 
-	pub fn status(&self) -> Status {
-		self.0.read().unwrap().status
+	pub async fn status(&self) -> Status {
+		self.0.read().await.status
 	}
 
-	pub fn last_error(&self) -> Option<Error> {
-		self.0.read().unwrap().last_error
+	pub async fn last_error(&self) -> Option<Error> {
+		self.0.read().await.last_error
 	}
 
-	pub fn set_status(&self, new: Status) {
-		self.0.write().unwrap().status = new;
+	pub async fn set_status(&self, new: Status) {
+		self.0.write().await.status = new;
 	}
 
-	pub fn set_last_error(&self, new: Option<Error>) {
-		self.0.write().unwrap().last_error = new;
+	pub async fn set_last_error(&self, new: Option<Error>) {
+		self.0.write().await.last_error = new;
 	}
 }
 
@@ -115,47 +115,47 @@ pub trait WifiConfigurator {
 }
 
 impl<T: WifiConfigurator> ImprovWifi<T> {
-	fn modify_status(&mut self, status: Status) {
-		self.state.set_status(status);
+	async fn modify_status(&mut self, status: Status) {
+		self.state.set_status(status).await;
 		self.status_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub fn set_error(&mut self, error: Error) {
-		self.state.set_last_error(Some(error));
+	pub async fn set_error(&mut self, error: Error) {
+		self.state.set_last_error(Some(error)).await;
 		self.error_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub fn clear_error(&mut self) {
-		self.state.set_last_error(None);
+	pub async fn clear_error(&mut self) {
+		self.state.set_last_error(None).await;
 		self.error_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub fn set_authorized(&mut self) {
-		if self.state.status() == Status::AuthorizationRequired {
-			self.modify_status(Status::Authorized);
+	pub async fn set_authorized(&mut self) {
+		if self.state.status().await == Status::AuthorizationRequired {
+			self.modify_status(Status::Authorized).await;
 		}
 	}
 
 	pub async fn provision(&mut self) {
-		if self.state.status() != Status::Authorized {
-			self.set_error(Error::NotAuthorized);
+		if self.state.status().await != Status::Authorized {
+			self.set_error(Error::NotAuthorized).await;
 			return;
 		}
 
-		self.clear_error();
+		self.clear_error().await;
 
-		self.modify_status(Status::Provisioning);
+		self.modify_status(Status::Provisioning).await;
 
 		if let Err(err) = self.handler.provision().await {
-			self.set_error(err);
-			self.modify_status(Status::Authorized);
+			self.set_error(err).await;
+			self.modify_status(Status::Authorized).await;
 			return;
 		}
 
-		self.modify_status(Status::Provisioned);
+		self.modify_status(Status::Provisioned).await;
 	}
 
 	pub async fn install(adapter: &Adapter, handler: T) -> Result<Self> {
@@ -207,7 +207,9 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 								let state = state.clone();
 								move |_| {
 									let state = state.clone();
-									Box::pin(async move { Ok(vec![state.status().as_byte()]) })
+									Box::pin(
+										async move { Ok(vec![state.status().await.as_byte()]) },
+									)
 								}
 							}),
 							..Default::default()
@@ -225,7 +227,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 										tokio::spawn(async move {
 											while let Ok(()) = status_change_receiver.recv().await {
 												notifier
-													.notify(vec![state.status().as_byte()])
+													.notify(vec![state.status().await.as_byte()])
 													.await
 													.ok();
 											}
@@ -247,7 +249,10 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 								move |_| {
 									let state = state.clone();
 									Box::pin(async move {
-										Ok(vec![state.last_error().map_or(0x00, |s| s.as_byte())])
+										Ok(vec![state
+											.last_error()
+											.await
+											.map_or(0x00, |s| s.as_byte())])
 									})
 								}
 							}),
@@ -268,6 +273,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 												notifier
 													.notify(vec![state
 														.last_error()
+														.await
 														.map_or(0x00, |s| s.as_byte())])
 													.await
 													.ok();
