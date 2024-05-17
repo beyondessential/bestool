@@ -30,7 +30,6 @@ use bluer::{
 use error::Error;
 use status::Status;
 
-mod characteristics;
 mod error;
 mod status;
 
@@ -38,6 +37,8 @@ const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_27747826800
 const CHARACTERISTIC_UUID_CAPABILITIES: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268005);
 const CHARACTERISTIC_UUID_CURRENT_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268001);
 const CHARACTERISTIC_UUID_ERROR_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268002);
+const CHARACTERISTIC_UUID_RPC_COMMAND: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268003);
+const CHARACTERISTIC_UUID_RPC_RESULT: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268004);
 
 #[derive(Debug)]
 pub struct InnerState {
@@ -167,8 +168,8 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		let (capabilities_control, capabilities_handle) = characteristic_control();
 		let (current_control, current_handle) = characteristic_control();
 		let (error_control, error_handle) = characteristic_control();
-		let (rpc_command, rpc_command_char) = characteristics::rpc_command::install();
-		let (rpc_result, rpc_result_char) = characteristics::rpc_result::install();
+		let (rpc_command_control, rpc_command_handle) = characteristic_control();
+		let (rpc_result_control, rpc_result_handle) = characteristic_control();
 
 		let app = Application {
 			services: vec![Service {
@@ -226,8 +227,16 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 						control_handle: error_handle,
 						..Default::default()
 					},
-					rpc_command_char,
-					rpc_result_char,
+					Characteristic {
+						uuid: CHARACTERISTIC_UUID_RPC_COMMAND,
+						control_handle: rpc_command_handle,
+						..Default::default()
+					},
+					Characteristic {
+						uuid: CHARACTERISTIC_UUID_RPC_RESULT,
+						control_handle: rpc_result_handle,
+						..Default::default()
+					},
 				],
 				control_handle: service_handle,
 				..Default::default()
@@ -248,8 +257,8 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 			capabilities: capabilities_control,
 			current_state: current_control,
 			error_state: error_control,
-			rpc_command,
-			rpc_result,
+			rpc_command: rpc_command_control,
+			rpc_result: rpc_result_control,
 		})
 	}
 
