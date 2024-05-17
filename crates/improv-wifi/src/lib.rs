@@ -27,9 +27,6 @@ use bluer::{
 	},
 	Adapter, Result, Uuid,
 };
-use characteristics::{
-	capabilities::Capabilities,
-};
 use error::Error;
 use status::Status;
 
@@ -38,6 +35,7 @@ mod error;
 mod status;
 
 const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268000);
+const CHARACTERISTIC_UUID_CAPABILITIES: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268005);
 const CHARACTERISTIC_UUID_CURRENT_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268001);
 const CHARACTERISTIC_UUID_ERROR_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268002);
 
@@ -89,7 +87,7 @@ pub struct ImprovWifi<T> {
 	handler: T,
 	app: ApplicationHandle,
 	service: ServiceControl,
-	capabilities: Capabilities,
+	capabilities: CharacteristicControl,
 	current_state: CharacteristicControl,
 	error_state: CharacteristicControl,
 	rpc_command: CharacteristicControl,
@@ -166,7 +164,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		});
 
 		let (service, service_handle) = service_control();
-		let (capabilities, capabilities_char) = Capabilities::install(T::can_identify());
+		let (capabilities_control, capabilities_handle) = characteristic_control();
 		let (current_control, current_handle) = characteristic_control();
 		let (error_control, error_handle) = characteristic_control();
 		let (rpc_command, rpc_command_char) = characteristics::rpc_command::install();
@@ -177,7 +175,25 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 				uuid: SERVICE_UUID,
 				primary: true,
 				characteristics: vec![
-					capabilities_char,
+					Characteristic {
+						uuid: CHARACTERISTIC_UUID_CAPABILITIES,
+						read: Some(CharacteristicRead {
+							read: true,
+							fun: Box::new(move |_| {
+								Box::pin(async move {
+									let byte = if T::can_identify() {
+										1
+									} else {
+										0
+									};
+									Ok(vec![byte])
+								})
+							}),
+							..Default::default()
+						}),
+						control_handle: capabilities_handle,
+						..Default::default()
+					},
 					Characteristic {
 						uuid: CHARACTERISTIC_UUID_CURRENT_STATE,
 						read: Some(CharacteristicRead {
@@ -229,7 +245,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 			handler,
 			app: adapter.serve_gatt_application(app).await?,
 			service,
-			capabilities,
+			capabilities: capabilities_control,
 			current_state: current_control,
 			error_state: error_control,
 			rpc_command,
