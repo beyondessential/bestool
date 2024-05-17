@@ -29,24 +29,26 @@ use bluer::{
 };
 use characteristics::{
 	capabilities::Capabilities,
-	current_state::{CurrentState, State as CState},
 };
 use error::Error;
+use status::Status;
 
 mod characteristics;
 mod error;
+mod status;
 
 const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268000);
-const CHARACTERISTIC_UUID_ERROR_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268001);
+const CHARACTERISTIC_UUID_CURRENT_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268001);
+const CHARACTERISTIC_UUID_ERROR_STATE: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268002);
 
 #[derive(Debug)]
 pub struct InnerState {
-	pub(crate) status: CState,
+	pub(crate) status: Status,
 	pub(crate) last_error: Option<Error>,
 }
 
 impl InnerState {
-	pub fn status(&self) -> CState {
+	pub fn status(&self) -> Status {
 		self.status
 	}
 
@@ -63,7 +65,7 @@ impl State {
 		Self(Arc::new(RwLock::new(state)))
 	}
 
-	pub fn status(&self) -> CState {
+	pub fn status(&self) -> Status {
 		self.0.read().unwrap().status
 	}
 
@@ -71,7 +73,7 @@ impl State {
 		self.0.read().unwrap().last_error
 	}
 
-	pub fn set_status(&self, new: CState) {
+	pub fn set_status(&self, new: Status) {
 		self.0.write().unwrap().status = new;
 	}
 
@@ -88,7 +90,7 @@ pub struct ImprovWifi<T> {
 	app: ApplicationHandle,
 	service: ServiceControl,
 	capabilities: Capabilities,
-	current_state: CurrentState,
+	current_state: CharacteristicControl,
 	error_state: CharacteristicControl,
 	rpc_command: CharacteristicControl,
 	rpc_result: CharacteristicControl,
@@ -106,14 +108,14 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		todo!("write and notify the error to a connected client");
 	}
 
-	fn notify_state(&self) {
+	fn notify_status(&self) {
 		let state_byte = self.state.status().as_byte();
 		todo!("write and notify the state to a connected client");
 	}
 
-	fn modify_state(&mut self, state: CState) {
-		self.state.set_status(state);
-		self.notify_state();
+	fn modify_status(&mut self, status: Status) {
+		self.state.set_status(status);
+		self.notify_status();
 	}
 
 	pub fn set_error(&mut self, error: Error) {
@@ -127,45 +129,45 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 	}
 
 	pub fn set_authorized(&mut self) {
-		if self.state.status() == CState::AuthorizationRequired {
-			self.modify_state(CState::Authorized);
+		if self.state.status() == Status::AuthorizationRequired {
+			self.modify_status(Status::Authorized);
 		}
 	}
 
 	pub async fn provision(&mut self) {
-		if self.state.status() != CState::Authorized {
+		if self.state.status() != Status::Authorized {
 			self.set_error(Error::NotAuthorized);
 			return;
 		}
 
 		self.clear_error();
 
-		self.modify_state(CState::Provisioning);
+		self.modify_status(Status::Provisioning);
 
 		if let Err(err) = self.handler.provision().await {
 			self.set_error(err);
-			self.modify_state(CState::Authorized);
+			self.modify_status(Status::Authorized);
 			return;
 		}
 
-		self.modify_state(CState::Provisioned);
+		self.modify_status(Status::Provisioned);
 	}
 
 	pub async fn install(adapter: &Adapter, handler: T) -> Result<Self> {
-		let initial_state = if T::can_authorize() {
-			CState::AuthorizationRequired
+		let initial_status = if T::can_authorize() {
+			Status::AuthorizationRequired
 		} else {
-			CState::Authorized
+			Status::Authorized
 		};
 
 		let state = State::new(InnerState {
-			status: initial_state,
+			status: initial_status,
 			last_error: None,
 		});
 
 		let (service, service_handle) = service_control();
 		let (capabilities, capabilities_char) = Capabilities::install(T::can_identify());
-		let (current_state, current_state_char) = CurrentState::install(initial_state);
+		let (current_control, current_handle) = characteristic_control();
 		let (error_control, error_handle) = characteristic_control();
 		let (rpc_command, rpc_command_char) = characteristics::rpc_command::install();
 		let (rpc_result, rpc_result_char) = characteristics::rpc_result::install();
@@ -176,7 +178,21 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 				primary: true,
 				characteristics: vec![
 					capabilities_char,
-					current_state_char,
+					Characteristic {
+						uuid: CHARACTERISTIC_UUID_CURRENT_STATE,
+						read: Some(CharacteristicRead {
+							read: true,
+							fun: Box::new({
+								let state = state.clone();
+								move |_| {
+								let state = state.clone();
+								Box::pin(async move { Ok(vec![state.status().as_byte()]) })
+							}}),
+							..Default::default()
+						}),
+						control_handle: current_handle,
+						..Default::default()
+					},
 					Characteristic {
 						uuid: CHARACTERISTIC_UUID_ERROR_STATE,
 						read: Some(CharacteristicRead {
@@ -204,7 +220,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		};
 
 		Ok(ImprovWifi {
-			timeout: if initial_state == CState::AuthorizationRequired {
+			timeout: if initial_status == Status::AuthorizationRequired {
 				Some(Duration::from_secs(60))
 			} else {
 				None
@@ -214,7 +230,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 			app: adapter.serve_gatt_application(app).await?,
 			service,
 			capabilities,
-			current_state,
+			current_state: current_control,
 			error_state: error_control,
 			rpc_command,
 			rpc_result,
