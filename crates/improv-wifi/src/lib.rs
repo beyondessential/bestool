@@ -118,19 +118,19 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 	fn modify_status(&mut self, status: Status) {
 		self.state.set_status(status);
 		self.status_change_notifier.send(()).ok();
-		todo!("write the state to a connected client");
+		// TODO: pro-actively write to the client???
 	}
 
 	pub fn set_error(&mut self, error: Error) {
 		self.state.set_last_error(Some(error));
 		self.error_change_notifier.send(()).ok();
-		todo!("write the error to a connected client");
+		// TODO: pro-actively write to the client???
 	}
 
 	pub fn clear_error(&mut self) {
 		self.state.set_last_error(None);
 		self.error_change_notifier.send(()).ok();
-		todo!("write the error to a connected client");
+		// TODO: pro-actively write to the client???
 	}
 
 	pub fn set_authorized(&mut self) {
