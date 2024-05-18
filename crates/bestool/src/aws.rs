@@ -115,7 +115,7 @@ impl AwsArgs {
 /// Get AWS config from the environment, or credentials files, or ambient, etc.
 pub async fn init(args: &AwsArgs) -> SdkConfig {
 	let mut config = ConfigLoader::default()
-		.behavior_version(BehaviorVersion::v2023_11_09())
+		.behavior_version(BehaviorVersion::v2024_03_28())
 		.app_name(AppName::new(crate::APP_NAME).unwrap());
 
 	if let (Some(key_id), Some(secret)) = (args.aws_access_key_id(), args.aws_secret_access_key()) {
