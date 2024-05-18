@@ -5,7 +5,64 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.12.4](https://github.com/beyondessential/bestool/compare/v0.12.3..0.12.4) - 2024-04-12
+## [0.13.0](https://github.com/beyondessential/bestool/compare/v0.12.4..0.13.0) - 2024-05-18
+
+
+- **Deps:** Bump aws-sdk-s3 from 1.22.0 to 1.23.0 (#42) - ([94cb52b](https://github.com/beyondessential/bestool/commit/94cb52b79609ec82faaee4518cee0c5cf0425ac0))
+- **Deps:** Bump windows from 0.54.0 to 0.56.0 (#43) - ([a6e5f1f](https://github.com/beyondessential/bestool/commit/a6e5f1f1ee9fc2eca2e11d1d1037b4dd21ae6676))
+- **Deps:** Bump reqwest from 0.11.27 to 0.12.3 (#45) - ([4124ca3](https://github.com/beyondessential/bestool/commit/4124ca3119876a5a1195c8cd17d0946748c5819d))
+- **Deps:** Bump aws-config from 1.1.10 to 1.2.0 (#44) - ([89de799](https://github.com/beyondessential/bestool/commit/89de799909227391dfc1f6d3427f29dd8900fec0))
+- **Deps:** Bump rustls from 0.21.10 to 0.21.11 (#47) - ([6f4a681](https://github.com/beyondessential/bestool/commit/6f4a6811414856110729702d2ac3c77c756f9341))
+- **Deps:** Bump build-data from 0.1.5 to 0.2.1 (#49) - ([74d686d](https://github.com/beyondessential/bestool/commit/74d686dc9f260059f0af8005a93fbe41e85e08b9))
+- **Deps:** Bump aws-sdk-route53 from 1.20.0 to 1.21.0 (#48) - ([cb30a2b](https://github.com/beyondessential/bestool/commit/cb30a2beff3b4a8f653bec5326dc35284c55fc89))
+- **Deps:** Bump serde from 1.0.197 to 1.0.198 (#51) - ([c681a14](https://github.com/beyondessential/bestool/commit/c681a146c5633b0ecbc7605dcd62f2c231bb2135))
+- **Deps:** Bump thiserror from 1.0.58 to 1.0.59 (#52) - ([a735977](https://github.com/beyondessential/bestool/commit/a735977deba3d901733c825e23d8fefe3858e507))
+- **Deps:** Bump chrono from 0.4.37 to 0.4.38 (#50) - ([cc8e85d](https://github.com/beyondessential/bestool/commit/cc8e85d2e2690e35eb0e9cdf5957058c8b0d053e))
+- **Deps:** Bump aws-sdk-route53 from 1.21.0 to 1.22.0 (#53) - ([a615c40](https://github.com/beyondessential/bestool/commit/a615c4013fbcf37c58308740226538f3e488dcc4))
+- **Deps:** Bump serde_json from 1.0.115 to 1.0.116 (#55) - ([a1f2186](https://github.com/beyondessential/bestool/commit/a1f2186238dcbe62f7a34f87d23e1c95ab370383))
+- **Deps:** Bump serde from 1.0.198 to 1.0.199 (#56) - ([d5388c5](https://github.com/beyondessential/bestool/commit/d5388c500ead0507a6167a886f25654e664231be))
+- **Deps:** Bump ssh-key from 0.6.5 to 0.6.6 (#57) - ([a1aa646](https://github.com/beyondessential/bestool/commit/a1aa6463d12b70c023dfc49ed070f2745a5a8b04))
+- **Deps:** Bump upgrade from 1.1.1 to 2.0.0 (#54) - ([b673374](https://github.com/beyondessential/bestool/commit/b6733745c3ec0cfd6eb6d22a0b3ba1a46571c98d))
+- **Deps:** Bump serde from 1.0.199 to 1.0.200 (#58) - ([d8c2d56](https://github.com/beyondessential/bestool/commit/d8c2d560be2e4661e5b338a271914f1f5c282a33))
+- **Deps:** Bump mimalloc from 0.1.39 to 0.1.41 (#59) - ([394c684](https://github.com/beyondessential/bestool/commit/394c684a17a7db53dcddfa39cb5de04243c79e81))
+- **Deps:** Bump aws-sdk-route53 from 1.22.0 to 1.23.0 (#62) - ([3af11f0](https://github.com/beyondessential/bestool/commit/3af11f022a77fc5723e38a6083b1e6f05a8a36bb))
+- **Deps:** Bump reqwest from 0.12.3 to 0.12.4 (#61) - ([43dc4e3](https://github.com/beyondessential/bestool/commit/43dc4e38742788a9bf24c1621d56100149a65119))
+- **Deps:** Bump aws-sdk-sts from 1.20.0 to 1.22.0 (#63) - ([07b14ff](https://github.com/beyondessential/bestool/commit/07b14ff83ba5f51bada3482909ece2927dcc13f4))
+- **Deps:** Bump detect-targets from 0.1.15 to 0.1.17 (#67) - ([e2a5793](https://github.com/beyondessential/bestool/commit/e2a5793b25fcbe0e2a110bdb32c4d49e1985e626))
+- **Deps:** Bump binstalk-downloader from 0.10.1 to 0.10.3 (#71) - ([be5d807](https://github.com/beyondessential/bestool/commit/be5d80736476442119e1cf28db4cc2c9fd860912))
+- **Deps:** Bump boxcar from 0.2.4 to 0.2.5 (#69) - ([bd0ced2](https://github.com/beyondessential/bestool/commit/bd0ced2967fd8e6955023de0e5b12e0c9ea8ea4b))
+- **Deps:** Bump serde from 1.0.200 to 1.0.201 (#68) - ([f7e6eff](https://github.com/beyondessential/bestool/commit/f7e6eff581c168fa38b62f021220ab694b98cad0))
+- **Deps:** Bump fs4 from 0.8.2 to 0.8.3 (#70) - ([8718ad6](https://github.com/beyondessential/bestool/commit/8718ad64078cf789c256c4ea36e98f11a516fd81))
+- **Deps:** Bump serde_json from 1.0.116 to 1.0.117 (#74) - ([da82a47](https://github.com/beyondessential/bestool/commit/da82a4703f048ad27c728810c1275e63610ea6c8))
+- **Deps:** Bump aws-config from 1.2.0 to 1.3.0 (#73) - ([ce8b99a](https://github.com/beyondessential/bestool/commit/ce8b99ac9c0793c3bc3bc317f219206f91679979))
+- **Deps:** Bump thiserror from 1.0.59 to 1.0.60 (#72) - ([4f84c8f](https://github.com/beyondessential/bestool/commit/4f84c8f0e9cb5e60e351196e4f1477781373f5aa))
+- **Deps:** Reduce set of mandatory deps - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Add --logs-timeless - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Refactor:** Use non-blocking logging - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Refactor:** Move bestool crate to a workspace (#65) - ([39d8a4b](https://github.com/beyondessential/bestool/commit/39d8a4b8921aa1a5a223d34173e065ef060c6f27))
+- **Refactor:** Split out rpi-st7789v2-driver crate - ([39d8a4b](https://github.com/beyondessential/bestool/commit/39d8a4b8921aa1a5a223d34173e065ef060c6f27))
+
+### Iti
+
+- **Bugfix:** Properly clear lcd on start and stop - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Documentation:** Warn against using trace logging with lcd serve - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Feature:** Add commands for battery and lcd (#64) - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Feature:** Add systemd services for battery and lcd - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Feature:** Add systemd services for lcd display (#75) - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Add temperature to lcd - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Add local time to lcd - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Add network addresses to lcd - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Add wifi network to lcd - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Feature:** Sparklines for cpu/ram usage - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Refactor:** Move eink and wifisetup into iti command - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
+- **Refactor:** Simplify bg/fg colour calculations - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Refactor:** Remove wifisetup wip command - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Tweak:** Make time less precise for battery display - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Tweak:** More responsive battery display - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+- **Tweak:** Add fully charged message - ([4a4f768](https://github.com/beyondessential/bestool/commit/4a4f768c18ac7f151adc3ee8df61cc355e7a14ea))
+
+---
+## [0.12.4](https://github.com/beyondessential/bestool/compare/v0.12.3..v0.12.4) - 2024-04-12
 
 
 - **Bugfix:** Run yarn with cmd - ([3e292ef](https://github.com/beyondessential/bestool/commit/3e292ef4d5c5f396db636356befa455dc1e33a8f))
