@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+
+store=""
+while true; do
+	date_current="$(date +%Y-%m-%d)"
+	time_current="$(date +%H:%M)"
+	if [[ "$store" != "$date_current $time_current" ]]; then
+		store="$date_current $time_current"
+
+		bestool iti lcd send '{"layout":[
+			{"x":100,"y":4,"fill":[0,0,0],"width":100,"height":20},
+			{"x":100,"y":20,"stroke":[235,225,205],"text":"'"$date_current"'"}
+		]}'
+
+		bestool iti lcd send '{"layout":[
+			{"x":210,"y":4,"fill":[0,0,0],"width":50,"height":20},
+			{"x":210,"y":20,"stroke":[235,225,205],"text":"'"$time_current"'"}
+		]}'
+	fi
+
+	sleep 10
+done

@@ -6,6 +6,7 @@ Requires=iti-lcd-server.service
 [Service]
 ExecStart=/usr/local/bin/bestool --log-timeless iti battery --watch 10sec --estimate --json --update-screen 220
 Restart=always
+RestartSec=60s
 
 [Install]
 WantedBy=multi-user.target

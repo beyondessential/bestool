@@ -6,6 +6,12 @@ members = [
 ]
 
 [profile.release]
+lto = false
+codegen-units = 16
+strip = "symbols"
+
+[profile.dist]
+inherits = "release"
 lto = true
 codegen-units = 1
 strip = "symbols"

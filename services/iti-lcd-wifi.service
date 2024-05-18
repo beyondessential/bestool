@@ -1,0 +1,13 @@
+[Unit]
+Description=Iti wifi network display
+After=network.target
+Requires=iti-lcd-server.service
+
+[Service]
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/local/bin/iti-lcd-wifi
+Restart=always
+RestartSec=60s
+
+[Install]
+WantedBy=multi-user.target
