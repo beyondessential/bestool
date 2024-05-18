@@ -17,11 +17,11 @@ aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"]
 aws-sdk-route53 = { version = "1.23.0", optional = true }
 aws-sdk-s3 = { version = "1.23.0", optional = true }
 aws-sdk-sts = { version = "1.22.0", optional = true }
-base64ct = { version = "1.6.0", features = ["std"] }
+base64ct = { version = "1.6.0", features = ["std"], optional = true }
 binstalk-downloader = { version = "0.10.3", optional = true }
 bitflags = { version = "2.4.2", optional = true }
 bitvec = { version = "1.0.1", optional = true }
-blake3 = "1.5.1"
+blake3 = { version = "1.5.1", optional = true }
 boxcar = "0.2.5"
 bytes = "1.6.0"
 chrono = "0.4.38"
@@ -29,31 +29,32 @@ clap = { version = "4.5.4", features = ["derive", "cargo", "wrap_help", "env", "
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 console-subscriber = { version = "0.2.0", optional = true }
-ctrlc = "3.4.4"
+ctrlc = { version = "3.4.4", optional = true }
 detect-targets = { version = "0.1.17", optional = true }
-dirs = "5.0.1"
-duct = "0.13.7"
+dirs = { version = "5.0.1", optional = true }
+duct = { version = "0.13.7", optional = true }
 embedded-graphics = { version = "0.8.1", optional = true }
 enable-ansi-support = "0.2.1"
+folktime = { version = "0.2.1", optional = true }
 fontdue = { version = "0.8.0", optional = true }
 fs4 = { version = "0.8.3", features = ["tokio"], optional = true }
-glob = "0.3.1"
+glob = { version = "0.3.1", optional = true }
 hex = { version = "0.4.3", optional = true }
-humantime = "2.1.0"
+humantime = { version = "2.1.0", optional = true }
 indicatif = { version = "0.17.7", features = ["tokio"] }
 ip_network = { version = "0.4.1", optional = true }
 is-root = { version = "0.1.3", optional = true }
-itertools = "0.12.1"
-json5 = "0.4.1"
+itertools = { version = "0.12.1", optional = true }
+json5 = { version = "0.4.1", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 local-ip-address = { version = "0.6.1", optional = true }
-merkle_hash = "3.6.1"
+merkle_hash = { version = "3.6.1", optional = true }
 miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.41"
 minisign = { version = "0.7.6", optional = true }
-node-semver = "2.1.0"
-regex = "1.10.4"
+node-semver = { version = "2.1.0", optional = true }
+regex = { version = "1.10.4", optional = true }
 reqwest = { version = "0.12.4", features = ["json"], default-features = false }
 rpi-st7789v2-driver = { version = "0.1.0", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.17.1", optional = true }
@@ -62,6 +63,7 @@ secrecy = { version = "0.8.0", optional = true }
 serde = { version = "1.0.201", features = ["derive"] }
 serde_json = "1.0.117"
 ssh-key = { version = "0.6.6", optional = true }
+sysinfo = { version = "0.30.12", optional = true }
 tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.60"
 tokio = { version = "1.37.0", features = ["full"] }
@@ -69,11 +71,8 @@ tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
 upgrade = { version = "2.0.0", optional = true }
-walkdir = "2.5.0"
+walkdir = { version = "2.5.0", optional = true }
 zmq = { version = "0.10.0", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-networkmanager = { package = "passcod-networkmanager", version = "=0.7.0-pre.1", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.56.0", features = ["Win32_System_Console"] , optional = true }
@@ -90,26 +89,26 @@ default = ["caddy", "completions", "crypto", "self-update", "ssh", "tamanu", "up
 console-subscriber = ["dep:console-subscriber"]
 
 ## Common dep groups (not meant to be used directly)
-aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts"]
+aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts", "dep:base64ct"]
 download = ["dep:binstalk-downloader", "dep:detect-targets"]
 
 ## Subcommands
 caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
-crypto = ["dep:hex", "dep:leon", "dep:minisign", "dep:secrecy"]
-dyndns = ["aws", "dep:local-ip-address", "dep:ip_network"]
-iti = ["iti-battery", "iti-lcd"]
+crypto = ["dep:base64ct", "dep:blake3", "dep:hex", "dep:leon", "dep:merkle_hash", "dep:minisign", "dep:secrecy"]
+dyndns = ["aws", "dep:local-ip-address", "dep:ip_network", "dep:regex"]
+iti = ["iti-battery", "iti-lcd", "iti-temperature"]
 self-update = ["download", "dep:upgrade"]
-ssh = ["dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
-tamanu = ["download", "dep:leon", "dep:leon-macros", "dep:windows"]
-upload = ["aws"]
+ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
+tamanu = ["download", "dep:dirs", "dep:duct", "dep:glob", "dep:itertools", "dep:json5", "dep:leon", "dep:leon-macros", "dep:node-semver", "dep:regex", "dep:windows"]
+upload = ["aws", "dep:humantime", "dep:walkdir"]
 walg = ["download"]
 
 ## Iti subcommands
-iti-battery = ["__iti", "dep:rppal"]
+iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
 iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
-iti-wifisetup = ["__iti", "dep:networkmanager"]
+iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
+iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 [package.metadata.binstall]

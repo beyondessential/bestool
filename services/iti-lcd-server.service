@@ -5,11 +5,13 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/bestool --log-timeless iti lcd serve
 ExecStartPost=-/usr/local/bin/bestool --log-timeless iti lcd on
-ExecStop=-/usr/local/bin/bestool --log-timeless iti lcd clear
+ExecStartPost=-/usr/local/bin/bestool --log-timeless iti lcd clear 0 0 0
+ExecStop=-/usr/local/bin/bestool --log-timeless iti lcd clear 0 0 0
 ExecStop=-/usr/local/bin/bestool --log-timeless iti lcd off
 ExecStop=/usr/bin/kill -INT $MAINPID
 ExecStop=/usr/bin/sleep 1
 Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target

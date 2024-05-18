@@ -1,0 +1,19 @@
+#!/usr/bin/bash
+
+update() {
+	jq -n \
+		--argjson y 195 \
+		--arg wifiname "$(nmcli -t dev wifi list | grep '^\*:' | head -n1 | sed 's/\\://g' | cut -d: -f3)" \
+	'
+		"Wifi: \($wifiname // "not connected")"[:20]
+		| {layout:[
+			{x:10,y:($y-15),fill:[0,0,0],width:200,height:20},
+			{x:10,y:$y,stroke:[255,255,0],text:.}
+		]}
+	' | bestool iti lcd send
+}
+
+while true; do
+	update
+	sleep 60
+done
