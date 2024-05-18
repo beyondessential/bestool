@@ -1,4 +1,5 @@
 publish = true
+tag-name = "v{{version}}"
 tag-message = "release: {{version}}"
 pre-release-commit-message = "release: {{version}}"
 pre-release-hook = ["git", "cliff", "-r", "../..", "-c", "../../cliff.toml", "-o", "../../CHANGELOG.md", "--tag", "{{version}}"]
