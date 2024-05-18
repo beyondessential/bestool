@@ -25,7 +25,8 @@ use bluer::{
 	gatt::local::{
 		characteristic_control, service_control, Application, ApplicationHandle, Characteristic,
 		CharacteristicControl, CharacteristicNotify, CharacteristicNotifyMethod,
-		CharacteristicRead, Service, ServiceControl,
+		CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, Service,
+		ServiceControl,
 	},
 	Adapter, Result, Uuid,
 };
@@ -37,6 +38,7 @@ use tokio::sync::{
 };
 
 mod error;
+mod rpc;
 mod status;
 
 const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268000);
@@ -68,79 +70,60 @@ impl InnerState {
 }
 
 #[derive(Clone, Debug)]
-pub struct State(Arc<RwLock<InnerState>>);
-
-impl State {
-	pub fn new(state: InnerState) -> Self {
-		Self(Arc::new(RwLock::new(state)))
-	}
-
-	pub async fn status(&self) -> Status {
-		self.0.read().await.status
-	}
-
-	pub async fn last_error(&self) -> Option<Error> {
-		self.0.read().await.last_error
-	}
-
-	pub async fn set_status(&self, new: Status) {
-		self.0.write().await.status = new;
-	}
-
-	pub async fn set_last_error(&self, new: Option<Error>) {
-		self.0.write().await.last_error = new;
-	}
-}
-
-#[derive(Debug)]
-pub struct ImprovWifi<T> {
-	timeout: Option<Duration>,
-	state: State,
-	handler: T,
+pub struct State<T> {
+	inner: Arc<RwLock<InnerState>>,
 	status_change_notifier: Sender<()>,
 	error_change_notifier: Sender<()>,
-	app: ApplicationHandle,
-	service: ServiceControl,
-	capabilities: CharacteristicControl,
-	current_state: CharacteristicControl,
-	error_state: CharacteristicControl,
-	rpc_command: CharacteristicControl,
-	rpc_result: CharacteristicControl,
+	timeout: Option<Duration>,
+	handler: T,
 }
 
-pub trait WifiConfigurator {
-	fn can_authorize() -> bool;
-	fn can_identify() -> bool;
-	async fn provision(&mut self) -> std::result::Result<(), Error>;
-}
+impl<T> State<T>
+where
+	T: WifiConfigurator,
+{
+	async fn status(&self) -> Status {
+		self.inner.read().await.status
+	}
 
-impl<T: WifiConfigurator> ImprovWifi<T> {
-	async fn modify_status(&mut self, status: Status) {
-		self.state.set_status(status).await;
+	async fn last_error(&self) -> Option<Error> {
+		self.inner.read().await.last_error
+	}
+
+	async fn set_status(&self, new: Status) {
+		self.inner.write().await.status = new;
+	}
+
+	async fn set_last_error(&self, new: Option<Error>) {
+		self.inner.write().await.last_error = new;
+	}
+
+	async fn modify_status(&self, status: Status) {
+		self.set_status(status).await;
 		self.status_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub async fn set_error(&mut self, error: Error) {
-		self.state.set_last_error(Some(error)).await;
+	pub async fn set_error(&self, error: Error) {
+		self.set_last_error(Some(error)).await;
 		self.error_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub async fn clear_error(&mut self) {
-		self.state.set_last_error(None).await;
+	pub async fn clear_error(&self) {
+		self.set_last_error(None).await;
 		self.error_change_notifier.send(()).ok();
 		// TODO: pro-actively write to the client???
 	}
 
-	pub async fn set_authorized(&mut self) {
-		if self.state.status().await == Status::AuthorizationRequired {
+	pub async fn set_authorized(&self) {
+		if self.status().await == Status::AuthorizationRequired {
 			self.modify_status(Status::Authorized).await;
 		}
 	}
 
 	pub async fn provision(&mut self) {
-		if self.state.status().await != Status::Authorized {
+		if self.status().await != Status::Authorized {
 			self.set_error(Error::NotAuthorized).await;
 			return;
 		}
@@ -158,6 +141,57 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		self.modify_status(Status::Provisioned).await;
 	}
 
+	#[tracing::instrument(level = "trace", skip(self))]
+	pub async fn handle_raw_rpc(&self, value: Vec<u8>) {
+		if let Err(error) = Self::inner_handle_raw_rpc(&self, value).await {
+			self.set_error(error).await;
+		} else {
+			self.clear_error().await;
+		}
+	}
+
+	async fn inner_handle_raw_rpc(&self, value: Vec<u8>) -> std::result::Result<(), Error> {
+		let rpc = rpc::Rpc::parse(&value).map_err(|err| {
+			tracing::error!("Failed to parse RPC: {}", err);
+			Error::InvalidRPC
+		})?;
+
+		todo!()
+	}
+
+	pub fn set_timeout(&mut self, timeout: Duration) {
+		if T::can_authorize() {
+			self.timeout = Some(timeout);
+		}
+	}
+}
+
+#[derive(Debug)]
+pub struct ImprovWifi<T> {
+	state: State<T>,
+	app: ApplicationHandle,
+	service: ServiceControl,
+	capabilities: CharacteristicControl,
+	current_state: CharacteristicControl,
+	error_state: CharacteristicControl,
+	rpc_command: CharacteristicControl,
+	rpc_result: CharacteristicControl,
+}
+
+pub trait WifiConfigurator: Clone + Send + Sync + 'static {
+	fn can_authorize() -> bool;
+	fn can_identify() -> bool;
+	async fn provision(&mut self) -> std::result::Result<(), Error>;
+}
+
+impl<T> ImprovWifi<T>
+where
+	T: WifiConfigurator,
+{
+	pub fn set_timeout(&mut self, timeout: Duration) {
+		self.state.set_timeout(timeout);
+	}
+
 	pub async fn install(adapter: &Adapter, handler: T) -> Result<Self> {
 		let initial_status = if T::can_authorize() {
 			Status::AuthorizationRequired
@@ -165,12 +199,22 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 			Status::Authorized
 		};
 
-		let state = State::new(InnerState {
-			status: initial_status,
-			last_error: None,
-		});
 		let (status_change_notifier, _) = broadcast_channel(2);
 		let (error_change_notifier, _) = broadcast_channel(2);
+		let state = State {
+			inner: Arc::new(RwLock::new(InnerState {
+				status: initial_status,
+				last_error: None,
+			})),
+			status_change_notifier: status_change_notifier.clone(),
+			error_change_notifier: error_change_notifier.clone(),
+			timeout: if initial_status == Status::AuthorizationRequired {
+				Some(Duration::from_secs(60))
+			} else {
+				None
+			},
+			handler,
+		};
 
 		let (service, service_handle) = service_control();
 		let (capabilities_control, capabilities_handle) = characteristic_control();
@@ -289,6 +333,22 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 					},
 					Characteristic {
 						uuid: CHARACTERISTIC_UUID_RPC_COMMAND,
+						write: Some(CharacteristicWrite {
+							write: true,
+							write_without_response: true,
+							method: CharacteristicWriteMethod::Fun(Box::new({
+								let state = state.clone();
+								move |value, _req| {
+									let state = state.clone();
+									Box::pin(async move {
+										// not sure if the bluer interface here will stitch writes together, let's ignore that for now
+										state.handle_raw_rpc(value).await;
+										Ok(())
+									})
+								}
+							})),
+							..Default::default()
+						}),
 						control_handle: rpc_command_handle,
 						..Default::default()
 					},
@@ -305,15 +365,7 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 		};
 
 		Ok(ImprovWifi {
-			timeout: if initial_status == Status::AuthorizationRequired {
-				Some(Duration::from_secs(60))
-			} else {
-				None
-			},
 			state,
-			handler,
-			status_change_notifier,
-			error_change_notifier,
 			app: adapter.serve_gatt_application(app).await?,
 			service,
 			capabilities: capabilities_control,
@@ -322,11 +374,5 @@ impl<T: WifiConfigurator> ImprovWifi<T> {
 			rpc_command: rpc_command_control,
 			rpc_result: rpc_result_control,
 		})
-	}
-
-	pub fn set_timeout(&mut self, timeout: Duration) {
-		if T::can_authorize() {
-			self.timeout = Some(timeout);
-		}
 	}
 }

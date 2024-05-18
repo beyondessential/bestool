@@ -2659,6 +2659,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "winnow",
 ]
 
 [[package]]
