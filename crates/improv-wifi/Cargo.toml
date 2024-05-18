@@ -1,0 +1,25 @@
+[package]
+name = "improv-wifi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.76.0"
+resolver = "2"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Implementation of the Improv-WiFi protocol for Linux"
+keywords = ["improv-wifi", "linux", "wifi", "ble", "networkmanager"]
+categories = ["embedded"]
+repository = "https://github.com/beyondessential/bestool"
+
+[dependencies]
+bluer = { version = "0.17.1", features = ["bluetoothd"] }
+miette = { version = "7.2.0", optional = true }
+thiserror = "1.0.59"
+tokio = { version = "1.37.0", features = ["sync", "rt"] }
+tracing = { version = "0.1.40", features = ["attributes"] }
+winnow = "0.6.8"
+
+[features]
+miette = ["dep:miette"]
+networkmanager = []
