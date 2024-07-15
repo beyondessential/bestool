@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.13.0](https://github.com/beyondessential/bestool/compare/v0.12.4..0.13.0) - 2024-05-18
+## [0.13.0](https://github.com/beyondessential/bestool/compare/v0.12.4..v0.13.0) - 2024-05-18
 
 
+- **Bugfix:** Fix ci - ([e35f8b8](https://github.com/beyondessential/bestool/commit/e35f8b8fc3b3b599015a5b1af6a520ce24898cee))
 - **Deps:** Bump aws-sdk-s3 from 1.22.0 to 1.23.0 (#42) - ([94cb52b](https://github.com/beyondessential/bestool/commit/94cb52b79609ec82faaee4518cee0c5cf0425ac0))
 - **Deps:** Bump windows from 0.54.0 to 0.56.0 (#43) - ([a6e5f1f](https://github.com/beyondessential/bestool/commit/a6e5f1f1ee9fc2eca2e11d1d1037b4dd21ae6676))
 - **Deps:** Bump reqwest from 0.11.27 to 0.12.3 (#45) - ([4124ca3](https://github.com/beyondessential/bestool/commit/4124ca3119876a5a1195c8cd17d0946748c5819d))
@@ -41,6 +42,10 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 - **Refactor:** Use non-blocking logging - ([9cf0c52](https://github.com/beyondessential/bestool/commit/9cf0c52259a3a91a37367f143feb96ef1a8edfe9))
 - **Refactor:** Move bestool crate to a workspace (#65) - ([39d8a4b](https://github.com/beyondessential/bestool/commit/39d8a4b8921aa1a5a223d34173e065ef060c6f27))
 - **Refactor:** Split out rpi-st7789v2-driver crate - ([39d8a4b](https://github.com/beyondessential/bestool/commit/39d8a4b8921aa1a5a223d34173e065ef060c6f27))
+
+### Aws
+
+- **Tweak:** Opt into 2024 behaviour (stalled stream protection for uploads) - ([55853a0](https://github.com/beyondessential/bestool/commit/55853a0cd3288564c25a5665c8b23575e297fdba))
 
 ### Iti
 
