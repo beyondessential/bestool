@@ -5,7 +5,7 @@ use leon_macros::template;
 use miette::{IntoDiagnostic, Result};
 use node_semver::Version;
 use serde::Deserialize;
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 const KNOWN_ROOTS: &[Template<'static>] = &[
 	// container
