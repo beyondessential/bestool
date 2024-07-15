@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.14.1](https://github.com/beyondessential/bestool/compare/v0.14.0..0.14.1) - 2024-07-15
+
+
+- **Deps:** Update - ([ae784df](https://github.com/beyondessential/bestool/commit/ae784df09e4dcfdccc54ca7d13f703068c835b8d))
+
+---
 ## [0.13.0](https://github.com/beyondessential/bestool/compare/v0.12.4..v0.13.0) - 2024-05-18
 
 
