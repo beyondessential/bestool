@@ -101,7 +101,7 @@ pub fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_js
 	inner(&path).wrap_err(path.to_string_lossy().into_owned())
 }
 
-#[instrument(level = "debug")]
+#[instrument(level = "trace")]
 pub fn merge_json(
 	mut base: serde_json::Value,
 	mut overlay: serde_json::Value,
