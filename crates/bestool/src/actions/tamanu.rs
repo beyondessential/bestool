@@ -10,6 +10,7 @@ use node_semver::Version;
 
 use super::Context;
 
+pub mod alerts;
 pub mod config;
 pub mod download;
 pub mod find;
@@ -34,6 +35,7 @@ pub struct TamanuArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum TamanuAction {
+	Alerts(alerts::AlertsArgs),
 	Config(config::ConfigArgs),
 	Download(download::DownloadArgs),
 	Find(find::FindArgs),
@@ -46,6 +48,7 @@ pub enum TamanuAction {
 
 pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
 	match ctx.args_top.action.clone() {
+		TamanuAction::Alerts(subargs) => alerts::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
 		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,

@@ -49,6 +49,7 @@ json5 = { version = "0.4.1", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 local-ip-address = { version = "0.6.1", optional = true }
+mailgun-rs = { version = "0.1.11", optional = true }
 merkle_hash = { version = "3.6.1", optional = true }
 miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.41"
@@ -62,11 +63,13 @@ rust-fontconfig = { version = "0.1.7", optional = true }
 secrecy = { version = "0.8.0", optional = true }
 serde = { version = "1.0.201", features = ["derive"] }
 serde_json = "1.0.117"
+serde_yml = { version = "0.0.10", optional = true }
 ssh-key = { version = "0.6.6", optional = true }
 sysinfo = { version = "0.30.12", optional = true }
 tera = { version = "1.19.1", optional = true }
 thiserror = "1.0.60"
 tokio = { version = "1.37.0", features = ["full"] }
+tokio-postgres = { version = "0.7.10", features = ["with-chrono-0_4"], optional = true }
 tracing = { version = "0.1.40", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.18", features = ["ansi", "env-filter", "json"] }
@@ -100,7 +103,7 @@ dyndns = ["aws", "dep:local-ip-address", "dep:ip_network", "dep:regex"]
 iti = ["iti-battery", "iti-lcd", "iti-temperature"]
 self-update = ["download", "dep:upgrade"]
 ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
-tamanu = ["download", "dep:dirs", "dep:duct", "dep:glob", "dep:itertools", "dep:json5", "dep:leon", "dep:leon-macros", "dep:node-semver", "dep:regex", "dep:windows"]
+tamanu = ["download", "dep:dirs", "dep:duct", "dep:glob", "dep:itertools", "dep:json5", "dep:leon", "dep:leon-macros", "dep:mailgun-rs", "dep:node-semver", "dep:regex", "dep:serde_yml", "dep:sysinfo", "dep:tera", "dep:tokio-postgres", "dep:walkdir", "dep:windows"]
 upload = ["aws", "dep:humantime", "dep:walkdir"]
 walg = ["download"]
 

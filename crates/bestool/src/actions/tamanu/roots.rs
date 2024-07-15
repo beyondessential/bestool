@@ -11,6 +11,8 @@ const KNOWN_ROOTS: &[Template<'static>] = &[
 	// container
 	template!("/app"),
 	// linux installs
+	template!("/etc/tamanu"),
+	template!("/etc/tamanu/*"),
 	template!("/opt/bes/tamanu"),
 	template!("/var/lib/tamanu"),
 	// windows
@@ -27,12 +29,12 @@ const KNOWN_ROOTS: &[Template<'static>] = &[
 #[instrument(level = "debug")]
 pub fn find_roots() -> Result<Vec<PathBuf>> {
 	let home = dirs::home_dir().map_or("/home".into(), |path| path.to_string_lossy().into_owned());
-	debug!(?home, "home directory");
+	trace!(?home, "home directory");
 
 	let mut paths = Vec::new();
 	for template in KNOWN_ROOTS {
 		let pattern = template.render(&[("home", &home)])?;
-		debug!(?pattern, "searching for root in pattern");
+		trace!(?pattern, "searching for root in pattern");
 		for path in glob::glob(&pattern).into_diagnostic()?.flatten() {
 			trace!(?path, "found possible root");
 			paths.push(path);
@@ -42,7 +44,7 @@ pub fn find_roots() -> Result<Vec<PathBuf>> {
 	Ok(paths)
 }
 
-#[instrument(level = "debug")]
+#[instrument(level = "trace")]
 pub fn version_of_root(root: impl AsRef<Path> + std::fmt::Debug) -> Result<Option<Version>> {
 	let root = root.as_ref();
 	let pkg_file = root.join("package.json");
