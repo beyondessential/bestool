@@ -14,7 +14,7 @@ template: |
   <p>There are {{ rows | length }} FHIR jobs that have failed to process.</p>
   <ul>
     {% for row in rows | slice(end=5) %}
-    <li><b>{{ row.topic }}</b>: <i>{{ row.error }}</i></li>
+    <li><b>{{ row.created_at }}</b>: {{ row.topic }} - <i>{{ row.error }}</i></li>
     {% endfor %}
     {% if rows | length > 5 %}
     <li>... and {{ rows | length - 5 }} more</li>

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use mailgun_rs::{EmailAddress, Mailgun, Message};
@@ -7,7 +7,7 @@ use sysinfo::System;
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
-use crate::actions::Context;
+use crate::{actions::Context, postgres_to_value::rows_to_value_map};
 
 use super::{
 	config::{merge_json, package_config},
@@ -256,19 +256,7 @@ async fn execute_alert(
 		.wrap_err("compiling email template")?;
 
 	debug!("building Tera context");
-	let context_rows: Vec<HashMap<String, String>> = rows
-		.iter()
-		.map(|row| {
-			let mut map = HashMap::new();
-			for (i, col) in row.columns().iter().enumerate() {
-				map.insert(
-					col.name().to_owned(),
-					row.try_get(i).unwrap_or("(unknown)".into()),
-				);
-			}
-			map
-		})
-		.collect();
+	let context_rows = rows_to_value_map(&rows);
 
 	let mut context = tera::Context::new();
 	context.insert("rows", &context_rows);
