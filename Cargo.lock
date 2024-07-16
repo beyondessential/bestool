@@ -833,6 +833,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "upgrade",
+ "uuid",
  "walkdir",
  "windows 0.58.0",
  "windows-acl",
@@ -3652,6 +3653,7 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "postgres-protocol",
+ "uuid",
 ]
 
 [[package]]
