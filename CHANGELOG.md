@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.14.1](https://github.com/beyondessential/bestool/compare/v0.14.0..0.14.1) - 2024-07-15
+## [0.14.2](https://github.com/beyondessential/bestool/compare/v0.14.1..0.14.2) - 2024-07-16
+
+
+
+### Alerts
+
+- **Bugfix:** Convert more types than string - ([456500c](https://github.com/beyondessential/bestool/commit/456500c77da0d4b0526c73be99a0a1cfbfdf8398))
+
+---
+## [0.14.1](https://github.com/beyondessential/bestool/compare/v0.14.0..v0.14.1) - 2024-07-15
 
 
 - **Deps:** Update - ([ae784df](https://github.com/beyondessential/bestool/commit/ae784df09e4dcfdccc54ca7d13f703068c835b8d))
