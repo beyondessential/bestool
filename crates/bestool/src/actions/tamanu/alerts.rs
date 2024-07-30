@@ -260,7 +260,7 @@ async fn execute_alert(
 
 	let mut context = tera::Context::new();
 	context.insert("rows", &context_rows);
-	context.insert("interval", &format!("{:?}", now - not_before));
+	context.insert("interval", &format!("{}", now - not_before));
 	context.insert(
 		"hostname",
 		System::host_name().as_deref().unwrap_or("unknown"),
