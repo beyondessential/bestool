@@ -115,17 +115,6 @@ pub fn get_args() -> Result<(Args, Option<WorkerGuard>)> {
 pub fn logging_preargs() -> bool {
 	let mut log_on = false;
 
-	#[cfg(feature = "dev-console")]
-	match console_subscriber::try_init() {
-		Ok(_) => {
-			warn!("dev-console enabled");
-			log_on = true;
-		}
-		Err(e) => {
-			eprintln!("Failed to initialise tokio console, falling back to normal logging\n{e}")
-		}
-	}
-
 	if !log_on && var("RUST_LOG").is_ok() {
 		match tracing_subscriber::fmt::try_init() {
 			Ok(()) => {
