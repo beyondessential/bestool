@@ -10,19 +10,19 @@ macro_rules! subcommands {
 	(
 		[$argtype:ty => $ctxcode:block]($ctxmethod:ident)
 		$(
-			#[$meta:meta]
+			$(#[$meta:meta])*
 			$modname:ident => $enumname:ident($argname:ident)
 		),+
 	) => {
 		$(
-			#[$meta]
+			$(#[$meta])*
 			pub mod $modname;
 		)*
 
 		#[derive(Debug, Clone, Subcommand)]
 		pub enum Action {
 			$(
-				#[$meta]
+				$(#[$meta])*
 				$enumname($modname::$argname),
 			)*
 		}
@@ -31,7 +31,7 @@ macro_rules! subcommands {
 			let ctxfn = $ctxcode;
 			match ctxfn(ctx)? {
 				$(
-					#[$meta]
+					$(#[$meta])*
 					(Action::$enumname(args), ctx) => $modname::run(ctx.$ctxmethod(args)).await,
 				)*
 			}
