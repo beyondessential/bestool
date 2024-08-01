@@ -15,7 +15,11 @@ use crate::actions::Context;
 
 use super::{ApiServerKind, TamanuArgs};
 
-/// Find Tamanu installations.
+/// Download Tamanu servers.
+///
+/// In general, you should prefer to use the container images.
+/// This command is here to support Windows deployments, which run servers with a system Node.js.
+/// It will be deprecated in the future as Windows containers are developed for Tamanu.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// What to download.
