@@ -8,10 +8,10 @@ use tokio::time::sleep;
 use tracing::instrument;
 
 use crate::actions::{
-	iti::lcd::{
+	iti::{ItiArgs, lcd::{
 		json::{Item, Screen},
 		send,
-	},
+	}},
 	Context,
 };
 
@@ -50,12 +50,12 @@ pub struct BatteryArgs {
 	pub estimate: bool,
 }
 
-pub async fn run(ctx: Context<BatteryArgs>) -> Result<()> {
-	if let Some(n) = ctx.args_top.watch {
+pub async fn run(ctx: Context<ItiArgs, BatteryArgs>) -> Result<()> {
+	if let Some(n) = ctx.args_sub.watch {
 		let n = n.as_ref().clone();
 
 		// gather info only for initial round
-		let mut rolling = if ctx.args_top.estimate {
+		let mut rolling = if ctx.args_sub.estimate {
 			let first = once(ctx.clone(), None).await?;
 			sleep(n).await;
 			Some(VecDeque::from([first]))
@@ -74,7 +74,7 @@ pub async fn run(ctx: Context<BatteryArgs>) -> Result<()> {
 	Ok(())
 }
 
-pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>) -> Result<f64> {
+pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDeque<f64>>) -> Result<f64> {
 	let gpio = Gpio::new().into_diagnostic().wrap_err("gpio: init")?;
 	let powered = gpio
 		.get(6)
@@ -114,7 +114,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			.unwrap_or(rolling.len() - 1);
 
 		let mut rate = (capacity - rolling.get(index_to_first_difference).unwrap_or(&capacity))
-			/ ((rolling.len() as u64 * ctx.args_top.watch.unwrap().as_ref().as_secs()) as f64);
+			/ ((rolling.len() as u64 * ctx.args_sub.watch.unwrap().as_ref().as_secs()) as f64);
 		let capacity_left = if rate > 0.0 {
 			(100.0 - capacity).abs()
 		} else {
@@ -191,7 +191,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 		}
 	};
 
-	if ctx.args_top.json {
+	if ctx.args_sub.json {
 		if let Some((rate, ref time_remaining)) = estimates {
 			println!(
 				"{}",
@@ -224,7 +224,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 	}
 
 	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = ctx.args_top.update_screen {
+	if let Some(y) = ctx.args_sub.update_screen {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
@@ -291,7 +291,7 @@ pub async fn once(ctx: Context<BatteryArgs>, rolling: Option<&mut VecDeque<f64>>
 			},
 		);
 
-		send(&ctx.args_top.zmq_socket, Screen::Layout(items))?;
+		send(&ctx.args_sub.zmq_socket, Screen::Layout(items))?;
 	}
 
 	Ok(capacity)

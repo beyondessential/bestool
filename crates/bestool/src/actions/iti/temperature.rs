@@ -3,10 +3,10 @@ use miette::{IntoDiagnostic, Result};
 use tokio::time::sleep;
 
 use crate::actions::{
-	iti::lcd::{
+	iti::{ItiArgs, lcd::{
 		json::{Item, Screen},
 		send,
-	},
+	}},
 	Context,
 };
 
@@ -36,8 +36,8 @@ pub struct TemperatureArgs {
 	pub watch: Option<humantime::Duration>,
 }
 
-pub async fn run(ctx: Context<TemperatureArgs>) -> Result<()> {
-	if let Some(n) = ctx.args_top.watch {
+pub async fn run(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
+	if let Some(n) = ctx.args_sub.watch {
 		loop {
 			once(ctx.clone()).await?;
 			sleep(*n).await;
@@ -47,7 +47,7 @@ pub async fn run(ctx: Context<TemperatureArgs>) -> Result<()> {
 	}
 }
 
-pub async fn once(ctx: Context<TemperatureArgs>) -> Result<()> {
+pub async fn once(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
 	let temperature = duct::cmd!("vcgencmd", "measure_temp")
 		.read()
 		.into_diagnostic()?
@@ -56,7 +56,7 @@ pub async fn once(ctx: Context<TemperatureArgs>) -> Result<()> {
 		.parse::<f32>()
 		.into_diagnostic()?;
 
-	if ctx.args_top.json {
+	if ctx.args_sub.json {
 		println!(
 			"{}",
 			serde_json::json!({
@@ -68,14 +68,14 @@ pub async fn once(ctx: Context<TemperatureArgs>) -> Result<()> {
 	}
 
 	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = ctx.args_top.update_screen {
+	if let Some(y) = ctx.args_sub.update_screen {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
 		const YELLOW: [u8; 3] = [255, 255, 0];
 
 		send(
-			&ctx.args_top.zmq_socket,
+			&ctx.args_sub.zmq_socket,
 			Screen::Layout(vec![
 				Item {
 					x: 218,

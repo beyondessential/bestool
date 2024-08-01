@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use miette::Result;
 
 use self::chip::Chip;
-
+use super::ItiArgs;
 use crate::actions::Context;
 
 mod chip;
@@ -75,9 +75,9 @@ pub enum EinkAction {
 	Text(text::TextArgs),
 }
 
-pub async fn run(ctx: Context<EinkArgs>) -> Result<()> {
-	match ctx.args_top.action.clone() {
-		EinkAction::Fill(subargs) => fill::run(ctx.with_sub(subargs)).await,
-		EinkAction::Text(subargs) => text::run(ctx.with_sub(subargs)).await,
+pub async fn run(ctx: Context<ItiArgs, EinkArgs>) -> Result<()> {
+	match ctx.args_sub.action.clone() {
+		EinkAction::Fill(subargs) => fill::run(ctx.push(subargs)).await,
+		EinkAction::Text(subargs) => text::run(ctx.push(subargs)).await,
 	}
 }

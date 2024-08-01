@@ -31,6 +31,7 @@ impl Context {
 	}
 }
 
+#[allow(dead_code)] // due to command features
 impl<A, B> Context<A, B> {
 	pub fn with_top<C>(self, args_top: C) -> Context<C, B> {
 		Context::<C, B> {
@@ -50,6 +51,15 @@ impl<A, B> Context<A, B> {
 		}
 	}
 
+	pub fn push<C>(self, new_sub: C) -> Context<B, C> {
+		Context::<B, C> {
+			args_top: self.args_sub,
+			args_sub: new_sub,
+			progress: self.progress,
+			cleanups: self.cleanups,
+		}
+	}
+
 	pub fn take_top(self) -> (A, Context<(), B>) {
 		(
 			self.args_top,
@@ -62,7 +72,6 @@ impl<A, B> Context<A, B> {
 		)
 	}
 
-	#[allow(dead_code)]
 	pub fn bar(&self, len: u64) -> ProgressBar {
 		self.progress.add(
 			ProgressBar::new(len).with_style(
@@ -94,7 +103,7 @@ impl<A, B> Context<A, B> {
 		self.cleanups.read().unwrap().push(cleanup);
 	}
 
-	#[allow(dead_code)] // TODO: clean up on ctrl-c
+	// TODO: clean up on ctrl-c
 	pub fn process_cleanups(&self) -> Vec<Cleanup> {
 		let mut guard = self.cleanups.write().unwrap();
 		let locked = guard.deref_mut();
