@@ -1,26 +1,9 @@
-use std::num::NonZeroU64;
-
 use aws_config::{
 	default_provider::credentials::Builder, AppName, BehaviorVersion, ConfigLoader, Region,
 	SdkConfig,
 };
 use aws_credential_types::Credentials;
 use clap::Parser;
-
-pub mod s3;
-pub mod token;
-
-/// The minimum size of a part in a multipart upload (excluding the last part).
-///
-/// This is a hard limit imposed by S3. It is not possible to upload a part smaller than this,
-/// unless it's the last part. See <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>.
-///
-/// Also see: <https://stackoverflow.com/questions/19376136/amazon-s3-your-proposed-upload-is-smaller-than-the-minimum-allowed-size>.
-///
-/// In practice "5 MiB" is not even enough, it must be a little more than that; we use 6 MiB.
-// SAFETY: hardcoded
-pub const MINIMUM_MULTIPART_PART_SIZE: NonZeroU64 =
-	unsafe { NonZeroU64::new_unchecked(6 * 1024 * 1024) };
 
 /// Include this struct as `#[command(flatten)]` in an Args struct so it can host AWS credentials.
 #[derive(Debug, Clone, Parser)]
@@ -55,15 +38,6 @@ pub struct AwsArgs {
 	/// specified here, it will be taken from the environment variable `AWS_SESSION_TOKEN` if exists.
 	#[arg(long, value_name = "SESSION_TOKEN")]
 	pub aws_session_token: Option<String>,
-
-	/// AWS Delegated Identity Token.
-	///
-	/// This is a Base64-encoded JSON structure containing an access key id, secret key, session
-	/// token, and expiry time. It can be generated using `delegate` subcommands or other tooling.
-	/// It is used as a more convenient way to pass AWS credentials to `bestool` when using
-	/// temporary credentials.
-	#[arg(long, value_name = "TOKEN")]
-	pub aws_delegated: Option<token::DelegatedToken>,
 }
 
 impl AwsArgs {
@@ -71,43 +45,21 @@ impl AwsArgs {
 		self.aws_access_key_id
 			.as_deref()
 			.map(::std::borrow::Cow::Borrowed)
-			.or_else(|| {
-				self.aws_delegated
-					.as_ref()
-					.map(|t| ::std::borrow::Cow::Owned(t.access_key_id.clone()))
-			})
 	}
 
 	fn aws_secret_access_key(&self) -> Option<::std::borrow::Cow<'_, str>> {
 		self.aws_secret_access_key
 			.as_deref()
 			.map(::std::borrow::Cow::Borrowed)
-			.or_else(|| {
-				self.aws_delegated
-					.as_ref()
-					.map(|t| ::std::borrow::Cow::Owned(t.secret_access_key.clone()))
-			})
 	}
 
 	fn aws_region(&self) -> Option<::std::borrow::Cow<'_, str>> {
-		self.aws_region
-			.as_deref()
-			.or_else(|| {
-				self.aws_delegated
-					.as_ref()
-					.and_then(|t: &token::DelegatedToken| t.region.as_deref())
-			})
-			.map(::std::borrow::Cow::Borrowed)
+		self.aws_region.as_deref().map(::std::borrow::Cow::Borrowed)
 	}
 
 	fn aws_session_token(&self) -> Option<::std::borrow::Cow<'_, str>> {
 		self.aws_session_token
 			.as_deref()
-			.or_else(|| {
-				self.aws_delegated
-					.as_ref()
-					.and_then(|t| t.session_token.as_deref())
-			})
 			.map(::std::borrow::Cow::Borrowed)
 	}
 }

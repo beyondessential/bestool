@@ -63,8 +63,6 @@ commands! {
 	ssh => Ssh(SshArgs),
 	#[cfg(feature = "__tamanu")]
 	tamanu => Tamanu(TamanuArgs),
-	#[cfg(feature = "upload")]
-	upload => Upload(UploadArgs),
 	#[cfg(feature = "walg")]
 	walg => WalG(WalgArgs)
 }
@@ -102,4 +100,5 @@ macro_rules! subcommands {
 		}
 	};
 }
+#[allow(unused_imports)]
 pub(crate) use subcommands;
