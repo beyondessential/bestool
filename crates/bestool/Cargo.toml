@@ -178,6 +178,7 @@ tamanu = [ # enable all tamanu subcommands
 tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
+	"dep:folktime",
 	"dep:mailgun-rs",
 	"dep:serde_yml",
 	"dep:sysinfo",

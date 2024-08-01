@@ -1,10 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
+use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
-use tera::Tera;
+use tera::{Context as TeraCtx, Tera};
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
@@ -241,20 +242,18 @@ fn load_templates(alert: &AlertDefinition) -> Result<Tera> {
 	Ok(tera)
 }
 
-#[instrument(skip(alert, tera, rows, now, not_before))]
-fn render_alert(
+#[instrument(skip(alert, rows, now, not_before))]
+fn build_context(
 	alert: &AlertDefinition,
-	tera: &Tera,
 	rows: &[tokio_postgres::Row],
 	now: chrono::DateTime<chrono::Utc>,
 	not_before: chrono::DateTime<chrono::Utc>,
-) -> Result<(String, String)> {
-	debug!("building Tera context");
+) -> TeraCtx {
 	let context_rows = rows_to_value_map(rows);
 
-	let mut context = tera::Context::new();
+	let mut context = TeraCtx::new();
 	context.insert("rows", &context_rows);
-	context.insert("interval", &format!("{}", now - not_before));
+	context.insert("interval", &format!("{}", Folktime::new((now - not_before).to_std().unwrap()).with_style(FolkStyle::OneUnitWhole)));
 	context.insert(
 		"hostname",
 		System::host_name().as_deref().unwrap_or("unknown"),
@@ -265,7 +264,11 @@ fn render_alert(
 	);
 	context.insert("now", &now.to_string());
 
-	debug!("rendering Tera templates");
+	context
+}
+
+#[instrument(skip(tera, context))]
+fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> {
 	let subject = tera
 		.render("subject", &context)
 		.into_diagnostic()
@@ -305,7 +308,8 @@ async fn execute_alert(
 	}
 	info!(?alert.file, rows=%rows.len(), "alert triggered");
 
-	let (subject, body) = render_alert(alert, tera, &rows, now, not_before)?;
+	let mut context = build_context(alert, &rows, now, not_before);
+	let (subject, body) = render_alert(tera, &mut context)?;
 
 	if dry_run {
 		println!("-------------------------------");
@@ -338,4 +342,53 @@ async fn execute_alert(
 		.wrap_err("sending email")?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use chrono::{Duration, Utc};
+
+	use super::*;
+
+	fn interval_context(dur: Duration) -> Option<String> {
+		let alert = AlertDefinition {
+			file: PathBuf::from("test.yaml"),
+			enabled: true,
+			recipients: vec![],
+			sql: "".into(),
+			subject: None,
+			template: "".into(),
+		};
+		let rows = vec![];
+		let now = Utc::now();
+		let not_before = now - dur;
+		build_context(&alert, &rows, now, not_before)
+			.get("interval")
+			.and_then(|v| v.as_str())
+			.map(|s| s.to_owned())
+	}
+
+	#[test]
+	fn test_interval_format_minutes() {
+		assert_eq!(
+			interval_context(Duration::minutes(15)).as_deref(),
+			Some("15m"),
+		);
+	}
+
+	#[test]
+	fn test_interval_format_hour() {
+		assert_eq!(
+			interval_context(Duration::hours(1)).as_deref(),
+			Some("1h"),
+		);
+	}
+
+	#[test]
+	fn test_interval_format_day() {
+		assert_eq!(
+			interval_context(Duration::days(1)).as_deref(),
+			Some("1d"),
+		);
+	}
 }
