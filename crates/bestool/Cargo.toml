@@ -90,32 +90,167 @@ build-data = "0.2.1"
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "self-update", "ssh", "tamanu", "upload", "walg"]
+default = [
+	"caddy",
+	"completions",
+	"crypto",
+	"self-update",
+	"ssh",
+	"tamanu",
+	"upload",
+	"walg"
+]
 
 ## For debugging
-console-subscriber = ["dep:console-subscriber"]
+console-subscriber = [
+	"dep:console-subscriber"
+]
 
 ## Common dep groups (not meant to be used directly)
-aws = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-route53", "dep:aws-sdk-s3", "dep:aws-sdk-sts", "dep:base64ct"]
-download = ["dep:binstalk-downloader", "dep:detect-targets"]
+aws = [
+	"dep:aws-config",
+	"dep:aws-credential-types",
+	"dep:aws-sdk-route53",
+	"dep:aws-sdk-s3",
+	"dep:aws-sdk-sts",
+	"dep:base64ct"
+]
+download = [
+	"dep:binstalk-downloader",
+	"dep:detect-targets"
+]
 
 ## Subcommands
-caddy = ["download", "dep:tera"]
-completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
-crypto = ["dep:base64ct", "dep:blake3", "dep:hex", "dep:leon", "dep:merkle_hash", "dep:minisign", "dep:secrecy"]
-dyndns = ["aws", "dep:local-ip-address", "dep:ip_network", "dep:regex"]
-iti = ["iti-battery", "iti-lcd", "iti-temperature"]
-self-update = ["download", "dep:upgrade"]
-ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
-tamanu = ["download", "dep:dirs", "dep:duct", "dep:glob", "dep:itertools", "dep:json5", "dep:leon", "dep:leon-macros", "dep:mailgun-rs", "dep:node-semver", "dep:regex", "dep:serde_yml", "dep:sysinfo", "dep:tera", "dep:tokio-postgres", "dep:walkdir", "dep:windows"]
-upload = ["aws", "dep:humantime", "dep:walkdir"]
-walg = ["download"]
+caddy = [
+	"download",
+	"dep:tera"
+]
+completions = [
+	"dep:clap_complete",
+	"dep:clap_complete_nushell"
+]
+crypto = [
+	"dep:base64ct",
+	"dep:blake3",
+	"dep:hex",
+	"dep:leon",
+	"dep:merkle_hash",
+	"dep:minisign",
+	"dep:secrecy"
+]
+dyndns = [
+	"aws",
+	"dep:local-ip-address",
+	"dep:ip_network",
+	"dep:regex"
+]
+self-update = [
+	"download",
+	"dep:upgrade"
+]
+ssh = [
+	"dep:dirs",
+	"dep:duct",
+	"dep:fs4",
+	"dep:is-root",
+	"dep:ssh-key",
+	"dep:windows",
+	"dep:windows-acl"
+]
+upload = [
+	"aws",
+	"dep:humantime",
+	"dep:walkdir"
+]
+walg = [
+	"download"
+]
+
+## Tamanu subcommands
+tamanu = [ # enable all tamanu subcommands
+	"tamanu-alerts",
+	"tamanu-config",
+	"tamanu-download",
+	"tamanu-find",
+	"tamanu-psql",
+	"tamanu-upgrade"
+]
+tamanu-alerts = [
+	"__tamanu",
+	"tamanu-config",
+	"dep:mailgun-rs",
+	"dep:serde_yml",
+	"dep:sysinfo",
+	"dep:tera",
+	"dep:tokio-postgres",
+	"dep:walkdir",
+]
+tamanu-config = [
+	"__tamanu",
+]
+tamanu-download = [
+	"__tamanu",
+	"download",
+]
+tamanu-find = [
+	"__tamanu",
+]
+tamanu-psql = [
+	"__tamanu",
+	"tamanu-config",
+	"dep:duct",
+	"dep:windows",
+]
+tamanu-upgrade = [
+	"__tamanu",
+	"caddy",
+	"tamanu-config",
+	"dep:regex",
+]
+__tamanu = [ # internal feature to enable the tamanu subcommand common code
+	# deps for tamanu::roots
+	"dep:dirs",
+	"dep:glob",
+	"dep:itertools",
+	"dep:json5",
+	"dep:leon-macros",
+	"dep:leon",
+	"dep:node-semver",
+]
 
 ## Iti subcommands
-iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
-iti-eink = ["__iti", "dep:bitflags", "dep:bitvec", "dep:fontdue", "dep:rppal", "dep:rust-fontconfig"]
-iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
-iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
+iti = [ # enable all iti subcommands
+	"iti-battery",
+	"iti-eink",
+	"iti-lcd",
+	"iti-temperature"
+]
+iti-battery = [
+	"__iti",
+	"dep:folktime",
+	"dep:humantime",
+	"dep:rppal"
+]
+iti-eink = [
+	"__iti",
+	"dep:bitflags",
+	"dep:bitvec",
+	"dep:fontdue",
+	"dep:rppal",
+	"dep:rust-fontconfig"
+]
+iti-lcd = [
+	"__iti",
+	"dep:ctrlc",
+	"dep:embedded-graphics",
+	"dep:rpi-st7789v2-driver",
+	"dep:sysinfo"
+]
+iti-temperature = [
+	"__iti",
+	"dep:duct",
+	"dep:humantime"
+]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 [package.metadata.binstall]

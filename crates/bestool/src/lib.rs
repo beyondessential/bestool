@@ -9,6 +9,7 @@ pub(crate) mod args;
 pub(crate) mod aws;
 pub mod file_chunker;
 
+#[cfg(feature = "tamanu-alerts")]
 pub(crate) mod postgres_to_value;
 
 #[allow(dead_code)] // some subcommands don't use it, but it's easier to have it everywhere

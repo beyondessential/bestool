@@ -2,11 +2,7 @@
 // which seems to be gone from github and used outdated dependencies.
 // Copyright to the original authors (1aim), MIT+Apache-2.0 licensed.
 
-use std::{
-	error::Error,
-	ops::Deref,
-	collections::HashMap
-};
+use std::{collections::HashMap, error::Error, ops::Deref};
 
 use chrono::{DateTime, Utc};
 use tokio_postgres::{
@@ -39,7 +35,11 @@ impl<'a> Deref for Raw<'a> {
 	}
 }
 
-pub fn col_to_value(col: &tokio_postgres::Column, row: &tokio_postgres::Row, i: usize) -> serde_json::Value {
+pub fn col_to_value(
+	col: &tokio_postgres::Column,
+	row: &tokio_postgres::Row,
+	i: usize,
+) -> serde_json::Value {
 	use serde_json::Value;
 	use tokio_postgres::types::Type;
 
@@ -70,15 +70,11 @@ pub fn col_to_value(col: &tokio_postgres::Column, row: &tokio_postgres::Row, i: 
 }
 
 pub fn rows_to_value_map(rows: &[Row]) -> Vec<HashMap<String, serde_json::Value>> {
-	rows
-		.iter()
+	rows.iter()
 		.map(|row| {
 			let mut map = HashMap::new();
 			for (i, col) in row.columns().iter().enumerate() {
-				map.insert(
-					col.name().to_owned(),
-					col_to_value(col, row, i)
-				);
+				map.insert(col.name().to_owned(), col_to_value(col, row, i));
 			}
 			map
 		})
