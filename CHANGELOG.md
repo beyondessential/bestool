@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.15.0](https://github.com/beyondessential/bestool/compare/v0.14.3..0.15.0) - 2024-08-01
+## [0.15.0](https://github.com/beyondessential/bestool/compare/v0.14.3..v0.15.0) - 2024-08-01
 
 
 - **Deps:** Upgrade bestool deps - ([c8e4831](https://github.com/beyondessential/bestool/commit/c8e48313c696fcc64ce9ac5244815fa390040c6f))
