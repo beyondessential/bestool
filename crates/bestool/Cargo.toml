@@ -38,7 +38,6 @@ folktime = { version = "0.2.1", optional = true }
 fontdue = { version = "0.9.2", optional = true }
 fs4 = { version = "0.9.1", features = ["tokio"], optional = true }
 glob = { version = "0.3.1", optional = true }
-hex = { version = "0.4.3", optional = true }
 humantime = { version = "2.1.0", optional = true }
 indicatif = { version = "0.17.7", features = ["tokio"] }
 ip_network = { version = "0.4.1", optional = true }
@@ -52,14 +51,12 @@ mailgun-rs = { version = "0.1.11", optional = true }
 merkle_hash = { version = "3.6.1", optional = true }
 miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.41"
-minisign = { version = "0.7.6", optional = true }
 node-semver = { version = "2.1.0", optional = true }
 regex = { version = "1.10.4", optional = true }
 reqwest = { version = "0.12.5", features = ["json"], default-features = false }
 rpi-st7789v2-driver = { version = "0.1.0", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.18.0", optional = true }
 rust-fontconfig = { version = "0.1.7", optional = true }
-secrecy = { version = "0.8.0", optional = true }
 serde = { version = "1.0.201", features = ["derive"] }
 serde_json = "1.0.117"
 serde_yml = { version = "0.0.11", optional = true }
@@ -127,13 +124,8 @@ completions = [
 	"dep:clap_complete_nushell"
 ]
 crypto = [
-	"dep:base64ct",
 	"dep:blake3",
-	"dep:hex",
-	"dep:leon",
 	"dep:merkle_hash",
-	"dep:minisign",
-	"dep:secrecy"
 ]
 dyndns = [
 	"aws",

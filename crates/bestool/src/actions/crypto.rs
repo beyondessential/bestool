@@ -4,12 +4,6 @@ use miette::Result;
 use super::Context;
 
 pub mod hash;
-pub mod keygen;
-pub mod sign;
-pub mod verify;
-
-mod inout_args;
-mod key_args;
 
 /// Cryptographic operations.
 #[derive(Debug, Clone, Parser)]
@@ -22,16 +16,10 @@ pub struct CryptoArgs {
 #[derive(Debug, Clone, Subcommand)]
 pub enum CryptoAction {
 	Hash(hash::HashArgs),
-	Keygen(keygen::KeygenArgs),
-	Sign(sign::SignArgs),
-	Verify(verify::VerifyArgs),
 }
 
 pub async fn run(ctx: Context<CryptoArgs>) -> Result<()> {
 	match ctx.args_top.action.clone() {
 		CryptoAction::Hash(subargs) => hash::run(ctx.with_sub(subargs)).await,
-		CryptoAction::Keygen(subargs) => keygen::run(ctx.with_sub(subargs)).await,
-		CryptoAction::Sign(subargs) => sign::run(ctx.with_sub(subargs)).await,
-		CryptoAction::Verify(subargs) => verify::run(ctx.with_sub(subargs)).await,
 	}
 }
