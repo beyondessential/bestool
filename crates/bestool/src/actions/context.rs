@@ -1,23 +1,14 @@
-use std::{
-	io::{stderr, Write},
-	mem::swap,
-	ops::DerefMut,
-	sync::{Arc, RwLock},
-};
+use std::io::{stderr, Write};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
-
-#[cfg(feature = "upload")]
-use super::upload::UploadId;
 
 #[derive(Clone, Debug)]
 pub struct Context<A = (), B = ()> {
 	pub args_top: A,
 	pub args_sub: B,
 	pub progress: MultiProgress,
-	cleanups: Arc<RwLock<boxcar::Vec<Cleanup>>>,
 }
 
 impl Context {
@@ -26,7 +17,6 @@ impl Context {
 			args_top: (),
 			args_sub: (),
 			progress: MultiProgress::new(),
-			cleanups: Arc::new(RwLock::new(boxcar::Vec::new())),
 		}
 	}
 }
@@ -38,7 +28,6 @@ impl<A, B> Context<A, B> {
 			args_top,
 			args_sub: self.args_sub,
 			progress: self.progress,
-			cleanups: self.cleanups,
 		}
 	}
 
@@ -47,7 +36,6 @@ impl<A, B> Context<A, B> {
 			args_top: self.args_top,
 			args_sub,
 			progress: self.progress,
-			cleanups: self.cleanups,
 		}
 	}
 
@@ -56,7 +44,6 @@ impl<A, B> Context<A, B> {
 			args_top: self.args_sub,
 			args_sub: new_sub,
 			progress: self.progress,
-			cleanups: self.cleanups,
 		}
 	}
 
@@ -67,7 +54,6 @@ impl<A, B> Context<A, B> {
 				args_top: (),
 				args_sub: self.args_sub,
 				progress: self.progress,
-				cleanups: self.cleanups,
 			},
 		)
 	}
@@ -95,21 +81,7 @@ impl<A, B> Context<A, B> {
 			args_top: (),
 			args_sub: (),
 			progress: self.progress.clone(),
-			cleanups: self.cleanups.clone(),
 		}
-	}
-
-	pub fn add_cleanup(&self, cleanup: Cleanup) {
-		self.cleanups.read().unwrap().push(cleanup);
-	}
-
-	// TODO: clean up on ctrl-c
-	pub fn process_cleanups(&self) -> Vec<Cleanup> {
-		let mut guard = self.cleanups.write().unwrap();
-		let locked = guard.deref_mut();
-		let mut retrieved = boxcar::Vec::new();
-		swap(locked, &mut retrieved);
-		retrieved.into_iter().collect()
 	}
 }
 
@@ -136,10 +108,4 @@ impl<'w, A, B> MakeWriter<'w> for Context<A, B> {
 	fn make_writer_for(&'w self, _meta: &Metadata<'_>) -> Self::Writer {
 		ProgressLogWriter(self.progress.clone())
 	}
-}
-
-#[derive(Debug, Clone)]
-pub enum Cleanup {
-	#[cfg(feature = "upload")]
-	MultiPartUpload(UploadId),
 }
