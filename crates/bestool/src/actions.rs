@@ -5,9 +5,10 @@ use tracing::{debug, trace};
 pub use context::Context;
 pub mod context;
 
-macro_rules! commands {
+#[macro_export]
+macro_rules! subcommands {
 	(
-		[$argtype:ty => $ctxcode:block]
+		[$argtype:ty => $ctxcode:block]($ctxmethod:ident)
 		$(
 			#[$meta:meta]
 			$modname:ident => $enumname:ident($argname:ident)
@@ -31,21 +32,23 @@ macro_rules! commands {
 			match ctxfn(ctx)? {
 				$(
 					#[$meta]
-					(Action::$enumname(args), ctx) => $modname::run(ctx.with_top(args)).await,
+					(Action::$enumname(args), ctx) => $modname::run(ctx.$ctxmethod(args)).await,
 				)*
 			}
 		}
 	};
 }
+#[allow(unused_imports)]
+pub(crate) use subcommands;
 
 use crate::args::Args;
 
-commands! {
+subcommands! {
 	[Args => {|args: Args| -> Result<(Action, Context<()>)> {
 		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
 		trace!(action=?args.action, "action");
 		Ok((args.action, Context::new()))
-	}}]
+	}}](with_top)
 
 	#[cfg(feature = "caddy")]
 	caddy => Caddy(CaddyArgs),
@@ -66,39 +69,3 @@ commands! {
 	#[cfg(feature = "walg")]
 	walg => WalG(WalgArgs)
 }
-
-#[macro_export]
-macro_rules! subcommands {
-	(
-		[$argtype:ty => $ctxcode:block]
-		$(
-			#[$meta:meta]
-			$modname:ident => $enumname:ident($argname:ident)
-		),+
-	) => {
-		$(
-			#[$meta]
-			pub mod $modname;
-		)*
-
-		#[derive(Debug, Clone, Subcommand)]
-		pub enum Action {
-			$(
-				#[$meta]
-				$enumname($modname::$argname),
-			)*
-		}
-
-		pub async fn run(ctx: $argtype) -> Result<()> {
-			let ctxfn = $ctxcode;
-			match ctxfn(ctx)? {
-				$(
-					#[$meta]
-					(Action::$enumname(args), ctx) => $modname::run(ctx.with_sub(args)).await,
-				)*
-			}
-		}
-	};
-}
-#[allow(unused_imports)]
-pub(crate) use subcommands;
