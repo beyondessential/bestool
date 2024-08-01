@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.15.0](https://github.com/beyondessential/bestool/compare/v0.14.3..0.15.0) - 2024-08-01
+
+
+- **Deps:** Upgrade bestool deps - ([c8e4831](https://github.com/beyondessential/bestool/commit/c8e48313c696fcc64ce9ac5244815fa390040c6f))
+- **Deps:** Update rpi-st7789v2-driver deps - ([c1097fd](https://github.com/beyondessential/bestool/commit/c1097fd3415e7babd492a7438ccd27b07f241f96))
+- **Refactor:** Remove upload command - ([2286435](https://github.com/beyondessential/bestool/commit/228643520e7fe6d1c84cc17a18f4da6545fc1c9e))
+
+### Alerts
+
+- **Bugfix:** Make interval rendering short and sweet and tested - ([d4f4517](https://github.com/beyondessential/bestool/commit/d4f45172b143f8d67376d10a1dd5cfc3421b220d))
+- **Refactor:** Split function to more easily test it - ([968a775](https://github.com/beyondessential/bestool/commit/968a7756fddcefb5245bb844240eba70defe98dc))
+
+### Crypto
+
+- **Refactor:** Remove minisign subcommands - ([107c0f8](https://github.com/beyondessential/bestool/commit/107c0f85bd302ff7c83bbb9aea51d3b7f7bd0e3a))
+
+### Iti
+
+- **Refactor:** Pass upper args through - ([9d5a93f](https://github.com/beyondessential/bestool/commit/9d5a93fb1f8d9ad487f04b6f807f9a08cc66339c))
+
+---
 ## [0.14.2](https://github.com/beyondessential/bestool/compare/v0.14.1..v0.14.2) - 2024-07-16
 
 
