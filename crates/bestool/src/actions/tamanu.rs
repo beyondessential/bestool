@@ -27,7 +27,7 @@ pub struct TamanuArgs {
 super::subcommands! {
 	[Context<TamanuArgs> => {|ctx: Context<TamanuArgs>| -> Result<(Action, Context<TamanuArgs>)> {
 		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
-	}}]
+	}}](with_sub)
 
 	#[cfg(feature = "tamanu-alerts")]
 	alerts => Alerts(AlertsArgs),

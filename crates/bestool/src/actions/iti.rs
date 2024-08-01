@@ -14,7 +14,7 @@ pub struct ItiArgs {
 super::subcommands! {
 	[Context<ItiArgs> => {|ctx: Context<ItiArgs>| -> Result<(Action, Context<ItiArgs>)> {
 		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
-	}}]
+	}}](with_sub)
 
 	#[cfg(feature = "iti-battery")]
 	battery => Battery(BatteryArgs),
