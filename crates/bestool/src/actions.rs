@@ -42,10 +42,9 @@ use crate::args::Args;
 
 commands! {
 	[Args => {|args: Args| -> Result<(Action, Context<()>)> {
-		let ctx = Context::new().with_top(args.action);
 		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
-		trace!(?ctx, "context");
-		Ok(ctx.take_top())
+		trace!(action=?args.action, "action");
+		Ok((args.action, Context::new()))
 	}}]
 
 	#[cfg(feature = "caddy")]

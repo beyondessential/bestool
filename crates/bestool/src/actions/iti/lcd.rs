@@ -13,6 +13,7 @@ use miette::{miette, IntoDiagnostic, Result, WrapErr};
 use rpi_st7789v2_driver::{DriverArgs, Driver};
 use tracing::{error, info, instrument, trace};
 
+use super::ItiArgs;
 use crate::actions::Context;
 
 pub mod json;
@@ -140,9 +141,9 @@ pub enum LcdAction {
 	Off,
 }
 
-pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
+pub async fn run(ctx: Context<ItiArgs, LcdArgs>) -> Result<()> {
 	use LcdAction::*;
-	match ctx.args_top.action.clone() {
+	match ctx.args_sub.action.clone() {
 		Serve => serve(ctx),
 		Send { message } => {
 			let screen = serde_json::from_str(&message.unwrap_or_else(|| {
@@ -152,16 +153,16 @@ pub async fn run(ctx: Context<LcdArgs>) -> Result<()> {
 			}))
 			.into_diagnostic()
 			.wrap_err("json: from_str")?;
-			send(&ctx.args_top.zmq_socket, screen)
+			send(&ctx.args_sub.zmq_socket, screen)
 		}
-		Clear { red, green, blue } => send(&ctx.args_top.zmq_socket, json::Screen::Clear([red, green, blue])),
-		On => send(&ctx.args_top.zmq_socket, json::Screen::Light(true)),
-		Off => send(&ctx.args_top.zmq_socket, json::Screen::Light(false)),
+		Clear { red, green, blue } => send(&ctx.args_sub.zmq_socket, json::Screen::Clear([red, green, blue])),
+		On => send(&ctx.args_sub.zmq_socket, json::Screen::Light(true)),
+		Off => send(&ctx.args_sub.zmq_socket, json::Screen::Light(false)),
 	}
 }
 
 #[instrument(level = "debug", skip(ctx))]
-pub fn serve(ctx: Context<LcdArgs>) -> Result<()> {
+pub fn serve(ctx: Context<ItiArgs, LcdArgs>) -> Result<()> {
 	let running = Arc::new(AtomicBool::new(true));
 	let r = running.clone();
 
@@ -181,15 +182,15 @@ pub fn serve(ctx: Context<LcdArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("zmq: set_ipv6")?;
 	socket
-		.bind(&ctx.args_top.zmq_socket)
+		.bind(&ctx.args_sub.zmq_socket)
 		.into_diagnostic()
-		.wrap_err(format!("zmq: bind({})", ctx.args_top.zmq_socket))?;
+		.wrap_err(format!("zmq: bind({})", ctx.args_sub.zmq_socket))?;
 	info!(
 		"ZMQ REP listening on {} for JSON messages",
-		ctx.args_top.zmq_socket
+		ctx.args_sub.zmq_socket
 	);
 
-	let mut lcd = Driver::new(ctx.args_top.into())?;
+	let mut lcd = Driver::new(ctx.args_sub.into())?;
 	lcd.init()?;
 	lcd.probe_buffer_length()?;
 

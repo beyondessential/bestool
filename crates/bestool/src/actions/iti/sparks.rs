@@ -5,10 +5,10 @@ use miette::Result;
 use sysinfo::System;
 
 use crate::actions::{
-	iti::lcd::{
+	iti::{ItiArgs, lcd::{
 		json::{Item, Screen},
 		send,
-	},
+	}},
 	Context,
 };
 
@@ -42,7 +42,7 @@ const GAP: i32 = 10;
 const OUTER_WIDTH: u32 = ((MAX_X - MIN_X - GAP) as u32) / 2;
 const INNER_WIDTH: u32 = OUTER_WIDTH - 2;
 
-pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
+pub async fn run(ctx: Context<ItiArgs, SparksArgs>) -> Result<()> {
 	let mut sys = System::new();
 	sys.refresh_cpu_usage();
 	sys.refresh_memory();
@@ -50,7 +50,7 @@ pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
 	let mut cpu = VecDeque::new();
 	let mut mem = VecDeque::new();
 
-	let mut interval: Duration = ctx.args_top.interval.into();
+	let mut interval: Duration = ctx.args_sub.interval.into();
 	if interval < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL {
 		interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
 	}
@@ -73,7 +73,7 @@ pub async fn run(ctx: Context<SparksArgs>) -> Result<()> {
 		mem.truncate(INNER_WIDTH as _);
 
 		render(
-			&ctx.args_top,
+			&ctx.args_sub,
 			cpu.iter().rev().copied(),
 			mem.iter().rev().copied(),
 		)?;
