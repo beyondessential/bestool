@@ -10,16 +10,7 @@ use node_semver::Version;
 
 use super::Context;
 
-pub mod alerts;
-pub mod config;
-pub mod download;
-pub mod find;
-#[cfg(windows)]
-pub mod prepare_upgrade;
-pub mod psql;
-pub mod roots;
-#[cfg(windows)]
-pub mod upgrade;
+mod roots;
 
 /// Interact with Tamanu.
 #[derive(Debug, Clone, Parser)]
@@ -30,34 +21,28 @@ pub struct TamanuArgs {
 
 	/// Tamanu subcommand
 	#[command(subcommand)]
-	pub action: TamanuAction,
+	pub action: Action,
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum TamanuAction {
-	Alerts(alerts::AlertsArgs),
-	Config(config::ConfigArgs),
-	Download(download::DownloadArgs),
-	Find(find::FindArgs),
-	#[cfg(windows)]
-	PrepareUpgrade(prepare_upgrade::PrepareUpgradeArgs),
-	Psql(psql::PsqlArgs),
-	#[cfg(windows)]
-	Upgrade(upgrade::UpgradeArgs),
-}
+super::subcommands! {
+	[Context<TamanuArgs> => {|ctx: Context<TamanuArgs>| -> Result<(Action, Context<TamanuArgs>)> {
+		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
+	}}]
 
-pub async fn run(ctx: Context<TamanuArgs>) -> Result<()> {
-	match ctx.args_top.action.clone() {
-		TamanuAction::Alerts(subargs) => alerts::run(ctx.with_sub(subargs)).await,
-		TamanuAction::Config(subargs) => config::run(ctx.with_sub(subargs)).await,
-		TamanuAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
-		TamanuAction::Find(subargs) => find::run(ctx.with_sub(subargs)).await,
-		#[cfg(windows)]
-		TamanuAction::PrepareUpgrade(subargs) => prepare_upgrade::run(ctx.with_sub(subargs)).await,
-		TamanuAction::Psql(subargs) => psql::run(ctx.with_sub(subargs)).await,
-		#[cfg(windows)]
-		TamanuAction::Upgrade(subargs) => upgrade::run(ctx.with_sub(subargs)).await,
-	}
+	#[cfg(feature = "tamanu-alerts")]
+	alerts => Alerts(AlertsArgs),
+	#[cfg(feature = "tamanu-config")]
+	config => Config(ConfigArgs),
+	#[cfg(feature = "tamanu-download")]
+	download => Download(DownloadArgs),
+	#[cfg(feature = "tamanu-find")]
+	find => Find(FindArgs),
+	#[cfg(all(windows, feature = "tamanu-upgrade"))]
+	prepare_upgrade => PrepareUpgrade(PrepareUpgradeArgs),
+	#[cfg(feature = "tamanu-psql")]
+	psql => Psql(PsqlArgs),
+	#[cfg(all(windows, feature = "tamanu-upgrade"))]
+	upgrade => Upgrade(UpgradeArgs)
 }
 
 /// What kind of server to interact with.

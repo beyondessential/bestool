@@ -5,8 +5,7 @@ use tracing::{debug, trace};
 pub use context::Context;
 pub mod context;
 
-#[macro_export]
-macro_rules! subcommands {
+macro_rules! commands {
 	(
 		[$argtype:ty => $ctxcode:block]
 		$(
@@ -38,11 +37,10 @@ macro_rules! subcommands {
 		}
 	};
 }
-pub(crate) use subcommands;
 
 use crate::args::Args;
 
-subcommands! {
+commands! {
 	[Args => {|args: Args| -> Result<(Action, Context<()>)> {
 		let ctx = Context::new().with_top(args.action);
 		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
@@ -64,10 +62,45 @@ subcommands! {
 	self_update => SelfUpdate(SelfUpdateArgs),
 	#[cfg(feature = "ssh")]
 	ssh => Ssh(SshArgs),
-	#[cfg(feature = "tamanu")]
+	#[cfg(feature = "__tamanu")]
 	tamanu => Tamanu(TamanuArgs),
 	#[cfg(feature = "upload")]
 	upload => Upload(UploadArgs),
 	#[cfg(feature = "walg")]
 	walg => WalG(WalgArgs)
 }
+
+#[macro_export]
+macro_rules! subcommands {
+	(
+		[$argtype:ty => $ctxcode:block]
+		$(
+			#[$meta:meta]
+			$modname:ident => $enumname:ident($argname:ident)
+		),+
+	) => {
+		$(
+			#[$meta]
+			pub mod $modname;
+		)*
+
+		#[derive(Debug, Clone, Subcommand)]
+		pub enum Action {
+			$(
+				#[$meta]
+				$enumname($modname::$argname),
+			)*
+		}
+
+		pub async fn run(ctx: $argtype) -> Result<()> {
+			let ctxfn = $ctxcode;
+			match ctxfn(ctx)? {
+				$(
+					#[$meta]
+					(Action::$enumname(args), ctx) => $modname::run(ctx.with_sub(args)).await,
+				)*
+			}
+		}
+	};
+}
+pub(crate) use subcommands;
