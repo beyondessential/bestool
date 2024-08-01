@@ -4,6 +4,7 @@ use clap::Parser;
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
+use tera::Tera;
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
@@ -201,17 +202,21 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
+	let tera = load_templates(&alerts[0])?;
+
 	// TODO: convert to join!
 	for alert in alerts {
 		if let Err(err) = execute_alert(
 			&client,
 			&config.mailgun,
 			&alert,
+			&tera,
 			now,
 			not_before,
 			ctx.args_sub.dry_run,
 		)
-		.await.wrap_err(format!("while executing alert: {}", alert.file.display()))
+		.await
+		.wrap_err(format!("while executing alert: {}", alert.file.display()))
 		{
 			eprintln!("{err:?}");
 		}
@@ -220,30 +225,8 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	Ok(())
 }
 
-#[instrument(skip(client, mailgun, alert, now, not_before))]
-async fn execute_alert(
-	client: &tokio_postgres::Client,
-	mailgun: &TamanuMailgun,
-	alert: &AlertDefinition,
-	now: chrono::DateTime<chrono::Utc>,
-	not_before: chrono::DateTime<chrono::Utc>,
-	dry_run: bool,
-) -> Result<()> {
-	info!(?alert.file, "executing alert");
-
-	let rows = client
-		.query(&alert.sql, &[&not_before])
-		.await
-		.into_diagnostic()
-		.wrap_err("querying database")?;
-
-	if rows.is_empty() {
-		debug!(?alert.file, "no rows returned, skipping");
-		return Ok(());
-	}
-	info!(?alert.file, rows=%rows.len(), "alert triggered");
-
-	debug!("compiling Tera templates");
+#[instrument(skip(alert))]
+fn load_templates(alert: &AlertDefinition) -> Result<Tera> {
 	let mut tera = tera::Tera::default();
 	tera.add_raw_template(
 		"subject",
@@ -255,8 +238,19 @@ async fn execute_alert(
 		.into_diagnostic()
 		.wrap_err("compiling email template")?;
 
+	Ok(tera)
+}
+
+#[instrument(skip(alert, tera, rows, now, not_before))]
+fn render_alert(
+	alert: &AlertDefinition,
+	tera: &Tera,
+	rows: &[tokio_postgres::Row],
+	now: chrono::DateTime<chrono::Utc>,
+	not_before: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, String)> {
 	debug!("building Tera context");
-	let context_rows = rows_to_value_map(&rows);
+	let context_rows = rows_to_value_map(rows);
 
 	let mut context = tera::Context::new();
 	context.insert("rows", &context_rows);
@@ -276,10 +270,42 @@ async fn execute_alert(
 		.render("subject", &context)
 		.into_diagnostic()
 		.wrap_err("rendering subject template")?;
+
+	context.insert("subject", &subject.to_string());
+
 	let body = tera
 		.render("alert.html", &context)
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
+
+	Ok((subject, body))
+}
+
+#[instrument(skip(client, mailgun, alert, tera, now, not_before))]
+async fn execute_alert(
+	client: &tokio_postgres::Client,
+	mailgun: &TamanuMailgun,
+	alert: &AlertDefinition,
+	tera: &Tera,
+	now: chrono::DateTime<chrono::Utc>,
+	not_before: chrono::DateTime<chrono::Utc>,
+	dry_run: bool,
+) -> Result<()> {
+	info!(?alert.file, "executing alert");
+
+	let rows = client
+		.query(&alert.sql, &[&not_before])
+		.await
+		.into_diagnostic()
+		.wrap_err("querying database")?;
+
+	if rows.is_empty() {
+		debug!(?alert.file, "no rows returned, skipping");
+		return Ok(());
+	}
+	info!(?alert.file, rows=%rows.len(), "alert triggered");
+
+	let (subject, body) = render_alert(alert, tera, &rows, now, not_before)?;
 
 	if dry_run {
 		println!("-------------------------------");
