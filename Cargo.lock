@@ -1271,14 +1271,14 @@ dependencies = [
 
 [[package]]
 name = "detect-targets"
-version = "0.1.17"
+version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96a150d64538808fa889928fe8b6edb1d78b3649472ee51334beff2e4de9a72a"
+checksum = "fe067044b4344e2dd9884efdce05e7dc8b7fd2b578c87d5e01a621bee5578511"
 dependencies = [
  "cfg-if",
  "guess_host_triple",
  "tokio",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5494,6 +5494,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
