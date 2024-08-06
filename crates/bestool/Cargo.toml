@@ -150,6 +150,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-config",
 	"tamanu-download",
 	"tamanu-find",
+	"tamanu-greenmask",
 	"tamanu-psql",
 	"tamanu-upgrade"
 ]
@@ -174,6 +175,12 @@ tamanu-download = [
 ]
 tamanu-find = [
 	"__tamanu",
+]
+tamanu-greenmask = [
+	"__tamanu",
+	"tamanu-config",
+	"dep:serde_yml",
+	"dep:walkdir",
 ]
 tamanu-psql = [
 	"__tamanu",
