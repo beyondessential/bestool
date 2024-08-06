@@ -37,6 +37,8 @@ super::subcommands! {
 	download => Download(DownloadArgs),
 	#[cfg(feature = "tamanu-find")]
 	find => Find(FindArgs),
+	#[cfg(feature = "tamanu-greenmask")]
+	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
 	#[cfg(all(windows, feature = "tamanu-upgrade"))]
 	prepare_upgrade => PrepareUpgrade(PrepareUpgradeArgs),
 	#[cfg(feature = "tamanu-psql")]
