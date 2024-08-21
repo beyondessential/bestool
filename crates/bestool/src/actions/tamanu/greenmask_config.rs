@@ -1,7 +1,7 @@
 use std::{
-	collections::{hash_map::Entry, HashMap},
+	collections::HashMap,
 	env::temp_dir,
-	fs,
+	fs::{self, canonicalize},
 	path::PathBuf,
 };
 
@@ -27,12 +27,14 @@ pub struct GreenmaskConfigArgs {
 	pub kind: Option<ApiServerKind>,
 
 	/// Folder containing table masking definitions.
+	///
+	/// By default, this is the `greenmask/config` folder in the Tamanu root.
 	#[arg(value_hint = ValueHint::DirPath)]
-	pub folder: PathBuf,
+	pub folder: Option<PathBuf>,
 
 	/// Folder where dumps are stored.
 	///
-	/// By default, this is the `greenmask` folder in the Tamanu root.
+	/// By default, this is the `greenmask/dumps` folder in the Tamanu root.
 	#[arg(long, value_hint = ValueHint::DirPath)]
 	pub storage_dir: Option<PathBuf>,
 }
@@ -120,8 +122,14 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	let pg_bin_path = find_postgres().wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
 
+	let transforms_dir = ctx
+		.args_sub
+		.folder
+		.unwrap_or_else(|| root.join("greenmask").join("config"));
+	debug!(path=?transforms_dir, "loading transformations");
+
 	let mut transforms = HashMap::new();
-	for entry in WalkDir::new(ctx.args_sub.folder).follow_links(true) {
+	for entry in WalkDir::new(transforms_dir).follow_links(true) {
 		let path = match entry {
 			Ok(entry) => entry.path().to_owned(),
 			Err(err) => {
@@ -160,10 +168,12 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 			tmp_dir,
 		},
 		storage: GreenmaskStorage::Directory(GreenmaskStorageDirectory {
-			path: ctx
-				.args_sub
-				.storage_dir
-				.unwrap_or_else(|| root.join("greenmask")),
+			path: canonicalize(
+				ctx.args_sub
+					.storage_dir
+					.unwrap_or_else(|| root.join("greenmask").join("dumps")),
+			)
+			.into_diagnostic()?,
 		}),
 		dump: GreenmaskDump {
 			pg_dump_options: GreenmaskDumpOptions {
