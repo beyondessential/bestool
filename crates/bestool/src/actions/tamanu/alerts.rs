@@ -203,15 +203,12 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let tera = load_templates(&alerts[0])?;
-
 	// TODO: convert to join!
 	for alert in alerts {
 		if let Err(err) = execute_alert(
 			&client,
 			&config.mailgun,
 			&alert,
-			&tera,
 			now,
 			not_before,
 			ctx.args_sub.dry_run,
@@ -284,17 +281,18 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> 
 	Ok((subject, body))
 }
 
-#[instrument(skip(client, mailgun, alert, tera, now, not_before))]
+#[instrument(skip(client, mailgun, alert, now, not_before))]
 async fn execute_alert(
 	client: &tokio_postgres::Client,
 	mailgun: &TamanuMailgun,
 	alert: &AlertDefinition,
-	tera: &Tera,
 	now: chrono::DateTime<chrono::Utc>,
 	not_before: chrono::DateTime<chrono::Utc>,
 	dry_run: bool,
 ) -> Result<()> {
 	info!(?alert.file, "executing alert");
+
+	let tera = load_templates(&alert)?;
 
 	let rows = client
 		.query(&alert.sql, &[&not_before])
@@ -309,11 +307,12 @@ async fn execute_alert(
 	info!(?alert.file, rows=%rows.len(), "alert triggered");
 
 	let mut context = build_context(alert, &rows, now, not_before);
-	let (subject, body) = render_alert(tera, &mut context)?;
+	let (subject, body) = render_alert(&tera, &mut context)?;
 
 	if dry_run {
 		println!("-------------------------------");
 		println!("Alert: {}", alert.file.display());
+		println!("Recipients: {}", alert.recipients.join(", "));
 		println!("Subject: {subject}");
 		println!("Body: {body}");
 		return Ok(());
