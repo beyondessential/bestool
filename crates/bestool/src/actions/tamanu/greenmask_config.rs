@@ -26,11 +26,13 @@ pub struct GreenmaskConfigArgs {
 	#[arg(long)]
 	pub kind: Option<ApiServerKind>,
 
-	/// Folder containing table masking definitions.
+	/// Folders containing table masking definitions.
 	///
 	/// By default, this is the `greenmask/config` folder in the Tamanu root.
+	///
+	/// Can be specified multiple times, entries will be merged.
 	#[arg(value_hint = ValueHint::DirPath)]
-	pub folder: Option<PathBuf>,
+	pub folders: Vec<PathBuf>,
 
 	/// Folder where dumps are stored.
 	///
@@ -147,44 +149,51 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	let pg_bin_path = find_postgres().wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
 
-	let transforms_dir = ctx
-		.args_sub
-		.folder
-		.unwrap_or_else(|| root.join("greenmask").join("config"));
-	debug!(path=?transforms_dir, "loading transformations");
+	let mut transforms_dirs = ctx.args_sub.folders;
+	if transforms_dirs.is_empty() {
+		transforms_dirs.push(root.join("greenmask").join("config"));
+	}
 
 	let mut transforms = HashMap::new();
-	for entry in WalkDir::new(transforms_dir).follow_links(true) {
-		let path = match entry {
-			Ok(entry) => entry.path().to_owned(),
-			Err(err) => {
-				warn!(?err, "failed to read entry");
-				continue;
-			}
-		};
-
-		match path.extension().and_then(|ext| ext.to_str()) {
-			Some("yml" | "yaml") => (),
-			_ => continue,
+	for transforms_dir in &transforms_dirs {
+		info!(path=?transforms_dir, "loading transformations");
+		if !transforms_dir.exists() {
+			warn!(path=?transforms_dir, "directory does not exist");
+			continue;
 		}
 
-		let content = fs::read_to_string(&path).into_diagnostic()?;
-		let value: GreenmaskTransformation = serde_yml::from_str(&content).into_diagnostic()?;
+		for entry in WalkDir::new(transforms_dir).follow_links(true) {
+			let path = match entry {
+				Ok(entry) => entry.path().to_owned(),
+				Err(err) => {
+					warn!(?err, "failed to read entry");
+					continue;
+				}
+			};
 
-		debug!(path=%path.display(), "loading transformation");
-		transforms
-			.entry((value.schema.clone(), value.table.clone()))
-			.and_modify(|entry: &mut GreenmaskTransformation| {
-				debug!(
-					?entry,
-					"duplicate entry for {}.{}, merging {}",
-					value.schema,
-					value.table,
-					path.display()
-				);
-				entry.rest = merge_yaml(entry.rest.clone(), value.rest.clone());
-			})
-			.or_insert(value);
+			match path.extension().and_then(|ext| ext.to_str()) {
+				Some("yml" | "yaml") => (),
+				_ => continue,
+			}
+
+			let content = fs::read_to_string(&path).into_diagnostic()?;
+			let value: GreenmaskTransformation = serde_yml::from_str(&content).into_diagnostic()?;
+
+			debug!(path=%path.display(), "loading transformation");
+			transforms
+				.entry((value.schema.clone(), value.table.clone()))
+				.and_modify(|entry: &mut GreenmaskTransformation| {
+					debug!(
+						?entry,
+						"duplicate entry for {}.{}, merging {}",
+						value.schema,
+						value.table,
+						path.display()
+					);
+					entry.rest = merge_yaml(entry.rest.clone(), value.rest.clone());
+				})
+				.or_insert(value);
+		}
 	}
 
 	let greenmask_config = GreenmaskConfig {
@@ -199,7 +208,8 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 					.unwrap_or_else(|| root.join("greenmask").join("dumps")),
 			)
 			.into_diagnostic()?,
-		}).into(),
+		})
+		.into(),
 		dump: GreenmaskDump {
 			pg_dump_options: GreenmaskDumpOptions {
 				dbname: format!(
