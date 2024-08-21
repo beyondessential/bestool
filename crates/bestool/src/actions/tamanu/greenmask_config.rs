@@ -60,7 +60,7 @@ struct Db {
 #[derive(serde::Serialize, Debug)]
 struct GreenmaskConfig {
 	common: GreenmaskCommon,
-	storage: GreenmaskStorage,
+	storage: GreenmaskStorageWrap,
 	dump: GreenmaskDump,
 }
 
@@ -71,9 +71,34 @@ struct GreenmaskCommon {
 }
 
 #[derive(serde::Serialize, Debug)]
-#[serde(tag = "type")]
+struct GreenmaskStorageWrap {
+	#[serde(rename = "type")]
+	kind: GreenmaskStorageName,
+	#[serde(flatten)]
+	storage: GreenmaskStorage,
+}
+
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "lowercase")]
+enum GreenmaskStorageName {
+	Directory,
+}
+
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "lowercase")]
 enum GreenmaskStorage {
 	Directory(GreenmaskStorageDirectory),
+}
+
+impl From<GreenmaskStorage> for GreenmaskStorageWrap {
+	fn from(storage: GreenmaskStorage) -> Self {
+		match storage {
+			GreenmaskStorage::Directory(dir) => GreenmaskStorageWrap {
+				kind: GreenmaskStorageName::Directory,
+				storage: GreenmaskStorage::Directory(dir),
+			},
+		}
+	}
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -174,11 +199,11 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 					.unwrap_or_else(|| root.join("greenmask").join("dumps")),
 			)
 			.into_diagnostic()?,
-		}),
+		}).into(),
 		dump: GreenmaskDump {
 			pg_dump_options: GreenmaskDumpOptions {
 				dbname: format!(
-					"host={} user={} password='{}' dbname='{}'",
+					"host='{}' user='{}' password='{}' dbname='{}'",
 					tamanu_config.db.host,
 					tamanu_config.db.username,
 					tamanu_config.db.password,
