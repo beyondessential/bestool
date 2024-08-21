@@ -28,9 +28,10 @@ pub struct GreenmaskConfigArgs {
 
 	/// Folders containing table masking definitions.
 	///
-	/// By default, this is the `greenmask/config` folder in the Tamanu root.
-	///
 	/// Can be specified multiple times, entries will be merged.
+	///
+	/// By default, it will look in the `greenmask/config` folder in the Tamanu root, and the
+	/// `greenmask` folder in the Tamanu release folder. Non-existant folders are ignored.
 	#[arg(value_hint = ValueHint::DirPath)]
 	pub folders: Vec<PathBuf>,
 
@@ -152,6 +153,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	let mut transforms_dirs = ctx.args_sub.folders;
 	if transforms_dirs.is_empty() {
 		transforms_dirs.push(root.join("greenmask").join("config"));
+		transforms_dirs.push(tamanu_folder.join("greenmask"));
 	}
 
 	let mut transforms = HashMap::new();
