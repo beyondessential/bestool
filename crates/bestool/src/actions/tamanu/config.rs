@@ -15,10 +15,6 @@ pub struct ConfigArgs {
 	#[arg(short, long)]
 	pub package: String,
 
-	/// Include defaults
-	#[arg(short = 'D', long)]
-	pub defaults: bool,
-
 	/// Print compact JSON instead of pretty
 	#[arg(short, long)]
 	pub compact: bool,
@@ -36,17 +32,37 @@ pub struct ConfigArgs {
 	pub raw: bool,
 }
 
+#[instrument(level = "debug")]
+pub fn load_config(root: &Path, package: &str) -> Result<serde_json::Value> {
+	let mut config = package_config(root, package, "default.json5")?;
+
+	if let Ok(env_name) = std::env::var("NODE_ENV") {
+		if let Ok(env_config) = package_config(
+			root, package,
+			&format!("{env_name}.json5"),
+		) {
+			config = merge_json(config, env_config);
+		}
+	} else {
+		if let Ok(env_config) = package_config(
+			root, package,
+			"production.json5",
+		) {
+			config = merge_json(config, env_config);
+		}
+	}
+
+	if let Ok(local_config) = package_config(root, package, "local.json5") {
+		config = merge_json(config, local_config);
+	}
+
+	Ok(config)
+}
+
 pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let config = if ctx.args_sub.defaults {
-		merge_json(
-			package_config(&root, &ctx.args_sub.package, "default.json5")?,
-			package_config(&root, &ctx.args_sub.package, "local.json5")?,
-		)
-	} else {
-		package_config(&root, &ctx.args_sub.package, "local.json5")?
-	};
+	let config = load_config(&root, &ctx.args_sub.package)?;
 
 	let value = if let Some(key) = &ctx.args_sub.key {
 		let mut value = &config;
