@@ -13,10 +13,7 @@ use walkdir::WalkDir;
 
 use crate::actions::Context;
 
-use super::{
-	config::{merge_json, package_config},
-	find_package, find_tamanu, ApiServerKind, TamanuArgs,
-};
+use super::{config::load_config, find_package, find_tamanu, ApiServerKind, TamanuArgs};
 
 /// Generate a Greenmask config file.
 #[derive(Debug, Clone, Parser)]
@@ -45,8 +42,13 @@ struct TamanuConfig {
 	db: Db,
 }
 
+fn default_host() -> String {
+	"localhost".into()
+}
+
 #[derive(serde::Deserialize, Debug)]
 struct Db {
+	#[serde(default = "default_host")]
 	host: String,
 	name: String,
 	username: String,
@@ -92,6 +94,7 @@ struct GreenmaskDumpOptions {
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct GreenmaskTransformation {
 	schema: String,
+	#[serde(rename = "name")]
 	table: String,
 
 	#[serde(flatten)]
@@ -108,11 +111,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	};
 	info!(?kind, "using");
 
-	let config_value = merge_json(
-		package_config(&tamanu_folder, kind.package_name(), "default.json5")?,
-		package_config(&tamanu_folder, kind.package_name(), "local.json5")?,
-		// TODO: read NODE_ENV as well or production or something
-	);
+	let config_value = load_config(&tamanu_folder, kind.package_name())?;
 
 	let tamanu_config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
@@ -139,20 +138,20 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 		let content = fs::read_to_string(&path).into_diagnostic()?;
 		let value: GreenmaskTransformation = serde_yml::from_str(&content).into_diagnostic()?;
 
-		let entry = transforms.entry((value.schema.clone(), value.table.clone()));
-		if let Entry::Occupied(entry) = entry {
-			warn!(
-				?entry,
-				"duplicate entry for {}.{}, skipping {}",
-				value.schema,
-				value.table,
-				path.display()
-			);
-			continue;
-		}
-
-		debug!(path=%path.display(), "loaded transformation");
-		entry.or_insert(value);
+		debug!(path=%path.display(), "loading transformation");
+		transforms
+			.entry((value.schema.clone(), value.table.clone()))
+			.and_modify(|entry: &mut GreenmaskTransformation| {
+				debug!(
+					?entry,
+					"duplicate entry for {}.{}, merging {}",
+					value.schema,
+					value.table,
+					path.display()
+				);
+				entry.rest = merge_yaml(entry.rest.clone(), value.rest.clone());
+			})
+			.or_insert(value);
 	}
 
 	let greenmask_config = GreenmaskConfig {
@@ -224,4 +223,26 @@ fn find_postgres() -> Result<PathBuf> {
 	} else {
 		todo!("find postgres on unix if needed")
 	}
+}
+
+#[instrument(level = "trace")]
+fn merge_yaml(mut base: serde_yml::Value, mut overlay: serde_yml::Value) -> serde_yml::Value {
+	if let (Some(base), Some(overlay)) = (base.as_mapping_mut(), overlay.as_mapping_mut()) {
+		for (key, value) in overlay {
+			if let Some(base_value) = base.get_mut(key) {
+				*base_value = merge_yaml(base_value.clone(), value.clone());
+			} else {
+				base.insert(key.clone(), value.clone());
+			}
+		}
+	} else if let (Some(base), Some(overlay)) = (base.as_sequence_mut(), overlay.as_sequence_mut())
+	{
+		for item in overlay {
+			base.push(item.clone());
+		}
+	} else {
+		// If either or both of `base` and `overlay` are scalar values, it must be safe to simply overwrite the base.
+		base = overlay
+	}
+	base
 }
