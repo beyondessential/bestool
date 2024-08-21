@@ -6,6 +6,7 @@ use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
+use tokio_postgres::types::ToSql;
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
@@ -294,8 +295,11 @@ async fn execute_alert(
 
 	let tera = load_templates(&alert)?;
 
+	let statement = client.prepare(&alert.sql).await.into_diagnostic()?;
+	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before];
+
 	let rows = client
-		.query(&alert.sql, &[&not_before])
+		.query(&statement, &all_params[..statement.params().len()])
 		.await
 		.into_diagnostic()
 		.wrap_err("querying database")?;
