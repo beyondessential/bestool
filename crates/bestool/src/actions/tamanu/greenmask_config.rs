@@ -38,6 +38,8 @@ pub struct GreenmaskConfigArgs {
 	/// Folder where dumps are stored.
 	///
 	/// By default, this is the `greenmask/dumps` folder in the Tamanu root.
+	///
+	/// If the folder does not exist, it will be created.
 	#[arg(long, value_hint = ValueHint::DirPath)]
 	pub storage_dir: Option<PathBuf>,
 }
@@ -198,20 +200,22 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 		}
 	}
 
+	let storage_dir = {
+		let dir = ctx
+			.args_sub
+			.storage_dir
+			.unwrap_or_else(|| root.join("greenmask").join("dumps"));
+		fs::create_dir_all(&dir).into_diagnostic()?;
+		canonicalize(dir).into_diagnostic()?
+	};
+
 	let greenmask_config = GreenmaskConfig {
 		common: GreenmaskCommon {
 			pg_bin_path,
 			tmp_dir,
 		},
-		storage: GreenmaskStorage::Directory(GreenmaskStorageDirectory {
-			path: canonicalize(
-				ctx.args_sub
-					.storage_dir
-					.unwrap_or_else(|| root.join("greenmask").join("dumps")),
-			)
-			.into_diagnostic()?,
-		})
-		.into(),
+		storage: GreenmaskStorage::Directory(GreenmaskStorageDirectory { path: storage_dir })
+			.into(),
 		dump: GreenmaskDump {
 			pg_dump_options: GreenmaskDumpOptions {
 				dbname: format!(
