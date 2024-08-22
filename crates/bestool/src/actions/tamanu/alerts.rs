@@ -190,31 +190,33 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 
 	let mut alerts = Vec::<AlertDefinition>::new();
 	for dir in ctx.args_sub.dir {
-		alerts.extend(WalkDir::new(dir)
-		.into_iter()
-		.filter_map(|e| e.ok())
-		.filter(|e| e.file_type().is_file())
-		.filter_map(|entry| {
-			let file = entry.path();
-			if file
-				.extension()
-				.map_or(false, |e| e == "yaml" || e == "yml")
-			{
-				debug!(?file, "parsing YAML file");
-				let content = std::fs::read_to_string(file).ok()?;
-				let mut alert: AlertDefinition = serde_yml::from_str(&content).ok()?;
-				debug!(?alert, "parsed alert file");
-				if !alert.enabled {
-					return None;
-				}
+		alerts.extend(
+			WalkDir::new(dir)
+				.into_iter()
+				.filter_map(|e| e.ok())
+				.filter(|e| e.file_type().is_file())
+				.filter_map(|entry| {
+					let file = entry.path();
+					if file
+						.extension()
+						.map_or(false, |e| e == "yaml" || e == "yml")
+					{
+						debug!(?file, "parsing YAML file");
+						let content = std::fs::read_to_string(file).ok()?;
+						let mut alert: AlertDefinition = serde_yml::from_str(&content).ok()?;
 
-				alert.file = file.to_path_buf();
-				alert.interval = ctx.args_sub.interval.into();
-				Some(alert.normalise())
-			} else {
-				None
-			}
-		}));
+						alert.file = file.to_path_buf();
+						alert.interval = ctx.args_sub.interval.into();
+						let alert = alert.normalise();
+						debug!(?alert, "parsed alert file");
+						if alert.enabled {
+							return Some(alert);
+						}
+					}
+
+					None
+				}),
+		);
 	}
 
 	if alerts.is_empty() {
