@@ -418,4 +418,23 @@ mod tests {
 			Some("1d"),
 		);
 	}
+
+	#[test]
+	fn test_alert_parse_without_interval() {
+		let alert = r#"
+recipients:
+  - test@example.com
+
+sql: |
+  SELECT $1::timestamptz;
+
+subject: "[Tamanu Alert] Example ({{ hostname }})"
+template: |
+  <p>Server: {{ hostname }}</p>
+  <p>There are {{ rows | length }} rows.</p>
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		assert_eq!(alert.interval, std::time::Duration::default());
+		assert_eq!(alert.recipients, vec![String::from("test@example.com")]);
+	}
 }
