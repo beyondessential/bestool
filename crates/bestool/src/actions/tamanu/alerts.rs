@@ -1,11 +1,13 @@
-use std::{path::PathBuf, time::Duration};
+use std::{error::Error, path::PathBuf, time::Duration};
 
+use bytes::{BufMut, BytesMut};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
+use tokio_postgres::types::{IsNull, ToSql, Type};
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
@@ -22,7 +24,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// An alert definition is a YAML file that describes a single alert
 /// condition and recipients to notify. Conditions are expressed as a SQL query,
-/// which must have a binding for a datetime in the past to limit results by;
+/// which can have a binding for a datetime in the past to limit results by;
 /// returning any rows indicates a condition trigger. The result of the query is
 /// sent to the recipients as an email, via a Tera template.
 ///
@@ -34,21 +36,22 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// enabled: true
-/// recipients:
-///   - alerts@tamanu.io
 ///
 /// sql: |
 ///  SELECT * FROM fhir.jobs
 ///  WHERE error IS NOT NULL
 ///  AND created_at > $1
 ///
-/// subject: "FHIR job errors ({{ hostname }})"
-/// template: |
-///   Automated alert! There have been {{ rows | length }} FHIR jobs
-///   with errors in the past {{ interval }}. Here are the first 5:
-///   {% for row in rows | first(5) %}
-///   - {{ row.topic }}: {{ row.error }}
-///  {% endfor %}
+/// send:
+/// - target: email:
+///   addresses: [alerts@tamanu.io]
+///   subject: "FHIR job errors ({{ hostname }})"
+///   template: |
+///     Automated alert! There have been {{ rows | length }} FHIR jobs
+///     with errors in the past {{ interval }}. Here are the first 5:
+///     {% for row in rows | first(5) %}
+///     - {{ row.topic }}: {{ row.error }}
+///    {% endfor %}
 /// ```
 ///
 /// # Template variables
@@ -61,6 +64,14 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// Additionally you can `{% include "subject" %}` to include the rendering of
 /// the subject template in the email template.
+///
+/// # Query binding parameters
+///
+/// The SQL query will be passed exactly the number of parameters it expects.
+/// The parameters are always provided in this order:
+///
+/// $1: the datetime of the start of the interval (timestamp with time zone)
+/// $2: the interval duration (interval)
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertsArgs {
@@ -70,8 +81,10 @@ pub struct AlertsArgs {
 	///
 	/// Files that don't match the expected format will be skipped, as will files with
 	/// `enabled: false`.
+	///
+	/// Can be provided multiple times.
 	#[arg(long)]
-	pub dir: PathBuf,
+	pub dir: Vec<PathBuf>,
 
 	/// How far back to look for alerts.
 	///
@@ -119,10 +132,44 @@ struct AlertDefinition {
 
 	#[serde(default = "enabled")]
 	enabled: bool,
-	recipients: Vec<String>,
+	#[serde(skip)]
+	interval: Duration,
+	#[serde(default)]
+	send: Vec<SendTarget>,
 	sql: String,
+
+	// legacy email-only fields
+	#[serde(default)]
+	recipients: Vec<String>,
 	subject: Option<String>,
-	template: String,
+	template: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "kebab-case", tag = "target")]
+enum SendTarget {
+	Email {
+		addresses: Vec<String>,
+		subject: Option<String>,
+		template: String,
+	},
+}
+
+impl AlertDefinition {
+	fn normalise(mut self) -> Self {
+		if !self.recipients.is_empty() {
+			self.send.push(SendTarget::Email {
+				addresses: self.recipients,
+				subject: self.subject,
+				template: self.template.unwrap_or_default(),
+			});
+			self.recipients = vec![];
+			self.subject = None;
+			self.template = None;
+		}
+
+		self
+	}
 }
 
 pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
@@ -141,42 +188,42 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let alerts: Vec<AlertDefinition> = WalkDir::new(ctx.args_sub.dir)
-		.into_iter()
-		.filter_map(|e| e.ok())
-		.filter(|e| e.file_type().is_file())
-		.filter_map(|entry| {
-			let file = entry.path();
-			if file
-				.extension()
-				.map_or(false, |e| e == "yaml" || e == "yml")
-			{
-				debug!(?file, "parsing YAML file");
-				let content = std::fs::read_to_string(file).ok()?;
-				let mut alert: AlertDefinition = serde_yml::from_str(&content).ok()?;
-				debug!(?alert, "parsed alert file");
-				if !alert.enabled {
-					return None;
-				}
+	let mut alerts = Vec::<AlertDefinition>::new();
+	for dir in ctx.args_sub.dir {
+		alerts.extend(
+			WalkDir::new(dir)
+				.into_iter()
+				.filter_map(|e| e.ok())
+				.filter(|e| e.file_type().is_file())
+				.filter_map(|entry| {
+					let file = entry.path();
+					if file
+						.extension()
+						.map_or(false, |e| e == "yaml" || e == "yml")
+					{
+						debug!(?file, "parsing YAML file");
+						let content = std::fs::read_to_string(file).ok()?;
+						let mut alert: AlertDefinition = serde_yml::from_str(&content).ok()?;
 
-				alert.file = file.to_path_buf();
-				Some(alert)
-			} else {
-				None
-			}
-		})
-		.collect();
+						alert.file = file.to_path_buf();
+						alert.interval = ctx.args_sub.interval.into();
+						let alert = alert.normalise();
+						debug!(?alert, "parsed alert file");
+						if alert.enabled {
+							return Some(alert);
+						}
+					}
+
+					None
+				}),
+		);
+	}
 
 	if alerts.is_empty() {
 		info!("no alerts found, doing nothing");
 		return Ok(());
 	}
 	debug!(count=%alerts.len(), "found some alerts");
-
-	let now = chrono::Utc::now();
-	let interval: Duration = ctx.args_sub.interval.into();
-	let not_before = now - interval;
-	info!(?now, ?not_before, "date range for alerts");
 
 	let mut pg_config = tokio_postgres::Config::default();
 	pg_config.application_name(&format!(
@@ -203,21 +250,11 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let tera = load_templates(&alerts[0])?;
-
 	// TODO: convert to join!
 	for alert in alerts {
-		if let Err(err) = execute_alert(
-			&client,
-			&config.mailgun,
-			&alert,
-			&tera,
-			now,
-			not_before,
-			ctx.args_sub.dry_run,
-		)
-		.await
-		.wrap_err(format!("while executing alert: {}", alert.file.display()))
+		if let Err(err) = execute_alert(&client, &config.mailgun, &alert, ctx.args_sub.dry_run)
+			.await
+			.wrap_err(format!("while executing alert: {}", alert.file.display()))
 		{
 			eprintln!("{err:?}");
 		}
@@ -226,34 +263,45 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	Ok(())
 }
 
-#[instrument(skip(alert))]
-fn load_templates(alert: &AlertDefinition) -> Result<Tera> {
+#[instrument]
+fn load_templates(target: &SendTarget) -> Result<Tera> {
 	let mut tera = tera::Tera::default();
-	tera.add_raw_template(
-		"subject",
-		alert.subject.as_deref().unwrap_or(DEFAULT_SUBJECT_TEMPLATE),
-	)
-	.into_diagnostic()
-	.wrap_err("compiling subject template")?;
-	tera.add_raw_template("alert.html", &alert.template)
-		.into_diagnostic()
-		.wrap_err("compiling email template")?;
 
+	match target {
+		SendTarget::Email {
+			subject, template, ..
+		} => {
+			tera.add_raw_template(
+				"subject",
+				subject.as_deref().unwrap_or(DEFAULT_SUBJECT_TEMPLATE),
+			)
+			.into_diagnostic()
+			.wrap_err("compiling subject template")?;
+			tera.add_raw_template("alert.html", &template)
+				.into_diagnostic()
+				.wrap_err("compiling email template")?;
+		}
+	}
 	Ok(tera)
 }
 
-#[instrument(skip(alert, rows, now, not_before))]
+#[instrument(skip(alert, rows, now))]
 fn build_context(
 	alert: &AlertDefinition,
 	rows: &[tokio_postgres::Row],
 	now: chrono::DateTime<chrono::Utc>,
-	not_before: chrono::DateTime<chrono::Utc>,
 ) -> TeraCtx {
 	let context_rows = rows_to_value_map(rows);
 
 	let mut context = TeraCtx::new();
 	context.insert("rows", &context_rows);
-	context.insert("interval", &format!("{}", Folktime::new((now - not_before).to_std().unwrap()).with_style(FolkStyle::OneUnitWhole)));
+	context.insert(
+		"interval",
+		&format!(
+			"{}",
+			Folktime::new(alert.interval).with_style(FolkStyle::OneUnitWhole)
+		),
+	);
 	context.insert(
 		"hostname",
 		System::host_name().as_deref().unwrap_or("unknown"),
@@ -284,20 +332,25 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> 
 	Ok((subject, body))
 }
 
-#[instrument(skip(client, mailgun, alert, tera, now, not_before))]
+#[instrument(skip(client, mailgun, alert))]
 async fn execute_alert(
 	client: &tokio_postgres::Client,
 	mailgun: &TamanuMailgun,
 	alert: &AlertDefinition,
-	tera: &Tera,
-	now: chrono::DateTime<chrono::Utc>,
-	not_before: chrono::DateTime<chrono::Utc>,
 	dry_run: bool,
 ) -> Result<()> {
 	info!(?alert.file, "executing alert");
 
+	let now = chrono::Utc::now();
+	let not_before = now - alert.interval;
+	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
+
+	let statement = client.prepare(&alert.sql).await.into_diagnostic()?;
+	let interval = Interval(alert.interval);
+	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
+
 	let rows = client
-		.query(&alert.sql, &[&not_before])
+		.query(&statement, &all_params[..statement.params().len()])
 		.await
 		.into_diagnostic()
 		.wrap_err("querying database")?;
@@ -308,40 +361,66 @@ async fn execute_alert(
 	}
 	info!(?alert.file, rows=%rows.len(), "alert triggered");
 
-	let mut context = build_context(alert, &rows, now, not_before);
-	let (subject, body) = render_alert(tera, &mut context)?;
+	let mut context = build_context(alert, &rows, now);
 
-	if dry_run {
-		println!("-------------------------------");
-		println!("Alert: {}", alert.file.display());
-		println!("Subject: {subject}");
-		println!("Body: {body}");
-		return Ok(());
+	for target in &alert.send {
+		let tera = load_templates(target)?;
+		match target {
+			SendTarget::Email { addresses, .. } => {
+				let (subject, body) = render_alert(&tera, &mut context)?;
+
+				if dry_run {
+					println!("-------------------------------");
+					println!("Alert: {}", alert.file.display());
+					println!("Recipients: {}", addresses.join(", "));
+					println!("Subject: {subject}");
+					println!("Body: {body}");
+					continue;
+				}
+
+				debug!(?alert.recipients, "sending email");
+				let sender = EmailAddress::address(&mailgun.sender);
+				let message = Mailgun {
+					api_key: mailgun.api_key.clone(),
+					domain: mailgun.domain.clone(),
+					message: Message {
+						to: addresses
+							.iter()
+							.map(|email| EmailAddress::address(email))
+							.collect(),
+						subject,
+						html: body,
+						..Default::default()
+					},
+				};
+				message
+					.async_send(mailgun_rs::MailgunRegion::US, &sender)
+					.await
+					.into_diagnostic()
+					.wrap_err("sending email")?;
+			}
+		}
 	}
 
-	debug!(?alert.recipients, "sending email");
-	let sender = EmailAddress::address(&mailgun.sender);
-	let message = Mailgun {
-		api_key: mailgun.api_key.clone(),
-		domain: mailgun.domain.clone(),
-		message: Message {
-			to: alert
-				.recipients
-				.iter()
-				.map(|email| EmailAddress::address(email))
-				.collect(),
-			subject,
-			html: body,
-			..Default::default()
-		},
-	};
-	message
-		.async_send(mailgun_rs::MailgunRegion::US, &sender)
-		.await
-		.into_diagnostic()
-		.wrap_err("sending email")?;
-
 	Ok(())
+}
+
+#[derive(Debug)]
+struct Interval(pub Duration);
+
+impl ToSql for Interval {
+	fn to_sql(&self, _: &Type, out: &mut BytesMut) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+		out.put_i64(self.0.as_micros().try_into().unwrap_or_default());
+		out.put_i32(0);
+		out.put_i32(0);
+		Ok(IsNull::No)
+	}
+
+	fn accepts(ty: &Type) -> bool {
+		matches!(*ty, Type::INTERVAL)
+	}
+
+	tokio_postgres::types::to_sql_checked!();
 }
 
 #[cfg(test)]
@@ -354,15 +433,15 @@ mod tests {
 		let alert = AlertDefinition {
 			file: PathBuf::from("test.yaml"),
 			enabled: true,
-			recipients: vec![],
+			interval: dur.to_std().unwrap(),
 			sql: "".into(),
+			send: vec![],
+			recipients: vec![],
 			subject: None,
-			template: "".into(),
+			template: None,
 		};
 		let rows = vec![];
-		let now = Utc::now();
-		let not_before = now - dur;
-		build_context(&alert, &rows, now, not_before)
+		build_context(&alert, &rows, Utc::now())
 			.get("interval")
 			.and_then(|v| v.as_str())
 			.map(|s| s.to_owned())
@@ -378,17 +457,48 @@ mod tests {
 
 	#[test]
 	fn test_interval_format_hour() {
-		assert_eq!(
-			interval_context(Duration::hours(1)).as_deref(),
-			Some("1h"),
-		);
+		assert_eq!(interval_context(Duration::hours(1)).as_deref(), Some("1h"),);
 	}
 
 	#[test]
 	fn test_interval_format_day() {
-		assert_eq!(
-			interval_context(Duration::days(1)).as_deref(),
-			Some("1d"),
-		);
+		assert_eq!(interval_context(Duration::days(1)).as_deref(), Some("1d"),);
+	}
+
+	#[test]
+	fn test_alert_parse() {
+		let alert = r#"
+sql: |
+  SELECT $1::timestamptz;
+send:
+- target: email
+  addresses: [test@example.com]
+  subject: "[Tamanu Alert] Example ({{ hostname }})"
+  template: |
+    <p>Server: {{ hostname }}</p>
+    <p>There are {{ rows | length }} rows.</p>
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		let alert = alert.normalise();
+		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
+	}
+
+	#[test]
+	fn test_alert_parse_legacy_recipients() {
+		let alert = r#"
+sql: |
+  SELECT $1::timestamptz;
+recipients:
+  - test@example.com
+subject: "[Tamanu Alert] Example ({{ hostname }})"
+template: |
+  <p>Server: {{ hostname }}</p>
+  <p>There are {{ rows | length }} rows.</p>
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		let alert = alert.normalise();
+		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
 	}
 }
