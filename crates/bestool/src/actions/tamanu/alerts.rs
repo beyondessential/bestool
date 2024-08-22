@@ -375,7 +375,7 @@ async fn execute_alert(
 					println!("Recipients: {}", addresses.join(", "));
 					println!("Subject: {subject}");
 					println!("Body: {body}");
-					return Ok(());
+					continue;
 				}
 
 				debug!(?alert.recipients, "sending email");
