@@ -81,8 +81,10 @@ pub struct AlertsArgs {
 	///
 	/// Files that don't match the expected format will be skipped, as will files with
 	/// `enabled: false`.
+	///
+	/// Can be provided multiple times.
 	#[arg(long)]
-	pub dir: PathBuf,
+	pub dir: Vec<PathBuf>,
 
 	/// How far back to look for alerts.
 	///
@@ -186,7 +188,9 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let alerts: Vec<AlertDefinition> = WalkDir::new(ctx.args_sub.dir)
+	let mut alerts = Vec::<AlertDefinition>::new();
+	for dir in ctx.args_sub.dir {
+		alerts.extend(WalkDir::new(dir)
 		.into_iter()
 		.filter_map(|e| e.ok())
 		.filter(|e| e.file_type().is_file())
@@ -210,8 +214,8 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 			} else {
 				None
 			}
-		})
-		.collect();
+		}));
+	}
 
 	if alerts.is_empty() {
 		info!("no alerts found, doing nothing");
