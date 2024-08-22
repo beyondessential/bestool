@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.16.0](https://github.com/beyondessential/bestool/compare/v0.15.2..0.16.0) - 2024-08-22
+
+
+- **Deps:** Bump regex from 1.10.5 to 1.10.6 (#105) - ([b26d804](https://github.com/beyondessential/bestool/commit/b26d8044b94502991c8dbb0dc23666a4f4c1c31c))
+- **Deps:** Bump detect-targets from 0.1.17 to 0.1.18 (#104) - ([060d3c1](https://github.com/beyondessential/bestool/commit/060d3c1b5f79cd262c585bcbc3ad32be978c95cd))
+- **Deps:** Bump merkle_hash from 3.6.1 to 3.7.0 (#103) - ([1b3bcf3](https://github.com/beyondessential/bestool/commit/1b3bcf34d57e41cd38f20e80724b36e15dc4916a))
+- **Deps:** Bump aws-sdk-route53 from 1.37.0 to 1.38.0 (#102) - ([f7b7068](https://github.com/beyondessential/bestool/commit/f7b7068188348270b4c1e54da2268715bd9ffbf4))
+- **Deps:** Bump serde_json from 1.0.121 to 1.0.122 (#101) - ([5699343](https://github.com/beyondessential/bestool/commit/56993437ea723871f2ea3383a6e784cc2e10ebd5))
+- **Deps:** Bump aws-sdk-route53 from 1.38.0 to 1.39.0 (#107) - ([34672c1](https://github.com/beyondessential/bestool/commit/34672c1cc5e5bdae2659a31eebc4347d3292fbd1))
+- **Deps:** Bump binstalk-downloader from 0.12.0 to 0.13.0 (#108) - ([472f0c1](https://github.com/beyondessential/bestool/commit/472f0c1979467e56d776b3e006268d4c4b6a49ae))
+- **Deps:** Bump aws-config from 1.5.4 to 1.5.5 (#110) - ([0a5dba7](https://github.com/beyondessential/bestool/commit/0a5dba76d8522885e3e66de367232e1a72a64d50))
+- **Deps:** Bump clap from 4.5.13 to 4.5.15 (#109) - ([e4e2e58](https://github.com/beyondessential/bestool/commit/e4e2e58516371a105bed1e342bd70cdb57dea35f))
+- **Deps:** Bump bytes from 1.7.0 to 1.7.1 (#106) - ([356bf38](https://github.com/beyondessential/bestool/commit/356bf38fbbec785b0e779a8633de1229851ebe51))
+- **Refactor:** Fix missing-feature warnings - ([69e3303](https://github.com/beyondessential/bestool/commit/69e33039631650cc7b5bf52adfb746fc9f513ba2))
+- **Refactor:** Remove console-subscriber feature - ([0c244a3](https://github.com/beyondessential/bestool/commit/0c244a30974ec2a5818b99901157e28de1e8a431))
+- **Refactor:** Deduplicate subcommands! macro - ([8407c9d](https://github.com/beyondessential/bestool/commit/8407c9dd376e16ce69c874ff3e96b61837f58ad9))
+- **Refactor:** Allow mulitple #[meta] blocks in subcommands! - ([ecb174e](https://github.com/beyondessential/bestool/commit/ecb174eed966856538cbf7672ad89b15840af6be))
+- **WIP:** Wip - ([e3e06f3](https://github.com/beyondessential/bestool/commit/e3e06f3f5ade5a0be75fc981cc8e725f3d6f2330))
+
+### Alerts
+
+- **Bugfix:** Only provide as many parameters as are used in the query - ([5d8cb4e](https://github.com/beyondessential/bestool/commit/5d8cb4e4b1a5ebadf7f736a818c7c992b16a4003))
+- **Bugfix:** Don't stop after first sendtarget in dry-run - ([5a54311](https://github.com/beyondessential/bestool/commit/5a54311c0afe65b874d7c1ff17c7779694c7ffe2))
+- **Feature:** Pass interval to query if wanted - ([c2bad97](https://github.com/beyondessential/bestool/commit/c2bad978584cb3d54409b9a68df00164d8ab116d))
+- **Feature:** Allow sending multiple emails per alert - ([0600114](https://github.com/beyondessential/bestool/commit/0600114fb322cf25d596e21ab4bd680eb1e3f756))
+- **Feature:** Support multiple --dir - ([8efd7ca](https://github.com/beyondessential/bestool/commit/8efd7ca908ea23dd902a2c98f616444a59d9e6c6))
+- **Refactor:** Log alert after normalisation - ([737e376](https://github.com/beyondessential/bestool/commit/737e3764a59f592a42ba0c3d3cf254aa5389cd6f))
+- **Test:** Parse an alert - ([9e9c95b](https://github.com/beyondessential/bestool/commit/9e9c95b7f92f6fe7123df84751d47d93bc093857))
+
+### Greenmask
+
+- **Bugfix:** Default all paths - ([427d7e9](https://github.com/beyondessential/bestool/commit/427d7e90a1336b1687f217e37e36a989f0c51683))
+- **Bugfix:** Correct storage stanza - ([3c96f8f](https://github.com/beyondessential/bestool/commit/3c96f8f5e9198ee511d4ea2bd917b69db563fc60))
+- **Feature:** Support multiple config directories - ([9e20dad](https://github.com/beyondessential/bestool/commit/9e20dad2034386e7d84beb9fa72bc974721aae13))
+- **Feature:** Look into release folder by default too - ([de634c8](https://github.com/beyondessential/bestool/commit/de634c832b12b3267b7aee3b6857d273b606a144))
+- **Feature:** Create storage dir if missing - ([7b04bdf](https://github.com/beyondessential/bestool/commit/7b04bdfb46e70e6d5d3064a9344a098ea58e8d0b))
+
+### Tamanu
+
+- **Documentation:** Fix docstring for tamanu download - ([89df2e6](https://github.com/beyondessential/bestool/commit/89df2e60927e9ecfeb2b12e25ee4345789b7537c))
+- **Feature:** Add greenmask-config command - ([e922f9a](https://github.com/beyondessential/bestool/commit/e922f9a792f387d8d2e4a55af3ed975673d1e88a))
+
+---
 ## [0.15.0](https://github.com/beyondessential/bestool/compare/v0.14.3..v0.15.0) - 2024-08-01
 
 
