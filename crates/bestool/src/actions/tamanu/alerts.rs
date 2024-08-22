@@ -1,12 +1,13 @@
-use std::{path::PathBuf, time::Duration};
+use std::{error::Error, path::PathBuf, time::Duration};
 
+use bytes::{BufMut, BytesMut};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
-use tokio_postgres::types::ToSql;
+use tokio_postgres::types::{IsNull, ToSql, Type};
 use tracing::{debug, info, instrument};
 use walkdir::WalkDir;
 
@@ -23,7 +24,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// An alert definition is a YAML file that describes a single alert
 /// condition and recipients to notify. Conditions are expressed as a SQL query,
-/// which must have a binding for a datetime in the past to limit results by;
+/// which can have a binding for a datetime in the past to limit results by;
 /// returning any rows indicates a condition trigger. The result of the query is
 /// sent to the recipients as an email, via a Tera template.
 ///
@@ -62,6 +63,14 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// Additionally you can `{% include "subject" %}` to include the rendering of
 /// the subject template in the email template.
+///
+/// # Query binding parameters
+///
+/// The SQL query will be passed exactly the number of parameters it expects.
+/// The parameters are always provided in this order:
+///
+/// $1: the datetime of the start of the interval (timestamp with time zone)
+/// $2: the interval duration (interval)
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertsArgs {
@@ -120,6 +129,8 @@ struct AlertDefinition {
 
 	#[serde(default = "enabled")]
 	enabled: bool,
+	#[serde(skip)]
+	interval: Duration,
 	recipients: Vec<String>,
 	sql: String,
 	subject: Option<String>,
@@ -161,6 +172,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 				}
 
 				alert.file = file.to_path_buf();
+				alert.interval = ctx.args_sub.interval.into();
 				Some(alert)
 			} else {
 				None
@@ -173,11 +185,6 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		return Ok(());
 	}
 	debug!(count=%alerts.len(), "found some alerts");
-
-	let now = chrono::Utc::now();
-	let interval: Duration = ctx.args_sub.interval.into();
-	let not_before = now - interval;
-	info!(?now, ?not_before, "date range for alerts");
 
 	let mut pg_config = tokio_postgres::Config::default();
 	pg_config.application_name(&format!(
@@ -210,8 +217,6 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 			&client,
 			&config.mailgun,
 			&alert,
-			now,
-			not_before,
 			ctx.args_sub.dry_run,
 		)
 		.await
@@ -240,18 +245,17 @@ fn load_templates(alert: &AlertDefinition) -> Result<Tera> {
 	Ok(tera)
 }
 
-#[instrument(skip(alert, rows, now, not_before))]
+#[instrument(skip(alert, rows, now))]
 fn build_context(
 	alert: &AlertDefinition,
 	rows: &[tokio_postgres::Row],
 	now: chrono::DateTime<chrono::Utc>,
-	not_before: chrono::DateTime<chrono::Utc>,
 ) -> TeraCtx {
 	let context_rows = rows_to_value_map(rows);
 
 	let mut context = TeraCtx::new();
 	context.insert("rows", &context_rows);
-	context.insert("interval", &format!("{}", Folktime::new((now - not_before).to_std().unwrap()).with_style(FolkStyle::OneUnitWhole)));
+	context.insert("interval", &format!("{}", Folktime::new(alert.interval).with_style(FolkStyle::OneUnitWhole)));
 	context.insert(
 		"hostname",
 		System::host_name().as_deref().unwrap_or("unknown"),
@@ -282,21 +286,24 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> 
 	Ok((subject, body))
 }
 
-#[instrument(skip(client, mailgun, alert, now, not_before))]
+#[instrument(skip(client, mailgun, alert))]
 async fn execute_alert(
 	client: &tokio_postgres::Client,
 	mailgun: &TamanuMailgun,
 	alert: &AlertDefinition,
-	now: chrono::DateTime<chrono::Utc>,
-	not_before: chrono::DateTime<chrono::Utc>,
 	dry_run: bool,
 ) -> Result<()> {
 	info!(?alert.file, "executing alert");
 
 	let tera = load_templates(&alert)?;
 
+	let now = chrono::Utc::now();
+	let not_before = now - alert.interval;
+	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
+
 	let statement = client.prepare(&alert.sql).await.into_diagnostic()?;
-	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before];
+	let interval = Interval(alert.interval);
+	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
 
 	let rows = client
 		.query(&statement, &all_params[..statement.params().len()])
@@ -310,7 +317,7 @@ async fn execute_alert(
 	}
 	info!(?alert.file, rows=%rows.len(), "alert triggered");
 
-	let mut context = build_context(alert, &rows, now, not_before);
+	let mut context = build_context(alert, &rows, now);
 	let (subject, body) = render_alert(&tera, &mut context)?;
 
 	if dry_run {
@@ -347,6 +354,24 @@ async fn execute_alert(
 	Ok(())
 }
 
+#[derive(Debug)]
+struct Interval(pub Duration);
+
+impl ToSql for Interval {
+    fn to_sql(&self, _: &Type, out: &mut BytesMut) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        out.put_i64(self.0.as_micros().try_into().unwrap_or_default());
+        out.put_i32(0);
+        out.put_i32(0);
+        Ok(IsNull::No)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(*ty, Type::INTERVAL)
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
 #[cfg(test)]
 mod tests {
 	use chrono::{Duration, Utc};
@@ -357,15 +382,14 @@ mod tests {
 		let alert = AlertDefinition {
 			file: PathBuf::from("test.yaml"),
 			enabled: true,
+			interval: dur.to_std().unwrap(),
 			recipients: vec![],
 			sql: "".into(),
 			subject: None,
 			template: "".into(),
 		};
 		let rows = vec![];
-		let now = Utc::now();
-		let not_before = now - dur;
-		build_context(&alert, &rows, now, not_before)
+		build_context(&alert, &rows, Utc::now())
 			.get("interval")
 			.and_then(|v| v.as_str())
 			.map(|s| s.to_owned())
