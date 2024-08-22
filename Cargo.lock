@@ -1282,9 +1282,9 @@ dependencies = [
 
 [[package]]
 name = "detect-targets"
-version = "0.1.18"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe067044b4344e2dd9884efdce05e7dc8b7fd2b578c87d5e01a621bee5578511"
+checksum = "abbb40987509f8530e7d5b20dd518c4a010bb23c94aa3f5db67210cf124cb000"
 dependencies = [
  "cfg-if",
  "guess_host_triple",

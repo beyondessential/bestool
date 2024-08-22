@@ -28,7 +28,7 @@ clap = { version = "4.5.15", features = ["derive", "cargo", "wrap_help", "env", 
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 ctrlc = { version = "3.4.4", optional = true }
-detect-targets = { version = "0.1.18", optional = true }
+detect-targets = { version = "0.1.19", optional = true }
 dirs = { version = "5.0.1", optional = true }
 duct = { version = "0.13.7", optional = true }
 embedded-graphics = { version = "0.8.1", optional = true }
