@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.16.0](https://github.com/beyondessential/bestool/compare/v0.15.2..0.16.0) - 2024-08-22
+## [0.16.1](https://github.com/beyondessential/bestool/compare/v0.16.0..0.16.1) - 2024-08-29
+
+
+
+### Greenmask
+
+- **Bugfix:** Use dunce canonicalize instead of unc - ([76304a5](https://github.com/beyondessential/bestool/commit/76304a50d55dfb3dae0fa76ef8d24b1d44f526e1))
+
+---
+## [0.16.0](https://github.com/beyondessential/bestool/compare/v0.15.2..v0.16.0) - 2024-08-22
 
 
 - **Deps:** Bump regex from 1.10.5 to 1.10.6 (#105) - ([b26d804](https://github.com/beyondessential/bestool/commit/b26d8044b94502991c8dbb0dc23666a4f4c1c31c))
@@ -26,12 +35,20 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 
 ### Alerts
 
+- **Bugfix:** Bug where templates were shared between alerts - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
+- **Bugfix:** Only provide as many parameters as are used in the query - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
+- **Bugfix:** Don't stop after first sendtarget in dry-run - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
 - **Bugfix:** Only provide as many parameters as are used in the query - ([5d8cb4e](https://github.com/beyondessential/bestool/commit/5d8cb4e4b1a5ebadf7f736a818c7c992b16a4003))
 - **Bugfix:** Don't stop after first sendtarget in dry-run - ([5a54311](https://github.com/beyondessential/bestool/commit/5a54311c0afe65b874d7c1ff17c7779694c7ffe2))
+- **Feature:** Allow sending multiple emails per alert - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
+- **Feature:** Pass interval to query if wanted - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
+- **Feature:** Support multiple --dir - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
 - **Feature:** Pass interval to query if wanted - ([c2bad97](https://github.com/beyondessential/bestool/commit/c2bad978584cb3d54409b9a68df00164d8ab116d))
 - **Feature:** Allow sending multiple emails per alert - ([0600114](https://github.com/beyondessential/bestool/commit/0600114fb322cf25d596e21ab4bd680eb1e3f756))
 - **Feature:** Support multiple --dir - ([8efd7ca](https://github.com/beyondessential/bestool/commit/8efd7ca908ea23dd902a2c98f616444a59d9e6c6))
+- **Refactor:** Log alert after normalisation - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
 - **Refactor:** Log alert after normalisation - ([737e376](https://github.com/beyondessential/bestool/commit/737e3764a59f592a42ba0c3d3cf254aa5389cd6f))
+- **Test:** Parse an alert - ([5cc49f4](https://github.com/beyondessential/bestool/commit/5cc49f44a2cc412e9869e21f95d8003f9dd86b5c))
 - **Test:** Parse an alert - ([9e9c95b](https://github.com/beyondessential/bestool/commit/9e9c95b7f92f6fe7123df84751d47d93bc093857))
 
 ### Greenmask
