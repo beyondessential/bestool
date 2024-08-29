@@ -702,9 +702,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30fd8b2cc460227b92b4f3ae26105af8f543af0f416fbde5b8c41c371b10256d"
+checksum = "b67f7d4092e6124075b3e8e837cac35eb6213fc9809d16d8ace1f40816fab839"
 dependencies = [
  "async-compression",
  "async-trait",
