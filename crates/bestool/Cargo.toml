@@ -31,6 +31,7 @@ ctrlc = { version = "3.4.4", optional = true }
 detect-targets = { version = "0.1.18", optional = true }
 dirs = { version = "5.0.1", optional = true }
 duct = { version = "0.13.7", optional = true }
+dunce = { version = "1.0.5", optional = true }
 embedded-graphics = { version = "0.8.1", optional = true }
 enable-ansi-support = "0.2.1"
 folktime = { version = "0.2.1", optional = true }
@@ -179,6 +180,7 @@ tamanu-find = [
 tamanu-greenmask = [
 	"__tamanu",
 	"tamanu-config",
+	"dep:dunce",
 	"dep:serde_yml",
 	"dep:walkdir",
 ]
