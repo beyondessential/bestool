@@ -858,7 +858,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40723b8fb387abc38f4f4a37c09073622e41dd12327033091ef8950659e6dc0c"
 dependencies = [
  "memchr",
- "regex-automata 0.4.7",
  "serde",
 ]
 
@@ -1283,9 +1282,9 @@ dependencies = [
 
 [[package]]
 name = "detect-targets"
-version = "0.1.18"
+version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe067044b4344e2dd9884efdce05e7dc8b7fd2b578c87d5e01a621bee5578511"
+checksum = "f63e5f714cad786891eb5d317047751773fafa5a2af35de72f1bbcd03a0874e5"
 dependencies = [
  "cfg-if",
  "guess_host_triple",
@@ -4338,11 +4337,10 @@ checksum = "a7065abeca94b6a8a577f9bd45aa0867a2238b74e8eb67cf10d492bc39351394"
 
 [[package]]
 name = "sysinfo"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29a6b037e3af4ae9a9d6214198e4df53091363b2c96c88fc416a6c1bd92a2799"
+checksum = "e3b5ae3f4f7d64646c46c4cae4e3f01d1c5d255c7406fdd7c7f999a94e488791"
 dependencies = [
- "bstr",
  "core-foundation-sys",
  "libc",
  "memchr",
