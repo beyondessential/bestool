@@ -24,7 +24,7 @@ blake3 = { version = "1.5.1", optional = true }
 boxcar = "0.2.5"
 bytes = "1.7.1"
 chrono = "0.4.38"
-clap = { version = "4.5.15", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
+clap = { version = "4.5.19", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.1", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 ctrlc = { version = "3.4.4", optional = true }
