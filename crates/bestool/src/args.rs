@@ -5,18 +5,29 @@ use miette::{bail, Result};
 use tracing::{debug, warn};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard, rolling};
 
-/// BES Tooling
-#[derive(Debug, Clone, Parser)]
-#[command(
-	author,
-	version,
-	long_version = format!("{} built from branch={} commit={} dirty={} source_timestamp={}",
+#[cfg(docsrs)]
+fn long_version() -> String {
+	env!("CARGO_PKG_VERSION").into()
+}
+
+#[cfg(not(docsrs))]
+fn long_version() -> String {
+	format!(
+		"{} built from branch={} commit={} dirty={} source_timestamp={}",
 		env!("CARGO_PKG_VERSION"),
 		env!("GIT_BRANCH"),
 		env!("GIT_COMMIT"),
 		env!("GIT_DIRTY"),
 		env!("SOURCE_TIMESTAMP"),
-    ),
+	)
+}
+
+/// BES Tooling
+#[derive(Debug, Clone, Parser)]
+#[command(
+	author,
+	version,
+	long_version = long_version(),
 	after_help = "Want more detail? Try the long '--help' flag!",
 	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help.",
 )]
