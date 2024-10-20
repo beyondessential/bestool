@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.16.3](https://github.com/beyondessential/bestool/compare/v0.16.2..0.16.3) - 2024-10-20
+
+
+- **Bugfix:** Don´t require git in docsrs - ([970d935](https://github.com/beyondessential/bestool/commit/970d935e0e42314d7bd469ab8f314897c6e44be3))
+- **Deps:** Update lockfile - ([2a542ec](https://github.com/beyondessential/bestool/commit/2a542ecdda21097c2f4d6141091e996d108ea9a2))
+
+---
+## [0.16.2](https://github.com/beyondessential/bestool/compare/v0.16.1..v0.16.2) - 2024-10-20
+
+
+- **Deps:** Update sysinfo requirement from 0.31.0 to 0.32.0 in /crates/bestool (#127) - ([2a8b279](https://github.com/beyondessential/bestool/commit/2a8b2792ad6b49ab27fe4fa63287b80544488719))
+
+---
 ## [0.16.1](https://github.com/beyondessential/bestool/compare/v0.16.0..v0.16.1) - 2024-08-29
 
 
