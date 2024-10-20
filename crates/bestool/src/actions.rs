@@ -39,7 +39,7 @@ macro_rules! subcommands {
 	};
 }
 #[allow(unused_imports)]
-pub(crate) use subcommands;
+pub use subcommands;
 
 use crate::args::Args;
 
