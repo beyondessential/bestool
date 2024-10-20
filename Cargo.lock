@@ -659,6 +659,7 @@ dependencies = [
  "folktime",
  "fontdue",
  "fs4",
+ "futures",
  "glob",
  "humantime",
  "indicatif",

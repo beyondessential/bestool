@@ -1,15 +1,16 @@
-use std::{error::Error, path::PathBuf, time::Duration};
+use std::{error::Error, ops::ControlFlow, path::PathBuf, process, time::Duration};
 
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
-use miette::{Context as _, IntoDiagnostic, Result};
+use miette::{miette, Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
+use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::{IsNull, ToSql, Type};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use walkdir::WalkDir;
 
 use crate::{actions::Context, postgres_to_value::rows_to_value_map};
@@ -128,7 +129,6 @@ fn enabled() -> bool {
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(untagged)]
-#[allow(dead_code)]
 enum TicketSource {
 	Sql { sql: String },
 	Shell { shell: String, run: String },
@@ -319,13 +319,13 @@ fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>) ->
 	context
 }
 
-#[instrument(skip(client, context))]
-async fn raed_sources(
+#[instrument(skip(client, alert, not_before, context))]
+async fn read_sources(
 	client: &tokio_postgres::Client,
 	alert: &AlertDefinition,
 	not_before: DateTime<Utc>,
 	context: &mut TeraCtx,
-) -> Result<()> {
+) -> Result<ControlFlow<(), ()>> {
 	match &alert.source {
 		TicketSource::Sql { sql } => {
 			let statement = client.prepare(sql).await.into_diagnostic()?;
@@ -341,7 +341,7 @@ async fn raed_sources(
 
 			if rows.is_empty() {
 				debug!(?alert.file, "no rows returned, skipping");
-				return Ok(());
+				return Ok(ControlFlow::Break(()));
 			}
 			info!(?alert.file, rows=%rows.len(), "alert triggered");
 
@@ -349,9 +349,41 @@ async fn raed_sources(
 
 			context.insert("rows", &context_rows);
 		}
-		_ => todo!(),
+		TicketSource::Shell { shell, run } => {
+			let mut shell = tokio::process::Command::new(shell)
+				.arg("-c") // "-c" for "command" is in the POSIX standard and well supported incl. PowerShell 7.
+				.arg(run)
+				.stdin(process::Stdio::null())
+				.stdout(process::Stdio::piped())
+				.spawn()
+				.into_diagnostic()?;
+
+			let mut output = Vec::new();
+			let mut stdout = shell
+				.stdout
+				.take()
+				.ok_or_else(|| miette!("getting the child stdout handle"))?;
+			let output_future =
+				futures::future::try_join(shell.wait(), stdout.read_to_end(&mut output));
+
+			let Ok(res) = tokio::time::timeout(alert.interval, output_future).await else {
+				warn!(?alert.file, "the script timed out, skipping");
+				shell.kill().await.into_diagnostic()?;
+				return Ok(ControlFlow::Break(()));
+			};
+
+			let (status, output_size) = res.into_diagnostic().wrap_err("running the shell")?;
+
+			if status.success() {
+				debug!(?alert.file, "the script succeeded, skipping");
+				return Ok(ControlFlow::Break(()));
+			}
+			info!(?alert.file, ?status, ?output_size, "alert triggered");
+
+			context.insert("output", &String::from_utf8_lossy(&output));
+		}
 	}
-	Ok(())
+	Ok(ControlFlow::Continue(()))
 }
 
 #[instrument(skip(tera, context))]
@@ -385,7 +417,12 @@ async fn execute_alert(
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
 	let mut context = build_context(alert, now);
-	raed_sources(client, alert, not_before, &mut context).await?;
+	if read_sources(client, alert, not_before, &mut context)
+		.await?
+		.is_break()
+	{
+		return Ok(());
+	}
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
@@ -504,6 +541,7 @@ send:
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
 		let alert = alert.normalise();
 		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(matches!(alert.source, TicketSource::Sql { .. }));
 		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
 	}
 
