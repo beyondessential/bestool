@@ -1,6 +1,7 @@
 use std::{error::Error, path::PathBuf, time::Duration};
 
 use bytes::{BufMut, BytesMut};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
@@ -126,6 +127,14 @@ fn enabled() -> bool {
 }
 
 #[derive(serde::Deserialize, Debug)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum TicketSource {
+	Sql { sql: String },
+	Shell { shell: String, run: String },
+}
+
+#[derive(serde::Deserialize, Debug)]
 struct AlertDefinition {
 	#[serde(default, skip)]
 	file: PathBuf,
@@ -136,7 +145,9 @@ struct AlertDefinition {
 	interval: Duration,
 	#[serde(default)]
 	send: Vec<SendTarget>,
-	sql: String,
+
+	#[serde(flatten)]
+	source: TicketSource,
 
 	// legacy email-only fields
 	#[serde(default)]
@@ -285,16 +296,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 	Ok(tera)
 }
 
-#[instrument(skip(alert, rows, now))]
-fn build_context(
-	alert: &AlertDefinition,
-	rows: &[tokio_postgres::Row],
-	now: chrono::DateTime<chrono::Utc>,
-) -> TeraCtx {
-	let context_rows = rows_to_value_map(rows);
-
+#[instrument(skip(alert, now))]
+fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>) -> TeraCtx {
 	let mut context = TeraCtx::new();
-	context.insert("rows", &context_rows);
 	context.insert(
 		"interval",
 		&format!(
@@ -313,6 +317,41 @@ fn build_context(
 	context.insert("now", &now.to_string());
 
 	context
+}
+
+#[instrument(skip(client, context))]
+async fn raed_sources(
+	client: &tokio_postgres::Client,
+	alert: &AlertDefinition,
+	not_before: DateTime<Utc>,
+	context: &mut TeraCtx,
+) -> Result<()> {
+	match &alert.source {
+		TicketSource::Sql { sql } => {
+			let statement = client.prepare(sql).await.into_diagnostic()?;
+
+			let interval = Interval(alert.interval);
+			let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
+
+			let rows = client
+				.query(&statement, &all_params[..statement.params().len()])
+				.await
+				.into_diagnostic()
+				.wrap_err("querying database")?;
+
+			if rows.is_empty() {
+				debug!(?alert.file, "no rows returned, skipping");
+				return Ok(());
+			}
+			info!(?alert.file, rows=%rows.len(), "alert triggered");
+
+			let context_rows = rows_to_value_map(&rows);
+
+			context.insert("rows", &context_rows);
+		}
+		_ => todo!(),
+	}
+	Ok(())
 }
 
 #[instrument(skip(tera, context))]
@@ -345,23 +384,8 @@ async fn execute_alert(
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
-	let statement = client.prepare(&alert.sql).await.into_diagnostic()?;
-	let interval = Interval(alert.interval);
-	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
-
-	let rows = client
-		.query(&statement, &all_params[..statement.params().len()])
-		.await
-		.into_diagnostic()
-		.wrap_err("querying database")?;
-
-	if rows.is_empty() {
-		debug!(?alert.file, "no rows returned, skipping");
-		return Ok(());
-	}
-	info!(?alert.file, rows=%rows.len(), "alert triggered");
-
-	let mut context = build_context(alert, &rows, now);
+	let mut context = build_context(alert, now);
+	raed_sources(client, alert, not_before, &mut context).await?;
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
@@ -434,14 +458,13 @@ mod tests {
 			file: PathBuf::from("test.yaml"),
 			enabled: true,
 			interval: dur.to_std().unwrap(),
-			sql: "".into(),
+			source: TicketSource::Sql { sql: "".into() },
 			send: vec![],
 			recipients: vec![],
 			subject: None,
 			template: None,
 		};
-		let rows = vec![];
-		build_context(&alert, &rows, Utc::now())
+		build_context(&alert, Utc::now())
 			.get("interval")
 			.and_then(|v| v.as_str())
 			.map(|s| s.to_owned())
