@@ -5,6 +5,8 @@ use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{Context as _, IntoDiagnostic, Result};
+use reqwest::Url;
+use serde_json::json;
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
 use tokio_postgres::types::{IsNull, ToSql, Type};
@@ -146,12 +148,25 @@ struct AlertDefinition {
 }
 
 #[derive(serde::Deserialize, Debug)]
+struct ZendeskCredentials {
+	email: String,
+	password: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "kebab-case", tag = "target")]
 enum SendTarget {
 	Email {
 		addresses: Vec<String>,
 		subject: Option<String>,
 		template: String,
+	},
+	Zendesk {
+		endpoint: Url,
+		credentials: Option<ZendeskCredentials>,
+		subject: Option<String>,
+		template: String,
+		requester: Option<String>,
 	},
 }
 
@@ -270,6 +285,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 	match target {
 		SendTarget::Email {
 			subject, template, ..
+		}
+		| SendTarget::Zendesk {
+			subject, template, ..
 		} => {
 			tera.add_raw_template(
 				"subject",
@@ -281,6 +299,14 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 				.into_diagnostic()
 				.wrap_err("compiling email template")?;
 		}
+	}
+	if let SendTarget::Zendesk {
+		requester: Some(r), ..
+	} = target
+	{
+		tera.add_raw_template("requester", r)
+			.into_diagnostic()
+			.wrap_err("compiling requester template")?;
 	}
 	Ok(tera)
 }
@@ -316,7 +342,7 @@ fn build_context(
 }
 
 #[instrument(skip(tera, context))]
-fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> {
+fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String, Option<String>)> {
 	let subject = tera
 		.render("subject", &context)
 		.into_diagnostic()
@@ -329,7 +355,17 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> 
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
 
-	Ok((subject, body))
+	let requester = tera
+		.render("requester", &context)
+		.map(Some)
+		.or_else(|err| match err.kind {
+			tera::ErrorKind::TemplateNotFound(_) => Ok(None),
+			_ => Err(err),
+		})
+		.into_diagnostic()
+		.wrap_err("rendering requester template")?;
+
+	Ok((subject, body, requester))
 }
 
 #[instrument(skip(client, mailgun, alert))]
@@ -365,10 +401,9 @@ async fn execute_alert(
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
+		let (subject, body, requester) = render_alert(&tera, &mut context)?;
 		match target {
 			SendTarget::Email { addresses, .. } => {
-				let (subject, body) = render_alert(&tera, &mut context)?;
-
 				if dry_run {
 					println!("-------------------------------");
 					println!("Alert: {}", alert.file.display());
@@ -398,6 +433,39 @@ async fn execute_alert(
 					.await
 					.into_diagnostic()
 					.wrap_err("sending email")?;
+			}
+			SendTarget::Zendesk {
+				endpoint,
+				credentials,
+				..
+			} => {
+				if dry_run {
+					println!("-------------------------------");
+					println!("Alert: {}", alert.file.display());
+					println!("Endpoint: {}", endpoint);
+					println!("Subject: {subject}");
+					println!("Body: {body}");
+					continue;
+				}
+
+				let req = json!({
+					"subject": subject,
+					"comment": { "html_body": body },
+					"requester": requester.map(|r| json!({ "name": r })),
+				});
+
+				let mut req_builder = reqwest::Client::new().post(endpoint.clone()).json(&req);
+
+				if let Some(ZendeskCredentials { email, password }) = credentials {
+					req_builder =
+						req_builder.basic_auth(std::format_args!("{email}/token"), Some(password));
+				}
+
+				req_builder
+					.send()
+					.await
+					.into_diagnostic()
+					.wrap_err("sending Zendesk ticket")?;
 			}
 		}
 	}
