@@ -128,7 +128,7 @@ fn enabled() -> bool {
 }
 
 #[derive(serde::Deserialize, Debug)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 enum TicketSource {
 	Sql { sql: String },
 	Shell { shell: String, run: String },
@@ -526,10 +526,9 @@ mod tests {
 	}
 
 	#[test]
-	fn test_alert_parse() {
+	fn test_alert_parse_email() {
 		let alert = r#"
-sql: |
-  SELECT $1::timestamptz;
+sql: SELECT $1::timestamptz;
 send:
 - target: email
   addresses: [test@example.com]
@@ -541,8 +540,67 @@ send:
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
 		let alert = alert.normalise();
 		assert_eq!(alert.interval, std::time::Duration::default());
-		assert!(matches!(alert.source, TicketSource::Sql { .. }));
+		assert!(
+			matches!(alert.source, TicketSource::Sql { sql } if sql == "SELECT $1::timestamptz;")
+		);
 		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
+	}
+
+	#[test]
+	fn test_alert_parse_shell() {
+		let alert = r#"
+shell: bash
+run: echo foobar
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		let alert = alert.normalise();
+		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(
+			matches!(alert.source, TicketSource::Shell { shell, run } if shell == "bash" && run == "echo foobar")
+		);
+	}
+
+	#[test]
+	fn test_alert_parse_invalid_source() {
+		let alert = r#"
+shell: bash
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+shell: bash
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+shell: bash
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
 	}
 
 	#[test]
