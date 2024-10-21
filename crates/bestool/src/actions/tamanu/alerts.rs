@@ -1,14 +1,16 @@
-use std::{error::Error, path::PathBuf, time::Duration};
+use std::{error::Error, ops::ControlFlow, path::PathBuf, process, time::Duration};
 
 use bytes::{BufMut, BytesMut};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
-use miette::{Context as _, IntoDiagnostic, Result};
+use miette::{miette, Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
+use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::{IsNull, ToSql, Type};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use walkdir::WalkDir;
 
 use crate::{actions::Context, postgres_to_value::rows_to_value_map};
@@ -126,6 +128,13 @@ fn enabled() -> bool {
 }
 
 #[derive(serde::Deserialize, Debug)]
+#[serde(untagged, deny_unknown_fields)]
+enum TicketSource {
+	Sql { sql: String },
+	Shell { shell: String, run: String },
+}
+
+#[derive(serde::Deserialize, Debug)]
 struct AlertDefinition {
 	#[serde(default, skip)]
 	file: PathBuf,
@@ -136,7 +145,9 @@ struct AlertDefinition {
 	interval: Duration,
 	#[serde(default)]
 	send: Vec<SendTarget>,
-	sql: String,
+
+	#[serde(flatten)]
+	source: TicketSource,
 
 	// legacy email-only fields
 	#[serde(default)]
@@ -285,16 +296,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 	Ok(tera)
 }
 
-#[instrument(skip(alert, rows, now))]
-fn build_context(
-	alert: &AlertDefinition,
-	rows: &[tokio_postgres::Row],
-	now: chrono::DateTime<chrono::Utc>,
-) -> TeraCtx {
-	let context_rows = rows_to_value_map(rows);
-
+#[instrument(skip(alert, now))]
+fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>) -> TeraCtx {
 	let mut context = TeraCtx::new();
-	context.insert("rows", &context_rows);
 	context.insert(
 		"interval",
 		&format!(
@@ -313,6 +317,73 @@ fn build_context(
 	context.insert("now", &now.to_string());
 
 	context
+}
+
+#[instrument(skip(client, alert, not_before, context))]
+async fn read_sources(
+	client: &tokio_postgres::Client,
+	alert: &AlertDefinition,
+	not_before: DateTime<Utc>,
+	context: &mut TeraCtx,
+) -> Result<ControlFlow<(), ()>> {
+	match &alert.source {
+		TicketSource::Sql { sql } => {
+			let statement = client.prepare(sql).await.into_diagnostic()?;
+
+			let interval = Interval(alert.interval);
+			let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
+
+			let rows = client
+				.query(&statement, &all_params[..statement.params().len()])
+				.await
+				.into_diagnostic()
+				.wrap_err("querying database")?;
+
+			if rows.is_empty() {
+				debug!(?alert.file, "no rows returned, skipping");
+				return Ok(ControlFlow::Break(()));
+			}
+			info!(?alert.file, rows=%rows.len(), "alert triggered");
+
+			let context_rows = rows_to_value_map(&rows);
+
+			context.insert("rows", &context_rows);
+		}
+		TicketSource::Shell { shell, run } => {
+			let mut shell = tokio::process::Command::new(shell)
+				.arg("-c") // "-c" for "command" is in the POSIX standard and well supported incl. PowerShell 7.
+				.arg(run)
+				.stdin(process::Stdio::null())
+				.stdout(process::Stdio::piped())
+				.spawn()
+				.into_diagnostic()?;
+
+			let mut output = Vec::new();
+			let mut stdout = shell
+				.stdout
+				.take()
+				.ok_or_else(|| miette!("getting the child stdout handle"))?;
+			let output_future =
+				futures::future::try_join(shell.wait(), stdout.read_to_end(&mut output));
+
+			let Ok(res) = tokio::time::timeout(alert.interval, output_future).await else {
+				warn!(?alert.file, "the script timed out, skipping");
+				shell.kill().await.into_diagnostic()?;
+				return Ok(ControlFlow::Break(()));
+			};
+
+			let (status, output_size) = res.into_diagnostic().wrap_err("running the shell")?;
+
+			if status.success() {
+				debug!(?alert.file, "the script succeeded, skipping");
+				return Ok(ControlFlow::Break(()));
+			}
+			info!(?alert.file, ?status, ?output_size, "alert triggered");
+
+			context.insert("output", &String::from_utf8_lossy(&output));
+		}
+	}
+	Ok(ControlFlow::Continue(()))
 }
 
 #[instrument(skip(tera, context))]
@@ -345,23 +416,13 @@ async fn execute_alert(
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
-	let statement = client.prepare(&alert.sql).await.into_diagnostic()?;
-	let interval = Interval(alert.interval);
-	let all_params: Vec<&(dyn ToSql + Sync)> = vec![&not_before, &interval];
-
-	let rows = client
-		.query(&statement, &all_params[..statement.params().len()])
-		.await
-		.into_diagnostic()
-		.wrap_err("querying database")?;
-
-	if rows.is_empty() {
-		debug!(?alert.file, "no rows returned, skipping");
+	let mut context = build_context(alert, now);
+	if read_sources(client, alert, not_before, &mut context)
+		.await?
+		.is_break()
+	{
 		return Ok(());
 	}
-	info!(?alert.file, rows=%rows.len(), "alert triggered");
-
-	let mut context = build_context(alert, &rows, now);
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
@@ -434,14 +495,13 @@ mod tests {
 			file: PathBuf::from("test.yaml"),
 			enabled: true,
 			interval: dur.to_std().unwrap(),
-			sql: "".into(),
+			source: TicketSource::Sql { sql: "".into() },
 			send: vec![],
 			recipients: vec![],
 			subject: None,
 			template: None,
 		};
-		let rows = vec![];
-		build_context(&alert, &rows, Utc::now())
+		build_context(&alert, Utc::now())
 			.get("interval")
 			.and_then(|v| v.as_str())
 			.map(|s| s.to_owned())
@@ -466,10 +526,9 @@ mod tests {
 	}
 
 	#[test]
-	fn test_alert_parse() {
+	fn test_alert_parse_email() {
 		let alert = r#"
-sql: |
-  SELECT $1::timestamptz;
+sql: SELECT $1::timestamptz;
 send:
 - target: email
   addresses: [test@example.com]
@@ -481,7 +540,67 @@ send:
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
 		let alert = alert.normalise();
 		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(
+			matches!(alert.source, TicketSource::Sql { sql } if sql == "SELECT $1::timestamptz;")
+		);
 		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
+	}
+
+	#[test]
+	fn test_alert_parse_shell() {
+		let alert = r#"
+shell: bash
+run: echo foobar
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		let alert = alert.normalise();
+		assert_eq!(alert.interval, std::time::Duration::default());
+		assert!(
+			matches!(alert.source, TicketSource::Shell { shell, run } if shell == "bash" && run == "echo foobar")
+		);
+	}
+
+	#[test]
+	fn test_alert_parse_invalid_source() {
+		let alert = r#"
+shell: bash
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+shell: bash
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+shell: bash
+run: echo foo
+"#;
+		assert!(matches!(
+			serde_yml::from_str::<AlertDefinition>(&alert),
+			Err(_)
+		));
 	}
 
 	#[test]
