@@ -17,6 +17,8 @@ use crate::actions::{
 ///
 /// This finds the database from the Tamanu's configuration. The output will be written to a file
 /// "{current_datetime}-{host_name}-{database_name}.dump".
+///
+/// By default, this excludes tables "sync_snapshots.*" and "fhir.jobs".
 #[derive(Debug, Clone, Parser)]
 pub struct BackupArgs {
 	/// The compression level to use.
@@ -30,10 +32,14 @@ pub struct BackupArgs {
 	#[cfg_attr(not(windows), arg(long, default_value = "/backup"))]
 	write_to: String,
 
+	/// TODO:
 	#[arg(long)]
 	then_copy_to: Option<String>,
 
-	#[arg(long)]
+	/// Enable the lean backup
+	///
+	/// The lean backup excludes more tables "logs.*", "reporting.*" and "public.attachments".
+	#[arg(long, default_value_t = false)]
 	lean: bool,
 }
 
@@ -52,8 +58,6 @@ struct TamanuDb {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
-	// TODO: Start-Transcript -Path "C:\tamanu\backup-$(Get-Date -Format "yyyy-MM-dd_HHmm").log" -Append
-
 	// TODO: # Use two processor cores at most
 	// $thisProcess = [System.Diagnostics.Process]::GetCurrentProcess();
 	// $thisProcess.ProcessorAffinity = 3;
@@ -89,16 +93,16 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 		duct::cmd!(
 			pg_dump,
-            "--username=", config.db.username,
+            "--username", config.db.username,
 			"--verbose",
-			"--exclude-table=", "sync_snapshots.*",
-			"--exclude-table-data=", "fhir.*",
-			"--exclude-table-data=", "logs.*",
-			"--exclude-table-data=", "reporting.*",
-			"--exclude-table-data=", "public.attachments",
-			"--format=", "c",
-			"--compress=", ctx.args_sub.compression_level.to_string(),
-			"--file=", &output,
+			"--exclude-table", "sync_snapshots.*",
+			"--exclude-table-data", "fhir.*",
+			"--exclude-table-data", "logs.*",
+			"--exclude-table-data", "reporting.*",
+			"--exclude-table-data", "public.attachments",
+			"--format", "c",
+			"--compress", ctx.args_sub.compression_level.to_string(),
+			"--file", &output,
 			config.db.name
 		)
 	} else {
