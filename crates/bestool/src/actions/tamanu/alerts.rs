@@ -6,6 +6,8 @@ use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{miette, Context as _, IntoDiagnostic, Result};
+use reqwest::Url;
+use serde_json::json;
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
 use tokio::io::AsyncReadExt as _;
@@ -128,13 +130,6 @@ fn enabled() -> bool {
 }
 
 #[derive(serde::Deserialize, Debug)]
-#[serde(untagged, deny_unknown_fields)]
-enum TicketSource {
-	Sql { sql: String },
-	Shell { shell: String, run: String },
-}
-
-#[derive(serde::Deserialize, Debug)]
 struct AlertDefinition {
 	#[serde(default, skip)]
 	file: PathBuf,
@@ -157,13 +152,56 @@ struct AlertDefinition {
 }
 
 #[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "kebab-case", tag = "target")]
+#[serde(untagged, deny_unknown_fields)]
+enum TicketSource {
+	Sql { sql: String },
+	Shell { shell: String, run: String },
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "snake_case", tag = "target")]
 enum SendTarget {
 	Email {
 		addresses: Vec<String>,
 		subject: Option<String>,
 		template: String,
 	},
+	Zendesk {
+		endpoint: Url,
+
+		#[serde(flatten)]
+		method: ZendeskMethod,
+
+		subject: Option<String>,
+
+		ticket_form_id: Option<u64>,
+		#[serde(default)]
+		custom_fields: Vec<ZendeskCustomField>,
+
+		template: String,
+	},
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(untagged, deny_unknown_fields)]
+enum ZendeskMethod {
+	// Make credentials and requester fields exclusive as specifying the requester object in authorized
+	// request is invalid. We may be able to specify some account as the requester, but it's not
+	// necessary. That's because the requester defaults to the authenticated account.
+	Authorized { credentials: ZendeskCredentials },
+	Anonymous { requester: String },
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ZendeskCredentials {
+	email: String,
+	password: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
+struct ZendeskCustomField {
+	id: u64,
+	value: String,
 }
 
 impl AlertDefinition {
@@ -181,6 +219,11 @@ impl AlertDefinition {
 
 		self
 	}
+}
+
+struct InternalContext {
+	pg_client: tokio_postgres::Client,
+	http_client: reqwest::Client,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
@@ -261,11 +304,17 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
+	let internal_ctx = InternalContext {
+		pg_client: client,
+		http_client: reqwest::Client::new(),
+	};
+
 	// TODO: convert to join!
 	for alert in alerts {
-		if let Err(err) = execute_alert(&client, &config.mailgun, &alert, ctx.args_sub.dry_run)
-			.await
-			.wrap_err(format!("while executing alert: {}", alert.file.display()))
+		if let Err(err) =
+			execute_alert(&internal_ctx, &config.mailgun, &alert, ctx.args_sub.dry_run)
+				.await
+				.wrap_err(format!("while executing alert: {}", alert.file.display()))
 		{
 			eprintln!("{err:?}");
 		}
@@ -281,6 +330,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 	match target {
 		SendTarget::Email {
 			subject, template, ..
+		}
+		| SendTarget::Zendesk {
+			subject, template, ..
 		} => {
 			tera.add_raw_template(
 				"subject",
@@ -292,6 +344,15 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 				.into_diagnostic()
 				.wrap_err("compiling email template")?;
 		}
+	}
+	if let SendTarget::Zendesk {
+		method: ZendeskMethod::Anonymous { requester },
+		..
+	} = target
+	{
+		tera.add_raw_template("requester", requester)
+			.into_diagnostic()
+			.wrap_err("compiling requester template")?;
 	}
 	Ok(tera)
 }
@@ -387,7 +448,7 @@ async fn read_sources(
 }
 
 #[instrument(skip(tera, context))]
-fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> {
+fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String, Option<String>)> {
 	let subject = tera
 		.render("subject", &context)
 		.into_diagnostic()
@@ -400,12 +461,22 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> 
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
 
-	Ok((subject, body))
+	let requester = tera
+		.render("requester", &context)
+		.map(Some)
+		.or_else(|err| match err.kind {
+			tera::ErrorKind::TemplateNotFound(_) => Ok(None),
+			_ => Err(err),
+		})
+		.into_diagnostic()
+		.wrap_err("rendering requester template")?;
+
+	Ok((subject, body, requester))
 }
 
-#[instrument(skip(client, mailgun, alert))]
+#[instrument(skip(ctx, mailgun, alert))]
 async fn execute_alert(
-	client: &tokio_postgres::Client,
+	ctx: &InternalContext,
 	mailgun: &TamanuMailgun,
 	alert: &AlertDefinition,
 	dry_run: bool,
@@ -416,8 +487,8 @@ async fn execute_alert(
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
-	let mut context = build_context(alert, now);
-	if read_sources(client, alert, not_before, &mut context)
+	let mut tera_ctx = build_context(alert, now);
+	if read_sources(&ctx.pg_client, alert, not_before, &mut tera_ctx)
 		.await?
 		.is_break()
 	{
@@ -426,10 +497,9 @@ async fn execute_alert(
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
+		let (subject, body, requester) = render_alert(&tera, &mut tera_ctx)?;
 		match target {
 			SendTarget::Email { addresses, .. } => {
-				let (subject, body) = render_alert(&tera, &mut context)?;
-
 				if dry_run {
 					println!("-------------------------------");
 					println!("Alert: {}", alert.file.display());
@@ -459,6 +529,49 @@ async fn execute_alert(
 					.await
 					.into_diagnostic()
 					.wrap_err("sending email")?;
+			}
+			SendTarget::Zendesk {
+				endpoint,
+				method,
+				ticket_form_id,
+				custom_fields,
+				..
+			} => {
+				if dry_run {
+					println!("-------------------------------");
+					println!("Alert: {}", alert.file.display());
+					println!("Endpoint: {}", endpoint);
+					println!("Subject: {subject}");
+					println!("Body: {body}");
+					continue;
+				}
+
+				let req = json!({
+					"request": {
+						"subject": subject,
+						"ticket_form_id": ticket_form_id,
+						"custom_fields": custom_fields,
+						"comment": { "html_body": body },
+						"requester": requester.map(|r| json!({ "name": r }))
+					}
+				});
+
+				let mut req_builder = ctx.http_client.post(endpoint.clone()).json(&req);
+
+				if let ZendeskMethod::Authorized {
+					credentials: ZendeskCredentials { email, password },
+				} = method
+				{
+					req_builder =
+						req_builder.basic_auth(std::format_args!("{email}/token"), Some(password));
+				}
+
+				let resp = req_builder
+					.send()
+					.await
+					.into_diagnostic()
+					.wrap_err("creating Zendesk ticket")?;
+				debug!(resp_text = ?resp.text().await.into_diagnostic()?, "Zendesk ticket sent");
 			}
 		}
 	}
@@ -601,6 +714,57 @@ run: echo foo
 			serde_yml::from_str::<AlertDefinition>(&alert),
 			Err(_)
 		));
+	}
+
+	#[test]
+	fn test_alert_parse_zendesk_authorized() {
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: zendesk
+  endpoint: https://example.zendesk.com/api/v2/requests
+  credentials:
+    email: foo@example.com
+    password: pass
+  subject: "[Tamanu Alert] Example ({{ hostname }})"
+  template: "Output: {{ output }}""#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		assert!(matches!(alert.send[0], SendTarget::Zendesk { .. }));
+	}
+
+	#[test]
+	fn test_alert_parse_zendesk_anon() {
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: zendesk
+  endpoint: https://example.zendesk.com/api/v2/requests
+  requester: "{{ hostname }}"
+  subject: "[Tamanu Alert] Example ({{ hostname }})"
+  template: "Output: {{ output }}""#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		assert!(matches!(alert.send[0], SendTarget::Zendesk { .. }));
+	}
+
+	#[test]
+	fn test_alert_parse_zendesk_form_fields() {
+		let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: zendesk
+  endpoint: https://example.zendesk.com/api/v2/requests
+  requester: "{{ hostname }}"
+  subject: "[Tamanu Alert] Example ({{ hostname }})"
+  template: "Output: {{ output }}"
+  ticket_form_id: 500
+  custom_fields:
+  - id: 100
+    value: tamanu_
+  - id: 200
+    value: Test
+"#;
+		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+		assert!(matches!(alert.send[0], SendTarget::Zendesk { .. }));
 	}
 
 	#[test]
