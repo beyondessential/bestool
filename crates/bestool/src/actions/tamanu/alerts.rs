@@ -167,7 +167,7 @@ enum SendTarget {
 		template: String,
 	},
 	Zendesk {
-		endpoint: Url, // TODO: should this target the domain name, domain name + /api/v2 or the actual endpoint for the request?
+		endpoint: Url,
 
 		#[serde(flatten)]
 		method: ZendeskMethod,
