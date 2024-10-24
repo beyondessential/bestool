@@ -221,6 +221,11 @@ impl AlertDefinition {
 	}
 }
 
+struct InternalContext {
+	pg_client: tokio_postgres::Client,
+	http_client: reqwest::Client,
+}
+
 pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
@@ -299,11 +304,17 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
+	let internal_ctx = InternalContext {
+		pg_client: client,
+		http_client: reqwest::Client::new(),
+	};
+
 	// TODO: convert to join!
 	for alert in alerts {
-		if let Err(err) = execute_alert(&client, &config.mailgun, &alert, ctx.args_sub.dry_run)
-			.await
-			.wrap_err(format!("while executing alert: {}", alert.file.display()))
+		if let Err(err) =
+			execute_alert(&internal_ctx, &config.mailgun, &alert, ctx.args_sub.dry_run)
+				.await
+				.wrap_err(format!("while executing alert: {}", alert.file.display()))
 		{
 			eprintln!("{err:?}");
 		}
@@ -463,9 +474,9 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String, O
 	Ok((subject, body, requester))
 }
 
-#[instrument(skip(client, mailgun, alert))]
+#[instrument(skip(ctx, mailgun, alert))]
 async fn execute_alert(
-	client: &tokio_postgres::Client,
+	ctx: &InternalContext,
 	mailgun: &TamanuMailgun,
 	alert: &AlertDefinition,
 	dry_run: bool,
@@ -476,8 +487,8 @@ async fn execute_alert(
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
-	let mut context = build_context(alert, now);
-	if read_sources(client, alert, not_before, &mut context)
+	let mut tera_ctx = build_context(alert, now);
+	if read_sources(&ctx.pg_client, alert, not_before, &mut tera_ctx)
 		.await?
 		.is_break()
 	{
@@ -486,7 +497,7 @@ async fn execute_alert(
 
 	for target in &alert.send {
 		let tera = load_templates(target)?;
-		let (subject, body, requester) = render_alert(&tera, &mut context)?;
+		let (subject, body, requester) = render_alert(&tera, &mut tera_ctx)?;
 		match target {
 			SendTarget::Email { addresses, .. } => {
 				if dry_run {
@@ -545,7 +556,7 @@ async fn execute_alert(
 					}
 				});
 
-				let mut req_builder = reqwest::Client::new().post(endpoint.clone()).json(&req);
+				let mut req_builder = ctx.http_client.post(endpoint.clone()).json(&req);
 
 				if let ZendeskMethod::Authorized {
 					credentials: ZendeskCredentials { email, password },
@@ -560,7 +571,7 @@ async fn execute_alert(
 					.await
 					.into_diagnostic()
 					.wrap_err("creating Zendesk ticket")?;
-				debug!(?resp, "Zendesk ticket sent");
+				debug!(resp_text = ?resp.text().await.into_diagnostic()?, "Zendesk ticket sent");
 			}
 		}
 	}
