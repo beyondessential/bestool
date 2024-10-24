@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.16.3](https://github.com/beyondessential/bestool/compare/v0.16.2..0.16.3) - 2024-10-20
+## [0.17.0](https://github.com/beyondessential/bestool/compare/v0.16.3..0.17.0) - 2024-10-24
+
+
+
+### Alerts
+
+- **Feature:** KAM-273: add shell script runner (#133) - ([8b4e582](https://github.com/beyondessential/bestool/commit/8b4e58288c4c1562ec39828b1d6350bbbda8c46f))
+- **Feature:** KAM-242: add zendesk as send target (#134) - ([53177c7](https://github.com/beyondessential/bestool/commit/53177c7873db15c263eef0dadd040ecfcccc0164))
+
+---
+## [0.16.3](https://github.com/beyondessential/bestool/compare/v0.16.2..v0.16.3) - 2024-10-20
 
 
 - **Bugfix:** Don´t require git in docsrs - ([970d935](https://github.com/beyondessential/bestool/commit/970d935e0e42314d7bd469ab8f314897c6e44be3))
