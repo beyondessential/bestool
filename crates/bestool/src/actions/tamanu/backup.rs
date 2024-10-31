@@ -32,7 +32,9 @@ pub struct BackupArgs {
 	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
 	write_to: String,
 
-	/// TODO:
+	/// The file path to copy the written backup.
+	///
+	/// The backup will stay as is in "write_to".
 	#[arg(long)]
 	then_copy_to: Option<String>,
 
