@@ -38,7 +38,7 @@ pub struct BackupArgs {
 
 	/// Enable the lean backup
 	///
-	/// The lean backup excludes more tables "logs.*", "reporting.*" and "public.attachments".
+	/// The lean backup excludes more tables: "logs.*", "reporting.*" and "public.attachments".
 	#[arg(long, default_value_t = false)]
 	lean: bool,
 }
@@ -78,7 +78,11 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	debug!(?config, "parsed Tamanu config");
 
 	let output_date = Local::now().format("%Y-%m-%d_%H%M");
-	let output_name = config.canonical_host_name.trim_start_matches("http://");
+	let output_name = config
+		.canonical_host_name
+		.strip_prefix("http://")
+		.or_else(|| config.canonical_host_name.strip_prefix("https://"))
+		.unwrap_or(&config.canonical_host_name);
 	let output = Path::new(&ctx.args_sub.write_to).join(format!(
 		"{output_date}-{output_name}-{db}.dump",
 		db = config.db.name
