@@ -1,9 +1,4 @@
-use std::{
-	collections::HashMap,
-	env::temp_dir,
-	fs,
-	path::PathBuf,
-};
+use std::{collections::HashMap, env::temp_dir, fs, path::PathBuf};
 
 use clap::{Parser, ValueHint};
 use dunce::canonicalize;
@@ -12,7 +7,7 @@ use serde_yml::Value;
 use tracing::{debug, info, instrument, warn};
 use walkdir::WalkDir;
 
-use crate::actions::Context;
+use crate::actions::{tamanu::find_postgres_bin, Context};
 
 use super::{config::load_config, find_package, find_tamanu, ApiServerKind, TamanuArgs};
 
@@ -150,7 +145,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
 
-	let pg_bin_path = find_postgres().wrap_err("failed to find psql executable")?;
+	let pg_bin_path = find_postgres_bin("psql").wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
 
 	let mut transforms_dirs = ctx.args_sub.folders;
@@ -240,41 +235,6 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	);
 
 	Ok(())
-}
-
-#[instrument(level = "debug")]
-fn find_postgres() -> Result<PathBuf> {
-	// On Windows, find `psql` assuming the standard instllation using the instller
-	// because PATH on Windows is not reliable.
-	// See https://github.com/rust-lang/rust/issues/37519
-	if cfg!(windows) {
-		let root = r"C:\Program Files\PostgreSQL";
-		let version = fs::read_dir(root)
-			.into_diagnostic()?
-			.inspect(|res| debug!(?res, "reading PostgreSQL installation"))
-			.filter_map(|res| {
-				res.map(|dir| {
-					dir.file_name()
-						.into_string()
-						.ok()
-						.filter(|name| name.parse::<u32>().is_ok())
-				})
-				.transpose()
-			})
-			// Use `u32::MAX` in case of `Err` so that we always catch IO errors.
-			.max_by_key(|res| {
-				res.as_ref()
-					.cloned()
-					.map(|n| n.parse::<u32>().unwrap())
-					.unwrap_or(u32::MAX)
-			})
-			.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
-			.into_diagnostic()?;
-
-		Ok([root, version.as_str(), "bin"].iter().collect())
-	} else {
-		todo!("find postgres on unix if needed")
-	}
 }
 
 #[instrument(level = "trace")]

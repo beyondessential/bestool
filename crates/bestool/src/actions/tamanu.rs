@@ -124,8 +124,8 @@ pub fn find_existing_version() -> Result<Version> {
 }
 
 #[cfg(not(windows))]
-fn find_postgres_bin(name: &str) -> Result<&str> {
-	Ok(name)
+fn find_postgres_bin(name: &str) -> Result<PathBuf> {
+	Ok(name.into())
 }
 
 #[cfg(windows)]
