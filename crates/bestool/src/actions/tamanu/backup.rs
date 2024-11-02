@@ -60,10 +60,6 @@ struct TamanuDb {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
-	// TODO: # Use two processor cores at most
-	// $thisProcess = [System.Diagnostics.Process]::GetCurrentProcess();
-	// $thisProcess.ProcessorAffinity = 3;
-
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
 	let kind = find_package(&root)?;
