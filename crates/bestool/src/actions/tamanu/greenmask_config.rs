@@ -2,7 +2,7 @@ use std::{collections::HashMap, env::temp_dir, fs, path::PathBuf};
 
 use clap::{Parser, ValueHint};
 use dunce::canonicalize;
-use miette::{miette, Context as _, IntoDiagnostic, Result};
+use miette::{Context as _, IntoDiagnostic, Result};
 use serde_yml::Value;
 use tracing::{debug, info, instrument, warn};
 use walkdir::WalkDir;
