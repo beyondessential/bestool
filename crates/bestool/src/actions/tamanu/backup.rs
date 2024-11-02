@@ -29,7 +29,7 @@ pub struct BackupArgs {
 
 	/// The destination directory the output will be written to.
 	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
-	#[cfg_attr(not(windows), arg(long, default_value = "/backup"))]
+	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
 	write_to: String,
 
 	/// TODO:
