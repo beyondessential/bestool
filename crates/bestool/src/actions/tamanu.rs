@@ -123,12 +123,12 @@ pub fn find_existing_version() -> Result<Version> {
 		.version)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(feature = "tamanu-pg-common", not(windows)))]
 fn find_postgres_bin(name: &str) -> Result<PathBuf> {
 	Ok(name.into())
 }
 
-#[cfg(windows)]
+#[cfg(all(feature = "tamanu-pg-common", windows))]
 #[tracing::instrument(level = "debug")]
 fn find_postgres_bin(name: &str) -> Result<PathBuf> {
 	// On Windows, find `psql` assuming the standard instllation using the instller

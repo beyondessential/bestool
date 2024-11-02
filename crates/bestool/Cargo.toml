@@ -172,6 +172,7 @@ tamanu-alerts = [
 tamanu-backup = [
 	"__tamanu",
 	"tamanu-config",
+	"tamanu-pg-common",
 	"dep:duct",
 ]
 tamanu-config = [
@@ -187,6 +188,7 @@ tamanu-find = [
 tamanu-greenmask = [
 	"__tamanu",
 	"tamanu-config",
+	"tamanu-pg-common",
 	"dep:dunce",
 	"dep:serde_yml",
 	"dep:walkdir",
@@ -194,6 +196,7 @@ tamanu-greenmask = [
 tamanu-psql = [
 	"__tamanu",
 	"tamanu-config",
+	"tamanu-pg-common",
 	"dep:duct",
 	"dep:windows",
 ]
@@ -213,6 +216,7 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:leon",
 	"dep:node-semver",
 ]
+tamanu-pg-common = []
 
 ## Iti subcommands
 iti = [ # enable all iti subcommands
