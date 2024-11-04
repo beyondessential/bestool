@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::temp_dir, fs, path::PathBuf};
+use std::{collections::HashMap, env::temp_dir, ffi::OsString, fs, path::PathBuf};
 
 use clap::{Parser, ValueHint};
 use dunce::canonicalize;
@@ -67,7 +67,7 @@ struct GreenmaskConfig {
 
 #[derive(serde::Serialize, Debug)]
 struct GreenmaskCommon {
-	pg_bin_path: PathBuf,
+	pg_bin_path: OsString,
 	tmp_dir: PathBuf,
 }
 

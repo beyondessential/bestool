@@ -1,4 +1,5 @@
 use std::{
+	ffi::OsString,
 	fs,
 	path::{Path, PathBuf},
 };
@@ -124,13 +125,13 @@ pub fn find_existing_version() -> Result<Version> {
 }
 
 #[cfg(all(feature = "tamanu-pg-common", not(windows)))]
-fn find_postgres_bin(name: &str) -> Result<PathBuf> {
+fn find_postgres_bin(name: &str) -> Result<OsString> {
 	Ok(name.into())
 }
 
 #[cfg(all(feature = "tamanu-pg-common", windows))]
 #[tracing::instrument(level = "debug")]
-fn find_postgres_bin(name: &str) -> Result<PathBuf> {
+fn find_postgres_bin(name: &str) -> Result<OsString> {
 	// On Windows, find `psql` assuming the standard installation using the installer
 	// because PATH on Windows is not reliable.
 	// See https://github.com/rust-lang/rust/issues/37519
@@ -159,5 +160,6 @@ fn find_postgres_bin(name: &str) -> Result<PathBuf> {
 
 	Ok([root, version.as_str(), "bin", &format!("{name}.exe")]
 		.iter()
-		.collect::<PathBuf>())
+		.collect::<PathBuf>()
+		.into())
 }
