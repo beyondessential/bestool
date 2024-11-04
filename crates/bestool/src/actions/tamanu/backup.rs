@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use chrono::Local;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
+use reqwest::Url;
 use tracing::{debug, info};
 
 use crate::actions::{
@@ -78,14 +79,17 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	debug!(?config, "parsed Tamanu config");
 
 	let output_date = Local::now().format("%Y-%m-%d_%H%M");
-	let output_name = config
-		.canonical_host_name
-		.strip_prefix("http://")
-		.or_else(|| config.canonical_host_name.strip_prefix("https://"))
-		.unwrap_or(&config.canonical_host_name);
+
+	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
 	let output = Path::new(&ctx.args_sub.write_to).join(format!(
 		"{output_date}-{output_name}-{db}.dump",
-		db = config.db.name
+		// Extract the host section since "canonical_host_name" is a full URL, which is not
+		// suitable for a file name.
+		output_name = canonical_host_name
+			.as_ref()
+			.and_then(|url| url.host_str())
+			.unwrap_or(&config.canonical_host_name),
+		db = config.db.name,
 	));
 
 	let pg_dump = find_postgres_bin("pg_dump")?;
