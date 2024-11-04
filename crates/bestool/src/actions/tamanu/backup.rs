@@ -38,7 +38,7 @@ pub struct BackupArgs {
 	#[arg(long)]
 	then_copy_to: Option<String>,
 
-	/// Enable the lean backup
+	/// Take a lean backup instead.
 	///
 	/// The lean backup excludes more tables: "logs.*", "reporting.*" and "public.attachments".
 	#[arg(long, default_value_t = false)]
