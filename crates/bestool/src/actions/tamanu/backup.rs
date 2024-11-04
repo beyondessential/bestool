@@ -13,7 +13,7 @@ use crate::actions::{
 	Context,
 };
 
-/// Dump a local Tamanu DB using "pg_dump".
+/// Backup a local Tamanu database to a single file.
 ///
 /// This finds the database from the Tamanu's configuration. The output will be written to a file
 /// "{current_datetime}-{host_name}-{database_name}.dump".
