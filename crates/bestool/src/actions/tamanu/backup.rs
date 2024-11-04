@@ -41,6 +41,8 @@ pub struct BackupArgs {
 	/// Take a lean backup instead.
 	///
 	/// The lean backup excludes more tables: "logs.*", "reporting.*" and "public.attachments".
+	///
+	/// These thus are not suitable for recovery, but can be used for analysis.
 	#[arg(long, default_value_t = false)]
 	lean: bool,
 }
