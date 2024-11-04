@@ -131,7 +131,7 @@ fn find_postgres_bin(name: &str) -> Result<PathBuf> {
 #[cfg(all(feature = "tamanu-pg-common", windows))]
 #[tracing::instrument(level = "debug")]
 fn find_postgres_bin(name: &str) -> Result<PathBuf> {
-	// On Windows, find `psql` assuming the standard instllation using the instller
+	// On Windows, find `psql` assuming the standard installation using the installer
 	// because PATH on Windows is not reliable.
 	// See https://github.com/rust-lang/rust/issues/37519
 	let root = r"C:\Program Files\PostgreSQL";
