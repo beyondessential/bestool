@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{ffi::OsString, fs, path::Path};
 
 use chrono::Local;
 use clap::Parser;
@@ -46,6 +46,12 @@ pub struct BackupArgs {
 	/// These thus are not suitable for recovery, but can be used for analysis.
 	#[arg(long, default_value_t = false)]
 	lean: bool,
+
+	/// Additional, arbitrary arguments to pass to "pg_dump"
+	///
+	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes.
+	#[arg(trailing_var_arg = true)]
+	args: Vec<OsString>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -96,39 +102,41 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	#[rustfmt::skip]
-	if ctx.args_sub.lean {
+	let excluded_tables = if ctx.args_sub.lean {
 		info!(?output, "writing lean backup");
 
-		duct::cmd!(
-			pg_dump,
-            "--username", config.db.username,
-			"--verbose",
-			"--exclude-table", "sync_snapshots.*",
+		vec!["--exclude-table", "sync_snapshots.*",
 			"--exclude-table-data", "fhir.*",
 			"--exclude-table-data", "logs.*",
 			"--exclude-table-data", "reporting.*",
-			"--exclude-table-data", "public.attachments",
-			"--format", "c",
-			"--compress", ctx.args_sub.compression_level.to_string(),
-			"--file", &output,
-			config.db.name
-		)
+			"--exclude-table-data", "public.attachments"].into_iter().map(Into::<OsString>::into)
 	} else {
 		info!(?output, "writing full backup to");
 
-		duct::cmd!(
-			pg_dump,
-            "--username", config.db.username,
-			"--verbose",
-			"--exclude-table", "sync_snapshots.*",
-			"--exclude-table-data", "fhir.jobs",
-			"--format", "c",
-			"--compress", ctx.args_sub.compression_level.to_string(),
-			"--file", &output,
-			config.db.name
-		)
-	}
-    .env("PGPASSWORD", config.db.password)
+		vec!["--exclude-table", "sync_snapshots.*",
+			"--exclude-table-data", "fhir.jobs"].into_iter().map(Into::<OsString>::into)
+	};
+
+	duct::cmd(
+		pg_dump,
+		[
+			Into::<OsString>::into("--username"),
+			config.db.username.into(),
+			"--verbose".into(),
+			"--format".into(),
+			"c".into(),
+			"--compress".into(),
+			ctx.args_sub.compression_level.to_string().into(),
+			"--file".into(),
+			output.clone().into(),
+			"--dbname".into(),
+			config.db.name.into(),
+		]
+		.into_iter()
+		.chain(excluded_tables)
+		.chain(ctx.args_sub.args),
+	)
+	.env("PGPASSWORD", config.db.password)
 	.run()
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;
