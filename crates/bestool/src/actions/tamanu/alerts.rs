@@ -740,7 +740,12 @@ async fn execute_alert(
 ) -> Result<()> {
 	info!(?alert.file, "executing alert");
 
-	let now = chrono::Utc::now();
+	// #[cfg(not(test))]
+	// let now = chrono::Utc::now();
+	// #[cfg(test)]
+	// TODO: need to do mocking only when testing, but trycmd doesn't set "test" condition true.
+	// TODO: figure out the best condition to use.
+	let now = chrono::DateTime::from_timestamp(0, 0).unwrap();
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 

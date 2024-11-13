@@ -1,0 +1,2 @@
+bin.name = "bestool"
+args = "--log-timeless tamanu --root ./tamanu alerts --interval 1w --dir ./alerts --dry-run"

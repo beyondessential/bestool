@@ -1,0 +1,13 @@
+{
+    "db": {
+        "host": "localhost",
+        "name": "tamanu-central",
+        "username": "rail",
+        "password": ""
+    },
+    "mailgun": {
+        "domain": "",
+        "apiKey": "",
+        "from": ""
+    }
+}
