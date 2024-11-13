@@ -1,9 +1,9 @@
 -------------------------------
 Alert: ./alerts/shell.yml
 Recipients: test@example.com
-Subject: [Tamanu Alert] (MacBook-Air-70.local)
-Body: <p>Server: MacBook-Air-70.local</p>
-<h1>Job Failed</h1>
+Subject: Tamanu Alert
+Body: <h1>Job Failed</h1>
 <p>test
 </p>
 <p>For more information, please check the logs.</p>
+

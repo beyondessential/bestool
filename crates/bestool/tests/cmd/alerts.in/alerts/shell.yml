@@ -4,9 +4,8 @@ recipients:
 shell: bash
 run: echo test && exit 1
 
-subject: "[Tamanu Alert] ({{ hostname }})"
+subject: "Tamanu Alert"
 template: |
-  <p>Server: {{ hostname }}</p>
   <h1>Job Failed</h1>
   <p>{{ output }}</p>
   <p>For more information, please check the logs.</p>
