@@ -7,10 +7,7 @@ use reqwest::Url;
 use tracing::{debug, info};
 
 use crate::actions::{
-	tamanu::{
-		config::{merge_json, package_config},
-		find_package, find_postgres_bin, find_tamanu, TamanuArgs,
-	},
+	tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
 	Context,
 };
 
@@ -74,10 +71,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let kind = find_package(&root)?;
 	info!(?root, ?kind, "using this Tamanu for config");
 
-	let config_value = merge_json(
-		package_config(&root, kind.package_name(), "default.json5")?,
-		package_config(&root, kind.package_name(), "local.json5")?,
-	);
+	let config_value = load_config(&root, &kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
