@@ -1,4 +1,5 @@
 use std::{
+	ffi::OsString,
 	fs,
 	path::{Path, PathBuf},
 };
@@ -31,6 +32,8 @@ super::subcommands! {
 
 	#[cfg(feature = "tamanu-alerts")]
 	alerts => Alerts(AlertsArgs),
+	#[cfg(feature = "tamanu-backup")]
+	backup => Backup(BackupArgs),
 	#[cfg(feature = "tamanu-config")]
 	config => Config(ConfigArgs),
 	#[cfg(feature = "tamanu-download")]
@@ -119,4 +122,44 @@ pub fn find_existing_version() -> Result<Version> {
 		.ok_or_else(|| miette!("there's no live Tamanu running"))?
 		.pm2_env
 		.version)
+}
+
+#[cfg(all(feature = "tamanu-pg-common", not(windows)))]
+fn find_postgres_bin(name: &str) -> Result<OsString> {
+	Ok(name.into())
+}
+
+#[cfg(all(feature = "tamanu-pg-common", windows))]
+#[tracing::instrument(level = "debug")]
+fn find_postgres_bin(name: &str) -> Result<OsString> {
+	// On Windows, find `psql` assuming the standard installation using the installer
+	// because PATH on Windows is not reliable.
+	// See https://github.com/rust-lang/rust/issues/37519
+	let root = r"C:\Program Files\PostgreSQL";
+	let version = fs::read_dir(root)
+		.into_diagnostic()?
+		.inspect(|res| tracing::debug!(?res, "reading PostgreSQL installation"))
+		.filter_map(|res| {
+			res.map(|dir| {
+				dir.file_name()
+					.into_string()
+					.ok()
+					.filter(|name| name.parse::<u32>().is_ok())
+			})
+			.transpose()
+		})
+		// Use `u32::MAX` in case of `Err` so that we always catch IO errors.
+		.max_by_key(|res| {
+			res.as_ref()
+				.cloned()
+				.map(|n| n.parse::<u32>().unwrap())
+				.unwrap_or(u32::MAX)
+		})
+		.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
+		.into_diagnostic()?;
+
+	Ok([root, version.as_str(), "bin", &format!("{name}.exe")]
+		.iter()
+		.collect::<PathBuf>()
+		.into())
 }

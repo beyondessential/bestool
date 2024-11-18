@@ -1,15 +1,12 @@
-use std::ffi::OsString;
-use std::{fs, path::PathBuf};
-
 use clap::Parser;
-use miette::{miette, Context as _, IntoDiagnostic, Result};
-use tracing::{debug, info, instrument};
+use miette::{Context as _, IntoDiagnostic, Result};
+use tracing::info;
 
 use crate::actions::Context;
 
 use super::{
 	config::{merge_json, package_config},
-	find_package, find_tamanu, ApiServerKind, TamanuArgs,
+	find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
 /// Connect to Tamanu's db via `psql`.
@@ -76,7 +73,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
 	}
 
-	let psql_path = find_psql().wrap_err("failed to find psql executable")?;
+	let psql_path = find_postgres_bin("psql")?;
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	duct::cmd!(psql_path, "--dbname", name, "--username", username,)
 		.env("PGPASSWORD", password)
@@ -86,42 +83,4 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		.wrap_err("failed to execute psql")?;
 
 	Ok(())
-}
-
-#[instrument(level = "debug")]
-fn find_psql() -> Result<OsString> {
-	// On Windows, find `psql` assuming the standard instllation using the instller
-	// because PATH on Windows is not reliable.
-	// See https://github.com/rust-lang/rust/issues/37519
-	if cfg!(windows) {
-		let root = r"C:\Program Files\PostgreSQL";
-		let version = fs::read_dir(root)
-			.into_diagnostic()?
-			.inspect(|res| debug!(?res, "reading PostgreSQL installation"))
-			.filter_map(|res| {
-				res.map(|dir| {
-					dir.file_name()
-						.into_string()
-						.ok()
-						.filter(|name| name.parse::<u32>().is_ok())
-				})
-				.transpose()
-			})
-			// Use `u32::MAX` in case of `Err` so that we always catch IO errors.
-			.max_by_key(|res| {
-				res.as_ref()
-					.cloned()
-					.map(|n| n.parse::<u32>().unwrap())
-					.unwrap_or(u32::MAX)
-			})
-			.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
-			.into_diagnostic()?;
-
-		Ok([root, version.as_str(), r"bin\psql.exe"]
-			.iter()
-			.collect::<PathBuf>()
-			.into_os_string())
-	} else {
-		Ok("psql".into())
-	}
 }
