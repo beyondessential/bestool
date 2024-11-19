@@ -1,5 +1,9 @@
 #![deny(rust_2018_idioms)]
 
+use std::env;
+
+use chrono::{DateTime, TimeZone, Utc};
+
 pub use crate::actions::run;
 pub use crate::args::get_args as args;
 
@@ -64,4 +68,16 @@ pub mod __help {
 
 	pub use crate::actions::*;
 	pub use crate::args::Args;
+}
+
+/// A wrapper of [`chrono::Utc::now`].
+///
+/// On debug build, this returns a fixed time if `BESTOOL_TIMELESS` is set.
+fn now_time<T: TimeZone>(tz: &T) -> DateTime<T> {
+	if cfg!(debug_assertions) && env::var("BESTOOL_TIMELESS").is_ok() {
+		DateTime::from_timestamp_nanos(0)
+	} else {
+		Utc::now()
+	}
+	.with_timezone(tz)
 }

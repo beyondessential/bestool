@@ -1,4 +1,6 @@
 #[test]
 fn cli_tests() {
-	trycmd::TestCases::new().case("tests/cmd/*.toml");
+	trycmd::TestCases::new()
+		.env("BESTOOL_TIMELESS", "1")
+		.case("tests/cmd/*.toml");
 }
