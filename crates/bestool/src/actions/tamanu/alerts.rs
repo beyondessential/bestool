@@ -12,7 +12,7 @@ use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
 use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::{IsNull, ToSql, Type};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use walkdir::WalkDir;
 
 use crate::{actions::Context, postgres_to_value::rows_to_value_map};
@@ -249,26 +249,37 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 				.into_iter()
 				.filter_map(|e| e.ok())
 				.filter(|e| e.file_type().is_file())
-				.filter_map(|entry| {
+				.map(|entry| {
 					let file = entry.path();
 					if file
 						.extension()
 						.map_or(false, |e| e == "yaml" || e == "yml")
 					{
 						debug!(?file, "parsing YAML file");
-						let content = std::fs::read_to_string(file).ok()?;
-						let mut alert: AlertDefinition = serde_yml::from_str(&content).ok()?;
+						let content = std::fs::read_to_string(file)
+							.into_diagnostic()
+							.wrap_err(format!("{file:?}"))?;
+						let mut alert: AlertDefinition = serde_yml::from_str(&content)
+							.into_diagnostic()
+							.wrap_err(format!("{file:?}"))?;
 
 						alert.file = file.to_path_buf();
 						alert.interval = ctx.args_sub.interval.into();
 						let alert = alert.normalise();
 						debug!(?alert, "parsed alert file");
 						if alert.enabled {
-							return Some(alert);
+							return Ok(Some(alert));
 						}
 					}
 
-					None
+					Ok(None)
+				})
+				.filter_map(|def: Result<Option<AlertDefinition>>| match def {
+					Err(err) => {
+						error!("{err:?}");
+						None
+					}
+					Ok(def) => def,
 				}),
 		);
 	}
