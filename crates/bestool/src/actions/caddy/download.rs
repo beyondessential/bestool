@@ -18,25 +18,30 @@ use crate::actions::Context;
 use super::CaddyArgs;
 
 /// Download caddy.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool caddy download`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// Version to download.
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: version, default `latest`"))]
 	#[arg(value_name = "VERSION", default_value = "latest")]
 	pub version: String,
 
 	/// Where to download to.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--path PATH`"))]
 	#[arg(long)]
 	pub path: PathBuf,
 
 	/// Print the URL, don't download.
 	///
 	/// Useful if you want to download it on a different machine, or with a different tool.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--url-only`"))]
 	#[arg(long)]
 	pub url_only: bool,
 
 	/// Target to download.
 	///
 	/// Usually the auto-detected default is fine, in rare cases you may need to override it.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--target TARGET`"))]
 	#[arg(long)]
 	pub target: Option<String>,
 }

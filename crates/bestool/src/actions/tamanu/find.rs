@@ -6,19 +6,23 @@ use crate::actions::Context;
 use super::TamanuArgs;
 
 /// Find Tamanu installations.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu find`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct FindArgs {
 	/// Return this many entries
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--n, --count NUMBER`"))]
 	#[arg(long, short = 'n')]
 	pub count: Option<usize>,
 
 	/// Sort ascending.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--asc`"))]
 	#[arg(long)]
 	pub asc: bool,
 
 	/// With version.
 	///
 	/// Print parsed version information for each root.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--with-version`"))]
 	#[arg(long)]
 	pub with_version: bool,
 }

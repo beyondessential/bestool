@@ -20,23 +20,28 @@ use super::{ApiServerKind, TamanuArgs};
 /// In general, you should prefer to use the container images.
 /// This command is here to support Windows deployments, which run servers with a system Node.js.
 /// It will be deprecated in the future as Windows containers are developed for Tamanu.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu download`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// What to download.
+	#[cfg_attr(docsrs, doc("\n\n**1st Argument**: `central|facility|web`"))]
 	#[arg(value_name = "KIND")]
 	pub kind: ServerKind,
 
 	/// Version to download.
+	#[cfg_attr(docsrs, doc("\n\n**2nd Argument**: version (e.g. `bestool tamanu download web 1.2.3`)"))]
 	#[arg(value_name = "VERSION")]
 	pub version: String,
 
 	/// Where to download to.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--into PATH`, default C:\\Tamanu"))]
 	#[arg(long, default_value = "/Tamanu")]
 	pub into: PathBuf,
 
 	/// Print the URL, don't download.
 	///
 	/// Useful if you want to download it on a different machine, or with a different tool.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--url-only`"))]
 	#[arg(long)]
 	pub url_only: bool,
 }

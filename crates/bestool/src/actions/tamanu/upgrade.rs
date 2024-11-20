@@ -20,9 +20,11 @@ use super::{
 ///
 /// This command will switch the server to upgrade mode, take down API servers, migrate the database,
 /// start new API servers, upgrade the frontend, healthcheck, and finally switch out of upgrade mode.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu upgrade`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct UpgradeArgs {
 	/// Version to update to.
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: version"))]
 	#[arg(value_name = "VERSION")]
 	pub version: Version,
 
@@ -31,10 +33,12 @@ pub struct UpgradeArgs {
 	/// By default, this command looks for the most recent installed version of Tamanu.
 	/// If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --kind central|facility`"))]
 	#[arg(short, long)]
 	pub kind: Option<ApiServerKind>,
 
 	/// Path to the Caddyfile.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--caddyfile-path PATH`"))]
 	#[arg(long, default_value = DEFAULT_CADDYFILE_PATH)]
 	pub caddyfile_path: PathBuf,
 }

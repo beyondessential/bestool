@@ -10,6 +10,7 @@ use super::{
 };
 
 /// Connect to Tamanu's db via `psql`.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct PsqlArgs {
 	/// Package to load config from.
@@ -17,13 +18,15 @@ pub struct PsqlArgs {
 	/// By default, this command looks for the most recent installed version of Tamanu and tries to
 	/// look for an appropriate config. If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, -kind central|facility`"))]
 	#[arg(short, long)]
 	pub kind: Option<ApiServerKind>,
 
 	/// Connect to postgres with a different username.
 	///
 	/// This may prompt for a password depending on your local settings and pg_hba config.
-	#[arg(short, long)]
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-u, -U, --username STRING`"))]
+	#[arg(short, long, alias = "U")]
 	pub username: Option<String>,
 }
 

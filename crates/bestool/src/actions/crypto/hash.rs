@@ -15,21 +15,25 @@ use super::{Context, CryptoArgs};
 /// Checksum files and folders.
 ///
 /// This uses the BLAKE3 algorithm and expects digests to be prefixed by `b3:` to be future-proof.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool crypto hash`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct HashArgs {
 	/// Paths to files and/or folders to compute a checksum for.
 	///
 	/// One path will generate one checksum.
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: paths"))]
 	#[arg(required = true)]
 	pub paths: Vec<PathBuf>,
 
 	/// Digests to check the generated ones against.
 	///
 	/// Must be provided in the same order as the inputs.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--check DIGEST`"))]
 	#[arg(long = "check")]
 	pub checks: Vec<String>,
 
 	/// Print just the hashes, not the filenames.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-n, --no-filenames`"))]
 	#[arg(short, long)]
 	pub no_filenames: bool,
 }
