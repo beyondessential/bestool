@@ -17,38 +17,47 @@ use crate::actions::{
 /// "{current_datetime}-{host_name}-{database_name}.dump".
 ///
 /// By default, this excludes tables "sync_snapshots.*" and "fhir.jobs".
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu backup`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct BackupArgs {
 	/// The compression level to use.
 	///
 	/// This is simply passed to the "--compress" option of "pg_dump".
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--compression-level LEVEL`, default 3"))]
 	#[arg(long, default_value_t = 3)]
-	compression_level: u32,
+	pub compression_level: u32,
 
 	/// The destination directory the output will be written to.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--write-to PATH`"))]
 	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
 	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
-	write_to: String,
+	pub write_to: String,
 
 	/// The file path to copy the written backup.
 	///
 	/// The backup will stay as is in "write_to".
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--then-copy-to PATH`"))]
 	#[arg(long)]
-	then_copy_to: Option<String>,
+	pub then_copy_to: Option<String>,
 
 	/// Take a lean backup instead.
 	///
 	/// The lean backup excludes more tables: "logs.*", "reporting.*" and "public.attachments".
 	///
 	/// These thus are not suitable for recovery, but can be used for analysis.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--lean`"))]
 	#[arg(long, default_value_t = false)]
-	lean: bool,
+	pub lean: bool,
 
 	/// Additional, arbitrary arguments to pass to "pg_dump"
 	///
-	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes.
+	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes:
+	///
+	/// ```plain
+	/// bestool tamanu backup -- --password pass
+	/// ```
 	#[arg(trailing_var_arg = true)]
-	args: Vec<OsString>,
+	pub args: Vec<OsString>,
 }
 
 #[derive(serde::Deserialize, Debug)]

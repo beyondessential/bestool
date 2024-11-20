@@ -183,6 +183,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///     template: |
 ///       <h1>Whoops</h1>
 /// ```
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu alerts`"))]
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertsArgs {
@@ -196,6 +197,7 @@ pub struct AlertsArgs {
 	/// It's entirely valid to provide a folder that only contains a `_targets.yml` file.
 	///
 	/// Can be provided multiple times.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--dir PATH`"))]
 	#[arg(long)]
 	pub dir: Vec<PathBuf>,
 
@@ -203,10 +205,12 @@ pub struct AlertsArgs {
 	///
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc. It should match
 	/// the task scheduling / cron interval for this command.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--interval DURATION`"))]
 	#[arg(long)]
 	pub interval: humantime::Duration,
 
 	/// Don't actually send alerts, just print them to stdout.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--dry-run`"))]
 	#[arg(long)]
 	pub dry_run: bool,
 }
