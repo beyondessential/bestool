@@ -5,40 +5,13 @@ use miette::{bail, Result};
 use tracing::{debug, warn};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard, rolling};
 
-#[cfg(docsrs)]
-fn long_version() -> String {
-	env!("CARGO_PKG_VERSION").into()
-}
-
-#[cfg(not(docsrs))]
-fn long_version() -> String {
-	if let (Some(branch), Some(commit), Some(dirty)) = (
-		option_env!("GIT_BRANCH"),
-		option_env!("GIT_COMMIT"),
-		option_env!("GIT_DIRTY"),
-	) {
-		format!(
-			"{} built from branch={branch} commit={commit} dirty={dirty} source_timestamp={}",
-			env!("CARGO_PKG_VERSION"),
-			env!("SOURCE_TIMESTAMP"),
-		)
-	} else {
-		format!(
-			"{} built from crate source_timestamp={}",
-			env!("CARGO_PKG_VERSION"),
-			env!("SOURCE_TIMESTAMP"),
-		)
-	}
-}
-
 /// BES Tooling
 #[derive(Debug, Clone, Parser)]
 #[command(
 	author,
 	version,
-	long_version = long_version(),
 	after_help = "Want more detail? Try the long '--help' flag!",
-	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help.",
+	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
 )]
 #[cfg_attr(debug_assertions, command(before_help = "⚠ DEBUG BUILD ⚠"))]
 pub struct Args {
