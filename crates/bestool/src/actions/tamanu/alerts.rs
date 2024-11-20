@@ -1,4 +1,6 @@
-use std::{error::Error, ops::ControlFlow, path::PathBuf, process, time::Duration};
+use std::{
+	collections::HashMap, error::Error, ops::ControlFlow, path::PathBuf, process, time::Duration,
+};
 
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Utc};
@@ -27,10 +29,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// Execute alert definitions against Tamanu.
 ///
 /// An alert definition is a YAML file that describes a single alert
-/// condition and recipients to notify. Conditions are expressed as a SQL query,
-/// which can have a binding for a datetime in the past to limit results by;
-/// returning any rows indicates a condition trigger. The result of the query is
-/// sent to the recipients as an email, via a Tera template.
+/// source and targets to send triggered alerts to.
 ///
 /// This tool reads both database and email credentials from Tamanu's own
 /// configuration files, see the tamanu subcommand help (one level above) for
@@ -60,7 +59,8 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// # Template variables
 ///
-/// - `rows`: the result of the SQL query, as a list of objects
+/// - `rows`: the result of the SQL query, as a list of objects (if source = sql)
+/// - `output`: the result of the shell command (if source = shell)
 /// - `interval`: the duration string of the alert interval
 /// - `hostname`: the hostname of the machine running this command
 /// - `filename`: the name of the alert definition file
@@ -69,13 +69,120 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// Additionally you can `{% include "subject" %}` to include the rendering of
 /// the subject template in the email template.
 ///
-/// # Query binding parameters
+/// # Sources
+///
+/// Each alert must have one source that it executes to determine whether the
+/// alert is triggered or not. Current sources: `sql`, `shell`.
+///
+/// ## SQL
+///
+/// This source executes a SQL query, which can have a binding for a datetime in
+/// the past to limit results by; returning any rows indicates an alert trigger.
+///
+/// ```yaml
+/// sql: |
+///   SELECT 1 + 1
+/// ```
+///
+/// ### Query binding parameters
 ///
 /// The SQL query will be passed exactly the number of parameters it expects.
 /// The parameters are always provided in this order:
 ///
 /// $1: the datetime of the start of the interval (timestamp with time zone)
 /// $2: the interval duration (interval)
+///
+/// ## Shell
+///
+/// This source executes a shell script. Returning a non-zero exit code
+/// indicates an alert trigger. The stdout of the script will be the `output`
+/// template variable.
+///
+/// ```yaml
+/// shell: bash
+/// run: |
+///   echo foo
+///   exit 1
+/// ```
+///
+/// # Send targets
+///
+/// You can send triggered alerts to one or more different targets. Current send
+/// targets are: `email`, `zendesk`. Note that you can have multiple targets of
+/// the same type.
+///
+/// ## Email
+///
+/// ```yaml
+/// send:
+///   - type: email
+///     addresses:
+///       - staff@job.com
+///       - support@job.com
+/// ```
+///
+/// ## Zendesk (authenticated)
+///
+/// ```yaml
+/// send:
+///   - type: zendesk
+///     endpoint: https://example.zendesk.com/api/v2/requests
+///     credentials:
+///       email: foo@example.com
+///       password: pass
+///     ticket_form_id: 500
+///     custom_fields:
+///       - id: 100
+///         value: tamanu_
+///       - id: 200
+///         value: Test
+/// ```
+///
+/// ## Zendesk (anonymous)
+///
+/// ```yaml
+/// send:
+///   - type: zendesk
+///     endpoint: https://example.zendesk.com/api/v2/requests
+///     requester: Name of requester
+///     ticket_form_id: 500
+///     custom_fields:
+///       - id: 100
+///         value: tamanu_
+///       - id: 200
+///         value: Test
+/// ```
+///
+/// ## External targets
+///
+/// It can be tedious to specify and update the same addresses in many different
+/// alert files, especially for more complex send targets. You can create a
+/// `_targets.yml` file in any of the `--dir`s (if there are multiple such files
+/// they will be merged).
+///
+/// ```yaml
+/// - id: email-staff
+///   type: email
+///   addresses:
+///     - staff@job.com
+/// - id: zendesk-normal
+///   type: zendesk
+///   endpoint: https://...
+/// ```
+///
+/// The `subject` and `template` fields are omitted in the `_targets.yml`.
+///
+/// Then in the alerts file, specify `external` targets, with the relevant `id`s
+/// and the `subject` and `template`:
+///
+/// ```yaml
+/// send:
+///   - type: external
+///     id: email-staff
+///     subject: [Alert] Something is wrong
+///     template: |
+///       <h1>Whoops</h1>
+/// ```
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertsArgs {
@@ -129,7 +236,7 @@ fn enabled() -> bool {
 	true
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Default)]
 struct AlertDefinition {
 	#[serde(default, skip)]
 	file: PathBuf,
@@ -151,38 +258,116 @@ struct AlertDefinition {
 	template: Option<String>,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Default)]
 #[serde(untagged, deny_unknown_fields)]
 enum TicketSource {
-	Sql { sql: String },
-	Shell { shell: String, run: String },
+	Sql {
+		sql: String,
+	},
+	Shell {
+		shell: String,
+		run: String,
+	},
+
+	#[default]
+	None,
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "snake_case", tag = "target")]
 enum SendTarget {
 	Email {
-		addresses: Vec<String>,
 		subject: Option<String>,
 		template: String,
+		#[serde(flatten)]
+		conn: TargetEmail,
 	},
 	Zendesk {
-		endpoint: Url,
-
-		#[serde(flatten)]
-		method: ZendeskMethod,
-
 		subject: Option<String>,
-
-		ticket_form_id: Option<u64>,
-		#[serde(default)]
-		custom_fields: Vec<ZendeskCustomField>,
-
 		template: String,
+		#[serde(flatten)]
+		conn: TargetZendesk,
+	},
+	External {
+		subject: Option<String>,
+		template: String,
+		id: String,
+		#[serde(default, skip)]
+		resolved: Option<ExternalTarget>,
 	},
 }
 
+impl SendTarget {
+	fn resolve_external(&mut self, external_targets: &HashMap<String, ExternalTarget>) {
+		match self {
+			Self::External { id, resolved, .. } => {
+				if let Some(target) = external_targets.get(id) {
+					*resolved = Some(target.clone());
+				}
+			}
+			_ => {}
+		}
+	}
+}
+
 #[derive(serde::Deserialize, Debug)]
+struct AlertTargets {
+	targets: Vec<ExternalTarget>,
+}
+
+impl AlertTargets {
+	fn to_map(self) -> HashMap<String, ExternalTarget> {
+		self.targets
+			.into_iter()
+			.map(|target| (target.id().into(), target))
+			.collect()
+	}
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case", tag = "target")]
+enum ExternalTarget {
+	Email {
+		id: String,
+		#[serde(flatten)]
+		conn: TargetEmail,
+	},
+	Zendesk {
+		id: String,
+		#[serde(flatten)]
+		conn: TargetZendesk,
+	},
+}
+
+impl ExternalTarget {
+	fn id(&self) -> &str {
+		match self {
+			Self::Email { id, .. } => id,
+			Self::Zendesk { id, .. } => id,
+		}
+	}
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+struct TargetEmail {
+	addresses: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+struct TargetZendesk {
+	endpoint: Url,
+
+	#[serde(flatten)]
+	method: ZendeskMethod,
+
+	ticket_form_id: Option<u64>,
+	#[serde(default)]
+	custom_fields: Vec<ZendeskCustomField>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
 #[serde(untagged, deny_unknown_fields)]
 enum ZendeskMethod {
 	// Make credentials and requester fields exclusive as specifying the requester object in authorized
@@ -192,29 +377,35 @@ enum ZendeskMethod {
 	Anonymous { requester: String },
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Clone, Debug)]
 struct ZendeskCredentials {
 	email: String,
 	password: String,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct ZendeskCustomField {
 	id: u64,
 	value: String,
 }
 
 impl AlertDefinition {
-	fn normalise(mut self) -> Self {
+	fn normalise(mut self, external_targets: &HashMap<String, ExternalTarget>) -> Self {
 		if !self.recipients.is_empty() {
 			self.send.push(SendTarget::Email {
-				addresses: self.recipients,
 				subject: self.subject,
 				template: self.template.unwrap_or_default(),
+				conn: TargetEmail {
+					addresses: self.recipients,
+				},
 			});
 			self.recipients = vec![];
 			self.subject = None;
 			self.template = None;
+		}
+
+		for target in &mut self.send {
+			target.resolve_external(external_targets);
 		}
 
 		self
@@ -243,7 +434,17 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	debug!(?config, "parsed Tamanu config");
 
 	let mut alerts = Vec::<AlertDefinition>::new();
+	let mut external_targets = HashMap::new();
 	for dir in ctx.args_sub.dir {
+		if let Some(target) = std::fs::read_to_string(dir.join("_alerts.yml"))
+			.ok()
+			.and_then(|content| {
+				let targets: AlertTargets = serde_yml::from_str(&content).ok()?;
+				Some(targets)
+			}) {
+			external_targets.extend(target.to_map().into_iter());
+		}
+
 		alerts.extend(
 			WalkDir::new(dir)
 				.into_iter()
@@ -251,28 +452,30 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 				.filter(|e| e.file_type().is_file())
 				.map(|entry| {
 					let file = entry.path();
-					if file
+
+					if !file
 						.extension()
 						.map_or(false, |e| e == "yaml" || e == "yml")
 					{
-						debug!(?file, "parsing YAML file");
-						let content = std::fs::read_to_string(file)
-							.into_diagnostic()
-							.wrap_err(format!("{file:?}"))?;
-						let mut alert: AlertDefinition = serde_yml::from_str(&content)
-							.into_diagnostic()
-							.wrap_err(format!("{file:?}"))?;
-
-						alert.file = file.to_path_buf();
-						alert.interval = ctx.args_sub.interval.into();
-						let alert = alert.normalise();
-						debug!(?alert, "parsed alert file");
-						if alert.enabled {
-							return Ok(Some(alert));
-						}
+						return Ok(None);
 					}
 
-					Ok(None)
+					if file.file_stem().map_or(false, |n| n == "_targets") {
+						return Ok(None);
+					}
+
+					debug!(?file, "parsing YAML file");
+					let content = std::fs::read_to_string(file)
+						.into_diagnostic()
+						.wrap_err(format!("{file:?}"))?;
+					let mut alert: AlertDefinition = serde_yml::from_str(&content)
+						.into_diagnostic()
+						.wrap_err(format!("{file:?}"))?;
+
+					alert.file = file.to_path_buf();
+					alert.interval = ctx.args_sub.interval.into();
+					debug!(?alert, "parsed alert file");
+					Ok(if alert.enabled { Some(alert) } else { None })
 				})
 				.filter_map(|def: Result<Option<AlertDefinition>>| match def {
 					Err(err) => {
@@ -287,6 +490,9 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	if alerts.is_empty() {
 		info!("no alerts found, doing nothing");
 		return Ok(());
+	}
+	for alert in &mut alerts {
+		*alert = std::mem::take(alert).normalise(&external_targets);
 	}
 	debug!(count=%alerts.len(), "found some alerts");
 
@@ -320,7 +526,6 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		http_client: reqwest::Client::new(),
 	};
 
-	// TODO: convert to join!
 	for alert in alerts {
 		if let Err(err) =
 			execute_alert(&internal_ctx, &config.mailgun, &alert, ctx.args_sub.dry_run)
@@ -344,6 +549,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 		}
 		| SendTarget::Zendesk {
 			subject, template, ..
+		}
+		| SendTarget::External {
+			subject, template, ..
 		} => {
 			tera.add_raw_template(
 				"subject",
@@ -356,8 +564,24 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 				.wrap_err("compiling email template")?;
 		}
 	}
+
 	if let SendTarget::Zendesk {
-		method: ZendeskMethod::Anonymous { requester },
+		conn: TargetZendesk {
+			method: ZendeskMethod::Anonymous { requester },
+			..
+		},
+		..
+	}
+	| SendTarget::External {
+		resolved:
+			Some(ExternalTarget::Zendesk {
+				conn:
+					TargetZendesk {
+						method: ZendeskMethod::Anonymous { requester },
+						..
+					},
+				..
+			}),
 		..
 	} = target
 	{
@@ -399,6 +623,10 @@ async fn read_sources(
 	context: &mut TeraCtx,
 ) -> Result<ControlFlow<(), ()>> {
 	match &alert.source {
+		TicketSource::None => {
+			debug!(?alert.file, "no source, skipping");
+			return Ok(ControlFlow::Break(()));
+		}
 		TicketSource::Sql { sql } => {
 			let statement = client.prepare(sql).await.into_diagnostic()?;
 
@@ -509,8 +737,20 @@ async fn execute_alert(
 	for target in &alert.send {
 		let tera = load_templates(target)?;
 		let (subject, body, requester) = render_alert(&tera, &mut tera_ctx)?;
+
 		match target {
-			SendTarget::Email { addresses, .. } => {
+			SendTarget::Email {
+				conn: TargetEmail { addresses },
+				..
+			}
+			| SendTarget::External {
+				resolved:
+					Some(ExternalTarget::Email {
+						conn: TargetEmail { addresses },
+						..
+					}),
+				..
+			} => {
 				if dry_run {
 					println!("-------------------------------");
 					println!("Alert: {}", alert.file.display());
@@ -541,11 +781,29 @@ async fn execute_alert(
 					.into_diagnostic()
 					.wrap_err("sending email")?;
 			}
+
 			SendTarget::Zendesk {
-				endpoint,
-				method,
-				ticket_form_id,
-				custom_fields,
+				conn:
+					TargetZendesk {
+						endpoint,
+						method,
+						ticket_form_id,
+						custom_fields,
+					},
+				..
+			}
+			| SendTarget::External {
+				resolved:
+					Some(ExternalTarget::Zendesk {
+						conn:
+							TargetZendesk {
+								endpoint,
+								method,
+								ticket_form_id,
+								custom_fields,
+							},
+						..
+					}),
 				..
 			} => {
 				if dry_run {
@@ -583,6 +841,12 @@ async fn execute_alert(
 					.into_diagnostic()
 					.wrap_err("creating Zendesk ticket")?;
 				debug!(resp_text = ?resp.text().await.into_diagnostic()?, "Zendesk ticket sent");
+			}
+
+			SendTarget::External {
+				resolved: None, id, ..
+			} => {
+				error!(?id, "external send target not found");
 			}
 		}
 	}
@@ -662,7 +926,7 @@ send:
     <p>There are {{ rows | length }} rows.</p>
 "#;
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
-		let alert = alert.normalise();
+		let alert = alert.normalise(&Default::default());
 		assert_eq!(alert.interval, std::time::Duration::default());
 		assert!(
 			matches!(alert.source, TicketSource::Sql { sql } if sql == "SELECT $1::timestamptz;")
@@ -677,7 +941,7 @@ shell: bash
 run: echo foobar
 "#;
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
-		let alert = alert.normalise();
+		let alert = alert.normalise(&Default::default());
 		assert_eq!(alert.interval, std::time::Duration::default());
 		assert!(
 			matches!(alert.source, TicketSource::Shell { shell, run } if shell == "bash" && run == "echo foobar")
@@ -791,7 +1055,7 @@ template: |
   <p>There are {{ rows | length }} rows.</p>
 "#;
 		let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
-		let alert = alert.normalise();
+		let alert = alert.normalise(&Default::default());
 		assert_eq!(alert.interval, std::time::Duration::default());
 		assert!(matches!(alert.send[0], SendTarget::Email { .. }));
 	}
