@@ -12,14 +12,23 @@ fn long_version() -> String {
 
 #[cfg(not(docsrs))]
 fn long_version() -> String {
-	format!(
-		"{} built from branch={} commit={} dirty={} source_timestamp={}",
-		env!("CARGO_PKG_VERSION"),
-		env!("GIT_BRANCH"),
-		env!("GIT_COMMIT"),
-		env!("GIT_DIRTY"),
-		env!("SOURCE_TIMESTAMP"),
-	)
+	if let (Some(branch), Some(commit), Some(dirty)) = (
+		option_env!("GIT_BRANCH"),
+		option_env!("GIT_COMMIT"),
+		option_env!("GIT_DIRTY"),
+	) {
+		format!(
+			"{} built from branch={branch} commit={commit} dirty={dirty} source_timestamp={}",
+			env!("CARGO_PKG_VERSION"),
+			env!("SOURCE_TIMESTAMP"),
+		)
+	} else {
+		format!(
+			"{} built from crate source_timestamp={}",
+			env!("CARGO_PKG_VERSION"),
+			env!("SOURCE_TIMESTAMP"),
+		)
+	}
 }
 
 /// BES Tooling
