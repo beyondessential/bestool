@@ -89,8 +89,8 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// The SQL query will be passed exactly the number of parameters it expects.
 /// The parameters are always provided in this order:
 ///
-/// $1: the datetime of the start of the interval (timestamp with time zone)
-/// $2: the interval duration (interval)
+/// - `$1`: the datetime of the start of the interval (timestamp with time zone)
+/// - `$2`: the interval duration (interval)
 ///
 /// ## Shell
 ///
