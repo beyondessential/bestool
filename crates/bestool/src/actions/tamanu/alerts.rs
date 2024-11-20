@@ -59,6 +59,8 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// # Template variables
 ///
+/// Templates are rendered with [Tera](https://keats.github.io/tera/docs/#templates).
+///
 /// - `rows`: the result of the SQL query, as a list of objects (if source = sql)
 /// - `output`: the result of the shell command (if source = shell)
 /// - `interval`: the duration string of the alert interval
