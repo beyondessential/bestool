@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.18.2](https://github.com/beyondessential/bestool/compare/v0.18.1..0.18.2) - 2024-11-20
+## [0.18.3](https://github.com/beyondessential/bestool/compare/v0.18.2..0.18.3) - 2024-11-20
+
+
+- **Bugfix:** Ability to build with cargo install - ([d4b4a21](https://github.com/beyondessential/bestool/commit/d4b4a21e54595f6cd6451d08faf68c4765719c48))
+- **Deps:** Update fs4 requirement from 0.10.0 to 0.11.1 in /crates/bestool (#143) - ([525da60](https://github.com/beyondessential/bestool/commit/525da60eb62f40531bd76637ba19370511a0b742))
+- **Deps:** Bump serde_json from 1.0.132 to 1.0.133 (#147) - ([0b10aae](https://github.com/beyondessential/bestool/commit/0b10aaec856f00d5827f1f7801c7d0e2937e91eb))
+- **Deps:** Bump clap_complete from 4.5.33 to 4.5.38 (#145) - ([7387b4b](https://github.com/beyondessential/bestool/commit/7387b4b0ab9754d04760ba1599d5a232ec62906d))
+- **Deps:** Bump serde from 1.0.210 to 1.0.215 (#146) - ([e6aea17](https://github.com/beyondessential/bestool/commit/e6aea176ff4e53296008596030af34d78b7d2479))
+- **Deps:** Update rppal requirement from 0.18.0 to 0.19.0 in /crates/bestool (#117) - ([15111c9](https://github.com/beyondessential/bestool/commit/15111c97f4bd4951a8715ad17ddc6cbcb0f87930))
+- **Documentation:** Fix paragraph - ([13708c5](https://github.com/beyondessential/bestool/commit/13708c546aa99a4384fb930a5ec9cd3d14944137))
+
+---
+## [0.18.2](https://github.com/beyondessential/bestool/compare/v0.18.1..v0.18.2) - 2024-11-20
 
 
 - **Deps:** Bump binstalk-downloader from 0.13.1 to 0.13.4 (#142) - ([2509e0b](https://github.com/beyondessential/bestool/commit/2509e0bf080dd6aba7944032e8d67f21cb8ef267))
