@@ -668,7 +668,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.8",
  "rpi-st7789v2-driver",
- "rppal",
+ "rppal 0.19.0",
  "rust-fontconfig",
  "serde",
  "serde_json",
@@ -3926,7 +3926,7 @@ dependencies = [
  "embedded-graphics",
  "itertools 0.13.0",
  "miette 7.2.0",
- "rppal",
+ "rppal 0.18.0",
  "thiserror 1.0.64",
  "tracing",
 ]
@@ -3936,6 +3936,15 @@ name = "rppal"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae44db779bd0898047804d22b662a9dc533b142c077b3f7e36003f658835c5b9"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "rppal"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b37e992f3222e304708025de77c9e395068a347449d0d7164f52d3beccdbd8d"
 dependencies = [
  "libc",
 ]
