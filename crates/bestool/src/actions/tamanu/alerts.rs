@@ -38,8 +38,6 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// # Example
 ///
 /// ```yaml
-/// enabled: true
-///
 /// sql: |
 ///  SELECT * FROM fhir.jobs
 ///  WHERE error IS NOT NULL
@@ -193,7 +191,9 @@ pub struct AlertsArgs {
 	/// This folder will be read recursively for files with the `.yaml` or `.yml` extension.
 	///
 	/// Files that don't match the expected format will be skipped, as will files with
-	/// `enabled: false`.
+	/// `enabled: false` at the top level. Syntax errors will be reported for YAML files.
+	///
+	/// It's entirely valid to provide a folder that only contains a `_targets.yml` file.
 	///
 	/// Can be provided multiple times.
 	#[arg(long)]
@@ -206,7 +206,7 @@ pub struct AlertsArgs {
 	#[arg(long)]
 	pub interval: humantime::Duration,
 
-	/// Don't actually send emails, just print them to stdout.
+	/// Don't actually send alerts, just print them to stdout.
 	#[arg(long)]
 	pub dry_run: bool,
 }
