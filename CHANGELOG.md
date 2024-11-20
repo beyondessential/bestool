@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.18.1](https://github.com/beyondessential/bestool/compare/v0.18.0..0.18.1) - 2024-11-20
+## [0.18.2](https://github.com/beyondessential/bestool/compare/v0.18.1..0.18.2) - 2024-11-20
+
+
+- **Deps:** Bump binstalk-downloader from 0.13.1 to 0.13.4 (#142) - ([2509e0b](https://github.com/beyondessential/bestool/commit/2509e0bf080dd6aba7944032e8d67f21cb8ef267))
+
+### Self-update
+
+- **Feature:** Add ourselves to PATH on windows with -P - ([02e234a](https://github.com/beyondessential/bestool/commit/02e234aaf7c370eb5598d53f70c1090e8d7aa7bf))
+
+---
+## [0.18.1](https://github.com/beyondessential/bestool/compare/v0.18.0..v0.18.1) - 2024-11-20
 
 
 - **Documentation:** Add flags/commands to docsrs output - ([e290a67](https://github.com/beyondessential/bestool/commit/e290a67bd06ccb20ec9ee6c605ca252a61ee9437))
