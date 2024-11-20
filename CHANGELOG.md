@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.18.3](https://github.com/beyondessential/bestool/compare/v0.18.2..0.18.3) - 2024-11-20
+## [0.18.4](https://github.com/beyondessential/bestool/compare/v0.18.3..0.18.4) - 2024-11-20
+
+
+- **Bugfix:** Just remove the git build info - ([5e25ffe](https://github.com/beyondessential/bestool/commit/5e25ffe2bfd573ffda88c4a940b791620a21ae58))
+
+---
+## [0.18.3](https://github.com/beyondessential/bestool/compare/v0.18.2..v0.18.3) - 2024-11-20
 
 
 - **Bugfix:** Ability to build with cargo install - ([d4b4a21](https://github.com/beyondessential/bestool/commit/d4b4a21e54595f6cd6451d08faf68c4765719c48))
