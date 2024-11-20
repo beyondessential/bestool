@@ -9,25 +9,31 @@ use crate::actions::Context;
 use super::{find_tamanu, TamanuArgs};
 
 /// Find and print the current Tamanu config.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigArgs {
 	/// Package to look at
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-p, --package central|facility`"))]
 	#[arg(short, long)]
 	pub package: String,
 
 	/// Print compact JSON instead of pretty
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-c, --compact`"))]
 	#[arg(short, long)]
 	pub compact: bool,
 
 	/// Print null if key not found
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-n, --or-null`"))]
 	#[arg(short = 'n', long)]
 	pub or_null: bool,
 
 	/// Path to a subkey
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key`"))]
 	#[arg(short, long)]
 	pub key: Option<String>,
 
 	/// If the value is a string, print it directly (without quotes)
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-r, --raw`"))]
 	#[arg(short, long)]
 	pub raw: bool,
 }

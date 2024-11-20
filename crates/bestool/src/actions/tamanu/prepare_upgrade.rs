@@ -27,9 +27,11 @@ pub const UPGRADED_SIGNAL_NAME: &str = ".bestool_preupgraded";
 /// This command will detect which server is installed (Facility or Central) and which version is
 /// currently running, then download the desired newer version, unpack it, copy config across,
 /// install dependencies, and perform readiness checks.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu prepare-upgrade`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct PrepareUpgradeArgs {
 	/// Version to update to.
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: `VERSION`"))]
 	#[arg(value_name = "VERSION")]
 	pub version: Version,
 
@@ -39,10 +41,12 @@ pub struct PrepareUpgradeArgs {
 	///
 	/// If both central and facility servers are present, it will error and you'll have to specify
 	/// this option.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --kind central|facility`"))]
 	#[arg(short, long)]
 	pub kind: Option<ApiServerKind>,
 
 	/// Force installing older Tamanu
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--force-downgrade`"))]
 	#[arg(long)]
 	pub force_downgrade: bool,
 }

@@ -26,39 +26,48 @@ pub const DEFAULT_CADDYFILE_PATH: &str = if cfg!(windows) {
 };
 
 /// Configure Caddy for a Tamanu installation.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool caddy configure-tamanu`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigureTamanuArgs {
 	/// Path to the Caddyfile.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--path PATH`"))]
 	#[arg(long, default_value = DEFAULT_CADDYFILE_PATH)]
 	pub path: PathBuf,
 
 	/// Print the Caddyfile, don't write it to disk.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--print`"))]
 	#[arg(long)]
 	pub print: bool,
 
 	/// Tamanu domain name.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--domain DOMAIN`"))]
 	#[arg(long, value_name = "DOMAIN")]
 	pub domain: String,
 
 	/// Tamanu API server port.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--api-port PORT`"))]
 	#[arg(long, value_name = "PORT")]
 	pub api_port: NonZeroU16,
 
 	/// Tamanu server version to configure.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--api-version VERSION`"))]
 	#[arg(long, value_name = "VERSION")]
 	pub api_version: String,
 
 	/// Tamanu frontend version to configure.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--web-version VERSION`"))]
 	#[arg(long, value_name = "VERSION")]
 	pub web_version: String,
 
 	/// Email for TLS issuance.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--email EMAIL`"))]
 	#[arg(long)]
 	pub email: Option<String>,
 
 	/// ZeroSSL API Key.
 	///
 	/// If not provided, ZeroSSL will still be used as per default Caddy config, but rate limited.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--zerossl-api-key KEY`"))]
 	#[arg(long)]
 	pub zerossl_api_key: Option<String>,
 }

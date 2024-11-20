@@ -12,6 +12,7 @@ use crate::actions::{tamanu::find_postgres_bin, Context};
 use super::{config::load_config, find_package, find_tamanu, ApiServerKind, TamanuArgs};
 
 /// Generate a Greenmask config file.
+#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu greenmask-config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct GreenmaskConfigArgs {
 	/// Package to load config from.
@@ -19,6 +20,7 @@ pub struct GreenmaskConfigArgs {
 	/// By default, this command looks for the most recent installed version of Tamanu and tries to
 	/// look for an appropriate config. If both central and facility servers are present and
 	/// configured, it will pick one arbitrarily.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--kind central|facility`"))]
 	#[arg(long)]
 	pub kind: Option<ApiServerKind>,
 
@@ -28,6 +30,7 @@ pub struct GreenmaskConfigArgs {
 	///
 	/// By default, it will look in the `greenmask/config` folder in the Tamanu root, and the
 	/// `greenmask` folder in the Tamanu release folder. Non-existant folders are ignored.
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	#[arg(value_hint = ValueHint::DirPath)]
 	pub folders: Vec<PathBuf>,
 
@@ -36,6 +39,7 @@ pub struct GreenmaskConfigArgs {
 	/// By default, this is the `greenmask/dumps` folder in the Tamanu root.
 	///
 	/// If the folder does not exist, it will be created.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--storage-dir PATH`"))]
 	#[arg(long, value_hint = ValueHint::DirPath)]
 	pub storage_dir: Option<PathBuf>,
 }
