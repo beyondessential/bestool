@@ -16,7 +16,6 @@ use tracing::{debug, instrument, trace};
 
 /// Absolute minimum chunk size: 100 kB
 ///
-/// Also see [`crate::aws::MINIMUM_MULTIPART_PART_SIZE`].
 // SAFETY: hardcoded
 pub const MIN_CHUNK_SIZE: NonZeroU64 = unsafe { NonZeroU64::new_unchecked(100 * 1024) };
 
