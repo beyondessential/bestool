@@ -436,11 +436,12 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
 	for dir in ctx.args_sub.dir {
-		if let Some(target) = std::fs::read_to_string(dir.join("_alerts.yml"))
+		let external_targets_path = dir.join("_targets.yml");
+		if let Some(target) = std::fs::read_to_string(&external_targets_path)
 			.ok()
 			.and_then(|content| {
-				let targets: AlertTargets = serde_yml::from_str(&content).ok()?;
-				Some(targets)
+				debug!(path=?external_targets_path, "parsing external targets");
+				serde_yml::from_str::<AlertTargets>(&content).ok()
 			}) {
 			external_targets.extend(target.to_map().into_iter());
 		}
@@ -491,6 +492,11 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		info!("no alerts found, doing nothing");
 		return Ok(());
 	}
+
+	if !external_targets.is_empty() {
+		debug!(count=%external_targets.len(), "found some external targets");
+	}
+
 	for alert in &mut alerts {
 		*alert = std::mem::take(alert).normalise(&external_targets);
 	}
