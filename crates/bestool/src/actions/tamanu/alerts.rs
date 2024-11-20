@@ -115,7 +115,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// send:
-///   - type: email
+///   - target: email
 ///     addresses:
 ///       - staff@job.com
 ///       - support@job.com
@@ -125,7 +125,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// send:
-///   - type: zendesk
+///   - target: zendesk
 ///     endpoint: https://example.zendesk.com/api/v2/requests
 ///     credentials:
 ///       email: foo@example.com
@@ -142,7 +142,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// send:
-///   - type: zendesk
+///   - target: zendesk
 ///     endpoint: https://example.zendesk.com/api/v2/requests
 ///     requester: Name of requester
 ///     ticket_form_id: 500
@@ -162,11 +162,11 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// - id: email-staff
-///   type: email
+///   target: email
 ///   addresses:
 ///     - staff@job.com
 /// - id: zendesk-normal
-///   type: zendesk
+///   target: zendesk
 ///   endpoint: https://...
 /// ```
 ///
@@ -177,7 +177,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///
 /// ```yaml
 /// send:
-///   - type: external
+///   - target: external
 ///     id: email-staff
 ///     subject: [Alert] Something is wrong
 ///     template: |
