@@ -4,6 +4,7 @@ use clap::{ArgAction, Parser, ValueEnum, ValueHint};
 use miette::{bail, Result};
 use tracing::{debug, warn};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard, rolling};
+use tracing_subscriber::EnvFilter;
 
 /// BES Tooling
 #[derive(Debug, Clone, Parser)]
@@ -77,19 +78,18 @@ pub enum ColourMode {
 	Never,
 }
 
-pub fn get_args() -> Result<(Args, Option<WorkerGuard>)> {
-	let prearg_logs = logging_preargs();
-	if prearg_logs {
+pub fn get_args() -> Result<(Args, WorkerGuard)> {
+	let prearg_log_guard = logging_preargs();
+	if prearg_log_guard.is_some() {
 		warn!("⚠ RUST_LOG environment variable set or hardcoded, logging options have no effect");
 	}
 
 	debug!("parsing arguments");
 	let mut args = Args::parse();
 
-	let log_guard = if !prearg_logs {
-		Some(logging_postargs(&args)?)
-	} else {
-		None
+	let log_guard = match prearg_log_guard {
+		Some(g) => g,
+		None => logging_postargs(&args)?,
 	};
 
 	// https://no-color.org/
@@ -105,20 +105,36 @@ pub fn get_args() -> Result<(Args, Option<WorkerGuard>)> {
 	Ok((args, log_guard))
 }
 
-pub fn logging_preargs() -> bool {
-	let mut log_on = false;
-
-	if !log_on && var("RUST_LOG").is_ok() {
-		match tracing_subscriber::fmt::try_init() {
-			Ok(()) => {
-				warn!(RUST_LOG=%var("RUST_LOG").unwrap(), "logging configured from RUST_LOG");
-				log_on = true;
-			}
-			Err(e) => eprintln!("Failed to initialise logging with RUST_LOG, falling back\n{e}"),
-		}
+pub fn logging_preargs() -> Option<WorkerGuard> {
+	if var("RUST_LOG").is_err() {
+		return None;
 	}
 
-	log_on
+	let (writer, guard) = non_blocking(stderr());
+
+	let builder = if cfg!(debug_assertions) && var("BESTOOL_TIMELESS").is_ok() {
+		tracing_subscriber::fmt()
+			.with_env_filter(EnvFilter::from_default_env())
+			.with_writer(writer)
+			.without_time()
+			.try_init()
+	} else {
+		tracing_subscriber::fmt()
+			.with_env_filter(EnvFilter::from_default_env())
+			.with_writer(writer)
+			.try_init()
+	};
+
+	match builder {
+		Ok(()) => {
+			warn!(RUST_LOG=%var("RUST_LOG").unwrap(), "logging configured from RUST_LOG");
+			Some(guard)
+		}
+		Err(e) => {
+			eprintln!("Failed to initialise logging with RUST_LOG, falling back\n{e}");
+			None
+		}
+	}
 }
 
 pub fn logging_postargs(args: &Args) -> Result<WorkerGuard> {
