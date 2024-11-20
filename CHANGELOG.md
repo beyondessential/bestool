@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.18.0](https://github.com/beyondessential/bestool/compare/v0.17.0..0.18.0) - 2024-11-20
+## [0.18.1](https://github.com/beyondessential/bestool/compare/v0.18.0..0.18.1) - 2024-11-20
+
+
+- **Documentation:** Add flags/commands to docsrs output - ([e290a67](https://github.com/beyondessential/bestool/commit/e290a67bd06ccb20ec9ee6c605ca252a61ee9437))
+- **Documentation:** Add docs.rs-only annotations for ease of use - ([014e036](https://github.com/beyondessential/bestool/commit/014e0366e8fb94f9491dba4ba4e52397c195833c))
+
+---
+## [0.18.0](https://github.com/beyondessential/bestool/compare/v0.17.0..v0.18.0) - 2024-11-20
 
 
 - **Deps:** Bump fs4 from 0.9.1 to 0.10.0 (#136) - ([fe8fdac](https://github.com/beyondessential/bestool/commit/fe8fdacc14c2fc13cb60711dbf978fa57bc76d34))
