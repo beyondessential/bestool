@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.17.0](https://github.com/beyondessential/bestool/compare/v0.16.3..0.17.0) - 2024-10-24
+## [0.18.0](https://github.com/beyondessential/bestool/compare/v0.17.0..0.18.0) - 2024-11-20
+
+
+- **Deps:** Bump fs4 from 0.9.1 to 0.10.0 (#136) - ([fe8fdac](https://github.com/beyondessential/bestool/commit/fe8fdacc14c2fc13cb60711dbf978fa57bc76d34))
+- **Deps:** Bump serde_yml from 0.0.11 to 0.0.12 (#135) - ([1d26c90](https://github.com/beyondessential/bestool/commit/1d26c90203a22b54aeb0e7959050ee255c91d036))
+- **Documentation:** Remove obsolete link - ([6170256](https://github.com/beyondessential/bestool/commit/6170256a98e6b0fce60b845fd9d104e234acac64))
+
+### Alerts
+
+- **Bugfix:** Show errors for alerts parsing - ([e6e5202](https://github.com/beyondessential/bestool/commit/e6e5202c43b23ef5b9609db78ed99e8fc6c26df4))
+- **Documentation:** Fix send target syntax - ([b0b8044](https://github.com/beyondessential/bestool/commit/b0b804459623dc33e728da0d22ca1299a3c2ed25))
+- **Documentation:** Add link to tera - ([0d392d4](https://github.com/beyondessential/bestool/commit/0d392d44810ee9abcc1e2094d58389dac15a77ec))
+- **Documentation:** Don't imply that enabled:true is required - ([6c43663](https://github.com/beyondessential/bestool/commit/6c4366376d956f624eba2900722a628e51c6ae22))
+- **Feature:** Add external targets and docs - ([31e90d1](https://github.com/beyondessential/bestool/commit/31e90d160d6974d9d4034e058fb1759b411c187e))
+- **Style:** More debugging - ([7048ee0](https://github.com/beyondessential/bestool/commit/7048ee056c1a61b312ab00a67505445b35f5259f))
+
+### Tamanu
+
+- **Feature:** Add postgres backup tool (#137) - ([667171f](https://github.com/beyondessential/bestool/commit/667171fdbc01b0933494167a8b2a7734ee15f752))
+
+---
+## [0.17.0](https://github.com/beyondessential/bestool/compare/v0.16.3..v0.17.0) - 2024-10-24
 
 
 
