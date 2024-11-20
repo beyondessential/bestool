@@ -698,6 +698,7 @@ dependencies = [
  "walkdir",
  "windows 0.58.0",
  "windows-acl",
+ "windows-env",
  "windows_exe_info",
  "zmq",
 ]
@@ -5305,6 +5306,16 @@ dependencies = [
  "windows-result 0.2.0",
  "windows-strings",
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-env"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd788f0222c1cfc5d41163b577f0b285150c3148011c773330ac4b81f17bee7f"
+dependencies = [
+ "windows 0.58.0",
+ "winreg 0.52.0",
 ]
 
 [[package]]
