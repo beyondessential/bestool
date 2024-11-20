@@ -34,6 +34,11 @@ pub struct SelfUpdateArgs {
 	/// Defaults to the system temp directory.
 	#[arg(long)]
 	pub temp_dir: Option<PathBuf>,
+
+	/// Add to the PATH (only on Windows).
+	#[cfg(windows)]
+	#[arg(short = 'P', long)]
+	pub add_to_path: bool,
 }
 
 pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
@@ -41,6 +46,8 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		version,
 		target,
 		temp_dir,
+		#[cfg(windows)]
+		add_to_path,
 	} = ctx.args_top;
 
 	let client = Client::new(
@@ -63,12 +70,11 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 	let dest = dir.join(&filename);
 
 	let url = format!(
-		"https://tools.ops.tamanu.io/bestool/{version}/{target}/{filename}?bust={date}",
+		"https://tools.ops.tamanu.io/bestool/{version}/{target}/{filename}",
 		target = detected_targets
 			.first()
 			.cloned()
 			.unwrap_or_else(|| TARGET.into()),
-		date = chrono::Utc::now(),
 	);
 	info!(url = %url, "downloading");
 
@@ -77,8 +83,26 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()?;
 
+	#[cfg(windows)]
+	if add_to_path {
+		if let Err(err) = add_self_to_path() {
+			tracing::error!("{err:?}");
+		}
+	}
+
 	info!(?dest, "downloaded, self-upgrading");
 	upgrade::run_upgrade(&dest, true, &vec!["--version"])
 		.map_err(|err| miette!("upgrade: {err:?}"))?;
+	Ok(())
+}
+
+#[cfg(windows)]
+fn add_self_to_path() -> Result<()> {
+	let self_path = std::env::current_exe().into_diagnostic()?;
+	let self_dir = self_path.parent().ok_or_else(|| miette!("current exe is not in a dir?"))?;
+	let self_dir = self_dir.to_str().ok_or_else(|| miette!("current exe path is not utf-8"))?;
+
+	windows_env::prepend("PATH", self_dir).into_diagnostic()?;
+
 	Ok(())
 }
