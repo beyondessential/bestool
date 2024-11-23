@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic, Result};
 use tracing::info;
@@ -8,6 +10,15 @@ use super::{
 	config::{merge_json, package_config},
 	find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
 };
+
+const PSQLRC: &str = r"
+\set HISTFILE ~/.psql_history
+\set HISTSIZE -1
+";
+
+const PSQLRC_RO: &str = r"
+SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;
+";
 
 /// Connect to Tamanu's db via `psql`.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
@@ -28,6 +39,14 @@ pub struct PsqlArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-u, -U, --username STRING`"))]
 	#[arg(short, long, alias = "U")]
 	pub username: Option<String>,
+
+	/// Force read-only mode for this psql.
+	///
+	/// This sets `TRANSACTION READ ONLY` for the session, so can be disabled at runtime. If you
+	/// want to use a stronger read-only mode, use `-U` to select a restricted user.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-r, --read-only`"))]
+	#[arg(short, long)]
+	pub read_only: bool,
 }
 
 /// The Tamanu config only describing the part `psql` needs
@@ -76,11 +95,23 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
 	}
 
+	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
+	write!(
+		rc.as_file_mut(),
+		"{PSQLRC}\n{}",
+		if ctx.args_sub.read_only {
+			PSQLRC_RO
+		} else {
+			""
+		}
+	)
+	.into_diagnostic()?;
+
 	let psql_path = find_postgres_bin("psql")?;
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
-	duct::cmd!(psql_path, "--dbname", name, "--username", username,)
+	duct::cmd!(psql_path, "--dbname", name, "--username", username)
+		.env("PSQLRC", rc.path())
 		.env("PGPASSWORD", password)
-		.env("PSQL_HISTORY", root.with_file_name("psql.history"))
 		.run()
 		.into_diagnostic()
 		.wrap_err("failed to execute psql")?;
