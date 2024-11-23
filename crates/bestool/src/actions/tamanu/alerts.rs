@@ -1,5 +1,6 @@
 use std::{
-	collections::HashMap, error::Error, ops::ControlFlow, path::PathBuf, process, time::Duration,
+	collections::HashMap, error::Error, io::Write, ops::ControlFlow, path::PathBuf, process,
+	time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
@@ -662,13 +663,17 @@ async fn read_sources(
 			context.insert("rows", &context_rows);
 		}
 		TicketSource::Shell { shell, run } => {
-			let mut shell = tokio::process::Command::new(shell)
-				.arg("-c") // "-c" for "command" is in the POSIX standard and well supported incl. PowerShell 7.
-				.arg(run)
-				.stdin(process::Stdio::null())
-				.stdout(process::Stdio::piped())
-				.spawn()
-				.into_diagnostic()?;
+			let mut shell = {
+				let mut script = tempfile::Builder::new().tempfile().into_diagnostic()?;
+				write!(script.as_file_mut(), "{run}").into_diagnostic()?;
+
+				tokio::process::Command::new(shell)
+					.arg(script.path())
+					.stdin(process::Stdio::null())
+					.stdout(process::Stdio::piped())
+					.spawn()
+					.into_diagnostic()?
+			};
 
 			let mut output = Vec::new();
 			let mut stdout = shell
