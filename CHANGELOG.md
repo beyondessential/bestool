@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.18.4](https://github.com/beyondessential/bestool/compare/v0.18.3..0.18.4) - 2024-11-20
+## [0.19.0](https://github.com/beyondessential/bestool/compare/v0.18.4..0.19.0) - 2024-11-23
+
+
+
+### Alerts
+
+- **Tweak:** Run scripts as files instead of args - ([d5f463c](https://github.com/beyondessential/bestool/commit/d5f463cfa72a2df09c5e323a6aef40562b9fb42e))
+
+### Psql
+
+- **Feature:** Add read-only mode - ([7150d93](https://github.com/beyondessential/bestool/commit/7150d93fdcd4439fe966c2231e689ac1281b0e13))
+
+---
+## [0.18.4](https://github.com/beyondessential/bestool/compare/v0.18.3..v0.18.4) - 2024-11-20
 
 
 - **Bugfix:** Just remove the git build info - ([5e25ffe](https://github.com/beyondessential/bestool/commit/5e25ffe2bfd573ffda88c4a940b791620a21ae58))
