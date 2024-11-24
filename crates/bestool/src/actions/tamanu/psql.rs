@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, str::FromStr};
 
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic, Result};
@@ -10,15 +10,6 @@ use super::{
 	config::{merge_json, package_config},
 	find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
 };
-
-const PSQLRC: &str = r"
-\set HISTFILE ~/.psql_history
-\set HISTSIZE -1
-";
-
-const PSQLRC_RO: &str = r"
-SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;
-";
 
 /// Connect to Tamanu's db via `psql`.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
@@ -37,16 +28,17 @@ pub struct PsqlArgs {
 	///
 	/// This may prompt for a password depending on your local settings and pg_hba config.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-u, -U, --username STRING`"))]
-	#[arg(short, long, alias = "U")]
+	#[arg(short = 'U', long, alias = "u")]
 	pub username: Option<String>,
 
-	/// Force read-only mode for this psql.
+	/// Enable write mode for this psql.
 	///
-	/// This sets `TRANSACTION READ ONLY` for the session, so can be disabled at runtime. If you
-	/// want to use a stronger read-only mode, use `-U` to select a restricted user.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-r, --read-only`"))]
-	#[arg(short, long)]
-	pub read_only: bool,
+	/// By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable
+	/// writes, either pass this flag, or call `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;`
+	/// within the session.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-W, --write`"))]
+	#[arg(short = 'W', long)]
+	pub write: bool,
 }
 
 /// The Tamanu config only describing the part `psql` needs
@@ -95,19 +87,31 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
 	}
 
+	let psql_path = find_postgres_bin("psql")?;
+	let version = String::from_utf8(
+		duct::cmd!(&psql_path, "--version")
+			.stdout_capture()
+			.run()
+			.into_diagnostic()?
+			.stdout,
+	)
+	.into_diagnostic()?
+	.split(|c: char| c.is_whitespace() || c == '.')
+	.find_map(|word| u8::from_str(word).ok())
+	.unwrap_or(12); // 12 is the lowest version we can encounter
+
 	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
 	write!(
 		rc.as_file_mut(),
-		"{PSQLRC}\n{}",
-		if ctx.args_sub.read_only {
-			PSQLRC_RO
-		} else {
+		"{ro}",
+		ro = if ctx.args_sub.write {
 			""
-		}
+		} else {
+			"SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;"
+		},
 	)
 	.into_diagnostic()?;
 
-	let psql_path = find_postgres_bin("psql")?;
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	duct::cmd!(psql_path, "--dbname", name, "--username", username)
 		.env("PSQLRC", rc.path())
