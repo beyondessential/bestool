@@ -1,4 +1,4 @@
-use std::{io::Write, str::FromStr};
+use std::io::Write;
 
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic, Result};
@@ -87,19 +87,6 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
 	}
 
-	let psql_path = find_postgres_bin("psql")?;
-	let version = String::from_utf8(
-		duct::cmd!(&psql_path, "--version")
-			.stdout_capture()
-			.run()
-			.into_diagnostic()?
-			.stdout,
-	)
-	.into_diagnostic()?
-	.split(|c: char| c.is_whitespace() || c == '.')
-	.find_map(|word| u8::from_str(word).ok())
-	.unwrap_or(12); // 12 is the lowest version we can encounter
-
 	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
 	write!(
 		rc.as_file_mut(),
@@ -111,6 +98,8 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		},
 	)
 	.into_diagnostic()?;
+
+	let psql_path = find_postgres_bin("psql")?;
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	duct::cmd!(psql_path, "--dbname", name, "--username", username)
