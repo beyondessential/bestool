@@ -2,6 +2,7 @@ use std::{
 	ffi::OsString,
 	fs,
 	path::{Path, PathBuf},
+	str::FromStr,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -162,4 +163,20 @@ fn find_postgres_bin(name: &str) -> Result<OsString> {
 		.iter()
 		.collect::<PathBuf>()
 		.into())
+}
+
+#[cfg(feature = "tamanu-pg-common")]
+#[expect(dead_code, reason = "unused for now")]
+pub fn find_postgres_version() -> Result<u8> {
+	Ok(String::from_utf8(
+		duct::cmd!(find_postgres_bin("psql")?, "--version")
+			.stdout_capture()
+			.run()
+			.into_diagnostic()?
+			.stdout,
+	)
+	.into_diagnostic()?
+	.split(|c: char| c.is_whitespace() || c == '.')
+	.find_map(|word| u8::from_str(word).ok())
+	.unwrap_or(12)) // 12 is the lowest version we can encounter
 }
