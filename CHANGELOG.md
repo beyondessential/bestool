@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.19.0](https://github.com/beyondessential/bestool/compare/v0.18.4..0.19.0) - 2024-11-23
+## [0.20.0](https://github.com/beyondessential/bestool/compare/v0.19.0..0.20.0) - 2024-11-25
+
+
+
+### Psql
+
+- **Feature:** Invert read/write default, require -W, --write to enable write mode - ([59d425a](https://github.com/beyondessential/bestool/commit/59d425ade1219723feffadffe75f267b6e1b0996))
+
+---
+## [0.19.0](https://github.com/beyondessential/bestool/compare/v0.18.4..v0.19.0) - 2024-11-23
 
 
 
