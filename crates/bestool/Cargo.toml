@@ -22,7 +22,7 @@ bitflags = { version = "2.6.0", optional = true }
 bitvec = { version = "1.0.1", optional = true }
 blake3 = { version = "1.5.1", optional = true }
 boxcar = "0.2.5"
-bytes = "1.7.1"
+bytes = "1.8.0"
 chrono = "0.4.38"
 clap = { version = "4.5.15", features = ["derive", "cargo", "wrap_help", "env", "unicode", "string"] }
 clap_complete = { version = "4.5.38", optional = true }
