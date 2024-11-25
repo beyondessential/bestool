@@ -73,14 +73,15 @@ checksum = "5c6cb57a04249c6480766f7f7cef5467412af1490f8d1e243141daddada3264f"
 
 [[package]]
 name = "allsorts"
-version = "0.14.2"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afb67debdbc7e8b0716e7b10ce247ff6cd2811b0b478969158b16ac58995d16b"
+checksum = "a7b566d29776fc848a8279a72339499db95ee5592926bac114d35aa9a92efe9c"
 dependencies = [
  "bitflags 1.3.2",
  "bitreader",
  "brotli-decompressor 2.5.1",
  "byteorder",
+ "crc32fast",
  "encoding_rs",
  "flate2",
  "glyph-names",
@@ -90,6 +91,7 @@ dependencies = [
  "log",
  "num-traits",
  "ouroboros",
+ "pathfinder_geometry",
  "rustc-hash 1.1.0",
  "tinyvec",
  "ucd-trie",
@@ -3295,6 +3297,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathfinder_geometry"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b7b7e7b4ea703700ce73ebf128e1450eb69c3a8329199ffbfb9b2a0418e5ad3"
+dependencies = [
+ "log",
+ "pathfinder_simd",
+]
+
+[[package]]
+name = "pathfinder_simd"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cf07ef4804cfa9aea3b04a7bbdd5a40031dbb6b4f2cbaf2b011666c80c5b4f2"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3962,11 +3983,12 @@ dependencies = [
 
 [[package]]
 name = "rust-fontconfig"
-version = "0.1.7"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea6002602a06c22f5f4e5ea2ed68854bfce071b48e1092c03874e34d0b59eb4b"
+checksum = "34f79014d061d4b959d842bc1a09c41f752fff163e25dfdde68552859fed1bd0"
 dependencies = [
  "allsorts",
+ "base64 0.22.1",
  "mmapio",
  "rayon",
  "xmlparser",
