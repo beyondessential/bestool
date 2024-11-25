@@ -694,9 +694,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "209caa951a8915fe09b6af4e3463779ed488c64b75be9bb9d8d0e46e14a85fdd"
+checksum = "f02ef137b82525b3b38cb35e7e4f894934f383a5daac74fa90151906812d25fd"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -727,9 +727,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-types"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0760d1974b6fa31f63534b7394200df452507afb897c7135d025aaac75a36bf8"
+checksum = "d886f885ef510fdabe5d62c09b48608a8774df14b0c551650ce97745d7a447db"
 dependencies = [
  "compact_str",
  "maybe-owned",
@@ -5234,9 +5234,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.3"
+version = "2.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d157f1b96d14500ffdc1f10ba712e780825526c03d9a49b4d0324b0d9113ada"
+checksum = "32f8b686cadd1473f4bd0117a5d28d36b1ade384ea9b5069a1c40aefed7fda60"
 dependencies = [
  "form_urlencoded",
  "idna 1.0.3",
