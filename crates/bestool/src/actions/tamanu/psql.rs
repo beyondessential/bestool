@@ -7,8 +7,7 @@ use tracing::info;
 use crate::actions::Context;
 
 use super::{
-	config::{merge_json, package_config},
-	find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
+	config::load_config, find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
 /// Connect to Tamanu's db via `psql`.
@@ -63,11 +62,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	};
 	info!(?kind, "using");
 
-	let config_value = merge_json(
-		package_config(&root, kind.package_name(), "default.json5")?,
-		package_config(&root, kind.package_name(), "local.json5")?,
-	);
-
+	let config_value = load_config(&root, kind.package_name())?;
 	let config: Config = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
