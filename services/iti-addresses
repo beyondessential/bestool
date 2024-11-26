@@ -6,7 +6,7 @@ update() {
 		--arg hostname "$(hostname)" \
 		--argjson ips "$(ip -4 -j a show up scope global)" \
 	'
-		["\($hostname).local", [$ips[].addr_info[].local | select(. != null)][:3][]]
+		["\($hostname).local", [$ips[].addr_info[] | select(.local != null) | select(.label | test("podman") | not) | .local][:3][]]
 		| [.[] | if (.|length <= 26) then . else "\(.[:20])\n  \(.[20:])" end]
 		| join("\n")
 		| {layout:[
