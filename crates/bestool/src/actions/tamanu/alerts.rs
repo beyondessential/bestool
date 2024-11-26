@@ -20,10 +20,7 @@ use walkdir::WalkDir;
 
 use crate::{actions::Context, postgres_to_value::rows_to_value_map};
 
-use super::{
-	config::{merge_json, package_config},
-	find_package, find_tamanu, TamanuArgs,
-};
+use super::{config::load_config, find_package, find_tamanu, TamanuArgs};
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";
 
@@ -430,11 +427,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let kind = find_package(&root)?;
 	info!(?root, ?kind, "using this Tamanu for config");
 
-	let config_value = merge_json(
-		package_config(&root, kind.package_name(), "default.json5")?,
-		package_config(&root, kind.package_name(), "local.json5")?,
-	);
-
+	let config_value = load_config(&root, kind.package_name())?;
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;

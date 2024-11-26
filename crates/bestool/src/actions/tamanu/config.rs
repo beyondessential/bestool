@@ -40,25 +40,21 @@ pub struct ConfigArgs {
 
 #[instrument(level = "debug")]
 pub fn load_config(root: &Path, package: &str) -> Result<serde_json::Value> {
-	let mut config = package_config(root, package, "default.json5")?;
+	let mut config = package_config(root, package, "default.json5")
+		.transpose()?
+		.unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
 	if let Ok(env_name) = std::env::var("NODE_ENV") {
-		if let Ok(env_config) = package_config(
-			root, package,
-			&format!("{env_name}.json5"),
-		) {
+		if let Some(env_config) = package_config(root, package, &format!("{env_name}.json5")).transpose()? {
 			config = merge_json(config, env_config);
 		}
 	} else {
-		if let Ok(env_config) = package_config(
-			root, package,
-			"production.json5",
-		) {
+		if let Some(env_config) = package_config(root, package, "production.json5").transpose()? {
 			config = merge_json(config, env_config);
 		}
 	}
 
-	if let Ok(local_config) = package_config(root, package, "local.json5") {
+	if let Some(local_config) = package_config(root, package, "local.json5").transpose()? {
 		config = merge_json(config, local_config);
 	}
 
@@ -101,7 +97,7 @@ pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 }
 
 #[instrument(level = "debug")]
-pub fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_json::Value> {
+pub fn package_config(root: &Path, package: &str, file: &str) -> Option<Result<serde_json::Value>> {
 	fn inner(path: &Path) -> Result<serde_json::Value> {
 		debug!(?path, "opening config file");
 		let mut file = File::open(path).into_diagnostic()?;
@@ -114,13 +110,23 @@ pub fn package_config(root: &Path, package: &str, file: &str) -> Result<serde_js
 		Ok(config)
 	}
 
+	// Windows installs
 	let path = root
 		.join("packages")
 		.join(package)
 		.join("config")
 		.join(file);
+	if path.exists() {
+		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
+	}
 
-	inner(&path).wrap_err(path.to_string_lossy().into_owned())
+	// Linux installs
+	let path = root.join(file);
+	if path.exists() {
+		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
+	}
+
+	None
 }
 
 #[instrument(level = "trace")]

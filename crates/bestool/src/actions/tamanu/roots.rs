@@ -1,9 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, sync::LazyLock};
 
 use leon::Template;
 use leon_macros::template;
 use miette::{IntoDiagnostic, Result};
 use node_semver::Version;
+use regex::Regex;
 use serde::Deserialize;
 use tracing::{instrument, trace};
 
@@ -47,6 +48,17 @@ pub fn find_roots() -> Result<Vec<PathBuf>> {
 #[instrument(level = "trace")]
 pub fn version_of_root(root: impl AsRef<Path> + std::fmt::Debug) -> Result<Option<Version>> {
 	let root = root.as_ref();
+
+	if let Some(name) = root.file_name().and_then(|name| name.to_str()) {
+		static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(release-)?v?(\d+\.\d+\.\d+)($|/)").unwrap());
+		if let Some(ver) = RE.find(name) {
+			if let Ok(semver) = Version::parse(ver.as_str()) {
+				trace!(?semver, "parsed version from path");
+				return Ok(Some(semver));
+			}
+		}
+	}
+
 	let pkg_file = root.join("package.json");
 	if !pkg_file.exists() {
 		return Ok(None);
