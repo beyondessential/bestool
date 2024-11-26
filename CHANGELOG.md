@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.20.0](https://github.com/beyondessential/bestool/compare/v0.19.0..0.20.0) - 2024-11-25
+## [0.21.0](https://github.com/beyondessential/bestool/compare/v0.20.0..0.21.0) - 2024-11-26
+
+
+- **Deps:** Update all - ([71bd82e](https://github.com/beyondessential/bestool/commit/71bd82ed343b202d221a5edd19f739335e4434a5))
+- **Documentation:** Remove useless ?latest from readme - ([77bfa3e](https://github.com/beyondessential/bestool/commit/77bfa3e52ac09fc64a8cdc95504ac6bfe430bd8d))
+
+### Iti
+
+- **Bugfix:** Omit podman network addresses - ([1e6b7e8](https://github.com/beyondessential/bestool/commit/1e6b7e8c81a08aece9c03135d68a784ef15636bd))
+
+### Iti-addresses
+
+- **Feature:** Include up to 3 ips - ([a58ca61](https://github.com/beyondessential/bestool/commit/a58ca617ec5d9c9077bb84df2ad8c00143e3a4ca))
+
+### Tamanu
+
+- **Bugfix:** Look into the right places for Linux installs' config - ([a385c18](https://github.com/beyondessential/bestool/commit/a385c184034b7a13dce8b7d7e205c87f2a2e1f11))
+
+---
+## [0.20.0](https://github.com/beyondessential/bestool/compare/v0.19.0..v0.20.0) - 2024-11-25
 
 
 
