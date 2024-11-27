@@ -256,7 +256,6 @@ iti-temperature = [
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 [dev-dependencies]
-tempfile = "3.14.0"
 trycmd = "0.15.8"
 
 [package.metadata.binstall]
