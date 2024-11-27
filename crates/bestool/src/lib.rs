@@ -72,7 +72,7 @@ pub mod __help {
 
 /// A wrapper of [`chrono::Utc::now`].
 ///
-/// On debug build, this returns a fixed time if `BESTOOL_TIMELESS` is set.
+/// On debug build, this returns a fixed time if `BESTOOL_MOCK_TIME` is set.
 fn now_time<T: TimeZone>(tz: &T) -> DateTime<T> {
 	if cfg!(debug_assertions) && env::var("BESTOOL_MOCK_TIME").is_ok() {
 		DateTime::from_timestamp_nanos(0)

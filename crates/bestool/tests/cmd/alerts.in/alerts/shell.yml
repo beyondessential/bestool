@@ -4,7 +4,7 @@ recipients:
 shell: bash
 run: echo test && exit 1
 
-subject: "Tamanu Alert"
+subject: "Tamanu Alert - {{ now }}"
 template: |
   <h1>Job Failed</h1>
   <p>{{ output }}</p>

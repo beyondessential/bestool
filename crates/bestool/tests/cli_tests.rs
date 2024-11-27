@@ -7,7 +7,7 @@ use tempfile::TempDir;
 fn cli_tests() {
 	let cases = trycmd::TestCases::new();
 	cases
-		.env("BESTOOL_TIMELESS", "1")
+		.env("BESTOOL_MOCK_TIME", "1")
 		.env("NO_COLOR", "1")
 		.case("tests/cmd/*.toml");
 
