@@ -106,28 +106,20 @@ pub fn get_args() -> Result<(Args, WorkerGuard)> {
 }
 
 pub fn logging_preargs() -> Option<WorkerGuard> {
-	if var("RUST_LOG").is_err() {
+	let Ok(rust_log) = var("RUST_LOG") else {
 		return None;
-	}
+	};
 
 	let (writer, guard) = non_blocking(stderr());
 
-	let builder = if cfg!(debug_assertions) && var("BESTOOL_TIMELESS").is_ok() {
-		tracing_subscriber::fmt()
-			.with_env_filter(EnvFilter::from_default_env())
-			.with_writer(writer)
-			.without_time()
-			.try_init()
-	} else {
-		tracing_subscriber::fmt()
-			.with_env_filter(EnvFilter::from_default_env())
-			.with_writer(writer)
-			.try_init()
-	};
+	let builder = tracing_subscriber::fmt()
+		.with_env_filter(EnvFilter::from_default_env())
+		.with_writer(writer)
+		.try_init();
 
 	match builder {
 		Ok(()) => {
-			warn!(RUST_LOG=%var("RUST_LOG").unwrap(), "logging configured from RUST_LOG");
+			warn!(RUST_LOG=%rust_log, "logging configured from RUST_LOG");
 			Some(guard)
 		}
 		Err(e) => {

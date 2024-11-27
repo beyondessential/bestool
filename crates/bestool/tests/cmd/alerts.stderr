@@ -1,2 +1,0 @@
- WARN bestool::args: logging configured from RUST_LOG RUST_LOG=warn
- WARN bestool::args: ⚠ RUST_LOG environment variable set or hardcoded, logging options have no effect

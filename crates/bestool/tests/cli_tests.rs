@@ -8,7 +8,6 @@ fn cli_tests() {
 	let cases = trycmd::TestCases::new();
 	cases
 		.env("BESTOOL_TIMELESS", "1")
-		.env("RUST_LOG", "warn")
 		.env("NO_COLOR", "1")
 		.case("tests/cmd/*.toml");
 
