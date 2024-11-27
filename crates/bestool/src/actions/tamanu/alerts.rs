@@ -664,17 +664,15 @@ async fn read_sources(
 			context.insert("rows", &context_rows);
 		}
 		TicketSource::Shell { shell, run } => {
-			let mut shell = {
-				let mut script = tempfile::Builder::new().tempfile().into_diagnostic()?;
-				write!(script.as_file_mut(), "{run}").into_diagnostic()?;
+			let mut script = tempfile::Builder::new().tempfile().into_diagnostic()?;
+			write!(script.as_file_mut(), "{run}").into_diagnostic()?;
 
-				tokio::process::Command::new(shell)
-					.arg(script.path())
-					.stdin(process::Stdio::null())
-					.stdout(process::Stdio::piped())
-					.spawn()
-					.into_diagnostic()?
-			};
+			let mut shell = tokio::process::Command::new(shell)
+				.arg(script.path())
+				.stdin(process::Stdio::null())
+				.stdout(process::Stdio::piped())
+				.spawn()
+				.into_diagnostic()?;
 
 			let mut output = Vec::new();
 			let mut stdout = shell
