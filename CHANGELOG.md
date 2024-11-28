@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.1](https://github.com/beyondessential/bestool/compare/v0.21.0..0.21.1) - 2024-11-28
+## [0.21.2](https://github.com/beyondessential/bestool/compare/v0.21.1..0.21.2) - 2024-11-28
+
+
+
+### Alerts
+
+- **Documentation:** Fix external targets docs missing targets: line - ([469b7b9](https://github.com/beyondessential/bestool/commit/469b7b9fa3ac27c0f390287b504b6edf861218c9))
+
+---
+## [0.21.1](https://github.com/beyondessential/bestool/compare/v0.21.0..v0.21.1) - 2024-11-28
 
 
 
