@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.0](https://github.com/beyondessential/bestool/compare/v0.20.0..0.21.0) - 2024-11-26
+## [0.21.1](https://github.com/beyondessential/bestool/compare/v0.21.0..0.21.1) - 2024-11-28
+
+
+
+### Alerts
+
+- **Bugfix:** Warn with specifics when _targets.yml has errors - ([4c85002](https://github.com/beyondessential/bestool/commit/4c8500217fcf8a31399533edd837b9ecbd93108d))
+
+---
+## [0.21.0](https://github.com/beyondessential/bestool/compare/v0.20.0..v0.21.0) - 2024-11-26
 
 
 - **Deps:** Update all - ([71bd82e](https://github.com/beyondessential/bestool/commit/71bd82ed343b202d221a5edd19f739335e4434a5))
