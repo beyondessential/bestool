@@ -159,16 +159,17 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// they will be merged).
 ///
 /// ```yaml
-/// - id: email-staff
-///   target: email
-///   addresses:
-///     - staff@job.com
-/// - id: zendesk-normal
-///   target: zendesk
-///   endpoint: https://...
-///   credentials:
-///     email: the@bear.com
-///     password: ichooseyou
+/// targets:
+///   - id: email-staff
+///     target: email
+///     addresses:
+///       - staff@job.com
+///   - id: zendesk-normal
+///     target: zendesk
+///     endpoint: https://...
+///     credentials:
+///       email: the@bear.com
+///       password: ichooseyou
 /// ```
 ///
 /// The `subject` and `template` fields are omitted in the `_targets.yml`.
