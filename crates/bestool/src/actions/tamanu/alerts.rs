@@ -166,6 +166,9 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// - id: zendesk-normal
 ///   target: zendesk
 ///   endpoint: https://...
+///   credentials:
+///     email: the@bear.com
+///     password: ichooseyou
 /// ```
 ///
 /// The `subject` and `template` fields are omitted in the `_targets.yml`.
@@ -441,7 +444,11 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 			.ok()
 			.and_then(|content| {
 				debug!(path=?external_targets_path, "parsing external targets");
-				serde_yml::from_str::<AlertTargets>(&content).ok()
+				serde_yml::from_str::<AlertTargets>(&content)
+					.map_err(
+						|err| warn!(path=?external_targets_path, "_targets.yml has errors! {err}"),
+					)
+					.ok()
 			}) {
 			external_targets.extend(target.to_map().into_iter());
 		}
