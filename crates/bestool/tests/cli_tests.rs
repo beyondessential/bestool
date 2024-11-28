@@ -142,7 +142,12 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 			.ok_or_else(|| miette!("the Postgres root {root} is empty"))?
 			.into_diagnostic()?;
 
-		Ok([root, version.as_str(), "bin", &format!("{name}.exe")]
+		let exec_file_name = if cfg!(windows) {
+			format!("{name}.exe")
+		} else {
+			format!("{name}")
+		};
+		Ok([root, version.as_str(), "bin", &exec_file_name]
 			.iter()
 			.collect::<PathBuf>()
 			.into())

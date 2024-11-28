@@ -67,7 +67,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: mxschmitt/action-tmate@v3
       - run: cargo ${{ matrix.command }}
 
   build:
