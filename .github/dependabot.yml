@@ -13,9 +13,17 @@ updates:
       interval: weekly
     commit-message:
       prefix: deps
+    groups:
+      deps:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /crates/bestool
     schedule:
       interval: weekly
     commit-message:
       prefix: deps
+    groups:
+      deps:
+        patterns:
+          - "*"
