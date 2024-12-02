@@ -780,21 +780,21 @@ async fn execute_alert(
 
 				debug!(?alert.recipients, "sending email");
 				let sender = EmailAddress::address(&mailgun.sender);
-				let message = Mailgun {
+				let mailgun = Mailgun {
 					api_key: mailgun.api_key.clone(),
 					domain: mailgun.domain.clone(),
-					message: Message {
-						to: addresses
-							.iter()
-							.map(|email| EmailAddress::address(email))
-							.collect(),
-						subject,
-						html: body,
-						..Default::default()
-					},
 				};
-				message
-					.async_send(mailgun_rs::MailgunRegion::US, &sender)
+				let message = Message {
+					to: addresses
+						.iter()
+						.map(|email| EmailAddress::address(email))
+						.collect(),
+					subject,
+					html: body,
+					..Default::default()
+				};
+				mailgun
+					.async_send(mailgun_rs::MailgunRegion::US, &sender, message)
 					.await
 					.into_diagnostic()
 					.wrap_err("sending email")?;
