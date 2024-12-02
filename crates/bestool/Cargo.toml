@@ -48,7 +48,7 @@ json5 = { version = "0.4.1", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 local-ip-address = { version = "0.6.1", optional = true }
-mailgun-rs = { version = "0.1.11", optional = true }
+mailgun-rs = { version = "1.0.0", optional = true }
 merkle_hash = { version = "3.7.0", optional = true }
 miette = { version = "7.2.0", features = ["fancy"] }
 mimalloc = "0.1.41"
