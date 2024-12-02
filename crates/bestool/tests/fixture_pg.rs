@@ -61,7 +61,6 @@ pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 			"-c autovacuum=off ",
 			"-c full_page_writes=off ",
 			"-c fsync=off ",
-			"-c unix_socket_directories='' ",
 			"-c synchronous_commit=off",
 		),
 	)
