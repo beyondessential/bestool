@@ -12,6 +12,8 @@ fn cli_tests() {
 
 	let handle_res = init_db().and_then(run_db);
 
+	// Ignore tests that depend on Postgres if the Postgres test fixture failed.
+	// Add more `cases.skip()` here if any test use Postgres.
 	if handle_res.is_err() {
 		cases.skip("tests/cmd/alerts.toml");
 	}
