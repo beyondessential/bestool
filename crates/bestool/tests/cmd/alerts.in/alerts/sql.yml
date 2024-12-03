@@ -1,0 +1,15 @@
+recipients:
+  - test@example.com
+
+sql: |
+ SELECT * FROM jobs
+ WHERE error IS NOT NULL
+ AND created_at > $1
+
+subject: "Tamanu Alert - {{ now }}"
+template: |
+  Automated alert! There have been {{ rows | length }} jobs
+  with errors in the past {{ interval }}. Here are the first 2:
+  {% for row in rows | slice(end=2) %}
+  - {{ row.topic }}: {{ row.error }}
+  {% endfor %}

@@ -1,0 +1,13 @@
+{
+    "db": {
+        "host": "localhost",
+        "name": "postgres",
+        "username": "postgres",
+        "password": "password"
+    },
+    "mailgun": {
+        "domain": "",
+        "apiKey": "",
+        "from": ""
+    }
+}

@@ -255,6 +255,9 @@ iti-temperature = [
 ]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
+[dev-dependencies]
+trycmd = "0.15.8"
+
 [package.metadata.binstall]
 pkg-url = "https://tools.ops.tamanu.io/bestool/{ version }/{ target }/{ name }{ binary-ext }"
 pkg-fmt = "bin"
