@@ -57,12 +57,11 @@ pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 		"--options",
 		// https://www.postgresql.org/docs/current/non-durability.html
 		// https://wiki.postgresql.org/wiki/Tuning_Your_PostgreSQL_Server
-		std::concat!(
-			"-c autovacuum=off ",
-			"-c full_page_writes=off ",
-			"-c fsync=off ",
-			"-c synchronous_commit=off",
-		),
+		if cfg!(target_os = "linux") {
+			"-c autovacuum=off -c full_page_writes=off -c fsync=off -c unix_socket_directories=\'\' -c synchronous_commit=off"
+		} else {
+			"-c autovacuum=off -c full_page_writes=off -c fsync=off -c synchronous_commit=off"
+		},
 	)
 	.run()
 	.into_diagnostic()
