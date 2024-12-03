@@ -1,9 +1,12 @@
 -------------------------------
-Alert: ./alerts/shell.yml
+Alert: ./alerts/sql.yml
 Recipients: test@example.com
 Subject: Tamanu Alert - 1970-01-01 00:00:00 UTC
-Body: <h1>Job Failed</h1>
-<p>test
-</p>
-<p>For more information, please check the logs.</p>
+Body: Automated alert! There have been 5 jobs
+with errors in the past 1w. Here are the first 2:
+
+- foo: err
+
+- bar: err
+
 

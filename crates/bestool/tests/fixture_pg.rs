@@ -81,7 +81,26 @@ pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 		}
 	}
 
+	load_database().wrap_err("loading fixture database")?;
+
 	Ok(Handle(Some(temp_dir)))
+}
+
+fn load_database() -> Result<()> {
+	duct::cmd!(
+		find_postgres_bin("psql")?,
+		"--username",
+		"postgres",
+		"--file",
+		"tests/fixture.sql",
+	)
+	.env("PGPASSWORD", "password")
+	.stdout_null()
+	.run()
+	.into_diagnostic()
+	.wrap_err("running psql")?;
+
+	Ok(())
 }
 
 fn stop_db(temp_dir: TempDir) -> Result<()> {
