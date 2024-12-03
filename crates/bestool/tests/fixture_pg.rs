@@ -57,8 +57,10 @@ pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 		"--options",
 		// https://www.postgresql.org/docs/current/non-durability.html
 		// https://wiki.postgresql.org/wiki/Tuning_Your_PostgreSQL_Server
-		if cfg!(target_os = "linux") {
-			"-c autovacuum=off -c full_page_writes=off -c fsync=off -c unix_socket_directories=\'\' -c synchronous_commit=off"
+		if cfg!(unix) {
+			// Setting "unix_socket_directories" is necessary as creating socket files fail in permission error for some systems.
+			// Instead, this forces the use of TCP/IP over domain sockets.
+			"-c autovacuum=off -c full_page_writes=off -c fsync=off -c unix_socket_directories='' -c synchronous_commit=off"
 		} else {
 			"-c autovacuum=off -c full_page_writes=off -c fsync=off -c synchronous_commit=off"
 		},
@@ -88,6 +90,8 @@ pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 fn load_database() -> Result<()> {
 	duct::cmd!(
 		find_postgres_bin("psql")?,
+		"--host",
+		"localhost",
 		"--username",
 		"postgres",
 		"--file",
