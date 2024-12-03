@@ -12,7 +12,7 @@ fn cli_tests() {
 
 	let handle_res = init_db().and_then(run_db);
 
-	if matches!(handle_res, Err(_)) {
+	if handle_res.is_err() {
 		cases.skip("tests/cmd/alerts.toml");
 	}
 
