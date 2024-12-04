@@ -692,6 +692,7 @@ dependencies = [
  "thiserror 2.0.3",
  "tokio",
  "tokio-postgres",
+ "tokio-tar",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
