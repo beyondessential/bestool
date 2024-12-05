@@ -53,10 +53,7 @@ pub async fn run(ctx: Context<TamanuArgs, UpgradeArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let new_root = root.parent().unwrap().join(format!("release-v{version}"));
 
-	let kind = match kind {
-		Some(kind) => kind,
-		None => find_package(&root)?,
-	};
+	let kind = kind.unwrap_or_else(|| find_package(&root));
 	info!(?kind, "using");
 
 	if version < Version::parse("2.0.0").unwrap() {
