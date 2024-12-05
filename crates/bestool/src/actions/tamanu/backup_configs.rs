@@ -4,7 +4,6 @@ use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::io::AsyncWriteExt as _;
 use tokio_tar::{Builder, HeaderMode};
-use tracing::info;
 
 use crate::actions::{
 	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
@@ -42,9 +41,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	let caddyfile_path = ctx.args_sub.caddyfile_path;
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
-	let kind = find_package(&root)?;
-	info!(?root, ?kind, "using this Tamanu for config");
-
+	let kind = find_package(&root);
 	let config_value = load_config(&root, kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
