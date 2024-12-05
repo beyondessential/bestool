@@ -1,15 +1,18 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::io::AsyncWriteExt as _;
 use tokio_tar::Builder;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::actions::{
 	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
-	tamanu::{find_package, find_tamanu, TamanuArgs},
+	tamanu::{
+		backup::{make_backup_filename, TamanuConfig},
+		config::load_config,
+		find_package, find_tamanu, TamanuArgs,
+	},
 	Context,
 };
 
@@ -34,6 +37,13 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root)?;
 	info!(?root, ?kind, "using this Tamanu for config");
+
+	let config_value = load_config(&root, &kind.package_name())?;
+
+	let config: TamanuConfig = serde_json::from_value(config_value)
+		.into_diagnostic()
+		.wrap_err("parsing of Tamanu config failed")?;
+
 	let tamanu_config_path = root
 		.join("packages")
 		.join(kind.package_name())
@@ -41,19 +51,9 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let pm2_config_path = root.join("pm2.config.cjs");
 
-	let output_date = Local::now().format("%Y-%m-%d_%H%M");
-	// let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
-	let output_path = Path::new(&ctx.args_sub.write_to).join(format!(
-		"{output_date}-configs.tar",
-		// Extract the host section since "canonical_host_name" is a full URL, which is not
-		// suitable for a file name.
-		// output_name = canonical_host_name
-		// 	.as_ref()
-		// 	.and_then(|url| url.host_str())
-		// 	.unwrap_or(&config.canonical_host_name),
-	));
+	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "tar"));
 
-	let file = tokio::fs::File::create_new(output_path)
+	let file = tokio::fs::File::create_new(output)
 		.await
 		.into_diagnostic()
 		.wrap_err("creating the destination")?;
