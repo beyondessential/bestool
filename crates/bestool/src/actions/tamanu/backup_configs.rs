@@ -42,7 +42,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	let kind = find_package(&root)?;
 	info!(?root, ?kind, "using this Tamanu for config");
 
-	let config_value = load_config(&root, &kind.package_name())?;
+	let config_value = load_config(&root, kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
