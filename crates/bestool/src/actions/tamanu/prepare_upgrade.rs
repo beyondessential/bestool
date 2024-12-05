@@ -61,10 +61,7 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let existing_version = find_existing_version()?;
 
-	let kind = match kind {
-		Some(kind) => kind,
-		None => find_package(&root)?,
-	};
+	let kind = kind.unwrap_or_else(|| find_package(&root));
 	info!(?kind, "using");
 
 	// Assumptions here are that `root` is already canonicalised and all Windows installations have an upper root that can house multiple versioned Tamanu roots.
