@@ -1,5 +1,6 @@
 use std::{
 	ffi::OsString,
+	fmt::Debug,
 	fs,
 	path::{Path, PathBuf},
 	str::FromStr,
@@ -9,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
 use miette::{miette, IntoDiagnostic, Result};
 use node_semver::Version;
+use tracing::{debug, instrument};
 
 use super::Context;
 
@@ -72,28 +74,42 @@ impl ApiServerKind {
 	}
 }
 
+#[instrument(level = "debug")]
 pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
-	if let Some(root) = &args.root {
-		let version = roots::version_of_root(root)?
-			.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
-		Ok((version, root.canonicalize().into_diagnostic()?))
-	} else {
-		roots::find_versions()?
-			.into_iter()
-			.next()
-			.ok_or_else(|| miette!("no tamanu discovered, use --root"))
+	#[inline]
+	fn inner(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
+		if let Some(root) = &args.root {
+			let version = roots::version_of_root(root)?
+				.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
+			Ok((version, root.canonicalize().into_diagnostic()?))
+		} else {
+			roots::find_versions()?
+				.into_iter()
+				.next()
+				.ok_or_else(|| miette!("no tamanu discovered, use --root"))
+		}
 	}
+
+	inner(args).inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
 }
 
-pub fn find_package(root: impl AsRef<Path>) -> Result<ApiServerKind> {
-	fs::read_dir(root.as_ref().join("packages"))
-		.into_diagnostic()?
-		.filter_map_ok(|e| e.file_name().into_string().ok())
-		.process_results(|mut iter| {
-			iter.find_map(|dir_name| ApiServerKind::from_str(&dir_name, false).ok())
-				.ok_or_else(|| miette!("Tamanu servers not found"))
-		})
-		.into_diagnostic()?
+#[instrument(level = "debug")]
+pub fn find_package(root: impl AsRef<Path> + Debug) -> ApiServerKind {
+	fn inner(root: &Path) -> Result<ApiServerKind> {
+		fs::read_dir(root.join("packages"))
+			.into_diagnostic()?
+			.filter_map_ok(|e| e.file_name().into_string().ok())
+			.process_results(|mut iter| {
+				iter.find_map(|dir_name| ApiServerKind::from_str(&dir_name, false).ok())
+					.ok_or_else(|| miette!("Tamanu servers not found"))
+			})
+			.into_diagnostic()?
+	}
+
+	inner(root.as_ref())
+		.inspect(|kind| debug!(?root, ?kind, "using this Tamanu for config"))
+		.map_err(|err| debug!(?err, "failed to detect package, assuming facility"))
+		.unwrap_or(ApiServerKind::Facility)
 }
 
 #[cfg(windows)]
@@ -126,6 +142,7 @@ pub fn find_existing_version() -> Result<Version> {
 }
 
 #[cfg(feature = "tamanu-pg-common")]
+#[instrument(level = "debug")]
 pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 	use std::env;
 
@@ -206,7 +223,7 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 }
 
 #[cfg(feature = "tamanu-pg-common")]
-#[expect(dead_code, reason = "unused for now")]
+#[instrument(level = "debug")]
 pub fn find_postgres_version() -> Result<u8> {
 	Ok(String::from_utf8(
 		duct::cmd!(find_postgres_bin("psql")?, "--version")

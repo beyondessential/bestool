@@ -5,7 +5,7 @@ use std::{
 
 use leon::Template;
 use leon_macros::template;
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr};
 use node_semver::Version;
 use regex::Regex;
 use serde::Deserialize;
@@ -82,7 +82,7 @@ struct PackageJson {
 
 #[instrument(level = "debug")]
 pub fn find_versions() -> Result<Vec<(Version, PathBuf)>> {
-	let mut roots: Vec<_> = find_roots()?
+	let mut roots: Vec<_> = find_roots().wrap_err("find roots for versions")?
 		.into_iter()
 		.filter_map(|root| {
 			version_of_root(root.clone())

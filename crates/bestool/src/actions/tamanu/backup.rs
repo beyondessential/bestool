@@ -76,10 +76,7 @@ struct TamanuDb {
 
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
-
-	let kind = find_package(&root)?;
-	info!(?root, ?kind, "using this Tamanu for config");
-
+	let kind = find_package(&root);
 	let config_value = load_config(&root, &kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
