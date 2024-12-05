@@ -137,14 +137,8 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	let (_, tamanu_folder) = find_tamanu(&ctx.args_top)?;
 	let root = tamanu_folder.parent().unwrap();
 
-	let kind = match ctx.args_sub.kind {
-		Some(kind) => kind,
-		None => find_package(&tamanu_folder)?,
-	};
-	info!(?kind, "using");
-
+	let kind = ctx.args_sub.kind.unwrap_or_else(|| find_package(&tamanu_folder));
 	let config_value = load_config(&tamanu_folder, kind.package_name())?;
-
 	let tamanu_config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;

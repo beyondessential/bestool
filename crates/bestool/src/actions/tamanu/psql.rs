@@ -2,7 +2,6 @@ use std::io::Write;
 
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic, Result};
-use tracing::info;
 
 use crate::actions::Context;
 
@@ -56,12 +55,7 @@ struct Db {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let kind = match ctx.args_sub.kind {
-		Some(kind) => kind,
-		None => find_package(&root)?,
-	};
-	info!(?kind, "using");
-
+	let kind = ctx.args_sub.kind.unwrap_or_else(|| find_package(&root));
 	let config_value = load_config(&root, kind.package_name())?;
 	let config: Config = serde_json::from_value(config_value)
 		.into_diagnostic()
