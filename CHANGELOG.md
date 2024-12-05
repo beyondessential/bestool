@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.2](https://github.com/beyondessential/bestool/compare/v0.21.1..0.21.2) - 2024-11-28
+## [0.21.3](https://github.com/beyondessential/bestool/compare/v0.21.2..0.21.3) - 2024-12-05
+
+
+- **Deps:** Bump the deps group across 1 directory with 8 updates (#164) - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update blake3 to 1.5.5 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update bytes to 1.9.0 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update detect-targets to 0.1.31 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update fs4 to 0.12.0 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update miette to 7.4.0 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update rppal to 0.20.0 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update tracing to 0.1.41 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Update tracing-subscriber to 0.3.19 - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
+- **Deps:** Upgrade mailgun-rs to 1.0.0 - ([15abb09](https://github.com/beyondessential/bestool/commit/15abb0931ae2fb8d47381c30de84d0846c556042))
+- **Test:** Add integration tests to bestool - ([d1ec56f](https://github.com/beyondessential/bestool/commit/d1ec56f0072c4baf6eb61b9ef2c14ac4893b2109))
+- **Tweak:** Improve postgresql binary detection on Linux and Windows - ([d1ec56f](https://github.com/beyondessential/bestool/commit/d1ec56f0072c4baf6eb61b9ef2c14ac4893b2109))
+
+### Tamanu
+
+- **Bugfix:** Assume facility if we can't detect server type - ([ed48e55](https://github.com/beyondessential/bestool/commit/ed48e556dfa064347b90d8a1bf8070118c7fa971))
+
+---
+## [0.21.2](https://github.com/beyondessential/bestool/compare/v0.21.1..v0.21.2) - 2024-11-28
 
 
 
