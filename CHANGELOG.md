@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.3](https://github.com/beyondessential/bestool/compare/v0.21.2..0.21.3) - 2024-12-05
+## [0.21.4](https://github.com/beyondessential/bestool/compare/v0.21.3..0.21.4) - 2024-12-05
+
+
+
+### Tamanu
+
+- **Bugfix:** Windows compilation - ([96919d4](https://github.com/beyondessential/bestool/commit/96919d494567c2ef3282fbe73f5a80b367e07cf2))
+
+---
+## [0.21.3](https://github.com/beyondessential/bestool/compare/v0.21.2..v0.21.3) - 2024-12-05
 
 
 - **Deps:** Bump the deps group across 1 directory with 8 updates (#164) - ([687c5ee](https://github.com/beyondessential/bestool/commit/687c5eeaa44ad93828c609740951dd5daba98f9a))
