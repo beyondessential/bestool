@@ -24,14 +24,17 @@ pub struct BackupConfigsArgs {
 	/// The destination directory the output will be written to.
 	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
 	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--write-to PATH`"))]
 	write_to: String,
 
 	/// Path to the Caddyfile.
 	#[arg(long, default_value = DEFAULT_CADDYFILE_PATH)]
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--caddyfile-path PATH`"))]
 	caddyfile_path: PathBuf,
 
 	/// Exclude extra metadata such as ownership and mod/access times.
 	#[arg(long, default_value_t = false)]
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--deterministic`, default false"))]
 	deterministic: bool,
 }
 
