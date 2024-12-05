@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::io::AsyncWriteExt as _;
-use tokio_tar::Builder;
+use tokio_tar::{Builder, HeaderMode};
 use tracing::info;
 
 use crate::actions::{
@@ -28,7 +28,11 @@ pub struct BackupConfigsArgs {
 
 	/// Path to the Caddyfile.
 	#[arg(long, default_value = DEFAULT_CADDYFILE_PATH)]
-	pub caddyfile_path: PathBuf,
+	caddyfile_path: PathBuf,
+
+	/// Exclude extra metadata such as ownership and mod/access times.
+	#[arg(long, default_value_t = false)]
+	deterministic: bool,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
@@ -59,6 +63,9 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.wrap_err("creating the destination")?;
 
 	let mut archive_builder = Builder::new(tokio::io::BufWriter::new(file));
+	if ctx.args_sub.deterministic {
+		archive_builder.mode(HeaderMode::Deterministic);
+	}
 	archive_builder
 		.append_path_with_name(caddyfile_path, "Caddyfile")
 		.await
