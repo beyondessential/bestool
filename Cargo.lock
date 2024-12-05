@@ -633,7 +633,7 @@ checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 
 [[package]]
 name = "bestool"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -3975,7 +3975,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-st7789v2-driver"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitvec",
  "embedded-graphics",
