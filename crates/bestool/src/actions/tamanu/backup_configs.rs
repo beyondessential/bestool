@@ -9,7 +9,7 @@ use crate::actions::{
 	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
 	tamanu::{
 		backup::{make_backup_filename, TamanuConfig},
-		config::load_config,
+		config::{find_config_dir, load_config},
 		find_package, find_tamanu, TamanuArgs,
 	},
 	Context,
@@ -48,11 +48,6 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
 
-	let tamanu_config_path = root
-		.join("packages")
-		.join(kind.package_name())
-		.join("config");
-
 	let pm2_config_path = root.join("pm2.config.cjs");
 
 	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "tar"));
@@ -76,20 +71,20 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("writing the backup")?;
-	archive_builder
-		.append_path_with_name(tamanu_config_path.join("local.json5"), "local.json5")
-		.await
-		.into_diagnostic()
-		.wrap_err("writing the backup")?;
-	archive_builder
-		.append_path_with_name(
-			tamanu_config_path.join("production.json5"),
-			"production.json5",
-		)
-		.await
-		.into_diagnostic()
-		.wrap_err("writing the backup")?;
-
+	if let Some(path) = find_config_dir(&root, kind.package_name(), "local.json5") {
+		archive_builder
+			.append_path_with_name(path, "local.json5")
+			.await
+			.into_diagnostic()
+			.wrap_err("writing the backup")?;
+	}
+	if let Some(path) = find_config_dir(&root, kind.package_name(), "production.json5") {
+		archive_builder
+			.append_path_with_name(path, "production.json5")
+			.await
+			.into_diagnostic()
+			.wrap_err("writing the backup")?;
+	}
 	archive_builder
 		.into_inner()
 		.await
