@@ -1,6 +1,6 @@
 use std::{ffi::OsString, fs, path::Path};
 
-use chrono::Local;
+use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
@@ -142,7 +142,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 #[instrument(level = "debug")]
 pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
-	let output_date = now_time(&Local).format("%Y-%m-%d_%H%M");
+	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
 
 	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
 	format!(
