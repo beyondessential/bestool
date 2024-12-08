@@ -1,14 +1,17 @@
 use std::{ffi::OsString, fs, path::Path};
 
-use chrono::Local;
+use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
-use crate::actions::{
-	tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
-	Context,
+use crate::{
+	actions::{
+		tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
+		Context,
+	},
+	now_time,
 };
 
 /// Backup a local Tamanu database to a single file.
@@ -62,13 +65,13 @@ pub struct BackupArgs {
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct TamanuConfig {
+pub struct TamanuConfig {
 	canonical_host_name: String,
 	db: TamanuDb,
 }
 
 #[derive(serde::Deserialize, Debug)]
-struct TamanuDb {
+pub struct TamanuDb {
 	name: String,
 	username: String,
 	password: String,
@@ -77,26 +80,14 @@ struct TamanuDb {
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
-	let config_value = load_config(&root, &kind.package_name())?;
+	let config_value = load_config(&root, kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let output_date = Local::now().format("%Y-%m-%d_%H%M");
-
-	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
-	let output = Path::new(&ctx.args_sub.write_to).join(format!(
-		"{output_date}-{output_name}-{db}.dump",
-		// Extract the host section since "canonical_host_name" is a full URL, which is not
-		// suitable for a file name.
-		output_name = canonical_host_name
-			.as_ref()
-			.and_then(|url| url.host_str())
-			.unwrap_or(&config.canonical_host_name),
-		db = config.db.name,
-	));
+	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
 
 	let pg_dump = find_postgres_bin("pg_dump")?;
 
@@ -147,4 +138,21 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	}
 
 	Ok(())
+}
+
+#[instrument(level = "debug")]
+pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
+	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
+
+	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
+	format!(
+		"{output_date}-{output_name}-{db}.{ext}",
+		// Extract the host section since "canonical_host_name" is a full URL, which is not
+		// suitable for a file name.
+		output_name = canonical_host_name
+			.as_ref()
+			.and_then(|url| url.host_str())
+			.unwrap_or(&config.canonical_host_name),
+		db = config.db.name,
+	)
 }

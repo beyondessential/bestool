@@ -1,4 +1,8 @@
-use std::{fs::File, io::Read, path::Path};
+use std::{
+	fs::File,
+	io::Read,
+	path::{Path, PathBuf},
+};
 
 use clap::Parser;
 use miette::{bail, IntoDiagnostic, Result, WrapErr};
@@ -45,7 +49,9 @@ pub fn load_config(root: &Path, package: &str) -> Result<serde_json::Value> {
 		.unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
 	if let Ok(env_name) = std::env::var("NODE_ENV") {
-		if let Some(env_config) = package_config(root, package, &format!("{env_name}.json5")).transpose()? {
+		if let Some(env_config) =
+			package_config(root, package, &format!("{env_name}.json5")).transpose()?
+		{
 			config = merge_json(config, env_config);
 		}
 	} else {
@@ -97,6 +103,27 @@ pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 }
 
 #[instrument(level = "debug")]
+pub fn find_config_dir(root: &Path, package: &str, file: &str) -> Option<PathBuf> {
+	// Windows installs
+	let path = root
+		.join("packages")
+		.join(package)
+		.join("config")
+		.join(file);
+	if path.exists() {
+		return Some(path);
+	}
+
+	// Linux installs
+	let path = root.join(file);
+	if path.exists() {
+		return Some(path);
+	}
+
+	None
+}
+
+#[instrument(level = "debug")]
 pub fn package_config(root: &Path, package: &str, file: &str) -> Option<Result<serde_json::Value>> {
 	fn inner(path: &Path) -> Result<serde_json::Value> {
 		debug!(?path, "opening config file");
@@ -110,23 +137,8 @@ pub fn package_config(root: &Path, package: &str, file: &str) -> Option<Result<s
 		Ok(config)
 	}
 
-	// Windows installs
-	let path = root
-		.join("packages")
-		.join(package)
-		.join("config")
-		.join(file);
-	if path.exists() {
-		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
-	}
-
-	// Linux installs
-	let path = root.join(file);
-	if path.exists() {
-		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
-	}
-
-	None
+	find_config_dir(root, package, file)
+		.map(|path| inner(&path).wrap_err(path.to_string_lossy().into_owned()))
 }
 
 #[instrument(level = "trace")]

@@ -1,0 +1,2 @@
+bin.name = "bestool"
+args = "--log-timeless tamanu --root ./tamanu backup-configs --write-to ./ --caddyfile-path ./Caddyfile --deterministic"
