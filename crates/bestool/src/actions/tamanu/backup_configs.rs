@@ -1,9 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+	io,
+	path::{Path, PathBuf},
+};
 
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::io::AsyncWriteExt as _;
 use tokio_tar::{Builder, HeaderMode};
+use tracing::warn;
 
 use crate::actions::{
 	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
@@ -61,14 +65,24 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	if ctx.args_sub.deterministic {
 		archive_builder.mode(HeaderMode::Deterministic);
 	}
+	fn ignore_not_found(err: io::Error) -> io::Result<()> {
+		if err.kind() == io::ErrorKind::NotFound {
+			warn!("Ignore a file from the archive: {err}");
+			Ok(())
+		} else {
+			Err(err)
+		}
+	}
 	archive_builder
 		.append_path_with_name(caddyfile_path, "Caddyfile")
 		.await
+		.or_else(ignore_not_found)
 		.into_diagnostic()
 		.wrap_err("writing the backup")?;
 	archive_builder
 		.append_path_with_name(pm2_config_path, "pm2.config.cjs")
 		.await
+		.or_else(ignore_not_found)
 		.into_diagnostic()
 		.wrap_err("writing the backup")?;
 	if let Some(path) = find_config_dir(&root, kind.package_name(), "local.json5") {
@@ -77,6 +91,8 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 			.await
 			.into_diagnostic()
 			.wrap_err("writing the backup")?;
+	} else {
+		warn!("Ignore a file from the archive: local.json5 not found");
 	}
 	if let Some(path) = find_config_dir(&root, kind.package_name(), "production.json5") {
 		archive_builder
@@ -84,6 +100,8 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 			.await
 			.into_diagnostic()
 			.wrap_err("writing the backup")?;
+	} else {
+		warn!("Ignore a file from the archive: production.json5 not found");
 	}
 	archive_builder
 		.into_inner()
