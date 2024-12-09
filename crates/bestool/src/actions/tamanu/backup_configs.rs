@@ -67,7 +67,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	}
 	fn ignore_not_found(err: io::Error) -> io::Result<()> {
 		if err.kind() == io::ErrorKind::NotFound {
-			warn!("Ignore a file from the archive: {err}");
+			warn!("Skipping a file while archiving: {err}");
 			Ok(())
 		} else {
 			Err(err)
@@ -92,7 +92,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 			.into_diagnostic()
 			.wrap_err("writing the backup")?;
 	} else {
-		warn!("Ignore a file from the archive: local.json5 not found");
+		warn!("Skipping local.json5 while archiving: the file is not found");
 	}
 	if let Some(path) = find_config_dir(&root, kind.package_name(), "production.json5") {
 		archive_builder
@@ -101,7 +101,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 			.into_diagnostic()
 			.wrap_err("writing the backup")?;
 	} else {
-		warn!("Ignore a file from the archive: production.json5 not found");
+		warn!("Skipping production.json5 while archiving: the file is not found");
 	}
 	archive_builder
 		.into_inner()
