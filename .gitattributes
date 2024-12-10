@@ -1,0 +1,8 @@
+* text=auto
+
+# Those files need to have consistent binary across platform because some
+# test process input and compare output byte by byte.
+crates/bestool/tests/cmd/*.in/**/* text eol=lf
+crates/bestool/tests/cmd/*.out/**/* text eol=lf
+
+*.tar binary
