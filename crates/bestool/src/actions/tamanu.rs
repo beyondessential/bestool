@@ -37,6 +37,8 @@ super::subcommands! {
 	alerts => Alerts(AlertsArgs),
 	#[cfg(feature = "tamanu-backup")]
 	backup => Backup(BackupArgs),
+	#[cfg(feature = "tamanu-backup-configs")]
+	backup_configs => BackupConfigs(BackupConfigsArgs),
 	#[cfg(feature = "tamanu-config")]
 	config => Config(ConfigArgs),
 	#[cfg(feature = "tamanu-download")]

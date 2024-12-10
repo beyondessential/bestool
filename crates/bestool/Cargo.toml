@@ -68,6 +68,7 @@ tera = { version = "1.19.1", optional = true }
 thiserror = "2.0.6"
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-postgres = { version = "0.7.10", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
+tokio-tar = { version = "0.3.1", optional = true }
 tracing = { version = "0.1.41", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter", "json"] }
@@ -152,6 +153,7 @@ walg = [
 tamanu = [ # enable all tamanu subcommands
 	"tamanu-alerts",
 	"tamanu-backup",
+	"tamanu-backup-configs",
 	"tamanu-config",
 	"tamanu-download",
 	"tamanu-find",
@@ -176,6 +178,12 @@ tamanu-backup = [
 	"tamanu-config",
 	"tamanu-pg-common",
 	"dep:duct",
+]
+tamanu-backup-configs = [
+	"__tamanu",
+	"tamanu-config",
+	"dep:duct",
+	"dep:tokio-tar",
 ]
 tamanu-config = [
 	"__tamanu",
