@@ -12,6 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
+age = { version = "0.11.0", features = ["async"], optional = true }
 aws-config = { version = "1.5.5", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.54.0", optional = true }
@@ -122,6 +123,7 @@ completions = [
 	"dep:clap_complete_nushell"
 ]
 crypto = [
+	"dep:age",
 	"dep:blake3",
 	"dep:merkle_hash",
 ]

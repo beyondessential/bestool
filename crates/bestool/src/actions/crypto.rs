@@ -3,23 +3,21 @@ use miette::Result;
 
 use super::Context;
 
-pub mod hash;
-
 /// Cryptographic operations.
 #[derive(Debug, Clone, Parser)]
 pub struct CryptoArgs {
 	/// Crypto subcommand
 	#[command(subcommand)]
-	pub action: CryptoAction,
+	pub action: Action,
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum CryptoAction {
-	Hash(hash::HashArgs),
-}
+super::subcommands! {
+	[Context<CryptoArgs> => {|ctx: Context<CryptoArgs>| -> Result<(Action, Context<CryptoArgs>)> {
+		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
+	}}](with_sub)
 
-pub async fn run(ctx: Context<CryptoArgs>) -> Result<()> {
-	match ctx.args_top.action.clone() {
-		CryptoAction::Hash(subargs) => hash::run(ctx.with_sub(subargs)).await,
-	}
+	// decrypt => Decrypt(DecryptArgs),
+	// encrypt => Encrypt(EncryptArgs),
+	hash => Hash(HashArgs),
+	keygen => Keygen(KeygenArgs)
 }
