@@ -16,8 +16,8 @@ super::subcommands! {
 		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
 	}}](with_sub)
 
-	// decrypt => Decrypt(DecryptArgs),
-	// encrypt => Encrypt(EncryptArgs),
+	decrypt => Decrypt(DecryptArgs),
+	encrypt => Encrypt(EncryptArgs),
 	hash => Hash(HashArgs),
 	keygen => Keygen(KeygenArgs)
 }
