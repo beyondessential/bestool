@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-age = { version = "0.11.0", optional = true }
+age = { version = "0.11.0", features = ["async"], optional = true }
 aws-config = { version = "1.5.5", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.54.0", optional = true }
@@ -70,6 +70,7 @@ thiserror = "2.0.6"
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-postgres = { version = "0.7.10", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
 tokio-tar = { version = "0.3.1", optional = true }
+tokio-util = { version = "0.7.13", features = ["compat"], optional = true }
 tracing = { version = "0.1.41", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter", "json"] }
@@ -126,6 +127,7 @@ crypto = [
 	"dep:age",
 	"dep:blake3",
 	"dep:merkle_hash",
+	"dep:tokio-util",
 ]
 dyndns = [
 	"aws",
