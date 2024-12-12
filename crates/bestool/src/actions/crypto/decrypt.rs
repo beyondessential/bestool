@@ -6,7 +6,10 @@ use miette::{miette, Context as _, IntoDiagnostic as _, Result};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncReadCompatExt as _, TokioAsyncReadCompatExt as _};
 
-use crate::actions::{crypto::CryptoArgs, Context};
+use crate::actions::{
+	crypto::{wrap_async_read_with_progress_bar, CryptoArgs},
+	Context,
+};
 
 #[derive(Debug, Clone, Parser)]
 pub struct DecryptArgs {
@@ -28,6 +31,8 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the encrypted file")?;
+	// Wrap with progress bar before introducing "age" to avoid predicting size after decryption.
+	let encrypted = wrap_async_read_with_progress_bar(encrypted).await?;
 
 	let mut plaintext = File::create_new(ctx.args_sub.encrypted.with_extension(""))
 		.await

@@ -1,5 +1,9 @@
+use std::io::{stderr, IsTerminal as _};
+
 use clap::{Parser, Subcommand};
-use miette::Result;
+use indicatif::{ProgressBar, ProgressBarIter, ProgressStyle};
+use miette::{IntoDiagnostic, Result};
+use tokio::fs::File;
 
 use super::Context;
 
@@ -20,4 +24,17 @@ super::subcommands! {
 	encrypt => Encrypt(EncryptArgs),
 	hash => Hash(HashArgs),
 	keygen => Keygen(KeygenArgs)
+}
+
+async fn wrap_async_read_with_progress_bar(read: File) -> Result<ProgressBarIter<File>> {
+	let progress_bar = if stderr().is_terminal() {
+		let style = ProgressStyle::default_bar()
+			.template("[{bar:.green/blue}] {wide_msg} {binary_bytes}/{binary_total_bytes} ({eta})")
+			.expect("bar template invalid");
+		ProgressBar::new(read.metadata().await.into_diagnostic()?.len()).with_style(style)
+	} else {
+		ProgressBar::hidden()
+	};
+
+	Ok(progress_bar.wrap_async_read(read))
 }

@@ -6,7 +6,10 @@ use miette::{miette, Context as _, IntoDiagnostic as _, Result};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
 
-use crate::actions::{crypto::CryptoArgs, Context};
+use crate::actions::{
+	crypto::{wrap_async_read_with_progress_bar, CryptoArgs},
+	Context,
+};
 
 #[derive(Debug, Clone, Parser)]
 pub struct EncryptArgs {
@@ -24,10 +27,12 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.parse()
 		.map_err(|err: &str| miette!("failed to parse: {err}"))?;
 
-	let mut plaintext = File::open(&ctx.args_sub.plaintext)
+	let plaintext = File::open(&ctx.args_sub.plaintext)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the plainetxt")?;
+	// Wrap with progress bar before introducing "age" to avoid predicting size after encryption.
+	let mut plaintext = wrap_async_read_with_progress_bar(plaintext).await?;
 
 	let mut encrypted_path = ctx.args_sub.plaintext.into_os_string();
 	encrypted_path.push(".enc");
