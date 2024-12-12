@@ -3,7 +3,7 @@ use std::{iter, path::PathBuf};
 use age::{x25519, Encryptor};
 use clap::Parser;
 use miette::{miette, Context as _, IntoDiagnostic as _, Result};
-use tokio::io::AsyncWriteExt;
+use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 use crate::actions::{crypto::CryptoArgs, Context};
@@ -24,14 +24,14 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.parse()
 		.map_err(|err: &str| miette!("failed to parse: {err}"))?;
 
-	let mut plaintext = tokio::fs::File::open(&ctx.args_sub.plaintext)
+	let mut plaintext = File::open(&ctx.args_sub.plaintext)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the plainetxt")?;
 
 	let mut encrypted_path = ctx.args_sub.plaintext.into_os_string();
 	encrypted_path.push(".enc");
-	let encrypted = tokio::fs::File::create_new(encrypted_path)
+	let encrypted = File::create_new(encrypted_path)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the encrypted output")?;
