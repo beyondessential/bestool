@@ -26,6 +26,9 @@ super::subcommands! {
 	keygen => Keygen(KeygenArgs)
 }
 
+/// Wraps a [`tokio::fs::File`] with a [`indicatif::ProgressBar`].
+///
+/// The progress bar outputs to stderr. This does nothing if stderr is not terminal.
 async fn wrap_async_read_with_progress_bar(read: File) -> Result<ProgressBarIter<File>> {
 	let progress_bar = if stderr().is_terminal() {
 		let style = ProgressStyle::default_bar()
