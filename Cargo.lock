@@ -189,7 +189,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df895a515f70646414f4b45c0b79082783b80552b373a68283012928df56f522"
 dependencies = [
  "brotli",
- "bzip2",
+ "bzip2 0.4.4",
  "flate2",
  "futures-core",
  "memchr",
@@ -698,7 +698,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tera",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
  "tokio",
  "tokio-postgres",
  "tokio-tar",
@@ -718,16 +718,16 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f02ef137b82525b3b38cb35e7e4f894934f383a5daac74fa90151906812d25fd"
+checksum = "4871b6687a3919b6b09e6b6cda4ac8b4e435ef615a0ec422cf675a24978c480d"
 dependencies = [
  "async-compression",
  "async-trait",
  "binstalk-types",
  "binstall-tar",
  "bytes",
- "bzip2",
+ "bzip2 0.5.0",
  "cfg-if",
  "compact_str",
  "flate2",
@@ -739,7 +739,7 @@ dependencies = [
  "rc-zip-sync",
  "reqwest 0.12.9",
  "tempfile",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
  "tokio",
  "tokio-tar",
  "tokio-util",
@@ -923,6 +923,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bzip2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bafdbf26611df8c14810e268ddceda071c297570a5fb360ceddf617fe417ef58"
+dependencies = [
+ "bzip2-sys",
+ "libc",
+]
+
+[[package]]
 name = "bzip2-sys"
 version = "0.1.11+1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -994,9 +1004,9 @@ dependencies = [
 
 [[package]]
 name = "chrono"
-version = "0.4.38"
+version = "0.4.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a21f936df1771bf62b77f047b726c4625ff2e8aa607c01ec06e5a05bd8463401"
+checksum = "7e36cc9d416881d2e24f9a963be5fb1cd90966419ac844274161d10488b3e825"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
@@ -1335,9 +1345,9 @@ dependencies = [
 
 [[package]]
 name = "detect-targets"
-version = "0.1.32"
+version = "0.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99882387f026535e1f6291dea2fe3af4e828735d33561ec6555ab5c9ae304264"
+checksum = "db5962e845fec6b0057f1dd3fa5520ae0301a2024debf9946094237ac8a179d6"
 dependencies = [
  "cfg-if",
  "guess_host_triple",
@@ -2601,7 +2611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42a865ffec5587961f5afc6d365bccb304f4feaa1928f4fe94c91c9d210d7310"
 dependencies = [
  "miette 7.4.0",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
 ]
 
 [[package]]
@@ -3636,7 +3646,7 @@ dependencies = [
  "rustc-hash 2.0.0",
  "rustls 0.23.18",
  "socket2",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
  "tokio",
  "tracing",
 ]
@@ -3655,7 +3665,7 @@ dependencies = [
  "rustls 0.23.18",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
  "tinyvec",
  "tracing",
  "web-time",
@@ -3746,7 +3756,7 @@ version = "5.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14e24471baa77d6e0e8be04c7d62d5e3c3454e7f1863ed7d74faddd6e4786007"
 dependencies = [
- "bzip2",
+ "bzip2 0.4.4",
  "chardetng",
  "chrono",
  "crc32fast",
@@ -3992,15 +4002,15 @@ dependencies = [
  "itertools 0.13.0",
  "miette 7.4.0",
  "rppal",
- "thiserror 2.0.6",
+ "thiserror 2.0.7",
  "tracing",
 ]
 
 [[package]]
 name = "rppal"
-version = "0.20.0"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "302b549c5e3fe53ec00d2fa473da106f9effc8176a5206373d92b3c44e8b06db"
+checksum = "c1ce3b019009cff02cb6b0e96e7cc2e5c5b90187dc1a490f8ef1521d0596b026"
 dependencies = [
  "libc",
 ]
@@ -4296,18 +4306,18 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.215"
+version = "1.0.216"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6513c1ad0b11a9376da888e3e0baa0077f1aed55c17f50e7b2397136129fb88f"
+checksum = "0b9781016e935a97e8beecf0c933758c97a5520d32930e460142b4cd80c6338e"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.215"
+version = "1.0.216"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad1e866f866923f252f05c889987993144fb74e722403468a4ebd70c3cd756c0"
+checksum = "46f859dbbf73865c6627ed570e78961cd3ac92407a2d117204c49232485da55e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4801,11 +4811,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.6"
+version = "2.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec2a1820ebd077e2b90c4df007bebf344cd394098a13c563957d0afc83ea47"
+checksum = "93605438cbd668185516ab499d589afb7ee1859ea3d5fc8f6b0755e1c7443767"
 dependencies = [
- "thiserror-impl 2.0.6",
+ "thiserror-impl 2.0.7",
 ]
 
 [[package]]
@@ -4821,9 +4831,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.6"
+version = "2.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d65750cab40f4ff1929fb1ba509e9914eb756131cef4210da8d5d700d26f6312"
+checksum = "e1d8749b4531af2117677a5fcd12b1348a3fe2b81e36e61ffeac5c4aa3273e36"
 dependencies = [
  "proc-macro2",
  "quote",
