@@ -1,41 +1,51 @@
 use std::path::PathBuf;
 
 use age::{secrecy::ExposeSecret, x25519};
+use chrono::Utc;
 use clap::Parser;
-use miette::{IntoDiagnostic as _, Result};
+use miette::{Context as _, IntoDiagnostic as _, Result};
+use tokio::{fs::File, io::AsyncWriteExt};
 use tracing::info;
 
-use crate::actions::{crypto::CryptoArgs, Context};
+use crate::{
+	actions::{crypto::CryptoArgs, Context},
+	now_time,
+};
 
 /// Generate a key-pair to use in the "encrypt" and "decrypt" subcommands.
+///
+/// This makes a single identity file as in `age-keygen --output PATH`
 #[derive(Debug, Clone, Parser)]
 pub struct KeygenArgs {
-	/// The destination directory the output will be written to.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--output PATH`"))]
-	#[arg(long, default_value = r"./")]
-	pub output: PathBuf,
+	/// Path to the output identity key file.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--identity PATH`"))]
+	#[arg(long, default_value = r"identity.txt")]
+	pub identity: PathBuf,
 }
 
 pub async fn run(ctx: Context<CryptoArgs, KeygenArgs>) -> Result<()> {
-	let output = ctx.args_sub.output;
+	let identity_path = ctx.args_sub.identity;
 	let secret = x25519::Identity::generate();
 	let public = secret.to_public();
 
-	tokio::fs::write(
-		output.join("private_key.txt"),
-		secret.to_string().expose_secret().as_bytes(),
-	)
-	.await
-	.into_diagnostic()?;
-
-	tokio::fs::write(output.join("public_key.txt"), public.to_string().as_bytes())
+	File::create_new(&identity_path)
 		.await
-		.into_diagnostic()?;
+		.into_diagnostic()
+		.wrap_err("opening the identity file")?
+		.write_all(
+			format!(
+				"# created: {}\n# public key: {}\n{}\n",
+				now_time(&Utc).to_rfc3339(),
+				public.to_string(),
+				secret.to_string().expose_secret()
+			)
+			.as_bytes(),
+		)
+		.await
+		.into_diagnostic()
+		.wrap_err("writing the identity")?;
 
-	info!(
-		?output,
-		"the generated key written as 'public_key.txt' and 'private_key.txt'"
-	);
+	info!(?identity_path, "wrote the generated key to");
 
 	Ok(())
 }
