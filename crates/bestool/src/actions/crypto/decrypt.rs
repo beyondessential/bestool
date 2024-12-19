@@ -28,7 +28,7 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		encrypted: encrypted_path,
 		private_key: private_key_path,
 	} = ctx.args_sub;
-	if encrypted_path.extension().is_some_and(|ext| ext == "age") {
+	if !encrypted_path.extension().is_some_and(|ext| ext == "age") {
 		bail!("Unknown file extension (expected .age): failed to derive the output file name.");
 	}
 	let plaintext_path = encrypted_path.with_extension("");
