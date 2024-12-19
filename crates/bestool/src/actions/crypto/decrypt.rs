@@ -2,13 +2,13 @@ use std::{iter, path::PathBuf};
 
 use age::{x25519, Decryptor};
 use clap::Parser;
-use miette::{bail, miette, Context as _, IntoDiagnostic as _, Result};
+use miette::{bail, Context as _, IntoDiagnostic as _, Result};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncReadCompatExt as _, TokioAsyncReadCompatExt as _};
 use tracing::info;
 
 use crate::actions::{
-	crypto::{wrap_async_read_with_progress_bar, CryptoArgs},
+	crypto::{self, wrap_async_read_with_progress_bar, CryptoArgs},
 	Context,
 };
 
@@ -39,12 +39,7 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		"decrypting"
 	);
 
-	let private_key: x25519::Identity = tokio::fs::read_to_string(&private_key_path)
-		.await
-		.into_diagnostic()
-		.wrap_err("reading the private key")?
-		.parse()
-		.map_err(|err: &str| miette!("failed to parse: {err}"))?;
+	let private_key: x25519::Identity = crypto::read_age_key(&private_key_path).await?;
 
 	let encrypted = File::open(&encrypted_path)
 		.await

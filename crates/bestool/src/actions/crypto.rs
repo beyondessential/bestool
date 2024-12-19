@@ -1,8 +1,13 @@
-use std::io::{stderr, IsTerminal as _};
+use std::{
+	io::{stderr, IsTerminal as _},
+	path::PathBuf,
+	str,
+};
 
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressBarIter, ProgressStyle};
-use miette::{IntoDiagnostic, Result};
+use miette::{miette, Context as _, IntoDiagnostic as _, Result};
+use regex::Regex;
 use tokio::fs::File;
 
 use super::Context;
@@ -40,4 +45,28 @@ async fn wrap_async_read_with_progress_bar(read: File) -> Result<ProgressBarIter
 	};
 
 	Ok(progress_bar.wrap_async_read(read))
+}
+
+/// Read an age key file from the file specificed by the path
+///
+/// This ignores any line starting with "#".
+#[tracing::instrument(level = "debug")]
+async fn read_age_key<T>(path: &PathBuf) -> Result<T>
+where
+	T: str::FromStr<Err = &'static str>,
+{
+	let file = tokio::fs::read_to_string(path)
+		.await
+		.into_diagnostic()
+		.wrap_err("reading the key")?;
+
+	let re = Regex::new("#.*").unwrap();
+	let identity_string = re.replace_all(&file, "");
+
+	tracing::debug!(?identity_string);
+
+	identity_string
+		.trim()
+		.parse()
+		.map_err(|err: &str| miette!("failed to parse: {err}"))
 }
