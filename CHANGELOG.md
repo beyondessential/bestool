@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [rpi-st7789v2-driver-v0.3.3](https://github.com/beyondessential/bestool/compare/v0.21.5..rpi-st7789v2-driver-v0.3.3) - 2024-12-20
+## [0.22.0](https://github.com/beyondessential/bestool/compare/v0.21.5..v0.22.0) - 2024-12-20
 
 
 - **Deps:** Update rppal requirement from 0.20.0 to 0.22.1 in /crates/bestool in the deps group (#171) - ([44ce528](https://github.com/beyondessential/bestool/commit/44ce5289b66c0667230de2eabd904975a4cf694c))
