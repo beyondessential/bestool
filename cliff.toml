@@ -50,7 +50,7 @@ filter_unconventional = true
 split_commits = true
 protect_breaking_commits = true
 filter_commits = true
-tag_pattern = "v[0-9].*"
+tag_pattern = "^v[0-9].*"
 sort_commits = "oldest"
 
 link_parsers = [
