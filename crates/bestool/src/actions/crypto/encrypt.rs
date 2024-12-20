@@ -1,6 +1,6 @@
 use std::{iter, path::PathBuf};
 
-use age::{x25519, Encryptor};
+use age::{x25519, IdentityFile, Recipient, Encryptor};
 use clap::Parser;
 use miette::{bail, miette, WrapErr as _, IntoDiagnostic as _, Result};
 use tokio::{fs::{read_to_string, File}, io::AsyncWriteExt as _};
@@ -41,7 +41,7 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		..
 	} = ctx.args_sub;
 
-	let public_key: x25519::Recipient = match ctx.args_sub {
+	let public_key: Box<dyn Recipient + Send> = match ctx.args_sub {
 		EncryptArgs { public_key_path: None, public_key: None, .. } => {
 			bail!("one of `--key-path` or `--key` must be provided");
 		}
@@ -49,11 +49,29 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 			bail!("one of `--key-path` or `--key` must be provided, not both");
 		}
 		EncryptArgs { public_key: Some(key), .. } => {
-			key.parse().map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+			Box::new(
+				key.parse::<x25519::Recipient>()
+					.map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+			)
 		}
 		EncryptArgs { public_key_path: Some(path), .. } => {
 			let key = read_to_string(&path).await.into_diagnostic().wrap_err("reading keyfile")?;
-			key.parse().map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+			if key.starts_with("age") {
+				Box::new(
+					key.parse::<x25519::Recipient>()
+						.map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+				)
+			} else {
+				let recipient = IdentityFile::from_buffer(key.as_bytes())
+					.into_diagnostic()
+					.wrap_err("parsing identity")?
+					.to_recipients()
+					.into_diagnostic()
+					.wrap_err("parsing recipients from identity")?
+					.pop()
+					.ok_or_else(|| miette!("no recipient available in identity"))?;
+				recipient
+			}
 		}
 	};
 
@@ -66,7 +84,6 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 	info!(
 		input=?plaintext_path,
 		output=?encrypted_path,
-		key=?public_key,
 		"encrypting"
 	);
 
@@ -82,7 +99,7 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("opening the encrypted output")?;
 
-	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&public_key as _))
+	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&*public_key as _))
 		.expect("a recipient should exist")
 		.wrap_async_output(encrypted.compat_write())
 		.await
