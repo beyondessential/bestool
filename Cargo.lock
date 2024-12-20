@@ -709,7 +709,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "0.21.5"
+version = "0.22.0"
 dependencies = [
  "age",
  "aws-config",
