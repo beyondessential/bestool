@@ -2,8 +2,8 @@ use std::{iter, path::PathBuf};
 
 use age::{x25519, Encryptor};
 use clap::Parser;
-use miette::{miette, Context as _, IntoDiagnostic as _, Result};
-use tokio::{fs::File, io::AsyncWriteExt as _};
+use miette::{bail, miette, WrapErr as _, IntoDiagnostic as _, Result};
+use tokio::{fs::{read_to_string, File}, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tracing::info;
 
@@ -12,36 +12,63 @@ use crate::actions::{
 	Context,
 };
 
+/// Encrypt a file using a public key or an identity.
+///
+/// Either of `--key-path` or `--key` must be provided.
+///
+///
 #[derive(Debug, Clone, Parser)]
 pub struct EncryptArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
-	plaintext: PathBuf,
+	input: PathBuf,
 
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--public-key PATH`"))]
-	#[arg(long)]
-	public_key: PathBuf,
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-o, --output PATH`"))]
+	#[arg(short, long)]
+	output: Option<PathBuf>,
+
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key-path PATH`"))]
+	#[arg(short = 'k', long = "key-path")]
+	public_key_path: Option<PathBuf>,
+
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-K, --key KEY`"))]
+	#[arg(short = 'K', long = "key")]
+	public_key: Option<String>,
 }
 
 pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 	let EncryptArgs {
-		plaintext: plaintext_path,
-		public_key: public_key_path,
+		input: ref plaintext_path,
+		..
 	} = ctx.args_sub;
-	let mut encrypted_path = plaintext_path.clone().into_os_string();
-	encrypted_path.push(".age");
+
+	let public_key: x25519::Recipient = match ctx.args_sub {
+		EncryptArgs { public_key_path: None, public_key: None, .. } => {
+			bail!("one of `--key-path` or `--key` must be provided");
+		}
+		EncryptArgs { public_key_path: Some(_), public_key: Some(_), .. } => {
+			bail!("one of `--key-path` or `--key` must be provided, not both");
+		}
+		EncryptArgs { public_key: Some(key), .. } => {
+			key.parse().map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+		}
+		EncryptArgs { public_key_path: Some(path), .. } => {
+			let key = read_to_string(&path).await.into_diagnostic().wrap_err("reading keyfile")?;
+			key.parse().map_err(|err| miette!("{err}").wrap_err("parsing key"))?
+		}
+	};
+
+	let encrypted_path = if let Some(path) = ctx.args_sub.output { path } else {
+		let mut path = plaintext_path.clone().into_os_string();
+		path.push(".age");
+		path.into()
+	};
+
 	info!(
-		?plaintext_path,
-		?encrypted_path,
-		?public_key_path,
+		input=?plaintext_path,
+		output=?encrypted_path,
+		key=?public_key,
 		"encrypting"
 	);
-
-	let public_key: x25519::Recipient = tokio::fs::read_to_string(&public_key_path)
-		.await
-		.into_diagnostic()
-		.wrap_err("reading the public key")?
-		.parse()
-		.map_err(|err: &str| miette!("failed to parse: {err}"))?;
 
 	let plaintext = File::open(&plaintext_path)
 		.await
