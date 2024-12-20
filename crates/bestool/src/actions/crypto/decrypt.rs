@@ -15,8 +15,11 @@ use crate::actions::{
 /// Decrypt the file encrypted by the "encrypt" subcommand.
 #[derive(Debug, Clone, Parser)]
 pub struct DecryptArgs {
-	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
-	encrypted: PathBuf,
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: `INPUT PATH`"))]
+	file: PathBuf,
+
+	#[cfg_attr(docsrs, doc("\n\n**Argument**: `[OUTPUT PATH]`"))]
+	output: Option<PathBuf>,
 
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--private-key PATH`"))]
 	#[arg(long)]
@@ -25,13 +28,17 @@ pub struct DecryptArgs {
 
 pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 	let DecryptArgs {
-		encrypted: encrypted_path,
+		file: encrypted_path,
 		private_key: private_key_path,
+		..
 	} = ctx.args_sub;
-	if encrypted_path.extension().is_some_and(|ext| ext == "enc") {
-		bail!("Unknown file extension (expected .enc): failed to derive the output file name.");
-	}
-	let plaintext_path = encrypted_path.with_extension("");
+
+	let plaintext_path = if let Some(path) = ctx.args_sub.output { path } else {
+		if !encrypted_path.extension().is_some_and(|ext| ext == "age") {
+			bail!("Unknown file extension (expected .age): failed to derive the output file name.");
+		}
+		encrypted_path.with_extension("")
+	};
 	info!(
 		?encrypted_path,
 		?plaintext_path,
@@ -50,13 +57,14 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the encrypted file")?;
-	// Wrap with progress bar before introducing "age" to avoid predicting size after decryption.
+
+	// Progress is calculated on the input size, not the predicted output
 	let encrypted = wrap_async_read_with_progress_bar(encrypted).await?;
 
 	let mut plaintext = File::create_new(&plaintext_path)
 		.await
 		.into_diagnostic()
-		.wrap_err("opening the decrypted output")?;
+		.wrap_err("opening the output file")?;
 
 	let mut decrypting_reader = Decryptor::new_async(encrypted.compat())
 		.await
@@ -68,14 +76,14 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 	tokio::io::copy(&mut decrypting_reader, &mut plaintext)
 		.await
 		.into_diagnostic()
-		.wrap_err("decrypting data in stream")?;
+		.wrap_err("decrypting data")?;
 
 	plaintext
 		.shutdown()
 		.await
 		.into_diagnostic()
-		.wrap_err("closing the plaintext output")?;
+		.wrap_err("closing the output stream")?;
 
-	info!("finished decrypting");
+	info!("done");
 	Ok(())
 }

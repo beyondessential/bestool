@@ -28,7 +28,7 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		public_key: public_key_path,
 	} = ctx.args_sub;
 	let mut encrypted_path = plaintext_path.clone().into_os_string();
-	encrypted_path.push(".enc");
+	encrypted_path.push(".age");
 	info!(
 		?plaintext_path,
 		?encrypted_path,
