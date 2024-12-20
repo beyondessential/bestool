@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.4](https://github.com/beyondessential/bestool/compare/v0.21.3..0.21.4) - 2024-12-05
+## [0.21.5](https://github.com/beyondessential/bestool/compare/v0.21.4..0.21.5) - 2024-12-18
+
+
+- **Deps:** Bump the deps group with 7 updates (#167) - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Aws-sdk-route53 to 1.54.0 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Aws-sdk-sts to 1.51.0 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Clap to 4.5.23 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Detect-targets to 0.1.32 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Sysinfo to 0.33.0 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Thiserror to 2.0.6 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Tokio to 1.42.0 - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
+- **Deps:** Enable TLS for reqwest - ([a910503](https://github.com/beyondessential/bestool/commit/a91050352f73a628afbf1272ce2cca07f15749e2))
+- **Feature:** KAM-296: Backup Configs (#166) - ([93ad98d](https://github.com/beyondessential/bestool/commit/93ad98df8b12b35ba36353d6c09bcf370d3fc06b))
+
+---
+## [0.21.4](https://github.com/beyondessential/bestool/compare/v0.21.3..v0.21.4) - 2024-12-05
 
 
 
