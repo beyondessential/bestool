@@ -15,8 +15,6 @@ use crate::actions::{
 /// Encrypt a file using a public key or an identity.
 ///
 /// Either of `--key-path` or `--key` must be provided.
-///
-///
 #[derive(Debug, Clone, Parser)]
 pub struct EncryptArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
