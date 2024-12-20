@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.21.5](https://github.com/beyondessential/bestool/compare/v0.21.4..0.21.5) - 2024-12-18
+## [0.3.3](https://github.com/beyondessential/bestool/compare/v0.21.5..0.3.3) - 2024-12-20
+
+
+- **Deps:** Update rppal requirement from 0.20.0 to 0.22.1 in /crates/bestool in the deps group (#171) - ([44ce528](https://github.com/beyondessential/bestool/commit/44ce5289b66c0667230de2eabd904975a4cf694c))
+- **Deps:** Bump the deps group across 1 directory with 10 updates (#172) - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update aws-config to 1.5.11 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update aws-sdk-route53 to 1.55.0 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update binstalk-downloader to 0.13.6 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update chrono to 0.4.39 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update clap_complete to 4.5.40 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update detect-targets to 0.1.33 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update rppal to 0.22.1 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+- **Deps:** Update serde to 1.0.216 - ([2d246a4](https://github.com/beyondessential/bestool/commit/2d246a44493b5dbfbfdfe798a4a8966f11ecadf4))
+
+### Crypto
+
+- **Feature:** KAM-297: add encrypt, decrypt, and keygen (#169) - ([c2d24b2](https://github.com/beyondessential/bestool/commit/c2d24b29d465bc4dd43cd77d1e521d7449cd263b))
+
+---
+## [0.21.5](https://github.com/beyondessential/bestool/compare/v0.21.4..v0.21.5) - 2024-12-18
 
 
 - **Deps:** Bump the deps group with 7 updates (#167) - ([2058f7f](https://github.com/beyondessential/bestool/commit/2058f7fdace631408e03d36594f3e43d292f93ae))
