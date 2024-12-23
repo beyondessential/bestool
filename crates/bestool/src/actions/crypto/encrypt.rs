@@ -13,17 +13,17 @@ use crate::actions::Context;
 pub struct EncryptArgs {
 	/// File to be encrypted.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
-	input: PathBuf,
+	pub input: PathBuf,
 
 	/// Path or filename to write the encrypted file to.
 	///
 	/// By default this is the input file, with `.age` appended.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-o, --output PATH`"))]
 	#[arg(short, long)]
-	output: Option<PathBuf>,
+	pub output: Option<PathBuf>,
 
 	#[command(flatten)]
-	key: KeyArgs,
+	pub key: KeyArgs,
 }
 
 pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {

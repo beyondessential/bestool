@@ -13,7 +13,7 @@ use crate::actions::Context;
 pub struct DecryptArgs {
 	/// File to be decrypted.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
-	input: PathBuf,
+	pub input: PathBuf,
 
 	/// Path or filename to write the decrypted file to.
 	///
@@ -21,10 +21,10 @@ pub struct DecryptArgs {
 	/// `.age`). Otherwise, this option is required.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-o, --output PATH`"))]
 	#[arg(short, long)]
-	output: Option<PathBuf>,
+	pub output: Option<PathBuf>,
 
 	#[command(flatten)]
-	key: KeyArgs,
+	pub key: KeyArgs,
 }
 
 pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
