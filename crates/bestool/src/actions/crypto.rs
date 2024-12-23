@@ -22,5 +22,7 @@ super::subcommands! {
 	decrypt => Decrypt(DecryptArgs),
 	encrypt => Encrypt(EncryptArgs),
 	hash => Hash(HashArgs),
-	keygen => Keygen(KeygenArgs)
+	keygen => Keygen(KeygenArgs),
+	protect => Protect(ProtectArgs),
+	reveal => Reveal(RevealArgs)
 }

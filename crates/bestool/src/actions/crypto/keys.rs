@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use age::{x25519, Identity, IdentityFile, Recipient};
+use age::{secrecy::SecretString, x25519, Identity, IdentityFile, Recipient};
 use clap::Parser;
+use dialoguer::Password;
 use miette::{bail, miette, Context as _, IntoDiagnostic as _, Result};
 use tokio::fs::read_to_string;
 
@@ -42,8 +43,8 @@ pub struct KeyArgs {
 	/// AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key-path PATH`"))]
-	#[arg(short = 'k', long = "key-path", verbatim_doc_comment)]
-	key_path: Option<PathBuf>,
+	#[arg(short, long, verbatim_doc_comment)]
+	pub key_path: Option<PathBuf>,
 
 	/// The key to use for encrypting/decrypting as a string.
 	///
@@ -70,13 +71,8 @@ pub struct KeyArgs {
 	/// --key AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-K, --key STRING`"))]
-	#[arg(
-		short = 'K',
-		long = "key",
-		verbatim_doc_comment,
-		conflicts_with = "key_path"
-	)]
-	key: Option<String>,
+	#[arg(short = 'K', verbatim_doc_comment, conflicts_with = "key_path")]
+	pub key: Option<String>,
 }
 
 impl KeyArgs {
@@ -231,5 +227,100 @@ impl KeyArgs {
 				}
 			}
 		}
+	}
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct PassphraseArgs {
+	/// Path to a file containing a passphrase.
+	///
+	/// The contents of the file will be trimmed of whitespace.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-P, --passphrase-path PATH`"))]
+	#[arg(short = 'P', long)]
+	pub passphrase_path: Option<PathBuf>,
+
+	/// A passphrase as a string.
+	///
+	/// This is extremely insecure, only use when there is no other option. When on an interactive
+	/// terminal, make sure to wipe this command line from your history, or better yet not record it
+	/// in the first place (in Bash you often can do that by prepending a space to your command).
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--insecure-passphrase STRING`"))]
+	#[arg(long, conflicts_with = "passphrase_path")]
+	pub insecure_passphrase: Option<SecretString>,
+}
+
+impl PassphraseArgs {
+	/// Retrieve a passphrase from the user.
+	pub async fn require(&self) -> Result<Passphrase> {
+		self.get(false).await
+	}
+
+	/// Retrieve a passphrase from the user, with confirmation when prompting.
+	pub async fn require_with_confirmation(&self) -> Result<Passphrase> {
+		self.get(true).await
+	}
+
+	async fn get(&self, confirm: bool) -> Result<Passphrase> {
+		if let Some(ref phrase) = self.insecure_passphrase {
+			Ok(Passphrase::new(phrase.clone()))
+		} else if let Some(ref path) = self.passphrase_path {
+			Ok(Passphrase::new(
+				read_to_string(path)
+					.await
+					.into_diagnostic()
+					.wrap_err("reading keyfile")?
+					.trim()
+					.into(),
+			))
+		} else {
+			let mut prompt = Password::new().with_prompt("Passphrase");
+			if confirm {
+				prompt = prompt.with_confirmation("Confirm passphrase", "Passphrases mismatching");
+			}
+			let phrase = prompt.interact().into_diagnostic()?;
+			Ok(Passphrase::new(phrase.into()))
+		}
+	}
+}
+
+pub struct Passphrase(age::scrypt::Recipient, age::scrypt::Identity);
+
+impl Passphrase {
+	fn new(secret: SecretString) -> Self {
+		Self(
+			age::scrypt::Recipient::new(secret.clone()),
+			age::scrypt::Identity::new(secret),
+		)
+	}
+}
+
+impl Recipient for Passphrase {
+	fn wrap_file_key(
+		&self,
+		file_key: &age_core::format::FileKey,
+	) -> std::result::Result<
+		(
+			Vec<age_core::format::Stanza>,
+			std::collections::HashSet<String>,
+		),
+		age::EncryptError,
+	> {
+		self.0.wrap_file_key(file_key)
+	}
+}
+
+impl Identity for Passphrase {
+	fn unwrap_stanza(
+		&self,
+		stanza: &age_core::format::Stanza,
+	) -> Option<std::result::Result<age_core::format::FileKey, age::DecryptError>> {
+		self.1.unwrap_stanza(stanza)
+	}
+
+	fn unwrap_stanzas(
+		&self,
+		stanzas: &[age_core::format::Stanza],
+	) -> Option<std::result::Result<age_core::format::FileKey, age::DecryptError>> {
+		self.1.unwrap_stanzas(stanzas)
 	}
 }
