@@ -50,6 +50,10 @@ pub struct KeyArgs {
 	/// This supports either public key or secret keys depending on the operation being done.
 	/// It does not support the age identity format (with both public and secret keys).
 	///
+	/// When encrypting and provided with a secret key, the corresponding public key will be derived
+	/// first; there is no way to encrypt with a secret key such that a file is decodable with the
+	/// public key.
+	///
 	/// There is no support for password-protected secret keys.
 	///
 	/// ## Examples
@@ -65,10 +69,6 @@ pub struct KeyArgs {
 	/// ```console
 	/// --key AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
-	///
-	/// When encrypting and provided with a secret key, the corresponding public key will be derived
-	/// first; there is no way to encrypt with a secret key such that a file is decodable with the
-	/// public key.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-K, --key STRING`"))]
 	#[arg(
 		short = 'K',
