@@ -73,6 +73,9 @@ pub struct KeyArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-K, --key STRING`"))]
 	#[arg(short = 'K', verbatim_doc_comment, conflicts_with = "key_path")]
 	pub key: Option<String>,
+
+	#[command(flatten)]
+	pub pass: PassphraseArgs,
 }
 
 impl KeyArgs {
@@ -142,27 +145,31 @@ impl KeyArgs {
 				.map_err(|err| miette!("{err}").wrap_err("parsing secret key")),
 			Self {
 				key_path: Some(path),
+				pass,
+				..
+			} if path.extension().unwrap_or_default() == "age" => {
+				let key = tokio::fs::read(path).await.into_diagnostic()?;
+				let pass = pass.require().await?;
+				let id = age::decrypt(&pass, &key)
+					.into_diagnostic()
+					.wrap_err("revealing identity file")?;
+
+				parse_id_as_identity(
+					&String::from_utf8(id)
+						.into_diagnostic()
+						.wrap_err("parsing identity file as UTF-8")?,
+				)
+				.map(Some)
+			}
+			Self {
+				key_path: Some(path),
 				..
 			} => {
 				let key = read_to_string(&path)
 					.await
 					.into_diagnostic()
-					.wrap_err("reading keyfile")?;
-				if key.starts_with("AGE-SECRET-KEY") {
-					key.parse::<x25519::Identity>()
-						.map(|sec| Some(Box::new(sec) as _))
-						.map_err(|err| miette!("{err}").wrap_err("parsing secret key"))
-				} else {
-					IdentityFile::from_buffer(key.as_bytes())
-						.into_diagnostic()
-						.wrap_err("parsing identity")?
-						.into_identities()
-						.into_diagnostic()
-						.wrap_err("parsing keys from identity")?
-						.pop()
-						.ok_or_else(|| miette!("no identity available"))
-						.map(Some)
-				}
+					.wrap_err("reading identity file")?;
+				parse_id_as_identity(&key).map(Some)
 			}
 		}
 	}
@@ -200,33 +207,71 @@ impl KeyArgs {
 			}
 			Self {
 				key_path: Some(path),
+				pass,
+				..
+			} if path.extension().unwrap_or_default() == "age" => {
+				let key = tokio::fs::read(path).await.into_diagnostic()?;
+				let pass = pass.require().await?;
+				let id = age::decrypt(&pass, &key)
+					.into_diagnostic()
+					.wrap_err("revealing identity file")?;
+
+				parse_id_as_recipient(
+					&String::from_utf8(id)
+						.into_diagnostic()
+						.wrap_err("parsing identity file as UTF-8")?,
+				)
+				.map(Some)
+			}
+			Self {
+				key_path: Some(path),
 				..
 			} => {
-				let key = read_to_string(&path)
+				let key = read_to_string(path)
 					.await
 					.into_diagnostic()
-					.wrap_err("reading keyfile")?;
-				if key.starts_with("age") {
-					key.parse::<x25519::Recipient>()
-						.map(|key| Some(Box::new(key) as _))
-						.map_err(|err| miette!("{err}").wrap_err("parsing public key"))
-				} else if key.starts_with("AGE-SECRET-KEY") {
-					key.parse::<x25519::Identity>()
-						.map(|sec| Some(Box::new(sec.to_public()) as _))
-						.map_err(|err| miette!("{err}").wrap_err("parsing secret key"))
-				} else {
-					IdentityFile::from_buffer(key.as_bytes())
-						.into_diagnostic()
-						.wrap_err("parsing identity")?
-						.to_recipients()
-						.into_diagnostic()
-						.wrap_err("parsing recipients from identity")?
-						.pop()
-						.ok_or_else(|| miette!("no recipient available in identity"))
-						.map(Some)
-				}
+					.wrap_err("reading identity file")?;
+				parse_id_as_recipient(&key).map(Some)
 			}
 		}
+	}
+}
+
+fn parse_id_as_identity(id: &str) -> Result<Box<dyn Identity>> {
+	if id.starts_with("AGE-SECRET-KEY") {
+		id.parse::<x25519::Identity>()
+			.map(|sec| Box::new(sec) as _)
+			.map_err(|err| miette!("{err}").wrap_err("parsing secret key"))
+	} else {
+		IdentityFile::from_buffer(id.as_bytes())
+			.into_diagnostic()
+			.wrap_err("parsing identity")?
+			.into_identities()
+			.into_diagnostic()
+			.wrap_err("parsing keys from identity")?
+			.pop()
+			.ok_or_else(|| miette!("no identity available"))
+	}
+}
+
+fn parse_id_as_recipient(id: &str) -> Result<Box<dyn Recipient + Send>> {
+	if id.starts_with("age") {
+		id.parse::<x25519::Recipient>()
+			.map(|key| Box::new(key) as _)
+			.map_err(|err| miette!("{err}").wrap_err("parsing public key"))
+	} else if id.starts_with("AGE-SECRET-KEY") {
+		id.parse::<x25519::Identity>()
+			.map(|sec| Box::new(sec.to_public()) as _)
+			.map_err(|err| miette!("{err}").wrap_err("parsing secret key"))
+	} else {
+		IdentityFile::from_buffer(id.as_bytes())
+			.into_diagnostic()
+			.wrap_err("parsing identity")?
+			.to_recipients()
+			.into_diagnostic()
+			.wrap_err("parsing recipients from identity")?
+			.pop()
+			.ok_or_else(|| miette!("no recipient available in identity"))
 	}
 }
 
