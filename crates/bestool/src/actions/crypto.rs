@@ -2,8 +2,8 @@ use std::io::{stderr, IsTerminal as _};
 
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressBarIter, ProgressStyle};
-use miette::{IntoDiagnostic, Result};
-use tokio::fs::File;
+use miette::Result;
+use tokio::io::AsyncRead;
 
 use super::Context;
 
@@ -28,18 +28,20 @@ super::subcommands! {
 	keygen => Keygen(KeygenArgs)
 }
 
-/// Wraps a [`tokio::fs::File`] with a [`indicatif::ProgressBar`].
+/// Wraps a [`tokio::io::AsyncRead`] with an [`indicatif::ProgressBar`].
 ///
-/// The progress bar outputs to stderr. This does nothing if stderr is not terminal.
-async fn wrap_async_read_with_progress_bar(read: File) -> Result<ProgressBarIter<File>> {
-	let progress_bar = if stderr().is_terminal() {
+/// The progress bar outputs to stderr iff that's terminal, and nothing is displayed otherwise.
+pub(crate) fn with_progress_bar<R: AsyncRead + Unpin>(
+	expected_length: u64,
+	reader: R,
+) -> ProgressBarIter<R> {
+	if stderr().is_terminal() {
 		let style = ProgressStyle::default_bar()
 			.template("[{bar:.green/blue}] {wide_msg} {binary_bytes}/{binary_total_bytes} ({eta})")
-			.expect("bar template invalid");
-		ProgressBar::new(read.metadata().await.into_diagnostic()?.len()).with_style(style)
+			.expect("BUG: progress bar template invalid");
+		ProgressBar::new(expected_length).with_style(style)
 	} else {
 		ProgressBar::hidden()
-	};
-
-	Ok(progress_bar.wrap_async_read(read))
+	}
+	.wrap_async_read(reader)
 }

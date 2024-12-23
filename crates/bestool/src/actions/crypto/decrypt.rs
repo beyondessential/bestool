@@ -1,13 +1,13 @@
 use std::{iter, path::PathBuf};
 
-use age::Decryptor;
+use age::{Decryptor, Identity};
 use clap::Parser;
 use miette::{bail, Context as _, IntoDiagnostic as _, Result};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncReadCompatExt as _, TokioAsyncReadCompatExt as _};
-use tracing::debug;
+use tracing::{debug, trace};
 
-use super::{key::KeyArgs, wrap_async_read_with_progress_bar, CryptoArgs};
+use super::{key::KeyArgs, with_progress_bar, CryptoArgs};
 use crate::actions::Context;
 
 /// Decrypt a file using a private key or an identity.
@@ -54,36 +54,60 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		"decrypting"
 	);
 
-	let encrypted = File::open(&encrypted_path)
+	let input = File::open(&encrypted_path)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the input file")?;
+	let input_length = input
+		.metadata()
+		.await
+		.into_diagnostic()
+		.wrap_err("reading input file length")?
+		.len();
 
-	// Progress is calculated on the input size, not the predicted output
-	let encrypted = wrap_async_read_with_progress_bar(encrypted).await?;
-
-	let mut plaintext = File::create_new(&plaintext_path)
+	let output = File::create_new(&plaintext_path)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the output file")?;
 
-	let mut decrypting_reader = Decryptor::new_async(encrypted.compat())
+	decrypt_stream(
+		with_progress_bar(input_length, input).compat(),
+		output,
+		secret_key,
+	)
+	.await?;
+
+	Ok(())
+}
+
+/// Decrypt a bytestream given a secret key.
+pub(crate) async fn decrypt_stream<
+	R: futures::AsyncRead + Unpin,
+	W: tokio::io::AsyncWrite + Unpin,
+>(
+	reader: R,
+	mut writer: W,
+	key: Box<dyn Identity>,
+) -> Result<u64> {
+	let mut decrypting_reader = Decryptor::new_async(reader)
 		.await
 		.into_diagnostic()?
-		.decrypt_async(iter::once(&*secret_key))
+		.decrypt_async(iter::once(&*key))
 		.into_diagnostic()?
 		.compat();
 
-	tokio::io::copy(&mut decrypting_reader, &mut plaintext)
+	let bytes = tokio::io::copy(&mut decrypting_reader, &mut writer)
 		.await
 		.into_diagnostic()
 		.wrap_err("decrypting data")?;
 
-	plaintext
+	writer
 		.shutdown()
 		.await
 		.into_diagnostic()
 		.wrap_err("closing the output stream")?;
 
-	Ok(())
+	trace!(?bytes, "bytestream decrypted");
+
+	Ok(bytes)
 }

@@ -1,13 +1,13 @@
 use std::{iter, path::PathBuf};
 
-use age::Encryptor;
+use age::{Encryptor, Recipient};
 use clap::Parser;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
-use tracing::debug;
+use tracing::{debug, trace};
 
-use super::{key::KeyArgs, wrap_async_read_with_progress_bar, CryptoArgs};
+use super::{key::KeyArgs, with_progress_bar, CryptoArgs};
 use crate::actions::Context;
 
 /// Encrypt a file using a public key or an identity.
@@ -56,22 +56,45 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the plainetxt")?;
-	// Wrap with progress bar before introducing "age" to avoid predicting size after encryption.
-	let mut plaintext = wrap_async_read_with_progress_bar(plaintext).await?;
+	let plaintext_length = plaintext
+		.metadata()
+		.await
+		.into_diagnostic()
+		.wrap_err("reading input file length")?
+		.len();
 
 	let encrypted = File::create_new(&encrypted_path)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the encrypted output")?;
 
-	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&*public_key as _))
-		.expect("a recipient should exist")
-		.wrap_async_output(encrypted.compat_write())
+	encrypt_stream(
+		with_progress_bar(plaintext_length, plaintext),
+		encrypted.compat_write(),
+		public_key,
+	)
+	.await?;
+
+	Ok(())
+}
+
+/// Encrypt a bytestream given a public key.
+pub(crate) async fn encrypt_stream<
+	R: tokio::io::AsyncRead + Unpin,
+	W: futures::AsyncWrite + Unpin,
+>(
+	mut reader: R,
+	writer: W,
+	key: Box<dyn Recipient + Send>,
+) -> Result<u64> {
+	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&*key as _))
+		.expect("BUG: a single recipient is always given")
+		.wrap_async_output(writer)
 		.await
 		.into_diagnostic()?
 		.compat_write();
 
-	tokio::io::copy(&mut plaintext, &mut encrypting_writer)
+	let bytes = tokio::io::copy(&mut reader, &mut encrypting_writer)
 		.await
 		.into_diagnostic()
 		.wrap_err("encrypting data in stream")?;
@@ -82,5 +105,7 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("closing the encrypted output")?;
 
-	Ok(())
+	trace!(?bytes, "bytestream encrypted");
+
+	Ok(bytes)
 }
