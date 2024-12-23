@@ -9,6 +9,8 @@ use crate::actions::Context;
 /// Encrypt a file using a public key or an identity.
 ///
 /// Either of `--key-path` or `--key` must be provided.
+///
+/// If symmetric cryptography (using a passphrase), see `protect`/`reveal`.
 #[derive(Debug, Clone, Parser)]
 pub struct EncryptArgs {
 	/// File to be encrypted.

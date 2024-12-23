@@ -36,7 +36,7 @@ pub fn with_progress_bar<R: AsyncRead + Unpin>(
 	.wrap_async_read(reader)
 }
 
-/// Encrypt a bytestream given a public key.
+/// Encrypt a bytestream given a [`Recipient`].
 pub async fn encrypt_stream<R: tokio::io::AsyncRead + Unpin, W: futures::AsyncWrite + Unpin>(
 	mut reader: R,
 	writer: W,
@@ -65,7 +65,7 @@ pub async fn encrypt_stream<R: tokio::io::AsyncRead + Unpin, W: futures::AsyncWr
 	Ok(bytes)
 }
 
-/// Encrypt a path to another given a public key.
+/// Encrypt a path to another given a [`Recipient`].
 ///
 /// If stderr is a terminal, this will show a progress bar.
 #[instrument(level = "debug", skip(key))]
@@ -98,7 +98,7 @@ pub async fn encrypt_file(
 	.await
 }
 
-/// Decrypt a bytestream given a secret key.
+/// Decrypt a bytestream given an [`Identity`].
 pub async fn decrypt_stream<R: futures::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin>(
 	reader: R,
 	mut writer: W,
@@ -127,7 +127,7 @@ pub async fn decrypt_stream<R: futures::AsyncRead + Unpin, W: tokio::io::AsyncWr
 	Ok(bytes)
 }
 
-/// Decrypt a path to another given a secret key.
+/// Decrypt a path to another given an [`Identity`].
 ///
 /// If stderr is a terminal, this will show a progress bar.
 #[instrument(level = "debug", skip(key))]
