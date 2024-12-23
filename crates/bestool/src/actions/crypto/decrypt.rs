@@ -5,7 +5,7 @@ use clap::Parser;
 use miette::{bail, Context as _, IntoDiagnostic as _, Result};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncReadCompatExt as _, TokioAsyncReadCompatExt as _};
-use tracing::info;
+use tracing::debug;
 
 use super::{key::KeyArgs, wrap_async_read_with_progress_bar, CryptoArgs};
 use crate::actions::Context;
@@ -15,9 +15,14 @@ use crate::actions::Context;
 /// Either of `--key-path` or `--key` must be provided.
 #[derive(Debug, Clone, Parser)]
 pub struct DecryptArgs {
+	/// File to be decrypted.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	input: PathBuf,
 
+	/// Path or filename to write the decrypted file to.
+	///
+	/// If the input file has a `.age` extension, this can be automatically derived (by removing the
+	/// `.age`). Otherwise, this option is required.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-o, --output PATH`"))]
 	#[arg(short, long)]
 	output: Option<PathBuf>,
@@ -43,7 +48,7 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		encrypted_path.with_extension("")
 	};
 
-	info!(
+	debug!(
 		input=?encrypted_path,
 		output=?plaintext_path,
 		"decrypting"
@@ -80,6 +85,5 @@ pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("closing the output stream")?;
 
-	info!("done");
 	Ok(())
 }

@@ -5,7 +5,7 @@ use clap::Parser;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
 use tokio::{fs::File, io::AsyncWriteExt as _};
 use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
-use tracing::info;
+use tracing::debug;
 
 use super::{key::KeyArgs, wrap_async_read_with_progress_bar, CryptoArgs};
 use crate::actions::Context;
@@ -15,9 +15,13 @@ use crate::actions::Context;
 /// Either of `--key-path` or `--key` must be provided.
 #[derive(Debug, Clone, Parser)]
 pub struct EncryptArgs {
+	/// File to be encrypted.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	input: PathBuf,
 
+	/// Path or filename to write the encrypted file to.
+	///
+	/// By default this is the input file, with `.age` appended.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-o, --output PATH`"))]
 	#[arg(short, long)]
 	output: Option<PathBuf>,
@@ -42,7 +46,7 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		path.into()
 	};
 
-	info!(
+	debug!(
 		input=?plaintext_path,
 		output=?encrypted_path,
 		"encrypting"
@@ -78,6 +82,5 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("closing the encrypted output")?;
 
-	info!("finished encrypting");
 	Ok(())
 }
