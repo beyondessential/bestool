@@ -1,13 +1,15 @@
-use std::{ffi::OsString, fs, path::Path};
+use std::{ffi::OsString, fs, path::{Path, PathBuf}};
 
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
+use tokio::fs::remove_file;
 use tracing::{debug, info, instrument};
 
 use crate::{
 	actions::{
+		crypto::{keys::KeyArgs, streams::encrypt_file},
 		tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},
@@ -20,6 +22,11 @@ use crate::{
 /// "{current_datetime}-{host_name}-{database_name}.dump".
 ///
 /// By default, this excludes tables "sync_snapshots.*" and "fhir.jobs".
+///
+/// If `--key` or `--key-file` is provided, the backup file will be encrypted. Note that this is
+/// done by first writing the plaintext backup file to disk, then encrypting, and finally deleting
+/// the original. That effectively requires double the available disk space, and the plaintext file
+/// is briefly available on disk. This limitation may be lifted in the future.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu backup`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct BackupArgs {
@@ -34,14 +41,14 @@ pub struct BackupArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--write-to PATH`"))]
 	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
 	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
-	pub write_to: String,
+	pub write_to: PathBuf,
 
 	/// The file path to copy the written backup.
 	///
 	/// The backup will stay as is in "write_to".
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--then-copy-to PATH`"))]
 	#[arg(long)]
-	pub then_copy_to: Option<String>,
+	pub then_copy_to: Option<PathBuf>,
 
 	/// Take a lean backup instead.
 	///
@@ -61,6 +68,9 @@ pub struct BackupArgs {
 	/// ```
 	#[arg(trailing_var_arg = true)]
 	pub args: Vec<OsString>,
+
+	#[command(flatten)]
+	pub key: KeyArgs,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -82,46 +92,55 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let kind = find_package(&root);
 	let config_value = load_config(&root, kind.package_name())?;
 
+	let pg_dump = find_postgres_bin("pg_dump")?;
+
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
+	let key = ctx.args_sub.key.get_public_key().await?;
 
-	let pg_dump = find_postgres_bin("pg_dump")?;
+	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	#[rustfmt::skip]
-	let excluded_tables = if ctx.args_sub.lean {
-		info!(?output, "writing lean backup");
-
-		vec!["--exclude-table", "sync_snapshots.*",
-			"--exclude-table-data", "fhir.*",
-			"--exclude-table-data", "logs.*",
-			"--exclude-table-data", "reporting.*",
-			"--exclude-table-data", "public.attachments"].into_iter().map(Into::<OsString>::into)
+	let (backup_type, excluded_tables) = if ctx.args_sub.lean {
+		(
+			"lean",
+			vec![
+				"--exclude-table", "sync_snapshots.*",
+				"--exclude-table-data", "fhir.*",
+				"--exclude-table-data", "logs.*",
+				"--exclude-table-data", "reporting.*",
+				"--exclude-table-data", "public.attachments",
+			]
+			.into_iter()
+			.map(Into::<OsString>::into),
+		)
 	} else {
-		info!(?output, "writing full backup to");
-
-		vec!["--exclude-table", "sync_snapshots.*",
-			"--exclude-table-data", "fhir.jobs"].into_iter().map(Into::<OsString>::into)
+		(
+			"full",
+			vec![
+				"--exclude-table", "sync_snapshots.*",
+				"--exclude-table-data", "fhir.jobs",
+			]
+			.into_iter()
+			.map(Into::<OsString>::into),
+		)
 	};
+	info!(?output, "writing {backup_type} backup");
 
+	#[rustfmt::skip]
 	duct::cmd(
 		pg_dump,
 		[
-			Into::<OsString>::into("--username"),
-			config.db.username.into(),
+			"--username".into(), config.db.username.into(),
 			"--verbose".into(),
-			"--format".into(),
-			"c".into(),
-			"--compress".into(),
-			ctx.args_sub.compression_level.to_string().into(),
-			"--file".into(),
-			output.clone().into(),
-			"--dbname".into(),
-			config.db.name.into(),
+			"--format".into(), "c".into(),
+			"--compress".into(), ctx.args_sub.compression_level.to_string().into(),
+			"--file".into(), output.clone().into(),
+			"--dbname".into(), config.db.name.into(),
 		]
 		.into_iter()
 		.chain(excluded_tables)
@@ -132,8 +151,22 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;
 
+	let output = if let Some(key) = key {
+		let mut encrypted_path = output.clone().into_os_string();
+		encrypted_path.push(".age");
+		info!(path=?encrypted_path, "encrypting backup");
+		encrypt_file(&output, &encrypted_path, key).await?;
+
+		info!(path=?output, "deleting original");
+		remove_file(output).await.into_diagnostic()?;
+
+		encrypted_path.into()
+	} else {
+		output
+	};
+
 	if let Some(then_copy_to) = ctx.args_sub.then_copy_to {
-		info!(?then_copy_to, "copying backup");
+		info!(path=?then_copy_to, "copying backup");
 		fs::copy(output, then_copy_to).into_diagnostic()?;
 	}
 

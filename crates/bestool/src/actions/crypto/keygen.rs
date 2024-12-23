@@ -14,10 +14,26 @@ use crate::{
 
 /// Generate a key-pair to use in the "encrypt" and "decrypt" subcommands.
 ///
-/// This makes a single identity file as in `age-keygen --output PATH`
+/// This creates a single identity file, compatible with `age-keygen`, which
+/// contains both the public and secret key:
+///
+/// ```identity.txt
+/// # created: 2024-12-20T05:36:10.267871872+00:00
+/// # public key: age1c3jdepjm05aey2dq9dgkfn4utj9a776zwqzqcar3879smuh04ysqttvmyd
+/// AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
+/// ```
+///
+/// Do NOT store this entire identity file on untrusted machines, or where it's
+/// unnecessary to regularly decrypt files. Instead, copy just the public key
+/// string, which can safely be shared and stored as-is:
+///
+/// ```key.pub
+/// age1c3jdepjm05aey2dq9dgkfn4utj9a776zwqzqcar3879smuh04ysqttvmyd
+/// ```
 #[derive(Debug, Clone, Parser)]
+#[clap(verbatim_doc_comment)]
 pub struct KeygenArgs {
-	/// Path to the output identity key file.
+	/// Path to write the identity file to.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--identity PATH`"))]
 	#[arg(long, default_value = r"identity.txt")]
 	pub identity: PathBuf,
