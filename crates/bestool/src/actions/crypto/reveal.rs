@@ -3,16 +3,18 @@ use std::{fmt::Debug, path::PathBuf};
 use clap::Parser;
 use miette::{bail, Result};
 
-use super::{keys::KeyArgs, streams::decrypt_file, CryptoArgs};
+use super::{keys::PassphraseArgs, streams::decrypt_file, CryptoArgs};
 use crate::actions::Context;
 
-/// Decrypt a file using a secret key or an identity.
+/// Decrypt a file using a passphrase.
 ///
-/// Either of `--key-path` or `--key` must be provided.
+/// Whenever possible, prefer to use `encrypt` and `decrypt` with identity files
+/// (public key cryptography).
 ///
-/// If symmetric cryptography (using a passphrase), see `protect`/`reveal`.
+/// This utility may also be used to convert a passphrase-protected identity
+/// file into a plaintext one.
 #[derive(Debug, Clone, Parser)]
-pub struct DecryptArgs {
+pub struct RevealArgs {
 	/// File to be decrypted.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	pub input: PathBuf,
@@ -26,26 +28,26 @@ pub struct DecryptArgs {
 	pub output: Option<PathBuf>,
 
 	#[command(flatten)]
-	pub key: KeyArgs,
+	pub key: PassphraseArgs,
 }
 
-pub async fn run(ctx: Context<CryptoArgs, DecryptArgs>) -> Result<()> {
-	let DecryptArgs {
-		input: ref encrypted_path,
+pub async fn run(ctx: Context<CryptoArgs, RevealArgs>) -> Result<()> {
+	let RevealArgs {
+		ref input,
 		output,
 		key,
 	} = ctx.args_sub;
 
-	let secret_key = key.require_secret_key().await?;
-	let plaintext_path = if let Some(ref path) = output {
+	let key = key.require().await?;
+	let output = if let Some(ref path) = output {
 		path.to_owned()
 	} else {
-		if !encrypted_path.extension().is_some_and(|ext| ext == "age") {
+		if !input.extension().is_some_and(|ext| ext == "age") {
 			bail!("Cannot guess output path, use --output to set one");
 		}
-		encrypted_path.with_extension("")
+		input.with_extension("")
 	};
 
-	decrypt_file(encrypted_path, plaintext_path, secret_key).await?;
+	decrypt_file(input, output, Box::new(key)).await?;
 	Ok(())
 }
