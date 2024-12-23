@@ -1,13 +1,9 @@
-use std::{iter, path::PathBuf};
+use std::{fmt::Debug, path::PathBuf};
 
-use age::{Encryptor, Recipient};
 use clap::Parser;
-use miette::{IntoDiagnostic as _, Result, WrapErr as _};
-use tokio::{fs::File, io::AsyncWriteExt as _};
-use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
-use tracing::{debug, trace};
+use miette::Result;
 
-use super::{key::KeyArgs, with_progress_bar, CryptoArgs};
+use super::{keys::KeyArgs, streams::encrypt_file, CryptoArgs};
 use crate::actions::Context;
 
 /// Encrypt a file using a public key or an identity.
@@ -46,66 +42,6 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 		path.into()
 	};
 
-	debug!(
-		input=?plaintext_path,
-		output=?encrypted_path,
-		"encrypting"
-	);
-
-	let plaintext = File::open(&plaintext_path)
-		.await
-		.into_diagnostic()
-		.wrap_err("opening the plainetxt")?;
-	let plaintext_length = plaintext
-		.metadata()
-		.await
-		.into_diagnostic()
-		.wrap_err("reading input file length")?
-		.len();
-
-	let encrypted = File::create_new(&encrypted_path)
-		.await
-		.into_diagnostic()
-		.wrap_err("opening the encrypted output")?;
-
-	encrypt_stream(
-		with_progress_bar(plaintext_length, plaintext),
-		encrypted.compat_write(),
-		public_key,
-	)
-	.await?;
-
+	encrypt_file(plaintext_path, encrypted_path, public_key).await?;
 	Ok(())
-}
-
-/// Encrypt a bytestream given a public key.
-pub(crate) async fn encrypt_stream<
-	R: tokio::io::AsyncRead + Unpin,
-	W: futures::AsyncWrite + Unpin,
->(
-	mut reader: R,
-	writer: W,
-	key: Box<dyn Recipient + Send>,
-) -> Result<u64> {
-	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&*key as _))
-		.expect("BUG: a single recipient is always given")
-		.wrap_async_output(writer)
-		.await
-		.into_diagnostic()?
-		.compat_write();
-
-	let bytes = tokio::io::copy(&mut reader, &mut encrypting_writer)
-		.await
-		.into_diagnostic()
-		.wrap_err("encrypting data in stream")?;
-
-	encrypting_writer
-		.shutdown()
-		.await
-		.into_diagnostic()
-		.wrap_err("closing the encrypted output")?;
-
-	trace!(?bytes, "bytestream encrypted");
-
-	Ok(bytes)
 }
