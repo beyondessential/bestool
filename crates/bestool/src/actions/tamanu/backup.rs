@@ -66,7 +66,7 @@ pub struct BackupArgs {
 	/// ```plain
 	/// bestool tamanu backup -- --password pass
 	/// ```
-	#[arg(trailing_var_arg = true)]
+	#[arg(trailing_var_arg = true, verbatim_doc_comment)]
 	pub args: Vec<OsString>,
 
 	#[command(flatten)]
