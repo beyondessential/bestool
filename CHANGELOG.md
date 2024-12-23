@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.23.0](https://github.com/beyondessential/bestool/compare/v0.22.0..0.23.0) - 2024-12-23
+
+
+- **Deps:** Bump the deps group with 3 updates (#173) - ([0952cef](https://github.com/beyondessential/bestool/commit/0952cef8784698c3c4c7b9c44bf395b177ccb92d))
+- **Deps:** Update age to 0.11.1 - ([0952cef](https://github.com/beyondessential/bestool/commit/0952cef8784698c3c4c7b9c44bf395b177ccb92d))
+- **Deps:** Update serde_json to 1.0.134 - ([0952cef](https://github.com/beyondessential/bestool/commit/0952cef8784698c3c4c7b9c44bf395b177ccb92d))
+- **Deps:** Update thiserror to 2.0.9 - ([0952cef](https://github.com/beyondessential/bestool/commit/0952cef8784698c3c4c7b9c44bf395b177ccb92d))
+- **Documentation:** Fix changelog - ([801615a](https://github.com/beyondessential/bestool/commit/801615a268a6789e57ba572dd0d30880cdd56ac6))
+
+### Backup
+
+- **Documentation:** Fix help for trailing args - ([e0755c1](https://github.com/beyondessential/bestool/commit/e0755c141843da70ce653d6e60c057e5b607988b))
+- **Feature:** KAM-297: add ability to encrypt backups (#174) - ([c9fc6ed](https://github.com/beyondessential/bestool/commit/c9fc6ed7a636aae2d3e4d35f7038a1ed5fb22cee))
+
+### Crypto
+
+- **Documentation:** Explain how to use the identity file in keygen - ([c9fc6ed](https://github.com/beyondessential/bestool/commit/c9fc6ed7a636aae2d3e4d35f7038a1ed5fb22cee))
+- **Documentation:** Fix description of keygen - ([41968cc](https://github.com/beyondessential/bestool/commit/41968cc9d22a498e37cea521ae8eddb741d9bd55))
+- **Feature:** Add protect/reveal commands for passphrase encryption - ([26a593b](https://github.com/beyondessential/bestool/commit/26a593b3993fb7b87e149952aa8ab70a8a12dece))
+- **Feature:** Encrypt identity files by default - ([1c90629](https://github.com/beyondessential/bestool/commit/1c906294967b25d2e8f3495b2a3b0a0cfeadd854))
+- **Feature:** Support encrypted identity files directly while en/decrypting - ([91f263b](https://github.com/beyondessential/bestool/commit/91f263b41cb89016358dd711a385ba6a4744a4a1))
+- **Feature:** Add --rm to encrypt and protect - ([4344884](https://github.com/beyondessential/bestool/commit/43448843bf6f5c038848def58a9b501a72515d33))
+- **Feature:** Write identity.pub by default - ([555662d](https://github.com/beyondessential/bestool/commit/555662df5b38609e276935ac607d49177fbf319e))
+- **Refactor:** Extract en/decryption and key handling routines - ([c9fc6ed](https://github.com/beyondessential/bestool/commit/c9fc6ed7a636aae2d3e4d35f7038a1ed5fb22cee))
+
+---
 ## [0.22.0](https://github.com/beyondessential/bestool/compare/v0.21.5..v0.22.0) - 2024-12-20
 
 
