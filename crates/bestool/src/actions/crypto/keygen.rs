@@ -16,7 +16,7 @@ use crate::{
 
 use super::keys::PassphraseArgs;
 
-/// Generate a key pair to encrypt and decrypt files with.
+/// Generate an identity (key pair) to encrypt and decrypt files
 ///
 /// This creates a passphrase-protected identity file which contains both public
 /// and secret keys:
