@@ -7,6 +7,8 @@ use tokio::fs::File;
 
 use super::Context;
 
+pub mod key;
+
 /// Cryptographic operations.
 #[derive(Debug, Clone, Parser)]
 pub struct CryptoArgs {
