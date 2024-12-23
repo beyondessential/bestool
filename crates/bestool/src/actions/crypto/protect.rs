@@ -1,7 +1,8 @@
 use std::{fmt::Debug, path::PathBuf};
 
 use clap::Parser;
-use miette::Result;
+use miette::{IntoDiagnostic, Result, WrapErr};
+use tokio::fs::remove_file;
 
 use super::{keys::PassphraseArgs, streams::encrypt_file, CryptoArgs};
 use crate::actions::Context;
@@ -26,6 +27,11 @@ pub struct ProtectArgs {
 	#[arg(short, long)]
 	pub output: Option<PathBuf>,
 
+	/// Delete input file after encrypting.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--rm`"))]
+	#[arg(long = "rm")]
+	pub remove: bool,
+
 	#[command(flatten)]
 	pub key: PassphraseArgs,
 }
@@ -35,6 +41,7 @@ pub async fn run(ctx: Context<CryptoArgs, ProtectArgs>) -> Result<()> {
 		ref input,
 		output,
 		key,
+		remove,
 	} = ctx.args_sub;
 
 	let key = key.require_with_confirmation().await?;
@@ -47,5 +54,13 @@ pub async fn run(ctx: Context<CryptoArgs, ProtectArgs>) -> Result<()> {
 	};
 
 	encrypt_file(input, output, Box::new(key)).await?;
+
+	if remove {
+		remove_file(input)
+			.await
+			.into_diagnostic()
+			.wrap_err("deleting input file")?;
+	}
+
 	Ok(())
 }

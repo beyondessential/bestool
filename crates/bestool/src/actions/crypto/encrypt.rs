@@ -1,7 +1,8 @@
 use std::{fmt::Debug, path::PathBuf};
 
 use clap::Parser;
-use miette::Result;
+use miette::{IntoDiagnostic, Result, WrapErr};
+use tokio::fs::remove_file;
 
 use super::{keys::KeyArgs, streams::encrypt_file, CryptoArgs};
 use crate::actions::Context;
@@ -24,26 +25,40 @@ pub struct EncryptArgs {
 	#[arg(short, long)]
 	pub output: Option<PathBuf>,
 
+	/// Delete input file after encrypting.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--rm`"))]
+	#[arg(long = "rm")]
+	pub remove: bool,
+
 	#[command(flatten)]
 	pub key: KeyArgs,
 }
 
 pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 	let EncryptArgs {
-		input: ref plaintext_path,
+		ref input,
 		output,
 		key,
+		remove,
 	} = ctx.args_sub;
 
 	let public_key = key.require_public_key().await?;
-	let encrypted_path = if let Some(path) = output {
+	let output = if let Some(path) = output {
 		path
 	} else {
-		let mut path = plaintext_path.clone().into_os_string();
+		let mut path = input.clone().into_os_string();
 		path.push(".age");
 		path.into()
 	};
 
-	encrypt_file(plaintext_path, encrypted_path, public_key).await?;
+	encrypt_file(input, output, public_key).await?;
+
+	if remove {
+		remove_file(input)
+			.await
+			.into_diagnostic()
+			.wrap_err("deleting input file")?;
+	}
+
 	Ok(())
 }
