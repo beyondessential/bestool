@@ -11,6 +11,10 @@ keywords = ["age", "cryptography", "encryption"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/algae-cli"
 
+[[bin]]
+path = "src/main.rs"
+name = "algae"
+
 [dependencies]
 age = { version = "0.11.1", features = ["async"] }
 age-core = "0.11.0"
