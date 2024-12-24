@@ -34,14 +34,13 @@ pub struct KeyArgs {
 	///
 	/// The file can either be:
 	/// - an identity file, which contains both a public and secret key, in age format;
-	/// - a secret key in Bech32 encoding (usually uppercase);
-	/// - when encrypting, a public key in Bech32 encoding (usually lowercase).
+	/// - a passphrase-protected identity file;
+	/// - a secret key in Bech32 encoding (starts with `AGE-SECRET-KEY`);
+	/// - when encrypting, a public key in Bech32 encoding (starts with `age`).
 	///
-	/// When encrypting and provided with a secret key, the corresponding public key will be derived
-	/// first; there is no way to encrypt with a secret key such that a file is decodable with the
-	/// public key.
-	///
-	/// There is no support (yet) for password-protected secret key or identity files.
+	/// When encrypting and provided with a secret key, the corresponding public key
+	/// will be derived first; there is no way to encrypt with a secret key such that
+	/// a file is decodable with the public key.
 	///
 	/// ## Examples
 	///
@@ -53,15 +52,27 @@ pub struct KeyArgs {
 	/// AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
 	///
+	/// An passphrase-protected identity file:
+	///
+	/// ```identity.txt.age
+	/// age-encryption.org/v1
+	/// -> scrypt BIsqC5QmFKsr4IJmVyHovQ 20
+	/// GKscLTw0+n/z+vktrgcoW5eCh0qCfTkFnbTFLrhvXrI
+	/// --- rFMmV2H+FgP27oaLC6SHQOLy5d5DPGSp2pktFo/AOh8
+	/// U�`OZ�rGЕ~N}Ͷ
+	/// MbE/2m��`aQfl&$QCx
+	/// n:T?#�k!_�ΉIa�Y|�}j[頙߄)JJ{څ1y}cܪB���7�
+	/// ```
+	///
 	/// A public key file:
 	///
-	/// ```key.pub
+	/// ```identity.pub
 	/// age1c3jdepjm05aey2dq9dgkfn4utj9a776zwqzqcar3879smuh04ysqttvmyd
 	/// ```
 	///
 	/// A secret key file:
 	///
-	/// ```key.sec
+	/// ```identity.key
 	/// AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key-path PATH`"))]
@@ -70,12 +81,11 @@ pub struct KeyArgs {
 
 	/// The key to use for encrypting/decrypting as a string.
 	///
-	/// This supports either public key or secret keys depending on the operation being done.
-	/// It does not support the age identity format (with both public and secret keys).
+	/// This does not support the age identity format, only single keys.
 	///
-	/// When encrypting and provided with a secret key, the corresponding public key will be derived
-	/// first; there is no way to encrypt with a secret key such that a file is decodable with the
-	/// public key.
+	/// When encrypting and provided with a secret key, the corresponding public key
+	/// will be derived first; there is no way to encrypt with a secret key such that
+	/// a file is decodable with the public key.
 	///
 	/// There is no support for password-protected secret keys.
 	///
