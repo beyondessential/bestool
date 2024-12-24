@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.23.1](https://github.com/beyondessential/bestool/compare/v0.23.0..0.23.1) - 2024-12-24
+## [0.23.2](https://github.com/beyondessential/bestool/compare/v0.23.1..0.23.2) - 2024-12-24
+
+
+
+### Algae
+
+- **Bugfix:** Use algae as the name of the executable - ([c9bafb2](https://github.com/beyondessential/bestool/commit/c9bafb2b03b32d849bccafab87be0f3b511baa2c))
+- **Bugfix:** Actually print passphrase - ([bd372bd](https://github.com/beyondessential/bestool/commit/bd372bd32152b4a04dc8c1e50f05c01995dbc41a))
+
+---
+## [0.23.1](https://github.com/beyondessential/bestool/compare/v0.23.0..v0.23.1) - 2024-12-24
 
 
 - **Deps:** Update lockfile - ([4cf6c3b](https://github.com/beyondessential/bestool/commit/4cf6c3b733af54a7d30426da121ec6681c97a700))
