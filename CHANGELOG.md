@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.23.2](https://github.com/beyondessential/bestool/compare/v0.23.1..0.23.2) - 2024-12-24
+## [0.23.3](https://github.com/beyondessential/bestool/compare/v0.23.2..0.23.3) - 2024-12-24
+
+
+
+### Algae
+
+- **Documentation:** Show example of encrypted identity - ([52c8808](https://github.com/beyondessential/bestool/commit/52c8808675a67552c27e5795f3e99ccb119b598e))
+
+---
+## [0.23.2](https://github.com/beyondessential/bestool/compare/v0.23.1..v0.23.2) - 2024-12-24
 
 
 
