@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "age",
  "age-core",
