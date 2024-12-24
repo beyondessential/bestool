@@ -1,0 +1,32 @@
+[package]
+name = "algae-cli"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.76.0"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Lightweight age profile for user-friendly encryption (CLI tool and library)"
+keywords = ["age", "cryptography", "encryption"]
+categories = ["command-line-utilities"]
+repository = "https://github.com/beyondessential/bestool"
+
+[dependencies]
+age = { version = "0.11.1", features = ["async"] }
+age-core = "0.11.0"
+clap = { version = "4.5.23", features = ["cargo", "derive", "wrap_help"] }
+dialoguer = { version = "0.11.0", features = ["password"], default-features = false }
+diceware_wordlists = "1.2.3"
+futures = "0.3.30"
+indicatif = { version = "0.17.9", features = ["tokio"] }
+itertools = "0.13.0"
+jiff = "0.1.15"
+miette = "7.4.0"
+pinentry = "0.6.0"
+rand = "0.8.5"
+tokio = { version = "1.42.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+tokio-util = { version = "0.7.13", features = ["compat"] }
+tracing = { version = "0.1.41", features = ["attributes"] }
+
+[build-dependencies]
+windows_exe_info = { version = "0.4.1", features = ["manifest"] }

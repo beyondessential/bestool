@@ -1,0 +1,3 @@
+publish = true
+tag-message = "release: algae-cli {{version}}"
+pre-release-commit-message = "release: algae-cli {{version}}"
