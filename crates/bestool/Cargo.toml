@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-algae-cli = { version = "1.0.0", path = "../algae-cli", optional = true }
+algae-cli = { version = "0.0.0", path = "../algae-cli", optional = true }
 aws-config = { version = "1.5.11", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.55.0", optional = true }
