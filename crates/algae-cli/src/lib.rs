@@ -55,11 +55,11 @@
 //! #[derive(Parser)]
 //! enum Command {
 //!     Encrypt(encrypt::EncryptArgs),
-//!     Decrypt(decrypt::DecrytArgs),
+//!     Decrypt(decrypt::DecryptArgs),
 //! }
 //!
 //! #[tokio::main]
-//! fn main() -> Result<()> {
+//! async fn main() -> Result<()> {
 //!     let command = Command::parse();
 //!     match command {
 //!         Command::Encrypt(args) => encrypt::run(args).await,
@@ -71,13 +71,14 @@
 //! Or you can prompt for a passphrase with the same flags and logic as algae with:
 //!
 //! ```no_run
+//! use age::secrecy::ExposeSecret;
+//! use algae_cli::passphrases::PassphraseArgs;
 //! use clap::Parser;
 //! use miette::Result;
-//! use algae_cli::passphrases::PassphraseArgs,
 //!
 //! /// Your CLI tool
 //! #[derive(Parser)]
-//! enum Args {
+//! struct Args {
 //!     your_args: bool,
 //!
 //!     #[command(flatten)]
@@ -85,7 +86,7 @@
 //! }
 //!
 //! #[tokio::main]
-//! fn main() -> Result<()> {
+//! async fn main() -> Result<()> {
 //!     let args = Args::parse();
 //!     let key = args.pass.require_phrase().await?;
 //!     dbg!(key.expose_secret());
@@ -95,18 +96,20 @@
 //!
 //! Or you can add optional file encryption to a tool:
 //!
-//! ```ignore
-//! use std::path::PathBuf,
+//! ```no_run
+//! use std::path::PathBuf;
 //!
+//! use algae_cli::{keys::KeyArgs, streams::encrypt_stream};
 //! use clap::Parser;
-//! use miette::Result;
-//! use algae_cli::keys::KeyArgs,
+//! use miette::{IntoDiagnostic, Result, WrapErr};
+//! use tokio::fs::File;
+//! use tokio_util::compat::TokioAsyncWriteCompatExt;
 //!
 //! /// Your CLI tool
 //! ///
 //! /// If `--key` or `--key-path` is provided, the file will be encrypted.
 //! #[derive(Parser)]
-//! enum Args {
+//! struct Args {
 //!     output_path: PathBuf,
 //!
 //!     #[command(flatten)]
@@ -114,14 +117,14 @@
 //! }
 //!
 //! #[tokio::main]
-//! fn main() -> Result<()> {
+//! async fn main() -> Result<()> {
 //!     let args = Args::parse();
 //!
 //!     // if a key is provided, validate it early
 //!     let key = args.key.get_public_key().await?;
 //!
-//!     let input = generate_file_data_somehow().await?;
-//!     let output = File::create_new(args.output_path)
+//!     let mut input = generate_file_data_somehow().await;
+//!     let mut output = File::create_new(args.output_path)
 //!         .await
 //!         .into_diagnostic()
 //!         .wrap_err("opening the output file")?;
@@ -129,7 +132,7 @@
 //!     if let Some(key) = key {
 //!         encrypt_stream(input, output.compat_write(), key).await?;
 //!     } else {
-//!         tokio::io::copy(&mut reader, &mut encrypting_writer)
+//!         tokio::io::copy(&mut input, &mut output)
 //!             .await
 //!             .into_diagnostic()
 //!             .wrap_err("copying data to file")?;
@@ -137,6 +140,8 @@
 //!
 //!     Ok(())
 //! }
+//!
+//! # async fn generate_file_data_somehow() -> &'static [u8] { &[] }
 //! ```
 //!
 //! # The name

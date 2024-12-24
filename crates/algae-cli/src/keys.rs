@@ -10,7 +10,7 @@ use tokio::fs::read_to_string;
 /// ```no_run
 /// use clap::Parser;
 /// use miette::Result;
-/// use algae_cli::key::KeyArgs;
+/// use algae_cli::keys::KeyArgs;
 ///
 /// /// Your CLI tool
 /// #[derive(Parser)]
@@ -20,10 +20,11 @@ use tokio::fs::read_to_string;
 /// }
 ///
 /// #[tokio::main]
-/// fn main() -> Result<()> {
+/// async fn main() -> Result<()> {
 ///     let args = Args::parse();
 ///     let key = args.key.require_secret_key().await?;
-///     dbg!(key);
+///     // use key somehow...
+/// # let _key = key;
 ///     Ok(())
 /// }
 /// ```
