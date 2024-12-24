@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+	"crates/algae-cli",
 	"crates/bestool",
 	"crates/rpi-st7789v2-driver",
 ]
