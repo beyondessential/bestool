@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.23.2"
+version = "0.23.3"
 edition = "2021"
 rust-version = "1.76.0"
 
@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-algae-cli = { version = "1.0.2", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.0.3", path = "../algae-cli", optional = true }
 aws-config = { version = "1.5.11", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.55.0", optional = true }
@@ -56,7 +56,7 @@ mimalloc = "0.1.41"
 node-semver = { version = "2.1.0", optional = true }
 regex = { version = "1.10.6", optional = true }
 reqwest = { version = "0.12.5", features = ["default-tls", "json"], default-features = false }
-rpi-st7789v2-driver = { version = "0.3.3", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
+rpi-st7789v2-driver = { version = "0.3.4", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.22.1", optional = true }
 rust-fontconfig = { version = "0.1.7", optional = true }
 serde = { version = "1.0.216", features = ["derive"] }
