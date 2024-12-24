@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use age::{secrecy::SecretString, Identity, Recipient};
 use clap::Parser;
 use dialoguer::Password;
-use miette::{Context as _, IntoDiagnostic as _, Result};
+use miette::{miette, Context as _, IntoDiagnostic as _, Result};
+use pinentry::PassphraseInput;
 use tokio::fs::read_to_string;
 
 /// [Clap][clap] arguments for passphrases.
@@ -83,12 +84,23 @@ impl PassphraseArgs {
 				.trim()
 				.into())
 		} else {
-			let mut prompt = Password::new().with_prompt("Passphrase");
-			if confirm {
-				prompt = prompt.with_confirmation("Confirm passphrase", "Passphrases mismatching");
+			if let Some(mut input) = PassphraseInput::with_default_binary() {
+				input
+					.with_prompt("Passphrase:")
+					.required("Cannot use an empty passphrase");
+				if confirm {
+					input.with_confirmation("Confirm passphrase:", "Passphrases do not match");
+				}
+				input.interact().map_err(|err| miette!("{err}"))
+			} else {
+				let mut prompt = Password::new().with_prompt("Passphrase");
+				if confirm {
+					prompt =
+						prompt.with_confirmation("Confirm passphrase", "Passphrases do not match");
+				}
+				let phrase = prompt.interact().into_diagnostic()?;
+				Ok(phrase.into())
 			}
-			let phrase = prompt.interact().into_diagnostic()?;
-			Ok(phrase.into())
 		}
 	}
 }
