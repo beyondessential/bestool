@@ -42,7 +42,7 @@ Documentation: https://docs.rs/algae-cli
 _age_ is pronounced ah-gay. While [age doesn't have an inherent meaning](https://github.com/FiloSottile/age/discussions/329),
 the Italian-adjacent Friulian language (spoken around Venice) word _aghe_, pronounced the same, means water.
 
-Algae (pronounced al-gay or al-ghee) is a lightweight (a)ge. Algae are also fond of water.
+Algae (pronounced al-gay or al-ghee) is **a** **l**ightweight (a)**ge**. Algae are also fond of water.
 
 ## License
 
