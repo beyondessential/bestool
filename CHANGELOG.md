@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.23.0](https://github.com/beyondessential/bestool/compare/v0.22.0..0.23.0) - 2024-12-23
+## [0.23.1](https://github.com/beyondessential/bestool/compare/v0.23.0..0.23.1) - 2024-12-24
+
+
+- **Deps:** Update lockfile - ([4cf6c3b](https://github.com/beyondessential/bestool/commit/4cf6c3b733af54a7d30426da121ec6681c97a700))
+- **Repo:** Temporarily downgrade algae to 0.0.0 for release purposes - ([3baae1c](https://github.com/beyondessential/bestool/commit/3baae1cc2ac63e3c0a5b36ffefe71ce8d3d4a5f7))
+
+### Algae
+
+- **Documentation:** Clarify naming - ([c5401c5](https://github.com/beyondessential/bestool/commit/c5401c5bb7bc0f28c936da5f2df8ffedcd0fef32))
+- **Documentation:** Address google's "translation" - ([5352e9c](https://github.com/beyondessential/bestool/commit/5352e9ca1dc4949bc055e93c66ea198c976d15b4))
+- **Feature:** Extract crypto interface into its own tool/lib - ([d25a21f](https://github.com/beyondessential/bestool/commit/d25a21ff119555faa042100550f60b52e5a6cc71))
+- **Feature:** Use pinentry when available - ([683b743](https://github.com/beyondessential/bestool/commit/683b743b03e37333ca9333ee5f4ea1aac290d0ce))
+- **Test:** Fix doctests - ([22af897](https://github.com/beyondessential/bestool/commit/22af8974fa02ce3e9b02fad8dc67f88097e2ab4a))
+
+### Crypto
+
+- **Refactor:** Use algae-cli in bestool - ([2d0efe4](https://github.com/beyondessential/bestool/commit/2d0efe481c4ead6a0d05965a3a01dbd477bf27c0))
+
+---
+## [0.23.0](https://github.com/beyondessential/bestool/compare/v0.22.0..v0.23.0) - 2024-12-23
 
 
 - **Deps:** Bump the deps group with 3 updates (#173) - ([0952cef](https://github.com/beyondessential/bestool/commit/0952cef8784698c3c4c7b9c44bf395b177ccb92d))
