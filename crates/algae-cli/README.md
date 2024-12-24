@@ -40,9 +40,15 @@ Documentation: https://docs.rs/algae-cli
 ## Name
 
 _age_ is pronounced ah-gay. While [age doesn't have an inherent meaning](https://github.com/FiloSottile/age/discussions/329),
-the Italian-adjacent Friulian language (spoken around Venice) word _aghe_, pronounced the same, means water.
+the Italian-adjacent Friulian language (spoken around Venice) word _aghe_,
+[pronounced the same](https://translate.google.com/?sl=it&text=aghe), means water.
 
 Algae (pronounced al-gay or al-ghee) is **a** **l**ightweight (a)**ge**. Algae are also fond of water.
+
+(Google Translate invents an Italian translation for `aghe` but in fact
+[that's not a word](https://www.dizionario-italiano.it/dizionario-italiano.php?parola=aghe).
+The actual plural of _ago_ ("needle") [is _aghi_](https://www.dizionario-italiano.it/dizionario-italiano.php?parola=ago).
+The perils of AI…)
 
 ## License
 
