@@ -1,5 +1,6 @@
 use std::{ffi::OsString, fs, path::{Path, PathBuf}};
 
+use algae_cli::{keys::KeyArgs, files::encrypt_file};
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -9,7 +10,6 @@ use tracing::{debug, info, instrument};
 
 use crate::{
 	actions::{
-		crypto::{keys::KeyArgs, streams::encrypt_file},
 		tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},

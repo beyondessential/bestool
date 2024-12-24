@@ -3,9 +3,6 @@ use miette::Result;
 
 use super::Context;
 
-pub mod keys;
-pub mod streams;
-
 /// Cryptographic operations.
 #[derive(Debug, Clone, Parser)]
 pub struct CryptoArgs {
