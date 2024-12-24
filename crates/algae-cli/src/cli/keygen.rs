@@ -110,6 +110,7 @@ pub async fn run(
 			let rng = &mut rand::thread_rng();
 			let words = diceware_wordlists::MINILOCK_WORDLIST.choose_multiple(rng, 6);
 			let phrase: String = Itertools::intersperse(words.map(|item| *item), "-").collect();
+			println!("passphrase: {phrase}");
 			Passphrase::new(phrase.into())
 		} else {
 			key.require_with_confirmation().await?
