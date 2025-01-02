@@ -29,7 +29,7 @@ pub struct GreenmaskConfigArgs {
 	/// Can be specified multiple times, entries will be merged.
 	///
 	/// By default, it will look in the `greenmask/config` folder in the Tamanu root, and the
-	/// `greenmask` folder in the Tamanu release folder. Non-existant folders are ignored.
+	/// `greenmask` folder in the Tamanu release folder. Non-existent folders are ignored.
 	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	#[arg(value_hint = ValueHint::DirPath)]
 	pub folders: Vec<PathBuf>,

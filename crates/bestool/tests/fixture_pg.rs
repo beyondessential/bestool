@@ -41,8 +41,9 @@ pub fn init_db() -> Result<TempDir> {
 	Ok(temp_dir)
 }
 
-/// Execute the `pg_ctl start`. The Postgres server and resources get cleaned when the returnd
-/// handle dropped.
+/// Execute the `pg_ctl start`.
+///
+/// The Postgres server and resources get cleaned when the returned handle drops.
 pub fn run_db(temp_dir: TempDir) -> Result<impl Drop> {
 	let data_dir = temp_dir.path().join("data");
 
