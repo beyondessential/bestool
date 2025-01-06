@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.23.3](https://github.com/beyondessential/bestool/compare/v0.23.2..0.23.3) - 2024-12-24
+## [0.24.0](https://github.com/beyondessential/bestool/compare/v0.23.3..0.24.0) - 2025-01-06
+
+
+- **Deps:** Bump the deps group with 10 updates (#176) - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update jiff to 0.1.16 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update aws-config to 1.5.12 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update aws-sdk-route53 to 1.56.0 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update aws-sdk-sts to 1.53.0 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update boxcar to 0.2.8 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update detect-targets to 0.1.34 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update glob to 0.3.2 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update reqwest to 0.12.11 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update serde to 1.0.217 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Update sysinfo to 0.33.1 - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
+- **Deps:** Upgrade itertools to 0.14.0 - ([fc74cb7](https://github.com/beyondessential/bestool/commit/fc74cb72e4a014904fa0d5116163ca6803e6c5f7))
+
+### Backups
+
+- **Feature:** Add --keep-days option to cleanup old backups - ([d2a6df5](https://github.com/beyondessential/bestool/commit/d2a6df55959af328f00a569356947f7f099938cd))
+
+---
+## [0.23.3](https://github.com/beyondessential/bestool/compare/v0.23.2..v0.23.3) - 2024-12-24
 
 
 
