@@ -1,14 +1,13 @@
-use std::{iter, path::PathBuf};
+use std::path::PathBuf;
 
-use age::{x25519, Encryptor};
+use age::x25519;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
-use tokio::{fs::File, io::AsyncWriteExt as _};
-use tokio_util::compat::{FuturesAsyncWriteCompatExt as _, TokioAsyncWriteCompatExt as _};
+use tokio::fs::File;
 use tracing::info;
 
 use crate::actions::{
-	crypto::{self, wrap_async_read_with_progress_bar, CryptoArgs},
+	crypto::{self, copy_encrypting, wrap_async_read_with_progress_bar, CryptoArgs},
 	Context,
 };
 
@@ -59,28 +58,12 @@ pub async fn run(ctx: Context<CryptoArgs, EncryptArgs>) -> Result<()> {
 	// Wrap with progress bar before introducing "age" to avoid predicting size after encryption.
 	let mut plaintext = wrap_async_read_with_progress_bar(plaintext).await?;
 
-	let encrypted = File::create_new(&encrypted_path)
+	let mut encrypted = File::create_new(&encrypted_path)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the encrypted output")?;
 
-	let mut encrypting_writer = Encryptor::with_recipients(iter::once(&public_key as _))
-		.expect("a recipient should exist")
-		.wrap_async_output(encrypted.compat_write())
-		.await
-		.into_diagnostic()?
-		.compat_write();
-
-	tokio::io::copy(&mut plaintext, &mut encrypting_writer)
-		.await
-		.into_diagnostic()
-		.wrap_err("encrypting data in stream")?;
-
-	encrypting_writer
-		.shutdown()
-		.await
-		.into_diagnostic()
-		.wrap_err("closing the encrypted output")?;
+	copy_encrypting(&mut plaintext, &mut encrypted, &public_key).await?;
 
 	info!("finished encrypting");
 	Ok(())

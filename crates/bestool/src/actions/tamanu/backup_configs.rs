@@ -11,6 +11,7 @@ use tracing::warn;
 
 use crate::actions::{
 	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
+	crypto::{copy_encrypting, read_age_key},
 	tamanu::{
 		backup::{make_backup_filename, TamanuConfig},
 		config::{find_config_dir, load_config},
@@ -39,6 +40,11 @@ pub struct BackupConfigsArgs {
 	#[arg(long, default_value_t = false)]
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--deterministic`, default false"))]
 	deterministic: bool,
+
+	/// Output the backup encrypted in the same way the "crypto encrypt" command does.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--encrypt-with-pubkey PATH`"))]
+	#[arg(long)]
+	pub encrypt_with_pubkey: Option<PathBuf>,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
@@ -54,14 +60,16 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let pm2_config_path = root.join("pm2.config.cjs");
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "tar"));
+	let output_path = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "tar"));
+	let output_path = if ctx.args_sub.encrypt_with_pubkey.is_some() {
+		let mut encrypted_path = output_path.clone().into_os_string();
+		encrypted_path.push(".age");
+		encrypted_path.into()
+	} else {
+		output_path
+	};
 
-	let file = tokio::fs::File::create_new(output)
-		.await
-		.into_diagnostic()
-		.wrap_err("creating the destination")?;
-
-	let mut archive_builder = Builder::new(tokio::io::BufWriter::new(file));
+	let mut archive_builder = Builder::new(Vec::new());
 	if ctx.args_sub.deterministic {
 		archive_builder.mode(HeaderMode::Deterministic);
 	}
@@ -103,13 +111,31 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	} else {
 		warn!("Skipping production.json5 while archiving: the file is not found");
 	}
-	archive_builder
+
+	let archive = archive_builder
 		.into_inner()
 		.await
 		.into_diagnostic()
-		.wrap_err("writing the backup")?
-		.flush()
+		.wrap_err("finalising the backup")?;
+
+	let mut file = tokio::fs::File::create_new(output_path)
 		.await
-		.into_diagnostic()?;
+		.into_diagnostic()
+		.wrap_err("creating the destination")?;
+
+	if let Some(pubkey_path) = ctx.args_sub.encrypt_with_pubkey {
+		let public_key = read_age_key(&pubkey_path).await?;
+		copy_encrypting(&mut archive.as_slice(), &mut file, &public_key).await?;
+	} else {
+		tokio::io::copy(&mut archive.as_slice(), &mut file)
+			.await
+			.into_diagnostic()
+			.wrap_err("writing the backup")?;
+
+		file.shutdown()
+			.await
+			.into_diagnostic()
+			.wrap_err("closing the encrypted output")?;
+	}
 	Ok(())
 }

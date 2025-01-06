@@ -1,13 +1,19 @@
-use std::{ffi::OsString, fs, path::Path};
+use std::{
+	ffi::OsString,
+	fs,
+	path::{Path, PathBuf},
+};
 
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
+use tokio::fs::File;
 use tracing::{debug, info, instrument};
 
 use crate::{
 	actions::{
+		crypto::{copy_encrypting, read_age_key},
 		tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},
@@ -52,6 +58,11 @@ pub struct BackupArgs {
 	#[arg(long, default_value_t = false)]
 	pub lean: bool,
 
+	/// Output the backup encrypted in the same way the "crypto encrypt" command does.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--encrypt-with-pubkey PATH`"))]
+	#[arg(long)]
+	pub encrypt_with_pubkey: Option<PathBuf>,
+
 	/// Additional, arbitrary arguments to pass to "pg_dump"
 	///
 	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes:
@@ -87,14 +98,14 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
+	let output_path = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
 
 	let pg_dump = find_postgres_bin("pg_dump")?;
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	#[rustfmt::skip]
 	let excluded_tables = if ctx.args_sub.lean {
-		info!(?output, "writing lean backup");
+		info!(?output_path, "writing lean backup");
 
 		vec!["--exclude-table", "sync_snapshots.*",
 			"--exclude-table-data", "fhir.*",
@@ -102,7 +113,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			"--exclude-table-data", "reporting.*",
 			"--exclude-table-data", "public.attachments"].into_iter().map(Into::<OsString>::into)
 	} else {
-		info!(?output, "writing full backup to");
+		info!(?output_path, "writing full backup to");
 
 		vec!["--exclude-table", "sync_snapshots.*",
 			"--exclude-table-data", "fhir.jobs"].into_iter().map(Into::<OsString>::into)
@@ -119,7 +130,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			"--compress".into(),
 			ctx.args_sub.compression_level.to_string().into(),
 			"--file".into(),
-			output.clone().into(),
+			output_path.as_path().into(),
 			"--dbname".into(),
 			config.db.name.into(),
 		]
@@ -132,9 +143,41 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;
 
+	// Pipes would be more efficient than writing the backup to a temporary file.
+	// Though, the stdout of pgdump doesn't interact with tokio IO as "duct" doesn't support "tokio::process".
+	// https://github.com/oconnor663/duct.rs/issues/10.
+	let final_output_path = if let Some(pubkey_path) = ctx.args_sub.encrypt_with_pubkey {
+		info!(?pubkey_path, "encrypting backup");
+
+		let mut output = File::open(&output_path)
+			.await
+			.into_diagnostic()
+			.wrap_err("opening dumped backup")?;
+
+		let mut encrypted_path = output_path.clone().into_os_string();
+		encrypted_path.push(".age");
+		let encrypted_path: PathBuf = encrypted_path.into();
+		let mut encrypted_output = File::create_new(&encrypted_path)
+			.await
+			.into_diagnostic()
+			.wrap_err("opening the encrypted output")?;
+
+		let pubkey = read_age_key(&pubkey_path).await?;
+		copy_encrypting(&mut output, &mut encrypted_output, &pubkey).await?;
+
+		tokio::fs::remove_file(output_path)
+			.await
+			.into_diagnostic()
+			.wrap_err("remove file")?;
+
+		encrypted_path
+	} else {
+		output_path
+	};
+
 	if let Some(then_copy_to) = ctx.args_sub.then_copy_to {
 		info!(?then_copy_to, "copying backup");
-		fs::copy(output, then_copy_to).into_diagnostic()?;
+		fs::copy(&final_output_path, then_copy_to).into_diagnostic()?;
 	}
 
 	Ok(())
