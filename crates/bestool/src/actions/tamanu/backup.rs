@@ -1,6 +1,11 @@
-use std::{ffi::OsString, fs, path::{Path, PathBuf}};
+use std::{
+	ffi::{OsStr, OsString},
+	fs,
+	path::{Path, PathBuf},
+	time::{Duration, SystemTime},
+};
 
-use algae_cli::{keys::KeyArgs, files::encrypt_file};
+use algae_cli::{files::encrypt_file, keys::KeyArgs};
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -59,6 +64,21 @@ pub struct BackupArgs {
 	#[arg(long, default_value_t = false)]
 	pub lean: bool,
 
+	/// Delete backups and copies that are older than N days.
+	///
+	/// Only files with the `.dump` or the `.dump.age` extensions are deleted.
+	/// Subfolders are not recursed into.
+	///
+	/// If this option is not provided, a single backup is taken and no
+	/// deletions are executed.
+	///
+	/// Backup deletion always occurs after the backup is taken, so that if the
+	/// process fails for some reason, existing (presumed valid) backups remain.
+	///
+	/// If `--then-copy-to` is provided, also deletes backup files there.
+	#[arg(long)]
+	pub keep_days: Option<u16>,
+
 	/// Additional, arbitrary arguments to pass to "pg_dump"
 	///
 	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes:
@@ -101,7 +121,10 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	let key = ctx.args_sub.key.get_public_key().await?;
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "dump"));
+	let output = ctx
+		.args_sub
+		.write_to
+		.join(make_backup_filename(&config, "dump"));
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	#[rustfmt::skip]
@@ -165,9 +188,25 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		output
 	};
 
-	if let Some(then_copy_to) = ctx.args_sub.then_copy_to {
+	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
 		info!(path=?then_copy_to, "copying backup");
-		fs::copy(output, then_copy_to).into_diagnostic()?;
+		fs::copy(&output, then_copy_to).into_diagnostic()?;
+	}
+
+	if let Some(days) = ctx.args_sub.keep_days {
+		let just_written_filename = output
+			.file_name()
+			.expect("from above we know it's got a filename");
+
+		purge_old_backups(days, &ctx.args_sub.write_to, just_written_filename)
+			.await
+			.wrap_err("purging old backups in main target")?;
+
+		if let Some(copies) = &ctx.args_sub.then_copy_to {
+			purge_old_backups(days, copies, just_written_filename)
+				.await
+				.wrap_err("purging old backups in secondary target")?;
+		}
 	}
 
 	Ok(())
@@ -188,4 +227,64 @@ pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
 			.unwrap_or(&config.canonical_host_name),
 		db = config.db.name,
 	)
+}
+
+#[instrument(level = "debug")]
+async fn purge_old_backups(
+	older_than_days: u16,
+	from_dir: &Path,
+	exclude_filename: &OsStr,
+) -> Result<()> {
+	const SECONDS_IN_A_DAY: u64 = 60 * 60 * 24;
+	let limit_date =
+		SystemTime::now() - Duration::from_secs((older_than_days as u64) * SECONDS_IN_A_DAY);
+
+	let mut dir = tokio::fs::read_dir(from_dir)
+		.await
+		.into_diagnostic()
+		.wrap_err(format!("reading directory {from_dir:?}"))?;
+
+	while let Some(entry) = dir
+		.next_entry()
+		.await
+		.into_diagnostic()
+		.wrap_err(format!("reading directory entry in {from_dir:?}"))?
+	{
+		let path = entry.path();
+
+		let name = entry.file_name();
+		if name == exclude_filename {
+			debug!(?path, "ignoring file we just created");
+			continue;
+		}
+
+		let name = name.to_string_lossy();
+		if !(name.ends_with(".dump") || name.ends_with(".dump.age")) {
+			debug!(?path, "ignoring file with wrong extension");
+			continue;
+		}
+
+		let meta = entry
+			.metadata()
+			.await
+			.into_diagnostic()
+			.wrap_err(format!("looking up metadata for {path:?}"))?;
+		let Ok(date_created) = meta.created().or_else(|_| meta.modified()) else {
+			debug!(?path, "ignoring file without created/modified timestamp");
+			continue;
+		};
+
+		if date_created > limit_date {
+			debug!(?path, "ignoring too-new file");
+			continue;
+		}
+
+		info!(?path, "deleting old backup");
+		tokio::fs::remove_file(&path)
+			.await
+			.into_diagnostic()
+			.wrap_err(format!("deleting {path:?}"))?;
+	}
+
+	Ok(())
 }
