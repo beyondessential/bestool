@@ -79,6 +79,9 @@ pub struct BackupArgs {
 	#[arg(long)]
 	pub keep_days: Option<u16>,
 
+	#[arg(long, hide = true)]
+	pub debug_skip_pgdump: bool,
+
 	/// Additional, arbitrary arguments to pass to "pg_dump"
 	///
 	/// If it has dashes (like "--password pass"), you need to prefix this with two dashes:
@@ -154,6 +157,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	};
 	info!(?output, "writing {backup_type} backup");
 
+	if !ctx.args_sub.debug_skip_pgdump {
 	#[rustfmt::skip]
 	duct::cmd(
 		pg_dump,
@@ -173,6 +177,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	.run()
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;
+	}
 
 	let output = if let Some(key) = key {
 		let mut encrypted_path = output.clone().into_os_string();
