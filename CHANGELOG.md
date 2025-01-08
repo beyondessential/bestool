@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.0](https://github.com/beyondessential/bestool/compare/v0.23.3..0.24.0) - 2025-01-06
+## [0.24.0](https://github.com/beyondessential/bestool/compare/v0.23.3..v0.24.0) - 2025-01-06
 
 
 - **Deps:** Bump the deps group with 10 updates (#176) - ([a7615d9](https://github.com/beyondessential/bestool/commit/a7615d956cd75d68e107027dd4aa79fd47acc5db))
