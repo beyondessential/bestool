@@ -195,7 +195,9 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
 		info!(from=?output, to=?then_copy_to, "copying backup");
+	if !ctx.args_sub.debug_skip_pgdump {
 		fs::copy(&output, then_copy_to).into_diagnostic()?;
+	}
 	}
 
 	if let Some(days) = ctx.args_sub.keep_days {
