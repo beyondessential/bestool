@@ -1,6 +1,5 @@
 use std::{
 	ffi::{OsStr, OsString},
-	fs,
 	path::{Path, PathBuf},
 	time::{Duration, SystemTime},
 };
@@ -10,7 +9,7 @@ use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tokio::fs::remove_file;
+use tokio::fs;
 use tracing::{debug, info, instrument};
 
 use crate::{
@@ -177,6 +176,8 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	.run()
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;
+	} else {
+		let _ = fs::File::create_new(&output).await.into_diagnostic()?;
 	}
 
 	let output = if let Some(key) = key {
@@ -186,7 +187,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		encrypt_file(&output, &encrypted_path, key).await?;
 
 		info!(path=?output, "deleting original");
-		remove_file(output).await.into_diagnostic()?;
+		fs::remove_file(output).await.into_diagnostic()?;
 
 		encrypted_path.into()
 	} else {
@@ -195,9 +196,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
 		info!(from=?output, to=?then_copy_to, "copying backup");
-	if !ctx.args_sub.debug_skip_pgdump {
-		fs::copy(&output, then_copy_to).into_diagnostic()?;
-	}
+		fs::copy(&output, then_copy_to).await.into_diagnostic()?;
 	}
 
 	if let Some(days) = ctx.args_sub.keep_days {
@@ -246,7 +245,7 @@ async fn purge_old_backups(
 	let limit_date =
 		SystemTime::now() - Duration::from_secs((older_than_days as u64) * SECONDS_IN_A_DAY);
 
-	let mut dir = tokio::fs::read_dir(from_dir)
+	let mut dir = fs::read_dir(from_dir)
 		.await
 		.into_diagnostic()
 		.wrap_err(format!("reading directory {from_dir:?}"))?;
@@ -287,7 +286,7 @@ async fn purge_old_backups(
 		}
 
 		info!(?path, "deleting old backup");
-		tokio::fs::remove_file(&path)
+		fs::remove_file(&path)
 			.await
 			.into_diagnostic()
 			.wrap_err(format!("deleting {path:?}"))?;
