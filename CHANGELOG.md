@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.6](https://github.com/beyondessential/bestool/compare/v0.24.5..0.24.6) - 2025-01-09
+## [0.24.7](https://github.com/beyondessential/bestool/compare/v0.24.6..0.24.7) - 2025-01-09
+
+
+
+### Backups
+
+- **Bugfix:** Compute output filename properly - ([608161e](https://github.com/beyondessential/bestool/commit/608161e7757f359561c6373f34193ac499196cbe))
+
+---
+## [0.24.6](https://github.com/beyondessential/bestool/compare/v0.24.5..v0.24.6) - 2025-01-09
 
 
 
