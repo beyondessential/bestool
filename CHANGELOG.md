@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [0.24.5](https://github.com/beyondessential/bestool/compare/v0.24.4..0.24.5) - 2025-01-09
+
+
+- **Style:** Don't mix tokio and std io - ([8017b59](https://github.com/beyondessential/bestool/commit/8017b59bd6ebbe301d1ffef6ab9b0dd9ba157a76))
+
+---
 ## [0.24.0](https://github.com/beyondessential/bestool/compare/v0.23.3..v0.24.0) - 2025-01-06
 
 
