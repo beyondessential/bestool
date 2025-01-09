@@ -194,8 +194,13 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		output
 	};
 
+	let output_filename = output
+		.file_name()
+		.expect("from above we know it's got a filename");
+
 	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
-		info!(from=?output, to=?then_copy_to, "copying backup");
+		let target_path = then_copy_to.join(output_filename);
+		info!(from=?output, to=?target_path, "copying backup");
 
 		// We're doing the copy in Rust to get a progress bar and better errors
 
@@ -210,7 +215,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			.wrap_err("reading original file length")?
 			.len();
 
-		let mut writer = fs::File::create_new(then_copy_to)
+		let mut writer = fs::File::create_new(target_path)
 			.await
 			.into_diagnostic()
 			.wrap_err("opening the target file")?;
@@ -230,16 +235,12 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	}
 
 	if let Some(days) = ctx.args_sub.keep_days {
-		let just_written_filename = output
-			.file_name()
-			.expect("from above we know it's got a filename");
-
-		purge_old_backups(days, &ctx.args_sub.write_to, just_written_filename)
+		purge_old_backups(days, &ctx.args_sub.write_to, output_filename)
 			.await
 			.wrap_err("purging old backups in main target")?;
 
 		if let Some(copies) = &ctx.args_sub.then_copy_to {
-			purge_old_backups(days, copies, just_written_filename)
+			purge_old_backups(days, copies, output_filename)
 				.await
 				.wrap_err("purging old backups in secondary target")?;
 		}
