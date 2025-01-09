@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.5](https://github.com/beyondessential/bestool/compare/v0.24.4..0.24.5) - 2025-01-09
+## [0.24.6](https://github.com/beyondessential/bestool/compare/v0.24.5..0.24.6) - 2025-01-09
+
+
+
+### Backups
+
+- **Tweak:** Do file copy in Rust to get a progress indication - ([a16d035](https://github.com/beyondessential/bestool/commit/a16d035593b610b8e927551769621d87e0152fbd))
+
+---
+## [0.24.5](https://github.com/beyondessential/bestool/compare/v0.24.4..v0.24.5) - 2025-01-09
 
 
 - **Style:** Don't mix tokio and std io - ([8017b59](https://github.com/beyondessential/bestool/commit/8017b59bd6ebbe301d1ffef6ab9b0dd9ba157a76))
