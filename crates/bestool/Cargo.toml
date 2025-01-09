@@ -179,6 +179,7 @@ tamanu-backup = [
 	"__tamanu",
 	"tamanu-config",
 	"tamanu-pg-common",
+	"dep:algae-cli",
 	"dep:duct",
 ]
 tamanu-backup-configs = [

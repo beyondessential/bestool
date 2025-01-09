@@ -4,12 +4,12 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use algae_cli::{files::encrypt_file, keys::KeyArgs};
+use algae_cli::{files::{encrypt_file, with_progress_bar}, keys::KeyArgs};
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tokio::fs;
+use tokio::{fs, io::AsyncWriteExt as _};
 use tracing::{debug, info, instrument};
 
 use crate::{
@@ -157,7 +157,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	info!(?output, "writing {backup_type} backup");
 
 	if !ctx.args_sub.debug_skip_pgdump {
-	#[rustfmt::skip]
+		#[rustfmt::skip]
 	duct::cmd(
 		pg_dump,
 		[
@@ -196,7 +196,37 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
 		info!(from=?output, to=?then_copy_to, "copying backup");
-		fs::copy(&output, then_copy_to).await.into_diagnostic()?;
+
+		// We're doing the copy in Rust to get a progress bar and better errors
+
+		let input = fs::File::open(&output)
+			.await
+			.into_diagnostic()
+			.wrap_err("opening the original")?;
+		let input_length = input
+			.metadata()
+			.await
+			.into_diagnostic()
+			.wrap_err("reading original file length")?
+			.len();
+
+		let mut writer = fs::File::create_new(then_copy_to)
+			.await
+			.into_diagnostic()
+			.wrap_err("opening the target file")?;
+
+		let mut reader = with_progress_bar(input_length, input);
+		let bytes = tokio::io::copy(&mut reader, &mut writer)
+			.await
+			.into_diagnostic()
+			.wrap_err("copying data in stream")?;
+		debug!("copied {bytes} bytes");
+
+		writer
+			.shutdown()
+			.await
+			.into_diagnostic()
+			.wrap_err("closing the target file")?;
 	}
 
 	if let Some(days) = ctx.args_sub.keep_days {
