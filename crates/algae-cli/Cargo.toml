@@ -24,7 +24,7 @@ diceware_wordlists = "1.2.3"
 futures = "0.3.30"
 indicatif = { version = "0.17.9", features = ["tokio"] }
 itertools = "0.14.0"
-jiff = "0.1.22"
+jiff = "0.1.24"
 miette = { version = "7.4.0", features = ["fancy"] }
 pinentry = "0.6.0"
 rand = "0.8.5"
