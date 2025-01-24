@@ -3,107 +3,169 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use algae_cli::keys::KeyArgs;
+use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
-use tokio::io::AsyncWriteExt as _;
+use reqwest::Url;
+use tokio::{
+	fs::File,
+	io::{AsyncWriteExt as _, BufWriter},
+};
 use tokio_tar::{Builder, HeaderMode};
-use tracing::warn;
+use tracing::{error, info, warn};
 
-use crate::actions::{
-	caddy::configure_tamanu::DEFAULT_CADDYFILE_PATH,
-	tamanu::{
-		backup::{make_backup_filename, TamanuConfig},
-		config::{find_config_dir, load_config},
-		find_package, find_tamanu, TamanuArgs,
+use crate::{
+	actions::{
+		tamanu::{
+			backup::TamanuConfig,
+			config::{find_config_dir, load_config},
+			find_package, find_tamanu, TamanuArgs,
+		},
+		Context,
 	},
-	Context,
+	now_time,
 };
 
-/// Backup a local Tamanu-related config files to a tar archive.
+use super::backup::process_backup;
+
+/// Backup local Tamanu-related config files to a tar archive.
 ///
-/// The output will be written to a file "{current_datetime}-{host_name}-{database_name}.tar".
+/// The output will be written to a file "{current_datetime}-{host_name}.config.tar".
+///
+/// If `--key` or `--key-file` is provided, the backup file will be encrypted. Note that this is
+/// done by first writing the plaintext backup file to disk, then encrypting, and finally deleting
+/// the original. That effectively requires double the available disk space, and the plaintext file
+/// is briefly available on disk. This limitation may be lifted in the future.
 #[derive(Debug, Clone, Parser)]
 pub struct BackupConfigsArgs {
 	/// The destination directory the output will be written to.
-	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
-	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--write-to PATH`"))]
-	write_to: String,
+	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup\Config"))]
+	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup/config"))]
+	pub write_to: PathBuf,
 
-	/// Path to the Caddyfile.
-	#[arg(long, default_value = DEFAULT_CADDYFILE_PATH)]
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--caddyfile-path PATH`"))]
-	caddyfile_path: PathBuf,
+	/// The file path to copy the written backup.
+	///
+	/// The backup will stay as is in "write_to".
+	#[arg(long)]
+	pub then_copy_to: Option<PathBuf>,
+
+	/// Delete backups and copies that are older than N days.
+	///
+	/// Only files with the `.config.tar` or the `.config.tar.age` extensions
+	/// are deleted. Subfolders are not recursed into.
+	///
+	/// If this option is not provided, a single backup is taken and no
+	/// deletions are executed.
+	///
+	/// Backup deletion always occurs after the backup is taken, so that if the
+	/// process fails for some reason, existing (presumed valid) backups remain.
+	///
+	/// If `--then-copy-to` is provided, also deletes backup files there.
+	#[arg(long)]
+	pub keep_days: Option<u16>,
 
 	/// Exclude extra metadata such as ownership and mod/access times.
 	#[arg(long, default_value_t = false)]
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--deterministic`, default false"))]
-	deterministic: bool,
+	pub deterministic: bool,
+
+	#[command(flatten)]
+	pub key: KeyArgs,
+}
+
+fn ignore_not_found(err: io::Error) -> io::Result<()> {
+	if err.kind() == io::ErrorKind::NotFound {
+		warn!("Skipping a file while archiving: {err}");
+		Ok(())
+	} else {
+		Err(err)
+	}
+}
+
+async fn add_file(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>) -> bool {
+	let path = path.as_ref();
+	builder
+		.append_path(path)
+		.await
+		.or_else(ignore_not_found)
+		.into_diagnostic()
+		.wrap_err(format!("processing {path:?}"))
+		.map(|_| true)
+		.unwrap_or_else(|err| {
+			warn!("{err}");
+			false
+		})
+}
+
+async fn add_dir(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>, at: &str) -> bool {
+	let path = path.as_ref();
+	builder
+		.append_dir_all(path, at)
+		.await
+		.or_else(ignore_not_found)
+		.into_diagnostic()
+		.wrap_err(format!("processing {path:?}"))
+		.map(|_| {
+			info!("stored {path:?}");
+			true
+		})
+		.unwrap_or_else(|err| {
+			warn!("{err}");
+			false
+		})
+}
+
+fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
+	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
+	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
+	let output_name = canonical_host_name
+		.as_ref()
+		.and_then(|url| url.host_str())
+		.unwrap_or(&config.canonical_host_name);
+
+	format!("{output_date}-{output_name}.config.tar").into()
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
-	let caddyfile_path = ctx.args_sub.caddyfile_path;
-
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
 	let config_value = load_config(&root, kind.package_name())?;
 
 	let config: TamanuConfig = serde_json::from_value(config_value)
 		.into_diagnostic()
-		.wrap_err("parsing of Tamanu config failed")?;
+		.wrap_err("parsing tamanu config")?;
 
-	let pm2_config_path = root.join("pm2.config.cjs");
+	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config));
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config, "tar"));
-
-	let file = tokio::fs::File::create_new(output)
+	let file = tokio::fs::File::create_new(&output)
 		.await
 		.into_diagnostic()
-		.wrap_err("creating the destination")?;
+		.wrap_err_with(|| format!("opening file {output:?}"))?;
 
-	let mut archive_builder = Builder::new(tokio::io::BufWriter::new(file));
+	let mut builder = Builder::new(tokio::io::BufWriter::new(file));
 	if ctx.args_sub.deterministic {
-		archive_builder.mode(HeaderMode::Deterministic);
+		builder.mode(HeaderMode::Deterministic);
 	}
-	fn ignore_not_found(err: io::Error) -> io::Result<()> {
-		if err.kind() == io::ErrorKind::NotFound {
-			warn!("Skipping a file while archiving: {err}");
-			Ok(())
-		} else {
-			Err(err)
-		}
+
+	let mut got_caddy = add_dir(&mut builder, "/etc/caddy", "caddy").await;
+	if !got_caddy {
+		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile").await;
 	}
-	archive_builder
-		.append_path_with_name(caddyfile_path, "Caddyfile")
-		.await
-		.or_else(ignore_not_found)
-		.into_diagnostic()
-		.wrap_err("writing the backup")?;
-	archive_builder
-		.append_path_with_name(pm2_config_path, "pm2.config.cjs")
-		.await
-		.or_else(ignore_not_found)
-		.into_diagnostic()
-		.wrap_err("writing the backup")?;
-	if let Some(path) = find_config_dir(&root, kind.package_name(), "local.json5") {
-		archive_builder
-			.append_path_with_name(path, "local.json5")
-			.await
-			.into_diagnostic()
-			.wrap_err("writing the backup")?;
-	} else {
-		warn!("Skipping local.json5 while archiving: the file is not found");
+	if !got_caddy {
+		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile.txt").await;
 	}
-	if let Some(path) = find_config_dir(&root, kind.package_name(), "production.json5") {
-		archive_builder
-			.append_path_with_name(path, "production.json5")
-			.await
-			.into_diagnostic()
-			.wrap_err("writing the backup")?;
-	} else {
-		warn!("Skipping production.json5 while archiving: the file is not found");
+	if !got_caddy {
+		error!("could not find a caddy to backup");
 	}
-	archive_builder
+
+	add_dir(&mut builder, "/etc/tamanu", "tamanu").await;
+
+	add_file(&mut builder, root.join("pm2.config.cjs")).await;
+	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
+		add_dir(&mut builder, path, kind.package_name()).await;
+	}
+
+	builder
 		.into_inner()
 		.await
 		.into_diagnostic()
@@ -111,5 +173,15 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.flush()
 		.await
 		.into_diagnostic()?;
+
+	process_backup(
+		output,
+		&ctx.args_sub.write_to,
+		ctx.args_sub.then_copy_to.as_deref(),
+		ctx.args_sub.keep_days,
+		ctx.args_sub.key,
+	)
+	.await?;
+
 	Ok(())
 }
