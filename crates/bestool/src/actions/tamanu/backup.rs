@@ -229,6 +229,11 @@ pub(crate) async fn process_backup(
 		.expect("from above we know it's got a filename");
 
 	if let Some(then_copy_to) = then_copy_to {
+		create_dir_all(then_copy_to)
+			.await
+			.into_diagnostic()
+			.wrap_err("creating copy dest dir")?;
+
 		let target_path = then_copy_to.join(output_filename);
 		info!(from=?output, to=?target_path, "copying backup");
 
