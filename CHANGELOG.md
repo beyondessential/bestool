@@ -5,7 +5,31 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.7](https://github.com/beyondessential/bestool/compare/v0.24.6..0.24.7) - 2025-01-09
+## [0.24.8](https://github.com/beyondessential/bestool/compare/v0.24.7..0.24.8) - 2025-01-24
+
+
+- **Deps:** Bump the deps group with 14 updates (#180) - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade clap to 4.5.26 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade jiff to 0.1.22 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade tokio to 1.43.0 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade aws-sdk-route53 to 1.58.0 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade aws-sdk-sts to 1.54.1 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade binstalk-downloader to 0.13.8 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade bitflags to 2.7.0 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade clap_complete to 4.5.42 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade detect-targets to 0.1.36 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade dirs to 6.0.0 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade serde_json to 1.0.135 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade thiserror to 2.0.11 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade uuid to 1.11.1 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+- **Deps:** Upgrade windows to 0.59.0 - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
+
+### Backups
+
+- **Feature:** Add encryption and --then-copy-to and --keep-days to config backups - ([fd842a1](https://github.com/beyondessential/bestool/commit/fd842a1bfe3edefea010f8c42059bb60681c39f2))
+
+---
+## [0.24.7](https://github.com/beyondessential/bestool/compare/v0.24.6..v0.24.7) - 2025-01-09
 
 
 
