@@ -63,30 +63,19 @@ pub struct BackupConfigsArgs {
 	#[arg(long)]
 	pub keep_days: Option<u16>,
 
-	/// Exclude extra metadata such as ownership and mod/access times.
-	#[arg(long, default_value_t = false)]
-	pub deterministic: bool,
-
 	#[command(flatten)]
 	pub key: KeyArgs,
 }
 
-fn zip_options(deterministic: bool) -> SimpleFileOptions {
-	let opts = SimpleFileOptions::default()
+fn zip_options() -> SimpleFileOptions {
+	SimpleFileOptions::default()
 		.unix_permissions(0o644)
 		.compression_method(CompressionMethod::Zstd)
-		.compression_level(Some(16));
-
-	if deterministic {
-		opts.last_modified_time(DateTime::default())
-	} else {
-		opts
-	}
+		.compression_level(Some(16))
 }
 
 fn add_file_impl(
 	zip: &mut ZipWriter<&mut File>,
-	deterministic: bool,
 	path: &Path,
 	name: &Path,
 ) -> Result<()> {
@@ -101,7 +90,7 @@ fn add_file_impl(
 		})
 		.into_diagnostic()?;
 
-	zip.start_file_from_path(name, zip_options(deterministic))
+	zip.start_file_from_path(name, zip_options())
 		.into_diagnostic()?;
 
 	let bytes = copy(&mut file, zip).into_diagnostic()?;
@@ -112,18 +101,16 @@ fn add_file_impl(
 
 fn add_file(
 	zip: &mut ZipWriter<&mut File>,
-	deterministic: bool,
 	path: impl AsRef<Path>,
 	name: impl AsRef<Path>,
 ) -> bool {
 	let path = path.as_ref();
 	let name = name.as_ref();
-	add_file_impl(zip, deterministic, path, name).map_or(false, |_| true)
+	add_file_impl(zip, path, name).map_or(false, |_| true)
 }
 
 fn add_dir(
 	zip: &mut ZipWriter<&mut File>,
-	deterministic: bool,
 	path: impl AsRef<Path>,
 	at: impl AsRef<Path>,
 ) -> Result<bool> {
@@ -157,7 +144,7 @@ fn add_dir(
 
 		if entry.file_type().is_dir() {
 			debug!("creating {zip_path:?} dir entry");
-			zip.add_directory_from_path(zip_path, zip_options(deterministic))
+			zip.add_directory_from_path(zip_path, zip_options())
 				.into_diagnostic()
 				.wrap_err("writing directory entry failed, which is fatal")?;
 			continue;
@@ -166,7 +153,7 @@ fn add_dir(
 			continue;
 		}
 
-		success = add_file(zip, deterministic, entry.path(), &zip_path);
+		success = add_file(zip, entry.path(), &zip_path);
 	}
 
 	Ok(success)
@@ -203,13 +190,11 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.wrap_err_with(|| format!("opening file {output:?}"))?;
 
 	let mut zip = ZipWriter::new(&mut file);
-	let deterministic = ctx.args_sub.deterministic;
 
-	let mut got_caddy = add_dir(&mut zip, deterministic, "/etc/caddy", "caddy")?;
+	let mut got_caddy = add_dir(&mut zip, "/etc/caddy", "caddy")?;
 	if !got_caddy {
 		got_caddy = add_file(
 			&mut zip,
-			deterministic,
 			r"C:\Caddy\Caddyfile",
 			"caddy/Caddyfile",
 		);
@@ -217,7 +202,6 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	if !got_caddy {
 		got_caddy = add_file(
 			&mut zip,
-			deterministic,
 			r"C:\Caddy\Caddyfile.txt",
 			"caddy/Caddyfile",
 		);
@@ -226,28 +210,25 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		error!("could not find a caddy to backup");
 	}
 
-	add_dir(&mut zip, deterministic, "/etc/tamanu", "etc-tamanu")?;
+	add_dir(&mut zip, "/etc/tamanu", "etc-tamanu")?;
 
 	add_file(
 		&mut zip,
-		deterministic,
 		root.join("pm2.config.cjs"),
 		"pm2.config.cjs",
 	);
 	add_dir(
 		&mut zip,
-		deterministic,
 		root.join("alerts"),
 		"alerts/version",
 	)?;
 	add_dir(
 		&mut zip,
-		deterministic,
 		r"C:\Tamanu\alerts",
 		"alerts/global",
 	)?;
 	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
-		add_dir(&mut zip, deterministic, path, kind.package_name())?;
+		add_dir(&mut zip, path, kind.package_name())?;
 	}
 
 	zip.finish()
