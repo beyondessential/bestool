@@ -11,7 +11,7 @@ use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
 use tracing::{debug, error, warn};
 use walkdir::WalkDir;
-use zip::{write::SimpleFileOptions, CompressionMethod, DateTime, ZipWriter};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 use crate::{
 	actions::{
