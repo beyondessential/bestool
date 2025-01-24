@@ -4,7 +4,10 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use algae_cli::{files::{encrypt_file, with_progress_bar}, keys::KeyArgs};
+use algae_cli::{
+	files::{encrypt_file, with_progress_bar},
+	keys::KeyArgs,
+};
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -31,18 +34,15 @@ use crate::{
 /// done by first writing the plaintext backup file to disk, then encrypting, and finally deleting
 /// the original. That effectively requires double the available disk space, and the plaintext file
 /// is briefly available on disk. This limitation may be lifted in the future.
-#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu backup`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct BackupArgs {
 	/// The compression level to use.
 	///
 	/// This is simply passed to the "--compress" option of "pg_dump".
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--compression-level LEVEL`, default 3"))]
 	#[arg(long, default_value_t = 3)]
 	pub compression_level: u32,
 
 	/// The destination directory the output will be written to.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--write-to PATH`"))]
 	#[cfg_attr(windows, arg(long, default_value = r"C:\Backup"))]
 	#[cfg_attr(not(windows), arg(long, default_value = "/opt/tamanu-backup"))]
 	pub write_to: PathBuf,
@@ -50,7 +50,6 @@ pub struct BackupArgs {
 	/// The file path to copy the written backup.
 	///
 	/// The backup will stay as is in "write_to".
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--then-copy-to PATH`"))]
 	#[arg(long)]
 	pub then_copy_to: Option<PathBuf>,
 
@@ -59,7 +58,6 @@ pub struct BackupArgs {
 	/// The lean backup excludes more tables: "logs.*", "reporting.*" and "public.attachments".
 	///
 	/// These thus are not suitable for recovery, but can be used for analysis.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--lean`"))]
 	#[arg(long, default_value_t = false)]
 	pub lean: bool,
 
@@ -98,15 +96,15 @@ pub struct BackupArgs {
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TamanuConfig {
-	canonical_host_name: String,
-	db: TamanuDb,
+	pub canonical_host_name: String,
+	pub db: TamanuDb,
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub struct TamanuDb {
-	name: String,
-	username: String,
-	password: String,
+	pub name: String,
+	pub username: String,
+	pub password: String,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
@@ -121,7 +119,8 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
-	let key = ctx.args_sub.key.get_public_key().await?;
+	// check key
+	ctx.args_sub.key.get_public_key().await?;
 
 	let output = ctx
 		.args_sub
@@ -180,6 +179,27 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		let _ = fs::File::create_new(&output).await.into_diagnostic()?;
 	}
 
+	process_backup(
+		output,
+		&ctx.args_sub.write_to,
+		ctx.args_sub.then_copy_to.as_deref(),
+		ctx.args_sub.keep_days,
+		ctx.args_sub.key,
+	)
+	.await?;
+
+	Ok(())
+}
+
+pub(crate) async fn process_backup(
+	output: PathBuf,
+	written_to: &Path,
+	then_copy_to: Option<&Path>,
+	keep_days: Option<u16>,
+	key: KeyArgs,
+) -> Result<PathBuf, miette::Error> {
+	let key = key.get_public_key().await?;
+
 	let output = if let Some(key) = key {
 		let mut encrypted_path = output.clone().into_os_string();
 		encrypted_path.push(".age");
@@ -198,7 +218,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		.file_name()
 		.expect("from above we know it's got a filename");
 
-	if let Some(then_copy_to) = &ctx.args_sub.then_copy_to {
+	if let Some(then_copy_to) = then_copy_to {
 		let target_path = then_copy_to.join(output_filename);
 		info!(from=?output, to=?target_path, "copying backup");
 
@@ -234,19 +254,19 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			.wrap_err("closing the target file")?;
 	}
 
-	if let Some(days) = ctx.args_sub.keep_days {
-		purge_old_backups(days, &ctx.args_sub.write_to, output_filename)
+	if let Some(days) = keep_days {
+		purge_old_backups(days, written_to, output_filename)
 			.await
 			.wrap_err("purging old backups in main target")?;
 
-		if let Some(copies) = &ctx.args_sub.then_copy_to {
+		if let Some(copies) = then_copy_to {
 			purge_old_backups(days, copies, output_filename)
 				.await
 				.wrap_err("purging old backups in secondary target")?;
 		}
 	}
 
-	Ok(())
+	Ok(output)
 }
 
 #[instrument(level = "debug")]
