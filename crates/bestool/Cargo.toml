@@ -69,13 +69,13 @@ tera = { version = "1.19.1", optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-postgres = { version = "0.7.10", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
-tokio-tar = { version = "0.3.1", optional = true }
 tracing = { version = "0.1.41", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter", "json"] }
 upgrade = { version = "2.0.0", optional = true }
 uuid = "1.11.1"
 walkdir = { version = "2.5.0", optional = true }
+zip = { version = "2.2.2", optional = true, default-features = false, features = ["time", "zstd"] }
 zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -185,8 +185,10 @@ tamanu-backup = [
 tamanu-backup-configs = [
 	"__tamanu",
 	"tamanu-config",
+	"dep:algae-cli",
 	"dep:duct",
-	"dep:tokio-tar",
+	"dep:walkdir",
+	"dep:zip",
 ]
 tamanu-config = [
 	"__tamanu",

@@ -1,2 +1,0 @@
-ERROR bestool::actions::tamanu::backup_configs: could not find a caddy to backup
- INFO bestool::actions::tamanu::backup_configs: stored "[CWD]/tamanu/pm2.config.cjs"
