@@ -12,7 +12,10 @@ use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tokio::{fs::{self, create_dir_all}, io::AsyncWriteExt as _};
+use tokio::{
+	fs::{self, create_dir_all},
+	io::AsyncWriteExt as _,
+};
 use tracing::{debug, info, instrument};
 
 use crate::{
@@ -189,6 +192,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		&ctx.args_sub.write_to,
 		ctx.args_sub.then_copy_to.as_deref(),
 		ctx.args_sub.keep_days,
+		".dump",
 		ctx.args_sub.key,
 	)
 	.await?;
@@ -201,6 +205,7 @@ pub(crate) async fn process_backup(
 	written_to: &Path,
 	then_copy_to: Option<&Path>,
 	keep_days: Option<u16>,
+	purge_extension: &str,
 	key: KeyArgs,
 ) -> Result<PathBuf, miette::Error> {
 	let key = key.get_public_key().await?;
@@ -260,12 +265,12 @@ pub(crate) async fn process_backup(
 	}
 
 	if let Some(days) = keep_days {
-		purge_old_backups(days, written_to, output_filename)
+		purge_old_backups(days, written_to, output_filename, purge_extension)
 			.await
 			.wrap_err("purging old backups in main target")?;
 
 		if let Some(copies) = then_copy_to {
-			purge_old_backups(days, copies, output_filename)
+			purge_old_backups(days, copies, output_filename, purge_extension)
 				.await
 				.wrap_err("purging old backups in secondary target")?;
 		}
@@ -296,6 +301,7 @@ async fn purge_old_backups(
 	older_than_days: u16,
 	from_dir: &Path,
 	exclude_filename: &OsStr,
+	include_extension: &str,
 ) -> Result<()> {
 	const SECONDS_IN_A_DAY: u64 = 60 * 60 * 24;
 	let limit_date =
@@ -321,7 +327,9 @@ async fn purge_old_backups(
 		}
 
 		let name = name.to_string_lossy();
-		if !(name.ends_with(".dump") || name.ends_with(".dump.age")) {
+		if !(name.ends_with(include_extension)
+			|| name.ends_with(&format!("{include_extension}.age")))
+		{
 			debug!(?path, "ignoring file with wrong extension");
 			continue;
 		}

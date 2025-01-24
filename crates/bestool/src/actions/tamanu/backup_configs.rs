@@ -1,5 +1,6 @@
 use std::{
-	io,
+	fs::{create_dir_all, File},
+	io::{self, copy},
 	path::{Path, PathBuf},
 };
 
@@ -8,12 +9,9 @@ use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tokio::{
-	fs::{create_dir_all, File},
-	io::{AsyncWriteExt as _, BufWriter},
-};
-use tokio_tar::{Builder, HeaderMode};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
+use walkdir::WalkDir;
+use zip::{write::SimpleFileOptions, CompressionMethod, DateTime, ZipWriter};
 
 use crate::{
 	actions::{
@@ -29,9 +27,9 @@ use crate::{
 
 use super::backup::process_backup;
 
-/// Backup local Tamanu-related config files to a tar archive.
+/// Backup local Tamanu-related config files to a zip archive.
 ///
-/// The output will be written to a file "{current_datetime}-{host_name}.config.tar".
+/// The output will be written to a file "{current_datetime}-{host_name}.config.zip".
 ///
 /// If `--key` or `--key-file` is provided, the backup file will be encrypted. Note that this is
 /// done by first writing the plaintext backup file to disk, then encrypting, and finally deleting
@@ -52,7 +50,7 @@ pub struct BackupConfigsArgs {
 
 	/// Delete backups and copies that are older than N days.
 	///
-	/// Only files with the `.config.tar` or the `.config.tar.age` extensions
+	/// Only files with the `.config.zip` or the `.config.zip.age` extensions
 	/// are deleted. Subfolders are not recursed into.
 	///
 	/// If this option is not provided, a single backup is taken and no
@@ -73,44 +71,105 @@ pub struct BackupConfigsArgs {
 	pub key: KeyArgs,
 }
 
-async fn add_file(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>, name: &str) -> bool {
-	let path = path.as_ref();
-	debug!("trying to store {path:?} at {name}");
-	builder
-		.append_path_with_name(path, name)
-		.await
-		.map(|_| {
-			info!("stored {path:?}");
-			true
-		})
-		.unwrap_or_else(|err| {
-			if err.kind() == io::ErrorKind::NotFound {
-				debug!("skipping {path:?} because it doesn't exist");
-			} else {
-				warn!("skipping {path:?} because {err}");
-			}
-			false
-		})
+fn zip_options(deterministic: bool) -> SimpleFileOptions {
+	let opts = SimpleFileOptions::default()
+		.unix_permissions(0o644)
+		.compression_method(CompressionMethod::Zstd)
+		.compression_level(Some(16));
+
+	if deterministic {
+		opts.last_modified_time(DateTime::default())
+	} else {
+		opts
+	}
 }
 
-async fn add_dir(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>, at: &str) -> bool {
-	let path = path.as_ref();
-	debug!("trying to store {path:?} at {at}");
-	builder
-		.append_dir_all(path, at)
-		.await
-		.map(|_| {
-			info!("stored {path:?}");
-			true
-		})
-		.unwrap_or_else(|err| {
+fn add_file_impl(
+	zip: &mut ZipWriter<&mut File>,
+	deterministic: bool,
+	path: &Path,
+	name: &Path,
+) -> Result<()> {
+	debug!("trying to store file {path:?} at {name:?}");
+	let mut file = File::open(path)
+		.inspect_err(|err| {
 			if err.kind() == io::ErrorKind::NotFound {
 				debug!("skipping {path:?} because it doesn't exist");
 			} else {
 				warn!("skipping {path:?} because {err}");
 			}
-			false
 		})
+		.into_diagnostic()?;
+
+	zip.start_file_from_path(name, zip_options(deterministic))
+		.into_diagnostic()?;
+
+	let bytes = copy(&mut file, zip).into_diagnostic()?;
+	debug!(?bytes, "zipped file {path:?} at {name:?}");
+
+	Ok(())
+}
+
+fn add_file(
+	zip: &mut ZipWriter<&mut File>,
+	deterministic: bool,
+	path: impl AsRef<Path>,
+	name: impl AsRef<Path>,
+) -> bool {
+	let path = path.as_ref();
+	let name = name.as_ref();
+	add_file_impl(zip, deterministic, path, name).map_or(false, |_| true)
+}
+
+fn add_dir(
+	zip: &mut ZipWriter<&mut File>,
+	deterministic: bool,
+	path: impl AsRef<Path>,
+	at: impl AsRef<Path>,
+) -> Result<bool> {
+	let path = path.as_ref();
+	let at = at.as_ref();
+	debug!("trying to store dir {path:?} at {at:?}");
+	if !path.exists() {
+		debug!("skipping {path:?} because it doesn't exist");
+		return Ok(false);
+	}
+
+	let mut success = false;
+	for entry in WalkDir::new(path).follow_links(true) {
+		let entry = match entry {
+			Ok(e) => e,
+			Err(err) => {
+				warn!("skipping an entry in {path:?} because {err}");
+				continue;
+			}
+		};
+
+		let zip_path = if let Ok(file_path) = entry.path().strip_prefix(path) {
+			at.join(file_path)
+		} else {
+			error!(
+				"file at {:?} is not within search, this should be impossible, skipping",
+				entry.path()
+			);
+			continue;
+		};
+
+		if entry.file_type().is_dir() {
+			debug!("creating {zip_path:?} dir entry");
+			zip.add_directory_from_path(zip_path, zip_options(deterministic))
+				.into_diagnostic()
+				.wrap_err("writing directory entry failed, which is fatal")?;
+			continue;
+		} else if !entry.file_type().is_file() {
+			debug!("skipping {zip_path:?} because it's not a file");
+			continue;
+		}
+
+		success = add_file(zip, deterministic, entry.path(), &zip_path);
+	}
+
+	Ok(success)
 }
 
 fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
@@ -121,12 +180,11 @@ fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
 		.and_then(|url| url.host_str())
 		.unwrap_or(&config.canonical_host_name);
 
-	format!("{output_date}-{output_name}.config.tar").into()
+	format!("{output_date}-{output_name}.config.zip").into()
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	create_dir_all(&ctx.args_sub.write_to)
-		.await
 		.into_diagnostic()
 		.wrap_err("creating dest dir")?;
 
@@ -140,51 +198,72 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config));
 
-	let file = tokio::fs::File::create_new(&output)
-		.await
+	let mut file = std::fs::File::create_new(&output)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("opening file {output:?}"))?;
 
-	let mut builder = Builder::new(tokio::io::BufWriter::new(file));
-	if ctx.args_sub.deterministic {
-		builder.mode(HeaderMode::Deterministic);
-	}
+	let mut zip = ZipWriter::new(&mut file);
+	let deterministic = ctx.args_sub.deterministic;
 
-	let mut got_caddy = add_dir(&mut builder, "/etc/caddy", "caddy").await;
+	let mut got_caddy = add_dir(&mut zip, deterministic, "/etc/caddy", "caddy")?;
 	if !got_caddy {
-		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile", "caddy/Caddyfile").await;
+		got_caddy = add_file(
+			&mut zip,
+			deterministic,
+			r"C:\Caddy\Caddyfile",
+			"caddy/Caddyfile",
+		);
 	}
 	if !got_caddy {
-		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile.txt", "caddy/Caddyfile").await;
+		got_caddy = add_file(
+			&mut zip,
+			deterministic,
+			r"C:\Caddy\Caddyfile.txt",
+			"caddy/Caddyfile",
+		);
 	}
 	if !got_caddy {
 		error!("could not find a caddy to backup");
 	}
 
-	add_dir(&mut builder, "/etc/tamanu", "etc-tamanu").await;
+	add_dir(&mut zip, deterministic, "/etc/tamanu", "etc-tamanu")?;
 
-	add_file(&mut builder, root.join("pm2.config.cjs"), "pm2.config.cjs").await;
-	add_dir(&mut builder, root.join("alerts"), "alerts/version").await;
-	add_dir(&mut builder, r"C:\Tamanu\alerts", "alerts/global").await;
+	add_file(
+		&mut zip,
+		deterministic,
+		root.join("pm2.config.cjs"),
+		"pm2.config.cjs",
+	);
+	add_dir(
+		&mut zip,
+		deterministic,
+		root.join("alerts"),
+		"alerts/version",
+	)?;
+	add_dir(
+		&mut zip,
+		deterministic,
+		r"C:\Tamanu\alerts",
+		"alerts/global",
+	)?;
 	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
-		add_dir(&mut builder, path, kind.package_name()).await;
+		add_dir(&mut zip, deterministic, path, kind.package_name())?;
 	}
 
-	builder
-		.into_inner()
-		.await
+	zip.finish()
 		.into_diagnostic()
-		.wrap_err("writing tar file")?
-		.flush()
-		.await
+		.wrap_err("finalising archive")?;
+
+	file.sync_all()
 		.into_diagnostic()
-		.wrap_err("flushing tar file")?;
+		.wrap_err("fsyncing zip file")?;
 
 	process_backup(
 		output,
 		&ctx.args_sub.write_to,
 		ctx.args_sub.then_copy_to.as_deref(),
 		ctx.args_sub.keep_days,
+		".config.zip",
 		ctx.args_sub.key,
 	)
 	.await?;
