@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.8](https://github.com/beyondessential/bestool/compare/v0.24.7..0.24.8) - 2025-01-24
+## [0.24.9](https://github.com/beyondessential/bestool/compare/v0.24.8..0.24.9) - 2025-01-24
+
+
+
+### Backup
+
+- **Test:** Update snapshot - ([e4301f9](https://github.com/beyondessential/bestool/commit/e4301f9c5c5dc8bebbaafa3482e3881b9f1ae37c))
+
+### Backups
+
+- **Feature:** Create dest dir and fix log output - ([869a794](https://github.com/beyondessential/bestool/commit/869a7946328c387920bfc91d3498002571562464))
+- **Feature:** Use zip for configs instead of tar - ([e242da7](https://github.com/beyondessential/bestool/commit/e242da7aa04ef74117bbd8ab6d8188e634406509))
+
+---
+## [0.24.8](https://github.com/beyondessential/bestool/compare/v0.24.7..v0.24.8) - 2025-01-24
 
 
 - **Deps:** Bump the deps group with 14 updates (#180) - ([38d1d56](https://github.com/beyondessential/bestool/commit/38d1d56c5fe72a5d1a1c3b561316a017b0089dea))
