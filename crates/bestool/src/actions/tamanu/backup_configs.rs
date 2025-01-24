@@ -9,11 +9,11 @@ use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
 use tokio::{
-	fs::File,
+	fs::{create_dir_all, File},
 	io::{AsyncWriteExt as _, BufWriter},
 };
 use tokio_tar::{Builder, HeaderMode};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
 	actions::{
@@ -73,44 +73,42 @@ pub struct BackupConfigsArgs {
 	pub key: KeyArgs,
 }
 
-fn ignore_not_found(err: io::Error) -> io::Result<()> {
-	if err.kind() == io::ErrorKind::NotFound {
-		warn!("Skipping a file while archiving: {err}");
-		Ok(())
-	} else {
-		Err(err)
-	}
-}
-
-async fn add_file(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>) -> bool {
+async fn add_file(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>, name: &str) -> bool {
 	let path = path.as_ref();
+	debug!("trying to store {path:?} at {name}");
 	builder
-		.append_path(path)
+		.append_path_with_name(path, name)
 		.await
-		.or_else(ignore_not_found)
-		.into_diagnostic()
-		.wrap_err(format!("processing {path:?}"))
-		.map(|_| true)
+		.map(|_| {
+			info!("stored {path:?}");
+			true
+		})
 		.unwrap_or_else(|err| {
-			warn!("{err}");
+			if err.kind() == io::ErrorKind::NotFound {
+				debug!("skipping {path:?} because it doesn't exist");
+			} else {
+				warn!("skipping {path:?} because {err}");
+			}
 			false
 		})
 }
 
 async fn add_dir(builder: &mut Builder<BufWriter<File>>, path: impl AsRef<Path>, at: &str) -> bool {
 	let path = path.as_ref();
+	debug!("trying to store {path:?} at {at}");
 	builder
 		.append_dir_all(path, at)
 		.await
-		.or_else(ignore_not_found)
-		.into_diagnostic()
-		.wrap_err(format!("processing {path:?}"))
 		.map(|_| {
 			info!("stored {path:?}");
 			true
 		})
 		.unwrap_or_else(|err| {
-			warn!("{err}");
+			if err.kind() == io::ErrorKind::NotFound {
+				debug!("skipping {path:?} because it doesn't exist");
+			} else {
+				warn!("skipping {path:?} because {err}");
+			}
 			false
 		})
 }
@@ -127,6 +125,11 @@ fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
+	create_dir_all(&ctx.args_sub.write_to)
+		.await
+		.into_diagnostic()
+		.wrap_err("creating dest dir")?;
+
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
 	let config_value = load_config(&root, kind.package_name())?;
@@ -149,18 +152,20 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let mut got_caddy = add_dir(&mut builder, "/etc/caddy", "caddy").await;
 	if !got_caddy {
-		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile").await;
+		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile", "caddy/Caddyfile").await;
 	}
 	if !got_caddy {
-		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile.txt").await;
+		got_caddy = add_file(&mut builder, r"C:\Caddy\Caddyfile.txt", "caddy/Caddyfile").await;
 	}
 	if !got_caddy {
 		error!("could not find a caddy to backup");
 	}
 
-	add_dir(&mut builder, "/etc/tamanu", "tamanu").await;
+	add_dir(&mut builder, "/etc/tamanu", "etc-tamanu").await;
 
-	add_file(&mut builder, root.join("pm2.config.cjs")).await;
+	add_file(&mut builder, root.join("pm2.config.cjs"), "pm2.config.cjs").await;
+	add_dir(&mut builder, root.join("alerts"), "alerts/version").await;
+	add_dir(&mut builder, r"C:\Tamanu\alerts", "alerts/global").await;
 	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
 		add_dir(&mut builder, path, kind.package_name()).await;
 	}
@@ -169,10 +174,11 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 		.into_inner()
 		.await
 		.into_diagnostic()
-		.wrap_err("writing the backup")?
+		.wrap_err("writing tar file")?
 		.flush()
 		.await
-		.into_diagnostic()?;
+		.into_diagnostic()
+		.wrap_err("flushing tar file")?;
 
 	process_backup(
 		output,

@@ -1,6 +1,2 @@
- WARN bestool::actions::tamanu::backup_configs: Skipping a file while archiving: No such file or directory (os error 2)
- INFO bestool::actions::tamanu::backup_configs: stored "/etc/caddy"
- WARN bestool::actions::tamanu::backup_configs: processing "/etc/tamanu"
- WARN bestool::actions::tamanu::backup_configs: processing "[CWD]/tamanu/pm2.config.cjs"
- WARN bestool::actions::tamanu::backup_configs: Skipping a file while archiving: No such file or directory (os error 2)
- INFO bestool::actions::tamanu::backup_configs: stored "[CWD]/tamanu/packages/central-server/config/."
+ERROR bestool::actions::tamanu::backup_configs: could not find a caddy to backup
+ INFO bestool::actions::tamanu::backup_configs: stored "[CWD]/tamanu/pm2.config.cjs"

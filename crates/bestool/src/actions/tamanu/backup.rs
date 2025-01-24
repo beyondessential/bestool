@@ -12,7 +12,7 @@ use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use reqwest::Url;
-use tokio::{fs, io::AsyncWriteExt as _};
+use tokio::{fs::{self, create_dir_all}, io::AsyncWriteExt as _};
 use tracing::{debug, info, instrument};
 
 use crate::{
@@ -108,6 +108,11 @@ pub struct TamanuDb {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
+	create_dir_all(&ctx.args_sub.write_to)
+		.await
+		.into_diagnostic()
+		.wrap_err("creating dest dir")?;
+
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
 	let config_value = load_config(&root, kind.package_name())?;
