@@ -1,12 +1,13 @@
 use std::{
-	collections::HashMap, error::Error, fmt::Display, io::Write, ops::ControlFlow, path::PathBuf,
-	process, sync::Arc, time::Duration,
+	collections::HashMap, convert::Infallible, error::Error, fmt::Display, io::Write,
+	ops::ControlFlow, path::PathBuf, process, sync::Arc, time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
+use futures::TryFutureExt;
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{miette, Context as _, IntoDiagnostic, Result};
 use reqwest::Url;
@@ -712,24 +713,28 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		let dry_run = ctx.args_sub.dry_run;
 		let mailgun = mailgun.clone();
 		let timeout_d: Duration = ctx.args_sub.timeout.into();
-		set.spawn(timeout(timeout_d, async move {
-			let error = format!("while executing alert: {}", alert.file.display());
-			if let Err(err) = execute_alert(internal_ctx, mailgun, alert, dry_run)
-				.await
-				.wrap_err(error)
-			{
-				eprintln!("{err:?}");
-			}
-		}));
+		let name = alert.file.clone();
+		set.spawn(
+			timeout(timeout_d, async move {
+				let error = format!("while executing alert: {}", alert.file.display());
+				if let Err(err) = execute_alert(internal_ctx, mailgun, alert, dry_run)
+					.await
+					.wrap_err(error)
+				{
+					eprintln!("{err:?}");
+				}
+			})
+			.or_else(move |elapsed| async move {
+				error!(alert=?name, "timeout: {elapsed:?}");
+				Ok::<_, Infallible>(())
+			}),
+		);
 	}
 
 	while let Some(res) = set.join_next().await {
 		match res {
 			Err(err) => {
 				error!("task: {err:?}");
-			}
-			Ok(Err(err)) => {
-				error!("timeout: {err:?}");
 			}
 			_ => (),
 		}
