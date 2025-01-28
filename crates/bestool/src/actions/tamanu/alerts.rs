@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use futures::TryFutureExt;
+use html2md_rs::to_md::safe_from_html_to_md;
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{miette, Context as _, IntoDiagnostic, Result};
 use reqwest::Url;
@@ -993,7 +994,11 @@ async fn execute_alert(
 								.ok()
 								.or_else(|| {
 									tera_ctx.get(field.as_str()).map(|v| {
-										v.as_str().map_or_else(|| v.to_string(), |v| v.into())
+										let v = match v.as_str() {
+											Some(t) => t.to_owned(),
+											None => v.to_string(),
+										};
+										safe_from_html_to_md(v.clone()).unwrap_or(v)
 									})
 								})
 								.unwrap_or_default(),
