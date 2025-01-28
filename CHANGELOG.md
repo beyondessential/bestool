@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.24.10](https://github.com/beyondessential/bestool/compare/v0.24.9..0.24.10) - 2025-01-24
+## [0.25.0](https://github.com/beyondessential/bestool/compare/v0.24.10..0.25.0) - 2025-01-28
+
+
+- **Bugfix:** Fix tests - ([f2866c6](https://github.com/beyondessential/bestool/commit/f2866c65f5b63aa1888f727bce2839624a625243))
+- **Style:** Remove a warning - ([6657913](https://github.com/beyondessential/bestool/commit/665791300fbd2fcfac67f5089affbc5fc4fe84ba))
+
+### Alerts
+
+- **Feature:** Add slack and multiplexed external targets - ([692b1c8](https://github.com/beyondessential/bestool/commit/692b1c81f3562c7f2f60bb0f70c7f2cb0dc89463))
+
+### Backups
+
+- **Test:** Remove --deterministic - ([6c2ad7a](https://github.com/beyondessential/bestool/commit/6c2ad7a5fd61f3f7a650251243f70e1f87f3644c))
+- **Tweak:** Use zero-compression zips - ([6470673](https://github.com/beyondessential/bestool/commit/6470673e4dc62e6d5166f69ad246e32f4f57707f))
+
+---
+## [0.24.10](https://github.com/beyondessential/bestool/compare/v0.24.9..v0.24.10) - 2025-01-24
 
 
 
