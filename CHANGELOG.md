@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.0](https://github.com/beyondessential/bestool/compare/v0.24.10..0.25.0) - 2025-01-28
+## [0.25.1](https://github.com/beyondessential/bestool/compare/v0.25.0..0.25.1) - 2025-01-28
+
+
+
+### Backups
+
+- **Tweak:** Use filesystem copy if we can - ([9097b12](https://github.com/beyondessential/bestool/commit/9097b12c54fb910b18d7bf746cc69c5f333c8fc3))
+
+---
+## [0.25.0](https://github.com/beyondessential/bestool/compare/v0.24.10..v0.25.0) - 2025-01-28
 
 
 - **Bugfix:** Fix tests - ([f2866c6](https://github.com/beyondessential/bestool/commit/f2866c65f5b63aa1888f727bce2839624a625243))
