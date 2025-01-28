@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.1](https://github.com/beyondessential/bestool/compare/v0.25.0..0.25.1) - 2025-01-28
+## [0.25.2](https://github.com/beyondessential/bestool/compare/v0.25.1..0.25.2) - 2025-01-28
+
+
+
+### Alerts
+
+- **Feature:** Add --timeout for alerts to avoid blocking indefinitely - ([4935514](https://github.com/beyondessential/bestool/commit/4935514778fcb82be05e512701a0d844c1896466))
+- **Performance:** Run alerts in parallel - ([210ec12](https://github.com/beyondessential/bestool/commit/210ec12787124090c254d6feeb980d860f626375))
+
+---
+## [0.25.1](https://github.com/beyondessential/bestool/compare/v0.25.0..v0.25.1) - 2025-01-28
 
 
 
