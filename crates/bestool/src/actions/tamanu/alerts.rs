@@ -1,6 +1,6 @@
 use std::{
-	collections::HashMap, error::Error, io::Write, ops::ControlFlow, path::PathBuf, process,
-	time::Duration,
+	collections::HashMap, error::Error, fmt::Display, io::Write, ops::ControlFlow, path::PathBuf,
+	process, time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
@@ -106,8 +106,8 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 /// # Send targets
 ///
 /// You can send triggered alerts to one or more different targets. Current send
-/// targets are: `email`, `zendesk`. Note that you can have multiple targets of
-/// the same type.
+/// targets are: `email`, `slack`, `zendesk`. Note that you can have multiple
+/// targets of the same type.
 ///
 /// ## Email
 ///
@@ -118,6 +118,46 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///       - staff@job.com
 ///       - support@job.com
 /// ```
+///
+/// ## Slack
+///
+/// ```yaml
+/// send:
+///   - target: slack
+///     webhook: https://hooks.slack.com/services/...
+///     template: |
+///       _Alert!_ There are {{ rows | length }} rows with errors.
+/// ```
+///
+/// You can customise the payload sent to Slack by specifying fields:
+///
+/// ```yaml
+/// send:
+///  - target: slack
+///    webhook: https://hooks.slack.com/services/...
+///    # ...
+///    fields:
+///    - name: alertname
+///      field: filename # this will be replaced with the filename of the alert
+///    - name: deployment
+///      value: production # this will be the exact value 'production'
+/// ```
+///
+/// The default set of fields is:
+///
+/// ```yaml
+/// - name: hostname
+///   field: hostname
+/// - name: filename
+///   field: filename
+/// - name: subject
+///   field: subject
+/// - name: message
+///   field: body
+/// ```
+///
+/// Overriding the `fields` will replace the default set entirely (so you may
+/// want to include all the ones you're not changing).
 ///
 /// ## Zendesk (authenticated)
 ///
@@ -185,6 +225,16 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 ///     template: |
 ///       <h1>Whoops</h1>
 /// ```
+///
+/// If you specify multiple external targets with the same `id`, the alert will be
+/// multiplexed (i.e. sent to all targets with that `id`). This can be useful for
+/// sending alerts to both email and slack, or for debugging by temporarily sending
+/// alerts to an additional target.
+///
+/// ---
+/// As this documentation is a bit hard to read in the terminal, you may want to
+/// consult the online version:
+/// <https://docs.rs/bestool/latest/bestool/__help/tamanu/alerts/struct.AlertsArgs.html>
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu alerts`"))]
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
@@ -281,7 +331,7 @@ enum TicketSource {
 	None,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case", tag = "target")]
 enum SendTarget {
 	Email {
@@ -296,24 +346,51 @@ enum SendTarget {
 		#[serde(flatten)]
 		conn: TargetZendesk,
 	},
+	Slack {
+		subject: Option<String>,
+		template: String,
+		#[serde(flatten)]
+		conn: TargetSlack,
+	},
 	External {
 		subject: Option<String>,
 		template: String,
 		id: String,
-		#[serde(default, skip)]
-		resolved: Option<ExternalTarget>,
 	},
 }
 
 impl SendTarget {
-	fn resolve_external(&mut self, external_targets: &HashMap<String, ExternalTarget>) {
+	fn resolve_external(
+		&self,
+		external_targets: &HashMap<String, Vec<ExternalTarget>>,
+	) -> Option<Vec<SendTarget>> {
 		match self {
-			Self::External { id, resolved, .. } => {
-				if let Some(target) = external_targets.get(id) {
-					*resolved = Some(target.clone());
-				}
-			}
-			_ => {}
+			Self::External {
+				id,
+				subject,
+				template,
+			} => external_targets.get(id).map(|exts| {
+				exts.iter()
+					.map(|ext| match ext {
+						ExternalTarget::Email { conn, .. } => SendTarget::Email {
+							subject: subject.clone(),
+							template: template.clone(),
+							conn: conn.clone(),
+						},
+						ExternalTarget::Zendesk { conn, .. } => SendTarget::Zendesk {
+							subject: subject.clone(),
+							template: template.clone(),
+							conn: conn.clone(),
+						},
+						ExternalTarget::Slack { conn, .. } => SendTarget::Slack {
+							subject: subject.clone(),
+							template: template.clone(),
+							conn: conn.clone(),
+						},
+					})
+					.collect()
+			}),
+			_ => None,
 		}
 	}
 }
@@ -321,15 +398,6 @@ impl SendTarget {
 #[derive(serde::Deserialize, Debug)]
 struct AlertTargets {
 	targets: Vec<ExternalTarget>,
-}
-
-impl AlertTargets {
-	fn to_map(self) -> HashMap<String, ExternalTarget> {
-		self.targets
-			.into_iter()
-			.map(|target| (target.id().into(), target))
-			.collect()
-	}
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -345,6 +413,11 @@ enum ExternalTarget {
 		#[serde(flatten)]
 		conn: TargetZendesk,
 	},
+	Slack {
+		id: String,
+		#[serde(flatten)]
+		conn: TargetSlack,
+	},
 }
 
 impl ExternalTarget {
@@ -352,6 +425,7 @@ impl ExternalTarget {
 		match self {
 			Self::Email { id, .. } => id,
 			Self::Zendesk { id, .. } => id,
+			Self::Slack { id, .. } => id,
 		}
 	}
 }
@@ -373,6 +447,75 @@ struct TargetZendesk {
 	ticket_form_id: Option<u64>,
 	#[serde(default)]
 	custom_fields: Vec<ZendeskCustomField>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+struct TargetSlack {
+	webhook: Url,
+
+	#[serde(default = "SlackField::default_set")]
+	fields: Vec<SlackField>,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+#[serde(rename_all = "snake_case")]
+enum TemplateField {
+	Filename,
+	Subject,
+	Body,
+	Hostname,
+	Requester,
+	Interval,
+}
+
+impl TemplateField {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Filename => "filename",
+			Self::Subject => "subject",
+			Self::Body => "body",
+			Self::Hostname => "hostname",
+			Self::Requester => "requester",
+			Self::Interval => "interval",
+		}
+	}
+}
+
+impl Display for TemplateField {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}", self.as_str())
+	}
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(untagged, rename_all = "snake_case")]
+enum SlackField {
+	Fixed { name: String, value: String },
+	Field { name: String, field: TemplateField },
+}
+
+impl SlackField {
+	fn default_set() -> Vec<Self> {
+		vec![
+			Self::Field {
+				name: "hostname".into(),
+				field: TemplateField::Hostname,
+			},
+			Self::Field {
+				name: "filename".into(),
+				field: TemplateField::Filename,
+			},
+			Self::Field {
+				name: "subject".into(),
+				field: TemplateField::Subject,
+			},
+			Self::Field {
+				name: "message".into(),
+				field: TemplateField::Body,
+			},
+		]
+	}
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -398,7 +541,7 @@ struct ZendeskCustomField {
 }
 
 impl AlertDefinition {
-	fn normalise(mut self, external_targets: &HashMap<String, ExternalTarget>) -> Self {
+	fn normalise(mut self, external_targets: &HashMap<String, Vec<ExternalTarget>>) -> Self {
 		if !self.recipients.is_empty() {
 			self.send.push(SendTarget::Email {
 				subject: self.subject,
@@ -412,9 +555,19 @@ impl AlertDefinition {
 			self.template = None;
 		}
 
-		for target in &mut self.send {
-			target.resolve_external(external_targets);
-		}
+		self.send = self
+			.send
+			.iter()
+			.flat_map(|target| match target {
+				target @ SendTarget::External { id, .. } => target
+					.resolve_external(external_targets)
+					.unwrap_or_else(|| {
+						error!(id, "external target not found");
+						Vec::new()
+					}),
+				other => vec![other.clone()],
+			})
+			.collect();
 
 		self
 	}
@@ -438,7 +591,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let mut external_targets = HashMap::new();
 	for dir in ctx.args_sub.dir {
 		let external_targets_path = dir.join("_targets.yml");
-		if let Some(target) = std::fs::read_to_string(&external_targets_path)
+		if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
 			.ok()
 			.and_then(|content| {
 				debug!(path=?external_targets_path, "parsing external targets");
@@ -448,7 +601,12 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 					)
 					.ok()
 			}) {
-			external_targets.extend(target.to_map().into_iter());
+			for target in targets {
+				external_targets
+					.entry(target.id().into())
+					.or_insert(Vec::new())
+					.push(target);
+			}
 		}
 
 		alerts.extend(
@@ -561,18 +719,21 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 		| SendTarget::Zendesk {
 			subject, template, ..
 		}
+		| SendTarget::Slack {
+			subject, template, ..
+		}
 		| SendTarget::External {
 			subject, template, ..
 		} => {
 			tera.add_raw_template(
-				"subject",
+				TemplateField::Subject.as_str(),
 				subject.as_deref().unwrap_or(DEFAULT_SUBJECT_TEMPLATE),
 			)
 			.into_diagnostic()
 			.wrap_err("compiling subject template")?;
-			tera.add_raw_template("alert.html", &template)
+			tera.add_raw_template(TemplateField::Body.as_str(), &template)
 				.into_diagnostic()
-				.wrap_err("compiling email template")?;
+				.wrap_err("compiling body template")?;
 		}
 	}
 
@@ -582,21 +743,9 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 			..
 		},
 		..
-	}
-	| SendTarget::External {
-		resolved:
-			Some(ExternalTarget::Zendesk {
-				conn:
-					TargetZendesk {
-						method: ZendeskMethod::Anonymous { requester },
-						..
-					},
-				..
-			}),
-		..
 	} = target
 	{
-		tera.add_raw_template("requester", requester)
+		tera.add_raw_template(TemplateField::Requester.as_str(), requester)
 			.into_diagnostic()
 			.wrap_err("compiling requester template")?;
 	}
@@ -607,18 +756,18 @@ fn load_templates(target: &SendTarget) -> Result<Tera> {
 fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>) -> TeraCtx {
 	let mut context = TeraCtx::new();
 	context.insert(
-		"interval",
+		TemplateField::Interval.as_str(),
 		&format!(
 			"{}",
 			Folktime::new(alert.interval).with_style(FolkStyle::OneUnitWhole)
 		),
 	);
 	context.insert(
-		"hostname",
+		TemplateField::Hostname.as_str(),
 		System::host_name().as_deref().unwrap_or("unknown"),
 	);
 	context.insert(
-		"filename",
+		TemplateField::Filename.as_str(),
 		&alert.file.file_name().unwrap().to_string_lossy(),
 	);
 	context.insert("now", &now.to_string());
@@ -702,19 +851,19 @@ async fn read_sources(
 #[instrument(skip(tera, context))]
 fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String, Option<String>)> {
 	let subject = tera
-		.render("subject", &context)
+		.render(TemplateField::Subject.as_str(), &context)
 		.into_diagnostic()
 		.wrap_err("rendering subject template")?;
 
-	context.insert("subject", &subject.to_string());
+	context.insert(TemplateField::Subject.as_str(), &subject.to_string());
 
 	let body = tera
-		.render("alert.html", &context)
+		.render(TemplateField::Body.as_str(), &context)
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
 
 	let requester = tera
-		.render("requester", &context)
+		.render(TemplateField::Requester.as_str(), &context)
 		.map(Some)
 		.or_else(|err| match err.kind {
 			tera::ErrorKind::TemplateNotFound(_) => Ok(None),
@@ -755,14 +904,6 @@ async fn execute_alert(
 			SendTarget::Email {
 				conn: TargetEmail { addresses },
 				..
-			}
-			| SendTarget::External {
-				resolved:
-					Some(ExternalTarget::Email {
-						conn: TargetEmail { addresses },
-						..
-					}),
-				..
 			} => {
 				if dry_run {
 					println!("-------------------------------");
@@ -795,6 +936,47 @@ async fn execute_alert(
 					.wrap_err("sending email")?;
 			}
 
+			SendTarget::Slack {
+				conn: TargetSlack { webhook, fields },
+				..
+			} => {
+				if dry_run {
+					println!("-------------------------------");
+					println!("Alert: {}", alert.file.display());
+					println!("Recipients: slack");
+					println!("Subject: {subject}");
+					println!("Body: {body}");
+					continue;
+				}
+
+				let payload: HashMap<&String, String> = fields
+					.iter()
+					.map(|field| match field {
+						SlackField::Fixed { name, value } => (name, value.clone()),
+						SlackField::Field { name, field } => (
+							name,
+							tera.render(field.as_str(), &tera_ctx)
+								.ok()
+								.or_else(|| {
+									tera_ctx.get(field.as_str()).map(|v| {
+										v.as_str().map_or_else(|| v.to_string(), |v| v.into())
+									})
+								})
+								.unwrap_or_default(),
+						),
+					})
+					.collect();
+
+				debug!(?webhook, ?payload, "posting to slack webhook");
+				ctx.http_client
+					.post(webhook.clone())
+					.json(&payload)
+					.send()
+					.await
+					.into_diagnostic()
+					.wrap_err("posting to slack webhook")?;
+			}
+
 			SendTarget::Zendesk {
 				conn:
 					TargetZendesk {
@@ -803,20 +985,6 @@ async fn execute_alert(
 						ticket_form_id,
 						custom_fields,
 					},
-				..
-			}
-			| SendTarget::External {
-				resolved:
-					Some(ExternalTarget::Zendesk {
-						conn:
-							TargetZendesk {
-								endpoint,
-								method,
-								ticket_form_id,
-								custom_fields,
-							},
-						..
-					}),
 				..
 			} => {
 				if dry_run {
@@ -856,10 +1024,8 @@ async fn execute_alert(
 				debug!(resp_text = ?resp.text().await.into_diagnostic()?, "Zendesk ticket sent");
 			}
 
-			SendTarget::External {
-				resolved: None, id, ..
-			} => {
-				error!(?id, "external send target not found");
+			SendTarget::External { .. } => {
+				unreachable!("external targets should be resolved before here");
 			}
 		}
 	}
