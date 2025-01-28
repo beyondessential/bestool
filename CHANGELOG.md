@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.4](https://github.com/beyondessential/bestool/compare/v0.25.3..0.25.4) - 2025-01-28
+## [0.25.5](https://github.com/beyondessential/bestool/compare/v0.25.4..0.25.5) - 2025-01-28
+
+
+- **Deps:** Upgrade rand to 0.9.0 - ([7b2a4cc](https://github.com/beyondessential/bestool/commit/7b2a4cce3580b873becf1aecd00f4a9a489bda1f))
+
+### Alerts
+
+- **Feature:** Render slack alerts to markdown if they’re html - ([f833063](https://github.com/beyondessential/bestool/commit/f83306392d43f6fec147d1a7ce43d3f8e9122c1a))
+
+---
+## [0.25.4](https://github.com/beyondessential/bestool/compare/v0.25.3..v0.25.4) - 2025-01-28
 
 
 
