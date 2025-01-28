@@ -1,6 +1,7 @@
 use std::{
 	collections::HashMap,
 	convert::Infallible,
+	env::current_dir,
 	error::Error,
 	fmt::Display,
 	io::Write,
@@ -259,7 +260,8 @@ pub struct AlertsArgs {
 	/// It's entirely valid to provide a folder that only contains a `_targets.yml` file.
 	///
 	/// Can be provided multiple times. Defaults to (depending on platform): `C:\Tamanu\alerts`,
-	/// `C:\Tamanu\{current-version}\alerts`, `/opt/tamanu-toolbox/alerts`, `/etc/tamanu/alerts`.
+	/// `C:\Tamanu\{current-version}\alerts`, `/opt/tamanu-toolbox/alerts`, `/etc/tamanu/alerts`,
+	/// `/alerts`, and `./alerts`.
 	#[arg(long)]
 	pub dir: Vec<PathBuf>,
 
@@ -598,12 +600,16 @@ struct InternalContext {
 }
 
 async fn default_dirs(root: &Path) -> Vec<PathBuf> {
-	let dirs = vec![
+	let mut dirs = vec![
 		PathBuf::from(r"C:\Tamanu\alerts"),
 		root.join("alerts"),
 		PathBuf::from("/opt/tamanu-toolbox/alerts"),
 		PathBuf::from("/etc/tamanu/alerts"),
+		PathBuf::from("/alerts"),
 	];
+	if let Ok(cwd) = current_dir() {
+		dirs.push(cwd.join("alerts"));
+	}
 
 	join_all(dirs.into_iter().map(|dir| async {
 		if dir.exists() {
