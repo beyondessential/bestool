@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.25.4"
+version = "0.25.5"
 edition = "2021"
 rust-version = "1.76.0"
 
@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-algae-cli = { version = "1.0.4", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.0.5", path = "../algae-cli", optional = true }
 aws-config = { version = "1.5.12", optional = true }
 aws-credential-types = { version = "1.1.7", features = ["hardcoded-credentials"], optional = true }
 aws-sdk-route53 = { version = "1.58.0", optional = true }
