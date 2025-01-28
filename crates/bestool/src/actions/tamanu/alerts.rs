@@ -1,6 +1,6 @@
 use std::{
 	collections::HashMap, error::Error, fmt::Display, io::Write, ops::ControlFlow, path::PathBuf,
-	process, time::Duration,
+	process, sync::Arc, time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
@@ -13,7 +13,7 @@ use reqwest::Url;
 use serde_json::json;
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
-use tokio::io::AsyncReadExt as _;
+use tokio::{io::AsyncReadExt as _, task::JoinSet};
 use tokio_postgres::types::{IsNull, ToSql, Type};
 use tracing::{debug, error, info, instrument, warn};
 use walkdir::WalkDir;
@@ -258,8 +258,18 @@ pub struct AlertsArgs {
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc. It should match
 	/// the task scheduling / cron interval for this command.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--interval DURATION`"))]
-	#[arg(long)]
+	#[arg(long, default_value = "15m")]
 	pub interval: humantime::Duration,
+
+	/// Timeout for each alert.
+	///
+	/// If an alert takes longer than this to query the database or run the shell script, it will be
+	/// skipped. Defaults to 30 seconds.
+	///
+	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc.
+	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--interval DURATION`"))]
+	#[arg(long, default_value = "30s")]
+	pub timeout: humantime::Duration,
 
 	/// Don't actually send alerts, just print them to stdout.
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--dry-run`"))]
@@ -690,18 +700,31 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let internal_ctx = InternalContext {
+	let mailgun = Arc::new(config.mailgun);
+	let internal_ctx = Arc::new(InternalContext {
 		pg_client: client,
 		http_client: reqwest::Client::new(),
-	};
+	});
 
+	let mut set = JoinSet::new();
 	for alert in alerts {
-		if let Err(err) =
-			execute_alert(&internal_ctx, &config.mailgun, &alert, ctx.args_sub.dry_run)
+		let internal_ctx = internal_ctx.clone();
+		let dry_run = ctx.args_sub.dry_run;
+		let mailgun = mailgun.clone();
+		set.spawn(async move {
+			let error = format!("while executing alert: {}", alert.file.display());
+			if let Err(err) = execute_alert(internal_ctx, mailgun, alert, dry_run)
 				.await
-				.wrap_err(format!("while executing alert: {}", alert.file.display()))
-		{
-			eprintln!("{err:?}");
+				.wrap_err(error)
+			{
+				eprintln!("{err:?}");
+			}
+		});
+	}
+
+	while let Some(res) = set.join_next().await {
+		if let Err(err) = res {
+			error!("task: {err:?}");
 		}
 	}
 
@@ -875,11 +898,10 @@ fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String, O
 	Ok((subject, body, requester))
 }
 
-#[instrument(skip(ctx, mailgun, alert))]
 async fn execute_alert(
-	ctx: &InternalContext,
-	mailgun: &TamanuMailgun,
-	alert: &AlertDefinition,
+	ctx: Arc<InternalContext>,
+	mailgun: Arc<TamanuMailgun>,
+	alert: AlertDefinition,
 	dry_run: bool,
 ) -> Result<()> {
 	info!(?alert.file, "executing alert");
@@ -888,8 +910,8 @@ async fn execute_alert(
 	let not_before = now - alert.interval;
 	info!(?now, ?not_before, interval=?alert.interval, "date range for alert");
 
-	let mut tera_ctx = build_context(alert, now);
-	if read_sources(&ctx.pg_client, alert, not_before, &mut tera_ctx)
+	let mut tera_ctx = build_context(&alert, now);
+	if read_sources(&ctx.pg_client, &alert, not_before, &mut tera_ctx)
 		.await?
 		.is_break()
 	{
@@ -1016,12 +1038,12 @@ async fn execute_alert(
 						req_builder.basic_auth(std::format_args!("{email}/token"), Some(password));
 				}
 
-				let resp = req_builder
+				req_builder
 					.send()
 					.await
 					.into_diagnostic()
 					.wrap_err("creating Zendesk ticket")?;
-				debug!(resp_text = ?resp.text().await.into_diagnostic()?, "Zendesk ticket sent");
+				debug!("Zendesk ticket sent");
 			}
 
 			SendTarget::External { .. } => {
