@@ -18,16 +18,16 @@ name = "algae"
 [dependencies]
 age = { version = "0.11.1", features = ["async"] }
 age-core = "0.11.0"
-clap = { version = "4.5.26", features = ["cargo", "derive", "wrap_help"] }
+clap = { version = "4.5.27", features = ["cargo", "derive", "wrap_help"] }
 dialoguer = { version = "0.11.0", features = ["password"], default-features = false }
 diceware_wordlists = "1.2.3"
 futures = "0.3.30"
 indicatif = { version = "0.17.9", features = ["tokio"] }
 itertools = "0.14.0"
-jiff = "0.1.22"
+jiff = "0.1.28"
 miette = { version = "7.4.0", features = ["fancy"] }
 pinentry = "0.6.0"
-rand = "0.8.5"
+rand = "0.9.0"
 tokio = { version = "1.43.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7.13", features = ["compat"] }
 tracing = { version = "0.1.41", features = ["attributes"] }
