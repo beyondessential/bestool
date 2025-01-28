@@ -63,6 +63,9 @@ pub struct BackupConfigsArgs {
 	#[arg(long)]
 	pub keep_days: Option<u16>,
 
+	#[arg(short, hide = true)]
+	test_skip_caddy: bool,
+
 	#[command(flatten)]
 	pub key: KeyArgs,
 }
@@ -70,15 +73,10 @@ pub struct BackupConfigsArgs {
 fn zip_options() -> SimpleFileOptions {
 	SimpleFileOptions::default()
 		.unix_permissions(0o644)
-		.compression_method(CompressionMethod::Zstd)
-		.compression_level(Some(16))
+		.compression_method(CompressionMethod::Stored)
 }
 
-fn add_file_impl(
-	zip: &mut ZipWriter<&mut File>,
-	path: &Path,
-	name: &Path,
-) -> Result<()> {
+fn add_file_impl(zip: &mut ZipWriter<&mut File>, path: &Path, name: &Path) -> Result<()> {
 	debug!("trying to store file {path:?} at {name:?}");
 	let mut file = File::open(path)
 		.inspect_err(|err| {
@@ -191,42 +189,24 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let mut zip = ZipWriter::new(&mut file);
 
-	let mut got_caddy = add_dir(&mut zip, "/etc/caddy", "caddy")?;
-	if !got_caddy {
-		got_caddy = add_file(
-			&mut zip,
-			r"C:\Caddy\Caddyfile",
-			"caddy/Caddyfile",
-		);
-	}
-	if !got_caddy {
-		got_caddy = add_file(
-			&mut zip,
-			r"C:\Caddy\Caddyfile.txt",
-			"caddy/Caddyfile",
-		);
-	}
-	if !got_caddy {
-		error!("could not find a caddy to backup");
-	}
+	if !ctx.args_sub.test_skip_caddy {
+		let mut got_caddy = add_dir(&mut zip, "/etc/caddy", "caddy")?;
+		if !got_caddy {
+			got_caddy = add_file(&mut zip, r"C:\Caddy\Caddyfile", "caddy/Caddyfile");
+		}
+		if !got_caddy {
+			got_caddy = add_file(&mut zip, r"C:\Caddy\Caddyfile.txt", "caddy/Caddyfile");
+		}
+		if !got_caddy {
+			error!("could not find a caddy to backup");
+		}
+	};
 
 	add_dir(&mut zip, "/etc/tamanu", "etc-tamanu")?;
 
-	add_file(
-		&mut zip,
-		root.join("pm2.config.cjs"),
-		"pm2.config.cjs",
-	);
-	add_dir(
-		&mut zip,
-		root.join("alerts"),
-		"alerts/version",
-	)?;
-	add_dir(
-		&mut zip,
-		r"C:\Tamanu\alerts",
-		"alerts/global",
-	)?;
+	add_file(&mut zip, root.join("pm2.config.cjs"), "pm2.config.cjs");
+	add_dir(&mut zip, root.join("alerts"), "alerts/version")?;
+	add_dir(&mut zip, r"C:\Tamanu\alerts", "alerts/global")?;
 	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
 		add_dir(&mut zip, path, kind.package_name())?;
 	}
