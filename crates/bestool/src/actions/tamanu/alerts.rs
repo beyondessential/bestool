@@ -1,13 +1,21 @@
 use std::{
-	collections::HashMap, convert::Infallible, error::Error, fmt::Display, io::Write,
-	ops::ControlFlow, path::PathBuf, process, sync::Arc, time::Duration,
+	collections::HashMap,
+	convert::Infallible,
+	error::Error,
+	fmt::Display,
+	io::Write,
+	ops::ControlFlow,
+	path::{Path, PathBuf},
+	process,
+	sync::Arc,
+	time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use folktime::duration::{Duration as Folktime, Style as FolkStyle};
-use futures::TryFutureExt;
+use futures::{future::join_all, TryFutureExt};
 use html2md_rs::to_md::safe_from_html_to_md;
 use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{miette, Context as _, IntoDiagnostic, Result};
@@ -250,8 +258,8 @@ pub struct AlertsArgs {
 	///
 	/// It's entirely valid to provide a folder that only contains a `_targets.yml` file.
 	///
-	/// Can be provided multiple times.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--dir PATH`"))]
+	/// Can be provided multiple times. Defaults to (depending on platform): `C:\Tamanu\alerts`,
+	/// `C:\Tamanu\{current-version}\alerts`, `/opt/tamanu-toolbox/alerts`, `/etc/tamanu/alerts`.
 	#[arg(long)]
 	pub dir: Vec<PathBuf>,
 
@@ -259,7 +267,6 @@ pub struct AlertsArgs {
 	///
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc. It should match
 	/// the task scheduling / cron interval for this command.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--interval DURATION`"))]
 	#[arg(long, default_value = "15m")]
 	pub interval: humantime::Duration,
 
@@ -590,6 +597,27 @@ struct InternalContext {
 	http_client: reqwest::Client,
 }
 
+async fn default_dirs(root: &Path) -> Vec<PathBuf> {
+	let dirs = vec![
+		PathBuf::from(r"C:\Tamanu\alerts"),
+		root.join("alerts"),
+		PathBuf::from("/opt/tamanu-toolbox/alerts"),
+		PathBuf::from("/etc/tamanu/alerts"),
+	];
+
+	join_all(dirs.into_iter().map(|dir| async {
+		if dir.exists() {
+			Some(dir)
+		} else {
+			None
+		}
+	}))
+	.await
+	.into_iter()
+	.flatten()
+	.collect()
+}
+
 pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
@@ -599,9 +627,15 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		.wrap_err("parsing of Tamanu config failed")?;
 	debug!(?config, "parsed Tamanu config");
 
+	let dirs = if ctx.args_sub.dir.is_empty() {
+		default_dirs(&root).await
+	} else {
+		ctx.args_sub.dir
+	};
+
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
-	for dir in ctx.args_sub.dir {
+	for dir in dirs {
 		let external_targets_path = dir.join("_targets.yml");
 		if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
 			.ok()
