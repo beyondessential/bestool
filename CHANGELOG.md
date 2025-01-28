@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.7](https://github.com/beyondessential/bestool/compare/v0.25.6..0.25.7) - 2025-01-28
+## [0.25.8](https://github.com/beyondessential/bestool/compare/v0.25.7..0.25.8) - 2025-01-28
+
+
+
+### Alerts
+
+- **Tweak:** Print which folders are searched - ([09d706a](https://github.com/beyondessential/bestool/commit/09d706a873e956a97068cb16db5de346b4d61898))
+
+---
+## [0.25.7](https://github.com/beyondessential/bestool/compare/v0.25.6..v0.25.7) - 2025-01-28
 
 
 
