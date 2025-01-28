@@ -724,8 +724,14 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	}
 
 	while let Some(res) = set.join_next().await {
-		if let Err(err) = res {
-			error!("task: {err:?}");
+		match res {
+			Err(err) => {
+				error!("task: {err:?}");
+			}
+			Ok(Err(err)) => {
+				error!("timeout: {err:?}");
+			}
+			_ => (),
 		}
 	}
 
