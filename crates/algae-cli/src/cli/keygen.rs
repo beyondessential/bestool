@@ -106,11 +106,16 @@ pub async fn run(
 		identity.expose_secret().as_bytes().to_owned()
 	} else {
 		let key = if random_passphrase {
-			use rand::seq::SliceRandom;
-			let rng = &mut rand::thread_rng();
-			let words = diceware_wordlists::MINILOCK_WORDLIST.choose_multiple(rng, 6);
-			let phrase: String = Itertools::intersperse(words.map(|item| *item), "-").collect();
+			use rand::prelude::*;
+			let rng = &mut rand::rng();
+			let words: [_; 6] = diceware_wordlists::MINILOCK_WORDLIST
+				.choose_multiple_array(rng)
+				.unwrap();
+
+			let phrase: String =
+				Itertools::intersperse(words.into_iter().map(|item| item), "-").collect();
 			println!("passphrase: {phrase}");
+
 			Passphrase::new(phrase.into())
 		} else {
 			key.require_with_confirmation().await?
