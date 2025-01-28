@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.6](https://github.com/beyondessential/bestool/compare/v0.25.5..0.25.6) - 2025-01-28
+## [0.25.7](https://github.com/beyondessential/bestool/compare/v0.25.6..0.25.7) - 2025-01-28
+
+
+
+### Alerts
+
+- **Tweak:** Cover more default dirs (toolbox container, cwd) - ([ce4e427](https://github.com/beyondessential/bestool/commit/ce4e427b877a64237bf3cfdb1c9ab0ed82ca7073))
+
+---
+## [0.25.6](https://github.com/beyondessential/bestool/compare/v0.25.5..v0.25.6) - 2025-01-28
 
 
 - **Deps:** Make html2md conditional - ([8d2659e](https://github.com/beyondessential/bestool/commit/8d2659ef478b64d6f46501caca06e167bf2df457))
