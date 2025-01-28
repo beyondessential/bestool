@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.3](https://github.com/beyondessential/bestool/compare/v0.25.2..0.25.3) - 2025-01-28
+## [0.25.4](https://github.com/beyondessential/bestool/compare/v0.25.3..0.25.4) - 2025-01-28
+
+
+
+### Alerts
+
+- **Bugfix:** Specify which alert timed out - ([b4f7cef](https://github.com/beyondessential/bestool/commit/b4f7cef1632bb6d0393bba8b69edd2b831c0b426))
+
+---
+## [0.25.3](https://github.com/beyondessential/bestool/compare/v0.25.2..v0.25.3) - 2025-01-28
 
 
 
