@@ -1,2 +1,2 @@
 bin.name = "bestool"
-args = "--log-timeless tamanu --root ./tamanu backup-configs --write-to ./"
+args = "--log-timeless tamanu --root ./tamanu backup-configs --write-to ./ --test-skip-caddy"
