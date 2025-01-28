@@ -638,6 +638,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	} else {
 		ctx.args_sub.dir
 	};
+	debug!(?dirs, "searching for alerts");
 
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
