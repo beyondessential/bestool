@@ -16,7 +16,7 @@ use tokio::{
 	fs::{self, create_dir_all},
 	io::AsyncWriteExt as _,
 };
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::{
 	actions::{
@@ -237,36 +237,11 @@ pub(crate) async fn process_backup(
 		let target_path = then_copy_to.join(output_filename);
 		info!(from=?output, to=?target_path, "copying backup");
 
-		// We're doing the copy in Rust to get a progress bar and better errors
-
-		let input = fs::File::open(&output)
-			.await
-			.into_diagnostic()
-			.wrap_err("opening the original")?;
-		let input_length = input
-			.metadata()
-			.await
-			.into_diagnostic()
-			.wrap_err("reading original file length")?
-			.len();
-
-		let mut writer = fs::File::create_new(target_path)
-			.await
-			.into_diagnostic()
-			.wrap_err("opening the target file")?;
-
-		let mut reader = with_progress_bar(input_length, input);
-		let bytes = tokio::io::copy(&mut reader, &mut writer)
-			.await
-			.into_diagnostic()
-			.wrap_err("copying data in stream")?;
-		debug!("copied {bytes} bytes");
-
-		writer
-			.shutdown()
-			.await
-			.into_diagnostic()
-			.wrap_err("closing the target file")?;
+		// attempt copy first via fs, then fallback to via io
+		if let Err(e) = fs::copy(&output, &target_path).await {
+			warn!(?e, "fs::copy failed, falling back to io::copy");
+			copy_via_io(&output, target_path).await?;
+		}
 	}
 
 	if let Some(days) = keep_days {
@@ -282,6 +257,38 @@ pub(crate) async fn process_backup(
 	}
 
 	Ok(output)
+}
+
+async fn copy_via_io(output: &PathBuf, target_path: PathBuf) -> Result<(), miette::Error> {
+	let input = fs::File::open(output)
+		.await
+		.into_diagnostic()
+		.wrap_err("opening the original")?;
+	let input_length = input
+		.metadata()
+		.await
+		.into_diagnostic()
+		.wrap_err("reading original file length")?
+		.len();
+
+	let mut writer = fs::File::create_new(target_path)
+		.await
+		.into_diagnostic()
+		.wrap_err("opening the target file")?;
+
+	let mut reader = with_progress_bar(input_length, input);
+
+	let bytes = tokio::io::copy(&mut reader, &mut writer)
+		.await
+		.into_diagnostic()
+		.wrap_err("copying data in stream")?;
+	debug!("copied {bytes} bytes");
+
+	writer
+		.shutdown()
+		.await
+		.into_diagnostic()
+		.wrap_err("closing the target file")
 }
 
 #[instrument(level = "debug")]
