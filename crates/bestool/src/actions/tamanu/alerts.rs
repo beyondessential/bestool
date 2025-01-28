@@ -13,7 +13,7 @@ use reqwest::Url;
 use serde_json::json;
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
-use tokio::{io::AsyncReadExt as _, task::JoinSet};
+use tokio::{io::AsyncReadExt as _, task::JoinSet, time::timeout};
 use tokio_postgres::types::{IsNull, ToSql, Type};
 use tracing::{debug, error, info, instrument, warn};
 use walkdir::WalkDir;
@@ -711,7 +711,8 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		let internal_ctx = internal_ctx.clone();
 		let dry_run = ctx.args_sub.dry_run;
 		let mailgun = mailgun.clone();
-		set.spawn(async move {
+		let timeout_d: Duration = ctx.args_sub.timeout.into();
+		set.spawn(timeout(timeout_d, async move {
 			let error = format!("while executing alert: {}", alert.file.display());
 			if let Err(err) = execute_alert(internal_ctx, mailgun, alert, dry_run)
 				.await
@@ -719,7 +720,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 			{
 				eprintln!("{err:?}");
 			}
-		});
+		}));
 	}
 
 	while let Some(res) = set.join_next().await {
