@@ -63,8 +63,8 @@ pub struct BackupConfigsArgs {
 	#[arg(long)]
 	pub keep_days: Option<u16>,
 
-	#[arg(short, hide = true)]
-	test_skip_caddy: bool,
+	#[arg(long, hide = true)]
+	pub test_skip_caddy: bool,
 
 	#[command(flatten)]
 	pub key: KeyArgs,

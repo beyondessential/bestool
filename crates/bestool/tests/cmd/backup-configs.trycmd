@@ -1,0 +1,4 @@
+```console
+rm -f 1970-01-01_0000-localhost.config.zip
+bestool --log-timeless tamanu --root ./tamanu backup-configs --write-to ./ --test-skip-caddy
+```
