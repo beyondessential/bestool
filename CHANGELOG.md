@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.25.8](https://github.com/beyondessential/bestool/compare/v0.25.7..0.25.8) - 2025-01-28
+## [0.26.0](https://github.com/beyondessential/bestool/compare/v0.25.8..0.26.0) - 2025-01-29
+
+
+- **Bugfix:** Fix tests - ([ef4be42](https://github.com/beyondessential/bestool/commit/ef4be42f3e5112c4e5b4ac600bc8ee25d02528e4))
+- **Bugfix:** Fix more tests - ([214ed72](https://github.com/beyondessential/bestool/commit/214ed72d3f388b5e7668eaba28bc7647974ac24d))
+- **Deps:** Update lockfile - ([e2387af](https://github.com/beyondessential/bestool/commit/e2387af575211bdd6f37c892fa1211bac1e1e609))
+
+### Alerts
+
+- **Feature:** Render email html body from markdown - ([58d9d20](https://github.com/beyondessential/bestool/commit/58d9d20622d0873e0fe602c1e191c25c584d76ec))
+- **Refactor:** Split into mods - ([4126fbe](https://github.com/beyondessential/bestool/commit/4126fbe59a512fc88e47f65f7ecf2ab82d59e42a))
+- **Refactor:** Split alerts into mods - ([bf8c147](https://github.com/beyondessential/bestool/commit/bf8c14791a582b665c2c7ecf377cb21e39c46ccb))
+- **Test:** Remove legacy alert definition support - ([335d5c2](https://github.com/beyondessential/bestool/commit/335d5c219542bb88ca7b26ce417274309c9d1969))
+
+---
+## [0.25.8](https://github.com/beyondessential/bestool/compare/v0.25.7..v0.25.8) - 2025-01-28
 
 
 
