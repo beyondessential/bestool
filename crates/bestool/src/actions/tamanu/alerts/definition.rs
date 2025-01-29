@@ -4,22 +4,18 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{miette, Context as _, IntoDiagnostic, Result};
-use serde_json::json;
 use tera::Context as TeraCtx;
 use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{actions::tamanu::config, postgres_to_value::rows_to_value_map};
+use crate::{actions::tamanu::config::TamanuConfig, postgres_to_value::rows_to_value_map};
 
 use super::{
 	pg_interval::Interval,
-	targets::{ExternalTarget, SendTarget, TargetEmail},
-	targets::{SlackField, TargetSlack, TargetZendesk, ZendeskCredentials, ZendeskMethod},
+	targets::{ExternalTarget, SendTarget},
 	templates::build_context,
-	templates::{load_templates, render_alert},
 	InternalContext,
 };
 
@@ -41,12 +37,6 @@ pub struct AlertDefinition {
 
 	#[serde(flatten)]
 	pub source: TicketSource,
-
-	// legacy email-only fields
-	#[serde(default)]
-	pub recipients: Vec<String>,
-	pub subject: Option<String>,
-	pub template: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug, Default)]
@@ -66,19 +56,6 @@ pub enum TicketSource {
 
 impl AlertDefinition {
 	pub fn normalise(mut self, external_targets: &HashMap<String, Vec<ExternalTarget>>) -> Self {
-		if !self.recipients.is_empty() {
-			self.send.push(SendTarget::Email {
-				subject: self.subject,
-				template: self.template.unwrap_or_default(),
-				conn: TargetEmail {
-					addresses: self.recipients,
-				},
-			});
-			self.recipients = vec![];
-			self.subject = None;
-			self.template = None;
-		}
-
 		self.send = self
 			.send
 			.iter()
@@ -172,7 +149,7 @@ impl AlertDefinition {
 	pub async fn execute(
 		self,
 		ctx: Arc<InternalContext>,
-		mailgun: Arc<config::Mailgun>,
+		config: &TamanuConfig,
 		dry_run: bool,
 	) -> Result<()> {
 		info!(?self.file, "executing alert");
@@ -191,137 +168,11 @@ impl AlertDefinition {
 		}
 
 		for target in &self.send {
-			let tera = load_templates(target)?;
-			let (subject, body, requester) = render_alert(&tera, &mut tera_ctx)?;
-
-			match target {
-				SendTarget::Email {
-					conn: TargetEmail { addresses },
-					..
-				} => {
-					if dry_run {
-						println!("-------------------------------");
-						println!("Alert: {}", self.file.display());
-						println!("Recipients: {}", addresses.join(", "));
-						println!("Subject: {subject}");
-						println!("Body: {body}");
-						continue;
-					}
-
-					debug!(?self.recipients, "sending email");
-					let sender = EmailAddress::address(&mailgun.sender);
-					let mailgun = Mailgun {
-						api_key: mailgun.api_key.clone(),
-						domain: mailgun.domain.clone(),
-					};
-					let message = Message {
-						to: addresses
-							.iter()
-							.map(|email| EmailAddress::address(email))
-							.collect(),
-						subject,
-						html: body,
-						..Default::default()
-					};
-					mailgun
-						.async_send(mailgun_rs::MailgunRegion::US, &sender, message)
-						.await
-						.into_diagnostic()
-						.wrap_err("sending email")?;
-				}
-
-				SendTarget::Slack {
-					conn: TargetSlack { webhook, fields },
-					..
-				} => {
-					if dry_run {
-						println!("-------------------------------");
-						println!("Alert: {}", self.file.display());
-						println!("Recipients: slack");
-						println!("Subject: {subject}");
-						println!("Body: {body}");
-						continue;
-					}
-
-					let payload: HashMap<&String, String> = fields
-						.iter()
-						.map(|field| match field {
-							SlackField::Fixed { name, value } => (name, value.clone()),
-							SlackField::Field { name, field } => (
-								name,
-								tera.render(field.as_str(), &tera_ctx)
-									.ok()
-									.or_else(|| {
-										tera_ctx.get(field.as_str()).map(|v| match v.as_str() {
-											Some(t) => t.to_owned(),
-											None => v.to_string(),
-										})
-									})
-									.unwrap_or_default(),
-							),
-						})
-						.collect();
-
-					debug!(?webhook, ?payload, "posting to slack webhook");
-					ctx.http_client
-						.post(webhook.clone())
-						.json(&payload)
-						.send()
-						.await
-						.into_diagnostic()
-						.wrap_err("posting to slack webhook")?;
-				}
-
-				SendTarget::Zendesk {
-					conn:
-						TargetZendesk {
-							endpoint,
-							method,
-							ticket_form_id,
-							custom_fields,
-						},
-					..
-				} => {
-					if dry_run {
-						println!("-------------------------------");
-						println!("Alert: {}", self.file.display());
-						println!("Endpoint: {}", endpoint);
-						println!("Subject: {subject}");
-						println!("Body: {body}");
-						continue;
-					}
-
-					let req = json!({
-						"request": {
-							"subject": subject,
-							"ticket_form_id": ticket_form_id,
-							"custom_fields": custom_fields,
-							"comment": { "html_body": body },
-							"requester": requester.map(|r| json!({ "name": r }))
-						}
-					});
-
-					let mut req_builder = ctx.http_client.post(endpoint.clone()).json(&req);
-
-					if let ZendeskMethod::Authorized {
-						credentials: ZendeskCredentials { email, password },
-					} = method
-					{
-						req_builder = req_builder
-							.basic_auth(std::format_args!("{email}/token"), Some(password));
-					}
-
-					req_builder
-						.send()
-						.await
-						.into_diagnostic()
-						.wrap_err("creating Zendesk ticket")?;
-					debug!("Zendesk ticket sent");
-				}
-
-				SendTarget::External { .. } => {
-					unreachable!("external targets should be resolved before here");
-				}
+			if let Err(err) = target
+				.send(&self, ctx.clone(), &mut tera_ctx, config, dry_run)
+				.await
+			{
+				error!("sending: {err:?}");
 			}
 		}
 
