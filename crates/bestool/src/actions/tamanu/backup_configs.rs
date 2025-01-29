@@ -8,7 +8,6 @@ use algae_cli::keys::KeyArgs;
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
-use reqwest::Url;
 use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
@@ -158,11 +157,11 @@ fn add_dir(
 
 fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
 	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
-	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
-	let output_name = canonical_host_name
+	let output_name = config
+		.canonical_host_name
 		.as_ref()
 		.and_then(|url| url.host_str())
-		.unwrap_or(&config.canonical_host_name);
+		.unwrap_or_else(|| "localhost");
 
 	format!("{output_date}-{output_name}.config.zip").into()
 }

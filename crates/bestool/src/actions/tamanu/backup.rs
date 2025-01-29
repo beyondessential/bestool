@@ -11,7 +11,6 @@ use algae_cli::{
 use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
-use reqwest::Url;
 use tokio::{
 	fs::{self, create_dir_all},
 	io::AsyncWriteExt as _,
@@ -277,16 +276,14 @@ async fn copy_via_io(output: &PathBuf, target_path: PathBuf) -> Result<(), miett
 #[instrument(level = "debug")]
 pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
 	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
+	let output_name = config
+		.canonical_host_name
+		.as_ref()
+		.and_then(|url| url.host_str())
+		.unwrap_or_else(|| "localhost");
 
-	let canonical_host_name = Url::parse(&config.canonical_host_name).ok();
 	format!(
 		"{output_date}-{output_name}-{db}.{ext}",
-		// Extract the host section since "canonical_host_name" is a full URL, which is not
-		// suitable for a file name.
-		output_name = canonical_host_name
-			.as_ref()
-			.and_then(|url| url.host_str())
-			.unwrap_or(&config.canonical_host_name),
 		db = config.db.name,
 	)
 }
