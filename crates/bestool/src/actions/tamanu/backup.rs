@@ -20,11 +20,13 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::{
 	actions::{
-		tamanu::{config::load_config, find_package, find_postgres_bin, find_tamanu, TamanuArgs},
+		tamanu::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},
 	now_time,
 };
+
+use super::config::TamanuConfig;
 
 /// Backup a local Tamanu database to a single file.
 ///
@@ -96,20 +98,6 @@ pub struct BackupArgs {
 	pub key: KeyArgs,
 }
 
-#[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct TamanuConfig {
-	pub canonical_host_name: String,
-	pub db: TamanuDb,
-}
-
-#[derive(serde::Deserialize, Debug)]
-pub struct TamanuDb {
-	pub name: String,
-	pub username: String,
-	pub password: String,
-}
-
 pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	create_dir_all(&ctx.args_sub.write_to)
 		.await
@@ -117,15 +105,10 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		.wrap_err("creating dest dir")?;
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
-	let kind = find_package(&root);
-	let config_value = load_config(&root, kind.package_name())?;
+	let config = load_config(&root, None)?;
+	debug!(?config, "parsed Tamanu config");
 
 	let pg_dump = find_postgres_bin("pg_dump")?;
-
-	let config: TamanuConfig = serde_json::from_value(config_value)
-		.into_diagnostic()
-		.wrap_err("parsing of Tamanu config failed")?;
-	debug!(?config, "parsed Tamanu config");
 
 	// check key
 	ctx.args_sub.key.get_public_key().await?;
