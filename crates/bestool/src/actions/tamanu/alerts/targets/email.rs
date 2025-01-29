@@ -19,6 +19,13 @@ impl TargetEmail {
 		body: &str,
 		dry_run: bool,
 	) -> Result<()> {
+		let body = {
+			let parser = pulldown_cmark::Parser::new(body);
+			let mut html_output = String::new();
+			pulldown_cmark::html::push_html(&mut html_output, parser);
+			html_output
+		};
+
 		if dry_run {
 			println!("-------------------------------");
 			println!("Alert: {}", alert.file.display());

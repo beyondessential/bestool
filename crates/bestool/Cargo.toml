@@ -52,7 +52,6 @@ fontdue = { version = "0.9.2", optional = true }
 fs4 = { version = "0.12.0", features = ["tokio"], optional = true }
 futures = "0.3.30"
 glob = { version = "0.3.2", optional = true }
-html2md-rs = { version = "0.10.2", optional = true }
 humantime = { version = "2.1.0", optional = true }
 indicatif = { version = "0.17.7", features = ["tokio"] }
 ip_network = { version = "0.4.1", optional = true }
@@ -67,6 +66,7 @@ merkle_hash = { version = "3.7.0", optional = true }
 miette = { version = "7.4.0", features = ["fancy"] }
 mimalloc = "0.1.41"
 node-semver = { version = "2.1.0", optional = true }
+pulldown-cmark = { version = "0.12.2", optional = true }
 regex = { version = "1.10.6", optional = true }
 reqwest = { version = "0.12.11", features = [
 	"default-tls",
@@ -172,9 +172,9 @@ tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
 	"dep:folktime",
-	"dep:html2md-rs",
 	"dep:humantime",
 	"dep:mailgun-rs",
+	"dep:pulldown-cmark",
 	"dep:serde_yml",
 	"dep:sysinfo",
 	"dep:tera",

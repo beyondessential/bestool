@@ -51,7 +51,8 @@ use crate::actions::{
 ///
 /// # Template variables
 ///
-/// Templates are rendered with [Tera](https://keats.github.io/tera/docs/#templates).
+/// Templates are rendered with [Tera](https://keats.github.io/tera/docs/#templates),
+/// and are expected to be either plain text or markdown.
 ///
 /// - `rows`: the result of the SQL query, as a list of objects (if source = sql)
 /// - `output`: the result of the shell command (if source = shell)
@@ -114,6 +115,8 @@ use crate::actions::{
 ///       - staff@job.com
 ///       - support@job.com
 /// ```
+///
+/// The `template` field will be rendered and then converted to HTML (using markdown syntax).
 ///
 /// ## Slack
 ///
@@ -219,7 +222,7 @@ use crate::actions::{
 ///     id: email-staff
 ///     subject: [Alert] Something is wrong
 ///     template: |
-///       <h1>Whoops</h1>
+///       # Whoops
 /// ```
 ///
 /// If you specify multiple external targets with the same `id`, the alert will be
