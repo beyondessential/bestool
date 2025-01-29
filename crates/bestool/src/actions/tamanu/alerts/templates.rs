@@ -10,7 +10,10 @@ use tracing::{instrument, warn};
 
 use super::{
 	definition::AlertDefinition,
-	targets::{SendTarget, TargetZendesk, ZendeskMethod},
+	targets::{
+		zendesk::{TargetZendesk, ZendeskMethod},
+		SendTarget,
+	},
 };
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";

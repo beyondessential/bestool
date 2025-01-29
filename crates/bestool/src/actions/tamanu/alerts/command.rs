@@ -418,7 +418,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let mailgun = Arc::new(config.mailgun);
+	let config = Arc::new(config);
 	let internal_ctx = Arc::new(InternalContext {
 		pg_client: client,
 		http_client: reqwest::Client::new(),
@@ -428,14 +428,14 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	for alert in alerts {
 		let internal_ctx = internal_ctx.clone();
 		let dry_run = ctx.args_sub.dry_run;
-		let mailgun = mailgun.clone();
 		let timeout_d: Duration = ctx.args_sub.timeout.into();
 		let name = alert.file.clone();
+		let config = config.clone();
 		set.spawn(
 			timeout(timeout_d, async move {
 				let error = format!("while executing alert: {}", alert.file.display());
 				if let Err(err) = alert
-					.execute(internal_ctx, mailgun, dry_run)
+					.execute(internal_ctx, &config, dry_run)
 					.await
 					.wrap_err(error)
 				{

@@ -1,8 +1,18 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use reqwest::Url;
+use miette::Result;
 
-use super::templates::TemplateField;
+use crate::actions::tamanu::config::TamanuConfig;
+
+use super::{
+	definition::AlertDefinition,
+	templates::{load_templates, render_alert},
+	InternalContext,
+};
+
+mod email;
+mod slack;
+pub(super) mod zendesk;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case", tag = "target")]
@@ -11,19 +21,19 @@ pub enum SendTarget {
 		subject: Option<String>,
 		template: String,
 		#[serde(flatten)]
-		conn: TargetEmail,
+		conn: email::TargetEmail,
 	},
 	Zendesk {
 		subject: Option<String>,
 		template: String,
 		#[serde(flatten)]
-		conn: TargetZendesk,
+		conn: zendesk::TargetZendesk,
 	},
 	Slack {
 		subject: Option<String>,
 		template: String,
 		#[serde(flatten)]
-		conn: TargetSlack,
+		conn: slack::TargetSlack,
 	},
 	External {
 		subject: Option<String>,
@@ -66,6 +76,40 @@ impl SendTarget {
 			_ => None,
 		}
 	}
+
+	pub async fn send(
+		&self,
+		alert: &AlertDefinition,
+		ctx: Arc<InternalContext>,
+		tera_ctx: &mut tera::Context,
+		config: &TamanuConfig,
+		dry_run: bool,
+	) -> Result<()> {
+		let tera = load_templates(&self)?;
+		let (subject, body, requester) = render_alert(&tera, tera_ctx)?;
+
+		match self {
+			SendTarget::Email { conn, .. } => {
+				conn.send(alert, config, &subject, &body, dry_run).await?;
+			}
+
+			SendTarget::Slack { conn, .. } => {
+				conn.send(alert, &ctx, &subject, &body, &tera, &tera_ctx, dry_run)
+					.await?;
+			}
+
+			SendTarget::Zendesk { conn, .. } => {
+				conn.send(alert, &ctx, &subject, &body, requester.as_deref(), dry_run)
+					.await?;
+			}
+
+			SendTarget::External { .. } => {
+				unreachable!("external targets should be resolved before here");
+			}
+		}
+
+		Ok(())
+	}
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -79,17 +123,17 @@ pub enum ExternalTarget {
 	Email {
 		id: String,
 		#[serde(flatten)]
-		conn: TargetEmail,
+		conn: email::TargetEmail,
 	},
 	Zendesk {
 		id: String,
 		#[serde(flatten)]
-		conn: TargetZendesk,
+		conn: zendesk::TargetZendesk,
 	},
 	Slack {
 		id: String,
 		#[serde(flatten)]
-		conn: TargetSlack,
+		conn: slack::TargetSlack,
 	},
 }
 
@@ -101,85 +145,4 @@ impl ExternalTarget {
 			Self::Slack { id, .. } => id,
 		}
 	}
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct TargetEmail {
-	pub addresses: Vec<String>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct TargetZendesk {
-	pub endpoint: Url,
-
-	#[serde(flatten)]
-	pub method: ZendeskMethod,
-
-	pub ticket_form_id: Option<u64>,
-
-	#[serde(default)]
-	pub custom_fields: Vec<ZendeskCustomField>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct TargetSlack {
-	pub webhook: Url,
-
-	#[serde(default = "SlackField::default_set")]
-	pub fields: Vec<SlackField>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(untagged, rename_all = "snake_case")]
-pub enum SlackField {
-	Fixed { name: String, value: String },
-	Field { name: String, field: TemplateField },
-}
-
-impl SlackField {
-	pub fn default_set() -> Vec<Self> {
-		vec![
-			Self::Field {
-				name: "hostname".into(),
-				field: TemplateField::Hostname,
-			},
-			Self::Field {
-				name: "filename".into(),
-				field: TemplateField::Filename,
-			},
-			Self::Field {
-				name: "subject".into(),
-				field: TemplateField::Subject,
-			},
-			Self::Field {
-				name: "message".into(),
-				field: TemplateField::Body,
-			},
-		]
-	}
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum ZendeskMethod {
-	// Make credentials and requester fields exclusive as specifying the requester object in authorized
-	// request is invalid. We may be able to specify some account as the requester, but it's not
-	// necessary. That's because the requester defaults to the authenticated account.
-	Authorized { credentials: ZendeskCredentials },
-	Anonymous { requester: String },
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-pub struct ZendeskCredentials {
-	pub email: String,
-	pub password: String,
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-pub struct ZendeskCustomField {
-	pub id: u64,
-	pub value: String,
 }

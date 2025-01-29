@@ -15,9 +15,6 @@ fn interval_context(dur: Duration) -> Option<String> {
 		interval: dur.to_std().unwrap(),
 		source: TicketSource::Sql { sql: "".into() },
 		send: vec![],
-		recipients: vec![],
-		subject: None,
-		template: None,
 	};
 	build_context(&alert, Utc::now())
 		.get("interval")
