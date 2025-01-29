@@ -5,28 +5,16 @@ use miette::{Context as _, IntoDiagnostic, Result};
 
 use crate::actions::Context;
 
-use super::{
-	config::load_config, find_package, find_postgres_bin, find_tamanu, ApiServerKind, TamanuArgs,
-};
+use super::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs};
 
 /// Connect to Tamanu's db via `psql`.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct PsqlArgs {
-	/// Package to load config from.
-	///
-	/// By default, this command looks for the most recent installed version of Tamanu and tries to
-	/// look for an appropriate config. If both central and facility servers are present and
-	/// configured, it will pick one arbitrarily.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, -kind central|facility`"))]
-	#[arg(short, long)]
-	pub kind: Option<ApiServerKind>,
-
 	/// Connect to postgres with a different username.
 	///
 	/// This may prompt for a password depending on your local settings and pg_hba config.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-u, -U, --username STRING`"))]
-	#[arg(short = 'U', long, alias = "u")]
+	#[arg(short = 'U', long)]
 	pub username: Option<String>,
 
 	/// Enable write mode for this psql.
@@ -34,32 +22,14 @@ pub struct PsqlArgs {
 	/// By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable
 	/// writes, either pass this flag, or call `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;`
 	/// within the session.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-W, --write`"))]
 	#[arg(short = 'W', long)]
 	pub write: bool,
-}
-
-/// The Tamanu config only describing the part `psql` needs
-#[derive(serde::Deserialize, Debug)]
-struct Config {
-	db: Db,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct Db {
-	name: String,
-	username: String,
-	password: String,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
-	let kind = ctx.args_sub.kind.unwrap_or_else(|| find_package(&root));
-	let config_value = load_config(&root, kind.package_name())?;
-	let config: Config = serde_json::from_value(config_value)
-		.into_diagnostic()
-		.wrap_err("parsing of Tamanu config failed")?;
+	let config = load_config(&root, None)?;
 	let name = &config.db.name;
 	let (username, password) = if let Some(ref username) = ctx.args_sub.username {
 		// Rely on `psql` password prompt by making the password parameter empty.

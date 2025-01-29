@@ -16,16 +16,15 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 use crate::{
 	actions::{
 		tamanu::{
-			backup::TamanuConfig,
 			config::{find_config_dir, load_config},
-			find_package, find_tamanu, TamanuArgs,
+			find_tamanu, TamanuArgs,
 		},
 		Context,
 	},
 	now_time,
 };
 
-use super::backup::process_backup;
+use super::{backup::process_backup, config::TamanuConfig, find_package};
 
 /// Backup local Tamanu-related config files to a zip archive.
 ///
@@ -175,11 +174,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let kind = find_package(&root);
-	let config_value = load_config(&root, kind.package_name())?;
-
-	let config: TamanuConfig = serde_json::from_value(config_value)
-		.into_diagnostic()
-		.wrap_err("parsing tamanu config")?;
+	let config = load_config(&root, Some(kind.package_name()))?;
 
 	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config));
 
@@ -207,7 +202,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	add_file(&mut zip, root.join("pm2.config.cjs"), "pm2.config.cjs");
 	add_dir(&mut zip, root.join("alerts"), "alerts/version")?;
 	add_dir(&mut zip, r"C:\Tamanu\alerts", "alerts/global")?;
-	if let Some(path) = find_config_dir(&root, kind.package_name(), ".") {
+	if let Some(path) = find_config_dir(&root, Some(kind.package_name()), ".") {
 		add_dir(&mut zip, path, kind.package_name())?;
 	}
 

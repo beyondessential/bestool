@@ -9,21 +9,12 @@ use walkdir::WalkDir;
 
 use crate::actions::{tamanu::find_postgres_bin, Context};
 
-use super::{config::load_config, find_package, find_tamanu, ApiServerKind, TamanuArgs};
+use super::{config::load_config, find_tamanu, TamanuArgs};
 
 /// Generate a Greenmask config file.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu greenmask-config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct GreenmaskConfigArgs {
-	/// Package to load config from.
-	///
-	/// By default, this command looks for the most recent installed version of Tamanu and tries to
-	/// look for an appropriate config. If both central and facility servers are present and
-	/// configured, it will pick one arbitrarily.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--kind central|facility`"))]
-	#[arg(long)]
-	pub kind: Option<ApiServerKind>,
-
 	/// Folders containing table masking definitions.
 	///
 	/// Can be specified multiple times, entries will be merged.
@@ -42,24 +33,6 @@ pub struct GreenmaskConfigArgs {
 	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--storage-dir PATH`"))]
 	#[arg(long, value_hint = ValueHint::DirPath)]
 	pub storage_dir: Option<PathBuf>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct TamanuConfig {
-	db: Db,
-}
-
-fn default_host() -> String {
-	"localhost".into()
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct Db {
-	#[serde(default = "default_host")]
-	host: String,
-	name: String,
-	username: String,
-	password: String,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -137,11 +110,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	let (_, tamanu_folder) = find_tamanu(&ctx.args_top)?;
 	let root = tamanu_folder.parent().unwrap();
 
-	let kind = ctx.args_sub.kind.unwrap_or_else(|| find_package(&tamanu_folder));
-	let config_value = load_config(&tamanu_folder, kind.package_name())?;
-	let tamanu_config: TamanuConfig = serde_json::from_value(config_value)
-		.into_diagnostic()
-		.wrap_err("parsing of Tamanu config failed")?;
+	let config = load_config(&tamanu_folder, None)?;
 
 	let pg_bin_path = find_postgres_bin("psql").wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
@@ -214,10 +183,10 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 			pg_dump_options: GreenmaskDumpOptions {
 				dbname: format!(
 					"host='{}' user='{}' password='{}' dbname='{}'",
-					tamanu_config.db.host,
-					tamanu_config.db.username,
-					tamanu_config.db.password,
-					tamanu_config.db.name
+					config.db.host.as_deref().unwrap_or("localhost"),
+					config.db.username,
+					config.db.password,
+					config.db.name
 				),
 				schema: "public".into(),
 			},
