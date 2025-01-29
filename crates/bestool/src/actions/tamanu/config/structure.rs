@@ -1,7 +1,9 @@
+use reqwest::Url;
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TamanuConfig {
-	pub canonical_host_name: String,
+	pub canonical_host_name: Option<Url>,
 	pub db: Database,
 	pub mailgun: Mailgun,
 }
