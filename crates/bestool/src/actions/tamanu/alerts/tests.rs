@@ -168,19 +168,32 @@ send:
 }
 
 #[test]
-fn test_alert_parse_legacy_recipients() {
+fn test_alert_parse_slack() {
 	let alert = r#"
-sql: |
-  SELECT $1::timestamptz;
-recipients:
-  - test@example.com
-subject: "[Tamanu Alert] Example ({{ hostname }})"
-template: |
-  <p>Server: {{ hostname }}</p>
-  <p>There are {{ rows | length }} rows.</p>
+sql: SELECT $1::timestamptz;
+send:
+- target: slack
+  webhook: https://hooks.slack.com/triggers/
+  template: Something happened
 "#;
 	let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
-	let alert = alert.normalise(&Default::default());
-	assert_eq!(alert.interval, std::time::Duration::default());
-	assert!(matches!(alert.send[0], SendTarget::Email { .. }));
+	assert!(matches!(alert.send[0], SendTarget::Slack { .. }));
+}
+
+#[test]
+fn test_alert_parse_slack_fields() {
+	let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: slack
+  webhook: https://hooks.slack.com/triggers/
+  template: Something happened
+  fields:
+  - name: alertname
+    field: filename
+  - name: deployment
+    value: production
+"#;
+	let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+	assert!(matches!(alert.send[0], SendTarget::Slack { .. }));
 }
