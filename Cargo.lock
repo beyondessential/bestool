@@ -112,7 +112,7 @@ dependencies = [
  "indicatif",
  "itertools 0.14.0",
  "jiff",
- "miette 7.4.0",
+ "miette 7.5.0",
  "pinentry",
  "rand 0.9.0",
  "tokio",
@@ -407,9 +407,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-route53"
-version = "1.62.0"
+version = "1.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c4ac863a18f5528780f56758a30cc5590170dba544345e10d7b3d650c84c4c7"
+checksum = "0951ba7c5adfeebb749d4bf6c5ff7097b8616ad7839674914866b06b9cf9ca08"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -473,9 +473,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sts"
-version = "1.57.0"
+version = "1.58.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115fd4fb663817ed595a5ee4f1649d7aacd861d47462323cb37576ce89271b93"
+checksum = "ba60e1d519d6f23a9df712c04fdeadd7872ac911c84b2f62a8bda92e129b7962"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -781,7 +781,7 @@ dependencies = [
  "local-ip-address",
  "mailgun-rs",
  "merkle_hash",
- "miette 7.4.0",
+ "miette 7.5.0",
  "mimalloc",
  "node-semver",
  "openssl-sys",
@@ -1198,9 +1198,9 @@ dependencies = [
 
 [[package]]
 name = "clap_complete"
-version = "4.5.43"
+version = "4.5.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0952013545c9c6dca60f491602655b795c6c062ab180c9cb0bccb83135461861"
+checksum = "375f9d8255adeeedd51053574fd8d4ba875ea5fa558e86617b07f09f1680c8b6"
 dependencies = [
  "clap",
 ]
@@ -2962,9 +2962,9 @@ checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
 
 [[package]]
 name = "jiff"
-version = "0.1.28"
+version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c607c728e28764fecde611a2764a3a5db19ae21dcec46f292244f5cc5c085a81"
+checksum = "c04ef77ae73f3cf50510712722f0c4e8b46f5aaa1bf5ffad2ae213e6495e78e5"
 dependencies = [
  "jiff-tzdb-platform",
  "log",
@@ -3044,7 +3044,7 @@ version = "3.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42a865ffec5587961f5afc6d365bccb304f4feaa1928f4fe94c91c9d210d7310"
 dependencies = [
- "miette 7.4.0",
+ "miette 7.5.0",
  "thiserror 2.0.11",
 ]
 
@@ -3282,14 +3282,14 @@ dependencies = [
 
 [[package]]
 name = "miette"
-version = "7.4.0"
+version = "7.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317f146e2eb7021892722af37cf1b971f0a70c8406f487e24952667616192c64"
+checksum = "1a955165f87b37fd1862df2a59547ac542c77ef6d17c666f619d1ad22dd89484"
 dependencies = [
  "backtrace",
  "backtrace-ext",
  "cfg-if",
- "miette-derive 7.4.0",
+ "miette-derive 7.5.0",
  "owo-colors",
  "supports-color",
  "supports-hyperlinks",
@@ -3313,9 +3313,9 @@ dependencies = [
 
 [[package]]
 name = "miette-derive"
-version = "7.4.0"
+version = "7.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23c9b935fbe1d6cbd1dac857b54a688145e2d93f48db36010514d0f612d0ad67"
+checksum = "bf45bf44ab49be92fd1227a3be6fc6f617f1a337c06af54981048574d8783147"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3659,9 +3659,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.104"
+version = "0.9.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45abf306cbf99debc8195b66b7346498d7b10c210de50418b5ccd7ceba08c741"
+checksum = "8b22d5b84be05a8d6947c7cb71f7c849aa0f112acd4bf51c2a7c1c988ac0a9dc"
 dependencies = [
  "cc",
  "libc",
@@ -4064,9 +4064,9 @@ dependencies = [
 
 [[package]]
 name = "postgres-protocol"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acda0ebdebc28befa84bee35e651e4c5f09073d668c7aed4cf7e23c3cda84b23"
+checksum = "76ff0abab4a9b844b93ef7b81f1efc0a366062aaef2cd702c76256b5dc075c54"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
@@ -4075,16 +4075,16 @@ dependencies = [
  "hmac",
  "md-5",
  "memchr",
- "rand 0.8.5",
+ "rand 0.9.0",
  "sha2",
  "stringprep",
 ]
 
 [[package]]
 name = "postgres-types"
-version = "0.2.8"
+version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f66ea23a2d0e5734297357705193335e0a957696f34bed2f2faefacb2fec336f"
+checksum = "613283563cd90e1dfc3518d548caee47e0e725455ed619881f5cf21f36de4b48"
 dependencies = [
  "bytes",
  "chrono",
@@ -4576,7 +4576,7 @@ dependencies = [
  "bitvec",
  "embedded-graphics",
  "itertools 0.14.0",
- "miette 7.4.0",
+ "miette 7.5.0",
  "rppal",
  "thiserror 2.0.11",
  "tracing",
@@ -5614,9 +5614,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-postgres"
-version = "0.7.12"
+version = "0.7.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b5d3742945bc7d7f210693b0c58ae542c6fd47b17adbbda0885f3dcb34a6bdb"
+checksum = "6c95d533c83082bb6490e0189acaa0bbeef9084e60471b696ca6988cd0541fb0"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -5631,7 +5631,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
- "rand 0.8.5",
+ "rand 0.9.0",
  "socket2",
  "tokio",
  "tokio-util",

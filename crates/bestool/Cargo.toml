@@ -20,8 +20,8 @@ aws-config = { version = "1.5.12", optional = true }
 aws-credential-types = { version = "1.1.7", features = [
 	"hardcoded-credentials",
 ], optional = true }
-aws-sdk-route53 = { version = "1.58.0", optional = true }
-aws-sdk-sts = { version = "1.54.1", optional = true }
+aws-sdk-route53 = { version = "1.63.0", optional = true }
+aws-sdk-sts = { version = "1.58.0", optional = true }
 base64ct = { version = "1.6.0", features = ["std"], optional = true }
 binstalk-downloader = { version = "0.13.8", optional = true }
 bitflags = { version = "2.7.0", optional = true }
@@ -38,7 +38,7 @@ clap = { version = "4.5.26", features = [
 	"unicode",
 	"string",
 ] }
-clap_complete = { version = "4.5.42", optional = true }
+clap_complete = { version = "4.5.44", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 ctrlc = { version = "3.4.4", optional = true }
 detect-targets = { version = "0.1.36", optional = true }
@@ -62,7 +62,7 @@ lloggs = "1.0.0"
 local-ip-address = { version = "0.6.1", optional = true }
 mailgun-rs = { version = "1.0.0", optional = true }
 merkle_hash = { version = "3.7.0", optional = true }
-miette = { version = "7.4.0", features = ["fancy"] }
+miette = { version = "7.5.0", features = ["fancy"] }
 mimalloc = "0.1.41"
 node-semver = { version = "2.1.0", optional = true }
 pulldown-cmark = { version = "0.12.2", optional = true }
@@ -85,7 +85,7 @@ tempfile = "3.14.0"
 tera = { version = "1.19.1", optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.43.0", features = ["full"] }
-tokio-postgres = { version = "0.7.10", features = [
+tokio-postgres = { version = "0.7.13", features = [
 	"with-chrono-0_4",
 	"with-uuid-1",
 ], optional = true }
@@ -106,7 +106,7 @@ windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.1.1", optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
-openssl-sys = { version = "0.9.0", features = ["vendored"] }
+openssl-sys = { version = "0.9.105", features = ["vendored"] }
 
 [build-dependencies]
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
