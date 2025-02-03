@@ -765,20 +765,19 @@ dependencies = [
  "duct",
  "dunce",
  "embedded-graphics",
- "enable-ansi-support",
  "folktime",
  "fontdue",
  "fs4",
  "futures",
  "glob",
  "humantime",
- "indicatif",
  "ip_network",
  "is-root",
  "itertools 0.14.0",
  "json5",
  "leon",
  "leon-macros",
+ "lloggs",
  "local-ip-address",
  "mailgun-rs",
  "merkle_hash",
@@ -803,8 +802,6 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "trycmd",
  "upgrade",
  "uuid",
@@ -3117,6 +3114,19 @@ name = "litemap"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ee93343901ab17bd981295f2cf0026d4ad018c7c31ba84549a4ddbb47a45104"
+
+[[package]]
+name = "lloggs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc683ae9620ac9e536d411bebdb4fbf4ea98b7742b36e46c792767331f8df149"
+dependencies = [
+ "clap",
+ "enable-ansi-support",
+ "time",
+ "tracing-appender",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "local-ip-address"
