@@ -1,4 +1,4 @@
-publish = true
+publish = false
 tag-name = "v{{version}}"
 tag-message = "release: {{version}}"
 pre-release-commit-message = "release: {{version}}"
