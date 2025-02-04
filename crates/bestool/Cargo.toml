@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.26.5"
+version = "0.26.6"
 edition = "2021"
 rust-version = "1.76.0"
 
@@ -15,7 +15,7 @@ categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
-algae-cli = { version = "1.0.5", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.0.6", path = "../algae-cli", optional = true }
 binstalk-downloader = { version = "0.13.11", optional = true, features = [
 	"hickory-dns",
 ] }
@@ -66,7 +66,7 @@ reqwest = { version = "0.12.11", features = [
 	"default-tls",
 	"json",
 ], default-features = false }
-rpi-st7789v2-driver = { version = "0.3.5", path = "../rpi-st7789v2-driver", features = [
+rpi-st7789v2-driver = { version = "0.3.6", path = "../rpi-st7789v2-driver", features = [
 	"miette",
 ], optional = true }
 rppal = { version = "0.22.1", optional = true }
