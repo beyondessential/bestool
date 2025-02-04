@@ -16,9 +16,9 @@ repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 algae-cli = { version = "1.0.5", path = "../algae-cli", optional = true }
-binstalk-downloader = { version = "0.13.8", optional = true, features = [
+binstalk-downloader = { version = "0.13.11", optional = true, features = [
 	"hickory-dns",
-], git = "https://github.com/cargo-bins/cargo-binstall", branch = "feat/downloader-custom-client" }
+] }
 bitflags = { version = "2.7.0", optional = true }
 bitvec = { version = "1.0.1", optional = true }
 blake3 = { version = "1.5.5", optional = true }

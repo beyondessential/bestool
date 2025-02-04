@@ -1,7 +1,5 @@
-publish = false
+publish = true
 tag-name = "v{{version}}"
-tag-message = "release: {{version}}"
-pre-release-commit-message = "release: {{version}}"
 pre-release-hook = ["git", "cliff", "-r", "../..", "-c", "../../cliff.toml", "-o", "../../CHANGELOG.md", "--tag", "{{version}}"]
 pre-release-replacements = [
   { file = "../../README.md", search = "Current release: [0-9\\.]+", replace = "Current release: {{version}}"},
