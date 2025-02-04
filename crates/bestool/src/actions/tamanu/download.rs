@@ -78,7 +78,7 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		url_only,
 	} = ctx.args_sub;
 
-	let url = make_url(kind, version).await?;
+	let url = make_url(kind, version)?;
 
 	if url_only {
 		println!("{}", url);
@@ -93,7 +93,7 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 	Ok(())
 }
 
-pub async fn make_url(kind: ServerKind, version: String) -> Result<Url> {
+pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
 	let host = DownloadSource::Servers.host();
 	host.join(&format!(
 		"/{version}/{kind}-{version}{platform}.tar.zst",
