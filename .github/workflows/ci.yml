@@ -79,26 +79,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-apple-darwin
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - x86_64-pc-windows-msvc
-          - aarch64-apple-darwin
-          - aarch64-unknown-linux-gnu
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
 
     name: Build / ${{ matrix.target }}
-    runs-on: >-
-      ${{ contains(matrix.target, 'linux') && (
-          contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' ||
-            'ubuntu-24.04'
-        ) || (
-        contains(matrix.target, 'windows') && 'windows-latest' || (
-          contains(matrix.target, 'darwin') && 'macos-14' ||
-            'unknown-this-is-a-bug'
-        )
-      ) }}
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -135,9 +133,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
+      - if: runner.os == 'Linux' && contains(matrix.target, 'musl')
         run: cross build -p bestool --profile dist --target ${{ matrix.target }} --features iti
-      - if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
+      - if: runner.os != 'Linux' || !contains(matrix.target, 'musl')
         run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
