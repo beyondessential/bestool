@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.26.0](https://github.com/beyondessential/bestool/compare/v0.25.8..0.26.0) - 2025-01-29
+## [0.26.1](https://github.com/beyondessential/bestool/compare/v0.26.0..0.26.1) - 2025-02-04
+
+
+- **Refactor:** Use lloggs instead of custom logging code - ([7075b4a](https://github.com/beyondessential/bestool/commit/7075b4a23e8b365606725107204d9fd7ac7ae295))
+- **Repo:** Temporarily disable publishing to crates.io - ([6b10528](https://github.com/beyondessential/bestool/commit/6b10528910ac506393ed16427a301e410bd64e24))
+
+### Bestool
+
+- **Feature:** Download from tailscale proxies when available - ([58ca165](https://github.com/beyondessential/bestool/commit/58ca16530171673c14b9c22a44f9d7f4260aefb3))
+
+---
+## [0.26.0](https://github.com/beyondessential/bestool/compare/v0.25.8..v0.26.0) - 2025-01-29
 
 
 - **Bugfix:** Fix tests - ([ef4be42](https://github.com/beyondessential/bestool/commit/ef4be42f3e5112c4e5b4ac600bc8ee25d02528e4))
