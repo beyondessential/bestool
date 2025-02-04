@@ -126,15 +126,10 @@ jobs:
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get install -y musl musl-dev musl-tools
 
-      - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
       - uses: Swatinem/rust-cache@v2
 
-      - if: runner.os == 'Linux' && contains(matrix.target, 'musl')
-        run: cross build -p bestool --profile dist --target ${{ matrix.target }} --features iti
+      - if: runner.os == 'Linux' && contains(matrix.target, 'aarch64')
+        run: cargo build -p bestool --profile dist --target ${{ matrix.target }} --features iti
       - if: runner.os != 'Linux' || !contains(matrix.target, 'musl')
         run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
 
