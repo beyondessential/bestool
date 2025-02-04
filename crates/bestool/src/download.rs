@@ -53,9 +53,13 @@ impl DownloadSource {
 	#[instrument(level = "TRACE")]
 	async fn source_alternatives(self) -> Vec<SocketAddr> {
 		// tailscale proxies, if available, can bypass outbound firewalls
+		// need to use the full name because:
+		// - in some cases on windows, the short name is not resolved
+		// - we don't really want to have this be easily hijacked by another tailnet
+		// this does have the effect of exposing our tailnet suffix here, but that should be safe
 		lookup_host(match self {
-			Self::Tools => "bestool-proxy-tools:443",
-			Self::Servers => "bestool-proxy-servers:443",
+			Self::Tools => "bestool-proxy-tools.tail53aef.ts.net:443",
+			Self::Servers => "bestool-proxy-servers.tail53aef.ts.net:443",
 		})
 		.await
 		.ok()
