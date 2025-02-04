@@ -96,7 +96,7 @@ jobs:
         ) || (
         contains(matrix.target, 'windows') && 'windows-latest' || (
           contains(matrix.target, 'darwin') && 'macos-14' ||
-            'ubuntu-24.04'
+            'unknown-this-is-a-bug'
         )
       ) }}
 
