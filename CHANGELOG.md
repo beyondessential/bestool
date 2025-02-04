@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.26.3](https://github.com/beyondessential/bestool/compare/v0.26.2..0.26.3) - 2025-02-04
+## [0.26.4](https://github.com/beyondessential/bestool/compare/v0.26.3..0.26.4) - 2025-02-04
+
+
+
+### Downloads
+
+- **Bugfix:** Use full tailscale name for alternative sources - ([44d82f1](https://github.com/beyondessential/bestool/commit/44d82f1dc6aabec92ae40a92682bab962ba38c85))
+
+---
+## [0.26.3](https://github.com/beyondessential/bestool/compare/v0.26.2..v0.26.3) - 2025-02-04
 
 
 - **Bugfix:** Whoops windows things again - ([0e4a23d](https://github.com/beyondessential/bestool/commit/0e4a23d2b864ca848e586ca66df071033349e565))
