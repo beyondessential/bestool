@@ -4,6 +4,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use binstalk_downloader::download::{Download, PkgFmt};
 use clap::Parser;
 use itertools::Itertools;
 use miette::{bail, IntoDiagnostic, Result, WrapErr};
@@ -11,10 +12,10 @@ use node_semver::Version;
 use regex::Regex;
 use tracing::{info, warn};
 
-use crate::actions::Context;
+use crate::{actions::Context, download::client};
 
 use super::{
-	download::{download, make_url, ServerKind},
+	download::{make_url, ServerKind},
 	find_existing_version, find_package, find_tamanu, ApiServerKind, TamanuArgs,
 };
 
@@ -85,14 +86,22 @@ pub async fn run(ctx: Context<TamanuArgs, PrepareUpgradeArgs>) -> Result<()> {
 		bail!("refusing to downgrade (from {existing_version} to {new_version}) without `--force-downgrade`");
 	}
 
+	let client = client().await?;
+
 	if !new_root.exists() {
 		let url = make_url(kind.into(), new_version.to_string())?;
-		download(url, upper_root).await?;
+		Download::new(client.clone(), url)
+			.and_extract(PkgFmt::Tzstd, &upper_root)
+			.await
+			.into_diagnostic()?;
 	}
 
 	if !new_web_root.exists() {
 		let url = make_url(ServerKind::Web, new_version.to_string())?;
-		download(url, upper_root).await?;
+		Download::new(client, url)
+			.and_extract(PkgFmt::Tzstd, &upper_root)
+			.await
+			.into_diagnostic()?;
 	}
 
 	duct::cmd!("cmd", "/C", "yarn", "--prod")
