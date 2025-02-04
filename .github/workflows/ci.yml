@@ -128,9 +128,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - if: contains(matrix.target, 'aarch64-unknown-linux')
+      - if: matrix.target == 'aarch64-unknown-linux-musl'
         run: cargo zigbuild -p bestool --profile dist --target ${{ matrix.target }} --features iti
-      - if: "!contains(matrix.target, 'aarch64-unknown-linux')"
+      - if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
