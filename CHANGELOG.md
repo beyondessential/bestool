@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.26.2](https://github.com/beyondessential/bestool/compare/v0.26.1..0.26.2) - 2025-02-04
+## [0.26.3](https://github.com/beyondessential/bestool/compare/v0.26.2..0.26.3) - 2025-02-04
+
+
+- **Bugfix:** Whoops windows things again - ([0e4a23d](https://github.com/beyondessential/bestool/commit/0e4a23d2b864ca848e586ca66df071033349e565))
+
+---
+## [0.26.2](https://github.com/beyondessential/bestool/compare/v0.26.1..v0.26.2) - 2025-02-04
 
 
 - **Bugfix:** Whoops extraneous `async` - ([e47d1d4](https://github.com/beyondessential/bestool/commit/e47d1d4bd0a38e65811b41240157ba8864e4fcd2))
