@@ -56,8 +56,6 @@ subcommands! {
 	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
 	crypto => Crypto(CryptoArgs),
-	#[cfg(feature = "dyndns")]
-	dyndns => Dyndns(DyndnsArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
 	#[cfg(feature = "self-update")]

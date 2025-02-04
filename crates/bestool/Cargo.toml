@@ -16,13 +16,6 @@ repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 algae-cli = { version = "1.0.5", path = "../algae-cli", optional = true }
-aws-config = { version = "1.5.12", optional = true }
-aws-credential-types = { version = "1.1.7", features = [
-	"hardcoded-credentials",
-], optional = true }
-aws-sdk-route53 = { version = "1.63.0", optional = true }
-aws-sdk-sts = { version = "1.58.0", optional = true }
-base64ct = { version = "1.6.0", features = ["std"], optional = true }
 binstalk-downloader = { version = "0.13.8", optional = true, features = [
 	"hickory-dns",
 ], git = "https://github.com/cargo-bins/cargo-binstall", branch = "feat/downloader-custom-client" }
@@ -62,7 +55,6 @@ json5 = { version = "0.4.1", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 lloggs = "1.0.1"
-local-ip-address = { version = "0.6.1", optional = true }
 mailgun-rs = { version = "1.0.0", optional = true }
 merkle_hash = { version = "3.7.0", optional = true }
 miette = { version = "7.5.0", features = ["fancy"] }
@@ -126,13 +118,6 @@ default = [
 ]
 
 ## Common dep groups (not meant to be used directly)
-aws = [
-	"dep:aws-config",
-	"dep:aws-credential-types",
-	"dep:aws-sdk-route53",
-	"dep:aws-sdk-sts",
-	"dep:base64ct",
-]
 download = [
 	"dep:binstalk-downloader",
 	"dep:detect-targets",
@@ -143,7 +128,6 @@ download = [
 caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
-dyndns = ["aws", "dep:local-ip-address", "dep:ip_network", "dep:regex"]
 self-update = ["download", "dep:upgrade", "dep:windows-env"]
 ssh = [
 	"dep:dirs",
