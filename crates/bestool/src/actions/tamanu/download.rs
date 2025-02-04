@@ -1,17 +1,16 @@
-use std::{
-	iter,
-	num::{NonZeroU16, NonZeroU64},
-	path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use binstalk_downloader::{
 	download::{Download, PkgFmt},
-	remote::{Client, Url},
+	remote::Url,
 };
 use clap::{Parser, ValueEnum};
 use miette::{IntoDiagnostic, Result};
 
-use crate::actions::Context;
+use crate::{
+	actions::Context,
+	download::{client, DownloadSource},
+};
 
 use super::{ApiServerKind, TamanuArgs};
 
@@ -29,7 +28,10 @@ pub struct DownloadArgs {
 	pub kind: ServerKind,
 
 	/// Version to download.
-	#[cfg_attr(docsrs, doc("\n\n**2nd Argument**: version (e.g. `bestool tamanu download web 1.2.3`)"))]
+	#[cfg_attr(
+		docsrs,
+		doc("\n\n**2nd Argument**: version (e.g. `bestool tamanu download web 1.2.3`)")
+	)]
 	#[arg(value_name = "VERSION")]
 	pub version: String,
 
@@ -76,19 +78,25 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		url_only,
 	} = ctx.args_sub;
 
-	let url = make_url(kind, version)?;
+	let url = make_url(kind, version).await?;
 
 	if url_only {
 		println!("{}", url);
 		return Ok(());
 	}
 
-	download(url, into).await
+	let client = client().await?;
+	Download::new(client, url)
+		.and_extract(PkgFmt::Tzstd, &into)
+		.await
+		.into_diagnostic()?;
+	Ok(())
 }
 
-pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
-	let url_string = format!(
-		"https://servers.ops.tamanu.io/{version}/{kind}-{version}{platform}.tar.zst",
+pub async fn make_url(kind: ServerKind, version: String) -> Result<Url> {
+	let host = DownloadSource::Servers.host();
+	host.join(&format!(
+		"/{version}/{kind}-{version}{platform}.tar.zst",
 		kind = match kind {
 			ServerKind::Central => "central",
 			ServerKind::Facility => "facility",
@@ -99,25 +107,6 @@ pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
 		} else {
 			"-windows"
 		},
-	);
-
-	Url::parse(&url_string).into_diagnostic()
-}
-
-pub async fn download(url: Url, into: impl AsRef<Path>) -> Result<()> {
-	let client = Client::new(
-		crate::APP_NAME,
-		None,
-		NonZeroU16::new(1).unwrap(),
-		NonZeroU64::new(1).unwrap(),
-		iter::empty(),
-	)
-	.into_diagnostic()?;
-	let download = Download::new(client, url);
-	download
-		.and_extract(PkgFmt::Tzstd, into)
-		.await
-		.into_diagnostic()?;
-
-	Ok(())
+	))
+	.into_diagnostic()
 }
