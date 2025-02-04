@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.26.4](https://github.com/beyondessential/bestool/compare/v0.26.3..0.26.4) - 2025-02-04
+## [0.26.5](https://github.com/beyondessential/bestool/compare/v0.26.4..0.26.5) - 2025-02-04
+
+
+- **Deps:** Bump the deps group across 1 directory with 9 updates (#186) - ([6681997](https://github.com/beyondessential/bestool/commit/6681997b076e5993c7dd8631dc21077c55540931))
+- **Deps:** Update lockfile - ([6ae7537](https://github.com/beyondessential/bestool/commit/6ae75375c5152c4f9b3743972ee1c62b1838be98))
+- **Repo:** Remove dyndns feature - ([6d92e03](https://github.com/beyondessential/bestool/commit/6d92e039374f03200c67fb66bc1603b96f259890))
+
+### Downloads
+
+- **Bugfix:** Query tailscale dns directly to avoid buggy systems - ([cc2172e](https://github.com/beyondessential/bestool/commit/cc2172ea14079faa83cf558803e75c93c7b9f59a))
+
+---
+## [0.26.4](https://github.com/beyondessential/bestool/compare/v0.26.3..v0.26.4) - 2025-02-04
 
 
 
