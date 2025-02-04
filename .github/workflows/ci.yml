@@ -23,15 +23,16 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - macos
-          - ubuntu
-          - windows
+          - macos-latest
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - windows-latest
         command:
           - test
           - clippy
 
     name: ${{ matrix.platform }} / ${{ matrix.command }}
-    runs-on: "${{ matrix.platform }}-latest"
+    runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
@@ -84,14 +85,18 @@ jobs:
           - x86_64-unknown-linux-musl
           - x86_64-pc-windows-msvc
           - aarch64-apple-darwin
+          - aarch64-unknown-linux-gnu
           - aarch64-unknown-linux-musl
 
     name: Build / ${{ matrix.target }}
     runs-on: >-
-      ${{ contains(matrix.target, 'linux') && 'ubuntu-latest' || (
+      ${{ contains(matrix.target, 'linux') && (
+          contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' ||
+            'ubuntu-24.04'
+        ) || (
         contains(matrix.target, 'windows') && 'windows-latest' || (
           contains(matrix.target, 'darwin') && 'macos-14' ||
-            'ubuntu-latest'
+            'ubuntu-24.04'
         )
       ) }}
 
@@ -122,8 +127,6 @@ jobs:
         run: sudo apt-get update
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get install -y musl musl-dev musl-tools
-      - if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
         uses: taiki-e/install-action@v2
