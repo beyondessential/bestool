@@ -23,7 +23,7 @@ aws-credential-types = { version = "1.1.7", features = [
 aws-sdk-route53 = { version = "1.58.0", optional = true }
 aws-sdk-sts = { version = "1.54.1", optional = true }
 base64ct = { version = "1.6.0", features = ["std"], optional = true }
-binstalk-downloader = { version = "0.13.8", optional = true }
+binstalk-downloader = { version = "0.13.8", optional = true, git = "https://github.com/cargo-bins/cargo-binstall", branch = "feat/downloader-custom-client" }
 bitflags = { version = "2.7.0", optional = true }
 bitvec = { version = "1.0.1", optional = true }
 blake3 = { version = "1.5.5", optional = true }
@@ -58,7 +58,7 @@ itertools = { version = "0.14.0", optional = true }
 json5 = { version = "0.4.1", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
-lloggs = "1.0.0"
+lloggs = "1.0.1"
 local-ip-address = { version = "0.6.1", optional = true }
 mailgun-rs = { version = "1.0.0", optional = true }
 merkle_hash = { version = "3.7.0", optional = true }

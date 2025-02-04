@@ -1,18 +1,13 @@
-use std::{
-	iter,
-	num::{NonZeroU16, NonZeroU64},
-	path::PathBuf,
-};
+use std::path::PathBuf;
 
 use clap::Parser;
 
-use binstalk_downloader::{
-	download::{Download, PkgFmt},
-	remote::{Client, Url},
-};
+use binstalk_downloader::download::{Download, PkgFmt};
 use detect_targets::{get_desired_targets, TARGET};
 use miette::{miette, IntoDiagnostic, Result};
 use tracing::info;
+
+use crate::download::{client, DownloadSource};
 
 use super::Context;
 
@@ -50,14 +45,7 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		add_to_path,
 	} = ctx.args_top;
 
-	let client = Client::new(
-		crate::APP_NAME,
-		None,
-		NonZeroU16::new(1).unwrap(),
-		NonZeroU64::new(1).unwrap(),
-		iter::empty(),
-	)
-	.into_diagnostic()?;
+	let client = client().await?;
 
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
 	let detected_targets = detected_targets.get().await;
@@ -69,16 +57,19 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 	);
 	let dest = dir.join(&filename);
 
-	let url = format!(
-		"https://tools.ops.tamanu.io/bestool/{version}/{target}/{filename}",
-		target = detected_targets
-			.first()
-			.cloned()
-			.unwrap_or_else(|| TARGET.into()),
-	);
+	let host = DownloadSource::Tools.host();
+	let url = host
+		.join(&format!(
+			"/bestool/{version}/{target}/{filename}",
+			target = detected_targets
+				.first()
+				.cloned()
+				.unwrap_or_else(|| TARGET.into()),
+		))
+		.into_diagnostic()?;
 	info!(url = %url, "downloading");
 
-	Download::new(client, Url::parse(&url).into_diagnostic()?)
+	Download::new(client, url)
 		.and_extract(PkgFmt::Bin, &dest)
 		.await
 		.into_diagnostic()?;
@@ -99,8 +90,12 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 #[cfg(windows)]
 fn add_self_to_path() -> Result<()> {
 	let self_path = std::env::current_exe().into_diagnostic()?;
-	let self_dir = self_path.parent().ok_or_else(|| miette!("current exe is not in a dir?"))?;
-	let self_dir = self_dir.to_str().ok_or_else(|| miette!("current exe path is not utf-8"))?;
+	let self_dir = self_path
+		.parent()
+		.ok_or_else(|| miette!("current exe is not in a dir?"))?;
+	let self_dir = self_dir
+		.to_str()
+		.ok_or_else(|| miette!("current exe path is not utf-8"))?;
 
 	windows_env::prepend("PATH", self_dir).into_diagnostic()?;
 

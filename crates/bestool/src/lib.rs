@@ -11,6 +11,8 @@ pub(crate) mod actions;
 pub(crate) mod args;
 #[cfg(feature = "aws")]
 pub(crate) mod aws;
+#[cfg(feature = "download")]
+pub(crate) mod download;
 pub mod file_chunker;
 
 #[cfg(feature = "tamanu-alerts")]

@@ -817,8 +817,7 @@ dependencies = [
 [[package]]
 name = "binstalk-downloader"
 version = "0.13.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19b2728f490abcc77e0eac4d91dc5192a084f284fa2eb56b74a2113e1a916911"
+source = "git+https://github.com/cargo-bins/cargo-binstall?branch=feat/downloader-custom-client#b88d0df3e56703208e968a2e75285a90964d2cc1"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -850,8 +849,7 @@ dependencies = [
 [[package]]
 name = "binstalk-types"
 version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d886f885ef510fdabe5d62c09b48608a8774df14b0c551650ce97745d7a447db"
+source = "git+https://github.com/cargo-bins/cargo-binstall?branch=feat/downloader-custom-client#b88d0df3e56703208e968a2e75285a90964d2cc1"
 dependencies = [
  "compact_str",
  "maybe-owned",
@@ -3117,9 +3115,9 @@ checksum = "4ee93343901ab17bd981295f2cf0026d4ad018c7c31ba84549a4ddbb47a45104"
 
 [[package]]
 name = "lloggs"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc683ae9620ac9e536d411bebdb4fbf4ea98b7742b36e46c792767331f8df149"
+checksum = "d5a139b23b3eb42ed6a22033ae6cf7f32adecba7b42ecc98db33d010650baecf"
 dependencies = [
  "clap",
  "enable-ansi-support",

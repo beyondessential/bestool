@@ -1,19 +1,15 @@
-use std::{
-	iter,
-	num::{NonZeroU16, NonZeroU64},
-	path::PathBuf,
-};
+use std::path::PathBuf;
 
-use binstalk_downloader::{
-	download::{Download, PkgFmt},
-	remote::{Client, Url},
-};
+use binstalk_downloader::download::{Download, PkgFmt};
 use clap::Parser;
 use detect_targets::get_desired_targets;
 use miette::{bail, IntoDiagnostic, Result};
 use tracing::{debug, info};
 
-use crate::actions::Context;
+use crate::{
+	actions::Context,
+	download::{client, DownloadSource},
+};
 
 use super::CaddyArgs;
 
@@ -57,27 +53,23 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
 	let detected_targets = detected_targets.get().await;
 
-	let client = Client::new(
-		crate::APP_NAME,
-		None,
-		NonZeroU16::new(1).unwrap(),
-		NonZeroU64::new(1).unwrap(),
-		iter::empty(),
-	)
-	.into_diagnostic()?;
+	let client = client().await?;
+
+	let host = DownloadSource::Tools.host();
 
 	let mut url = None;
 	for target in detected_targets {
-		let try_url = Url::parse(&format!(
-			"https://tools.ops.tamanu.io/caddy/{version}/caddy-{target}{ext}?bust={date}",
-			ext = if target.contains("windows") {
-				".exe"
-			} else {
-				""
-			},
-			date = chrono::Utc::now(),
-		))
-		.into_diagnostic()?;
+		let try_url = host
+			.join(&format!(
+				"/caddy/{version}/caddy-{target}{ext}?bust={date}",
+				ext = if target.contains("windows") {
+					".exe"
+				} else {
+					""
+				},
+				date = chrono::Utc::now(),
+			))
+			.into_diagnostic()?;
 		debug!(url=%try_url, "trying URL");
 		if client
 			.remote_gettable(try_url.clone())
