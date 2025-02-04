@@ -5,8 +5,12 @@ use std::{
 };
 
 use binstalk_downloader::remote::{Client, Url};
+use hickory_resolver::{
+	config::{NameServerConfig, ResolverConfig},
+	name_server::ConnectionProvider,
+	Resolver,
+};
 use miette::{IntoDiagnostic, Result};
-use tokio::net::lookup_host;
 use tracing::{debug, instrument};
 
 pub async fn client() -> Result<Client> {
@@ -54,16 +58,26 @@ impl DownloadSource {
 	async fn source_alternatives(self) -> Vec<SocketAddr> {
 		// tailscale proxies, if available, can bypass outbound firewalls
 		// need to use the full name because:
-		// - in some cases on windows, the short name is not resolved
+		// - we're querying tailscale DNS server directly
 		// - we don't really want to have this be easily hijacked by another tailnet
 		// this does have the effect of exposing our tailnet suffix here, but that should be safe
-		lookup_host(match self {
-			Self::Tools => "bestool-proxy-tools.tail53aef.ts.net:443",
-			Self::Servers => "bestool-proxy-servers.tail53aef.ts.net:443",
-		})
-		.await
-		.ok()
-		.map(|addrs| addrs.collect())
-		.unwrap_or_default()
+		tailscale_resolver()
+			.lookup_ip(match self {
+				Self::Tools => "bestool-proxy-tools.tail53aef.ts.net",
+				Self::Servers => "bestool-proxy-servers.tail53aef.ts.net",
+			})
+			.await
+			.ok()
+			.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+			.unwrap_or_default()
 	}
+}
+
+fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
+	let mut config = ResolverConfig::new();
+	config.add_name_server(NameServerConfig::new(
+		"100.100.100.100:53".parse().unwrap(),
+		hickory_resolver::proto::xfer::Protocol::Udp,
+	));
+	Resolver::tokio(config, Default::default())
 }
