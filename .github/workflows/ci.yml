@@ -122,14 +122,14 @@ jobs:
           echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
 
       - if: runner.os == 'Linux'
-        run: sudo apt-get update
+        run: pip install ziglang && pipx install cargo-zigbuild
       - if: contains(matrix.target, 'musl')
-        run: sudo apt-get install -y musl musl-dev musl-tools aarch64-linux-musl-g++
+        run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
 
       - uses: Swatinem/rust-cache@v2
 
       - if: contains(matrix.target, 'aarch64-unknown-linux')
-        run: cargo build -p bestool --profile dist --target ${{ matrix.target }} --features iti
+        run: cargo zigbuild -p bestool --profile dist --target ${{ matrix.target }} --features iti
       - if: "!contains(matrix.target, 'aarch64-unknown-linux')"
         run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
 
