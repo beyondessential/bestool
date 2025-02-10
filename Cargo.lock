@@ -112,7 +112,7 @@ dependencies = [
  "indicatif",
  "itertools 0.14.0",
  "jiff",
- "miette 7.5.0",
+ "miette",
  "pinentry",
  "rand 0.9.0",
  "tokio",
@@ -444,7 +444,7 @@ dependencies = [
  "lloggs",
  "mailgun-rs",
  "merkle_hash",
- "miette 7.5.0",
+ "miette",
  "mimalloc",
  "node-semver",
  "openssl-sys",
@@ -597,9 +597,12 @@ dependencies = [
 
 [[package]]
 name = "boxcar"
-version = "0.2.8"
+version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2721c3c5a6f0e7f7e607125d963fedeb765f545f67adc9d71ed934693881eb42"
+checksum = "b18a28f3926aa80dd1eeccb27b1ac5cfab9e823459fe0a7ba60366f5d983b413"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "brotli"
@@ -1942,9 +1945,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hickory-proto"
-version = "0.25.0-alpha.4"
+version = "0.25.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d063c0692ee669aa6d261988aa19ca5510f1cc40e4f211024f50c888499a35d7"
+checksum = "1d00147af6310f4392a31680db52a3ed45a2e0f68eb18e8c3fe5537ecc96d9e2"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1965,9 +1968,10 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "quinn",
- "rand 0.8.5",
+ "rand 0.9.0",
  "ring",
  "rustls",
+ "rustls-pki-types",
  "thiserror 2.0.11",
  "time",
  "tinyvec",
@@ -1979,9 +1983,9 @@ dependencies = [
 
 [[package]]
 name = "hickory-resolver"
-version = "0.25.0-alpha.4"
+version = "0.25.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42bc352e4412fb657e795f79b4efcf2bd60b59ee5ca0187f3554194cd1107a27"
+checksum = "5762f69ebdbd4ddb2e975cd24690bf21fe6b2604039189c26acddbc427f12887"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -1991,7 +1995,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "quinn",
- "rand 0.8.5",
+ "rand 0.9.0",
  "resolv-conf",
  "rustls",
  "smallvec",
@@ -2641,7 +2645,7 @@ version = "3.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42a865ffec5587961f5afc6d365bccb304f4feaa1928f4fe94c91c9d210d7310"
 dependencies = [
- "miette 7.5.0",
+ "miette",
  "thiserror 2.0.11",
 ]
 
@@ -2861,18 +2865,6 @@ checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
 name = "miette"
-version = "5.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
-dependencies = [
- "miette-derive 5.10.0",
- "once_cell",
- "thiserror 1.0.69",
- "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "miette"
 version = "7.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a955165f87b37fd1862df2a59547ac542c77ef6d17c666f619d1ad22dd89484"
@@ -2880,7 +2872,7 @@ dependencies = [
  "backtrace",
  "backtrace-ext",
  "cfg-if",
- "miette-derive 7.5.0",
+ "miette-derive",
  "owo-colors",
  "supports-color",
  "supports-hyperlinks",
@@ -2889,17 +2881,6 @@ dependencies = [
  "textwrap",
  "thiserror 1.0.69",
  "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "miette-derive"
-version = "5.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.98",
 ]
 
 [[package]]
@@ -3071,12 +3052,12 @@ dependencies = [
 
 [[package]]
 name = "node-semver"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84f390c1756333538f2aed01cf280a56bc683e199b9804a504df6e7320d40116"
+checksum = "3b1a233ea5dc37d2cfba31cfc87a5a56cc2a9c04e3672c15d179ca118dae40a7"
 dependencies = [
  "bytecount",
- "miette 5.10.0",
+ "miette",
  "nom",
  "serde",
  "thiserror 1.0.69",
@@ -4184,7 +4165,7 @@ dependencies = [
  "bitvec",
  "embedded-graphics",
  "itertools 0.14.0",
- "miette 7.5.0",
+ "miette",
  "rppal",
  "thiserror 2.0.11",
  "tracing",
@@ -5714,11 +5695,11 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.12.1"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3758f5e68192bb96cc8f9b7e2c2cfdabb435499a28499a42f8f984092adad4b"
+checksum = "ced87ca4be083373936a67f8de945faa23b6b42384bd5b64434850802c6dccd0"
 dependencies = [
- "getrandom 0.2.15",
+ "getrandom 0.3.1",
 ]
 
 [[package]]
