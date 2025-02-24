@@ -18,7 +18,7 @@ name = "algae"
 [dependencies]
 age = { version = "0.11.1", features = ["async"] }
 age-core = "0.11.0"
-clap = { version = "4.5.29", features = ["cargo", "derive", "wrap_help"] }
+clap = { version = "4.5.30", features = ["cargo", "derive", "wrap_help"] }
 dialoguer = { version = "0.11.0", features = ["password"], default-features = false }
 diceware_wordlists = "1.2.3"
 futures = "0.3.30"
