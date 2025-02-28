@@ -58,6 +58,8 @@ subcommands! {
 	crypto => Crypto(CryptoArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
+	#[cfg(feature = "observability")]
+	observe => Observe(ObserveArgs),
 	#[cfg(feature = "self-update")]
 	self_update => SelfUpdate(SelfUpdateArgs),
 	#[cfg(feature = "ssh")]

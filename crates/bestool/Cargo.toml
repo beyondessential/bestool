@@ -16,6 +16,7 @@ repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 algae-cli = { version = "1.0.6", path = "../algae-cli", optional = true }
+axum = { version = "0.8.1", optional = true }
 binstalk-downloader = { version = "0.13.12", optional = true, features = [
 	"hickory-dns",
 ] }
@@ -61,6 +62,11 @@ miette = { version = "7.5.0", features = ["fancy"] }
 mimalloc = "0.1.41"
 node-semver = { version = "2.2.0", optional = true }
 pulldown-cmark = { version = "0.13.0", optional = true }
+opentelemetry = { version = "0.28.0", optional = true }
+opentelemetry-prometheus = { version = "0.28.0", optional = true }
+opentelemetry-semantic-conventions = { version = "0.28.0", optional = true, features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.28.0", features = ["http", "metrics", "rt-tokio"], optional = true }
+prometheus = { version = "0.13.4", optional = true }
 regex = { version = "1.10.6", optional = true }
 reqwest = { version = "0.12.11", features = [
 	"default-tls",
@@ -111,6 +117,7 @@ default = [
 	"caddy",
 	"completions",
 	"crypto",
+	"observability",
 	"self-update",
 	"ssh",
 	"tamanu",
@@ -128,6 +135,14 @@ download = [
 caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
+observability = [
+	"dep:axum",
+	"dep:opentelemetry",
+	"dep:opentelemetry-prometheus",
+	"dep:opentelemetry-semantic-conventions",
+	"dep:opentelemetry_sdk",
+	"dep:prometheus"
+]
 self-update = ["download", "dep:upgrade", "dep:windows-env"]
 ssh = [
 	"dep:dirs",
