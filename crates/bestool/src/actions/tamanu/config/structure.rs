@@ -5,7 +5,7 @@ use reqwest::Url;
 pub struct TamanuConfig {
 	pub canonical_host_name: Option<Url>,
 	pub db: Database,
-	pub mailgun: Mailgun,
+	pub mailgun: Option<Mailgun>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

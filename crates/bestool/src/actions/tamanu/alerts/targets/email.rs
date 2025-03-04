@@ -1,5 +1,5 @@
 use mailgun_rs::{EmailAddress, Mailgun, Message};
-use miette::{IntoDiagnostic, Result, WrapErr};
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use tracing::debug;
 
 use crate::actions::tamanu::{alerts::definition::AlertDefinition, config::TamanuConfig};
@@ -36,10 +36,11 @@ impl TargetEmail {
 		}
 
 		debug!(?self.addresses, "sending email");
-		let sender = EmailAddress::address(&config.mailgun.sender);
+		let mailgun_config = config.mailgun.as_ref().ok_or_else(|| miette!("missing mailgun config"))?;
+		let sender = EmailAddress::address(&mailgun_config.sender);
 		let mailgun = Mailgun {
-			api_key: config.mailgun.api_key.clone(),
-			domain: config.mailgun.domain.clone(),
+			api_key: mailgun_config.api_key.clone(),
+			domain: mailgun_config.domain.clone(),
 		};
 		let message = Message {
 			to: self
