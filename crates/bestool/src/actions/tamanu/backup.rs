@@ -1,9 +1,5 @@
 use std::{
-	ffi::{OsStr, OsString},
-	io::{stderr, IsTerminal as _},
-	num::NonZero,
-	path::{Path, PathBuf},
-	time::{Duration, SystemTime},
+	collections::BTreeMap, ffi::{OsStr, OsString}, io::{stderr, IsTerminal as _}, num::NonZero, path::{Path, PathBuf}, time::{Duration, SystemTime}
 };
 
 use algae_cli::{
@@ -18,6 +14,7 @@ use tokio::{
 	fs::{self, create_dir_all},
 	io::{AsyncReadExt as _, AsyncWriteExt as _},
 };
+use tokio_util::io::InspectReader;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
@@ -373,7 +370,8 @@ async fn copy_via_io(
 #[derive(Debug, serde::Serialize)]
 struct ChunkedMetadata {
 	n: u64,
-	chunks: Vec<String>,
+	sum: String,
+	chunks: BTreeMap<String, String>,
 }
 
 async fn copy_into_chunks(
@@ -389,7 +387,7 @@ async fn copy_into_chunks(
 
 	let n_chunks = input_length.div_ceil(chunk_size);
 	let chunk_digits = usize::try_from(n_chunks.ilog10() + 1).unwrap();
-	let mut chunks = Vec::with_capacity(usize::try_from(n_chunks).unwrap());
+	let mut chunks = BTreeMap::new();
 
 	let pb = if stderr().is_terminal() {
 		let style = ProgressStyle::default_bar()
@@ -400,14 +398,20 @@ async fn copy_into_chunks(
 		ProgressBar::hidden()
 	};
 
+	let mut whole_hash = blake3::Hasher::new();
+
 	let mut chunk_n = 0;
 	loop {
 		chunk_n += 1;
-		let mut chunk = input.take(chunk_size);
+		let mut chunk_hash = blake3::Hasher::new();
+		let mut chunk = InspectReader::new(input.take(chunk_size), |bytes| {
+			whole_hash.update(bytes);
+			chunk_hash.update(bytes);
+		});
+
 		let chunk_name = format!("{chunk_n:0chunk_digits$}.chunk");
-		chunks.push(chunk_name.clone());
 		let target_path = target_dir.join(&chunk_name);
-		pb.set_message(chunk_name);
+		pb.set_message(chunk_name.clone());
 
 		let mut writer = fs::File::create_new(&target_path)
 			.await
@@ -427,16 +431,19 @@ async fn copy_into_chunks(
 			.await
 			.into_diagnostic()
 			.wrap_err("closing the target file")?;
-		input = chunk.into_inner();
+		input = chunk.into_inner().into_inner();
 
 		if bytes == 0 {
 			let _ = fs::remove_file(target_path).await;
 			break;
 		}
+
+		chunks.insert(chunk_name, format!("b3:{}", chunk_hash.finalize().to_hex()));
 	}
 
 	let meta = ChunkedMetadata {
 		n: n_chunks,
+		sum: format!("b3:{}", whole_hash.finalize().to_hex()),
 		chunks,
 	};
 	let meta = serde_json::to_vec_pretty(&meta).unwrap();

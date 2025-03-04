@@ -29,7 +29,7 @@ miette = { workspace = true, features = ["fancy"] }
 pinentry = "0.6.0"
 rand = "0.9.0"
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
-tokio-util = { version = "0.7.13", features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat"] }
 tracing = { workspace = true }
 
 [build-dependencies]
