@@ -65,7 +65,5 @@ subcommands! {
 	#[cfg(feature = "ssh")]
 	ssh => Ssh(SshArgs),
 	#[cfg(feature = "__tamanu")]
-	tamanu => Tamanu(TamanuArgs),
-	#[cfg(feature = "walg")]
-	walg => WalG(WalgArgs)
+	tamanu => Tamanu(TamanuArgs)
 }

@@ -109,7 +109,6 @@ default = [
 	"self-update",
 	"ssh",
 	"tamanu",
-	"walg",
 ]
 
 ## Common dep groups (not meant to be used directly)
@@ -138,7 +137,6 @@ ssh = [
 	"dep:windows",
 	"dep:windows-acl",
 ]
-walg = ["download"]
 
 ## Tamanu subcommands
 tamanu = [ # enable all tamanu subcommands
