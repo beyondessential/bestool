@@ -19,8 +19,6 @@ algae-cli = { version = "1.0.6", path = "../algae-cli", optional = true }
 binstalk-downloader = { version = "0.13.13", optional = true, features = [
 	"hickory-dns",
 ] }
-bitflags = { version = "2.9.0", optional = true }
-bitvec = { version = "1.0.1", optional = true }
 blake3 = { version = "1.6.1", optional = true }
 boxcar = "0.2.10"
 bytes = "1.10.0"
@@ -42,7 +40,6 @@ duct = { version = "0.13.7", optional = true }
 dunce = { version = "1.0.5", optional = true }
 embedded-graphics = { version = "0.8.1", optional = true }
 folktime = { version = "0.2.1", optional = true }
-fontdue = { version = "0.9.3", optional = true }
 fs4 = { version = "0.13.0", features = ["tokio"], optional = true }
 futures = "0.3.30"
 glob = { version = "0.3.2", optional = true }
@@ -70,7 +67,6 @@ rpi-st7789v2-driver = { version = "0.3.6", path = "../rpi-st7789v2-driver", feat
 	"miette",
 ], optional = true }
 rppal = { version = "0.22.1", optional = true }
-rust-fontconfig = { version = "0.1.7", optional = true }
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 serde_yml = { version = "0.0.12", optional = true }
@@ -214,19 +210,10 @@ tamanu-pg-common = []
 ## Iti subcommands
 iti = [ # enable all iti subcommands
 	"iti-battery",
-	"iti-eink",
 	"iti-lcd",
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
-iti-eink = [
-	"__iti",
-	"dep:bitflags",
-	"dep:bitvec",
-	"dep:fontdue",
-	"dep:rppal",
-	"dep:rust-fontconfig",
-]
 iti-lcd = [
 	"__iti",
 	"dep:ctrlc",
