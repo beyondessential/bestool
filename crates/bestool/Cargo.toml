@@ -123,6 +123,11 @@ download = [
 caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
+file = [
+	"dep:blake3",
+	"dep:indicatif",
+	"dep:tokio-util",
+]
 self-update = ["download", "dep:upgrade", "dep:windows-env"]
 ssh = [
 	"dep:dirs",
@@ -162,13 +167,11 @@ tamanu-alerts = [
 ]
 tamanu-backup = [
 	"__tamanu",
+	"file",
 	"tamanu-config",
 	"tamanu-pg-common",
 	"dep:algae-cli",
-	"dep:blake3",
 	"dep:duct",
-	"dep:indicatif",
-	"dep:tokio-util",
 ]
 tamanu-backup-configs = [
 	"__tamanu",

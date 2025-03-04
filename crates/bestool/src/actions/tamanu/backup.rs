@@ -1,5 +1,8 @@
 use std::{
-	collections::BTreeMap, ffi::{OsStr, OsString}, io::{stderr, IsTerminal as _}, num::NonZero, path::{Path, PathBuf}, time::{Duration, SystemTime}
+	ffi::{OsStr, OsString},
+	num::NonZero,
+	path::{Path, PathBuf},
+	time::{Duration, SystemTime},
 };
 
 use algae_cli::{
@@ -8,17 +11,16 @@ use algae_cli::{
 };
 use chrono::Utc;
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::{
 	fs::{self, create_dir_all},
-	io::{AsyncReadExt as _, AsyncWriteExt as _},
+	io::AsyncWriteExt as _,
 };
-use tokio_util::io::InspectReader;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
 	actions::{
+		file::split::{copy_into_chunks, ChunkSize},
 		tamanu::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},
@@ -59,24 +61,11 @@ pub struct BackupArgs {
 
 	/// Split the copied file into fixed-sized chunks.
 	///
-	/// Backups can be very large files. Uploading them in one go over an unreliable connection can
-	/// be a painful experience, and in some cases not succeed. This option provides a lo-fi
-	/// solution to the problem, by splitting the file created by `--then-copy` into smaller chunks.
-	/// It is then a lot easier to upload the chunks and retry on error or after network failures by
-	/// re-uploading chunks missing on the remote; `rclone sync` can do this for example.
-	///
-	/// The file chunks are written into a directory named after the original file, including the
-	/// extension. This makes the other side simpler: take all the chunks and re-assemble into one
-	/// file, naming it the same as the containing directory.
-	///
-	/// A metadata file is also written. This is a JSON file which contains the number of chunks
-	/// created, a checksum over the whole file, and a checksum for each chunk. This can be used by
-	/// the far-side re-assembler to check whether all files are available, and verify integrity.
+	/// This is the same as the subcommand `bestool file split`, and the argument is the same as its
+	/// `--size` option (integer size in mibibytes), except for the special value `0` which behaves
+	/// as when the upstream subcommand's `--size` option is not provided (size auto-determination).
 	///
 	/// Splitting happens after encryption, if enabled.
-	///
-	/// Takes a non-zero integer size in mibibytes, or `0`, which will pick either 64MiB or 1000
-	/// chunks (rounded to 8192 bytes), whichever makes smaller chunks, with a minimum size of 8MiB.
 	#[arg(long)]
 	pub then_split: Option<u16>,
 
@@ -197,15 +186,11 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		&ctx.args_sub.write_to,
 		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
 			copy_to: path,
-			split: ctx
-				.args_sub
-				.then_split
-				.map(|n| {
-					NonZero::new(n)
-						.map(ThenSplit::Mib)
-						.unwrap_or(ThenSplit::Auto)
-				})
-				.unwrap_or(ThenSplit::No),
+			split: ctx.args_sub.then_split.map(|n| {
+				NonZero::new(n)
+					.map(ChunkSize::Mib)
+					.unwrap_or_default()
+			}),
 		}),
 		ctx.args_sub.keep_days,
 		".dump",
@@ -217,50 +202,9 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ThenSplit {
-	No,
-	Auto,
-	Mib(NonZero<u16>),
-}
-
-const MIBIBYTE: u64 = 1024_u64.pow(3);
-const MAX_AUTO_CHUNKS: u64 = 1000;
-const MINPAGE: u64 = 8192;
-// We round chunk sizes so they always fall on the disk page size for best write and storage perf
-
-impl ThenSplit {
-	// None if we're not splitting
-	fn max_chunk_bytes(self, full_size: u64) -> Option<u64> {
-		match self {
-			Self::No => None,
-			Self::Mib(mib) => Some({
-				let chunk_bytes = u64::from(mib.get()) * MIBIBYTE;
-				if full_size < chunk_bytes {
-					full_size
-				} else {
-					chunk_bytes
-				}
-			}),
-			Self::Auto => {
-				// SAFETY: constants
-				// UNWRAP: Mib always returns Some
-				let if_8_mib = Self::Mib(unsafe { NonZero::new_unchecked(8) })
-					.max_chunk_bytes(full_size)
-					.unwrap();
-				let if_64_mib = Self::Mib(unsafe { NonZero::new_unchecked(64) })
-					.max_chunk_bytes(full_size)
-					.unwrap();
-				let if_max_chunks = (full_size / MAX_AUTO_CHUNKS / MINPAGE) * MINPAGE;
-				Some(if_max_chunks.min(if_64_mib).max(if_8_mib))
-			}
-		}
-	}
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) struct Then<'a> {
 	pub copy_to: &'a Path,
-	pub split: ThenSplit,
+	pub split: Option<ChunkSize>,
 }
 
 pub(crate) async fn process_backup(
@@ -308,9 +252,9 @@ pub(crate) async fn process_backup(
 
 		let target_path = copy_to.join(output_filename);
 
-		if let Some(chunk_size) = split.max_chunk_bytes(full_size) {
-			info!(from=?output, to=?target_path, %chunk_size, "copying split backup");
-			copy_into_chunks(&output, full_size, target_path, chunk_size).await?;
+		if let Some(chunk_size) = split {
+			info!(from=?output, to=?target_path, ?chunk_size, "copying split backup");
+			copy_into_chunks(&output, target_path, chunk_size).await?;
 		} else {
 			info!(from=?output, to=?target_path, "copying whole backup");
 
@@ -365,95 +309,6 @@ async fn copy_via_io(
 		.await
 		.into_diagnostic()
 		.wrap_err("closing the target file")
-}
-
-#[derive(Debug, serde::Serialize)]
-struct ChunkedMetadata {
-	n: u64,
-	sum: String,
-	chunks: BTreeMap<String, String>,
-}
-
-async fn copy_into_chunks(
-	input: &PathBuf,
-	input_length: u64,
-	target_dir: PathBuf,
-	chunk_size: u64,
-) -> Result<(), miette::Error> {
-	let mut input = fs::File::open(input)
-		.await
-		.into_diagnostic()
-		.wrap_err("opening the original")?;
-
-	let n_chunks = input_length.div_ceil(chunk_size);
-	let chunk_digits = usize::try_from(n_chunks.ilog10() + 1).unwrap();
-	let mut chunks = BTreeMap::new();
-
-	let pb = if stderr().is_terminal() {
-		let style = ProgressStyle::default_bar()
-			.template("[{bar:.green/blue}] {wide_msg} {binary_bytes}/{binary_total_bytes} ({eta})")
-			.expect("BUG: progress bar template invalid");
-		ProgressBar::new(input_length).with_style(style)
-	} else {
-		ProgressBar::hidden()
-	};
-
-	let mut whole_hash = blake3::Hasher::new();
-
-	let mut chunk_n = 0;
-	loop {
-		chunk_n += 1;
-		let mut chunk_hash = blake3::Hasher::new();
-		let mut chunk = InspectReader::new(input.take(chunk_size), |bytes| {
-			whole_hash.update(bytes);
-			chunk_hash.update(bytes);
-		});
-
-		let chunk_name = format!("{chunk_n:0chunk_digits$}.chunk");
-		let target_path = target_dir.join(&chunk_name);
-		pb.set_message(chunk_name.clone());
-
-		let mut writer = fs::File::create_new(&target_path)
-			.await
-			.into_diagnostic()
-			.wrap_err("opening the target file")?;
-
-		// TODO: checksums
-		let bytes = tokio::io::copy(&mut chunk, &mut writer)
-			.await
-			.into_diagnostic()
-			.wrap_err("copying data in stream")?;
-		debug!(%chunk_n, %n_chunks, "copied {bytes} bytes");
-		pb.inc(bytes);
-
-		writer
-			.shutdown()
-			.await
-			.into_diagnostic()
-			.wrap_err("closing the target file")?;
-		input = chunk.into_inner().into_inner();
-
-		if bytes == 0 {
-			let _ = fs::remove_file(target_path).await;
-			break;
-		}
-
-		chunks.insert(chunk_name, format!("b3:{}", chunk_hash.finalize().to_hex()));
-	}
-
-	let meta = ChunkedMetadata {
-		n: n_chunks,
-		sum: format!("b3:{}", whole_hash.finalize().to_hex()),
-		chunks,
-	};
-	let meta = serde_json::to_vec_pretty(&meta).unwrap();
-	fs::write(target_dir.join("metadata.json"), meta)
-		.await
-		.into_diagnostic()
-		.wrap_err("write metadata file")?;
-
-	pb.finish_with_message(format!("wrote {n_chunks} chunks"));
-	Ok(())
 }
 
 #[instrument(level = "debug")]

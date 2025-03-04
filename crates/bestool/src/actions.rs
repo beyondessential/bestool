@@ -56,6 +56,8 @@ subcommands! {
 	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
 	crypto => Crypto(CryptoArgs),
+	#[cfg(feature = "file")]
+	file => File(FileArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
 	#[cfg(feature = "self-update")]
