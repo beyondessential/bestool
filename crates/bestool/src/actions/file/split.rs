@@ -7,7 +7,7 @@ use std::{
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use miette::{Context as _, IntoDiagnostic as _, Result};
+use miette::{miette, Context as _, IntoDiagnostic as _, Result};
 use tokio::{
 	fs::{self, create_dir_all},
 	io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -32,7 +32,7 @@ use super::{Context, FileArgs};
 /// A metadata file is also written. This is a JSON file which contains the number of chunks
 /// created, a checksum over the whole file, and a checksum for each chunk. This can be used by the
 /// re-assembler to check whether all chunks are available, and verify integrity. The `join` sibling
-/// subcommand provides such a re-assembler.
+/// subcommand provides such a re-assembler, or you can simply use `cat` (without integrity checks).
 ///
 /// The checksums are compatible with the ones written and verified by the `crypto hash` subcommand.
 #[derive(Debug, Clone, Parser)]
@@ -73,17 +73,19 @@ pub(crate) enum ChunkSize {
 	Mib(NonZero<u16>),
 }
 
-const MIBIBYTE: u64 = 1024_u64.pow(3);
+const MIBIBYTE: u64 = 1024 * 1024;
 const MAX_AUTO_CHUNKS: u64 = 1000;
 const MINPAGE: u64 = 8192;
 // We round chunk sizes so they always fall on the disk page size for best write and storage perf
 
 impl ChunkSize {
+	#[instrument(level = "debug")]
 	fn max_chunk_bytes(self, full_size: u64) -> u64 {
 		match self {
 			Self::Mib(mib) => {
 				let chunk_bytes = u64::from(mib.get()) * MIBIBYTE;
 				if full_size < chunk_bytes {
+					debug!(full_size, chunk_bytes, "full size is less than chunk");
 					full_size
 				} else {
 					chunk_bytes
@@ -97,6 +99,7 @@ impl ChunkSize {
 					Self::Mib(unsafe { NonZero::new_unchecked(64) }).max_chunk_bytes(full_size);
 				let if_max_chunks = (full_size / MAX_AUTO_CHUNKS / MINPAGE) * MINPAGE;
 
+				debug!(if_8_mib, if_64_mib, if_max_chunks, "auto chunk size parameters");
 				if_max_chunks.min(if_64_mib).max(if_8_mib)
 			}
 		}
@@ -118,16 +121,30 @@ pub(crate) async fn copy_into_chunks(
 	target_dir: PathBuf,
 	chunk_size: ChunkSize,
 ) -> Result<()> {
+	let target_dir = target_dir.join(
+		input
+			.file_name()
+			.ok_or_else(|| miette!("input is not a file"))?,
+	);
+
 	let mut input = fs::File::open(input)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening input file")?;
 
-	let input_length = input.metadata().await.into_diagnostic().wrap_err("reading input file size")?.len();
+	let input_length = input
+		.metadata()
+		.await
+		.into_diagnostic()
+		.wrap_err("reading input file size")?
+		.len();
 
 	let chunk_size = chunk_size.max_chunk_bytes(input_length);
 	let n_chunks = input_length.div_ceil(chunk_size);
 	let chunk_digits = usize::try_from(n_chunks.ilog10() + 1).unwrap();
+
+	debug!(chunk_size, n_chunks, chunk_digits, input_length, ?target_dir, "chunking parameters");
+
 	let mut chunks = BTreeMap::new();
 
 	let pb = if stderr().is_terminal() {
