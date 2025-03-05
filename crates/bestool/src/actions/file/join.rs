@@ -1,5 +1,5 @@
 use std::{
-	io::{ErrorKind, IsTerminal},
+	io::{stderr, ErrorKind, IsTerminal},
 	path::{Path, PathBuf},
 	pin::Pin,
 	task::Poll,
@@ -9,13 +9,14 @@ use blake3::{Hash, Hasher};
 use bytes::Bytes;
 use clap::Parser;
 use futures::{future::join_all, stream, FutureExt, Stream, StreamExt as _, TryStreamExt as _};
+use indicatif::{ProgressBar, ProgressStyle};
 use miette::{bail, miette, IntoDiagnostic, Result, WrapErr};
 use tokio::{
 	fs::{self, remove_file, File},
 	io::{copy_buf, stdout, AsyncReadExt, AsyncWriteExt},
 };
 use tokio_util::io::{ReaderStream, StreamReader};
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 
 use super::{split::ChunkedMetadata, Context, FileArgs};
 
@@ -54,7 +55,23 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 		bail!("some chunks missing or incomplete");
 	}
 
-	let mut stream = StreamReader::new(chunk_readers(&input, &meta).try_flatten());
+	let pb = if stderr().is_terminal() {
+		let style = ProgressStyle::default_bar()
+			.template("[{bar:.green/blue}] {binary_bytes}/{binary_total_bytes} ({eta})")
+			.expect("BUG: progress bar template invalid");
+		ProgressBar::new(expected_bytes).with_style(style)
+	} else {
+		ProgressBar::hidden()
+	};
+
+	let mut hasher = Hasher::new();
+	let mut stream = StreamReader::new(chunk_readers(&input, &meta).try_flatten().inspect_ok(
+		|bytes| {
+			hasher.update(&bytes);
+			pb.inc(bytes.len() as _);
+		},
+	));
+
 	if let Some(output) = output {
 		let output = if output.is_dir() {
 			output.join(
@@ -81,6 +98,7 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 				drop(file);
 				let _ = remove_file(output).await;
 
+				pb.abandon();
 				Err(err)
 			}
 			Ok(bytes) if bytes != expected_bytes => {
@@ -89,14 +107,17 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 				drop(file);
 				let _ = remove_file(output).await;
 
+				pb.abandon();
 				bail!("expected {expected_bytes} bytes, got {bytes} bytes");
 			}
 			Ok(bytes) => {
+				pb.finish();
 				info!("wrote {bytes} bytes");
 				Ok(())
 			}
 		}
 	} else if std::io::stdout().is_terminal() {
+		pb.finish_and_clear();
 		Err(miette!("stdout is a terminal, not writing data there")
 			.wrap_err("did you mean to write to a file? provide a second argument"))
 	} else {
@@ -107,9 +128,11 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 			.wrap_err("writing to file")?;
 
 		if bytes != expected_bytes {
+			pb.abandon();
 			bail!("expected {expected_bytes} bytes, got {bytes} bytes");
 		}
 
+		pb.finish();
 		info!("wrote {bytes} bytes");
 		Ok(())
 	}
@@ -157,21 +180,32 @@ async fn verify_all_chunks_correct(input: &Path, meta: &ChunkedMetadata) -> bool
 			.iter()
 			.enumerate()
 			.map(|(n, (filename, sum))| async move {
-				// TODO: print errors
-
 				let Ok(file_meta) = fs::metadata(input.join(filename)).await else {
+					error!(n, filename, "chunk not found");
 					return false;
 				};
 				if !file_meta.is_file() {
+					error!(n, filename, "chunk not a file");
 					return false;
 				}
-				if file_meta.len() != meta.chunk_size && u64::try_from(n).unwrap() != meta.chunk_n {
+				if file_meta.len() != meta.chunk_size
+					&& u64::try_from(n + 1).unwrap() != meta.chunk_n
+				{
+					error!(
+						n,
+						filename,
+						expected = meta.chunk_size,
+						actual = file_meta.len(),
+						"chunk not correct size"
+					);
 					return false;
 				}
 				let Some(sum) = sum.strip_prefix("b3:") else {
+					error!(n, filename, sum, "chunk sum not prefixed by b3:");
 					return false;
 				};
-				if let Err(_err) = Hash::from_hex(sum) {
+				if let Err(err) = Hash::from_hex(sum) {
+					error!(n, filename, sum, "chunk sum not in right format: {err}");
 					return false;
 				}
 

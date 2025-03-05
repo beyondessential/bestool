@@ -150,7 +150,7 @@ pub(crate) async fn copy_into_chunks(
 
 	let pb = if stderr().is_terminal() {
 		let style = ProgressStyle::default_bar()
-			.template("[{bar:.green/blue}] {wide_msg} {binary_bytes}/{binary_total_bytes} ({eta})")
+			.template("[{bar:.green/blue}] {msg} {binary_bytes}/{binary_total_bytes} ({eta})")
 			.expect("BUG: progress bar template invalid");
 		ProgressBar::new(input_length).with_style(style)
 	} else {
