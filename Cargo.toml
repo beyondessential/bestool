@@ -6,6 +6,17 @@ members = [
 	"crates/rpi-st7789v2-driver",
 ]
 
+[workspace.dependencies]
+clap = { version = "4.5.31", features = ["cargo", "derive", "wrap_help"] }
+futures = "0.3.30"
+indicatif = { version = "0.17.9", features = ["tokio"] }
+itertools = "0.14.0"
+miette = "7.5.0"
+thiserror = "2.0.9"
+tokio = "1.43.0"
+tokio-util = "0.7.13"
+tracing = { version = "0.1.41", features = ["attributes"] }
+
 [profile.release]
 lto = false
 codegen-units = 16

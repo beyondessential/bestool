@@ -15,10 +15,10 @@ repository = "https://github.com/beyondessential/bestool"
 [dependencies]
 bitvec = "1.0.1"
 embedded-graphics = "0.8.1"
-itertools = "0.14.0"
-thiserror = "2.0.9"
-tracing = { version = "0.1.41", features = ["attributes"] }
-miette = { version = "7.5.0", optional = true }
+itertools = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+miette = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rppal = "0.22.1"

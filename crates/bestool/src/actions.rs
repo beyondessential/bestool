@@ -56,6 +56,8 @@ subcommands! {
 	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
 	crypto => Crypto(CryptoArgs),
+	#[cfg(feature = "file")]
+	file => File(FileArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
 	#[cfg(feature = "self-update")]
@@ -63,7 +65,5 @@ subcommands! {
 	#[cfg(feature = "ssh")]
 	ssh => Ssh(SshArgs),
 	#[cfg(feature = "__tamanu")]
-	tamanu => Tamanu(TamanuArgs),
-	#[cfg(feature = "walg")]
-	walg => WalG(WalgArgs)
+	tamanu => Tamanu(TamanuArgs)
 }

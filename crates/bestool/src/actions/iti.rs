@@ -18,8 +18,6 @@ super::subcommands! {
 
 	#[cfg(feature = "iti-battery")]
 	battery => Battery(BatteryArgs),
-	#[cfg(feature = "iti-eink")]
-	eink => Eink(EinkArgs),
 	#[cfg(feature = "iti-lcd")]
 	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-lcd")]
