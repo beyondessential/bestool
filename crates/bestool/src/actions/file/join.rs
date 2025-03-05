@@ -1,15 +1,20 @@
 use std::{
-	io::IsTerminal,
+	io::{ErrorKind, IsTerminal},
 	path::{Path, PathBuf},
+	pin::Pin,
+	task::Poll,
 };
 
+use blake3::{Hash, Hasher};
+use bytes::Bytes;
 use clap::Parser;
-use futures::future::join_all;
+use futures::{future::join_all, stream, FutureExt, Stream, StreamExt as _, TryStreamExt as _};
 use miette::{bail, miette, IntoDiagnostic, Result, WrapErr};
 use tokio::{
 	fs::{self, remove_file, File},
-	io::{copy_buf, empty, stdout, AsyncBufRead, AsyncReadExt, AsyncWriteExt},
+	io::{copy_buf, stdout, AsyncReadExt, AsyncWriteExt},
 };
+use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::{info, instrument};
 
 use super::{split::ChunkedMetadata, Context, FileArgs};
@@ -49,7 +54,7 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 		bail!("some chunks missing or incomplete");
 	}
 
-	let mut stream = read_from_chunks(&input, &meta).await?;
+	let mut stream = StreamReader::new(chunk_readers(&input, &meta).try_flatten());
 	if let Some(output) = output {
 		let output = if output.is_dir() {
 			output.join(
@@ -144,14 +149,16 @@ async fn parse_metadata(input: &Path) -> Result<ChunkedMetadata> {
 		.wrap_err("parse metadata.json")
 }
 
-/// Check all chunks for existence and size match (no checksums)
+/// Check all chunks for existence, size match, and checksum format (no checksum verification)
 #[instrument(level = "debug")]
 async fn verify_all_chunks_correct(input: &Path, meta: &ChunkedMetadata) -> bool {
 	join_all(
 		meta.chunks
-			.keys()
+			.iter()
 			.enumerate()
-			.map(|(n, filename)| async move {
+			.map(|(n, (filename, sum))| async move {
+				// TODO: print errors
+
 				let Ok(file_meta) = fs::metadata(input.join(filename)).await else {
 					return false;
 				};
@@ -159,6 +166,12 @@ async fn verify_all_chunks_correct(input: &Path, meta: &ChunkedMetadata) -> bool
 					return false;
 				}
 				if file_meta.len() != meta.chunk_size && u64::try_from(n).unwrap() != meta.chunk_n {
+					return false;
+				}
+				let Some(sum) = sum.strip_prefix("b3:") else {
+					return false;
+				};
+				if let Err(_err) = Hash::from_hex(sum) {
 					return false;
 				}
 
@@ -170,7 +183,88 @@ async fn verify_all_chunks_correct(input: &Path, meta: &ChunkedMetadata) -> bool
 	.all(|t| *t)
 }
 
-#[instrument(level = "debug")]
-async fn read_from_chunks(input: &Path, meta: &ChunkedMetadata) -> Result<impl AsyncBufRead> {
-	Ok(empty())
+fn chunk_readers(
+	input: &Path,
+	meta: &ChunkedMetadata,
+) -> impl Stream<Item = std::io::Result<ChunkReader>> {
+	let chunks: Vec<(PathBuf, Hash, u64)> = meta
+		.chunks
+		.iter()
+		.enumerate()
+		.map(|(n, (filename, sum))| {
+			(
+				input.join(filename),
+				// UNWRAPs: prefix and hash were checked before
+				Hash::from_hex(sum.strip_prefix("b3:").unwrap()).unwrap(),
+				if n as u64 == meta.chunk_n {
+					meta.full_size
+						.saturating_sub(meta.chunk_size * (meta.chunk_n - 1))
+				} else {
+					meta.chunk_size
+				},
+			)
+		})
+		.collect();
+	// collect: to not carry the input/meta lifetimes into the stream
+
+	stream::iter(chunks.into_iter().map(|(path, sum, size)| {
+		Box::pin(async move {
+			File::open(path).await.map(|file| ChunkReader {
+				file: ReaderStream::new(file),
+				hasher: Hasher::new(),
+				sum,
+				size,
+				read: 0,
+			})
+		})
+		.into_stream()
+	}))
+	.flatten()
+}
+
+#[derive(Debug)]
+struct ChunkReader {
+	file: ReaderStream<File>,
+	hasher: Hasher,
+	sum: Hash,
+	size: u64,
+	read: u64,
+}
+
+impl Stream for ChunkReader {
+	type Item = std::io::Result<Bytes>;
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		let n = usize::try_from(self.size.saturating_sub(self.read));
+		(n.unwrap_or(0), n.ok())
+	}
+
+	fn poll_next(
+		mut self: Pin<&mut Self>,
+		cx: &mut futures::task::Context<'_>,
+	) -> Poll<Option<Self::Item>> {
+		match self.file.poll_next_unpin(cx) {
+			p @ Poll::Pending | p @ Poll::Ready(Some(Err(_))) => p,
+			Poll::Ready(Some(Ok(bytes))) => {
+				self.read += bytes.len() as u64;
+				self.hasher.update(&bytes);
+				Poll::Ready(Some(Ok(bytes)))
+			}
+			Poll::Ready(None) => {
+				// chunk finished
+				let sum = self.hasher.finalize();
+				if self.sum != sum {
+					Poll::Ready(Some(Err(std::io::Error::new(
+						ErrorKind::InvalidData,
+						format!(
+							"chunk checksum mismatch!\nexpected: {}\nobtained: {sum}",
+							self.sum
+						),
+					))))
+				} else {
+					Poll::Ready(None)
+				}
+			}
+		}
+	}
 }
