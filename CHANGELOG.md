@@ -5,11 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.26.7](https://github.com/beyondessential/bestool/compare/v0.26.6..0.26.7) - 2025-03-04
+## [0.27.0](https://github.com/beyondessential/bestool/compare/v0.26.7..0.27.0) - 2025-03-05
+
+
+- **Feature:** KAM-341: split and join files (with backup support) (#194) - ([87e712b](https://github.com/beyondessential/bestool/commit/87e712b4354b9aa7ccc7ed09779b406d07d3af92))
+- **Repo:** Release - ([d202eb6](https://github.com/beyondessential/bestool/commit/d202eb61b004747b206628bbb232c8e7b22cead9))
+
+---
+## [0.26.7](https://github.com/beyondessential/bestool/compare/v0.26.6..v0.26.7) - 2025-03-04
 
 
 - **Deps:** Bump the deps group across 1 directory with 14 updates (#188) - ([fd09a5d](https://github.com/beyondessential/bestool/commit/fd09a5d5b910945282c4f270b593afcbab6a0877))
 - **Deps:** Bump the deps group across 1 directory with 15 updates (#193) - ([4205bd7](https://github.com/beyondessential/bestool/commit/4205bd7419b797ec2849268a9801b363dcd51708))
+- **Repo:** Release - ([69e220c](https://github.com/beyondessential/bestool/commit/69e220cc7a161dede7247debe09c029f0d85c249))
 
 ### Tamanu
 
