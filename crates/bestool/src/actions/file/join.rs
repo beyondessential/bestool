@@ -50,6 +50,15 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 	let JoinArgs { input, output } = ctx.args_sub;
 
 	let meta = parse_metadata(&input).await?;
+
+	let full_sum = Hash::from_hex(
+		meta.full_sum
+			.strip_prefix("b3:")
+			.ok_or_else(|| miette!("full_sum has bad prefix"))?,
+	)
+	.into_diagnostic()
+	.wrap_err("full_sum is in invalid format")?;
+
 	let expected_bytes = meta.full_size;
 	if !verify_all_chunks_correct(&input, &meta).await {
 		bail!("some chunks missing or incomplete");
@@ -112,6 +121,17 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 			}
 			Ok(bytes) => {
 				pb.finish();
+
+				let sum = hasher.finalize();
+				if sum != full_sum {
+					// best-effort cleanup
+					let _ = file.shutdown().await;
+					drop(file);
+					let _ = remove_file(output).await;
+
+					bail!("bad checksum!\nexpected: {full_sum}\nobtained: {sum}");
+				}
+
 				info!("wrote {bytes} bytes");
 				Ok(())
 			}
@@ -133,6 +153,12 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 		}
 
 		pb.finish();
+
+		let sum = hasher.finalize();
+		if sum != full_sum {
+			bail!("bad checksum!\nexpected: {full_sum}\nobtained: {sum}");
+		}
+
 		info!("wrote {bytes} bytes");
 		Ok(())
 	}
