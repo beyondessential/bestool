@@ -16,6 +16,6 @@ super::subcommands! {
 		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
 	}}](with_sub)
 
+	join => Join(JoinArgs),
 	split => Split(SplitArgs)
 }
-// join => Join(JoinArgs),

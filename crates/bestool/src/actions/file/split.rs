@@ -52,6 +52,7 @@ pub struct SplitArgs {
 	/// If not present, the default is to pick a chunk size between 8 MiB and 64 MiB inclusive, such
 	/// that the input file is divided in 1000 chunks. The resulting size is rounded to the nearest
 	/// 8 KiB, to make copying and disk usage more efficient.
+	#[arg(long, short)]
 	pub size: Option<NonZero<u16>>,
 }
 
@@ -108,11 +109,11 @@ impl ChunkSize {
 
 #[derive(Debug, serde::Serialize)]
 pub(super) struct ChunkedMetadata {
-	full_size: u64,
-	full_sum: String,
-	chunk_n: u64,
-	chunk_size: u64,
-	chunks: BTreeMap<String, String>,
+	pub full_size: u64,
+	pub full_sum: String,
+	pub chunk_n: u64,
+	pub chunk_size: u64,
+	pub chunks: BTreeMap<String, String>,
 }
 
 #[instrument(level = "debug")]
