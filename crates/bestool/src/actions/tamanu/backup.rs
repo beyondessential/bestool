@@ -1,5 +1,6 @@
 use std::{
 	ffi::{OsStr, OsString},
+	num::NonZero,
 	path::{Path, PathBuf},
 	time::{Duration, SystemTime},
 };
@@ -19,6 +20,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::{
 	actions::{
+		file::split::{copy_into_chunks, ChunkSize},
 		tamanu::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
 	},
@@ -56,6 +58,16 @@ pub struct BackupArgs {
 	/// The backup will stay as is in "write_to".
 	#[arg(long)]
 	pub then_copy_to: Option<PathBuf>,
+
+	/// Split the copied file into fixed-sized chunks.
+	///
+	/// This is the same as the subcommand `bestool file split`, and the argument is the same as its
+	/// `--size` option (integer size in mibibytes), except for the special value `0` which behaves
+	/// as when the upstream subcommand's `--size` option is not provided (size auto-determination).
+	///
+	/// Splitting happens after encryption, if enabled.
+	#[arg(long)]
+	pub then_split: Option<u16>,
 
 	/// Take a lean backup instead.
 	///
@@ -172,7 +184,14 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	process_backup(
 		output,
 		&ctx.args_sub.write_to,
-		ctx.args_sub.then_copy_to.as_deref(),
+		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
+			copy_to: path,
+			split: ctx.args_sub.then_split.map(|n| {
+				NonZero::new(n)
+					.map(ChunkSize::Mib)
+					.unwrap_or_default()
+			}),
+		}),
 		ctx.args_sub.keep_days,
 		".dump",
 		ctx.args_sub.key,
@@ -182,10 +201,16 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Then<'a> {
+	pub copy_to: &'a Path,
+	pub split: Option<ChunkSize>,
+}
+
 pub(crate) async fn process_backup(
 	output: PathBuf,
 	written_to: &Path,
-	then_copy_to: Option<&Path>,
+	then: Option<Then<'_>>,
 	keep_days: Option<u16>,
 	purge_extension: &str,
 	key: KeyArgs,
@@ -206,23 +231,38 @@ pub(crate) async fn process_backup(
 		output
 	};
 
+	let full_size = {
+		let meta = fs::metadata(&output)
+			.await
+			.into_diagnostic()
+			.wrap_err("opening the output (metadata)")?;
+		meta.len()
+	};
+	info!("wrote {full_size} bytes");
+
 	let output_filename = output
 		.file_name()
 		.expect("from above we know it's got a filename");
 
-	if let Some(then_copy_to) = then_copy_to {
-		create_dir_all(then_copy_to)
+	if let Some(Then { copy_to, split }) = then {
+		create_dir_all(copy_to)
 			.await
 			.into_diagnostic()
 			.wrap_err("creating copy dest dir")?;
 
-		let target_path = then_copy_to.join(output_filename);
-		info!(from=?output, to=?target_path, "copying backup");
+		let target_path = copy_to.join(output_filename);
 
-		// attempt copy first via fs, then fallback to via io
-		if let Err(e) = fs::copy(&output, &target_path).await {
-			warn!(?e, "fs::copy failed, falling back to io::copy");
-			copy_via_io(&output, target_path).await?;
+		if let Some(chunk_size) = split {
+			info!(from=?output, to=?target_path, ?chunk_size, "copying split backup");
+			copy_into_chunks(&output, target_path, chunk_size).await?;
+		} else {
+			info!(from=?output, to=?target_path, "copying whole backup");
+
+			// attempt copy first via fs, then fallback to via io
+			if let Err(e) = fs::copy(&output, &target_path).await {
+				warn!(?e, "fs::copy failed, falling back to io::copy");
+				copy_via_io(&output, full_size, target_path).await?;
+			}
 		}
 	}
 
@@ -231,7 +271,7 @@ pub(crate) async fn process_backup(
 			.await
 			.wrap_err("purging old backups in main target")?;
 
-		if let Some(copies) = then_copy_to {
+		if let Some(copies) = then.map(|t| t.copy_to) {
 			purge_old_backups(days, copies, output_filename, purge_extension)
 				.await
 				.wrap_err("purging old backups in secondary target")?;
@@ -241,17 +281,15 @@ pub(crate) async fn process_backup(
 	Ok(output)
 }
 
-async fn copy_via_io(output: &PathBuf, target_path: PathBuf) -> Result<(), miette::Error> {
-	let input = fs::File::open(output)
+async fn copy_via_io(
+	input: &PathBuf,
+	input_length: u64,
+	target_path: PathBuf,
+) -> Result<(), miette::Error> {
+	let input = fs::File::open(input)
 		.await
 		.into_diagnostic()
 		.wrap_err("opening the original")?;
-	let input_length = input
-		.metadata()
-		.await
-		.into_diagnostic()
-		.wrap_err("reading original file length")?
-		.len();
 
 	let mut writer = fs::File::create_new(target_path)
 		.await
@@ -342,10 +380,17 @@ async fn purge_old_backups(
 		}
 
 		info!(?path, "deleting old backup");
-		fs::remove_file(&path)
-			.await
-			.into_diagnostic()
-			.wrap_err(format!("deleting {path:?}"))?;
+		if meta.is_dir() {
+			fs::remove_dir_all(&path)
+				.await
+				.into_diagnostic()
+				.wrap_err(format!("deleting dir {path:?}"))?;
+		} else {
+			fs::remove_file(&path)
+				.await
+				.into_diagnostic()
+				.wrap_err(format!("deleting file {path:?}"))?;
+		}
 	}
 
 	Ok(())

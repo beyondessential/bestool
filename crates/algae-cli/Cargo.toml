@@ -18,19 +18,19 @@ name = "algae"
 [dependencies]
 age = { version = "0.11.1", features = ["async"] }
 age-core = "0.11.0"
-clap = { version = "4.5.31", features = ["cargo", "derive", "wrap_help"] }
+clap = { workspace = true }
 dialoguer = { version = "0.11.0", features = ["password"], default-features = false }
 diceware_wordlists = "1.2.3"
-futures = "0.3.30"
-indicatif = { version = "0.17.9", features = ["tokio"] }
-itertools = "0.14.0"
+futures = { workspace = true }
+indicatif = { workspace = true }
+itertools = { workspace = true }
 jiff = "0.2.1"
-miette = { version = "7.5.0", features = ["fancy"] }
+miette = { workspace = true, features = ["fancy"] }
 pinentry = "0.6.0"
 rand = "0.9.0"
-tokio = { version = "1.43.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
-tokio-util = { version = "0.7.13", features = ["compat"] }
-tracing = { version = "0.1.41", features = ["attributes"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+tokio-util = { workspace = true, features = ["compat"] }
+tracing = { workspace = true }
 
 [build-dependencies]
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }

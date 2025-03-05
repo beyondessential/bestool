@@ -15,15 +15,14 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 use crate::{
 	actions::{
 		tamanu::{
-			config::{find_config_dir, load_config},
-			find_tamanu, TamanuArgs,
+			backup::{process_backup, Then},
+			config::{find_config_dir, load_config, TamanuConfig},
+			find_package, find_tamanu, TamanuArgs,
 		},
 		Context,
 	},
 	now_time,
 };
-
-use super::{backup::process_backup, config::TamanuConfig, find_package};
 
 /// Backup local Tamanu-related config files to a zip archive.
 ///
@@ -216,7 +215,10 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 	process_backup(
 		output,
 		&ctx.args_sub.write_to,
-		ctx.args_sub.then_copy_to.as_deref(),
+		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
+			copy_to: path,
+			split: None,
+		}),
 		ctx.args_sub.keep_days,
 		".config.zip",
 		ctx.args_sub.key,
