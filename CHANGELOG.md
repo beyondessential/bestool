@@ -5,11 +5,22 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.27.0](https://github.com/beyondessential/bestool/compare/v0.26.7..0.27.0) - 2025-03-05
+## [0.28.0](https://github.com/beyondessential/bestool/compare/v0.27.0..0.28.0) - 2025-03-06
+
+
+- **Repo:** Completely remove dyndns - ([3783f07](https://github.com/beyondessential/bestool/commit/3783f070bbb1ce6e1cc55234f294f8f3c84fe052))
+- **Repo:** Remove useless file_chunker - ([d4e13b1](https://github.com/beyondessential/bestool/commit/d4e13b1dffe18dff060c3818da1161e4e7b0246a))
+
+### Psql
+
+- **Feature:** Arbitrary program and args - ([29a0596](https://github.com/beyondessential/bestool/commit/29a0596e5ecad5e3c4f8909896182dee67a72502))
+- **Tweak:** Turn autocommit off when -W is given - ([535d2ee](https://github.com/beyondessential/bestool/commit/535d2ee47d3208a321480e5da50f928f4621b467))
+
+---
+## [0.27.0](https://github.com/beyondessential/bestool/compare/v0.26.7..v0.27.0) - 2025-03-05
 
 
 - **Feature:** KAM-341: split and join files (with backup support) (#194) - ([87e712b](https://github.com/beyondessential/bestool/commit/87e712b4354b9aa7ccc7ed09779b406d07d3af92))
-- **Repo:** Release - ([d202eb6](https://github.com/beyondessential/bestool/commit/d202eb61b004747b206628bbb232c8e7b22cead9))
 
 ---
 ## [0.26.7](https://github.com/beyondessential/bestool/compare/v0.26.6..v0.26.7) - 2025-03-04
@@ -17,7 +28,6 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 
 - **Deps:** Bump the deps group across 1 directory with 14 updates (#188) - ([fd09a5d](https://github.com/beyondessential/bestool/commit/fd09a5d5b910945282c4f270b593afcbab6a0877))
 - **Deps:** Bump the deps group across 1 directory with 15 updates (#193) - ([4205bd7](https://github.com/beyondessential/bestool/commit/4205bd7419b797ec2849268a9801b363dcd51708))
-- **Repo:** Release - ([69e220c](https://github.com/beyondessential/bestool/commit/69e220cc7a161dede7247debe09c029f0d85c249))
 
 ### Tamanu
 
@@ -517,7 +527,6 @@ See [conventional commits](https://www.conventionalcommits.org/) for commit guid
 - **Refactor:** Remove console-subscriber feature - ([0c244a3](https://github.com/beyondessential/bestool/commit/0c244a30974ec2a5818b99901157e28de1e8a431))
 - **Refactor:** Deduplicate subcommands! macro - ([8407c9d](https://github.com/beyondessential/bestool/commit/8407c9dd376e16ce69c874ff3e96b61837f58ad9))
 - **Refactor:** Allow mulitple #[meta] blocks in subcommands! - ([ecb174e](https://github.com/beyondessential/bestool/commit/ecb174eed966856538cbf7672ad89b15840af6be))
-- **WIP:** Wip - ([e3e06f3](https://github.com/beyondessential/bestool/commit/e3e06f3f5ade5a0be75fc981cc8e725f3d6f2330))
 
 ### Alerts
 
