@@ -122,16 +122,21 @@ jobs:
           echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
 
       - if: runner.os == 'Linux'
-        run: pip install ziglang && pipx install cargo-zigbuild
+        run: pip install ziglang
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
 
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-auditable
 
+      # zigbuild isn't compatible with auditable
+      # https://github.com/rust-secure-code/cargo-auditable/issues/179
       - if: matrix.target == 'aarch64-unknown-linux-musl'
         run: cargo zigbuild -p bestool --profile dist --target ${{ matrix.target }} --features iti
       - if: matrix.target != 'aarch64-unknown-linux-musl'
-        run: cargo build -p bestool --profile dist --target ${{ matrix.target }}
+        run: cargo auditable build -p bestool --profile dist --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
         with:
