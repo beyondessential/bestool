@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.28.0](https://github.com/beyondessential/bestool/compare/v0.27.0..0.28.0) - 2025-03-06
+## [0.28.1](https://github.com/beyondessential/bestool/compare/v0.28.0..0.28.1) - 2025-03-06
+
+
+- **Repo:** Add walg feature back so builds don’t break - ([8b1df12](https://github.com/beyondessential/bestool/commit/8b1df127b772106abaac0a3a5ed4ed9e5a3103f0))
+
+---
+## [0.28.0](https://github.com/beyondessential/bestool/compare/v0.27.0..v0.28.0) - 2025-03-06
 
 
 - **Repo:** Completely remove dyndns - ([3783f07](https://github.com/beyondessential/bestool/commit/3783f070bbb1ce6e1cc55234f294f8f3c84fe052))
