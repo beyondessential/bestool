@@ -27,6 +27,21 @@ pub struct PsqlArgs {
 	/// a write (insert, update, etc), as an extra safety measure.
 	#[arg(short = 'W', long)]
 	pub write: bool,
+
+	/// Additional, arbitrary arguments to pass to `psql`
+	///
+	/// If it has dashes (like `--password pass`), you need to prefix this with two dashes:
+	///
+	/// bestool tamanu psql -- --password pass
+	#[arg(trailing_var_arg = true)]
+	pub args: Vec<String>,
+
+	/// Alternative postgres program to invoke
+	///
+	/// Advanced! You can swap out psql for another postgres program. This will be passed options
+	/// derived from the config (database credentials) so may not work if those aren't expected.
+	#[arg(long, default_value = "psql")]
+	pub program: String,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
@@ -61,13 +76,14 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	)
 	.into_diagnostic()?;
 
-	let psql_path = find_postgres_bin("psql")?;
+	let psql_path = find_postgres_bin(&ctx.args_sub.program)?;
 
 	let mut args = vec!["--dbname", name, "--username", username];
-	if ctx.args_sub.write {
+	if ctx.args_sub.write && ctx.args_sub.program == "psql" {
 		args.push("--set=AUTOCOMMIT=OFF");
 		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
 	}
+	args.extend(ctx.args_sub.args.iter().map(|s| s.as_str()));
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	duct::cmd(psql_path, &args)
