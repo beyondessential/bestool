@@ -224,6 +224,9 @@ iti-lcd = [
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
+## Legacy noop feature to avoid breaking builds
+walg = []
+
 [dev-dependencies]
 trycmd = "0.15.9"
 
