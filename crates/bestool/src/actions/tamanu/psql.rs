@@ -22,6 +22,9 @@ pub struct PsqlArgs {
 	/// By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable
 	/// writes, either pass this flag, or call `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;`
 	/// within the session.
+	///
+	/// This also disables autocommit, so you need to issue a COMMIT; command whenever you perform
+	/// a write (insert, update, etc), as an extra safety measure.
 	#[arg(short = 'W', long)]
 	pub write: bool,
 }
@@ -60,8 +63,14 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	let psql_path = find_postgres_bin("psql")?;
 
+	let mut args = vec!["--dbname", name, "--username", username];
+	if ctx.args_sub.write {
+		args.push("--set=AUTOCOMMIT=OFF");
+		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+	}
+
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
-	duct::cmd!(psql_path, "--dbname", name, "--username", username)
+	duct::cmd(psql_path, &args)
 		.env("PSQLRC", rc.path())
 		.env("PGPASSWORD", password)
 		.run()
