@@ -60,19 +60,16 @@ link_parsers = [
 ]
 
 commit_parsers = [
+  { message = "^(draft|wip|(repo: )?(release|Initial commit)|merge|fmt|chore|ci)", skip = true },
+  { message = "^deps", group = "Deps" },
+  { message = "^doc", group = "Documentation" },
   { message = "^feat", group = "Feature" },
   { message = "^fix", group = "Bugfix" },
-  { message = "^tweak", group = "Tweak" },
-  { message = "^doc", group = "Documentation" },
   { message = "^perf", group = "Performance" },
   { message = "^refactor", group = "Refactor" },
-  { message = "^(draft|wip)", group = "WIP" },
+  { message = "^repo", group = "Repo" },
+  { message = "^revert", group = "Revert" },
   { message = "^style", group = "Style" },
   { message = "^test", group = "Test" },
-  { message = "^deps", group = "Deps" },
-  { message = "^repo: Initial commit", skip = true },
-  { message = "^repo", group = "Repo" },
-  { message = "^(release|merge|fmt|chore|ci)", skip = true },
-  { body = ".*security", group = "Security" },
-  { message = "^revert", group = "Revert" },
+  { message = "^tweak", group = "Tweak" },
 ]
