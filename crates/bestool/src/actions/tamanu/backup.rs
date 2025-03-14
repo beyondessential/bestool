@@ -250,12 +250,11 @@ pub(crate) async fn process_backup(
 			.into_diagnostic()
 			.wrap_err("creating copy dest dir")?;
 
-		let target_path = copy_to.join(output_filename);
-
 		if let Some(chunk_size) = split {
-			info!(from=?output, to=?target_path, ?chunk_size, "copying split backup");
-			copy_into_chunks(&output, target_path, chunk_size).await?;
+			info!(from=?output, to=?copy_to, ?chunk_size, "copying split backup");
+			copy_into_chunks(&output, copy_to, chunk_size).await?;
 		} else {
+			let target_path = copy_to.join(output_filename);
 			info!(from=?output, to=?target_path, "copying whole backup");
 
 			// attempt copy first via fs, then fallback to via io

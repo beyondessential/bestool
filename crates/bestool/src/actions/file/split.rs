@@ -2,7 +2,7 @@ use std::{
 	collections::BTreeMap,
 	io::{stderr, IsTerminal as _},
 	num::NonZero,
-	path::PathBuf,
+	path::{Path, PathBuf},
 };
 
 use clap::Parser;
@@ -64,7 +64,7 @@ pub async fn run(ctx: Context<FileArgs, SplitArgs>) -> Result<()> {
 	} = ctx.args_sub;
 
 	let chunk_size = size.map(ChunkSize::Mib).unwrap_or_default();
-	copy_into_chunks(&input, output, chunk_size).await
+	copy_into_chunks(&input, &output, chunk_size).await
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -119,7 +119,7 @@ pub(super) struct ChunkedMetadata {
 #[instrument(level = "debug")]
 pub(crate) async fn copy_into_chunks(
 	input: &PathBuf,
-	target_dir: PathBuf,
+	target_dir: &Path,
 	chunk_size: ChunkSize,
 ) -> Result<()> {
 	let target_dir = target_dir.join(
