@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.28.1](https://github.com/beyondessential/bestool/compare/v0.28.0..0.28.1) - 2025-03-06
+## [0.28.2](https://github.com/beyondessential/bestool/compare/v0.28.1..0.28.2) - 2025-03-14
+
+
+- **Deps:** Bump the deps group with 7 updates (#196) - ([36bc8d3](https://github.com/beyondessential/bestool/commit/36bc8d3230c1085a87e764fb50d33fb618dea15b))
+
+### Backups
+
+- **Bugfix:** Don’t nest backup in duplicate folders when splitting - ([4e7e55d](https://github.com/beyondessential/bestool/commit/4e7e55d75dcb9a705795587bc7f0f9c87f4966da))
+
+---
+## [0.28.1](https://github.com/beyondessential/bestool/compare/v0.28.0..v0.28.1) - 2025-03-06
 
 
 - **Repo:** Add walg feature back so builds don’t break - ([8b1df12](https://github.com/beyondessential/bestool/commit/8b1df127b772106abaac0a3a5ed4ed9e5a3103f0))
