@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.28.2](https://github.com/beyondessential/bestool/compare/v0.28.1..0.28.2) - 2025-03-14
+## [0.28.3](https://github.com/beyondessential/bestool/compare/v0.28.2..0.28.3) - 2025-03-18
+
+
+- **Deps:** Bump the deps group with 11 updates (#197) - ([c065700](https://github.com/beyondessential/bestool/commit/c065700e84635f6c1df2c2423b6d745fa795085c))
+
+---
+## [0.28.2](https://github.com/beyondessential/bestool/compare/v0.28.1..v0.28.2) - 2025-03-14
 
 
 - **Deps:** Bump the deps group with 7 updates (#196) - ([36bc8d3](https://github.com/beyondessential/bestool/commit/36bc8d3230c1085a87e764fb50d33fb618dea15b))
