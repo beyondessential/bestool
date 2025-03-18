@@ -24,7 +24,7 @@ diceware_wordlists = "1.2.3"
 futures = { workspace = true }
 indicatif = { workspace = true }
 itertools = { workspace = true }
-jiff = "0.2.3"
+jiff = "0.2.4"
 miette = { workspace = true, features = ["fancy"] }
 pinentry = "0.6.0"
 rand = "0.9.0"
