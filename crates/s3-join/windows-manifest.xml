@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings xmlns:ws="http://schemas.microsoft.com/SMI/2020/WindowsSettings">
+      <ws:longPathAware xmlns:ws="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</ws:longPathAware>
+      <ws:activeCodePage xmlns:ws="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</ws:activeCodePage>
+      <ws:heapType xmlns:ws="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</ws:heapType>
+    </windowsSettings>
+  </application>
+</assembly>

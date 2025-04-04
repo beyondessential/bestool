@@ -4,6 +4,7 @@ members = [
 	"crates/algae-cli",
 	"crates/bestool",
 	"crates/rpi-st7789v2-driver",
+	"crates/s3-join",
 ]
 
 [workspace.dependencies]

@@ -1,0 +1,30 @@
+[package]
+name = "s3-join"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Concat S3 objects into a single S3 object"
+repository = "https://github.com/beyondessential/bestool/tree/main/crates/s3-join"
+
+[dependencies]
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.82.0"
+aws_lambda_events = { version = "0.15.1", default-features = false, features = ["s3"], optional = true }
+blake3 = "1.8.1"
+clap = { workspace = true }
+lambda_runtime = { version = "0.13.0", features = ["miette"], optional = true }
+miette = { workspace = true, features = ["fancy"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+
+[build-dependencies]
+windows_exe_info = { version = "0.4.1", features = ["manifest"] }
+
+[features]
+default = ["lambda"]
+lambda = ["dep:lambda_runtime", "dep:aws_lambda_events"]
