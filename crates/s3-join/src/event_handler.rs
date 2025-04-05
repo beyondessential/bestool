@@ -50,7 +50,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<S3Event>) -> Result<()> 
 		if record
 			.event_name
 			.as_deref()
-			.map_or(false, |name| name.starts_with("ObjectCreated:"))
+			.is_some_and(|name| name.starts_with("ObjectCreated:"))
 		{
 			continue;
 		}
@@ -177,7 +177,7 @@ impl ChunkedFile {
 		match put_result {
 			Ok(_) => Ok(true),
 			Err(err) => {
-				if err.meta().code().as_deref() == Some("419") {
+				if err.meta().code() == Some("419") {
 					// Lock exists, check if expired
 					let existing_lock = self
 						.s3
@@ -234,13 +234,13 @@ impl ChunkedFile {
 			.s3
 			.get_object()
 			.bucket(&self.bucket)
-			.key(&self.integrity_flag())
+			.key(self.integrity_flag())
 			.send()
 			.await
 			.map_err(|err| err.into_service_error())
 			.map(Some)
 			.or_else(|err| {
-				if err.meta().code().as_deref() == Some("404") {
+				if err.meta().code() == Some("404") {
 					Ok(None)
 				} else {
 					Err(err)
@@ -252,13 +252,21 @@ impl ChunkedFile {
 			let map: HashMap<String, String> =
 				serde_json::from_slice(&content.to_vec()).into_diagnostic()?;
 			let mut invalid = false;
+
 			for (chunk, version_id) in map {
-				if self.chunk_meta(&chunk).await?.map_or(
-					true,                        /* missing */
-					|meta| meta.0 != version_id, /* bad */
-				) {
-					invalid = true;
-					break;
+				match self.chunk_meta(&chunk).await? {
+					None => {
+						tracing::warn!(?chunk, "Chunk is missing");
+						invalid = true;
+					}
+					Some(meta) if meta.0 != version_id => {
+						tracing::warn!(
+							?chunk,
+							"Chunk has been overwritten since integrity was checked",
+						);
+						invalid = true;
+					}
+					_ => { /* we're good */ }
 				}
 			}
 
@@ -273,7 +281,7 @@ impl ChunkedFile {
 			.s3
 			.list_objects_v2()
 			.bucket(&self.bucket)
-			.prefix(&self.inbox_filename(""))
+			.prefix(self.inbox_filename(""))
 			.send()
 			.await
 			.into_diagnostic()?;
@@ -281,7 +289,7 @@ impl ChunkedFile {
 		let chunk_count = list_resp
 			.contents()
 			.iter()
-			.filter(|obj| obj.key().map_or(false, |k| k.ends_with(".chunk")))
+			.filter(|obj| obj.key().is_some_and(|k| k.ends_with(".chunk")))
 			.count();
 
 		if chunk_count as u64 != meta.chunk_n {
@@ -321,7 +329,7 @@ impl ChunkedFile {
 				.s3
 				.get_object()
 				.bucket(&self.bucket)
-				.key(&self.inbox_filename(&chunk))
+				.key(self.inbox_filename(chunk))
 				.send()
 				.await
 				.into_diagnostic()?;
@@ -403,7 +411,7 @@ impl ChunkedFile {
 					.into(),
 			)
 			.bucket(&self.bucket)
-			.key(&self.integrity_flag())
+			.key(self.integrity_flag())
 			.send()
 			.await
 			.map_err(|err| err.into_service_error())
@@ -542,7 +550,7 @@ impl ChunkedFile {
 				.s3
 				.list_objects_v2()
 				.bucket(&self.bucket)
-				.prefix(&format!("{prefix}/{}", self.name))
+				.prefix(format!("{prefix}/{}", self.name))
 				.send()
 				.await
 				.map_err(|err| err.into_service_error())
@@ -601,7 +609,7 @@ impl ChunkVersion {
 			.map_err(|err| err.into_service_error())
 			.map(Some)
 			.or_else(|err| {
-				if err.meta().code().as_deref() == Some("404") {
+				if err.meta().code() == Some("404") {
 					Ok(None)
 				} else {
 					Err(err)
