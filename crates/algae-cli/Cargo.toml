@@ -24,7 +24,7 @@ diceware_wordlists = "1.2.3"
 futures = { workspace = true }
 indicatif = { workspace = true }
 itertools = { workspace = true }
-jiff = "0.2.4"
+jiff = "0.2.8"
 miette = { workspace = true, features = ["fancy"] }
 pinentry = "0.6.0"
 rand = "0.9.0"
@@ -33,4 +33,4 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-windows_exe_info = { version = "0.4.1", features = ["manifest"] }
+windows_exe_info = { version = "0.5.1", features = ["manifest"] }
