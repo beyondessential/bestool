@@ -7,14 +7,14 @@ members = [
 ]
 
 [workspace.dependencies]
-clap = { version = "4.5.32", features = ["cargo", "derive", "wrap_help"] }
+clap = { version = "4.5.37", features = ["cargo", "derive", "wrap_help"] }
 futures = "0.3.30"
 indicatif = { version = "0.17.9", features = ["tokio"] }
 itertools = "0.14.0"
-miette = "7.5.0"
+miette = "7.6.0"
 thiserror = "2.0.9"
-tokio = "1.44.1"
-tokio-util = "0.7.14"
+tokio = "1.44.2"
+tokio-util = "0.7.15"
 tracing = { version = "0.1.41", features = ["attributes"] }
 
 [profile.release]
