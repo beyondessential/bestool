@@ -137,7 +137,8 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			vec![
 				"--exclude-table", "sync_snapshots.*",
 				"--exclude-table-data", "fhir.*",
-				"--exclude-table-data", "logs.*",
+				"--exclude-table-data", "logs.fhir_writes",
+				"--exclude-table-data", "logs.debug_logs",
 				"--exclude-table-data", "reporting.*",
 				"--exclude-table-data", "public.attachments",
 			]
@@ -186,11 +187,10 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 		&ctx.args_sub.write_to,
 		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
 			copy_to: path,
-			split: ctx.args_sub.then_split.map(|n| {
-				NonZero::new(n)
-					.map(ChunkSize::Mib)
-					.unwrap_or_default()
-			}),
+			split: ctx
+				.args_sub
+				.then_split
+				.map(|n| NonZero::new(n).map(ChunkSize::Mib).unwrap_or_default()),
 		}),
 		ctx.args_sub.keep_days,
 		".dump",
