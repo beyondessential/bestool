@@ -74,6 +74,30 @@ run: echo foobar
 }
 
 #[test]
+fn test_alert_parse_errors() {
+	let alert = r#"
+errors:
+- timeout
+- send.+
+"#;
+	let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+	let alert = alert.normalise(&Default::default());
+	assert_eq!(alert.interval, std::time::Duration::default());
+	assert!(matches!(alert.source, TicketSource::Errors { .. }));
+}
+
+#[test]
+fn test_alert_parse_errors_empty() {
+	let alert = r#"
+errors: []
+"#;
+	let alert: AlertDefinition = serde_yml::from_str(&alert).unwrap();
+	let alert = alert.normalise(&Default::default());
+	assert_eq!(alert.interval, std::time::Duration::default());
+	assert!(matches!(alert.source, TicketSource::Errors { .. }));
+}
+
+#[test]
 fn test_alert_parse_invalid_source() {
 	let alert = r#"
 shell: bash

@@ -21,6 +21,7 @@ const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostna
 #[derive(serde::Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum TemplateField {
+	Now,
 	Filename,
 	Subject,
 	Body,
@@ -32,6 +33,7 @@ pub enum TemplateField {
 impl TemplateField {
 	pub fn as_str(self) -> &'static str {
 		match self {
+			Self::Now => "now",
 			Self::Filename => "filename",
 			Self::Subject => "subject",
 			Self::Body => "body",
@@ -110,7 +112,7 @@ pub fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>
 		TemplateField::Filename.as_str(),
 		&alert.file.file_name().unwrap().to_string_lossy(),
 	);
-	context.insert("now", &now.to_string());
+	context.insert(TemplateField::Now.as_str(), &now.to_string());
 
 	context
 }

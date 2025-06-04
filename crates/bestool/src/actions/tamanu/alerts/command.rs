@@ -1,22 +1,28 @@
 use std::{
 	collections::HashMap,
-	convert::Infallible,
 	env::current_dir,
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::Duration,
 };
 
+use chrono::Utc;
 use clap::Parser;
-use futures::{future::join_all, TryFutureExt};
-use miette::{Context as _, IntoDiagnostic, Result};
+use futures::{future::join_all, FutureExt, TryFutureExt};
+use miette::{miette, Context as _, IntoDiagnostic, Result};
+use sysinfo::System;
+use tera::Context as TeraCtx;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
 use super::{definition::AlertDefinition, targets::AlertTargets};
 use crate::actions::{
-	tamanu::{config::load_config, find_tamanu, TamanuArgs},
+	tamanu::{
+		alerts::{definition::TicketSource, templates::TemplateField},
+		config::load_config,
+		find_tamanu, TamanuArgs,
+	},
 	Context,
 };
 
@@ -98,6 +104,27 @@ use crate::actions::{
 /// run: |
 ///   echo foo
 ///   exit 1
+/// ```
+///
+/// ## Errors
+///
+/// This source is based on internal events: timeouts and errors. When an alert
+/// for a source errors, which includes timeouts, this special source is
+/// triggered. The `errors` template variable contains an array of multiline
+/// string error messages.
+///
+/// The source takes either an empty array:
+///
+/// ```yaml
+/// errors: []
+/// ```
+///
+/// or a list of regex patterns to match against error messages:
+///
+/// ```yaml
+/// errors:
+/// - timeout
+/// - send.+
 /// ```
 ///
 /// # Send targets
@@ -391,9 +418,10 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		debug!(count=%external_targets.len(), "found some external targets");
 	}
 
-	for alert in &mut alerts {
-		*alert = std::mem::take(alert).normalise(&external_targets);
-	}
+	let (alerts, on_errors): (Vec<AlertDefinition>, Vec<AlertDefinition>) = alerts
+		.into_iter()
+		.map(|alert| alert.normalise(&external_targets))
+		.partition(|alert| matches!(alert.source, TicketSource::Errors { .. }));
 	debug!(count=%alerts.len(), "found some alerts");
 
 	let mut pg_config = tokio_postgres::Config::default();
@@ -432,32 +460,62 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		let internal_ctx = internal_ctx.clone();
 		let dry_run = ctx.args_sub.dry_run;
 		let timeout_d: Duration = ctx.args_sub.timeout.into();
-		let name = alert.file.clone();
 		let config = config.clone();
+		let error_ctx = format!("while executing alert: {}", alert.file.display());
 		set.spawn(
 			timeout(timeout_d, async move {
-				let error = format!("while executing alert: {}", alert.file.display());
-				if let Err(err) = alert
-					.execute(internal_ctx, &config, dry_run)
-					.await
-					.wrap_err(error)
-				{
-					eprintln!("{err:?}");
-				}
+				alert.execute(internal_ctx, &config, dry_run).await
 			})
-			.or_else(move |elapsed| async move {
-				error!(alert=?name, "timeout: {elapsed:?}");
-				Ok::<_, Infallible>(())
-			}),
+			.unwrap_or_else(|elapsed| Err(miette!("timeout: {elapsed:?}")))
+			.map(|err| err.wrap_err(error_ctx)),
 		);
 	}
 
+	let mut errors = Vec::new();
 	while let Some(res) = set.join_next().await {
-		match res {
-			Err(err) => {
-				error!("task: {err:?}");
+		let Err(err) = res.unwrap_or_else(|err| Err(miette!("tokio join: {err:?}"))) else {
+			continue;
+		};
+
+		error!("task: {err:?}");
+		errors.push(err);
+	}
+
+	if !errors.is_empty() {
+		let mut tera_ctx = TeraCtx::new();
+		tera_ctx.insert(
+			TemplateField::Hostname.as_str(),
+			System::host_name().as_deref().unwrap_or("unknown"),
+		);
+		tera_ctx.insert(TemplateField::Now.as_str(), &Utc::now().to_string());
+
+		for sender in on_errors {
+			let TicketSource::Errors {
+				errors: ref errors_regex,
+			} = sender.source
+			else {
+				continue;
+			};
+
+			let matched_errors = errors
+				.iter()
+				.map(|err| err.to_string())
+				.filter(|err| errors_regex.is_empty() || errors_regex.is_match(err))
+				.collect::<Vec<String>>();
+			if matched_errors.is_empty() {
+				continue;
 			}
-			_ => (),
+
+			let mut tera_ctx = tera_ctx.clone();
+			tera_ctx.insert("errors", &matched_errors);
+			sender
+				.send_with_ctx(
+					internal_ctx.clone(),
+					&config,
+					&mut tera_ctx,
+					ctx.args_sub.dry_run,
+				)
+				.await?;
 		}
 	}
 
