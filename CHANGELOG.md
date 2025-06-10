@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.28.4](https://github.com/beyondessential/bestool/compare/v0.28.3..0.28.4) - 2025-06-08
+## [0.28.5](https://github.com/beyondessential/bestool/compare/v0.28.4..0.28.5) - 2025-06-10
+
+
+
+### Cli
+
+- **Feature:** Enable unambiguous shorthands - ([3bcc04e](https://github.com/beyondessential/bestool/commit/3bcc04e46c6e8b794d91a2954663f7f3bcfe5fd5))
+
+---
+## [0.28.4](https://github.com/beyondessential/bestool/compare/v0.28.3..v0.28.4) - 2025-06-08
 
 
 
