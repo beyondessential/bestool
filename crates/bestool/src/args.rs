@@ -9,9 +9,9 @@ use tracing::debug;
 	author,
 	version,
 	after_help = "Want more detail? Try the long '--help' flag!",
-	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
+	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help.",
+	infer_subcommands = true
 )]
-#[cfg_attr(debug_assertions, command(before_help = "⚠ DEBUG BUILD ⚠"))]
 pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
