@@ -4,7 +4,8 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use miette::{miette, Context as _, IntoDiagnostic, Result};
+use miette::{bail, miette, Context as _, Diagnostic, IntoDiagnostic, Result};
+use regex::RegexSet;
 use tera::Context as TeraCtx;
 use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::ToSql;
@@ -49,7 +50,10 @@ pub enum TicketSource {
 		shell: String,
 		run: String,
 	},
-
+	Errors {
+		#[serde(with = "serde_regex")]
+		errors: RegexSet,
+	},
 	#[default]
 	None,
 }
@@ -83,6 +87,10 @@ impl AlertDefinition {
 		match &self.source {
 			TicketSource::None => {
 				debug!(?self.file, "no source, skipping");
+				return Ok(ControlFlow::Break(()));
+			}
+			TicketSource::Errors { .. } => {
+				debug!(?self.file, "internal source, skipping");
 				return Ok(ControlFlow::Break(()));
 			}
 			TicketSource::Sql { sql } => {
@@ -128,8 +136,8 @@ impl AlertDefinition {
 
 				let Ok(res) = tokio::time::timeout(self.interval, output_future).await else {
 					warn!(?self.file, "the script timed out, skipping");
-					shell.kill().await.into_diagnostic()?;
-					return Ok(ControlFlow::Break(()));
+					let _ = shell.kill().await;
+					bail!("timed out");
 				};
 
 				let (status, output_size) = res.into_diagnostic().wrap_err("running the shell")?;
@@ -167,15 +175,38 @@ impl AlertDefinition {
 			return Ok(());
 		}
 
+		self.send_with_ctx(ctx, config, &mut tera_ctx, dry_run)
+			.await
+	}
+
+	pub async fn send_with_ctx(
+		self,
+		ctx: Arc<InternalContext>,
+		config: &TamanuConfig,
+		tera_ctx: &mut TeraCtx,
+		dry_run: bool,
+	) -> Result<()> {
+		#[derive(Debug, thiserror::Error, Diagnostic)]
+		#[error("multiple errors occurred")]
+		struct MultiErr(#[related] Vec<miette::Report>);
+
+		let mut errors = Vec::new();
 		for target in &self.send {
 			if let Err(err) = target
-				.send(&self, ctx.clone(), &mut tera_ctx, config, dry_run)
+				.send(&self, ctx.clone(), tera_ctx, config, dry_run)
 				.await
 			{
 				error!("sending: {err:?}");
+				errors.push(err);
 			}
 		}
 
-		Ok(())
+		if errors.is_empty() {
+			Ok(())
+		} else if errors.len() == 1 {
+			Err(errors.pop().unwrap())
+		} else {
+			Err(MultiErr(errors).into())
+		}
 	}
 }
