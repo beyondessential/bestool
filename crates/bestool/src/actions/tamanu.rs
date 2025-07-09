@@ -35,6 +35,8 @@ super::subcommands! {
 
 	#[cfg(feature = "tamanu-alerts")]
 	alerts => Alerts(AlertsArgs),
+	#[cfg(feature = "tamanu-artifacts")]
+	artifacts => Artifacts(ArtifactsArgs),
 	#[cfg(feature = "tamanu-backup")]
 	backup => Backup(BackupArgs),
 	#[cfg(feature = "tamanu-backup-configs")]

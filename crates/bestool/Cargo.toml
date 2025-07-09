@@ -4,10 +4,7 @@ version = "0.28.5"
 edition = "2021"
 rust-version = "1.76.0"
 
-authors = [
-	"Félix Saparelli <felix@passcod.name>",
-	"BES Developers <contact@bes.au>",
-]
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
 description = "BES Deployment tooling"
 keywords = ["bes", "tamanu", "tupaia"]
@@ -16,21 +13,16 @@ repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 algae-cli = { version = "1.0.8", path = "../algae-cli", optional = true }
-binstalk-downloader = { version = "0.13.15", optional = true, features = [
-	"hickory-dns",
-] }
+binstalk-downloader = { version = "0.13.15", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.6.1", optional = true }
 boxcar = "0.2.10"
 bytes = "1.10.0"
 chrono = "0.4.40"
-clap = { workspace = true, features = [
-	"env",
-	"unicode",
-	"string",
-] }
+clap = { workspace = true, features = ["env", "unicode", "string"] }
 clap_complete = { version = "4.5.46", optional = true }
 clap_complete_nushell = { version = "4.5.1", optional = true }
 ctrlc = { version = "3.4.4", optional = true }
+comfy-table = { version = "7.1.4", optional = true }
 detect-targets = { version = "0.1.45", optional = true }
 dirs = { version = "6.0.0", optional = true }
 duct = { version = "0.13.7", optional = true }
@@ -56,13 +48,8 @@ mimalloc = "0.1.41"
 node-semver = { version = "2.2.0", optional = true }
 pulldown-cmark = { version = "0.13.0", optional = true }
 regex = { version = "1.10.6", optional = true }
-reqwest = { version = "0.12.14", features = [
-	"default-tls",
-	"json",
-], default-features = false }
-rpi-st7789v2-driver = { version = "0.3.7", path = "../rpi-st7789v2-driver", features = [
-	"miette",
-], optional = true }
+reqwest = { version = "0.12.14", features = ["default-tls", "json"], default-features = false }
+rpi-st7789v2-driver = { version = "0.3.7", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.22.1", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.139"
@@ -73,24 +60,17 @@ tempfile = "3.19.0"
 tera = { version = "1.19.1", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-postgres = { version = "0.7.13", features = [
-	"with-chrono-0_4",
-	"with-uuid-1",
-], optional = true }
+tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
 uuid = "1.16.0"
 walkdir = { version = "2.5.0", optional = true }
-zip = { version = "2.3.0", optional = true, default-features = false, features = [
-	"time",
-] }
+zip = { version = "2.3.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60.0", features = [
-	"Win32_System_Console",
-], optional = true }
+windows = { version = "0.60.0", features = ["Win32_System_Console"], optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.1.1", optional = true }
 
@@ -101,45 +81,23 @@ openssl-sys = { version = "0.9.106", features = ["vendored"] }
 windows_exe_info = { version = "0.4.1", features = ["manifest"] }
 
 [features]
-default = [
-	"caddy",
-	"completions",
-	"crypto",
-	"self-update",
-	"ssh",
-	"tamanu",
-]
+default = ["caddy", "completions", "crypto", "self-update", "ssh", "tamanu"]
 
 ## Common dep groups (not meant to be used directly)
-download = [
-	"dep:binstalk-downloader",
-	"dep:detect-targets",
-	"dep:hickory-resolver",
-]
+download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolver"]
 
 ## Subcommands
 caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
-file = [
-	"dep:blake3",
-	"dep:indicatif",
-	"dep:tokio-util",
-]
+file = ["dep:blake3", "dep:indicatif", "dep:tokio-util"]
 self-update = ["download", "dep:upgrade", "dep:windows-env"]
-ssh = [
-	"dep:dirs",
-	"dep:duct",
-	"dep:fs4",
-	"dep:is-root",
-	"dep:ssh-key",
-	"dep:windows",
-	"dep:windows-acl",
-]
+ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:is-root", "dep:ssh-key", "dep:windows", "dep:windows-acl"]
 
 ## Tamanu subcommands
 tamanu = [ # enable all tamanu subcommands
 	"tamanu-alerts",
+	"tamanu-artifacts",
 	"tamanu-backup",
 	"tamanu-backup-configs",
 	"tamanu-config",
@@ -162,38 +120,14 @@ tamanu-alerts = [
 	"dep:tokio-postgres",
 	"dep:walkdir",
 ]
-tamanu-backup = [
-	"__tamanu",
-	"file",
-	"tamanu-config",
-	"tamanu-pg-common",
-	"dep:algae-cli",
-	"dep:duct",
-]
-tamanu-backup-configs = [
-	"__tamanu",
-	"tamanu-backup",
-	"dep:walkdir",
-	"dep:zip",
-]
+tamanu-artifacts = ["__tamanu", "dep:comfy-table"]
+tamanu-backup = ["__tamanu", "file", "tamanu-config", "tamanu-pg-common", "dep:algae-cli", "dep:duct"]
+tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 tamanu-config = ["__tamanu"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
-tamanu-greenmask = [
-	"__tamanu",
-	"tamanu-config",
-	"tamanu-pg-common",
-	"dep:dunce",
-	"dep:serde_yml",
-	"dep:walkdir",
-]
-tamanu-psql = [
-	"__tamanu",
-	"tamanu-config",
-	"tamanu-pg-common",
-	"dep:duct",
-	"dep:windows",
-]
+tamanu-greenmask = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
+tamanu-psql = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:duct", "dep:windows"]
 tamanu-upgrade = ["__tamanu", "caddy", "tamanu-config", "dep:regex"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	# deps for tamanu::roots
@@ -214,13 +148,7 @@ iti = [ # enable all iti subcommands
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
-iti-lcd = [
-	"__iti",
-	"dep:ctrlc",
-	"dep:embedded-graphics",
-	"dep:rpi-st7789v2-driver",
-	"dep:sysinfo",
-]
+iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
