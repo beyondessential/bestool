@@ -403,6 +403,7 @@ dependencies = [
  "serde_yml",
  "ssh-key",
  "sysinfo",
+ "target-tuples",
  "tempfile",
  "tera",
  "thiserror 2.0.12",
@@ -4821,6 +4822,12 @@ name = "target-lexicon"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
+
+[[package]]
+name = "target-tuples"
+version = "0.5.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79f244e96093a636944c070a216397df56fc85b1d4b8bb1810668d392462d588"
 
 [[package]]
 name = "tempfile"
