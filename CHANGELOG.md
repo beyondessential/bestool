@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.28.5](https://github.com/beyondessential/bestool/compare/v0.28.4..0.28.5) - 2025-06-10
+## [0.29.0](https://github.com/beyondessential/bestool/compare/v0.28.5..0.29.0) - 2025-07-09
+
+
+
+### Tamanu
+
+- **Feature:** Command to list artifacts from meta (#212) - ([d1927b9](https://github.com/beyondessential/bestool/commit/d1927b9d2e1a184139eb1cf2365a236223ed0429))
+- **Feature:** Remove unused upgrade and pre-upgrade commands - ([d1927b9](https://github.com/beyondessential/bestool/commit/d1927b9d2e1a184139eb1cf2365a236223ed0429))
+- **Tweak:** Make download command able to download any artifact - ([d1927b9](https://github.com/beyondessential/bestool/commit/d1927b9d2e1a184139eb1cf2365a236223ed0429))
+
+---
+## [0.28.5](https://github.com/beyondessential/bestool/compare/v0.28.4..v0.28.5) - 2025-06-10
 
 
 
