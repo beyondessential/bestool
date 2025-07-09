@@ -1,73 +1,61 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use binstalk_downloader::{
-	download::{Download, PkgFmt},
-	remote::Url,
-};
-use clap::{Parser, ValueEnum};
-use miette::{IntoDiagnostic, Result};
+use binstalk_downloader::download::{Download, PkgFmt};
+use clap::Parser;
+use miette::{bail, IntoDiagnostic, Result};
 
 use crate::{
-	actions::Context,
-	download::{client, DownloadSource},
+	actions::{
+		tamanu::artifacts::{get_artifacts, Platform},
+		Context,
+	},
+	download::client,
 };
 
-use super::{ApiServerKind, TamanuArgs};
+use super::TamanuArgs;
 
-/// Download Tamanu servers.
+/// Download Tamanu artifacts.
 ///
-/// In general, you should prefer to use the container images.
-/// This command is here to support Windows deployments, which run servers with a system Node.js.
-/// It will be deprecated in the future as Windows containers are developed for Tamanu.
-#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu download`"))]
+/// Use the `tamanu artifacts` subcommand to list of the artifacts available for a version.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
-	/// What to download.
-	#[cfg_attr(docsrs, doc("\n\n**1st Argument**: `central|facility|web`"))]
-	#[arg(value_name = "KIND")]
-	pub kind: ServerKind,
+	/// Artifact type to download.
+	///
+	/// You can find the artifact list using the `tamanu artifacts` subcommand.
+	///
+	/// For backward compatibility, `web` is an alias to `frontend`, and `facility-server` /
+	/// `central-server` are aliases to `facility` / `central`. Prefer the literal values.
+	#[arg(value_name = "ARTIFACT TYPE")]
+	pub kind: String,
 
 	/// Version to download.
-	#[cfg_attr(
-		docsrs,
-		doc("\n\n**2nd Argument**: version (e.g. `bestool tamanu download web 1.2.3`)")
-	)]
 	#[arg(value_name = "VERSION")]
 	pub version: String,
 
 	/// Where to download to.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--into PATH`, default C:\\Tamanu"))]
-	#[arg(long, default_value = "/Tamanu")]
+	#[arg(long)]
+	#[cfg_attr(windows, arg(default_value = "/Tamanu"))]
+	#[cfg_attr(not(windows), arg(default_value = "."))]
 	pub into: PathBuf,
 
 	/// Print the URL, don't download.
 	///
 	/// Useful if you want to download it on a different machine, or with a different tool.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--url-only`"))]
 	#[arg(long)]
 	pub url_only: bool,
-}
 
-/// What kind of server to download.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum ServerKind {
-	/// Central server
-	Central,
+	/// Don't extract (if the download is an archive).
+	#[arg(long)]
+	pub no_extract: bool,
 
-	/// Facility server
-	Facility,
-
-	/// Web frontend
-	Web,
-}
-
-impl From<ApiServerKind> for ServerKind {
-	fn from(value: ApiServerKind) -> Self {
-		match value {
-			ApiServerKind::Central => Self::Central,
-			ApiServerKind::Facility => Self::Facility,
-		}
-	}
+	/// Platform to download artifacts for.
+	///
+	/// Use `host` (default) for the auto-detected current platform, `container` for container artifacts,
+	/// `os-arch` for specific targets (e.g., `linux-x86_64`), and `all` to list all platforms.
+	///
+	/// This is mostly useful with `--url-only` or `--no-extract`.
+	#[arg(short, long, value_name = "PLATFORM", default_value = "host")]
+	pub platform: Platform,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
@@ -76,37 +64,62 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		version,
 		into,
 		url_only,
+		no_extract,
+		platform,
 	} = ctx.args_sub;
 
-	let url = make_url(kind, version)?;
+	let artifact_type = match kind.to_ascii_lowercase().as_str() {
+		"web" => "frontend".to_string(),
+		"central-server" => "central".to_string(),
+		"facility-server" => "facility".to_string(),
+		other => other.to_string(),
+	};
+
+	let Some(artifact) = get_artifacts(&version, &platform)
+		.await?
+		.into_iter()
+		.find(|artifact| artifact.artifact_type == artifact_type)
+	else {
+		bail!("No such artifact found");
+	};
 
 	if url_only {
-		println!("{}", url);
+		println!("{}", artifact.download_url);
 		return Ok(());
 	}
 
+	let fmt = if no_extract {
+		PkgFmt::Bin
+	} else if let Some(fmt) = PkgFmt::guess_pkg_format(artifact.download_url.as_str()) {
+		fmt
+	} else {
+		PkgFmt::Bin
+	};
+
+	let path = if into.is_dir() && fmt == PkgFmt::Bin {
+		let file = into.join(format!(
+			"tamanu-{}-{}{}",
+			artifact.artifact_type,
+			version,
+			Path::new(artifact.download_url.path()).extension().map_or(
+				Default::default(),
+				|ext| format!(".{}", ext.to_string_lossy())
+			)
+		));
+		if file.exists() {
+			bail!("{file:?} already exists, refusing to overwrite");
+		}
+		file
+	} else {
+		into
+	};
+
 	let client = client().await?;
-	Download::new(client, url)
-		.and_extract(PkgFmt::Tzstd, &into)
+
+	eprintln!("Downloading {} to {path:?}...", artifact.download_url);
+	Download::new(client, artifact.download_url)
+		.and_extract(fmt, &path)
 		.await
 		.into_diagnostic()?;
 	Ok(())
-}
-
-pub fn make_url(kind: ServerKind, version: String) -> Result<Url> {
-	let host = DownloadSource::Servers.host();
-	host.join(&format!(
-		"/{version}/{kind}-{version}{platform}.tar.zst",
-		kind = match kind {
-			ServerKind::Central => "central",
-			ServerKind::Facility => "facility",
-			ServerKind::Web => "web",
-		},
-		platform = if kind == ServerKind::Web {
-			""
-		} else {
-			"-windows"
-		},
-	))
-	.into_diagnostic()
 }

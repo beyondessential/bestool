@@ -2,7 +2,7 @@ use clap::Parser;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, ContentArrangement, Table};
 use detect_targets::detect_targets;
 use miette::{IntoDiagnostic, Result};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::str::FromStr;
 use target_tuples::{Target, OS};
@@ -51,7 +51,7 @@ impl FromStr for Platform {
 pub struct Artifact {
 	pub artifact_type: String,
 	pub platform: String,
-	pub download_url: String,
+	pub download_url: Url,
 }
 
 pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec<Artifact>> {
@@ -146,7 +146,7 @@ pub async fn run(ctx: Context<TamanuArgs, ArtifactsArgs>) -> Result<()> {
 		table.add_row(vec![
 			artifact.artifact_type,
 			artifact.platform,
-			artifact.download_url,
+			artifact.download_url.to_string(),
 		]);
 	}
 	println!("{table}");
