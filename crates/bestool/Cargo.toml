@@ -106,7 +106,6 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-find",
 	"tamanu-greenmask",
 	"tamanu-psql",
-	"tamanu-upgrade",
 ]
 tamanu-alerts = [
 	"__tamanu",
@@ -129,9 +128,7 @@ tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
 tamanu-psql = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:duct", "dep:windows"]
-tamanu-upgrade = ["__tamanu", "caddy", "tamanu-config", "dep:regex"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
-	# deps for tamanu::roots
 	"dep:dirs",
 	"dep:glob",
 	"dep:itertools",
@@ -139,6 +136,7 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:leon-macros",
 	"dep:leon",
 	"dep:node-semver",
+	"dep:regex",
 ]
 tamanu-pg-common = []
 
@@ -153,7 +151,8 @@ iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driv
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
-## Legacy noop feature to avoid breaking builds
+## Legacy noop features to avoid breaking builds
+tamanu-upgrade = []
 walg = []
 
 [dev-dependencies]

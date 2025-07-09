@@ -49,12 +49,8 @@ super::subcommands! {
 	find => Find(FindArgs),
 	#[cfg(feature = "tamanu-greenmask")]
 	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
-	#[cfg(all(windows, feature = "tamanu-upgrade"))]
-	prepare_upgrade => PrepareUpgrade(PrepareUpgradeArgs),
 	#[cfg(feature = "tamanu-psql")]
-	psql => Psql(PsqlArgs),
-	#[cfg(all(windows, feature = "tamanu-upgrade"))]
-	upgrade => Upgrade(UpgradeArgs)
+	psql => Psql(PsqlArgs)
 }
 
 /// What kind of server to interact with.
