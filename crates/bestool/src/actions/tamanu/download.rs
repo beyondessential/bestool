@@ -68,6 +68,10 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		platform,
 	} = ctx.args_sub;
 
+	if platform == Platform::Match("container".into()) {
+		bail!("Cannot download container artifacts");
+	}
+
 	let artifact_type = match kind.to_ascii_lowercase().as_str() {
 		"web" => "frontend".to_string(),
 		"central-server" => "central".to_string(),
