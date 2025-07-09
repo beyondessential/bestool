@@ -112,8 +112,7 @@ pub async fn run(
 				.choose_multiple_array(rng)
 				.unwrap();
 
-			let phrase: String =
-				Itertools::intersperse(words.into_iter().map(|item| item), "-").collect();
+			let phrase: String = Itertools::intersperse(words.into_iter(), "-").collect();
 			println!("passphrase: {phrase}");
 
 			Passphrase::new(phrase.into())
