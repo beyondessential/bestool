@@ -56,18 +56,16 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		(config.db.username.as_str(), config.db.password.as_str())
 	};
 
-	// By default, consoles on Windows use a different codepage from other parts of the system.
-	// What that implies for us is not clear, but this code is here just in case.
-	// See https://www.postgresql.org/docs/current/app-psql.html
+	// Set the console encoding to UTF-8
 	#[cfg(windows)]
 	unsafe {
-		windows::Win32::System::Console::SetConsoleCP(1252).into_diagnostic()?
+		windows::Win32::System::Console::SetConsoleCP(65001).into_diagnostic()?
 	}
 
 	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
 	write!(
 		rc.as_file_mut(),
-		"{ro}",
+		"\\encoding UTF8\n{ro}",
 		ro = if ctx.args_sub.write {
 			""
 		} else {
