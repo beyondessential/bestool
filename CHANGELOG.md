@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.29.0](https://github.com/beyondessential/bestool/compare/v0.28.5..0.29.0) - 2025-07-09
+## [0.29.1](https://github.com/beyondessential/bestool/compare/v0.29.0..0.29.1) - 2025-07-28
+
+
+
+### Psql
+
+- **Tweak:** Use UTF-8 codepage on Windows and force UTF8 encoding on PSQL - ([1c10454](https://github.com/beyondessential/bestool/commit/1c10454f2ddebd13bce013d56a3e5b47b01f256b))
+
+---
+## [0.29.0](https://github.com/beyondessential/bestool/compare/v0.28.5..v0.29.0) - 2025-07-09
 
 
 
