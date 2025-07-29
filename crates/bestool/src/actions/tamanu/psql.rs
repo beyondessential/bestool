@@ -65,7 +65,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
 	write!(
 		rc.as_file_mut(),
-		"\\encoding UTF8\n{ro}",
+		"\\encoding UTF8\n\\timing\n{ro}",
 		ro = if ctx.args_sub.write {
 			""
 		} else {
