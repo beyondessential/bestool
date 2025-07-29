@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.29.1](https://github.com/beyondessential/bestool/compare/v0.29.0..0.29.1) - 2025-07-28
+## [0.29.2](https://github.com/beyondessential/bestool/compare/v0.29.1..0.29.2) - 2025-07-29
+
+
+
+### Psql
+
+- **Tweak:** Default to \timing on - ([1887952](https://github.com/beyondessential/bestool/commit/188795285ec8a9076b890cef05b1e657a40e3d02))
+
+---
+## [0.29.1](https://github.com/beyondessential/bestool/compare/v0.29.0..v0.29.1) - 2025-07-28
 
 
 
