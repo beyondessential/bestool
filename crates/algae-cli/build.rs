@@ -6,5 +6,5 @@ fn main() {
 	}
 
 	windows_exe_info::versioninfo::link_cargo_env();
-	windows_exe_info::manifest(Path::new("windows-manifest.xml"));
+	windows_exe_info::manifest("windows-manifest.xml");
 }
