@@ -1,5 +1,3 @@
-use std::path::Path;
-
 fn main() {
 	if std::env::var("DOCS_RS").is_ok() {
 		return;
