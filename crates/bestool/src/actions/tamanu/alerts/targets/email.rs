@@ -53,7 +53,7 @@ impl TargetEmail {
 			..Default::default()
 		};
 		mailgun
-			.async_send(mailgun_rs::MailgunRegion::US, &sender, message)
+			.async_send(mailgun_rs::MailgunRegion::US, &sender, message, None)
 			.await
 			.into_diagnostic()
 			.wrap_err("sending email")

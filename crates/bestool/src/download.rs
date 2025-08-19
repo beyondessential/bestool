@@ -7,7 +7,7 @@ use std::{
 use binstalk_downloader::remote::{Client, Url};
 use hickory_resolver::{
 	config::{NameServerConfig, ResolverConfig},
-	name_server::ConnectionProvider,
+	name_server::{ConnectionProvider, TokioConnectionProvider},
 	Resolver,
 };
 use miette::{IntoDiagnostic, Result};
@@ -39,6 +39,8 @@ pub async fn client() -> Result<Client> {
 pub enum DownloadSource {
 	Tools,
 	Servers,
+	#[expect(dead_code, reason = "not used yet")]
+	Meta,
 }
 
 impl DownloadSource {
@@ -46,6 +48,7 @@ impl DownloadSource {
 		Url::parse(match self {
 			Self::Tools => "https://tools.ops.tamanu.io",
 			Self::Servers => "https://servers.ops.tamanu.io",
+			Self::Meta => "https://meta.tamanu.app",
 		})
 		.unwrap()
 	}
@@ -63,8 +66,9 @@ impl DownloadSource {
 		// this does have the effect of exposing our tailnet suffix here, but that should be safe
 		tailscale_resolver()
 			.lookup_ip(match self {
-				Self::Tools => "bestool-proxy-tools.tail53aef.ts.net",
-				Self::Servers => "bestool-proxy-servers.tail53aef.ts.net",
+				Self::Tools => "bestool-proxy-tools",
+				Self::Servers => "bestool-proxy-servers",
+				Self::Meta => "tamanu-meta-prod",
 			})
 			.await
 			.ok()
@@ -74,10 +78,16 @@ impl DownloadSource {
 }
 
 fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
-	let mut config = ResolverConfig::new();
-	config.add_name_server(NameServerConfig::new(
-		"100.100.100.100:53".parse().unwrap(),
-		hickory_resolver::proto::xfer::Protocol::Udp,
-	));
-	Resolver::tokio(config, Default::default())
+	Resolver::builder_with_config(
+		ResolverConfig::from_parts(
+			None,
+			vec!["tail53aef.ts.net.".parse().unwrap()],
+			vec![NameServerConfig::new(
+				"100.100.100.100:53".parse().unwrap(),
+				hickory_resolver::proto::xfer::Protocol::Udp,
+			)],
+		),
+		TokioConnectionProvider::default(),
+	)
+	.build()
 }
