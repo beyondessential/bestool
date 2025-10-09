@@ -36,7 +36,7 @@ pub async fn run(ctx: Context<TamanuArgs, UrlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 
-	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
+	let (username, mut password) = if let Some(ref user) = ctx.args_sub.username {
 		if let Some(ref report_schemas) = config.db.report_schemas {
 			if let Some(connection) = report_schemas.connections.get(user) {
 				(
@@ -56,6 +56,10 @@ pub async fn run(ctx: Context<TamanuArgs, UrlArgs>) -> Result<()> {
 	} else {
 		(config.db.username.clone(), Some(config.db.password.clone()))
 	};
+
+	if password.as_ref().is_some_and(|p| p.is_empty()) {
+		password = None;
+	}
 
 	let host = config.db.host.as_deref().unwrap_or("localhost");
 	let database = &config.db.name;
