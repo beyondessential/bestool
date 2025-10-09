@@ -38,7 +38,7 @@ pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
 
 	let (username, mut password) = if let Some(ref user) = ctx.args_sub.username {
 		if let Some(ref report_schemas) = config.db.report_schemas {
-			if let Some(connection) = report_schemas.connections.get(user) {
+			if let Some(connection) = report_schemas.connections.get(user) && !connection.username.is_empty() {
 				(
 					connection.username.clone(),
 					Some(connection.password.clone()),

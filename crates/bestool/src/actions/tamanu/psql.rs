@@ -56,7 +56,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
 		// First, check if this matches a report schema connection
 		if let Some(ref report_schemas) = config.db.report_schemas {
-			if let Some(connection) = report_schemas.connections.get(user) {
+			if let Some(connection) = report_schemas.connections.get(user) && !connection.username.is_empty() {
 				(connection.username.as_str(), connection.password.as_str())
 			} else if user == &config.db.username {
 				// User matches main db user
