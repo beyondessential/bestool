@@ -8,7 +8,7 @@ use std::{
 };
 
 use clap::Parser;
-use futures::{future::join_all, TryFutureExt};
+use futures::{TryFutureExt, future::join_all};
 use miette::{Context as _, IntoDiagnostic, Result};
 use tokio::{task::JoinSet, time::timeout};
 use tracing::{debug, error, info, warn};
@@ -16,11 +16,11 @@ use walkdir::WalkDir;
 
 use super::{definition::AlertDefinition, targets::AlertTargets};
 use crate::actions::{
-	tamanu::{config::load_config, find_tamanu, TamanuArgs},
 	Context,
+	tamanu::{TamanuArgs, config::load_config, find_tamanu},
 };
 
-/// Execute alert definitions against Tamanu.
+/// Execute alert definitions against Tamanu
 ///
 /// An alert definition is a YAML file that describes a single alert
 /// source and targets to send triggered alerts to.
@@ -293,13 +293,10 @@ async fn default_dirs(root: &Path) -> Vec<PathBuf> {
 		dirs.push(cwd.join("alerts"));
 	}
 
-	join_all(dirs.into_iter().map(|dir| async {
-		if dir.exists() {
-			Some(dir)
-		} else {
-			None
-		}
-	}))
+	join_all(
+		dirs.into_iter()
+			.map(|dir| async { if dir.exists() { Some(dir) } else { None } }),
+	)
 	.await
 	.into_iter()
 	.flatten()
