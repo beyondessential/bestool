@@ -1,0 +1,18 @@
+{
+    "db": {
+        "host": "staging.db.example.com",
+        "port": 5433,
+        "name": "tamanu_staging",
+        "username": "staging_user",
+        "password": "staging_pass",
+        "reportSchemas": {
+            "enabled": true,
+            "connections": {
+                "readonly": {
+                    "username": "staging_readonly",
+                    "password": "readonly_pass"
+                }
+            }
+        }
+    }
+}

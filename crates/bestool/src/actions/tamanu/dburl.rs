@@ -60,15 +60,24 @@ pub async fn run(ctx: Context<TamanuArgs, DburlArgs>) -> Result<()> {
 	let host = config.db.host.as_deref().unwrap_or("localhost");
 	let database = &config.db.name;
 
+	let host_with_port = if let Some(port) = config.db.port {
+		format!("{}:{}", host, port)
+	} else {
+		host.to_string()
+	};
+
 	let encoded_username = utf8_percent_encode(&username, USERINFO_ENCODE_SET);
 	let url = if let Some(password) = password {
 		let encoded_password = utf8_percent_encode(&password, USERINFO_ENCODE_SET);
 		format!(
 			"postgresql://{}:{}@{}/{}",
-			encoded_username, encoded_password, host, database
+			encoded_username, encoded_password, host_with_port, database
 		)
 	} else {
-		format!("postgresql://{}@{}/{}", encoded_username, host, database)
+		format!(
+			"postgresql://{}@{}/{}",
+			encoded_username, host_with_port, database
+		)
 	};
 
 	println!("{}", url);

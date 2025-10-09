@@ -14,6 +14,7 @@ pub struct TamanuConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Database {
 	pub host: Option<String>,
+	pub port: Option<u16>,
 	pub name: String,
 	pub username: String,
 	pub password: String,
