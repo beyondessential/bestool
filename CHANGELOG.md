@@ -5,7 +5,31 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.29.2](https://github.com/beyondessential/bestool/compare/v0.29.1..0.29.2) - 2025-07-29
+## [0.30.0](https://github.com/beyondessential/bestool/compare/v0.29.2..0.30.0) - 2025-10-09
+
+
+- **Deps:** Bump the deps group across 1 directory with 32 updates (#217) - ([5452ec0](https://github.com/beyondessential/bestool/commit/5452ec02421733aa99d1b16b71ce59586ba5cd3d))
+- **Deps:** Bump the deps group with 8 updates (#218) - ([8a4dd21](https://github.com/beyondessential/bestool/commit/8a4dd215b292bc3ebcc0e872e591089daf942bc9))
+- **Deps:** Bump the deps group with 6 updates (#220) - ([314c97c](https://github.com/beyondessential/bestool/commit/314c97c546e283640c232404f72adecfbe0e2e16))
+- **Deps:** Bump the deps group with 6 updates (#222) - ([314d696](https://github.com/beyondessential/bestool/commit/314d69603406beada45bfc75405dd5d2939eafe3))
+
+### Psql
+
+- **Tweak:** Use reporting users when present - ([df57d81](https://github.com/beyondessential/bestool/commit/df57d8144c157ad45e37e8211c968a74cd9cbc20))
+- **Tweak:** Allow customising the codepage on windows - ([a3934c4](https://github.com/beyondessential/bestool/commit/a3934c489473fa3d4e173e85e06250c8ece02c90))
+
+### Tamanu
+
+- **Feature:** Add dburl command - ([22eadbc](https://github.com/beyondessential/bestool/commit/22eadbc9fef9493d00ac6ee305c3b582cfe25310))
+- **Tweak:** Support port field - ([0284b59](https://github.com/beyondessential/bestool/commit/0284b591484369283e4c68c89979838b6ea4f43b))
+- **Tweak:** Move dburl command to url for mnemonics - ([e7e083d](https://github.com/beyondessential/bestool/commit/e7e083d83482d127518192893adb50ca1cf2121c))
+
+### Url
+
+- **Tweak:** Don't include empty password if no password is provided - ([a6bc318](https://github.com/beyondessential/bestool/commit/a6bc31823c156fb7539a3cf29b8f50627f2aeb67))
+
+---
+## [0.29.2](https://github.com/beyondessential/bestool/compare/v0.29.1..v0.29.2) - 2025-07-29
 
 
 
