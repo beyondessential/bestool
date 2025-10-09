@@ -42,6 +42,10 @@ pub struct PsqlArgs {
 	/// derived from the config (database credentials) so may not work if those aren't expected.
 	#[arg(long, default_value = "psql")]
 	pub program: String,
+
+	/// Set the console codepage (Windows-only)
+	#[arg(long, default_value = "65001")]
+	pub codepage: u32,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
@@ -76,7 +80,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	// Set the console encoding to UTF-8
 	#[cfg(windows)]
 	unsafe {
-		windows::Win32::System::Console::SetConsoleCP(65001).into_diagnostic()?
+		windows::Win32::System::Console::SetConsoleCP(ctx.args_top.codepage).into_diagnostic()?
 	}
 
 	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
