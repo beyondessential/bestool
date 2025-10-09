@@ -102,7 +102,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-backup",
 	"tamanu-backup-configs",
 	"tamanu-config",
-	"tamanu-dburl",
+	"tamanu-url",
 	"tamanu-download",
 	"tamanu-find",
 	"tamanu-greenmask",
@@ -125,7 +125,7 @@ tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:ta
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "tamanu-pg-common", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 tamanu-config = ["__tamanu"]
-tamanu-dburl = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
+tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
