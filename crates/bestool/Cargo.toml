@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "0.30.2"
+version = "0.30.3"
 edition = "2024"
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
