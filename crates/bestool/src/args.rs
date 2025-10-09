@@ -9,8 +9,7 @@ use tracing::debug;
 	author,
 	version,
 	after_help = "Want more detail? Try the long '--help' flag!",
-	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help.",
-	infer_subcommands = true
+	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
 )]
 pub struct Args {
 	#[command(flatten)]

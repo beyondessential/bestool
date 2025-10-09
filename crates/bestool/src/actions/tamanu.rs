@@ -3,7 +3,6 @@ use std::{
 	fmt::Debug,
 	fs,
 	path::{Path, PathBuf},
-	str::FromStr,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -36,22 +35,28 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-alerts")]
 	alerts => Alerts(AlertsArgs),
 	#[cfg(feature = "tamanu-artifacts")]
+	#[clap(alias = "art")]
 	artifacts => Artifacts(ArtifactsArgs),
 	#[cfg(feature = "tamanu-backup")]
+	#[clap(alias = "b")]
 	backup => Backup(BackupArgs),
 	#[cfg(feature = "tamanu-backup-configs")]
 	backup_configs => BackupConfigs(BackupConfigsArgs),
 	#[cfg(feature = "tamanu-config")]
+	#[clap(alias = "c")]
 	config => Config(ConfigArgs),
 	#[cfg(feature = "tamanu-url")]
-	url => Url(UrlArgs),
+	#[clap(aliases = ["db", "u", "url"])]
+	db_url => DbUrl(DbUrlArgs),
 	#[cfg(feature = "tamanu-download")]
+	#[clap(aliases = ["d", "down"])]
 	download => Download(DownloadArgs),
 	#[cfg(feature = "tamanu-find")]
 	find => Find(FindArgs),
 	#[cfg(feature = "tamanu-greenmask")]
 	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
 	#[cfg(feature = "tamanu-psql")]
+	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs)
 }
 
@@ -222,20 +227,4 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 
 	#[cfg(not(any(windows, target_os = "linux")))]
 	return Ok(name.into());
-}
-
-#[cfg(feature = "tamanu-pg-common")]
-#[instrument(level = "debug")]
-pub fn find_postgres_version() -> Result<u8> {
-	Ok(String::from_utf8(
-		duct::cmd!(find_postgres_bin("psql")?, "--version")
-			.stdout_capture()
-			.run()
-			.into_diagnostic()?
-			.stdout,
-	)
-	.into_diagnostic()?
-	.split(|c: char| c.is_whitespace() || c == '.')
-	.find_map(|word| u8::from_str(word).ok())
-	.unwrap_or(12)) // 12 is the lowest version we can encounter
 }

@@ -10,19 +10,21 @@ macro_rules! subcommands {
 	(
 		[$argtype:ty => $ctxcode:block]($ctxmethod:ident)
 		$(
-			$(#[$meta:meta])*
+			$(#[cfg($cfg:meta)])*
+			$(#[clap($clap:meta)])*
 			$modname:ident => $enumname:ident($argname:ident)
 		),+
 	) => {
 		$(
-			$(#[$meta])*
+			$(#[cfg($cfg)])*
 			pub mod $modname;
 		)*
 
 		#[derive(Debug, Clone, Subcommand)]
 		pub enum Action {
 			$(
-				$(#[$meta])*
+				$(#[cfg($cfg)])*
+				$(#[clap($clap)])*
 				$enumname($modname::$argname),
 			)*
 		}
@@ -31,7 +33,7 @@ macro_rules! subcommands {
 			let ctxfn = $ctxcode;
 			match ctxfn(ctx)? {
 				$(
-					$(#[$meta])*
+					$(#[cfg($cfg)])*
 					(Action::$enumname(args), ctx) => $modname::run(ctx.$ctxmethod(args)).await,
 				)*
 			}
@@ -61,9 +63,11 @@ subcommands! {
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
 	#[cfg(feature = "self-update")]
+	#[clap(alias = "self")]
 	self_update => SelfUpdate(SelfUpdateArgs),
 	#[cfg(feature = "ssh")]
 	ssh => Ssh(SshArgs),
 	#[cfg(feature = "__tamanu")]
+	#[clap(alias = "t")]
 	tamanu => Tamanu(TamanuArgs)
 }

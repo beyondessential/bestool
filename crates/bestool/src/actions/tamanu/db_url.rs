@@ -18,12 +18,12 @@ const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
 	.add(b']')
 	.add(b'$');
 
-/// Generate a DATABASE_URL connection string from Tamanu config.
+/// Generate a DATABASE_URL connection string
 ///
 /// This command reads the Tamanu configuration and outputs a PostgreSQL connection string
 /// in the standard DATABASE_URL format: `postgresql://user:password@host/database`.
 #[derive(Debug, Clone, Parser)]
-pub struct UrlArgs {
+pub struct DbUrlArgs {
 	/// Database user to use in the connection string.
 	///
 	/// If the value matches one of the report schema connection names
@@ -32,7 +32,7 @@ pub struct UrlArgs {
 	pub username: Option<String>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, UrlArgs>) -> Result<()> {
+pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 
