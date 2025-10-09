@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.30.0](https://github.com/beyondessential/bestool/compare/v0.29.2..0.30.0) - 2025-10-09
+## [0.30.1](https://github.com/beyondessential/bestool/compare/v0.30.0..0.30.1) - 2025-10-09
+
+
+- **Tweak:** Use hand-picked short aliases instead of inferred shorthands - ([f09941a](https://github.com/beyondessential/bestool/commit/f09941a75d8f37a3349850f6a572ffc91e31fdfe))
+
+---
+## [0.30.0](https://github.com/beyondessential/bestool/compare/v0.29.2..v0.30.0) - 2025-10-09
 
 
 - **Deps:** Bump the deps group across 1 directory with 32 updates (#217) - ([5452ec0](https://github.com/beyondessential/bestool/commit/5452ec02421733aa99d1b16b71ce59586ba5cd3d))
