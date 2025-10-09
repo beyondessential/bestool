@@ -1,10 +1,10 @@
 use clap::Parser;
 use miette::Result;
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 use crate::actions::{
-	tamanu::{config::load_config, find_tamanu, TamanuArgs},
 	Context,
+	tamanu::{TamanuArgs, config::load_config, find_tamanu},
 };
 
 /// Characters to encode in userinfo (username:password) part of URL
@@ -23,7 +23,7 @@ const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
 /// This command reads the Tamanu configuration and outputs a PostgreSQL connection string
 /// in the standard DATABASE_URL format: `postgresql://user:password@host/database`.
 #[derive(Debug, Clone, Parser)]
-pub struct DburlArgs {
+pub struct UrlArgs {
 	/// Database user to use in the connection string.
 	///
 	/// If the value matches one of the report schema connection names
@@ -32,7 +32,7 @@ pub struct DburlArgs {
 	pub username: Option<String>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, DburlArgs>) -> Result<()> {
+pub async fn run(ctx: Context<TamanuArgs, UrlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 

@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
@@ -43,8 +43,8 @@ super::subcommands! {
 	backup_configs => BackupConfigs(BackupConfigsArgs),
 	#[cfg(feature = "tamanu-config")]
 	config => Config(ConfigArgs),
-	#[cfg(feature = "tamanu-dburl")]
-	dburl => Dburl(DburlArgs),
+	#[cfg(feature = "tamanu-url")]
+	url => Url(UrlArgs),
 	#[cfg(feature = "tamanu-download")]
 	download => Download(DownloadArgs),
 	#[cfg(feature = "tamanu-find")]
