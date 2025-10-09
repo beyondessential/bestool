@@ -6,9 +6,9 @@ use std::{
 
 use binstalk_downloader::remote::{Client, Url};
 use hickory_resolver::{
+	Resolver,
 	config::{NameServerConfig, ResolverConfig},
 	name_server::{ConnectionProvider, TokioConnectionProvider},
-	Resolver,
 };
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, instrument};
