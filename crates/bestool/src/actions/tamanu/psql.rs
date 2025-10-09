@@ -8,7 +8,8 @@ use crate::actions::Context;
 use super::{TamanuArgs, config::load_config, find_postgres_bin, find_tamanu};
 
 /// Connect to Tamanu's db via `psql`.
-#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
+///
+/// Aliases: p, pg, sql
 #[derive(Debug, Clone, Parser)]
 pub struct PsqlArgs {
 	/// Connect to postgres with a different username.

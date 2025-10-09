@@ -7,6 +7,8 @@ use crate::actions::{
 };
 
 /// Find and print the current Tamanu config.
+///
+/// Alias: c
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigArgs {

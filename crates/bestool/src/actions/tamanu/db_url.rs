@@ -22,6 +22,8 @@ const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
 ///
 /// This command reads the Tamanu configuration and outputs a PostgreSQL connection string
 /// in the standard DATABASE_URL format: `postgresql://user:password@host/database`.
+///
+/// Aliases: db, u, url
 #[derive(Debug, Clone, Parser)]
 pub struct DbUrlArgs {
 	/// Database user to use in the connection string.

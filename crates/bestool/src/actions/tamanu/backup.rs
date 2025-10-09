@@ -40,6 +40,8 @@ use super::config::TamanuConfig;
 /// done by first writing the plaintext backup file to disk, then encrypting, and finally deleting
 /// the original. That effectively requires double the available disk space, and the plaintext file
 /// is briefly available on disk. This limitation may be lifted in the future.
+///
+/// Alias: b
 #[derive(Debug, Clone, Parser)]
 pub struct BackupArgs {
 	/// The compression level to use.

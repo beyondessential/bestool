@@ -12,6 +12,8 @@ use crate::download::{client, DownloadSource};
 use super::Context;
 
 /// Update this bestool.
+///
+/// Alias: self
 #[derive(Debug, Clone, Parser)]
 pub struct SelfUpdateArgs {
 	/// Version to update to.

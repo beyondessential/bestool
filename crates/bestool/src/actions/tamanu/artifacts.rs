@@ -14,6 +14,8 @@ use super::TamanuArgs;
 /// List available artifacts for a Tamanu version.
 ///
 /// Fetches and displays the available artifacts (downloads) for a specific Tamanu version.
+///
+/// Alias: art
 #[derive(Debug, Clone, Parser)]
 pub struct ArtifactsArgs {
 	/// Version to list artifacts for.
