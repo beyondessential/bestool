@@ -5,7 +5,7 @@ use miette::{Context as _, IntoDiagnostic, Result};
 
 use crate::actions::Context;
 
-use super::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs};
+use super::{TamanuArgs, config::load_config, find_postgres_bin, find_tamanu};
 
 /// Connect to Tamanu's db via `psql`.
 #[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu psql`"))]
@@ -49,10 +49,27 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	let config = load_config(&root, None)?;
 	let name = &config.db.name;
-	let (username, password) = if let Some(ref username) = ctx.args_sub.username {
-		// Rely on `psql` password prompt by making the password parameter empty.
-		(username.as_str(), "")
+	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
+		// First, check if this matches a report schema connection
+		if let Some(ref report_schemas) = config.db.report_schemas {
+			if let Some(connection) = report_schemas.connections.get(user) {
+				(connection.username.as_str(), connection.password.as_str())
+			} else if user == &config.db.username {
+				// User matches main db user
+				(config.db.username.as_str(), config.db.password.as_str())
+			} else {
+				// User doesn't match anything, rely on psql password prompt
+				(user.as_str(), "")
+			}
+		} else if user == &config.db.username {
+			// No report schemas, check if matches main user
+			(config.db.username.as_str(), config.db.password.as_str())
+		} else {
+			// User doesn't match, rely on psql password prompt
+			(user.as_str(), "")
+		}
 	} else {
+		// No user specified, use main db credentials
 		(config.db.username.as_str(), config.db.password.as_str())
 	};
 
@@ -77,13 +94,27 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let psql_path = find_postgres_bin(&ctx.args_sub.program)?;
 
 	let mut args = vec!["--dbname", name, "--username", username];
+
+	if let Some(ref host) = config.db.host
+		&& host != "localhost"
+	{
+		args.push("--host");
+		args.push(host);
+	}
+
+	let port_string;
+	if let Some(port) = config.db.port {
+		port_string = port.to_string();
+		args.push("--port");
+		args.push(&port_string);
+	}
+
 	if ctx.args_sub.write && ctx.args_sub.program == "psql" {
 		args.push("--set=AUTOCOMMIT=OFF");
 		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
 	}
 	args.extend(ctx.args_sub.args.iter().map(|s| s.as_str()));
 
-	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	duct::cmd(psql_path, &args)
 		.env("PSQLRC", rc.path())
 		.env("PGPASSWORD", password)

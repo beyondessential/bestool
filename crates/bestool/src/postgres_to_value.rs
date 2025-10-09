@@ -6,8 +6,8 @@ use std::{collections::HashMap, error::Error, ops::Deref};
 
 use chrono::{DateTime, Utc};
 use tokio_postgres::{
-	types::{FromSql, Type},
 	Row,
+	types::{FromSql, Type},
 };
 use uuid::Uuid;
 

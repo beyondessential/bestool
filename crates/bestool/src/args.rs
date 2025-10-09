@@ -1,6 +1,6 @@
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
-use miette::{miette, Result};
+use miette::{Result, miette};
 use tracing::debug;
 
 /// BES Tooling
