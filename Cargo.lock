@@ -377,6 +377,7 @@ dependencies = [
  "mimalloc",
  "node-semver",
  "openssl-sys",
+ "percent-encoding",
  "pulldown-cmark",
  "regex",
  "reqwest",

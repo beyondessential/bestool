@@ -1,0 +1,17 @@
+{
+    "db": {
+        "host": "test.db.example.com",
+        "name": "test_database",
+        "username": "test@user",
+        "password": "p@ss:w0rd/with#special$chars",
+        "reportSchemas": {
+            "enabled": true,
+            "connections": {
+                "special": {
+                    "username": "special_reporter",
+                    "password": "r3p0rt&pass:word@123"
+                }
+            }
+        }
+    }
+}

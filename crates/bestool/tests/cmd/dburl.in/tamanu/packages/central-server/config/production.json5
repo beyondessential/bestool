@@ -1,0 +1,21 @@
+{
+    "db": {
+        "host": "prod.db.example.com",
+        "name": "tamanu_production",
+        "username": "prod_main_user",
+        "password": "prod_main_pass",
+        "reportSchemas": {
+            "enabled": true,
+            "connections": {
+                "analytics": {
+                    "username": "analytics_user",
+                    "password": "analytics_pass"
+                },
+                "readonly": {
+                    "username": "readonly_user",
+                    "password": "readonly_pass"
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,26 @@
+{
+    "db": {
+        "host": "localhost",
+        "name": "tamanu_test",
+        "username": "tamanu_user",
+        "password": "tamanu_pass",
+        "reportSchemas": {
+            "enabled": true,
+            "connections": {
+                "raw": {
+                    "username": "raw_user",
+                    "password": "raw_pass"
+                },
+                "reporting": {
+                    "username": "reporting_user",
+                    "password": "reporting_pass"
+                }
+            }
+        }
+    },
+    "mailgun": {
+        "domain": "",
+        "apiKey": "",
+        "from": ""
+    }
+}
