@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [0.30.1](https://github.com/beyondessential/bestool/compare/v0.30.0..0.30.1) - 2025-10-09
+## [0.30.2](https://github.com/beyondessential/bestool/compare/v0.30.1..0.30.2) - 2025-10-09
+
+
+
+### Db-url
+
+- **Bugfix:** Handle the case where a reporting username is empty in config - ([e9fd311](https://github.com/beyondessential/bestool/commit/e9fd3112fbc4fec538cd1dfbe58bccbf1fede634))
+
+---
+## [0.30.1](https://github.com/beyondessential/bestool/compare/v0.30.0..v0.30.1) - 2025-10-09
 
 
 - **Tweak:** Use hand-picked short aliases instead of inferred shorthands - ([f09941a](https://github.com/beyondessential/bestool/commit/f09941a75d8f37a3349850f6a572ffc91e31fdfe))
