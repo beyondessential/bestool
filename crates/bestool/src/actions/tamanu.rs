@@ -7,7 +7,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{miette, IntoDiagnostic, Result};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
@@ -16,6 +16,8 @@ use super::Context;
 mod roots;
 
 /// Interact with Tamanu.
+///
+/// Alias: t
 #[derive(Debug, Clone, Parser)]
 pub struct TamanuArgs {
 	/// Tamanu root to operate in

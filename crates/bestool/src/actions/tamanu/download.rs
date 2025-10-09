@@ -17,6 +17,8 @@ use super::TamanuArgs;
 /// Download Tamanu artifacts.
 ///
 /// Use the `tamanu artifacts` subcommand to list of the artifacts available for a version.
+///
+/// Aliases: d, down
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
 	/// Artifact type to download.
