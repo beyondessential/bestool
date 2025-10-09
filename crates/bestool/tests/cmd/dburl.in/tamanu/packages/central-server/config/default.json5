@@ -1,0 +1,8 @@
+{
+    "db": {
+        "host": "db.example.com:5433",
+        "name": "tamanu_prod",
+        "username": "prod_user",
+        "password": "prod_pass"
+    }
+}

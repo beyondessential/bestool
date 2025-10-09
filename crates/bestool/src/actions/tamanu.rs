@@ -43,6 +43,8 @@ super::subcommands! {
 	backup_configs => BackupConfigs(BackupConfigsArgs),
 	#[cfg(feature = "tamanu-config")]
 	config => Config(ConfigArgs),
+	#[cfg(feature = "tamanu-dburl")]
+	dburl => Dburl(DburlArgs),
 	#[cfg(feature = "tamanu-download")]
 	download => Download(DownloadArgs),
 	#[cfg(feature = "tamanu-find")]
