@@ -138,7 +138,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			"lean",
 			vec![
 				"--exclude-table", "sync_snapshots.*",
-				"--exclude-table-data", "fhir.*",
+				"--exclude-table-data", "fhir.jobs",
 				"--exclude-table-data", "logs.fhir_writes",
 				"--exclude-table-data", "logs.debug_logs",
 				"--exclude-table-data", "reporting.*",
