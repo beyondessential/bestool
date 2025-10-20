@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "age",
  "age-core",
@@ -4222,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-st7789v2-driver"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "bitvec",
  "embedded-graphics",
