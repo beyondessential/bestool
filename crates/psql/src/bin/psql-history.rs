@@ -1,13 +1,22 @@
 use bestool_psql::history::History;
 use clap::{Parser, Subcommand};
-use miette::{IntoDiagnostic, Result};
+use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
+use miette::{miette, IntoDiagnostic, Result};
 use std::path::PathBuf;
+use tracing::debug;
 
 /// Manage bestool-psql query history
 #[derive(Debug, Parser)]
 #[command(name = "psql-history")]
 #[command(about = "Manage bestool-psql query history")]
+#[command(
+	after_help = "Want more detail? Try the long '--help' flag!",
+	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
+)]
 struct Args {
+	#[command(flatten)]
+	logging: LoggingArgs,
+
 	/// Path to history database (default: ~/.cache/bestool-psql/history.redb)
 	#[arg(long, global = true)]
 	history_path: Option<PathBuf>,
@@ -54,8 +63,32 @@ enum Commands {
 	},
 }
 
-fn main() -> Result<()> {
+fn get_args() -> Result<(Args, WorkerGuard)> {
+	let log_guard = PreArgs::parse().setup().map_err(|err| miette!("{err}"))?;
+
+	debug!("parsing arguments");
 	let args = Args::parse();
+
+	let log_guard = match log_guard {
+		Some(g) => g,
+		None => args
+			.logging
+			.setup(|v| match v {
+				0 => "info",
+				1 => "info,bestool_psql=debug",
+				2 => "debug",
+				3 => "debug,bestool_psql=trace",
+				_ => "trace",
+			})
+			.map_err(|err| miette!("{err}"))?,
+	};
+
+	debug!(?args, "got arguments");
+	Ok((args, log_guard))
+}
+
+fn main() -> Result<()> {
+	let (args, _guard) = get_args()?;
 
 	// Determine history path
 	let history_path = if let Some(path) = args.history_path {

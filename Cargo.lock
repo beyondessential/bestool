@@ -407,6 +407,7 @@ name = "bestool-psql"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "lloggs",
  "miette",
  "portable-pty",
  "redb",
@@ -419,6 +420,7 @@ dependencies = [
  "terminal_size",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
  "windows-sys 0.59.0",
 ]
 
