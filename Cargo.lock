@@ -413,6 +413,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "signal-hook",
  "strip-ansi-escapes",
  "tempfile",
  "terminal_size",

@@ -11,6 +11,11 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
+#[cfg(unix)]
+use signal_hook::consts::SIGWINCH;
+#[cfg(unix)]
+use signal_hook::iterator::Signals;
+
 #[derive(Debug, Error)]
 pub enum PsqlError {
 	#[error("psql process terminated unexpectedly")]
@@ -98,6 +103,40 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		})
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
 
+	// Set up resize handler
+	#[cfg(unix)]
+	let pty_master = Arc::new(Mutex::new(pty_pair.master));
+	#[cfg(not(unix))]
+	let pty_master = pty_pair.master;
+
+	#[cfg(unix)]
+	{
+		let pty_master_clone = pty_master.clone();
+		thread::spawn(move || {
+			let mut signals = match Signals::new(&[SIGWINCH]) {
+				Ok(s) => s,
+				Err(_) => return,
+			};
+
+			for _ in signals.forever() {
+				// Get new terminal size
+				if let Some((w, h)) = terminal_size::terminal_size() {
+					let new_size = PtySize {
+						rows: h.0,
+						cols: w.0,
+						pixel_width: 0,
+						pixel_height: 0,
+					};
+
+					// Update PTY size
+					if let Ok(master) = pty_master_clone.lock() {
+						let _ = master.resize(new_size);
+					}
+				}
+			}
+		});
+	}
+
 	// Extract values before config is consumed
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
@@ -111,13 +150,28 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	drop(pty_pair.slave);
 
-	let reader = pty_pair
-		.master
+	#[cfg(unix)]
+	let reader = {
+		let master = pty_master.lock().unwrap();
+		master
+			.try_clone_reader()
+			.map_err(|e| miette!("failed to clone pty reader: {}", e))?
+	};
+	#[cfg(not(unix))]
+	let reader = pty_master
 		.try_clone_reader()
 		.map_err(|e| miette!("failed to clone pty reader: {}", e))?;
+
+	#[cfg(unix)]
+	let writer = Arc::new(Mutex::new({
+		let master = pty_master.lock().unwrap();
+		master
+			.take_writer()
+			.map_err(|e| miette!("failed to get pty writer: {}", e))?
+	}));
+	#[cfg(not(unix))]
 	let writer = Arc::new(Mutex::new(
-		pty_pair
-			.master
+		pty_master
 			.take_writer()
 			.map_err(|e| miette!("failed to get pty writer: {}", e))?,
 	));
