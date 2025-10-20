@@ -474,11 +474,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		thread::sleep(Duration::from_millis(50));
 
 		// Check if we're at a prompt by looking for our boundary marker in the output buffer
-		let buffer = output_buffer.lock().unwrap();
+		let mut buffer = output_buffer.lock().unwrap();
 		let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
 		let buffer_str = String::from_utf8_lossy(&buffer_vec);
-		trace!("buffer: {}", buffer_str);
 		let at_prompt = buffer_str.contains(&format!("<<<{boundary}|||"));
+		trace!(at_prompt, %buffer_str, "buffer");
 
 		if !at_prompt {
 			// Not at a prompt, continue waiting
@@ -487,7 +487,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		}
 
 		// Clear the buffer since we've detected a prompt
-		output_buffer.lock().unwrap().clear();
+		buffer.clear();
+		drop(buffer);
 
 		// Use the formatted prompt for readline
 		let prompt_text = current_prompt.lock().unwrap().clone();
@@ -507,7 +508,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					continue;
 				}
 
-				// Write to history immediately before sending to psql to ensure we don't miss entries
 				if !line.trim().is_empty() {
 					if let Err(e) = rl.history_mut().add(&line) {
 						warn!("failed to add history entry: {}", e);
