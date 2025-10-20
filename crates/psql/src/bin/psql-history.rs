@@ -70,7 +70,7 @@ fn main() -> Result<()> {
 		return Ok(());
 	}
 
-	let history = History::open(history_path)?;
+	let mut history = History::open(history_path)?;
 
 	match args.command {
 		Commands::List { limit, reverse } => {
@@ -96,9 +96,9 @@ fn main() -> Result<()> {
 					"[{}] {} - db={} sys={}",
 					datetime, mode, entry.db_user, entry.sys_user
 				);
-				if let Some(ref tailscale) = entry.tailscale {
+				if !entry.tailscale.is_empty() {
 					print!("  tailscale=");
-					for peer in tailscale {
+					for peer in &entry.tailscale {
 						print!("{}:{} ", peer.user, peer.device);
 					}
 					println!();
@@ -123,9 +123,9 @@ fn main() -> Result<()> {
 					"[{}] {} - db:{} sys:{}",
 					datetime, mode, entry.db_user, entry.sys_user
 				);
-				if let Some(ref tailscale) = entry.tailscale {
+				if !entry.tailscale.is_empty() {
 					print!("  tailscale:");
-					for peer in tailscale {
+					for peer in &entry.tailscale {
 						print!(" {}@{}", peer.user, peer.device);
 					}
 					println!();
@@ -150,7 +150,7 @@ fn main() -> Result<()> {
 				}
 			}
 
-			history.clear()?;
+			history.clear_all()?;
 			println!("History cleared.");
 		}
 
@@ -172,8 +172,8 @@ fn main() -> Result<()> {
 			for (_, entry) in &entries {
 				db_users.insert(entry.db_user.clone());
 				sys_users.insert(entry.sys_user.clone());
-				if let Some(ref tailscale) = entry.tailscale {
-					for peer in tailscale {
+				if !entry.tailscale.is_empty() {
+					for peer in &entry.tailscale {
 						tailscale_users.insert(format!("{}@{}", peer.user, peer.device));
 					}
 				}
