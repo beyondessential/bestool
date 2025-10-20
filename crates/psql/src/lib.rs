@@ -14,7 +14,7 @@ use completer::SqlCompleter;
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use psql_writer::PsqlWriter;
-use rustyline::history::History as _;
+use rustyline::history::{History as _, SearchDirection};
 use rustyline::{Config, Editor};
 use schema_cache::SchemaCacheManager;
 use std::collections::VecDeque;
@@ -343,8 +343,62 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				trace!("received input line");
 				let trimmed = line.trim();
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
-					warn!("editor command intercepted (not yet implemented)");
-					// TODO: Open editor, read content, save history, send to psql
+					debug!("editor command intercepted");
+
+					// Get the initial content - either from argument or from history
+					let initial_content = if trimmed == "\\e" {
+						// Get the last command from history
+						let hist_len = rl.history().len();
+						if hist_len > 0 {
+							match rl.history().get(hist_len - 1, SearchDirection::Forward) {
+								Ok(Some(result)) => result.entry.to_string(),
+								_ => String::new(),
+							}
+						} else {
+							String::new()
+						}
+					} else {
+						// User provided content after \e
+						trimmed
+							.strip_prefix("\\e ")
+							.unwrap_or("")
+							.trim()
+							.to_string()
+					};
+
+					// Open editor with the content
+					match edit::edit(&initial_content) {
+						Ok(edited_content) => {
+							let edited_trimmed = edited_content.trim();
+
+							// Only send if content is not empty
+							if !edited_trimmed.is_empty() {
+								info!("sending edited content to psql");
+
+								// Add to history
+								if let Err(e) = rl.history_mut().add(&edited_content) {
+									warn!("failed to add history entry: {}", e);
+								} else {
+									debug!("wrote history entry before sending to psql");
+								}
+
+								// Store the input so we can filter out the echo
+								*last_input.lock().unwrap() = format!("{}\n", edited_content);
+
+								// Send to psql
+								if let Err(e) = psql_writer.write_line(&edited_content) {
+									warn!("failed to write to psql: {}", e);
+									return Err(PsqlError::WriteError).into_diagnostic();
+								}
+							} else {
+								debug!("editor returned empty content, skipping");
+							}
+						}
+						Err(e) => {
+							warn!("editor failed: {}", e);
+							eprintln!("Editor failed: {}", e);
+						}
+					}
 					continue;
 				}
 
