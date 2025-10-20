@@ -146,7 +146,7 @@ impl Driver {
 		self.set_reset(Level::High);
 		sleep(Duration::from_millis(120)); // wait past cancel period
 
-		self.spi.write(&vec![0xaa; 3])?;
+		self.spi.write(&[0xaa; 3])?;
 		self.command(Command::MemoryAccessControl)?;
 		self.write_data(&[MemoryAccessControl::default().into()])?;
 
@@ -175,7 +175,7 @@ impl Driver {
 		self.write_data(&[0x20])?;
 
 		self.command(Command::FrameRateControl)?;
-		self.write_data(&[0b000 << 5 | frame_rate(53)])?;
+		self.write_data(&[frame_rate(53)])?;
 
 		self.command(Command::PowerControl1)?;
 		self.write_data(&power_control1(68, 48, 23))?;

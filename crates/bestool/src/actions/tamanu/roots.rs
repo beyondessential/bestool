@@ -55,12 +55,11 @@ pub fn version_of_root(root: impl AsRef<Path> + std::fmt::Debug) -> Result<Optio
 	if let Some(name) = root.file_name().and_then(|name| name.to_str()) {
 		static RE: LazyLock<Regex> =
 			LazyLock::new(|| Regex::new(r"(release-)?v?(\d+\.\d+\.\d+)($|/)").unwrap());
-		if let Some(ver) = RE.find(name) {
-			if let Ok(semver) = Version::parse(ver.as_str()) {
+		if let Some(ver) = RE.find(name)
+			&& let Ok(semver) = Version::parse(ver.as_str()) {
 				trace!(?semver, "parsed version from path");
 				return Ok(Some(semver));
 			}
-		}
 	}
 
 	let pkg_file = root.join("package.json");

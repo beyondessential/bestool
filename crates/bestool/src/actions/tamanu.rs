@@ -182,7 +182,7 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 		let exec_file_name = if cfg!(windows) {
 			format!("{name}.exe")
 		} else {
-			format!("{name}")
+			name.to_string()
 		};
 		Ok([root, version.as_str(), "bin", &exec_file_name]
 			.iter()
@@ -220,11 +220,11 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 
 	#[cfg(target_os = "linux")]
 	if is_in_path(name).is_some() {
-		return Ok(name.into());
+		Ok(name.into())
 	} else {
 		// Ubuntu reccomends to use pg_ctlcluster over pg_ctl and doesn't put pg_ctl in PATH.
 		// Still, it should be fine for temporary database.
-		return find_from_installation(r"/usr/lib/postgresql", name);
+		find_from_installation(r"/usr/lib/postgresql", name)
 	}
 
 	#[cfg(not(any(windows, target_os = "linux")))]

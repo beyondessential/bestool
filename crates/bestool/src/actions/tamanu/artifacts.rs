@@ -109,11 +109,7 @@ pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec
 				host_targets.iter().any(|t| t.arch_name() == "x86_64")
 			} else if artifact.platform.contains("arm64") {
 				host_targets.iter().any(|t| t.arch_name() == "aarch64")
-			} else if !artifact.platform.contains("-") {
-				true
-			} else {
-				false
-			};
+			} else { !artifact.platform.contains("-") };
 
 			os && arch
 		}

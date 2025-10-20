@@ -202,7 +202,7 @@ impl SchemaCacheManager {
 		for row in rows {
 			tables
 				.entry(row.schemaname)
-				.or_insert_with(Vec::new)
+				.or_default()
 				.push(row.tablename);
 		}
 
@@ -221,7 +221,7 @@ impl SchemaCacheManager {
 		for row in rows {
 			views
 				.entry(row.schemaname)
-				.or_insert_with(Vec::new)
+				.or_default()
 				.push(row.viewname);
 		}
 
@@ -243,14 +243,14 @@ impl SchemaCacheManager {
 			let qualified = format!("{}.{}", row.table_schema, row.table_name);
 			columns
 				.entry(qualified)
-				.or_insert_with(Vec::new)
+				.or_default()
 				.push(row.column_name.clone());
 
 			// Also store unqualified for easier lookup (public schema priority)
 			if row.table_schema == "public" {
 				columns
 					.entry(row.table_name.clone())
-					.or_insert_with(Vec::new)
+					.or_default()
 					.push(row.column_name);
 			}
 		}

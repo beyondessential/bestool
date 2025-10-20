@@ -319,7 +319,7 @@ pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
 		.canonical_host_name
 		.as_ref()
 		.and_then(|url| url.host_str())
-		.unwrap_or_else(|| "localhost");
+		.unwrap_or("localhost");
 
 	format!(
 		"{output_date}-{output_name}-{db}.{ext}",

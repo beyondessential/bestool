@@ -97,7 +97,7 @@ impl History {
 				info!(size_mb, "history database exceeds 100MB, culling to 90MB");
 
 				// Remove oldest entries in batches until we reach target size
-				while timestamps.len() > 0 {
+				while !timestamps.is_empty() {
 					if let Ok(metadata) = std::fs::metadata(path) {
 						if metadata.len() <= TARGET_SIZE {
 							break;
@@ -471,8 +471,7 @@ impl HistoryTrait for History {
 
 		let timestamp = self.timestamps[index];
 		let entry = self.get_entry(timestamp).map_err(|e| {
-			rustyline::error::ReadlineError::Io(std::io::Error::new(
-				std::io::ErrorKind::Other,
+			rustyline::error::ReadlineError::Io(std::io::Error::other(
 				e.to_string(),
 			))
 		})?;
@@ -525,8 +524,7 @@ impl HistoryTrait for History {
 		)
 		.map_err(|e| {
 			warn!("failed to add history entry: {}", e);
-			rustyline::error::ReadlineError::Io(std::io::Error::new(
-				std::io::ErrorKind::Other,
+			rustyline::error::ReadlineError::Io(std::io::Error::other(
 				e.to_string(),
 			))
 		})?;
@@ -553,30 +551,26 @@ impl HistoryTrait for History {
 
 			// Remove from database
 			let write_txn = self.db.read().unwrap().begin_write().map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::new(
-					std::io::ErrorKind::Other,
+				rustyline::error::ReadlineError::Io(std::io::Error::other(
 					e.to_string(),
 				))
 			})?;
 			{
 				let mut table = write_txn.open_table(HISTORY_TABLE).map_err(|e| {
-					rustyline::error::ReadlineError::Io(std::io::Error::new(
-						std::io::ErrorKind::Other,
+					rustyline::error::ReadlineError::Io(std::io::Error::other(
 						e.to_string(),
 					))
 				})?;
 				for ts in old_timestamps {
 					table.remove(ts).map_err(|e| {
-						rustyline::error::ReadlineError::Io(std::io::Error::new(
-							std::io::ErrorKind::Other,
+						rustyline::error::ReadlineError::Io(std::io::Error::other(
 							e.to_string(),
 						))
 					})?;
 				}
 			}
 			write_txn.commit().map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::new(
-					std::io::ErrorKind::Other,
+				rustyline::error::ReadlineError::Io(std::io::Error::other(
 					e.to_string(),
 				))
 			})?;
@@ -640,8 +634,7 @@ impl HistoryTrait for History {
 		for idx in range {
 			let timestamp = self.timestamps[idx];
 			let entry = self.get_entry(timestamp).map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::new(
-					std::io::ErrorKind::Other,
+				rustyline::error::ReadlineError::Io(std::io::Error::other(
 					e.to_string(),
 				))
 			})?;
@@ -687,8 +680,7 @@ impl HistoryTrait for History {
 		for idx in range {
 			let timestamp = self.timestamps[idx];
 			let entry = self.get_entry(timestamp).map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::new(
-					std::io::ErrorKind::Other,
+				rustyline::error::ReadlineError::Io(std::io::Error::other(
 					e.to_string(),
 				))
 			})?;

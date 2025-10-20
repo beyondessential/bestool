@@ -84,7 +84,7 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 	}
 
 	info!(?dest, "downloaded, self-upgrading");
-	upgrade::run_upgrade(&dest, true, &vec!["--version"])
+	upgrade::run_upgrade(&dest, true, vec!["--version"])
 		.map_err(|err| miette!("upgrade: {err:?}"))?;
 	Ok(())
 }

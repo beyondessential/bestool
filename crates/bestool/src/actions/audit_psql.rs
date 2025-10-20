@@ -82,16 +82,14 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 				.into_iter()
 				.rev() // Reverse to show most recent first
 				.filter(|(_, entry)| {
-					if let Some(user) = db_user {
-						if &entry.db_user != user {
+					if let Some(user) = db_user
+						&& &entry.db_user != user {
 							return false;
 						}
-					}
-					if let Some(user) = sys_user {
-						if &entry.sys_user != user {
+					if let Some(user) = sys_user
+						&& &entry.sys_user != user {
 							return false;
 						}
-					}
 					if *write_only && !entry.writemode {
 						return false;
 					}

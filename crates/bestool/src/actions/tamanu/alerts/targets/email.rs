@@ -49,7 +49,7 @@ impl TargetEmail {
 				.map(|email| EmailAddress::address(email))
 				.collect(),
 			subject: subject.into(),
-			html: body.into(),
+			html: body,
 			..Default::default()
 		};
 		mailgun

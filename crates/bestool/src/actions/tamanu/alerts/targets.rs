@@ -85,7 +85,7 @@ impl SendTarget {
 		config: &TamanuConfig,
 		dry_run: bool,
 	) -> Result<()> {
-		let tera = load_templates(&self)?;
+		let tera = load_templates(self)?;
 		let (subject, body, requester) = render_alert(&tera, tera_ctx)?;
 
 		match self {
@@ -94,7 +94,7 @@ impl SendTarget {
 			}
 
 			SendTarget::Slack { conn, .. } => {
-				conn.send(alert, &ctx, &subject, &body, &tera, &tera_ctx, dry_run)
+				conn.send(alert, &ctx, &subject, &body, &tera, tera_ctx, dry_run)
 					.await?;
 			}
 

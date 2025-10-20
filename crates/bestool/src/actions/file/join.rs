@@ -76,7 +76,7 @@ pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
 	let mut hasher = Hasher::new();
 	let mut stream = StreamReader::new(chunk_readers(&input, &meta).try_flatten().inspect_ok(
 		|bytes| {
-			hasher.update(&bytes);
+			hasher.update(bytes);
 			pb.inc(bytes.len() as _);
 		},
 	));

@@ -216,19 +216,19 @@ pub fn frame_rate(rate: u8) -> u8 {
 		58 | 59 => 0x10,
 		60 | 61 => 0x0F,
 		62 | 63 => 0x0E,
-		64 | 65 | 66 => 0x0D,
+		64..=66 => 0x0D,
 		67 | 68 => 0x0C,
-		69 | 70 | 71 => 0x0B,
-		72 | 73 | 74 => 0x0A,
-		75 | 76 | 77 => 0x09,
-		78 | 79 | 80 | 81 => 0x08,
-		82 | 83 | 84 | 85 => 0x07,
-		86 | 87 | 88 | 89 => 0x06,
-		90 | 91 | 92 | 93 => 0x05,
-		94 | 95 | 96 | 97 | 98 => 0x04,
-		99 | 100 | 101 | 102 | 103 | 104 => 0x03,
-		105 | 106 | 107 | 108 | 109 | 110 => 0x02,
-		111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 => 0x01,
+		69..=71 => 0x0B,
+		72..=74 => 0x0A,
+		75..=77 => 0x09,
+		78..=81 => 0x08,
+		82..=85 => 0x07,
+		86..=89 => 0x06,
+		90..=93 => 0x05,
+		94..=98 => 0x04,
+		99..=104 => 0x03,
+		105..=110 => 0x02,
+		111..=118 => 0x01,
 		_high => 0x00,
 	};
 	debug!(rate, "frame rate");
@@ -270,7 +270,7 @@ pub fn power_control2(avdd: u8, avcl: u8, vdds: u8) -> u8 {
 		25 | 26 => 0x3,
 		_ => unreachable!(),
 	};
-	let byte = 0 | avdd << 6 | avcl << 4 | vdds;
+	let byte = (avdd << 6) | avcl << 4 | vdds;
 	debug!(avdd, avcl, vdds, byte, "power control values");
 	byte
 }
@@ -322,10 +322,10 @@ pub enum GateScanDirection {
 
 impl From<GateFlags> for u8 {
 	fn from(flags: GateFlags) -> u8 {
-		0 | (match flags.mirror {
+		((match flags.mirror {
 			GateMirror::Local => 0,
 			GateMirror::Full => 1,
-		} << 4) | (match flags.interlace {
+		} << 4)) | (match flags.interlace {
 			GateInterlace::Interlaced => 0,
 			GateInterlace::Progressive => 1,
 		} << 2) | match flags.scan_direction {

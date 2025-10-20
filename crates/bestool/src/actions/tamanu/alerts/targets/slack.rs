@@ -75,7 +75,7 @@ impl TargetSlack {
 				SlackField::Fixed { name, value } => (name, value.clone()),
 				SlackField::Field { name, field } => (
 					name,
-					tera.render(field.as_str(), &tera_ctx)
+					tera.render(field.as_str(), tera_ctx)
 						.ok()
 						.or_else(|| {
 							tera_ctx.get(field.as_str()).map(|v| match v.as_str() {

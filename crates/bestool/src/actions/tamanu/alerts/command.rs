@@ -347,12 +347,12 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 
 					if !file
 						.extension()
-						.map_or(false, |e| e == "yaml" || e == "yml")
+						.is_some_and(|e| e == "yaml" || e == "yml")
 					{
 						return Ok(None);
 					}
 
-					if file.file_stem().map_or(false, |n| n == "_targets") {
+					if file.file_stem().is_some_and(|n| n == "_targets") {
 						return Ok(None);
 					}
 
@@ -394,7 +394,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	debug!(count=%alerts.len(), "found some alerts");
 
 	let mut pg_config = tokio_postgres::Config::default();
-	pg_config.application_name(&format!(
+	pg_config.application_name(format!(
 		"{}/{} (tamanu alerts)",
 		env!("CARGO_PKG_NAME"),
 		env!("CARGO_PKG_VERSION")
@@ -450,12 +450,9 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	}
 
 	while let Some(res) = set.join_next().await {
-		match res {
-			Err(err) => {
-				error!("task: {err:?}");
-			}
-			_ => (),
-		}
+		if let Err(err) = res {
+  				error!("task: {err:?}");
+  			}
 	}
 
 	Ok(())

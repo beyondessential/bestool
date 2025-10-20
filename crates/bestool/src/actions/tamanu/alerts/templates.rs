@@ -71,7 +71,7 @@ pub fn load_templates(target: &SendTarget) -> Result<Tera> {
 			)
 			.into_diagnostic()
 			.wrap_err("compiling subject template")?;
-			tera.add_raw_template(TemplateField::Body.as_str(), &template)
+			tera.add_raw_template(TemplateField::Body.as_str(), template)
 				.into_diagnostic()
 				.wrap_err("compiling body template")?;
 		}
@@ -121,19 +121,19 @@ pub fn render_alert(
 	context: &mut TeraCtx,
 ) -> Result<(String, String, Option<String>)> {
 	let subject = tera
-		.render(TemplateField::Subject.as_str(), &context)
+		.render(TemplateField::Subject.as_str(), context)
 		.into_diagnostic()
 		.wrap_err("rendering subject template")?;
 
 	context.insert(TemplateField::Subject.as_str(), &subject.to_string());
 
 	let body = tera
-		.render(TemplateField::Body.as_str(), &context)
+		.render(TemplateField::Body.as_str(), context)
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
 
 	let requester = tera
-		.render(TemplateField::Requester.as_str(), &context)
+		.render(TemplateField::Requester.as_str(), context)
 		.map(Some)
 		.or_else(|err| match err.kind {
 			tera::ErrorKind::TemplateNotFound(_) => Ok(None),

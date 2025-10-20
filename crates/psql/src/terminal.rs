@@ -39,7 +39,7 @@ pub fn spawn_resize_handler(pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPt
 	{
 		thread::spawn(move || {
 			debug!("starting SIGWINCH handler thread");
-			let mut signals = match Signals::new(&[SIGWINCH]) {
+			let mut signals = match Signals::new([SIGWINCH]) {
 				Ok(s) => s,
 				Err(e) => {
 					warn!("failed to register SIGWINCH handler: {}", e);

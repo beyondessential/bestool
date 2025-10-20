@@ -101,7 +101,7 @@ fn add_file(
 ) -> bool {
 	let path = path.as_ref();
 	let name = name.as_ref();
-	add_file_impl(zip, path, name).map_or(false, |_| true)
+	add_file_impl(zip, path, name).is_ok_and(|_| true)
 }
 
 fn add_dir(
@@ -160,7 +160,7 @@ fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
 		.canonical_host_name
 		.as_ref()
 		.and_then(|url| url.host_str())
-		.unwrap_or_else(|| "localhost");
+		.unwrap_or("localhost");
 
 	format!("{output_date}-{output_name}.config.zip").into()
 }
