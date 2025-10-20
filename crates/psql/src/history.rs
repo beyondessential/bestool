@@ -70,10 +70,8 @@ impl History {
 		let path = path.as_ref();
 		let db = Database::create(path).into_diagnostic()?;
 
-		// Load all timestamps for indexed access
 		let mut timestamps = Self::load_timestamps(&db)?;
 
-		// Check database size and cull if necessary
 		if let Ok(metadata) = std::fs::metadata(path) {
 			const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
 			const TARGET_SIZE: u64 = 90 * 1024 * 1024; // 90MB
@@ -85,18 +83,15 @@ impl History {
 
 				// Remove oldest entries in batches until we reach target size
 				while timestamps.len() > 0 {
-					// Check current size
 					if let Ok(metadata) = std::fs::metadata(path) {
 						if metadata.len() <= TARGET_SIZE {
 							break;
 						}
 					}
 
-					// Remove a batch of oldest entries
 					let to_remove = CULL_BATCH.min(timestamps.len());
 					let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
 
-					// Remove from database
 					let write_txn = db.begin_write().into_diagnostic()?;
 					{
 						let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
@@ -142,10 +137,9 @@ impl History {
 	fn load_timestamps(db: &Database) -> Result<Vec<u64>> {
 		let read_txn = db.begin_read().into_diagnostic()?;
 
-		// Try to open the table, but if it doesn't exist yet, return empty vec
 		let table = match read_txn.open_table(HISTORY_TABLE) {
 			Ok(table) => table,
-			Err(_) => return Ok(Vec::new()), // Table doesn't exist yet
+			Err(_) => return Ok(Vec::new()),
 		};
 
 		let mut timestamps = Vec::new();
@@ -179,7 +173,6 @@ impl History {
 	fn get_entry(&self, timestamp: u64) -> Result<Option<HistoryEntry>> {
 		let read_txn = self.db.begin_read().into_diagnostic()?;
 
-		// Table might not exist yet
 		let table = match read_txn.open_table(HISTORY_TABLE) {
 			Ok(table) => table,
 			Err(_) => return Ok(None),
@@ -187,7 +180,7 @@ impl History {
 
 		let json = match table.get(timestamp).into_diagnostic()? {
 			Some(json) => json,
-			None => return Ok(None), // Entry was deleted
+			None => return Ok(None),
 		};
 
 		let entry = serde_json::from_str(json.value()).into_diagnostic()?;
@@ -250,7 +243,6 @@ impl History {
 		}
 		write_txn.commit().into_diagnostic()?;
 
-		// Update timestamps index
 		self.timestamps.push(timestamp);
 
 		// Enforce max length (note: other processes may have added entries,
@@ -264,11 +256,11 @@ impl History {
 				{
 					if let Ok(mut table) = write_txn.open_table(HISTORY_TABLE) {
 						for ts in old_timestamps {
-							let _ = table.remove(ts); // Ignore errors
+							let _ = table.remove(ts);
 						}
 					}
 				}
-				let _ = write_txn.commit(); // Ignore errors
+				let _ = write_txn.commit();
 			}
 		}
 
@@ -375,7 +367,6 @@ impl HistoryTrait for History {
 	}
 
 	fn add_owned(&mut self, line: String) -> rustyline::Result<bool> {
-		// Check ignore rules
 		if line.trim().is_empty() {
 			trace!("ignoring empty line");
 			return Ok(false);
@@ -387,7 +378,6 @@ impl HistoryTrait for History {
 		}
 
 		if self.ignore_dups && !self.timestamps.is_empty() {
-			// Check if the last entry is a duplicate
 			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
 			{
 				if last_entry.query == line {
@@ -397,7 +387,6 @@ impl HistoryTrait for History {
 			}
 		}
 
-		// Add to database
 		self.add_entry(
 			line,
 			self.db_user.clone(),
@@ -428,7 +417,6 @@ impl HistoryTrait for History {
 		debug!(len, "setting max history length");
 		self.max_len = len;
 
-		// Trim history if needed
 		if self.timestamps.len() > len {
 			let to_remove = self.timestamps.len() - len;
 			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
@@ -534,7 +522,6 @@ impl HistoryTrait for History {
 				))
 			})?;
 
-			// Skip entries that were deleted by another process
 			let entry = match entry {
 				Some(e) => e,
 				None => continue,
@@ -582,7 +569,6 @@ impl HistoryTrait for History {
 				))
 			})?;
 
-			// Skip entries that were deleted by another process
 			let entry = match entry {
 				Some(e) => e,
 				None => continue,
@@ -605,7 +591,6 @@ impl HistoryTrait for History {
 fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
 	use std::process::Command;
 
-	// Check if tailscale is installed
 	let output = Command::new("tailscale")
 		.arg("status")
 		.arg("--json")
@@ -620,12 +605,10 @@ fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
 
 	let mut peers = Vec::new();
 
-	// Get the User map for looking up user info by UserID
 	let user_map = json.get("User").and_then(|u| u.as_object());
 
 	if let Some(peer_map) = json.get("Peer").and_then(|p| p.as_object()) {
 		for (_key, peer) in peer_map {
-			// Check if peer is active
 			let active = peer
 				.get("Active")
 				.and_then(|a| a.as_bool())
@@ -635,7 +618,6 @@ fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
 				continue;
 			}
 
-			// Check if peer has no tags (or Tags is null)
 			let has_tags = peer
 				.get("Tags")
 				.and_then(|t| t.as_array())
@@ -646,13 +628,11 @@ fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
 				continue;
 			}
 
-			// Extract hostname
 			let device = peer
 				.get("HostName")
 				.and_then(|h| h.as_str())
 				.map(|s| s.to_string());
 
-			// Get UserID and look up the user info
 			let user_id = peer.get("UserID").and_then(|id| id.as_u64());
 
 			let user = if let (Some(user_map), Some(user_id)) = (user_map, user_id) {

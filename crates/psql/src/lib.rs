@@ -98,7 +98,6 @@ impl PsqlConfig {
 pub fn run(config: PsqlConfig) -> Result<i32> {
 	let pty_system = NativePtySystem::default();
 
-	// Get terminal size or use sensible defaults
 	let (cols, rows) = terminal_size::terminal_size()
 		.map(|(w, h)| (w.0, h.0))
 		.unwrap_or((80, 24));
@@ -114,7 +113,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		})
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
 
-	// Set up resize handler (Arc<Mutex> on all platforms for resize support)
 	let pty_master = Arc::new(Mutex::new(pty_pair.master));
 
 	#[cfg(unix)]
@@ -131,7 +129,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			};
 
 			for _ in signals.forever() {
-				// Get new terminal size
 				if let Some((w, h)) = terminal_size::terminal_size() {
 					let new_size = PtySize {
 						rows: h.0,
@@ -141,7 +138,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					};
 
 					debug!(cols = w.0, rows = h.0, "terminal resized (SIGWINCH)");
-					// Update PTY size
 					if let Ok(master) = pty_master_clone.lock() {
 						let _ = master.resize(new_size);
 					}
@@ -197,7 +193,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		});
 	}
 
-	// Extract values before config is consumed
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
 	let write_mode = config.write;
@@ -253,7 +248,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						data.drain(..to_skip);
 						skip_next -= to_skip;
 					} else {
-						// Check if this contains the echo we're waiting for
 						let expected_echo = last_input_clone.lock().unwrap().clone();
 						if !expected_echo.is_empty() {
 							// PTY converts \n to \r\n
@@ -269,7 +263,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						}
 					}
 
-					// Print remaining data to stdout
 					if !data.is_empty() {
 						print!("{}", data);
 						std::io::stdout().flush().ok();
@@ -277,7 +270,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						// Also store in buffer for prompt detection
 						let mut buffer = output_buffer_clone.lock().unwrap();
 						buffer.extend_from_slice(data.as_bytes());
-						// Keep only last 1024 bytes for prompt detection
 						if buffer.len() > 1024 {
 							let drain_len = buffer.len() - 1024;
 							buffer.drain(0..drain_len);
@@ -290,7 +282,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		*running_clone.lock().unwrap() = false;
 	});
 
-	// Set up history with database backend
 	let db_user = db_user.unwrap_or_else(|| {
 		std::env::var("USER")
 			.or_else(|_| std::env::var("USERNAME"))
@@ -301,7 +292,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
 
-	// Open or create history database
 	let mut history = history::History::open(history_path).unwrap_or_else(|e| {
 		warn!("could not open history database: {}", e);
 		debug!("creating fallback history database");
@@ -326,13 +316,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	)
 	.into_diagnostic()?;
 
-	// Track last timestamp reload time
 	let mut last_reload = std::time::Instant::now();
 
 	debug!("entering main event loop");
 
 	loop {
-		// Reload timestamps every 60 seconds to pick up entries from concurrent writers
 		if last_reload.elapsed() >= Duration::from_secs(60) {
 			debug!("reloading history timestamps");
 			if let Err(e) = rl.history_mut().reload_timestamps() {
@@ -340,7 +328,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			}
 			last_reload = std::time::Instant::now();
 		}
-		// Check if child process is still running
 		match child.try_wait().into_diagnostic()? {
 			Some(status) => {
 				// Process has exited
@@ -389,20 +376,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		// Clear the buffer since we've detected a prompt
 		output_buffer.lock().unwrap().clear();
 
-		// Read a line from the user
 		match rl.readline(&text) {
 			Ok(line) => {
 				trace!("received input line");
-				// Check if user wants to use a graphical editor
 				let trimmed = line.trim();
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
-					// Intercept the \e command
 					warn!("editor command intercepted (not yet implemented)");
 					// TODO: Open editor, read content, send to psql
 					continue;
 				}
 
-				// Send the line to psql
 				let input = format!("{}\n", line);
 
 				// Store the input so we can filter out the echo
@@ -415,14 +398,12 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				writer.flush().into_diagnostic()?;
 			}
 			Err(rustyline::error::ReadlineError::Interrupted) => {
-				// Ctrl-C - send interrupt to psql
 				debug!("received Ctrl-C");
 				let mut writer = writer.lock().unwrap();
 				writer.write_all(&[3]).ok(); // ASCII ETX (Ctrl-C)
 				writer.flush().ok();
 			}
 			Err(rustyline::error::ReadlineError::Eof) => {
-				// Ctrl-D - send EOF to psql
 				debug!("received Ctrl-D (EOF)");
 				let mut writer = writer.lock().unwrap();
 				writer.write_all(&[4]).ok(); // ASCII EOT (Ctrl-D)
@@ -435,13 +416,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		}
 	}
 
-	// Wait for reader thread to finish
 	reader_thread.join().ok();
 
-	// Wait for child to exit
 	let status = child.wait().into_diagnostic()?;
 
-	// Compact the history database before exiting
 	debug!("compacting history database");
 	if let Err(e) = rl.history_mut().compact() {
 		warn!("failed to compact history database: {}", e);

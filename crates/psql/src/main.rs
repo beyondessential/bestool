@@ -101,7 +101,6 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	// Set the console encoding to UTF-8 on Windows
 	#[cfg(windows)]
 	unsafe {
 		use std::os::windows::io::AsRawHandle;
@@ -110,7 +109,6 @@ fn main() -> Result<()> {
 		SetConsoleOutputCP(args.codepage);
 	}
 
-	// Read .psqlrc unless --no-psqlrc is specified
 	let psqlrc = if args.no_psqlrc {
 		String::new()
 	} else {
