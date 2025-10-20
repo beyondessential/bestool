@@ -6,8 +6,19 @@ use tera::Tera;
 use tracing::debug;
 
 use crate::actions::tamanu::alerts::{
-	definition::AlertDefinition, templates::TemplateField, InternalContext,
+	InternalContext, definition::AlertDefinition, templates::TemplateField,
 };
+
+/// Parameters for sending a Slack alert
+pub struct SlackSendParams<'a> {
+	pub alert: &'a AlertDefinition,
+	pub ctx: &'a InternalContext,
+	pub subject: &'a str,
+	pub body: &'a str,
+	pub tera: &'a Tera,
+	pub tera_ctx: &'a tera::Context,
+	pub dry_run: bool,
+}
 
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -49,16 +60,16 @@ impl SlackField {
 }
 
 impl TargetSlack {
-	pub async fn send(
-		&self,
-		alert: &AlertDefinition,
-		ctx: &InternalContext,
-		subject: &str,
-		body: &str,
-		tera: &Tera,
-		tera_ctx: &tera::Context,
-		dry_run: bool,
-	) -> Result<()> {
+	pub async fn send(&self, params: SlackSendParams<'_>) -> Result<()> {
+		let SlackSendParams {
+			alert,
+			ctx,
+			subject,
+			body,
+			tera,
+			tera_ctx,
+			dry_run,
+		} = params;
 		if dry_run {
 			println!("-------------------------------");
 			println!("Alert: {}", alert.file.display());

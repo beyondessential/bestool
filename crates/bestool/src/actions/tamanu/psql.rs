@@ -19,11 +19,14 @@ pub struct PsqlArgs {
 	/// Enable write mode for this psql.
 	///
 	/// By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable
-	/// writes, either pass this flag, or call `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;`
-	/// within the session.
+	/// writes, either pass this flag, or call `\W` within the session.
 	///
 	/// This also disables autocommit, so you need to issue a COMMIT; command whenever you perform
 	/// a write (insert, update, etc), as an extra safety measure.
+	///
+	/// Additionally, enabling write mode will prompt for an OTS value. This should be the name of
+	/// a person supervising the write operation, or a short message describing why you don't need
+	/// one, such as "demo" or "emergency".
 	#[arg(short = 'W', long)]
 	pub write: bool,
 
@@ -40,6 +43,9 @@ pub struct PsqlArgs {
 	///
 	/// By default, we query the database schema on startup to provide table/column completion.
 	/// Use this flag to disable that behavior (e.g., for very large databases or slow connections).
+	///
+	/// Use the `\refresh` command to manually refresh the schema cache during a session.
+	/// This is not available during a transaction for safety reasons.
 	#[arg(long)]
 	pub disable_schema_cache: bool,
 
@@ -136,6 +142,14 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),
 		user: Some(username.to_string()),
 	};
+
+	#[cfg(windows)]
+	unsafe {
+		use std::os::windows::io::AsRawHandle;
+		use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+		SetConsoleCP(ctx.args_top.codepage);
+		SetConsoleOutputCP(ctx.args_top.codepage);
+	}
 
 	// Run bestool-psql
 	let exit_code = bestool_psql::run(psql_config).wrap_err("failed to execute psql")?;

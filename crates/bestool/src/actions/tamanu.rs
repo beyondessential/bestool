@@ -7,7 +7,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use itertools::Itertools;
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
@@ -222,7 +222,7 @@ pub fn find_postgres_bin(name: &str) -> Result<OsString> {
 	if is_in_path(name).is_some() {
 		Ok(name.into())
 	} else {
-		// Ubuntu reccomends to use pg_ctlcluster over pg_ctl and doesn't put pg_ctl in PATH.
+		// Ubuntu recommends to use pg_ctlcluster over pg_ctl and doesn't put pg_ctl in PATH.
 		// Still, it should be fine for temporary database.
 		find_from_installation(r"/usr/lib/postgresql", name)
 	}

@@ -7,6 +7,18 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::trace;
 
+/// Parameters for the reader thread
+pub struct ReaderThreadParams {
+	pub reader: Box<dyn Read + Send>,
+	pub boundary: String,
+	pub output_buffer: Arc<Mutex<VecDeque<u8>>>,
+	pub current_prompt: Arc<Mutex<String>>,
+	pub current_prompt_info: Arc<Mutex<Option<PromptInfo>>>,
+	pub last_input: Arc<Mutex<String>>,
+	pub running: Arc<Mutex<bool>>,
+	pub print_enabled: Arc<Mutex<bool>>,
+}
+
 /// Spawn a background thread to read from the PTY and handle output
 ///
 /// This thread:
@@ -15,16 +27,18 @@ use tracing::trace;
 /// - Detects and formats prompts
 /// - Maintains a ring buffer for prompt detection
 /// - Writes output to stdout
-pub fn spawn_reader_thread(
-	mut reader: Box<dyn Read + Send>,
-	boundary: String,
-	output_buffer: Arc<Mutex<VecDeque<u8>>>,
-	current_prompt: Arc<Mutex<String>>,
-	current_prompt_info: Arc<Mutex<Option<PromptInfo>>>,
-	last_input: Arc<Mutex<String>>,
-	running: Arc<Mutex<bool>>,
-	print_enabled: Arc<Mutex<bool>>,
-) -> JoinHandle<()> {
+pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
+	let ReaderThreadParams {
+		mut reader,
+		boundary,
+		output_buffer,
+		current_prompt,
+		current_prompt_info,
+		last_input,
+		running,
+		print_enabled,
+	} = params;
+
 	thread::spawn(move || {
 		let mut buf = [0u8; 4096];
 		let mut skip_next = 0usize;

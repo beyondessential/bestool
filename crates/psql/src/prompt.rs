@@ -82,8 +82,8 @@ pub fn generate_boundary() -> String {
 	use rand::Rng;
 	use std::fmt::Write;
 
-	let mut rng = rand::thread_rng();
-	let random_bytes: [u8; 16] = rng.gen();
+	let mut rng = rand::rng();
+	let random_bytes: [u8; 16] = rng.random();
 
 	let mut result = String::with_capacity(32);
 	for byte in random_bytes {

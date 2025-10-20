@@ -237,16 +237,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let print_enabled = Arc::new(Mutex::new(true));
 	let print_enabled_clone = print_enabled.clone();
 
-	let reader_thread = reader::spawn_reader_thread(
+	let reader_thread = reader::spawn_reader_thread(reader::ReaderThreadParams {
 		reader,
-		boundary_clone,
-		output_buffer_clone,
-		current_prompt_clone,
-		current_prompt_info_clone,
-		last_input.clone(),
-		running_clone,
-		print_enabled_clone,
-	);
+		boundary: boundary_clone,
+		output_buffer: output_buffer_clone,
+		current_prompt: current_prompt_clone,
+		current_prompt_info: current_prompt_info_clone,
+		last_input: last_input.clone(),
+		running: running_clone,
+		print_enabled: print_enabled_clone,
+	});
 
 	let history = history::History::setup(
 		history_path.clone(),

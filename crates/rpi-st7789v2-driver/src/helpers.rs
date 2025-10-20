@@ -322,10 +322,10 @@ pub enum GateScanDirection {
 
 impl From<GateFlags> for u8 {
 	fn from(flags: GateFlags) -> u8 {
-		((match flags.mirror {
+		(match flags.mirror {
 			GateMirror::Local => 0,
 			GateMirror::Full => 1,
-		} << 4)) | (match flags.interlace {
+		} << 4) | (match flags.interlace {
 			GateInterlace::Interlaced => 0,
 			GateInterlace::Progressive => 1,
 		} << 2) | match flags.scan_direction {

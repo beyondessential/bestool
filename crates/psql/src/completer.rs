@@ -5,11 +5,12 @@ use std::{
 	sync::{Arc, Mutex, RwLock},
 };
 
+use rustyline::highlight::CmdKind;
 use rustyline::{
 	completion::{Completer, Pair},
 	highlight::Highlighter,
 	hint::Hinter,
-	validate::Validator,
+	validate::{ValidationContext, ValidationResult, Validator},
 	Context, Helper,
 };
 
@@ -530,17 +531,14 @@ impl Highlighter for SqlCompleter {
 		Cow::Borrowed(line)
 	}
 
-	fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+	fn highlight_char(&self, _line: &str, _pos: usize, _forced: CmdKind) -> bool {
 		false
 	}
 }
 
 impl Validator for SqlCompleter {
-	fn validate(
-		&self,
-		_ctx: &mut rustyline::validate::ValidationContext,
-	) -> rustyline::Result<rustyline::validate::ValidationResult> {
-		Ok(rustyline::validate::ValidationResult::Valid(None))
+	fn validate(&self, _ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+		Ok(ValidationResult::Valid(None))
 	}
 }
 

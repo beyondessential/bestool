@@ -2,7 +2,7 @@
 
 use crate::history::History;
 use miette::{IntoDiagnostic, Result};
-use redb::{Database, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable};
 use rustyline::history::{History as HistoryTrait, MemHistory};
 use rustyline::{Config, Editor};
 use std::path::Path;

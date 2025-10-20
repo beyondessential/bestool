@@ -5,9 +5,9 @@ use miette::Result;
 use crate::actions::tamanu::config::TamanuConfig;
 
 use super::{
+	InternalContext,
 	definition::AlertDefinition,
 	templates::{load_templates, render_alert},
-	InternalContext,
 };
 
 mod email;
@@ -94,8 +94,16 @@ impl SendTarget {
 			}
 
 			SendTarget::Slack { conn, .. } => {
-				conn.send(alert, &ctx, &subject, &body, &tera, tera_ctx, dry_run)
-					.await?;
+				conn.send(slack::SlackSendParams {
+					alert,
+					ctx: &ctx,
+					subject: &subject,
+					body: &body,
+					tera: &tera,
+					tera_ctx,
+					dry_run,
+				})
+				.await?;
 			}
 
 			SendTarget::Zendesk { conn, .. } => {
