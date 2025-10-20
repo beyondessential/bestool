@@ -70,7 +70,7 @@ pub fn spawn_resize_handler(pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPt
 		thread::spawn(move || unsafe {
 			debug!("starting Windows console resize handler thread");
 			let stdout_handle: HANDLE = GetStdHandle(STD_OUTPUT_HANDLE);
-			if stdout_handle == 0 || stdout_handle == -1i32 as HANDLE {
+			if stdout_handle == std::ptr::null_mut() || (stdout_handle as i32) < 0 {
 				warn!("failed to get stdout handle for resize detection");
 				return;
 			}

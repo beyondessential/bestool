@@ -73,6 +73,18 @@ pub struct History {
 impl History {
 	/// Open or create a history database at the given path
 	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+		Self::open_internal(path, true)
+	}
+
+	/// Open a history database without importing from ~/.psql_history
+	///
+	/// This is useful for tests where we want a clean database.
+	#[cfg(test)]
+	pub fn open_empty(path: impl AsRef<Path>) -> Result<Self> {
+		Self::open_internal(path, false)
+	}
+
+	fn open_internal(path: impl AsRef<Path>, import_psql_history: bool) -> Result<Self> {
 		let path = path.as_ref();
 		let is_new_db = !path.exists();
 		let db = Database::create(path).into_diagnostic()?;
@@ -81,7 +93,7 @@ impl History {
 		let mut timestamps = Self::load_timestamps(&db)?;
 
 		// Import plain text psql history if this is a new database
-		if is_new_db && timestamps.is_empty() {
+		if import_psql_history && is_new_db && timestamps.is_empty() {
 			if let Err(e) = Self::import_psql_history(&db, &mut timestamps) {
 				debug!("could not import psql history: {}", e);
 			}
@@ -767,7 +779,7 @@ mod tests {
 		let temp_dir = tempfile::tempdir().unwrap();
 		let db_path = temp_dir.path().join("test.redb");
 
-		let mut history = History::open(db_path).unwrap();
+		let mut history = History::open_empty(db_path).unwrap();
 
 		// Add some entries
 		history
@@ -830,7 +842,7 @@ mod tests {
 		let temp_dir = tempfile::tempdir().unwrap();
 		let db_path = temp_dir.path().join("test.redb");
 
-		let mut history = History::open(db_path).unwrap();
+		let mut history = History::open_empty(db_path).unwrap();
 		history.set_context("dbuser".to_string(), "sysuser".to_string(), false, None);
 
 		// Test add
