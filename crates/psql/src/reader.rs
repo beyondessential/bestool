@@ -23,6 +23,7 @@ pub fn spawn_reader_thread(
 	current_prompt_info: Arc<Mutex<Option<PromptInfo>>>,
 	last_input: Arc<Mutex<String>>,
 	running: Arc<Mutex<bool>>,
+	print_enabled: Arc<Mutex<bool>>,
 ) -> JoinHandle<()> {
 	thread::spawn(move || {
 		let mut buf = [0u8; 4096];
@@ -83,9 +84,11 @@ pub fn spawn_reader_thread(
 							*current_prompt_info.lock().unwrap() = Some(prompt_info);
 						}
 
-						print!("{}", data);
-						use std::io::Write;
-						std::io::stdout().flush().ok();
+						if *print_enabled.lock().unwrap() {
+							print!("{}", data);
+							use std::io::Write;
+							std::io::stdout().flush().ok();
+						}
 					}
 				}
 				Err(_) => break,

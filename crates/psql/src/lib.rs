@@ -233,6 +233,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	// Track the last input sent to filter out echo
 	let last_input = Arc::new(Mutex::new(String::new()));
 
+	// Control whether output is printed to stdout
+	let print_enabled = Arc::new(Mutex::new(true));
+	let print_enabled_clone = print_enabled.clone();
+
 	let reader_thread = reader::spawn_reader_thread(
 		reader,
 		boundary_clone,
@@ -241,6 +245,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		current_prompt_info_clone,
 		last_input.clone(),
 		running_clone,
+		print_enabled_clone,
 	);
 
 	let history = history::History::setup(
@@ -252,7 +257,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let schema_cache_manager = if !disable_schema_cache {
 		debug!("initializing schema cache");
-		let manager = SchemaCacheManager::new(writer.clone());
+		let manager = SchemaCacheManager::new(writer.clone(), print_enabled.clone());
 
 		if let Err(e) = manager.refresh() {
 			warn!("failed to populate schema cache: {}", e);

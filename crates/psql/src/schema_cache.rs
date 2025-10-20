@@ -62,6 +62,7 @@ impl SchemaCache {
 pub struct SchemaCacheManager {
 	cache: Arc<RwLock<SchemaCache>>,
 	pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+	print_enabled: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,10 +96,14 @@ struct SchemaRow {
 
 impl SchemaCacheManager {
 	/// Create a new cache manager with PTY writer access
-	pub fn new(pty_writer: Arc<Mutex<Box<dyn Write + Send>>>) -> Self {
+	pub fn new(
+		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+		print_enabled: Arc<Mutex<bool>>,
+	) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
 			pty_writer,
+			print_enabled,
 		}
 	}
 
@@ -110,6 +115,18 @@ impl SchemaCacheManager {
 	/// Refresh the schema cache by querying through psql
 	pub fn refresh(&self) -> Result<()> {
 		info!("refreshing schema cache");
+
+		// Disable output printing during schema refresh
+		*self.print_enabled.lock().unwrap() = false;
+
+		// Guard to ensure printing is always re-enabled
+		struct PrintGuard(Arc<Mutex<bool>>);
+		impl Drop for PrintGuard {
+			fn drop(&mut self) {
+				*self.0.lock().unwrap() = true;
+			}
+		}
+		let _guard = PrintGuard(self.print_enabled.clone());
 
 		let mut new_cache = SchemaCache::new();
 
@@ -280,6 +297,7 @@ impl Clone for SchemaCacheManager {
 		Self {
 			cache: self.cache.clone(),
 			pty_writer: self.pty_writer.clone(),
+			print_enabled: self.print_enabled.clone(),
 		}
 	}
 }
