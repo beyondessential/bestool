@@ -89,7 +89,7 @@ pub struct PsqlConfig {
 }
 
 impl PsqlConfig {
-	fn psqlrc(&self, boundary: Option<&str>) -> Result<NamedTempFile> {
+	fn psqlrc(&self, boundary: Option<&str>, disable_pager: bool) -> Result<NamedTempFile> {
 		let prompts = if let Some(boundary) = boundary {
 			format!(
 				"\\set PROMPT1 '<<<{boundary}|||1|||%/|||%n|||%#|||%R|||%x>>>'\n\
@@ -98,6 +98,12 @@ impl PsqlConfig {
 			)
 		} else {
 			String::new()
+		};
+
+		let pager_setting = if disable_pager {
+			"\\pset pager off\n"
+		} else {
+			""
 		};
 
 		let mut rc = tempfile::Builder::new()
@@ -110,6 +116,7 @@ impl PsqlConfig {
 			rc.as_file_mut(),
 			"\\encoding UTF8\n\
 			\\timing\n\
+			{pager_setting}\
 			{existing}\n\
 			{ro}\n\
 			{prompts}",
@@ -132,8 +139,9 @@ impl PsqlConfig {
 			cmd.arg("--set=AUTOCOMMIT=OFF");
 		}
 
-		let rc = self.psqlrc(boundary)?;
+		let rc = self.psqlrc(boundary, true)?;
 		cmd.env("PSQLRC", rc.path());
+		cmd.env("PAGER", "cat");
 
 		for arg in &self.args {
 			cmd.arg(arg);
@@ -145,15 +153,22 @@ impl PsqlConfig {
 		Ok((cmd, rc))
 	}
 
-	fn std_command(self, boundary: Option<&str>) -> Result<(Command, NamedTempFile)> {
+	fn std_command(
+		self,
+		boundary: Option<&str>,
+		disable_pager: bool,
+	) -> Result<(Command, NamedTempFile)> {
 		let mut cmd = Command::new(&self.psql_path);
 
 		if self.write {
 			cmd.arg("--set=AUTOCOMMIT=OFF");
 		}
 
-		let rc = self.psqlrc(boundary)?;
+		let rc = self.psqlrc(boundary, disable_pager)?;
 		cmd.env("PSQLRC", rc.path());
+		if disable_pager {
+			cmd.env("PAGER", "cat");
+		}
 
 		for arg in &self.args {
 			cmd.arg(arg);
@@ -570,7 +585,7 @@ fn run_passthrough(mut config: PsqlConfig) -> Result<i32> {
 	// explicitly cannot do writes without the protections of the wrapper
 	config.write = false;
 
-	let (mut cmd, _guard) = config.std_command(None)?;
+	let (mut cmd, _guard) = config.std_command(None, false)?;
 	let status = cmd.status().into_diagnostic()?;
 
 	Ok(status.code().unwrap_or(1))
