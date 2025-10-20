@@ -36,8 +36,8 @@ pub struct PsqlConfig {
 	/// Existing psqlrc contents
 	pub psqlrc: String,
 
-	/// Path to the history database (optional)
-	pub history_path: Option<PathBuf>,
+	/// Path to the history database
+	pub history_path: PathBuf,
 
 	/// Database user for history tracking
 	pub user: Option<String>,
@@ -180,7 +180,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let mut rl = DefaultEditor::new().into_diagnostic()?;
 
 	// Load history from redb if available
-	let history = if let Some(ref path) = history_path {
+	let history = if let Some(ref path) = Some(history_path) {
 		match history::History::open(path.clone()) {
 			Ok(h) => {
 				// Load queries into rustyline history
