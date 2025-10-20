@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum PsqlError {
@@ -164,6 +164,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let current_prompt = Arc::new(Mutex::new(String::new()));
 	let current_prompt_clone = current_prompt.clone();
 
+	// Track the parsed prompt info for transaction state checking
+	let current_prompt_info = Arc::new(Mutex::new(None));
+	let current_prompt_info_clone = current_prompt_info.clone();
+
 	// Track the last input sent to filter out echo
 	let last_input = Arc::new(Mutex::new(String::new()));
 
@@ -172,6 +176,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		boundary_clone,
 		output_buffer_clone,
 		current_prompt_clone,
+		current_prompt_info_clone,
 		last_input.clone(),
 		running_clone,
 	);
@@ -265,6 +270,17 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				}
 
 				if trimmed == "\\W" {
+					let prompt_info = current_prompt_info.lock().unwrap().clone();
+					if let Some(ref info) = prompt_info {
+						if info.in_transaction() && info.transaction == "*" {
+							eprintln!(
+								"Cannot toggle write mode while {}, please COMMIT or ROLLBACK first",
+								info.transaction_state_description()
+							);
+							continue;
+						}
+					}
+
 					let mut current_write_mode = write_mode_clone.lock().unwrap();
 					let mut current_ots = ots_clone.lock().unwrap();
 
@@ -272,12 +288,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						*current_write_mode = false;
 						*current_ots = None;
 
-						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\n";
+						let cmd = "\nSET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\nROLLBACK;\n";
 						let mut writer = writer.lock().unwrap();
 						writer.write_all(cmd.as_bytes()).ok();
 						writer.flush().ok();
 
-						eprintln!("Write mode disabled - session is now READ ONLY");
+						thread::sleep(Duration::from_millis(50));
+						info!("Write mode disabled");
+						thread::sleep(Duration::from_millis(5));
+						eprintln!("SESSION IS NOW READ ONLY");
 
 						let db_user = rl.history().db_user.clone();
 						let sys_user = rl.history().sys_user.clone();
@@ -295,12 +314,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 								*current_write_mode = true;
 								*current_ots = Some(new_ots.clone());
 
-								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\set AUTOCOMMIT off\n";
+								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\set AUTOCOMMIT off\nROLLBACK;\n";
 								let mut writer = writer.lock().unwrap();
 								writer.write_all(cmd.as_bytes()).ok();
 								writer.flush().ok();
 
-								eprintln!("Write mode enabled - AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+								thread::sleep(Duration::from_millis(50));
+								info!("Write mode enabled");
+								thread::sleep(Duration::from_millis(5));
+								eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
 
 								let db_user = rl.history().db_user.clone();
 								let sys_user = rl.history().sys_user.clone();
