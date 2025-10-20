@@ -180,24 +180,20 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let mut rl = DefaultEditor::new().into_diagnostic()?;
 
 	// Load history from redb if available
-	let history = if let Some(ref path) = Some(history_path) {
-		match history::History::open(path.clone()) {
-			Ok(h) => {
-				// Load queries into rustyline history
-				if let Ok(queries) = h.queries_for_rustyline() {
-					for query in queries {
-						let _ = rl.add_history_entry(query);
-					}
+	let history = match history::History::open(history_path) {
+		Ok(h) => {
+			// Load queries into rustyline history
+			if let Ok(queries) = h.queries_for_rustyline() {
+				for query in queries {
+					let _ = rl.add_history_entry(query);
 				}
-				Some(h)
 			}
-			Err(e) => {
-				eprintln!("Warning: Could not open history database: {}", e);
-				None
-			}
+			Some(h)
 		}
-	} else {
-		None
+		Err(e) => {
+			eprintln!("Warning: Could not open history database: {}", e);
+			None
+		}
 	};
 
 	let db_user = db_user.unwrap_or_else(|| {
