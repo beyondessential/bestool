@@ -9,9 +9,10 @@ use rustyline::history::{History as HistoryTrait, SearchDirection, SearchResult}
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tracing::{debug, info, trace, warn};
 
-const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
+pub const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
 /// A single history entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +51,7 @@ pub struct TailscalePeer {
 /// - Missing entries are handled gracefully
 /// - Timestamps can be refreshed with `reload_timestamps()`
 pub struct History {
-	db: Database,
+	db: Arc<RwLock<Database>>,
 	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
 	timestamps: Vec<u64>,
 	/// Maximum history length
@@ -74,6 +75,7 @@ impl History {
 	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
 		let path = path.as_ref();
 		let db = Database::create(path).into_diagnostic()?;
+		let db = Arc::new(RwLock::new(db));
 
 		let mut timestamps = Self::load_timestamps(&db)?;
 
@@ -97,7 +99,7 @@ impl History {
 					let to_remove = CULL_BATCH.min(timestamps.len());
 					let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
 
-					let write_txn = db.begin_write().into_diagnostic()?;
+					let write_txn = db.read().unwrap().begin_write().into_diagnostic()?;
 					{
 						let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 						for ts in old_timestamps {
@@ -131,6 +133,11 @@ impl History {
 		})
 	}
 
+	/// Clone the database handle for concurrent access
+	pub fn clone_db(&self) -> Arc<RwLock<Database>> {
+		self.db.clone()
+	}
+
 	/// Set the context for new history entries
 	pub fn set_context(
 		&mut self,
@@ -153,8 +160,8 @@ impl History {
 	}
 
 	/// Load all timestamps from the database
-	fn load_timestamps(db: &Database) -> Result<Vec<u64>> {
-		let read_txn = db.begin_read().into_diagnostic()?;
+	fn load_timestamps(db: &Arc<RwLock<Database>>) -> Result<Vec<u64>> {
+		let read_txn = db.read().unwrap().begin_read().into_diagnostic()?;
 
 		let table = match read_txn.open_table(HISTORY_TABLE) {
 			Ok(table) => table,
@@ -190,7 +197,7 @@ impl History {
 	///
 	/// Returns None if the entry doesn't exist (may have been deleted by another process)
 	fn get_entry(&self, timestamp: u64) -> Result<Option<HistoryEntry>> {
-		let read_txn = self.db.begin_read().into_diagnostic()?;
+		let read_txn = self.db.read().unwrap().begin_read().into_diagnostic()?;
 
 		let table = match read_txn.open_table(HISTORY_TABLE) {
 			Ok(table) => table,
@@ -208,7 +215,7 @@ impl History {
 
 	/// Compact the database to reclaim space from deleted entries
 	pub fn compact(&mut self) -> Result<()> {
-		self.db.compact().into_diagnostic()?;
+		self.db.write().unwrap().compact().into_diagnostic()?;
 		Ok(())
 	}
 
@@ -292,7 +299,7 @@ impl History {
 			.into_diagnostic()?
 			.as_micros() as u64;
 
-		let write_txn = self.db.begin_write().into_diagnostic()?;
+		let write_txn = self.db.read().unwrap().begin_write().into_diagnostic()?;
 		{
 			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 			table.insert(timestamp, json.as_str()).into_diagnostic()?;
@@ -308,7 +315,7 @@ impl History {
 			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
 
 			// Remove from database (ignore errors if already deleted by another process)
-			if let Ok(write_txn) = self.db.begin_write() {
+			if let Ok(write_txn) = self.db.read().unwrap().begin_write() {
 				{
 					if let Ok(mut table) = write_txn.open_table(HISTORY_TABLE) {
 						for ts in old_timestamps {
@@ -325,7 +332,7 @@ impl History {
 
 	/// Get all history entries in chronological order (oldest first)
 	pub fn list(&self) -> Result<Vec<(u64, HistoryEntry)>> {
-		let read_txn = self.db.begin_read().into_diagnostic()?;
+		let read_txn = self.db.read().unwrap().begin_read().into_diagnostic()?;
 		let table = read_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 
 		let mut entries = Vec::new();
@@ -364,7 +371,7 @@ impl History {
 
 	/// Clear all history
 	pub fn clear_all(&mut self) -> Result<()> {
-		let write_txn = self.db.begin_write().into_diagnostic()?;
+		let write_txn = self.db.read().unwrap().begin_write().into_diagnostic()?;
 		{
 			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 			// Collect all keys first to avoid iterator invalidation
@@ -479,7 +486,7 @@ impl HistoryTrait for History {
 			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
 
 			// Remove from database
-			let write_txn = self.db.begin_write().map_err(|e| {
+			let write_txn = self.db.read().unwrap().begin_write().map_err(|e| {
 				rustyline::error::ReadlineError::Io(std::io::Error::new(
 					std::io::ErrorKind::Other,
 					e.to_string(),
