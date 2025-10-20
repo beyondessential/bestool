@@ -1,0 +1,72 @@
+#!/usr/bin/expect -f
+
+set timeout 10
+
+# Create a temporary directory for test history
+set test_dir [exec mktemp -d]
+set history_db "$test_dir/demo_history.redb"
+
+puts "\n=== bestool-psql History Demo ==="
+puts "History database: $history_db\n"
+
+# Start the bestool-psql program with history enabled
+spawn cargo run --package bestool-psql --bin bestool-psql -- --history-path $history_db -U demo_user -- -d tamanu_meta
+
+# Wait for initial prompt
+expect {
+    timeout { puts "ERROR: Timeout waiting for initial prompt"; exit 1 }
+    "tamanu_meta=# " { puts "✓ Connected to database" }
+}
+
+# Send first query
+puts "\n--- Sending Query 1: SELECT 1 ---"
+send "SELECT 1;\r"
+
+expect {
+    timeout { puts "ERROR: Timeout"; exit 1 }
+    "tamanu_meta=# " { puts "✓ Query 1 executed" }
+}
+
+sleep 1
+
+# Send second query
+puts "\n--- Sending Query 2: SELECT current_user ---"
+send "SELECT current_user;\r"
+
+expect {
+    timeout { puts "ERROR: Timeout"; exit 1 }
+    "tamanu_meta=# " { puts "✓ Query 2 executed" }
+}
+
+sleep 1
+
+# Send third query
+puts "\n--- Sending Query 3: SELECT version() ---"
+send "SELECT version();\r"
+
+expect {
+    timeout { puts "ERROR: Timeout"; exit 1 }
+    "tamanu_meta=# " { puts "✓ Query 3 executed" }
+}
+
+sleep 1
+
+# Exit psql
+puts "\n--- Exiting psql ---"
+send "\\q\r"
+
+expect eof
+
+puts "\n✓ Session completed\n"
+
+# Now show the history using the psql-history tool
+puts "=== History Contents ===\n"
+exec cargo run --bin psql-history -- --history-path $history_db recent --limit 10
+
+puts "\n=== History Statistics ===\n"
+exec cargo run --bin psql-history -- --history-path $history_db stats
+
+puts "\n=== Cleanup ===\n"
+puts "To clean up the test database:"
+puts "  rm -rf $test_dir"
+puts "\nTest directory preserved at: $test_dir\n"

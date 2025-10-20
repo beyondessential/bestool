@@ -59,10 +59,57 @@ pub struct History {
 impl History {
 	/// Open or create a history database at the given path
 	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+		let path = path.as_ref();
 		let db = Database::create(path).into_diagnostic()?;
 
 		// Load all timestamps for indexed access
-		let timestamps = Self::load_timestamps(&db)?;
+		let mut timestamps = Self::load_timestamps(&db)?;
+
+		// Check database size and cull if necessary
+		if let Ok(metadata) = std::fs::metadata(path) {
+			const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+			const TARGET_SIZE: u64 = 90 * 1024 * 1024; // 90MB
+			const CULL_BATCH: usize = 100; // Remove 100 entries at a time
+
+			if metadata.len() > MAX_SIZE {
+				eprintln!(
+					"History database is {}MB, culling to 90MB...",
+					metadata.len() / (1024 * 1024)
+				);
+
+				// Remove oldest entries in batches until we reach target size
+				while timestamps.len() > 0 {
+					// Check current size
+					if let Ok(metadata) = std::fs::metadata(path) {
+						if metadata.len() <= TARGET_SIZE {
+							break;
+						}
+					}
+
+					// Remove a batch of oldest entries
+					let to_remove = CULL_BATCH.min(timestamps.len());
+					let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
+
+					// Remove from database
+					let write_txn = db.begin_write().into_diagnostic()?;
+					{
+						let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
+						for ts in old_timestamps {
+							table.remove(ts).into_diagnostic()?;
+						}
+					}
+					write_txn.commit().into_diagnostic()?;
+				}
+
+				eprintln!(
+					"Culled history, now {}MB with {} entries",
+					std::fs::metadata(path)
+						.map(|m| m.len() / (1024 * 1024))
+						.unwrap_or(0),
+					timestamps.len()
+				);
+			}
+		}
 
 		Ok(Self {
 			db,
