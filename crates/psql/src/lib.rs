@@ -1,3 +1,28 @@
+use std::{
+	collections::VecDeque,
+	io::Write,
+	path::PathBuf,
+	process::Command,
+	sync::{Arc, Mutex},
+	thread,
+	time::Duration,
+};
+
+use completer::SqlCompleter;
+use miette::{miette, IntoDiagnostic, Result};
+use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use psql_writer::PsqlWriter;
+use rustyline::{
+	history::{History as _, SearchDirection},
+	Config, Editor,
+};
+use schema_cache::SchemaCacheManager;
+use tempfile::NamedTempFile;
+use thiserror::Error;
+use tracing::{debug, info, trace, warn};
+
+pub use ots::prompt_for_ots;
+
 mod completer;
 pub mod highlighter;
 pub mod history;
@@ -7,9 +32,6 @@ mod psql_writer;
 mod reader;
 mod schema_cache;
 mod terminal;
-
-// Re-export for convenience
-pub use ots::prompt_for_ots;
 
 /// Set the console codepage on Windows
 ///
@@ -29,24 +51,6 @@ pub fn set_console_codepage(codepage: u32) {
 pub fn set_console_codepage(_codepage: u32) {
 	// No-op on non-Windows platforms
 }
-
-use completer::SqlCompleter;
-use miette::{miette, IntoDiagnostic, Result};
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use psql_writer::PsqlWriter;
-use rustyline::history::{History as _, SearchDirection};
-use rustyline::{Config, Editor};
-use schema_cache::SchemaCacheManager;
-use std::collections::VecDeque;
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-use tempfile::NamedTempFile;
-use thiserror::Error;
-use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum PsqlError {

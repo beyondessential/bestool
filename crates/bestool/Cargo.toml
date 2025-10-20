@@ -13,7 +13,7 @@ repository = "https://github.com/beyondessential/bestool"
 
 [dependencies]
 algae-cli = { version = "1.0.8", path = "../algae-cli", optional = true }
-bestool-psql = { version = "0.1.0", path = "../psql", optional = true }
+bestool-psql = { version = "0.1.0", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.22", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
