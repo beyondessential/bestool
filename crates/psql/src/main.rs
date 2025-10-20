@@ -35,10 +35,6 @@ pub struct Args {
 	#[arg(long)]
 	pub history_path: Option<PathBuf>,
 
-	/// Disable history recording
-	#[arg(long)]
-	pub no_history: bool,
-
 	/// Database user (for history tracking, defaults to $USER)
 	#[arg(short = 'U', long)]
 	pub user: Option<String>,
@@ -88,13 +84,10 @@ fn main() -> Result<()> {
 		read_psqlrc()?
 	};
 
-	// Determine history path unless --no-history is specified
-	let history_path = if args.no_history {
-		None
-	} else if let Some(path) = args.history_path {
-		Some(path)
+	let history_path = if let Some(path) = args.history_path {
+		path
 	} else {
-		History::default_path().ok()
+		History::default_path()?
 	};
 
 	let config = bestool_psql::PsqlConfig {
