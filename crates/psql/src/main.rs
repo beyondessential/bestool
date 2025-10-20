@@ -2,7 +2,7 @@ use bestool_psql::history::History;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, IntoDiagnostic, Result};
-use std::{fs, io::Write, path::PathBuf};
+use std::{fs, path::PathBuf};
 use tracing::debug;
 
 /// Interactive psql wrapper with custom readline and editor interception
@@ -109,20 +109,15 @@ fn main() -> Result<()> {
 		SetConsoleOutputCP(args.codepage);
 	}
 
+	let history_path = if let Some(path) = args.history_path.clone() {
+		path
+	} else {
+		History::default_path()?
+	};
+
 	// Prompt for OTS when write mode is enabled
 	let ots = if args.write {
-		print!("OTS? ");
-		std::io::stdout().flush().into_diagnostic()?;
-
-		let mut input = String::new();
-		std::io::stdin().read_line(&mut input).into_diagnostic()?;
-
-		let trimmed = input.trim();
-		if trimmed.is_empty() {
-			return Err(miette!("OTS is required for write mode"));
-		}
-
-		Some(trimmed.to_string())
+		Some(bestool_psql::prompt_for_ots(&history_path)?)
 	} else {
 		None
 	};
@@ -131,12 +126,6 @@ fn main() -> Result<()> {
 		String::new()
 	} else {
 		read_psqlrc()?
-	};
-
-	let history_path = if let Some(path) = args.history_path {
-		path
-	} else {
-		History::default_path()?
 	};
 
 	let config = bestool_psql::PsqlConfig {

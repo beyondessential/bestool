@@ -1,6 +1,10 @@
 pub mod history;
+mod ots;
 mod reader;
 mod terminal;
+
+// Re-export for convenience
+pub use ots::prompt_for_ots;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -202,9 +206,13 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
-	let write_mode = config.write;
-	let ots = config.ots.clone();
 	let boundary_clone = boundary.clone();
+
+	// Track write mode and OTS as mutable shared state for \W command
+	let write_mode = Arc::new(Mutex::new(config.write));
+	let ots = Arc::new(Mutex::new(config.ots.clone()));
+	let write_mode_clone = write_mode.clone();
+	let ots_clone = ots.clone();
 
 	let (cmd, _rc_guard) = config.command(&boundary)?;
 	let mut child = pty_pair
@@ -251,7 +259,12 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		running_clone,
 	);
 
-	let history = history::History::setup(history_path, db_user, write_mode, ots);
+	let history = history::History::setup(
+		history_path.clone(),
+		db_user,
+		*write_mode.lock().unwrap(),
+		ots.lock().unwrap().clone(),
+	);
 
 	let mut rl: Editor<(), history::History> = Editor::with_history(
 		Config::builder()
@@ -331,6 +344,60 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
 					warn!("editor command intercepted (not yet implemented)");
 					// TODO: Open editor, read content, save history, send to psql
+					continue;
+				}
+
+				if trimmed == "\\W" {
+					let mut current_write_mode = write_mode_clone.lock().unwrap();
+					let mut current_ots = ots_clone.lock().unwrap();
+
+					if *current_write_mode {
+						*current_write_mode = false;
+						*current_ots = None;
+
+						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n";
+						let mut writer = writer.lock().unwrap();
+						writer.write_all(cmd.as_bytes()).ok();
+						writer.flush().ok();
+
+						eprintln!("Write mode disabled - session is now READ ONLY");
+
+						let db_user = rl.history().db_user.clone();
+						let sys_user = rl.history().sys_user.clone();
+						rl.history_mut().set_context(db_user, sys_user, false, None);
+					} else {
+						drop(current_write_mode);
+						drop(current_ots);
+
+						match ots::prompt_for_ots(&history_path) {
+							Ok(new_ots) => {
+								let mut current_write_mode = write_mode_clone.lock().unwrap();
+								let mut current_ots = ots_clone.lock().unwrap();
+
+								*current_write_mode = true;
+								*current_ots = Some(new_ots.clone());
+
+								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\nSET AUTOCOMMIT=OFF;\n";
+								let mut writer = writer.lock().unwrap();
+								writer.write_all(cmd.as_bytes()).ok();
+								writer.flush().ok();
+
+								eprintln!("Write mode enabled - AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+
+								let db_user = rl.history().db_user.clone();
+								let sys_user = rl.history().sys_user.clone();
+								rl.history_mut().set_context(
+									db_user,
+									sys_user,
+									true,
+									Some(new_ots),
+								);
+							}
+							Err(e) => {
+								eprintln!("Failed to enable write mode: {}", e);
+							}
+						}
+					}
 					continue;
 				}
 
