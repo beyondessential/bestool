@@ -10,6 +10,25 @@ mod terminal;
 // Re-export for convenience
 pub use ots::prompt_for_ots;
 
+/// Set the console codepage on Windows
+///
+/// This is useful for ensuring proper UTF-8 display in Windows console.
+/// On non-Windows platforms, this is a no-op.
+#[cfg(windows)]
+pub fn set_console_codepage(codepage: u32) {
+	unsafe {
+		use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+		SetConsoleCP(codepage);
+		SetConsoleOutputCP(codepage);
+	}
+}
+
+/// Set the console codepage on Windows (no-op on other platforms)
+#[cfg(not(windows))]
+pub fn set_console_codepage(_codepage: u32) {
+	// No-op on non-Windows platforms
+}
+
 use completer::SqlCompleter;
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};

@@ -122,13 +122,7 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	#[cfg(windows)]
-	unsafe {
-		use std::os::windows::io::AsRawHandle;
-		use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
-		SetConsoleCP(args.codepage);
-		SetConsoleOutputCP(args.codepage);
-	}
+	bestool_psql::set_console_codepage(args.codepage);
 
 	let history_path = if let Some(path) = args.history_path.clone() {
 		path

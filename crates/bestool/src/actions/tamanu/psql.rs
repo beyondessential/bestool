@@ -143,13 +143,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		user: Some(username.to_string()),
 	};
 
-	#[cfg(windows)]
-	unsafe {
-		use std::os::windows::io::AsRawHandle;
-		use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
-		SetConsoleCP(ctx.args_top.codepage);
-		SetConsoleOutputCP(ctx.args_top.codepage);
-	}
+	bestool_psql::set_console_codepage(ctx.args_sub.codepage);
 
 	// Run bestool-psql
 	let exit_code = bestool_psql::run(psql_config).wrap_err("failed to execute psql")?;
