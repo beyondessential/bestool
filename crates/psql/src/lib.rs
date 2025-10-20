@@ -1,4 +1,6 @@
 pub mod history;
+mod reader;
+mod terminal;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -6,7 +8,7 @@ use rand::Rng;
 use rustyline::history::History as HistoryTrait;
 use rustyline::{Config, Editor};
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -98,19 +100,6 @@ impl PromptInfo {
 	}
 }
 
-#[cfg(unix)]
-use signal_hook::consts::SIGWINCH;
-#[cfg(unix)]
-use signal_hook::iterator::Signals;
-
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::HANDLE;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::{
-	GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
-	WINDOW_BUFFER_SIZE_EVENT,
-};
-
 #[derive(Debug, Error)]
 pub enum PsqlError {
 	#[error("psql process terminated unexpectedly")]
@@ -196,11 +185,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let pty_system = NativePtySystem::default();
 
-	let (cols, rows) = terminal_size::terminal_size()
-		.map(|(w, h)| (w.0, h.0))
-		.unwrap_or((80, 24));
-
-	debug!(cols, rows, "terminal size detected");
+	let (cols, rows) = terminal::get_terminal_size();
 
 	let pty_pair = pty_system
 		.openpty(PtySize {
@@ -213,83 +198,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let pty_master = Arc::new(Mutex::new(pty_pair.master));
 
-	#[cfg(unix)]
-	{
-		let pty_master_clone = pty_master.clone();
-		thread::spawn(move || {
-			debug!("starting SIGWINCH handler thread");
-			let mut signals = match Signals::new(&[SIGWINCH]) {
-				Ok(s) => s,
-				Err(e) => {
-					warn!("failed to register SIGWINCH handler: {}", e);
-					return;
-				}
-			};
-
-			for _ in signals.forever() {
-				if let Some((w, h)) = terminal_size::terminal_size() {
-					let new_size = PtySize {
-						rows: h.0,
-						cols: w.0,
-						pixel_width: 0,
-						pixel_height: 0,
-					};
-
-					debug!(cols = w.0, rows = h.0, "terminal resized (SIGWINCH)");
-					if let Ok(master) = pty_master_clone.lock() {
-						let _ = master.resize(new_size);
-					}
-				}
-			}
-		});
-	}
-
-	#[cfg(windows)]
-	{
-		let pty_master_clone = pty_master.clone();
-		thread::spawn(move || unsafe {
-			debug!("starting Windows console resize handler thread");
-			let stdout_handle: HANDLE = GetStdHandle(STD_OUTPUT_HANDLE);
-			if stdout_handle == 0 || stdout_handle == -1i32 as HANDLE {
-				warn!("failed to get stdout handle for resize detection");
-				return;
-			}
-
-			let mut last_size = (cols, rows);
-
-			loop {
-				thread::sleep(Duration::from_millis(200));
-
-				let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
-				if GetConsoleScreenBufferInfo(stdout_handle, &mut csbi) == 0 {
-					continue;
-				}
-
-				let new_cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as u16;
-				let new_rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as u16;
-
-				if (new_cols, new_rows) != last_size {
-					last_size = (new_cols, new_rows);
-
-					let new_size = PtySize {
-						rows: new_rows,
-						cols: new_cols,
-						pixel_width: 0,
-						pixel_height: 0,
-					};
-
-					debug!(
-						cols = new_cols,
-						rows = new_rows,
-						"terminal resized (Windows)"
-					);
-					if let Ok(master) = pty_master_clone.lock() {
-						let _ = master.resize(new_size);
-					}
-				}
-			}
-		});
-	}
+	terminal::spawn_resize_handler(pty_master.clone());
 
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
@@ -332,100 +241,17 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	// Track the last input sent to filter out echo
 	let last_input = Arc::new(Mutex::new(String::new()));
-	let last_input_clone = last_input.clone();
 
-	let reader_thread = thread::spawn(move || {
-		let mut reader = reader;
-		let mut buf = [0u8; 4096];
-		let mut skip_next = 0usize;
+	let reader_thread = reader::spawn_reader_thread(
+		reader,
+		boundary_clone,
+		output_buffer_clone,
+		current_prompt_clone,
+		last_input.clone(),
+		running_clone,
+	);
 
-		loop {
-			match reader.read(&mut buf) {
-				Ok(0) => break, // EOF
-				Ok(n) => {
-					// Store in buffer for prompt detection
-					let mut buffer = output_buffer_clone.lock().unwrap();
-					for &byte in &buf[..n] {
-						if buffer.len() >= 1024 {
-							buffer.pop_front();
-						}
-						buffer.push_back(byte);
-					}
-
-					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
-					trace!(data, "read some data");
-
-					// Filter out echoed input if we're expecting echo
-					if skip_next > 0 {
-						let to_skip = skip_next.min(data.len());
-						data.drain(..to_skip);
-						skip_next -= to_skip;
-					} else {
-						let expected_echo = last_input_clone.lock().unwrap().clone();
-						if !expected_echo.is_empty() {
-							// PTY converts \n to \r\n
-							let normalized = expected_echo.replace('\n', "\r\n");
-							if data.starts_with(&normalized) {
-								data.drain(..normalized.len());
-								last_input_clone.lock().unwrap().clear();
-							} else if normalized.starts_with(&data) {
-								// Partial match - skip this chunk and continue
-								skip_next = normalized.len() - data.len();
-								data.clear();
-							}
-						}
-					}
-
-					if !data.is_empty() {
-						// Check if this contains our prompt boundary marker
-						if let Some(prompt_info) = PromptInfo::parse(&data, &boundary_clone) {
-							// Replace the boundary marker with formatted prompt
-							let formatted = prompt_info.format_prompt();
-							let marker = format!("<<<{}|||", boundary_clone);
-							if let Some(start) = data.find(&marker) {
-								if let Some(end) = data[start..].find(">>>") {
-									let full_marker_end = start + end + 3;
-									data.replace_range(start..full_marker_end, &formatted);
-								}
-							}
-
-							// Store the formatted prompt
-							*current_prompt_clone.lock().unwrap() = formatted;
-						}
-
-						print!("{}", data);
-						std::io::stdout().flush().ok();
-					}
-				}
-				Err(_) => break,
-			}
-		}
-		*running_clone.lock().unwrap() = false;
-	});
-
-	let db_user = db_user.unwrap_or_else(|| {
-		std::env::var("USER")
-			.or_else(|_| std::env::var("USERNAME"))
-			.unwrap_or_else(|_| "unknown".to_string())
-	});
-
-	let sys_user = std::env::var("USER")
-		.or_else(|_| std::env::var("USERNAME"))
-		.unwrap_or_else(|_| "unknown".to_string());
-
-	let mut history = history::History::open(history_path).unwrap_or_else(|e| {
-		warn!("could not open history database: {}", e);
-		debug!("creating fallback history database");
-		// Create a temporary in-memory fallback (this will still fail, but provides a better error)
-		history::History::open(
-			std::env::temp_dir().join(format!("bestool-psql-fallback-{}.redb", std::process::id())),
-		)
-		.expect("Failed to create fallback history database")
-	});
-
-	history.set_context(db_user.clone(), sys_user.clone(), write_mode, ots);
-
-	debug!(db_user, sys_user, write_mode, "history context set");
+	let history = history::History::setup(history_path, db_user, write_mode, ots);
 
 	let mut rl: Editor<(), history::History> = Editor::with_history(
 		Config::builder()
