@@ -1,7 +1,9 @@
 use bestool_psql::history::History;
 use clap::{Parser, Subcommand};
+use jiff::Timestamp;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, IntoDiagnostic, Result};
+use serde::Serialize;
 use std::path::PathBuf;
 use tracing::debug;
 
@@ -122,7 +124,7 @@ fn main() -> Result<()> {
 			}
 
 			for (timestamp, entry) in entries {
-				let datetime = timestamp_to_datetime(timestamp);
+				let datetime = timestamp_to_rfc3339(timestamp);
 				let mode = if entry.writemode { "WRITE" } else { "READ" };
 				println!(
 					"[{}] {} - db={} sys={}",
@@ -149,7 +151,7 @@ fn main() -> Result<()> {
 			}
 
 			for (timestamp, entry) in entries {
-				let datetime = timestamp_to_datetime(timestamp);
+				let datetime = timestamp_to_rfc3339(timestamp);
 				let mode = if entry.writemode { "WRITE" } else { "READ" };
 				println!(
 					"[{}] {} - db:{} sys:{}",
@@ -211,8 +213,8 @@ fn main() -> Result<()> {
 				}
 			}
 
-			let oldest = timestamp_to_datetime(entries.first().unwrap().0);
-			let newest = timestamp_to_datetime(entries.last().unwrap().0);
+			let oldest = timestamp_to_rfc3339(entries.first().unwrap().0);
+			let newest = timestamp_to_rfc3339(entries.last().unwrap().0);
 
 			println!("History Statistics");
 			println!("==================");
@@ -247,13 +249,33 @@ fn main() -> Result<()> {
 		Commands::Export { output } => {
 			let entries = history.list()?;
 
-			let json = serde_json::to_string_pretty(&entries).into_diagnostic()?;
+			// Convert entries to export format with RFC3339 timestamps
+			let export_entries: Vec<ExportEntry> = entries
+				.into_iter()
+				.map(|(timestamp, entry)| ExportEntry {
+					ts: timestamp_to_rfc3339(timestamp),
+					query: entry.query,
+					db_user: entry.db_user,
+					sys_user: entry.sys_user,
+					writemode: entry.writemode,
+					tailscale: entry.tailscale,
+					ots: entry.ots,
+				})
+				.collect();
 
 			if let Some(path) = output {
-				std::fs::write(path, json).into_diagnostic()?;
+				use std::io::Write;
+				let mut file = std::fs::File::create(path).into_diagnostic()?;
+				for entry in export_entries {
+					let json = serde_json::to_string(&entry).into_diagnostic()?;
+					writeln!(file, "{}", json).into_diagnostic()?;
+				}
 				println!("History exported.");
 			} else {
-				println!("{}", json);
+				for entry in export_entries {
+					let json = serde_json::to_string(&entry).into_diagnostic()?;
+					println!("{}", json);
+				}
 			}
 		}
 	}
@@ -261,39 +283,91 @@ fn main() -> Result<()> {
 	Ok(())
 }
 
-fn timestamp_to_datetime(micros: u64) -> String {
-	use std::time::{Duration, UNIX_EPOCH};
+/// Export entry format with RFC3339 timestamp
+#[derive(Debug, Serialize)]
+struct ExportEntry {
+	ts: String,
+	query: String,
+	db_user: String,
+	sys_user: String,
+	writemode: bool,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	tailscale: Vec<bestool_psql::history::TailscalePeer>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	ots: Option<String>,
+}
 
-	let duration = Duration::from_micros(micros);
-	let system_time = UNIX_EPOCH + duration;
+fn timestamp_to_rfc3339(micros: u64) -> String {
+	// Convert microseconds to seconds and nanoseconds
+	let secs = (micros / 1_000_000) as i64;
+	let nanos = ((micros % 1_000_000) * 1_000) as i32;
 
-	if let Ok(duration_since_epoch) = system_time.duration_since(UNIX_EPOCH) {
-		let secs = duration_since_epoch.as_secs();
-		let nanos = duration_since_epoch.subsec_nanos();
+	// Create timestamp and format as RFC3339
+	Timestamp::new(secs, nanos)
+		.map(|ts| ts.to_string())
+		.unwrap_or_else(|_| format!("invalid-timestamp-{}", micros))
+}
 
-		let days_since_epoch = secs / 86400;
-		let seconds_today = secs % 86400;
-		let hours = seconds_today / 3600;
-		let minutes = (seconds_today % 3600) / 60;
-		let seconds = seconds_today % 60;
+#[cfg(test)]
+mod tests {
+	use super::*;
 
-		let year = 1970 + (days_since_epoch / 365) as i32;
-		let day_of_year = (days_since_epoch % 365) as u32;
+	#[test]
+	fn test_timestamp_to_rfc3339() {
+		// Test a known timestamp: 2024-01-15 13:10:45.123456 UTC
+		// = 1705324245123456 microseconds since epoch
+		let micros = 1705324245123456;
+		let rfc3339 = timestamp_to_rfc3339(micros);
 
-		let month = 1 + (day_of_year / 30).min(11);
-		let day = 1 + (day_of_year % 30).min(30);
+		// Should be in RFC3339 format with T separator and Z timezone
+		assert_eq!(rfc3339, "2024-01-15T13:10:45.123456Z");
+	}
 
-		format!(
-			"{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}",
-			year,
-			month,
-			day,
-			hours,
-			minutes,
-			seconds,
-			nanos / 1000
-		)
-	} else {
-		format!("{}", micros)
+	#[test]
+	fn test_export_entry_serialization() {
+		let entry = ExportEntry {
+			ts: "2024-01-15T12:30:45.123456Z".to_string(),
+			query: "SELECT * FROM users;".to_string(),
+			db_user: "postgres".to_string(),
+			sys_user: "alice".to_string(),
+			writemode: false,
+			tailscale: vec![],
+			ots: None,
+		};
+
+		let json = serde_json::to_string(&entry).unwrap();
+
+		// Should be compact (single line)
+		assert!(!json.contains('\n'));
+
+		// Should contain expected fields
+		assert!(json.contains("\"ts\""));
+		assert!(json.contains("\"query\""));
+		assert!(json.contains("\"db_user\""));
+		assert!(json.contains("\"sys_user\""));
+		assert!(json.contains("\"writemode\""));
+
+		// Should NOT contain empty tailscale or null ots (due to skip_serializing_if)
+		assert!(!json.contains("\"tailscale\""));
+		assert!(!json.contains("\"ots\""));
+	}
+
+	#[test]
+	fn test_export_entry_with_ots() {
+		let entry = ExportEntry {
+			ts: "2024-01-15T12:30:45.123456Z".to_string(),
+			query: "INSERT INTO logs VALUES (1);".to_string(),
+			db_user: "postgres".to_string(),
+			sys_user: "alice".to_string(),
+			writemode: true,
+			tailscale: vec![],
+			ots: Some("bob-watching".to_string()),
+		};
+
+		let json = serde_json::to_string(&entry).unwrap();
+
+		// Should contain ots when present
+		assert!(json.contains("\"ots\""));
+		assert!(json.contains("bob-watching"));
 	}
 }

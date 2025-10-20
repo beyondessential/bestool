@@ -99,7 +99,7 @@ dependencies = [
  "futures",
  "indicatif",
  "itertools",
- "jiff",
+ "jiff 0.2.15",
  "miette",
  "pinentry",
  "rand 0.9.2",
@@ -407,6 +407,7 @@ name = "bestool-psql"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "jiff 0.1.29",
  "lloggs",
  "miette",
  "portable-pty",
@@ -2548,6 +2549,20 @@ name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+
+[[package]]
+name = "jiff"
+version = "0.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c04ef77ae73f3cf50510712722f0c4e8b46f5aaa1bf5ffad2ae213e6495e78e5"
+dependencies = [
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "jiff"
