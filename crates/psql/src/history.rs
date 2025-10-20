@@ -162,6 +162,12 @@ impl History {
 		serde_json::from_str(json.value()).into_diagnostic()
 	}
 
+	/// Compact the database to reclaim space from deleted entries
+	pub fn compact(&mut self) -> Result<()> {
+		self.db.compact().into_diagnostic()?;
+		Ok(())
+	}
+
 	/// Get the default history database path
 	pub fn default_path() -> Result<PathBuf> {
 		let cache_dir = if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
