@@ -2,7 +2,7 @@ use bestool_psql::history::History;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, IntoDiagnostic, Result};
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 use tracing::debug;
 
 /// Interactive psql wrapper with custom readline and editor interception
@@ -109,6 +109,24 @@ fn main() -> Result<()> {
 		SetConsoleOutputCP(args.codepage);
 	}
 
+	// Prompt for OTS when write mode is enabled
+	let ots = if args.write {
+		print!("OTS? ");
+		std::io::stdout().flush().into_diagnostic()?;
+
+		let mut input = String::new();
+		std::io::stdin().read_line(&mut input).into_diagnostic()?;
+
+		let trimmed = input.trim();
+		if trimmed.is_empty() {
+			return Err(miette!("OTS is required for write mode"));
+		}
+
+		Some(trimmed.to_string())
+	} else {
+		None
+	};
+
 	let psqlrc = if args.no_psqlrc {
 		String::new()
 	} else {
@@ -128,6 +146,7 @@ fn main() -> Result<()> {
 		psqlrc,
 		history_path,
 		user: args.user,
+		ots,
 	};
 
 	if args.write {

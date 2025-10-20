@@ -410,6 +410,7 @@ dependencies = [
  "lloggs",
  "miette",
  "portable-pty",
+ "rand 0.8.5",
  "redb",
  "rustyline",
  "serde",
