@@ -27,6 +27,9 @@ pub struct HistoryEntry {
 	/// Tailscale peer information (if tailscale is installed and has active peers)
 	#[serde(skip_serializing_if = "Vec::is_empty", default)]
 	pub tailscale: Vec<TailscalePeer>,
+	/// OTS (Over The Shoulder) value for write mode sessions
+	#[serde(skip_serializing_if = "Option::is_none", default)]
+	pub ots: Option<String>,
 }
 
 /// Information about a Tailscale peer
@@ -62,6 +65,8 @@ pub struct History {
 	sys_user: String,
 	/// Write mode for new entries
 	writemode: bool,
+	/// OTS value for new entries
+	ots: Option<String>,
 }
 
 impl History {
@@ -122,15 +127,29 @@ impl History {
 			db_user: String::new(),
 			sys_user: String::new(),
 			writemode: false,
+			ots: None,
 		})
 	}
 
 	/// Set the context for new history entries
-	pub fn set_context(&mut self, db_user: String, sys_user: String, writemode: bool) {
-		debug!(?db_user, ?sys_user, writemode, "setting history context");
+	pub fn set_context(
+		&mut self,
+		db_user: String,
+		sys_user: String,
+		writemode: bool,
+		ots: Option<String>,
+	) {
+		debug!(
+			?db_user,
+			?sys_user,
+			writemode,
+			?ots,
+			"setting history context"
+		);
 		self.db_user = db_user;
 		self.sys_user = sys_user;
 		self.writemode = writemode;
+		self.ots = ots;
 	}
 
 	/// Load all timestamps from the database
@@ -218,6 +237,7 @@ impl History {
 		db_user: String,
 		sys_user: String,
 		writemode: bool,
+		ots: Option<String>,
 	) -> Result<()> {
 		trace!("adding history entry");
 		let tailscale = get_tailscale_peers().ok().unwrap_or_default();
@@ -228,6 +248,7 @@ impl History {
 			sys_user,
 			writemode,
 			tailscale,
+			ots,
 		};
 
 		let json = serde_json::to_string(&entry).into_diagnostic()?;
@@ -392,6 +413,7 @@ impl HistoryTrait for History {
 			self.db_user.clone(),
 			self.sys_user.clone(),
 			self.writemode,
+			self.ots.clone(),
 		)
 		.map_err(|e| {
 			warn!("failed to add history entry: {}", e);
@@ -676,6 +698,7 @@ mod tests {
 				"dbuser".to_string(),
 				"testuser".to_string(),
 				false,
+				None,
 			)
 			.unwrap();
 		history
@@ -684,6 +707,7 @@ mod tests {
 				"dbuser".to_string(),
 				"testuser".to_string(),
 				false,
+				None,
 			)
 			.unwrap();
 		history
@@ -692,6 +716,7 @@ mod tests {
 				"dbuser".to_string(),
 				"testuser".to_string(),
 				true,
+				Some("John Doe".to_string()),
 			)
 			.unwrap();
 
@@ -704,6 +729,7 @@ mod tests {
 		assert_eq!(entries[2].1.writemode, true);
 		assert_eq!(entries[2].1.db_user, "dbuser");
 		assert_eq!(entries[2].1.sys_user, "testuser");
+		assert_eq!(entries[2].1.ots, Some("John Doe".to_string()));
 
 		// Get recent entries
 		let recent = history.recent(2).unwrap();
@@ -727,7 +753,7 @@ mod tests {
 		let db_path = temp_dir.path().join("test.redb");
 
 		let mut history = History::open(db_path).unwrap();
-		history.set_context("dbuser".to_string(), "sysuser".to_string(), false);
+		history.set_context("dbuser".to_string(), "sysuser".to_string(), false, None);
 
 		// Test add
 		assert!(history.add("SELECT 1;").unwrap());

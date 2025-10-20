@@ -2,6 +2,7 @@ pub mod history;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use rand::Rng;
 use rustyline::{Config, Editor};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -11,6 +12,89 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use tracing::{debug, trace, warn};
+
+/// Generate a random boundary marker for prompt detection
+fn generate_boundary() -> String {
+	use std::fmt::Write;
+
+	let mut rng = rand::thread_rng();
+	let random_bytes: [u8; 16] = rng.gen();
+
+	let mut result = String::with_capacity(32);
+	for byte in random_bytes {
+		write!(&mut result, "{:02x}", byte).unwrap();
+	}
+	result
+}
+
+/// Information parsed from a psql prompt
+#[derive(Debug, Clone)]
+struct PromptInfo {
+	database: String,
+	#[allow(dead_code)]
+	username: String,
+	user_type: String,   // "#" for superuser, ">" for regular
+	status: String,      // "=" normal, "!" disconnected, "^" single-line
+	transaction: String, // "" none, "*" in transaction, "!" failed transaction, "?" unknown
+	prompt_type: u8,     // 1 = PROMPT1 (normal), 2 = PROMPT2 (continuation), 3 = PROMPT3 (COPY)
+}
+
+impl PromptInfo {
+	/// Parse from our custom format: <<<BOUNDARY|||type|||db|||user|||usertype|||status|||transaction>>>
+	fn parse(line: &str, boundary: &str) -> Option<Self> {
+		let marker_start = format!("<<<{}|||", boundary);
+		let marker_end = ">>>";
+
+		let start = line.find(&marker_start)?;
+		let end = line.find(marker_end)?;
+
+		if end <= start {
+			return None;
+		}
+
+		let content = &line[start + marker_start.len()..end];
+		let parts: Vec<&str> = content.split("|||").collect();
+
+		if parts.len() != 6 {
+			return None;
+		}
+
+		let prompt_type = parts[0].parse::<u8>().ok()?;
+
+		Some(PromptInfo {
+			database: parts[1].to_string(),
+			username: parts[2].to_string(),
+			user_type: parts[3].to_string(),
+			status: parts[4].to_string(),
+			transaction: parts[5].to_string(),
+			prompt_type,
+		})
+	}
+
+	/// Format as a standard psql prompt
+	fn format_prompt(&self) -> String {
+		match self.prompt_type {
+			2 => {
+				// PROMPT2: continuation prompt (multi-line queries)
+				format!(
+					"{}{}{}{} ",
+					self.database, self.status, self.transaction, "-"
+				)
+			}
+			3 => {
+				// PROMPT3: COPY mode prompt
+				">> ".to_string()
+			}
+			_ => {
+				// PROMPT1: normal prompt
+				format!(
+					"{}{}{}{} ",
+					self.database, self.status, self.transaction, self.user_type
+				)
+			}
+		}
+	}
+}
 
 #[cfg(unix)]
 use signal_hook::consts::SIGWINCH;
@@ -55,10 +139,13 @@ pub struct PsqlConfig {
 
 	/// Database user for history tracking
 	pub user: Option<String>,
+
+	/// OTS (Over The Shoulder) value for write mode sessions
+	pub ots: Option<String>,
 }
 
 impl PsqlConfig {
-	fn command(self) -> Result<(CommandBuilder, NamedTempFile)> {
+	fn command(self, boundary: &str) -> Result<(CommandBuilder, NamedTempFile)> {
 		let mut cmd = CommandBuilder::new(&self.psql_path);
 
 		if self.write {
@@ -73,7 +160,13 @@ impl PsqlConfig {
 
 		write!(
 			rc.as_file_mut(),
-			"\\encoding UTF8\n\\timing\n{existing}\n{ro}",
+			"\\encoding UTF8\n\
+			\\timing\n\
+			{existing}\n\
+			{ro}\n\
+			\\set PROMPT1 '<<<{boundary}|||1|||%/|||%n|||%#|||%R|||%x>>>'\n\
+			\\set PROMPT2 '<<<{boundary}|||2|||%/|||%n|||%#|||%R|||%x>>>'\n\
+			\\set PROMPT3 '<<<{boundary}|||3|||%/|||%n|||%#|||%R|||%x>>>'\n",
 			existing = self.psqlrc,
 			ro = if self.write {
 				""
@@ -96,6 +189,9 @@ impl PsqlConfig {
 }
 
 pub fn run(config: PsqlConfig) -> Result<i32> {
+	let boundary = generate_boundary();
+	debug!(boundary = %boundary, "generated prompt boundary marker");
+
 	let pty_system = NativePtySystem::default();
 
 	let (cols, rows) = terminal_size::terminal_size()
@@ -196,8 +292,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
 	let write_mode = config.write;
+	let ots = config.ots.clone();
+	let boundary_clone = boundary.clone();
 
-	let (cmd, _rc_guard) = config.command()?;
+	let (cmd, _rc_guard) = config.command(&boundary)?;
 	let mut child = pty_pair
 		.slave
 		.spawn_command(cmd)
@@ -223,9 +321,12 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let running = Arc::new(Mutex::new(true));
 	let running_clone = running.clone();
 
-	// Buffer to accumulate output
+	// Buffer to accumulate output and track current prompt
 	let output_buffer = Arc::new(Mutex::new(Vec::new()));
 	let output_buffer_clone = output_buffer.clone();
+
+	let current_prompt = Arc::new(Mutex::new(String::new()));
+	let current_prompt_clone = current_prompt.clone();
 
 	// Track the last input sent to filter out echo
 	let last_input = Arc::new(Mutex::new(String::new()));
@@ -240,7 +341,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			match reader.read(&mut buf) {
 				Ok(0) => break, // EOF
 				Ok(n) => {
+					// Store in buffer for prompt detection
+					let mut buffer = output_buffer_clone.lock().unwrap();
+					buffer.extend_from_slice(&buf[..n]);
+					if buffer.len() > 1024 {
+						let drain_len = buffer.len() - 1024;
+						buffer.drain(0..drain_len);
+					}
+
 					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
+					trace!(data, "read some data");
 
 					// Filter out echoed input if we're expecting echo
 					if skip_next > 0 {
@@ -264,16 +374,24 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					}
 
 					if !data.is_empty() {
+						// Check if this contains our prompt boundary marker
+						if let Some(prompt_info) = PromptInfo::parse(&data, &boundary_clone) {
+							// Replace the boundary marker with formatted prompt
+							let formatted = prompt_info.format_prompt();
+							let marker = format!("<<<{}|||", boundary_clone);
+							if let Some(start) = data.find(&marker) {
+								if let Some(end) = data[start..].find(">>>") {
+									let full_marker_end = start + end + 3;
+									data.replace_range(start..full_marker_end, &formatted);
+								}
+							}
+
+							// Store the formatted prompt
+							*current_prompt_clone.lock().unwrap() = formatted;
+						}
+
 						print!("{}", data);
 						std::io::stdout().flush().ok();
-
-						// Also store in buffer for prompt detection
-						let mut buffer = output_buffer_clone.lock().unwrap();
-						buffer.extend_from_slice(data.as_bytes());
-						if buffer.len() > 1024 {
-							let drain_len = buffer.len() - 1024;
-							buffer.drain(0..drain_len);
-						}
 					}
 				}
 				Err(_) => break,
@@ -302,7 +420,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		.expect("Failed to create fallback history database")
 	});
 
-	history.set_context(db_user.clone(), sys_user.clone(), write_mode);
+	history.set_context(db_user.clone(), sys_user.clone(), write_mode, ots);
 
 	debug!(db_user, sys_user, write_mode, "history context set");
 
@@ -352,20 +470,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		// Small delay to let output accumulate
 		thread::sleep(Duration::from_millis(50));
 
-		// Check if we're at a prompt by looking at the output buffer
+		// Check if we're at a prompt by looking for our boundary marker in the output buffer
 		let buffer = output_buffer.lock().unwrap().clone();
-		let last_line = strip_ansi_escapes::strip(
-			buffer
-				.split(|b| *b == b'\r' || *b == b'\n')
-				.last()
-				.unwrap_or_default(),
-		);
-		let text = String::from_utf8_lossy(&last_line);
-		let at_prompt = text.ends_with("=> ")
-			|| text.ends_with("-> ")
-			|| text.ends_with("=# ")
-			|| text.ends_with("-# ")
-			|| text.ends_with("(# ");
+		let buffer_str = String::from_utf8_lossy(&buffer);
+		trace!("buffer: {}", buffer_str);
+		let at_prompt = buffer_str.contains(&format!("<<<{boundary}|||"));
 
 		if !at_prompt {
 			// Not at a prompt, continue waiting
@@ -376,13 +485,21 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		// Clear the buffer since we've detected a prompt
 		output_buffer.lock().unwrap().clear();
 
-		match rl.readline(&text) {
+		// Use the formatted prompt for readline
+		let prompt_text = current_prompt.lock().unwrap().clone();
+		let readline_prompt = if prompt_text.is_empty() {
+			"psql> ".to_string()
+		} else {
+			prompt_text
+		};
+
+		match rl.readline(&readline_prompt) {
 			Ok(line) => {
 				trace!("received input line");
 				let trimmed = line.trim();
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
 					warn!("editor command intercepted (not yet implemented)");
-					// TODO: Open editor, read content, send to psql
+					// TODO: Open editor, read content, save history, send to psql
 					continue;
 				}
 
