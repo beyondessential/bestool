@@ -83,8 +83,19 @@ impl PsqlConfig {
 
 pub fn run(config: PsqlConfig) -> Result<i32> {
 	let pty_system = NativePtySystem::default();
+
+	// Get terminal size or use sensible defaults
+	let (cols, rows) = terminal_size::terminal_size()
+		.map(|(w, h)| (w.0, h.0))
+		.unwrap_or((80, 24));
+
 	let pty_pair = pty_system
-		.openpty(PtySize::default())
+		.openpty(PtySize {
+			rows,
+			cols,
+			pixel_width: 0,
+			pixel_height: 0,
+		})
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
 
 	// Extract values before config is consumed
