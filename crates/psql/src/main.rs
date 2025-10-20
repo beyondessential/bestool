@@ -133,7 +133,7 @@ fn main() -> Result<()> {
 	};
 
 	if args.write {
-		tracing::warn!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
 	}
 
 	debug!(?config, "starting psql");
