@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.0](https://github.com/beyondessential/bestool/compare/v0.30.3..1.0.0) - 2025-10-20
+## [1.0.0](https://github.com/beyondessential/bestool/compare/v0.30.3..v1.0.0) - 2025-10-20
 
 
 - **Bugfix:** Codepage setting - ([44f0317](https://github.com/beyondessential/bestool/commit/44f03172da24129b82dc5151b7776cd7206ba7ce))
