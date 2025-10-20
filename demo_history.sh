@@ -88,7 +88,7 @@ echo "✓ Each entry includes: query, user, writemode, timestamp"
 echo "✓ History persists across sessions"
 echo "✓ Rustyline integration for up-arrow navigation"
 echo "✓ Separate tool (psql-history) to inspect/manage history"
-echo "✓ Default location: ~/.cache/bestool-psql/history.redb"
+echo "✓ Default location: ~/.local/state/bestool-psql/history.redb"
 echo
 
 echo "=== Cleanup ==="

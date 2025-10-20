@@ -58,7 +58,7 @@ pub struct Args {
 	#[arg(short = 'X', long)]
 	pub no_psqlrc: bool,
 
-	/// Path to history database (default: ~/.cache/bestool-psql/history.redb)
+	/// Path to history database (default: ~/.local/state/bestool-psql/history.redb)
 	#[arg(long)]
 	pub history_path: Option<PathBuf>,
 

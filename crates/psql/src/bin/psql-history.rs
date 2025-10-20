@@ -19,7 +19,7 @@ struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
-	/// Path to history database (default: ~/.cache/bestool-psql/history.redb)
+	/// Path to history database (default: ~/.local/state/bestool-psql/history.redb)
 	#[arg(long, global = true)]
 	history_path: Option<PathBuf>,
 

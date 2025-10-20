@@ -287,18 +287,18 @@ impl History {
 
 	/// Get the default history database path
 	pub fn default_path() -> Result<PathBuf> {
-		let cache_dir = if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+		let state_dir = if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
 			PathBuf::from(dir)
 		} else if let Some(home) = std::env::var_os("HOME") {
-			PathBuf::from(home).join(".cache")
+			PathBuf::from(home).join(".local").join("state")
 		} else if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
 			// Windows
 			PathBuf::from(localappdata)
 		} else {
-			return Err(miette::miette!("Could not determine cache directory"));
+			return Err(miette::miette!("Could not determine state directory"));
 		};
 
-		let history_dir = cache_dir.join("bestool-psql");
+		let history_dir = state_dir.join("bestool-psql");
 		std::fs::create_dir_all(&history_dir).into_diagnostic()?;
 		Ok(history_dir.join("history.redb"))
 	}
