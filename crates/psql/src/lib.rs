@@ -201,8 +201,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	history.set_context(db_user.clone(), sys_user.clone(), write_mode);
 
-	let mut rl: Editor<(), history::History> =
-		Editor::with_history(Config::default(), history).into_diagnostic()?;
+	let mut rl: Editor<(), history::History> = Editor::with_history(
+		Config::builder()
+			.auto_add_history(true)
+			.history_ignore_dups(false)
+			.unwrap()
+			.build(),
+		history,
+	)
+	.into_diagnostic()?;
 
 	loop {
 		// Check if child process is still running
