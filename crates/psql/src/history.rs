@@ -393,21 +393,6 @@ impl HistoryTrait for History {
 			return Ok(false);
 		}
 
-		if self.ignore_space && line.starts_with(' ') {
-			trace!("ignoring line starting with space");
-			return Ok(false);
-		}
-
-		if self.ignore_dups && !self.timestamps.is_empty() {
-			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
-			{
-				if last_entry.query == line {
-					trace!("ignoring duplicate entry");
-					return Ok(false);
-				}
-			}
-		}
-
 		self.add_entry(
 			line,
 			self.db_user.clone(),
@@ -504,14 +489,8 @@ impl HistoryTrait for History {
 	}
 
 	fn clear(&mut self) -> rustyline::Result<()> {
-		debug!("clearing history");
-		self.clear_all().map_err(|e| {
-			warn!("failed to clear history: {}", e);
-			rustyline::error::ReadlineError::Io(std::io::Error::new(
-				std::io::ErrorKind::Other,
-				e.to_string(),
-			))
-		})
+		// No-op: we do that ourselves
+		Ok(())
 	}
 
 	fn search(
@@ -609,7 +588,7 @@ impl HistoryTrait for History {
 	}
 }
 
-/// Get active Tailscale peers without tags
+/// Get active Tailscale human peers
 fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
 	use std::process::Command;
 
