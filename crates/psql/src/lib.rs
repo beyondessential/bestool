@@ -355,7 +355,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						*current_write_mode = false;
 						*current_ots = None;
 
-						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n";
+						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\SET AUTOCOMMIT ON;\n";
 						let mut writer = writer.lock().unwrap();
 						writer.write_all(cmd.as_bytes()).ok();
 						writer.flush().ok();
@@ -377,7 +377,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 								*current_write_mode = true;
 								*current_ots = Some(new_ots.clone());
 
-								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\nSET AUTOCOMMIT=OFF;\n";
+								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\SET AUTOCOMMIT OFF;\n";
 								let mut writer = writer.lock().unwrap();
 								writer.write_all(cmd.as_bytes()).ok();
 								writer.flush().ok();
