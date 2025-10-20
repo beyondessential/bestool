@@ -2,6 +2,7 @@
 name = "bestool"
 version = "0.30.3"
 edition = "2024"
+default-run = "bestool"
 
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
