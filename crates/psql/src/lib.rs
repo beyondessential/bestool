@@ -257,7 +257,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let schema_cache_manager = if !disable_schema_cache {
 		debug!("initializing schema cache");
-		let manager = SchemaCacheManager::new(writer.clone(), print_enabled.clone());
+		let manager =
+			SchemaCacheManager::new(writer.clone(), print_enabled.clone(), write_mode.clone());
 
 		if let Err(e) = manager.refresh() {
 			warn!("failed to populate schema cache: {}", e);
@@ -347,8 +348,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					continue;
 				}
 
-				// Handle \refresh command to reload schema cache
 				if trimmed == "\\refresh" {
+					let prompt_info = current_prompt_info.lock().unwrap().clone();
+					if let Some(ref info) = prompt_info {
+						if info.in_transaction() {
+							eprintln!("Cannot refresh schema cache while in a transaction. Please COMMIT or ROLLBACK first.");
+							continue;
+						}
+					}
+
 					if let Some(ref cache_manager) = schema_cache_manager {
 						info!("refreshing schema cache...");
 						eprintln!("Refreshing schema cache...");

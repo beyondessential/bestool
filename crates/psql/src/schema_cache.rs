@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use tempfile::NamedTempFile;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]
@@ -63,6 +63,7 @@ pub struct SchemaCacheManager {
 	cache: Arc<RwLock<SchemaCache>>,
 	pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
 	print_enabled: Arc<Mutex<bool>>,
+	write_mode: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,11 +100,13 @@ impl SchemaCacheManager {
 	pub fn new(
 		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
 		print_enabled: Arc<Mutex<bool>>,
+		write_mode: Arc<Mutex<bool>>,
 	) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
 			pty_writer,
 			print_enabled,
+			write_mode,
 		}
 	}
 
@@ -114,7 +117,7 @@ impl SchemaCacheManager {
 
 	/// Refresh the schema cache by querying through psql
 	pub fn refresh(&self) -> Result<()> {
-		info!("refreshing schema cache");
+		debug!("refreshing schema cache");
 
 		// Disable output printing during schema refresh
 		*self.print_enabled.lock().unwrap() = false;
@@ -159,7 +162,20 @@ impl SchemaCacheManager {
 
 		*self.cache.write().unwrap() = new_cache;
 
-		info!("schema cache refresh complete");
+		if *self.write_mode.lock().unwrap() {
+			debug!("issuing ROLLBACK after schema refresh in write mode");
+			let rollback_cmd = "ROLLBACK;\n";
+			let mut writer = self.pty_writer.lock().unwrap();
+			writer
+				.write_all(rollback_cmd.as_bytes())
+				.into_diagnostic()?;
+			writer.flush().into_diagnostic()?;
+
+			// Give psql time to process the rollback
+			std::thread::sleep(std::time::Duration::from_millis(50));
+		}
+
+		debug!("schema cache refresh complete");
 		Ok(())
 	}
 
@@ -298,6 +314,7 @@ impl Clone for SchemaCacheManager {
 			cache: self.cache.clone(),
 			pty_writer: self.pty_writer.clone(),
 			print_enabled: self.print_enabled.clone(),
+			write_mode: self.write_mode.clone(),
 		}
 	}
 }

@@ -5,14 +5,12 @@ use miette::{miette, IntoDiagnostic, Result};
 use std::{fs, path::PathBuf};
 use tracing::debug;
 
-/// Interactive psql wrapper with custom readline and editor interception
+/// Interactive PostgreSQL terminal
+///
+/// Custom commands:
+///   \W        - Toggle write mode (switches between read-only and read-write sessions)
+///   \refresh  - Reload schema cache (refreshes table/column/function autocompletion)
 #[derive(Debug, Clone, Parser)]
-#[command(name = "bestool-psql")]
-#[command(about = "Connect to PostgreSQL via psql with enhanced features")]
-#[command(
-	after_help = "Want more detail? Try the long '--help' flag!",
-	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
-)]
 pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
