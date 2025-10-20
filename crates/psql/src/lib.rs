@@ -127,25 +127,64 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let output_buffer = Arc::new(Mutex::new(Vec::new()));
 	let output_buffer_clone = output_buffer.clone();
 
+	// Track the last input sent to filter out echo
+	let last_input = Arc::new(Mutex::new(String::new()));
+	let last_input_clone = last_input.clone();
+
 	let reader_thread = thread::spawn(move || {
 		let mut reader = reader;
 		let mut buf = [0u8; 4096];
+		let mut echo_skip = String::new();
+
 		loop {
 			match reader.read(&mut buf) {
 				Ok(0) => break, // EOF
 				Ok(n) => {
-					let data = buf[..n].to_vec();
-					// Print immediately to stdout
-					print!("{}", String::from_utf8_lossy(&data));
-					std::io::stdout().flush().ok();
+					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
 
-					// Also store in buffer for prompt detection
-					let mut buffer = output_buffer_clone.lock().unwrap();
-					buffer.extend_from_slice(&data);
-					// Keep only last 1024 bytes for prompt detection
-					if buffer.len() > 1024 {
-						let drain_len = buffer.len() - 1024;
-						buffer.drain(0..drain_len);
+					// Filter out echoed input if present
+					let last_sent = last_input_clone.lock().unwrap().clone();
+					if !last_sent.is_empty() {
+						// Check if this chunk starts with part of the echoed input
+						if !echo_skip.is_empty() {
+							let skip_len = echo_skip.len().min(data.len());
+							if data.starts_with(&echo_skip[..skip_len]) {
+								data.drain(..skip_len);
+								echo_skip.drain(..skip_len);
+							} else {
+								echo_skip.clear();
+							}
+						}
+
+						// Check if we should start skipping echo
+						if echo_skip.is_empty() && data.starts_with(&last_sent) {
+							data.drain(..last_sent.len());
+							last_input_clone.lock().unwrap().clear();
+						} else if echo_skip.is_empty() && last_sent.starts_with(&data) {
+							// The echo is split across chunks
+							echo_skip = last_sent.clone();
+							let skip_len = data.len();
+							data.clear();
+							echo_skip.drain(..skip_len);
+							if echo_skip.is_empty() {
+								last_input_clone.lock().unwrap().clear();
+							}
+						}
+					}
+
+					// Print remaining data to stdout
+					if !data.is_empty() {
+						print!("{}", data);
+						std::io::stdout().flush().ok();
+
+						// Also store in buffer for prompt detection
+						let mut buffer = output_buffer_clone.lock().unwrap();
+						buffer.extend_from_slice(data.as_bytes());
+						// Keep only last 1024 bytes for prompt detection
+						if buffer.len() > 1024 {
+							let drain_len = buffer.len() - 1024;
+							buffer.drain(0..drain_len);
+						}
 					}
 				}
 				Err(_) => break,
@@ -219,6 +258,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 				// Send the line to psql
 				let input = format!("{}\n", line);
+
+				// Store the input so we can filter out the echo
+				*last_input.lock().unwrap() = input.clone();
+
 				let mut writer = writer.lock().unwrap();
 				if let Err(_) = writer.write_all(input.as_bytes()) {
 					return Err(PsqlError::WriteError).into_diagnostic();
