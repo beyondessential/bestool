@@ -6,7 +6,7 @@
 use miette::{IntoDiagnostic, Result};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
@@ -42,8 +42,8 @@ pub struct History {
 
 impl History {
 	/// Open or create a history database at the given path
-	pub fn open(path: PathBuf) -> Result<Self> {
-		let db = Database::create(&path).into_diagnostic()?;
+	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+		let db = Database::create(path).into_diagnostic()?;
 		Ok(Self { db })
 	}
 
