@@ -10,6 +10,7 @@ use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
+use tracing::{debug, trace, warn};
 
 #[cfg(unix)]
 use signal_hook::consts::SIGWINCH;
@@ -102,6 +103,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		.map(|(w, h)| (w.0, h.0))
 		.unwrap_or((80, 24));
 
+	debug!(cols, rows, "terminal size detected");
+
 	let pty_pair = pty_system
 		.openpty(PtySize {
 			rows,
@@ -118,9 +121,13 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	{
 		let pty_master_clone = pty_master.clone();
 		thread::spawn(move || {
+			debug!("starting SIGWINCH handler thread");
 			let mut signals = match Signals::new(&[SIGWINCH]) {
 				Ok(s) => s,
-				Err(_) => return,
+				Err(e) => {
+					warn!("failed to register SIGWINCH handler: {}", e);
+					return;
+				}
 			};
 
 			for _ in signals.forever() {
@@ -133,6 +140,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						pixel_height: 0,
 					};
 
+					debug!(cols = w.0, rows = h.0, "terminal resized (SIGWINCH)");
 					// Update PTY size
 					if let Ok(master) = pty_master_clone.lock() {
 						let _ = master.resize(new_size);
@@ -146,8 +154,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	{
 		let pty_master_clone = pty_master.clone();
 		thread::spawn(move || unsafe {
+			debug!("starting Windows console resize handler thread");
 			let stdout_handle: HANDLE = GetStdHandle(STD_OUTPUT_HANDLE);
 			if stdout_handle == 0 || stdout_handle == -1i32 as HANDLE {
+				warn!("failed to get stdout handle for resize detection");
 				return;
 			}
 
@@ -174,6 +184,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						pixel_height: 0,
 					};
 
+					debug!(
+						cols = new_cols,
+						rows = new_rows,
+						"terminal resized (Windows)"
+					);
 					if let Ok(master) = pty_master_clone.lock() {
 						let _ = master.resize(new_size);
 					}
@@ -288,8 +303,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	// Open or create history database
 	let mut history = history::History::open(history_path).unwrap_or_else(|e| {
-		eprintln!("Warning: Could not open history database: {}", e);
-		eprintln!("Creating new history database...");
+		warn!("could not open history database: {}", e);
+		debug!("creating fallback history database");
 		// Create a temporary in-memory fallback (this will still fail, but provides a better error)
 		history::History::open(
 			std::env::temp_dir().join(format!("bestool-psql-fallback-{}.redb", std::process::id())),
@@ -298,6 +313,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	});
 
 	history.set_context(db_user.clone(), sys_user.clone(), write_mode);
+
+	debug!(db_user, sys_user, write_mode, "history context set");
 
 	let mut rl: Editor<(), history::History> = Editor::with_history(
 		Config::builder()
@@ -312,11 +329,14 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	// Track last timestamp reload time
 	let mut last_reload = std::time::Instant::now();
 
+	debug!("entering main event loop");
+
 	loop {
 		// Reload timestamps every 60 seconds to pick up entries from concurrent writers
 		if last_reload.elapsed() >= Duration::from_secs(60) {
+			debug!("reloading history timestamps");
 			if let Err(e) = rl.history_mut().reload_timestamps() {
-				eprintln!("Warning: Failed to reload history timestamps: {}", e);
+				warn!("failed to reload history timestamps: {}", e);
 			}
 			last_reload = std::time::Instant::now();
 		}
@@ -324,6 +344,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		match child.try_wait().into_diagnostic()? {
 			Some(status) => {
 				// Process has exited
+				debug!(exit_code = status.exit_code(), "psql process exited");
 				reader_thread.join().ok();
 				return Ok(status.exit_code() as i32);
 			}
@@ -371,11 +392,12 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		// Read a line from the user
 		match rl.readline(&text) {
 			Ok(line) => {
+				trace!("received input line");
 				// Check if user wants to use a graphical editor
 				let trimmed = line.trim();
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
 					// Intercept the \e command
-					eprintln!("Editor command intercepted (not yet implemented)");
+					warn!("editor command intercepted (not yet implemented)");
 					// TODO: Open editor, read content, send to psql
 					continue;
 				}
@@ -394,12 +416,14 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			}
 			Err(rustyline::error::ReadlineError::Interrupted) => {
 				// Ctrl-C - send interrupt to psql
+				debug!("received Ctrl-C");
 				let mut writer = writer.lock().unwrap();
 				writer.write_all(&[3]).ok(); // ASCII ETX (Ctrl-C)
 				writer.flush().ok();
 			}
 			Err(rustyline::error::ReadlineError::Eof) => {
 				// Ctrl-D - send EOF to psql
+				debug!("received Ctrl-D (EOF)");
 				let mut writer = writer.lock().unwrap();
 				writer.write_all(&[4]).ok(); // ASCII EOT (Ctrl-D)
 				writer.flush().ok();
@@ -418,9 +442,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let status = child.wait().into_diagnostic()?;
 
 	// Compact the history database before exiting
+	debug!("compacting history database");
 	if let Err(e) = rl.history_mut().compact() {
-		eprintln!("Warning: Failed to compact history database: {}", e);
+		warn!("failed to compact history database: {}", e);
 	}
 
+	debug!(exit_code = status.exit_code(), "exiting");
 	Ok(status.exit_code() as i32)
 }

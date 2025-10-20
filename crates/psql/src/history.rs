@@ -9,6 +9,7 @@ use rustyline::history::{History as HistoryTrait, SearchDirection, SearchResult}
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use tracing::{debug, trace, warn};
 
 const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
@@ -79,10 +80,8 @@ impl History {
 			const CULL_BATCH: usize = 100; // Remove 100 entries at a time
 
 			if metadata.len() > MAX_SIZE {
-				eprintln!(
-					"History database is {}MB, culling to 90MB...",
-					metadata.len() / (1024 * 1024)
-				);
+				let size_mb = metadata.len() / (1024 * 1024);
+				warn!(size_mb, "history database exceeds 100MB, culling to 90MB");
 
 				// Remove oldest entries in batches until we reach target size
 				while timestamps.len() > 0 {
@@ -108,12 +107,13 @@ impl History {
 					write_txn.commit().into_diagnostic()?;
 				}
 
-				eprintln!(
-					"Culled history, now {}MB with {} entries",
-					std::fs::metadata(path)
-						.map(|m| m.len() / (1024 * 1024))
-						.unwrap_or(0),
-					timestamps.len()
+				let final_size_mb = std::fs::metadata(path)
+					.map(|m| m.len() / (1024 * 1024))
+					.unwrap_or(0);
+				debug!(
+					size_mb = final_size_mb,
+					entries = timestamps.len(),
+					"culled history database"
 				);
 			}
 		}
@@ -132,6 +132,7 @@ impl History {
 
 	/// Set the context for new history entries
 	pub fn set_context(&mut self, db_user: String, sys_user: String, writemode: bool) {
+		debug!(?db_user, ?sys_user, writemode, "setting history context");
 		self.db_user = db_user;
 		self.sys_user = sys_user;
 		self.writemode = writemode;
@@ -161,7 +162,14 @@ impl History {
 	/// This is useful when multiple processes are writing to the same database.
 	/// Call this to see entries added by other processes.
 	pub fn reload_timestamps(&mut self) -> Result<()> {
+		let old_len = self.timestamps.len();
 		self.timestamps = Self::load_timestamps(&self.db)?;
+		let new_len = self.timestamps.len();
+		if new_len != old_len {
+			debug!(old_len, new_len, "reloaded history timestamps");
+		} else {
+			trace!("reloaded history timestamps (no change)");
+		}
 		Ok(())
 	}
 
@@ -218,6 +226,7 @@ impl History {
 		sys_user: String,
 		writemode: bool,
 	) -> Result<()> {
+		trace!("adding history entry");
 		let tailscale = get_tailscale_peers().ok().unwrap_or_default();
 
 		let entry = HistoryEntry {
@@ -361,16 +370,19 @@ impl HistoryTrait for History {
 	}
 
 	fn add(&mut self, line: &str) -> rustyline::Result<bool> {
+		trace!("History::add called");
 		self.add_owned(line.to_string())
 	}
 
 	fn add_owned(&mut self, line: String) -> rustyline::Result<bool> {
 		// Check ignore rules
 		if line.trim().is_empty() {
+			trace!("ignoring empty line");
 			return Ok(false);
 		}
 
 		if self.ignore_space && line.starts_with(' ') {
+			trace!("ignoring line starting with space");
 			return Ok(false);
 		}
 
@@ -379,6 +391,7 @@ impl HistoryTrait for History {
 			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
 			{
 				if last_entry.query == line {
+					trace!("ignoring duplicate entry");
 					return Ok(false);
 				}
 			}
@@ -392,12 +405,14 @@ impl HistoryTrait for History {
 			self.writemode,
 		)
 		.map_err(|e| {
+			warn!("failed to add history entry: {}", e);
 			rustyline::error::ReadlineError::Io(std::io::Error::new(
 				std::io::ErrorKind::Other,
 				e.to_string(),
 			))
 		})?;
 
+		debug!("added history entry");
 		Ok(true)
 	}
 
@@ -410,6 +425,7 @@ impl HistoryTrait for History {
 	}
 
 	fn set_max_len(&mut self, len: usize) -> rustyline::Result<()> {
+		debug!(len, "setting max history length");
 		self.max_len = len;
 
 		// Trim history if needed
@@ -452,11 +468,13 @@ impl HistoryTrait for History {
 	}
 
 	fn ignore_dups(&mut self, yes: bool) -> rustyline::Result<()> {
+		debug!(yes, "setting ignore_dups");
 		self.ignore_dups = yes;
 		Ok(())
 	}
 
 	fn ignore_space(&mut self, yes: bool) {
+		debug!(yes, "setting ignore_space");
 		self.ignore_space = yes;
 	}
 
@@ -476,7 +494,9 @@ impl HistoryTrait for History {
 	}
 
 	fn clear(&mut self) -> rustyline::Result<()> {
+		debug!("clearing history");
 		self.clear_all().map_err(|e| {
+			warn!("failed to clear history: {}", e);
 			rustyline::error::ReadlineError::Io(std::io::Error::new(
 				std::io::ErrorKind::Other,
 				e.to_string(),

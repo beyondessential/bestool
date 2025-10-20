@@ -1,13 +1,22 @@
 use bestool_psql::history::History;
 use clap::Parser;
-use miette::{IntoDiagnostic, Result};
+use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
+use miette::{miette, IntoDiagnostic, Result};
 use std::{fs, path::PathBuf};
+use tracing::debug;
 
 /// Interactive psql wrapper with custom readline and editor interception
 #[derive(Debug, Clone, Parser)]
 #[command(name = "bestool-psql")]
 #[command(about = "Connect to PostgreSQL via psql with enhanced features")]
+#[command(
+	after_help = "Want more detail? Try the long '--help' flag!",
+	after_long_help = "Didn't expect this much output? Use the short '-h' flag to get short help."
+)]
 pub struct Args {
+	#[command(flatten)]
+	logging: LoggingArgs,
+
 	/// Enable write mode for this psql.
 	///
 	/// By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable
@@ -65,8 +74,32 @@ fn read_psqlrc() -> Result<String> {
 	}
 }
 
-fn main() -> Result<()> {
+fn get_args() -> Result<(Args, WorkerGuard)> {
+	let log_guard = PreArgs::parse().setup().map_err(|err| miette!("{err}"))?;
+
+	debug!("parsing arguments");
 	let args = Args::parse();
+
+	let log_guard = match log_guard {
+		Some(g) => g,
+		None => args
+			.logging
+			.setup(|v| match v {
+				0 => "info",
+				1 => "info,bestool_psql=debug",
+				2 => "debug",
+				3 => "debug,bestool_psql=trace",
+				_ => "trace",
+			})
+			.map_err(|err| miette!("{err}"))?,
+	};
+
+	debug!(?args, "got arguments");
+	Ok((args, log_guard))
+}
+
+fn main() -> Result<()> {
+	let (args, _guard) = get_args()?;
 
 	// Set the console encoding to UTF-8 on Windows
 	#[cfg(windows)]
@@ -100,8 +133,10 @@ fn main() -> Result<()> {
 	};
 
 	if args.write {
-		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+		tracing::warn!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
 	}
+
+	debug!(?config, "starting psql");
 
 	std::process::exit(bestool_psql::run(config)?);
 }
