@@ -551,10 +551,12 @@ impl Highlighter for SqlCompleter {
 			.find_syntax_by_extension("sql")
 			.unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-		// Get theme name
-		let theme_name = match self.theme {
+		// Get theme name (resolve Auto to Light or Dark)
+		let resolved_theme = self.theme.resolve();
+		let theme_name = match resolved_theme {
 			Theme::Light => "base16-ocean.light",
 			Theme::Dark => "base16-ocean.dark",
+			Theme::Auto => unreachable!("resolve() always returns Light or Dark"),
 		};
 
 		// Get theme

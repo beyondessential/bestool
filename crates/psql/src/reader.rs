@@ -109,7 +109,7 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 							if is_debug_pty() {
 								// Wrap output with cyan [PTY] marker for debugging
 								for line in data.lines() {
-									print!("\x1b[36m[PTY]\x1b[0m {}\n", line);
+									println!("\x1b[36m[PTY]\x1b[0m {}", line);
 								}
 								// Handle trailing data without newline
 								if !data.ends_with('\n') && !data.ends_with('\r') {

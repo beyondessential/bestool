@@ -1,3 +1,4 @@
+use bestool_psql::highlighter::Theme;
 use clap::Parser;
 use miette::{Context as _, Result};
 
@@ -65,7 +66,7 @@ pub struct PsqlArgs {
 	/// Controls the color scheme for SQL syntax highlighting in the input line.
 	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
 	#[arg(long, default_value = "auto")]
-	pub theme: String,
+	pub theme: Theme,
 
 	/// Additional, arbitrary arguments to pass to `psql`
 	///
@@ -148,7 +149,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			.ok()
 			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),
 		user: Some(username.to_string()),
-		theme: bestool_psql::highlighter::Theme::from_str(&ctx.args_sub.theme),
+		theme: ctx.args_sub.theme.resolve(),
 	};
 
 	bestool_psql::set_console_codepage(ctx.args_sub.codepage);

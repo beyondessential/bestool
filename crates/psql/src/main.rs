@@ -75,7 +75,7 @@ pub struct Args {
 	/// Controls the color scheme for SQL syntax highlighting in the input line.
 	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
 	#[arg(long, default_value = "auto")]
-	pub theme: String,
+	pub theme: Theme,
 
 	/// Arbitrary arguments to pass to `psql`; prefix with `--`
 	///
@@ -151,7 +151,7 @@ fn main() -> Result<()> {
 		read_psqlrc()?
 	};
 
-	let theme = Theme::from_str(&args.theme);
+	let theme = args.theme.resolve();
 	debug!(?theme, "using syntax highlighting theme");
 
 	let config = bestool_psql::PsqlConfig {

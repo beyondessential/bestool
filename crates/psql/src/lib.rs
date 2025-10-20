@@ -282,7 +282,7 @@ fn forward_stdin_to_pty(psql_writer: &PsqlWriter) {
 			if std::env::var("DEBUG_PTY").is_ok() {
 				use std::io::Write;
 				let data = String::from_utf8_lossy(&buf[..n]);
-				eprint!("\x1b[33m[FWD]\x1b[0m forwarding {} bytes: {:?}\n", n, data);
+				eprintln!("\x1b[33m[FWD]\x1b[0m forwarding {} bytes: {:?}", n, data);
 				std::io::stderr().flush().ok();
 			}
 			if let Err(e) = psql_writer.write_bytes(&buf[..n]) {
