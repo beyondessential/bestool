@@ -16,6 +16,14 @@ use signal_hook::consts::SIGWINCH;
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::HANDLE;
+#[cfg(windows)]
+use windows_sys::Win32::System::Console::{
+	GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
+	WINDOW_BUFFER_SIZE_EVENT,
+};
+
 #[derive(Debug, Error)]
 pub enum PsqlError {
 	#[error("psql process terminated unexpectedly")]
@@ -103,11 +111,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		})
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
 
-	// Set up resize handler
-	#[cfg(unix)]
+	// Set up resize handler (Arc<Mutex> on all platforms for resize support)
 	let pty_master = Arc::new(Mutex::new(pty_pair.master));
-	#[cfg(not(unix))]
-	let pty_master = pty_pair.master;
 
 	#[cfg(unix)]
 	{
@@ -137,6 +142,46 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		});
 	}
 
+	#[cfg(windows)]
+	{
+		let pty_master_clone = pty_master.clone();
+		thread::spawn(move || unsafe {
+			let stdout_handle: HANDLE = GetStdHandle(STD_OUTPUT_HANDLE);
+			if stdout_handle == 0 || stdout_handle == -1i32 as HANDLE {
+				return;
+			}
+
+			let mut last_size = (cols, rows);
+
+			loop {
+				thread::sleep(Duration::from_millis(200));
+
+				let mut csbi: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+				if GetConsoleScreenBufferInfo(stdout_handle, &mut csbi) == 0 {
+					continue;
+				}
+
+				let new_cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as u16;
+				let new_rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as u16;
+
+				if (new_cols, new_rows) != last_size {
+					last_size = (new_cols, new_rows);
+
+					let new_size = PtySize {
+						rows: new_rows,
+						cols: new_cols,
+						pixel_width: 0,
+						pixel_height: 0,
+					};
+
+					if let Ok(master) = pty_master_clone.lock() {
+						let _ = master.resize(new_size);
+					}
+				}
+			}
+		});
+	}
+
 	// Extract values before config is consumed
 	let history_path = config.history_path.clone();
 	let db_user = config.user.clone();
@@ -150,31 +195,19 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	drop(pty_pair.slave);
 
-	#[cfg(unix)]
 	let reader = {
 		let master = pty_master.lock().unwrap();
 		master
 			.try_clone_reader()
 			.map_err(|e| miette!("failed to clone pty reader: {}", e))?
 	};
-	#[cfg(not(unix))]
-	let reader = pty_master
-		.try_clone_reader()
-		.map_err(|e| miette!("failed to clone pty reader: {}", e))?;
 
-	#[cfg(unix)]
 	let writer = Arc::new(Mutex::new({
 		let master = pty_master.lock().unwrap();
 		master
 			.take_writer()
 			.map_err(|e| miette!("failed to get pty writer: {}", e))?
 	}));
-	#[cfg(not(unix))]
-	let writer = Arc::new(Mutex::new(
-		pty_master
-			.take_writer()
-			.map_err(|e| miette!("failed to get pty writer: {}", e))?,
-	));
 
 	// Flag to signal termination
 	let running = Arc::new(Mutex::new(true));
