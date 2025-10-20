@@ -60,9 +60,9 @@ pub struct History {
 	/// Ignore lines starting with space
 	ignore_space: bool,
 	/// Database user for new entries
-	db_user: String,
+	pub db_user: String,
 	/// System user for new entries
-	sys_user: String,
+	pub sys_user: String,
 	/// Write mode for new entries
 	writemode: bool,
 	/// OTS value for new entries
