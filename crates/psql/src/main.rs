@@ -1,3 +1,4 @@
+use bestool_psql::history::History;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
 use std::{fs, path::PathBuf};
@@ -29,6 +30,18 @@ pub struct Args {
 	/// Do not read the startup file (~/.psqlrc)
 	#[arg(short = 'X', long)]
 	pub no_psqlrc: bool,
+
+	/// Path to history database (default: ~/.cache/bestool-psql/history.redb)
+	#[arg(long)]
+	pub history_path: Option<PathBuf>,
+
+	/// Disable history recording
+	#[arg(long)]
+	pub no_history: bool,
+
+	/// Database user (for history tracking, defaults to $USER)
+	#[arg(short = 'U', long)]
+	pub user: Option<String>,
 
 	/// Arbitrary arguments to pass to `psql`; prefix with `--`
 	///
@@ -68,10 +81,20 @@ fn main() -> Result<()> {
 		SetConsoleOutputCP(args.codepage);
 	}
 
+	// Read .psqlrc unless --no-psqlrc is specified
 	let psqlrc = if args.no_psqlrc {
 		String::new()
 	} else {
 		read_psqlrc()?
+	};
+
+	// Determine history path unless --no-history is specified
+	let history_path = if args.no_history {
+		None
+	} else if let Some(path) = args.history_path {
+		Some(path)
+	} else {
+		History::default_path().ok()
 	};
 
 	let config = bestool_psql::PsqlConfig {
@@ -79,6 +102,8 @@ fn main() -> Result<()> {
 		write: args.write,
 		args: args.args,
 		psqlrc,
+		history_path,
+		user: args.user,
 	};
 
 	if args.write {

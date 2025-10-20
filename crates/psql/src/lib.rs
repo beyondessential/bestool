@@ -1,23 +1,4 @@
-//! Interactive psql wrapper with custom readline and editor interception.
-//!
-//! This library provides functionality to wrap psql with custom readline handling
-//! and the ability to intercept editor commands.
-//!
-//! # Example
-//!
-//! ```no_run
-//! use bestool_psql::{PsqlConfig, run_psql};
-//!
-//! # fn main() -> miette::Result<()> {
-//! let config = PsqlConfig::new("psql")
-//!     .arg("--dbname").arg("mydb")
-//!     .arg("--username").arg("myuser")
-//!     .env("PGPASSWORD", "mypassword");
-//!
-//! let exit_code = run_psql(config)?;
-//! std::process::exit(exit_code);
-//! # }
-//! ```
+pub mod history;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -54,6 +35,12 @@ pub struct PsqlConfig {
 
 	/// Existing psqlrc contents
 	pub psqlrc: String,
+
+	/// Path to the history database (optional)
+	pub history_path: Option<PathBuf>,
+
+	/// Database user for history tracking
+	pub user: Option<String>,
 }
 
 impl PsqlConfig {
@@ -99,6 +86,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let pty_pair = pty_system
 		.openpty(PtySize::default())
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
+
+	// Extract values before config is consumed
+	let history_path = config.history_path.clone();
+	let user = config.user.clone();
+	let write_mode = config.write;
 
 	let (cmd, _rc_guard) = config.command()?;
 	let mut child = pty_pair
@@ -187,6 +179,33 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let mut rl = DefaultEditor::new().into_diagnostic()?;
 
+	// Load history from redb if available
+	let history = if let Some(ref path) = history_path {
+		match history::History::open(path.clone()) {
+			Ok(h) => {
+				// Load queries into rustyline history
+				if let Ok(queries) = h.queries_for_rustyline() {
+					for query in queries {
+						let _ = rl.add_history_entry(query);
+					}
+				}
+				Some(h)
+			}
+			Err(e) => {
+				eprintln!("Warning: Could not open history database: {}", e);
+				None
+			}
+		}
+	} else {
+		None
+	};
+
+	let user = user.unwrap_or_else(|| {
+		std::env::var("USER")
+			.or_else(|_| std::env::var("USERNAME"))
+			.unwrap_or_else(|_| "unknown".to_string())
+	});
+
 	loop {
 		// Check if child process is still running
 		match child.try_wait().into_diagnostic()? {
@@ -250,6 +269,13 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 				// Send the line to psql
 				let input = format!("{}\n", line);
+
+				// Save to history if available
+				if let Some(ref hist) = history {
+					if let Err(e) = hist.add(line.clone(), user.clone(), write_mode) {
+						eprintln!("Warning: Could not save to history: {}", e);
+					}
+				}
 
 				// Store the input so we can filter out the echo
 				*last_input.lock().unwrap() = input.clone();
