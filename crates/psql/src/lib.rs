@@ -308,5 +308,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	// Wait for child to exit
 	let status = child.wait().into_diagnostic()?;
+
+	// Compact the history database before exiting
+	if let Err(e) = rl.history_mut().compact() {
+		eprintln!("Warning: Failed to compact history database: {}", e);
+	}
+
 	Ok(status.exit_code() as i32)
 }
