@@ -3,6 +3,7 @@ pub mod history;
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use rand::Rng;
+use rustyline::history::History as HistoryTrait;
 use rustyline::{Config, Editor};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -426,7 +427,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let mut rl: Editor<(), history::History> = Editor::with_history(
 		Config::builder()
-			.auto_add_history(true)
+			.auto_add_history(false)
 			.history_ignore_dups(false)
 			.unwrap()
 			.build(),
@@ -501,6 +502,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					warn!("editor command intercepted (not yet implemented)");
 					// TODO: Open editor, read content, save history, send to psql
 					continue;
+				}
+
+				// Write to history immediately before sending to psql to ensure we don't miss entries
+				if !line.trim().is_empty() {
+					if let Err(e) = rl.history_mut().add(&line) {
+						warn!("failed to add history entry: {}", e);
+					} else {
+						debug!("wrote history entry before sending to psql");
+					}
 				}
 
 				let input = format!("{}\n", line);
