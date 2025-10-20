@@ -60,6 +60,13 @@ pub struct PsqlArgs {
 	#[arg(long, default_value = "psql")]
 	pub program: String,
 
+	/// Syntax highlighting theme (light, dark, or auto)
+	///
+	/// Controls the color scheme for SQL syntax highlighting in the input line.
+	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
+	#[arg(long, default_value = "auto")]
+	pub theme: String,
+
 	/// Additional, arbitrary arguments to pass to `psql`
 	///
 	/// If it has dashes (like `--password pass`), you need to prefix this with two dashes:
@@ -141,6 +148,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			.ok()
 			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),
 		user: Some(username.to_string()),
+		theme: bestool_psql::highlighter::Theme::from_str(&ctx.args_sub.theme),
 	};
 
 	bestool_psql::set_console_codepage(ctx.args_sub.codepage);

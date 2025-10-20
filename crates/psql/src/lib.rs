@@ -1,4 +1,5 @@
 mod completer;
+pub mod highlighter;
 pub mod history;
 mod ots;
 mod prompt;
@@ -86,6 +87,9 @@ pub struct PsqlConfig {
 
 	/// Whether to disable schema cache population
 	pub disable_schema_cache: bool,
+
+	/// Syntax highlighting theme
+	pub theme: highlighter::Theme,
 }
 
 impl PsqlConfig {
@@ -352,6 +356,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		return run_passthrough(config);
 	}
 
+	// Extract theme before config is moved
+	let theme = config.theme;
+
 	let boundary = prompt::generate_boundary();
 	debug!(boundary = %boundary, "generated prompt boundary marker");
 
@@ -463,7 +470,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		None
 	};
 
-	let mut completer = SqlCompleter::with_pty(writer.clone(), output_buffer.clone());
+	let mut completer =
+		SqlCompleter::with_pty_and_theme(writer.clone(), output_buffer.clone(), theme);
 	if let Some(ref cache_manager) = schema_cache_manager {
 		completer = completer.with_schema_cache(cache_manager.cache_arc());
 	}

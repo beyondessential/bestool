@@ -13,8 +13,12 @@ use rustyline::{
 	validate::{ValidationContext, ValidationResult, Validator},
 	Context, Helper,
 };
+use syntect::{
+	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
+	util::as_24_bit_terminal_escaped,
+};
 
-use crate::schema_cache::SchemaCache;
+use crate::{highlighter::Theme, schema_cache::SchemaCache};
 
 /// SQL keywords and psql commands for autocompletion
 pub struct SqlCompleter {
@@ -24,14 +28,26 @@ pub struct SqlCompleter {
 	pty_buffer: Option<Arc<Mutex<VecDeque<u8>>>>,
 	/// Cached schema information from the database
 	schema_cache: Option<Arc<RwLock<SchemaCache>>>,
+	/// Syntax highlighting support
+	syntax_set: SyntaxSet,
+	theme_set: ThemeSet,
+	theme: Theme,
 }
 
 impl SqlCompleter {
 	pub fn new() -> Self {
+		Self::with_theme(Theme::Dark)
+	}
+
+	/// Create a new SqlCompleter with a specific theme
+	pub fn with_theme(theme: Theme) -> Self {
 		Self {
 			pty_writer: None,
 			pty_buffer: None,
 			schema_cache: None,
+			syntax_set: SyntaxSet::load_defaults_newlines(),
+			theme_set: ThemeSet::load_defaults(),
+			theme,
 			keywords: vec![
 				// SQL Keywords (uppercase for convention)
 				"SELECT",
@@ -472,11 +488,13 @@ impl SqlCompleter {
 		completions
 	}
 
-	pub fn with_pty(
+	/// Create a completer with PTY and a specific theme
+	pub fn with_pty_and_theme(
 		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
 		pty_buffer: Arc<Mutex<VecDeque<u8>>>,
+		theme: Theme,
 	) -> Self {
-		let mut completer = Self::new();
+		let mut completer = Self::with_theme(theme);
 		completer.pty_writer = Some(pty_writer);
 		completer.pty_buffer = Some(pty_buffer);
 		completer
@@ -527,12 +545,36 @@ impl Hinter for SqlCompleter {
 
 impl Highlighter for SqlCompleter {
 	fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-		// No syntax highlighting
-		Cow::Borrowed(line)
+		// Get SQL syntax
+		let syntax = self
+			.syntax_set
+			.find_syntax_by_extension("sql")
+			.unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+
+		// Get theme name
+		let theme_name = match self.theme {
+			Theme::Light => "base16-ocean.light",
+			Theme::Dark => "base16-ocean.dark",
+		};
+
+		// Get theme
+		let theme = &self.theme_set.themes[theme_name];
+
+		// Highlight
+		let mut highlighter = HighlightLines::new(syntax, theme);
+		match highlighter.highlight_line(line, &self.syntax_set) {
+			Ok(ranges) => {
+				let mut escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+				// Add ANSI reset sequence to prevent color bleeding into prompt/output
+				escaped.push_str("\x1b[0m");
+				Cow::Owned(escaped)
+			}
+			Err(_) => Cow::Borrowed(line),
+		}
 	}
 
 	fn highlight_char(&self, _line: &str, _pos: usize, _forced: CmdKind) -> bool {
-		false
+		true
 	}
 }
 

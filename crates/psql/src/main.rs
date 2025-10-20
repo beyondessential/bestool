@@ -1,3 +1,4 @@
+use bestool_psql::highlighter::Theme;
 use bestool_psql::history::History;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
@@ -68,6 +69,13 @@ pub struct Args {
 	/// Database user (for history tracking, defaults to $USER)
 	#[arg(short = 'U', long)]
 	pub user: Option<String>,
+
+	/// Syntax highlighting theme (light, dark, or auto)
+	///
+	/// Controls the color scheme for SQL syntax highlighting in the input line.
+	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
+	#[arg(long, default_value = "auto")]
+	pub theme: String,
 
 	/// Arbitrary arguments to pass to `psql`; prefix with `--`
 	///
@@ -143,6 +151,9 @@ fn main() -> Result<()> {
 		read_psqlrc()?
 	};
 
+	let theme = Theme::from_str(&args.theme);
+	debug!(?theme, "using syntax highlighting theme");
+
 	let config = bestool_psql::PsqlConfig {
 		psql_path: args.program,
 		write: args.write,
@@ -153,6 +164,7 @@ fn main() -> Result<()> {
 		ots,
 		passthrough: args.passthrough,
 		disable_schema_cache: args.disable_schema_cache,
+		theme,
 	};
 
 	if args.write {
