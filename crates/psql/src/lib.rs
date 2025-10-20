@@ -2,7 +2,7 @@ pub mod history;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use rustyline::DefaultEditor;
+use rustyline::{Config, Editor};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -177,25 +177,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		*running_clone.lock().unwrap() = false;
 	});
 
-	let mut rl = DefaultEditor::new().into_diagnostic()?;
-
-	// Load history from redb if available
-	let history = match history::History::open(history_path) {
-		Ok(h) => {
-			// Load queries into rustyline history
-			if let Ok(queries) = h.queries_for_rustyline() {
-				for query in queries {
-					let _ = rl.add_history_entry(query);
-				}
-			}
-			Some(h)
-		}
-		Err(e) => {
-			eprintln!("Warning: Could not open history database: {}", e);
-			None
-		}
-	};
-
+	// Set up history with database backend
 	let db_user = db_user.unwrap_or_else(|| {
 		std::env::var("USER")
 			.or_else(|_| std::env::var("USERNAME"))
@@ -205,6 +187,22 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
+
+	// Open or create history database
+	let mut history = history::History::open(history_path).unwrap_or_else(|e| {
+		eprintln!("Warning: Could not open history database: {}", e);
+		eprintln!("Creating new history database...");
+		// Create a temporary in-memory fallback (this will still fail, but provides a better error)
+		history::History::open(
+			std::env::temp_dir().join(format!("bestool-psql-fallback-{}.redb", std::process::id())),
+		)
+		.expect("Failed to create fallback history database")
+	});
+
+	history.set_context(db_user.clone(), sys_user.clone(), write_mode);
+
+	let mut rl: Editor<(), history::History> =
+		Editor::with_history(Config::default(), history).into_diagnostic()?;
 
 	loop {
 		// Check if child process is still running
@@ -269,15 +267,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 				// Send the line to psql
 				let input = format!("{}\n", line);
-
-				// Save to history if available
-				if let Some(ref hist) = history {
-					if let Err(e) =
-						hist.add(line.clone(), db_user.clone(), sys_user.clone(), write_mode)
-					{
-						eprintln!("Warning: Could not save to history: {}", e);
-					}
-				}
 
 				// Store the input so we can filter out the echo
 				*last_input.lock().unwrap() = input.clone();
