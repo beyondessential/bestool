@@ -230,6 +230,41 @@ impl History {
 		Ok(history_dir.join("history.redb"))
 	}
 
+	/// Set up history with context, falling back to a temporary database on error
+	pub fn setup(
+		history_path: PathBuf,
+		db_user: Option<String>,
+		write_mode: bool,
+		ots: Option<String>,
+	) -> Self {
+		let mut history = Self::open(history_path.clone()).unwrap_or_else(|e| {
+			warn!("could not open history database: {}", e);
+			debug!("creating fallback history database");
+			// Create a temporary in-memory fallback (this will still fail, but provides a better error)
+			Self::open(
+				std::env::temp_dir()
+					.join(format!("bestool-psql-fallback-{}.redb", std::process::id())),
+			)
+			.expect("Failed to create fallback history database")
+		});
+
+		let db_user = db_user.unwrap_or_else(|| {
+			std::env::var("USER")
+				.or_else(|_| std::env::var("USERNAME"))
+				.unwrap_or_else(|_| "unknown".to_string())
+		});
+
+		let sys_user = std::env::var("USER")
+			.or_else(|_| std::env::var("USERNAME"))
+			.unwrap_or_else(|_| "unknown".to_string());
+
+		history.set_context(db_user.clone(), sys_user.clone(), write_mode, ots);
+
+		debug!(db_user, sys_user, write_mode, "history context set");
+
+		history
+	}
+
 	/// Add a new entry to the history (legacy method for compatibility)
 	pub fn add_entry(
 		&mut self,
@@ -393,6 +428,21 @@ impl HistoryTrait for History {
 			return Ok(false);
 		}
 
+		if self.ignore_space && line.starts_with(' ') {
+			trace!("ignoring line starting with space");
+			return Ok(false);
+		}
+
+		if self.ignore_dups && !self.timestamps.is_empty() {
+			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
+			{
+				if last_entry.query == line {
+					trace!("ignoring duplicate entry");
+					return Ok(false);
+				}
+			}
+		}
+
 		self.add_entry(
 			line,
 			self.db_user.clone(),
@@ -489,7 +539,7 @@ impl HistoryTrait for History {
 	}
 
 	fn clear(&mut self) -> rustyline::Result<()> {
-		// No-op: we do that ourselves
+		// No-op: we don't clear audit logs
 		Ok(())
 	}
 
@@ -783,9 +833,9 @@ mod tests {
 		let result = history.get(0, SearchDirection::Forward).unwrap().unwrap();
 		assert_eq!(result.entry, "SELECT 3;");
 
-		// Test clear
+		// Test clear (should be a no-op for audit logs)
 		history.clear().unwrap();
-		assert_eq!(history.len(), 0);
-		assert!(history.is_empty());
+		assert_eq!(history.len(), 2); // Should still have 2 entries
+		assert!(!history.is_empty());
 	}
 }
