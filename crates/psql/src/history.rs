@@ -38,9 +38,16 @@ pub struct TailscalePeer {
 }
 
 /// History manager using redb for persistent storage
+///
+/// This struct is safe for use with concurrent writers. Multiple psql processes
+/// can write to the same database simultaneously. The in-memory `timestamps` cache
+/// may become stale if other processes add entries, but operations remain safe:
+/// - Database operations use redb's MVCC for consistency
+/// - Missing entries are handled gracefully
+/// - Timestamps can be refreshed with `reload_timestamps()`
 pub struct History {
 	db: Database,
-	/// Sorted list of timestamps for indexed access
+	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
 	timestamps: Vec<u64>,
 	/// Maximum history length
 	max_len: usize,
@@ -149,17 +156,34 @@ impl History {
 		Ok(timestamps)
 	}
 
+	/// Reload timestamps from the database
+	///
+	/// This is useful when multiple processes are writing to the same database.
+	/// Call this to see entries added by other processes.
+	pub fn reload_timestamps(&mut self) -> Result<()> {
+		self.timestamps = Self::load_timestamps(&self.db)?;
+		Ok(())
+	}
+
 	/// Get entry by timestamp
-	fn get_entry(&self, timestamp: u64) -> Result<HistoryEntry> {
+	///
+	/// Returns None if the entry doesn't exist (may have been deleted by another process)
+	fn get_entry(&self, timestamp: u64) -> Result<Option<HistoryEntry>> {
 		let read_txn = self.db.begin_read().into_diagnostic()?;
-		let table = read_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 
-		let json = table
-			.get(timestamp)
-			.into_diagnostic()?
-			.ok_or_else(|| miette::miette!("Entry not found"))?;
+		// Table might not exist yet
+		let table = match read_txn.open_table(HISTORY_TABLE) {
+			Ok(table) => table,
+			Err(_) => return Ok(None),
+		};
 
-		serde_json::from_str(json.value()).into_diagnostic()
+		let json = match table.get(timestamp).into_diagnostic()? {
+			Some(json) => json,
+			None => return Ok(None), // Entry was deleted
+		};
+
+		let entry = serde_json::from_str(json.value()).into_diagnostic()?;
+		Ok(Some(entry))
 	}
 
 	/// Compact the database to reclaim space from deleted entries
@@ -220,20 +244,23 @@ impl History {
 		// Update timestamps index
 		self.timestamps.push(timestamp);
 
-		// Enforce max length
+		// Enforce max length (note: other processes may have added entries,
+		// so the actual database size may exceed max_len temporarily)
 		if self.timestamps.len() > self.max_len {
 			let to_remove = self.timestamps.len() - self.max_len;
 			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
 
-			// Remove from database
-			let write_txn = self.db.begin_write().into_diagnostic()?;
-			{
-				let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
-				for ts in old_timestamps {
-					table.remove(ts).into_diagnostic()?;
+			// Remove from database (ignore errors if already deleted by another process)
+			if let Ok(write_txn) = self.db.begin_write() {
+				{
+					if let Ok(mut table) = write_txn.open_table(HISTORY_TABLE) {
+						for ts in old_timestamps {
+							let _ = table.remove(ts); // Ignore errors
+						}
+					}
 				}
+				let _ = write_txn.commit(); // Ignore errors
 			}
-			write_txn.commit().into_diagnostic()?;
 		}
 
 		Ok(())
@@ -320,6 +347,12 @@ impl HistoryTrait for History {
 			))
 		})?;
 
+		// Entry may have been deleted by another process
+		let entry = match entry {
+			Some(e) => e,
+			None => return Ok(None),
+		};
+
 		Ok(Some(SearchResult {
 			entry: Cow::Owned(entry.query),
 			idx: index,
@@ -343,7 +376,8 @@ impl HistoryTrait for History {
 
 		if self.ignore_dups && !self.timestamps.is_empty() {
 			// Check if the last entry is a duplicate
-			if let Ok(last_entry) = self.get_entry(self.timestamps[self.timestamps.len() - 1]) {
+			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
+			{
 				if last_entry.query == line {
 					return Ok(false);
 				}
@@ -480,6 +514,12 @@ impl HistoryTrait for History {
 				))
 			})?;
 
+			// Skip entries that were deleted by another process
+			let entry = match entry {
+				Some(e) => e,
+				None => continue,
+			};
+
 			if let Some(pos) = entry.query.find(term) {
 				return Ok(Some(SearchResult {
 					entry: Cow::Owned(entry.query),
@@ -521,6 +561,12 @@ impl HistoryTrait for History {
 					e.to_string(),
 				))
 			})?;
+
+			// Skip entries that were deleted by another process
+			let entry = match entry {
+				Some(e) => e,
+				None => continue,
+			};
 
 			if entry.query.starts_with(term) {
 				return Ok(Some(SearchResult {
