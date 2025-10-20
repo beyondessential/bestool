@@ -9,7 +9,7 @@ use rustyline::history::{History as HistoryTrait, SearchDirection, SearchResult}
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
@@ -84,7 +84,7 @@ impl History {
 
 			if metadata.len() > MAX_SIZE {
 				let size_mb = metadata.len() / (1024 * 1024);
-				warn!(size_mb, "history database exceeds 100MB, culling to 90MB");
+				info!(size_mb, "history database exceeds 100MB, culling to 90MB");
 
 				// Remove oldest entries in batches until we reach target size
 				while timestamps.len() > 0 {
