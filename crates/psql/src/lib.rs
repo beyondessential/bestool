@@ -1,6 +1,7 @@
 pub mod history;
 mod ots;
 mod prompt;
+mod psql_writer;
 mod reader;
 mod terminal;
 
@@ -9,7 +10,8 @@ pub use ots::prompt_for_ots;
 
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use rustyline::history::History as HistoryTrait;
+use psql_writer::PsqlWriter;
+use rustyline::history::History as _;
 use rustyline::{Config, Editor};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -161,6 +163,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let output_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(1024)));
 	let output_buffer_clone = output_buffer.clone();
 
+	let psql_writer = PsqlWriter::new(writer.clone(), output_buffer.clone());
+
 	let current_prompt = Arc::new(Mutex::new(String::new()));
 	let current_prompt_clone = current_prompt.clone();
 
@@ -234,13 +238,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		// Small delay to let output accumulate
 		thread::sleep(Duration::from_millis(50));
 
-		// Check if we're at a prompt by looking for our boundary marker in the output buffer
-		let mut buffer = output_buffer.lock().unwrap();
-		let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
-		let buffer_str = String::from_utf8_lossy(&buffer_vec);
-		let at_prompt = buffer_str.contains(&format!("<<<{boundary}|||"));
-		trace!(at_prompt, %buffer_str, "buffer");
-
+		let at_prompt = psql_writer.buffer_contains(&format!("<<<{boundary}|||"));
 		if !at_prompt {
 			// Not at a prompt, continue waiting
 			thread::sleep(Duration::from_millis(50));
@@ -281,14 +279,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						*current_write_mode = false;
 						*current_ots = None;
 
-						// Clear the buffer since we're about to hit up psql
-						buffer.clear();
-						drop(buffer);
-
-						let cmd = "\nSET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\nROLLBACK;\n";
-						let mut writer = writer.lock().unwrap();
-						writer.write_all(cmd.as_bytes()).ok();
-						writer.flush().ok();
+						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\nROLLBACK;\n";
+						if let Err(e) = psql_writer.write_str(cmd) {
+							warn!("failed to write to psql: {}", e);
+							continue;
+						}
 
 						thread::sleep(Duration::from_millis(50));
 						info!("Write mode disabled");
@@ -311,14 +306,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 								*current_write_mode = true;
 								*current_ots = Some(new_ots.clone());
 
-								// Clear the buffer since we're about to hit up psql
-								buffer.clear();
-								drop(buffer);
-
 								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\set AUTOCOMMIT off\nROLLBACK;\n";
-								let mut writer = writer.lock().unwrap();
-								writer.write_all(cmd.as_bytes()).ok();
-								writer.flush().ok();
+								if let Err(e) = psql_writer.write_str(cmd) {
+									warn!("failed to write to psql: {}", e);
+									continue;
+								}
 
 								thread::sleep(Duration::from_millis(50));
 								info!("Write mode enabled");
@@ -342,10 +334,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					continue;
 				}
 
-				// Clear the buffer since we're about to hit up psql
-				buffer.clear();
-				drop(buffer);
-
 				if !line.trim().is_empty() {
 					if let Err(e) = rl.history_mut().add(&line) {
 						warn!("failed to add history entry: {}", e);
@@ -354,28 +342,21 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					}
 				}
 
-				let input = format!("{}\n", line);
-
 				// Store the input so we can filter out the echo
-				*last_input.lock().unwrap() = input.clone();
+				*last_input.lock().unwrap() = format!("{}\n", line);
 
-				let mut writer = writer.lock().unwrap();
-				if let Err(_) = writer.write_all(input.as_bytes()) {
+				if let Err(e) = psql_writer.write_line(&line) {
+					warn!("failed to write to psql: {}", e);
 					return Err(PsqlError::WriteError).into_diagnostic();
 				}
-				writer.flush().into_diagnostic()?;
 			}
 			Err(rustyline::error::ReadlineError::Interrupted) => {
 				debug!("received Ctrl-C");
-				let mut writer = writer.lock().unwrap();
-				writer.write_all(&[3]).ok(); // ASCII ETX (Ctrl-C)
-				writer.flush().ok();
+				psql_writer.send_control(3).ok(); // ASCII ETX (Ctrl-C)
 			}
 			Err(rustyline::error::ReadlineError::Eof) => {
 				debug!("received Ctrl-D (EOF)");
-				let mut writer = writer.lock().unwrap();
-				writer.write_all(&[4]).ok(); // ASCII EOT (Ctrl-D)
-				writer.flush().ok();
+				psql_writer.send_control(4).ok(); // ASCII EOT (Ctrl-D)
 				break;
 			}
 			Err(err) => {
