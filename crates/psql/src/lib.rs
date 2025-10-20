@@ -154,9 +154,6 @@ impl PsqlConfig {
 		for arg in &self.args {
 			cmd.arg(arg);
 		}
-		for (key, value) in std::env::vars_os() {
-			cmd.env(key, value);
-		}
 
 		Ok((cmd, rc))
 	}
@@ -180,9 +177,6 @@ impl PsqlConfig {
 
 		for arg in &self.args {
 			cmd.arg(arg);
-		}
-		for (key, value) in std::env::vars_os() {
-			cmd.env(key, value);
 		}
 
 		Ok((cmd, rc))
