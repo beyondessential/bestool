@@ -90,7 +90,6 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	// Determine history path
 	let history_path = if let Some(path) = args.history_path {
 		path
 	} else {
@@ -268,23 +267,19 @@ fn timestamp_to_datetime(micros: u64) -> String {
 	let duration = Duration::from_micros(micros);
 	let system_time = UNIX_EPOCH + duration;
 
-	// Format as ISO 8601 datetime
 	if let Ok(duration_since_epoch) = system_time.duration_since(UNIX_EPOCH) {
 		let secs = duration_since_epoch.as_secs();
 		let nanos = duration_since_epoch.subsec_nanos();
 
-		// Basic datetime formatting (simplified)
 		let days_since_epoch = secs / 86400;
 		let seconds_today = secs % 86400;
 		let hours = seconds_today / 3600;
 		let minutes = (seconds_today % 3600) / 60;
 		let seconds = seconds_today % 60;
 
-		// Calculate date (simplified - not accounting for leap years properly)
 		let year = 1970 + (days_since_epoch / 365) as i32;
 		let day_of_year = (days_since_epoch % 365) as u32;
 
-		// Very simplified month/day calculation
 		let month = 1 + (day_of_year / 30).min(11);
 		let day = 1 + (day_of_year % 30).min(30);
 
