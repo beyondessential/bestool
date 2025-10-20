@@ -4,6 +4,7 @@ mod ots;
 mod prompt;
 mod psql_writer;
 mod reader;
+mod schema_cache;
 mod terminal;
 
 // Re-export for convenience
@@ -15,9 +16,11 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use psql_writer::PsqlWriter;
 use rustyline::history::History as _;
 use rustyline::{Config, Editor};
+use schema_cache::SchemaCacheManager;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -58,15 +61,25 @@ pub struct PsqlConfig {
 
 	/// OTS (Over The Shoulder) value for write mode sessions
 	pub ots: Option<String>,
+
+	/// Whether to launch psql directly without rustyline wrapper (read-only mode only)
+	pub passthrough: bool,
+
+	/// Whether to disable schema cache population
+	pub disable_schema_cache: bool,
 }
 
 impl PsqlConfig {
-	fn command(self, boundary: &str) -> Result<(CommandBuilder, NamedTempFile)> {
-		let mut cmd = CommandBuilder::new(&self.psql_path);
-
-		if self.write {
-			cmd.arg("--set=AUTOCOMMIT=OFF");
-		}
+	fn psqlrc(&self, boundary: Option<&str>) -> Result<NamedTempFile> {
+		let prompts = if let Some(boundary) = boundary {
+			format!(
+				"\\set PROMPT1 '<<<{boundary}|||1|||%/|||%n|||%#|||%R|||%x>>>'\n\
+				\\set PROMPT2 '<<<{boundary}|||2|||%/|||%n|||%#|||%R|||%x>>>'\n\
+				\\set PROMPT3 '<<<{boundary}|||3|||%/|||%n|||%#|||%R|||%x>>>'\n"
+			)
+		} else {
+			String::new()
+		};
 
 		let mut rc = tempfile::Builder::new()
 			.prefix("bestool-psql-")
@@ -80,9 +93,7 @@ impl PsqlConfig {
 			\\timing\n\
 			{existing}\n\
 			{ro}\n\
-			\\set PROMPT1 '<<<{boundary}|||1|||%/|||%n|||%#|||%R|||%x>>>'\n\
-			\\set PROMPT2 '<<<{boundary}|||2|||%/|||%n|||%#|||%R|||%x>>>'\n\
-			\\set PROMPT3 '<<<{boundary}|||3|||%/|||%n|||%#|||%R|||%x>>>'\n",
+			{prompts}",
 			existing = self.psqlrc,
 			ro = if self.write {
 				""
@@ -91,6 +102,38 @@ impl PsqlConfig {
 			},
 		)
 		.into_diagnostic()?;
+
+		Ok(rc)
+	}
+
+	fn pty_command(self, boundary: Option<&str>) -> Result<(CommandBuilder, NamedTempFile)> {
+		let mut cmd = CommandBuilder::new(&self.psql_path);
+
+		if self.write {
+			cmd.arg("--set=AUTOCOMMIT=OFF");
+		}
+
+		let rc = self.psqlrc(boundary)?;
+		cmd.env("PSQLRC", rc.path());
+
+		for arg in &self.args {
+			cmd.arg(arg);
+		}
+		for (key, value) in std::env::vars_os() {
+			cmd.env(key, value);
+		}
+
+		Ok((cmd, rc))
+	}
+
+	fn std_command(self, boundary: Option<&str>) -> Result<(Command, NamedTempFile)> {
+		let mut cmd = Command::new(&self.psql_path);
+
+		if self.write {
+			cmd.arg("--set=AUTOCOMMIT=OFF");
+		}
+
+		let rc = self.psqlrc(boundary)?;
 		cmd.env("PSQLRC", rc.path());
 
 		for arg in &self.args {
@@ -105,6 +148,17 @@ impl PsqlConfig {
 }
 
 pub fn run(config: PsqlConfig) -> Result<i32> {
+	// Handle passthrough mode (read-only only)
+	if config.passthrough {
+		if config.write {
+			return Err(miette!(
+				"passthrough mode is only available in read-only mode"
+			));
+		}
+		info!("launching psql in passthrough mode");
+		return run_passthrough(config);
+	}
+
 	let boundary = prompt::generate_boundary();
 	debug!(boundary = %boundary, "generated prompt boundary marker");
 
@@ -135,7 +189,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let write_mode_clone = write_mode.clone();
 	let ots_clone = ots.clone();
 
-	let (cmd, _rc_guard) = config.command(&boundary)?;
+	let disable_schema_cache = config.disable_schema_cache;
+
+	let (cmd, _rc_guard) = config.pty_command(Some(&boundary))?;
 	let mut child = pty_pair
 		.slave
 		.spawn_command(cmd)
@@ -194,7 +250,25 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		ots.lock().unwrap().clone(),
 	);
 
-	let completer = SqlCompleter::new();
+	let schema_cache_manager = if !disable_schema_cache {
+		debug!("initializing schema cache");
+		let manager = SchemaCacheManager::new(writer.clone());
+
+		if let Err(e) = manager.refresh() {
+			warn!("failed to populate schema cache: {}", e);
+		}
+
+		Some(manager)
+	} else {
+		debug!("schema cache disabled by config");
+		None
+	};
+
+	let mut completer = SqlCompleter::with_pty(writer.clone(), output_buffer.clone());
+	if let Some(ref cache_manager) = schema_cache_manager {
+		completer = completer.with_schema_cache(cache_manager.cache_arc());
+	}
+
 	let mut rl: Editor<SqlCompleter, history::History> = Editor::with_history(
 		Config::builder()
 			.auto_add_history(false)
@@ -265,6 +339,26 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				if trimmed == "\\e" || trimmed.starts_with("\\e ") {
 					warn!("editor command intercepted (not yet implemented)");
 					// TODO: Open editor, read content, save history, send to psql
+					continue;
+				}
+
+				// Handle \refresh command to reload schema cache
+				if trimmed == "\\refresh" {
+					if let Some(ref cache_manager) = schema_cache_manager {
+						info!("refreshing schema cache...");
+						eprintln!("Refreshing schema cache...");
+						match cache_manager.refresh() {
+							Ok(()) => {
+								eprintln!("Schema cache refreshed successfully");
+							}
+							Err(e) => {
+								warn!("failed to refresh schema cache: {}", e);
+								eprintln!("Failed to refresh schema cache: {}", e);
+							}
+						}
+					} else {
+						eprintln!("Schema cache is not enabled");
+					}
 					continue;
 				}
 
@@ -381,4 +475,17 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	debug!(exit_code = status.exit_code(), "exiting");
 	Ok(status.exit_code() as i32)
+}
+
+/// Run psql in passthrough mode (no rustyline wrapper)
+///
+/// Read-only mode is enforced.
+fn run_passthrough(mut config: PsqlConfig) -> Result<i32> {
+	// explicitly cannot do writes without the protections of the wrapper
+	config.write = false;
+
+	let (mut cmd, _guard) = config.std_command(None)?;
+	let status = cmd.status().into_diagnostic()?;
+
+	Ok(status.code().unwrap_or(1))
 }

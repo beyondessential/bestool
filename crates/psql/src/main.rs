@@ -28,6 +28,22 @@ pub struct Args {
 	#[arg(short = 'W', long)]
 	pub write: bool,
 
+	/// Launch psql directly without wrapper (passthrough mode).
+	///
+	/// This mode runs native psql with its own readline, which means you can use psql's native
+	/// tab completion on unix but lose bestool features like audit logging and custom commands.
+	///
+	/// Enforces read-only mode for safety.
+	#[arg(long, conflicts_with = "write")]
+	pub passthrough: bool,
+
+	/// Disable schema cache for autocompletion.
+	///
+	/// By default, we query the database schema on startup to provide table/column completion.
+	/// Use this flag to disable that behavior (e.g., for very large databases or slow connections).
+	#[arg(long)]
+	pub disable_schema_cache: bool,
+
 	/// Set the console codepage (Windows-only, ignored on other platforms)
 	#[arg(long, default_value = "65001")]
 	pub codepage: u32,
@@ -136,6 +152,8 @@ fn main() -> Result<()> {
 		history_path,
 		user: args.user,
 		ots,
+		passthrough: args.passthrough,
+		disable_schema_cache: args.disable_schema_cache,
 	};
 
 	if args.write {

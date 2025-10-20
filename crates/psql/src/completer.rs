@@ -1,64 +1,36 @@
-//! SQL and psql command completion for rustyline
-//!
-//! This module provides autocompletion functionality for the psql wrapper,
-//! implementing rustyline's `Completer` trait to offer suggestions as users type.
-//!
-//! # Features
-//!
-//! - **SQL Keyword Completion**: Autocompletes common SQL keywords (SELECT, FROM, WHERE, etc.)
-//! - **Data Type Completion**: Suggests PostgreSQL data types (INTEGER, TEXT, JSONB, etc.)
-//! - **Function Completion**: Completes common SQL functions (COUNT, COALESCE, NOW, etc.)
-//! - **psql Command Completion**: Autocompletes backslash commands (\\dt, \\d, \\l, etc.)
-//! - **Case Insensitive**: Works regardless of input case
-//!
-//! # Usage
-//!
-//! Press `Tab` while typing to trigger autocompletion. The completer will:
-//! - Show all matching SQL keywords when typing SQL commands
-//! - Show matching psql commands when input starts with backslash
-//! - Provide case-insensitive matching for SQL keywords
-//!
-//! # Limitations
-//!
-//! This is a static completer that doesn't query the database for schema information.
-//! Unlike native psql's completion, it cannot suggest:
-//! - Actual table names from your database
-//! - Column names from specific tables
-//! - Schema names
-//! - Function names defined in your database
-//!
-//! The completer provides a baseline SQL keyword and command completion experience
-//! without requiring database connectivity or query overhead.
-//!
-//! # Examples
-//!
-//! ```text
-//! # Typing "SEL" + Tab suggests:
-//! SELECT
-//!
-//! # Typing "\\d" + Tab suggests:
-//! \d    \d+   \da   \db   \dc   \dt   \di   ...
-//!
-//! # Typing "select * fro" + Tab suggests:
-//! FROM
-//! ```
+use std::{
+	borrow::Cow,
+	collections::VecDeque,
+	io::Write,
+	sync::{Arc, Mutex, RwLock},
+};
 
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
-use std::borrow::Cow;
+use rustyline::{
+	completion::{Completer, Pair},
+	highlight::Highlighter,
+	hint::Hinter,
+	validate::Validator,
+	Context, Helper,
+};
+
+use crate::schema_cache::SchemaCache;
 
 /// SQL keywords and psql commands for autocompletion
 pub struct SqlCompleter {
 	keywords: Vec<&'static str>,
 	psql_commands: Vec<&'static str>,
+	pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+	pty_buffer: Option<Arc<Mutex<VecDeque<u8>>>>,
+	/// Cached schema information from the database
+	schema_cache: Option<Arc<RwLock<SchemaCache>>>,
 }
 
 impl SqlCompleter {
 	pub fn new() -> Self {
 		Self {
+			pty_writer: None,
+			pty_buffer: None,
+			schema_cache: None,
 			keywords: vec![
 				// SQL Keywords (uppercase for convention)
 				"SELECT",
@@ -399,6 +371,53 @@ impl SqlCompleter {
 				}
 			}
 		} else {
+			let input_lower = text_before_cursor.to_lowercase();
+
+			// Check if we're in a FROM clause (suggest tables)
+			if input_lower.contains(" from ") || input_lower.starts_with("from ") {
+				if let Some(cache) = &self.schema_cache {
+					let cache = cache.read().unwrap();
+					for table in cache.all_tables() {
+						if table
+							.to_lowercase()
+							.starts_with(&current_word.to_lowercase())
+						{
+							completions.push(Pair {
+								display: table.clone(),
+								replacement: table,
+							});
+						}
+					}
+					for view in cache.all_views() {
+						if view
+							.to_lowercase()
+							.starts_with(&current_word.to_lowercase())
+						{
+							completions.push(Pair {
+								display: view.clone(),
+								replacement: view,
+							});
+						}
+					}
+				}
+			}
+
+			// Add schema names if we have them
+			if let Some(cache) = &self.schema_cache {
+				let cache = cache.read().unwrap();
+				for schema in &cache.schemas {
+					if schema
+						.to_lowercase()
+						.starts_with(&current_word.to_lowercase())
+					{
+						completions.push(Pair {
+							display: schema.clone(),
+							replacement: schema.clone(),
+						});
+					}
+				}
+			}
+
 			// Complete SQL keywords
 			let current_upper = current_word.to_uppercase();
 			for keyword in &self.keywords {
@@ -409,11 +428,63 @@ impl SqlCompleter {
 					});
 				}
 			}
+
+			// Add table names from schema cache
+			if let Some(cache) = &self.schema_cache {
+				let cache = cache.read().unwrap();
+				for table in cache.all_tables() {
+					if table
+						.to_lowercase()
+						.starts_with(&current_word.to_lowercase())
+					{
+						// Avoid duplicates if already added in FROM clause detection
+						if !completions.iter().any(|c| c.display == table) {
+							completions.push(Pair {
+								display: table.clone(),
+								replacement: table,
+							});
+						}
+					}
+				}
+			}
+
+			// Add function names from schema cache
+			if let Some(cache) = &self.schema_cache {
+				let cache = cache.read().unwrap();
+				for func in &cache.functions {
+					if func
+						.to_lowercase()
+						.starts_with(&current_word.to_lowercase())
+					{
+						completions.push(Pair {
+							display: func.clone(),
+							replacement: func.clone(),
+						});
+					}
+				}
+			}
 		}
 
-		// Sort completions alphabetically
+		// Sort completions alphabetically and remove duplicates
 		completions.sort_by(|a, b| a.display.cmp(&b.display));
+		completions.dedup_by(|a, b| a.display == b.display);
 		completions
+	}
+
+	pub fn with_pty(
+		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+		pty_buffer: Arc<Mutex<VecDeque<u8>>>,
+	) -> Self {
+		let mut completer = Self::new();
+		completer.pty_writer = Some(pty_writer);
+		completer.pty_buffer = Some(pty_buffer);
+		completer
+	}
+
+	/// Set the schema cache for database-aware completion
+	pub fn with_schema_cache(mut self, cache: Arc<RwLock<SchemaCache>>) -> Self {
+		self.schema_cache = Some(cache);
+		self
 	}
 }
 
@@ -449,14 +520,13 @@ impl Hinter for SqlCompleter {
 	type Hint = String;
 
 	fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
-		// Could implement hints showing the first completion candidate
 		None
 	}
 }
 
 impl Highlighter for SqlCompleter {
 	fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-		// No syntax highlighting for now
+		// No syntax highlighting
 		Cow::Borrowed(line)
 	}
 
