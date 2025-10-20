@@ -74,10 +74,18 @@ impl History {
 	/// Open or create a history database at the given path
 	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
 		let path = path.as_ref();
+		let is_new_db = !path.exists();
 		let db = Database::create(path).into_diagnostic()?;
 		let db = Arc::new(RwLock::new(db));
 
 		let mut timestamps = Self::load_timestamps(&db)?;
+
+		// Import plain text psql history if this is a new database
+		if is_new_db && timestamps.is_empty() {
+			if let Err(e) = Self::import_psql_history(&db, &mut timestamps) {
+				debug!("could not import psql history: {}", e);
+			}
+		}
 
 		if let Ok(metadata) = std::fs::metadata(path) {
 			const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
@@ -175,6 +183,64 @@ impl History {
 		}
 
 		Ok(timestamps)
+	}
+
+	/// Import entries from plain text psql history file (~/.psql_history)
+	fn import_psql_history(db: &Arc<RwLock<Database>>, timestamps: &mut Vec<u64>) -> Result<()> {
+		let psql_history_path = if let Some(home) = std::env::var_os("HOME") {
+			PathBuf::from(home).join(".psql_history")
+		} else if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+			// Windows fallback
+			PathBuf::from(userprofile).join(".psql_history")
+		} else {
+			return Ok(()); // No home directory, skip import
+		};
+
+		if !psql_history_path.exists() {
+			debug!("no psql history file found at {:?}", psql_history_path);
+			return Ok(());
+		}
+
+		info!("importing psql history from {:?}", psql_history_path);
+
+		let content = std::fs::read_to_string(&psql_history_path).into_diagnostic()?;
+		let lines: Vec<&str> = content.lines().collect();
+
+		if lines.is_empty() {
+			return Ok(());
+		}
+
+		let write_txn = db.read().unwrap().begin_write().into_diagnostic()?;
+		{
+			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
+			let mut timestamp = 0u64;
+
+			for line in lines {
+				let line = line.trim();
+				if line.is_empty() {
+					continue;
+				}
+
+				// Create entry with default values
+				let entry = HistoryEntry {
+					query: line.to_string(),
+					db_user: String::new(),
+					sys_user: String::new(),
+					writemode: true,
+					tailscale: Vec::new(),
+					ots: None,
+				};
+
+				let json = serde_json::to_string(&entry).into_diagnostic()?;
+				table.insert(timestamp, json.as_str()).into_diagnostic()?;
+				timestamps.push(timestamp);
+				timestamp += 1;
+			}
+		}
+		write_txn.commit().into_diagnostic()?;
+
+		info!("imported {} entries from psql history", timestamps.len());
+		Ok(())
 	}
 
 	/// Reload timestamps from the database
