@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -56,7 +57,7 @@ pub struct PsqlConfig {
 }
 
 impl PsqlConfig {
-	fn command(self) -> Result<CommandBuilder> {
+	fn command(self) -> Result<(CommandBuilder, NamedTempFile)> {
 		let mut cmd = CommandBuilder::new(&self.psql_path);
 
 		if self.write {
@@ -80,6 +81,7 @@ impl PsqlConfig {
 			},
 		)
 		.into_diagnostic()?;
+		cmd.env("PSQLRC", rc.path());
 
 		for arg in &self.args {
 			cmd.arg(arg);
@@ -88,7 +90,7 @@ impl PsqlConfig {
 			cmd.env(key, value);
 		}
 
-		Ok(cmd)
+		Ok((cmd, rc))
 	}
 }
 
@@ -98,9 +100,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		.openpty(PtySize::default())
 		.map_err(|e| miette!("failed to create pty: {}", e))?;
 
+	let (cmd, _rc_guard) = config.command()?;
 	let mut child = pty_pair
 		.slave
-		.spawn_command(config.command()?)
+		.spawn_command(cmd)
 		.map_err(|e| miette!("failed to spawn psql: {}", e))?;
 
 	drop(pty_pair.slave);
