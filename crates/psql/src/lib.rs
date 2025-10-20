@@ -309,7 +309,17 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	)
 	.into_diagnostic()?;
 
+	// Track last timestamp reload time
+	let mut last_reload = std::time::Instant::now();
+
 	loop {
+		// Reload timestamps every 60 seconds to pick up entries from concurrent writers
+		if last_reload.elapsed() >= Duration::from_secs(60) {
+			if let Err(e) = rl.history_mut().reload_timestamps() {
+				eprintln!("Warning: Failed to reload history timestamps: {}", e);
+			}
+			last_reload = std::time::Instant::now();
+		}
 		// Check if child process is still running
 		match child.try_wait().into_diagnostic()? {
 			Some(status) => {
