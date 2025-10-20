@@ -410,6 +410,7 @@ dependencies = [
  "clap",
  "edit",
  "jiff",
+ "libc",
  "lloggs",
  "miette",
  "portable-pty",

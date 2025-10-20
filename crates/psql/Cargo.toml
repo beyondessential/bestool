@@ -38,6 +38,7 @@ edit = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3.18"
+libc = "0.2.177"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

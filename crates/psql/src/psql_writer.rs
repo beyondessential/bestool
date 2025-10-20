@@ -55,6 +55,17 @@ impl PsqlWriter {
 		self.write(data.as_bytes())
 	}
 
+	/// Write raw bytes to psql WITHOUT clearing the buffer
+	///
+	/// This is used for forwarding stdin directly to the PTY (e.g., for pager interaction)
+	/// where we don't want to clear the buffer and interfere with output detection.
+	pub fn write_bytes(&self, data: &[u8]) -> Result<()> {
+		let mut writer = self.writer.lock().unwrap();
+		writer.write_all(data).into_diagnostic()?;
+		writer.flush().into_diagnostic()?;
+		Ok(())
+	}
+
 	/// Send a control character to psql (e.g., Ctrl-C, Ctrl-D)
 	pub fn send_control(&self, byte: u8) -> Result<()> {
 		let mut writer = self.writer.lock().unwrap();

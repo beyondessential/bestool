@@ -139,9 +139,9 @@ impl PsqlConfig {
 			cmd.arg("--set=AUTOCOMMIT=OFF");
 		}
 
-		let rc = self.psqlrc(boundary, true)?;
+		let rc = self.psqlrc(boundary, false)?;
 		cmd.env("PSQLRC", rc.path());
-		cmd.env("PAGER", "cat");
+		// Allow pager - we'll handle stdin forwarding when not at prompt
 
 		for arg in &self.args {
 			cmd.arg(arg);
@@ -178,6 +178,105 @@ impl PsqlConfig {
 		}
 
 		Ok((cmd, rc))
+	}
+}
+
+/// Forward stdin to PTY in raw mode for pager interaction
+///
+/// This allows pager keys (space, q, arrows, etc.) to work immediately
+/// without waiting for Enter to be pressed.
+#[cfg(unix)]
+fn forward_stdin_to_pty(psql_writer: &PsqlWriter) {
+	use std::io::Read;
+	use std::os::unix::io::AsRawFd;
+
+	let stdin_handle = std::io::stdin();
+	let mut stdin_lock = stdin_handle.lock();
+	let stdin_fd = stdin_lock.as_raw_fd();
+
+	// Save original terminal settings
+	let mut original_termios: libc::termios = unsafe { std::mem::zeroed() };
+	if unsafe { libc::tcgetattr(stdin_fd, &mut original_termios) } != 0 {
+		return;
+	}
+
+	// Set raw mode for immediate character input
+	let mut raw_termios = original_termios;
+	unsafe {
+		libc::cfmakeraw(&mut raw_termios);
+		// Set non-blocking mode
+		let original_flags = libc::fcntl(stdin_fd, libc::F_GETFL);
+		if original_flags >= 0 {
+			libc::fcntl(stdin_fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK);
+		}
+		libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_termios);
+	}
+
+	// Read and forward input
+	let mut buf = [0u8; 1024];
+	match stdin_lock.read(&mut buf) {
+		Ok(n) if n > 0 => {
+			if let Err(e) = psql_writer.write_bytes(&buf[..n]) {
+				warn!("failed to forward stdin to pty: {}", e);
+			}
+		}
+		_ => {}
+	}
+
+	// Restore original terminal settings
+	unsafe {
+		libc::tcsetattr(stdin_fd, libc::TCSANOW, &original_termios);
+		let original_flags = libc::fcntl(stdin_fd, libc::F_GETFL);
+		if original_flags >= 0 {
+			libc::fcntl(stdin_fd, libc::F_SETFL, original_flags & !libc::O_NONBLOCK);
+		}
+	}
+}
+
+#[cfg(windows)]
+fn forward_stdin_to_pty(psql_writer: &PsqlWriter) {
+	use windows_sys::Win32::System::Console::{
+		GetStdHandle, PeekConsoleInputW, ReadConsoleInputW, INPUT_RECORD, STD_INPUT_HANDLE,
+	};
+
+	unsafe {
+		let stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+		if !stdin_handle.is_null() && stdin_handle as i32 != -1 {
+			let mut num_events: u32 = 0;
+			let mut buffer: [INPUT_RECORD; 1] = std::mem::zeroed();
+
+			// Peek to see if there are any console input events available
+			if PeekConsoleInputW(stdin_handle, buffer.as_mut_ptr(), 1, &mut num_events) != 0
+				&& num_events > 0
+			{
+				// Read the input events
+				let mut num_read: u32 = 0;
+				if ReadConsoleInputW(stdin_handle, buffer.as_mut_ptr(), 1, &mut num_read) != 0
+					&& num_read > 0
+				{
+					// Convert INPUT_RECORD to bytes if it's a key event
+					let record = &buffer[0];
+					// EventType == 1 means KEY_EVENT
+					if record.EventType == 1 {
+						let key_event = record.Event.KeyEvent;
+						// Only process key down events
+						if key_event.bKeyDown != 0 {
+							let ch = key_event.uChar.UnicodeChar;
+							if ch != 0 {
+								// Convert UTF-16 char to bytes
+								let mut utf8_buf = [0u8; 4];
+								if let Some(c) = char::from_u32(ch as u32) {
+									let utf8_str = c.encode_utf8(&mut utf8_buf);
+									if let Err(e) = psql_writer.write_bytes(utf8_str.as_bytes()) {
+										warn!("failed to forward stdin to pty: {}", e);
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -359,7 +458,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 		let at_prompt = psql_writer.buffer_contains(&format!("<<<{boundary}|||"));
 		if !at_prompt {
-			// Not at a prompt, continue waiting
+			// Not at a prompt - could be in a pager or query is running
+			// Forward stdin to PTY for pager interaction
+			forward_stdin_to_pty(&psql_writer);
 			thread::sleep(Duration::from_millis(50));
 			continue;
 		}
