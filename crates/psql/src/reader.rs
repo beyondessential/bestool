@@ -3,9 +3,15 @@
 use crate::prompt::PromptInfo;
 use std::collections::VecDeque;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use tracing::trace;
+
+static DEBUG_PTY: OnceLock<bool> = OnceLock::new();
+
+fn is_debug_pty() -> bool {
+	*DEBUG_PTY.get_or_init(|| std::env::var("DEBUG_PTY").is_ok())
+}
 
 /// Parameters for the reader thread
 pub struct ReaderThreadParams {
@@ -99,8 +105,23 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 						}
 
 						if *print_enabled.lock().unwrap() {
-							print!("{}", data);
 							use std::io::Write;
+							if is_debug_pty() {
+								// Wrap output with cyan [PTY] marker for debugging
+								for line in data.lines() {
+									print!("\x1b[36m[PTY]\x1b[0m {}\n", line);
+								}
+								// Handle trailing data without newline
+								if !data.ends_with('\n') && !data.ends_with('\r') {
+									if let Some(_last_line) = data.lines().last() {
+										// Already printed
+									} else {
+										print!("\x1b[36m[PTY]\x1b[0m {}", data);
+									}
+								}
+							} else {
+								print!("{}", data);
+							}
 							std::io::stdout().flush().ok();
 						}
 					}

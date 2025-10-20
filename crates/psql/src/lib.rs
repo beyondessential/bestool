@@ -181,55 +181,107 @@ impl PsqlConfig {
 	}
 }
 
+/// Set terminal to raw mode for pager interaction
+#[cfg(unix)]
+struct RawMode {
+	term_fd: i32,
+	original_termios: libc::termios,
+	stdin_fd: i32,
+	original_flags: i32,
+}
+
+#[cfg(unix)]
+impl RawMode {
+	fn enable() -> Option<Self> {
+		use std::os::unix::io::AsRawFd;
+
+		let stdin_fd = std::io::stdin().as_raw_fd();
+
+		// Get the controlling terminal
+		let tty_fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
+		let term_fd = if tty_fd >= 0 {
+			tty_fd
+		} else {
+			libc::STDOUT_FILENO
+		};
+
+		// Save original terminal settings
+		let mut original_termios: libc::termios = unsafe { std::mem::zeroed() };
+		if unsafe { libc::tcgetattr(term_fd, &mut original_termios) } != 0 {
+			if tty_fd >= 0 {
+				unsafe { libc::close(tty_fd) };
+			}
+			return None;
+		}
+
+		// Save original stdin flags
+		let original_flags = unsafe { libc::fcntl(stdin_fd, libc::F_GETFL) };
+		if original_flags < 0 {
+			if tty_fd >= 0 {
+				unsafe { libc::close(tty_fd) };
+			}
+			return None;
+		}
+
+		// Set raw mode for immediate character input without echo
+		let mut raw_termios = original_termios;
+		unsafe {
+			libc::cfmakeraw(&mut raw_termios);
+			// Explicitly disable echo to prevent doubled input
+			raw_termios.c_lflag &= !libc::ECHO;
+			raw_termios.c_lflag &= !libc::ECHONL;
+			libc::tcsetattr(term_fd, libc::TCSANOW, &raw_termios);
+
+			// Set stdin non-blocking mode
+			libc::fcntl(stdin_fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK);
+		}
+
+		Some(RawMode {
+			term_fd,
+			original_termios,
+			stdin_fd,
+			original_flags,
+		})
+	}
+}
+
+#[cfg(unix)]
+impl Drop for RawMode {
+	fn drop(&mut self) {
+		// Restore original terminal settings
+		unsafe {
+			libc::tcsetattr(self.term_fd, libc::TCSANOW, &self.original_termios);
+			libc::fcntl(self.stdin_fd, libc::F_SETFL, self.original_flags);
+			if self.term_fd != libc::STDOUT_FILENO {
+				libc::close(self.term_fd);
+			}
+		}
+	}
+}
+
 /// Forward stdin to PTY in raw mode for pager interaction
-///
-/// This allows pager keys (space, q, arrows, etc.) to work immediately
-/// without waiting for Enter to be pressed.
 #[cfg(unix)]
 fn forward_stdin_to_pty(psql_writer: &PsqlWriter) {
 	use std::io::Read;
-	use std::os::unix::io::AsRawFd;
 
 	let stdin_handle = std::io::stdin();
 	let mut stdin_lock = stdin_handle.lock();
-	let stdin_fd = stdin_lock.as_raw_fd();
-
-	// Save original terminal settings
-	let mut original_termios: libc::termios = unsafe { std::mem::zeroed() };
-	if unsafe { libc::tcgetattr(stdin_fd, &mut original_termios) } != 0 {
-		return;
-	}
-
-	// Set raw mode for immediate character input
-	let mut raw_termios = original_termios;
-	unsafe {
-		libc::cfmakeraw(&mut raw_termios);
-		// Set non-blocking mode
-		let original_flags = libc::fcntl(stdin_fd, libc::F_GETFL);
-		if original_flags >= 0 {
-			libc::fcntl(stdin_fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK);
-		}
-		libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_termios);
-	}
 
 	// Read and forward input
 	let mut buf = [0u8; 1024];
 	match stdin_lock.read(&mut buf) {
 		Ok(n) if n > 0 => {
+			if std::env::var("DEBUG_PTY").is_ok() {
+				use std::io::Write;
+				let data = String::from_utf8_lossy(&buf[..n]);
+				eprint!("\x1b[33m[FWD]\x1b[0m forwarding {} bytes: {:?}\n", n, data);
+				std::io::stderr().flush().ok();
+			}
 			if let Err(e) = psql_writer.write_bytes(&buf[..n]) {
 				warn!("failed to forward stdin to pty: {}", e);
 			}
 		}
 		_ => {}
-	}
-
-	// Restore original terminal settings
-	unsafe {
-		libc::tcsetattr(stdin_fd, libc::TCSANOW, &original_termios);
-		let original_flags = libc::fcntl(stdin_fd, libc::F_GETFL);
-		if original_flags >= 0 {
-			libc::fcntl(stdin_fd, libc::F_SETFL, original_flags & !libc::O_NONBLOCK);
-		}
 	}
 }
 
@@ -267,6 +319,14 @@ fn forward_stdin_to_pty(psql_writer: &PsqlWriter) {
 								let mut utf8_buf = [0u8; 4];
 								if let Some(c) = char::from_u32(ch as u32) {
 									let utf8_str = c.encode_utf8(&mut utf8_buf);
+									if std::env::var("DEBUG_PTY").is_ok() {
+										use std::io::Write;
+										eprint!(
+											"\x1b[33m[FWD]\x1b[0m forwarding char: {:?}\n",
+											utf8_str
+										);
+										std::io::stderr().flush().ok();
+									}
 									if let Err(e) = psql_writer.write_bytes(utf8_str.as_bytes()) {
 										warn!("failed to forward stdin to pty: {}", e);
 									}
@@ -424,6 +484,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	debug!("entering main event loop");
 
+	#[cfg(unix)]
+	let mut raw_mode: Option<RawMode> = None;
+
 	loop {
 		if last_reload.elapsed() >= Duration::from_secs(60) {
 			debug!("reloading history timestamps");
@@ -459,10 +522,22 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		let at_prompt = psql_writer.buffer_contains(&format!("<<<{boundary}|||"));
 		if !at_prompt {
 			// Not at a prompt - could be in a pager or query is running
+			// Enable raw mode once and keep it active until we return to prompt
+			#[cfg(unix)]
+			if raw_mode.is_none() {
+				raw_mode = RawMode::enable();
+			}
+
 			// Forward stdin to PTY for pager interaction
 			forward_stdin_to_pty(&psql_writer);
 			thread::sleep(Duration::from_millis(50));
 			continue;
+		}
+
+		// We're at a prompt - disable raw mode if it was enabled
+		#[cfg(unix)]
+		if raw_mode.is_some() {
+			raw_mode = None; // Drop will restore terminal
 		}
 
 		// Use the formatted prompt for readline
