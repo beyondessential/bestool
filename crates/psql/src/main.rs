@@ -50,9 +50,12 @@ pub struct Args {
 	#[arg(long, default_value = "65001")]
 	pub codepage: u32,
 
-	/// Path to psql executable
+	/// Alternative postgres program to invoke
+	///
+	/// Advanced! You can swap out psql for another postgres program. This will be passed options
+	/// derived from the config (database credentials) so may not work if those aren't expected.
 	#[arg(long, default_value = "psql")]
-	pub psql_path: PathBuf,
+	pub program: PathBuf,
 
 	/// Do not read the startup file (~/.psqlrc)
 	#[arg(short = 'X', long)]
@@ -147,7 +150,7 @@ fn main() -> Result<()> {
 	};
 
 	let config = bestool_psql::PsqlConfig {
-		psql_path: args.psql_path,
+		psql_path: args.program,
 		write: args.write,
 		args: args.args,
 		psqlrc,

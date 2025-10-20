@@ -52,6 +52,8 @@ subcommands! {
 		Ok((args.action, Context::new()))
 	}}](with_top)
 
+	#[cfg(feature = "psql-audit")]
+	audit_psql => AuditPsql(AuditPsqlArgs),
 	#[cfg(feature = "caddy")]
 	caddy => Caddy(CaddyArgs),
 	#[cfg(feature = "completions")]

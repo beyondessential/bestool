@@ -1,11 +1,9 @@
-use std::io::Write;
-
 use clap::Parser;
-use miette::{Context as _, IntoDiagnostic, Result};
+use miette::{Context as _, Result};
 
 use crate::actions::Context;
 
-use super::{TamanuArgs, config::load_config, find_postgres_bin, find_tamanu};
+use super::{TamanuArgs, config::load_config, find_tamanu};
 
 /// Connect to Tamanu's db via `psql`.
 ///
@@ -29,13 +27,25 @@ pub struct PsqlArgs {
 	#[arg(short = 'W', long)]
 	pub write: bool,
 
-	/// Additional, arbitrary arguments to pass to `psql`
+	/// Launch psql directly without wrapper (passthrough mode).
 	///
-	/// If it has dashes (like `--password pass`), you need to prefix this with two dashes:
+	/// This mode runs native psql with its own readline, which means you can use psql's native
+	/// tab completion on unix but lose bestool features like audit logging and custom commands.
 	///
-	/// bestool tamanu psql -- --password pass
-	#[arg(trailing_var_arg = true)]
-	pub args: Vec<String>,
+	/// Enforces read-only mode for safety.
+	#[arg(long, conflicts_with = "write")]
+	pub passthrough: bool,
+
+	/// Disable schema cache for autocompletion.
+	///
+	/// By default, we query the database schema on startup to provide table/column completion.
+	/// Use this flag to disable that behavior (e.g., for very large databases or slow connections).
+	#[arg(long)]
+	pub disable_schema_cache: bool,
+
+	/// Set the console codepage (Windows-only, ignored on other platforms)
+	#[arg(long, default_value = "65001")]
+	pub codepage: u32,
 
 	/// Alternative postgres program to invoke
 	///
@@ -44,9 +54,13 @@ pub struct PsqlArgs {
 	#[arg(long, default_value = "psql")]
 	pub program: String,
 
-	/// Set the console codepage (Windows-only)
-	#[arg(long, default_value = "65001")]
-	pub codepage: u32,
+	/// Additional, arbitrary arguments to pass to `psql`
+	///
+	/// If it has dashes (like `--password pass`), you need to prefix this with two dashes:
+	///
+	/// bestool tamanu psql -- --password pass
+	#[arg(trailing_var_arg = true)]
+	pub args: Vec<String>,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
@@ -57,7 +71,9 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
 		// First, check if this matches a report schema connection
 		if let Some(ref report_schemas) = config.db.report_schemas {
-			if let Some(connection) = report_schemas.connections.get(user) && !connection.username.is_empty() {
+			if let Some(connection) = report_schemas.connections.get(user)
+				&& !connection.username.is_empty()
+			{
 				(connection.username.as_str(), connection.password.as_str())
 			} else if user == &config.db.username {
 				// User matches main db user
@@ -78,54 +94,56 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		(config.db.username.as_str(), config.db.password.as_str())
 	};
 
-	// Set the console encoding to UTF-8
-	#[cfg(windows)]
-	unsafe {
-		windows::Win32::System::Console::SetConsoleCP(ctx.args_top.codepage).into_diagnostic()?
-	}
-
-	let mut rc = tempfile::Builder::new().tempfile().into_diagnostic()?;
-	write!(
-		rc.as_file_mut(),
-		"\\encoding UTF8\n\\timing\n{ro}",
-		ro = if ctx.args_sub.write {
-			""
-		} else {
-			"SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;"
-		},
-	)
-	.into_diagnostic()?;
-
-	let psql_path = find_postgres_bin(&ctx.args_sub.program)?;
-
-	let mut args = vec!["--dbname", name, "--username", username];
+	// Build psql arguments for the database connection
+	let mut psql_args = vec![
+		"--dbname".to_string(),
+		name.to_string(),
+		"--username".to_string(),
+		username.to_string(),
+	];
 
 	if let Some(ref host) = config.db.host
 		&& host != "localhost"
 	{
-		args.push("--host");
-		args.push(host);
+		psql_args.push("--host".to_string());
+		psql_args.push(host.to_string());
 	}
 
-	let port_string;
 	if let Some(port) = config.db.port {
-		port_string = port.to_string();
-		args.push("--port");
-		args.push(&port_string);
+		psql_args.push("--port".to_string());
+		psql_args.push(port.to_string());
 	}
 
-	if ctx.args_sub.write && ctx.args_sub.program == "psql" {
-		args.push("--set=AUTOCOMMIT=OFF");
-		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
-	}
-	args.extend(ctx.args_sub.args.iter().map(|s| s.as_str()));
+	// Add any additional user-specified arguments
+	psql_args.extend(ctx.args_sub.args.iter().cloned());
 
-	duct::cmd(psql_path, &args)
-		.env("PSQLRC", rc.path())
-		.env("PGPASSWORD", password)
-		.run()
-		.into_diagnostic()
-		.wrap_err("failed to execute psql")?;
+	// Set PGPASSWORD environment variable
+	unsafe {
+		std::env::set_var("PGPASSWORD", password);
+	}
+
+	// Create the bestool-psql config
+	let psql_config = bestool_psql::PsqlConfig {
+		psql_path: std::path::PathBuf::from(&ctx.args_sub.program),
+		args: psql_args,
+		write: ctx.args_sub.write,
+		ots: None,             // Tamanu doesn't use OTS by default
+		psqlrc: String::new(), // Use empty psqlrc, defaults will be set by bestool-psql
+		passthrough: ctx.args_sub.passthrough,
+		disable_schema_cache: ctx.args_sub.disable_schema_cache,
+		history_path: bestool_psql::history::History::default_path()
+			.ok()
+			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),
+		user: Some(username.to_string()),
+	};
+
+	// Run bestool-psql
+	let exit_code = bestool_psql::run(psql_config).wrap_err("failed to execute psql")?;
+
+	// Exit with the same code as psql
+	if exit_code != 0 {
+		std::process::exit(exit_code);
+	}
 
 	Ok(())
 }

@@ -337,6 +337,7 @@ name = "bestool"
 version = "0.30.3"
 dependencies = [
  "algae-cli",
+ "bestool-psql",
  "binstalk-downloader",
  "blake3",
  "boxcar",
