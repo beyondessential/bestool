@@ -35,8 +35,12 @@ terminal_size = "0.4.0"
 signal-hook = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59.0", features = ["Win32_System_Console"], optional = true }
+windows-sys = { version = "0.59.0", features = [
+    "Win32_System_Console",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:tempfile", "windows-sys?/Win32_System_Console"]
+cli = ["dep:clap", "dep:tempfile"]
