@@ -415,6 +415,7 @@ dependencies = [
  "serde_json",
  "strip-ansi-escapes",
  "tempfile",
+ "terminal_size",
  "thiserror 2.0.17",
  "tokio",
  "windows-sys 0.59.0",
