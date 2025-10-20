@@ -219,10 +219,7 @@ impl SchemaCacheManager {
 
 		let mut views: HashMap<String, Vec<String>> = HashMap::new();
 		for row in rows {
-			views
-				.entry(row.schemaname)
-				.or_default()
-				.push(row.viewname);
+			views.entry(row.schemaname).or_default().push(row.viewname);
 		}
 
 		Ok(views)

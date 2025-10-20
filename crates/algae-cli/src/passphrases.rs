@@ -85,22 +85,21 @@ impl PassphraseArgs {
 				.trim()
 				.into())
 		} else if let Some(mut input) = PassphraseInput::with_default_binary() {
-  				input
-  					.with_prompt("Passphrase:")
-  					.required("Cannot use an empty passphrase");
-  				if confirm {
-  					input.with_confirmation("Confirm passphrase:", "Passphrases do not match");
-  				}
-  				input.interact().map_err(|err| miette!("{err}"))
-  			} else {
-  				let mut prompt = Password::new().with_prompt("Passphrase");
-  				if confirm {
-  					prompt =
-  						prompt.with_confirmation("Confirm passphrase", "Passphrases do not match");
-  				}
-  				let phrase = prompt.interact().into_diagnostic()?;
-  				Ok(phrase.into())
-  			}
+			input
+				.with_prompt("Passphrase:")
+				.required("Cannot use an empty passphrase");
+			if confirm {
+				input.with_confirmation("Confirm passphrase:", "Passphrases do not match");
+			}
+			input.interact().map_err(|err| miette!("{err}"))
+		} else {
+			let mut prompt = Password::new().with_prompt("Passphrase");
+			if confirm {
+				prompt = prompt.with_confirmation("Confirm passphrase", "Passphrases do not match");
+			}
+			let phrase = prompt.interact().into_diagnostic()?;
+			Ok(phrase.into())
+		}
 	}
 }
 
