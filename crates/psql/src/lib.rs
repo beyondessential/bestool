@@ -369,7 +369,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						drop(current_write_mode);
 						drop(current_ots);
 
-						match ots::prompt_for_ots(&history_path) {
+						let db_handle = rl.history().clone_db();
+						match ots::prompt_for_ots_with_db(Some(db_handle), Some(&history_path)) {
 							Ok(new_ots) => {
 								let mut current_write_mode = write_mode_clone.lock().unwrap();
 								let mut current_ots = ots_clone.lock().unwrap();
