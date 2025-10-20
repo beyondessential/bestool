@@ -1,3 +1,4 @@
+mod completer;
 pub mod history;
 mod ots;
 mod prompt;
@@ -8,6 +9,7 @@ mod terminal;
 // Re-export for convenience
 pub use ots::prompt_for_ots;
 
+use completer::SqlCompleter;
 use miette::{miette, IntoDiagnostic, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use psql_writer::PsqlWriter;
@@ -192,7 +194,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		ots.lock().unwrap().clone(),
 	);
 
-	let mut rl: Editor<(), history::History> = Editor::with_history(
+	let completer = SqlCompleter::new();
+	let mut rl: Editor<SqlCompleter, history::History> = Editor::with_history(
 		Config::builder()
 			.auto_add_history(false)
 			.history_ignore_dups(false)
@@ -201,6 +204,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		history,
 	)
 	.into_diagnostic()?;
+
+	rl.set_helper(Some(completer));
 
 	let mut last_reload = std::time::Instant::now();
 
