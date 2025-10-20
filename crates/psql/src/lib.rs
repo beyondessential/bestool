@@ -247,10 +247,6 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			continue;
 		}
 
-		// Clear the buffer since we've detected a prompt
-		buffer.clear();
-		drop(buffer);
-
 		// Use the formatted prompt for readline
 		let prompt_text = current_prompt.lock().unwrap().clone();
 		let readline_prompt = if prompt_text.is_empty() {
@@ -273,10 +269,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					let prompt_info = current_prompt_info.lock().unwrap().clone();
 					if let Some(ref info) = prompt_info {
 						if info.in_transaction() && info.transaction == "*" {
-							eprintln!(
-								"Cannot toggle write mode while {}, please COMMIT or ROLLBACK first",
-								info.transaction_state_description()
-							);
+							warn!("Pending transaction! Please COMMIT or ROLLBACK first");
 							continue;
 						}
 					}
@@ -287,6 +280,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					if *current_write_mode {
 						*current_write_mode = false;
 						*current_ots = None;
+
+						// Clear the buffer since we're about to hit up psql
+						buffer.clear();
+						drop(buffer);
 
 						let cmd = "\nSET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\nROLLBACK;\n";
 						let mut writer = writer.lock().unwrap();
@@ -314,6 +311,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 								*current_write_mode = true;
 								*current_ots = Some(new_ots.clone());
 
+								// Clear the buffer since we're about to hit up psql
+								buffer.clear();
+								drop(buffer);
+
 								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\set AUTOCOMMIT off\nROLLBACK;\n";
 								let mut writer = writer.lock().unwrap();
 								writer.write_all(cmd.as_bytes()).ok();
@@ -340,6 +341,10 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					}
 					continue;
 				}
+
+				// Clear the buffer since we're about to hit up psql
+				buffer.clear();
+				drop(buffer);
 
 				if !line.trim().is_empty() {
 					if let Err(e) = rl.history_mut().add(&line) {
