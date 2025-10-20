@@ -5,6 +5,7 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use rand::Rng;
 use rustyline::history::History as HistoryTrait;
 use rustyline::{Config, Editor};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -322,8 +323,8 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let running = Arc::new(Mutex::new(true));
 	let running_clone = running.clone();
 
-	// Buffer to accumulate output and track current prompt
-	let output_buffer = Arc::new(Mutex::new(Vec::new()));
+	// Buffer to accumulate output and track current prompt (ring buffer with max 1024 bytes)
+	let output_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(1024)));
 	let output_buffer_clone = output_buffer.clone();
 
 	let current_prompt = Arc::new(Mutex::new(String::new()));
@@ -344,10 +345,11 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				Ok(n) => {
 					// Store in buffer for prompt detection
 					let mut buffer = output_buffer_clone.lock().unwrap();
-					buffer.extend_from_slice(&buf[..n]);
-					if buffer.len() > 1024 {
-						let drain_len = buffer.len() - 1024;
-						buffer.drain(0..drain_len);
+					for &byte in &buf[..n] {
+						if buffer.len() >= 1024 {
+							buffer.pop_front();
+						}
+						buffer.push_back(byte);
 					}
 
 					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
@@ -472,8 +474,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		thread::sleep(Duration::from_millis(50));
 
 		// Check if we're at a prompt by looking for our boundary marker in the output buffer
-		let buffer = output_buffer.lock().unwrap().clone();
-		let buffer_str = String::from_utf8_lossy(&buffer);
+		let buffer = output_buffer.lock().unwrap();
+		let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
+		let buffer_str = String::from_utf8_lossy(&buffer_vec);
 		trace!("buffer: {}", buffer_str);
 		let at_prompt = buffer_str.contains(&format!("<<<{boundary}|||"));
 
