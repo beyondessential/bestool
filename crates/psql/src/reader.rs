@@ -1,6 +1,6 @@
 //! PTY reader thread for handling output from psql
 
-use crate::PromptInfo;
+use crate::prompt::PromptInfo;
 use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
