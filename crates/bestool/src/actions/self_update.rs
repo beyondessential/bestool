@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use binstalk_downloader::download::{Download, PkgFmt};
-use detect_targets::{get_desired_targets, TARGET};
-use miette::{miette, IntoDiagnostic, Result};
+use detect_targets::{TARGET, get_desired_targets};
+use miette::{IntoDiagnostic, Result, miette};
 use tracing::info;
 
-use crate::download::{client, DownloadSource};
+use crate::download::{DownloadSource, client};
 
 use super::Context;
 
@@ -77,10 +77,8 @@ pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
 		.into_diagnostic()?;
 
 	#[cfg(windows)]
-	if add_to_path {
-		if let Err(err) = add_self_to_path() {
-			tracing::error!("{err:?}");
-		}
+	if add_to_path && let Err(err) = add_self_to_path() {
+		tracing::error!("{err:?}");
 	}
 
 	info!(?dest, "downloaded, self-upgrading");

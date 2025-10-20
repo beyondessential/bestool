@@ -121,35 +121,6 @@ pub fn find_package(root: impl AsRef<Path> + Debug) -> ApiServerKind {
 		.unwrap_or(ApiServerKind::Facility)
 }
 
-#[cfg(windows)]
-pub fn find_existing_version() -> Result<Version> {
-	use miette::WrapErr;
-
-	#[derive(serde::Deserialize, Debug)]
-	struct Process {
-		name: String,
-		pm2_env: Pm2Env,
-	}
-
-	#[derive(serde::Deserialize, Debug)]
-	struct Pm2Env {
-		version: Version,
-	}
-
-	let reader = duct::cmd!("cmd", "/C", "pm2", "jlist")
-		.reader()
-		.into_diagnostic()
-		.wrap_err("failed to run pm2")?;
-	let processes: Vec<Process> = serde_json::from_reader(reader).into_diagnostic()?;
-
-	Ok(processes
-		.into_iter()
-		.find(|p| p.name == "tamanu-api-server" || p.name == "tamanu-http-server")
-		.ok_or_else(|| miette!("there's no live Tamanu running"))?
-		.pm2_env
-		.version)
-}
-
 #[cfg(feature = "tamanu-pg-common")]
 #[instrument(level = "debug")]
 pub fn find_postgres_bin(name: &str) -> Result<OsString> {
