@@ -20,6 +20,7 @@ pub fn spawn_reader_thread(
 	boundary: String,
 	output_buffer: Arc<Mutex<VecDeque<u8>>>,
 	current_prompt: Arc<Mutex<String>>,
+	current_prompt_info: Arc<Mutex<Option<PromptInfo>>>,
 	last_input: Arc<Mutex<String>>,
 	running: Arc<Mutex<bool>>,
 ) -> JoinHandle<()> {
@@ -78,8 +79,8 @@ pub fn spawn_reader_thread(
 								}
 							}
 
-							// Store the formatted prompt
 							*current_prompt.lock().unwrap() = formatted;
+							*current_prompt_info.lock().unwrap() = Some(prompt_info);
 						}
 
 						print!("{}", data);

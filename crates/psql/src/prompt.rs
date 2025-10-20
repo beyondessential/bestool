@@ -70,6 +70,21 @@ impl PromptInfo {
 			}
 		}
 	}
+
+	/// Check if currently in a transaction
+	pub fn in_transaction(&self) -> bool {
+		!self.transaction.is_empty()
+	}
+
+	/// Get a description of the transaction state
+	pub fn transaction_state_description(&self) -> &str {
+		match self.transaction.as_str() {
+			"*" => "in transaction",
+			"!" => "in failed transaction",
+			"?" => "in unknown transaction state",
+			_ => "no transaction",
+		}
+	}
 }
 
 /// Generate a random boundary marker for prompt detection
