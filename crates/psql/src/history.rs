@@ -16,9 +16,23 @@ pub struct HistoryEntry {
 	/// The SQL query that was executed
 	pub query: String,
 	/// The database user
-	pub user: String,
+	pub db_user: String,
+	/// The OS-level user (e.g. $USER on Unix)
+	pub sys_user: String,
 	/// Whether write mode was enabled
 	pub writemode: bool,
+	/// Tailscale peer information (if tailscale is installed and has active peers)
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub tailscale: Vec<TailscalePeer>,
+}
+
+/// Information about a Tailscale peer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailscalePeer {
+	/// Device hostname
+	pub device: String,
+	/// User login name
+	pub user: String,
 }
 
 /// History manager using redb for persistent storage
@@ -52,11 +66,21 @@ impl History {
 	}
 
 	/// Add a new entry to the history
-	pub fn add(&self, query: String, user: String, writemode: bool) -> Result<()> {
+	pub fn add(
+		&self,
+		query: String,
+		db_user: String,
+		sys_user: String,
+		writemode: bool,
+	) -> Result<()> {
+		let tailscale = get_tailscale_peers().ok().unwrap_or_default();
+
 		let entry = HistoryEntry {
 			query,
-			user,
+			db_user,
+			sys_user,
 			writemode,
+			tailscale,
 		};
 
 		let json = serde_json::to_string(&entry).into_diagnostic()?;
@@ -136,6 +160,83 @@ impl History {
 	}
 }
 
+/// Get active Tailscale peers without tags
+fn get_tailscale_peers() -> Result<Vec<TailscalePeer>> {
+	use std::process::Command;
+
+	// Check if tailscale is installed
+	let output = Command::new("tailscale")
+		.arg("status")
+		.arg("--json")
+		.output()
+		.into_diagnostic()?;
+
+	if !output.status.success() {
+		return Err(miette::miette!("tailscale command failed"));
+	}
+
+	let json: serde_json::Value = serde_json::from_slice(&output.stdout).into_diagnostic()?;
+
+	let mut peers = Vec::new();
+
+	// Get the User map for looking up user info by UserID
+	let user_map = json.get("User").and_then(|u| u.as_object());
+
+	if let Some(peer_map) = json.get("Peer").and_then(|p| p.as_object()) {
+		for (_key, peer) in peer_map {
+			// Check if peer is active
+			let active = peer
+				.get("Active")
+				.and_then(|a| a.as_bool())
+				.unwrap_or(false);
+
+			if !active {
+				continue;
+			}
+
+			// Check if peer has no tags (or Tags is null)
+			let has_tags = peer
+				.get("Tags")
+				.and_then(|t| t.as_array())
+				.map(|arr| !arr.is_empty())
+				.unwrap_or(false);
+
+			if has_tags {
+				continue;
+			}
+
+			// Extract hostname
+			let device = peer
+				.get("HostName")
+				.and_then(|h| h.as_str())
+				.map(|s| s.to_string());
+
+			// Get UserID and look up the user info
+			let user_id = peer.get("UserID").and_then(|id| id.as_u64());
+
+			let user = if let (Some(user_map), Some(user_id)) = (user_map, user_id) {
+				user_map
+					.get(&user_id.to_string())
+					.and_then(|u| u.get("LoginName"))
+					.and_then(|l| l.as_str())
+					.map(|s| s.to_string())
+			} else {
+				None
+			};
+
+			if let (Some(device), Some(user)) = (device, user) {
+				peers.push(TailscalePeer { device, user });
+			}
+		}
+	}
+
+	if peers.is_empty() {
+		Err(miette::miette!("no active tailscale peers found"))
+	} else {
+		Ok(peers)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -149,13 +250,28 @@ mod tests {
 
 		// Add some entries
 		history
-			.add("SELECT 1;".to_string(), "testuser".to_string(), false)
+			.add(
+				"SELECT 1;".to_string(),
+				"dbuser".to_string(),
+				"testuser".to_string(),
+				false,
+			)
 			.unwrap();
 		history
-			.add("SELECT 2;".to_string(), "testuser".to_string(), false)
+			.add(
+				"SELECT 2;".to_string(),
+				"dbuser".to_string(),
+				"testuser".to_string(),
+				false,
+			)
 			.unwrap();
 		history
-			.add("INSERT INTO foo;".to_string(), "testuser".to_string(), true)
+			.add(
+				"INSERT INTO foo;".to_string(),
+				"dbuser".to_string(),
+				"testuser".to_string(),
+				true,
+			)
 			.unwrap();
 
 		// List all entries
@@ -165,6 +281,8 @@ mod tests {
 		assert_eq!(entries[1].1.query, "SELECT 2;");
 		assert_eq!(entries[2].1.query, "INSERT INTO foo;");
 		assert_eq!(entries[2].1.writemode, true);
+		assert_eq!(entries[2].1.db_user, "dbuser");
+		assert_eq!(entries[2].1.sys_user, "testuser");
 
 		// Get recent entries
 		let recent = history.recent(2).unwrap();

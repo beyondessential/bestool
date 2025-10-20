@@ -89,7 +89,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	// Extract values before config is consumed
 	let history_path = config.history_path.clone();
-	let user = config.user.clone();
+	let db_user = config.user.clone();
 	let write_mode = config.write;
 
 	let (cmd, _rc_guard) = config.command()?;
@@ -200,11 +200,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		None
 	};
 
-	let user = user.unwrap_or_else(|| {
+	let db_user = db_user.unwrap_or_else(|| {
 		std::env::var("USER")
 			.or_else(|_| std::env::var("USERNAME"))
 			.unwrap_or_else(|_| "unknown".to_string())
 	});
+
+	let sys_user = std::env::var("USER")
+		.or_else(|_| std::env::var("USERNAME"))
+		.unwrap_or_else(|_| "unknown".to_string());
 
 	loop {
 		// Check if child process is still running
@@ -272,7 +276,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 				// Save to history if available
 				if let Some(ref hist) = history {
-					if let Err(e) = hist.add(line.clone(), user.clone(), write_mode) {
+					if let Err(e) =
+						hist.add(line.clone(), db_user.clone(), sys_user.clone(), write_mode)
+					{
 						eprintln!("Warning: Could not save to history: {}", e);
 					}
 				}

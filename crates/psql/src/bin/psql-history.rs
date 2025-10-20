@@ -92,7 +92,17 @@ fn main() -> Result<()> {
 			for (timestamp, entry) in entries {
 				let datetime = timestamp_to_datetime(timestamp);
 				let mode = if entry.writemode { "WRITE" } else { "READ" };
-				println!("[{}] {} - {}", datetime, mode, entry.user);
+				println!(
+					"[{}] {} - db={} sys={}",
+					datetime, mode, entry.db_user, entry.sys_user
+				);
+				if let Some(ref tailscale) = entry.tailscale {
+					print!("  tailscale=");
+					for peer in tailscale {
+						print!("{}:{} ", peer.user, peer.device);
+					}
+					println!();
+				}
 				println!("  {}", entry.query);
 				println!();
 			}
@@ -109,7 +119,17 @@ fn main() -> Result<()> {
 			for (timestamp, entry) in entries {
 				let datetime = timestamp_to_datetime(timestamp);
 				let mode = if entry.writemode { "WRITE" } else { "READ" };
-				println!("[{}] {} - {}", datetime, mode, entry.user);
+				println!(
+					"[{}] {} - db:{} sys:{}",
+					datetime, mode, entry.db_user, entry.sys_user
+				);
+				if let Some(ref tailscale) = entry.tailscale {
+					print!("  tailscale:");
+					for peer in tailscale {
+						print!(" {}@{}", peer.user, peer.device);
+					}
+					println!();
+				}
 				println!("  {}", entry.query);
 				println!();
 			}
@@ -146,9 +166,17 @@ fn main() -> Result<()> {
 			let write_count = entries.iter().filter(|(_, e)| e.writemode).count();
 			let read_count = total - write_count;
 
-			let mut users = std::collections::HashSet::new();
+			let mut db_users = std::collections::HashSet::new();
+			let mut sys_users = std::collections::HashSet::new();
+			let mut tailscale_users = std::collections::HashSet::new();
 			for (_, entry) in &entries {
-				users.insert(entry.user.clone());
+				db_users.insert(entry.db_user.clone());
+				sys_users.insert(entry.sys_user.clone());
+				if let Some(ref tailscale) = entry.tailscale {
+					for peer in tailscale {
+						tailscale_users.insert(format!("{}@{}", peer.user, peer.device));
+					}
+				}
 			}
 
 			let oldest = timestamp_to_datetime(entries.first().unwrap().0);
@@ -156,16 +184,32 @@ fn main() -> Result<()> {
 
 			println!("History Statistics");
 			println!("==================");
-			println!("Total entries: {}", total);
-			println!("Read queries:  {}", read_count);
-			println!("Write queries: {}", write_count);
-			println!("Unique users:  {}", users.len());
+			println!("Total entries:    {}", total);
+			println!("Read queries:     {}", read_count);
+			println!("Write queries:    {}", write_count);
+			println!("Unique DB users:  {}", db_users.len());
 			println!(
-				"Users:         {}",
-				users.iter().cloned().collect::<Vec<_>>().join(", ")
+				"DB users:         {}",
+				db_users.iter().cloned().collect::<Vec<_>>().join(", ")
 			);
-			println!("Oldest entry:  {}", oldest);
-			println!("Newest entry:  {}", newest);
+			println!("Unique sys users: {}", sys_users.len());
+			println!(
+				"Sys users:        {}",
+				sys_users.iter().cloned().collect::<Vec<_>>().join(", ")
+			);
+			if !tailscale_users.is_empty() {
+				println!("Tailscale peers:  {}", tailscale_users.len());
+				println!(
+					"Peers:            {}",
+					tailscale_users
+						.iter()
+						.cloned()
+						.collect::<Vec<_>>()
+						.join(", ")
+				);
+			}
+			println!("Oldest entry:     {}", oldest);
+			println!("Newest entry:     {}", newest);
 		}
 
 		Commands::Export { output } => {
