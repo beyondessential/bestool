@@ -134,7 +134,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let reader_thread = thread::spawn(move || {
 		let mut reader = reader;
 		let mut buf = [0u8; 4096];
-		let mut echo_skip = String::new();
+		let mut skip_next = 0usize;
 
 		loop {
 			match reader.read(&mut buf) {
@@ -142,32 +142,24 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 				Ok(n) => {
 					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
 
-					// Filter out echoed input if present
-					let last_sent = last_input_clone.lock().unwrap().clone();
-					if !last_sent.is_empty() {
-						// Check if this chunk starts with part of the echoed input
-						if !echo_skip.is_empty() {
-							let skip_len = echo_skip.len().min(data.len());
-							if data.starts_with(&echo_skip[..skip_len]) {
-								data.drain(..skip_len);
-								echo_skip.drain(..skip_len);
-							} else {
-								echo_skip.clear();
-							}
-						}
-
-						// Check if we should start skipping echo
-						if echo_skip.is_empty() && data.starts_with(&last_sent) {
-							data.drain(..last_sent.len());
-							last_input_clone.lock().unwrap().clear();
-						} else if echo_skip.is_empty() && last_sent.starts_with(&data) {
-							// The echo is split across chunks
-							echo_skip = last_sent.clone();
-							let skip_len = data.len();
-							data.clear();
-							echo_skip.drain(..skip_len);
-							if echo_skip.is_empty() {
+					// Filter out echoed input if we're expecting echo
+					if skip_next > 0 {
+						let to_skip = skip_next.min(data.len());
+						data.drain(..to_skip);
+						skip_next -= to_skip;
+					} else {
+						// Check if this contains the echo we're waiting for
+						let expected_echo = last_input_clone.lock().unwrap().clone();
+						if !expected_echo.is_empty() {
+							// PTY converts \n to \r\n
+							let normalized = expected_echo.replace('\n', "\r\n");
+							if data.starts_with(&normalized) {
+								data.drain(..normalized.len());
 								last_input_clone.lock().unwrap().clear();
+							} else if normalized.starts_with(&data) {
+								// Partial match - skip this chunk and continue
+								skip_next = normalized.len() - data.len();
+								data.clear();
 							}
 						}
 					}
