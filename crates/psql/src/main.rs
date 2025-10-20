@@ -8,8 +8,12 @@ use tracing::debug;
 /// Interactive PostgreSQL terminal
 ///
 /// Custom commands:
+///
 ///   \W        - Toggle write mode (switches between read-only and read-write sessions)
+///
 ///   \refresh  - Reload schema cache (refreshes table/column/function autocompletion)
+///
+/// For psql help and options, see `psql --help`. To pass those into this tool, add `--` and then the options.
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
 	#[command(flatten)]
