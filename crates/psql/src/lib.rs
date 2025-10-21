@@ -149,9 +149,14 @@ impl PsqlConfig {
 			cmd.arg("--set=AUTOCOMMIT=OFF");
 		}
 
-		let rc = self.psqlrc(boundary, false)?;
+		// Disable pager on Windows as it doesn't work properly with PTY
+		let rc = self.psqlrc(boundary, cfg!(windows))?;
 		cmd.env("PSQLRC", rc.path());
-		// Allow pager - we'll handle stdin forwarding when not at prompt
+
+		if cfg!(windows) {
+			cmd.env("PAGER", "cat");
+		}
+		// On Unix, allow pager - we'll handle stdin forwarding when not at prompt
 
 		for arg in &self.args {
 			cmd.arg(arg);
