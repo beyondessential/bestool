@@ -678,6 +678,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 						*current_write_mode = false;
 						*current_ots = None;
 
+						#[cfg(windows)]
+						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\r\n\\set AUTOCOMMIT on\r\nROLLBACK;\r\n";
+						#[cfg(not(windows))]
 						let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;\n\\set AUTOCOMMIT on\nROLLBACK;\n";
 						if let Err(e) = psql_writer.write_str(cmd) {
 							warn!("failed to write to psql: {}", e);
@@ -705,6 +708,9 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 								*current_write_mode = true;
 								*current_ots = Some(new_ots.clone());
 
+								#[cfg(windows)]
+								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\r\n\\set AUTOCOMMIT off\r\nROLLBACK;\r\n";
+								#[cfg(not(windows))]
 								let cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;\n\\set AUTOCOMMIT off\nROLLBACK;\n";
 								if let Err(e) = psql_writer.write_str(cmd) {
 									warn!("failed to write to psql: {}", e);
