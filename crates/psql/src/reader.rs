@@ -1,10 +1,30 @@
 //! PTY reader thread for handling output from psql
+//!
+//! ## Windows CPR (Cursor Position Report) Handling
+//!
+//! On Windows, psql sends a CPR escape sequence `\x1b[6n` to detect terminal capabilities
+//! and cursor position. This is a standard ANSI escape sequence that terminals respond to
+//! with `\x1b[{row};{col}R` (e.g., `\x1b[1;1R` for row 1, column 1).
+//!
+//! Without a proper response, psql will hang indefinitely waiting for the terminal to reply.
+//! This reader thread detects CPR requests on Windows and sends back a valid response to
+//! prevent psql from spinning and blocking on startup.
+//!
+//! The fix:
+//! 1. Detect `\x1b[6n` in the data read from the PTY
+//! 2. Send back `\x1b[1;1R` (cursor at row 1, column 1) to satisfy psql
+//! 3. Remove the CPR sequence from the output so it doesn't get printed
+//!
+//! This issue is Windows-specific because the PTY implementation behaves differently
+//! from Unix pseudoterminals, which typically handle these sequences transparently.
 
 use crate::prompt::PromptInfo;
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
+#[cfg(windows)]
+use tracing::debug;
 use tracing::trace;
 
 static DEBUG_PTY: OnceLock<bool> = OnceLock::new();
@@ -23,6 +43,7 @@ pub struct ReaderThreadParams {
 	pub last_input: Arc<Mutex<String>>,
 	pub running: Arc<Mutex<bool>>,
 	pub print_enabled: Arc<Mutex<bool>>,
+	pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
 }
 
 /// Spawn a background thread to read from the PTY and handle output
@@ -43,7 +64,12 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 		last_input,
 		running,
 		print_enabled,
+		writer,
 	} = params;
+
+	// Suppress unused warning on non-Windows platforms
+	#[cfg(not(windows))]
+	let _ = &writer;
 
 	thread::spawn(move || {
 		let mut buf = [0u8; 4096];
@@ -53,6 +79,25 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 			match reader.read(&mut buf) {
 				Ok(0) => break, // EOF
 				Ok(n) => {
+					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
+					trace!(data, "read some data");
+
+					// On Windows, respond to CPR (Cursor Position Report) requests
+					// psql sends \x1b[6n to query cursor position and waits for a response
+					#[cfg(windows)]
+					if data.contains("\x1b[6n") {
+						debug!("detected CPR request, sending response");
+						// Respond with cursor position (row 1, col 1)
+						// Format: ESC [ row ; col R
+						let response = b"\x1b[1;1R";
+						if let Ok(mut w) = writer.lock() {
+							let _ = w.write_all(response);
+							let _ = w.flush();
+						}
+						// Remove CPR from data so it doesn't get printed
+						data = data.replace("\x1b[6n", "");
+					}
+
 					// Store in buffer for prompt detection (ring buffer, keeps last 1024 bytes)
 					let mut buffer = output_buffer.lock().unwrap();
 					for &byte in &buf[..n] {
@@ -62,9 +107,6 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 						buffer.push_back(byte);
 					}
 					drop(buffer);
-
-					let mut data = String::from_utf8_lossy(&buf[..n]).to_string();
-					trace!(data, "read some data");
 
 					// Filter out echoed input if we're expecting echo
 					if skip_next > 0 {

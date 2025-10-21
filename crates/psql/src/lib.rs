@@ -446,6 +446,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		last_input: last_input.clone(),
 		running: running_clone,
 		print_enabled: print_enabled_clone,
+		writer: writer.clone(),
 	});
 
 	let history = history::History::setup(
