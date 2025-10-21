@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.0.2](https://github.com/beyondessential/bestool/compare/v1.0.1..1.0.2) - 2025-10-21
+
+
+
+### Psql
+
+- **Bugfix:** Find psql program when not in PATH - ([e1004bb](https://github.com/beyondessential/bestool/commit/e1004bb75f55c3316eb106331b756b7659db1fdd))
+
+---
 ## [1.0.0](https://github.com/beyondessential/bestool/compare/v0.30.3..v1.0.0) - 2025-10-20
 
 
