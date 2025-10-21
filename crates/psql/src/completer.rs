@@ -482,8 +482,13 @@ impl SqlCompleter {
 			}
 		}
 
-		// Sort completions alphabetically and remove duplicates
-		completions.sort_by(|a, b| a.display.cmp(&b.display));
+		// Sort completions alphabetically, with underscores sorting after alphanumerics
+		completions.sort_by(|a, b| {
+			// Create versions where underscores are replaced with a character that sorts after 'z'
+			let a_key = a.display.replace('_', "~");
+			let b_key = b.display.replace('_', "~");
+			a_key.cmp(&b_key)
+		});
 		completions.dedup_by(|a, b| a.display == b.display);
 		completions
 	}
