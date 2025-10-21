@@ -63,11 +63,9 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 					if !re.is_match(&entry.query) {
 						return false;
 					}
-				} else {
-					if re.is_match(&entry.query) {
-						return false;
-					}
-				}
+				} else if re.is_match(&entry.query) {
+    						return false;
+    					}
 			}
 			if let Some(user) = &ctx.args_top.db_user
 				&& &entry.db_user != user
