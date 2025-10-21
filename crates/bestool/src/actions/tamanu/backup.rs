@@ -20,9 +20,9 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::{
 	actions::{
-		file::split::{copy_into_chunks, ChunkSize},
-		tamanu::{config::load_config, find_postgres_bin, find_tamanu, TamanuArgs},
 		Context,
+		file::split::{ChunkSize, copy_into_chunks},
+		tamanu::{TamanuArgs, config::load_config, find_tamanu},
 	},
 	now_time,
 };
@@ -121,7 +121,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 
-	let pg_dump = find_postgres_bin("pg_dump")?;
+	let pg_dump = bestool_psql::find_postgres_bin("pg_dump")?;
 
 	// check key
 	ctx.args_sub.key.get_public_key().await?;

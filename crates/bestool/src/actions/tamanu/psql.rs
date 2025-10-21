@@ -58,6 +58,9 @@ pub struct PsqlArgs {
 	///
 	/// Advanced! You can swap out psql for another postgres program. This will be passed options
 	/// derived from the config (database credentials) so may not work if those aren't expected.
+	///
+	/// If the path is absolute, it will be used directly. Otherwise, it will be searched for in
+	/// the PATH or in the PostgreSQL installation directory.
 	#[arg(long, default_value = "psql")]
 	pub program: String,
 
@@ -138,7 +141,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	// Create the bestool-psql config
 	let psql_config = bestool_psql::PsqlConfig {
-		psql_path: std::path::PathBuf::from(&ctx.args_sub.program),
+		program: ctx.args_sub.program,
 		args: psql_args,
 		write: ctx.args_sub.write,
 		ots: None,             // Tamanu doesn't use OTS by default

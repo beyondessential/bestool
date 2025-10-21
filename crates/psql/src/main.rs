@@ -55,8 +55,11 @@ pub struct Args {
 	///
 	/// Advanced! You can swap out psql for another postgres program. This will be passed options
 	/// derived from the config (database credentials) so may not work if those aren't expected.
+	///
+	/// If the path is absolute, it will be used directly. Otherwise, it will be searched for in
+	/// the PATH or in the PostgreSQL installation directory.
 	#[arg(long, default_value = "psql")]
-	pub program: PathBuf,
+	pub program: String,
 
 	/// Do not read the startup file (~/.psqlrc)
 	#[arg(short = 'X', long)]
@@ -155,7 +158,7 @@ fn main() -> Result<()> {
 	debug!(?theme, "using syntax highlighting theme");
 
 	let config = bestool_psql::PsqlConfig {
-		psql_path: args.program,
+		program: args.program,
 		write: args.write,
 		args: args.args,
 		psqlrc,

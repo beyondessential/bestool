@@ -21,9 +21,11 @@ use tempfile::NamedTempFile;
 use thiserror::Error;
 use tracing::{debug, info, trace, warn};
 
+pub use find::find_postgres_bin;
 pub use ots::prompt_for_ots;
 
 mod completer;
+mod find;
 pub mod highlighter;
 pub mod history;
 mod ots;
@@ -65,8 +67,8 @@ pub enum PsqlError {
 /// Configuration for the psql wrapper
 #[derive(Debug, Clone)]
 pub struct PsqlConfig {
-	/// Path to the psql executable
-	pub psql_path: PathBuf,
+	/// Program executable (typically psql)
+	pub program: String,
 
 	/// Whether to enable write mode
 	pub write: bool,
@@ -141,7 +143,7 @@ impl PsqlConfig {
 	}
 
 	fn pty_command(self, boundary: Option<&str>) -> Result<(CommandBuilder, NamedTempFile)> {
-		let mut cmd = CommandBuilder::new(&self.psql_path);
+		let mut cmd = CommandBuilder::new(crate::find_postgres_bin(&self.program)?);
 
 		if self.write {
 			cmd.arg("--set=AUTOCOMMIT=OFF");
@@ -163,7 +165,7 @@ impl PsqlConfig {
 		boundary: Option<&str>,
 		disable_pager: bool,
 	) -> Result<(Command, NamedTempFile)> {
-		let mut cmd = Command::new(&self.psql_path);
+		let mut cmd = Command::new(crate::find_postgres_bin(&self.program)?);
 
 		if self.write {
 			cmd.arg("--set=AUTOCOMMIT=OFF");

@@ -4,7 +4,7 @@ use std::env;
 
 use chrono::{DateTime, TimeZone, Utc};
 
-pub use crate::actions::{run, tamanu::find_postgres_bin};
+pub use crate::actions::run;
 pub use crate::args::get_args as args;
 
 pub(crate) mod actions;

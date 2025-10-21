@@ -125,13 +125,13 @@ tamanu-alerts = [
 	"dep:walkdir",
 ]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
-tamanu-backup = ["__tamanu", "file", "tamanu-config", "tamanu-pg-common", "dep:algae-cli", "dep:duct"]
+tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 tamanu-config = ["__tamanu"]
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
-tamanu-greenmask = ["__tamanu", "tamanu-config", "tamanu-pg-common", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
+tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:dirs",
@@ -143,7 +143,6 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:node-semver",
 	"dep:regex",
 ]
-tamanu-pg-common = []
 
 ## Iti subcommands
 iti = [ # enable all iti subcommands
