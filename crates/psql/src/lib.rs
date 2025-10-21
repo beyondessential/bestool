@@ -361,6 +361,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		return run_passthrough(config);
 	}
 
+	// Warn if running in cmd.exe on Windows (output is broken there)
+	#[cfg(windows)]
+	if std::env::var("PSModulePath").is_err() {
+		use tracing::warn;
+		warn!(
+			"Running in cmd.exe detected. Output may be broken. Consider using PowerShell instead."
+		);
+	}
+
 	// Extract theme before config is moved
 	let theme = config.theme;
 
