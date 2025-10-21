@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.10](https://github.com/beyondessential/bestool/compare/v1.0.9..1.0.10) - 2025-10-21
+## [1.0.11](https://github.com/beyondessential/bestool/compare/v1.0.10..1.0.11) - 2025-10-21
+
+
+- **Feature:** Add update self-check - ([223dc66](https://github.com/beyondessential/bestool/commit/223dc66e49279b7028ef070389e03737fbab7647))
+
+---
+## [1.0.10](https://github.com/beyondessential/bestool/compare/v1.0.9..v1.0.10) - 2025-10-21
 
 
 - **Feature:** Feat(psql) add --filter to audit tool - ([918d575](https://github.com/beyondessential/bestool/commit/918d575022d5804a043b2f6e0f919de7352569f5))
