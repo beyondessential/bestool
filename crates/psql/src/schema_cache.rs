@@ -1,6 +1,6 @@
 use miette::{IntoDiagnostic, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
@@ -64,6 +64,8 @@ pub struct SchemaCacheManager {
 	pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
 	print_enabled: Arc<Mutex<bool>>,
 	write_mode: Arc<Mutex<bool>>,
+	output_buffer: Arc<Mutex<VecDeque<u8>>>,
+	boundary: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,12 +103,16 @@ impl SchemaCacheManager {
 		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
 		print_enabled: Arc<Mutex<bool>>,
 		write_mode: Arc<Mutex<bool>>,
+		output_buffer: Arc<Mutex<VecDeque<u8>>>,
+		boundary: String,
 	) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
 			pty_writer,
 			print_enabled,
 			write_mode,
+			output_buffer,
+			boundary,
 		}
 	}
 
@@ -121,6 +127,12 @@ impl SchemaCacheManager {
 
 		// Disable output printing during schema refresh
 		*self.print_enabled.lock().unwrap() = false;
+
+		// Wait a moment for reader thread to see the flag
+		std::thread::sleep(std::time::Duration::from_millis(50));
+
+		// Clear the output buffer to discard any buffered content
+		self.output_buffer.lock().unwrap().clear();
 
 		// Guard to ensure printing is always re-enabled
 		struct PrintGuard(Arc<Mutex<bool>>);
@@ -286,8 +298,32 @@ impl SchemaCacheManager {
 			writer.flush().into_diagnostic()?;
 		}
 
-		// Give psql time to write the file
-		std::thread::sleep(std::time::Duration::from_millis(100));
+		// Wait for psql to return to prompt (check for boundary marker)
+		let boundary_marker = format!("<<<{}|||", self.boundary);
+		let timeout = std::time::Duration::from_secs(10);
+		let start = std::time::Instant::now();
+
+		loop {
+			if start.elapsed() > timeout {
+				return Err(miette::miette!(
+					"timeout waiting for schema query to complete"
+				));
+			}
+
+			let buffer = self.output_buffer.lock().unwrap();
+			let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
+			let buffer_str = String::from_utf8_lossy(&buffer_vec);
+
+			if buffer_str.contains(&boundary_marker) {
+				drop(buffer);
+				// Small delay to ensure psql has flushed the file
+				std::thread::sleep(std::time::Duration::from_millis(100));
+				break;
+			}
+			drop(buffer);
+
+			std::thread::sleep(std::time::Duration::from_millis(50));
+		}
 
 		// Read and parse the JSON file
 		let content = fs::read_to_string(&temp_path).into_diagnostic()?;
@@ -312,6 +348,8 @@ impl Clone for SchemaCacheManager {
 			pty_writer: self.pty_writer.clone(),
 			print_enabled: self.print_enabled.clone(),
 			write_mode: self.write_mode.clone(),
+			output_buffer: self.output_buffer.clone(),
+			boundary: self.boundary.clone(),
 		}
 	}
 }
