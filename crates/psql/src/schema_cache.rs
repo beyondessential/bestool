@@ -176,6 +176,9 @@ impl SchemaCacheManager {
 
 		if *self.write_mode.lock().unwrap() {
 			debug!("issuing ROLLBACK after schema refresh in write mode");
+			#[cfg(windows)]
+			let rollback_cmd = "ROLLBACK;\r\n";
+			#[cfg(not(windows))]
 			let rollback_cmd = "ROLLBACK;\n";
 			let mut writer = self.pty_writer.lock().unwrap();
 			writer
@@ -286,10 +289,21 @@ impl SchemaCacheManager {
 
 		debug!(query = %query, "executing schema query");
 
+		// On Windows, replace backslashes with forward slashes for psql compatibility
+		#[cfg(windows)]
+		let path_for_psql = temp_path.display().to_string().replace('\\', "/");
+		#[cfg(not(windows))]
+		let path_for_psql = temp_path.display().to_string();
+
+		#[cfg(windows)]
+		let commands = format!(
+			"\\t\r\n\\a\r\n\\o {}\r\nSELECT json_agg(t) FROM ({}) t;\r\n\\o\r\n\\t\r\n\\a\r\n",
+			path_for_psql, query
+		);
+		#[cfg(not(windows))]
 		let commands = format!(
 			"\\t\n\\a\n\\o {}\nSELECT json_agg(t) FROM ({}) t;\n\\o\n\\t\n\\a\n",
-			temp_path.display(),
-			query
+			path_for_psql, query
 		);
 
 		{
