@@ -1,5 +1,4 @@
 use std::{
-	env,
 	ffi::OsString,
 	fs,
 	path::{Path, PathBuf},
@@ -69,10 +68,10 @@ fn find_from_installation(root: &str, name: &str) -> Result<OsString> {
 
 #[cfg(unix)]
 fn is_in_path(name: &str) -> Option<PathBuf> {
-	let var = env::var_os("PATH")?;
+	let var = std::env::var_os("PATH")?;
 
 	// Separate PATH value into paths
-	let paths_iter = env::split_paths(&var);
+	let paths_iter = std::env::split_paths(&var);
 
 	// Attempt to read each path as a directory
 	let dirs_iter = paths_iter.filter_map(|path| fs::read_dir(path).ok());
