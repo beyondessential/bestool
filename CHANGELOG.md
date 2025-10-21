@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.0.4](https://github.com/beyondessential/bestool/compare/v1.0.3..1.0.4) - 2025-10-21
+
+
+
+### Psql
+
+- **Bugfix:** Disable schema autocompletion by default - ([85d1452](https://github.com/beyondessential/bestool/commit/85d1452093cc3d6f2c9193cb739389574f0723c0))
+
+---
 ## [1.0.2](https://github.com/beyondessential/bestool/compare/v1.0.1..v1.0.2) - 2025-10-21
 
 
