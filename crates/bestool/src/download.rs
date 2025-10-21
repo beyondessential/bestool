@@ -15,7 +15,11 @@ use tracing::{debug, info, instrument};
 
 pub async fn client() -> Result<Client> {
 	let mut builder = Client::default_builder(crate::APP_NAME, None, &mut iter::empty());
-	for source in [DownloadSource::Tools, DownloadSource::Servers] {
+	for source in [
+		DownloadSource::Tools,
+		DownloadSource::Servers,
+		DownloadSource::Meta,
+	] {
 		let addrs = source.source_alternatives().await;
 		if !addrs.is_empty() {
 			debug!(
@@ -39,7 +43,6 @@ pub async fn client() -> Result<Client> {
 pub enum DownloadSource {
 	Tools,
 	Servers,
-	#[expect(dead_code, reason = "not used yet")]
 	Meta,
 }
 
@@ -95,30 +98,36 @@ fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
 pub async fn check_for_update() -> Result<()> {
 	let current_version = env!("CARGO_PKG_VERSION");
 
-	let client = reqwest::Client::new();
-	let url = format!(
-		"{}/bestool/latest-version.txt",
-		DownloadSource::Tools.host()
+	let url = DownloadSource::Tools
+		.host()
+		.join("/bestool/latest-version.txt")
+		.into_diagnostic()?;
+	debug!(?url, "Checking for updates");
+
+	let response = client()
+		.await?
+		.get(url)
+		.send(true)
+		.await
+		.into_diagnostic()?;
+
+	let latest_version = response.bytes().await.into_diagnostic()?;
+	let latest_version = std::str::from_utf8(&latest_version).into_diagnostic()?;
+	let latest_version = latest_version.trim();
+	debug!(
+		current = current_version,
+		latest = latest_version,
+		"Version check result"
 	);
 
-	let response = client.get(&url).send().await;
-
-	match response {
-		Ok(resp) if resp.status().is_success() => {
-			if let Ok(latest_version) = resp.text().await {
-				let latest_version = latest_version.trim();
-				if latest_version != current_version {
-					info!(
-						current = current_version,
-						latest = latest_version,
-						"A new version of bestool is available. Run 'bestool self-update' to update."
-					);
-				}
-			}
-		}
-		_ => {
-			debug!("Could not check for updates");
-		}
+	if latest_version != current_version {
+		info!(
+			current = current_version,
+			latest = latest_version,
+			"A new version of bestool is available. Run 'bestool self-update' to update."
+		);
+	} else {
+		debug!("No update available");
 	}
 
 	Ok(())
