@@ -35,6 +35,10 @@ enum Command {
 		/// Show only write-mode queries
 		#[arg(long)]
 		write_only: bool,
+
+		/// Output as JSON (one entry per line)
+		#[arg(long)]
+		json: bool,
 	},
 
 	/// Search history entries
@@ -74,6 +78,7 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 			db_user,
 			sys_user,
 			write_only,
+			json,
 		} => {
 			let history = bestool_psql::history::History::open(&history_path)?;
 			let entries = history.list()?;
@@ -83,13 +88,15 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 				.rev() // Reverse to show most recent first
 				.filter(|(_, entry)| {
 					if let Some(user) = db_user
-						&& &entry.db_user != user {
-							return false;
-						}
+						&& &entry.db_user != user
+					{
+						return false;
+					}
 					if let Some(user) = sys_user
-						&& &entry.sys_user != user {
-							return false;
-						}
+						&& &entry.sys_user != user
+					{
+						return false;
+					}
 					if *write_only && !entry.writemode {
 						return false;
 					}
@@ -99,37 +106,56 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 				.collect();
 
 			if filtered.is_empty() {
-				println!("No matching history entries found");
+				if !json {
+					println!("No matching history entries found");
+				}
 				return Ok(());
 			}
 
-			let count = filtered.len();
-			for (timestamp, entry) in filtered {
-				let ts_str = if timestamp > 0 {
-					chrono::DateTime::from_timestamp_micros(timestamp as i64)
-						.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-						.unwrap_or_else(|| format!("timestamp:{}", timestamp))
-				} else {
-					"imported".to_string()
-				};
+			if *json {
+				for (timestamp, entry) in filtered {
+					let export_entry = ExportEntry {
+						ts: timestamp_to_rfc3339(timestamp),
+						query: entry.query,
+						db_user: entry.db_user,
+						sys_user: entry.sys_user,
+						writemode: entry.writemode,
+						tailscale: entry.tailscale,
+						ots: entry.ots,
+					};
+					let json_str = serde_json::to_string(&export_entry)
+						.map_err(|e| miette::miette!("Failed to serialize entry: {}", e))?;
+					println!("{}", json_str);
+				}
+			} else {
+				let count = filtered.len();
+				for (timestamp, entry) in filtered {
+					let ts_str = if timestamp > 0 {
+						chrono::DateTime::from_timestamp_micros(timestamp as i64)
+							.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+							.unwrap_or_else(|| format!("timestamp:{}", timestamp))
+					} else {
+						"imported".to_string()
+					};
 
-				let mode = if entry.writemode { "W" } else { "R" };
-				let users = if entry.db_user.is_empty() && entry.sys_user.is_empty() {
-					String::new()
-				} else {
-					format!(" [{}@{}]", entry.sys_user, entry.db_user)
-				};
+					let mode = if entry.writemode { "W" } else { "R" };
+					let users = if entry.db_user.is_empty() && entry.sys_user.is_empty() {
+						String::new()
+					} else {
+						format!(" [{}@{}]", entry.sys_user, entry.db_user)
+					};
 
-				println!(
-					"{} [{}]{}: {}",
-					ts_str,
-					mode,
-					users,
-					entry.query.lines().next().unwrap_or("")
-				);
+					println!(
+						"{} [{}]{}: {}",
+						ts_str,
+						mode,
+						users,
+						entry.query.lines().next().unwrap_or("")
+					);
+				}
+
+				println!("\nShowing {} entries", count);
 			}
-
-			println!("\nShowing {} entries", count);
 		}
 
 		Command::Search { pattern, limit } => {
@@ -238,4 +264,29 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 	}
 
 	Ok(())
+}
+
+/// Export entry format with RFC3339 timestamp
+#[derive(Debug, serde::Serialize)]
+struct ExportEntry {
+	ts: String,
+	query: String,
+	db_user: String,
+	sys_user: String,
+	writemode: bool,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	tailscale: Vec<bestool_psql::history::TailscalePeer>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	ots: Option<String>,
+}
+
+fn timestamp_to_rfc3339(micros: u64) -> String {
+	use jiff::Timestamp;
+
+	let secs = (micros / 1_000_000) as i64;
+	let nanos = ((micros % 1_000_000) * 1_000) as i32;
+
+	Timestamp::new(secs, nanos)
+		.map(|ts| ts.to_string())
+		.unwrap_or_else(|_| format!("invalid-timestamp-{}", micros))
 }

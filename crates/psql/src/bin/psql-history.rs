@@ -38,6 +38,10 @@ enum Commands {
 		/// Show in reverse order (newest first)
 		#[arg(short, long)]
 		reverse: bool,
+
+		/// Output as JSON (one entry per line)
+		#[arg(long)]
+		json: bool,
 	},
 
 	/// Show recent history entries
@@ -56,13 +60,6 @@ enum Commands {
 
 	/// Show history statistics
 	Stats,
-
-	/// Export history as JSON
-	Export {
-		/// Output file (default: stdout)
-		#[arg(short, long)]
-		output: Option<PathBuf>,
-	},
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -107,7 +104,11 @@ fn main() -> Result<()> {
 	let mut history = History::open(history_path)?;
 
 	match args.command {
-		Commands::List { limit, reverse } => {
+		Commands::List {
+			limit,
+			reverse,
+			json,
+		} => {
 			let mut entries = history.list()?;
 
 			if reverse {
@@ -119,26 +120,44 @@ fn main() -> Result<()> {
 			}
 
 			if entries.is_empty() {
-				println!("No history entries found.");
+				if !json {
+					println!("No history entries found.");
+				}
 				return Ok(());
 			}
 
-			for (timestamp, entry) in entries {
-				let datetime = timestamp_to_rfc3339(timestamp);
-				let mode = if entry.writemode { "WRITE" } else { "READ" };
-				println!(
-					"[{}] {} - db={} sys={}",
-					datetime, mode, entry.db_user, entry.sys_user
-				);
-				if !entry.tailscale.is_empty() {
-					print!("  tailscale=");
-					for peer in &entry.tailscale {
-						print!("{}:{} ", peer.user, peer.device);
+			if json {
+				for (timestamp, entry) in entries {
+					let export_entry = ExportEntry {
+						ts: timestamp_to_rfc3339(timestamp),
+						query: entry.query,
+						db_user: entry.db_user,
+						sys_user: entry.sys_user,
+						writemode: entry.writemode,
+						tailscale: entry.tailscale,
+						ots: entry.ots,
+					};
+					let json_str = serde_json::to_string(&export_entry).into_diagnostic()?;
+					println!("{}", json_str);
+				}
+			} else {
+				for (timestamp, entry) in entries {
+					let datetime = timestamp_to_rfc3339(timestamp);
+					let mode = if entry.writemode { "WRITE" } else { "READ" };
+					println!(
+						"[{}] {} - db={} sys={}",
+						datetime, mode, entry.db_user, entry.sys_user
+					);
+					if !entry.tailscale.is_empty() {
+						print!("  tailscale=");
+						for peer in &entry.tailscale {
+							print!("{}:{} ", peer.user, peer.device);
+						}
+						println!();
 					}
+					println!("  {}", entry.query);
 					println!();
 				}
-				println!("  {}", entry.query);
-				println!();
 			}
 		}
 
@@ -244,39 +263,6 @@ fn main() -> Result<()> {
 			}
 			println!("Oldest entry:     {}", oldest);
 			println!("Newest entry:     {}", newest);
-		}
-
-		Commands::Export { output } => {
-			let entries = history.list()?;
-
-			// Convert entries to export format with RFC3339 timestamps
-			let export_entries: Vec<ExportEntry> = entries
-				.into_iter()
-				.map(|(timestamp, entry)| ExportEntry {
-					ts: timestamp_to_rfc3339(timestamp),
-					query: entry.query,
-					db_user: entry.db_user,
-					sys_user: entry.sys_user,
-					writemode: entry.writemode,
-					tailscale: entry.tailscale,
-					ots: entry.ots,
-				})
-				.collect();
-
-			if let Some(path) = output {
-				use std::io::Write;
-				let mut file = std::fs::File::create(path).into_diagnostic()?;
-				for entry in export_entries {
-					let json = serde_json::to_string(&entry).into_diagnostic()?;
-					writeln!(file, "{}", json).into_diagnostic()?;
-				}
-				println!("History exported.");
-			} else {
-				for entry in export_entries {
-					let json = serde_json::to_string(&entry).into_diagnostic()?;
-					println!("{}", json);
-				}
-			}
 		}
 	}
 
