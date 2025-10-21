@@ -40,15 +40,13 @@ pub struct PsqlArgs {
 	#[arg(long, conflicts_with = "write")]
 	pub passthrough: bool,
 
-	/// Enable schema-aware autocompletion.
+	/// Disable schema-aware autocompletion.
 	///
-	/// Disabled by default because it can be a bit buggy and slow.
-	///
-	/// Queries the database schema on startup to provide table/column completion.
+	/// By default, queries the database schema on startup to provide table/column completion.
 	/// Use the `\refresh` command to manually refresh the schema cache during a session.
 	/// This is not available during a transaction for safety reasons.
 	#[arg(long)]
-	pub enable_schema_completion: bool,
+	pub disable_schema_completion: bool,
 
 	/// Set the console codepage (Windows-only, ignored on other platforms)
 	#[arg(long, default_value = "65001")]
@@ -147,7 +145,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		ots: None,             // Tamanu doesn't use OTS by default
 		psqlrc: String::new(), // Use empty psqlrc, defaults will be set by bestool-psql
 		passthrough: ctx.args_sub.passthrough,
-		disable_schema_cache: !ctx.args_sub.enable_schema_completion,
+		disable_schema_completion: ctx.args_sub.disable_schema_completion,
 		history_path: bestool_psql::history::History::default_path()
 			.ok()
 			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),

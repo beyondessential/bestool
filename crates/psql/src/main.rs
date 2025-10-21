@@ -40,15 +40,13 @@ pub struct Args {
 	#[arg(long, conflicts_with = "write")]
 	pub passthrough: bool,
 
-	/// Enable schema-aware autocompletion.
+	/// Disable schema-aware autocompletion.
 	///
-	/// Disabled by default because it can be a bit buggy and slow.
-	///
-	/// Queries the database schema on startup to provide table/column completion.
+	/// By default, queries the database schema on startup to provide table/column completion.
 	/// Use the `\refresh` command to manually refresh the schema cache during a session.
 	/// This is not available during a transaction for safety reasons.
 	#[arg(long)]
-	pub enable_schema_completion: bool,
+	pub disable_schema_completion: bool,
 
 	/// Set the console codepage (Windows-only, ignored on other platforms)
 	#[arg(long, default_value = "65001")]
@@ -169,7 +167,7 @@ fn main() -> Result<()> {
 		user: args.user,
 		ots,
 		passthrough: args.passthrough,
-		disable_schema_cache: !args.enable_schema_completion,
+		disable_schema_completion: args.disable_schema_completion,
 		theme,
 	};
 

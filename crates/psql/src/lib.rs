@@ -91,8 +91,8 @@ pub struct PsqlConfig {
 	/// Whether to launch psql directly without rustyline wrapper (read-only mode only)
 	pub passthrough: bool,
 
-	/// Whether to disable schema cache population
-	pub disable_schema_cache: bool,
+	/// Whether to disable schema completion
+	pub disable_schema_completion: bool,
 
 	/// Syntax highlighting theme
 	pub theme: highlighter::Theme,
@@ -403,7 +403,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let write_mode_clone = write_mode.clone();
 	let ots_clone = ots.clone();
 
-	let disable_schema_cache = config.disable_schema_cache;
+	let disable_schema_completion = config.disable_schema_completion;
 
 	let (cmd, _rc_guard) = config.pty_command(Some(&boundary))?;
 	let mut child = pty_pair
@@ -477,7 +477,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		ots.lock().unwrap().clone(),
 	);
 
-	let schema_cache_manager = if !disable_schema_cache {
+	let schema_cache_manager = if !disable_schema_completion {
 		debug!("initializing schema cache");
 		let manager = SchemaCacheManager::new(
 			writer.clone(),
@@ -493,7 +493,7 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 		Some(manager)
 	} else {
-		debug!("schema cache disabled by config");
+		debug!("schema completion disabled by config");
 		None
 	};
 
