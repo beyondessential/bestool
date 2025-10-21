@@ -1,6 +1,6 @@
 [package]
 name = "bestool-psql"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
