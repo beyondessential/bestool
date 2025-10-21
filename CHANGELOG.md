@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.11](https://github.com/beyondessential/bestool/compare/v1.0.10..1.0.11) - 2025-10-21
+## [1.0.12](https://github.com/beyondessential/bestool/compare/v1.0.11..1.0.12) - 2025-10-21
+
+
+
+### Update
+
+- **Bugfix:** Use the right client and construct the url correctly - ([659f0f0](https://github.com/beyondessential/bestool/commit/659f0f06d3480219df408907a4461dad9535aabe))
+
+---
+## [1.0.11](https://github.com/beyondessential/bestool/compare/v1.0.10..v1.0.11) - 2025-10-21
 
 
 - **Feature:** Add update self-check - ([223dc66](https://github.com/beyondessential/bestool/commit/223dc66e49279b7028ef070389e03737fbab7647))
