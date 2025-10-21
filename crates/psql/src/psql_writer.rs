@@ -51,6 +51,10 @@ impl PsqlWriter {
 
 	/// Write a line to psql (appends newline), automatically clearing the output buffer
 	pub fn write_line(&self, line: &str) -> Result<()> {
+		// On Windows, PTY requires an extra newline to properly trigger command execution
+		#[cfg(windows)]
+		let data = format!("{}\n\n", line);
+		#[cfg(not(windows))]
 		let data = format!("{}\n", line);
 		self.write(data.as_bytes())
 	}

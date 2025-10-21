@@ -755,7 +755,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			}
 			Err(rustyline::error::ReadlineError::Eof) => {
 				debug!("received Ctrl-D (EOF)");
-				psql_writer.send_control(4).ok(); // ASCII EOT (Ctrl-D)
+				#[cfg(windows)]
+				{
+					// On Windows, send \q command instead of Ctrl-D as it's more reliable
+					psql_writer.write_line("\\q").ok();
+				}
+				#[cfg(not(windows))]
+				{
+					psql_writer.send_control(4).ok(); // ASCII EOT (Ctrl-D)
+				}
 				break;
 			}
 			Err(err) => {
@@ -766,6 +774,34 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	reader_thread.join().ok();
 
+	// On Windows, give the process a chance to exit gracefully, but force kill if needed
+	#[cfg(windows)]
+	let status = {
+		use std::time::Duration;
+
+		// Wait up to 2 seconds for graceful exit
+		let mut attempts = 0;
+		loop {
+			if let Some(status) = child.try_wait().into_diagnostic()? {
+				break status;
+			}
+			if attempts >= 20 {
+				// After 2 seconds, force kill with Ctrl-C
+				debug!("process didn't exit gracefully, sending Ctrl-C");
+				psql_writer.send_control(3).ok();
+				thread::sleep(Duration::from_millis(500));
+				if let Some(status) = child.try_wait().into_diagnostic()? {
+					break status;
+				}
+				// If still not dead, wait indefinitely
+				break child.wait().into_diagnostic()?;
+			}
+			thread::sleep(Duration::from_millis(100));
+			attempts += 1;
+		}
+	};
+
+	#[cfg(not(windows))]
 	let status = child.wait().into_diagnostic()?;
 
 	debug!("compacting history database");
