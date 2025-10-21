@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.0.9](https://github.com/beyondessential/bestool/compare/v1.0.8..1.0.9) - 2025-10-21
+
+
+
+### Psql
+
+- **Refactor:** Clean up legacy field name - ([72f125a](https://github.com/beyondessential/bestool/commit/72f125a4eb9e0c5ea263660769b3185f94670290))
+
+---
 ## [1.0.4](https://github.com/beyondessential/bestool/compare/v1.0.3..v1.0.4) - 2025-10-21
 
 
