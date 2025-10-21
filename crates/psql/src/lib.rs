@@ -451,6 +451,13 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 	let print_enabled = Arc::new(Mutex::new(true));
 	let print_enabled_clone = print_enabled.clone();
 
+	#[cfg_attr(
+		windows,
+		expect(
+			unused_variables,
+			reason = "different quit behaviour, see below in the main loop"
+		)
+	)]
 	let reader_thread = reader::spawn_reader_thread(reader::ReaderThreadParams {
 		reader,
 		boundary: boundary_clone,
