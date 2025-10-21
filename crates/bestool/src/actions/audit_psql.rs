@@ -39,6 +39,10 @@ enum Command {
 		/// Output as JSON (one entry per line)
 		#[arg(long)]
 		json: bool,
+
+		/// Filter queries by regex pattern
+		#[arg(long)]
+		filter: Option<String>,
 	},
 
 	/// Search history entries
@@ -79,14 +83,38 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 			sys_user,
 			write_only,
 			json,
+			filter,
 		} => {
 			let history = bestool_psql::history::History::open(&history_path)?;
 			let entries = history.list()?;
+
+			let filter_regex = if let Some(pattern) = filter {
+				Some(
+					regex::Regex::new(pattern)
+						.map_err(|e| miette::miette!("Invalid regex: {}", e))?,
+				)
+			} else {
+				Some(
+					regex::Regex::new(r"^\\q\s*$")
+						.map_err(|e| miette::miette!("Invalid regex: {}", e))?,
+				)
+			};
 
 			let filtered: Vec<_> = entries
 				.into_iter()
 				.rev() // Reverse to show most recent first
 				.filter(|(_, entry)| {
+					if let Some(ref re) = filter_regex {
+						if filter.is_some() {
+							if !re.is_match(&entry.query) {
+								return false;
+							}
+						} else {
+							if re.is_match(&entry.query) {
+								return false;
+							}
+						}
+					}
 					if let Some(user) = db_user
 						&& &entry.db_user != user
 					{

@@ -42,6 +42,10 @@ enum Commands {
 		/// Output as JSON (one entry per line)
 		#[arg(long)]
 		json: bool,
+
+		/// Filter queries by regex pattern
+		#[arg(long)]
+		filter: Option<String>,
 	},
 
 	/// Show recent history entries
@@ -108,8 +112,23 @@ fn main() -> Result<()> {
 			limit,
 			reverse,
 			json,
+			filter,
 		} => {
 			let mut entries = history.list()?;
+
+			let (filter_regex, is_inclusive) = if let Some(pattern) = filter {
+				(regex::Regex::new(&pattern).into_diagnostic()?, true)
+			} else {
+				(regex::Regex::new(r"^\\q\s*$").into_diagnostic()?, false)
+			};
+
+			entries.retain(|(_, entry)| {
+				if is_inclusive {
+					filter_regex.is_match(&entry.query)
+				} else {
+					!filter_regex.is_match(&entry.query)
+				}
+			});
 
 			if reverse {
 				entries.reverse();
