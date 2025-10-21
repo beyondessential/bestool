@@ -479,8 +479,13 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 	let schema_cache_manager = if !disable_schema_cache {
 		debug!("initializing schema cache");
-		let manager =
-			SchemaCacheManager::new(writer.clone(), print_enabled.clone(), write_mode.clone());
+		let manager = SchemaCacheManager::new(
+			writer.clone(),
+			print_enabled.clone(),
+			write_mode.clone(),
+			output_buffer.clone(),
+			boundary.clone(),
+		);
 
 		if let Err(e) = manager.refresh() {
 			warn!("failed to populate schema cache: {}", e);
@@ -529,7 +534,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			Some(status) => {
 				// Process has exited
 				debug!(exit_code = status.exit_code(), "psql process exited");
-				reader_thread.join().ok();
+				// On Windows, don't wait for reader thread as it may be blocked on PTY read
+				#[cfg(windows)]
+				{
+					*running.lock().unwrap() = false;
+					thread::sleep(Duration::from_millis(100));
+				}
+				#[cfg(not(windows))]
+				{
+					reader_thread.join().ok();
+				}
 				return Ok(status.exit_code() as i32);
 			}
 			None => {
@@ -542,6 +556,15 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 			// Reader has stopped, process might have exited
 			thread::sleep(Duration::from_millis(50));
 			if let Some(status) = child.try_wait().into_diagnostic()? {
+				// Reader thread signaled it stopped, process may have exited
+				#[cfg(windows)]
+				{
+					thread::sleep(Duration::from_millis(100));
+				}
+				#[cfg(not(windows))]
+				{
+					reader_thread.join().ok();
+				}
 				return Ok(status.exit_code() as i32);
 			}
 		}
@@ -557,7 +580,18 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 					exit_code = status.exit_code(),
 					"psql process exited while not at prompt"
 				);
-				reader_thread.join().ok();
+				// On Windows, don't wait for reader thread as it may be blocked on PTY read
+				#[cfg(windows)]
+				{
+					// Signal the reader to stop
+					*running.lock().unwrap() = false;
+					// Give it a moment to finish, but don't wait indefinitely
+					thread::sleep(Duration::from_millis(100));
+				}
+				#[cfg(not(windows))]
+				{
+					reader_thread.join().ok();
+				}
 				return Ok(status.exit_code() as i32);
 			}
 
@@ -795,7 +829,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 		}
 	}
 
-	reader_thread.join().ok();
+	// On Windows, don't wait for reader thread as it may be blocked on PTY read
+	#[cfg(windows)]
+	{
+		*running.lock().unwrap() = false;
+		thread::sleep(Duration::from_millis(100));
+	}
+	#[cfg(not(windows))]
+	{
+		reader_thread.join().ok();
+	}
 
 	// On Windows, give the process a chance to exit gracefully, but force kill if needed
 	#[cfg(windows)]
