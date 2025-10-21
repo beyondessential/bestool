@@ -16,9 +16,9 @@ repository = "https://github.com/beyondessential/bestool"
 bitvec = "1.0.1"
 embedded-graphics = "0.8.1"
 itertools = { workspace = true }
+miette = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-miette = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rppal = "0.22.1"

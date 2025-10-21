@@ -39,8 +39,8 @@ tokio = { version = "1.47.1", features = ["full"] }
 tracing = "0.1.41"
 
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3.18"
 libc = "0.2.177"
+signal-hook = "0.3.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
@@ -48,6 +48,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
 ] }
+
 
 [features]
 default = ["cli"]
