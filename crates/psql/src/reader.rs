@@ -130,9 +130,15 @@ pub fn spawn_reader_thread(params: ReaderThreadParams) -> JoinHandle<()> {
 					}
 
 					if !data.is_empty() {
-						// Check if this contains our prompt boundary marker
-						if let Some(prompt_info) = PromptInfo::parse(&data, &boundary) {
-							// Replace the boundary marker with formatted prompt
+						// Check accumulated buffer for prompt boundary marker (handles split reads)
+						let buffer_str = {
+							let buffer = output_buffer.lock().unwrap();
+							let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
+							String::from_utf8_lossy(&buffer_vec).to_string()
+						};
+
+						if let Some(prompt_info) = PromptInfo::parse(&buffer_str, &boundary) {
+							// Replace the boundary marker with formatted prompt in current data chunk
 							let formatted = prompt_info.format_prompt();
 							let marker = format!("<<<{}|||", boundary);
 							if let Some(start) = data.find(&marker) {
