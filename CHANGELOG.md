@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.9](https://github.com/beyondessential/bestool/compare/v1.0.8..1.0.9) - 2025-10-21
+## [1.0.10](https://github.com/beyondessential/bestool/compare/v1.0.9..1.0.10) - 2025-10-21
+
+
+- **Feature:** Feat(psql) add --filter to audit tool - ([918d575](https://github.com/beyondessential/bestool/commit/918d575022d5804a043b2f6e0f919de7352569f5))
+- **Style:** Fix ordering of deps - ([74eea18](https://github.com/beyondessential/bestool/commit/74eea18ff0d10d9c48269899845226a3c6c85ff3))
+- **Style:** Clippy - ([4524550](https://github.com/beyondessential/bestool/commit/4524550b7f0f15884a816e817bbd5fa86026e15e))
+
+### Psql
+
+- **Feature:** Add --json mode to audit tool - ([c2d22c6](https://github.com/beyondessential/bestool/commit/c2d22c6103c5256848174a57b85f62abab201a81))
+- **Refactor:** Share code for the export function - ([3888f22](https://github.com/beyondessential/bestool/commit/3888f22eb020964d7f8387acdc0241dc223f553a))
+- **Refactor:** Simplify audit tool - ([cd64be9](https://github.com/beyondessential/bestool/commit/cd64be94815e23f4e4612647eca60d46eacc5bd6))
+
+---
+## [1.0.9](https://github.com/beyondessential/bestool/compare/v1.0.8..v1.0.9) - 2025-10-21
 
 
 
