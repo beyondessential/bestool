@@ -544,6 +544,16 @@ pub fn run(config: PsqlConfig) -> Result<i32> {
 
 		let at_prompt = psql_writer.buffer_contains(&format!("<<<{boundary}|||"));
 		if !at_prompt {
+			// Check if process has exited before forwarding stdin
+			if let Some(status) = child.try_wait().into_diagnostic()? {
+				debug!(
+					exit_code = status.exit_code(),
+					"psql process exited while not at prompt"
+				);
+				reader_thread.join().ok();
+				return Ok(status.exit_code() as i32);
+			}
+
 			// Not at a prompt - could be in a pager or query is running
 			// Enable raw mode once and keep it active until we return to prompt
 			#[cfg(unix)]
