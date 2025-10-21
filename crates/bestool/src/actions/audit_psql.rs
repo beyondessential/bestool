@@ -1,5 +1,6 @@
 //! Audit psql history command.
 
+use bestool_psql::export::ExportEntry;
 use clap::Parser;
 use miette::Result;
 
@@ -142,15 +143,7 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 
 			if *json {
 				for (timestamp, entry) in filtered {
-					let export_entry = ExportEntry {
-						ts: timestamp_to_rfc3339(timestamp),
-						query: entry.query,
-						db_user: entry.db_user,
-						sys_user: entry.sys_user,
-						writemode: entry.writemode,
-						tailscale: entry.tailscale,
-						ots: entry.ots,
-					};
+					let export_entry = ExportEntry::from_history(timestamp, entry);
 					let json_str = serde_json::to_string(&export_entry)
 						.map_err(|e| miette::miette!("Failed to serialize entry: {}", e))?;
 					println!("{}", json_str);
@@ -292,29 +285,4 @@ pub async fn run(ctx: Context<AuditPsqlArgs>) -> Result<()> {
 	}
 
 	Ok(())
-}
-
-/// Export entry format with RFC3339 timestamp
-#[derive(Debug, serde::Serialize)]
-struct ExportEntry {
-	ts: String,
-	query: String,
-	db_user: String,
-	sys_user: String,
-	writemode: bool,
-	#[serde(skip_serializing_if = "Vec::is_empty")]
-	tailscale: Vec<bestool_psql::history::TailscalePeer>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	ots: Option<String>,
-}
-
-fn timestamp_to_rfc3339(micros: u64) -> String {
-	use jiff::Timestamp;
-
-	let secs = (micros / 1_000_000) as i64;
-	let nanos = ((micros % 1_000_000) * 1_000) as i32;
-
-	Timestamp::new(secs, nanos)
-		.map(|ts| ts.to_string())
-		.unwrap_or_else(|_| format!("invalid-timestamp-{}", micros))
 }

@@ -1,9 +1,8 @@
+use bestool_psql::export::{timestamp_to_rfc3339, ExportEntry};
 use bestool_psql::history::History;
 use clap::{Parser, Subcommand};
-use jiff::Timestamp;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, IntoDiagnostic, Result};
-use serde::Serialize;
 use std::path::PathBuf;
 use tracing::debug;
 
@@ -147,15 +146,7 @@ fn main() -> Result<()> {
 
 			if json {
 				for (timestamp, entry) in entries {
-					let export_entry = ExportEntry {
-						ts: timestamp_to_rfc3339(timestamp),
-						query: entry.query,
-						db_user: entry.db_user,
-						sys_user: entry.sys_user,
-						writemode: entry.writemode,
-						tailscale: entry.tailscale,
-						ots: entry.ots,
-					};
+					let export_entry = ExportEntry::from_history(timestamp, entry);
 					let json_str = serde_json::to_string(&export_entry).into_diagnostic()?;
 					println!("{}", json_str);
 				}
@@ -286,93 +277,4 @@ fn main() -> Result<()> {
 	}
 
 	Ok(())
-}
-
-/// Export entry format with RFC3339 timestamp
-#[derive(Debug, Serialize)]
-struct ExportEntry {
-	ts: String,
-	query: String,
-	db_user: String,
-	sys_user: String,
-	writemode: bool,
-	#[serde(skip_serializing_if = "Vec::is_empty")]
-	tailscale: Vec<bestool_psql::history::TailscalePeer>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	ots: Option<String>,
-}
-
-fn timestamp_to_rfc3339(micros: u64) -> String {
-	// Convert microseconds to seconds and nanoseconds
-	let secs = (micros / 1_000_000) as i64;
-	let nanos = ((micros % 1_000_000) * 1_000) as i32;
-
-	// Create timestamp and format as RFC3339
-	Timestamp::new(secs, nanos)
-		.map(|ts| ts.to_string())
-		.unwrap_or_else(|_| format!("invalid-timestamp-{}", micros))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn test_timestamp_to_rfc3339() {
-		// Test a known timestamp: 2024-01-15 13:10:45.123456 UTC
-		// = 1705324245123456 microseconds since epoch
-		let micros = 1705324245123456;
-		let rfc3339 = timestamp_to_rfc3339(micros);
-
-		// Should be in RFC3339 format with T separator and Z timezone
-		assert_eq!(rfc3339, "2024-01-15T13:10:45.123456Z");
-	}
-
-	#[test]
-	fn test_export_entry_serialization() {
-		let entry = ExportEntry {
-			ts: "2024-01-15T12:30:45.123456Z".to_string(),
-			query: "SELECT * FROM users;".to_string(),
-			db_user: "postgres".to_string(),
-			sys_user: "alice".to_string(),
-			writemode: false,
-			tailscale: vec![],
-			ots: None,
-		};
-
-		let json = serde_json::to_string(&entry).unwrap();
-
-		// Should be compact (single line)
-		assert!(!json.contains('\n'));
-
-		// Should contain expected fields
-		assert!(json.contains("\"ts\""));
-		assert!(json.contains("\"query\""));
-		assert!(json.contains("\"db_user\""));
-		assert!(json.contains("\"sys_user\""));
-		assert!(json.contains("\"writemode\""));
-
-		// Should NOT contain empty tailscale or null ots (due to skip_serializing_if)
-		assert!(!json.contains("\"tailscale\""));
-		assert!(!json.contains("\"ots\""));
-	}
-
-	#[test]
-	fn test_export_entry_with_ots() {
-		let entry = ExportEntry {
-			ts: "2024-01-15T12:30:45.123456Z".to_string(),
-			query: "INSERT INTO logs VALUES (1);".to_string(),
-			db_user: "postgres".to_string(),
-			sys_user: "alice".to_string(),
-			writemode: true,
-			tailscale: vec![],
-			ots: Some("bob-watching".to_string()),
-		};
-
-		let json = serde_json::to_string(&entry).unwrap();
-
-		// Should contain ots when present
-		assert!(json.contains("\"ots\""));
-		assert!(json.contains("bob-watching"));
-	}
 }

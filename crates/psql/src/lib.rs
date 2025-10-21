@@ -25,6 +25,7 @@ pub use find::find_postgres_bin;
 pub use ots::prompt_for_ots;
 
 mod completer;
+pub mod export;
 mod find;
 pub mod highlighter;
 pub mod history;
