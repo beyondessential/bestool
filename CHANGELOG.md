@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.12](https://github.com/beyondessential/bestool/compare/v1.0.11..1.0.12) - 2025-10-21
+## [1.0.13](https://github.com/beyondessential/bestool/compare/v1.0.12..1.0.13) - 2025-10-23
+
+
+
+### Psql
+
+- **Bugfix:** Enable OTS prompt on bestool - ([e54a589](https://github.com/beyondessential/bestool/commit/e54a5892a21653cd57e143d8d8cb9f4a5676191d))
+
+---
+## [1.0.12](https://github.com/beyondessential/bestool/compare/v1.0.11..v1.0.12) - 2025-10-21
 
 
 
