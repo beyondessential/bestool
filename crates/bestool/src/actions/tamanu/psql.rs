@@ -81,6 +81,17 @@ pub struct PsqlArgs {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 
+	let history_path = bestool_psql::history::History::default_path()
+		.ok()
+		.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb"));
+
+	// Prompt for OTS when write mode is enabled
+	let ots = if ctx.args_sub.write {
+		Some(bestool_psql::prompt_for_ots(&history_path)?)
+	} else {
+		None
+	};
+
 	let config = load_config(&root, None)?;
 	let name = &config.db.name;
 	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
@@ -142,13 +153,11 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		program: ctx.args_sub.program,
 		args: psql_args,
 		write: ctx.args_sub.write,
-		ots: None,             // Tamanu doesn't use OTS by default
+		ots,
 		psqlrc: String::new(), // Use empty psqlrc, defaults will be set by bestool-psql
 		passthrough: ctx.args_sub.passthrough,
 		disable_schema_completion: ctx.args_sub.disable_schema_completion,
-		history_path: bestool_psql::history::History::default_path()
-			.ok()
-			.unwrap_or_else(|| std::path::PathBuf::from(".bestool-psql-history.redb")),
+		history_path,
 		user: Some(username.to_string()),
 		theme: ctx.args_sub.theme.resolve(),
 	};
