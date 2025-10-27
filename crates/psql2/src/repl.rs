@@ -66,6 +66,7 @@ pub(crate) async fn run_repl(
 				let user_input = buffer.trim().to_string();
 				let (_, test_mods) = parse_query_modifiers(&user_input);
 				let has_metacommand = test_mods.expanded
+					|| test_mods.json
 					|| test_mods.varset
 					|| user_input.trim_end().to_lowercase().ends_with("\\g");
 				let should_execute = user_input.ends_with(';')
