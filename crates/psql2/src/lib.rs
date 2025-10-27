@@ -180,23 +180,36 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 		for row in &rows {
 			let mut row_data = Vec::new();
 			for (i, _column) in columns.iter().enumerate() {
-				let value_str = match row.try_get::<_, String>(i) {
-					Ok(s) => s,
-					Err(_) => {
-						// Try other common types
-						if let Ok(v) = row.try_get::<_, i32>(i) {
-							v.to_string()
-						} else if let Ok(v) = row.try_get::<_, i64>(i) {
-							v.to_string()
-						} else if let Ok(v) = row.try_get::<_, f32>(i) {
-							v.to_string()
-						} else if let Ok(v) = row.try_get::<_, f64>(i) {
-							v.to_string()
-						} else if let Ok(v) = row.try_get::<_, bool>(i) {
-							v.to_string()
-						} else {
-							"NULL".to_string()
-						}
+				let value_str = if let Ok(v) = row.try_get::<_, String>(i) {
+					v
+				} else if let Ok(v) = row.try_get::<_, i16>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, i32>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, i64>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, f32>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, f64>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, bool>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, Vec<u8>>(i) {
+					format!("\\x{}", hex::encode(v))
+				} else if let Ok(v) = row.try_get::<_, jiff::Timestamp>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, jiff::civil::Date>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, jiff::civil::Time>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, jiff::civil::DateTime>(i) {
+					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, serde_json::Value>(i) {
+					v.to_string()
+				} else {
+					match row.try_get::<_, Option<String>>(i) {
+						Ok(None) => "NULL".to_string(),
+						_ => "(unprintable)".to_string(),
 					}
 				};
 				row_data.push(value_str);
