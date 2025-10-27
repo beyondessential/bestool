@@ -172,7 +172,9 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 
 		// If we have unprintable columns, re-query with text casting
 		let text_rows = if !unprintable_columns.is_empty() {
-			let text_query = build_text_cast_query(sql, &columns, &unprintable_columns);
+			// Strip trailing semicolon if present
+			let sql_trimmed = sql.trim_end_matches(';').trim();
+			let text_query = build_text_cast_query(sql_trimmed, &columns, &unprintable_columns);
 			debug!("re-querying with text casts: {}", text_query);
 			match client.query(&text_query, &[]).await {
 				Ok(rows) => Some(rows),
@@ -239,7 +241,9 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 }
 
 fn can_print_column(row: &tokio_postgres::Row, i: usize) -> bool {
-	row.try_get::<_, String>(i).is_ok()
+	// Try each supported type - if any succeeds, we can print it
+	// Note: we must check Option<T> types carefully to distinguish NULL from unprintable
+	if row.try_get::<_, String>(i).is_ok()
 		|| row.try_get::<_, i16>(i).is_ok()
 		|| row.try_get::<_, i32>(i).is_ok()
 		|| row.try_get::<_, i64>(i).is_ok()
@@ -258,7 +262,14 @@ fn can_print_column(row: &tokio_postgres::Row, i: usize) -> bool {
 		|| row.try_get::<_, Vec<f32>>(i).is_ok()
 		|| row.try_get::<_, Vec<f64>>(i).is_ok()
 		|| row.try_get::<_, Vec<bool>>(i).is_ok()
-		|| row.try_get::<_, Option<String>>(i).ok().flatten().is_none()
+	{
+		return true;
+	}
+
+	// Check if it's NULL by trying to get as Option<String>
+	// If this succeeds and is None, it's a true NULL value
+	// If this fails, it's an unprintable type
+	matches!(row.try_get::<_, Option<String>>(i), Ok(None))
 }
 
 fn format_column_value(row: &tokio_postgres::Row, i: usize) -> String {
@@ -405,50 +416,48 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_text_cast_for_record_types() {
-		// This is an integration-style test that requires a real database connection
-		// Skip if we can't connect
-		let connection_string = "postgresql://localhost/postgres";
-		let client_result = tokio_postgres::connect(connection_string, tokio_postgres::NoTls).await;
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		if let Ok((client, connection)) = client_result {
-			tokio::spawn(async move {
-				let _ = connection.await;
-			});
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
 
-			// Test that record types are handled properly
-			let result = client
-				.query("SELECT row(1, 'foo', true) as record", &[])
-				.await;
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
 
-			if let Ok(rows) = result {
-				assert!(!rows.is_empty());
-				// The record column should be handled via text cast fallback
-				// We can't easily test the formatted output here, but we verify it doesn't panic
-			}
-		}
-		// If connection fails, skip the test
+		// Test that record types are handled properly
+		let result = execute_query(&client, "SELECT row(1, 'foo', true) as record").await;
+
+		// Should succeed without panicking
+		assert!(result.is_ok());
 	}
 
 	#[tokio::test]
 	async fn test_array_formatting() {
-		let connection_string = "postgresql://localhost/postgres";
-		let client_result = tokio_postgres::connect(connection_string, tokio_postgres::NoTls).await;
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		if let Ok((client, connection)) = client_result {
-			tokio::spawn(async move {
-				let _ = connection.await;
-			});
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
 
-			let result = client.query("SELECT array[1,2,3] as arr", &[]).await;
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
 
-			if let Ok(rows) = result {
-				assert!(!rows.is_empty());
-				if let Some(row) = rows.first() {
-					let formatted = format_column_value(row, 0);
-					assert_eq!(formatted, "{1,2,3}");
-				}
-			}
-		}
+		let rows = client
+			.query("SELECT array[1,2,3] as arr", &[])
+			.await
+			.expect("Failed to execute query");
+
+		assert!(!rows.is_empty());
+		let row = rows.first().expect("No rows returned");
+		let formatted = format_column_value(row, 0);
+		assert_eq!(formatted, "{1,2,3}");
 	}
 
 	#[test]
