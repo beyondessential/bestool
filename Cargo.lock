@@ -454,6 +454,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tracing",
+ "winnow 0.7.13",
 ]
 
 [[package]]

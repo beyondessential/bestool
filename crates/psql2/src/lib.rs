@@ -6,6 +6,11 @@ use supports_unicode::Stream;
 use thiserror::Error;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
+use winnow::ascii::{space0, space1, Caseless};
+use winnow::combinator::{alt, opt, preceded};
+use winnow::error::ErrMode;
+use winnow::token::{literal, rest, take_till};
+use winnow::Parser;
 
 pub mod helper;
 pub mod highlighter;
@@ -172,11 +177,12 @@ async fn run_repl(
 
 				// Check if we should execute (has trailing ; or \g variants)
 				let user_input = buffer.trim().to_string();
+				let (_, test_mods) = parse_query_modifiers(&user_input);
+				let has_metacommand = test_mods.expanded
+					|| test_mods.varset
+					|| user_input.trim_end().to_lowercase().ends_with("\\g");
 				let should_execute = user_input.ends_with(';')
-					|| user_input.ends_with("\\g")
-					|| user_input.ends_with("\\gx")
-					|| user_input.contains("\\gset")
-					|| user_input.contains("\\gxset")
+					|| has_metacommand
 					|| user_input.eq_ignore_ascii_case("\\q")
 					|| user_input.eq_ignore_ascii_case("quit");
 
@@ -237,50 +243,73 @@ async fn run_repl(
 
 fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
 	let input = input.trim();
-	let mut modifiers = QueryModifiers::default();
 
-	// Check for \gxset with optional prefix
-	if input.contains("\\gxset") {
-		if let Some(gxset_pos) = input.rfind("\\gxset") {
-			let before = &input[..gxset_pos];
-			let after = input[gxset_pos + 6..].trim();
+	fn backslash_g<'a>(
+		input: &mut &'a str,
+	) -> winnow::error::Result<(), ErrMode<winnow::error::ContextError>> {
+		('\\', alt(('g', 'G'))).void().parse_next(input)
+	}
 
-			modifiers.expanded = true;
-			modifiers.varset = true;
-			if !after.is_empty() {
-				modifiers.prefix = Some(after.to_string());
+	fn metacommand<'a>(
+		input: &mut &'a str,
+	) -> winnow::error::Result<(String, Option<String>), ErrMode<winnow::error::ContextError>> {
+		let _ = backslash_g.parse_next(input)?;
+
+		let cmd = alt((
+			literal(Caseless("xset")).map(|_| "xset".to_string()),
+			literal(Caseless("set")).map(|_| "set".to_string()),
+			literal(Caseless("x")).map(|_| "x".to_string()),
+			literal("").map(|_| "".to_string()),
+		))
+		.parse_next(input)?;
+
+		let arg = opt(preceded(space1, rest.map(|s: &str| s.trim())))
+			.parse_next(input)?
+			.and_then(|s| {
+				if s.is_empty() {
+					None
+				} else {
+					Some(s.to_string())
+				}
+			});
+
+		Ok((cmd, arg))
+	}
+
+	fn parse_line<'a>(
+		input: &mut &'a str,
+	) -> winnow::error::Result<
+		(&'a str, Option<(String, Option<String>)>),
+		ErrMode<winnow::error::ContextError>,
+	> {
+		let sql = take_till(1.., |c| c == '\\').parse_next(input)?;
+		let cmd_and_arg = opt((space0, metacommand)).parse_next(input)?;
+		Ok((sql, cmd_and_arg.map(|(_, cmd)| cmd)))
+	}
+
+	match parse_line.parse(input) {
+		Ok((sql, Some((cmd, arg)))) => {
+			let mut modifiers = QueryModifiers::default();
+			match cmd.as_str() {
+				"xset" => {
+					modifiers.expanded = true;
+					modifiers.varset = true;
+					modifiers.prefix = arg;
+				}
+				"set" => {
+					modifiers.varset = true;
+					modifiers.prefix = arg;
+				}
+				"x" => {
+					modifiers.expanded = true;
+				}
+				_ => {}
 			}
-			return (before.trim().to_string(), modifiers);
+			(sql.trim().to_string(), modifiers)
 		}
+		Ok((sql, None)) => (sql.trim().to_string(), QueryModifiers::default()),
+		Err(_) => (input.to_string(), QueryModifiers::default()),
 	}
-
-	// Check for \gset with optional prefix
-	if input.contains("\\gset") {
-		if let Some(gset_pos) = input.rfind("\\gset") {
-			let before = &input[..gset_pos];
-			let after = input[gset_pos + 5..].trim();
-
-			modifiers.varset = true;
-			if !after.is_empty() {
-				modifiers.prefix = Some(after.to_string());
-			}
-			return (before.trim().to_string(), modifiers);
-		}
-	}
-
-	// Check for \gx
-	if let Some(sql) = input.strip_suffix("\\gx") {
-		modifiers.expanded = true;
-		return (sql.trim().to_string(), modifiers);
-	}
-
-	// Check for \g
-	if let Some(sql) = input.strip_suffix("\\g") {
-		return (sql.trim().to_string(), modifiers);
-	}
-
-	// Default: just strip trailing semicolon if present
-	(input.to_string(), modifiers)
 }
 
 async fn execute_query(
@@ -790,5 +819,41 @@ mod tests {
 		assert!(!mods.expanded);
 		assert!(mods.varset);
 		assert_eq!(mods.prefix, Some("my_prefix_".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_case_insensitive_gx() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GX");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(!mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_case_insensitive_gset() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\Gset prefix");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(!mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("prefix".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_case_insensitive_gxset() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GXSET myvar");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("myvar".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxset_prefix_no_space() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxsetprefix");
+		assert_eq!(sql, "SELECT * FROM users\\gxsetprefix");
+		assert!(!mods.expanded);
+		assert!(!mods.varset);
+		assert_eq!(mods.prefix, None);
 	}
 }
