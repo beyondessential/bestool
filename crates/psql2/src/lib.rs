@@ -112,21 +112,22 @@ async fn run_repl(
 					break;
 				}
 
+				// Always add to history, even if query fails
+				let _ = rl.add_history_entry(line);
+				if let Err(e) = rl.history_mut().add_entry(
+					line.to_string(),
+					db_user.clone(),
+					sys_user.clone(),
+					false,
+					None,
+				) {
+					debug!("failed to add to history: {}", e);
+				}
+
 				match execute_query(&client, line).await {
-					Ok(()) => {
-						let _ = rl.add_history_entry(line);
-						if let Err(e) = rl.history_mut().add_entry(
-							line.to_string(),
-							db_user.clone(),
-							sys_user.clone(),
-							false,
-							None,
-						) {
-							debug!("failed to add to history: {}", e);
-						}
-					}
+					Ok(()) => {}
 					Err(e) => {
-						eprintln!("Error: {}", e);
+						eprintln!("Error: {:?}", e);
 					}
 				}
 			}
