@@ -93,47 +93,86 @@ async fn run_repl(
 
 	let helper = SqlHelper::new(theme);
 	let mut rl: Editor<SqlHelper, History> = Editor::with_history(
-		rustyline::Config::builder().auto_add_history(false).build(),
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
 		history,
 	)
 	.into_diagnostic()?;
 	rl.set_helper(Some(helper));
 
+	let mut buffer = String::new();
+
 	loop {
-		let readline = rl.readline("psql2> ");
+		let prompt = if buffer.is_empty() {
+			"psql2> "
+		} else {
+			"psql2- "
+		};
+
+		let readline = rl.readline(prompt);
 		match readline {
 			Ok(line) => {
 				let line = line.trim();
-				if line.is_empty() {
+				if line.is_empty() && buffer.is_empty() {
 					continue;
 				}
 
-				if line.eq_ignore_ascii_case("\\q") || line.eq_ignore_ascii_case("quit") {
+				if buffer.is_empty()
+					&& (line.eq_ignore_ascii_case("\\q") || line.eq_ignore_ascii_case("quit"))
+				{
 					break;
 				}
 
-				// Always add to history, even if query fails
-				let _ = rl.add_history_entry(line);
-				if let Err(e) = rl.history_mut().add_entry(
-					line.to_string(),
-					db_user.clone(),
-					sys_user.clone(),
-					false,
-					None,
-				) {
-					debug!("failed to add to history: {}", e);
+				// Add line to buffer
+				if !buffer.is_empty() {
+					buffer.push('\n');
 				}
+				buffer.push_str(line);
 
-				match execute_query(&client, line).await {
-					Ok(()) => {}
-					Err(e) => {
-						eprintln!("Error: {:?}", e);
+				// Check if we should execute (has trailing ; or \g)
+				let should_execute = buffer.trim_end().ends_with(';')
+					|| buffer.trim_end().ends_with("\\g")
+					|| buffer.trim_end().eq_ignore_ascii_case("\\q")
+					|| buffer.trim_end().eq_ignore_ascii_case("quit");
+
+				if should_execute {
+					let sql = buffer.trim().to_string();
+					buffer.clear();
+
+					if sql.eq_ignore_ascii_case("\\q") || sql.eq_ignore_ascii_case("quit") {
+						break;
+					}
+
+					// Always add to history, even if query fails
+					let _ = rl.add_history_entry(&sql);
+					if let Err(e) = rl.history_mut().add_entry(
+						sql.clone(),
+						db_user.clone(),
+						sys_user.clone(),
+						false,
+						None,
+					) {
+						debug!("failed to add to history: {}", e);
+					}
+
+					match execute_query(&client, &sql).await {
+						Ok(()) => {}
+						Err(e) => {
+							eprintln!("Error: {:?}", e);
+						}
 					}
 				}
 			}
 			Err(ReadlineError::Interrupted) => {
 				debug!("CTRL-C");
-				break;
+				if !buffer.is_empty() {
+					buffer.clear();
+					eprintln!("\nQuery buffer cleared");
+				} else {
+					break;
+				}
 			}
 			Err(ReadlineError::Eof) => {
 				debug!("CTRL-D");
