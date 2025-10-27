@@ -174,7 +174,13 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 		let text_rows = if !unprintable_columns.is_empty() {
 			let text_query = build_text_cast_query(sql, &columns, &unprintable_columns);
 			debug!("re-querying with text casts: {}", text_query);
-			Some(client.query(&text_query, &[]).await.into_diagnostic()?)
+			match client.query(&text_query, &[]).await {
+				Ok(rows) => Some(rows),
+				Err(e) => {
+					debug!("failed to re-query with text casts: {:?}", e);
+					None
+				}
+			}
 		} else {
 			None
 		};
@@ -344,14 +350,14 @@ fn build_text_cast_query(
 		.enumerate()
 		.map(|(i, col)| {
 			if unprintable_columns.contains(&i) {
-				format!("({})::text", col.name())
+				format!("(subq.{})::text", col.name())
 			} else {
-				col.name().to_string()
+				format!("subq.{}", col.name())
 			}
 		})
 		.collect();
 
-	format!("SELECT {} FROM ({})", column_exprs.join(", "), sql)
+	format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql)
 }
 
 fn supports_unicode() -> bool {
