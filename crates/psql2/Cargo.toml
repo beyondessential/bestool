@@ -16,6 +16,7 @@ required-features = ["cli"]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
 lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
+rustyline = "17.0.2"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = "0.7.15"

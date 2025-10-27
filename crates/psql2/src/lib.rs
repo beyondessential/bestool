@@ -1,4 +1,6 @@
 use miette::{IntoDiagnostic, Result};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use thiserror::Error;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
@@ -46,6 +48,97 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		let version: String = row.get(0);
 		println!("{}", version);
 	}
+
+	run_repl(client).await?;
+
+	Ok(())
+}
+
+async fn run_repl(client: tokio_postgres::Client) -> Result<()> {
+	let mut rl = DefaultEditor::new().into_diagnostic()?;
+
+	loop {
+		let readline = rl.readline("psql2> ");
+		match readline {
+			Ok(line) => {
+				let line = line.trim();
+				if line.is_empty() {
+					continue;
+				}
+
+				let _ = rl.add_history_entry(line);
+
+				if line.eq_ignore_ascii_case("\\q") || line.eq_ignore_ascii_case("quit") {
+					break;
+				}
+
+				match execute_query(&client, line).await {
+					Ok(()) => {}
+					Err(e) => {
+						eprintln!("Error: {}", e);
+					}
+				}
+			}
+			Err(ReadlineError::Interrupted) => {
+				debug!("CTRL-C");
+				break;
+			}
+			Err(ReadlineError::Eof) => {
+				debug!("CTRL-D");
+				break;
+			}
+			Err(err) => {
+				eprintln!("Error: {:?}", err);
+				break;
+			}
+		}
+	}
+
+	Ok(())
+}
+
+async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()> {
+	debug!("executing query: {}", sql);
+
+	let rows = client.query(sql, &[]).await.into_diagnostic()?;
+
+	if rows.is_empty() {
+		println!("(no rows)");
+		return Ok(());
+	}
+
+	if let Some(first_row) = rows.first() {
+		let columns = first_row.columns();
+		for (i, column) in columns.iter().enumerate() {
+			if i > 0 {
+				print!(" | ");
+			}
+			print!("{}", column.name());
+		}
+		println!();
+
+		for _i in 0..columns.len() {
+			print!("----------");
+		}
+		println!();
+
+		for row in &rows {
+			for (i, _column) in columns.iter().enumerate() {
+				if i > 0 {
+					print!(" | ");
+				}
+				let value: Option<String> = row.try_get(i).ok();
+				print!("{}", value.unwrap_or_else(|| "NULL".to_string()));
+			}
+			println!();
+		}
+	}
+
+	println!(
+		"\n({} row{})",
+		rows.len(),
+		if rows.len() == 1 { "" } else { "s" }
+	);
 
 	Ok(())
 }
