@@ -42,6 +42,13 @@ pub struct PsqlConfig {
 	pub database_name: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct QueryModifiers {
+	expanded: bool,
+	varset: bool,
+	prefix: Option<String>,
+}
+
 /// Run the psql2 client
 pub async fn run(config: PsqlConfig) -> Result<()> {
 	let theme = config.theme;
@@ -163,10 +170,13 @@ async fn run_repl(
 				}
 				buffer.push_str(line);
 
-				// Check if we should execute (has trailing ; or \g)
+				// Check if we should execute (has trailing ; or \g variants)
 				let user_input = buffer.trim().to_string();
 				let should_execute = user_input.ends_with(';')
 					|| user_input.ends_with("\\g")
+					|| user_input.ends_with("\\gx")
+					|| user_input.contains("\\gset")
+					|| user_input.contains("\\gxset")
 					|| user_input.eq_ignore_ascii_case("\\q")
 					|| user_input.eq_ignore_ascii_case("quit");
 
@@ -191,14 +201,10 @@ async fn run_repl(
 						debug!("failed to add to history: {}", e);
 					}
 
-					// Strip \g if present for execution (treat it like ;)
-					let sql_to_execute = if user_input.ends_with("\\g") {
-						user_input[..user_input.len() - 2].trim().to_string()
-					} else {
-						user_input
-					};
+					// Parse query modifiers and extract SQL
+					let (sql_to_execute, modifiers) = parse_query_modifiers(&user_input);
 
-					match execute_query(&client, &sql_to_execute).await {
+					match execute_query(&client, &sql_to_execute, modifiers).await {
 						Ok(()) => {}
 						Err(e) => {
 							eprintln!("Error: {:?}", e);
@@ -229,7 +235,59 @@ async fn run_repl(
 	Ok(())
 }
 
-async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()> {
+fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
+	let input = input.trim();
+	let mut modifiers = QueryModifiers::default();
+
+	// Check for \gxset with optional prefix
+	if input.contains("\\gxset") {
+		if let Some(gxset_pos) = input.rfind("\\gxset") {
+			let before = &input[..gxset_pos];
+			let after = input[gxset_pos + 6..].trim();
+
+			modifiers.expanded = true;
+			modifiers.varset = true;
+			if !after.is_empty() {
+				modifiers.prefix = Some(after.to_string());
+			}
+			return (before.trim().to_string(), modifiers);
+		}
+	}
+
+	// Check for \gset with optional prefix
+	if input.contains("\\gset") {
+		if let Some(gset_pos) = input.rfind("\\gset") {
+			let before = &input[..gset_pos];
+			let after = input[gset_pos + 5..].trim();
+
+			modifiers.varset = true;
+			if !after.is_empty() {
+				modifiers.prefix = Some(after.to_string());
+			}
+			return (before.trim().to_string(), modifiers);
+		}
+	}
+
+	// Check for \gx
+	if let Some(sql) = input.strip_suffix("\\gx") {
+		modifiers.expanded = true;
+		return (sql.trim().to_string(), modifiers);
+	}
+
+	// Check for \g
+	if let Some(sql) = input.strip_suffix("\\g") {
+		return (sql.trim().to_string(), modifiers);
+	}
+
+	// Default: just strip trailing semicolon if present
+	(input.to_string(), modifiers)
+}
+
+async fn execute_query(
+	client: &tokio_postgres::Client,
+	sql: &str,
+	_modifiers: QueryModifiers,
+) -> Result<()> {
 	debug!("executing query: {}", sql);
 
 	let start = std::time::Instant::now();
@@ -516,7 +574,12 @@ mod tests {
 		});
 
 		// Test that record types are handled properly
-		let result = execute_query(&client, "SELECT row(1, 'foo', true) as record").await;
+		let result = execute_query(
+			&client,
+			"SELECT row(1, 'foo', true) as record",
+			QueryModifiers::default(),
+		)
+		.await;
 
 		// Should succeed without panicking
 		assert!(result.is_ok());
@@ -638,5 +701,94 @@ mod tests {
 		assert!(result.contains("(subq.data)::text"));
 		assert!(result.starts_with("SELECT"));
 		assert!(result.contains("AS subq"));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_semicolon() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users;");
+		assert_eq!(sql, "SELECT * FROM users;");
+		assert!(!mods.expanded);
+		assert!(!mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_backslash_g() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\g");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(!mods.expanded);
+		assert!(!mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gx() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gx");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(!mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gset() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gset");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(!mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gset_with_prefix() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gset myprefix");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(!mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("myprefix".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxset() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxset");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, None);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxset_with_prefix() {
+		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxset myprefix");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("myprefix".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_with_whitespace() {
+		let (sql, mods) = parse_query_modifiers("  SELECT * FROM users  \\gx  ");
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.expanded);
+		assert!(!mods.varset);
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_multiline() {
+		let (sql, mods) = parse_query_modifiers("SELECT *\nFROM users\nWHERE id = 1\\gset var");
+		assert_eq!(sql, "SELECT *\nFROM users\nWHERE id = 1");
+		assert!(!mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("var".to_string()));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_prefix_with_underscore() {
+		let (sql, mods) = parse_query_modifiers("SELECT count(*) FROM users\\gset my_prefix_");
+		assert_eq!(sql, "SELECT count(*) FROM users");
+		assert!(!mods.expanded);
+		assert!(mods.varset);
+		assert_eq!(mods.prefix, Some("my_prefix_".to_string()));
 	}
 }
