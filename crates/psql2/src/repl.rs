@@ -9,7 +9,7 @@ use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 #[derive(Debug, PartialEq)]
 enum ReplAction {
@@ -245,7 +245,7 @@ pub(crate) async fn run_repl(
 							.await
 						{
 							Ok(_) => {
-								info!("Write mode disabled");
+								debug!("Write mode disabled");
 								eprintln!("SESSION IS NOW READ ONLY");
 
 								rl.history_mut().set_context(
@@ -272,7 +272,7 @@ pub(crate) async fn run_repl(
 									.await
 								{
 									Ok(_) => {
-										info!("Write mode enabled");
+										debug!("Write mode enabled");
 										eprintln!(
 											"AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES"
 										);
