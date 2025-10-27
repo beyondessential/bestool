@@ -1,4 +1,4 @@
-use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Table};
+use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, Table};
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -133,7 +133,11 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 			table.load_preset(presets::ASCII_FULL);
 		}
 
-		table.set_header(columns.iter().map(|col| col.name()));
+		table.set_header(columns.iter().map(|col| {
+			Cell::new(col.name())
+				.add_attribute(Attribute::Bold)
+				.set_alignment(CellAlignment::Center)
+		}));
 
 		for row in &rows {
 			let mut row_data = Vec::new();
