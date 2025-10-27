@@ -115,12 +115,7 @@ pub(crate) async fn run_repl(
 			}
 			Err(ReadlineError::Interrupted) => {
 				debug!("CTRL-C");
-				if !buffer.is_empty() {
-					buffer.clear();
-					eprintln!("\nQuery buffer cleared");
-				} else {
-					break;
-				}
+				buffer.clear();
 			}
 			Err(ReadlineError::Eof) => {
 				debug!("CTRL-D");
