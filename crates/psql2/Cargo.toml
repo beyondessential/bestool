@@ -1,0 +1,25 @@
+[package]
+name = "bestool-psql2"
+version = "0.1.0"
+edition = "2021"
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Async PostgreSQL client for BES (bestool dependency)"
+repository = "https://github.com/beyondessential/bestool"
+
+[[bin]]
+name = "bestool-psql2"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
+lloggs = { version = "1.1.0", optional = true }
+miette = "7.6.0"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["full"] }
+tracing = "0.1.41"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:lloggs", "miette/fancy"]
