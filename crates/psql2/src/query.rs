@@ -7,9 +7,12 @@ use tracing::debug;
 pub(crate) async fn execute_query(
 	client: &tokio_postgres::Client,
 	sql: &str,
-	_modifiers: QueryModifiers,
+	modifiers: QueryModifiers,
 ) -> Result<()> {
-	debug!("executing query: {}", sql);
+	debug!(
+		"executing query: {} (expanded={}, json={}, varset={}, prefix={:?})",
+		sql, modifiers.expanded, modifiers.json, modifiers.varset, modifiers.prefix
+	);
 
 	let start = std::time::Instant::now();
 	let rows = client.query(sql, &[]).await.into_diagnostic()?;
