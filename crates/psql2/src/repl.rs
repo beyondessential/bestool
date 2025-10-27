@@ -210,7 +210,7 @@ pub(crate) async fn run_repl(
 		let prompt_suffix = if is_superuser { "#" } else { ">" };
 		let prompt = if buffer.is_empty() {
 			format!(
-				"{}{}={}{}{}  ",
+				"{}{}={}{}{} ",
 				color_code, database_name, transaction_marker, prompt_suffix, reset_code
 			)
 		} else {
