@@ -9,10 +9,7 @@ pub(crate) async fn execute_query(
 	sql: &str,
 	modifiers: QueryModifiers,
 ) -> Result<()> {
-	debug!(
-		"executing query: {} (expanded={}, json={}, varset={}, prefix={:?})",
-		sql, modifiers.expanded, modifiers.json, modifiers.varset, modifiers.prefix
-	);
+	debug!(?modifiers, %sql, "executing query");
 
 	let start = std::time::Instant::now();
 	let rows = client.query(sql, &[]).await.into_diagnostic()?;
