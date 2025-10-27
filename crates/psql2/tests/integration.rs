@@ -7,6 +7,7 @@ fn test_config_with_all_fields() {
 		user: Some("admin".to_string()),
 		theme: Theme::Dark,
 		history_path: std::path::PathBuf::from("/tmp/history.redb"),
+		database_name: "testdb".to_string(),
 	};
 
 	assert_eq!(
@@ -23,6 +24,7 @@ fn test_config_minimal() {
 		user: None,
 		theme: Theme::Auto,
 		history_path: std::path::PathBuf::from("/tmp/history.redb"),
+		database_name: "db".to_string(),
 	};
 
 	assert_eq!(config.connection_string, "postgresql://localhost/db");
@@ -37,18 +39,21 @@ fn test_theme_variations() {
 			user: None,
 			theme: Theme::Light,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			database_name: "db".to_string(),
 		},
 		PsqlConfig {
 			connection_string: "postgresql://localhost/db".to_string(),
 			user: None,
 			theme: Theme::Dark,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			database_name: "db".to_string(),
 		},
 		PsqlConfig {
 			connection_string: "postgresql://localhost/db".to_string(),
 			user: None,
 			theme: Theme::Auto,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			database_name: "db".to_string(),
 		},
 	];
 
@@ -64,6 +69,7 @@ fn test_config_clone() {
 		user: Some("user1".to_string()),
 		theme: Theme::Dark,
 		history_path: std::path::PathBuf::from("/tmp/history.redb"),
+		database_name: "db".to_string(),
 	};
 
 	let config2 = config1.clone();

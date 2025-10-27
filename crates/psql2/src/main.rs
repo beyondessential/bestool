@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
 		user: args.user,
 		theme,
 		history_path,
+		database_name: String::new(), // Will be queried from database
 	};
 
 	bestool_psql2::run(config).await

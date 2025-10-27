@@ -37,12 +37,16 @@ pub struct PsqlConfig {
 
 	/// Path to history database
 	pub history_path: std::path::PathBuf,
+
+	/// Database name for display in prompt
+	pub database_name: String,
 }
 
 /// Run the psql2 client
 pub async fn run(config: PsqlConfig) -> Result<()> {
 	let theme = config.theme;
 	let history_path = config.history_path.clone();
+	let database_name = config.database_name.clone();
 	let db_user = config.user.clone().unwrap_or_else(|| {
 		std::env::var("USER")
 			.or_else(|_| std::env::var("USERNAME"))
@@ -73,7 +77,32 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		println!("{}", version);
 	}
 
-	run_repl(client, theme, history_path, db_user).await?;
+	// Query for database name and superuser status
+	let info_rows = client
+		.query(
+			"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+			&[],
+		)
+		.await
+		.into_diagnostic()?;
+
+	let (database_name, is_superuser) = if let Some(row) = info_rows.first() {
+		let db: String = row.get(0);
+		let is_super: bool = row.get(2);
+		(db, is_super)
+	} else {
+		(database_name, false)
+	};
+
+	run_repl(
+		client,
+		theme,
+		history_path,
+		db_user,
+		database_name,
+		is_superuser,
+	)
+	.await?;
 
 	Ok(())
 }
@@ -83,6 +112,8 @@ async fn run_repl(
 	theme: Theme,
 	history_path: std::path::PathBuf,
 	db_user: String,
+	database_name: String,
+	is_superuser: bool,
 ) -> Result<()> {
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
@@ -105,13 +136,14 @@ async fn run_repl(
 	let mut buffer = String::new();
 
 	loop {
+		let prompt_char = if is_superuser { "#" } else { "=" };
 		let prompt = if buffer.is_empty() {
-			"psql2> "
+			format!("{}{}> ", database_name, prompt_char)
 		} else {
-			"psql2- "
+			format!("{}-  ", database_name)
 		};
 
-		let readline = rl.readline(prompt);
+		let readline = rl.readline(&prompt);
 		match readline {
 			Ok(line) => {
 				let line = line.trim();
@@ -425,10 +457,12 @@ mod tests {
 			user: Some("testuser".to_string()),
 			theme: Theme::Dark,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			database_name: "test".to_string(),
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
 		assert_eq!(config.user, Some("testuser".to_string()));
+		assert_eq!(config.database_name, "test");
 	}
 
 	#[test]
@@ -438,6 +472,7 @@ mod tests {
 			user: None,
 			theme: Theme::Light,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			database_name: "test".to_string(),
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
@@ -503,6 +538,63 @@ mod tests {
 	fn test_supports_unicode() {
 		// This just tests that the function runs without panicking
 		let _ = supports_unicode();
+	}
+
+	#[test]
+	fn test_prompt_generation_regular_user() {
+		let database_name = "mydb";
+		let is_superuser = false;
+		let prompt_char = if is_superuser { "#" } else { "=" };
+		let prompt = format!("{}{}> ", database_name, prompt_char);
+		assert_eq!(prompt, "mydb=> ");
+	}
+
+	#[test]
+	fn test_prompt_generation_superuser() {
+		let database_name = "postgres";
+		let is_superuser = true;
+		let prompt_char = if is_superuser { "#" } else { "=" };
+		let prompt = format!("{}{}> ", database_name, prompt_char);
+		assert_eq!(prompt, "postgres#> ");
+	}
+
+	#[test]
+	fn test_prompt_generation_continuation() {
+		let database_name = "mydb";
+		let prompt = format!("{}-  ", database_name);
+		assert_eq!(prompt, "mydb-  ");
+	}
+
+	#[tokio::test]
+	async fn test_database_info_query() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		// Query for database name and superuser status
+		let info_rows = client
+			.query(
+				"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+				&[],
+			)
+			.await
+			.expect("Failed to query database info");
+
+		assert!(!info_rows.is_empty());
+		let row = info_rows.first().expect("No rows returned");
+		let db_name: String = row.get(0);
+		let _username: String = row.get(1);
+		let _is_super: bool = row.get(2);
+
+		assert!(!db_name.is_empty());
 	}
 
 	#[test]
