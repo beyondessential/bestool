@@ -11,15 +11,15 @@ pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
+	/// Database name or connection string
+	///
+	/// Can be a simple database name (e.g., 'mydb') or full connection string
+	/// (e.g., 'postgresql://user:password@localhost:5432/dbname')
+	pub dbname: String,
+
 	/// Database user (for tracking, defaults to $USER)
 	#[arg(short = 'U', long)]
 	pub user: Option<String>,
-
-	/// Database connection string
-	///
-	/// Example: postgresql://user:password@localhost:5432/dbname
-	#[arg(short = 'd', long)]
-	pub connection: String,
 
 	/// Syntax highlighting theme (light, dark, or auto)
 	///
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
 	debug!(?theme, "using syntax highlighting theme");
 
 	let config = PsqlConfig {
-		connection_string: args.connection,
+		connection_string: args.dbname,
 		user: args.user,
 		theme,
 	};
