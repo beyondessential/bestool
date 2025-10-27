@@ -164,31 +164,25 @@ async fn run_repl(
 				buffer.push_str(line);
 
 				// Check if we should execute (has trailing ; or \g)
-				let mut sql_to_execute = buffer.trim().to_string();
-				let should_execute = sql_to_execute.ends_with(';')
-					|| sql_to_execute.ends_with("\\g")
-					|| sql_to_execute.eq_ignore_ascii_case("\\q")
-					|| sql_to_execute.eq_ignore_ascii_case("quit");
+				let user_input = buffer.trim().to_string();
+				let should_execute = user_input.ends_with(';')
+					|| user_input.ends_with("\\g")
+					|| user_input.eq_ignore_ascii_case("\\q")
+					|| user_input.eq_ignore_ascii_case("quit");
 
 				if should_execute {
-					// Strip \g if present (treat it like ;)
-					if sql_to_execute.ends_with("\\g") {
-						sql_to_execute = sql_to_execute[..sql_to_execute.len() - 2]
-							.trim()
-							.to_string();
-					}
 					buffer.clear();
 
-					if sql_to_execute.eq_ignore_ascii_case("\\q")
-						|| sql_to_execute.eq_ignore_ascii_case("quit")
+					if user_input.eq_ignore_ascii_case("\\q")
+						|| user_input.eq_ignore_ascii_case("quit")
 					{
 						break;
 					}
 
-					// Always add to history, even if query fails
-					let _ = rl.add_history_entry(&sql_to_execute);
+					// Always add to history first, exactly as user typed
+					let _ = rl.add_history_entry(&user_input);
 					if let Err(e) = rl.history_mut().add_entry(
-						sql_to_execute.clone(),
+						user_input.clone(),
 						db_user.clone(),
 						sys_user.clone(),
 						false,
@@ -196,6 +190,13 @@ async fn run_repl(
 					) {
 						debug!("failed to add to history: {}", e);
 					}
+
+					// Strip \g if present for execution (treat it like ;)
+					let sql_to_execute = if user_input.ends_with("\\g") {
+						user_input[..user_input.len() - 2].trim().to_string()
+					} else {
+						user_input
+					};
 
 					match execute_query(&client, &sql_to_execute).await {
 						Ok(()) => {}
