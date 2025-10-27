@@ -122,10 +122,10 @@ pub(crate) async fn run_repl(
 
 	loop {
 		let in_transaction = is_in_transaction(&client).await;
-		let prompt_suffix = if is_superuser { "=#" } else { "=>" };
 		let transaction_marker = if in_transaction { "*" } else { "" };
+		let prompt_suffix = if is_superuser { "#" } else { ">" };
 		let prompt = if buffer.is_empty() {
-			format!("{}{}{} ", database_name, prompt_suffix, transaction_marker)
+			format!("{}={}{} ", database_name, transaction_marker, prompt_suffix)
 		} else {
 			format!("{}->  ", database_name)
 		};
