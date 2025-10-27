@@ -179,8 +179,26 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 		for row in &rows {
 			let mut row_data = Vec::new();
 			for (i, _column) in columns.iter().enumerate() {
-				let value: Option<String> = row.try_get(i).ok();
-				row_data.push(value.unwrap_or_else(|| "NULL".to_string()));
+				let value_str = match row.try_get::<_, String>(i) {
+					Ok(s) => s,
+					Err(_) => {
+						// Try other common types
+						if let Ok(v) = row.try_get::<_, i32>(i) {
+							v.to_string()
+						} else if let Ok(v) = row.try_get::<_, i64>(i) {
+							v.to_string()
+						} else if let Ok(v) = row.try_get::<_, f32>(i) {
+							v.to_string()
+						} else if let Ok(v) = row.try_get::<_, f64>(i) {
+							v.to_string()
+						} else if let Ok(v) = row.try_get::<_, bool>(i) {
+							v.to_string()
+						} else {
+							"NULL".to_string()
+						}
+					}
+				};
+				row_data.push(value_str);
 			}
 			table.add_row(row_data);
 		}
