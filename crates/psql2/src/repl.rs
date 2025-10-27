@@ -62,17 +62,44 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 	(buffer_state, action)
 }
 
-/// Check if the connection is currently in a transaction
-async fn is_in_transaction(client: &tokio_postgres::Client) -> bool {
-	match client
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TransactionState {
+	None,
+	Active,
+	Error,
+}
+
+/// Check the transaction state of the connection
+async fn check_transaction_state(client: &tokio_postgres::Client) -> TransactionState {
+	// First check if we're in a transaction at all
+	let in_transaction = match client
 		.query_one(
 			"SELECT CASE WHEN txid_current_if_assigned() IS NULL THEN false ELSE true END",
 			&[],
 		)
 		.await
 	{
-		Ok(row) => row.get(0),
-		Err(_) => false,
+		Ok(row) => row.get::<_, bool>(0),
+		Err(_) => return TransactionState::None,
+	};
+
+	if !in_transaction {
+		return TransactionState::None;
+	}
+
+	// Check if the transaction is in an error state by trying to query transaction status
+	// In PostgreSQL, if a transaction is aborted, queries will fail with a specific error
+	match client.query_one("SELECT 1", &[]).await {
+		Ok(_) => TransactionState::Active,
+		Err(e) => {
+			// Check if this is a "current transaction is aborted" error
+			let error_msg = e.to_string();
+			if error_msg.contains("current transaction is aborted") {
+				TransactionState::Error
+			} else {
+				TransactionState::Active
+			}
+		}
 	}
 }
 
@@ -121,13 +148,36 @@ pub(crate) async fn run_repl(
 	let mut buffer = String::new();
 
 	loop {
-		let in_transaction = is_in_transaction(&client).await;
-		let transaction_marker = if in_transaction { "*" } else { "" };
+		let transaction_state = check_transaction_state(&client).await;
+		let current_write_mode = *write_mode.lock().unwrap();
+
+		let (transaction_marker, color_code) = match transaction_state {
+			TransactionState::Error => ("!", "\x1b[1;31m"), // Bold red
+			TransactionState::Active => {
+				if current_write_mode {
+					("*", "\x1b[1;34m") // Bold blue (write mode + transaction)
+				} else {
+					("*", "") // No color (read mode + transaction)
+				}
+			}
+			TransactionState::None => {
+				if current_write_mode {
+					("", "\x1b[1;32m") // Bold green (write mode, no transaction)
+				} else {
+					("", "") // No color (read mode, no transaction)
+				}
+			}
+		};
+
+		let reset_code = if color_code.is_empty() { "" } else { "\x1b[0m" };
 		let prompt_suffix = if is_superuser { "#" } else { ">" };
 		let prompt = if buffer.is_empty() {
-			format!("{}={}{} ", database_name, transaction_marker, prompt_suffix)
+			format!(
+				"{}{}={}{}{}  ",
+				color_code, database_name, transaction_marker, prompt_suffix, reset_code
+			)
 		} else {
-			format!("{}->  ", database_name)
+			format!("{}{}->{}  ", color_code, database_name, reset_code)
 		};
 
 		let readline = rl.readline(&prompt);
@@ -142,7 +192,8 @@ pub(crate) async fn run_repl(
 					let current_write_mode = *write_mode.lock().unwrap();
 
 					if current_write_mode {
-						if is_in_transaction(&client).await {
+						let tx_state = check_transaction_state(&client).await;
+						if tx_state != TransactionState::None {
 							eprintln!("Cannot disable write mode while in a transaction. COMMIT or ROLLBACK first.");
 							continue;
 						}
@@ -259,7 +310,8 @@ pub(crate) async fn run_repl(
 						match execute_query(&client, &sql, modifiers).await {
 							Ok(()) => {
 								// If write mode is on and we're not in a transaction, start one
-								if *write_mode.lock().unwrap() && !is_in_transaction(&client).await
+								let tx_state = check_transaction_state(&client).await;
+								if *write_mode.lock().unwrap() && tx_state == TransactionState::None
 								{
 									if let Err(e) = client.batch_execute("BEGIN").await {
 										warn!("Failed to start transaction: {}", e);
