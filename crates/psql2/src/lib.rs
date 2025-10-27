@@ -3,10 +3,6 @@ use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use supports_unicode::Stream;
-use syntect::{
-	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
-	util::as_24_bit_terminal_escaped,
-};
 use thiserror::Error;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
@@ -299,10 +295,7 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 					format_column_value(row, i)
 				};
 
-				// Apply syntax highlighting to the value if appropriate
-				let highlighted = highlight_value(&value_str);
-				// comfy-table handles ANSI codes automatically in v7+
-				row_data.push(highlighted);
+				row_data.push(value_str);
 			}
 			table.add_row(row_data);
 		}
@@ -454,41 +447,6 @@ fn supports_unicode() -> bool {
 	supports_unicode::on(Stream::Stdout)
 }
 
-fn highlight_value(value: &str) -> String {
-	// Try to detect and highlight JSON
-	if (value.starts_with('{') && value.ends_with('}'))
-		|| (value.starts_with('[') && value.ends_with(']'))
-	{
-		if let Ok(_parsed) = serde_json::from_str::<serde_json::Value>(value) {
-			// It's valid JSON, try to highlight it (use compact format)
-			if let Some(highlighted) = try_highlight_json(value) {
-				return highlighted;
-			}
-		}
-	}
-
-	value.to_string()
-}
-
-fn try_highlight_json(json: &str) -> Option<String> {
-	let syntax_set = SyntaxSet::load_defaults_newlines();
-	let theme_set = ThemeSet::load_defaults();
-
-	let syntax = syntax_set.find_syntax_by_extension("json")?;
-	let theme = &theme_set.themes["base16-ocean.dark"];
-
-	let mut highlighter = HighlightLines::new(syntax, theme);
-
-	match highlighter.highlight_line(json, &syntax_set) {
-		Ok(ranges) => {
-			let mut result = as_24_bit_terminal_escaped(&ranges[..], false);
-			result.push_str("\x1b[0m");
-			Some(result)
-		}
-		Err(_) => None,
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -579,38 +537,7 @@ mod tests {
 
 	#[test]
 	fn test_supports_unicode() {
-		// This just tests that the function runs without panicking
 		let _ = supports_unicode();
-	}
-
-	#[test]
-	fn test_highlight_json_value() {
-		let json_str = r#"{"name": "test", "value": 123}"#;
-		let highlighted = highlight_value(json_str);
-
-		// Should contain ANSI escape codes for colors
-		assert!(highlighted.contains("\x1b["));
-		// Should contain the actual content
-		assert!(highlighted.contains("name"));
-		assert!(highlighted.contains("test"));
-	}
-
-	#[test]
-	fn test_highlight_non_json_value() {
-		let plain_str = "just a plain string";
-		let highlighted = highlight_value(plain_str);
-
-		// Should return unchanged
-		assert_eq!(highlighted, plain_str);
-	}
-
-	#[test]
-	fn test_highlight_invalid_json() {
-		let invalid_json = "{not valid json}";
-		let highlighted = highlight_value(invalid_json);
-
-		// Should return unchanged since it's not valid JSON
-		assert_eq!(highlighted, invalid_json);
 	}
 
 	#[test]
