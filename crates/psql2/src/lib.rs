@@ -164,23 +164,31 @@ async fn run_repl(
 				buffer.push_str(line);
 
 				// Check if we should execute (has trailing ; or \g)
-				let should_execute = buffer.trim_end().ends_with(';')
-					|| buffer.trim_end().ends_with("\\g")
-					|| buffer.trim_end().eq_ignore_ascii_case("\\q")
-					|| buffer.trim_end().eq_ignore_ascii_case("quit");
+				let mut sql_to_execute = buffer.trim().to_string();
+				let should_execute = sql_to_execute.ends_with(';')
+					|| sql_to_execute.ends_with("\\g")
+					|| sql_to_execute.eq_ignore_ascii_case("\\q")
+					|| sql_to_execute.eq_ignore_ascii_case("quit");
 
 				if should_execute {
-					let sql = buffer.trim().to_string();
+					// Strip \g if present (treat it like ;)
+					if sql_to_execute.ends_with("\\g") {
+						sql_to_execute = sql_to_execute[..sql_to_execute.len() - 2]
+							.trim()
+							.to_string();
+					}
 					buffer.clear();
 
-					if sql.eq_ignore_ascii_case("\\q") || sql.eq_ignore_ascii_case("quit") {
+					if sql_to_execute.eq_ignore_ascii_case("\\q")
+						|| sql_to_execute.eq_ignore_ascii_case("quit")
+					{
 						break;
 					}
 
 					// Always add to history, even if query fails
-					let _ = rl.add_history_entry(&sql);
+					let _ = rl.add_history_entry(&sql_to_execute);
 					if let Err(e) = rl.history_mut().add_entry(
-						sql.clone(),
+						sql_to_execute.clone(),
 						db_user.clone(),
 						sys_user.clone(),
 						false,
@@ -189,7 +197,7 @@ async fn run_repl(
 						debug!("failed to add to history: {}", e);
 					}
 
-					match execute_query(&client, &sql).await {
+					match execute_query(&client, &sql_to_execute).await {
 						Ok(()) => {}
 						Err(e) => {
 							eprintln!("Error: {:?}", e);
@@ -223,7 +231,9 @@ async fn run_repl(
 async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()> {
 	debug!("executing query: {}", sql);
 
+	let start = std::time::Instant::now();
 	let rows = client.query(sql, &[]).await.into_diagnostic()?;
+	let duration = start.elapsed();
 
 	if rows.is_empty() {
 		println!("(no rows)");
@@ -303,9 +313,10 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 		println!("{table}");
 
 		println!(
-			"({} row{})",
+			"({} row{}, took {:.3}ms)",
 			rows.len(),
-			if rows.len() == 1 { "" } else { "s" }
+			if rows.len() == 1 { "" } else { "s" },
+			duration.as_secs_f64() * 1000.0
 		);
 	}
 
