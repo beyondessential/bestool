@@ -15,11 +15,16 @@ required-features = ["cli"]
 [dependencies]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
 comfy-table = "7.2.1"
+jiff = "0.2.15"
 lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
+redb = "3.1.0"
 rustyline = "17.0.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
+tempfile = "3.21.0"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = "0.7.15"

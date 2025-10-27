@@ -1,8 +1,10 @@
 use bestool_psql2::highlighter::Theme;
+use bestool_psql2::history::History;
 use bestool_psql2::PsqlConfig;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, Result};
+use std::path::PathBuf;
 use tracing::debug;
 
 /// Async PostgreSQL client
@@ -27,6 +29,10 @@ pub struct Args {
 	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
 	#[arg(long, default_value = "auto")]
 	pub theme: Theme,
+
+	/// Path to history database (default: ~/.local/state/bestool-psql/history.redb)
+	#[arg(long)]
+	pub history_path: Option<PathBuf>,
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -70,10 +76,17 @@ async fn main() -> Result<()> {
 
 	debug!(?connection_string, "using connection string");
 
+	let history_path = if let Some(path) = args.history_path {
+		path
+	} else {
+		History::default_path()?
+	};
+
 	let config = PsqlConfig {
 		connection_string,
 		user: args.user,
 		theme,
+		history_path,
 	};
 
 	bestool_psql2::run(config).await

@@ -9,9 +9,11 @@ use tracing::{debug, info};
 
 pub mod helper;
 pub mod highlighter;
+pub mod history;
 
 use helper::SqlHelper;
 use highlighter::Theme;
+use history::History;
 
 #[derive(Debug, Error)]
 pub enum PsqlError {
@@ -32,11 +34,21 @@ pub struct PsqlConfig {
 
 	/// Syntax highlighting theme
 	pub theme: Theme,
+
+	/// Path to history database
+	pub history_path: std::path::PathBuf,
 }
 
 /// Run the psql2 client
 pub async fn run(config: PsqlConfig) -> Result<()> {
 	let theme = config.theme;
+	let history_path = config.history_path.clone();
+	let db_user = config.user.clone().unwrap_or_else(|| {
+		std::env::var("USER")
+			.or_else(|_| std::env::var("USERNAME"))
+			.unwrap_or_else(|_| "unknown".to_string())
+	});
+
 	debug!("connecting to database");
 	let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
 		.await
@@ -61,14 +73,30 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		println!("{}", version);
 	}
 
-	run_repl(client, theme).await?;
+	run_repl(client, theme, history_path, db_user).await?;
 
 	Ok(())
 }
 
-async fn run_repl(client: tokio_postgres::Client, theme: Theme) -> Result<()> {
+async fn run_repl(
+	client: tokio_postgres::Client,
+	theme: Theme,
+	history_path: std::path::PathBuf,
+	db_user: String,
+) -> Result<()> {
+	let sys_user = std::env::var("USER")
+		.or_else(|_| std::env::var("USERNAME"))
+		.unwrap_or_else(|_| "unknown".to_string());
+
+	let mut history = History::open(&history_path)?;
+	history.set_context(db_user.clone(), sys_user.clone(), false, None);
+
 	let helper = SqlHelper::new(theme);
-	let mut rl = Editor::new().into_diagnostic()?;
+	let mut rl: Editor<SqlHelper, History> = Editor::with_history(
+		rustyline::Config::builder().auto_add_history(false).build(),
+		history,
+	)
+	.into_diagnostic()?;
 	rl.set_helper(Some(helper));
 
 	loop {
@@ -80,14 +108,23 @@ async fn run_repl(client: tokio_postgres::Client, theme: Theme) -> Result<()> {
 					continue;
 				}
 
-				let _ = rl.add_history_entry(line);
-
 				if line.eq_ignore_ascii_case("\\q") || line.eq_ignore_ascii_case("quit") {
 					break;
 				}
 
 				match execute_query(&client, line).await {
-					Ok(()) => {}
+					Ok(()) => {
+						let _ = rl.add_history_entry(line);
+						if let Err(e) = rl.history_mut().add_entry(
+							line.to_string(),
+							db_user.clone(),
+							sys_user.clone(),
+							false,
+							None,
+						) {
+							debug!("failed to add to history: {}", e);
+						}
+					}
 					Err(e) => {
 						eprintln!("Error: {}", e);
 					}
@@ -174,6 +211,7 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: Some("testuser".to_string()),
 			theme: Theme::Dark,
+			history_path: std::path::PathBuf::from("/tmp/history.redb"),
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
@@ -186,6 +224,7 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: None,
 			theme: Theme::Light,
+			history_path: std::path::PathBuf::from("/tmp/history.redb"),
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
