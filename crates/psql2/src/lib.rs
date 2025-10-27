@@ -1,3 +1,4 @@
+use cli_table::{print_stdout, Cell, Style, Table};
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -121,36 +122,36 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 
 	if let Some(first_row) = rows.first() {
 		let columns = first_row.columns();
-		for (i, column) in columns.iter().enumerate() {
-			if i > 0 {
-				print!(" | ");
-			}
-			print!("{}", column.name());
-		}
-		println!();
 
-		for _i in 0..columns.len() {
-			print!("----------");
-		}
-		println!();
+		let mut table_data: Vec<Vec<String>> = Vec::new();
 
 		for row in &rows {
+			let mut row_data = Vec::new();
 			for (i, _column) in columns.iter().enumerate() {
-				if i > 0 {
-					print!(" | ");
-				}
 				let value: Option<String> = row.try_get(i).ok();
-				print!("{}", value.unwrap_or_else(|| "NULL".to_string()));
+				row_data.push(value.unwrap_or_else(|| "NULL".to_string()));
 			}
-			println!();
+			table_data.push(row_data);
 		}
-	}
 
-	println!(
-		"\n({} row{})",
-		rows.len(),
-		if rows.len() == 1 { "" } else { "s" }
-	);
+		let table = table_data
+			.table()
+			.title(
+				columns
+					.iter()
+					.map(|col| col.name().cell().bold(true))
+					.collect::<Vec<_>>(),
+			)
+			.bold(true);
+
+		print_stdout(table).into_diagnostic()?;
+
+		println!(
+			"\n({} row{})",
+			rows.len(),
+			if rows.len() == 1 { "" } else { "s" }
+		);
+	}
 
 	Ok(())
 }
