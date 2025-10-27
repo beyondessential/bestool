@@ -162,6 +162,23 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 	if let Some(first_row) = rows.first() {
 		let columns = first_row.columns();
 
+		// Identify columns that need text casting
+		let mut unprintable_columns = Vec::new();
+		for (i, _column) in columns.iter().enumerate() {
+			if !can_print_column(&first_row, i) {
+				unprintable_columns.push(i);
+			}
+		}
+
+		// If we have unprintable columns, re-query with text casting
+		let text_rows = if !unprintable_columns.is_empty() {
+			let text_query = build_text_cast_query(sql, &columns, &unprintable_columns);
+			debug!("re-querying with text casts: {}", text_query);
+			Some(client.query(&text_query, &[]).await.into_diagnostic()?)
+		} else {
+			None
+		};
+
 		let mut table = Table::new();
 
 		if supports_unicode() {
@@ -177,84 +194,26 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 				.set_alignment(CellAlignment::Center)
 		}));
 
-		for row in &rows {
+		for (row_idx, row) in rows.iter().enumerate() {
 			let mut row_data = Vec::new();
 			for (i, _column) in columns.iter().enumerate() {
-				let value_str = if let Ok(v) = row.try_get::<_, String>(i) {
-					v
-				} else if let Ok(v) = row.try_get::<_, i16>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, i32>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, i64>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, f32>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, f64>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, bool>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, Vec<u8>>(i) {
-					format!("\\x{}", hex::encode(v))
-				} else if let Ok(v) = row.try_get::<_, jiff::Timestamp>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, jiff::civil::Date>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, jiff::civil::Time>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, jiff::civil::DateTime>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, serde_json::Value>(i) {
-					v.to_string()
-				} else if let Ok(v) = row.try_get::<_, Vec<String>>(i) {
-					format!("{{{}}}", v.join(","))
-				} else if let Ok(v) = row.try_get::<_, Vec<i32>>(i) {
-					format!(
-						"{{{}}}",
-						v.iter()
-							.map(|x| x.to_string())
-							.collect::<Vec<_>>()
-							.join(",")
-					)
-				} else if let Ok(v) = row.try_get::<_, Vec<i64>>(i) {
-					format!(
-						"{{{}}}",
-						v.iter()
-							.map(|x| x.to_string())
-							.collect::<Vec<_>>()
-							.join(",")
-					)
-				} else if let Ok(v) = row.try_get::<_, Vec<f32>>(i) {
-					format!(
-						"{{{}}}",
-						v.iter()
-							.map(|x| x.to_string())
-							.collect::<Vec<_>>()
-							.join(",")
-					)
-				} else if let Ok(v) = row.try_get::<_, Vec<f64>>(i) {
-					format!(
-						"{{{}}}",
-						v.iter()
-							.map(|x| x.to_string())
-							.collect::<Vec<_>>()
-							.join(",")
-					)
-				} else if let Ok(v) = row.try_get::<_, Vec<bool>>(i) {
-					format!(
-						"{{{}}}",
-						v.iter()
-							.map(|x| x.to_string())
-							.collect::<Vec<_>>()
-							.join(",")
-					)
-				} else {
-					// Fallback: check if NULL, otherwise mark as unprintable
-					match row.try_get::<_, Option<String>>(i) {
-						Ok(None) => "NULL".to_string(),
-						Ok(Some(_)) => "(unprintable)".to_string(),
-						Err(_) => "(unprintable)".to_string(),
+				let value_str = if unprintable_columns.contains(&i) {
+					// Get from text-cast query
+					if let Some(ref text_rows) = text_rows {
+						if let Some(text_row) = text_rows.get(row_idx) {
+							text_row
+								.try_get::<_, Option<String>>(i)
+								.ok()
+								.flatten()
+								.unwrap_or_else(|| "NULL".to_string())
+						} else {
+							"(error)".to_string()
+						}
+					} else {
+						"(error)".to_string()
 					}
+				} else {
+					format_column_value(row, i)
 				};
 				row_data.push(value_str);
 			}
@@ -271,6 +230,128 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 	}
 
 	Ok(())
+}
+
+fn can_print_column(row: &tokio_postgres::Row, i: usize) -> bool {
+	row.try_get::<_, String>(i).is_ok()
+		|| row.try_get::<_, i16>(i).is_ok()
+		|| row.try_get::<_, i32>(i).is_ok()
+		|| row.try_get::<_, i64>(i).is_ok()
+		|| row.try_get::<_, f32>(i).is_ok()
+		|| row.try_get::<_, f64>(i).is_ok()
+		|| row.try_get::<_, bool>(i).is_ok()
+		|| row.try_get::<_, Vec<u8>>(i).is_ok()
+		|| row.try_get::<_, jiff::Timestamp>(i).is_ok()
+		|| row.try_get::<_, jiff::civil::Date>(i).is_ok()
+		|| row.try_get::<_, jiff::civil::Time>(i).is_ok()
+		|| row.try_get::<_, jiff::civil::DateTime>(i).is_ok()
+		|| row.try_get::<_, serde_json::Value>(i).is_ok()
+		|| row.try_get::<_, Vec<String>>(i).is_ok()
+		|| row.try_get::<_, Vec<i32>>(i).is_ok()
+		|| row.try_get::<_, Vec<i64>>(i).is_ok()
+		|| row.try_get::<_, Vec<f32>>(i).is_ok()
+		|| row.try_get::<_, Vec<f64>>(i).is_ok()
+		|| row.try_get::<_, Vec<bool>>(i).is_ok()
+		|| row.try_get::<_, Option<String>>(i).ok().flatten().is_none()
+}
+
+fn format_column_value(row: &tokio_postgres::Row, i: usize) -> String {
+	if let Ok(v) = row.try_get::<_, String>(i) {
+		v
+	} else if let Ok(v) = row.try_get::<_, i16>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, i32>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, i64>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, f32>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, f64>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, bool>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, Vec<u8>>(i) {
+		format!("\\x{}", hex::encode(v))
+	} else if let Ok(v) = row.try_get::<_, jiff::Timestamp>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::Date>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::Time>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::DateTime>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, serde_json::Value>(i) {
+		v.to_string()
+	} else if let Ok(v) = row.try_get::<_, Vec<String>>(i) {
+		format!("{{{}}}", v.join(","))
+	} else if let Ok(v) = row.try_get::<_, Vec<i32>>(i) {
+		format!(
+			"{{{}}}",
+			v.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>()
+				.join(",")
+		)
+	} else if let Ok(v) = row.try_get::<_, Vec<i64>>(i) {
+		format!(
+			"{{{}}}",
+			v.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>()
+				.join(",")
+		)
+	} else if let Ok(v) = row.try_get::<_, Vec<f32>>(i) {
+		format!(
+			"{{{}}}",
+			v.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>()
+				.join(",")
+		)
+	} else if let Ok(v) = row.try_get::<_, Vec<f64>>(i) {
+		format!(
+			"{{{}}}",
+			v.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>()
+				.join(",")
+		)
+	} else if let Ok(v) = row.try_get::<_, Vec<bool>>(i) {
+		format!(
+			"{{{}}}",
+			v.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>()
+				.join(",")
+		)
+	} else {
+		match row.try_get::<_, Option<String>>(i) {
+			Ok(None) => "NULL".to_string(),
+			Ok(Some(_)) => "(unprintable)".to_string(),
+			Err(_) => "NULL".to_string(),
+		}
+	}
+}
+
+fn build_text_cast_query(
+	sql: &str,
+	columns: &[tokio_postgres::Column],
+	unprintable_columns: &[usize],
+) -> String {
+	// Build a SELECT query that casts unprintable columns to text
+	let column_exprs: Vec<String> = columns
+		.iter()
+		.enumerate()
+		.map(|(i, col)| {
+			if unprintable_columns.contains(&i) {
+				format!("({})::text", col.name())
+			} else {
+				col.name().to_string()
+			}
+		})
+		.collect();
+
+	format!("SELECT {} FROM ({})", column_exprs.join(", "), sql)
 }
 
 fn supports_unicode() -> bool {
