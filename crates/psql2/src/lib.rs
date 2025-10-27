@@ -458,11 +458,9 @@ fn highlight_value(value: &str) -> String {
 	if (value.starts_with('{') && value.ends_with('}'))
 		|| (value.starts_with('[') && value.ends_with(']'))
 	{
-		if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) {
-			// It's valid JSON, try to highlight it
-			let formatted =
-				serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| value.to_string());
-			if let Some(highlighted) = try_highlight_json(&formatted) {
+		if let Ok(_parsed) = serde_json::from_str::<serde_json::Value>(value) {
+			// It's valid JSON, try to highlight it (use compact format)
+			if let Some(highlighted) = try_highlight_json(value) {
 				return highlighted;
 			}
 		}
@@ -480,24 +478,14 @@ fn try_highlight_json(json: &str) -> Option<String> {
 
 	let mut highlighter = HighlightLines::new(syntax, theme);
 
-	let mut result = String::new();
-	for line in json.lines() {
-		match highlighter.highlight_line(line, &syntax_set) {
-			Ok(ranges) => {
-				result.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
-				result.push('\n');
-			}
-			Err(_) => {
-				result.push_str(line);
-				result.push('\n');
-			}
+	match highlighter.highlight_line(json, &syntax_set) {
+		Ok(ranges) => {
+			let mut result = as_24_bit_terminal_escaped(&ranges[..], false);
+			result.push_str("\x1b[0m");
+			Some(result)
 		}
+		Err(_) => None,
 	}
-
-	// Add ANSI reset
-	result.push_str("\x1b[0m");
-
-	Some(result.trim_end().to_string())
 }
 
 #[cfg(test)]
