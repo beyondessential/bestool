@@ -69,37 +69,51 @@ enum TransactionState {
 	Error,
 }
 
-/// Check the transaction state of the connection
-async fn check_transaction_state(client: &tokio_postgres::Client) -> TransactionState {
-	// First check if we're in a transaction at all
-	let in_transaction = match client
+/// Check the transaction state of a connection by querying from a separate monitoring connection
+async fn check_transaction_state(
+	monitor_client: &tokio_postgres::Client,
+	backend_pid: i32,
+) -> TransactionState {
+	// Query pg_stat_activity from a separate connection to get the true state
+	// of the main connection without interfering with its transaction state
+	match monitor_client
 		.query_one(
-			"SELECT CASE WHEN txid_current_if_assigned() IS NULL THEN false ELSE true END",
-			&[],
+			"SELECT state FROM pg_stat_activity WHERE pid = $1",
+			&[&backend_pid],
 		)
 		.await
 	{
-		Ok(row) => row.get::<_, bool>(0),
-		Err(_) => return TransactionState::None,
-	};
+		Ok(row) => {
+			let state: String = row.get(0);
 
-	if !in_transaction {
-		return TransactionState::None;
-	}
-
-	// Check if the transaction is in an error state by trying to query transaction status
-	// In PostgreSQL, if a transaction is aborted, queries will fail with a specific error
-	match client.query_one("SELECT 1", &[]).await {
-		Ok(_) => TransactionState::Active,
-		Err(e) => {
-			// Check if this is a "current transaction is aborted" error
-			let error_msg = e.to_string();
-			if error_msg.contains("current transaction is aborted") {
+			if state == "idle in transaction (aborted)" {
 				TransactionState::Error
-			} else {
+			} else if state.starts_with("idle in transaction") {
 				TransactionState::Active
+			} else if state == "active" {
+				// Could be active in or out of transaction, check xact_start
+				match monitor_client
+					.query_one(
+						"SELECT xact_start FROM pg_stat_activity WHERE pid = $1",
+						&[&backend_pid],
+					)
+					.await
+				{
+					Ok(row) => {
+						let xact_start: Option<std::time::SystemTime> = row.get(0);
+						if xact_start.is_some() {
+							TransactionState::Active
+						} else {
+							TransactionState::None
+						}
+					}
+					Err(_) => TransactionState::None,
+				}
+			} else {
+				TransactionState::None
 			}
 		}
+		Err(_) => TransactionState::None,
 	}
 }
 
@@ -114,6 +128,29 @@ pub(crate) async fn run_repl(
 	write_mode: bool,
 	ots: Option<String>,
 ) -> Result<()> {
+	// Get the backend PID of the main connection
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.into_diagnostic()?
+		.get(0);
+
+	debug!(backend_pid, "main connection backend PID");
+
+	// Create a separate connection for monitoring transaction state
+	let tls_connector = crate::tls::make_tls_connector()?;
+	let (monitor_client, monitor_connection) =
+		tokio_postgres::connect(&connection_string, tls_connector)
+			.await
+			.into_diagnostic()?;
+
+	tokio::spawn(async move {
+		if let Err(e) = monitor_connection.await {
+			warn!("monitor connection error: {}", e);
+		}
+	});
+
+	debug!("monitor connection established");
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
@@ -148,7 +185,7 @@ pub(crate) async fn run_repl(
 	let mut buffer = String::new();
 
 	loop {
-		let transaction_state = check_transaction_state(&client).await;
+		let transaction_state = check_transaction_state(&monitor_client, backend_pid).await;
 		let current_write_mode = *write_mode.lock().unwrap();
 
 		let (transaction_marker, color_code) = match transaction_state {
@@ -192,7 +229,7 @@ pub(crate) async fn run_repl(
 					let current_write_mode = *write_mode.lock().unwrap();
 
 					if current_write_mode {
-						let tx_state = check_transaction_state(&client).await;
+						let tx_state = check_transaction_state(&monitor_client, backend_pid).await;
 						if tx_state != TransactionState::None {
 							eprintln!("Cannot disable write mode while in a transaction. COMMIT or ROLLBACK first.");
 							continue;
@@ -310,7 +347,8 @@ pub(crate) async fn run_repl(
 						match execute_query(&client, &sql, modifiers).await {
 							Ok(()) => {
 								// If write mode is on and we're not in a transaction, start one
-								let tx_state = check_transaction_state(&client).await;
+								let tx_state =
+									check_transaction_state(&monitor_client, backend_pid).await;
 								if *write_mode.lock().unwrap() && tx_state == TransactionState::None
 								{
 									if let Err(e) = client.batch_execute("BEGIN").await {
@@ -496,5 +534,143 @@ mod tests {
 			}
 			_ => panic!("Expected Execute action"),
 		}
+	}
+
+	#[tokio::test]
+	async fn test_transaction_state_none() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// No transaction should be active initially
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::None);
+	}
+
+	#[tokio::test]
+	async fn test_transaction_state_active() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// Start a transaction
+		client
+			.batch_execute("BEGIN")
+			.await
+			.expect("Failed to begin transaction");
+
+		// Should detect active transaction
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::Active);
+
+		// Clean up
+		client.batch_execute("ROLLBACK").await.ok();
+	}
+
+	#[tokio::test]
+	async fn test_transaction_state_error() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// Start a transaction
+		client
+			.batch_execute("BEGIN")
+			.await
+			.expect("Failed to begin transaction");
+
+		// Cause an error in the transaction (division by zero)
+		let _ = client.query("SELECT 1/0", &[]).await;
+
+		// Give pg_stat_activity time to update
+		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+		// Should detect error state
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::Error);
+
+		// Clean up
+		client.batch_execute("ROLLBACK").await.ok();
 	}
 }
