@@ -4,7 +4,7 @@ use miette::{IntoDiagnostic, Result};
 use supports_unicode::Stream;
 use tracing::debug;
 
-pub async fn execute_query(
+pub(crate) async fn execute_query(
 	client: &tokio_postgres::Client,
 	sql: &str,
 	_modifiers: QueryModifiers,

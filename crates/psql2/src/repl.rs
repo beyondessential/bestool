@@ -8,7 +8,7 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use tracing::debug;
 
-pub async fn run_repl(
+pub(crate) async fn run_repl(
 	client: tokio_postgres::Client,
 	theme: Theme,
 	history_path: std::path::PathBuf,

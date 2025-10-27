@@ -5,13 +5,13 @@ use winnow::token::{literal, rest, take_till};
 use winnow::Parser;
 
 #[derive(Debug, Clone, Default)]
-pub struct QueryModifiers {
-	pub expanded: bool,
-	pub varset: bool,
-	pub prefix: Option<String>,
+pub(crate) struct QueryModifiers {
+	pub(crate) expanded: bool,
+	pub(crate) varset: bool,
+	pub(crate) prefix: Option<String>,
 }
 
-pub fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
+pub(crate) fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
 	let input = input.trim();
 
 	fn backslash_g<'a>(

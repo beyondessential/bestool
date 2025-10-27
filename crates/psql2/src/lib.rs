@@ -1,9 +1,9 @@
 mod config;
+mod helper;
 mod parser;
 mod query;
 mod repl;
 
-pub mod helper;
 pub mod highlighter;
 pub mod history;
 
