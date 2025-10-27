@@ -136,7 +136,7 @@ mod tests {
 		let result = query::execute_query(
 			&client,
 			"SELECT row(1, 'foo', true) as record",
-			parser::QueryModifiers::default(),
+			parser::QueryModifiers::new(),
 		)
 		.await;
 
@@ -160,7 +160,7 @@ mod tests {
 		let result = query::execute_query(
 			&client,
 			"SELECT ARRAY[1, 2, 3] as numbers",
-			parser::QueryModifiers::default(),
+			parser::QueryModifiers::new(),
 		)
 		.await;
 

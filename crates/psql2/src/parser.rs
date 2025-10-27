@@ -1,16 +1,18 @@
+use std::collections::HashSet;
 use winnow::ascii::{space0, space1, Caseless};
 use winnow::combinator::{alt, opt, preceded};
 use winnow::error::ErrMode;
 use winnow::token::{literal, rest, take_till};
 use winnow::Parser;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct QueryModifiers {
-	pub(crate) expanded: bool,
-	pub(crate) json: bool,
-	pub(crate) varset: bool,
-	pub(crate) prefix: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum QueryModifier {
+	Expanded,
+	Json,
+	VarSet { prefix: Option<String> },
 }
+
+pub(crate) type QueryModifiers = HashSet<QueryModifier>;
 
 pub(crate) fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
 	let input = input.trim();
@@ -75,27 +77,30 @@ pub(crate) fn parse_query_modifiers(input: &str) -> (String, QueryModifiers) {
 
 	match parse_line.parse(input) {
 		Ok((sql, Some((modifier_chars, has_set, arg)))) => {
-			let mut modifiers = QueryModifiers::default();
+			let mut modifiers = QueryModifiers::new();
 
 			// Apply modifiers based on the characters we found
 			for ch in modifier_chars {
 				match ch {
-					'x' => modifiers.expanded = true,
-					'j' => modifiers.json = true,
+					'x' => {
+						modifiers.insert(QueryModifier::Expanded);
+					}
+					'j' => {
+						modifiers.insert(QueryModifier::Json);
+					}
 					_ => {}
 				}
 			}
 
 			// Apply set modifier if present
 			if has_set {
-				modifiers.varset = true;
-				modifiers.prefix = arg;
+				modifiers.insert(QueryModifier::VarSet { prefix: arg });
 			}
 
 			(sql.trim().to_string(), modifiers)
 		}
-		Ok((sql, None)) => (sql.trim().to_string(), QueryModifiers::default()),
-		Err(_) => (input.to_string(), QueryModifiers::default()),
+		Ok((sql, None)) => (sql.trim().to_string(), QueryModifiers::new()),
+		Err(_) => (input.to_string(), QueryModifiers::new()),
 	}
 }
 
@@ -107,235 +112,268 @@ mod tests {
 	fn test_parse_query_modifiers_semicolon() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users;");
 		assert_eq!(sql, "SELECT * FROM users;");
-		assert!(!mods.expanded);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_backslash_g() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\g");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gx() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gx");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gset");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet { prefix: None }));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gset_with_prefix() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gset myprefix");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("myprefix".to_string()));
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("myprefix".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gxset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxset");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet { prefix: None }));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gxset_with_prefix() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxset myprefix");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("myprefix".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("myprefix".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_with_whitespace() {
 		let (sql, mods) = parse_query_modifiers("  SELECT * FROM users  \\gx  ");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.json);
-		assert!(!mods.varset);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_multiline() {
 		let (sql, mods) = parse_query_modifiers("SELECT *\nFROM users\nWHERE id = 1\\gset var");
 		assert_eq!(sql, "SELECT *\nFROM users\nWHERE id = 1");
-		assert!(!mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("var".to_string()));
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("var".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_prefix_with_underscore() {
 		let (sql, mods) = parse_query_modifiers("SELECT count(*) FROM users\\gset my_prefix_");
 		assert_eq!(sql, "SELECT count(*) FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("my_prefix_".to_string()));
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("my_prefix_".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_case_insensitive_gx() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GX");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_case_insensitive_gset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\Gset prefix");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("prefix".to_string()));
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("prefix".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_case_insensitive_gxset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GXSET myvar");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("myvar".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("myvar".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gxset_prefix_no_space() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxsetprefix");
 		assert_eq!(sql, "SELECT * FROM users\\gxsetprefix");
-		assert!(!mods.expanded);
-		assert!(!mods.json);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gj() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gj");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.json);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gjx() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gjx");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gxj() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxj");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(!mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gjset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gjset");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, None);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet { prefix: None }));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gxjset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxjset var");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("var".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("var".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_gjxset() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gjxset prefix");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("prefix".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("prefix".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_case_insensitive_gj() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GJ");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.expanded);
-		assert!(mods.json);
-		assert!(!mods.varset);
+		assert!(!mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_duplicate_modifiers() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxx");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(!mods.json);
-		assert!(!mods.varset);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(!mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_duplicate_mixed() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gjjx");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(!mods.varset);
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_all_modifiers() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\gxjset myvar");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("myvar".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("myvar".to_string())
+		}));
 	}
 
 	#[test]
 	fn test_parse_query_modifiers_mixed_case_modifiers() {
 		let (sql, mods) = parse_query_modifiers("SELECT * FROM users\\GxJsEt var");
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.expanded);
-		assert!(mods.json);
-		assert!(mods.varset);
-		assert_eq!(mods.prefix, Some("var".to_string()));
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::VarSet {
+			prefix: Some("var".to_string())
+		}));
 	}
 }
