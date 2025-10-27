@@ -1,7 +1,7 @@
 use crate::helper::SqlHelper;
 use crate::highlighter::Theme;
 use crate::history::History;
-use crate::parser::parse_query_modifiers;
+use crate::parser::{parse_query_modifiers, QueryModifiers};
 use crate::query::execute_query;
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
@@ -52,12 +52,6 @@ pub(crate) async fn run_repl(
 					continue;
 				}
 
-				if buffer.is_empty()
-					&& (line.eq_ignore_ascii_case("\\q") || line.eq_ignore_ascii_case("quit"))
-				{
-					break;
-				}
-
 				if !buffer.is_empty() {
 					buffer.push('\n');
 				}
@@ -65,23 +59,25 @@ pub(crate) async fn run_repl(
 
 				let user_input = buffer.trim().to_string();
 
-				let should_execute = if user_input.eq_ignore_ascii_case("\\q")
-					|| user_input.eq_ignore_ascii_case("quit")
-				{
-					true
+				// Parse the query to see if it's ready to execute
+				let is_quit = user_input.eq_ignore_ascii_case("\\q")
+					|| user_input.eq_ignore_ascii_case("quit");
+				let parse_result = if is_quit {
+					Ok(Some((user_input.clone(), QueryModifiers::new())))
 				} else {
-					parse_query_modifiers(&user_input).ok().flatten().is_some()
+					parse_query_modifiers(&user_input)
 				};
+
+				let should_execute = parse_result
+					.as_ref()
+					.ok()
+					.and_then(|r| r.as_ref())
+					.is_some();
 
 				if should_execute {
 					buffer.clear();
 
-					if user_input.eq_ignore_ascii_case("\\q")
-						|| user_input.eq_ignore_ascii_case("quit")
-					{
-						break;
-					}
-
+					// Always add to history
 					let _ = rl.add_history_entry(&user_input);
 					if let Err(e) = rl.history_mut().add_entry(
 						user_input.clone(),
@@ -93,7 +89,13 @@ pub(crate) async fn run_repl(
 						debug!("failed to add to history: {}", e);
 					}
 
-					match parse_query_modifiers(&user_input) {
+					// Handle quit
+					if is_quit {
+						break;
+					}
+
+					// Execute query
+					match parse_result {
 						Ok(Some((sql_to_execute, modifiers))) => {
 							match execute_query(&client, &sql_to_execute, modifiers).await {
 								Ok(()) => {}
