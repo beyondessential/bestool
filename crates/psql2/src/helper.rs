@@ -88,3 +88,49 @@ impl Validator for SqlHelper {
 }
 
 impl Helper for SqlHelper {}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_sql_helper_creation() {
+		let helper = SqlHelper::new(Theme::Dark);
+		assert_eq!(helper.theme, Theme::Dark);
+
+		let helper = SqlHelper::new(Theme::Light);
+		assert_eq!(helper.theme, Theme::Light);
+	}
+
+	#[test]
+	fn test_completer_returns_empty() {
+		let helper = SqlHelper::new(Theme::Dark);
+		let history = rustyline::history::DefaultHistory::new();
+		let ctx = Context::new(&history);
+		let result = helper.complete("SELECT ", 7, &ctx).unwrap();
+		assert_eq!(result.0, 0);
+		assert_eq!(result.1.len(), 0);
+	}
+
+	#[test]
+	fn test_hinter_returns_none() {
+		let helper = SqlHelper::new(Theme::Dark);
+		let history = rustyline::history::DefaultHistory::new();
+		let ctx = Context::new(&history);
+		let hint = helper.hint("SELECT ", 7, &ctx);
+		assert!(hint.is_none());
+	}
+
+	#[test]
+	fn test_highlighter_returns_colored_output() {
+		let helper = SqlHelper::new(Theme::Dark);
+		let result = helper.highlight("SELECT * FROM users", 0);
+		assert!(!result.is_empty());
+	}
+
+	#[test]
+	fn test_highlight_char_always_true() {
+		let helper = SqlHelper::new(Theme::Dark);
+		assert!(helper.highlight_char("SELECT", 0, CmdKind::ForcedRefresh));
+	}
+}

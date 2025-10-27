@@ -154,3 +154,41 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_psql_config_creation() {
+		let config = PsqlConfig {
+			connection_string: "postgresql://localhost/test".to_string(),
+			user: Some("testuser".to_string()),
+			theme: Theme::Dark,
+		};
+
+		assert_eq!(config.connection_string, "postgresql://localhost/test");
+		assert_eq!(config.user, Some("testuser".to_string()));
+	}
+
+	#[test]
+	fn test_psql_config_no_user() {
+		let config = PsqlConfig {
+			connection_string: "postgresql://localhost/test".to_string(),
+			user: None,
+			theme: Theme::Light,
+		};
+
+		assert_eq!(config.connection_string, "postgresql://localhost/test");
+		assert!(config.user.is_none());
+	}
+
+	#[test]
+	fn test_psql_error_display() {
+		let err = PsqlError::ConnectionFailed;
+		assert_eq!(err.to_string(), "database connection failed");
+
+		let err = PsqlError::QueryFailed;
+		assert_eq!(err.to_string(), "query execution failed");
+	}
+}
