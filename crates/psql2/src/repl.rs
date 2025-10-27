@@ -15,6 +15,7 @@ use tracing::{debug, info};
 enum ReplAction {
 	Continue,
 	Execute {
+		input: String,
 		sql: String,
 		modifiers: QueryModifiers,
 	},
@@ -43,7 +44,11 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 			if is_quit {
 				ReplAction::Exit
 			} else {
-				ReplAction::Execute { sql, modifiers }
+				ReplAction::Execute {
+					input: user_input.clone(),
+					sql,
+					modifiers,
+				}
 			}
 		}
 		Ok(None) | Err(_) => ReplAction::Continue,
@@ -211,12 +216,16 @@ pub(crate) async fn run_repl(
 						}
 						break;
 					}
-					ReplAction::Execute { sql, modifiers } => {
-						let _ = rl.add_history_entry(&sql);
+					ReplAction::Execute {
+						input,
+						sql,
+						modifiers,
+					} => {
+						let _ = rl.add_history_entry(&input);
 						let current_write_mode = *write_mode.lock().unwrap();
 						let current_ots = ots.lock().unwrap().clone();
 						if let Err(e) = rl.history_mut().add_entry(
-							sql.clone(),
+							input,
 							db_user.clone(),
 							sys_user.clone(),
 							current_write_mode,
@@ -275,7 +284,12 @@ mod tests {
 		let (buffer, action) = handle_input("", "SELECT * FROM users;");
 		assert_eq!(buffer, "");
 		match action {
-			ReplAction::Execute { sql, modifiers } => {
+			ReplAction::Execute {
+				input,
+				sql,
+				modifiers,
+			} => {
+				assert_eq!(input, "SELECT * FROM users;");
 				assert_eq!(sql, "SELECT * FROM users");
 				assert!(modifiers.is_empty());
 			}
@@ -288,7 +302,12 @@ mod tests {
 		let (buffer, action) = handle_input("", "SELECT * FROM users\\g");
 		assert_eq!(buffer, "");
 		match action {
-			ReplAction::Execute { sql, modifiers } => {
+			ReplAction::Execute {
+				input,
+				sql,
+				modifiers,
+			} => {
+				assert_eq!(input, "SELECT * FROM users\\g");
 				assert_eq!(sql, "SELECT * FROM users");
 				assert!(modifiers.is_empty());
 			}
@@ -305,7 +324,8 @@ mod tests {
 		let (buffer2, action2) = handle_input(&buffer1, "FROM users;");
 		assert_eq!(buffer2, "");
 		match action2 {
-			ReplAction::Execute { sql, .. } => {
+			ReplAction::Execute { input, sql, .. } => {
+				assert_eq!(input, "SELECT *\nFROM users;");
 				assert_eq!(sql, "SELECT *\nFROM users");
 			}
 			_ => panic!("Expected Execute action"),
@@ -352,7 +372,8 @@ mod tests {
 		let (new_buffer, action) = handle_input(cleared_buffer, "SELECT 1;");
 		assert_eq!(new_buffer, "");
 		match action {
-			ReplAction::Execute { sql, .. } => {
+			ReplAction::Execute { input, sql, .. } => {
+				assert_eq!(input, "SELECT 1;");
 				assert_eq!(sql, "SELECT 1");
 			}
 			_ => panic!("Expected Execute action"),
@@ -372,5 +393,26 @@ mod tests {
 		// Ctrl-D behavior is tested via ReadlineError::Eof in the main loop
 		// This is a documentation test showing the expected behavior
 		// Ctrl-D (EOF) should exit the REPL regardless of buffer state
+	}
+
+	#[test]
+	fn test_handle_input_preserves_modifiers() {
+		let (buffer, action) = handle_input("", "select 1+1 \\gx");
+		assert_eq!(buffer, "");
+		match action {
+			ReplAction::Execute {
+				input,
+				sql,
+				modifiers,
+			} => {
+				// Input should preserve the full command including modifier
+				assert_eq!(input, "select 1+1 \\gx");
+				// SQL should be parsed without the modifier
+				assert_eq!(sql, "select 1+1");
+				// Modifiers should be parsed
+				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute action"),
+		}
 	}
 }
