@@ -1,8 +1,9 @@
-use crate::helper::SqlHelper;
+use crate::completer::SqlCompleter;
 use crate::highlighter::Theme;
 use crate::history::History;
 use crate::parser::{parse_query_modifiers, QueryModifiers};
 use crate::query::execute_query;
+use crate::schema_cache::SchemaCacheManager;
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -61,6 +62,7 @@ pub(crate) async fn run_repl(
 	db_user: String,
 	database_name: String,
 	is_superuser: bool,
+	connection_string: String,
 ) -> Result<()> {
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
@@ -69,8 +71,13 @@ pub(crate) async fn run_repl(
 	let mut history = History::open(&history_path)?;
 	history.set_context(db_user.clone(), sys_user.clone(), false, None);
 
-	let helper = SqlHelper::new(theme);
-	let mut rl: Editor<SqlHelper, History> = Editor::with_history(
+	debug!("initializing schema cache");
+	let schema_cache_manager = SchemaCacheManager::new(connection_string);
+	let cache_arc = schema_cache_manager.cache_arc();
+	let _cache_task = schema_cache_manager.start_background_refresh();
+
+	let completer = SqlCompleter::new(theme).with_schema_cache(cache_arc);
+	let mut rl: Editor<SqlCompleter, History> = Editor::with_history(
 		rustyline::Config::builder()
 			.auto_add_history(false)
 			.enable_signals(false)
@@ -78,7 +85,7 @@ pub(crate) async fn run_repl(
 		history,
 	)
 	.into_diagnostic()?;
-	rl.set_helper(Some(helper));
+	rl.set_helper(Some(completer));
 
 	let mut buffer = String::new();
 
@@ -272,7 +279,7 @@ mod tests {
 	#[test]
 	fn test_ctrl_c_on_empty_buffer() {
 		// Ctrl-C on empty buffer should keep it empty (not exit)
-		let buffer = "";
+		let _buffer = "";
 		let cleared_buffer = "";
 		assert_eq!(cleared_buffer, "");
 	}

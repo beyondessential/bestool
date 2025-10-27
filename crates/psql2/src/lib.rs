@@ -1,8 +1,9 @@
+mod completer;
 mod config;
-mod helper;
 mod parser;
 mod query;
 mod repl;
+mod schema_cache;
 
 pub mod highlighter;
 pub mod history;
@@ -72,6 +73,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		db_user,
 		database_name,
 		is_superuser,
+		config.connection_string,
 	)
 	.await?;
 
