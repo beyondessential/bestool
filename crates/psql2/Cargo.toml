@@ -14,10 +14,11 @@ required-features = ["cli"]
 
 [dependencies]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
-cli-table = "0.5.0"
+comfy-table = "7.2.1"
 lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
 rustyline = "17.0.2"
+supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["full"] }

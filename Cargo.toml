@@ -45,9 +45,3 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 incremental = false
-
-[profile.dev.package.fancy-regex]
-opt-level = 3
-
-[profile.dev.package.regex-automata]
-opt-level = 3

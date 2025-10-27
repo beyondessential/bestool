@@ -1,7 +1,8 @@
-use cli_table::{print_stdout, Cell, Style, Table};
+use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Table};
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use supports_unicode::Stream;
 use thiserror::Error;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
@@ -123,7 +124,16 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 	if let Some(first_row) = rows.first() {
 		let columns = first_row.columns();
 
-		let mut table_data: Vec<Vec<String>> = Vec::new();
+		let mut table = Table::new();
+
+		if supports_unicode() {
+			table.load_preset(presets::UTF8_FULL);
+			table.apply_modifier(UTF8_ROUND_CORNERS);
+		} else {
+			table.load_preset(presets::ASCII_FULL);
+		}
+
+		table.set_header(columns.iter().map(|col| col.name()));
 
 		for row in &rows {
 			let mut row_data = Vec::new();
@@ -131,29 +141,23 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 				let value: Option<String> = row.try_get(i).ok();
 				row_data.push(value.unwrap_or_else(|| "NULL".to_string()));
 			}
-			table_data.push(row_data);
+			table.add_row(row_data);
 		}
 
-		let table = table_data
-			.table()
-			.title(
-				columns
-					.iter()
-					.map(|col| col.name().cell().bold(true))
-					.collect::<Vec<_>>(),
-			)
-			.bold(true);
-
-		print_stdout(table).into_diagnostic()?;
+		println!("{table}");
 
 		println!(
-			"\n({} row{})",
+			"({} row{})",
 			rows.len(),
 			if rows.len() == 1 { "" } else { "s" }
 		);
 	}
 
 	Ok(())
+}
+
+fn supports_unicode() -> bool {
+	supports_unicode::on(Stream::Stdout)
 }
 
 #[cfg(test)]
