@@ -206,10 +206,54 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 					v.to_string()
 				} else if let Ok(v) = row.try_get::<_, serde_json::Value>(i) {
 					v.to_string()
+				} else if let Ok(v) = row.try_get::<_, Vec<String>>(i) {
+					format!("{{{}}}", v.join(","))
+				} else if let Ok(v) = row.try_get::<_, Vec<i32>>(i) {
+					format!(
+						"{{{}}}",
+						v.iter()
+							.map(|x| x.to_string())
+							.collect::<Vec<_>>()
+							.join(",")
+					)
+				} else if let Ok(v) = row.try_get::<_, Vec<i64>>(i) {
+					format!(
+						"{{{}}}",
+						v.iter()
+							.map(|x| x.to_string())
+							.collect::<Vec<_>>()
+							.join(",")
+					)
+				} else if let Ok(v) = row.try_get::<_, Vec<f32>>(i) {
+					format!(
+						"{{{}}}",
+						v.iter()
+							.map(|x| x.to_string())
+							.collect::<Vec<_>>()
+							.join(",")
+					)
+				} else if let Ok(v) = row.try_get::<_, Vec<f64>>(i) {
+					format!(
+						"{{{}}}",
+						v.iter()
+							.map(|x| x.to_string())
+							.collect::<Vec<_>>()
+							.join(",")
+					)
+				} else if let Ok(v) = row.try_get::<_, Vec<bool>>(i) {
+					format!(
+						"{{{}}}",
+						v.iter()
+							.map(|x| x.to_string())
+							.collect::<Vec<_>>()
+							.join(",")
+					)
 				} else {
+					// Fallback: check if NULL, otherwise mark as unprintable
 					match row.try_get::<_, Option<String>>(i) {
 						Ok(None) => "NULL".to_string(),
-						_ => "(unprintable)".to_string(),
+						Ok(Some(_)) => "(unprintable)".to_string(),
+						Err(_) => "(unprintable)".to_string(),
 					}
 				};
 				row_data.push(value_str);
