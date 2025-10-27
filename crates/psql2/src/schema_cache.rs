@@ -1,8 +1,9 @@
 use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tokio_postgres::NoTls;
 use tracing::{debug, warn};
+
+use crate::tls;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]
@@ -96,7 +97,8 @@ impl SchemaCacheManager {
 	pub async fn refresh(&self) -> Result<()> {
 		debug!("refreshing schema cache");
 
-		let (client, connection) = tokio_postgres::connect(&self.connection_string, NoTls)
+		let tls_connector = tls::make_tls_connector()?;
+		let (client, connection) = tokio_postgres::connect(&self.connection_string, tls_connector)
 			.await
 			.into_diagnostic()?;
 

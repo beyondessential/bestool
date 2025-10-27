@@ -1,5 +1,6 @@
 use bestool_psql2::highlighter::Theme;
 use bestool_psql2::history::History;
+use bestool_psql2::ots;
 use bestool_psql2::PsqlConfig;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
@@ -22,6 +23,14 @@ pub struct Args {
 	/// Database user (for tracking, defaults to $USER)
 	#[arg(short = 'U', long)]
 	pub user: Option<String>,
+
+	/// Enable write mode for this session
+	///
+	/// By default the session is read-only. To enable writes, pass this flag.
+	/// This also disables autocommit, so you need to issue a COMMIT; command
+	/// whenever you perform a write (insert, update, etc), as an extra safety measure.
+	#[arg(short = 'W', long)]
+	pub write: bool,
 
 	/// Syntax highlighting theme (light, dark, or auto)
 	///
@@ -82,13 +91,25 @@ async fn main() -> Result<()> {
 		History::default_path()?
 	};
 
+	let ots = if args.write {
+		Some(ots::prompt_for_ots(&history_path)?)
+	} else {
+		None
+	};
+
 	let config = PsqlConfig {
 		connection_string,
 		user: args.user,
 		theme,
 		history_path,
 		database_name: String::new(), // Will be queried from database
+		write: args.write,
+		ots,
 	};
+
+	if args.write {
+		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+	}
 
 	bestool_psql2::run(config).await
 }

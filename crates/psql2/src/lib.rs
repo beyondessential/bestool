@@ -4,15 +4,18 @@ mod parser;
 mod query;
 mod repl;
 mod schema_cache;
+mod tls;
 
 pub mod highlighter;
 pub mod history;
+pub mod ots;
 
 pub use config::{PsqlConfig, PsqlError};
 pub use highlighter::Theme;
+pub use ots::prompt_for_ots;
 
 use miette::{IntoDiagnostic, Result};
-use tokio_postgres::NoTls;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Run the psql2 client
@@ -27,7 +30,8 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	});
 
 	debug!("connecting to database");
-	let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
+	let tls_connector = tls::make_tls_connector()?;
+	let (client, connection) = tokio_postgres::connect(&config.connection_string, tls_connector)
 		.await
 		.into_diagnostic()?;
 
@@ -38,6 +42,20 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	});
 
 	info!("connected to database");
+
+	if config.write {
+		debug!("setting session to read-write mode with autocommit off");
+		client
+			.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE", &[])
+			.await
+			.into_diagnostic()?;
+	} else {
+		debug!("setting session to read-only mode");
+		client
+			.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", &[])
+			.await
+			.into_diagnostic()?;
+	}
 
 	debug!("executing version query");
 	let rows = client
@@ -67,13 +85,15 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	};
 
 	repl::run_repl(
-		client,
+		Arc::new(client),
 		theme,
 		history_path,
 		db_user,
 		database_name,
 		is_superuser,
 		config.connection_string,
+		config.write,
+		config.ots,
 	)
 	.await?;
 
@@ -92,6 +112,8 @@ mod tests {
 			theme: Theme::Dark,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
 			database_name: "test".to_string(),
+			write: false,
+			ots: None,
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
@@ -107,6 +129,8 @@ mod tests {
 			theme: Theme::Dark,
 			history_path: std::path::PathBuf::from("/tmp/history.redb"),
 			database_name: "test".to_string(),
+			write: false,
+			ots: None,
 		};
 
 		assert_eq!(config.user, None);

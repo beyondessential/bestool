@@ -1,13 +1,15 @@
 use crate::completer::SqlCompleter;
 use crate::highlighter::Theme;
 use crate::history::History;
+use crate::ots;
 use crate::parser::{parse_query_modifiers, QueryModifiers};
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use tracing::debug;
+use std::sync::{Arc, Mutex};
+use tracing::{debug, info};
 
 #[derive(Debug, PartialEq)]
 enum ReplAction {
@@ -56,20 +58,30 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 }
 
 pub(crate) async fn run_repl(
-	client: tokio_postgres::Client,
+	client: Arc<tokio_postgres::Client>,
 	theme: Theme,
 	history_path: std::path::PathBuf,
 	db_user: String,
 	database_name: String,
 	is_superuser: bool,
 	connection_string: String,
+	write_mode: bool,
+	ots: Option<String>,
 ) -> Result<()> {
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
 
+	let write_mode = Arc::new(Mutex::new(write_mode));
+	let ots = Arc::new(Mutex::new(ots));
+
 	let mut history = History::open(&history_path)?;
-	history.set_context(db_user.clone(), sys_user.clone(), false, None);
+	history.set_context(
+		db_user.clone(),
+		sys_user.clone(),
+		*write_mode.lock().unwrap(),
+		ots.lock().unwrap().clone(),
+	);
 
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(connection_string);
@@ -105,6 +117,73 @@ pub(crate) async fn run_repl(
 					continue;
 				}
 
+				if line == "\\W" && buffer.is_empty() {
+					let current_write_mode = *write_mode.lock().unwrap();
+
+					if current_write_mode {
+						*write_mode.lock().unwrap() = false;
+						*ots.lock().unwrap() = None;
+
+						match client
+							.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", &[])
+							.await
+						{
+							Ok(_) => {
+								info!("Write mode disabled");
+								eprintln!("SESSION IS NOW READ ONLY");
+
+								rl.history_mut().set_context(
+									db_user.clone(),
+									sys_user.clone(),
+									false,
+									None,
+								);
+							}
+							Err(e) => {
+								eprintln!("Failed to disable write mode: {}", e);
+							}
+						}
+					} else {
+						match ots::prompt_for_ots(&history_path) {
+							Ok(new_ots) => {
+								*write_mode.lock().unwrap() = true;
+								*ots.lock().unwrap() = Some(new_ots.clone());
+
+								match client
+									.execute(
+										"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE",
+										&[],
+									)
+									.await
+								{
+									Ok(_) => {
+										info!("Write mode enabled");
+										eprintln!(
+											"AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES"
+										);
+
+										rl.history_mut().set_context(
+											db_user.clone(),
+											sys_user.clone(),
+											true,
+											Some(new_ots),
+										);
+									}
+									Err(e) => {
+										eprintln!("Failed to enable write mode: {}", e);
+										*write_mode.lock().unwrap() = false;
+										*ots.lock().unwrap() = None;
+									}
+								}
+							}
+							Err(e) => {
+								eprintln!("Failed to enable write mode: {}", e);
+							}
+						}
+					}
+					continue;
+				}
+
 				let (new_buffer, action) = handle_input(&buffer, line);
 				buffer = new_buffer;
 
@@ -119,12 +198,14 @@ pub(crate) async fn run_repl(
 							line.to_string()
 						};
 						let _ = rl.add_history_entry(&user_input);
+						let current_write_mode = *write_mode.lock().unwrap();
+						let current_ots = ots.lock().unwrap().clone();
 						if let Err(e) = rl.history_mut().add_entry(
 							user_input,
 							db_user.clone(),
 							sys_user.clone(),
-							false,
-							None,
+							current_write_mode,
+							current_ots,
 						) {
 							debug!("failed to add to history: {}", e);
 						}
@@ -132,12 +213,14 @@ pub(crate) async fn run_repl(
 					}
 					ReplAction::Execute { sql, modifiers } => {
 						let _ = rl.add_history_entry(&sql);
+						let current_write_mode = *write_mode.lock().unwrap();
+						let current_ots = ots.lock().unwrap().clone();
 						if let Err(e) = rl.history_mut().add_entry(
 							sql.clone(),
 							db_user.clone(),
 							sys_user.clone(),
-							false,
-							None,
+							current_write_mode,
+							current_ots,
 						) {
 							debug!("failed to add to history: {}", e);
 						}

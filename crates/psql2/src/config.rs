@@ -26,4 +26,10 @@ pub struct PsqlConfig {
 
 	/// Database name for display in prompt
 	pub database_name: String,
+
+	/// Whether write mode is enabled
+	pub write: bool,
+
+	/// OTS (Over The Shoulder) value for write mode sessions
+	pub ots: Option<String>,
 }
