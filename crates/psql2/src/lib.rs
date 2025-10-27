@@ -301,6 +301,7 @@ async fn execute_query(client: &tokio_postgres::Client, sql: &str) -> Result<()>
 
 				// Apply syntax highlighting to the value if appropriate
 				let highlighted = highlight_value(&value_str);
+				// comfy-table handles ANSI codes automatically in v7+
 				row_data.push(highlighted);
 			}
 			table.add_row(row_data);
