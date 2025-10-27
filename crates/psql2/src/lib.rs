@@ -136,11 +136,11 @@ async fn run_repl(
 	let mut buffer = String::new();
 
 	loop {
-		let prompt_char = if is_superuser { "#" } else { "=" };
+		let prompt_suffix = if is_superuser { "=#" } else { "=>" };
 		let prompt = if buffer.is_empty() {
-			format!("{}{}> ", database_name, prompt_char)
+			format!("{}{} ", database_name, prompt_suffix)
 		} else {
-			format!("{}-  ", database_name)
+			format!("{}->  ", database_name)
 		};
 
 		let readline = rl.readline(&prompt);
@@ -544,8 +544,8 @@ mod tests {
 	fn test_prompt_generation_regular_user() {
 		let database_name = "mydb";
 		let is_superuser = false;
-		let prompt_char = if is_superuser { "#" } else { "=" };
-		let prompt = format!("{}{}> ", database_name, prompt_char);
+		let prompt_suffix = if is_superuser { "=#" } else { "=>" };
+		let prompt = format!("{}{} ", database_name, prompt_suffix);
 		assert_eq!(prompt, "mydb=> ");
 	}
 
@@ -553,16 +553,16 @@ mod tests {
 	fn test_prompt_generation_superuser() {
 		let database_name = "postgres";
 		let is_superuser = true;
-		let prompt_char = if is_superuser { "#" } else { "=" };
-		let prompt = format!("{}{}> ", database_name, prompt_char);
-		assert_eq!(prompt, "postgres#> ");
+		let prompt_suffix = if is_superuser { "=#" } else { "=>" };
+		let prompt = format!("{}{} ", database_name, prompt_suffix);
+		assert_eq!(prompt, "postgres=# ");
 	}
 
 	#[test]
 	fn test_prompt_generation_continuation() {
 		let database_name = "mydb";
-		let prompt = format!("{}-  ", database_name);
-		assert_eq!(prompt, "mydb-  ");
+		let prompt = format!("{}->  ", database_name);
+		assert_eq!(prompt, "mydb->  ");
 	}
 
 	#[tokio::test]
