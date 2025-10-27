@@ -92,7 +92,8 @@ async fn main() -> Result<()> {
 	};
 
 	let ots = if args.write {
-		Some(ots::prompt_for_ots(&history_path)?)
+		let history = History::open(&history_path)?;
+		Some(ots::prompt_for_ots(&history)?)
 	} else {
 		None
 	};

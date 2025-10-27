@@ -12,7 +12,6 @@ pub mod ots;
 
 pub use config::{PsqlConfig, PsqlError};
 pub use highlighter::Theme;
-pub use ots::prompt_for_ots;
 
 use miette::{IntoDiagnostic, Result};
 use std::sync::Arc;

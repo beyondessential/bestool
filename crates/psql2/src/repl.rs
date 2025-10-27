@@ -260,7 +260,7 @@ pub(crate) async fn run_repl(
 							}
 						}
 					} else {
-						match ots::prompt_for_ots(&history_path) {
+						match ots::prompt_for_ots(rl.history()) {
 							Ok(new_ots) => {
 								*write_mode.lock().unwrap() = true;
 								*ots.lock().unwrap() = Some(new_ots.clone());

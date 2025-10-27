@@ -2,12 +2,11 @@ use crate::history::History;
 use miette::{IntoDiagnostic, Result};
 use rustyline::history::{History as HistoryTrait, MemHistory};
 use rustyline::{Config, Editor};
-use std::path::Path;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Prompt for OTS value with rustyline and history from previous OTS values
-pub fn prompt_for_ots(history_path: &Path) -> Result<String> {
-	let ots_history = load_ots_history(history_path)?;
+pub fn prompt_for_ots(history: &History) -> Result<String> {
+	let ots_history = load_ots_history(history)?;
 
 	let mut rl: Editor<(), MemHistory> = Editor::with_history(
 		Config::builder()
@@ -47,22 +46,8 @@ pub fn prompt_for_ots(history_path: &Path) -> Result<String> {
 }
 
 /// Load unique OTS values from the history database
-fn load_ots_history(history_path: &Path) -> Result<Vec<String>> {
-	let history = match History::open(history_path) {
-		Ok(h) => h,
-		Err(e) => {
-			warn!("could not open history database for OTS values: {}", e);
-			return Ok(Vec::new());
-		}
-	};
-
-	let entries = match history.list() {
-		Ok(e) => e,
-		Err(e) => {
-			warn!("could not read history entries for OTS values: {}", e);
-			return Ok(Vec::new());
-		}
-	};
+fn load_ots_history(history: &History) -> Result<Vec<String>> {
+	let entries = history.list()?;
 
 	let mut ots_values = Vec::new();
 	let mut seen = std::collections::HashSet::new();
