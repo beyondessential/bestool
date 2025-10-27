@@ -1,3 +1,4 @@
+use bestool_psql2::highlighter::Theme;
 use bestool_psql2::PsqlConfig;
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
@@ -19,6 +20,13 @@ pub struct Args {
 	/// Example: postgresql://user:password@localhost:5432/dbname
 	#[arg(short = 'd', long)]
 	pub connection: String,
+
+	/// Syntax highlighting theme (light, dark, or auto)
+	///
+	/// Controls the color scheme for SQL syntax highlighting in the input line.
+	/// 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
+	#[arg(long, default_value = "auto")]
+	pub theme: Theme,
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -51,9 +59,13 @@ async fn main() -> Result<()> {
 
 	debug!("starting psql2");
 
+	let theme = args.theme.resolve();
+	debug!(?theme, "using syntax highlighting theme");
+
 	let config = PsqlConfig {
 		connection_string: args.connection,
 		user: args.user,
+		theme,
 	};
 
 	bestool_psql2::run(config).await

@@ -437,9 +437,11 @@ name = "bestool-psql2"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "lloggs",
  "miette",
  "rustyline",
+ "syntect",
  "thiserror 2.0.17",
  "tokio",
  "tokio-postgres",

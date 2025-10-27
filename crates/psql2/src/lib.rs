@@ -1,9 +1,15 @@
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::Editor;
 use thiserror::Error;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
+
+pub mod helper;
+pub mod highlighter;
+
+use helper::SqlHelper;
+use highlighter::Theme;
 
 #[derive(Debug, Error)]
 pub enum PsqlError {
@@ -21,10 +27,14 @@ pub struct PsqlConfig {
 
 	/// Database user for tracking
 	pub user: Option<String>,
+
+	/// Syntax highlighting theme
+	pub theme: Theme,
 }
 
 /// Run the psql2 client
 pub async fn run(config: PsqlConfig) -> Result<()> {
+	let theme = config.theme;
 	debug!("connecting to database");
 	let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
 		.await
@@ -49,13 +59,15 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		println!("{}", version);
 	}
 
-	run_repl(client).await?;
+	run_repl(client, theme).await?;
 
 	Ok(())
 }
 
-async fn run_repl(client: tokio_postgres::Client) -> Result<()> {
-	let mut rl = DefaultEditor::new().into_diagnostic()?;
+async fn run_repl(client: tokio_postgres::Client, theme: Theme) -> Result<()> {
+	let helper = SqlHelper::new(theme);
+	let mut rl = Editor::new().into_diagnostic()?;
+	rl.set_helper(Some(helper));
 
 	loop {
 		let readline = rl.readline("psql2> ");
