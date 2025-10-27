@@ -1,7 +1,7 @@
 use crate::helper::SqlHelper;
 use crate::highlighter::Theme;
 use crate::history::History;
-use crate::parser::{parse_query_modifiers, QueryModifier};
+use crate::parser::parse_query_modifiers;
 use crate::query::execute_query;
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
@@ -64,17 +64,14 @@ pub(crate) async fn run_repl(
 				buffer.push_str(line);
 
 				let user_input = buffer.trim().to_string();
-				let (_, test_mods) = parse_query_modifiers(&user_input);
-				let has_metacommand = test_mods.contains(&QueryModifier::Expanded)
-					|| test_mods.contains(&QueryModifier::Json)
-					|| test_mods
-						.iter()
-						.any(|m| matches!(m, QueryModifier::VarSet { .. }))
-					|| user_input.trim_end().to_lowercase().ends_with("\\g");
-				let should_execute = user_input.ends_with(';')
-					|| has_metacommand
-					|| user_input.eq_ignore_ascii_case("\\q")
-					|| user_input.eq_ignore_ascii_case("quit");
+
+				let should_execute = if user_input.eq_ignore_ascii_case("\\q")
+					|| user_input.eq_ignore_ascii_case("quit")
+				{
+					true
+				} else {
+					parse_query_modifiers(&user_input).ok().flatten().is_some()
+				};
 
 				if should_execute {
 					buffer.clear();
@@ -96,12 +93,20 @@ pub(crate) async fn run_repl(
 						debug!("failed to add to history: {}", e);
 					}
 
-					let (sql_to_execute, modifiers) = parse_query_modifiers(&user_input);
-
-					match execute_query(&client, &sql_to_execute, modifiers).await {
-						Ok(()) => {}
+					match parse_query_modifiers(&user_input) {
+						Ok(Some((sql_to_execute, modifiers))) => {
+							match execute_query(&client, &sql_to_execute, modifiers).await {
+								Ok(()) => {}
+								Err(e) => {
+									eprintln!("Error: {:?}", e);
+								}
+							}
+						}
+						Ok(None) => {
+							// Should not happen since should_execute was true
+						}
 						Err(e) => {
-							eprintln!("Error: {:?}", e);
+							eprintln!("Parse error: {:?}", e);
 						}
 					}
 				}
