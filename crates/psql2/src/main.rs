@@ -55,7 +55,7 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 		None => args
 			.logging
 			.setup(|v| match v {
-				0 => "info",
+				0 => "bestool_psql2=info",
 				1 => "info,bestool_psql2=debug",
 				2 => "debug",
 				3 => "debug,bestool_psql2=trace",
