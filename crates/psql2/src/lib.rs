@@ -46,7 +46,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	if config.write {
 		debug!("setting session to read-write mode with autocommit off");
 		client
-			.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE", &[])
+			.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN")
 			.await
 			.into_diagnostic()?;
 	} else {

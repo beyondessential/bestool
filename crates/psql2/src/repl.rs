@@ -9,7 +9,7 @@ use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, PartialEq)]
 enum ReplAction {
@@ -62,6 +62,20 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 	(buffer_state, action)
 }
 
+/// Check if the connection is currently in a transaction
+async fn is_in_transaction(client: &tokio_postgres::Client) -> bool {
+	match client
+		.query_one(
+			"SELECT CASE WHEN txid_current_if_assigned() IS NULL THEN false ELSE true END",
+			&[],
+		)
+		.await
+	{
+		Ok(row) => row.get(0),
+		Err(_) => false,
+	}
+}
+
 pub(crate) async fn run_repl(
 	client: Arc<tokio_postgres::Client>,
 	theme: Theme,
@@ -107,9 +121,11 @@ pub(crate) async fn run_repl(
 	let mut buffer = String::new();
 
 	loop {
+		let in_transaction = is_in_transaction(&client).await;
 		let prompt_suffix = if is_superuser { "=#" } else { "=>" };
+		let transaction_marker = if in_transaction { "*" } else { "" };
 		let prompt = if buffer.is_empty() {
-			format!("{}{} ", database_name, prompt_suffix)
+			format!("{}{}{} ", database_name, prompt_suffix, transaction_marker)
 		} else {
 			format!("{}->  ", database_name)
 		};
@@ -126,11 +142,18 @@ pub(crate) async fn run_repl(
 					let current_write_mode = *write_mode.lock().unwrap();
 
 					if current_write_mode {
+						if is_in_transaction(&client).await {
+							eprintln!("Cannot disable write mode while in a transaction. COMMIT or ROLLBACK first.");
+							continue;
+						}
+
 						*write_mode.lock().unwrap() = false;
 						*ots.lock().unwrap() = None;
 
 						match client
-							.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", &[])
+							.batch_execute(
+								"SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY; COMMIT",
+							)
 							.await
 						{
 							Ok(_) => {
@@ -155,9 +178,8 @@ pub(crate) async fn run_repl(
 								*ots.lock().unwrap() = Some(new_ots.clone());
 
 								match client
-									.execute(
-										"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE",
-										&[],
+									.batch_execute(
+										"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; COMMIT; BEGIN",
 									)
 									.await
 								{
@@ -235,7 +257,15 @@ pub(crate) async fn run_repl(
 						}
 
 						match execute_query(&client, &sql, modifiers).await {
-							Ok(()) => {}
+							Ok(()) => {
+								// If write mode is on and we're not in a transaction, start one
+								if *write_mode.lock().unwrap() && !is_in_transaction(&client).await
+								{
+									if let Err(e) = client.batch_execute("BEGIN").await {
+										warn!("Failed to start transaction: {}", e);
+									}
+								}
+							}
 							Err(e) => {
 								eprintln!("Error: {:?}", e);
 							}
