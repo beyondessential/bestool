@@ -487,12 +487,4 @@ mod tests {
 		assert!(result.starts_with("SELECT"));
 		assert!(result.contains("AS subq"));
 	}
-
-	#[test]
-	fn test_format_column_value_logic() {
-		// Test that format_column_value handles various type conversions
-		// This is implicitly tested through the array formatting test above
-		// Here we just verify the function exists and can be called
-		assert!(true); // Placeholder - actual testing requires Row objects
-	}
 }
