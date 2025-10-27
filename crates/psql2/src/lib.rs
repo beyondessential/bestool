@@ -1,5 +1,7 @@
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use thiserror::Error;
+use tokio_postgres::NoTls;
+use tracing::{debug, info};
 
 #[derive(Debug, Error)]
 pub enum PsqlError {
@@ -20,6 +22,30 @@ pub struct PsqlConfig {
 }
 
 /// Run the psql2 client
-pub async fn run(_config: PsqlConfig) -> Result<()> {
+pub async fn run(config: PsqlConfig) -> Result<()> {
+	debug!("connecting to database");
+	let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
+		.await
+		.into_diagnostic()?;
+
+	tokio::spawn(async move {
+		if let Err(e) = connection.await {
+			eprintln!("connection error: {}", e);
+		}
+	});
+
+	info!("connected to database");
+
+	debug!("executing version query");
+	let rows = client
+		.query("SELECT version();", &[])
+		.await
+		.into_diagnostic()?;
+
+	if let Some(row) = rows.first() {
+		let version: String = row.get(0);
+		println!("{}", version);
+	}
+
 	Ok(())
 }

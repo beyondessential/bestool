@@ -18,6 +18,7 @@ lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["full"] }
+tokio-postgres = "0.7.15"
 tracing = "0.1.41"
 
 [features]

@@ -441,6 +441,7 @@ dependencies = [
  "miette",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-postgres",
  "tracing",
 ]
 
