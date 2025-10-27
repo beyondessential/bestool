@@ -62,8 +62,16 @@ async fn main() -> Result<()> {
 	let theme = args.theme.resolve();
 	debug!(?theme, "using syntax highlighting theme");
 
+	let connection_string = if args.dbname.contains("://") {
+		args.dbname
+	} else {
+		format!("postgresql://localhost/{}", args.dbname)
+	};
+
+	debug!(?connection_string, "using connection string");
+
 	let config = PsqlConfig {
-		connection_string: args.dbname,
+		connection_string,
 		user: args.user,
 		theme,
 	};

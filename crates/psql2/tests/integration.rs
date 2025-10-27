@@ -65,3 +65,50 @@ fn test_config_clone() {
 	assert_eq!(config1.connection_string, config2.connection_string);
 	assert_eq!(config1.user, config2.user);
 }
+
+#[test]
+fn test_connection_string_parsing_full_url() {
+	let dbname = "postgresql://user:pass@localhost:5432/testdb";
+	let connection_string = if dbname.contains("://") {
+		dbname.to_string()
+	} else {
+		format!("postgresql://localhost/{}", dbname)
+	};
+
+	assert_eq!(
+		connection_string,
+		"postgresql://user:pass@localhost:5432/testdb"
+	);
+}
+
+#[test]
+fn test_connection_string_parsing_simple_name() {
+	let dbname = "mydb";
+	let connection_string = if dbname.contains("://") {
+		dbname.to_string()
+	} else {
+		format!("postgresql://localhost/{}", dbname)
+	};
+
+	assert_eq!(connection_string, "postgresql://localhost/mydb");
+}
+
+#[test]
+fn test_connection_string_parsing_various_names() {
+	let test_cases = vec![
+		("testdb", "postgresql://localhost/testdb"),
+		("my_database", "postgresql://localhost/my_database"),
+		("db-123", "postgresql://localhost/db-123"),
+		("postgres://host:5432/db", "postgres://host:5432/db"),
+		("postgresql://user@host/db", "postgresql://user@host/db"),
+	];
+
+	for (input, expected) in test_cases {
+		let connection_string = if input.contains("://") {
+			input.to_string()
+		} else {
+			format!("postgresql://localhost/{}", input)
+		};
+		assert_eq!(connection_string, expected);
+	}
+}
