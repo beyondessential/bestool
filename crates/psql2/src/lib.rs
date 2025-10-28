@@ -15,7 +15,7 @@ pub use highlighter::Theme;
 
 use miette::{IntoDiagnostic, Result};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Run the psql2 client
 pub async fn run(config: PsqlConfig) -> Result<()> {
@@ -40,7 +40,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		}
 	});
 
-	info!("connected to database");
+	debug!("connected to database");
 
 	if config.write {
 		debug!("setting session to read-write mode with autocommit off");

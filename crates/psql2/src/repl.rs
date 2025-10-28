@@ -65,6 +65,7 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TransactionState {
 	None,
+	Idle,
 	Active,
 	Error,
 }
@@ -78,31 +79,41 @@ async fn check_transaction_state(
 	// of the main connection without interfering with its transaction state
 	match monitor_client
 		.query_one(
-			"SELECT state FROM pg_stat_activity WHERE pid = $1",
+			"SELECT state, backend_xid::text FROM pg_stat_activity WHERE pid = $1",
 			&[&backend_pid],
 		)
 		.await
 	{
 		Ok(row) => {
 			let state: String = row.get(0);
+			let backend_xid: Option<String> = row.get(1);
 
 			if state == "idle in transaction (aborted)" {
 				TransactionState::Error
 			} else if state.starts_with("idle in transaction") {
-				TransactionState::Active
+				if backend_xid.is_some() && !backend_xid.as_ref().unwrap().is_empty() {
+					TransactionState::Active
+				} else {
+					TransactionState::Idle
+				}
 			} else if state == "active" {
-				// Could be active in or out of transaction, check xact_start
 				match monitor_client
 					.query_one(
-						"SELECT xact_start FROM pg_stat_activity WHERE pid = $1",
+						"SELECT xact_start, backend_xid::text FROM pg_stat_activity WHERE pid = $1",
 						&[&backend_pid],
 					)
 					.await
 				{
 					Ok(row) => {
 						let xact_start: Option<std::time::SystemTime> = row.get(0);
+						let backend_xid: Option<String> = row.get(1);
+
 						if xact_start.is_some() {
-							TransactionState::Active
+							if backend_xid.is_some() && !backend_xid.as_ref().unwrap().is_empty() {
+								TransactionState::Active
+							} else {
+								TransactionState::Idle
+							}
 						} else {
 							TransactionState::None
 						}
@@ -197,6 +208,13 @@ pub(crate) async fn run_repl(
 					("*", "") // No color (read mode + transaction)
 				}
 			}
+			TransactionState::Idle => {
+				if current_write_mode {
+					("", "\x1b[1;32m") // Bold green (write mode + idle transaction)
+				} else {
+					("", "") // No color (read mode + idle transaction)
+				}
+			}
 			TransactionState::None => {
 				if current_write_mode {
 					("", "\x1b[1;32m") // Bold green (write mode, no transaction)
@@ -230,8 +248,8 @@ pub(crate) async fn run_repl(
 
 					if current_write_mode {
 						let tx_state = check_transaction_state(&monitor_client, backend_pid).await;
-						if tx_state != TransactionState::None {
-							eprintln!("Cannot disable write mode while in a transaction. COMMIT or ROLLBACK first.");
+						if tx_state == TransactionState::Active {
+							eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
 							continue;
 						}
 
@@ -240,7 +258,7 @@ pub(crate) async fn run_repl(
 
 						match client
 							.batch_execute(
-								"SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY; COMMIT",
+								"ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
 							)
 							.await
 						{
@@ -349,7 +367,8 @@ pub(crate) async fn run_repl(
 								// If write mode is on and we're not in a transaction, start one
 								let tx_state =
 									check_transaction_state(&monitor_client, backend_pid).await;
-								if *write_mode.lock().unwrap() && tx_state == TransactionState::None
+								if *write_mode.lock().unwrap()
+									&& matches!(tx_state, TransactionState::None)
 								{
 									if let Err(e) = client.batch_execute("BEGIN").await {
 										warn!("Failed to start transaction: {}", e);
@@ -384,6 +403,9 @@ pub(crate) async fn run_repl(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	// To run tests that require a database connection:
+	// DATABASE_URL=postgresql://localhost/tamanu_meta cargo test -p bestool-psql2
 
 	#[test]
 	fn test_handle_input_empty_line() {
@@ -575,6 +597,53 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn test_transaction_state_idle() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// Start a transaction without allocating an XID
+		client
+			.batch_execute("BEGIN")
+			.await
+			.expect("Failed to begin transaction");
+
+		// Should detect idle transaction (no XID allocated yet)
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::Idle);
+
+		// Clean up
+		client.batch_execute("ROLLBACK").await.ok();
+	}
+
+	#[tokio::test]
 	async fn test_transaction_state_active() {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
@@ -607,13 +676,16 @@ mod tests {
 			let _ = monitor_connection.await;
 		});
 
-		// Start a transaction
+		// Start a transaction and allocate an XID by creating a temp table
 		client
-			.batch_execute("BEGIN")
+			.batch_execute("BEGIN; CREATE TEMP TABLE test_xid (id INT)")
 			.await
-			.expect("Failed to begin transaction");
+			.expect("Failed to begin transaction and allocate XID");
 
-		// Should detect active transaction
+		// Give pg_stat_activity time to update
+		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+		// Should detect active transaction with XID
 		let state = check_transaction_state(&monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::Active);
 
@@ -669,6 +741,165 @@ mod tests {
 		// Should detect error state
 		let state = check_transaction_state(&monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::Error);
+
+		// Clean up
+		client.batch_execute("ROLLBACK").await.ok();
+	}
+
+	#[tokio::test]
+	async fn test_write_mode_disable_with_idle_transaction() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// Simulate enabling write mode: set read-write and begin transaction
+		client
+			.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN")
+			.await
+			.expect("Failed to enable write mode");
+
+		// Should be in idle transaction state (no XID allocated)
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::Idle);
+
+		// Disabling write mode should succeed with idle transaction
+		client
+			.batch_execute("ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+			.await
+			.expect("Failed to disable write mode with idle transaction");
+
+		// Should be back to no transaction
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::None);
+	}
+
+	#[tokio::test]
+	async fn test_write_mode_disable_blocked_with_active_transaction() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let (monitor_client, monitor_connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect monitor");
+
+		tokio::spawn(async move {
+			let _ = monitor_connection.await;
+		});
+
+		// Simulate write mode with actual write allocating an XID
+		client
+			.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN; CREATE TEMP TABLE test_write_block (id INT)")
+			.await
+			.expect("Failed to enable write mode and allocate XID");
+
+		// Give pg_stat_activity time to update
+		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+		// Should be in active transaction state (XID allocated)
+		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		assert_eq!(state, TransactionState::Active);
+
+		// In real code, this would be blocked by checking state == Active
+		// We verify that we correctly detect Active state which prevents disable
+
+		// Clean up
+		client.batch_execute("ROLLBACK").await.ok();
+	}
+
+	#[tokio::test]
+	async fn test_backend_xmin_vs_xid_in_idle_transaction() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) = tokio_postgres::connect(
+			&connection_string,
+			crate::tls::make_tls_connector().unwrap(),
+		)
+		.await
+		.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		// Start a transaction without allocating an XID
+		client
+			.batch_execute("BEGIN")
+			.await
+			.expect("Failed to begin transaction");
+
+		// Query the backend state directly to verify backend_xmin is set but backend_xid is not
+		let row = client
+			.query_one(
+				"SELECT backend_xid::text, backend_xmin::text FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+				&[],
+			)
+			.await
+			.expect("Failed to query pg_stat_activity");
+
+		let backend_xid: Option<String> = row.get(0);
+		let backend_xmin: Option<String> = row.get(1);
+
+		// backend_xid should be NULL (None or empty) in idle transaction
+		assert!(
+			backend_xid.is_none() || backend_xid.as_ref().unwrap().is_empty(),
+			"backend_xid should be NULL in idle transaction, got: {:?}",
+			backend_xid
+		);
+
+		// backend_xmin should be set (Some and non-empty) even in idle transaction
+		assert!(
+			backend_xmin.is_some() && !backend_xmin.as_ref().unwrap().is_empty(),
+			"backend_xmin should be set in idle transaction, got: {:?}",
+			backend_xmin
+		);
 
 		// Clean up
 		client.batch_execute("ROLLBACK").await.ok();
