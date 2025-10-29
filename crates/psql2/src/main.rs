@@ -67,13 +67,13 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	// Install a global SIGINT handler that just sets a flag
-	// This prevents rustyline's handler from running and panicking
+	let (args, _guard) = get_args()?;
+
+	// Install a SIGINT handler that sets a flag for query cancellation
+	// With rustyline's signal-hook feature, this will work properly alongside rustyline
 	#[cfg(unix)]
 	bestool_psql2::register_sigint_handler()
 		.map_err(|e| miette!("Failed to register SIGINT handler: {}", e))?;
-
-	let (args, _guard) = get_args()?;
 
 	debug!("starting psql2");
 

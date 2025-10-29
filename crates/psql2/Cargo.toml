@@ -25,7 +25,7 @@ mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
 redb = "3.1.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
-rustyline = "17.0.2"
+rustyline = { version = "17.0.2", features = ["signal-hook"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 supports-unicode = "3.0.0"
