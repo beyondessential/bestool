@@ -1,9 +1,10 @@
-use crate::parser::QueryModifiers;
+use crate::parser::{QueryModifier, QueryModifiers};
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, Table};
 use miette::{IntoDiagnostic, Result};
 use supports_unicode::Stream;
 use tracing::debug;
 
+/// Execute a SQL query and display the results.
 pub(crate) async fn execute_query(
 	client: &tokio_postgres::Client,
 	sql: &str,
@@ -45,48 +46,13 @@ pub(crate) async fn execute_query(
 			None
 		};
 
-		let mut table = Table::new();
+		let is_expanded = modifiers.contains(&QueryModifier::Expanded);
 
-		if supports_unicode() {
-			table.load_preset(presets::UTF8_FULL);
-			table.apply_modifier(UTF8_ROUND_CORNERS);
+		if is_expanded {
+			display_expanded(columns, &rows, &unprintable_columns, &text_rows);
 		} else {
-			table.load_preset(presets::ASCII_FULL);
+			display_normal(columns, &rows, &unprintable_columns, &text_rows);
 		}
-
-		table.set_header(columns.iter().map(|col| {
-			Cell::new(col.name())
-				.add_attribute(Attribute::Bold)
-				.set_alignment(CellAlignment::Center)
-		}));
-
-		for (row_idx, row) in rows.iter().enumerate() {
-			let mut row_data = Vec::new();
-			for (i, _column) in columns.iter().enumerate() {
-				let value_str = if unprintable_columns.contains(&i) {
-					if let Some(ref text_rows) = text_rows {
-						if let Some(text_row) = text_rows.get(row_idx) {
-							text_row
-								.try_get::<_, Option<String>>(i)
-								.ok()
-								.flatten()
-								.unwrap_or_else(|| "NULL".to_string())
-						} else {
-							"(error)".to_string()
-						}
-					} else {
-						"(error)".to_string()
-					}
-				} else {
-					format_column_value(row, i)
-				};
-
-				row_data.push(value_str);
-			}
-			table.add_row(row_data);
-		}
-
-		println!("{table}");
 
 		println!(
 			"({} row{}, took {:.3}ms)",
@@ -224,6 +190,95 @@ fn build_text_cast_query(
 	format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql)
 }
 
+fn display_expanded(
+	columns: &[tokio_postgres::Column],
+	rows: &[tokio_postgres::Row],
+	unprintable_columns: &[usize],
+	text_rows: &Option<Vec<tokio_postgres::Row>>,
+) {
+	for (row_idx, row) in rows.iter().enumerate() {
+		println!("-[ RECORD {} ]-", row_idx + 1);
+
+		let mut table = Table::new();
+
+		if supports_unicode() {
+			table.load_preset(presets::UTF8_FULL);
+			table.apply_modifier(UTF8_ROUND_CORNERS);
+		} else {
+			table.load_preset(presets::ASCII_FULL);
+		}
+
+		// No header in expanded mode, just column-value pairs
+		for (i, column) in columns.iter().enumerate() {
+			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+
+			table.add_row(vec![
+				Cell::new(column.name()).add_attribute(Attribute::Bold),
+				Cell::new(value_str),
+			]);
+		}
+
+		println!("{table}");
+	}
+}
+
+fn display_normal(
+	columns: &[tokio_postgres::Column],
+	rows: &[tokio_postgres::Row],
+	unprintable_columns: &[usize],
+	text_rows: &Option<Vec<tokio_postgres::Row>>,
+) {
+	let mut table = Table::new();
+
+	if supports_unicode() {
+		table.load_preset(presets::UTF8_FULL);
+		table.apply_modifier(UTF8_ROUND_CORNERS);
+	} else {
+		table.load_preset(presets::ASCII_FULL);
+	}
+
+	table.set_header(columns.iter().map(|col| {
+		Cell::new(col.name())
+			.add_attribute(Attribute::Bold)
+			.set_alignment(CellAlignment::Center)
+	}));
+
+	for (row_idx, row) in rows.iter().enumerate() {
+		let mut row_data = Vec::new();
+		for (i, _column) in columns.iter().enumerate() {
+			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+			row_data.push(value_str);
+		}
+		table.add_row(row_data);
+	}
+
+	println!("{table}");
+}
+
+fn get_column_value(
+	row: &tokio_postgres::Row,
+	column_index: usize,
+	row_index: usize,
+	unprintable_columns: &[usize],
+	text_rows: &Option<Vec<tokio_postgres::Row>>,
+) -> String {
+	if !unprintable_columns.contains(&column_index) {
+		return format_column_value(row, column_index);
+	}
+
+	if let Some(ref text_rows) = text_rows {
+		if let Some(text_row) = text_rows.get(row_index) {
+			return text_row
+				.try_get::<_, Option<String>>(column_index)
+				.ok()
+				.flatten()
+				.unwrap_or_else(|| "NULL".to_string());
+		}
+	}
+
+	"(error)".to_string()
+}
+
 fn supports_unicode() -> bool {
 	supports_unicode::on(Stream::Stdout)
 }
@@ -262,5 +317,26 @@ mod tests {
 		assert!(result.contains("(subq.data)::text"));
 		assert!(result.starts_with("SELECT"));
 		assert!(result.contains("AS subq"));
+	}
+
+	#[test]
+	fn test_expanded_modifier_detection() {
+		use std::collections::HashSet;
+
+		// Test with expanded modifier
+		let mut modifiers_with_expanded = HashSet::new();
+		modifiers_with_expanded.insert(QueryModifier::Expanded);
+		assert!(modifiers_with_expanded.contains(&QueryModifier::Expanded));
+
+		// Test without expanded modifier
+		let mut modifiers_without_expanded = HashSet::new();
+		modifiers_without_expanded.insert(QueryModifier::Json);
+		assert!(!modifiers_without_expanded.contains(&QueryModifier::Expanded));
+
+		// Test with multiple modifiers including expanded
+		let mut modifiers_mixed = HashSet::new();
+		modifiers_mixed.insert(QueryModifier::Expanded);
+		modifiers_mixed.insert(QueryModifier::Json);
+		assert!(modifiers_mixed.contains(&QueryModifier::Expanded));
 	}
 }

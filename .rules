@@ -1,1 +1,10 @@
 - For tests requiring database connections, use `DATABASE_URL=postgresql://localhost/tamanu_meta` as the connection string.
+- When adding or changing features, or when fixing bugs, add tests whenever possible.
+- Never write documentation files or readmes.
+- Always run `cargo clippy` and `cargo fmt` before committing changes.
+- Use conventional commit messages.
+- Don't write useless comments that only repeat the code.
+- Don't print long summaries or unnecessary information.
+- When removing code that has already been committed, delete it unless explicitly requested that it be commented out.
+- Prefer using small dependencies instead of reimplementing the wheel. Ask the user to pick a dependency if there is no obvious choice.
+- Use `--no-pager` with `git log` commands.
