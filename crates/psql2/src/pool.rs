@@ -1,8 +1,9 @@
+use std::str::FromStr;
+use std::time::Duration;
+
 use miette::{IntoDiagnostic, Result};
 use mobc::{Connection, Pool};
 use mobc_postgres::{tokio_postgres, PgConnectionManager};
-use std::str::FromStr;
-use std::time::Duration;
 use tokio_postgres::Config;
 
 pub type PgPool = Pool<PgConnectionManager<crate::tls::MakeRustlsConnectWrapper>>;

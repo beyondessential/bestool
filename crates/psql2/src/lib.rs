@@ -12,12 +12,12 @@ mod schema_cache;
 mod snippets;
 mod tls;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 pub use config::{PsqlConfig, PsqlError};
 pub use highlighter::Theme;
 pub use pool::{create_pool, PgConnection, PgPool};
 pub use repl::run;
-
-use std::sync::atomic::{AtomicBool, Ordering};
 
 static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 

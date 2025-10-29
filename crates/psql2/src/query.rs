@@ -1,4 +1,3 @@
-use crate::parser::{QueryModifier, QueryModifiers};
 use comfy_table::{
 	modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, ColumnConstraint,
 	ContentArrangement, Table, Width,
@@ -12,6 +11,8 @@ use syntect::{
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
+
+use crate::parser::{QueryModifier, QueryModifiers};
 
 /// Interpolate variables in the SQL string.
 /// Replaces ${name} with the value of variable `name`.

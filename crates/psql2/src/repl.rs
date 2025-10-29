@@ -1,3 +1,18 @@
+use std::collections::BTreeMap;
+use std::ops::ControlFlow;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use comfy_table::Table;
+use miette::{bail, IntoDiagnostic, Result};
+use rustyline::error::ReadlineError;
+use rustyline::history::History;
+use rustyline::Editor;
+use tokio::fs::File;
+use tokio::io::{self, AsyncWriteExt};
+use tokio::sync::Mutex as TokioMutex;
+use tracing::{debug, error, instrument, warn};
+
 use crate::audit::Audit;
 use crate::completer::SqlCompleter;
 use crate::config::PsqlConfig;
@@ -8,19 +23,6 @@ use crate::parser::QueryModifier;
 use crate::query::{configure_table, execute_query};
 use crate::schema_cache::SchemaCacheManager;
 use crate::snippets::Snippets;
-use comfy_table::Table;
-use miette::{bail, IntoDiagnostic, Result};
-use rustyline::error::ReadlineError;
-use rustyline::history::History;
-use rustyline::Editor;
-use std::collections::BTreeMap;
-use std::ops::ControlFlow;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use tokio::fs::File;
-use tokio::io::{self, AsyncWriteExt};
-use tokio::sync::Mutex as TokioMutex;
-use tracing::{debug, error, instrument, warn};
 
 pub(crate) struct ReplContext<'a> {
 	client: &'a tokio_postgres::Client,

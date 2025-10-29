@@ -1,9 +1,11 @@
-use bestool_psql2::{create_pool, PsqlConfig, Theme};
+use std::path::PathBuf;
+
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, Result};
-use std::path::PathBuf;
 use tracing::debug;
+
+use bestool_psql2::{create_pool, PsqlConfig, Theme};
 
 /// Async PostgreSQL client
 #[derive(Debug, Clone, Parser)]

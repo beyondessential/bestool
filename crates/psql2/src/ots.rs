@@ -1,8 +1,9 @@
-use crate::audit::Audit;
 use miette::{IntoDiagnostic, Result};
 use rustyline::history::{History as HistoryTrait, MemHistory};
 use rustyline::{Config, Editor};
 use tracing::debug;
+
+use crate::audit::Audit;
 
 /// Prompt for OTS value with rustyline and history from previous OTS values
 pub fn prompt_for_ots(audit: &Audit) -> Result<String> {

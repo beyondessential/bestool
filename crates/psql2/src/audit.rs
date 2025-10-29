@@ -3,15 +3,16 @@
 //! Audit entries are stored with timestamp keys and JSON-serialized values
 //! containing the query, user, and write mode information.
 
+use std::borrow::Cow;
+use std::mem::replace;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use miette::{IntoDiagnostic, Result};
 use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use rustyline::history::{History as RustylineHistory, SearchDirection, SearchResult};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::mem::replace;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::repl::ReplState;

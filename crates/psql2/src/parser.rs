@@ -1,10 +1,10 @@
-use miette::Result;
 use std::collections::HashSet;
+
+use miette::Result;
 use winnow::ascii::{space0, space1, Caseless};
 use winnow::combinator::{alt, eof, opt, preceded};
 use winnow::error::ErrMode;
-use winnow::token::take_while;
-use winnow::token::{literal, rest, take_till};
+use winnow::token::{literal, rest, take_till, take_while};
 use winnow::Parser;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -1,6 +1,7 @@
-use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+use miette::{IntoDiagnostic, Result};
 use tracing::{debug, warn};
 
 use crate::pool::PgPool;

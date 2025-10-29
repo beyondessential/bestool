@@ -1,6 +1,6 @@
-use crate::highlighter::Theme;
-use crate::pool::PgPool;
 use thiserror::Error;
+
+use crate::{highlighter::Theme, pool::PgPool};
 
 #[derive(Debug, Error)]
 pub enum PsqlError {
