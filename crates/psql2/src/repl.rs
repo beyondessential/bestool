@@ -5,7 +5,7 @@ use crate::highlighter::Theme;
 use crate::input::{handle_input, ReplAction};
 use crate::ots;
 use crate::parser::QueryModifier;
-use crate::query::execute_query;
+use crate::query::{configure_table, execute_query};
 use crate::schema_cache::SchemaCacheManager;
 use crate::snippets::Snippets;
 use comfy_table::Table;
@@ -329,6 +329,7 @@ fn handle_debug(ctx: &mut ReplContext<'_>, what: crate::parser::DebugWhat) -> Co
 fn handle_help() -> ControlFlow<()> {
 	eprintln!("Available metacommands:");
 	let mut metacmds = Table::new();
+	configure_table(&mut metacmds);
 	metacmds.add_row(vec!["\\?", "Show this help"]);
 	metacmds.add_row(vec!["\\help", "Show this help"]);
 	metacmds.add_row(vec!["\\q", "Quit"]);
@@ -347,7 +348,10 @@ fn handle_help() -> ControlFlow<()> {
 		"\\debug [cmd]",
 		"Debug commands (run \\debug for options)",
 	]);
-	metacmds.add_row(vec!["\\snip run <name>", "Run a saved snippet"]);
+	metacmds.add_row(vec![
+		"\\snip run <name> [var=val...]",
+		"Run a saved snippet",
+	]);
 	metacmds.add_row(vec![
 		"\\snip save <name>",
 		"Save the preceding command as a snippet",
@@ -363,6 +367,7 @@ fn handle_help() -> ControlFlow<()> {
 
 	eprintln!("\nQuery modifiers (used after query):");
 	let mut modifiers = Table::new();
+	configure_table(&mut modifiers);
 	modifiers.add_row(vec!["\\g", "Execute query"]);
 	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
 	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
@@ -381,13 +386,14 @@ fn handle_help() -> ControlFlow<()> {
 
 	eprintln!("\nVariable interpolation:");
 	let mut vars = Table::new();
+	configure_table(&mut vars);
 	vars.add_row(vec![
-		"${{name}}",
+		"${name}",
 		"Replace with variable value (errors if not set)",
 	]);
 	vars.add_row(vec![
-		"${{{{name}}}}",
-		"Escape: produces ${{name}} without replacement",
+		"${{name}}",
+		"Escape: produces ${name} without replacement",
 	]);
 	eprintln!("{}", vars);
 
