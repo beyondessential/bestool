@@ -69,11 +69,9 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	// Install a SIGINT handler that sets a flag for query cancellation
-	// With rustyline's signal-hook feature, this will work properly alongside rustyline
-	#[cfg(unix)]
+	// Install a Ctrl-C handler that sets a flag for query cancellation
 	bestool_psql2::register_sigint_handler()
-		.map_err(|e| miette!("Failed to register SIGINT handler: {}", e))?;
+		.map_err(|e| miette!("Failed to register Ctrl-C handler: {}", e))?;
 
 	debug!("starting psql2");
 

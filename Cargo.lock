@@ -451,6 +451,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "crossterm",
+ "ctrlc",
  "edit",
  "hex",
  "jiff",

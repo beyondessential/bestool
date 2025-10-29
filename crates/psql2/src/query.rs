@@ -113,46 +113,36 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 
 	let start = std::time::Instant::now();
 
-	#[cfg(unix)]
-	let rows = {
-		let cancel_token = ctx.client.cancel_token();
-		let tls_connector = crate::tls::make_tls_connector()?;
+	let cancel_token = ctx.client.cancel_token();
+	let tls_connector = crate::tls::make_tls_connector()?;
 
-		// Reset the flag before starting
-		crate::reset_sigint();
+	// Reset the flag before starting
+	crate::reset_sigint();
 
-		// Poll for SIGINT while executing query
-		let result = tokio::select! {
-			result = ctx.client.query(&sql_to_execute, &[]) => {
-				result.into_diagnostic()
-			}
-			_ = async {
-				loop {
-					tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-					if crate::sigint_received() {
-						break;
-					}
+	// Poll for SIGINT while executing query
+	let result = tokio::select! {
+		result = ctx.client.query(&sql_to_execute, &[]) => {
+			result.into_diagnostic()
+		}
+		_ = async {
+			loop {
+				tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+				if crate::sigint_received() {
+					break;
 				}
-			} => {
-				eprintln!("\nCancelling query...");
-				if let Err(e) = cancel_token.cancel_query(tls_connector).await {
-					warn!("Failed to cancel query: {:?}", e);
-				}
-				// Reset flag for next time
-				crate::reset_sigint();
-				return Ok(());
 			}
-		};
-
-		result?
+		} => {
+			eprintln!("\nCancelling query...");
+			if let Err(e) = cancel_token.cancel_query(tls_connector).await {
+				warn!("Failed to cancel query: {:?}", e);
+			}
+			// Reset flag for next time
+			crate::reset_sigint();
+			return Ok(());
+		}
 	};
 
-	#[cfg(not(unix))]
-	let rows = ctx
-		.client
-		.query(&sql_to_execute, &[])
-		.await
-		.into_diagnostic()?;
+	let rows = result?;
 
 	let duration = start.elapsed();
 
