@@ -21,6 +21,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	theme: crate::highlighter::Theme,
 	writer: &mut W,
 	use_colours: bool,
+	vars: Option<&mut std::collections::BTreeMap<String, String>>,
 ) -> Result<()> {
 	debug!(?modifiers, %sql, "executing query");
 
@@ -141,6 +142,47 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		);
 		// Status messages always go to stderr
 		eprint!("{}", status_msg);
+
+		// Handle VarSet modifier: if exactly one row, store column values as variables
+		if rows.len() == 1 {
+			if let Some(var_prefix) = modifiers.iter().find_map(|m| {
+				if let QueryModifier::VarSet { prefix } = m {
+					Some(prefix)
+				} else {
+					None
+				}
+			}) {
+				if let Some(vars_map) = vars {
+					let row = &rows[0];
+					for (i, column) in columns.iter().enumerate() {
+						let var_name = if let Some(prefix_str) = var_prefix {
+							format!("{}{}", prefix_str, column.name())
+						} else {
+							column.name().to_string()
+						};
+
+						// Get the value as a string
+						let value = if unprintable_columns.contains(&i) {
+							if let Some(ref text_rows) = text_rows {
+								if let Some(text_row) = text_rows.first() {
+									text_row
+										.try_get::<_, String>(i)
+										.unwrap_or_else(|_| String::new())
+								} else {
+									String::new()
+								}
+							} else {
+								String::new()
+							}
+						} else {
+							get_column_value(row, i, 0, &unprintable_columns, &text_rows)
+						};
+
+						vars_map.insert(var_name, value);
+					}
+				}
+			}
+		}
 	}
 
 	Ok(())
@@ -532,7 +574,7 @@ mod tests {
 
 	#[test]
 	fn test_supports_unicode() {
-		let _ = supports_unicode();
+		let _ = supports_unicode::on(Stream::Stdout);
 	}
 
 	#[test]

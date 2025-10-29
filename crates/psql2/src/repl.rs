@@ -409,6 +409,7 @@ async fn handle_execute(
 		// Output modifier specified - open a temporary file
 		match File::create(&path).await {
 			Ok(mut file) => {
+				let mut state = ctx.repl_state.lock().unwrap();
 				execute_query(
 					ctx.client,
 					&sql,
@@ -416,6 +417,7 @@ async fn handle_execute(
 					ctx.theme,
 					&mut file,
 					use_colours,
+					Some(&mut state.vars),
 				)
 				.await
 			}
@@ -430,6 +432,7 @@ async fn handle_execute(
 			// ReplState has an output file
 			match file_arc.lock() {
 				Ok(mut file) => {
+					let mut state = ctx.repl_state.lock().unwrap();
 					execute_query(
 						ctx.client,
 						&sql,
@@ -437,6 +440,7 @@ async fn handle_execute(
 						ctx.theme,
 						&mut *file,
 						use_colours,
+						Some(&mut state.vars),
 					)
 					.await
 				}
@@ -448,6 +452,7 @@ async fn handle_execute(
 		} else {
 			// Write to stdout
 			let mut stdout = io::stdout();
+			let mut state = ctx.repl_state.lock().unwrap();
 			execute_query(
 				ctx.client,
 				&sql,
@@ -455,6 +460,7 @@ async fn handle_execute(
 				ctx.theme,
 				&mut stdout,
 				use_colours,
+				Some(&mut state.vars),
 			)
 			.await
 		}
@@ -930,6 +936,7 @@ mod tests {
 			crate::highlighter::Theme::Dark,
 			&mut stdout,
 			true,
+			None,
 		)
 		.await;
 
@@ -955,6 +962,7 @@ mod tests {
 			crate::highlighter::Theme::Dark,
 			&mut stdout,
 			true,
+			None,
 		)
 		.await;
 
