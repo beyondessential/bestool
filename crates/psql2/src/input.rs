@@ -70,6 +70,14 @@ pub(crate) fn handle_input(
 				Metacommand::Include { file_path } => ReplAction::IncludeFile {
 					file_path: file_path.into(),
 				},
+				Metacommand::SnippetRun { name } => match state.snippets.path(&name) {
+					Ok(file_path) => ReplAction::IncludeFile { file_path },
+					Err(err) => {
+						error!("Failed to find snippet '{}': {}", name, err);
+						ReplAction::Continue
+					}
+				},
+				Metacommand::SnippetSave { name } => todo!("save snippet {name}"),
 				Metacommand::Output {
 					file_path: Some(file_path),
 				} => ReplAction::SetOutputFile {

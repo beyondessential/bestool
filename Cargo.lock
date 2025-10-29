@@ -452,6 +452,7 @@ dependencies = [
  "comfy-table",
  "crossterm",
  "ctrlc",
+ "dirs",
  "edit",
  "hex",
  "jiff",

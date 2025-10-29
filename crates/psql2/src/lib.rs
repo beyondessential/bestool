@@ -9,6 +9,7 @@ mod pool;
 mod query;
 mod repl;
 mod schema_cache;
+mod snippets;
 mod tls;
 
 pub use config::{PsqlConfig, PsqlError};

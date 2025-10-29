@@ -1,9 +1,9 @@
 use miette::Result;
 use std::collections::HashSet;
 use winnow::ascii::{space0, space1, Caseless};
-use winnow::combinator::{alt, eof, opt, preceded};
+use winnow::combinator::{alt, eof, opt, preceded, repeat};
 use winnow::error::ErrMode;
-use winnow::token::{literal, rest, take_till};
+use winnow::token::{literal, none_of, rest, take_till};
 use winnow::Parser;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,6 +37,8 @@ pub(crate) enum Metacommand {
 	UnsetVar { name: String },
 	LookupVar { pattern: Option<String> },
 	GetVar { name: String },
+	SnippetRun { name: String },
+	SnippetSave { name: String },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -148,6 +150,34 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		Ok(Metacommand::Debug { what })
 	}
 
+	fn snip_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("snip").parse_next(input)?;
+
+		let cmd: Option<String> =
+			opt(preceded(space1, repeat(1.., none_of(' ')))).parse_next(input)?;
+		space0.parse_next(input)?;
+
+		let res = if let Some(cmd_str) = cmd {
+			let name: Option<String> =
+				opt(preceded(space1, repeat(1.., none_of(' ')))).parse_next(input)?;
+			space0.parse_next(input)?;
+			match (cmd_str.trim(), name) {
+				("run", Some(name)) => Metacommand::SnippetRun { name },
+				("list", Some(name)) => Metacommand::SnippetSave { name },
+				_ => Metacommand::Help,
+			}
+		} else {
+			// No argument, show help
+			Metacommand::Help
+		};
+
+		eof.parse_next(input)?;
+		Ok(res)
+	}
+
 	fn help_command(
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
@@ -238,6 +268,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		output_command,
 		debug_command,
 		help_command,
+		snip_command,
 		set_var_command,
 		unset_var_command,
 		lookup_var_command,

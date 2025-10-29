@@ -17,6 +17,7 @@ clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], option
 comfy-table = "7.2.1"
 crossterm = "0.29.0"
 ctrlc = "3.4.4"
+dirs = "6.0.0"
 edit = "0.1.5"
 hex = "0.4.3"
 jiff = "0.2.15"

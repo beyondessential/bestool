@@ -7,6 +7,7 @@ use crate::ots;
 use crate::parser::QueryModifier;
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
+use crate::snippets::Snippets;
 use miette::{bail, IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -73,6 +74,7 @@ pub struct ReplState {
 	pub(crate) output_file: Option<Arc<TokioMutex<File>>>,
 	pub(crate) use_colours: bool,
 	pub(crate) vars: BTreeMap<String, String>,
+	pub(crate) snippets: Snippets,
 }
 
 impl ReplState {
@@ -87,6 +89,7 @@ impl ReplState {
 			output_file: None,
 			use_colours: true,
 			vars: BTreeMap::new(),
+			snippets: Snippets::empty(),
 		}
 	}
 }
@@ -776,6 +779,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		ots: None,
 		use_colours: config.use_colours,
 		vars: BTreeMap::new(),
+		snippets: Snippets::new(),
 	};
 
 	let audit = Audit::open(&audit_path, repl_state.clone())?;
