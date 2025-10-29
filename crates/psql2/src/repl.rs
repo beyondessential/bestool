@@ -157,8 +157,10 @@ async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<()> 
 
 	if state.write_mode {
 		let tx_state = check_transaction_state(ctx.monitor_client, ctx.backend_pid).await;
-		if tx_state == TransactionState::Active {
-			eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
+		if !matches!(tx_state, TransactionState::Idle | TransactionState::None) {
+			eprintln!(
+				"Cannot disable write mode while in a transaction. COMMIT or ROLLBACK first."
+			);
 			return ControlFlow::Continue(());
 		}
 
