@@ -350,7 +350,7 @@ impl History {
 		history
 	}
 
-	/// Add a new entry to the history (legacy method for compatibility)
+	/// Add a new entry to the history
 	pub fn add_entry(
 		&mut self,
 		query: String,
@@ -499,45 +499,13 @@ impl HistoryTrait for History {
 		}))
 	}
 
-	fn add(&mut self, line: &str) -> rustyline::Result<bool> {
-		trace!("History::add called");
-		self.add_owned(line.to_string())
+	fn add(&mut self, _line: &str) -> rustyline::Result<bool> {
+		trace!("History::add called and ignored");
+		Ok(true)
 	}
 
-	fn add_owned(&mut self, line: String) -> rustyline::Result<bool> {
-		if line.trim().is_empty() {
-			trace!("ignoring empty line");
-			return Ok(false);
-		}
-
-		if self.ignore_space && line.starts_with(' ') {
-			trace!("ignoring line starting with space");
-			return Ok(false);
-		}
-
-		if self.ignore_dups && !self.timestamps.is_empty() {
-			if let Ok(Some(last_entry)) = self.get_entry(self.timestamps[self.timestamps.len() - 1])
-			{
-				if last_entry.query == line {
-					trace!("ignoring duplicate entry");
-					return Ok(false);
-				}
-			}
-		}
-
-		self.add_entry(
-			line,
-			self.db_user.clone(),
-			self.sys_user.clone(),
-			self.writemode,
-			self.ots.clone(),
-		)
-		.map_err(|e| {
-			warn!("failed to add history entry: {}", e);
-			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-		})?;
-
-		debug!("added history entry");
+	fn add_owned(&mut self, _line: String) -> rustyline::Result<bool> {
+		trace!("History::add_owned called and ignored");
 		Ok(true)
 	}
 
@@ -549,33 +517,8 @@ impl HistoryTrait for History {
 		self.timestamps.is_empty()
 	}
 
-	fn set_max_len(&mut self, len: usize) -> rustyline::Result<()> {
-		debug!(len, "setting max history length");
-		self.max_len = len;
-
-		if self.timestamps.len() > len {
-			let to_remove = self.timestamps.len() - len;
-			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
-
-			// Remove from database
-			let write_txn = self.db.read().unwrap().begin_write().map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-			})?;
-			{
-				let mut table = write_txn.open_table(HISTORY_TABLE).map_err(|e| {
-					rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-				})?;
-				for ts in old_timestamps {
-					table.remove(ts).map_err(|e| {
-						rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-					})?;
-				}
-			}
-			write_txn.commit().map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-			})?;
-		}
-
+	fn set_max_len(&mut self, _len: usize) -> rustyline::Result<()> {
+		// No-op: we don't clear audit logs through rustyline
 		Ok(())
 	}
 
