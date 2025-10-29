@@ -421,17 +421,7 @@ fn supports_unicode() -> bool {
 }
 
 fn get_terminal_width() -> Option<u16> {
-	#[cfg(unix)]
-	{
-		use std::os::fd::AsRawFd;
-		let fd = std::io::stdout().as_raw_fd();
-		let mut winsize: libc::winsize = unsafe { std::mem::zeroed() };
-		let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut winsize) };
-		if result == 0 && winsize.ws_col > 0 {
-			return Some(winsize.ws_col);
-		}
-	}
-	None
+	crossterm::terminal::size().ok().map(|(w, _)| w)
 }
 
 #[cfg(test)]
