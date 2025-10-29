@@ -23,7 +23,7 @@ pub(crate) enum Metacommand {
 	WriteMode,
 	Edit { content: Option<String> },
 	Include { file_path: String },
-	Output { file_path: String },
+	Output { file_path: Option<String> },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -98,14 +98,13 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
 		literal('o').parse_next(input)?;
-		space1.parse_next(input)?;
-		let file_path = rest.parse_next(input)?;
-		let file_path = file_path.trim();
-		if file_path.is_empty() {
-			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
-		}
+		let file_path = opt(preceded(space1, rest)).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
 		Ok(Metacommand::Output {
-			file_path: file_path.to_string(),
+			file_path: file_path
+				.map(|s: &str| s.trim().to_string())
+				.filter(|s| !s.is_empty()),
 		})
 	}
 
@@ -836,7 +835,7 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Output {
-				file_path: "/path/to/output.txt".to_string()
+				file_path: Some("/path/to/output.txt".to_string())
 			})
 		);
 	}
@@ -847,7 +846,7 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Output {
-				file_path: "/path/to/output.txt".to_string()
+				file_path: Some("/path/to/output.txt".to_string())
 			})
 		);
 	}
@@ -858,7 +857,7 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Output {
-				file_path: "./output/result.txt".to_string()
+				file_path: Some("./output/result.txt".to_string())
 			})
 		);
 	}
@@ -866,12 +865,12 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_output_without_path() {
 		let result = parse_metacommand("\\o").unwrap();
-		assert_eq!(result, None);
+		assert_eq!(result, Some(Metacommand::Output { file_path: None }));
 	}
 
 	#[test]
 	fn test_parse_metacommand_output_with_only_whitespace() {
 		let result = parse_metacommand("\\o   ").unwrap();
-		assert_eq!(result, None);
+		assert_eq!(result, Some(Metacommand::Output { file_path: None }));
 	}
 }

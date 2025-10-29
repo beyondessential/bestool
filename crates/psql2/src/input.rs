@@ -19,7 +19,7 @@ pub(crate) enum ReplAction {
 		file_path: String,
 	},
 	Output {
-		file_path: String,
+		file_path: Option<String>,
 	},
 }
 

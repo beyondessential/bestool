@@ -11,6 +11,8 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, instrument, warn};
 
 pub(crate) struct ReplContext<'a> {
@@ -46,7 +48,7 @@ impl ReplAction {
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
 			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
-			ReplAction::Output { file_path } => handle_output(ctx, file_path).await,
+			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -63,6 +65,7 @@ pub struct ReplState {
 	pub(crate) expanded_mode: bool,
 	pub(crate) write_mode: bool,
 	pub(crate) ots: Option<String>,
+	pub(crate) output_file: Option<Arc<Mutex<File>>>,
 }
 
 impl ReplState {
@@ -73,6 +76,7 @@ impl ReplState {
 			expanded_mode: false,
 			write_mode: false,
 			ots: None,
+			output_file: None,
 		}
 	}
 }
@@ -195,9 +199,35 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> Control
 	ControlFlow::Continue(())
 }
 
-async fn handle_output(ctx: &mut ReplContext<'_>, file_path: String) -> ControlFlow<()> {
-	debug!("output to file '{}' not yet implemented", file_path);
-	error!("\\o command is not yet implemented");
+async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> ControlFlow<()> {
+	let mut state = ctx.repl_state.lock().unwrap();
+
+	// Close existing file if any
+	if let Some(file_arc) = state.output_file.take() {
+		// Flush and close the file
+		if let Ok(mut file) = file_arc.lock() {
+			if let Err(e) = file.flush().await {
+				warn!("failed to flush output file: {}", e);
+			}
+		}
+		debug!("closed output file");
+		eprintln!("Output redirection closed");
+	}
+
+	// Open new file if path provided
+	if let Some(path) = file_path {
+		match File::create(path).await {
+			Ok(file) => {
+				debug!("opened output file: {}", path);
+				eprintln!("Output will be written to: {}", path);
+				state.output_file = Some(Arc::new(Mutex::new(file)));
+			}
+			Err(e) => {
+				error!("failed to open output file '{}': {}", path, e);
+			}
+		}
+	}
+
 	ControlFlow::Continue(())
 }
 
@@ -479,6 +509,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		.unwrap_or_else(|_| "unknown".to_string());
 
 	let repl_state = ReplState {
+		output_file: None,
 		sys_user,
 		db_user,
 		expanded_mode: false,
