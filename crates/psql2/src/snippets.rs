@@ -5,7 +5,7 @@ use miette::{miette, IntoDiagnostic, Result};
 #[derive(Debug, Clone)]
 pub struct Snippets {
 	savedir: Option<PathBuf>,
-	dirs: Vec<PathBuf>,
+	pub dirs: Vec<PathBuf>,
 }
 
 impl Snippets {
