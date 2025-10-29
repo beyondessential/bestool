@@ -866,16 +866,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		}
 	}
 
-	let audit_db = rl.history_mut().db.clone();
-	drop(rl);
-
-	let audit = Audit {
-		db: audit_db,
-		timestamps: Vec::new(),
-		repl_state: ReplState::new(),
-	};
-	audit.compact()?;
-
+	rl.history_mut().compact()?;
 	Ok(())
 }
 

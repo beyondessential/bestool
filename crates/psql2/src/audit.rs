@@ -4,10 +4,12 @@
 //! containing the query, user, and write mode information.
 
 use miette::{IntoDiagnostic, Result};
+use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use rustyline::history::{History as RustylineHistory, SearchDirection, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::mem::replace;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, trace, warn};
@@ -136,9 +138,17 @@ impl Audit {
 	}
 
 	/// Compact the database to reclaim space from deleted entries
-	pub fn compact(self) -> Result<()> {
+	pub fn compact(&mut self) -> Result<()> {
+		let db = replace(
+			&mut self.db,
+			Arc::new(
+				Database::builder()
+					.create_with_backend(InMemoryBackend::new())
+					.unwrap(),
+			),
+		);
 		let mut db =
-			Arc::try_unwrap(self.db).map_err(|_| miette::miette!("Failed to unwrap database"))?;
+			Arc::try_unwrap(db).map_err(|_| miette::miette!("Failed to unwrap database"))?;
 		db.compact().into_diagnostic()?;
 		Ok(())
 	}
