@@ -13,23 +13,39 @@ use syntect::{
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
+/// Context for executing a query.
+pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
+	pub client: &'a tokio_postgres::Client,
+	pub modifiers: QueryModifiers,
+	pub theme: crate::highlighter::Theme,
+	pub writer: &'a mut W,
+	pub use_colours: bool,
+	pub vars: Option<&'a mut std::collections::BTreeMap<String, String>>,
+}
+
+/// Context for displaying query results.
+struct DisplayContext<'a, W: AsyncWrite + Unpin> {
+	columns: &'a [tokio_postgres::Column],
+	rows: &'a [tokio_postgres::Row],
+	unprintable_columns: &'a [usize],
+	text_rows: &'a Option<Vec<tokio_postgres::Row>>,
+	writer: &'a mut W,
+	use_colours: bool,
+	theme: crate::highlighter::Theme,
+}
+
 /// Execute a SQL query and display the results.
 pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
-	client: &tokio_postgres::Client,
 	sql: &str,
-	modifiers: QueryModifiers,
-	theme: crate::highlighter::Theme,
-	writer: &mut W,
-	use_colours: bool,
-	vars: Option<&mut std::collections::BTreeMap<String, String>>,
+	ctx: &mut QueryContext<'_, W>,
 ) -> Result<()> {
-	debug!(?modifiers, %sql, "executing query");
+	debug!(?ctx.modifiers, %sql, "executing query");
 
 	let start = std::time::Instant::now();
 
 	#[cfg(unix)]
 	let rows = {
-		let cancel_token = client.cancel_token();
+		let cancel_token = ctx.client.cancel_token();
 		let tls_connector = crate::tls::make_tls_connector()?;
 
 		// Reset the flag before starting
@@ -37,7 +53,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 
 		// Poll for SIGINT while executing query
 		let result = tokio::select! {
-			result = client.query(sql, &[]) => {
+			result = ctx.client.query(sql, &[]) => {
 				result.into_diagnostic()
 			}
 			_ = async {
@@ -62,13 +78,16 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	};
 
 	#[cfg(not(unix))]
-	let rows = client.query(sql, &[]).await.into_diagnostic()?;
+	let rows = ctx.client.query(sql, &[]).await.into_diagnostic()?;
 
 	let duration = start.elapsed();
 
 	if rows.is_empty() {
-		writer.write_all(b"(no rows)\n").await.into_diagnostic()?;
-		writer.flush().await.into_diagnostic()?;
+		ctx.writer
+			.write_all(b"(no rows)\n")
+			.await
+			.into_diagnostic()?;
+		ctx.writer.flush().await.into_diagnostic()?;
 		return Ok(());
 	}
 
@@ -86,7 +105,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 			let sql_trimmed = sql.trim_end_matches(';').trim();
 			let text_query = build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
 			debug!("re-querying with text casts: {}", text_query);
-			match client.query(&text_query, &[]).await {
+			match ctx.client.query(&text_query, &[]).await {
 				Ok(rows) => Some(rows),
 				Err(e) => {
 					debug!("failed to re-query with text casts: {:?}", e);
@@ -97,41 +116,25 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 			None
 		};
 
-		let is_expanded = modifiers.contains(&QueryModifier::Expanded);
-		let is_json = modifiers.contains(&QueryModifier::Json);
+		let is_expanded = ctx.modifiers.contains(&QueryModifier::Expanded);
+		let is_json = ctx.modifiers.contains(&QueryModifier::Json);
+
+		let mut display_ctx = DisplayContext {
+			columns,
+			rows: &rows,
+			unprintable_columns: &unprintable_columns,
+			text_rows: &text_rows,
+			writer: ctx.writer,
+			use_colours: ctx.use_colours,
+			theme: ctx.theme,
+		};
 
 		if is_json {
-			display_json(
-				columns,
-				&rows,
-				&unprintable_columns,
-				&text_rows,
-				is_expanded,
-				theme,
-				writer,
-				use_colours,
-			)
-			.await?;
+			display_json(&mut display_ctx, is_expanded).await?;
 		} else if is_expanded {
-			display_expanded(
-				columns,
-				&rows,
-				&unprintable_columns,
-				&text_rows,
-				writer,
-				use_colours,
-			)
-			.await?;
+			display_expanded(&mut display_ctx).await?;
 		} else {
-			display_normal(
-				columns,
-				&rows,
-				&unprintable_columns,
-				&text_rows,
-				writer,
-				use_colours,
-			)
-			.await?;
+			display_normal(&mut display_ctx).await?;
 		}
 
 		let status_msg = format!(
@@ -145,14 +148,14 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 
 		// Handle VarSet modifier: if exactly one row, store column values as variables
 		if rows.len() == 1 {
-			if let Some(var_prefix) = modifiers.iter().find_map(|m| {
+			if let Some(var_prefix) = ctx.modifiers.iter().find_map(|m| {
 				if let QueryModifier::VarSet { prefix } = m {
 					Some(prefix)
 				} else {
 					None
 				}
 			}) {
-				if let Some(vars_map) = vars {
+				if let Some(vars_map) = ctx.vars.as_mut() {
 					let row = &rows[0];
 					for (i, column) in columns.iter().enumerate() {
 						let var_name = if let Some(prefix_str) = var_prefix {
@@ -328,17 +331,10 @@ pub(crate) fn configure_table(table: &mut Table) {
 	}
 }
 
-async fn display_expanded<W: AsyncWrite + Unpin>(
-	columns: &[tokio_postgres::Column],
-	rows: &[tokio_postgres::Row],
-	unprintable_columns: &[usize],
-	text_rows: &Option<Vec<tokio_postgres::Row>>,
-	writer: &mut W,
-	use_colours: bool,
-) -> Result<()> {
-	for (row_idx, row) in rows.iter().enumerate() {
+async fn display_expanded<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
+	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let header = format!("-[ RECORD {} ]-\n", row_idx + 1);
-		writer
+		ctx.writer
 			.write_all(header.as_bytes())
 			.await
 			.into_diagnostic()?;
@@ -347,10 +343,11 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 		configure_table(&mut table);
 
 		// No header in expanded mode, just column-value pairs
-		for (i, column) in columns.iter().enumerate() {
-			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+		for (i, column) in ctx.columns.iter().enumerate() {
+			let value_str =
+				get_column_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 
-			let name_cell = if use_colours {
+			let name_cell = if ctx.use_colours {
 				Cell::new(column.name()).add_attribute(Attribute::Bold)
 			} else {
 				Cell::new(column.name())
@@ -373,52 +370,45 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 			}
 		}
 
-		let output = format!("{}\n", table);
-		writer
-			.write_all(output.as_bytes())
+		let table_output = format!("{}\n", table);
+		ctx.writer
+			.write_all(table_output.as_bytes())
 			.await
 			.into_diagnostic()?;
 	}
-
-	writer.flush().await.into_diagnostic()?;
+	ctx.writer.flush().await.into_diagnostic()?;
 	Ok(())
 }
 
-async fn display_normal<W: AsyncWrite + Unpin>(
-	columns: &[tokio_postgres::Column],
-	rows: &[tokio_postgres::Row],
-	unprintable_columns: &[usize],
-	text_rows: &Option<Vec<tokio_postgres::Row>>,
-	writer: &mut W,
-	use_colours: bool,
-) -> Result<()> {
+async fn display_normal<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
 	let mut table = Table::new();
 	configure_table(&mut table);
 
-	table.set_header(columns.iter().map(|col| {
+	table.set_header(ctx.columns.iter().map(|col| {
 		let cell = Cell::new(col.name()).set_alignment(CellAlignment::Center);
-		if use_colours {
+		if ctx.use_colours {
 			cell.add_attribute(Attribute::Bold)
 		} else {
 			cell
 		}
 	}));
 
-	for (row_idx, row) in rows.iter().enumerate() {
+	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut row_data = Vec::new();
-		for (i, _column) in columns.iter().enumerate() {
-			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+		for (i, _column) in ctx.columns.iter().enumerate() {
+			let value_str =
+				get_column_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 			row_data.push(value_str);
 		}
 		table.add_row(row_data);
 	}
 
-	let output = format!("{}\n", table);
-	writer
-		.write_all(output.as_bytes())
+	let table_output = format!("{}\n", table);
+	ctx.writer
+		.write_all(table_output.as_bytes())
 		.await
 		.into_diagnostic()?;
-	writer.flush().await.into_diagnostic()?;
+	ctx.writer.flush().await.into_diagnostic()?;
 	Ok(())
 }
 
@@ -447,22 +437,16 @@ fn get_column_value(
 }
 
 async fn display_json<W: AsyncWrite + Unpin>(
-	columns: &[tokio_postgres::Column],
-	rows: &[tokio_postgres::Row],
-	unprintable_columns: &[usize],
-	text_rows: &Option<Vec<tokio_postgres::Row>>,
+	ctx: &mut DisplayContext<'_, W>,
 	expanded: bool,
-	theme: crate::highlighter::Theme,
-	writer: &mut W,
-	use_colours: bool,
 ) -> Result<()> {
 	let mut objects = Vec::new();
 
-	for (row_idx, row) in rows.iter().enumerate() {
+	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut obj = Map::new();
-
-		for (i, column) in columns.iter().enumerate() {
-			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+		for (i, column) in ctx.columns.iter().enumerate() {
+			let value_str =
+				get_column_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 
 			// Try to parse the value as JSON if it's a valid JSON string
 			let json_value = if value_str == "NULL" {
@@ -486,7 +470,7 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		.find_syntax_by_extension("json")
 		.unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
-	let theme_name = match theme {
+	let theme_name = match ctx.theme {
 		crate::highlighter::Theme::Light => "base16-ocean.light",
 		crate::highlighter::Theme::Dark => "base16-ocean.dark",
 		crate::highlighter::Theme::Auto => "base16-ocean.dark",
@@ -497,14 +481,14 @@ async fn display_json<W: AsyncWrite + Unpin>(
 	if expanded {
 		// Pretty-print a single array containing all objects
 		let json_str = serde_json::to_string_pretty(&objects).unwrap();
-		if use_colours {
+		if ctx.use_colours {
 			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
-			writer
+			ctx.writer
 				.write_all(format!("{}\n", highlighted).as_bytes())
 				.await
 				.into_diagnostic()?;
 		} else {
-			writer
+			ctx.writer
 				.write_all(format!("{}\n", json_str).as_bytes())
 				.await
 				.into_diagnostic()?;
@@ -513,14 +497,14 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		// Compact-print one object per line
 		for obj in objects {
 			let json_str = serde_json::to_string(&obj).unwrap();
-			if use_colours {
+			if ctx.use_colours {
 				let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
-				writer
+				ctx.writer
 					.write_all(format!("{}\n", highlighted).as_bytes())
 					.await
 					.into_diagnostic()?;
 			} else {
-				writer
+				ctx.writer
 					.write_all(format!("{}\n", json_str).as_bytes())
 					.await
 					.into_diagnostic()?;
@@ -528,7 +512,7 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		}
 	}
 
-	writer.flush().await.into_diagnostic()?;
+	ctx.writer.flush().await.into_diagnostic()?;
 	Ok(())
 }
 

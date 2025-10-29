@@ -15,6 +15,7 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use tokio::fs::File;
 use tokio::io::{self, AsyncWriteExt};
+use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, instrument, warn};
 
 pub(crate) struct ReplContext<'a> {
@@ -67,7 +68,7 @@ pub struct ReplState {
 	pub(crate) expanded_mode: bool,
 	pub(crate) write_mode: bool,
 	pub(crate) ots: Option<String>,
-	pub(crate) output_file: Option<Arc<Mutex<File>>>,
+	pub(crate) output_file: Option<Arc<TokioMutex<File>>>,
 	pub(crate) use_colours: bool,
 	pub(crate) vars: BTreeMap<String, String>,
 }
@@ -206,15 +207,17 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> Control
 }
 
 async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> ControlFlow<()> {
-	let mut state = ctx.repl_state.lock().unwrap();
-
 	// Close existing file if any
-	if let Some(file_arc) = state.output_file.take() {
+	let file_arc_opt = {
+		let mut state = ctx.repl_state.lock().unwrap();
+		state.output_file.take()
+	};
+
+	if let Some(file_arc) = file_arc_opt {
 		// Flush and close the file
-		if let Ok(mut file) = file_arc.lock() {
-			if let Err(e) = file.flush().await {
-				warn!("failed to flush output file: {}", e);
-			}
+		let mut file = file_arc.lock().await;
+		if let Err(e) = file.flush().await {
+			warn!("failed to flush output file: {}", e);
 		}
 		debug!("closed output file");
 		eprintln!("Output redirection closed");
@@ -226,10 +229,11 @@ async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> Co
 			Ok(file) => {
 				debug!("opened output file: {}", path);
 				eprintln!("Output will be written to: {}", path);
-				state.output_file = Some(Arc::new(Mutex::new(file)));
+				let mut state = ctx.repl_state.lock().unwrap();
+				state.output_file = Some(Arc::new(TokioMutex::new(file)));
 			}
 			Err(e) => {
-				error!("failed to open output file '{}': {}", path, e);
+				error!("Failed to open output file '{}': {}", path, e);
 			}
 		}
 	}
@@ -409,17 +413,22 @@ async fn handle_execute(
 		// Output modifier specified - open a temporary file
 		match File::create(&path).await {
 			Ok(mut file) => {
-				let mut state = ctx.repl_state.lock().unwrap();
-				execute_query(
-					ctx.client,
-					&sql,
-					modifiers,
-					ctx.theme,
-					&mut file,
+				let mut vars = {
+					let state = ctx.repl_state.lock().unwrap();
+					state.vars.clone()
+				};
+				let mut query_ctx = crate::query::QueryContext {
+					client: ctx.client,
+					modifiers: modifiers.clone(),
+					theme: ctx.theme,
+					writer: &mut file,
 					use_colours,
-					Some(&mut state.vars),
-				)
-				.await
+					vars: Some(&mut vars),
+				};
+				let result = execute_query(&sql, &mut query_ctx).await;
+				// Write vars back
+				ctx.repl_state.lock().unwrap().vars = vars;
+				result
 			}
 			Err(e) => {
 				error!("Failed to open output file '{}': {}", path, e);
@@ -430,39 +439,44 @@ async fn handle_execute(
 		let file_arc_opt = ctx.repl_state.lock().unwrap().output_file.clone();
 		if let Some(file_arc) = file_arc_opt {
 			// ReplState has an output file
-			match file_arc.lock() {
-				Ok(mut file) => {
-					let mut state = ctx.repl_state.lock().unwrap();
-					execute_query(
-						ctx.client,
-						&sql,
-						modifiers,
-						ctx.theme,
-						&mut *file,
-						use_colours,
-						Some(&mut state.vars),
-					)
-					.await
-				}
-				Err(e) => {
-					error!("Failed to lock output file: {}", e);
-					return ControlFlow::Continue(());
-				}
-			}
+			let mut vars = {
+				let state = ctx.repl_state.lock().unwrap();
+				state.vars.clone()
+			};
+
+			let mut file = file_arc.lock().await;
+			let mut query_ctx = crate::query::QueryContext {
+				client: ctx.client,
+				modifiers: modifiers.clone(),
+				theme: ctx.theme,
+				writer: &mut *file,
+				use_colours,
+				vars: Some(&mut vars),
+			};
+			let result = execute_query(&sql, &mut query_ctx).await;
+
+			// Write vars back
+			ctx.repl_state.lock().unwrap().vars = vars;
+			result
 		} else {
 			// Write to stdout
 			let mut stdout = io::stdout();
-			let mut state = ctx.repl_state.lock().unwrap();
-			execute_query(
-				ctx.client,
-				&sql,
+			let mut vars = {
+				let state = ctx.repl_state.lock().unwrap();
+				state.vars.clone()
+			};
+			let mut query_ctx = crate::query::QueryContext {
+				client: ctx.client,
 				modifiers,
-				ctx.theme,
-				&mut stdout,
+				theme: ctx.theme,
+				writer: &mut stdout,
 				use_colours,
-				Some(&mut state.vars),
-			)
-			.await
+				vars: Some(&mut vars),
+			};
+			let result = execute_query(&sql, &mut query_ctx).await;
+			// Write vars back
+			ctx.repl_state.lock().unwrap().vars = vars;
+			result
 		}
 	};
 
@@ -929,16 +943,17 @@ mod tests {
 		let client = pool.get().await.expect("Failed to get connection");
 
 		let mut stdout = tokio::io::stdout();
-		let result = crate::query::execute_query(
-			&*client,
-			"SELECT row(1, 'foo', true) as record",
-			crate::parser::QueryModifiers::new(),
-			crate::highlighter::Theme::Dark,
-			&mut stdout,
-			true,
-			None,
-		)
-		.await;
+		let mut query_ctx = crate::query::QueryContext {
+			client: &*client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::highlighter::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+		};
+		let result =
+			crate::query::execute_query("SELECT row(1, 'foo', true) as record", &mut query_ctx)
+				.await;
 
 		assert!(result.is_ok());
 	}
@@ -955,16 +970,16 @@ mod tests {
 		let client = pool.get().await.expect("Failed to get connection");
 
 		let mut stdout = tokio::io::stdout();
-		let result = crate::query::execute_query(
-			&*client,
-			"SELECT ARRAY[1, 2, 3] as numbers",
-			crate::parser::QueryModifiers::new(),
-			crate::highlighter::Theme::Dark,
-			&mut stdout,
-			true,
-			None,
-		)
-		.await;
+		let mut query_ctx = crate::query::QueryContext {
+			client: &*client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::highlighter::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+		};
+		let result =
+			crate::query::execute_query("SELECT ARRAY[1, 2, 3] as numbers", &mut query_ctx).await;
 
 		assert!(result.is_ok());
 	}
