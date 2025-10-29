@@ -12,6 +12,9 @@ pub(crate) enum ReplAction {
 	Exit,
 	ToggleExpanded,
 	ToggleWriteMode,
+	Edit {
+		content: Option<String>,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -35,6 +38,7 @@ pub(crate) fn handle_input(
 				Metacommand::Quit => ReplAction::Exit,
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
+				Metacommand::Edit { content } => ReplAction::Edit { content },
 			};
 			return (String::new(), action);
 		}

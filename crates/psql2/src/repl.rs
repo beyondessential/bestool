@@ -24,8 +24,8 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history before handling the action (except for Continue which is a no-op)
-		if !matches!(self, ReplAction::Continue) {
+		// Add to history before handling the action (except for Continue and Edit which handle it themselves)
+		if !matches!(self, ReplAction::Continue | ReplAction::Edit { .. }) {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
@@ -38,6 +38,7 @@ impl ReplAction {
 			ReplAction::ToggleExpanded => handle_toggle_expanded(ctx),
 			ReplAction::Exit => handle_exit(),
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
+			ReplAction::Edit { content } => handle_edit(ctx, content).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -80,6 +81,66 @@ fn handle_toggle_expanded(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 
 fn handle_exit() -> ControlFlow<()> {
 	ControlFlow::Break(())
+}
+
+async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> ControlFlow<()> {
+	use rustyline::history::{History as _, SearchDirection};
+
+	// Get the initial content - either from argument or from history
+	let initial_content = if let Some(content) = content {
+		content
+	} else {
+		// Get the last command from history
+		let hist_len = ctx.rl.history().len();
+		if hist_len > 0 {
+			match ctx.rl.history().get(hist_len - 1, SearchDirection::Forward) {
+				Ok(Some(result)) => result.entry.to_string(),
+				_ => String::new(),
+			}
+		} else {
+			String::new()
+		}
+	};
+
+	// Open editor with the content
+	match edit::edit(&initial_content) {
+		Ok(edited_content) => {
+			let edited_trimmed = edited_content.trim();
+
+			// Only process if content is not empty
+			if !edited_trimmed.is_empty() {
+				debug!("editor returned content, processing it");
+
+				// Add to history
+				let history = ctx.rl.history_mut();
+				history.set_repl_state(&ctx.repl_state.lock().unwrap());
+				if let Err(e) = history.add_entry(edited_content.clone()) {
+					debug!("failed to add to history: {}", e);
+				}
+
+				// Parse and execute the edited content
+				let (_, action) =
+					handle_input("", &edited_content, &ctx.repl_state.lock().unwrap());
+
+				// Execute the action if it's an Execute action
+				if let ReplAction::Execute {
+					input,
+					sql,
+					modifiers,
+				} = action
+				{
+					return handle_execute(ctx, input, sql, modifiers).await;
+				}
+			} else {
+				debug!("editor returned empty content, skipping");
+			}
+		}
+		Err(e) => {
+			warn!("editor failed: {}", e);
+		}
+	}
+
+	ControlFlow::Continue(())
 }
 
 async fn handle_execute(

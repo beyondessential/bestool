@@ -20,6 +20,7 @@ pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
 	WriteMode,
+	Edit { content: Option<String> },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -34,7 +35,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
-		alt(('q', 'Q')).parse_next(input)?;
+		literal('q').parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 		Ok(Metacommand::Quit)
@@ -44,7 +45,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
-		alt(('x', 'X')).parse_next(input)?;
+		literal('x').parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 		Ok(Metacommand::Expanded)
@@ -54,15 +55,33 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
-		alt(('w', 'W')).parse_next(input)?;
+		literal('W').parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 		Ok(Metacommand::WriteMode)
 	}
 
+	fn edit_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal('e').parse_next(input)?;
+		let content = opt(preceded(space1, rest)).parse_next(input)?;
+		Ok(Metacommand::Edit {
+			content: content
+				.map(|s: &str| s.trim().to_string())
+				.filter(|s| !s.is_empty()),
+		})
+	}
+
 	let mut input_slice = input;
-	if let Ok(cmd) =
-		alt((quit_command, expanded_command, write_mode_command)).parse_next(&mut input_slice)
+	if let Ok(cmd) = alt((
+		quit_command,
+		expanded_command,
+		write_mode_command,
+		edit_command,
+	))
+	.parse_next(&mut input_slice)
 	{
 		Ok(Some(cmd))
 	} else {
@@ -611,7 +630,47 @@ mod tests {
 
 	#[test]
 	fn test_parse_metacommand_write_mode_with_trailing_text() {
-		let result = parse_metacommand("\\W on").unwrap();
+		let result = parse_metacommand("\\W some text").unwrap();
 		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_edit() {
+		let result = parse_metacommand("\\e").unwrap();
+		assert_eq!(result, Some(Metacommand::Edit { content: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_edit_uppercase() {
+		let result = parse_metacommand("\\E").unwrap();
+		assert_eq!(result, Some(Metacommand::Edit { content: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_edit_with_content() {
+		let result = parse_metacommand("\\e SELECT * FROM users").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Edit {
+				content: Some("SELECT * FROM users".to_string())
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_edit_with_whitespace() {
+		let result = parse_metacommand("\\e   ").unwrap();
+		assert_eq!(result, Some(Metacommand::Edit { content: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_edit_with_content_and_whitespace() {
+		let result = parse_metacommand("\\e   SELECT 1   ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Edit {
+				content: Some("SELECT 1".to_string())
+			})
+		);
 	}
 }

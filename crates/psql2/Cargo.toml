@@ -16,6 +16,7 @@ required-features = ["cli"]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
 comfy-table = "7.2.1"
 crossterm = "0.29.0"
+edit = "0.1.5"
 hex = "0.4.3"
 jiff = "0.2.15"
 lloggs = { version = "1.1.0", optional = true }
