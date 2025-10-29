@@ -1,0 +1,1 @@
+- For tests requiring database connections, use `DATABASE_URL=postgresql://localhost/tamanu_meta` as the connection string.
