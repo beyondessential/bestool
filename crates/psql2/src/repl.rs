@@ -26,14 +26,8 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history before handling the action (except for Continue, Edit, Include, and Output which handle it themselves)
-		if !matches!(
-			self,
-			ReplAction::Continue
-				| ReplAction::Edit { .. }
-				| ReplAction::Include { .. }
-				| ReplAction::Output { .. }
-		) {
+		// Add to history before handling the action (except for Continue)
+		if !matches!(self, ReplAction::Continue) {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
