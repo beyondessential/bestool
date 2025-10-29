@@ -73,25 +73,25 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, QueryModifiers)>> {
 	let input = input.trim();
 
-	fn backslash_g<'a>(
-		input: &mut &'a str,
+	fn backslash_g(
+		input: &mut &str,
 	) -> winnow::error::Result<(), ErrMode<winnow::error::ContextError>> {
 		('\\', alt(('g', 'G'))).void().parse_next(input)
 	}
 
-	fn modifier_char<'a>(
-		input: &mut &'a str,
+	fn modifier_char(
+		input: &mut &str,
 	) -> winnow::error::Result<char, ErrMode<winnow::error::ContextError>> {
 		alt((alt(('x', 'X')).map(|_| 'x'), alt(('j', 'J')).map(|_| 'j'))).parse_next(input)
 	}
 
-	fn metacommand<'a>(
-		input: &mut &'a str,
+	fn metacommand(
+		input: &mut &str,
 	) -> winnow::error::Result<
 		(Vec<char>, bool, Option<String>),
 		ErrMode<winnow::error::ContextError>,
 	> {
-		let _ = backslash_g.parse_next(input)?;
+		backslash_g.parse_next(input)?;
 
 		// Parse zero or more modifier characters (x, j)
 		let mut modifiers = Vec::new();
@@ -120,12 +120,12 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 		Ok((modifiers, has_set, arg))
 	}
 
-	fn parse_line<'a>(
-		input: &mut &'a str,
-	) -> winnow::error::Result<
+	type ParseLineResult<'a> = winnow::error::Result<
 		(&'a str, Option<(Vec<char>, bool, Option<String>)>),
 		ErrMode<winnow::error::ContextError>,
-	> {
+	>;
+
+	fn parse_line<'a>(input: &mut &'a str) -> ParseLineResult<'a> {
 		let sql = take_till(1.., |c| c == '\\').parse_next(input)?;
 		let cmd_and_arg = opt((space0, metacommand)).parse_next(input)?;
 		Ok((sql, cmd_and_arg.map(|(_, cmd)| cmd)))
