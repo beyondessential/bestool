@@ -1,4 +1,5 @@
 use crate::completer::SqlCompleter;
+use crate::config::PsqlConfig;
 use crate::highlighter::Theme;
 use crate::history::History;
 use crate::input::{handle_input, ReplAction};
@@ -313,16 +314,79 @@ async fn check_transaction_state(
 }
 
 #[instrument(level = "debug")]
-pub(crate) async fn run_repl(
-	client: Arc<tokio_postgres::Client>,
-	theme: Theme,
-	history_path: std::path::PathBuf,
-	db_user: String,
-	database_name: String,
-	is_superuser: bool,
-	connection_string: String,
-	write_mode: bool,
-) -> Result<()> {
+pub async fn run(config: PsqlConfig) -> Result<()> {
+	let theme = config.theme;
+	let history_path = if let Some(path) = config.history_path {
+		path.clone()
+	} else {
+		History::default_path()?
+	};
+	let database_name = config.database_name.clone();
+	let db_user = config.user.clone().unwrap_or_else(|| {
+		std::env::var("USER")
+			.or_else(|_| std::env::var("USERNAME"))
+			.unwrap_or_else(|_| "unknown".to_string())
+	});
+
+	debug!("connecting to database");
+	let tls_connector = crate::tls::make_tls_connector()?;
+	let (client, connection) = tokio_postgres::connect(&config.connection_string, tls_connector)
+		.await
+		.into_diagnostic()?;
+
+	tokio::spawn(async move {
+		if let Err(e) = connection.await {
+			eprintln!("connection error: {}", e);
+		}
+	});
+
+	debug!("connected to database");
+
+	if config.write {
+		debug!("setting session to read-write mode with autocommit off");
+		client
+			.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN")
+			.await
+			.into_diagnostic()?;
+	} else {
+		debug!("setting session to read-only mode");
+		client
+			.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", &[])
+			.await
+			.into_diagnostic()?;
+	}
+
+	debug!("executing version query");
+	let rows = client
+		.query("SELECT version();", &[])
+		.await
+		.into_diagnostic()?;
+
+	if let Some(row) = rows.first() {
+		let version: String = row.get(0);
+		println!("{}", version);
+	}
+
+	let info_rows = client
+		.query(
+			"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+			&[],
+		)
+		.await
+		.into_diagnostic()?;
+
+	let (database_name, is_superuser) = if let Some(row) = info_rows.first() {
+		let db: String = row.get(0);
+		let is_super: bool = row.get(2);
+		(db, is_super)
+	} else {
+		(database_name, false)
+	};
+
+	let client = Arc::new(client);
+	let connection_string = config.connection_string;
+	let write_mode = config.write;
+
 	// Get the backend PID of the main connection
 	let backend_pid: i32 = client
 		.query_one("SELECT pg_backend_pid()", &[])
@@ -455,6 +519,16 @@ pub(crate) async fn run_repl(
 		}
 	}
 
+	let history_db = rl.history_mut().db.clone();
+	drop(rl);
+
+	let history = History {
+		db: history_db,
+		timestamps: Vec::new(),
+		repl_state: ReplState::new(),
+	};
+	history.compact()?;
+
 	Ok(())
 }
 
@@ -464,6 +538,126 @@ mod tests {
 
 	// To run tests that require a database connection:
 	// DATABASE_URL=postgresql://localhost/tamanu_meta cargo test -p bestool-psql2
+
+	#[test]
+	fn test_psql_config_creation() {
+		let config = PsqlConfig {
+			connection_string: "postgresql://localhost/test".to_string(),
+			user: Some("testuser".to_string()),
+			theme: Theme::Dark,
+			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
+			database_name: "test".to_string(),
+			write: false,
+		};
+
+		assert_eq!(config.connection_string, "postgresql://localhost/test");
+		assert_eq!(config.user, Some("testuser".to_string()));
+		assert_eq!(config.database_name, "test");
+	}
+
+	#[test]
+	fn test_psql_config_no_user() {
+		let config = PsqlConfig {
+			connection_string: "postgresql://localhost/test".to_string(),
+			user: None,
+			theme: Theme::Dark,
+			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
+			database_name: "test".to_string(),
+			write: false,
+		};
+
+		assert_eq!(config.user, None);
+	}
+
+	#[test]
+	fn test_psql_error_display() {
+		let err = crate::config::PsqlError::ConnectionFailed;
+		assert_eq!(format!("{}", err), "database connection failed");
+
+		let err = crate::config::PsqlError::QueryFailed;
+		assert_eq!(format!("{}", err), "query execution failed");
+	}
+
+	#[tokio::test]
+	async fn test_text_cast_for_record_types() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let result = crate::query::execute_query(
+			&client,
+			"SELECT row(1, 'foo', true) as record",
+			crate::parser::QueryModifiers::new(),
+			crate::highlighter::Theme::Dark,
+		)
+		.await;
+
+		assert!(result.is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_array_formatting() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let result = crate::query::execute_query(
+			&client,
+			"SELECT ARRAY[1, 2, 3] as numbers",
+			crate::parser::QueryModifiers::new(),
+			crate::highlighter::Theme::Dark,
+		)
+		.await;
+
+		assert!(result.is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_database_info_query() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let (client, connection) =
+			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+				.await
+				.expect("Failed to connect to database");
+
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		let info_rows = client
+			.query(
+				"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+				&[],
+			)
+			.await
+			.expect("Failed to query database info");
+
+		assert!(!info_rows.is_empty());
+		let row = info_rows.first().expect("No rows returned");
+		let db_name: String = row.get(0);
+		let _username: String = row.get(1);
+		let _is_super: bool = row.get(2);
+
+		assert!(!db_name.is_empty());
+	}
 
 	#[tokio::test]
 	async fn test_transaction_state_none() {

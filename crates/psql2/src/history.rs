@@ -54,9 +54,9 @@ pub struct TailscalePeer {
 /// - Timestamps can be refreshed with `reload_timestamps()`
 #[derive(Debug)]
 pub struct History {
-	db: Arc<Database>,
+	pub(crate) db: Arc<Database>,
 	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
-	timestamps: Vec<u64>,
+	pub(crate) timestamps: Vec<u64>,
 	/// State to record as context for new entries
 	pub repl_state: ReplState,
 }
