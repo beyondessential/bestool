@@ -315,13 +315,11 @@ async fn check_transaction_state(
 
 #[instrument(level = "debug")]
 pub async fn run(config: PsqlConfig) -> Result<()> {
-	let theme = config.theme;
 	let audit_path = if let Some(path) = config.audit_path {
 		path.clone()
 	} else {
 		Audit::default_path()?
 	};
-	let database_name = config.database_name.clone();
 	let db_user = config.user.clone().unwrap_or_else(|| {
 		std::env::var("USER")
 			.or_else(|_| std::env::var("USERNAME"))
@@ -380,12 +378,10 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		let is_super: bool = row.get(2);
 		(db, is_super)
 	} else {
-		(database_name, false)
+		(config.database_name.clone(), false)
 	};
 
 	let client = Arc::new(client);
-	let connection_string = config.connection_string;
-	let write_mode = config.write;
 
 	// Get the backend PID of the main connection
 	let backend_pid: i32 = client
@@ -398,7 +394,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	// Create a separate connection for monitoring transaction state
 	let tls_connector = crate::tls::make_tls_connector()?;
 	let (monitor_client, monitor_connection) =
-		tokio_postgres::connect(&connection_string, tls_connector)
+		tokio_postgres::connect(&config.connection_string, tls_connector)
 			.await
 			.into_diagnostic()?;
 
@@ -427,11 +423,11 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	let repl_state = Arc::new(Mutex::new(repl_state));
 
 	debug!("initializing schema cache");
-	let schema_cache_manager = SchemaCacheManager::new(connection_string);
+	let schema_cache_manager = SchemaCacheManager::new(&config.connection_string);
 	let cache_arc = schema_cache_manager.cache_arc();
 	let _cache_task = schema_cache_manager.start_background_refresh();
 
-	let completer = SqlCompleter::new(theme).with_schema_cache(cache_arc);
+	let completer = SqlCompleter::new(config.theme).with_schema_cache(cache_arc);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
 			.auto_add_history(false)
@@ -444,13 +440,13 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 
 	// If --write is given on the CLI, toggle write mode as the first action
 	// This saves us from handling prompts/history outside of this function
-	if write_mode {
+	if config.write {
 		if ReplAction::ToggleWriteMode
 			.handle(
 				&client,
 				&monitor_client,
 				backend_pid,
-				theme,
+				config.theme,
 				&repl_state,
 				&mut rl,
 				"",
@@ -493,7 +489,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 						&client,
 						&monitor_client,
 						backend_pid,
-						theme,
+						config.theme,
 						&repl_state,
 						&mut rl,
 						line,

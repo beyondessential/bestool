@@ -61,10 +61,10 @@ pub struct SchemaCacheManager {
 
 impl SchemaCacheManager {
 	/// Create a new cache manager
-	pub fn new(connection_string: String) -> Self {
+	pub fn new(connection_string: &str) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
-			connection_string,
+			connection_string: connection_string.into(),
 		}
 	}
 
