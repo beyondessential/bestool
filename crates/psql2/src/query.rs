@@ -397,7 +397,8 @@ fn highlight_json(
 	for line in json_str.lines() {
 		match highlighter.highlight_line(line, syntax_set) {
 			Ok(ranges) => {
-				let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+				let mut escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+				escaped.push_str("\x1b[0m");
 				result.push_str(&escaped);
 				result.push('\n');
 			}
