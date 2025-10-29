@@ -1,7 +1,7 @@
+use crate::audit::Audit;
 use crate::completer::SqlCompleter;
 use crate::config::PsqlConfig;
 use crate::highlighter::Theme;
-use crate::history::History;
 use crate::input::{handle_input, ReplAction};
 use crate::ots;
 use crate::query::execute_query;
@@ -21,7 +21,7 @@ impl ReplAction {
 		backend_pid: i32,
 		theme: Theme,
 		repl_state: &Arc<Mutex<ReplState>>,
-		rl: &mut Editor<SqlCompleter, History>,
+		rl: &mut Editor<SqlCompleter, Audit>,
 		line: &str,
 	) -> ControlFlow<()> {
 		match self {
@@ -86,7 +86,7 @@ fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()>
 
 fn handle_exit(
 	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, History>,
+	rl: &mut Editor<SqlCompleter, Audit>,
 	line: &str,
 ) -> ControlFlow<()> {
 	{
@@ -105,7 +105,7 @@ async fn handle_execute(
 	backend_pid: i32,
 	theme: Theme,
 	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, History>,
+	rl: &mut Editor<SqlCompleter, Audit>,
 	input: String,
 	sql: String,
 	modifiers: crate::parser::QueryModifiers,
@@ -185,7 +185,7 @@ async fn handle_write_mode_toggle(
 	monitor_client: &tokio_postgres::Client,
 	backend_pid: i32,
 	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, History>,
+	rl: &mut Editor<SqlCompleter, Audit>,
 ) -> ControlFlow<()> {
 	let state = { repl_state.lock().unwrap().clone() };
 
@@ -316,10 +316,10 @@ async fn check_transaction_state(
 #[instrument(level = "debug")]
 pub async fn run(config: PsqlConfig) -> Result<()> {
 	let theme = config.theme;
-	let history_path = if let Some(path) = config.history_path {
+	let audit_path = if let Some(path) = config.audit_path {
 		path.clone()
 	} else {
-		History::default_path()?
+		Audit::default_path()?
 	};
 	let database_name = config.database_name.clone();
 	let db_user = config.user.clone().unwrap_or_else(|| {
@@ -423,7 +423,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		ots: None,
 	};
 
-	let history = History::open(&history_path, repl_state.clone())?;
+	let audit = Audit::open(&audit_path, repl_state.clone())?;
 	let repl_state = Arc::new(Mutex::new(repl_state));
 
 	debug!("initializing schema cache");
@@ -432,12 +432,12 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	let _cache_task = schema_cache_manager.start_background_refresh();
 
 	let completer = SqlCompleter::new(theme).with_schema_cache(cache_arc);
-	let mut rl: Editor<SqlCompleter, History> = Editor::with_history(
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
 			.auto_add_history(false)
 			.enable_signals(false)
 			.build(),
-		history,
+		audit,
 	)
 	.into_diagnostic()?;
 	rl.set_helper(Some(completer));
@@ -519,15 +519,15 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		}
 	}
 
-	let history_db = rl.history_mut().db.clone();
+	let audit_db = rl.history_mut().db.clone();
 	drop(rl);
 
-	let history = History {
-		db: history_db,
+	let audit = Audit {
+		db: audit_db,
 		timestamps: Vec::new(),
 		repl_state: ReplState::new(),
 	};
-	history.compact()?;
+	audit.compact()?;
 
 	Ok(())
 }
@@ -545,7 +545,7 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: Some("testuser".to_string()),
 			theme: Theme::Dark,
-			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
+			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
 		};
@@ -561,7 +561,7 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: None,
 			theme: Theme::Dark,
-			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
+			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
 		};

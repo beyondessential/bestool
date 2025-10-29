@@ -1,12 +1,12 @@
-use crate::history::History;
+use crate::audit::Audit;
 use miette::{IntoDiagnostic, Result};
 use rustyline::history::{History as HistoryTrait, MemHistory};
 use rustyline::{Config, Editor};
 use tracing::debug;
 
 /// Prompt for OTS value with rustyline and history from previous OTS values
-pub fn prompt_for_ots(history: &History) -> Result<String> {
-	let ots_history = load_ots_history(history)?;
+pub fn prompt_for_ots(audit: &Audit) -> Result<String> {
+	let ots_history = load_ots_history(audit)?;
 
 	let mut rl: Editor<(), MemHistory> = Editor::with_history(
 		Config::builder()
@@ -45,9 +45,9 @@ pub fn prompt_for_ots(history: &History) -> Result<String> {
 	}
 }
 
-/// Load unique OTS values from the history database
-fn load_ots_history(history: &History) -> Result<Vec<String>> {
-	let entries = history.list()?;
+/// Load unique OTS values from the audit database
+fn load_ots_history(audit: &Audit) -> Result<Vec<String>> {
+	let entries = audit.list()?;
 
 	let mut ots_values = Vec::new();
 	let mut seen = std::collections::HashSet::new();

@@ -21,8 +21,8 @@ pub struct PsqlConfig {
 	/// Syntax highlighting theme
 	pub theme: Theme,
 
-	/// Path to history database
-	pub history_path: Option<std::path::PathBuf>,
+	/// Path to audit database
+	pub audit_path: Option<std::path::PathBuf>,
 
 	/// Database name for display in prompt
 	pub database_name: String,

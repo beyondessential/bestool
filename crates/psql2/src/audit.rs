@@ -1,11 +1,11 @@
-//! Query history storage using redb.
+//! Query audit storage using redb.
 //!
-//! History entries are stored with timestamp keys and JSON-serialized values
+//! Audit entries are stored with timestamp keys and JSON-serialized values
 //! containing the query, user, and write mode information.
 
 use miette::{IntoDiagnostic, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use rustyline::history::{History as HistoryTrait, SearchDirection, SearchResult};
+use rustyline::history::{History as RustylineHistory, SearchDirection, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -16,9 +16,9 @@ use crate::repl::ReplState;
 
 pub const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
-/// A single history entry
+/// A single audit entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
+pub struct AuditEntry {
 	/// The SQL query that was executed
 	pub query: String,
 	/// The database user
@@ -44,7 +44,7 @@ pub struct TailscalePeer {
 	pub user: String,
 }
 
-/// History manager using redb for persistent storage
+/// Audit manager using redb for persistent storage
 ///
 /// This struct is safe for use with concurrent writers. Multiple psql processes
 /// can write to the same database simultaneously. The in-memory `timestamps` cache
@@ -53,7 +53,7 @@ pub struct TailscalePeer {
 /// - Missing entries are handled gracefully
 /// - Timestamps can be refreshed with `reload_timestamps()`
 #[derive(Debug)]
-pub struct History {
+pub struct Audit {
 	pub(crate) db: Arc<Database>,
 	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
 	pub(crate) timestamps: Vec<u64>,
@@ -61,14 +61,14 @@ pub struct History {
 	pub repl_state: ReplState,
 }
 
-impl History {
-	/// Open or create a history database at the given path
+impl Audit {
+	/// Open or create an audit database at the given path
 	pub fn open(path: impl AsRef<Path>, repl_state: ReplState) -> Result<Self> {
 		let path = path.as_ref();
 		Self::open_internal(path, repl_state, true)
 	}
 
-	/// Open a history database without importing from ~/.psql_history
+	/// Open an audit database without importing from ~/.psql_history
 	///
 	/// This is useful for tests where we want a clean database.
 	#[cfg(test)]
@@ -118,7 +118,7 @@ impl History {
 	/// Get entry by timestamp
 	///
 	/// Returns None if the entry doesn't exist (may have been deleted by another process)
-	fn get_entry(&self, timestamp: u64) -> Result<Option<HistoryEntry>> {
+	fn get_entry(&self, timestamp: u64) -> Result<Option<AuditEntry>> {
 		let read_txn = self.db.begin_read().into_diagnostic()?;
 
 		let table = match read_txn.open_table(HISTORY_TABLE) {
@@ -143,7 +143,7 @@ impl History {
 		Ok(())
 	}
 
-	/// Get the default history database path
+	/// Get the default audit database path
 	pub fn default_path() -> Result<PathBuf> {
 		let state_dir = if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
 			PathBuf::from(dir)
@@ -161,12 +161,12 @@ impl History {
 		Ok(history_dir.join("history.redb"))
 	}
 
-	/// Add a new entry to the history
+	/// Add a new entry to the audit
 	pub fn add_entry(&mut self, query: String) -> Result<()> {
-		trace!("adding history entry");
+		trace!("adding audit entry");
 		let tailscale = get_tailscale_peers().ok().unwrap_or_default();
 
-		let entry = HistoryEntry {
+		let entry = AuditEntry {
 			query,
 			db_user: self.repl_state.db_user.clone(),
 			sys_user: self.repl_state.sys_user.clone(),
@@ -193,15 +193,15 @@ impl History {
 		Ok(())
 	}
 
-	/// Get all history entries in chronological order (oldest first)
-	pub fn list(&self) -> Result<Vec<(u64, HistoryEntry)>> {
+	/// Get all audit entries in chronological order (oldest first)
+	pub fn list(&self) -> Result<Vec<(u64, AuditEntry)>> {
 		let read_txn = self.db.begin_read().into_diagnostic()?;
 		let table = read_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 
 		let mut entries = Vec::new();
 		for item in table.iter().into_diagnostic()? {
 			let (timestamp, json) = item.into_diagnostic()?;
-			let entry: HistoryEntry = serde_json::from_str(json.value()).into_diagnostic()?;
+			let entry: AuditEntry = serde_json::from_str(json.value()).into_diagnostic()?;
 			entries.push((timestamp.value(), entry));
 		}
 
@@ -240,7 +240,7 @@ fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) ->
 
 	if metadata.len() > MAX_SIZE {
 		let size_mb = metadata.len() / (1024 * 1024);
-		info!(size_mb, "history database is too large, reducing size");
+		info!(size_mb, "audit database is too large, reducing size");
 
 		// Remove oldest entries in batches until we reach target size
 		while !timestamps.is_empty() {
@@ -269,7 +269,7 @@ fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) ->
 		debug!(
 			size_mb = final_size_mb,
 			entries = timestamps.len(),
-			"culled history database"
+			"culled audit database"
 		);
 	}
 
@@ -314,7 +314,7 @@ fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
 			}
 
 			// Create entry with default values
-			let entry = HistoryEntry {
+			let entry = AuditEntry {
 				query: line.to_string(),
 				db_user: String::new(),
 				sys_user: String::new(),
@@ -336,7 +336,7 @@ fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
 }
 
 /// Implementation of rustyline's History trait for database-backed history
-impl HistoryTrait for History {
+impl RustylineHistory for Audit {
 	fn get(
 		&self,
 		index: usize,
@@ -365,12 +365,12 @@ impl HistoryTrait for History {
 	}
 
 	fn add(&mut self, _line: &str) -> rustyline::Result<bool> {
-		trace!("History::add called and ignored");
+		trace!("Audit::add called and ignored");
 		Ok(true)
 	}
 
 	fn add_owned(&mut self, _line: String) -> rustyline::Result<bool> {
-		trace!("History::add_owned called and ignored");
+		trace!("Audit::add_owned called and ignored");
 		Ok(true)
 	}
 
@@ -581,11 +581,11 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_history_roundtrip() {
+	fn test_audit_roundtrip() {
 		let temp_dir = tempfile::tempdir().unwrap();
 		let db_path = temp_dir.path().join("test.redb");
 
-		let mut history = History::open_empty(db_path).unwrap();
+		let mut audit = Audit::open_empty(db_path).unwrap();
 
 		let mut state = ReplState {
 			db_user: "dbuser".to_string(),
@@ -594,19 +594,19 @@ mod tests {
 			ots: None,
 			..ReplState::new()
 		};
-		history.set_repl_state(&state);
+		audit.set_repl_state(&state);
 
 		// Add some entries
-		history.add_entry("SELECT 1;".to_string()).unwrap();
-		history.add_entry("SELECT 2;".to_string()).unwrap();
+		audit.add_entry("SELECT 1;".to_string()).unwrap();
+		audit.add_entry("SELECT 2;".to_string()).unwrap();
 
 		state.write_mode = true;
 		state.ots = Some("John Doe".to_string());
-		history.set_repl_state(&state);
-		history.add_entry("INSERT INTO foo;".to_string()).unwrap();
+		audit.set_repl_state(&state);
+		audit.add_entry("INSERT INTO foo;".to_string()).unwrap();
 
 		// List all entries
-		let entries = history.list().unwrap();
+		let entries = audit.list().unwrap();
 		assert_eq!(entries.len(), 3);
 		assert_eq!(entries[0].1.query, "SELECT 1;");
 		assert_eq!(entries[1].1.query, "SELECT 2;");

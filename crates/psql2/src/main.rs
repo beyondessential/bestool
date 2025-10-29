@@ -36,9 +36,9 @@ pub struct Args {
 	#[arg(long, default_value = "auto")]
 	pub theme: Theme,
 
-	/// Path to history database (default: ~/.local/state/bestool-psql/history.redb)
+	/// Path to audit database (default: ~/.local/state/bestool-psql/history.redb)
 	#[arg(long)]
-	pub history_path: Option<PathBuf>,
+	pub audit_path: Option<PathBuf>,
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
 		connection_string,
 		user: args.user,
 		theme,
-		history_path: args.history_path,
+		audit_path: args.audit_path,
 		database_name: String::new(), // Will be queried from database
 		write: args.write,
 	};

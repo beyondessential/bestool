@@ -7,8 +7,8 @@ pub mod repl;
 mod schema_cache;
 mod tls;
 
+mod audit;
 mod highlighter;
-mod history;
 mod ots;
 
 pub use config::{PsqlConfig, PsqlError};
