@@ -253,6 +253,36 @@ impl SqlCompleter {
 			return self.complete_file_path(partial_path);
 		}
 
+		// Check if we're completing snip subcommands after \snip
+		if text_before_cursor.trim_start().starts_with("\\snip ") {
+			// Check if we're after \snip but before a subcommand (e.g., "\\snip " or "\\snip r")
+			let after_snip = if let Some(pos) = text_before_cursor.find("\\snip ") {
+				&text_before_cursor[pos + 6..]
+			} else {
+				return Vec::new();
+			};
+
+			// If there's no space after what we've typed, we're still completing the subcommand
+			if !after_snip.contains(' ') {
+				let partial_cmd = after_snip.trim();
+				let mut completions = Vec::new();
+
+				// Offer snip subcommands
+				for cmd in &["run", "save"] {
+					if cmd.starts_with(&partial_cmd.to_lowercase()) {
+						completions.push(Pair {
+							display: cmd.to_string(),
+							replacement: cmd.to_string(),
+						});
+					}
+				}
+
+				if !completions.is_empty() {
+					return completions;
+				}
+			}
+		}
+
 		// Check if we're completing snippet names after \snip run or \snip save
 		if text_before_cursor.trim_start().starts_with("\\snip run ")
 			|| text_before_cursor.trim_start().starts_with("\\snip save ")
@@ -996,6 +1026,29 @@ mod tests {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions("\\hel", 4);
 		assert!(completions.iter().any(|c| c.display == "\\help"));
+	}
+
+	#[test]
+	fn test_snip_subcommand_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test completion of "run" subcommand
+		let input = "\\snip r";
+		let completions = completer.find_completions(input, input.len());
+		assert!(completions.iter().any(|c| c.display == "run"));
+		assert!(!completions.iter().any(|c| c.display == "save"));
+
+		// Test completion of "save" subcommand
+		let input = "\\snip s";
+		let completions = completer.find_completions(input, input.len());
+		assert!(completions.iter().any(|c| c.display == "save"));
+		assert!(!completions.iter().any(|c| c.display == "run"));
+
+		// Test completion of both subcommands when no prefix
+		let input = "\\snip ";
+		let completions = completer.find_completions(input, input.len());
+		assert!(completions.iter().any(|c| c.display == "run"));
+		assert!(completions.iter().any(|c| c.display == "save"));
 	}
 
 	#[test]
