@@ -38,68 +38,111 @@ impl ReplAction {
 		line: &str,
 	) -> ControlFlow<()> {
 		match self {
-			ReplAction::Continue => ControlFlow::Continue(()),
-			ReplAction::ToggleExpanded => {
-				let mut state = repl_state.lock().unwrap();
-				state.expanded_mode = !state.expanded_mode;
-				eprintln!(
-					"Expanded display is {}.",
-					if state.expanded_mode { "on" } else { "off" }
-				);
-				ControlFlow::Continue(())
-			}
-			ReplAction::Exit => {
-				let user_input = line.to_string();
-				let _ = rl.add_history_entry(&user_input);
-				let state = repl_state.lock().unwrap();
-				if let Err(e) = rl.history_mut().add_entry(
-					user_input,
-					db_user.to_string(),
-					sys_user.to_string(),
-					state.write_mode,
-					state.ots.clone(),
-				) {
-					debug!("failed to add to history: {}", e);
-				}
-				ControlFlow::Break(())
-			}
+			ReplAction::Continue => Self::handle_continue(),
+			ReplAction::ToggleExpanded => Self::handle_toggle_expanded(repl_state),
+			ReplAction::Exit => Self::handle_exit(repl_state, rl, db_user, sys_user, line),
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
 			} => {
-				let _ = rl.add_history_entry(&input);
-				let state = repl_state.lock().unwrap();
-				if let Err(e) = rl.history_mut().add_entry(
+				Self::handle_execute(
+					client,
+					monitor_client,
+					backend_pid,
+					theme,
+					repl_state,
+					rl,
+					db_user,
+					sys_user,
 					input,
-					db_user.to_string(),
-					sys_user.to_string(),
-					state.write_mode,
-					state.ots.clone(),
-				) {
-					debug!("failed to add to history: {}", e);
-				}
-				drop(state);
-
-				match execute_query(client, &sql, modifiers, theme).await {
-					Ok(()) => {
-						// If write mode is on and we're not in a transaction, start one
-						let tx_state = check_transaction_state(monitor_client, backend_pid).await;
-						if repl_state.lock().unwrap().write_mode
-							&& matches!(tx_state, TransactionState::None)
-						{
-							if let Err(e) = client.batch_execute("BEGIN").await {
-								warn!("Failed to start transaction: {}", e);
-							}
-						}
-					}
-					Err(e) => {
-						eprintln!("Error: {:?}", e);
-					}
-				}
-				ControlFlow::Continue(())
+					sql,
+					modifiers,
+				)
+				.await
 			}
 		}
+	}
+
+	fn handle_continue() -> ControlFlow<()> {
+		ControlFlow::Continue(())
+	}
+
+	fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()> {
+		let mut state = repl_state.lock().unwrap();
+		state.expanded_mode = !state.expanded_mode;
+		eprintln!(
+			"Expanded display is {}.",
+			if state.expanded_mode { "on" } else { "off" }
+		);
+		ControlFlow::Continue(())
+	}
+
+	fn handle_exit(
+		repl_state: &Arc<Mutex<ReplState>>,
+		rl: &mut Editor<SqlCompleter, History>,
+		db_user: &str,
+		sys_user: &str,
+		line: &str,
+	) -> ControlFlow<()> {
+		let user_input = line.to_string();
+		let _ = rl.add_history_entry(&user_input);
+		let state = repl_state.lock().unwrap();
+		if let Err(e) = rl.history_mut().add_entry(
+			user_input,
+			db_user.to_string(),
+			sys_user.to_string(),
+			state.write_mode,
+			state.ots.clone(),
+		) {
+			debug!("failed to add to history: {}", e);
+		}
+		ControlFlow::Break(())
+	}
+
+	async fn handle_execute(
+		client: &tokio_postgres::Client,
+		monitor_client: &tokio_postgres::Client,
+		backend_pid: i32,
+		theme: Theme,
+		repl_state: &Arc<Mutex<ReplState>>,
+		rl: &mut Editor<SqlCompleter, History>,
+		db_user: &str,
+		sys_user: &str,
+		input: String,
+		sql: String,
+		modifiers: QueryModifiers,
+	) -> ControlFlow<()> {
+		let _ = rl.add_history_entry(&input);
+		let state = repl_state.lock().unwrap();
+		if let Err(e) = rl.history_mut().add_entry(
+			input,
+			db_user.to_string(),
+			sys_user.to_string(),
+			state.write_mode,
+			state.ots.clone(),
+		) {
+			debug!("failed to add to history: {}", e);
+		}
+		drop(state);
+
+		match execute_query(client, &sql, modifiers, theme).await {
+			Ok(()) => {
+				// If write mode is on and we're not in a transaction, start one
+				let tx_state = check_transaction_state(monitor_client, backend_pid).await;
+				if repl_state.lock().unwrap().write_mode
+					&& matches!(tx_state, TransactionState::None)
+				{
+					if let Err(e) = client.batch_execute("BEGIN").await {
+						warn!("Failed to start transaction: {}", e);
+					}
+				}
+			}
+			Err(e) => {
+				eprintln!("Error: {:?}", e);
+			}
+		}
+		ControlFlow::Continue(())
 	}
 }
 
