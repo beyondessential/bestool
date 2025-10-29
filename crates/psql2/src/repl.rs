@@ -242,12 +242,10 @@ fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, Rep
 		Ok(None) | Err(_) => ReplAction::Continue,
 	};
 
-	let buffer_state = match &action {
-		ReplAction::Continue => new_buffer,
-		ReplAction::Execute { .. }
-		| ReplAction::Exit
-		| ReplAction::ToggleExpanded
-		| ReplAction::ToggleWriteMode => String::new(),
+	let buffer_state = if let ReplAction::Continue = &action {
+		new_buffer
+	} else {
+		String::new()
 	};
 
 	(buffer_state, action)
