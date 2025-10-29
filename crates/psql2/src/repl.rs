@@ -20,9 +20,28 @@ enum ReplAction {
 		modifiers: QueryModifiers,
 	},
 	Exit,
+	ToggleExpanded,
 }
 
-fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
+#[derive(Debug, Clone)]
+struct ReplState {
+	expanded_mode: bool,
+	write_mode: bool,
+	ots: Option<String>,
+}
+
+impl ReplState {
+	#[cfg(test)]
+	fn new() -> Self {
+		Self {
+			expanded_mode: false,
+			write_mode: false,
+			ots: None,
+		}
+	}
+}
+
+fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, ReplAction) {
 	let mut new_buffer = buffer.to_string();
 
 	if !new_buffer.is_empty() {
@@ -37,10 +56,7 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 		if let Ok(Some(metacmd)) = parse_metacommand(&user_input) {
 			let action = match metacmd {
 				Metacommand::Quit => ReplAction::Exit,
-				Metacommand::Expanded => {
-					// TODO: implement expanded mode toggle
-					ReplAction::Continue
-				}
+				Metacommand::Expanded => ReplAction::ToggleExpanded,
 			};
 			return (String::new(), action);
 		}
@@ -54,17 +70,23 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 	let parse_result = parse_query_modifiers(&user_input);
 
 	let action = match parse_result {
-		Ok(Some((sql, modifiers))) => ReplAction::Execute {
-			input: user_input.clone(),
-			sql,
-			modifiers,
-		},
+		Ok(Some((sql, mut modifiers))) => {
+			// Apply expanded mode state if enabled
+			if state.expanded_mode {
+				modifiers.insert(crate::parser::QueryModifier::Expanded);
+			}
+			ReplAction::Execute {
+				input: user_input.clone(),
+				sql,
+				modifiers,
+			}
+		}
 		Ok(None) | Err(_) => ReplAction::Continue,
 	};
 
 	let buffer_state = match action {
 		ReplAction::Continue => new_buffer,
-		ReplAction::Execute { .. } | ReplAction::Exit => String::new(),
+		_ => String::new(),
 	};
 
 	(buffer_state, action)
@@ -174,15 +196,18 @@ pub(crate) async fn run_repl(
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
 
-	let write_mode = Arc::new(Mutex::new(write_mode));
-	let ots = Arc::new(Mutex::new(ots));
+	let repl_state = Arc::new(Mutex::new(ReplState {
+		expanded_mode: false,
+		write_mode,
+		ots,
+	}));
 
 	let mut history = History::open(&history_path)?;
 	history.set_context(
 		db_user.clone(),
 		sys_user.clone(),
-		*write_mode.lock().unwrap(),
-		ots.lock().unwrap().clone(),
+		repl_state.lock().unwrap().write_mode,
+		repl_state.lock().unwrap().ots.clone(),
 	);
 
 	debug!("initializing schema cache");
@@ -205,7 +230,7 @@ pub(crate) async fn run_repl(
 
 	loop {
 		let transaction_state = check_transaction_state(&monitor_client, backend_pid).await;
-		let current_write_mode = *write_mode.lock().unwrap();
+		let current_write_mode = repl_state.lock().unwrap().write_mode;
 
 		let (transaction_marker, color_code) = match transaction_state {
 			TransactionState::Error => ("!", "\x1b[1;31m"), // Bold red
@@ -252,7 +277,7 @@ pub(crate) async fn run_repl(
 				}
 
 				if line == "\\W" && buffer.is_empty() {
-					let current_write_mode = *write_mode.lock().unwrap();
+					let current_write_mode = repl_state.lock().unwrap().write_mode;
 
 					if current_write_mode {
 						let tx_state = check_transaction_state(&monitor_client, backend_pid).await;
@@ -261,8 +286,8 @@ pub(crate) async fn run_repl(
 							continue;
 						}
 
-						*write_mode.lock().unwrap() = false;
-						*ots.lock().unwrap() = None;
+						repl_state.lock().unwrap().write_mode = false;
+						repl_state.lock().unwrap().ots = None;
 
 						match client
 							.batch_execute(
@@ -288,8 +313,8 @@ pub(crate) async fn run_repl(
 					} else {
 						match ots::prompt_for_ots(rl.history()) {
 							Ok(new_ots) => {
-								*write_mode.lock().unwrap() = true;
-								*ots.lock().unwrap() = Some(new_ots.clone());
+								repl_state.lock().unwrap().write_mode = true;
+								repl_state.lock().unwrap().ots = Some(new_ots.clone());
 
 								match client
 									.batch_execute(
@@ -312,8 +337,8 @@ pub(crate) async fn run_repl(
 									}
 									Err(e) => {
 										eprintln!("Failed to enable write mode: {}", e);
-										*write_mode.lock().unwrap() = false;
-										*ots.lock().unwrap() = None;
+										repl_state.lock().unwrap().write_mode = false;
+										repl_state.lock().unwrap().ots = None;
 									}
 								}
 							}
@@ -325,22 +350,31 @@ pub(crate) async fn run_repl(
 					continue;
 				}
 
-				let (new_buffer, action) = handle_input(&buffer, line);
+				let state = repl_state.lock().unwrap().clone();
+				let (new_buffer, action) = handle_input(&buffer, line, &state);
 				buffer = new_buffer;
 
 				match action {
 					ReplAction::Continue => continue,
+					ReplAction::ToggleExpanded => {
+						let mut state = repl_state.lock().unwrap();
+						state.expanded_mode = !state.expanded_mode;
+						eprintln!(
+							"Expanded display is {}.",
+							if state.expanded_mode { "on" } else { "off" }
+						);
+						continue;
+					}
 					ReplAction::Exit => {
 						let user_input = line.to_string();
 						let _ = rl.add_history_entry(&user_input);
-						let current_write_mode = *write_mode.lock().unwrap();
-						let current_ots = ots.lock().unwrap().clone();
+						let state = repl_state.lock().unwrap();
 						if let Err(e) = rl.history_mut().add_entry(
 							user_input,
 							db_user.clone(),
 							sys_user.clone(),
-							current_write_mode,
-							current_ots,
+							state.write_mode,
+							state.ots.clone(),
 						) {
 							debug!("failed to add to history: {}", e);
 						}
@@ -352,14 +386,13 @@ pub(crate) async fn run_repl(
 						modifiers,
 					} => {
 						let _ = rl.add_history_entry(&input);
-						let current_write_mode = *write_mode.lock().unwrap();
-						let current_ots = ots.lock().unwrap().clone();
+						let state = repl_state.lock().unwrap();
 						if let Err(e) = rl.history_mut().add_entry(
 							input,
 							db_user.clone(),
 							sys_user.clone(),
-							current_write_mode,
-							current_ots,
+							state.write_mode,
+							state.ots.clone(),
 						) {
 							debug!("failed to add to history: {}", e);
 						}
@@ -369,7 +402,7 @@ pub(crate) async fn run_repl(
 								// If write mode is on and we're not in a transaction, start one
 								let tx_state =
 									check_transaction_state(&monitor_client, backend_pid).await;
-								if *write_mode.lock().unwrap()
+								if repl_state.lock().unwrap().write_mode
 									&& matches!(tx_state, TransactionState::None)
 								{
 									if let Err(e) = client.batch_execute("BEGIN").await {
@@ -411,21 +444,24 @@ mod tests {
 
 	#[test]
 	fn test_handle_input_empty_line() {
-		let (buffer, action) = handle_input("", "");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(action, ReplAction::Continue);
 	}
 
 	#[test]
 	fn test_handle_input_incomplete_query() {
-		let (buffer, action) = handle_input("", "SELECT * FROM users");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "SELECT * FROM users", &state);
 		assert_eq!(buffer, "SELECT * FROM users");
 		assert_eq!(action, ReplAction::Continue);
 	}
 
 	#[test]
 	fn test_handle_input_complete_query_semicolon() {
-		let (buffer, action) = handle_input("", "SELECT * FROM users;");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "SELECT * FROM users;", &state);
 		assert_eq!(buffer, "");
 		match action {
 			ReplAction::Execute {
@@ -443,7 +479,8 @@ mod tests {
 
 	#[test]
 	fn test_handle_input_complete_query_backslash_g() {
-		let (buffer, action) = handle_input("", "SELECT * FROM users\\g");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "SELECT * FROM users\\g", &state);
 		assert_eq!(buffer, "");
 		match action {
 			ReplAction::Execute {
@@ -461,11 +498,12 @@ mod tests {
 
 	#[test]
 	fn test_handle_input_multiline_query() {
-		let (buffer1, action1) = handle_input("", "SELECT *");
+		let state = ReplState::new();
+		let (buffer1, action1) = handle_input("", "SELECT *", &state);
 		assert_eq!(buffer1, "SELECT *");
 		assert_eq!(action1, ReplAction::Continue);
 
-		let (buffer2, action2) = handle_input(&buffer1, "FROM users;");
+		let (buffer2, action2) = handle_input(&buffer1, "FROM users;", &state);
 		assert_eq!(buffer2, "");
 		match action2 {
 			ReplAction::Execute { input, sql, .. } => {
@@ -478,48 +516,54 @@ mod tests {
 
 	#[test]
 	fn test_handle_input_quit_command() {
-		let (buffer, action) = handle_input("", "\\q");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "\\q", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(action, ReplAction::Exit);
 	}
 
 	#[test]
 	fn test_handle_input_quit_command_case_insensitive() {
-		let (buffer, action) = handle_input("", "QUIT");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "QUIT", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(action, ReplAction::Exit);
 	}
 
 	#[test]
 	fn test_handle_input_quit_after_incomplete() {
-		let (buffer1, action1) = handle_input("", "SELECT *");
+		let state = ReplState::new();
+		let (buffer1, action1) = handle_input("", "SELECT *", &state);
 		assert_eq!(buffer1, "SELECT *");
 		assert_eq!(action1, ReplAction::Continue);
 
 		// \q after incomplete query is not treated as quit - it's part of the query
-		let (buffer2, action2) = handle_input(&buffer1, "\\q");
+		let (buffer2, action2) = handle_input(&buffer1, "\\q", &state);
 		assert_eq!(buffer2, "SELECT *\n\\q");
 		assert_eq!(action2, ReplAction::Continue);
 	}
 
 	#[test]
 	fn test_handle_input_expanded_metacommand() {
-		let (buffer, action) = handle_input("", "\\x");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "\\x", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Continue);
+		assert_eq!(action, ReplAction::ToggleExpanded);
 	}
 
 	#[test]
 	fn test_handle_input_expanded_metacommand_uppercase() {
-		let (buffer, action) = handle_input("", "\\X");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "\\X", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Continue);
+		assert_eq!(action, ReplAction::ToggleExpanded);
 	}
 
 	#[test]
 	fn test_ctrl_c_clears_buffer() {
+		let state = ReplState::new();
 		// Simulate building up a query
-		let (buffer, _) = handle_input("", "SELECT *");
+		let (buffer, _) = handle_input("", "SELECT *", &state);
 		assert_eq!(buffer, "SELECT *");
 
 		// Ctrl-C should clear the buffer (simulated by setting buffer to empty)
@@ -527,7 +571,7 @@ mod tests {
 		assert_eq!(cleared_buffer, "");
 
 		// Can start fresh after Ctrl-C
-		let (new_buffer, action) = handle_input(cleared_buffer, "SELECT 1;");
+		let (new_buffer, action) = handle_input(cleared_buffer, "SELECT 1;", &state);
 		assert_eq!(new_buffer, "");
 		match action {
 			ReplAction::Execute { input, sql, .. } => {
@@ -555,7 +599,8 @@ mod tests {
 
 	#[test]
 	fn test_handle_input_preserves_modifiers() {
-		let (buffer, action) = handle_input("", "select 1+1 \\gx");
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "select 1+1 \\gx", &state);
 		assert_eq!(buffer, "");
 		match action {
 			ReplAction::Execute {
@@ -568,6 +613,54 @@ mod tests {
 				// SQL should be parsed without the modifier
 				assert_eq!(sql, "select 1+1");
 				// Modifiers should be parsed
+				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_expanded_mode_applied_to_query() {
+		let state = ReplState {
+			expanded_mode: true,
+			write_mode: false,
+			ots: None,
+		};
+		let (buffer, action) = handle_input("", "SELECT 1;", &state);
+		assert_eq!(buffer, "");
+		match action {
+			ReplAction::Execute { modifiers, .. } => {
+				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_expanded_mode_not_applied_when_off() {
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "SELECT 1;", &state);
+		assert_eq!(buffer, "");
+		match action {
+			ReplAction::Execute { modifiers, .. } => {
+				assert!(!modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_expanded_mode_with_explicit_gx() {
+		// When expanded mode is on and \gx is used, expanded should still be on
+		let state = ReplState {
+			expanded_mode: true,
+			write_mode: false,
+			ots: None,
+		};
+		let (buffer, action) = handle_input("", "SELECT 1\\gx", &state);
+		assert_eq!(buffer, "");
+		match action {
+			ReplAction::Execute { modifiers, .. } => {
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
 			_ => panic!("Expected Execute action"),
