@@ -6,9 +6,9 @@ mod repl;
 mod schema_cache;
 mod tls;
 
-pub mod highlighter;
-pub mod history;
-pub mod ots;
+mod highlighter;
+mod history;
+mod ots;
 
 pub use config::{PsqlConfig, PsqlError};
 pub use highlighter::Theme;
@@ -17,10 +17,15 @@ use miette::{IntoDiagnostic, Result};
 use std::sync::Arc;
 use tracing::debug;
 
-/// Run the psql2 client
+use crate::history::History;
+
 pub async fn run(config: PsqlConfig) -> Result<()> {
 	let theme = config.theme;
-	let history_path = config.history_path.clone();
+	let history_path = if let Some(path) = config.history_path {
+		path.clone()
+	} else {
+		History::default_path()?
+	};
 	let database_name = config.database_name.clone();
 	let db_user = config.user.clone().unwrap_or_else(|| {
 		std::env::var("USER")
@@ -92,7 +97,6 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		is_superuser,
 		config.connection_string,
 		config.write,
-		config.ots,
 	)
 	.await?;
 
@@ -109,10 +113,9 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: Some("testuser".to_string()),
 			theme: Theme::Dark,
-			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
-			ots: None,
 		};
 
 		assert_eq!(config.connection_string, "postgresql://localhost/test");
@@ -126,10 +129,9 @@ mod tests {
 			connection_string: "postgresql://localhost/test".to_string(),
 			user: None,
 			theme: Theme::Dark,
-			history_path: std::path::PathBuf::from("/tmp/history.redb"),
+			history_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
-			ots: None,
 		};
 
 		assert_eq!(config.user, None);

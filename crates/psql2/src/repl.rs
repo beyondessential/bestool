@@ -5,12 +5,12 @@ use crate::ots;
 use crate::parser::{parse_metacommand, parse_query_modifiers, Metacommand, QueryModifiers};
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
-use miette::{IntoDiagnostic, Result};
+use miette::{bail, IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, warn};
+use tracing::{debug, error, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReplAction {
@@ -34,40 +34,27 @@ impl ReplAction {
 		theme: Theme,
 		repl_state: &Arc<Mutex<ReplState>>,
 		rl: &mut Editor<SqlCompleter, History>,
-		db_user: &str,
-		sys_user: &str,
 		line: &str,
 	) -> ControlFlow<()> {
 		match self {
-			ReplAction::Continue => Self::handle_continue(),
-			ReplAction::ToggleExpanded => Self::handle_toggle_expanded(repl_state),
-			ReplAction::Exit => Self::handle_exit(repl_state, rl, db_user, sys_user, line),
+			ReplAction::Continue => ControlFlow::Continue(()),
+			ReplAction::ToggleExpanded => handle_toggle_expanded(repl_state),
+			ReplAction::Exit => handle_exit(repl_state, rl, line),
 			ReplAction::ToggleWriteMode => {
-				Self::handle_toggle_write_mode(
-					client,
-					monitor_client,
-					backend_pid,
-					repl_state,
-					rl,
-					db_user,
-					sys_user,
-				)
-				.await
+				handle_write_mode_toggle(client, monitor_client, backend_pid, repl_state, rl).await
 			}
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
 			} => {
-				Self::handle_execute(
+				handle_execute(
 					client,
 					monitor_client,
 					backend_pid,
 					theme,
 					repl_state,
 					rl,
-					db_user,
-					sys_user,
 					input,
 					sql,
 					modifiers,
@@ -76,126 +63,89 @@ impl ReplAction {
 			}
 		}
 	}
-
-	fn handle_continue() -> ControlFlow<()> {
-		ControlFlow::Continue(())
-	}
-
-	fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()> {
-		let mut state = repl_state.lock().unwrap();
-		state.expanded_mode = !state.expanded_mode;
-		eprintln!(
-			"Expanded display is {}.",
-			if state.expanded_mode { "on" } else { "off" }
-		);
-		ControlFlow::Continue(())
-	}
-
-	fn handle_exit(
-		repl_state: &Arc<Mutex<ReplState>>,
-		rl: &mut Editor<SqlCompleter, History>,
-		db_user: &str,
-		sys_user: &str,
-		line: &str,
-	) -> ControlFlow<()> {
-		let user_input = line.to_string();
-		let _ = rl.add_history_entry(&user_input);
-		let state = repl_state.lock().unwrap();
-		if let Err(e) = rl.history_mut().add_entry(
-			user_input,
-			db_user.to_string(),
-			sys_user.to_string(),
-			state.write_mode,
-			state.ots.clone(),
-		) {
-			debug!("failed to add to history: {}", e);
-		}
-		ControlFlow::Break(())
-	}
-
-	async fn handle_execute(
-		client: &tokio_postgres::Client,
-		monitor_client: &tokio_postgres::Client,
-		backend_pid: i32,
-		theme: Theme,
-		repl_state: &Arc<Mutex<ReplState>>,
-		rl: &mut Editor<SqlCompleter, History>,
-		db_user: &str,
-		sys_user: &str,
-		input: String,
-		sql: String,
-		modifiers: QueryModifiers,
-	) -> ControlFlow<()> {
-		let _ = rl.add_history_entry(&input);
-		let state = repl_state.lock().unwrap();
-		if let Err(e) = rl.history_mut().add_entry(
-			input,
-			db_user.to_string(),
-			sys_user.to_string(),
-			state.write_mode,
-			state.ots.clone(),
-		) {
-			debug!("failed to add to history: {}", e);
-		}
-		drop(state);
-
-		match execute_query(client, &sql, modifiers, theme).await {
-			Ok(()) => {
-				// If write mode is on and we're not in a transaction, start one
-				let tx_state = check_transaction_state(monitor_client, backend_pid).await;
-				if repl_state.lock().unwrap().write_mode
-					&& matches!(tx_state, TransactionState::None)
-				{
-					if let Err(e) = client.batch_execute("BEGIN").await {
-						warn!("Failed to start transaction: {}", e);
-					}
-				}
-			}
-			Err(e) => {
-				eprintln!("Error: {:?}", e);
-			}
-		}
-		ControlFlow::Continue(())
-	}
-
-	async fn handle_toggle_write_mode(
-		client: &tokio_postgres::Client,
-		monitor_client: &tokio_postgres::Client,
-		backend_pid: i32,
-		repl_state: &Arc<Mutex<ReplState>>,
-		rl: &mut Editor<SqlCompleter, History>,
-		db_user: &str,
-		sys_user: &str,
-	) -> ControlFlow<()> {
-		handle_write_mode_toggle(
-			client,
-			monitor_client,
-			backend_pid,
-			repl_state,
-			rl,
-			db_user,
-			sys_user,
-		)
-		.await
-	}
 }
 
 #[derive(Debug, Clone)]
-struct ReplState {
-	expanded_mode: bool,
-	write_mode: bool,
-	ots: Option<String>,
+pub(crate) struct ReplState {
+	pub(crate) db_user: String,
+	pub(crate) sys_user: String,
+	pub(crate) expanded_mode: bool,
+	pub(crate) write_mode: bool,
+	pub(crate) ots: Option<String>,
 }
 
 impl ReplState {
 	#[cfg(test)]
-	fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self {
+			db_user: "testuser".to_string(),
+			sys_user: "localuser".to_string(),
 			expanded_mode: false,
 			write_mode: false,
 			ots: None,
 		}
 	}
+}
+
+fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()> {
+	let mut state = repl_state.lock().unwrap();
+	state.expanded_mode = !state.expanded_mode;
+	eprintln!(
+		"Expanded display is {}.",
+		if state.expanded_mode { "on" } else { "off" }
+	);
+	ControlFlow::Continue(())
+}
+
+fn handle_exit(
+	repl_state: &Arc<Mutex<ReplState>>,
+	rl: &mut Editor<SqlCompleter, History>,
+	line: &str,
+) -> ControlFlow<()> {
+	{
+		let history = rl.history_mut();
+		history.set_repl_state(&repl_state.lock().unwrap());
+		if let Err(e) = history.add_entry(line.into()) {
+			debug!("failed to add to history: {}", e);
+		}
+	}
+	ControlFlow::Break(())
+}
+
+async fn handle_execute(
+	client: &tokio_postgres::Client,
+	monitor_client: &tokio_postgres::Client,
+	backend_pid: i32,
+	theme: Theme,
+	repl_state: &Arc<Mutex<ReplState>>,
+	rl: &mut Editor<SqlCompleter, History>,
+	input: String,
+	sql: String,
+	modifiers: QueryModifiers,
+) -> ControlFlow<()> {
+	{
+		let history = rl.history_mut();
+		history.set_repl_state(&repl_state.lock().unwrap());
+		if let Err(e) = history.add_entry(input) {
+			debug!("failed to add to history: {}", e);
+		}
+	}
+
+	match execute_query(client, &sql, modifiers, theme).await {
+		Ok(()) => {
+			// If write mode is on and we're not in a transaction, start one
+			let tx_state = check_transaction_state(monitor_client, backend_pid).await;
+			if repl_state.lock().unwrap().write_mode && matches!(tx_state, TransactionState::None) {
+				if let Err(e) = client.batch_execute("BEGIN").await {
+					warn!("Failed to start transaction: {}", e);
+				}
+			}
+		}
+		Err(e) => {
+			eprintln!("Error: {:?}", e);
+		}
+	}
+	ControlFlow::Continue(())
 }
 
 fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, ReplAction) {
@@ -302,20 +252,19 @@ async fn handle_write_mode_toggle(
 	backend_pid: i32,
 	repl_state: &Arc<Mutex<ReplState>>,
 	rl: &mut Editor<SqlCompleter, History>,
-	db_user: &str,
-	sys_user: &str,
 ) -> ControlFlow<()> {
-	let current_write_mode = repl_state.lock().unwrap().write_mode;
+	let state = { repl_state.lock().unwrap().clone() };
 
-	if current_write_mode {
+	if state.write_mode {
 		let tx_state = check_transaction_state(monitor_client, backend_pid).await;
 		if tx_state == TransactionState::Active {
 			eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
 			return ControlFlow::Continue(());
 		}
 
-		repl_state.lock().unwrap().write_mode = false;
-		repl_state.lock().unwrap().ots = None;
+		let mut new_state = state.clone();
+		new_state.write_mode = false;
+		new_state.ots = None;
 
 		match client
 			.batch_execute("ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
@@ -324,23 +273,19 @@ async fn handle_write_mode_toggle(
 			Ok(_) => {
 				debug!("Write mode disabled");
 				eprintln!("SESSION IS NOW READ ONLY");
-
-				rl.history_mut().set_context(
-					db_user.to_string(),
-					sys_user.to_string(),
-					false,
-					None,
-				);
+				rl.history_mut().set_repl_state(&new_state);
+				*repl_state.lock().unwrap() = new_state;
 			}
 			Err(e) => {
-				eprintln!("Failed to disable write mode: {}", e);
+				error!("Failed to disable write mode: {}", e);
 			}
 		}
 	} else {
 		match ots::prompt_for_ots(rl.history()) {
 			Ok(new_ots) => {
-				repl_state.lock().unwrap().write_mode = true;
-				repl_state.lock().unwrap().ots = Some(new_ots.clone());
+				let mut new_state = state.clone();
+				new_state.write_mode = true;
+				new_state.ots = Some(new_ots.clone());
 
 				match client
 					.batch_execute(
@@ -351,23 +296,16 @@ async fn handle_write_mode_toggle(
 					Ok(_) => {
 						debug!("Write mode enabled");
 						eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
-
-						rl.history_mut().set_context(
-							db_user.to_string(),
-							sys_user.to_string(),
-							true,
-							Some(new_ots),
-						);
+						rl.history_mut().set_repl_state(&new_state);
+						*repl_state.lock().unwrap() = new_state;
 					}
 					Err(e) => {
-						eprintln!("Failed to enable write mode: {}", e);
-						repl_state.lock().unwrap().write_mode = false;
-						repl_state.lock().unwrap().ots = None;
+						error!("Failed to enable write mode: {}", e);
 					}
 				}
 			}
 			Err(e) => {
-				eprintln!("Failed to enable write mode: {}", e);
+				error!("Failed to enable write mode: {}", e);
 			}
 		}
 	}
@@ -441,6 +379,7 @@ async fn check_transaction_state(
 	}
 }
 
+#[instrument(level = "debug")]
 pub(crate) async fn run_repl(
 	client: Arc<tokio_postgres::Client>,
 	theme: Theme,
@@ -450,7 +389,6 @@ pub(crate) async fn run_repl(
 	is_superuser: bool,
 	connection_string: String,
 	write_mode: bool,
-	ots: Option<String>,
 ) -> Result<()> {
 	// Get the backend PID of the main connection
 	let backend_pid: i32 = client
@@ -458,8 +396,7 @@ pub(crate) async fn run_repl(
 		.await
 		.into_diagnostic()?
 		.get(0);
-
-	debug!(backend_pid, "main connection backend PID");
+	debug!(pid=%backend_pid, "main connection backend PID");
 
 	// Create a separate connection for monitoring transaction state
 	let tls_connector = crate::tls::make_tls_connector()?;
@@ -473,25 +410,24 @@ pub(crate) async fn run_repl(
 			warn!("monitor connection error: {}", e);
 		}
 	});
-
 	debug!("monitor connection established");
+
 	let sys_user = std::env::var("USER")
 		.or_else(|_| std::env::var("USERNAME"))
 		.unwrap_or_else(|_| "unknown".to_string());
 
-	let repl_state = Arc::new(Mutex::new(ReplState {
+	let repl_state = ReplState {
+		sys_user,
+		db_user,
 		expanded_mode: false,
-		write_mode,
-		ots,
-	}));
 
-	let mut history = History::open(&history_path)?;
-	history.set_context(
-		db_user.clone(),
-		sys_user.clone(),
-		repl_state.lock().unwrap().write_mode,
-		repl_state.lock().unwrap().ots.clone(),
-	);
+		// write_mode: true (from the CLI) is handled later
+		write_mode: false,
+		ots: None,
+	};
+
+	let history = History::open(&history_path, repl_state.clone())?;
+	let repl_state = Arc::new(Mutex::new(repl_state));
 
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(connection_string);
@@ -508,6 +444,26 @@ pub(crate) async fn run_repl(
 	)
 	.into_diagnostic()?;
 	rl.set_helper(Some(completer));
+
+	// If --write is given on the CLI, toggle write mode as the first action
+	// This saves us from handling prompts/history outside of this function
+	if write_mode {
+		if ReplAction::ToggleWriteMode
+			.handle(
+				&client,
+				&monitor_client,
+				backend_pid,
+				theme,
+				&repl_state,
+				&mut rl,
+				"",
+			)
+			.await
+			.is_break()
+		{
+			bail!("Write mode aborted");
+		}
+	}
 
 	let mut buffer = String::new();
 
@@ -531,8 +487,8 @@ pub(crate) async fn run_repl(
 					continue;
 				}
 
-				let state = repl_state.lock().unwrap().clone();
-				let (new_buffer, action) = handle_input(&buffer, line, &state);
+				let (new_buffer, action) =
+					{ handle_input(&buffer, line, &repl_state.lock().unwrap()) };
 				buffer = new_buffer;
 
 				if action
@@ -543,8 +499,6 @@ pub(crate) async fn run_repl(
 						theme,
 						&repl_state,
 						&mut rl,
-						&db_user,
-						&sys_user,
 						line,
 					)
 					.await
@@ -761,6 +715,7 @@ mod tests {
 			expanded_mode: true,
 			write_mode: false,
 			ots: None,
+			..ReplState::new()
 		};
 		let (buffer, action) = handle_input("", "SELECT 1;", &state);
 		assert_eq!(buffer, "");
@@ -792,6 +747,7 @@ mod tests {
 			expanded_mode: true,
 			write_mode: false,
 			ots: None,
+			..ReplState::new()
 		};
 		let (buffer, action) = handle_input("", "SELECT 1\\gx", &state);
 		assert_eq!(buffer, "");

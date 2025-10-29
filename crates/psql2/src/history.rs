@@ -9,8 +9,10 @@ use rustyline::history::{History as HistoryTrait, SearchDirection, SearchResult}
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use tracing::{debug, info, trace, warn};
+use std::sync::Arc;
+use tracing::{debug, info, instrument, trace, warn};
+
+use crate::repl::ReplState;
 
 pub const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
 
@@ -50,30 +52,20 @@ pub struct TailscalePeer {
 /// - Database operations use redb's MVCC for consistency
 /// - Missing entries are handled gracefully
 /// - Timestamps can be refreshed with `reload_timestamps()`
+#[derive(Debug)]
 pub struct History {
-	db: Arc<RwLock<Database>>,
+	db: Arc<Database>,
 	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
 	timestamps: Vec<u64>,
-	/// Maximum history length
-	max_len: usize,
-	/// Ignore consecutive duplicates
-	ignore_dups: bool,
-	/// Ignore lines starting with space
-	ignore_space: bool,
-	/// Database user for new entries
-	pub db_user: String,
-	/// System user for new entries
-	pub sys_user: String,
-	/// Write mode for new entries
-	writemode: bool,
-	/// OTS value for new entries
-	ots: Option<String>,
+	/// State to record as context for new entries
+	pub repl_state: ReplState,
 }
 
 impl History {
 	/// Open or create a history database at the given path
-	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-		Self::open_internal(path, true)
+	pub fn open(path: impl AsRef<Path>, repl_state: ReplState) -> Result<Self> {
+		let path = path.as_ref();
+		Self::open_internal(path, repl_state, true)
 	}
 
 	/// Open a history database without importing from ~/.psql_history
@@ -81,201 +73,53 @@ impl History {
 	/// This is useful for tests where we want a clean database.
 	#[cfg(test)]
 	pub fn open_empty(path: impl AsRef<Path>) -> Result<Self> {
-		Self::open_internal(path, false)
+		let path = path.as_ref();
+		Self::open_internal(path, ReplState::new(), false)
 	}
 
-	fn open_internal(path: impl AsRef<Path>, import_psql_history: bool) -> Result<Self> {
-		let path = path.as_ref();
+	#[instrument(level = "debug")]
+	fn open_internal(
+		path: &Path,
+		repl_state: ReplState,
+		new_db_import_psql_history: bool,
+	) -> Result<Self> {
 		let is_new_db = !path.exists();
-		let db = Database::create(path).into_diagnostic()?;
-		let db = Arc::new(RwLock::new(db));
+		debug!(?path, is_new_db, "opening audit database");
 
-		let mut timestamps = Self::load_timestamps(&db)?;
+		let db = Database::create(path).into_diagnostic()?;
+
+		let mut timestamps = load_timestamps(&db)?;
 
 		// Import plain text psql history if this is a new database
-		if import_psql_history && is_new_db && timestamps.is_empty() {
-			if let Err(e) = Self::import_psql_history(&db, &mut timestamps) {
+		if new_db_import_psql_history && is_new_db && timestamps.is_empty() {
+			if let Err(e) = import_psql_history(&db, &mut timestamps) {
 				debug!("could not import psql history: {}", e);
 			}
 		}
 
-		if let Ok(metadata) = std::fs::metadata(path) {
-			const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
-			const TARGET_SIZE: u64 = 90 * 1024 * 1024; // 90MB
-			const CULL_BATCH: usize = 100; // Remove 100 entries at a time
+		cull_db_if_oversize(&db, path, &mut timestamps)?;
 
-			if metadata.len() > MAX_SIZE {
-				let size_mb = metadata.len() / (1024 * 1024);
-				info!(size_mb, "history database exceeds 100MB, culling to 90MB");
-
-				// Remove oldest entries in batches until we reach target size
-				while !timestamps.is_empty() {
-					if let Ok(metadata) = std::fs::metadata(path) {
-						if metadata.len() <= TARGET_SIZE {
-							break;
-						}
-					}
-
-					let to_remove = CULL_BATCH.min(timestamps.len());
-					let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
-
-					let write_txn = db.read().unwrap().begin_write().into_diagnostic()?;
-					{
-						let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
-						for ts in old_timestamps {
-							table.remove(ts).into_diagnostic()?;
-						}
-					}
-					write_txn.commit().into_diagnostic()?;
-				}
-
-				let final_size_mb = std::fs::metadata(path)
-					.map(|m| m.len() / (1024 * 1024))
-					.unwrap_or(0);
-				debug!(
-					size_mb = final_size_mb,
-					entries = timestamps.len(),
-					"culled history database"
-				);
-			}
-		}
+		debug!(?db, "opened audit database");
+		let db = Arc::new(db);
 
 		Ok(Self {
 			db,
 			timestamps,
-			max_len: 10000,
-			ignore_dups: true,
-			ignore_space: false,
-			db_user: String::new(),
-			sys_user: String::new(),
-			writemode: false,
-			ots: None,
+			repl_state,
 		})
 	}
 
-	/// Clone the database handle for concurrent access
-	pub fn clone_db(&self) -> Arc<RwLock<Database>> {
-		self.db.clone()
-	}
-
-	/// Set the context for new history entries
-	pub fn set_context(
-		&mut self,
-		db_user: String,
-		sys_user: String,
-		writemode: bool,
-		ots: Option<String>,
-	) {
-		debug!(
-			?db_user,
-			?sys_user,
-			writemode,
-			?ots,
-			"setting history context"
-		);
-		self.db_user = db_user;
-		self.sys_user = sys_user;
-		self.writemode = writemode;
-		self.ots = ots;
-	}
-
-	/// Load all timestamps from the database
-	fn load_timestamps(db: &Arc<RwLock<Database>>) -> Result<Vec<u64>> {
-		let read_txn = db.read().unwrap().begin_read().into_diagnostic()?;
-
-		let table = match read_txn.open_table(HISTORY_TABLE) {
-			Ok(table) => table,
-			Err(_) => return Ok(Vec::new()),
-		};
-
-		let mut timestamps = Vec::new();
-		for item in table.iter().into_diagnostic()? {
-			let (timestamp, _) = item.into_diagnostic()?;
-			timestamps.push(timestamp.value());
-		}
-
-		Ok(timestamps)
-	}
-
-	/// Import entries from plain text psql history file (~/.psql_history)
-	fn import_psql_history(db: &Arc<RwLock<Database>>, timestamps: &mut Vec<u64>) -> Result<()> {
-		let psql_history_path = if let Some(home) = std::env::var_os("HOME") {
-			PathBuf::from(home).join(".psql_history")
-		} else if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-			// Windows fallback
-			PathBuf::from(userprofile).join(".psql_history")
-		} else {
-			return Ok(()); // No home directory, skip import
-		};
-
-		if !psql_history_path.exists() {
-			debug!("no psql history file found at {:?}", psql_history_path);
-			return Ok(());
-		}
-
-		info!("importing psql history from {:?}", psql_history_path);
-
-		let content = std::fs::read_to_string(&psql_history_path).into_diagnostic()?;
-		let lines: Vec<&str> = content.lines().collect();
-
-		if lines.is_empty() {
-			return Ok(());
-		}
-
-		let write_txn = db.read().unwrap().begin_write().into_diagnostic()?;
-		{
-			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
-			let mut timestamp = 0u64;
-
-			for line in lines {
-				let line = line.trim();
-				if line.is_empty() {
-					continue;
-				}
-
-				// Create entry with default values
-				let entry = HistoryEntry {
-					query: line.to_string(),
-					db_user: String::new(),
-					sys_user: String::new(),
-					writemode: true,
-					tailscale: Vec::new(),
-					ots: None,
-				};
-
-				let json = serde_json::to_string(&entry).into_diagnostic()?;
-				table.insert(timestamp, json.as_str()).into_diagnostic()?;
-				timestamps.push(timestamp);
-				timestamp += 1;
-			}
-		}
-		write_txn.commit().into_diagnostic()?;
-
-		info!("imported {} entries from psql history", timestamps.len());
-		Ok(())
-	}
-
-	/// Reload timestamps from the database
-	///
-	/// This is useful when multiple processes are writing to the same database.
-	/// Call this to see entries added by other processes.
-	pub fn reload_timestamps(&mut self) -> Result<()> {
-		let old_len = self.timestamps.len();
-		self.timestamps = Self::load_timestamps(&self.db)?;
-		let new_len = self.timestamps.len();
-		if new_len != old_len {
-			debug!(old_len, new_len, "reloaded history timestamps");
-		} else {
-			trace!("reloaded history timestamps (no change)");
-		}
-		Ok(())
+	/// Set the context for new history entries from REPL state
+	#[instrument(level = "debug")]
+	pub fn set_repl_state(&mut self, repl_state: &ReplState) {
+		self.repl_state = repl_state.clone();
 	}
 
 	/// Get entry by timestamp
 	///
 	/// Returns None if the entry doesn't exist (may have been deleted by another process)
 	fn get_entry(&self, timestamp: u64) -> Result<Option<HistoryEntry>> {
-		let read_txn = self.db.read().unwrap().begin_read().into_diagnostic()?;
+		let read_txn = self.db.begin_read().into_diagnostic()?;
 
 		let table = match read_txn.open_table(HISTORY_TABLE) {
 			Ok(table) => table,
@@ -292,8 +136,10 @@ impl History {
 	}
 
 	/// Compact the database to reclaim space from deleted entries
-	pub fn compact(&mut self) -> Result<()> {
-		self.db.write().unwrap().compact().into_diagnostic()?;
+	pub fn compact(self) -> Result<()> {
+		let mut db =
+			Arc::try_unwrap(self.db).map_err(|_| miette::miette!("Failed to unwrap database"))?;
+		db.compact().into_diagnostic()?;
 		Ok(())
 	}
 
@@ -315,60 +161,18 @@ impl History {
 		Ok(history_dir.join("history.redb"))
 	}
 
-	/// Set up history with context, falling back to a temporary database on error
-	pub fn setup(
-		history_path: PathBuf,
-		db_user: Option<String>,
-		write_mode: bool,
-		ots: Option<String>,
-	) -> Self {
-		let mut history = Self::open(history_path.clone()).unwrap_or_else(|e| {
-			warn!("could not open history database: {}", e);
-			debug!("creating fallback history database");
-			// Create a temporary in-memory fallback (this will still fail, but provides a better error)
-			Self::open(
-				std::env::temp_dir()
-					.join(format!("bestool-psql-fallback-{}.redb", std::process::id())),
-			)
-			.expect("Failed to create fallback history database")
-		});
-
-		let db_user = db_user.unwrap_or_else(|| {
-			std::env::var("USER")
-				.or_else(|_| std::env::var("USERNAME"))
-				.unwrap_or_else(|_| "unknown".to_string())
-		});
-
-		let sys_user = std::env::var("USER")
-			.or_else(|_| std::env::var("USERNAME"))
-			.unwrap_or_else(|_| "unknown".to_string());
-
-		history.set_context(db_user.clone(), sys_user.clone(), write_mode, ots);
-
-		debug!(db_user, sys_user, write_mode, "history context set");
-
-		history
-	}
-
 	/// Add a new entry to the history
-	pub fn add_entry(
-		&mut self,
-		query: String,
-		db_user: String,
-		sys_user: String,
-		writemode: bool,
-		ots: Option<String>,
-	) -> Result<()> {
+	pub fn add_entry(&mut self, query: String) -> Result<()> {
 		trace!("adding history entry");
 		let tailscale = get_tailscale_peers().ok().unwrap_or_default();
 
 		let entry = HistoryEntry {
 			query,
-			db_user,
-			sys_user,
-			writemode,
+			db_user: self.repl_state.db_user.clone(),
+			sys_user: self.repl_state.sys_user.clone(),
+			writemode: self.repl_state.write_mode,
 			tailscale,
-			ots,
+			ots: self.repl_state.ots.clone(),
 		};
 
 		let json = serde_json::to_string(&entry).into_diagnostic()?;
@@ -377,7 +181,7 @@ impl History {
 			.into_diagnostic()?
 			.as_micros() as u64;
 
-		let write_txn = self.db.read().unwrap().begin_write().into_diagnostic()?;
+		let write_txn = self.db.begin_write().into_diagnostic()?;
 		{
 			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 			table.insert(timestamp, json.as_str()).into_diagnostic()?;
@@ -386,31 +190,12 @@ impl History {
 
 		self.timestamps.push(timestamp);
 
-		// Enforce max length (note: other processes may have added entries,
-		// so the actual database size may exceed max_len temporarily)
-		if self.timestamps.len() > self.max_len {
-			let to_remove = self.timestamps.len() - self.max_len;
-			let old_timestamps: Vec<u64> = self.timestamps.drain(..to_remove).collect();
-
-			// Remove from database (ignore errors if already deleted by another process)
-			if let Ok(write_txn) = self.db.read().unwrap().begin_write() {
-				{
-					if let Ok(mut table) = write_txn.open_table(HISTORY_TABLE) {
-						for ts in old_timestamps {
-							let _ = table.remove(ts);
-						}
-					}
-				}
-				let _ = write_txn.commit();
-			}
-		}
-
 		Ok(())
 	}
 
 	/// Get all history entries in chronological order (oldest first)
 	pub fn list(&self) -> Result<Vec<(u64, HistoryEntry)>> {
-		let read_txn = self.db.read().unwrap().begin_read().into_diagnostic()?;
+		let read_txn = self.db.begin_read().into_diagnostic()?;
 		let table = read_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
 
 		let mut entries = Vec::new();
@@ -422,52 +207,132 @@ impl History {
 
 		Ok(entries)
 	}
+}
 
-	/// Get the most recent N history entries (newest first)
-	pub fn recent(&self, limit: usize) -> Result<Vec<(u64, HistoryEntry)>> {
-		let mut all = self.list()?;
-		all.reverse();
-		all.truncate(limit);
-		Ok(all)
+/// Load all timestamps from the database
+#[instrument(level = "trace", skip(db))]
+fn load_timestamps(db: &Database) -> Result<Vec<u64>> {
+	let read_txn = db.begin_read().into_diagnostic()?;
+
+	let table = match read_txn.open_table(HISTORY_TABLE) {
+		Ok(table) => table,
+		Err(_) => return Ok(Vec::new()),
+	};
+
+	let mut timestamps = Vec::new();
+	for item in table.iter().into_diagnostic()? {
+		let (timestamp, _) = item.into_diagnostic()?;
+		timestamps.push(timestamp.value());
 	}
 
-	/// Get all queries (deduplicated, most recent first) for rustyline history
-	pub fn queries_for_rustyline(&self) -> Result<Vec<String>> {
-		let entries = self.list()?;
-		let mut queries = Vec::new();
-		let mut seen = std::collections::HashSet::new();
+	Ok(timestamps)
+}
 
-		// Iterate in reverse to get most recent first
-		for (_, entry) in entries.into_iter().rev() {
-			if seen.insert(entry.query.clone()) {
-				queries.push(entry.query);
+#[instrument(level = "trace", skip(db, path, timestamps))]
+fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) -> Result<()> {
+	const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+	const TARGET_SIZE: u64 = 90 * 1024 * 1024; // 90MB
+	const CULL_BATCH: usize = 100; // Remove 100 entries at a time
+
+	let Ok(metadata) = std::fs::metadata(path) else {
+		return Ok(());
+	};
+
+	if metadata.len() > MAX_SIZE {
+		let size_mb = metadata.len() / (1024 * 1024);
+		info!(size_mb, "history database is too large, reducing size");
+
+		// Remove oldest entries in batches until we reach target size
+		while !timestamps.is_empty() {
+			if let Ok(metadata) = std::fs::metadata(path) {
+				if metadata.len() <= TARGET_SIZE {
+					break;
+				}
 			}
+
+			let to_remove = CULL_BATCH.min(timestamps.len());
+			let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
+
+			let write_txn = db.begin_write().into_diagnostic()?;
+			{
+				let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
+				for ts in old_timestamps {
+					table.remove(ts).into_diagnostic()?;
+				}
+			}
+			write_txn.commit().into_diagnostic()?;
 		}
 
-		Ok(queries)
+		let final_size_mb = std::fs::metadata(path)
+			.map(|m| m.len() / (1024 * 1024))
+			.unwrap_or(0);
+		debug!(
+			size_mb = final_size_mb,
+			entries = timestamps.len(),
+			"culled history database"
+		);
 	}
 
-	/// Clear all history
-	pub fn clear_all(&mut self) -> Result<()> {
-		let write_txn = self.db.read().unwrap().begin_write().into_diagnostic()?;
-		{
-			let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
-			// Collect all keys first to avoid iterator invalidation
-			let keys: Vec<u64> = table
-				.iter()
-				.into_diagnostic()?
-				.filter_map(|item| item.ok())
-				.map(|(k, _)| k.value())
-				.collect();
+	Ok(())
+}
 
-			for key in keys {
-				table.remove(key).into_diagnostic()?;
+/// Import entries from plain text psql history file (~/.psql_history)
+#[instrument(level = "trace", skip(db, timestamps))]
+fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
+	let psql_history_path = if let Some(home) = std::env::var_os("HOME") {
+		PathBuf::from(home).join(".psql_history")
+	} else if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+		// Windows fallback
+		PathBuf::from(userprofile).join(".psql_history")
+	} else {
+		return Ok(()); // No home directory, skip import
+	};
+
+	if !psql_history_path.exists() {
+		debug!("no psql history file found at {:?}", psql_history_path);
+		return Ok(());
+	}
+
+	info!("importing psql history from {:?}", psql_history_path);
+
+	let content = std::fs::read_to_string(&psql_history_path).into_diagnostic()?;
+	let lines: Vec<&str> = content.lines().collect();
+
+	if lines.is_empty() {
+		return Ok(());
+	}
+
+	let write_txn = db.begin_write().into_diagnostic()?;
+	{
+		let mut table = write_txn.open_table(HISTORY_TABLE).into_diagnostic()?;
+		let mut timestamp = 0u64;
+
+		for line in lines {
+			let line = line.trim();
+			if line.is_empty() {
+				continue;
 			}
+
+			// Create entry with default values
+			let entry = HistoryEntry {
+				query: line.to_string(),
+				db_user: String::new(),
+				sys_user: String::new(),
+				writemode: true,
+				tailscale: Vec::new(),
+				ots: None,
+			};
+
+			let json = serde_json::to_string(&entry).into_diagnostic()?;
+			table.insert(timestamp, json.as_str()).into_diagnostic()?;
+			timestamps.push(timestamp);
+			timestamp += 1;
 		}
-		write_txn.commit().into_diagnostic()?;
-		self.timestamps.clear();
-		Ok(())
 	}
+	write_txn.commit().into_diagnostic()?;
+
+	info!("imported {} entries from psql history", timestamps.len());
+	Ok(())
 }
 
 /// Implementation of rustyline's History trait for database-backed history
@@ -522,15 +387,13 @@ impl HistoryTrait for History {
 		Ok(())
 	}
 
-	fn ignore_dups(&mut self, yes: bool) -> rustyline::Result<()> {
-		debug!(yes, "setting ignore_dups");
-		self.ignore_dups = yes;
+	fn ignore_dups(&mut self, _yes: bool) -> rustyline::Result<()> {
+		// No-op: we never ignore duplicates
 		Ok(())
 	}
 
-	fn ignore_space(&mut self, yes: bool) {
-		debug!(yes, "setting ignore_space");
-		self.ignore_space = yes;
+	fn ignore_space(&mut self, _yes: bool) {
+		// No-op: we never ignore entries
 	}
 
 	fn save(&mut self, _path: &Path) -> rustyline::Result<()> {
@@ -724,34 +587,23 @@ mod tests {
 
 		let mut history = History::open_empty(db_path).unwrap();
 
+		let mut state = ReplState {
+			db_user: "dbuser".to_string(),
+			sys_user: "testuser".to_string(),
+			write_mode: false,
+			ots: None,
+			..ReplState::new()
+		};
+		history.set_repl_state(&state);
+
 		// Add some entries
-		history
-			.add_entry(
-				"SELECT 1;".to_string(),
-				"dbuser".to_string(),
-				"testuser".to_string(),
-				false,
-				None,
-			)
-			.unwrap();
-		history
-			.add_entry(
-				"SELECT 2;".to_string(),
-				"dbuser".to_string(),
-				"testuser".to_string(),
-				false,
-				None,
-			)
-			.unwrap();
-		history
-			.add_entry(
-				"INSERT INTO foo;".to_string(),
-				"dbuser".to_string(),
-				"testuser".to_string(),
-				true,
-				Some("John Doe".to_string()),
-			)
-			.unwrap();
+		history.add_entry("SELECT 1;".to_string()).unwrap();
+		history.add_entry("SELECT 2;".to_string()).unwrap();
+
+		state.write_mode = true;
+		state.ots = Some("John Doe".to_string());
+		history.set_repl_state(&state);
+		history.add_entry("INSERT INTO foo;".to_string()).unwrap();
 
 		// List all entries
 		let entries = history.list().unwrap();
@@ -763,18 +615,5 @@ mod tests {
 		assert_eq!(entries[2].1.db_user, "dbuser");
 		assert_eq!(entries[2].1.sys_user, "testuser");
 		assert_eq!(entries[2].1.ots, Some("John Doe".to_string()));
-
-		// Get recent entries
-		let recent = history.recent(2).unwrap();
-		assert_eq!(recent.len(), 2);
-		assert_eq!(recent[0].1.query, "INSERT INTO foo;");
-		assert_eq!(recent[1].1.query, "SELECT 2;");
-
-		// Get queries for rustyline
-		let queries = history.queries_for_rustyline().unwrap();
-		assert_eq!(queries.len(), 3);
-		assert_eq!(queries[0], "INSERT INTO foo;");
-		assert_eq!(queries[1], "SELECT 2;");
-		assert_eq!(queries[2], "SELECT 1;");
 	}
 }

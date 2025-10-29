@@ -22,14 +22,11 @@ pub struct PsqlConfig {
 	pub theme: Theme,
 
 	/// Path to history database
-	pub history_path: std::path::PathBuf,
+	pub history_path: Option<std::path::PathBuf>,
 
 	/// Database name for display in prompt
 	pub database_name: String,
 
-	/// Whether write mode is enabled
+	/// Whether write mode is enabled upon entering the REPL
 	pub write: bool,
-
-	/// OTS (Over The Shoulder) value for write mode sessions
-	pub ots: Option<String>,
 }

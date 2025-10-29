@@ -1,7 +1,4 @@
-use bestool_psql2::highlighter::Theme;
-use bestool_psql2::history::History;
-use bestool_psql2::ots;
-use bestool_psql2::PsqlConfig;
+use bestool_psql2::{PsqlConfig, Theme};
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, Result};
@@ -85,27 +82,13 @@ async fn main() -> Result<()> {
 
 	debug!(?connection_string, "using connection string");
 
-	let history_path = if let Some(path) = args.history_path {
-		path
-	} else {
-		History::default_path()?
-	};
-
-	let ots = if args.write {
-		let history = History::open(&history_path)?;
-		Some(ots::prompt_for_ots(&history)?)
-	} else {
-		None
-	};
-
 	let config = PsqlConfig {
 		connection_string,
 		user: args.user,
 		theme,
-		history_path,
+		history_path: args.history_path,
 		database_name: String::new(), // Will be queried from database
 		write: args.write,
-		ots,
 	};
 
 	if args.write {
