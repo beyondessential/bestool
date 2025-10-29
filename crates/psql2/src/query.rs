@@ -1,5 +1,8 @@
 use crate::parser::{QueryModifier, QueryModifiers};
-use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, Table};
+use comfy_table::{
+	modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, ColumnConstraint,
+	ContentArrangement, Table, Width,
+};
 use miette::{IntoDiagnostic, Result};
 use serde_json::{Map, Value};
 use supports_unicode::Stream;
@@ -224,6 +227,12 @@ fn display_expanded(
 			table.load_preset(presets::ASCII_FULL);
 		}
 
+		table.set_content_arrangement(ContentArrangement::Dynamic);
+
+		if let Some(width) = get_terminal_width() {
+			table.set_width(width);
+		}
+
 		// No header in expanded mode, just column-value pairs
 		for (i, column) in columns.iter().enumerate() {
 			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
@@ -232,6 +241,20 @@ fn display_expanded(
 				Cell::new(column.name()).add_attribute(Attribute::Bold),
 				Cell::new(value_str),
 			]);
+		}
+
+		// Set column constraints: fixed width for column names, flexible for values
+		if let Some(col) = table.column_mut(0) {
+			col.set_constraint(ColumnConstraint::ContentWidth);
+		}
+		if let Some(col) = table.column_mut(1) {
+			if let Some(width) = get_terminal_width() {
+				// Reserve space for column name, borders, and padding
+				let max_value_width = width.saturating_sub(20).max(30);
+				col.set_constraint(ColumnConstraint::UpperBoundary(Width::Fixed(
+					max_value_width,
+				)));
+			}
 		}
 
 		println!("{table}");
@@ -251,6 +274,12 @@ fn display_normal(
 		table.apply_modifier(UTF8_ROUND_CORNERS);
 	} else {
 		table.load_preset(presets::ASCII_FULL);
+	}
+
+	table.set_content_arrangement(ContentArrangement::Dynamic);
+
+	if let Some(width) = get_terminal_width() {
+		table.set_width(width);
 	}
 
 	table.set_header(columns.iter().map(|col| {
@@ -391,6 +420,20 @@ fn supports_unicode() -> bool {
 	supports_unicode::on(Stream::Stdout)
 }
 
+fn get_terminal_width() -> Option<u16> {
+	#[cfg(unix)]
+	{
+		use std::os::fd::AsRawFd;
+		let fd = std::io::stdout().as_raw_fd();
+		let mut winsize: libc::winsize = unsafe { std::mem::zeroed() };
+		let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut winsize) };
+		if result == 0 && winsize.ws_col > 0 {
+			return Some(winsize.ws_col);
+		}
+	}
+	None
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -498,5 +541,12 @@ mod tests {
 			Value::String(json_string.to_string())
 		};
 		assert!(json_value.is_object());
+	}
+
+	#[test]
+	fn test_get_terminal_width() {
+		// This test just ensures the function can be called without panicking
+		// The actual return value depends on the environment
+		let _ = get_terminal_width();
 	}
 }
