@@ -345,6 +345,16 @@ impl SqlCompleter {
 	fn find_completions(&self, input: &str, pos: usize) -> Vec<Pair> {
 		let text_before_cursor = &input[..pos];
 
+		// Check if we're completing a file path after \i command
+		// Do this check before checking for empty current_word so we can show directory listings
+		if text_before_cursor.trim_start().starts_with("\\i ") {
+			// Extract the file path being typed
+			let path_start = text_before_cursor.find("\\i ").unwrap() + 3;
+			let partial_path = &text_before_cursor[path_start..];
+
+			return self.complete_file_path(partial_path);
+		}
+
 		let word_start = text_before_cursor
 			.rfind(|c: char| c.is_whitespace() || c == '(' || c == ',' || c == ';')
 			.map(|i| i + 1)
@@ -357,15 +367,6 @@ impl SqlCompleter {
 		}
 
 		let mut completions = Vec::new();
-
-		// Check if we're completing a file path after \i command
-		if text_before_cursor.trim_start().starts_with("\\i ") {
-			// Extract the file path being typed
-			let path_start = text_before_cursor.find("\\i ").unwrap() + 3;
-			let partial_path = &text_before_cursor[path_start..];
-
-			return self.complete_file_path(partial_path);
-		}
 
 		if current_word.starts_with('\\') {
 			for cmd in &self.psql_commands {
@@ -500,8 +501,17 @@ impl SqlCompleter {
 		if let Ok(entries) = std::fs::read_dir(dir_path) {
 			for entry in entries.flatten() {
 				if let Ok(file_name) = entry.file_name().into_string() {
-					// Filter by partial name
-					if file_name.starts_with(partial_name) {
+					// Skip hidden files (starting with .) unless explicitly requested
+					if file_name.starts_with('.') && !partial_name.starts_with('.') {
+						continue;
+					}
+
+					// Filter by partial name (empty string matches everything)
+					// Match case-insensitively
+					if file_name
+						.to_lowercase()
+						.starts_with(&partial_name.to_lowercase())
+					{
 						let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
 
 						// Build the replacement path
@@ -534,7 +544,17 @@ impl SqlCompleter {
 			}
 		}
 
-		completions.sort_by(|a, b| a.display.cmp(&b.display));
+		// Sort directories first, then files, both alphabetically
+		completions.sort_by(|a, b| {
+			let a_is_dir = a.display.ends_with('/');
+			let b_is_dir = b.display.ends_with('/');
+			match (a_is_dir, b_is_dir) {
+				(true, false) => std::cmp::Ordering::Less,
+				(false, true) => std::cmp::Ordering::Greater,
+				_ => a.display.cmp(&b.display),
+			}
+		});
+
 		completions
 	}
 }
@@ -683,6 +703,115 @@ mod tests {
 
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display.starts_with("test")));
+
+		// Cleanup
+		let _ = fs::remove_dir_all(&temp_dir);
+	}
+
+	#[test]
+	fn test_include_command_directory_listing() {
+		use std::fs;
+		use std::io::Write;
+
+		// Create a temporary directory with test files
+		let temp_dir = std::env::temp_dir().join("psql2_test_dir_listing");
+		let _ = fs::remove_dir_all(&temp_dir);
+		fs::create_dir_all(&temp_dir).unwrap();
+
+		// Create test files and directories
+		let test_file1 = temp_dir.join("query1.sql");
+		let test_file2 = temp_dir.join("query2.sql");
+		let test_dir1 = temp_dir.join("queries");
+		let test_dir2 = temp_dir.join("scripts");
+
+		fs::File::create(&test_file1)
+			.unwrap()
+			.write_all(b"SELECT 1;")
+			.unwrap();
+		fs::File::create(&test_file2)
+			.unwrap()
+			.write_all(b"SELECT 2;")
+			.unwrap();
+		fs::create_dir(&test_dir1).unwrap();
+		fs::create_dir(&test_dir2).unwrap();
+
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test completion with just the directory path (no partial filename)
+		let path_str = temp_dir.to_string_lossy();
+		let input = format!("\\i {}/", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		// Should list all files and directories
+		assert!(!completions.is_empty());
+		assert!(completions.len() >= 4);
+
+		// Directories should come first (have trailing slash)
+		let dir_count = completions
+			.iter()
+			.filter(|c| c.display.ends_with('/'))
+			.count();
+		assert!(dir_count >= 2);
+
+		// Test with no path at all (current directory)
+		// This should show files in the current working directory
+		let input = "\\i ";
+		let _completions = completer.find_completions(input, input.len());
+		// Should have some completions (current dir likely has files)
+		// We don't assert specific files since we don't control the working directory
+
+		// Cleanup
+		let _ = fs::remove_dir_all(&temp_dir);
+	}
+
+	#[test]
+	fn test_include_command_case_insensitive_matching() {
+		use std::fs;
+		use std::io::Write;
+
+		// Create a temporary directory with test files
+		let temp_dir = std::env::temp_dir().join("psql2_test_case_insensitive");
+		let _ = fs::remove_dir_all(&temp_dir);
+		fs::create_dir_all(&temp_dir).unwrap();
+
+		// Create test files with mixed case
+		let test_file1 = temp_dir.join("Cargo.toml");
+		let test_file2 = temp_dir.join("README.md");
+		let test_dir = temp_dir.join("Scripts");
+
+		fs::File::create(&test_file1)
+			.unwrap()
+			.write_all(b"[package]")
+			.unwrap();
+		fs::File::create(&test_file2)
+			.unwrap()
+			.write_all(b"# README")
+			.unwrap();
+		fs::create_dir(&test_dir).unwrap();
+
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test lowercase matching uppercase files
+		let path_str = temp_dir.to_string_lossy();
+		let input = format!("\\i {}/cargo", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "Cargo.toml"));
+
+		// Test uppercase matching mixed case
+		let input = format!("\\i {}/SCRIPTS", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "Scripts/"));
+
+		// Test mixed case matching
+		let input = format!("\\i {}/ReAdMe", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "README.md"));
 
 		// Cleanup
 		let _ = fs::remove_dir_all(&temp_dir);
