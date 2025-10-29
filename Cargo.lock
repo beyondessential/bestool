@@ -464,6 +464,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "signal-hook",
  "supports-unicode",
  "syntect",
  "tempfile",

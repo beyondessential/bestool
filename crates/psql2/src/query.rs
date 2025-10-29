@@ -12,11 +12,6 @@ use syntect::{
 };
 use tracing::{debug, warn};
 
-#[cfg(unix)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(unix)]
-use std::sync::Arc;
-
 /// Execute a SQL query and display the results.
 pub(crate) async fn execute_query(
 	client: &tokio_postgres::Client,
@@ -30,48 +25,34 @@ pub(crate) async fn execute_query(
 
 	#[cfg(unix)]
 	let rows = {
-		use tokio::signal::unix::{signal, SignalKind};
-
-		// Block SIGINT at the signal mask level to prevent rustyline's handler from running
-		// We'll handle it ourselves with tokio's signal handler
-		let mut old_mask = unsafe { std::mem::zeroed() };
-		let mut new_mask = unsafe { std::mem::zeroed() };
-		unsafe {
-			libc::sigemptyset(&mut new_mask);
-			libc::sigaddset(&mut new_mask, libc::SIGINT);
-			libc::pthread_sigmask(libc::SIG_BLOCK, &new_mask, &mut old_mask);
-		}
-
-		// Set up our own signal handler for SIGINT
-		let mut sigint = signal(SignalKind::interrupt()).into_diagnostic()?;
 		let cancel_token = client.cancel_token();
 		let tls_connector = crate::tls::make_tls_connector()?;
-		let cancelled = Arc::new(AtomicBool::new(false));
-		let cancelled_clone = cancelled.clone();
 
-		// Race between query execution and SIGINT
+		// Reset the flag before starting
+		crate::reset_sigint();
+
+		// Poll for SIGINT while executing query
 		let result = tokio::select! {
 			result = client.query(sql, &[]) => {
 				result.into_diagnostic()
 			}
-			_ = sigint.recv() => {
-				cancelled_clone.store(true, Ordering::SeqCst);
+			_ = async {
+				loop {
+					tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+					if crate::sigint_received() {
+						break;
+					}
+				}
+			} => {
 				eprintln!("\nCancelling query...");
 				if let Err(e) = cancel_token.cancel_query(tls_connector).await {
 					warn!("Failed to cancel query: {:?}", e);
 				}
-				// Restore signal mask before returning
-				unsafe {
-					libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut());
-				}
+				// Reset flag for next time
+				crate::reset_sigint();
 				return Ok(());
 			}
 		};
-
-		// Restore the original signal mask
-		unsafe {
-			libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut());
-		}
 
 		result?
 	};

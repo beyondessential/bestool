@@ -40,6 +40,7 @@ winnow = "0.7.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"
+signal-hook = "0.3.18"
 
 [features]
 default = ["cli"]
