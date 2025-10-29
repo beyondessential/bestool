@@ -50,6 +50,7 @@ impl ReplAction {
 			ReplAction::SetVar { name, value } => handle_set_var(ctx, name, value),
 			ReplAction::UnsetVar { name } => handle_unset_var(ctx, name),
 			ReplAction::LookupVar { pattern } => handle_lookup_var(ctx, pattern),
+			ReplAction::GetVar { name } => handle_get_var(ctx, name),
 			ReplAction::Execute {
 				input,
 				sql,
@@ -266,6 +267,7 @@ fn handle_help() -> ControlFlow<()> {
 	eprintln!("  \\debug [cmd]  - Debug commands (run \\debug for options)");
 	eprintln!("  \\set <name> <value> - Set a variable");
 	eprintln!("  \\unset <name> - Unset a variable");
+	eprintln!("  \\get <name>   - Get and print a variable value");
 	eprintln!("  \\vars [pattern] - List variables (optionally matching pattern)");
 	eprintln!();
 	eprintln!("Query modifiers (used after query):");
@@ -326,6 +328,15 @@ fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> Cont
 
 	println!("{}", table);
 
+	ControlFlow::Continue(())
+}
+
+fn handle_get_var(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
+	let state = ctx.repl_state.lock().unwrap();
+	match state.vars.get(&name) {
+		Some(value) => println!("{}", value),
+		None => eprintln!("Variable '{}' not found", name),
+	}
 	ControlFlow::Continue(())
 }
 

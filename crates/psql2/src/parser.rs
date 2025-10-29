@@ -35,6 +35,7 @@ pub(crate) enum Metacommand {
 	SetVar { name: String, value: String },
 	UnsetVar { name: String },
 	LookupVar { pattern: Option<String> },
+	GetVar { name: String },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -210,6 +211,22 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		})
 	}
 
+	fn get_var_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("get").parse_next(input)?;
+		space1.parse_next(input)?;
+		let name = rest.parse_next(input)?;
+		let name = name.trim();
+		if name.is_empty() {
+			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+		}
+		Ok(Metacommand::GetVar {
+			name: name.to_string(),
+		})
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
@@ -223,6 +240,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		set_var_command,
 		unset_var_command,
 		lookup_var_command,
+		get_var_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -1168,5 +1186,33 @@ mod tests {
 				pattern: Some("pattern*".to_string()),
 			})
 		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_get_var() {
+		let result = parse_metacommand("\\get myvar").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::GetVar {
+				name: "myvar".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_get_var_with_whitespace() {
+		let result = parse_metacommand("  \\get  myvar  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::GetVar {
+				name: "myvar".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_get_var_without_name() {
+		let result = parse_metacommand("\\get").unwrap();
+		assert_eq!(result, None);
 	}
 }

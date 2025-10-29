@@ -35,6 +35,9 @@ pub(crate) enum ReplAction {
 	LookupVar {
 		pattern: Option<String>,
 	},
+	GetVar {
+		name: String,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -66,6 +69,7 @@ pub(crate) fn handle_input(
 				Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
 				Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
 				Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
+				Metacommand::GetVar { name } => ReplAction::GetVar { name },
 			};
 			return (String::new(), action);
 		}
