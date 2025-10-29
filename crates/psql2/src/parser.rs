@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use winnow::ascii::{space0, space1, Caseless};
 use winnow::combinator::{alt, eof, opt, preceded, repeat};
 use winnow::error::ErrMode;
+use winnow::token::take_while;
 use winnow::token::{literal, none_of, rest, take_till};
 use winnow::Parser;
 
@@ -156,25 +157,36 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		literal('\\').parse_next(input)?;
 		literal("snip").parse_next(input)?;
 
-		let cmd: Option<String> =
-			opt(preceded(space1, repeat(1.., none_of(' ')))).parse_next(input)?;
-		space0.parse_next(input)?;
+		let cmd: Option<&str> = opt(preceded(
+			space1,
+			take_while(1.., |c: char| !c.is_whitespace()),
+		))
+		.parse_next(input)?;
 
 		let res = if let Some(cmd_str) = cmd {
-			let name: Option<String> =
-				opt(preceded(space1, repeat(1.., none_of(' ')))).parse_next(input)?;
+			let name: Option<&str> = opt(preceded(
+				space1,
+				take_while(1.., |c: char| !c.is_whitespace()),
+			))
+			.parse_next(input)?;
 			space0.parse_next(input)?;
-			match (cmd_str.trim(), name) {
-				("run", Some(name)) => Metacommand::SnippetRun { name },
-				("save", Some(name)) => Metacommand::SnippetSave { name },
+			eof.parse_next(input)?;
+			match (cmd_str, name) {
+				("run", Some(name)) => Metacommand::SnippetRun {
+					name: name.to_string(),
+				},
+				("save", Some(name)) => Metacommand::SnippetSave {
+					name: name.to_string(),
+				},
 				_ => Metacommand::Help,
 			}
 		} else {
 			// No argument, show help
+			space0.parse_next(input)?;
+			eof.parse_next(input)?;
 			Metacommand::Help
 		};
 
-		eof.parse_next(input)?;
 		Ok(res)
 	}
 
@@ -1279,5 +1291,41 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Verbatim));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_run() {
+		let cmd = parse_metacommand("\\snip run mysnippet").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::SnippetRun { name }) if name == "mysnippet"));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_save() {
+		let cmd = parse_metacommand("\\snip save mysnippet").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::SnippetSave { name }) if name == "mysnippet"));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_run_with_whitespace() {
+		let cmd = parse_metacommand("\\snip run   mysnippet").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::SnippetRun { name }) if name == "mysnippet"));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_without_subcommand() {
+		let cmd = parse_metacommand("\\snip").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::Help)));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_invalid_subcommand() {
+		let cmd = parse_metacommand("\\snip invalid name").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::Help)));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_run_without_name() {
+		let cmd = parse_metacommand("\\snip run").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::Help)));
 	}
 }
