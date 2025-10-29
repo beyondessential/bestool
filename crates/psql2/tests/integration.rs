@@ -13,6 +13,7 @@ async fn test_config_with_all_fields() {
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 		database_name: "testdb".to_string(),
 		write: false,
+		use_colours: false,
 	};
 
 	assert_eq!(config.user, Some("admin".to_string()));
@@ -31,6 +32,7 @@ async fn test_config_minimal() {
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 		database_name: "db".to_string(),
 		write: false,
+		use_colours: false,
 	};
 
 	assert_eq!(config.user, None);
@@ -56,6 +58,7 @@ async fn test_theme_variations() {
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "db".to_string(),
 			write: false,
+			use_colours: false,
 		},
 		PsqlConfig {
 			pool: pool2,
@@ -64,6 +67,7 @@ async fn test_theme_variations() {
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "db".to_string(),
 			write: false,
+			use_colours: false,
 		},
 		PsqlConfig {
 			pool: pool3,
@@ -72,6 +76,7 @@ async fn test_theme_variations() {
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "db".to_string(),
 			write: false,
+			use_colours: false,
 		},
 	];
 
@@ -93,6 +98,7 @@ async fn test_config_clone() {
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 		database_name: "db".to_string(),
 		write: false,
+		use_colours: false,
 	};
 
 	let config2 = config1.clone();
