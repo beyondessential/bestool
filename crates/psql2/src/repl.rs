@@ -46,6 +46,9 @@ impl ReplAction {
 			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
 			ReplAction::Debug { what } => handle_debug(ctx, what),
 			ReplAction::Help => handle_help(),
+			ReplAction::SetVar { name, value } => handle_set_var(name, value),
+			ReplAction::UnsetVar { name } => handle_unset_var(name),
+			ReplAction::LookupVar { pattern } => handle_lookup_var(pattern),
 			ReplAction::Execute {
 				input,
 				sql,
@@ -251,13 +254,16 @@ fn handle_help() -> ControlFlow<()> {
 	eprintln!("Available metacommands:");
 	eprintln!("  \\?            - Show this help");
 	eprintln!("  \\help         - Show this help");
-	eprintln!("  \\q            - Quit psql2");
+	eprintln!("  \\q            - Quit");
 	eprintln!("  \\x            - Toggle expanded output mode");
 	eprintln!("  \\W            - Toggle write mode");
 	eprintln!("  \\e [query]    - Edit query in external editor");
 	eprintln!("  \\i <file>     - Execute commands from file");
 	eprintln!("  \\o [file]     - Send query results to file (or close if no file specified)");
 	eprintln!("  \\debug [cmd]  - Debug commands (run \\debug for options)");
+	eprintln!("  \\set <name> <value> - Set a variable");
+	eprintln!("  \\unset <name> - Unset a variable");
+	eprintln!("  \\vars [pattern] - List variables (optionally matching pattern)");
 	eprintln!();
 	eprintln!("Query modifiers (used after query):");
 	eprintln!("  \\g            - Execute query");
@@ -268,6 +274,21 @@ fn handle_help() -> ControlFlow<()> {
 	eprintln!();
 	eprintln!("Modifiers can be combined, e.g. \\gxj for expanded JSON output");
 
+	ControlFlow::Continue(())
+}
+
+fn handle_set_var(_name: String, _value: String) -> ControlFlow<()> {
+	eprintln!("\\set command not yet implemented");
+	ControlFlow::Continue(())
+}
+
+fn handle_unset_var(_name: String) -> ControlFlow<()> {
+	eprintln!("\\unset command not yet implemented");
+	ControlFlow::Continue(())
+}
+
+fn handle_lookup_var(_pattern: Option<String>) -> ControlFlow<()> {
+	eprintln!("\\vars command not yet implemented");
 	ControlFlow::Continue(())
 }
 

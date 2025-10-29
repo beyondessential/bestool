@@ -25,6 +25,16 @@ pub(crate) enum ReplAction {
 		what: DebugWhat,
 	},
 	Help,
+	SetVar {
+		name: String,
+		value: String,
+	},
+	UnsetVar {
+		name: String,
+	},
+	LookupVar {
+		pattern: Option<String>,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -53,6 +63,9 @@ pub(crate) fn handle_input(
 				Metacommand::Output { file_path } => ReplAction::Output { file_path },
 				Metacommand::Debug { what } => ReplAction::Debug { what },
 				Metacommand::Help => ReplAction::Help,
+				Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
+				Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
+				Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
 			};
 			return (String::new(), action);
 		}

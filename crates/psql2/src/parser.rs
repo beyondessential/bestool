@@ -32,6 +32,9 @@ pub(crate) enum Metacommand {
 	Output { file_path: Option<String> },
 	Debug { what: DebugWhat },
 	Help,
+	SetVar { name: String, value: String },
+	UnsetVar { name: String },
+	LookupVar { pattern: Option<String> },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -153,6 +156,60 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		Ok(Metacommand::Help)
 	}
 
+	fn set_var_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("set").parse_next(input)?;
+		space1.parse_next(input)?;
+		let rest_str = rest.parse_next(input)?;
+		let rest_trimmed = rest_str.trim();
+
+		// Split on first whitespace to get name and value
+		let parts: Vec<&str> = rest_trimmed
+			.splitn(2, |c: char| c.is_whitespace())
+			.collect();
+		if parts.len() != 2 || parts[0].is_empty() || parts[1].trim().is_empty() {
+			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+		}
+
+		Ok(Metacommand::SetVar {
+			name: parts[0].to_string(),
+			value: parts[1].trim().to_string(),
+		})
+	}
+
+	fn unset_var_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("unset").parse_next(input)?;
+		space1.parse_next(input)?;
+		let name = rest.parse_next(input)?;
+		let name = name.trim();
+		if name.is_empty() {
+			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+		}
+		Ok(Metacommand::UnsetVar {
+			name: name.to_string(),
+		})
+	}
+
+	fn lookup_var_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("vars").parse_next(input)?;
+		let pattern = opt(preceded(space1, rest)).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::LookupVar {
+			pattern: pattern
+				.map(|s: &str| s.trim().to_string())
+				.filter(|s| !s.is_empty()),
+		})
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
@@ -163,6 +220,9 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		output_command,
 		debug_command,
 		help_command,
+		set_var_command,
+		unset_var_command,
+		lookup_var_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -998,5 +1058,115 @@ mod tests {
 	fn test_parse_metacommand_help_word_with_whitespace() {
 		let result = parse_metacommand("  \\help  ").unwrap();
 		assert_eq!(result, Some(Metacommand::Help));
+	}
+
+	#[test]
+	fn test_parse_metacommand_set_var() {
+		let result = parse_metacommand("\\set myvar myvalue").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::SetVar {
+				name: "myvar".to_string(),
+				value: "myvalue".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_set_var_with_whitespace() {
+		let result = parse_metacommand("  \\set  myvar  myvalue  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::SetVar {
+				name: "myvar".to_string(),
+				value: "myvalue".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_set_var_multiword_value() {
+		let result = parse_metacommand("\\set myvar this is a long value").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::SetVar {
+				name: "myvar".to_string(),
+				value: "this is a long value".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_set_var_without_value() {
+		let result = parse_metacommand("\\set myvar").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_set_var_without_name() {
+		let result = parse_metacommand("\\set").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_unset_var() {
+		let result = parse_metacommand("\\unset myvar").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::UnsetVar {
+				name: "myvar".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_unset_var_with_whitespace() {
+		let result = parse_metacommand("  \\unset  myvar  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::UnsetVar {
+				name: "myvar".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_unset_var_without_name() {
+		let result = parse_metacommand("\\unset").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_vars() {
+		let result = parse_metacommand("\\vars").unwrap();
+		assert_eq!(result, Some(Metacommand::LookupVar { pattern: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_vars_with_pattern() {
+		let result = parse_metacommand("\\vars my*").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::LookupVar {
+				pattern: Some("my*".to_string()),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_vars_with_whitespace() {
+		let result = parse_metacommand("  \\vars  ").unwrap();
+		assert_eq!(result, Some(Metacommand::LookupVar { pattern: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_vars_with_pattern_and_whitespace() {
+		let result = parse_metacommand("  \\vars  pattern*  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::LookupVar {
+				pattern: Some("pattern*".to_string()),
+			})
+		);
 	}
 }

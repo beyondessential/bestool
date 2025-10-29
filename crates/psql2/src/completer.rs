@@ -212,7 +212,7 @@ impl SqlCompleter {
 			],
 			psql_commands: vec![
 				"\\q", "\\e", "\\i", "\\o", "\\debug", "\\?", "\\help", "\\x", "\\g", "\\go",
-				"\\gx", "\\gset",
+				"\\gx", "\\gset", "\\set", "\\unset", "\\vars",
 			],
 		}
 	}
