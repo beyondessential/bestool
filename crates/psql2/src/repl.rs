@@ -2,7 +2,7 @@ use crate::completer::SqlCompleter;
 use crate::highlighter::Theme;
 use crate::history::History;
 use crate::ots;
-use crate::parser::{parse_query_modifiers, QueryModifiers};
+use crate::parser::{parse_metacommand, parse_query_modifiers, Metacommand, QueryModifiers};
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
 use miette::{IntoDiagnostic, Result};
@@ -32,25 +32,33 @@ fn handle_input(buffer: &str, new_line: &str) -> (String, ReplAction) {
 
 	let user_input = new_buffer.trim().to_string();
 
-	let is_quit = user_input.eq_ignore_ascii_case("\\q") || user_input.eq_ignore_ascii_case("quit");
-	let parse_result = if is_quit {
-		Ok(Some((user_input.clone(), QueryModifiers::new())))
-	} else {
-		parse_query_modifiers(&user_input)
-	};
+	// Check for metacommands first (only if buffer is empty, i.e., command starts on first character)
+	if buffer.is_empty() {
+		if let Ok(Some(metacmd)) = parse_metacommand(&user_input) {
+			let action = match metacmd {
+				Metacommand::Quit => ReplAction::Exit,
+				Metacommand::Expanded => {
+					// TODO: implement expanded mode toggle
+					ReplAction::Continue
+				}
+			};
+			return (String::new(), action);
+		}
+	}
+
+	// Handle legacy "quit" command for compatibility
+	if buffer.is_empty() && user_input.eq_ignore_ascii_case("quit") {
+		return (String::new(), ReplAction::Exit);
+	}
+
+	let parse_result = parse_query_modifiers(&user_input);
 
 	let action = match parse_result {
-		Ok(Some((sql, modifiers))) => {
-			if is_quit {
-				ReplAction::Exit
-			} else {
-				ReplAction::Execute {
-					input: user_input.clone(),
-					sql,
-					modifiers,
-				}
-			}
-		}
+		Ok(Some((sql, modifiers))) => ReplAction::Execute {
+			input: user_input.clone(),
+			sql,
+			modifiers,
+		},
 		Ok(None) | Err(_) => ReplAction::Continue,
 	};
 
@@ -323,13 +331,7 @@ pub(crate) async fn run_repl(
 				match action {
 					ReplAction::Continue => continue,
 					ReplAction::Exit => {
-						let user_input = if line.eq_ignore_ascii_case("\\q")
-							|| line.eq_ignore_ascii_case("quit")
-						{
-							line.to_string()
-						} else {
-							line.to_string()
-						};
+						let user_input = line.to_string();
 						let _ = rl.add_history_entry(&user_input);
 						let current_write_mode = *write_mode.lock().unwrap();
 						let current_ots = ots.lock().unwrap().clone();
@@ -498,6 +500,20 @@ mod tests {
 		let (buffer2, action2) = handle_input(&buffer1, "\\q");
 		assert_eq!(buffer2, "SELECT *\n\\q");
 		assert_eq!(action2, ReplAction::Continue);
+	}
+
+	#[test]
+	fn test_handle_input_expanded_metacommand() {
+		let (buffer, action) = handle_input("", "\\x");
+		assert_eq!(buffer, "");
+		assert_eq!(action, ReplAction::Continue);
+	}
+
+	#[test]
+	fn test_handle_input_expanded_metacommand_uppercase() {
+		let (buffer, action) = handle_input("", "\\X");
+		assert_eq!(buffer, "");
+		assert_eq!(action, ReplAction::Continue);
 	}
 
 	#[test]

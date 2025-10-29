@@ -1,7 +1,7 @@
 use miette::Result;
 use std::collections::HashSet;
 use winnow::ascii::{space0, space1, Caseless};
-use winnow::combinator::{alt, opt, preceded};
+use winnow::combinator::{alt, eof, opt, preceded};
 use winnow::error::ErrMode;
 use winnow::token::{literal, rest, take_till};
 use winnow::Parser;
@@ -14,6 +14,48 @@ pub(crate) enum QueryModifier {
 }
 
 pub(crate) type QueryModifiers = HashSet<QueryModifier>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Metacommand {
+	Quit,
+	Expanded,
+}
+
+pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
+	let input = input.trim();
+
+	// Check if input starts with backslash
+	if !input.starts_with('\\') {
+		return Ok(None);
+	}
+
+	fn quit_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		alt(('q', 'Q')).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::Quit)
+	}
+
+	fn expanded_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		alt(('x', 'X')).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::Expanded)
+	}
+
+	let mut input_slice = input;
+	if let Ok(cmd) = alt((quit_command, expanded_command)).parse_next(&mut input_slice) {
+		Ok(Some(cmd))
+	} else {
+		Ok(None)
+	}
+}
 
 pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, QueryModifiers)>> {
 	let input = input.trim();
@@ -431,5 +473,108 @@ mod tests {
 	fn test_parse_query_modifiers_no_terminator() {
 		let result = parse_query_modifiers("SELECT * FROM users").unwrap();
 		assert!(result.is_none());
+	}
+
+	#[test]
+	fn test_parse_metacommand_quit() {
+		let result = parse_metacommand("\\q").unwrap();
+		assert_eq!(result, Some(Metacommand::Quit));
+	}
+
+	#[test]
+	fn test_parse_metacommand_quit_uppercase() {
+		let result = parse_metacommand("\\Q").unwrap();
+		assert_eq!(result, Some(Metacommand::Quit));
+	}
+
+	#[test]
+	fn test_parse_metacommand_quit_with_whitespace() {
+		let result = parse_metacommand("  \\q  ").unwrap();
+		assert_eq!(result, Some(Metacommand::Quit));
+	}
+
+	#[test]
+	fn test_parse_metacommand_expanded() {
+		let result = parse_metacommand("\\x").unwrap();
+		assert_eq!(result, Some(Metacommand::Expanded));
+	}
+
+	#[test]
+	fn test_parse_metacommand_expanded_uppercase() {
+		let result = parse_metacommand("\\X").unwrap();
+		assert_eq!(result, Some(Metacommand::Expanded));
+	}
+
+	#[test]
+	fn test_parse_metacommand_expanded_with_whitespace() {
+		let result = parse_metacommand("  \\x  ").unwrap();
+		assert_eq!(result, Some(Metacommand::Expanded));
+	}
+
+	#[test]
+	fn test_parse_metacommand_not_metacommand() {
+		let result = parse_metacommand("SELECT * FROM users").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_invalid_mushed() {
+		let result = parse_metacommand("\\qx").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_with_trailing_text() {
+		let result = parse_metacommand("\\q extra").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_query_modifier() {
+		// \gx should not be parsed as metacommand
+		let result = parse_metacommand("\\gx").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_unknown() {
+		let result = parse_metacommand("\\z").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_empty_backslash() {
+		let result = parse_metacommand("\\").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_quit_with_text_after() {
+		let result = parse_metacommand("\\q quit now").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_expanded_with_text_after() {
+		let result = parse_metacommand("\\x on").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_mixed_case() {
+		let result = parse_metacommand("\\qX").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_no_backslash() {
+		let result = parse_metacommand("q").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_empty_string() {
+		let result = parse_metacommand("").unwrap();
+		assert_eq!(result, None);
 	}
 }
