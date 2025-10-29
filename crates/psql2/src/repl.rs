@@ -12,6 +12,7 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::fs::File;
 use tokio::io::{self, AsyncWriteExt};
@@ -44,8 +45,9 @@ impl ReplAction {
 			ReplAction::Exit => handle_exit(),
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
-			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
-			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
+			ReplAction::IncludeFile { file_path } => handle_include(ctx, &file_path).await,
+			ReplAction::SetOutputFile { file_path } => handle_set_output(ctx, &file_path).await,
+			ReplAction::UnsetOutputFile => handle_unset_output(ctx).await,
 			ReplAction::Debug { what } => handle_debug(ctx, what),
 			ReplAction::Help => handle_help(),
 			ReplAction::SetVar { name, value } => handle_set_var(ctx, name, value),
@@ -162,14 +164,14 @@ async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> Cont
 	ControlFlow::Continue(())
 }
 
-async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> ControlFlow<()> {
+async fn handle_include(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlFlow<()> {
 	use std::fs;
 
 	// Read the file content
-	let content = match fs::read_to_string(&file_path) {
+	let content = match fs::read_to_string(file_path) {
 		Ok(content) => content,
 		Err(e) => {
-			error!("Failed to read file '{}': {}", file_path, e);
+			error!("Failed to read file '{file_path:?}': {e}");
 			return ControlFlow::Continue(());
 		}
 	};
@@ -178,13 +180,13 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> Control
 
 	// Only process if content is not empty
 	if !content_trimmed.is_empty() {
-		debug!("read {} bytes from file '{}'", content.len(), file_path);
+		debug!("read {} bytes from file '{file_path:?}'", content.len());
 
 		// Add to history
 		let history = ctx.rl.history_mut();
 		history.set_repl_state(&ctx.repl_state.lock().unwrap());
 		if let Err(e) = history.add_entry(content.clone()) {
-			debug!("failed to add to history: {}", e);
+			debug!("failed to add to history: {e}");
 		}
 
 		// Parse and execute the content
@@ -200,13 +202,33 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> Control
 			return handle_execute(ctx, input, sql, modifiers).await;
 		}
 	} else {
-		debug!("file '{}' is empty, skipping", file_path);
+		debug!("file '{file_path:?}' is empty, skipping");
 	}
 
 	ControlFlow::Continue(())
 }
 
-async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> ControlFlow<()> {
+async fn handle_set_output(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlFlow<()> {
+	// Close existing file if any
+	let _ = handle_unset_output(ctx).await;
+
+	// Open new file
+	match File::create(file_path).await {
+		Ok(file) => {
+			debug!("opened output file: {file_path:?}");
+			eprintln!("Output will be written to: {file_path:?}");
+			let mut state = ctx.repl_state.lock().unwrap();
+			state.output_file = Some(Arc::new(TokioMutex::new(file)));
+		}
+		Err(e) => {
+			error!("Failed to open output file '{file_path:?}': {e}");
+		}
+	}
+
+	ControlFlow::Continue(())
+}
+
+async fn handle_unset_output(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 	// Close existing file if any
 	let file_arc_opt = {
 		let mut state = ctx.repl_state.lock().unwrap();
@@ -217,25 +239,10 @@ async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> Co
 		// Flush and close the file
 		let mut file = file_arc.lock().await;
 		if let Err(e) = file.flush().await {
-			warn!("failed to flush output file: {}", e);
+			warn!("failed to flush output file: {e}");
 		}
 		debug!("closed output file");
 		eprintln!("Output redirection closed");
-	}
-
-	// Open new file if path provided
-	if let Some(path) = file_path {
-		match File::create(path).await {
-			Ok(file) => {
-				debug!("opened output file: {}", path);
-				eprintln!("Output will be written to: {}", path);
-				let mut state = ctx.repl_state.lock().unwrap();
-				state.output_file = Some(Arc::new(TokioMutex::new(file)));
-			}
-			Err(e) => {
-				error!("Failed to open output file '{}': {}", path, e);
-			}
-		}
 	}
 
 	ControlFlow::Continue(())

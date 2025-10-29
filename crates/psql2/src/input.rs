@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use tracing::error;
+
 use crate::parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand};
 use crate::repl::ReplState;
 
@@ -15,12 +19,13 @@ pub(crate) enum ReplAction {
 	Edit {
 		content: Option<String>,
 	},
-	Include {
-		file_path: String,
+	IncludeFile {
+		file_path: PathBuf,
 	},
-	Output {
-		file_path: Option<String>,
+	SetOutputFile {
+		file_path: PathBuf,
 	},
+	UnsetOutputFile,
 	Debug {
 		what: DebugWhat,
 	},
@@ -62,8 +67,15 @@ pub(crate) fn handle_input(
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 				Metacommand::Edit { content } => ReplAction::Edit { content },
-				Metacommand::Include { file_path } => ReplAction::Include { file_path },
-				Metacommand::Output { file_path } => ReplAction::Output { file_path },
+				Metacommand::Include { file_path } => ReplAction::IncludeFile {
+					file_path: file_path.into(),
+				},
+				Metacommand::Output {
+					file_path: Some(file_path),
+				} => ReplAction::SetOutputFile {
+					file_path: file_path.into(),
+				},
+				Metacommand::Output { file_path: None } => ReplAction::UnsetOutputFile,
 				Metacommand::Debug { what } => ReplAction::Debug { what },
 				Metacommand::Help => ReplAction::Help,
 				Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
