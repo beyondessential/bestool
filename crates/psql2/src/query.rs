@@ -271,6 +271,21 @@ fn build_text_cast_query(
 	format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql)
 }
 
+pub(crate) fn configure_table(table: &mut Table) {
+	if supports_unicode::on(Stream::Stdout) {
+		table.load_preset(presets::UTF8_FULL);
+		table.apply_modifier(UTF8_ROUND_CORNERS);
+	} else {
+		table.load_preset(presets::ASCII_FULL);
+	}
+
+	table.set_content_arrangement(ContentArrangement::Dynamic);
+
+	if let Some(width) = get_terminal_width() {
+		table.set_width(width);
+	}
+}
+
 async fn display_expanded<W: AsyncWrite + Unpin>(
 	columns: &[tokio_postgres::Column],
 	rows: &[tokio_postgres::Row],
@@ -287,19 +302,7 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 			.into_diagnostic()?;
 
 		let mut table = Table::new();
-
-		if supports_unicode() {
-			table.load_preset(presets::UTF8_FULL);
-			table.apply_modifier(UTF8_ROUND_CORNERS);
-		} else {
-			table.load_preset(presets::ASCII_FULL);
-		}
-
-		table.set_content_arrangement(ContentArrangement::Dynamic);
-
-		if let Some(width) = get_terminal_width() {
-			table.set_width(width);
-		}
+		configure_table(&mut table);
 
 		// No header in expanded mode, just column-value pairs
 		for (i, column) in columns.iter().enumerate() {
@@ -348,19 +351,7 @@ async fn display_normal<W: AsyncWrite + Unpin>(
 	use_colours: bool,
 ) -> Result<()> {
 	let mut table = Table::new();
-
-	if supports_unicode() {
-		table.load_preset(presets::UTF8_FULL);
-		table.apply_modifier(UTF8_ROUND_CORNERS);
-	} else {
-		table.load_preset(presets::ASCII_FULL);
-	}
-
-	table.set_content_arrangement(ContentArrangement::Dynamic);
-
-	if let Some(width) = get_terminal_width() {
-		table.set_width(width);
-	}
+	configure_table(&mut table);
 
 	table.set_header(columns.iter().map(|col| {
 		let cell = Cell::new(col.name()).set_alignment(CellAlignment::Center);
@@ -529,10 +520,6 @@ fn highlight_json(
 	}
 
 	result
-}
-
-fn supports_unicode() -> bool {
-	supports_unicode::on(Stream::Stdout)
 }
 
 fn get_terminal_width() -> Option<u16> {

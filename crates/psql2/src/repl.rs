@@ -320,6 +320,7 @@ fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> Cont
 	}
 
 	let mut table = comfy_table::Table::new();
+	crate::query::configure_table(&mut table);
 	table.set_header(vec!["Name", "Value"]);
 
 	for (name, value) in matching_vars {
