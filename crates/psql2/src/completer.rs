@@ -273,7 +273,7 @@ impl SqlCompleter {
 				"\\i", // "\\ir",
 				// "\\include",
 				// "\\include_relative",
-				"\\o",
+				"\\o", "\\debug",
 				// "\\out",
 				// "\\p",
 				// "\\print",
@@ -283,13 +283,10 @@ impl SqlCompleter {
 				// "\\history",
 				// "\\w",
 				// "\\write",
-				"\\x",
-				// "\\expanded",
-				"\\g",
-				// "\\go",
-				// "\\gx",
+				"\\x", // "\\expanded",
+				"\\g", "\\go", "\\gx",
 				// "\\gexec",
-				// "\\gset",
+				"\\gset",
 				// "\\watch",
 				// "\\timing",
 				// "\\t",
@@ -361,6 +358,22 @@ impl SqlCompleter {
 			let partial_path = &text_before_cursor[path_start..];
 
 			return self.complete_file_path(partial_path);
+		}
+
+		// Check if we're completing after \debug command
+		if text_before_cursor.trim_start().starts_with("\\debug ") {
+			// Extract what's after \debug
+			let debug_start = text_before_cursor.find("\\debug ").unwrap() + 7;
+			let partial_arg = &text_before_cursor[debug_start..].trim();
+
+			// Offer "state" as completion
+			if "state".starts_with(&partial_arg.to_lowercase()) {
+				return vec![Pair {
+					display: "state".to_string(),
+					replacement: "state".to_string(),
+				}];
+			}
+			return Vec::new();
 		}
 
 		// Check if we're completing a file path after \g...o query modifier (e.g. \go, \gxo, \gjo, \gxjo)
@@ -932,5 +945,35 @@ mod tests {
 
 		// Cleanup
 		let _ = fs::remove_dir_all(&temp_dir);
+	}
+
+	#[test]
+	fn test_debug_command_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\", 1);
+		assert!(completions.iter().any(|c| c.display == "\\debug"));
+	}
+
+	#[test]
+	fn test_debug_state_argument_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test with no argument
+		let input = "\\debug ";
+		let completions = completer.find_completions(input, input.len());
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "state"));
+
+		// Test with partial argument
+		let input = "\\debug st";
+		let completions = completer.find_completions(input, input.len());
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "state"));
+
+		// Test with full argument should still match
+		let input = "\\debug state";
+		let completions = completer.find_completions(input, input.len());
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "state"));
 	}
 }
