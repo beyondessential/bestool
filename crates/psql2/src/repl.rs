@@ -24,8 +24,11 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history before handling the action (except for Continue and Edit which handle it themselves)
-		if !matches!(self, ReplAction::Continue | ReplAction::Edit { .. }) {
+		// Add to history before handling the action (except for Continue, Edit, and Include which handle it themselves)
+		if !matches!(
+			self,
+			ReplAction::Continue | ReplAction::Edit { .. } | ReplAction::Include { .. }
+		) {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
@@ -39,6 +42,7 @@ impl ReplAction {
 			ReplAction::Exit => handle_exit(),
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
+			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -138,6 +142,50 @@ async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> Cont
 		Err(e) => {
 			warn!("editor failed: {}", e);
 		}
+	}
+
+	ControlFlow::Continue(())
+}
+
+async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> ControlFlow<()> {
+	use std::fs;
+
+	// Read the file content
+	let content = match fs::read_to_string(&file_path) {
+		Ok(content) => content,
+		Err(e) => {
+			error!("Failed to read file '{}': {}", file_path, e);
+			return ControlFlow::Continue(());
+		}
+	};
+
+	let content_trimmed = content.trim();
+
+	// Only process if content is not empty
+	if !content_trimmed.is_empty() {
+		debug!("read {} bytes from file '{}'", content.len(), file_path);
+
+		// Add to history
+		let history = ctx.rl.history_mut();
+		history.set_repl_state(&ctx.repl_state.lock().unwrap());
+		if let Err(e) = history.add_entry(content.clone()) {
+			debug!("failed to add to history: {}", e);
+		}
+
+		// Parse and execute the content
+		let (_, action) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
+
+		// Execute the action if it's an Execute action
+		if let ReplAction::Execute {
+			input,
+			sql,
+			modifiers,
+		} = action
+		{
+			return handle_execute(ctx, input, sql, modifiers).await;
+		}
+	} else {
+		debug!("file '{}' is empty, skipping", file_path);
 	}
 
 	ControlFlow::Continue(())

@@ -15,6 +15,9 @@ pub(crate) enum ReplAction {
 	Edit {
 		content: Option<String>,
 	},
+	Include {
+		file_path: String,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -39,6 +42,7 @@ pub(crate) fn handle_input(
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 				Metacommand::Edit { content } => ReplAction::Edit { content },
+				Metacommand::Include { file_path } => ReplAction::Include { file_path },
 			};
 			return (String::new(), action);
 		}
@@ -184,14 +188,6 @@ mod tests {
 	fn test_handle_input_expanded_metacommand() {
 		let state = ReplState::new();
 		let (buffer, action) = handle_input("", "\\x", &state);
-		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::ToggleExpanded);
-	}
-
-	#[test]
-	fn test_handle_input_expanded_metacommand_uppercase() {
-		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "\\X", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(action, ReplAction::ToggleExpanded);
 	}

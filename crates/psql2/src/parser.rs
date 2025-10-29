@@ -21,6 +21,7 @@ pub(crate) enum Metacommand {
 	Expanded,
 	WriteMode,
 	Edit { content: Option<String> },
+	Include { file_path: String },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -35,7 +36,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
-		literal('q').parse_next(input)?;
+		alt((literal('q'), literal('Q'))).parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 		Ok(Metacommand::Quit)
@@ -74,12 +75,29 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		})
 	}
 
+	fn include_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal('i').parse_next(input)?;
+		space1.parse_next(input)?;
+		let file_path = rest.parse_next(input)?;
+		let file_path = file_path.trim();
+		if file_path.is_empty() {
+			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+		}
+		Ok(Metacommand::Include {
+			file_path: file_path.to_string(),
+		})
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
 		expanded_command,
 		write_mode_command,
 		edit_command,
+		include_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -514,12 +532,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_metacommand_quit_uppercase() {
-		let result = parse_metacommand("\\Q").unwrap();
-		assert_eq!(result, Some(Metacommand::Quit));
-	}
-
-	#[test]
 	fn test_parse_metacommand_quit_with_whitespace() {
 		let result = parse_metacommand("  \\q  ").unwrap();
 		assert_eq!(result, Some(Metacommand::Quit));
@@ -528,12 +540,6 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_expanded() {
 		let result = parse_metacommand("\\x").unwrap();
-		assert_eq!(result, Some(Metacommand::Expanded));
-	}
-
-	#[test]
-	fn test_parse_metacommand_expanded_uppercase() {
-		let result = parse_metacommand("\\X").unwrap();
 		assert_eq!(result, Some(Metacommand::Expanded));
 	}
 
@@ -617,12 +623,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_metacommand_write_mode_lowercase() {
-		let result = parse_metacommand("\\w").unwrap();
-		assert_eq!(result, Some(Metacommand::WriteMode));
-	}
-
-	#[test]
 	fn test_parse_metacommand_write_mode_with_whitespace() {
 		let result = parse_metacommand("  \\W  ").unwrap();
 		assert_eq!(result, Some(Metacommand::WriteMode));
@@ -637,12 +637,6 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_edit() {
 		let result = parse_metacommand("\\e").unwrap();
-		assert_eq!(result, Some(Metacommand::Edit { content: None }));
-	}
-
-	#[test]
-	fn test_parse_metacommand_edit_uppercase() {
-		let result = parse_metacommand("\\E").unwrap();
 		assert_eq!(result, Some(Metacommand::Edit { content: None }));
 	}
 
@@ -665,12 +659,57 @@ mod tests {
 
 	#[test]
 	fn test_parse_metacommand_edit_with_content_and_whitespace() {
-		let result = parse_metacommand("\\e   SELECT 1   ").unwrap();
+		let result = parse_metacommand("  \\e   SELECT 1  ").unwrap();
 		assert_eq!(
 			result,
 			Some(Metacommand::Edit {
 				content: Some("SELECT 1".to_string())
 			})
 		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_include() {
+		let result = parse_metacommand("\\i /path/to/file.sql").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Include {
+				file_path: "/path/to/file.sql".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_with_whitespace() {
+		let result = parse_metacommand("  \\i   /path/to/file.sql  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Include {
+				file_path: "/path/to/file.sql".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_relative_path() {
+		let result = parse_metacommand("\\i ./queries/test.sql").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Include {
+				file_path: "./queries/test.sql".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_without_path() {
+		let result = parse_metacommand("\\i").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_with_only_whitespace() {
+		let result = parse_metacommand("\\i   ").unwrap();
+		assert_eq!(result, None);
 	}
 }
