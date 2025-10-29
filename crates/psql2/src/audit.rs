@@ -95,7 +95,7 @@ impl Audit {
 		// Import plain text psql history if this is a new database
 		if new_db_import_psql_history && is_new_db && timestamps.is_empty() {
 			if let Err(e) = import_psql_history(&db, &mut timestamps) {
-				debug!("could not import psql history: {}", e);
+				debug!("could not import psql history: {e}");
 			}
 		}
 
@@ -299,11 +299,11 @@ fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
 	};
 
 	if !psql_history_path.exists() {
-		debug!("no psql history file found at {:?}", psql_history_path);
+		debug!("no psql history file found at {psql_history_path:?}");
 		return Ok(());
 	}
 
-	info!("importing psql history from {:?}", psql_history_path);
+	info!("importing psql history from {psql_history_path:?}");
 
 	let content = std::fs::read_to_string(&psql_history_path).into_diagnostic()?;
 	let lines: Vec<&str> = content.lines().collect();

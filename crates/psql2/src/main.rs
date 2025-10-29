@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
 
 	// Install a Ctrl-C handler that sets a flag for query cancellation
 	bestool_psql2::register_sigint_handler()
-		.map_err(|e| miette!("Failed to register Ctrl-C handler: {}", e))?;
+		.map_err(|e| miette!("Failed to register Ctrl-C handler: {e}"))?;
 
 	debug!("starting psql2");
 
@@ -81,7 +81,8 @@ async fn main() -> Result<()> {
 	let connection_string = if args.dbname.contains("://") {
 		args.dbname
 	} else {
-		format!("postgresql://localhost/{}", args.dbname)
+		let dbname = &args.dbname;
+		format!("postgresql://localhost/{dbname}")
 	};
 
 	debug!(?connection_string, "using connection string");

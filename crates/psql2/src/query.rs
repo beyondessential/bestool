@@ -168,11 +168,11 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		let text_rows = if !unprintable_columns.is_empty() {
 			let sql_trimmed = sql_to_execute.trim_end_matches(';').trim();
 			let text_query = build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
-			debug!("re-querying with text casts: {}", text_query);
+			debug!("re-querying with text casts: {text_query}");
 			match ctx.client.query(&text_query, &[]).await {
 				Ok(rows) => Some(rows),
 				Err(e) => {
-					debug!("failed to re-query with text casts: {:?}", e);
+					debug!("failed to re-query with text casts: {e:?}");
 					None
 				}
 			}
@@ -208,7 +208,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 			duration.as_secs_f64() * 1000.0
 		);
 		// Status messages always go to stderr
-		eprint!("{}", status_msg);
+		eprint!("{status_msg}");
 
 		// Handle VarSet modifier: if exactly one row, store column values as variables
 		if rows.len() == 1 {
@@ -223,7 +223,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 					let row = &rows[0];
 					for (i, column) in columns.iter().enumerate() {
 						let var_name = if let Some(prefix_str) = var_prefix {
-							format!("{}{}", prefix_str, column.name())
+							format!("{prefix_str}{col_name}", col_name = column.name())
 						} else {
 							column.name().to_string()
 						};
@@ -298,7 +298,7 @@ fn format_column_value(row: &tokio_postgres::Row, i: usize) -> String {
 	} else if let Ok(v) = row.try_get::<_, bool>(i) {
 		v.to_string()
 	} else if let Ok(v) = row.try_get::<_, Vec<u8>>(i) {
-		format!("\\x{}", hex::encode(v))
+		format!("\\x{encoded}", encoded = hex::encode(v))
 	} else if let Ok(v) = row.try_get::<_, jiff::Timestamp>(i) {
 		v.to_string()
 	} else if let Ok(v) = row.try_get::<_, jiff::civil::Date>(i) {
@@ -370,14 +370,17 @@ fn build_text_cast_query(
 		.enumerate()
 		.map(|(i, col)| {
 			if unprintable_columns.contains(&i) {
-				format!("(subq.{})::text", col.name())
+				format!("(subq.{col_name})::text", col_name = col.name())
 			} else {
-				format!("subq.{}", col.name())
+				format!("subq.{col_name}", col_name = col.name())
 			}
 		})
 		.collect();
 
-	format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql)
+	format!(
+		"SELECT {cols} FROM ({sql}) AS subq",
+		cols = column_exprs.join(", ")
+	)
 }
 
 pub(crate) fn configure_table(table: &mut Table) {
@@ -397,7 +400,7 @@ pub(crate) fn configure_table(table: &mut Table) {
 
 async fn display_expanded<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
-		let header = format!("-[ RECORD {} ]-\n", row_idx + 1);
+		let header = format!("-[ RECORD {num} ]-\n", num = row_idx + 1);
 		ctx.writer
 			.write_all(header.as_bytes())
 			.await
@@ -434,7 +437,7 @@ async fn display_expanded<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>
 			}
 		}
 
-		let table_output = format!("{}\n", table);
+		let table_output = format!("{table}\n");
 		ctx.writer
 			.write_all(table_output.as_bytes())
 			.await
@@ -467,7 +470,7 @@ async fn display_normal<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) 
 		table.add_row(row_data);
 	}
 
-	let table_output = format!("{}\n", table);
+	let table_output = format!("{table}\n");
 	ctx.writer
 		.write_all(table_output.as_bytes())
 		.await
@@ -548,12 +551,12 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		if ctx.use_colours {
 			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 			ctx.writer
-				.write_all(format!("{}\n", highlighted).as_bytes())
+				.write_all(format!("{highlighted}\n").as_bytes())
 				.await
 				.into_diagnostic()?;
 		} else {
 			ctx.writer
-				.write_all(format!("{}\n", json_str).as_bytes())
+				.write_all(format!("{json_str}\n").as_bytes())
 				.await
 				.into_diagnostic()?;
 		}
@@ -564,12 +567,12 @@ async fn display_json<W: AsyncWrite + Unpin>(
 			if ctx.use_colours {
 				let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 				ctx.writer
-					.write_all(format!("{}\n", highlighted).as_bytes())
+					.write_all(format!("{highlighted}\n").as_bytes())
 					.await
 					.into_diagnostic()?;
 			} else {
 				ctx.writer
-					.write_all(format!("{}\n", json_str).as_bytes())
+					.write_all(format!("{json_str}\n").as_bytes())
 					.await
 					.into_diagnostic()?;
 			}
@@ -636,14 +639,17 @@ mod tests {
 			.enumerate()
 			.map(|(i, name)| {
 				if unprintable_indices.contains(&i) {
-					format!("(subq.{})::text", name)
+					format!("(subq.{name})::text")
 				} else {
-					format!("subq.{}", name)
+					format!("subq.{name}")
 				}
 			})
 			.collect();
 
-		let result = format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql);
+		let result = format!(
+			"SELECT {cols} FROM ({sql}) AS subq",
+			cols = column_exprs.join(", ")
+		);
 
 		assert!(result.contains("(subq.id)::text"));
 		assert!(result.contains("subq.name"));

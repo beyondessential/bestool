@@ -41,10 +41,10 @@ impl SchemaCache {
 	pub fn columns_for_table(&self, table: &str) -> Option<&Vec<String>> {
 		self.columns
 			.get(table)
-			.or_else(|| self.columns.get(&format!("public.{}", table)))
+			.or_else(|| self.columns.get(&format!("public.{table}")))
 			.or_else(|| {
 				for schema in &self.schemas {
-					if let Some(cols) = self.columns.get(&format!("{}.{}", schema, table)) {
+					if let Some(cols) = self.columns.get(&format!("{schema}.{table}")) {
 						return Some(cols);
 					}
 				}
@@ -77,7 +77,7 @@ impl SchemaCacheManager {
 	pub fn start_background_refresh(self) -> tokio::task::JoinHandle<()> {
 		tokio::spawn(async move {
 			if let Err(e) = self.refresh_loop().await {
-				warn!("schema cache refresh task failed: {}", e);
+				warn!("schema cache refresh task failed: {e}");
 			}
 		})
 	}
@@ -86,7 +86,7 @@ impl SchemaCacheManager {
 	async fn refresh_loop(&self) -> Result<()> {
 		loop {
 			if let Err(e) = self.refresh().await {
-				warn!("failed to refresh schema cache: {}", e);
+				warn!("failed to refresh schema cache: {e}");
 			}
 
 			tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
@@ -221,7 +221,7 @@ impl SchemaCacheManager {
 			let table_name: String = row.get(1);
 			let column_name: String = row.get(2);
 
-			let qualified = format!("{}.{}", table_schema, table_name);
+			let qualified = format!("{table_schema}.{table_name}");
 			columns
 				.entry(qualified)
 				.or_default()

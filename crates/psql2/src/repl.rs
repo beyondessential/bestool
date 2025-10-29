@@ -39,7 +39,7 @@ impl ReplAction {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
-				debug!("failed to add to history: {}", e);
+				debug!("failed to add to history: {e}");
 			}
 		}
 
@@ -147,7 +147,7 @@ async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> Cont
 				let history = ctx.rl.history_mut();
 				history.set_repl_state(&ctx.repl_state.lock().unwrap());
 				if let Err(e) = history.add_entry(edited_content.clone()) {
-					debug!("failed to add to history: {}", e);
+					debug!("failed to add to history: {e}");
 				}
 
 				// Parse and execute the edited content
@@ -168,7 +168,7 @@ async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> Cont
 			}
 		}
 		Err(e) => {
-			warn!("editor failed: {}", e);
+			warn!("editor failed: {e}");
 		}
 	}
 
@@ -259,7 +259,7 @@ async fn handle_run_snippet(
 	let file_path = match state.snippets.path(&name) {
 		Ok(path) => path,
 		Err(err) => {
-			error!("Failed to find snippet '{}': {}", name, err);
+			error!("Failed to find snippet '{name}': {err}");
 			return ControlFlow::Continue(());
 		}
 	};
@@ -363,7 +363,7 @@ fn handle_help() -> ControlFlow<()> {
 		"\\vars [pattern]",
 		"List variables (optionally matching pattern)",
 	]);
-	eprintln!("{}", metacmds);
+	eprintln!("{metacmds}");
 
 	eprintln!("\nQuery modifiers (used after query):");
 	let mut modifiers = Table::new();
@@ -380,7 +380,7 @@ fn handle_help() -> ControlFlow<()> {
 		"\\gset [prefix]",
 		"Execute query and store results in variables",
 	]);
-	eprintln!("{}", modifiers);
+	eprintln!("{modifiers}");
 
 	eprintln!("\nModifiers can be combined, e.g. \\gxj for expanded JSON output");
 
@@ -395,7 +395,7 @@ fn handle_help() -> ControlFlow<()> {
 		"${{name}}",
 		"Escape: produces ${name} without replacement",
 	]);
-	eprintln!("{}", vars);
+	eprintln!("{vars}");
 
 	ControlFlow::Continue(())
 }
@@ -445,7 +445,7 @@ fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> Cont
 		table.add_row(vec![name, value]);
 	}
 
-	println!("{}", table);
+	println!("{table}");
 
 	ControlFlow::Continue(())
 }
@@ -453,8 +453,8 @@ fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> Cont
 fn handle_get_var(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
 	let state = ctx.repl_state.lock().unwrap();
 	match state.vars.get(&name) {
-		Some(value) => println!("{}", value),
-		None => eprintln!("Variable '{}' not found", name),
+		Some(value) => println!("{value}"),
+		None => eprintln!("Variable '{name}' not found"),
 	}
 	ControlFlow::Continue(())
 }
@@ -486,7 +486,7 @@ async fn handle_snippet_save(
 				Ok(path) => {
 					println!("Snippet saved to {}", path.display());
 				}
-				Err(e) => eprintln!("Failed to save snippet '{}': {}", name, e),
+				Err(e) => eprintln!("Failed to save snippet '{name}': {e}"),
 			}
 		}
 	}
@@ -495,7 +495,7 @@ async fn handle_snippet_save(
 	let history = ctx.rl.history_mut();
 	history.set_repl_state(&ctx.repl_state.lock().unwrap());
 	if let Err(e) = history.add_entry(line.into()) {
-		debug!("failed to add SnippetSave to history: {}", e);
+		debug!("failed to add SnippetSave to history: {e}");
 	}
 
 	ControlFlow::Continue(())
@@ -587,7 +587,7 @@ async fn handle_execute(
 				result
 			}
 			Err(e) => {
-				error!("Failed to open output file '{}': {}", path, e);
+				error!("Failed to open output file '{path}': {e}");
 				return ControlFlow::Continue(());
 			}
 		}
@@ -644,7 +644,7 @@ async fn handle_execute(
 				&& matches!(tx_state, TransactionState::None)
 			{
 				if let Err(e) = ctx.client.batch_execute("BEGIN").await {
-					warn!("Failed to start transaction: {}", e);
+					warn!("Failed to start transaction: {e}");
 				}
 			}
 		}
@@ -729,7 +729,7 @@ async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<()> 
 				*ctx.repl_state.lock().unwrap() = new_state;
 			}
 			Err(e) => {
-				error!("Failed to disable write mode: {}", e);
+				error!("Failed to disable write mode: {e}");
 			}
 		}
 	} else {
@@ -753,12 +753,12 @@ async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<()> 
 						*ctx.repl_state.lock().unwrap() = new_state;
 					}
 					Err(e) => {
-						error!("Failed to enable write mode: {}", e);
+						error!("Failed to enable write mode: {e}");
 					}
 				}
 			}
 			Err(e) => {
-				error!("Failed to enable write mode: {}", e);
+				error!("Failed to enable write mode: {e}");
 			}
 		}
 	}
@@ -1070,10 +1070,10 @@ mod tests {
 	#[test]
 	fn test_psql_error_display() {
 		let err = crate::config::PsqlError::ConnectionFailed;
-		assert_eq!(format!("{}", err), "database connection failed");
+		assert_eq!(format!("{err}"), "database connection failed");
 
 		let err = crate::config::PsqlError::QueryFailed;
-		assert_eq!(format!("{}", err), "query execution failed");
+		assert_eq!(format!("{err}"), "query execution failed");
 	}
 
 	#[test]
