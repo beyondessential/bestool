@@ -81,12 +81,12 @@ impl Snippets {
 		Err(miette!("Snippet '{name}' not found"))
 	}
 
-	pub async fn save(&self, name: &str, content: &str) -> Result<()> {
+	pub async fn save(&self, name: &str, content: &str) -> Result<PathBuf> {
 		let savedir = self.savedir.as_ref().ok_or(miette!("No savedir"))?;
 		tokio::fs::create_dir_all(savedir).await.into_diagnostic()?;
 		let path = savedir.join(format!("{name}.sql"));
 		tokio::fs::write(&path, content).await.into_diagnostic()?;
-		Ok(())
+		Ok(path)
 	}
 }
 
@@ -113,11 +113,12 @@ mod tests {
 		assert!(!savedir.exists());
 
 		let snippets = Snippets::with_savedir(savedir.clone());
-		snippets.save("test_snippet", "SELECT 1;").await.unwrap();
+		let saved_path = snippets.save("test_snippet", "SELECT 1;").await.unwrap();
 
 		assert!(savedir.exists());
 		let saved_file = savedir.join("test_snippet.sql");
 		assert!(saved_file.exists());
+		assert_eq!(saved_path, saved_file);
 
 		let content = tokio::fs::read_to_string(&saved_file).await.unwrap();
 		assert_eq!(content, "SELECT 1;");
@@ -129,9 +130,10 @@ mod tests {
 		let savedir = temp_dir.path().to_path_buf();
 
 		let snippets = Snippets::with_savedir(savedir.clone());
-		snippets.save("test_snippet", "SELECT 1;").await.unwrap();
-		snippets.save("test_snippet", "SELECT 2;").await.unwrap();
+		let path1 = snippets.save("test_snippet", "SELECT 1;").await.unwrap();
+		let path2 = snippets.save("test_snippet", "SELECT 2;").await.unwrap();
 
+		assert_eq!(path1, path2);
 		let saved_file = savedir.join("test_snippet.sql");
 		let content = tokio::fs::read_to_string(&saved_file).await.unwrap();
 		assert_eq!(content, "SELECT 2;");
@@ -143,9 +145,13 @@ mod tests {
 		let savedir = temp_dir.path().to_path_buf();
 
 		let snippets = Snippets::with_savedir(savedir.clone());
-		snippets.save("snippet1", "SELECT 1;").await.unwrap();
-		snippets.save("snippet2", "SELECT 2;").await.unwrap();
-		snippets.save("snippet3", "SELECT 3;").await.unwrap();
+		let path1 = snippets.save("snippet1", "SELECT 1;").await.unwrap();
+		let path2 = snippets.save("snippet2", "SELECT 2;").await.unwrap();
+		let path3 = snippets.save("snippet3", "SELECT 3;").await.unwrap();
+
+		assert_eq!(path1, savedir.join("snippet1.sql"));
+		assert_eq!(path2, savedir.join("snippet2.sql"));
+		assert_eq!(path3, savedir.join("snippet3.sql"));
 
 		assert!(savedir.join("snippet1.sql").exists());
 		assert!(savedir.join("snippet2.sql").exists());
@@ -194,13 +200,14 @@ mod tests {
 		let savedir = temp_dir.path().to_path_buf();
 
 		let snippets = Snippets::with_savedir(savedir.clone());
-		snippets
+		let saved_path = snippets
 			.save("test_snippet-123", "SELECT 1;")
 			.await
 			.unwrap();
 
 		let saved_file = savedir.join("test_snippet-123.sql");
 		assert!(saved_file.exists());
+		assert_eq!(saved_path, saved_file);
 	}
 
 	#[tokio::test]
@@ -210,9 +217,10 @@ mod tests {
 
 		let snippets = Snippets::with_savedir(savedir.clone());
 		let content = "SELECT *\nFROM users\nWHERE id = 1;";
-		snippets.save("multiline", content).await.unwrap();
+		let saved_path = snippets.save("multiline", content).await.unwrap();
 
 		let saved_file = savedir.join("multiline.sql");
+		assert_eq!(saved_path, saved_file);
 		let read_content = tokio::fs::read_to_string(&saved_file).await.unwrap();
 		assert_eq!(read_content, content);
 	}
@@ -224,9 +232,10 @@ mod tests {
 
 		let snippets = Snippets::with_savedir(savedir.clone());
 		let content = "-- Comment\nSELECT 1; -- inline comment\n";
-		snippets.save("with_comments", content).await.unwrap();
+		let saved_path = snippets.save("with_comments", content).await.unwrap();
 
 		let saved_file = savedir.join("with_comments.sql");
+		assert_eq!(saved_path, saved_file);
 		let read_content = tokio::fs::read_to_string(&saved_file).await.unwrap();
 		assert_eq!(read_content, content);
 	}
