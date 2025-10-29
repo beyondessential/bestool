@@ -24,6 +24,7 @@ pub(crate) enum ReplAction {
 	Debug {
 		what: DebugWhat,
 	},
+	Help,
 }
 
 pub(crate) fn handle_input(
@@ -51,6 +52,7 @@ pub(crate) fn handle_input(
 				Metacommand::Include { file_path } => ReplAction::Include { file_path },
 				Metacommand::Output { file_path } => ReplAction::Output { file_path },
 				Metacommand::Debug { what } => ReplAction::Debug { what },
+				Metacommand::Help => ReplAction::Help,
 			};
 			return (String::new(), action);
 		}

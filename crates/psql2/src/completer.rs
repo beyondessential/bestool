@@ -211,123 +211,8 @@ impl SqlCompleter {
 				"CLUSTER",
 			],
 			psql_commands: vec![
-				// "\\?",
-				// "\\h",
-				"\\q",
-				// "\\c",
-				// "\\d",
-				// "\\dt",
-				// "\\di",
-				// "\\dv",
-				// "\\ds",
-				// "\\df",
-				// "\\dT",
-				// "\\du",
-				// "\\dn",
-				// "\\dp",
-				// "\\l",
-				// "\\z",
-				// "\\d+",
-				// "\\dt+",
-				// "\\di+",
-				// "\\dv+",
-				// "\\ds+",
-				// "\\df+",
-				// "\\dT+",
-				// "\\du+",
-				// "\\dn+",
-				// "\\dp+",
-				// "\\l+",
-				// "\\da",
-				// "\\db",
-				// "\\dc",
-				// "\\dC",
-				// "\\dd",
-				// "\\dD",
-				// "\\ddp",
-				// "\\dE",
-				// "\\des",
-				// "\\det",
-				// "\\deu",
-				// "\\dew",
-				// "\\dF",
-				// "\\dFd",
-				// "\\dFp",
-				// "\\dFt",
-				// "\\dg",
-				// "\\dL",
-				// "\\dm",
-				// "\\do",
-				// "\\dO",
-				// "\\drds",
-				// "\\dRs",
-				// "\\dRp",
-				// "\\dy",
-				"\\e",
-				// "\\ef",
-				// "\\ev",
-				// "\\edit",
-				// "\\echo",
-				// "\\qecho",
-				// "\\warn",
-				"\\i", // "\\ir",
-				// "\\include",
-				// "\\include_relative",
-				"\\o", "\\debug",
-				// "\\out",
-				// "\\p",
-				// "\\print",
-				// "\\r",
-				// "\\reset",
-				// "\\s",
-				// "\\history",
-				// "\\w",
-				// "\\write",
-				"\\x", // "\\expanded",
-				"\\g", "\\go", "\\gx",
-				// "\\gexec",
-				"\\gset",
-				// "\\watch",
-				// "\\timing",
-				// "\\t",
-				// "\\tuples_only",
-				// "\\a",
-				// "\\aligned",
-				// "\\C",
-				// "\\caption",
-				// "\\f",
-				// "\\fieldsep",
-				// "\\fieldsep_zero",
-				// "\\H",
-				// "\\html",
-				// "\\T",
-				// "\\tableattr",
-				// "\\pset",
-				// "\\P",
-				// "\\pager",
-				// "\\encoding",
-				// "\\password",
-				// "\\cd",
-				// "\\setenv",
-				// "\\!",
-				// "\\shell",
-				// "\\copy",
-				// "\\crosstabview",
-				// "\\errverbose",
-				// "\\gdesc",
-				// "\\set",
-				// "\\unset",
-				// "\\prompt",
-				// "\\if",
-				// "\\elif",
-				// "\\else",
-				// "\\endif",
-				// "\\lo_import",
-				// "\\lo_export",
-				// "\\lo_list",
-				// "\\lo_unlink",
-				// "\\conninfo",
-				// "\\connect",
+				"\\q", "\\e", "\\i", "\\o", "\\debug", "\\?", "\\help", "\\x", "\\g", "\\go",
+				"\\gx", "\\gset",
 			],
 		}
 	}
@@ -975,5 +860,27 @@ mod tests {
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "state"));
+	}
+
+	#[test]
+	fn test_help_command_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\", 1);
+		assert!(completions.iter().any(|c| c.display == "\\?"));
+		assert!(completions.iter().any(|c| c.display == "\\help"));
+	}
+
+	#[test]
+	fn test_help_question_mark_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\?", 2);
+		assert!(completions.iter().any(|c| c.display == "\\?"));
+	}
+
+	#[test]
+	fn test_help_word_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\hel", 4);
+		assert!(completions.iter().any(|c| c.display == "\\help"));
 	}
 }

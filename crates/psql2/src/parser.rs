@@ -31,6 +31,7 @@ pub(crate) enum Metacommand {
 	Include { file_path: String },
 	Output { file_path: Option<String> },
 	Debug { what: DebugWhat },
+	Help,
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -142,6 +143,16 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		Ok(Metacommand::Debug { what })
 	}
 
+	fn help_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		alt((literal('?'), literal("help"))).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::Help)
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
@@ -151,6 +162,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		include_command,
 		output_command,
 		debug_command,
+		help_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -962,5 +974,29 @@ mod tests {
 				what: DebugWhat::Help
 			})
 		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_help_question_mark() {
+		let result = parse_metacommand("\\?").unwrap();
+		assert_eq!(result, Some(Metacommand::Help));
+	}
+
+	#[test]
+	fn test_parse_metacommand_help_word() {
+		let result = parse_metacommand("\\help").unwrap();
+		assert_eq!(result, Some(Metacommand::Help));
+	}
+
+	#[test]
+	fn test_parse_metacommand_help_with_whitespace() {
+		let result = parse_metacommand("  \\?  ").unwrap();
+		assert_eq!(result, Some(Metacommand::Help));
+	}
+
+	#[test]
+	fn test_parse_metacommand_help_word_with_whitespace() {
+		let result = parse_metacommand("  \\help  ").unwrap();
+		assert_eq!(result, Some(Metacommand::Help));
 	}
 }

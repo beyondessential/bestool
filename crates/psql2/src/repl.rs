@@ -45,6 +45,7 @@ impl ReplAction {
 			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
 			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
 			ReplAction::Debug { what } => handle_debug(ctx, what),
+			ReplAction::Help => handle_help(),
 			ReplAction::Execute {
 				input,
 				sql,
@@ -242,6 +243,30 @@ fn handle_debug(ctx: &mut ReplContext<'_>, what: crate::parser::DebugWhat) -> Co
 			eprintln!("  \\debug state  - Show current REPL state");
 		}
 	}
+
+	ControlFlow::Continue(())
+}
+
+fn handle_help() -> ControlFlow<()> {
+	eprintln!("Available metacommands:");
+	eprintln!("  \\?            - Show this help");
+	eprintln!("  \\help         - Show this help");
+	eprintln!("  \\q            - Quit psql2");
+	eprintln!("  \\x            - Toggle expanded output mode");
+	eprintln!("  \\W            - Toggle write mode");
+	eprintln!("  \\e [query]    - Edit query in external editor");
+	eprintln!("  \\i <file>     - Execute commands from file");
+	eprintln!("  \\o [file]     - Send query results to file (or close if no file specified)");
+	eprintln!("  \\debug [cmd]  - Debug commands (run \\debug for options)");
+	eprintln!();
+	eprintln!("Query modifiers (used after query):");
+	eprintln!("  \\g            - Execute query");
+	eprintln!("  \\gx           - Execute query with expanded output");
+	eprintln!("  \\gj           - Execute query with JSON output");
+	eprintln!("  \\go <file>    - Execute query and write output to file");
+	eprintln!("  \\gset [prefix] - Execute query and store results in variables");
+	eprintln!();
+	eprintln!("Modifiers can be combined, e.g. \\gxj for expanded JSON output");
 
 	ControlFlow::Continue(())
 }
