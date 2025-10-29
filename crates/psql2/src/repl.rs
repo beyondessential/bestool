@@ -24,10 +24,19 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
+		// Add to history before handling the action (except for Continue which is a no-op)
+		if !matches!(self, ReplAction::Continue) {
+			let history = ctx.rl.history_mut();
+			history.set_repl_state(&ctx.repl_state.lock().unwrap());
+			if let Err(e) = history.add_entry(line.into()) {
+				debug!("failed to add to history: {}", e);
+			}
+		}
+
 		match self {
 			ReplAction::Continue => ControlFlow::Continue(()),
-			ReplAction::ToggleExpanded => handle_toggle_expanded(ctx.repl_state),
-			ReplAction::Exit => handle_exit(ctx.repl_state, ctx.rl, line),
+			ReplAction::ToggleExpanded => handle_toggle_expanded(ctx),
+			ReplAction::Exit => handle_exit(),
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Execute {
 				input,
@@ -59,8 +68,8 @@ impl ReplState {
 	}
 }
 
-fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()> {
-	let mut state = repl_state.lock().unwrap();
+fn handle_toggle_expanded(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
+	let mut state = ctx.repl_state.lock().unwrap();
 	state.expanded_mode = !state.expanded_mode;
 	eprintln!(
 		"Expanded display is {}.",
@@ -69,35 +78,16 @@ fn handle_toggle_expanded(repl_state: &Arc<Mutex<ReplState>>) -> ControlFlow<()>
 	ControlFlow::Continue(())
 }
 
-fn handle_exit(
-	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, Audit>,
-	line: &str,
-) -> ControlFlow<()> {
-	{
-		let history = rl.history_mut();
-		history.set_repl_state(&repl_state.lock().unwrap());
-		if let Err(e) = history.add_entry(line.into()) {
-			debug!("failed to add to history: {}", e);
-		}
-	}
+fn handle_exit() -> ControlFlow<()> {
 	ControlFlow::Break(())
 }
 
 async fn handle_execute(
 	ctx: &mut ReplContext<'_>,
-	input: String,
+	_input: String,
 	sql: String,
 	modifiers: crate::parser::QueryModifiers,
 ) -> ControlFlow<()> {
-	{
-		let history = ctx.rl.history_mut();
-		history.set_repl_state(&ctx.repl_state.lock().unwrap());
-		if let Err(e) = history.add_entry(input) {
-			debug!("failed to add to history: {}", e);
-		}
-	}
-
 	match execute_query(ctx.client, &sql, modifiers, ctx.theme).await {
 		Ok(()) => {
 			// If write mode is on and we're not in a transaction, start one
