@@ -362,7 +362,7 @@ pub(crate) async fn run_repl(
 							debug!("failed to add to history: {}", e);
 						}
 
-						match execute_query(&client, &sql, modifiers).await {
+						match execute_query(&client, &sql, modifiers, theme).await {
 							Ok(()) => {
 								// If write mode is on and we're not in a transaction, start one
 								let tx_state =

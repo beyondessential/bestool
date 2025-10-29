@@ -162,6 +162,7 @@ mod tests {
 			&client,
 			"SELECT row(1, 'foo', true) as record",
 			parser::QueryModifiers::new(),
+			highlighter::Theme::Dark,
 		)
 		.await;
 
@@ -186,6 +187,7 @@ mod tests {
 			&client,
 			"SELECT ARRAY[1, 2, 3] as numbers",
 			parser::QueryModifiers::new(),
+			highlighter::Theme::Dark,
 		)
 		.await;
 

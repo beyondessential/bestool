@@ -1,7 +1,12 @@
 use crate::parser::{QueryModifier, QueryModifiers};
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets, Attribute, Cell, CellAlignment, Table};
 use miette::{IntoDiagnostic, Result};
+use serde_json::{Map, Value};
 use supports_unicode::Stream;
+use syntect::{
+	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
+	util::as_24_bit_terminal_escaped,
+};
 use tracing::debug;
 
 /// Execute a SQL query and display the results.
@@ -9,6 +14,7 @@ pub(crate) async fn execute_query(
 	client: &tokio_postgres::Client,
 	sql: &str,
 	modifiers: QueryModifiers,
+	theme: crate::highlighter::Theme,
 ) -> Result<()> {
 	debug!(?modifiers, %sql, "executing query");
 
@@ -26,14 +32,14 @@ pub(crate) async fn execute_query(
 
 		let mut unprintable_columns = Vec::new();
 		for (i, _column) in columns.iter().enumerate() {
-			if !can_print_column(&first_row, i) {
+			if !can_print_column(first_row, i) {
 				unprintable_columns.push(i);
 			}
 		}
 
 		let text_rows = if !unprintable_columns.is_empty() {
 			let sql_trimmed = sql.trim_end_matches(';').trim();
-			let text_query = build_text_cast_query(sql_trimmed, &columns, &unprintable_columns);
+			let text_query = build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
 			debug!("re-querying with text casts: {}", text_query);
 			match client.query(&text_query, &[]).await {
 				Ok(rows) => Some(rows),
@@ -47,14 +53,24 @@ pub(crate) async fn execute_query(
 		};
 
 		let is_expanded = modifiers.contains(&QueryModifier::Expanded);
+		let is_json = modifiers.contains(&QueryModifier::Json);
 
-		if is_expanded {
+		if is_json {
+			display_json(
+				columns,
+				&rows,
+				&unprintable_columns,
+				&text_rows,
+				is_expanded,
+				theme,
+			);
+		} else if is_expanded {
 			display_expanded(columns, &rows, &unprintable_columns, &text_rows);
 		} else {
 			display_normal(columns, &rows, &unprintable_columns, &text_rows);
 		}
 
-		println!(
+		eprintln!(
 			"({} row{}, took {:.3}ms)",
 			rows.len(),
 			if rows.len() == 1 { "" } else { "s" },
@@ -279,6 +295,98 @@ fn get_column_value(
 	"(error)".to_string()
 }
 
+fn display_json(
+	columns: &[tokio_postgres::Column],
+	rows: &[tokio_postgres::Row],
+	unprintable_columns: &[usize],
+	text_rows: &Option<Vec<tokio_postgres::Row>>,
+	expanded: bool,
+	theme: crate::highlighter::Theme,
+) {
+	let mut objects = Vec::new();
+
+	for (row_idx, row) in rows.iter().enumerate() {
+		let mut obj = Map::new();
+
+		for (i, column) in columns.iter().enumerate() {
+			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
+
+			// Try to parse the value as JSON if it's a valid JSON string
+			let json_value = if value_str == "NULL" {
+				Value::Null
+			} else if let Ok(parsed) = serde_json::from_str::<Value>(&value_str) {
+				parsed
+			} else {
+				Value::String(value_str)
+			};
+
+			obj.insert(column.name().to_string(), json_value);
+		}
+
+		objects.push(Value::Object(obj));
+	}
+
+	let syntax_set = SyntaxSet::load_defaults_newlines();
+	let theme_set = ThemeSet::load_defaults();
+
+	let syntax = syntax_set
+		.find_syntax_by_extension("json")
+		.unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+
+	let theme_name = match theme {
+		crate::highlighter::Theme::Light => "base16-ocean.light",
+		crate::highlighter::Theme::Dark => "base16-ocean.dark",
+		crate::highlighter::Theme::Auto => "base16-ocean.dark",
+	};
+
+	let theme_obj = &theme_set.themes[theme_name];
+
+	if expanded {
+		// Pretty-print a single array containing all objects
+		let json_str = serde_json::to_string_pretty(&objects).unwrap();
+		let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
+		println!("{}", highlighted);
+	} else {
+		// Compact-print one object per line
+		for obj in objects {
+			let json_str = serde_json::to_string(&obj).unwrap();
+			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
+			println!("{}", highlighted);
+		}
+	}
+}
+
+fn highlight_json(
+	json_str: &str,
+	syntax: &syntect::parsing::SyntaxReference,
+	theme: &syntect::highlighting::Theme,
+	syntax_set: &SyntaxSet,
+) -> String {
+	let mut highlighter = HighlightLines::new(syntax, theme);
+	let mut result = String::new();
+
+	for line in json_str.lines() {
+		match highlighter.highlight_line(line, syntax_set) {
+			Ok(ranges) => {
+				let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+				result.push_str(&escaped);
+				result.push('\n');
+			}
+			Err(_) => {
+				result.push_str(line);
+				result.push('\n');
+			}
+		}
+	}
+
+	// Remove trailing newline if original didn't have one
+	if !json_str.ends_with('\n') && result.ends_with('\n') {
+		result.pop();
+	}
+
+	result
+}
+
 fn supports_unicode() -> bool {
 	supports_unicode::on(Stream::Stdout)
 }
@@ -338,5 +446,57 @@ mod tests {
 		modifiers_mixed.insert(QueryModifier::Expanded);
 		modifiers_mixed.insert(QueryModifier::Json);
 		assert!(modifiers_mixed.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_json_modifier_detection() {
+		use std::collections::HashSet;
+
+		let mut modifiers_with_json = HashSet::new();
+		modifiers_with_json.insert(QueryModifier::Json);
+		assert!(modifiers_with_json.contains(&QueryModifier::Json));
+
+		let mut modifiers_without_json = HashSet::new();
+		modifiers_without_json.insert(QueryModifier::Expanded);
+		assert!(!modifiers_without_json.contains(&QueryModifier::Json));
+
+		let mut modifiers_both = HashSet::new();
+		modifiers_both.insert(QueryModifier::Json);
+		modifiers_both.insert(QueryModifier::Expanded);
+		assert!(modifiers_both.contains(&QueryModifier::Json));
+		assert!(modifiers_both.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_json_value_parsing() {
+		let null_value = "NULL";
+		let json_value = if null_value == "NULL" {
+			Value::Null
+		} else if let Ok(parsed) = serde_json::from_str::<Value>(null_value) {
+			parsed
+		} else {
+			Value::String(null_value.to_string())
+		};
+		assert_eq!(json_value, Value::Null);
+
+		let string_value = "hello";
+		let json_value = if string_value == "NULL" {
+			Value::Null
+		} else if let Ok(parsed) = serde_json::from_str::<Value>(string_value) {
+			parsed
+		} else {
+			Value::String(string_value.to_string())
+		};
+		assert_eq!(json_value, Value::String("hello".to_string()));
+
+		let json_string = r#"{"key":"value"}"#;
+		let json_value = if json_string == "NULL" {
+			Value::Null
+		} else if let Ok(parsed) = serde_json::from_str::<Value>(json_string) {
+			parsed
+		} else {
+			Value::String(json_string.to_string())
+		};
+		assert!(json_value.is_object());
 	}
 }
