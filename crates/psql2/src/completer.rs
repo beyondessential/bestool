@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use rustyline::completion::{Completer, Pair};
@@ -269,7 +270,7 @@ impl SqlCompleter {
 				// "\\echo",
 				// "\\qecho",
 				// "\\warn",
-				// "\\i",
+				"\\i",
 				// "\\ir",
 				// "\\include",
 				// "\\include_relative",
@@ -356,6 +357,15 @@ impl SqlCompleter {
 		}
 
 		let mut completions = Vec::new();
+
+		// Check if we're completing a file path after \i command
+		if text_before_cursor.trim_start().starts_with("\\i ") {
+			// Extract the file path being typed
+			let path_start = text_before_cursor.find("\\i ").unwrap() + 3;
+			let partial_path = &text_before_cursor[path_start..];
+
+			return self.complete_file_path(partial_path);
+		}
 
 		if current_word.starts_with('\\') {
 			for cmd in &self.psql_commands {
@@ -462,6 +472,71 @@ impl SqlCompleter {
 		completions.dedup_by(|a, b| a.display == b.display);
 		completions
 	}
+
+	fn complete_file_path(&self, partial_path: &str) -> Vec<Pair> {
+		let mut completions = Vec::new();
+
+		// Determine the directory to search and the partial filename
+		let (dir_path, partial_name) = if partial_path.is_empty() {
+			(".", "")
+		} else if partial_path.ends_with('/') || partial_path.ends_with('\\') {
+			(partial_path, "")
+		} else {
+			let path = Path::new(partial_path);
+			if let Some(parent) = path.parent() {
+				let parent_str = if parent.as_os_str().is_empty() {
+					"."
+				} else {
+					parent.to_str().unwrap_or(".")
+				};
+				let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+				(parent_str, name)
+			} else {
+				(".", partial_path)
+			}
+		};
+
+		// Read directory entries
+		if let Ok(entries) = std::fs::read_dir(dir_path) {
+			for entry in entries.flatten() {
+				if let Ok(file_name) = entry.file_name().into_string() {
+					// Filter by partial name
+					if file_name.starts_with(partial_name) {
+						let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+
+						// Build the replacement path
+						let replacement = if dir_path == "." {
+							if is_dir {
+								format!("{}/", file_name)
+							} else {
+								file_name.clone()
+							}
+						} else {
+							let mut path = Path::new(dir_path).join(&file_name);
+							if is_dir {
+								path = path.join("");
+							}
+							path.to_string_lossy().to_string()
+						};
+
+						let display = if is_dir {
+							format!("{}/", file_name)
+						} else {
+							file_name
+						};
+
+						completions.push(Pair {
+							display,
+							replacement,
+						});
+					}
+				}
+			}
+		}
+
+		completions.sort_by(|a, b| a.display.cmp(&b.display));
+		completions
+	}
 }
 
 impl Completer for SqlCompleter {
@@ -565,5 +640,51 @@ mod tests {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions("SELECT * FRO", 12);
 		assert!(completions.iter().any(|c| c.display == "FROM"));
+	}
+
+	#[test]
+	fn test_include_command_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\", 1);
+		assert!(completions.iter().any(|c| c.display == "\\i"));
+	}
+
+	#[test]
+	fn test_include_command_file_path_completion() {
+		use std::fs;
+		use std::io::Write;
+
+		// Create a temporary directory with test files
+		let temp_dir = std::env::temp_dir().join("psql2_test_completion");
+		let _ = fs::remove_dir_all(&temp_dir);
+		fs::create_dir_all(&temp_dir).unwrap();
+
+		// Create test files
+		let test_file1 = temp_dir.join("test1.sql");
+		let test_file2 = temp_dir.join("test2.sql");
+		let test_dir = temp_dir.join("queries");
+
+		fs::File::create(&test_file1)
+			.unwrap()
+			.write_all(b"SELECT 1;")
+			.unwrap();
+		fs::File::create(&test_file2)
+			.unwrap()
+			.write_all(b"SELECT 2;")
+			.unwrap();
+		fs::create_dir(&test_dir).unwrap();
+
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test completion with partial path
+		let path_str = temp_dir.to_string_lossy();
+		let input = format!("\\i {}/test", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display.starts_with("test")));
+
+		// Cleanup
+		let _ = fs::remove_dir_all(&temp_dir);
 	}
 }
