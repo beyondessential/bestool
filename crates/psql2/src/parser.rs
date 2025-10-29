@@ -1220,4 +1220,33 @@ mod tests {
 		let result = parse_metacommand("\\get").unwrap();
 		assert_eq!(result, None);
 	}
+
+	#[test]
+	fn test_parse_query_modifiers_gv() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gv").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Verbatim));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gvx() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gvx").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Verbatim));
+		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxv() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gxv").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Verbatim));
+	}
 }
