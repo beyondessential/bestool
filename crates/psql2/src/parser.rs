@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 
 use miette::Result;
-use winnow::ascii::{space0, space1, Caseless};
-use winnow::combinator::{alt, eof, opt, preceded};
-use winnow::error::ErrMode;
-use winnow::token::{literal, rest, take_till, take_while};
-use winnow::Parser;
+use winnow::{
+	ascii::{space0, space1, Caseless},
+	combinator::{alt, eof, opt, preceded},
+	error::ErrMode,
+	token::{literal, rest, take_till, take_while},
+	Parser,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum QueryModifier {

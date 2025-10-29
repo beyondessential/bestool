@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
-use crate::parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand};
-use crate::repl::ReplState;
+use crate::{
+	parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand},
+	repl::ReplState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplAction {

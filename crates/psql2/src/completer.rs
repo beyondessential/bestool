@@ -1,20 +1,22 @@
-use std::borrow::Cow;
-use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::{
+	borrow::Cow,
+	path::Path,
+	sync::{Arc, Mutex, RwLock},
+};
 
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::{CmdKind, Highlighter};
-use rustyline::hint::Hinter;
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{Context, Helper};
+use rustyline::{
+	completion::{Completer, Pair},
+	highlight::{CmdKind, Highlighter},
+	hint::Hinter,
+	validate::{ValidationContext, ValidationResult, Validator},
+	Context, Helper,
+};
 use syntect::{
 	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
 	util::as_24_bit_terminal_escaped,
 };
 
-use crate::highlighter::Theme;
-use crate::repl::ReplState;
-use crate::schema_cache::SchemaCache;
+use crate::{highlighter::Theme, repl::ReplState, schema_cache::SchemaCache};
 
 /// SQL keywords and psql commands for autocompletion
 pub struct SqlCompleter {

@@ -1,28 +1,32 @@
-use std::collections::BTreeMap;
-use std::ops::ControlFlow;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+	collections::BTreeMap,
+	ops::ControlFlow,
+	path::Path,
+	sync::{Arc, Mutex},
+};
 
 use comfy_table::Table;
 use miette::{bail, IntoDiagnostic, Result};
-use rustyline::error::ReadlineError;
-use rustyline::history::History;
-use rustyline::Editor;
-use tokio::fs::File;
-use tokio::io::{self, AsyncWriteExt};
-use tokio::sync::Mutex as TokioMutex;
+use rustyline::{error::ReadlineError, history::History, Editor};
+use tokio::{
+	fs::File,
+	io::{self, AsyncWriteExt},
+	sync::Mutex as TokioMutex,
+};
 use tracing::{debug, error, instrument, warn};
 
-use crate::audit::Audit;
-use crate::completer::SqlCompleter;
-use crate::config::PsqlConfig;
-use crate::highlighter::Theme;
-use crate::input::{handle_input, ReplAction};
-use crate::ots;
-use crate::parser::QueryModifier;
-use crate::query::{configure_table, execute_query};
-use crate::schema_cache::SchemaCacheManager;
-use crate::snippets::Snippets;
+use crate::{
+	audit::Audit,
+	completer::SqlCompleter,
+	config::PsqlConfig,
+	highlighter::Theme,
+	input::{handle_input, ReplAction},
+	ots,
+	parser::QueryModifier,
+	query::{configure_table, execute_query},
+	schema_cache::SchemaCacheManager,
+	snippets::Snippets,
+};
 
 pub(crate) struct ReplContext<'a> {
 	client: &'a tokio_postgres::Client,

@@ -1,6 +1,8 @@
 use miette::{IntoDiagnostic, Result};
-use rustyline::history::{History as HistoryTrait, MemHistory};
-use rustyline::{Config, Editor};
+use rustyline::{
+	history::{History as HistoryTrait, MemHistory},
+	Config, Editor,
+};
 use tracing::debug;
 
 use crate::audit::Audit;
