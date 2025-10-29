@@ -98,6 +98,7 @@ async fn main() -> Result<()> {
 		audit_path: args.audit_path,
 		database_name: String::new(), // Will be queried from database
 		write: args.write,
+		use_colours: args.logging.color.enabled(),
 	};
 
 	if args.write {

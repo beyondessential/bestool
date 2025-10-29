@@ -30,4 +30,7 @@ pub struct PsqlConfig {
 
 	/// Whether write mode is enabled upon entering the REPL
 	pub write: bool,
+
+	/// Whether to use colours in output
+	pub use_colours: bool,
 }

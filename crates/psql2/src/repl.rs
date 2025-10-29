@@ -62,6 +62,7 @@ pub struct ReplState {
 	pub(crate) write_mode: bool,
 	pub(crate) ots: Option<String>,
 	pub(crate) output_file: Option<Arc<Mutex<File>>>,
+	pub(crate) use_colours: bool,
 }
 
 impl ReplState {
@@ -73,6 +74,7 @@ impl ReplState {
 			write_mode: false,
 			ots: None,
 			output_file: None,
+			use_colours: true,
 		}
 	}
 }
@@ -256,14 +258,28 @@ async fn handle_execute(
 		}
 	});
 
-	let use_colors: bool;
+	let use_colours = if output_file_path.is_some() {
+		// Writing to a file from modifier - disable colours
+		false
+	} else if ctx.repl_state.lock().unwrap().output_file.is_some() {
+		// Writing to repl state output file - disable colours
+		false
+	} else {
+		// Writing to stdout - use colours from config
+		ctx.repl_state.lock().unwrap().use_colours
+	};
+
 	let result = if let Some(path) = output_file_path {
 		// Output modifier specified - open a temporary file
-		use_colors = false;
 		match File::create(&path).await {
 			Ok(mut file) => {
 				execute_query(
-					ctx.client, &sql, modifiers, ctx.theme, &mut file, use_colors,
+					ctx.client,
+					&sql,
+					modifiers,
+					ctx.theme,
+					&mut file,
+					use_colours,
 				)
 				.await
 			}
@@ -276,11 +292,15 @@ async fn handle_execute(
 		let file_arc_opt = ctx.repl_state.lock().unwrap().output_file.clone();
 		if let Some(file_arc) = file_arc_opt {
 			// ReplState has an output file
-			use_colors = false;
 			match file_arc.lock() {
 				Ok(mut file) => {
 					execute_query(
-						ctx.client, &sql, modifiers, ctx.theme, &mut *file, use_colors,
+						ctx.client,
+						&sql,
+						modifiers,
+						ctx.theme,
+						&mut *file,
+						use_colours,
 					)
 					.await
 				}
@@ -291,7 +311,6 @@ async fn handle_execute(
 			}
 		} else {
 			// Write to stdout
-			use_colors = true;
 			let mut stdout = io::stdout();
 			execute_query(
 				ctx.client,
@@ -299,7 +318,7 @@ async fn handle_execute(
 				modifiers,
 				ctx.theme,
 				&mut stdout,
-				use_colors,
+				use_colours,
 			)
 			.await
 		}
@@ -586,6 +605,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		// write_mode: true (from the CLI) is handled later
 		write_mode: false,
 		ots: None,
+		use_colours: config.use_colours,
 	};
 
 	let audit = Audit::open(&audit_path, repl_state.clone())?;
@@ -716,6 +736,7 @@ mod tests {
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
+			use_colours: true,
 		};
 
 		assert_eq!(config.user, Some("testuser".to_string()));
@@ -736,6 +757,7 @@ mod tests {
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
 			database_name: "test".to_string(),
 			write: false,
+			use_colours: true,
 		};
 
 		assert_eq!(config.user, None);

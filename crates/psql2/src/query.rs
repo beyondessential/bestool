@@ -20,7 +20,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	modifiers: QueryModifiers,
 	theme: crate::highlighter::Theme,
 	writer: &mut W,
-	use_colors: bool,
+	use_colours: bool,
 ) -> Result<()> {
 	debug!(?modifiers, %sql, "executing query");
 
@@ -108,7 +108,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 				is_expanded,
 				theme,
 				writer,
-				use_colors,
+				use_colours,
 			)
 			.await?;
 		} else if is_expanded {
@@ -118,7 +118,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 				&unprintable_columns,
 				&text_rows,
 				writer,
-				use_colors,
+				use_colours,
 			)
 			.await?;
 		} else {
@@ -128,7 +128,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 				&unprintable_columns,
 				&text_rows,
 				writer,
-				use_colors,
+				use_colours,
 			)
 			.await?;
 		}
@@ -277,7 +277,7 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 	unprintable_columns: &[usize],
 	text_rows: &Option<Vec<tokio_postgres::Row>>,
 	writer: &mut W,
-	use_colors: bool,
+	use_colours: bool,
 ) -> Result<()> {
 	for (row_idx, row) in rows.iter().enumerate() {
 		let header = format!("-[ RECORD {} ]-\n", row_idx + 1);
@@ -288,15 +288,10 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 
 		let mut table = Table::new();
 
-		if use_colors {
-			if supports_unicode() {
-				table.load_preset(presets::UTF8_FULL);
-				table.apply_modifier(UTF8_ROUND_CORNERS);
-			} else {
-				table.load_preset(presets::ASCII_FULL);
-			}
+		if supports_unicode() {
+			table.load_preset(presets::UTF8_FULL);
+			table.apply_modifier(UTF8_ROUND_CORNERS);
 		} else {
-			// Use simple ASCII borders when colors are disabled
 			table.load_preset(presets::ASCII_FULL);
 		}
 
@@ -310,7 +305,7 @@ async fn display_expanded<W: AsyncWrite + Unpin>(
 		for (i, column) in columns.iter().enumerate() {
 			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
 
-			let name_cell = if use_colors {
+			let name_cell = if use_colours {
 				Cell::new(column.name()).add_attribute(Attribute::Bold)
 			} else {
 				Cell::new(column.name())
@@ -350,19 +345,14 @@ async fn display_normal<W: AsyncWrite + Unpin>(
 	unprintable_columns: &[usize],
 	text_rows: &Option<Vec<tokio_postgres::Row>>,
 	writer: &mut W,
-	use_colors: bool,
+	use_colours: bool,
 ) -> Result<()> {
 	let mut table = Table::new();
 
-	if use_colors {
-		if supports_unicode() {
-			table.load_preset(presets::UTF8_FULL);
-			table.apply_modifier(UTF8_ROUND_CORNERS);
-		} else {
-			table.load_preset(presets::ASCII_FULL);
-		}
+	if supports_unicode() {
+		table.load_preset(presets::UTF8_FULL);
+		table.apply_modifier(UTF8_ROUND_CORNERS);
 	} else {
-		// Use simple ASCII borders when colors are disabled
 		table.load_preset(presets::ASCII_FULL);
 	}
 
@@ -374,7 +364,7 @@ async fn display_normal<W: AsyncWrite + Unpin>(
 
 	table.set_header(columns.iter().map(|col| {
 		let cell = Cell::new(col.name()).set_alignment(CellAlignment::Center);
-		if use_colors {
+		if use_colours {
 			cell.add_attribute(Attribute::Bold)
 		} else {
 			cell
@@ -431,7 +421,7 @@ async fn display_json<W: AsyncWrite + Unpin>(
 	expanded: bool,
 	theme: crate::highlighter::Theme,
 	writer: &mut W,
-	use_colors: bool,
+	use_colours: bool,
 ) -> Result<()> {
 	let mut objects = Vec::new();
 
@@ -474,7 +464,7 @@ async fn display_json<W: AsyncWrite + Unpin>(
 	if expanded {
 		// Pretty-print a single array containing all objects
 		let json_str = serde_json::to_string_pretty(&objects).unwrap();
-		if use_colors {
+		if use_colours {
 			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 			writer
 				.write_all(format!("{}\n", highlighted).as_bytes())
@@ -490,7 +480,7 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		// Compact-print one object per line
 		for obj in objects {
 			let json_str = serde_json::to_string(&obj).unwrap();
-			if use_colors {
+			if use_colours {
 				let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 				writer
 					.write_all(format!("{}\n", highlighted).as_bytes())
