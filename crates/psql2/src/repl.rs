@@ -8,10 +8,11 @@ use crate::schema_cache::SchemaCacheManager;
 use miette::{IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReplAction {
 	Continue,
 	Execute {
@@ -21,6 +22,85 @@ enum ReplAction {
 	},
 	Exit,
 	ToggleExpanded,
+}
+
+impl ReplAction {
+	async fn handle(
+		self,
+		client: &tokio_postgres::Client,
+		monitor_client: &tokio_postgres::Client,
+		backend_pid: i32,
+		theme: Theme,
+		repl_state: &Arc<Mutex<ReplState>>,
+		rl: &mut Editor<SqlCompleter, History>,
+		db_user: &str,
+		sys_user: &str,
+		line: &str,
+	) -> ControlFlow<()> {
+		match self {
+			ReplAction::Continue => ControlFlow::Continue(()),
+			ReplAction::ToggleExpanded => {
+				let mut state = repl_state.lock().unwrap();
+				state.expanded_mode = !state.expanded_mode;
+				eprintln!(
+					"Expanded display is {}.",
+					if state.expanded_mode { "on" } else { "off" }
+				);
+				ControlFlow::Continue(())
+			}
+			ReplAction::Exit => {
+				let user_input = line.to_string();
+				let _ = rl.add_history_entry(&user_input);
+				let state = repl_state.lock().unwrap();
+				if let Err(e) = rl.history_mut().add_entry(
+					user_input,
+					db_user.to_string(),
+					sys_user.to_string(),
+					state.write_mode,
+					state.ots.clone(),
+				) {
+					debug!("failed to add to history: {}", e);
+				}
+				ControlFlow::Break(())
+			}
+			ReplAction::Execute {
+				input,
+				sql,
+				modifiers,
+			} => {
+				let _ = rl.add_history_entry(&input);
+				let state = repl_state.lock().unwrap();
+				if let Err(e) = rl.history_mut().add_entry(
+					input,
+					db_user.to_string(),
+					sys_user.to_string(),
+					state.write_mode,
+					state.ots.clone(),
+				) {
+					debug!("failed to add to history: {}", e);
+				}
+				drop(state);
+
+				match execute_query(client, &sql, modifiers, theme).await {
+					Ok(()) => {
+						// If write mode is on and we're not in a transaction, start one
+						let tx_state = check_transaction_state(monitor_client, backend_pid).await;
+						if repl_state.lock().unwrap().write_mode
+							&& matches!(tx_state, TransactionState::None)
+						{
+							if let Err(e) = client.batch_execute("BEGIN").await {
+								warn!("Failed to start transaction: {}", e);
+							}
+						}
+					}
+					Err(e) => {
+						eprintln!("Error: {:?}", e);
+					}
+				}
+				ControlFlow::Continue(())
+			}
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -84,12 +164,136 @@ fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, Rep
 		Ok(None) | Err(_) => ReplAction::Continue,
 	};
 
-	let buffer_state = match action {
+	let buffer_state = match &action {
 		ReplAction::Continue => new_buffer,
-		_ => String::new(),
+		ReplAction::Execute { .. } | ReplAction::Exit | ReplAction::ToggleExpanded => String::new(),
 	};
 
 	(buffer_state, action)
+}
+
+fn build_prompt(
+	database_name: &str,
+	is_superuser: bool,
+	buffer_is_empty: bool,
+	transaction_state: TransactionState,
+	write_mode: bool,
+) -> String {
+	let (transaction_marker, color_code) = match transaction_state {
+		TransactionState::Error => ("!", "\x1b[1;31m"), // Bold red
+		TransactionState::Active => {
+			if write_mode {
+				("*", "\x1b[1;34m") // Bold blue (write mode + transaction)
+			} else {
+				("*", "") // No color (read mode + transaction)
+			}
+		}
+		TransactionState::Idle => {
+			if write_mode {
+				("", "\x1b[1;32m") // Bold green (write mode + idle transaction)
+			} else {
+				("", "") // No color (read mode + idle transaction)
+			}
+		}
+		TransactionState::None => {
+			if write_mode {
+				("", "\x1b[1;32m") // Bold green (write mode, no transaction)
+			} else {
+				("", "") // No color (read mode, no transaction)
+			}
+		}
+	};
+
+	let reset_code = if color_code.is_empty() { "" } else { "\x1b[0m" };
+	let prompt_suffix = if is_superuser { "#" } else { ">" };
+
+	if buffer_is_empty {
+		format!(
+			"{}{}={}{}{} ",
+			color_code, database_name, transaction_marker, prompt_suffix, reset_code
+		)
+	} else {
+		format!("{}{}->{}  ", color_code, database_name, reset_code)
+	}
+}
+
+async fn handle_write_mode_toggle(
+	client: &tokio_postgres::Client,
+	monitor_client: &tokio_postgres::Client,
+	backend_pid: i32,
+	repl_state: &Arc<Mutex<ReplState>>,
+	rl: &mut Editor<SqlCompleter, History>,
+	db_user: &str,
+	sys_user: &str,
+) -> ControlFlow<()> {
+	let current_write_mode = repl_state.lock().unwrap().write_mode;
+
+	if current_write_mode {
+		let tx_state = check_transaction_state(monitor_client, backend_pid).await;
+		if tx_state == TransactionState::Active {
+			eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
+			return ControlFlow::Continue(());
+		}
+
+		repl_state.lock().unwrap().write_mode = false;
+		repl_state.lock().unwrap().ots = None;
+
+		match client
+			.batch_execute("ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+			.await
+		{
+			Ok(_) => {
+				debug!("Write mode disabled");
+				eprintln!("SESSION IS NOW READ ONLY");
+
+				rl.history_mut().set_context(
+					db_user.to_string(),
+					sys_user.to_string(),
+					false,
+					None,
+				);
+			}
+			Err(e) => {
+				eprintln!("Failed to disable write mode: {}", e);
+			}
+		}
+	} else {
+		match ots::prompt_for_ots(rl.history()) {
+			Ok(new_ots) => {
+				repl_state.lock().unwrap().write_mode = true;
+				repl_state.lock().unwrap().ots = Some(new_ots.clone());
+
+				match client
+					.batch_execute(
+						"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; COMMIT; BEGIN",
+					)
+					.await
+				{
+					Ok(_) => {
+						debug!("Write mode enabled");
+						eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
+
+						rl.history_mut().set_context(
+							db_user.to_string(),
+							sys_user.to_string(),
+							true,
+							Some(new_ots),
+						);
+					}
+					Err(e) => {
+						eprintln!("Failed to enable write mode: {}", e);
+						repl_state.lock().unwrap().write_mode = false;
+						repl_state.lock().unwrap().ots = None;
+					}
+				}
+			}
+			Err(e) => {
+				eprintln!("Failed to enable write mode: {}", e);
+			}
+		}
+	}
+
+	ControlFlow::Continue(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -232,41 +436,13 @@ pub(crate) async fn run_repl(
 		let transaction_state = check_transaction_state(&monitor_client, backend_pid).await;
 		let current_write_mode = repl_state.lock().unwrap().write_mode;
 
-		let (transaction_marker, color_code) = match transaction_state {
-			TransactionState::Error => ("!", "\x1b[1;31m"), // Bold red
-			TransactionState::Active => {
-				if current_write_mode {
-					("*", "\x1b[1;34m") // Bold blue (write mode + transaction)
-				} else {
-					("*", "") // No color (read mode + transaction)
-				}
-			}
-			TransactionState::Idle => {
-				if current_write_mode {
-					("", "\x1b[1;32m") // Bold green (write mode + idle transaction)
-				} else {
-					("", "") // No color (read mode + idle transaction)
-				}
-			}
-			TransactionState::None => {
-				if current_write_mode {
-					("", "\x1b[1;32m") // Bold green (write mode, no transaction)
-				} else {
-					("", "") // No color (read mode, no transaction)
-				}
-			}
-		};
-
-		let reset_code = if color_code.is_empty() { "" } else { "\x1b[0m" };
-		let prompt_suffix = if is_superuser { "#" } else { ">" };
-		let prompt = if buffer.is_empty() {
-			format!(
-				"{}{}={}{}{} ",
-				color_code, database_name, transaction_marker, prompt_suffix, reset_code
-			)
-		} else {
-			format!("{}{}->{}  ", color_code, database_name, reset_code)
-		};
+		let prompt = build_prompt(
+			&database_name,
+			is_superuser,
+			buffer.is_empty(),
+			transaction_state,
+			current_write_mode,
+		);
 
 		let readline = rl.readline(&prompt);
 		match readline {
@@ -277,144 +453,42 @@ pub(crate) async fn run_repl(
 				}
 
 				if line == "\\W" && buffer.is_empty() {
-					let current_write_mode = repl_state.lock().unwrap().write_mode;
-
-					if current_write_mode {
-						let tx_state = check_transaction_state(&monitor_client, backend_pid).await;
-						if tx_state == TransactionState::Active {
-							eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
-							continue;
-						}
-
-						repl_state.lock().unwrap().write_mode = false;
-						repl_state.lock().unwrap().ots = None;
-
-						match client
-							.batch_execute(
-								"ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
-							)
-							.await
-						{
-							Ok(_) => {
-								debug!("Write mode disabled");
-								eprintln!("SESSION IS NOW READ ONLY");
-
-								rl.history_mut().set_context(
-									db_user.clone(),
-									sys_user.clone(),
-									false,
-									None,
-								);
-							}
-							Err(e) => {
-								eprintln!("Failed to disable write mode: {}", e);
-							}
-						}
-					} else {
-						match ots::prompt_for_ots(rl.history()) {
-							Ok(new_ots) => {
-								repl_state.lock().unwrap().write_mode = true;
-								repl_state.lock().unwrap().ots = Some(new_ots.clone());
-
-								match client
-									.batch_execute(
-										"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; COMMIT; BEGIN",
-									)
-									.await
-								{
-									Ok(_) => {
-										debug!("Write mode enabled");
-										eprintln!(
-											"AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES"
-										);
-
-										rl.history_mut().set_context(
-											db_user.clone(),
-											sys_user.clone(),
-											true,
-											Some(new_ots),
-										);
-									}
-									Err(e) => {
-										eprintln!("Failed to enable write mode: {}", e);
-										repl_state.lock().unwrap().write_mode = false;
-										repl_state.lock().unwrap().ots = None;
-									}
-								}
-							}
-							Err(e) => {
-								eprintln!("Failed to enable write mode: {}", e);
-							}
-						}
+					if handle_write_mode_toggle(
+						&client,
+						&monitor_client,
+						backend_pid,
+						&repl_state,
+						&mut rl,
+						&db_user,
+						&sys_user,
+					)
+					.await
+					.is_continue()
+					{
+						continue;
 					}
-					continue;
 				}
 
 				let state = repl_state.lock().unwrap().clone();
 				let (new_buffer, action) = handle_input(&buffer, line, &state);
 				buffer = new_buffer;
 
-				match action {
-					ReplAction::Continue => continue,
-					ReplAction::ToggleExpanded => {
-						let mut state = repl_state.lock().unwrap();
-						state.expanded_mode = !state.expanded_mode;
-						eprintln!(
-							"Expanded display is {}.",
-							if state.expanded_mode { "on" } else { "off" }
-						);
-						continue;
-					}
-					ReplAction::Exit => {
-						let user_input = line.to_string();
-						let _ = rl.add_history_entry(&user_input);
-						let state = repl_state.lock().unwrap();
-						if let Err(e) = rl.history_mut().add_entry(
-							user_input,
-							db_user.clone(),
-							sys_user.clone(),
-							state.write_mode,
-							state.ots.clone(),
-						) {
-							debug!("failed to add to history: {}", e);
-						}
-						break;
-					}
-					ReplAction::Execute {
-						input,
-						sql,
-						modifiers,
-					} => {
-						let _ = rl.add_history_entry(&input);
-						let state = repl_state.lock().unwrap();
-						if let Err(e) = rl.history_mut().add_entry(
-							input,
-							db_user.clone(),
-							sys_user.clone(),
-							state.write_mode,
-							state.ots.clone(),
-						) {
-							debug!("failed to add to history: {}", e);
-						}
-
-						match execute_query(&client, &sql, modifiers, theme).await {
-							Ok(()) => {
-								// If write mode is on and we're not in a transaction, start one
-								let tx_state =
-									check_transaction_state(&monitor_client, backend_pid).await;
-								if repl_state.lock().unwrap().write_mode
-									&& matches!(tx_state, TransactionState::None)
-								{
-									if let Err(e) = client.batch_execute("BEGIN").await {
-										warn!("Failed to start transaction: {}", e);
-									}
-								}
-							}
-							Err(e) => {
-								eprintln!("Error: {:?}", e);
-							}
-						}
-					}
+				if action
+					.handle(
+						&client,
+						&monitor_client,
+						backend_pid,
+						theme,
+						&repl_state,
+						&mut rl,
+						&db_user,
+						&sys_user,
+						line,
+					)
+					.await
+					.is_break()
+				{
+					break;
 				}
 			}
 			Err(ReadlineError::Interrupted) => {
