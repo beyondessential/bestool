@@ -10,6 +10,7 @@ use winnow::Parser;
 pub(crate) enum QueryModifier {
 	Expanded,
 	Json,
+	Verbatim,
 	VarSet { prefix: Option<String> },
 	Output { file_path: String },
 }
@@ -266,6 +267,7 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 			alt(('x', 'X')).map(|_| 'x'),
 			alt(('j', 'J')).map(|_| 'j'),
 			alt(('o', 'O')).map(|_| 'o'),
+			alt(('v', 'V')).map(|_| 'v'),
 		))
 		.parse_next(input)
 	}
@@ -337,6 +339,9 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 					}
 					'j' => {
 						modifiers.insert(QueryModifier::Json);
+					}
+					'v' => {
+						modifiers.insert(QueryModifier::Verbatim);
 					}
 					'o' => {
 						// Output modifier needs a file path argument
