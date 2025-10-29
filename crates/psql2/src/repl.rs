@@ -49,6 +49,7 @@ impl ReplAction {
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
 			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
 			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
+			ReplAction::Debug { what } => handle_debug(ctx, what),
 			ReplAction::Execute {
 				input,
 				sql,
@@ -225,6 +226,19 @@ async fn handle_output(ctx: &mut ReplContext<'_>, file_path: Option<&str>) -> Co
 			Err(e) => {
 				error!("failed to open output file '{}': {}", path, e);
 			}
+		}
+	}
+
+	ControlFlow::Continue(())
+}
+
+fn handle_debug(ctx: &mut ReplContext<'_>, what: crate::parser::DebugWhat) -> ControlFlow<()> {
+	use crate::parser::DebugWhat;
+
+	match what {
+		DebugWhat::State => {
+			let state = ctx.repl_state.lock().unwrap();
+			eprintln!("ReplState: {:#?}", *state);
 		}
 	}
 

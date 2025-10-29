@@ -17,6 +17,11 @@ pub(crate) enum QueryModifier {
 pub(crate) type QueryModifiers = HashSet<QueryModifier>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DebugWhat {
+	State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
@@ -24,6 +29,7 @@ pub(crate) enum Metacommand {
 	Edit { content: Option<String> },
 	Include { file_path: String },
 	Output { file_path: Option<String> },
+	Debug { what: DebugWhat },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -108,6 +114,20 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		})
 	}
 
+	fn debug_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal("debug").parse_next(input)?;
+		space1.parse_next(input)?;
+		literal("state").parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::Debug {
+			what: DebugWhat::State,
+		})
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
@@ -116,6 +136,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		edit_command,
 		include_command,
 		output_command,
+		debug_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -872,5 +893,44 @@ mod tests {
 	fn test_parse_metacommand_output_with_only_whitespace() {
 		let result = parse_metacommand("\\o   ").unwrap();
 		assert_eq!(result, Some(Metacommand::Output { file_path: None }));
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_state() {
+		let result = parse_metacommand("\\debug state").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::State
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_state_with_whitespace() {
+		let result = parse_metacommand("  \\debug state  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::State
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_state_with_extra_whitespace() {
+		let result = parse_metacommand("\\debug  state").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::State
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_only() {
+		let result = parse_metacommand("\\debug").unwrap();
+		assert_eq!(result, None);
 	}
 }

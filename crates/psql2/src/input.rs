@@ -1,4 +1,4 @@
-use crate::parser::{parse_metacommand, parse_query_modifiers, Metacommand};
+use crate::parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand};
 use crate::repl::ReplState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,9 @@ pub(crate) enum ReplAction {
 	},
 	Output {
 		file_path: Option<String>,
+	},
+	Debug {
+		what: DebugWhat,
 	},
 }
 
@@ -47,6 +50,7 @@ pub(crate) fn handle_input(
 				Metacommand::Edit { content } => ReplAction::Edit { content },
 				Metacommand::Include { file_path } => ReplAction::Include { file_path },
 				Metacommand::Output { file_path } => ReplAction::Output { file_path },
+				Metacommand::Debug { what } => ReplAction::Debug { what },
 			};
 			return (String::new(), action);
 		}
