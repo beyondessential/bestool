@@ -10,6 +10,7 @@ use crate::schema_cache::SchemaCacheManager;
 use miette::{bail, IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use tokio::fs::File;
@@ -46,9 +47,9 @@ impl ReplAction {
 			ReplAction::Output { file_path } => handle_output(ctx, file_path.as_deref()).await,
 			ReplAction::Debug { what } => handle_debug(ctx, what),
 			ReplAction::Help => handle_help(),
-			ReplAction::SetVar { name, value } => handle_set_var(name, value),
-			ReplAction::UnsetVar { name } => handle_unset_var(name),
-			ReplAction::LookupVar { pattern } => handle_lookup_var(pattern),
+			ReplAction::SetVar { name, value } => handle_set_var(ctx, name, value),
+			ReplAction::UnsetVar { name } => handle_unset_var(ctx, name),
+			ReplAction::LookupVar { pattern } => handle_lookup_var(ctx, pattern),
 			ReplAction::Execute {
 				input,
 				sql,
@@ -67,6 +68,7 @@ pub struct ReplState {
 	pub(crate) ots: Option<String>,
 	pub(crate) output_file: Option<Arc<Mutex<File>>>,
 	pub(crate) use_colours: bool,
+	pub(crate) vars: BTreeMap<String, String>,
 }
 
 impl ReplState {
@@ -79,6 +81,7 @@ impl ReplState {
 			ots: None,
 			output_file: None,
 			use_colours: true,
+			vars: BTreeMap::new(),
 		}
 	}
 }
@@ -277,19 +280,90 @@ fn handle_help() -> ControlFlow<()> {
 	ControlFlow::Continue(())
 }
 
-fn handle_set_var(_name: String, _value: String) -> ControlFlow<()> {
-	eprintln!("\\set command not yet implemented");
+fn handle_set_var(ctx: &mut ReplContext<'_>, name: String, value: String) -> ControlFlow<()> {
+	let mut state = ctx.repl_state.lock().unwrap();
+	state.vars.insert(name, value);
 	ControlFlow::Continue(())
 }
 
-fn handle_unset_var(_name: String) -> ControlFlow<()> {
-	eprintln!("\\unset command not yet implemented");
+fn handle_unset_var(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
+	let mut state = ctx.repl_state.lock().unwrap();
+	if state.vars.remove(&name).is_none() {
+		eprintln!("Variable '{}' not found", name);
+	}
 	ControlFlow::Continue(())
 }
 
-fn handle_lookup_var(_pattern: Option<String>) -> ControlFlow<()> {
-	eprintln!("\\vars command not yet implemented");
+fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> ControlFlow<()> {
+	let state = ctx.repl_state.lock().unwrap();
+
+	let matching_vars: Vec<(&String, &String)> = if let Some(ref pat) = pattern {
+		// Simple wildcard matching: * matches any characters
+		state
+			.vars
+			.iter()
+			.filter(|(name, _)| matches_pattern(name, pat))
+			.collect()
+	} else {
+		state.vars.iter().collect()
+	};
+
+	if matching_vars.is_empty() {
+		if pattern.is_some() {
+			eprintln!("No variables match the pattern");
+		} else {
+			eprintln!("No variables defined");
+		}
+		return ControlFlow::Continue(());
+	}
+
+	let mut table = comfy_table::Table::new();
+	table.set_header(vec!["Name", "Value"]);
+
+	for (name, value) in matching_vars {
+		table.add_row(vec![name, value]);
+	}
+
+	println!("{}", table);
+
 	ControlFlow::Continue(())
+}
+
+fn matches_pattern(text: &str, pattern: &str) -> bool {
+	let mut text_chars = text.chars().peekable();
+	let mut pattern_chars = pattern.chars().peekable();
+
+	loop {
+		match (pattern_chars.peek(), text_chars.peek()) {
+			(None, None) => return true,
+			(None, Some(_)) => return false,
+			(Some(&'*'), _) => {
+				pattern_chars.next();
+				if pattern_chars.peek().is_none() {
+					return true;
+				}
+				// Try to match rest of pattern at each position
+				let rest_pattern: String = pattern_chars.clone().collect();
+				while text_chars.peek().is_some() {
+					let rest_text: String = text_chars.clone().collect();
+					if matches_pattern(&rest_text, &rest_pattern) {
+						return true;
+					}
+					text_chars.next();
+				}
+				return false;
+			}
+			(Some(&p), Some(&t)) => {
+				if p == t {
+					pattern_chars.next();
+					text_chars.next();
+				} else {
+					return false;
+				}
+			}
+			(Some(_), None) => return false,
+		}
+	}
 }
 
 async fn handle_execute(
@@ -656,6 +730,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		write_mode: false,
 		ots: None,
 		use_colours: config.use_colours,
+		vars: BTreeMap::new(),
 	};
 
 	let audit = Audit::open(&audit_path, repl_state.clone())?;
