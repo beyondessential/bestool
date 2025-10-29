@@ -363,6 +363,20 @@ impl SqlCompleter {
 			return self.complete_file_path(partial_path);
 		}
 
+		// Check if we're completing a file path after \g...o query modifier (e.g. \go, \gxo, \gjo, \gxjo)
+		// This is more complex because we need to find \g followed by optional modifiers and then 'o'
+		if let Some(g_pos) = text_before_cursor.rfind("\\g") {
+			let after_g = &text_before_cursor[g_pos + 2..];
+			// Check if it contains 'o' or 'O' and is followed by a space
+			if after_g.chars().any(|c| c == 'o' || c == 'O') {
+				if let Some(space_pos) = after_g.find(' ') {
+					// Extract the file path after the space
+					let partial_path = &after_g[space_pos + 1..];
+					return self.complete_file_path(partial_path);
+				}
+			}
+		}
+
 		let word_start = text_before_cursor
 			.rfind(|c: char| c.is_whitespace() || c == '(' || c == ',' || c == ';')
 			.map(|i| i + 1)
@@ -864,6 +878,57 @@ mod tests {
 
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display.starts_with("output")));
+
+		// Cleanup
+		let _ = fs::remove_dir_all(&temp_dir);
+	}
+
+	#[test]
+	fn test_query_modifier_go_file_path_completion() {
+		use std::fs;
+		use std::io::Write;
+
+		// Create a temporary directory with test files
+		let temp_dir = std::env::temp_dir().join("psql2_test_go_completion");
+		let _ = fs::remove_dir_all(&temp_dir);
+		fs::create_dir_all(&temp_dir).unwrap();
+
+		// Create test files
+		let test_file1 = temp_dir.join("result1.txt");
+		let test_file2 = temp_dir.join("result2.txt");
+
+		fs::File::create(&test_file1)
+			.unwrap()
+			.write_all(b"test")
+			.unwrap();
+		fs::File::create(&test_file2)
+			.unwrap()
+			.write_all(b"test")
+			.unwrap();
+
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test completion with \go
+		let path_str = temp_dir.to_string_lossy();
+		let input = format!("SELECT * FROM users\\go {}/result", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display.starts_with("result")));
+
+		// Test completion with \gxo
+		let input = format!("SELECT * FROM users\\gxo {}/result", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display.starts_with("result")));
+
+		// Test completion with \gjo
+		let input = format!("SELECT * FROM users\\gjo {}/result", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display.starts_with("result")));
 
 		// Cleanup
 		let _ = fs::remove_dir_all(&temp_dir);

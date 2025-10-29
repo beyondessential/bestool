@@ -11,6 +11,7 @@ pub(crate) enum QueryModifier {
 	Expanded,
 	Json,
 	VarSet { prefix: Option<String> },
+	Output { file_path: String },
 }
 
 pub(crate) type QueryModifiers = HashSet<QueryModifier>;
@@ -137,7 +138,12 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 	fn modifier_char(
 		input: &mut &str,
 	) -> winnow::error::Result<char, ErrMode<winnow::error::ContextError>> {
-		alt((alt(('x', 'X')).map(|_| 'x'), alt(('j', 'J')).map(|_| 'j'))).parse_next(input)
+		alt((
+			alt(('x', 'X')).map(|_| 'x'),
+			alt(('j', 'J')).map(|_| 'j'),
+			alt(('o', 'O')).map(|_| 'o'),
+		))
+		.parse_next(input)
 	}
 
 	fn metacommand(
@@ -148,7 +154,7 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 	> {
 		backslash_g.parse_next(input)?;
 
-		// Parse zero or more modifier characters (x, j)
+		// Parse zero or more modifier characters (x, j, o)
 		let mut modifiers = Vec::new();
 		while let Ok(m) = modifier_char.parse_next(input) {
 			modifiers.push(m);
@@ -157,8 +163,9 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 		// Try to parse "set"
 		let has_set = opt(literal(Caseless("set"))).parse_next(input)?.is_some();
 
-		// If "set" is present, try to parse optional prefix
-		let arg = if has_set {
+		// If "set" is present, or if 'o' modifier is present, try to parse argument
+		let has_output = modifiers.contains(&'o');
+		let arg = if has_set || has_output {
 			opt(preceded(space1, rest.map(|s: &str| s.trim())))
 				.parse_next(input)?
 				.and_then(|s| {
@@ -196,9 +203,10 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 	match parse_line.parse(input) {
 		Ok((sql, Some((modifier_chars, has_set, arg)))) => {
 			let mut modifiers = QueryModifiers::new();
+			let has_output = modifier_chars.contains(&'o');
 
 			// Apply modifiers based on the characters we found
-			for ch in modifier_chars {
+			for ch in &modifier_chars {
 				match ch {
 					'x' => {
 						modifiers.insert(QueryModifier::Expanded);
@@ -206,12 +214,21 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 					'j' => {
 						modifiers.insert(QueryModifier::Json);
 					}
+					'o' => {
+						// Output modifier needs a file path argument
+						if let Some(ref file_path) = arg {
+							modifiers.insert(QueryModifier::Output {
+								file_path: file_path.clone(),
+							});
+						}
+					}
 					_ => {}
 				}
 			}
 
 			// Apply set modifier if present
-			if has_set {
+			// Note: 'set' and 'o' cannot both be present (arg is used for both)
+			if has_set && !has_output {
 				modifiers.insert(QueryModifier::VarSet { prefix: arg });
 			}
 
@@ -541,6 +558,88 @@ mod tests {
 	fn test_parse_query_modifiers_no_terminator() {
 		let result = parse_query_modifiers("SELECT * FROM users").unwrap();
 		assert!(result.is_none());
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_go() {
+		let result = parse_query_modifiers("SELECT * FROM users\\go /tmp/output.txt").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "/tmp/output.txt".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_go_relative_path() {
+		let result = parse_query_modifiers("SELECT 1\\go ./output/result.txt").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT 1");
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "./output/result.txt".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_go_uppercase() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gO /tmp/output.txt").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "/tmp/output.txt".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxo() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gxo /tmp/output.txt").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "/tmp/output.txt".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gjo() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gjo /tmp/output.json").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "/tmp/output.json".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxjo() {
+		let result = parse_query_modifiers("SELECT * FROM users\\gxjo /tmp/output.json").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Expanded));
+		assert!(mods.contains(&QueryModifier::Json));
+		assert!(mods.contains(&QueryModifier::Output {
+			file_path: "/tmp/output.json".to_string()
+		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_go_without_path() {
+		let result = parse_query_modifiers("SELECT * FROM users\\go").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		// Should not contain Output modifier if no path provided
+		assert!(!mods
+			.iter()
+			.any(|m| matches!(m, QueryModifier::Output { .. })));
 	}
 
 	#[test]
