@@ -428,12 +428,13 @@ impl SqlCompleter {
 					if table
 						.to_lowercase()
 						.starts_with(&current_word.to_lowercase())
-						&& !completions.iter().any(|c| c.display == table) {
-							completions.push(Pair {
-								display: table.clone(),
-								replacement: table,
-							});
-						}
+						&& !completions.iter().any(|c| c.display == table)
+					{
+						completions.push(Pair {
+							display: table.clone(),
+							replacement: table,
+						});
+					}
 				}
 			}
 

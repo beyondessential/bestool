@@ -22,7 +22,34 @@ pub(crate) async fn execute_query(
 	debug!(?modifiers, %sql, "executing query");
 
 	let start = std::time::Instant::now();
+
+	#[cfg(unix)]
+	let rows = {
+		use tokio::signal::unix::{signal, SignalKind};
+
+		// Set up signal handler for SIGINT
+		let mut sigint = signal(SignalKind::interrupt()).into_diagnostic()?;
+		let cancel_token = client.cancel_token();
+		let tls_connector = crate::tls::make_tls_connector()?;
+
+		// Race between query execution and SIGINT
+		tokio::select! {
+			result = client.query(sql, &[]) => {
+				result.into_diagnostic()?
+			}
+			_ = sigint.recv() => {
+				eprintln!("\nCancelling query...");
+				if let Err(e) = cancel_token.cancel_query(tls_connector).await {
+					debug!("Failed to cancel query: {:?}", e);
+				}
+				return Ok(());
+			}
+		}
+	};
+
+	#[cfg(not(unix))]
 	let rows = client.query(sql, &[]).await.into_diagnostic()?;
+
 	let duration = start.elapsed();
 
 	if rows.is_empty() {
