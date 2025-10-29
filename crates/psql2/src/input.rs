@@ -18,6 +18,9 @@ pub(crate) enum ReplAction {
 	Include {
 		file_path: String,
 	},
+	Output {
+		file_path: String,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -43,6 +46,7 @@ pub(crate) fn handle_input(
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 				Metacommand::Edit { content } => ReplAction::Edit { content },
 				Metacommand::Include { file_path } => ReplAction::Include { file_path },
+				Metacommand::Output { file_path } => ReplAction::Output { file_path },
 			};
 			return (String::new(), action);
 		}

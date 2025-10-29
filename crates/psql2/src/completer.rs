@@ -270,11 +270,10 @@ impl SqlCompleter {
 				// "\\echo",
 				// "\\qecho",
 				// "\\warn",
-				"\\i",
-				// "\\ir",
+				"\\i", // "\\ir",
 				// "\\include",
 				// "\\include_relative",
-				// "\\o",
+				"\\o",
 				// "\\out",
 				// "\\p",
 				// "\\print",
@@ -350,6 +349,15 @@ impl SqlCompleter {
 		if text_before_cursor.trim_start().starts_with("\\i ") {
 			// Extract the file path being typed
 			let path_start = text_before_cursor.find("\\i ").unwrap() + 3;
+			let partial_path = &text_before_cursor[path_start..];
+
+			return self.complete_file_path(partial_path);
+		}
+
+		// Check if we're completing a file path after \o command
+		if text_before_cursor.trim_start().starts_with("\\o ") {
+			// Extract the file path being typed
+			let path_start = text_before_cursor.find("\\o ").unwrap() + 3;
 			let partial_path = &text_before_cursor[path_start..];
 
 			return self.complete_file_path(partial_path);
@@ -812,6 +820,50 @@ mod tests {
 
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "README.md"));
+
+		// Cleanup
+		let _ = fs::remove_dir_all(&temp_dir);
+	}
+
+	#[test]
+	fn test_output_command_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions("\\", 1);
+		assert!(completions.iter().any(|c| c.display == "\\o"));
+	}
+
+	#[test]
+	fn test_output_command_file_path_completion() {
+		use std::fs;
+		use std::io::Write;
+
+		// Create a temporary directory with test files
+		let temp_dir = std::env::temp_dir().join("psql2_test_output_completion");
+		let _ = fs::remove_dir_all(&temp_dir);
+		fs::create_dir_all(&temp_dir).unwrap();
+
+		// Create test files
+		let test_file1 = temp_dir.join("output1.txt");
+		let test_file2 = temp_dir.join("output2.txt");
+
+		fs::File::create(&test_file1)
+			.unwrap()
+			.write_all(b"test")
+			.unwrap();
+		fs::File::create(&test_file2)
+			.unwrap()
+			.write_all(b"test")
+			.unwrap();
+
+		let completer = SqlCompleter::new(Theme::Dark);
+
+		// Test completion with partial path
+		let path_str = temp_dir.to_string_lossy();
+		let input = format!("\\o {}/output", path_str);
+		let completions = completer.find_completions(&input, input.len());
+
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display.starts_with("output")));
 
 		// Cleanup
 		let _ = fs::remove_dir_all(&temp_dir);

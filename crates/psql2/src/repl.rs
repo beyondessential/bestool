@@ -24,10 +24,13 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history before handling the action (except for Continue, Edit, and Include which handle it themselves)
+		// Add to history before handling the action (except for Continue, Edit, Include, and Output which handle it themselves)
 		if !matches!(
 			self,
-			ReplAction::Continue | ReplAction::Edit { .. } | ReplAction::Include { .. }
+			ReplAction::Continue
+				| ReplAction::Edit { .. }
+				| ReplAction::Include { .. }
+				| ReplAction::Output { .. }
 		) {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
@@ -43,6 +46,7 @@ impl ReplAction {
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
 			ReplAction::Include { file_path } => handle_include(ctx, file_path).await,
+			ReplAction::Output { file_path } => handle_output(ctx, file_path).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -188,6 +192,12 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: String) -> Control
 		debug!("file '{}' is empty, skipping", file_path);
 	}
 
+	ControlFlow::Continue(())
+}
+
+async fn handle_output(ctx: &mut ReplContext<'_>, file_path: String) -> ControlFlow<()> {
+	debug!("output to file '{}' not yet implemented", file_path);
+	error!("\\o command is not yet implemented");
 	ControlFlow::Continue(())
 }
 

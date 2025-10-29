@@ -22,6 +22,7 @@ pub(crate) enum Metacommand {
 	WriteMode,
 	Edit { content: Option<String> },
 	Include { file_path: String },
+	Output { file_path: String },
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -91,6 +92,22 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		})
 	}
 
+	fn output_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		literal('o').parse_next(input)?;
+		space1.parse_next(input)?;
+		let file_path = rest.parse_next(input)?;
+		let file_path = file_path.trim();
+		if file_path.is_empty() {
+			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+		}
+		Ok(Metacommand::Output {
+			file_path: file_path.to_string(),
+		})
+	}
+
 	let mut input_slice = input;
 	if let Ok(cmd) = alt((
 		quit_command,
@@ -98,6 +115,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		write_mode_command,
 		edit_command,
 		include_command,
+		output_command,
 	))
 	.parse_next(&mut input_slice)
 	{
@@ -710,6 +728,51 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_include_with_only_whitespace() {
 		let result = parse_metacommand("\\i   ").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_output() {
+		let result = parse_metacommand("\\o /path/to/output.txt").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Output {
+				file_path: "/path/to/output.txt".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_output_with_whitespace() {
+		let result = parse_metacommand("  \\o   /path/to/output.txt  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Output {
+				file_path: "/path/to/output.txt".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_output_relative_path() {
+		let result = parse_metacommand("\\o ./output/result.txt").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Output {
+				file_path: "./output/result.txt".to_string()
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_output_without_path() {
+		let result = parse_metacommand("\\o").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_output_with_only_whitespace() {
+		let result = parse_metacommand("\\o   ").unwrap();
 		assert_eq!(result, None);
 	}
 }
