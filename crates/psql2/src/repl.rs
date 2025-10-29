@@ -32,8 +32,9 @@ pub(crate) struct ReplContext<'a> {
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history before handling the action (except for Continue)
-		if !matches!(self, ReplAction::Continue) {
+		// Add to history before handling the action (except for Continue and SnippetSave)
+		// SnippetSave will add itself after it retrieves the preceding command
+		if !matches!(self, ReplAction::Continue | ReplAction::SnippetSave { .. }) {
 			let history = ctx.rl.history_mut();
 			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
@@ -59,7 +60,7 @@ impl ReplAction {
 			ReplAction::UnsetVar { name } => handle_unset_var(ctx, name),
 			ReplAction::LookupVar { pattern } => handle_lookup_var(ctx, pattern),
 			ReplAction::GetVar { name } => handle_get_var(ctx, name),
-			ReplAction::SnippetSave { name } => handle_snippet_save(ctx, name).await,
+			ReplAction::SnippetSave { name } => handle_snippet_save(ctx, name, line).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -416,7 +417,11 @@ fn handle_get_var(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
 	ControlFlow::Continue(())
 }
 
-async fn handle_snippet_save(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
+async fn handle_snippet_save(
+	ctx: &mut ReplContext<'_>,
+	name: String,
+	line: &str,
+) -> ControlFlow<()> {
 	let history = ctx.rl.history();
 
 	// Get the last entry from history (which is the preceding command)
@@ -437,7 +442,15 @@ async fn handle_snippet_save(ctx: &mut ReplContext<'_>, name: String) -> Control
 	// Save the snippet - get snippets before awaiting
 	let snippets = ctx.repl_state.lock().unwrap().snippets.clone();
 	match snippets.save(&name, &content).await {
-		Ok(path) => println!("Snippet saved to {}", path.display()),
+		Ok(path) => {
+			println!("Snippet saved to {}", path.display());
+			// Now add the SnippetSave command to history after successful save
+			let history = ctx.rl.history_mut();
+			history.set_repl_state(&ctx.repl_state.lock().unwrap());
+			if let Err(e) = history.add_entry(line.into()) {
+				debug!("failed to add SnippetSave to history: {}", e);
+			}
+		}
 		Err(e) => eprintln!("Failed to save snippet '{}': {}", name, e),
 	}
 
