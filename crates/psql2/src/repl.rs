@@ -8,6 +8,7 @@ use crate::parser::QueryModifier;
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
 use crate::snippets::Snippets;
+use comfy_table::Table;
 use miette::{bail, IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
 use rustyline::history::History;
@@ -327,35 +328,68 @@ fn handle_debug(ctx: &mut ReplContext<'_>, what: crate::parser::DebugWhat) -> Co
 
 fn handle_help() -> ControlFlow<()> {
 	eprintln!("Available metacommands:");
-	eprintln!("  \\?            - Show this help");
-	eprintln!("  \\help         - Show this help");
-	eprintln!("  \\q            - Quit");
-	eprintln!("  \\x            - Toggle expanded output mode");
-	eprintln!("  \\W            - Toggle write mode");
-	eprintln!("  \\e [query]    - Edit query in external editor");
-	eprintln!("  \\i <file>     - Execute commands from file");
-	eprintln!("  \\o [file]     - Send query results to file (or close if no file specified)");
-	eprintln!("  \\debug [cmd]  - Debug commands (run \\debug for options)");
-	eprintln!("  \\snip run <name> - Run a saved snippet");
-	eprintln!("  \\snip save <name> - Save the preceding command as a snippet");
-	eprintln!("  \\set <name> <value> - Set a variable");
-	eprintln!("  \\unset <name> - Unset a variable");
-	eprintln!("  \\get <name>   - Get and print a variable value");
-	eprintln!("  \\vars [pattern] - List variables (optionally matching pattern)");
-	eprintln!();
-	eprintln!("Query modifiers (used after query):");
-	eprintln!("  \\g            - Execute query");
-	eprintln!("  \\gx           - Execute query with expanded output");
-	eprintln!("  \\gj           - Execute query with JSON output");
-	eprintln!("  \\gv           - Execute query without variable interpolation");
-	eprintln!("  \\go <file>    - Execute query and write output to file");
-	eprintln!("  \\gset [prefix] - Execute query and store results in variables");
-	eprintln!();
-	eprintln!("Modifiers can be combined, e.g. \\gxj for expanded JSON output");
-	eprintln!();
-	eprintln!("Variable interpolation:");
-	eprintln!("  ${{name}}       - Replace with variable value (errors if not set)");
-	eprintln!("  ${{{{name}}}}     - Escape: produces ${{name}} without replacement");
+	let mut metacmds = Table::new();
+	metacmds.add_row(vec!["\\?", "Show this help"]);
+	metacmds.add_row(vec!["\\help", "Show this help"]);
+	metacmds.add_row(vec!["\\q", "Quit"]);
+	metacmds.add_row(vec!["\\x", "Toggle expanded output mode"]);
+	metacmds.add_row(vec!["\\W", "Toggle write mode"]);
+	metacmds.add_row(vec!["\\e [query]", "Edit query in external editor"]);
+	metacmds.add_row(vec![
+		"\\i <file> [var=val...]",
+		"Execute commands from file",
+	]);
+	metacmds.add_row(vec![
+		"\\o [file]",
+		"Send query results to file (or close if no file)",
+	]);
+	metacmds.add_row(vec![
+		"\\debug [cmd]",
+		"Debug commands (run \\debug for options)",
+	]);
+	metacmds.add_row(vec!["\\snip run <name>", "Run a saved snippet"]);
+	metacmds.add_row(vec![
+		"\\snip save <name>",
+		"Save the preceding command as a snippet",
+	]);
+	metacmds.add_row(vec!["\\set <name> <value>", "Set a variable"]);
+	metacmds.add_row(vec!["\\unset <name>", "Unset a variable"]);
+	metacmds.add_row(vec!["\\get <name>", "Get and print a variable value"]);
+	metacmds.add_row(vec![
+		"\\vars [pattern]",
+		"List variables (optionally matching pattern)",
+	]);
+	eprintln!("{}", metacmds);
+
+	eprintln!("\nQuery modifiers (used after query):");
+	let mut modifiers = Table::new();
+	modifiers.add_row(vec!["\\g", "Execute query"]);
+	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
+	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
+	modifiers.add_row(vec!["\\gv", "Execute query without variable interpolation"]);
+	modifiers.add_row(vec![
+		"\\go <file>",
+		"Execute query and write output to file",
+	]);
+	modifiers.add_row(vec![
+		"\\gset [prefix]",
+		"Execute query and store results in variables",
+	]);
+	eprintln!("{}", modifiers);
+
+	eprintln!("\nModifiers can be combined, e.g. \\gxj for expanded JSON output");
+
+	eprintln!("\nVariable interpolation:");
+	let mut vars = Table::new();
+	vars.add_row(vec![
+		"${{name}}",
+		"Replace with variable value (errors if not set)",
+	]);
+	vars.add_row(vec![
+		"${{{{name}}}}",
+		"Escape: produces ${{name}} without replacement",
+	]);
+	eprintln!("{}", vars);
 
 	ControlFlow::Continue(())
 }
