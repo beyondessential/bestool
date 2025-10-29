@@ -336,6 +336,8 @@ fn handle_help() -> ControlFlow<()> {
 	eprintln!("  \\i <file>     - Execute commands from file");
 	eprintln!("  \\o [file]     - Send query results to file (or close if no file specified)");
 	eprintln!("  \\debug [cmd]  - Debug commands (run \\debug for options)");
+	eprintln!("  \\snip run <name> - Run a saved snippet");
+	eprintln!("  \\snip save <name> - Save the preceding command as a snippet");
 	eprintln!("  \\set <name> <value> - Set a variable");
 	eprintln!("  \\unset <name> - Unset a variable");
 	eprintln!("  \\get <name>   - Get and print a variable value");
