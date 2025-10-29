@@ -753,7 +753,9 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	let cache_arc = schema_cache_manager.cache_arc();
 	let _cache_task = schema_cache_manager.start_background_refresh();
 
-	let completer = SqlCompleter::new(config.theme).with_schema_cache(cache_arc);
+	let completer = SqlCompleter::new(config.theme)
+		.with_schema_cache(cache_arc)
+		.with_repl_state(repl_state.clone());
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
 			.auto_add_history(false)

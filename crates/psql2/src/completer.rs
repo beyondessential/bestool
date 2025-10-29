@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::{CmdKind, Highlighter};
@@ -13,6 +13,7 @@ use syntect::{
 };
 
 use crate::highlighter::Theme;
+use crate::repl::ReplState;
 use crate::schema_cache::SchemaCache;
 
 /// SQL keywords and psql commands for autocompletion
@@ -20,6 +21,7 @@ pub struct SqlCompleter {
 	keywords: Vec<&'static str>,
 	psql_commands: Vec<&'static str>,
 	schema_cache: Option<Arc<RwLock<SchemaCache>>>,
+	repl_state: Option<Arc<Mutex<ReplState>>>,
 	syntax_set: SyntaxSet,
 	theme_set: ThemeSet,
 	theme: Theme,
@@ -214,12 +216,18 @@ impl SqlCompleter {
 				"\\q", "\\e", "\\i", "\\o", "\\debug", "\\?", "\\help", "\\x", "\\g", "\\go",
 				"\\gx", "\\gset", "\\set", "\\unset", "\\vars", "\\get",
 			],
+			repl_state: None,
 		}
 	}
 
 	/// Set the schema cache for database-aware completion
 	pub fn with_schema_cache(mut self, cache: Arc<RwLock<SchemaCache>>) -> Self {
 		self.schema_cache = Some(cache);
+		self
+	}
+
+	pub fn with_repl_state(mut self, repl_state: Arc<Mutex<ReplState>>) -> Self {
+		self.repl_state = Some(repl_state);
 		self
 	}
 
@@ -259,6 +267,62 @@ impl SqlCompleter {
 				}];
 			}
 			return Vec::new();
+		}
+
+		// Check if we're completing variable names after \get, \set, or \unset
+		if text_before_cursor.trim_start().starts_with("\\get ")
+			|| text_before_cursor.trim_start().starts_with("\\unset ")
+			|| text_before_cursor.trim_start().starts_with("\\set ")
+		{
+			if let Some(repl_state_arc) = &self.repl_state {
+				let repl_state = repl_state_arc.lock().unwrap();
+
+				// For \set, only complete the variable name (first argument)
+				let is_set_command = text_before_cursor.trim_start().starts_with("\\set ");
+				if is_set_command {
+					// Check if we're on the first or second argument
+					let after_set = if let Some(pos) = text_before_cursor.find("\\set ") {
+						&text_before_cursor[pos + 5..]
+					} else {
+						return Vec::new();
+					};
+
+					// Count spaces to determine which argument we're on
+					let space_count = after_set.chars().filter(|&c| c == ' ').count();
+					if space_count > 0 && !after_set.ends_with(' ') {
+						// We're on the second argument (value), don't complete
+						return Vec::new();
+					}
+				}
+
+				let cmd_start = if let Some(pos) = text_before_cursor.find("\\get ") {
+					pos + 5
+				} else if let Some(pos) = text_before_cursor.find("\\unset ") {
+					pos + 8
+				} else if let Some(pos) = text_before_cursor.find("\\set ") {
+					pos + 5
+				} else {
+					return Vec::new();
+				};
+
+				let partial_var = text_before_cursor[cmd_start..].trim();
+
+				let mut completions = Vec::new();
+				for var_name in repl_state.vars.keys() {
+					if var_name
+						.to_lowercase()
+						.starts_with(&partial_var.to_lowercase())
+					{
+						completions.push(Pair {
+							display: var_name.clone(),
+							replacement: var_name.clone(),
+						});
+					}
+				}
+
+				completions.sort_by(|a, b| a.display.cmp(&b.display));
+				return completions;
+			}
 		}
 
 		// Check if we're completing a file path after \g...o query modifier (e.g. \go, \gxo, \gjo, \gxjo)
