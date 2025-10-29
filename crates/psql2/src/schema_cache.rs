@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, warn};
 
-use crate::tls;
+use crate::pool::PgPool;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]
@@ -56,15 +56,15 @@ impl SchemaCache {
 /// Schema cache manager that runs queries on a dedicated background connection
 pub struct SchemaCacheManager {
 	cache: Arc<RwLock<SchemaCache>>,
-	connection_string: String,
+	pool: PgPool,
 }
 
 impl SchemaCacheManager {
 	/// Create a new cache manager
-	pub fn new(connection_string: &str) -> Self {
+	pub fn new(pool: PgPool) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
-			connection_string: connection_string.into(),
+			pool,
 		}
 	}
 
@@ -97,16 +97,7 @@ impl SchemaCacheManager {
 	pub async fn refresh(&self) -> Result<()> {
 		debug!("refreshing schema cache");
 
-		let tls_connector = tls::make_tls_connector()?;
-		let (client, connection) = tokio_postgres::connect(&self.connection_string, tls_connector)
-			.await
-			.into_diagnostic()?;
-
-		tokio::spawn(async move {
-			if let Err(e) = connection.await {
-				warn!("schema cache connection error: {}", e);
-			}
-		});
+		let client = self.pool.get().await.into_diagnostic()?;
 
 		let mut new_cache = SchemaCache::new();
 
@@ -268,7 +259,7 @@ impl Clone for SchemaCacheManager {
 	fn clone(&self) -> Self {
 		Self {
 			cache: self.cache.clone(),
-			connection_string: self.connection_string.clone(),
+			pool: self.pool.clone(),
 		}
 	}
 }

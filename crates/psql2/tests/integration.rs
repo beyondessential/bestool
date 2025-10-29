@@ -1,9 +1,13 @@
-use bestool_psql2::{PsqlConfig, Theme};
+use bestool_psql2::{create_pool, PsqlConfig, Theme};
 
-#[test]
-fn test_config_with_all_fields() {
+#[tokio::test]
+async fn test_config_with_all_fields() {
+	let pool = create_pool("postgresql://user:pass@localhost:5432/testdb")
+		.await
+		.expect("Failed to create pool");
+
 	let config = PsqlConfig {
-		connection_string: "postgresql://user:pass@localhost:5432/testdb".to_string(),
+		pool,
 		user: Some("admin".to_string()),
 		theme: Theme::Dark,
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -11,17 +15,17 @@ fn test_config_with_all_fields() {
 		write: false,
 	};
 
-	assert_eq!(
-		config.connection_string,
-		"postgresql://user:pass@localhost:5432/testdb"
-	);
 	assert_eq!(config.user, Some("admin".to_string()));
 }
 
-#[test]
-fn test_config_minimal() {
+#[tokio::test]
+async fn test_config_minimal() {
+	let pool = create_pool("postgresql://localhost/db")
+		.await
+		.expect("Failed to create pool");
+
 	let config = PsqlConfig {
-		connection_string: "postgresql://localhost/db".to_string(),
+		pool,
 		user: None,
 		theme: Theme::Auto,
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -29,15 +33,24 @@ fn test_config_minimal() {
 		write: false,
 	};
 
-	assert_eq!(config.connection_string, "postgresql://localhost/db");
 	assert_eq!(config.user, None);
 }
 
-#[test]
-fn test_theme_variations() {
+#[tokio::test]
+async fn test_theme_variations() {
+	let pool1 = create_pool("postgresql://localhost/db")
+		.await
+		.expect("Failed to create pool");
+	let pool2 = create_pool("postgresql://localhost/db")
+		.await
+		.expect("Failed to create pool");
+	let pool3 = create_pool("postgresql://localhost/db")
+		.await
+		.expect("Failed to create pool");
+
 	let configs = vec![
 		PsqlConfig {
-			connection_string: "postgresql://localhost/db".to_string(),
+			pool: pool1,
 			user: None,
 			theme: Theme::Light,
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -45,7 +58,7 @@ fn test_theme_variations() {
 			write: false,
 		},
 		PsqlConfig {
-			connection_string: "postgresql://localhost/db".to_string(),
+			pool: pool2,
 			user: None,
 			theme: Theme::Dark,
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -53,7 +66,7 @@ fn test_theme_variations() {
 			write: false,
 		},
 		PsqlConfig {
-			connection_string: "postgresql://localhost/db".to_string(),
+			pool: pool3,
 			user: None,
 			theme: Theme::Auto,
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -62,15 +75,19 @@ fn test_theme_variations() {
 		},
 	];
 
-	for config in configs {
-		assert!(!config.connection_string.is_empty());
+	for _config in configs {
+		// Just ensure configs were created successfully
 	}
 }
 
-#[test]
-fn test_config_clone() {
+#[tokio::test]
+async fn test_config_clone() {
+	let pool = create_pool("postgresql://localhost/db")
+		.await
+		.expect("Failed to create pool");
+
 	let config1 = PsqlConfig {
-		connection_string: "postgresql://localhost/db".to_string(),
+		pool,
 		user: Some("user1".to_string()),
 		theme: Theme::Dark,
 		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -80,7 +97,6 @@ fn test_config_clone() {
 
 	let config2 = config1.clone();
 
-	assert_eq!(config1.connection_string, config2.connection_string);
 	assert_eq!(config1.user, config2.user);
 }
 

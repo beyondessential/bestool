@@ -326,17 +326,8 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 			.unwrap_or_else(|_| "unknown".to_string())
 	});
 
-	debug!("connecting to database");
-	let tls_connector = crate::tls::make_tls_connector()?;
-	let (client, connection) = tokio_postgres::connect(&config.connection_string, tls_connector)
-		.await
-		.into_diagnostic()?;
-
-	tokio::spawn(async move {
-		if let Err(e) = connection.await {
-			eprintln!("connection error: {}", e);
-		}
-	});
+	debug!("getting connection from pool");
+	let client = config.pool.get().await.into_diagnostic()?;
 
 	debug!("connected to database");
 
@@ -381,8 +372,6 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 		(config.database_name.clone(), false)
 	};
 
-	let client = Arc::new(client);
-
 	// Get the backend PID of the main connection
 	let backend_pid: i32 = client
 		.query_one("SELECT pg_backend_pid()", &[])
@@ -392,17 +381,8 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	debug!(pid=%backend_pid, "main connection backend PID");
 
 	// Create a separate connection for monitoring transaction state
-	let tls_connector = crate::tls::make_tls_connector()?;
-	let (monitor_client, monitor_connection) =
-		tokio_postgres::connect(&config.connection_string, tls_connector)
-			.await
-			.into_diagnostic()?;
-
-	tokio::spawn(async move {
-		if let Err(e) = monitor_connection.await {
-			warn!("monitor connection error: {}", e);
-		}
-	});
+	debug!("getting monitor connection from pool");
+	let monitor_client = config.pool.get().await.into_diagnostic()?;
 	debug!("monitor connection established");
 
 	let sys_user = std::env::var("USER")
@@ -423,7 +403,7 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	let repl_state = Arc::new(Mutex::new(repl_state));
 
 	debug!("initializing schema cache");
-	let schema_cache_manager = SchemaCacheManager::new(&config.connection_string);
+	let schema_cache_manager = SchemaCacheManager::new(config.pool.clone());
 	let cache_arc = schema_cache_manager.cache_arc();
 	let _cache_task = schema_cache_manager.start_background_refresh();
 
@@ -535,10 +515,15 @@ mod tests {
 	// To run tests that require a database connection:
 	// DATABASE_URL=postgresql://localhost/tamanu_meta cargo test -p bestool-psql2
 
-	#[test]
-	fn test_psql_config_creation() {
+	#[tokio::test]
+	async fn test_psql_config_creation() {
+		let connection_string = "postgresql://localhost/test";
+		let pool = crate::pool::create_pool(connection_string)
+			.await
+			.expect("Failed to create pool");
+
 		let config = PsqlConfig {
-			connection_string: "postgresql://localhost/test".to_string(),
+			pool,
 			user: Some("testuser".to_string()),
 			theme: Theme::Dark,
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -546,15 +531,19 @@ mod tests {
 			write: false,
 		};
 
-		assert_eq!(config.connection_string, "postgresql://localhost/test");
 		assert_eq!(config.user, Some("testuser".to_string()));
 		assert_eq!(config.database_name, "test");
 	}
 
-	#[test]
-	fn test_psql_config_no_user() {
+	#[tokio::test]
+	async fn test_psql_config_no_user() {
+		let connection_string = "postgresql://localhost/test";
+		let pool = crate::pool::create_pool(connection_string)
+			.await
+			.expect("Failed to create pool");
+
 		let config = PsqlConfig {
-			connection_string: "postgresql://localhost/test".to_string(),
+			pool,
 			user: None,
 			theme: Theme::Dark,
 			audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
@@ -579,17 +568,14 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) =
-			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
-				.await
-				.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let result = crate::query::execute_query(
-			&client,
+			&*client,
 			"SELECT row(1, 'foo', true) as record",
 			crate::parser::QueryModifiers::new(),
 			crate::highlighter::Theme::Dark,
@@ -604,17 +590,14 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) =
-			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
-				.await
-				.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let result = crate::query::execute_query(
-			&client,
+			&*client,
 			"SELECT ARRAY[1, 2, 3] as numbers",
 			crate::parser::QueryModifiers::new(),
 			crate::highlighter::Theme::Dark,
@@ -629,14 +612,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) =
-			tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
-				.await
-				.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let info_rows = client
 			.query(
@@ -660,16 +640,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -677,19 +652,10 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let state = check_transaction_state(&*monitor_client, backend_pid).await;
 
-		// No transaction should be active initially
-		let state = check_transaction_state(&monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::None);
 	}
 
@@ -698,16 +664,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -715,16 +676,7 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
-
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
 		// Start a transaction without allocating an XID
 		client
@@ -733,7 +685,7 @@ mod tests {
 			.expect("Failed to begin transaction");
 
 		// Should detect idle transaction (no XID allocated yet)
-		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		let state = check_transaction_state(&*monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::Idle);
 
 		// Clean up
@@ -745,16 +697,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -762,16 +709,7 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
-
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
 		// Start a transaction and allocate an XID by creating a temp table
 		client
@@ -783,7 +721,7 @@ mod tests {
 		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
 		// Should detect active transaction with XID
-		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		let state = check_transaction_state(&*monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::Active);
 
 		// Clean up
@@ -795,16 +733,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -812,16 +745,7 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
-
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
 		// Start a transaction
 		client
@@ -836,7 +760,7 @@ mod tests {
 		tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
 		// Should detect error state
-		let state = check_transaction_state(&monitor_client, backend_pid).await;
+		let state = check_transaction_state(&*monitor_client, backend_pid).await;
 		assert_eq!(state, TransactionState::Error);
 
 		// Clean up
@@ -848,16 +772,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -865,16 +784,7 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
-
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
 		// Simulate enabling write mode: set read-write and begin transaction
 		client
@@ -902,16 +812,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		let backend_pid: i32 = client
 			.query_one("SELECT pg_backend_pid()", &[])
@@ -919,16 +824,7 @@ mod tests {
 			.expect("Failed to get backend PID")
 			.get(0);
 
-		let (monitor_client, monitor_connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect monitor");
-
-		tokio::spawn(async move {
-			let _ = monitor_connection.await;
-		});
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
 		// Simulate write mode with actual write allocating an XID
 		client
@@ -955,16 +851,11 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let (client, connection) = tokio_postgres::connect(
-			&connection_string,
-			crate::tls::make_tls_connector().unwrap(),
-		)
-		.await
-		.expect("Failed to connect to database");
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
 
-		tokio::spawn(async move {
-			let _ = connection.await;
-		});
+		let client = pool.get().await.expect("Failed to get connection");
 
 		// Start a transaction without allocating an XID
 		client

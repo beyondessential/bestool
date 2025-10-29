@@ -1,4 +1,5 @@
 use crate::highlighter::Theme;
+use crate::pool::PgPool;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -10,10 +11,10 @@ pub enum PsqlError {
 }
 
 /// Configuration for the psql2 client
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct PsqlConfig {
-	/// Database connection string
-	pub connection_string: String,
+	/// Database connection pool
+	pub pool: PgPool,
 
 	/// Database user for tracking
 	pub user: Option<String>,

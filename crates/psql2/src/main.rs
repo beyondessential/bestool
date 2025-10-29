@@ -1,4 +1,4 @@
-use bestool_psql2::{PsqlConfig, Theme};
+use bestool_psql2::{create_pool, PsqlConfig, Theme};
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, Result};
@@ -82,8 +82,11 @@ async fn main() -> Result<()> {
 
 	debug!(?connection_string, "using connection string");
 
+	debug!("creating connection pool");
+	let pool = create_pool(&connection_string).await?;
+
 	let config = PsqlConfig {
-		connection_string,
+		pool,
 		user: args.user,
 		theme,
 		audit_path: args.audit_path,

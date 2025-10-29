@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::debug;
 
+pub type MakeRustlsConnectWrapper = MakeRustlsConnect;
+
 /// Create a TLS connector using rustls with system certificate store
 pub fn make_tls_connector() -> Result<MakeRustlsConnect> {
 	debug!("creating TLS connector with system certificates");

@@ -1,16 +1,17 @@
+mod audit;
 mod completer;
 mod config;
+mod highlighter;
 mod input;
+mod ots;
 mod parser;
+mod pool;
 mod query;
-pub mod repl;
+mod repl;
 mod schema_cache;
 mod tls;
 
-mod audit;
-mod highlighter;
-mod ots;
-
 pub use config::{PsqlConfig, PsqlError};
 pub use highlighter::Theme;
+pub use pool::{create_pool, PgConnection, PgPool};
 pub use repl::run;
