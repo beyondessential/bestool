@@ -278,10 +278,15 @@ fn handle_help() -> ControlFlow<()> {
 	eprintln!("  \\g            - Execute query");
 	eprintln!("  \\gx           - Execute query with expanded output");
 	eprintln!("  \\gj           - Execute query with JSON output");
+	eprintln!("  \\gv           - Execute query without variable interpolation");
 	eprintln!("  \\go <file>    - Execute query and write output to file");
 	eprintln!("  \\gset [prefix] - Execute query and store results in variables");
 	eprintln!();
 	eprintln!("Modifiers can be combined, e.g. \\gxj for expanded JSON output");
+	eprintln!();
+	eprintln!("Variable interpolation:");
+	eprintln!("  ${{name}}       - Replace with variable value (errors if not set)");
+	eprintln!("  ${{{{name}}}}     - Escape: produces ${{name}} without replacement");
 
 	ControlFlow::Continue(())
 }
