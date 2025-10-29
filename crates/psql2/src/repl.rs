@@ -13,42 +13,27 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, warn};
 
+pub(crate) struct ReplContext<'a> {
+	client: &'a tokio_postgres::Client,
+	monitor_client: &'a tokio_postgres::Client,
+	backend_pid: i32,
+	theme: Theme,
+	repl_state: &'a Arc<Mutex<ReplState>>,
+	rl: &'a mut Editor<SqlCompleter, Audit>,
+}
+
 impl ReplAction {
-	pub(crate) async fn handle(
-		self,
-		client: &tokio_postgres::Client,
-		monitor_client: &tokio_postgres::Client,
-		backend_pid: i32,
-		theme: Theme,
-		repl_state: &Arc<Mutex<ReplState>>,
-		rl: &mut Editor<SqlCompleter, Audit>,
-		line: &str,
-	) -> ControlFlow<()> {
+	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
 		match self {
 			ReplAction::Continue => ControlFlow::Continue(()),
-			ReplAction::ToggleExpanded => handle_toggle_expanded(repl_state),
-			ReplAction::Exit => handle_exit(repl_state, rl, line),
-			ReplAction::ToggleWriteMode => {
-				handle_write_mode_toggle(client, monitor_client, backend_pid, repl_state, rl).await
-			}
+			ReplAction::ToggleExpanded => handle_toggle_expanded(ctx.repl_state),
+			ReplAction::Exit => handle_exit(ctx.repl_state, ctx.rl, line),
+			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
-			} => {
-				handle_execute(
-					client,
-					monitor_client,
-					backend_pid,
-					theme,
-					repl_state,
-					rl,
-					input,
-					sql,
-					modifiers,
-				)
-				.await
-			}
+			} => handle_execute(ctx, input, sql, modifiers).await,
 		}
 	}
 }
@@ -100,30 +85,27 @@ fn handle_exit(
 }
 
 async fn handle_execute(
-	client: &tokio_postgres::Client,
-	monitor_client: &tokio_postgres::Client,
-	backend_pid: i32,
-	theme: Theme,
-	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, Audit>,
+	ctx: &mut ReplContext<'_>,
 	input: String,
 	sql: String,
 	modifiers: crate::parser::QueryModifiers,
 ) -> ControlFlow<()> {
 	{
-		let history = rl.history_mut();
-		history.set_repl_state(&repl_state.lock().unwrap());
+		let history = ctx.rl.history_mut();
+		history.set_repl_state(&ctx.repl_state.lock().unwrap());
 		if let Err(e) = history.add_entry(input) {
 			debug!("failed to add to history: {}", e);
 		}
 	}
 
-	match execute_query(client, &sql, modifiers, theme).await {
+	match execute_query(ctx.client, &sql, modifiers, ctx.theme).await {
 		Ok(()) => {
 			// If write mode is on and we're not in a transaction, start one
-			let tx_state = check_transaction_state(monitor_client, backend_pid).await;
-			if repl_state.lock().unwrap().write_mode && matches!(tx_state, TransactionState::None) {
-				if let Err(e) = client.batch_execute("BEGIN").await {
+			let tx_state = check_transaction_state(ctx.monitor_client, ctx.backend_pid).await;
+			if ctx.repl_state.lock().unwrap().write_mode
+				&& matches!(tx_state, TransactionState::None)
+			{
+				if let Err(e) = ctx.client.batch_execute("BEGIN").await {
 					warn!("Failed to start transaction: {}", e);
 				}
 			}
@@ -180,17 +162,11 @@ fn build_prompt(
 	}
 }
 
-async fn handle_write_mode_toggle(
-	client: &tokio_postgres::Client,
-	monitor_client: &tokio_postgres::Client,
-	backend_pid: i32,
-	repl_state: &Arc<Mutex<ReplState>>,
-	rl: &mut Editor<SqlCompleter, Audit>,
-) -> ControlFlow<()> {
-	let state = { repl_state.lock().unwrap().clone() };
+async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
+	let state = { ctx.repl_state.lock().unwrap().clone() };
 
 	if state.write_mode {
-		let tx_state = check_transaction_state(monitor_client, backend_pid).await;
+		let tx_state = check_transaction_state(ctx.monitor_client, ctx.backend_pid).await;
 		if tx_state == TransactionState::Active {
 			eprintln!("Cannot disable write mode while in a transaction with active changes. COMMIT or ROLLBACK first.");
 			return ControlFlow::Continue(());
@@ -200,28 +176,30 @@ async fn handle_write_mode_toggle(
 		new_state.write_mode = false;
 		new_state.ots = None;
 
-		match client
+		match ctx
+			.client
 			.batch_execute("ROLLBACK; SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
 			.await
 		{
 			Ok(_) => {
 				debug!("Write mode disabled");
 				eprintln!("SESSION IS NOW READ ONLY");
-				rl.history_mut().set_repl_state(&new_state);
-				*repl_state.lock().unwrap() = new_state;
+				ctx.rl.history_mut().set_repl_state(&new_state);
+				*ctx.repl_state.lock().unwrap() = new_state;
 			}
 			Err(e) => {
 				error!("Failed to disable write mode: {}", e);
 			}
 		}
 	} else {
-		match ots::prompt_for_ots(rl.history()) {
+		match ots::prompt_for_ots(ctx.rl.history()) {
 			Ok(new_ots) => {
 				let mut new_state = state.clone();
 				new_state.write_mode = true;
 				new_state.ots = Some(new_ots.clone());
 
-				match client
+				match ctx
+					.client
 					.batch_execute(
 						"SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; COMMIT; BEGIN",
 					)
@@ -230,8 +208,8 @@ async fn handle_write_mode_toggle(
 					Ok(_) => {
 						debug!("Write mode enabled");
 						eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
-						rl.history_mut().set_repl_state(&new_state);
-						*repl_state.lock().unwrap() = new_state;
+						ctx.rl.history_mut().set_repl_state(&new_state);
+						*ctx.repl_state.lock().unwrap() = new_state;
 					}
 					Err(e) => {
 						error!("Failed to enable write mode: {}", e);
@@ -421,16 +399,17 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 	// If --write is given on the CLI, toggle write mode as the first action
 	// This saves us from handling prompts/history outside of this function
 	if config.write {
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: config.theme,
+			repl_state: &repl_state,
+			rl: &mut rl,
+		};
+
 		if ReplAction::ToggleWriteMode
-			.handle(
-				&client,
-				&monitor_client,
-				backend_pid,
-				config.theme,
-				&repl_state,
-				&mut rl,
-				"",
-			)
+			.handle(&mut ctx, "")
 			.await
 			.is_break()
 		{
@@ -464,19 +443,16 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 					{ handle_input(&buffer, line, &repl_state.lock().unwrap()) };
 				buffer = new_buffer;
 
-				if action
-					.handle(
-						&client,
-						&monitor_client,
-						backend_pid,
-						config.theme,
-						&repl_state,
-						&mut rl,
-						line,
-					)
-					.await
-					.is_break()
-				{
+				let mut ctx = ReplContext {
+					client: &client,
+					monitor_client: &monitor_client,
+					backend_pid,
+					theme: config.theme,
+					repl_state: &repl_state,
+					rl: &mut rl,
+				};
+
+				if action.handle(&mut ctx, line).await.is_break() {
 					break;
 				}
 			}
