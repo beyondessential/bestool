@@ -36,7 +36,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		input: &mut &str,
 	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
 		literal('\\').parse_next(input)?;
-		alt((literal('q'), literal('Q'))).parse_next(input)?;
+		literal('q').parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 		Ok(Metacommand::Quit)
