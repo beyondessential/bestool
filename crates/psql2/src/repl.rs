@@ -76,6 +76,7 @@ pub struct ReplState {
 }
 
 impl ReplState {
+	#[cfg(test)]
 	pub fn new() -> Self {
 		Self {
 			db_user: "testuser".to_string(),
@@ -880,9 +881,6 @@ pub async fn run(config: PsqlConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	// To run tests that require a database connection:
-	// DATABASE_URL=postgresql://localhost/tamanu_meta cargo test -p bestool-psql2
 
 	#[tokio::test]
 	async fn test_psql_config_creation() {
