@@ -427,31 +427,33 @@ async fn handle_snippet_save(
 	// Get the last entry from history (which is the preceding command)
 	if history.is_empty() {
 		eprintln!("No command history available");
-		return ControlFlow::Continue(());
-	}
+	} else {
+		let last_idx = history.len() - 1;
+		let content = match history.get(last_idx, rustyline::history::SearchDirection::Forward) {
+			Ok(Some(result)) => result.entry.to_string(),
+			_ => {
+				eprintln!("Failed to retrieve last command from history");
+				String::new()
+			}
+		};
 
-	let last_idx = history.len() - 1;
-	let content = match history.get(last_idx, rustyline::history::SearchDirection::Forward) {
-		Ok(Some(result)) => result.entry.to_string(),
-		_ => {
-			eprintln!("Failed to retrieve last command from history");
-			return ControlFlow::Continue(());
-		}
-	};
-
-	// Save the snippet - get snippets before awaiting
-	let snippets = ctx.repl_state.lock().unwrap().snippets.clone();
-	match snippets.save(&name, &content).await {
-		Ok(path) => {
-			println!("Snippet saved to {}", path.display());
-			// Now add the SnippetSave command to history after successful save
-			let history = ctx.rl.history_mut();
-			history.set_repl_state(&ctx.repl_state.lock().unwrap());
-			if let Err(e) = history.add_entry(line.into()) {
-				debug!("failed to add SnippetSave to history: {}", e);
+		if !content.is_empty() {
+			// Save the snippet - get snippets before awaiting
+			let snippets = ctx.repl_state.lock().unwrap().snippets.clone();
+			match snippets.save(&name, &content).await {
+				Ok(path) => {
+					println!("Snippet saved to {}", path.display());
+				}
+				Err(e) => eprintln!("Failed to save snippet '{}': {}", name, e),
 			}
 		}
-		Err(e) => eprintln!("Failed to save snippet '{}': {}", name, e),
+	}
+
+	// Always add the SnippetSave command to history, even if save failed
+	let history = ctx.rl.history_mut();
+	history.set_repl_state(&ctx.repl_state.lock().unwrap());
+	if let Err(e) = history.add_entry(line.into()) {
+		debug!("failed to add SnippetSave to history: {}", e);
 	}
 
 	ControlFlow::Continue(())
@@ -1030,6 +1032,32 @@ mod tests {
 
 		let err = crate::config::PsqlError::QueryFailed;
 		assert_eq!(format!("{}", err), "query execution failed");
+	}
+
+	#[test]
+	fn test_snippet_save_excluded_from_preceding_command() {
+		use crate::audit::Audit;
+		use tempfile::TempDir;
+
+		// Create a temporary audit database
+		let temp_dir = TempDir::new().unwrap();
+		let audit_path = temp_dir.path().join("history.redb");
+
+		// Create an audit log and add some entries
+		let repl_state = ReplState::new();
+		let mut audit = Audit::open(&audit_path, repl_state).unwrap();
+		audit.add_entry("SELECT 1;".into()).unwrap();
+		audit.add_entry("SELECT 2;".into()).unwrap();
+
+		// Verify that the last entry is SELECT 2, not the \snip save command
+		let last_idx = audit.len() - 1;
+		let last_entry = audit
+			.get(last_idx, rustyline::history::SearchDirection::Forward)
+			.unwrap();
+		assert!(last_entry.is_some());
+		if let Some(result) = last_entry {
+			assert_eq!(result.entry, "SELECT 2;");
+		}
 	}
 
 	#[tokio::test]
