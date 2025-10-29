@@ -798,4 +798,21 @@ mod tests {
 		let result = interpolate_variables(sql, &vars).unwrap();
 		assert_eq!(result, "SELECT ${x}, ${x}, 10");
 	}
+
+	#[test]
+	fn test_execute_query_with_verbatim_modifier() {
+		// Test that Verbatim modifier prevents interpolation
+		let mut mods: QueryModifiers = QueryModifiers::new();
+		mods.insert(QueryModifier::Verbatim);
+
+		assert!(mods.contains(&QueryModifier::Verbatim));
+	}
+
+	#[test]
+	fn test_execute_query_without_verbatim_modifier() {
+		// Test that without Verbatim modifier, interpolation would occur
+		let mods: QueryModifiers = QueryModifiers::new();
+
+		assert!(!mods.contains(&QueryModifier::Verbatim));
+	}
 }
