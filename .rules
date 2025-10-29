@@ -8,5 +8,5 @@
 - Don't use emojis in text or commit messages unless absolutely necessary.
 - When removing code that has already been committed, delete it unless explicitly requested that it be commented out.
 - Prefer using small dependencies instead of reimplementing the wheel. Ask the user to pick a dependency if there is no obvious choice.
-- Use `--no-pager` with `git log`, `git diff`, etc commands.
+- Use `--no-pager` with `git log`, `git diff`, etc commands. The option goes before the subcommand, e.g. `git --no-pager log`.
 - Imports: merge them and group them by std, then third-party/workspace, then local (crate, super, self).

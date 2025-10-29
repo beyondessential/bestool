@@ -22,6 +22,7 @@ enum ReplAction {
 	},
 	Exit,
 	ToggleExpanded,
+	ToggleWriteMode,
 }
 
 impl ReplAction {
@@ -41,6 +42,18 @@ impl ReplAction {
 			ReplAction::Continue => Self::handle_continue(),
 			ReplAction::ToggleExpanded => Self::handle_toggle_expanded(repl_state),
 			ReplAction::Exit => Self::handle_exit(repl_state, rl, db_user, sys_user, line),
+			ReplAction::ToggleWriteMode => {
+				Self::handle_toggle_write_mode(
+					client,
+					monitor_client,
+					backend_pid,
+					repl_state,
+					rl,
+					db_user,
+					sys_user,
+				)
+				.await
+			}
 			ReplAction::Execute {
 				input,
 				sql,
@@ -144,6 +157,27 @@ impl ReplAction {
 		}
 		ControlFlow::Continue(())
 	}
+
+	async fn handle_toggle_write_mode(
+		client: &tokio_postgres::Client,
+		monitor_client: &tokio_postgres::Client,
+		backend_pid: i32,
+		repl_state: &Arc<Mutex<ReplState>>,
+		rl: &mut Editor<SqlCompleter, History>,
+		db_user: &str,
+		sys_user: &str,
+	) -> ControlFlow<()> {
+		handle_write_mode_toggle(
+			client,
+			monitor_client,
+			backend_pid,
+			repl_state,
+			rl,
+			db_user,
+			sys_user,
+		)
+		.await
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +214,7 @@ fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, Rep
 			let action = match metacmd {
 				Metacommand::Quit => ReplAction::Exit,
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
+				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 			};
 			return (String::new(), action);
 		}
@@ -209,7 +244,10 @@ fn handle_input(buffer: &str, new_line: &str, state: &ReplState) -> (String, Rep
 
 	let buffer_state = match &action {
 		ReplAction::Continue => new_buffer,
-		ReplAction::Execute { .. } | ReplAction::Exit | ReplAction::ToggleExpanded => String::new(),
+		ReplAction::Execute { .. }
+		| ReplAction::Exit
+		| ReplAction::ToggleExpanded
+		| ReplAction::ToggleWriteMode => String::new(),
 	};
 
 	(buffer_state, action)
@@ -493,23 +531,6 @@ pub(crate) async fn run_repl(
 				let line = line.trim();
 				if line.is_empty() && buffer.is_empty() {
 					continue;
-				}
-
-				if line == "\\W" && buffer.is_empty() {
-					if handle_write_mode_toggle(
-						&client,
-						&monitor_client,
-						backend_pid,
-						&repl_state,
-						&mut rl,
-						&db_user,
-						&sys_user,
-					)
-					.await
-					.is_continue()
-					{
-						continue;
-					}
 				}
 
 				let state = repl_state.lock().unwrap().clone();

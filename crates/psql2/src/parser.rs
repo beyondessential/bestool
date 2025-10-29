@@ -19,6 +19,7 @@ pub(crate) type QueryModifiers = HashSet<QueryModifier>;
 pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
+	WriteMode,
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -49,8 +50,20 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		Ok(Metacommand::Expanded)
 	}
 
+	fn write_mode_command(
+		input: &mut &str,
+	) -> winnow::error::Result<Metacommand, ErrMode<winnow::error::ContextError>> {
+		literal('\\').parse_next(input)?;
+		alt(('w', 'W')).parse_next(input)?;
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(Metacommand::WriteMode)
+	}
+
 	let mut input_slice = input;
-	if let Ok(cmd) = alt((quit_command, expanded_command)).parse_next(&mut input_slice) {
+	if let Ok(cmd) =
+		alt((quit_command, expanded_command, write_mode_command)).parse_next(&mut input_slice)
+	{
 		Ok(Some(cmd))
 	} else {
 		Ok(None)
@@ -575,6 +588,30 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_empty_string() {
 		let result = parse_metacommand("").unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[test]
+	fn test_parse_metacommand_write_mode() {
+		let result = parse_metacommand("\\W").unwrap();
+		assert_eq!(result, Some(Metacommand::WriteMode));
+	}
+
+	#[test]
+	fn test_parse_metacommand_write_mode_lowercase() {
+		let result = parse_metacommand("\\w").unwrap();
+		assert_eq!(result, Some(Metacommand::WriteMode));
+	}
+
+	#[test]
+	fn test_parse_metacommand_write_mode_with_whitespace() {
+		let result = parse_metacommand("  \\W  ").unwrap();
+		assert_eq!(result, Some(Metacommand::WriteMode));
+	}
+
+	#[test]
+	fn test_parse_metacommand_write_mode_with_trailing_text() {
+		let result = parse_metacommand("\\W on").unwrap();
 		assert_eq!(result, None);
 	}
 }
