@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use tracing::error;
-
 use crate::parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand};
 use crate::repl::ReplState;
 
@@ -21,6 +19,11 @@ pub(crate) enum ReplAction {
 	},
 	IncludeFile {
 		file_path: PathBuf,
+		vars: Vec<(String, String)>,
+	},
+	RunSnippet {
+		name: String,
+		vars: Vec<(String, String)>,
 	},
 	SetOutputFile {
 		file_path: PathBuf,
@@ -70,16 +73,11 @@ pub(crate) fn handle_input(
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 				Metacommand::Edit { content } => ReplAction::Edit { content },
-				Metacommand::Include { file_path } => ReplAction::IncludeFile {
+				Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
 					file_path: file_path.into(),
+					vars,
 				},
-				Metacommand::SnippetRun { name } => match state.snippets.path(&name) {
-					Ok(file_path) => ReplAction::IncludeFile { file_path },
-					Err(err) => {
-						error!("Failed to find snippet '{}': {}", name, err);
-						ReplAction::Continue
-					}
-				},
+				Metacommand::SnippetRun { name, vars } => ReplAction::RunSnippet { name, vars },
 				Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
 				Metacommand::Output {
 					file_path: Some(file_path),

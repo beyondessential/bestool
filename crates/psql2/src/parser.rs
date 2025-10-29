@@ -1,10 +1,10 @@
 use miette::Result;
 use std::collections::HashSet;
 use winnow::ascii::{space0, space1, Caseless};
-use winnow::combinator::{alt, eof, opt, preceded, repeat};
+use winnow::combinator::{alt, eof, opt, preceded};
 use winnow::error::ErrMode;
 use winnow::token::take_while;
-use winnow::token::{literal, none_of, rest, take_till};
+use winnow::token::{literal, rest, take_till};
 use winnow::Parser;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -29,17 +29,40 @@ pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
 	WriteMode,
-	Edit { content: Option<String> },
-	Include { file_path: String },
-	Output { file_path: Option<String> },
-	Debug { what: DebugWhat },
+	Edit {
+		content: Option<String>,
+	},
+	Include {
+		file_path: String,
+		vars: Vec<(String, String)>,
+	},
+	Output {
+		file_path: Option<String>,
+	},
+	Debug {
+		what: DebugWhat,
+	},
 	Help,
-	SetVar { name: String, value: String },
-	UnsetVar { name: String },
-	LookupVar { pattern: Option<String> },
-	GetVar { name: String },
-	SnippetRun { name: String },
-	SnippetSave { name: String },
+	SetVar {
+		name: String,
+		value: String,
+	},
+	UnsetVar {
+		name: String,
+	},
+	LookupVar {
+		pattern: Option<String>,
+	},
+	GetVar {
+		name: String,
+	},
+	SnippetRun {
+		name: String,
+		vars: Vec<(String, String)>,
+	},
+	SnippetSave {
+		name: String,
+	},
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -99,13 +122,17 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		literal('\\').parse_next(input)?;
 		literal('i').parse_next(input)?;
 		space1.parse_next(input)?;
-		let file_path = rest.parse_next(input)?;
-		let file_path = file_path.trim();
+		let file_path: &str = take_while(1.., |c: char| !c.is_whitespace()).parse_next(input)?;
 		if file_path.is_empty() {
 			return Err(ErrMode::Cut(winnow::error::ContextError::default()));
 		}
+
+		// Parse optional variable arguments
+		let vars = parse_variable_args(input)?;
+
 		Ok(Metacommand::Include {
 			file_path: file_path.to_string(),
+			vars,
 		})
 	}
 
@@ -169,16 +196,28 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 				take_while(1.., |c: char| !c.is_whitespace()),
 			))
 			.parse_next(input)?;
-			space0.parse_next(input)?;
-			eof.parse_next(input)?;
+
 			match (cmd_str, name) {
-				("run", Some(name)) => Metacommand::SnippetRun {
-					name: name.to_string(),
-				},
-				("save", Some(name)) => Metacommand::SnippetSave {
-					name: name.to_string(),
-				},
-				_ => Metacommand::Help,
+				("run", Some(name)) => {
+					// Parse optional variable arguments
+					let vars = parse_variable_args(input)?;
+					Metacommand::SnippetRun {
+						name: name.to_string(),
+						vars,
+					}
+				}
+				("save", Some(name)) => {
+					space0.parse_next(input)?;
+					eof.parse_next(input)?;
+					Metacommand::SnippetSave {
+						name: name.to_string(),
+					}
+				}
+				_ => {
+					space0.parse_next(input)?;
+					eof.parse_next(input)?;
+					Metacommand::Help
+				}
 			}
 		} else {
 			// No argument, show help
@@ -188,6 +227,49 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		};
 
 		Ok(res)
+	}
+
+	fn parse_variable_args(
+		input: &mut &str,
+	) -> winnow::error::Result<Vec<(String, String)>, ErrMode<winnow::error::ContextError>> {
+		let mut vars = Vec::new();
+
+		loop {
+			space0.parse_next(input)?;
+
+			// Check if we're at EOF
+			if opt(eof).parse_next(input)?.is_some() {
+				break;
+			}
+
+			// Try to parse name=value
+			let start_pos = input.len();
+			let name_part: &str =
+				take_while(1.., |c: char| c != '=' && !c.is_whitespace()).parse_next(input)?;
+
+			if name_part.is_empty() {
+				// Not a variable assignment, stop parsing
+				*input = &input[start_pos..];
+				break;
+			}
+
+			// Check for =
+			if opt(literal('=')).parse_next(input)?.is_none() {
+				// Not a variable assignment, rewind
+				*input = &input[start_pos..];
+				break;
+			}
+
+			// Parse value (everything until space or EOF)
+			let value_part: &str =
+				take_while(1.., |c: char| !c.is_whitespace()).parse_next(input)?;
+
+			vars.push((name_part.to_string(), value_part.to_string()));
+		}
+
+		space0.parse_next(input)?;
+		eof.parse_next(input)?;
+		Ok(vars)
 	}
 
 	fn help_command(
@@ -963,7 +1045,8 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Include {
-				file_path: "/path/to/file.sql".to_string()
+				file_path: "/path/to/file.sql".to_string(),
+				vars: vec![]
 			})
 		);
 	}
@@ -974,7 +1057,8 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Include {
-				file_path: "/path/to/file.sql".to_string()
+				file_path: "/path/to/file.sql".to_string(),
+				vars: vec![]
 			})
 		);
 	}
@@ -985,7 +1069,8 @@ mod tests {
 		assert_eq!(
 			result,
 			Some(Metacommand::Include {
-				file_path: "./queries/test.sql".to_string()
+				file_path: "./queries/test.sql".to_string(),
+				vars: vec![]
 			})
 		);
 	}
@@ -1296,7 +1381,9 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_snip_run() {
 		let cmd = parse_metacommand("\\snip run mysnippet").unwrap();
-		assert!(matches!(cmd, Some(Metacommand::SnippetRun { name }) if name == "mysnippet"));
+		assert!(
+			matches!(cmd, Some(Metacommand::SnippetRun { name, vars }) if name == "mysnippet" && vars.is_empty())
+		);
 	}
 
 	#[test]
@@ -1308,7 +1395,9 @@ mod tests {
 	#[test]
 	fn test_parse_metacommand_snip_run_with_whitespace() {
 		let cmd = parse_metacommand("\\snip run   mysnippet").unwrap();
-		assert!(matches!(cmd, Some(Metacommand::SnippetRun { name }) if name == "mysnippet"));
+		assert!(
+			matches!(cmd, Some(Metacommand::SnippetRun { name, vars }) if name == "mysnippet" && vars.is_empty())
+		);
 	}
 
 	#[test]
@@ -1327,5 +1416,44 @@ mod tests {
 	fn test_parse_metacommand_snip_run_without_name() {
 		let cmd = parse_metacommand("\\snip run").unwrap();
 		assert!(matches!(cmd, Some(Metacommand::Help)));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_run_with_vars() {
+		let cmd = parse_metacommand("\\snip run mysnippet foo=bar baz=qux").unwrap();
+		if let Some(Metacommand::SnippetRun { name, vars }) = cmd {
+			assert_eq!(name, "mysnippet");
+			assert_eq!(vars.len(), 2);
+			assert_eq!(vars[0], ("foo".to_string(), "bar".to_string()));
+			assert_eq!(vars[1], ("baz".to_string(), "qux".to_string()));
+		} else {
+			panic!("Expected SnippetRun");
+		}
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_with_vars() {
+		let cmd = parse_metacommand("\\i /path/to/file foo=bar").unwrap();
+		if let Some(Metacommand::Include { file_path, vars }) = cmd {
+			assert_eq!(file_path, "/path/to/file");
+			assert_eq!(vars.len(), 1);
+			assert_eq!(vars[0], ("foo".to_string(), "bar".to_string()));
+		} else {
+			panic!("Expected Include");
+		}
+	}
+
+	#[test]
+	fn test_parse_metacommand_include_with_multiple_vars() {
+		let cmd = parse_metacommand("\\i file.sql a=1 b=2 c=3").unwrap();
+		if let Some(Metacommand::Include { file_path, vars }) = cmd {
+			assert_eq!(file_path, "file.sql");
+			assert_eq!(vars.len(), 3);
+			assert_eq!(vars[0], ("a".to_string(), "1".to_string()));
+			assert_eq!(vars[1], ("b".to_string(), "2".to_string()));
+			assert_eq!(vars[2], ("c".to_string(), "3".to_string()));
+		} else {
+			panic!("Expected Include");
+		}
 	}
 }

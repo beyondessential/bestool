@@ -47,7 +47,10 @@ impl ReplAction {
 			ReplAction::Exit => handle_exit(),
 			ReplAction::ToggleWriteMode => handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit { content } => handle_edit(ctx, content).await,
-			ReplAction::IncludeFile { file_path } => handle_include(ctx, &file_path).await,
+			ReplAction::IncludeFile { file_path, vars } => {
+				handle_include(ctx, &file_path, vars).await
+			}
+			ReplAction::RunSnippet { name, vars } => handle_run_snippet(ctx, name, vars).await,
 			ReplAction::SetOutputFile { file_path } => handle_set_output(ctx, &file_path).await,
 			ReplAction::UnsetOutputFile => handle_unset_output(ctx).await,
 			ReplAction::Debug { what } => handle_debug(ctx, what),
@@ -170,7 +173,11 @@ async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> Cont
 	ControlFlow::Continue(())
 }
 
-async fn handle_include(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlFlow<()> {
+async fn handle_include(
+	ctx: &mut ReplContext<'_>,
+	file_path: &Path,
+	vars: Vec<(String, String)>,
+) -> ControlFlow<()> {
 	use std::fs;
 
 	// Read the file content
@@ -195,23 +202,69 @@ async fn handle_include(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlF
 			debug!("failed to add to history: {e}");
 		}
 
+		// Apply temporary variable shadowing
+		let mut state = ctx.repl_state.lock().unwrap();
+		let saved_vars: Vec<(String, Option<String>)> = vars
+			.iter()
+			.map(|(name, _)| (name.clone(), state.vars.get(name).cloned()))
+			.collect();
+
+		// Set the temporary variables
+		for (name, value) in &vars {
+			state.vars.insert(name.clone(), value.clone());
+		}
+		drop(state);
+
 		// Parse and execute the content
 		let (_, action) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
 
 		// Execute the action if it's an Execute action
-		if let ReplAction::Execute {
+		let result = if let ReplAction::Execute {
 			input,
 			sql,
 			modifiers,
 		} = action
 		{
-			return handle_execute(ctx, input, sql, modifiers).await;
+			handle_execute(ctx, input, sql, modifiers).await
+		} else {
+			ControlFlow::Continue(())
+		};
+
+		// Restore original variables
+		let mut state = ctx.repl_state.lock().unwrap();
+		for (name, original_value) in saved_vars {
+			match original_value {
+				Some(value) => state.vars.insert(name, value),
+				None => state.vars.remove(&name),
+			};
 		}
+
+		return result;
 	} else {
 		debug!("file '{file_path:?}' is empty, skipping");
 	}
 
 	ControlFlow::Continue(())
+}
+
+async fn handle_run_snippet(
+	ctx: &mut ReplContext<'_>,
+	name: String,
+	vars: Vec<(String, String)>,
+) -> ControlFlow<()> {
+	// Get the snippet path
+	let state = ctx.repl_state.lock().unwrap();
+	let file_path = match state.snippets.path(&name) {
+		Ok(path) => path,
+		Err(err) => {
+			error!("Failed to find snippet '{}': {}", name, err);
+			return ControlFlow::Continue(());
+		}
+	};
+	drop(state);
+
+	// Use handle_include to execute the snippet with variables
+	handle_include(ctx, &file_path, vars).await
 }
 
 async fn handle_set_output(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlFlow<()> {
