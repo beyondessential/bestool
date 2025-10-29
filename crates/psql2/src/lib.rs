@@ -1,5 +1,6 @@
 mod completer;
 mod config;
+mod input;
 mod parser;
 mod query;
 mod repl;
