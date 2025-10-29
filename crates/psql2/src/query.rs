@@ -10,14 +10,17 @@ use syntect::{
 	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
 	util::as_24_bit_terminal_escaped,
 };
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
 /// Execute a SQL query and display the results.
-pub(crate) async fn execute_query(
+pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	client: &tokio_postgres::Client,
 	sql: &str,
 	modifiers: QueryModifiers,
 	theme: crate::highlighter::Theme,
+	writer: &mut W,
+	use_colors: bool,
 ) -> Result<()> {
 	debug!(?modifiers, %sql, "executing query");
 
@@ -63,7 +66,8 @@ pub(crate) async fn execute_query(
 	let duration = start.elapsed();
 
 	if rows.is_empty() {
-		println!("(no rows)");
+		writer.write_all(b"(no rows)\n").await.into_diagnostic()?;
+		writer.flush().await.into_diagnostic()?;
 		return Ok(());
 	}
 
@@ -103,19 +107,40 @@ pub(crate) async fn execute_query(
 				&text_rows,
 				is_expanded,
 				theme,
-			);
+				writer,
+				use_colors,
+			)
+			.await?;
 		} else if is_expanded {
-			display_expanded(columns, &rows, &unprintable_columns, &text_rows);
+			display_expanded(
+				columns,
+				&rows,
+				&unprintable_columns,
+				&text_rows,
+				writer,
+				use_colors,
+			)
+			.await?;
 		} else {
-			display_normal(columns, &rows, &unprintable_columns, &text_rows);
+			display_normal(
+				columns,
+				&rows,
+				&unprintable_columns,
+				&text_rows,
+				writer,
+				use_colors,
+			)
+			.await?;
 		}
 
-		eprintln!(
-			"({} row{}, took {:.3}ms)",
+		let status_msg = format!(
+			"({} row{}, took {:.3}ms)\n",
 			rows.len(),
 			if rows.len() == 1 { "" } else { "s" },
 			duration.as_secs_f64() * 1000.0
 		);
+		// Status messages always go to stderr
+		eprint!("{}", status_msg);
 	}
 
 	Ok(())
@@ -246,21 +271,32 @@ fn build_text_cast_query(
 	format!("SELECT {} FROM ({}) AS subq", column_exprs.join(", "), sql)
 }
 
-fn display_expanded(
+async fn display_expanded<W: AsyncWrite + Unpin>(
 	columns: &[tokio_postgres::Column],
 	rows: &[tokio_postgres::Row],
 	unprintable_columns: &[usize],
 	text_rows: &Option<Vec<tokio_postgres::Row>>,
-) {
+	writer: &mut W,
+	use_colors: bool,
+) -> Result<()> {
 	for (row_idx, row) in rows.iter().enumerate() {
-		println!("-[ RECORD {} ]-", row_idx + 1);
+		let header = format!("-[ RECORD {} ]-\n", row_idx + 1);
+		writer
+			.write_all(header.as_bytes())
+			.await
+			.into_diagnostic()?;
 
 		let mut table = Table::new();
 
-		if supports_unicode() {
-			table.load_preset(presets::UTF8_FULL);
-			table.apply_modifier(UTF8_ROUND_CORNERS);
+		if use_colors {
+			if supports_unicode() {
+				table.load_preset(presets::UTF8_FULL);
+				table.apply_modifier(UTF8_ROUND_CORNERS);
+			} else {
+				table.load_preset(presets::ASCII_FULL);
+			}
 		} else {
+			// Use simple ASCII borders when colors are disabled
 			table.load_preset(presets::ASCII_FULL);
 		}
 
@@ -274,10 +310,13 @@ fn display_expanded(
 		for (i, column) in columns.iter().enumerate() {
 			let value_str = get_column_value(row, i, row_idx, unprintable_columns, text_rows);
 
-			table.add_row(vec![
-				Cell::new(column.name()).add_attribute(Attribute::Bold),
-				Cell::new(value_str),
-			]);
+			let name_cell = if use_colors {
+				Cell::new(column.name()).add_attribute(Attribute::Bold)
+			} else {
+				Cell::new(column.name())
+			};
+
+			table.add_row(vec![name_cell, Cell::new(value_str)]);
 		}
 
 		// Set column constraints: fixed width for column names, flexible for values
@@ -294,22 +333,36 @@ fn display_expanded(
 			}
 		}
 
-		println!("{table}");
+		let output = format!("{}\n", table);
+		writer
+			.write_all(output.as_bytes())
+			.await
+			.into_diagnostic()?;
 	}
+
+	writer.flush().await.into_diagnostic()?;
+	Ok(())
 }
 
-fn display_normal(
+async fn display_normal<W: AsyncWrite + Unpin>(
 	columns: &[tokio_postgres::Column],
 	rows: &[tokio_postgres::Row],
 	unprintable_columns: &[usize],
 	text_rows: &Option<Vec<tokio_postgres::Row>>,
-) {
+	writer: &mut W,
+	use_colors: bool,
+) -> Result<()> {
 	let mut table = Table::new();
 
-	if supports_unicode() {
-		table.load_preset(presets::UTF8_FULL);
-		table.apply_modifier(UTF8_ROUND_CORNERS);
+	if use_colors {
+		if supports_unicode() {
+			table.load_preset(presets::UTF8_FULL);
+			table.apply_modifier(UTF8_ROUND_CORNERS);
+		} else {
+			table.load_preset(presets::ASCII_FULL);
+		}
 	} else {
+		// Use simple ASCII borders when colors are disabled
 		table.load_preset(presets::ASCII_FULL);
 	}
 
@@ -320,9 +373,12 @@ fn display_normal(
 	}
 
 	table.set_header(columns.iter().map(|col| {
-		Cell::new(col.name())
-			.add_attribute(Attribute::Bold)
-			.set_alignment(CellAlignment::Center)
+		let cell = Cell::new(col.name()).set_alignment(CellAlignment::Center);
+		if use_colors {
+			cell.add_attribute(Attribute::Bold)
+		} else {
+			cell
+		}
 	}));
 
 	for (row_idx, row) in rows.iter().enumerate() {
@@ -334,7 +390,13 @@ fn display_normal(
 		table.add_row(row_data);
 	}
 
-	println!("{table}");
+	let output = format!("{}\n", table);
+	writer
+		.write_all(output.as_bytes())
+		.await
+		.into_diagnostic()?;
+	writer.flush().await.into_diagnostic()?;
+	Ok(())
 }
 
 fn get_column_value(
@@ -361,14 +423,16 @@ fn get_column_value(
 	"(error)".to_string()
 }
 
-fn display_json(
+async fn display_json<W: AsyncWrite + Unpin>(
 	columns: &[tokio_postgres::Column],
 	rows: &[tokio_postgres::Row],
 	unprintable_columns: &[usize],
 	text_rows: &Option<Vec<tokio_postgres::Row>>,
 	expanded: bool,
 	theme: crate::highlighter::Theme,
-) {
+	writer: &mut W,
+	use_colors: bool,
+) -> Result<()> {
 	let mut objects = Vec::new();
 
 	for (row_idx, row) in rows.iter().enumerate() {
@@ -410,16 +474,39 @@ fn display_json(
 	if expanded {
 		// Pretty-print a single array containing all objects
 		let json_str = serde_json::to_string_pretty(&objects).unwrap();
-		let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
-		println!("{}", highlighted);
+		if use_colors {
+			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
+			writer
+				.write_all(format!("{}\n", highlighted).as_bytes())
+				.await
+				.into_diagnostic()?;
+		} else {
+			writer
+				.write_all(format!("{}\n", json_str).as_bytes())
+				.await
+				.into_diagnostic()?;
+		}
 	} else {
 		// Compact-print one object per line
 		for obj in objects {
 			let json_str = serde_json::to_string(&obj).unwrap();
-			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
-			println!("{}", highlighted);
+			if use_colors {
+				let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
+				writer
+					.write_all(format!("{}\n", highlighted).as_bytes())
+					.await
+					.into_diagnostic()?;
+			} else {
+				writer
+					.write_all(format!("{}\n", json_str).as_bytes())
+					.await
+					.into_diagnostic()?;
+			}
 		}
 	}
+
+	writer.flush().await.into_diagnostic()?;
+	Ok(())
 }
 
 fn highlight_json(

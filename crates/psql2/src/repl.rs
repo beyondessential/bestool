@@ -4,6 +4,7 @@ use crate::config::PsqlConfig;
 use crate::highlighter::Theme;
 use crate::input::{handle_input, ReplAction};
 use crate::ots;
+use crate::parser::QueryModifier;
 use crate::query::execute_query;
 use crate::schema_cache::SchemaCacheManager;
 use miette::{bail, IntoDiagnostic, Result};
@@ -12,7 +13,7 @@ use rustyline::Editor;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{self, AsyncWriteExt};
 use tracing::{debug, error, instrument, warn};
 
 pub(crate) struct ReplContext<'a> {
@@ -245,7 +246,66 @@ async fn handle_execute(
 	sql: String,
 	modifiers: crate::parser::QueryModifiers,
 ) -> ControlFlow<()> {
-	match execute_query(ctx.client, &sql, modifiers, ctx.theme).await {
+	// Determine output destination
+	// Priority: 1. Output modifier file, 2. ReplState output file, 3. stdout
+	let output_file_path = modifiers.iter().find_map(|m| {
+		if let QueryModifier::Output { file_path } = m {
+			Some(file_path.clone())
+		} else {
+			None
+		}
+	});
+
+	let use_colors: bool;
+	let result = if let Some(path) = output_file_path {
+		// Output modifier specified - open a temporary file
+		use_colors = false;
+		match File::create(&path).await {
+			Ok(mut file) => {
+				execute_query(
+					ctx.client, &sql, modifiers, ctx.theme, &mut file, use_colors,
+				)
+				.await
+			}
+			Err(e) => {
+				error!("Failed to open output file '{}': {}", path, e);
+				return ControlFlow::Continue(());
+			}
+		}
+	} else {
+		let file_arc_opt = ctx.repl_state.lock().unwrap().output_file.clone();
+		if let Some(file_arc) = file_arc_opt {
+			// ReplState has an output file
+			use_colors = false;
+			match file_arc.lock() {
+				Ok(mut file) => {
+					execute_query(
+						ctx.client, &sql, modifiers, ctx.theme, &mut *file, use_colors,
+					)
+					.await
+				}
+				Err(e) => {
+					error!("Failed to lock output file: {}", e);
+					return ControlFlow::Continue(());
+				}
+			}
+		} else {
+			// Write to stdout
+			use_colors = true;
+			let mut stdout = io::stdout();
+			execute_query(
+				ctx.client,
+				&sql,
+				modifiers,
+				ctx.theme,
+				&mut stdout,
+				use_colors,
+			)
+			.await
+		}
+	};
+
+	match result {
 		Ok(()) => {
 			// If write mode is on and we're not in a transaction, start one
 			let tx_state = check_transaction_state(ctx.monitor_client, ctx.backend_pid).await;
@@ -258,9 +318,10 @@ async fn handle_execute(
 			}
 		}
 		Err(e) => {
-			eprintln!("Error: {:?}", e);
+			error!("{:?}", e);
 		}
 	}
+
 	ControlFlow::Continue(())
 }
 
@@ -700,11 +761,14 @@ mod tests {
 
 		let client = pool.get().await.expect("Failed to get connection");
 
+		let mut stdout = tokio::io::stdout();
 		let result = crate::query::execute_query(
 			&*client,
 			"SELECT row(1, 'foo', true) as record",
 			crate::parser::QueryModifiers::new(),
 			crate::highlighter::Theme::Dark,
+			&mut stdout,
+			true,
 		)
 		.await;
 
@@ -722,11 +786,14 @@ mod tests {
 
 		let client = pool.get().await.expect("Failed to get connection");
 
+		let mut stdout = tokio::io::stdout();
 		let result = crate::query::execute_query(
 			&*client,
 			"SELECT ARRAY[1, 2, 3] as numbers",
 			crate::parser::QueryModifiers::new(),
 			crate::highlighter::Theme::Dark,
+			&mut stdout,
+			true,
 		)
 		.await;
 
