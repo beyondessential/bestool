@@ -166,7 +166,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 			space0.parse_next(input)?;
 			match (cmd_str.trim(), name) {
 				("run", Some(name)) => Metacommand::SnippetRun { name },
-				("list", Some(name)) => Metacommand::SnippetSave { name },
+				("save", Some(name)) => Metacommand::SnippetSave { name },
 				_ => Metacommand::Help,
 			}
 		} else {

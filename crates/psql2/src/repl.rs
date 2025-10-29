@@ -10,6 +10,7 @@ use crate::schema_cache::SchemaCacheManager;
 use crate::snippets::Snippets;
 use miette::{bail, IntoDiagnostic, Result};
 use rustyline::error::ReadlineError;
+use rustyline::history::History;
 use rustyline::Editor;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -55,6 +56,7 @@ impl ReplAction {
 			ReplAction::UnsetVar { name } => handle_unset_var(ctx, name),
 			ReplAction::LookupVar { pattern } => handle_lookup_var(ctx, pattern),
 			ReplAction::GetVar { name } => handle_get_var(ctx, name),
+			ReplAction::SnippetSave { name } => handle_snippet_save(ctx, name).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -358,6 +360,35 @@ fn handle_get_var(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
 		Some(value) => println!("{}", value),
 		None => eprintln!("Variable '{}' not found", name),
 	}
+	ControlFlow::Continue(())
+}
+
+async fn handle_snippet_save(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
+	let history = ctx.rl.history();
+
+	// Get the last entry from history (which is the preceding command)
+	if history.is_empty() {
+		eprintln!("No command history available");
+		return ControlFlow::Continue(());
+	}
+
+	let last_idx = history.len() - 1;
+	let content = match history.get(last_idx, rustyline::history::SearchDirection::Forward) {
+		Ok(Some(result)) => result.entry.to_string(),
+		_ => {
+			eprintln!("Failed to retrieve last command from history");
+			return ControlFlow::Continue(());
+		}
+	};
+
+	// Save the snippet - get snippets before awaiting
+	let snippets = ctx.repl_state.lock().unwrap().snippets.clone();
+	if let Err(e) = snippets.save(&name, &content).await {
+		eprintln!("Failed to save snippet '{}': {}", name, e);
+	} else {
+		println!("Snippet '{}' saved", name);
+	}
+
 	ControlFlow::Continue(())
 }
 

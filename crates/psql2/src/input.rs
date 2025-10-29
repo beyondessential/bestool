@@ -43,6 +43,9 @@ pub(crate) enum ReplAction {
 	GetVar {
 		name: String,
 	},
+	SnippetSave {
+		name: String,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -77,7 +80,7 @@ pub(crate) fn handle_input(
 						ReplAction::Continue
 					}
 				},
-				Metacommand::SnippetSave { name } => todo!("save snippet {name}"),
+				Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
 				Metacommand::Output {
 					file_path: Some(file_path),
 				} => ReplAction::SetOutputFile {
