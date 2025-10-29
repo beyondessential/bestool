@@ -439,7 +439,12 @@ async fn handle_snippet_save(ctx: &mut ReplContext<'_>, name: String) -> Control
 	if let Err(e) = snippets.save(&name, &content).await {
 		eprintln!("Failed to save snippet '{}': {}", name, e);
 	} else {
-		println!("Snippet '{}' saved", name);
+		// Get the path where the snippet was saved
+		if let Ok(path) = snippets.path(&name) {
+			println!("Snippet saved to {}", path.display());
+		} else {
+			println!("Snippet '{}' saved", name);
+		}
 	}
 
 	ControlFlow::Continue(())
