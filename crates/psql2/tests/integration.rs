@@ -387,14 +387,12 @@ mod list_command_tests {
 						WHEN 'u' THEN 'unlogged'
 						WHEN 't' THEN 'temporary'
 					END AS "Persistence",
-					am.amname AS "Access method",
 					CASE
 						WHEN c.relacl IS NULL THEN NULL
 						ELSE pg_catalog.array_to_string(c.relacl, E'\n')
 					END AS "ACL"
 				FROM pg_catalog.pg_class c
 				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-				LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
@@ -415,15 +413,13 @@ mod list_command_tests {
 		let size: String = row.get(2);
 		let owner: String = row.get(3);
 		let persistence: String = row.get(4);
-		let access_method: Option<String> = row.get(5);
-		let _acl: Option<String> = row.get(6);
+		let _acl: Option<String> = row.get(5);
 
 		assert_eq!(schema, "public");
 		assert_eq!(name, table);
 		assert!(!size.is_empty());
 		assert!(!owner.is_empty());
 		assert_eq!(persistence, "permanent");
-		assert!(access_method.is_some(), "Access method should be present");
 
 		// Cleanup
 		client
@@ -788,11 +784,13 @@ mod list_command_tests {
 					n.nspname AS "Schema",
 					c.relname AS "Name",
 					t.relname AS "Table",
+					am.amname AS "Type",
 					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 				FROM pg_catalog.pg_class c
 				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
 				LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+				LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 				WHERE c.relkind = 'i'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
@@ -856,18 +854,14 @@ mod list_command_tests {
 					n.nspname AS "Schema",
 					c.relname AS "Name",
 					t.relname AS "Table",
+					am.amname AS "Type",
 					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
 					pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
 					CASE c.relpersistence
 						WHEN 'p' THEN 'permanent'
 						WHEN 'u' THEN 'unlogged'
 						WHEN 't' THEN 'temporary'
-					END AS "Persistence",
-					am.amname AS "Access method",
-					CASE
-						WHEN c.relacl IS NULL THEN NULL
-						ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-					END AS "ACL"
+					END AS "Persistence"
 				FROM pg_catalog.pg_class c
 				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -891,19 +885,18 @@ mod list_command_tests {
 		let schema: String = row.get(0);
 		let name: String = row.get(1);
 		let table_name: String = row.get(2);
-		let size: String = row.get(3);
-		let owner: String = row.get(4);
-		let persistence: String = row.get(5);
-		let access_method: Option<String> = row.get(6);
-		let _acl: Option<String> = row.get(7);
+		let index_type: Option<String> = row.get(3);
+		let size: String = row.get(4);
+		let owner: String = row.get(5);
+		let persistence: String = row.get(6);
 
 		assert_eq!(schema, "public");
 		assert_eq!(name, index);
 		assert_eq!(table_name, table);
+		assert!(index_type.is_some(), "Index type should be present");
 		assert!(!size.is_empty());
 		assert!(!owner.is_empty());
 		assert_eq!(persistence, "permanent");
-		assert!(access_method.is_some(), "Access method should be present");
 
 		// Cleanup
 		client
@@ -946,11 +939,13 @@ mod list_command_tests {
 					n.nspname AS "Schema",
 					c.relname AS "Name",
 					t.relname AS "Table",
+					am.amname AS "Type",
 					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 				FROM pg_catalog.pg_class c
 				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
 				LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+				LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 				WHERE c.relkind = 'i'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2

@@ -42,14 +42,12 @@ async fn handle_list_tables(
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
-				am.amname AS "Access method",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
 				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-			LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 			WHERE c.relkind = 'r'
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
@@ -68,14 +66,12 @@ async fn handle_list_tables(
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
-				am.amname AS "Access method",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
 				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-			LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 			WHERE c.relkind = 'r'
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
@@ -148,7 +144,6 @@ async fn handle_list_tables(
 					"Size",
 					"Owner",
 					"Persistence",
-					"Access method",
 					"ACL",
 				]);
 				for row in rows {
@@ -157,15 +152,13 @@ async fn handle_list_tables(
 					let size: String = row.get(2);
 					let owner: String = row.get(3);
 					let persistence: String = row.get(4);
-					let access_method: Option<String> = row.get(5);
-					let acl: Option<String> = row.get(6);
+					let acl: Option<String> = row.get(5);
 					table.add_row(vec![
 						schema,
 						name,
 						size,
 						owner,
 						persistence,
-						access_method.unwrap_or_default(),
 						acl.unwrap_or_default(),
 					]);
 				}
@@ -205,18 +198,14 @@ async fn handle_list_indexes(
 				n.nspname AS "Schema",
 				c.relname AS "Name",
 				t.relname AS "Table",
+				am.amname AS "Type",
 				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
 				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
 				CASE c.relpersistence
 					WHEN 'p' THEN 'permanent'
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
-				END AS "Persistence",
-				am.amname AS "Access method",
-				CASE
-					WHEN c.relacl IS NULL THEN NULL
-					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "ACL"
+				END AS "Persistence"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 			LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -234,18 +223,14 @@ async fn handle_list_indexes(
 				n.nspname AS "Schema",
 				c.relname AS "Name",
 				t.relname AS "Table",
+				am.amname AS "Type",
 				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
 				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
 				CASE c.relpersistence
 					WHEN 'p' THEN 'permanent'
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
-				END AS "Persistence",
-				am.amname AS "Access method",
-				CASE
-					WHEN c.relacl IS NULL THEN NULL
-					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "ACL"
+				END AS "Persistence"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 			LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -263,11 +248,13 @@ async fn handle_list_indexes(
 			n.nspname AS "Schema",
 			c.relname AS "Name",
 			t.relname AS "Table",
+			am.amname AS "Type",
 			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
 		LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+		LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 		WHERE c.relkind = 'i'
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
@@ -280,11 +267,13 @@ async fn handle_list_indexes(
 			n.nspname AS "Schema",
 			c.relname AS "Name",
 			t.relname AS "Table",
+			am.amname AS "Type",
 			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
 		LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+		LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 		WHERE c.relkind = 'i'
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
@@ -327,40 +316,44 @@ async fn handle_list_indexes(
 					"Schema",
 					"Name",
 					"Table",
+					"Type",
 					"Size",
 					"Owner",
 					"Persistence",
-					"Access method",
-					"ACL",
 				]);
 				for row in rows {
 					let schema: String = row.get(0);
 					let name: String = row.get(1);
 					let table_name: String = row.get(2);
-					let size: String = row.get(3);
-					let owner: String = row.get(4);
-					let persistence: String = row.get(5);
-					let access_method: Option<String> = row.get(6);
-					let acl: Option<String> = row.get(7);
+					let index_type: Option<String> = row.get(3);
+					let size: String = row.get(4);
+					let owner: String = row.get(5);
+					let persistence: String = row.get(6);
 					table.add_row(vec![
 						schema,
 						name,
 						table_name,
+						index_type.unwrap_or_default(),
 						size,
 						owner,
 						persistence,
-						access_method.unwrap_or_default(),
-						acl.unwrap_or_default(),
 					]);
 				}
 			} else {
-				table.set_header(vec!["Schema", "Name", "Table", "Size"]);
+				table.set_header(vec!["Schema", "Name", "Table", "Type", "Size"]);
 				for row in rows {
 					let schema: String = row.get(0);
 					let name: String = row.get(1);
 					let table_name: String = row.get(2);
-					let size: String = row.get(3);
-					table.add_row(vec![schema, name, table_name, size]);
+					let index_type: Option<String> = row.get(3);
+					let size: String = row.get(4);
+					table.add_row(vec![
+						schema,
+						name,
+						table_name,
+						index_type.unwrap_or_default(),
+						size,
+					]);
 				}
 			}
 
