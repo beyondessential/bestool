@@ -12,7 +12,10 @@ use syntect::{
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
-use crate::parser::{QueryModifier, QueryModifiers};
+use crate::{
+	parser::{QueryModifier, QueryModifiers},
+	signals::{reset_sigint, sigint_received},
+};
 
 /// Interpolate variables in the SQL string.
 /// Replaces ${name} with the value of variable `name`.
@@ -118,7 +121,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	let tls_connector = crate::tls::make_tls_connector()?;
 
 	// Reset the flag before starting
-	crate::reset_sigint();
+	reset_sigint();
 
 	// Poll for SIGINT while executing query
 	let result = tokio::select! {
@@ -128,7 +131,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		_ = async {
 			loop {
 				tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-				if crate::sigint_received() {
+				if sigint_received() {
 					break;
 				}
 			}
@@ -138,7 +141,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 				warn!("Failed to cancel query: {:?}", e);
 			}
 			// Reset flag for next time
-			crate::reset_sigint();
+			reset_sigint();
 			return Ok(());
 		}
 	};
