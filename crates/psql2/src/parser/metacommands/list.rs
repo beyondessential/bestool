@@ -12,6 +12,7 @@ pub enum ListItem {
 	Index,
 	Function,
 	View,
+	Schema,
 }
 
 pub fn parse(
@@ -26,6 +27,7 @@ pub fn parse(
 		literal("di").map(|_| Some(ListItem::Index)),
 		literal("df").map(|_| Some(ListItem::Function)),
 		literal("dv").map(|_| Some(ListItem::View)),
+		literal("dn").map(|_| Some(ListItem::Schema)),
 	))
 	.parse_next(input)?;
 
@@ -58,6 +60,7 @@ pub fn parse(
 			literal("index").map(|_| ListItem::Index),
 			literal("function").map(|_| ListItem::Function),
 			literal("view").map(|_| ListItem::View),
+			literal("schema").map(|_| ListItem::Schema),
 		))
 		.parse_next(input)?;
 
@@ -528,6 +531,76 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::View,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_list_schema() {
+		let result = parse_metacommand("\\list schema").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dn_alias() {
+		let result = parse_metacommand("\\dn").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dn_plus_alias() {
+		let result = parse_metacommand("\\dn+").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dn_with_sameconn() {
+		let result = parse_metacommand("\\dn!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dn_plus_with_sameconn() {
+		let result = parse_metacommand("\\dn+!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
 				pattern: "public.*".to_string(),
 				detail: true,
 				sameconn: true,

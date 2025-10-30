@@ -3,6 +3,7 @@ pub const METACOMMAND: &'static [&'static str] = &[
 	r"\set", r"\unset", r"\vars", r"\get", r"\list", r"\list+", r"\list!", r"\list+!", r"\list!+",
 	r"\dt", r"\dt+", r"\dt!", r"\dt+!", r"\dt!+", r"\di", r"\di+", r"\di!", r"\di+!", r"\di!+",
 	r"\df", r"\df+", r"\df!", r"\df+!", r"\df!+", r"\dv", r"\dv+", r"\dv!", r"\dv+!", r"\dv!+",
+	r"\dn", r"\dn+", r"\dn!", r"\dn+!", r"\dn!+",
 ];
 
 pub const SQL_KEYWORDS: &'static [&'static str] = &[

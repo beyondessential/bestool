@@ -7,6 +7,7 @@ use super::state::ReplContext;
 mod function;
 mod index;
 mod pattern;
+mod schema;
 mod table;
 mod view;
 
@@ -24,5 +25,6 @@ pub async fn handle_list(
 			function::handle_list_functions(ctx, &pattern, detail, sameconn).await
 		}
 		ListItem::View => view::handle_list_views(ctx, &pattern, detail, sameconn).await,
+		ListItem::Schema => schema::handle_list_schemas(ctx, &pattern, detail, sameconn).await,
 	}
 }

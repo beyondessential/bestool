@@ -26,7 +26,7 @@ impl super::SqlCompleter {
 		let parts: Vec<&str> = after_list.split_whitespace().collect();
 
 		if parts.is_empty() {
-			// Offer "table", "index", "function", and "view" as completions
+			// Offer "table", "index", "function", "view", and "schema" as completions
 			return Some(vec![
 				Pair {
 					display: "table".to_string(),
@@ -43,6 +43,10 @@ impl super::SqlCompleter {
 				Pair {
 					display: "view".to_string(),
 					replacement: "view".to_string(),
+				},
+				Pair {
+					display: "schema".to_string(),
+					replacement: "schema".to_string(),
 				},
 			]);
 		}
@@ -83,12 +87,20 @@ impl super::SqlCompleter {
 				});
 			}
 
+			// Check if "schema" matches
+			if "schema".starts_with(&partial.to_lowercase()) {
+				completions.push(Pair {
+					display: "schema".to_string(),
+					replacement: "schema".to_string(),
+				});
+			}
+
 			if !completions.is_empty() {
 				return Some(completions);
 			}
 		}
 
-		// For pattern completion after "table", "index", "function", or "view", we don't offer completions
+		// For pattern completion after "table", "index", "function", "view", or "schema", we don't offer completions
 		// to allow users to freely type patterns like "public.*" or "schema.table"
 		Some(Vec::new())
 	}
@@ -120,6 +132,7 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "index"));
 		assert!(completions.iter().any(|c| c.display == "function"));
 		assert!(completions.iter().any(|c| c.display == "view"));
+		assert!(completions.iter().any(|c| c.display == "schema"));
 
 		// Test with partial argument for table
 		let input = "\\list ta";
@@ -151,5 +164,6 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "index"));
 		assert!(completions.iter().any(|c| c.display == "function"));
 		assert!(completions.iter().any(|c| c.display == "view"));
+		assert!(completions.iter().any(|c| c.display == "schema"));
 	}
 }
