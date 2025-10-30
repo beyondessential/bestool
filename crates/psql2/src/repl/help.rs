@@ -39,6 +39,14 @@ pub fn handle_help() -> ControlFlow<()> {
 		"\\vars [pattern]",
 		"List variables (optionally matching pattern)",
 	]);
+	metacmds.add_row(vec![
+		"\\list[+][!] table [pattern]",
+		"List tables (+ for details, ! for same connection)",
+	]);
+	metacmds.add_row(vec![
+		"\\dt[+][!] [pattern]",
+		"List tables (alias for \\list table)",
+	]);
 	eprintln!("{metacmds}");
 
 	eprintln!("\nQuery modifiers (used after query):");
