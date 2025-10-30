@@ -1,27 +1,19 @@
-use std::{
-	borrow::Cow,
-	path::Path,
-	sync::{Arc, Mutex, RwLock},
-};
+use std::sync::{Arc, Mutex, RwLock};
 
-use rustyline::{
-	completion::{Completer, Pair},
-	highlight::{CmdKind, Highlighter},
-	hint::Hinter,
-	validate::{ValidationContext, ValidationResult, Validator},
-	Context, Helper,
-};
-use syntect::{
-	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
-	util::as_24_bit_terminal_escaped,
-};
+use rustyline::completion::Pair;
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 use crate::{highlighter::Theme, repl::ReplState, schema_cache::SchemaCache};
 
+mod debug;
+mod keywords;
+mod paths;
+mod readline;
+mod snippets;
+mod vars;
+
 /// SQL keywords and psql commands for autocompletion
 pub struct SqlCompleter {
-	keywords: Vec<&'static str>,
-	psql_commands: Vec<&'static str>,
 	schema_cache: Option<Arc<RwLock<SchemaCache>>>,
 	repl_state: Option<Arc<Mutex<ReplState>>>,
 	syntax_set: SyntaxSet,
@@ -36,188 +28,6 @@ impl SqlCompleter {
 			syntax_set: SyntaxSet::load_defaults_newlines(),
 			theme_set: ThemeSet::load_defaults(),
 			theme,
-			keywords: vec![
-				"SELECT",
-				"FROM",
-				"WHERE",
-				"AND",
-				"OR",
-				"NOT",
-				"IN",
-				"EXISTS",
-				"INSERT",
-				"INTO",
-				"VALUES",
-				"UPDATE",
-				"SET",
-				"DELETE",
-				"CREATE",
-				"ALTER",
-				"DROP",
-				"TRUNCATE",
-				"TABLE",
-				"INDEX",
-				"VIEW",
-				"SEQUENCE",
-				"SCHEMA",
-				"DATABASE",
-				"JOIN",
-				"INNER",
-				"LEFT",
-				"RIGHT",
-				"FULL",
-				"OUTER",
-				"CROSS",
-				"ON",
-				"USING",
-				"AS",
-				"DISTINCT",
-				"ALL",
-				"ANY",
-				"SOME",
-				"ORDER",
-				"BY",
-				"GROUP",
-				"HAVING",
-				"LIMIT",
-				"OFFSET",
-				"UNION",
-				"INTERSECT",
-				"EXCEPT",
-				"CASE",
-				"WHEN",
-				"THEN",
-				"ELSE",
-				"END",
-				"NULL",
-				"IS",
-				"LIKE",
-				"ILIKE",
-				"SIMILAR",
-				"TO",
-				"BETWEEN",
-				"ASC",
-				"DESC",
-				"NULLS",
-				"FIRST",
-				"LAST",
-				"WITH",
-				"RECURSIVE",
-				"CTE",
-				"WINDOW",
-				"OVER",
-				"PARTITION",
-				"ROWS",
-				"RANGE",
-				"BEGIN",
-				"COMMIT",
-				"ROLLBACK",
-				"SAVEPOINT",
-				"RELEASE",
-				"TRANSACTION",
-				"ISOLATION",
-				"LEVEL",
-				"READ",
-				"WRITE",
-				"SERIALIZABLE",
-				"REPEATABLE",
-				"UNCOMMITTED",
-				"COMMITTED",
-				"GRANT",
-				"REVOKE",
-				"PRIVILEGES",
-				"PUBLIC",
-				"PRIMARY",
-				"KEY",
-				"FOREIGN",
-				"REFERENCES",
-				"UNIQUE",
-				"CHECK",
-				"DEFAULT",
-				"CONSTRAINT",
-				"CASCADE",
-				"RESTRICT",
-				"EXPLAIN",
-				"ANALYZE",
-				"VERBOSE",
-				"COPY",
-				"RETURNING",
-				"INTEGER",
-				"INT",
-				"BIGINT",
-				"SMALLINT",
-				"SERIAL",
-				"BIGSERIAL",
-				"NUMERIC",
-				"DECIMAL",
-				"REAL",
-				"DOUBLE",
-				"PRECISION",
-				"VARCHAR",
-				"CHAR",
-				"TEXT",
-				"BYTEA",
-				"TIMESTAMP",
-				"TIMESTAMPTZ",
-				"DATE",
-				"TIME",
-				"TIMETZ",
-				"INTERVAL",
-				"BOOLEAN",
-				"BOOL",
-				"TRUE",
-				"FALSE",
-				"UUID",
-				"JSON",
-				"JSONB",
-				"ARRAY",
-				"COUNT",
-				"SUM",
-				"AVG",
-				"MIN",
-				"MAX",
-				"COALESCE",
-				"NULLIF",
-				"GREATEST",
-				"LEAST",
-				"CAST",
-				"CONVERT",
-				"CURRENT_TIMESTAMP",
-				"CURRENT_DATE",
-				"CURRENT_TIME",
-				"NOW",
-				"AGE",
-				"EXTRACT",
-				"CONCAT",
-				"LENGTH",
-				"SUBSTRING",
-				"TRIM",
-				"UPPER",
-				"LOWER",
-				"ARRAY_AGG",
-				"STRING_AGG",
-				"JSON_AGG",
-				"JSONB_AGG",
-				"ROW_NUMBER",
-				"RANK",
-				"DENSE_RANK",
-				"LAG",
-				"LEAD",
-				"ISNULL",
-				"NOTNULL",
-				"TABLESAMPLE",
-				"LATERAL",
-				"GENERATE_SERIES",
-				"UNNEST",
-				"VACUUM",
-				"ANALYZE",
-				"REINDEX",
-				"CLUSTER",
-			],
-			psql_commands: vec![
-				"\\q", "\\e", "\\i", "\\o", "\\debug", "\\?", "\\help", "\\x", "\\g", "\\go",
-				"\\gx", "\\gset", "\\set", "\\unset", "\\vars", "\\get",
-			],
 			repl_state: None,
 		}
 	}
@@ -236,189 +46,20 @@ impl SqlCompleter {
 	fn find_completions(&self, input: &str, pos: usize) -> Vec<Pair> {
 		let text_before_cursor = &input[..pos];
 
-		// Check if we're completing a file path after \i command
-		// Do this check before checking for empty current_word so we can show directory listings
-		if text_before_cursor.trim_start().starts_with("\\i ") {
-			// Extract the file path being typed
-			let path_start = text_before_cursor.find("\\i ").unwrap() + 3;
-			let partial_path = &text_before_cursor[path_start..];
-
+		if let Some(partial_path) = Self::for_path_completion(text_before_cursor) {
 			return self.complete_file_path(partial_path);
 		}
 
-		// Check if we're completing a file path after \o command
-		if text_before_cursor.trim_start().starts_with("\\o ") {
-			// Extract the file path being typed
-			let path_start = text_before_cursor.find("\\o ").unwrap() + 3;
-			let partial_path = &text_before_cursor[path_start..];
-
-			return self.complete_file_path(partial_path);
+		if let Some(completions) = self.complete_snippets(text_before_cursor) {
+			return completions;
 		}
 
-		// Check if we're completing snip subcommands after \snip
-		if text_before_cursor.trim_start().starts_with("\\snip ") {
-			// Check if we're after \snip but before a subcommand (e.g., "\\snip " or "\\snip r")
-			let after_snip = if let Some(pos) = text_before_cursor.find("\\snip ") {
-				&text_before_cursor[pos + 6..]
-			} else {
-				return Vec::new();
-			};
-
-			// If there's no space after what we've typed, we're still completing the subcommand
-			if !after_snip.contains(' ') {
-				let partial_cmd = after_snip.trim();
-				let mut completions = Vec::new();
-
-				// Offer snip subcommands
-				for cmd in &["run", "save"] {
-					if cmd.starts_with(&partial_cmd.to_lowercase()) {
-						completions.push(Pair {
-							display: cmd.to_string(),
-							replacement: cmd.to_string(),
-						});
-					}
-				}
-
-				if !completions.is_empty() {
-					return completions;
-				}
-			}
+		if let Some(completions) = self.complete_debug(text_before_cursor) {
+			return completions;
 		}
 
-		// Check if we're completing snippet names after \snip run or \snip save
-		if text_before_cursor.trim_start().starts_with("\\snip run ")
-			|| text_before_cursor.trim_start().starts_with("\\snip save ")
-		{
-			if let Some(repl_state_arc) = &self.repl_state {
-				let repl_state = repl_state_arc.lock().unwrap();
-
-				let cmd_start = if let Some(pos) = text_before_cursor.find("\\snip run ") {
-					pos + 10
-				} else if let Some(pos) = text_before_cursor.find("\\snip save ") {
-					pos + 11
-				} else {
-					return Vec::new();
-				};
-
-				let partial_name = text_before_cursor[cmd_start..].trim();
-
-				let mut completions = Vec::new();
-
-				// Try to get snippet names from all snippet directories
-				for dir in &repl_state.snippets.dirs {
-					if let Ok(entries) = std::fs::read_dir(dir) {
-						for entry in entries.flatten() {
-							if let Ok(file_name) = entry.file_name().into_string() {
-								// Look for .sql files
-								if file_name.ends_with(".sql") {
-									let snippet_name = &file_name[..file_name.len() - 4];
-									if snippet_name
-										.to_lowercase()
-										.starts_with(&partial_name.to_lowercase())
-										&& !completions
-											.iter()
-											.any(|c: &Pair| c.display == snippet_name)
-									{
-										completions.push(Pair {
-											display: snippet_name.to_string(),
-											replacement: snippet_name.to_string(),
-										});
-									}
-								}
-							}
-						}
-					}
-				}
-
-				completions.sort_by(|a, b| a.display.cmp(&b.display));
-				return completions;
-			}
-		}
-
-		// Check if we're completing after \debug command
-		if text_before_cursor.trim_start().starts_with("\\debug ") {
-			// Extract what's after \debug
-			let debug_start = text_before_cursor.find("\\debug ").unwrap() + 7;
-			let partial_arg = &text_before_cursor[debug_start..].trim();
-
-			// Offer "state" as completion
-			if "state".starts_with(&partial_arg.to_lowercase()) {
-				return vec![Pair {
-					display: "state".to_string(),
-					replacement: "state".to_string(),
-				}];
-			}
-			return Vec::new();
-		}
-
-		// Check if we're completing variable names after \get, \set, or \unset
-		if text_before_cursor.trim_start().starts_with("\\get ")
-			|| text_before_cursor.trim_start().starts_with("\\unset ")
-			|| text_before_cursor.trim_start().starts_with("\\set ")
-		{
-			if let Some(repl_state_arc) = &self.repl_state {
-				let repl_state = repl_state_arc.lock().unwrap();
-
-				// For \set, only complete the variable name (first argument)
-				let is_set_command = text_before_cursor.trim_start().starts_with("\\set ");
-				if is_set_command {
-					// Check if we're on the first or second argument
-					let after_set = if let Some(pos) = text_before_cursor.find("\\set ") {
-						&text_before_cursor[pos + 5..]
-					} else {
-						return Vec::new();
-					};
-
-					// Count spaces to determine which argument we're on
-					let space_count = after_set.chars().filter(|&c| c == ' ').count();
-					if space_count > 0 && !after_set.ends_with(' ') {
-						// We're on the second argument (value), don't complete
-						return Vec::new();
-					}
-				}
-
-				let cmd_start = if let Some(pos) = text_before_cursor.find("\\get ") {
-					pos + 5
-				} else if let Some(pos) = text_before_cursor.find("\\unset ") {
-					pos + 8
-				} else if let Some(pos) = text_before_cursor.find("\\set ") {
-					pos + 5
-				} else {
-					return Vec::new();
-				};
-
-				let partial_var = text_before_cursor[cmd_start..].trim();
-
-				let mut completions = Vec::new();
-				for var_name in repl_state.vars.keys() {
-					if var_name
-						.to_lowercase()
-						.starts_with(&partial_var.to_lowercase())
-					{
-						completions.push(Pair {
-							display: var_name.clone(),
-							replacement: var_name.clone(),
-						});
-					}
-				}
-
-				completions.sort_by(|a, b| a.display.cmp(&b.display));
-				return completions;
-			}
-		}
-
-		// Check if we're completing a file path after \g...o query modifier (e.g. \go, \gxo, \gjo, \gxjo)
-		// This is more complex because we need to find \g followed by optional modifiers and then 'o'
-		if let Some(g_pos) = text_before_cursor.rfind("\\g") {
-			let after_g = &text_before_cursor[g_pos + 2..];
-			// Check if it contains 'o' and is followed by a space
-			if after_g.chars().any(|c| c == 'o') {
-				if let Some(space_pos) = after_g.find(' ') {
-					// Extract the file path after the space
-					let partial_path = &after_g[space_pos + 1..];
-					return self.complete_file_path(partial_path);
-				}
-			}
+		if let Some(completions) = self.complete_vars(text_before_cursor) {
+			return completions;
 		}
 
 		let word_start = text_before_cursor
@@ -435,7 +76,7 @@ impl SqlCompleter {
 		let mut completions = Vec::new();
 
 		if current_word.starts_with('\\') {
-			for cmd in &self.psql_commands {
+			for cmd in keywords::METACOMMAND {
 				if cmd.to_lowercase().starts_with(&current_word.to_lowercase()) {
 					completions.push(Pair {
 						display: cmd.to_string(),
@@ -490,7 +131,7 @@ impl SqlCompleter {
 			}
 
 			let current_upper = current_word.to_uppercase();
-			for keyword in &self.keywords {
+			for keyword in keywords::SQL_KEYWORDS {
 				if keyword.starts_with(&current_upper) {
 					completions.push(Pair {
 						display: keyword.to_string(),
@@ -539,160 +180,7 @@ impl SqlCompleter {
 		completions.dedup_by(|a, b| a.display == b.display);
 		completions
 	}
-
-	fn complete_file_path(&self, partial_path: &str) -> Vec<Pair> {
-		let mut completions = Vec::new();
-
-		// Determine the directory to search and the partial filename
-		let (dir_path, partial_name) = if partial_path.is_empty() {
-			(".", "")
-		} else if partial_path.ends_with('/') || partial_path.ends_with('\\') {
-			(partial_path, "")
-		} else {
-			let path = Path::new(partial_path);
-			if let Some(parent) = path.parent() {
-				let parent_str = if parent.as_os_str().is_empty() {
-					"."
-				} else {
-					parent.to_str().unwrap_or(".")
-				};
-				let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-				(parent_str, name)
-			} else {
-				(".", partial_path)
-			}
-		};
-
-		// Read directory entries
-		if let Ok(entries) = std::fs::read_dir(dir_path) {
-			for entry in entries.flatten() {
-				if let Ok(file_name) = entry.file_name().into_string() {
-					// Skip hidden files (starting with .) unless explicitly requested
-					if file_name.starts_with('.') && !partial_name.starts_with('.') {
-						continue;
-					}
-
-					// Filter by partial name (empty string matches everything)
-					// Match case-insensitively
-					if file_name
-						.to_lowercase()
-						.starts_with(&partial_name.to_lowercase())
-					{
-						let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-
-						// Build the replacement path
-						let replacement = if dir_path == "." {
-							if is_dir {
-								format!("{}/", file_name)
-							} else {
-								file_name.clone()
-							}
-						} else {
-							let mut path = Path::new(dir_path).join(&file_name);
-							if is_dir {
-								path = path.join("");
-							}
-							path.to_string_lossy().to_string()
-						};
-
-						let display = if is_dir {
-							format!("{}/", file_name)
-						} else {
-							file_name
-						};
-
-						completions.push(Pair {
-							display,
-							replacement,
-						});
-					}
-				}
-			}
-		}
-
-		// Sort directories first, then files, both alphabetically
-		completions.sort_by(|a, b| {
-			let a_is_dir = a.display.ends_with('/');
-			let b_is_dir = b.display.ends_with('/');
-			match (a_is_dir, b_is_dir) {
-				(true, false) => std::cmp::Ordering::Less,
-				(false, true) => std::cmp::Ordering::Greater,
-				_ => a.display.cmp(&b.display),
-			}
-		});
-
-		completions
-	}
 }
-
-impl Completer for SqlCompleter {
-	type Candidate = Pair;
-
-	fn complete(
-		&self,
-		line: &str,
-		pos: usize,
-		_ctx: &Context<'_>,
-	) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-		let completions = self.find_completions(line, pos);
-
-		let text_before_cursor = &line[..pos];
-		let word_start = text_before_cursor
-			.rfind(|c: char| c.is_whitespace() || c == '(' || c == ',' || c == ';')
-			.map(|i| i + 1)
-			.unwrap_or(0);
-
-		Ok((word_start, completions))
-	}
-}
-
-impl Hinter for SqlCompleter {
-	type Hint = String;
-
-	fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
-		None
-	}
-}
-
-impl Highlighter for SqlCompleter {
-	fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-		let syntax = self
-			.syntax_set
-			.find_syntax_by_extension("sql")
-			.unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-
-		let resolved_theme = self.theme.resolve();
-		let theme_name = match resolved_theme {
-			Theme::Light => "base16-ocean.light",
-			Theme::Dark => "base16-ocean.dark",
-			Theme::Auto => unreachable!("resolve() always returns Light or Dark"),
-		};
-
-		let theme = &self.theme_set.themes[theme_name];
-
-		let mut highlighter = HighlightLines::new(syntax, theme);
-		match highlighter.highlight_line(line, &self.syntax_set) {
-			Ok(ranges) => {
-				let mut escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-				escaped.push_str("\x1b[0m");
-				Cow::Owned(escaped)
-			}
-			Err(_) => Cow::Borrowed(line),
-		}
-	}
-
-	fn highlight_char(&self, _line: &str, _pos: usize, _forced: CmdKind) -> bool {
-		true
-	}
-}
-
-impl Validator for SqlCompleter {
-	fn validate(&self, _ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
-		Ok(ValidationResult::Valid(None))
-	}
-}
-
-impl Helper for SqlCompleter {}
 
 #[cfg(test)]
 mod tests {
@@ -703,15 +191,6 @@ mod tests {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions("SEL", 3);
 		assert!(completions.iter().any(|c| c.display == "SELECT"));
-	}
-
-	#[test]
-	#[ignore = "psql meta-commands not yet supported"]
-	fn test_psql_command_completion() {
-		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\d", 2);
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "\\dt"));
 	}
 
 	#[test]
@@ -731,472 +210,36 @@ mod tests {
 	#[test]
 	fn test_include_command_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\", 1);
-		assert!(completions.iter().any(|c| c.display == "\\i"));
-	}
-
-	#[test]
-	fn test_include_command_file_path_completion() {
-		use std::fs;
-		use std::io::Write;
-
-		// Create a temporary directory with test files
-		let temp_dir = std::env::temp_dir().join("psql2_test_completion");
-		let _ = fs::remove_dir_all(&temp_dir);
-		fs::create_dir_all(&temp_dir).unwrap();
-
-		// Create test files
-		let test_file1 = temp_dir.join("test1.sql");
-		let test_file2 = temp_dir.join("test2.sql");
-		let test_dir = temp_dir.join("queries");
-
-		fs::File::create(&test_file1)
-			.unwrap()
-			.write_all(b"SELECT 1;")
-			.unwrap();
-		fs::File::create(&test_file2)
-			.unwrap()
-			.write_all(b"SELECT 2;")
-			.unwrap();
-		fs::create_dir(&test_dir).unwrap();
-
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test completion with partial path
-		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/test", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display.starts_with("test")));
-
-		// Cleanup
-		let _ = fs::remove_dir_all(&temp_dir);
-	}
-
-	#[test]
-	fn test_include_command_directory_listing() {
-		use std::fs;
-		use std::io::Write;
-
-		// Create a temporary directory with test files
-		let temp_dir = std::env::temp_dir().join("psql2_test_dir_listing");
-		let _ = fs::remove_dir_all(&temp_dir);
-		fs::create_dir_all(&temp_dir).unwrap();
-
-		// Create test files and directories
-		let test_file1 = temp_dir.join("query1.sql");
-		let test_file2 = temp_dir.join("query2.sql");
-		let test_dir1 = temp_dir.join("queries");
-		let test_dir2 = temp_dir.join("scripts");
-
-		fs::File::create(&test_file1)
-			.unwrap()
-			.write_all(b"SELECT 1;")
-			.unwrap();
-		fs::File::create(&test_file2)
-			.unwrap()
-			.write_all(b"SELECT 2;")
-			.unwrap();
-		fs::create_dir(&test_dir1).unwrap();
-		fs::create_dir(&test_dir2).unwrap();
-
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test completion with just the directory path (no partial filename)
-		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		// Should list all files and directories
-		assert!(!completions.is_empty());
-		assert!(completions.len() >= 4);
-
-		// Directories should come first (have trailing slash)
-		let dir_count = completions
-			.iter()
-			.filter(|c| c.display.ends_with('/'))
-			.count();
-		assert!(dir_count >= 2);
-
-		// Test with no path at all (current directory)
-		// This should show files in the current working directory
-		let input = "\\i ";
-		let _completions = completer.find_completions(input, input.len());
-		// Should have some completions (current dir likely has files)
-		// We don't assert specific files since we don't control the working directory
-
-		// Cleanup
-		let _ = fs::remove_dir_all(&temp_dir);
-	}
-
-	#[test]
-	fn test_include_command_case_insensitive_matching() {
-		use std::fs;
-		use std::io::Write;
-
-		// Create a temporary directory with test files
-		let temp_dir = std::env::temp_dir().join("psql2_test_case_insensitive");
-		let _ = fs::remove_dir_all(&temp_dir);
-		fs::create_dir_all(&temp_dir).unwrap();
-
-		// Create test files with mixed case
-		let test_file1 = temp_dir.join("Cargo.toml");
-		let test_file2 = temp_dir.join("README.md");
-		let test_dir = temp_dir.join("Scripts");
-
-		fs::File::create(&test_file1)
-			.unwrap()
-			.write_all(b"[package]")
-			.unwrap();
-		fs::File::create(&test_file2)
-			.unwrap()
-			.write_all(b"# README")
-			.unwrap();
-		fs::create_dir(&test_dir).unwrap();
-
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test lowercase matching uppercase files
-		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/cargo", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "Cargo.toml"));
-
-		// Test uppercase matching mixed case
-		let input = format!("\\i {}/SCRIPTS", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "Scripts/"));
-
-		// Test mixed case matching
-		let input = format!("\\i {}/ReAdMe", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "README.md"));
-
-		// Cleanup
-		let _ = fs::remove_dir_all(&temp_dir);
+		let completions = completer.find_completions(r"\", 1);
+		assert!(completions.iter().any(|c| c.display == r"\i"));
 	}
 
 	#[test]
 	fn test_output_command_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\", 1);
-		assert!(completions.iter().any(|c| c.display == "\\o"));
-	}
-
-	#[test]
-	fn test_output_command_file_path_completion() {
-		use std::fs;
-		use std::io::Write;
-
-		// Create a temporary directory with test files
-		let temp_dir = std::env::temp_dir().join("psql2_test_output_completion");
-		let _ = fs::remove_dir_all(&temp_dir);
-		fs::create_dir_all(&temp_dir).unwrap();
-
-		// Create test files
-		let test_file1 = temp_dir.join("output1.txt");
-		let test_file2 = temp_dir.join("output2.txt");
-
-		fs::File::create(&test_file1)
-			.unwrap()
-			.write_all(b"test")
-			.unwrap();
-		fs::File::create(&test_file2)
-			.unwrap()
-			.write_all(b"test")
-			.unwrap();
-
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test completion with partial path
-		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\o {}/output", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display.starts_with("output")));
-
-		// Cleanup
-		let _ = fs::remove_dir_all(&temp_dir);
-	}
-
-	#[test]
-	fn test_query_modifier_go_file_path_completion() {
-		use std::fs;
-		use std::io::Write;
-
-		// Create a temporary directory with test files
-		let temp_dir = std::env::temp_dir().join("psql2_test_go_completion");
-		let _ = fs::remove_dir_all(&temp_dir);
-		fs::create_dir_all(&temp_dir).unwrap();
-
-		// Create test files
-		let test_file1 = temp_dir.join("result1.txt");
-		let test_file2 = temp_dir.join("result2.txt");
-
-		fs::File::create(&test_file1)
-			.unwrap()
-			.write_all(b"test")
-			.unwrap();
-		fs::File::create(&test_file2)
-			.unwrap()
-			.write_all(b"test")
-			.unwrap();
-
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test completion with \go
-		let path_str = temp_dir.to_string_lossy();
-		let input = format!("SELECT * FROM users\\go {}/result", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display.starts_with("result")));
-
-		// Test completion with \gxo
-		let input = format!("SELECT * FROM users\\gxo {}/result", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display.starts_with("result")));
-
-		// Test completion with \gjo
-		let input = format!("SELECT * FROM users\\gjo {}/result", path_str);
-		let completions = completer.find_completions(&input, input.len());
-
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display.starts_with("result")));
-
-		// Cleanup
-		let _ = fs::remove_dir_all(&temp_dir);
-	}
-
-	#[test]
-	fn test_debug_command_completion() {
-		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\", 1);
-		assert!(completions.iter().any(|c| c.display == "\\debug"));
-	}
-
-	#[test]
-	fn test_debug_state_argument_completion() {
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test with no argument
-		let input = "\\debug ";
-		let completions = completer.find_completions(input, input.len());
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "state"));
-
-		// Test with partial argument
-		let input = "\\debug st";
-		let completions = completer.find_completions(input, input.len());
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "state"));
-
-		// Test with full argument should still match
-		let input = "\\debug state";
-		let completions = completer.find_completions(input, input.len());
-		assert!(!completions.is_empty());
-		assert!(completions.iter().any(|c| c.display == "state"));
+		let completions = completer.find_completions(r"\", 1);
+		assert!(completions.iter().any(|c| c.display == r"\o"));
 	}
 
 	#[test]
 	fn test_help_command_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\", 1);
-		assert!(completions.iter().any(|c| c.display == "\\?"));
-		assert!(completions.iter().any(|c| c.display == "\\help"));
+		let completions = completer.find_completions(r"\", 1);
+		assert!(completions.iter().any(|c| c.display == r"\?"));
+		assert!(completions.iter().any(|c| c.display == r"\help"));
 	}
 
 	#[test]
 	fn test_help_question_mark_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\?", 2);
-		assert!(completions.iter().any(|c| c.display == "\\?"));
+		let completions = completer.find_completions(r"\?", 2);
+		assert!(completions.iter().any(|c| c.display == r"\?"));
 	}
 
 	#[test]
 	fn test_help_word_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions("\\hel", 4);
-		assert!(completions.iter().any(|c| c.display == "\\help"));
-	}
-
-	#[test]
-	fn test_snip_subcommand_completion() {
-		let completer = SqlCompleter::new(Theme::Dark);
-
-		// Test completion of "run" subcommand
-		let input = "\\snip r";
-		let completions = completer.find_completions(input, input.len());
-		assert!(completions.iter().any(|c| c.display == "run"));
-		assert!(!completions.iter().any(|c| c.display == "save"));
-
-		// Test completion of "save" subcommand
-		let input = "\\snip s";
-		let completions = completer.find_completions(input, input.len());
-		assert!(completions.iter().any(|c| c.display == "save"));
-		assert!(!completions.iter().any(|c| c.display == "run"));
-
-		// Test completion of both subcommands when no prefix
-		let input = "\\snip ";
-		let completions = completer.find_completions(input, input.len());
-		assert!(completions.iter().any(|c| c.display == "run"));
-		assert!(completions.iter().any(|c| c.display == "save"));
-	}
-
-	#[test]
-	fn test_snippet_run_completion() {
-		use std::fs;
-		use std::sync::{Arc, Mutex};
-		use tempfile::TempDir;
-
-		let temp_dir = TempDir::new().unwrap();
-		let path = temp_dir.path();
-
-		fs::create_dir_all(&path).unwrap();
-		fs::write(path.join("test1.sql"), "SELECT 1;").unwrap();
-		fs::write(path.join("test2.sql"), "SELECT 2;").unwrap();
-		fs::write(path.join("other.txt"), "not a snippet").unwrap();
-
-		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
-		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
-			db_user: "test".to_string(),
-			sys_user: "test".to_string(),
-			expanded_mode: false,
-			write_mode: false,
-			ots: None,
-			output_file: None,
-			use_colours: true,
-			vars: Default::default(),
-			snippets,
-		}));
-
-		let mut completer = SqlCompleter::new(Theme::Dark);
-		completer.repl_state = Some(Arc::clone(&repl_state));
-
-		let input = "\\snip run t";
-		let completions = completer.find_completions(input, input.len());
-
-		assert!(completions.iter().any(|c| c.display == "test1"));
-		assert!(completions.iter().any(|c| c.display == "test2"));
-		assert!(!completions.iter().any(|c| c.display == "other"));
-	}
-
-	#[test]
-	fn test_snippet_save_completion() {
-		use std::fs;
-		use std::sync::{Arc, Mutex};
-		use tempfile::TempDir;
-
-		let temp_dir = TempDir::new().unwrap();
-		let path = temp_dir.path();
-
-		fs::create_dir_all(&path).unwrap();
-		fs::write(path.join("snippet1.sql"), "SELECT 1;").unwrap();
-		fs::write(path.join("snippet2.sql"), "SELECT 2;").unwrap();
-
-		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
-		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
-			db_user: "test".to_string(),
-			sys_user: "test".to_string(),
-			expanded_mode: false,
-			write_mode: false,
-			ots: None,
-			output_file: None,
-			use_colours: true,
-			vars: Default::default(),
-			snippets,
-		}));
-
-		let mut completer = SqlCompleter::new(Theme::Dark);
-		completer.repl_state = Some(Arc::clone(&repl_state));
-
-		let input = "\\snip save snip";
-		let completions = completer.find_completions(input, input.len());
-
-		assert!(completions.iter().any(|c| c.display == "snippet1"));
-		assert!(completions.iter().any(|c| c.display == "snippet2"));
-	}
-
-	#[test]
-	fn test_snippet_completion_case_insensitive() {
-		use std::fs;
-		use std::sync::{Arc, Mutex};
-		use tempfile::TempDir;
-
-		let temp_dir = TempDir::new().unwrap();
-		let path = temp_dir.path();
-
-		fs::create_dir_all(&path).unwrap();
-		fs::write(path.join("TestSnippet.sql"), "SELECT 1;").unwrap();
-
-		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
-		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
-			db_user: "test".to_string(),
-			sys_user: "test".to_string(),
-			expanded_mode: false,
-			write_mode: false,
-			ots: None,
-			output_file: None,
-			use_colours: true,
-			vars: Default::default(),
-			snippets,
-		}));
-
-		let mut completer = SqlCompleter::new(Theme::Dark);
-		completer.repl_state = Some(Arc::clone(&repl_state));
-
-		let input = "\\snip run test";
-		let completions = completer.find_completions(input, input.len());
-
-		assert!(completions.iter().any(|c| c.display == "TestSnippet"));
-	}
-
-	#[test]
-	fn test_snippet_completion_no_duplicates() {
-		use std::fs;
-		use std::sync::{Arc, Mutex};
-		use tempfile::TempDir;
-
-		let temp_dir1 = TempDir::new().unwrap();
-		let temp_dir2 = TempDir::new().unwrap();
-
-		fs::create_dir_all(temp_dir1.path()).unwrap();
-		fs::create_dir_all(temp_dir2.path()).unwrap();
-		fs::write(temp_dir1.path().join("same.sql"), "SELECT 1;").unwrap();
-		fs::write(temp_dir2.path().join("same.sql"), "SELECT 2;").unwrap();
-
-		let mut snippets = crate::snippets::Snippets::with_savedir(temp_dir1.path().to_path_buf());
-		snippets.dirs.push(temp_dir2.path().to_path_buf());
-
-		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
-			db_user: "test".to_string(),
-			sys_user: "test".to_string(),
-			expanded_mode: false,
-			write_mode: false,
-			ots: None,
-			output_file: None,
-			use_colours: true,
-			vars: Default::default(),
-			snippets,
-		}));
-
-		let mut completer = SqlCompleter::new(Theme::Dark);
-		completer.repl_state = Some(Arc::clone(&repl_state));
-
-		let input = "\\snip run ";
-		let completions = completer.find_completions(input, input.len());
-
-		let same_count = completions.iter().filter(|c| c.display == "same").count();
-		assert_eq!(same_count, 1);
+		let completions = completer.find_completions(r"\hel", 4);
+		assert!(completions.iter().any(|c| c.display == r"\help"));
 	}
 }
