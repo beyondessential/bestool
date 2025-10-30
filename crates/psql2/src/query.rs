@@ -359,8 +359,8 @@ mod tests {
 	#[test]
 	fn test_build_text_cast_query_logic() {
 		let sql = "SELECT id, name, data FROM users";
-		let column_names = vec!["id", "name", "data"];
-		let unprintable_indices = vec![0, 2];
+		let column_names = ["id", "name", "data"];
+		let unprintable_indices = [0, 2];
 
 		let column_exprs: Vec<String> = column_names
 			.iter()

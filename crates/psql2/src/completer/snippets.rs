@@ -117,7 +117,7 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let path = temp_dir.path();
 
-		fs::create_dir_all(&path).unwrap();
+		fs::create_dir_all(path).unwrap();
 		fs::write(path.join("test1.sql"), "SELECT 1;").unwrap();
 		fs::write(path.join("test2.sql"), "SELECT 2;").unwrap();
 		fs::write(path.join("other.txt"), "not a snippet").unwrap();
@@ -155,7 +155,7 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let path = temp_dir.path();
 
-		fs::create_dir_all(&path).unwrap();
+		fs::create_dir_all(path).unwrap();
 		fs::write(path.join("snippet1.sql"), "SELECT 1;").unwrap();
 		fs::write(path.join("snippet2.sql"), "SELECT 2;").unwrap();
 
@@ -191,7 +191,7 @@ mod tests {
 		let temp_dir = TempDir::new().unwrap();
 		let path = temp_dir.path();
 
-		fs::create_dir_all(&path).unwrap();
+		fs::create_dir_all(path).unwrap();
 		fs::write(path.join("TestSnippet.sql"), "SELECT 1;").unwrap();
 
 		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());

@@ -81,7 +81,7 @@ async fn test_text_cast_for_record_types() {
 
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
-		client: &*client,
+		client: &client,
 		modifiers: crate::parser::QueryModifiers::new(),
 		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
@@ -107,7 +107,7 @@ async fn test_array_formatting() {
 
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
-		client: &*client,
+		client: &client,
 		modifiers: crate::parser::QueryModifiers::new(),
 		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
@@ -167,7 +167,7 @@ async fn test_transaction_state_none() {
 
 	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
 
-	let state = TransactionState::check(&*monitor_client, backend_pid).await;
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
 
 	assert_eq!(state, TransactionState::None);
 }
@@ -196,7 +196,7 @@ async fn test_transaction_state_idle() {
 		.await
 		.expect("Failed to begin transaction");
 
-	let state = TransactionState::check(&*monitor_client, backend_pid).await;
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
 	assert_eq!(state, TransactionState::Idle);
 
 	client.batch_execute("ROLLBACK").await.ok();
@@ -228,7 +228,7 @@ async fn test_transaction_state_active() {
 
 	tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-	let state = TransactionState::check(&*monitor_client, backend_pid).await;
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
 	assert_eq!(state, TransactionState::Active);
 
 	client.batch_execute("ROLLBACK").await.ok();
@@ -262,7 +262,7 @@ async fn test_transaction_state_error() {
 
 	tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-	let state = TransactionState::check(&*monitor_client, backend_pid).await;
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
 	assert_eq!(state, TransactionState::Error);
 
 	client.batch_execute("ROLLBACK").await.ok();
@@ -714,8 +714,8 @@ async fn test_describe_table_with_database() {
 
 	{
 		let mut ctx = ReplContext {
-			client: &*client,
-			monitor_client: &*monitor_client,
+			client: &client,
+			monitor_client: &monitor_client,
 			backend_pid,
 			theme: Theme::Dark,
 			repl_state: &repl_state,
@@ -828,8 +828,8 @@ async fn test_describe_view_with_database() {
 
 	{
 		let mut ctx = ReplContext {
-			client: &*client,
-			monitor_client: &*monitor_client,
+			client: &client,
+			monitor_client: &monitor_client,
 			backend_pid,
 			theme: Theme::Dark,
 			repl_state: &repl_state,
@@ -945,8 +945,8 @@ async fn test_describe_index_with_database() {
 
 	{
 		let mut ctx = ReplContext {
-			client: &*client,
-			monitor_client: &*monitor_client,
+			client: &client,
+			monitor_client: &monitor_client,
 			backend_pid,
 			theme: Theme::Dark,
 			repl_state: &repl_state,
@@ -1065,8 +1065,8 @@ async fn test_describe_sequence_with_database() {
 
 	{
 		let mut ctx = ReplContext {
-			client: &*client,
-			monitor_client: &*monitor_client,
+			client: &client,
+			monitor_client: &monitor_client,
 			backend_pid,
 			theme: Theme::Dark,
 			repl_state: &repl_state,
@@ -1180,8 +1180,8 @@ async fn test_describe_function_with_database() {
 
 	{
 		let mut ctx = ReplContext {
-			client: &*client,
-			monitor_client: &*monitor_client,
+			client: &client,
+			monitor_client: &monitor_client,
 			backend_pid,
 			theme: Theme::Dark,
 			repl_state: &repl_state,

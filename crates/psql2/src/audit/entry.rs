@@ -140,7 +140,7 @@ mod tests {
 		assert_eq!(entries[0].1.query, "SELECT 1;");
 		assert_eq!(entries[1].1.query, "SELECT 2;");
 		assert_eq!(entries[2].1.query, "INSERT INTO foo;");
-		assert_eq!(entries[2].1.writemode, true);
+		assert!(entries[2].1.writemode);
 		assert_eq!(entries[2].1.db_user, "dbuser");
 		assert_eq!(entries[2].1.sys_user, "testuser");
 		assert_eq!(entries[2].1.ots, Some("John Doe".to_string()));
