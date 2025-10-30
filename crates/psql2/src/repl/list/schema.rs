@@ -20,8 +20,7 @@ pub(super) async fn handle_list_schemas(
 			SELECT
 				n.nspname AS "Name",
 				pg_catalog.pg_get_userbyid(n.nspowner) AS "Owner",
-				pg_catalog.array_to_string(n.nspacl, E'\n') AS "ACL",
-				pg_catalog.obj_description(n.oid, 'pg_namespace') AS "Description"
+				pg_catalog.array_to_string(n.nspacl, E'\n') AS "ACL"
 			FROM pg_catalog.pg_namespace n
 			WHERE n.nspname ~ $1
 				AND n.nspname NOT LIKE 'pg_%'
@@ -33,8 +32,7 @@ pub(super) async fn handle_list_schemas(
 			SELECT
 				n.nspname AS "Name",
 				pg_catalog.pg_get_userbyid(n.nspowner) AS "Owner",
-				pg_catalog.array_to_string(n.nspacl, E'\n') AS "ACL",
-				pg_catalog.obj_description(n.oid, 'pg_namespace') AS "Description"
+				pg_catalog.array_to_string(n.nspacl, E'\n') AS "ACL"
 			FROM pg_catalog.pg_namespace n
 			WHERE n.nspname ~ $1
 			ORDER BY 1
@@ -87,18 +85,12 @@ pub(super) async fn handle_list_schemas(
 			crate::table::configure(&mut table);
 
 			if detail {
-				table.set_header(vec!["Name", "Owner", "ACL", "Description"]);
+				table.set_header(vec!["Name", "Owner", "ACL"]);
 				for row in rows {
 					let name: String = row.get(0);
 					let owner: String = row.get(1);
 					let acl: Option<String> = row.get(2);
-					let description: Option<String> = row.get(3);
-					table.add_row(vec![
-						name,
-						owner,
-						acl.unwrap_or_default(),
-						description.unwrap_or_default(),
-					]);
+					table.add_row(vec![name, owner, acl.unwrap_or_default()]);
 				}
 			} else {
 				table.set_header(vec!["Name", "Owner"]);
