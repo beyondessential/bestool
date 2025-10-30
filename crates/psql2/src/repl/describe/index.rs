@@ -2,9 +2,9 @@ use std::ops::ControlFlow;
 
 use comfy_table::Table;
 
-use super::output::OutputWriter;
 use crate::repl::state::ReplContext;
 
+use super::{format_db_error, output::OutputWriter};
 pub(super) async fn handle_describe_index(
 	ctx: &mut ReplContext<'_>,
 	schema: &str,
@@ -82,7 +82,10 @@ pub(super) async fn handle_describe_index(
 		match ctx.pool.get().await {
 			Ok(client) => client.query(query, &[&schema, &index_name]).await,
 			Err(e) => {
-				eprintln!("Error getting connection from pool: {}", e);
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
 				return ControlFlow::Continue(());
 			}
 		}
@@ -147,7 +150,10 @@ pub(super) async fn handle_describe_index(
 				match ctx.pool.get().await {
 					Ok(client) => client.query(columns_query, &[&schema, &index_name]).await,
 					Err(e) => {
-						eprintln!("Error getting connection from pool: {}", e);
+						eprintln!(
+							"Error getting connection from pool: {}",
+							format_db_error(&e)
+						);
 						return ControlFlow::Continue(());
 					}
 				}
@@ -214,7 +220,9 @@ pub(super) async fn handle_describe_index(
 		Err(e) => {
 			eprintln!(
 				"Error describing index \"{}.{}\": {}",
-				schema, index_name, e
+				schema,
+				index_name,
+				format_db_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

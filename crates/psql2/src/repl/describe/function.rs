@@ -2,8 +2,9 @@ use std::ops::ControlFlow;
 
 use comfy_table::Table;
 
-use super::output::OutputWriter;
 use crate::repl::state::ReplContext;
+
+use super::{format_db_error, output::OutputWriter};
 
 pub(super) async fn handle_describe_function(
 	ctx: &mut ReplContext<'_>,
@@ -66,7 +67,10 @@ pub(super) async fn handle_describe_function(
 					.await
 			}
 			Err(e) => {
-				eprintln!("Error getting connection from pool: {}", e);
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
 				return ControlFlow::Continue(());
 			}
 		}
@@ -126,7 +130,10 @@ pub(super) async fn handle_describe_function(
 							.await
 					}
 					Err(e) => {
-						eprintln!("Error getting connection from pool: {}", e);
+						eprintln!(
+							"Error getting connection from pool: {}",
+							format_db_error(&e)
+						);
 						return ControlFlow::Continue(());
 					}
 				}
@@ -173,7 +180,9 @@ pub(super) async fn handle_describe_function(
 		Err(e) => {
 			eprintln!(
 				"Error describing function \"{}.{}\": {}",
-				schema, function_name, e
+				schema,
+				function_name,
+				format_db_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

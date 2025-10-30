@@ -49,6 +49,10 @@ pub(super) fn parse_item(item: &str) -> (String, String) {
 	}
 }
 
+fn format_db_error(e: &impl std::fmt::Debug) -> String {
+	format!("{:?}", e)
+}
+
 pub async fn handle_describe(
 	ctx: &mut ReplContext<'_>,
 	item: String,
@@ -89,7 +93,10 @@ pub async fn handle_describe(
 		match ctx.pool.get().await {
 			Ok(client) => client.query(relation_query, &[&schema, &name]).await,
 			Err(e) => {
-				eprintln!("Error getting connection from pool: {}", e);
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
 				return ControlFlow::Continue(());
 			}
 		}
@@ -105,7 +112,10 @@ pub async fn handle_describe(
 					match ctx.pool.get().await {
 						Ok(client) => client.query(function_query, &[&schema, &name]).await,
 						Err(e) => {
-							eprintln!("Error getting connection from pool: {}", e);
+							eprintln!(
+								"Error getting connection from pool: {}",
+								format_db_error(&e)
+							);
 							return ControlFlow::Continue(());
 						}
 					}
@@ -165,7 +175,7 @@ pub async fn handle_describe(
 			}
 		}
 		Err(e) => {
-			eprintln!("Error describing relation: {}", e);
+			eprintln!("Error describing relation: {}", format_db_error(&e));
 			ControlFlow::Continue(())
 		}
 	}

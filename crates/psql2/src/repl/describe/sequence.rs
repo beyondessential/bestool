@@ -4,7 +4,7 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
-use super::output::OutputWriter;
+use super::{format_db_error, output::OutputWriter};
 
 pub(super) async fn handle_describe_sequence(
 	ctx: &mut ReplContext<'_>,
@@ -69,7 +69,10 @@ pub(super) async fn handle_describe_sequence(
 					.await
 			}
 			Err(e) => {
-				eprintln!("Error getting connection from pool: {}", e);
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
 				return ControlFlow::Continue(());
 			}
 		}
@@ -178,7 +181,9 @@ pub(super) async fn handle_describe_sequence(
 		Err(e) => {
 			eprintln!(
 				"Error describing sequence \"{}.{}\": {}",
-				schema, sequence_name, e
+				schema,
+				sequence_name,
+				format_db_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

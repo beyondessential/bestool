@@ -4,7 +4,7 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
-use super::output::OutputWriter;
+use super::{format_db_error, output::OutputWriter};
 
 pub(super) async fn handle_describe_view(
 	ctx: &mut ReplContext<'_>,
@@ -57,7 +57,10 @@ pub(super) async fn handle_describe_view(
 		match ctx.pool.get().await {
 			Ok(client) => client.query(columns_query, &[&schema, &view_name]).await,
 			Err(e) => {
-				eprintln!("Error getting connection from pool: {}", e);
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
 				return ControlFlow::Continue(());
 			}
 		}
@@ -147,7 +150,12 @@ pub(super) async fn handle_describe_view(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing view \"{}.{}\": {}", schema, view_name, e);
+			eprintln!(
+				"Error describing view \"{}.{}\": {}",
+				schema,
+				view_name,
+				format_db_error(&e)
+			);
 			ControlFlow::Continue(())
 		}
 	}
