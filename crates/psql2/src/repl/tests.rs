@@ -635,6 +635,418 @@ async fn test_describe_table_with_triggers() {
 }
 
 #[tokio::test]
+async fn test_describe_table_with_database() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_d_table (
+				id SERIAL PRIMARY KEY,
+				name TEXT NOT NULL,
+				email TEXT UNIQUE,
+				created_at TIMESTAMP DEFAULT NOW()
+			)",
+		)
+		.await
+		.expect("Failed to create test table");
+
+	// Get the schema name (pg_temp_X)
+	let schema_row = client
+		.query_one(
+			"SELECT n.nspname FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_d_table' AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to get schema");
+	let schema: String = schema_row.get(0);
+
+	// Test describe via the actual describe handler
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = ReplState::new();
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let mut ctx = ReplContext {
+		client: &*client,
+		monitor_client: &*monitor_client,
+		backend_pid,
+		theme: Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Test describing the table
+	let result = crate::repl::describe::handle_describe(
+		&mut ctx,
+		format!("{}.test_d_table", schema),
+		false,
+		false,
+	)
+	.await;
+
+	assert!(result.is_continue());
+}
+
+#[tokio::test]
+async fn test_describe_view_with_database() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute("CREATE TEMP VIEW test_d_view AS SELECT 1 AS id, 'test' AS name")
+		.await
+		.expect("Failed to create test view");
+
+	// Get the schema name (pg_temp_X)
+	let schema_row = client
+		.query_one(
+			"SELECT n.nspname FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_d_view' AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to get schema");
+	let schema: String = schema_row.get(0);
+
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = ReplState::new();
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let mut ctx = ReplContext {
+		client: &*client,
+		monitor_client: &*monitor_client,
+		backend_pid,
+		theme: Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Test describing the view
+	let result = crate::repl::describe::handle_describe(
+		&mut ctx,
+		format!("{}.test_d_view", schema),
+		false,
+		false,
+	)
+	.await;
+
+	assert!(result.is_continue());
+}
+
+#[tokio::test]
+async fn test_describe_index_with_database() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_idx_table (id INT, name TEXT);
+			CREATE INDEX test_d_idx ON test_idx_table(name)",
+		)
+		.await
+		.expect("Failed to create test table and index");
+
+	// Get the schema name (pg_temp_X)
+	let schema_row = client
+		.query_one(
+			"SELECT n.nspname FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_d_idx' AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to get schema");
+	let schema: String = schema_row.get(0);
+
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = ReplState::new();
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let mut ctx = ReplContext {
+		client: &*client,
+		monitor_client: &*monitor_client,
+		backend_pid,
+		theme: Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Test describing the index
+	let result = crate::repl::describe::handle_describe(
+		&mut ctx,
+		format!("{}.test_d_idx", schema),
+		false,
+		false,
+	)
+	.await;
+
+	assert!(result.is_continue());
+}
+
+#[tokio::test]
+async fn test_describe_sequence_with_database() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute("CREATE TEMP SEQUENCE test_d_seq START 100 INCREMENT 5")
+		.await
+		.expect("Failed to create test sequence");
+
+	// Get the schema name (pg_temp_X)
+	let schema_row = client
+		.query_one(
+			"SELECT n.nspname FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_d_seq' AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to get schema");
+	let schema: String = schema_row.get(0);
+
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = ReplState::new();
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let mut ctx = ReplContext {
+		client: &*client,
+		monitor_client: &*monitor_client,
+		backend_pid,
+		theme: Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Test describing the sequence
+	let result = crate::repl::describe::handle_describe(
+		&mut ctx,
+		format!("{}.test_d_seq", schema),
+		false,
+		false,
+	)
+	.await;
+
+	assert!(result.is_continue());
+}
+
+#[tokio::test]
+async fn test_describe_function_with_database() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE OR REPLACE FUNCTION test_d_func(x INT, y INT)
+			RETURNS INT AS $$
+			BEGIN
+				RETURN x + y;
+			END;
+			$$ LANGUAGE plpgsql IMMUTABLE",
+		)
+		.await
+		.expect("Failed to create test function");
+
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = ReplState::new();
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let mut ctx = ReplContext {
+		client: &*client,
+		monitor_client: &*monitor_client,
+		backend_pid,
+		theme: Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Test describing the function
+	let result =
+		crate::repl::describe::handle_describe(&mut ctx, "test_d_func".to_string(), false, false)
+			.await;
+
+	assert!(result.is_continue());
+
+	client
+		.batch_execute("DROP FUNCTION IF EXISTS test_d_func(INT, INT)")
+		.await
+		.ok();
+}
+
+#[tokio::test]
 async fn test_describe_function() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
