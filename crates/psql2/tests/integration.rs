@@ -1,4 +1,4 @@
-use bestool_psql2::{create_pool, PsqlConfig, Theme};
+use bestool_psql2::{create_pool, Config, Theme};
 
 #[tokio::test]
 async fn test_config_with_all_fields() {
@@ -6,7 +6,7 @@ async fn test_config_with_all_fields() {
 		.await
 		.expect("Failed to create pool");
 
-	let config = PsqlConfig {
+	let config = Config {
 		pool,
 		user: Some("admin".to_string()),
 		theme: Theme::Dark,
@@ -25,7 +25,7 @@ async fn test_config_minimal() {
 		.await
 		.expect("Failed to create pool");
 
-	let config = PsqlConfig {
+	let config = Config {
 		pool,
 		user: None,
 		theme: Theme::Auto,
@@ -51,7 +51,7 @@ async fn test_theme_variations() {
 		.expect("Failed to create pool");
 
 	let configs = vec![
-		PsqlConfig {
+		Config {
 			pool: pool1,
 			user: None,
 			theme: Theme::Light,
@@ -60,7 +60,7 @@ async fn test_theme_variations() {
 			write: false,
 			use_colours: false,
 		},
-		PsqlConfig {
+		Config {
 			pool: pool2,
 			user: None,
 			theme: Theme::Dark,
@@ -69,7 +69,7 @@ async fn test_theme_variations() {
 			write: false,
 			use_colours: false,
 		},
-		PsqlConfig {
+		Config {
 			pool: pool3,
 			user: None,
 			theme: Theme::Auto,
@@ -91,7 +91,7 @@ async fn test_config_clone() {
 		.await
 		.expect("Failed to create pool");
 
-	let config1 = PsqlConfig {
+	let config1 = Config {
 		pool,
 		user: Some("user1".to_string()),
 		theme: Theme::Dark,

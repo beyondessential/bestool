@@ -10,7 +10,7 @@ async fn test_psql_config_creation() {
 		.await
 		.expect("Failed to create pool");
 
-	let config = PsqlConfig {
+	let config = Config {
 		pool,
 		user: Some("testuser".to_string()),
 		theme: Theme::Dark,
@@ -31,7 +31,7 @@ async fn test_psql_config_no_user() {
 		.await
 		.expect("Failed to create pool");
 
-	let config = PsqlConfig {
+	let config = Config {
 		pool,
 		user: None,
 		theme: Theme::Dark,
@@ -42,15 +42,6 @@ async fn test_psql_config_no_user() {
 	};
 
 	assert_eq!(config.user, None);
-}
-
-#[test]
-fn test_psql_error_display() {
-	let err = crate::config::PsqlError::ConnectionFailed;
-	assert_eq!(format!("{err}"), "database connection failed");
-
-	let err = crate::config::PsqlError::QueryFailed;
-	assert_eq!(format!("{err}"), "query execution failed");
 }
 
 #[test]

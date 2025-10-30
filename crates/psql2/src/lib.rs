@@ -13,7 +13,7 @@ mod snippets;
 mod theme;
 mod tls;
 
-pub use config::{PsqlConfig, PsqlError};
+pub use config::Config;
 pub use pool::{create_pool, PgConnection, PgPool};
 pub use repl::run;
 pub use signals::register_sigint_handler;

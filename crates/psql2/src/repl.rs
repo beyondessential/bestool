@@ -8,7 +8,7 @@ use tracing::{debug, instrument};
 use crate::{
 	audit::Audit,
 	completer::SqlCompleter,
-	config::PsqlConfig,
+	config::Config,
 	input::{handle_input, ReplAction},
 	schema_cache::SchemaCacheManager,
 	snippets::Snippets,
@@ -81,7 +81,7 @@ impl ReplAction {
 }
 
 #[instrument(level = "debug")]
-pub async fn run(config: PsqlConfig) -> Result<()> {
+pub async fn run(config: Config) -> Result<()> {
 	let audit_path = if let Some(path) = config.audit_path {
 		path.clone()
 	} else {

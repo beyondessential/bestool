@@ -471,7 +471,6 @@ dependencies = [
  "supports-unicode",
  "syntect",
  "tempfile",
- "thiserror 2.0.17",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",

@@ -1,18 +1,7 @@
-use thiserror::Error;
-
 use crate::{pool::PgPool, theme::Theme};
 
-#[derive(Debug, Error)]
-pub enum PsqlError {
-	#[error("database connection failed")]
-	ConnectionFailed,
-	#[error("query execution failed")]
-	QueryFailed,
-}
-
-/// Configuration for the psql2 client
 #[derive(Clone, Debug)]
-pub struct PsqlConfig {
+pub struct Config {
 	/// Database connection pool
 	pub pool: PgPool,
 

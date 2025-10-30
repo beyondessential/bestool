@@ -5,7 +5,7 @@ use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{miette, Result};
 use tracing::debug;
 
-use bestool_psql2::{create_pool, PsqlConfig, Theme};
+use bestool_psql2::{create_pool, Config, Theme};
 
 /// Async PostgreSQL client
 #[derive(Debug, Clone, Parser)]
@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
 	debug!("creating connection pool");
 	let pool = create_pool(&connection_string).await?;
 
-	let config = PsqlConfig {
+	bestool_psql2::run(Config {
 		pool,
 		user: args.user,
 		theme,
@@ -100,11 +100,6 @@ async fn main() -> Result<()> {
 		database_name: String::new(), // Will be queried from database
 		write: args.write,
 		use_colours: args.logging.color.enabled(),
-	};
-
-	if args.write {
-		eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
-	}
-
-	bestool_psql2::run(config).await
+	})
+	.await
 }
