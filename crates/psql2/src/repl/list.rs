@@ -8,6 +8,7 @@ mod function;
 mod index;
 mod pattern;
 mod schema;
+mod sequence;
 mod table;
 mod view;
 
@@ -26,5 +27,8 @@ pub async fn handle_list(
 		}
 		ListItem::View => view::handle_list_views(ctx, &pattern, detail, sameconn).await,
 		ListItem::Schema => schema::handle_list_schemas(ctx, &pattern, detail, sameconn).await,
+		ListItem::Sequence => {
+			sequence::handle_list_sequences(ctx, &pattern, detail, sameconn).await
+		}
 	}
 }

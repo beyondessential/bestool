@@ -13,6 +13,7 @@ pub enum ListItem {
 	Function,
 	View,
 	Schema,
+	Sequence,
 }
 
 pub fn parse(
@@ -28,6 +29,7 @@ pub fn parse(
 		literal("df").map(|_| Some(ListItem::Function)),
 		literal("dv").map(|_| Some(ListItem::View)),
 		literal("dn").map(|_| Some(ListItem::Schema)),
+		literal("ds").map(|_| Some(ListItem::Sequence)),
 	))
 	.parse_next(input)?;
 
@@ -61,6 +63,7 @@ pub fn parse(
 			literal("function").map(|_| ListItem::Function),
 			literal("view").map(|_| ListItem::View),
 			literal("schema").map(|_| ListItem::Schema),
+			literal("sequence").map(|_| ListItem::Sequence),
 		))
 		.parse_next(input)?;
 
@@ -601,6 +604,76 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_list_sequence() {
+		let result = parse_metacommand("\\list sequence").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Sequence,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_ds_alias() {
+		let result = parse_metacommand("\\ds").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Sequence,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_ds_plus_alias() {
+		let result = parse_metacommand("\\ds+").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Sequence,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_ds_with_sameconn() {
+		let result = parse_metacommand("\\ds!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Sequence,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_ds_plus_with_sameconn() {
+		let result = parse_metacommand("\\ds+!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Sequence,
 				pattern: "public.*".to_string(),
 				detail: true,
 				sameconn: true,

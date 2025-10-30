@@ -45,14 +45,14 @@ pub fn handle_help() -> ControlFlow<()> {
 		"\\list[+][!] <item> [pattern]",
 		"List database items (+ for details, ! for same connection)",
 	]);
-	metacmds.add_row(vec!["\\d{t,i,f,v,n}", "Aliases for \\list"]);
+	metacmds.add_row(vec!["\\d{t,i,f,v,n,s}", "Aliases for \\list"]);
 	metacmds.add_row(vec![
 		"\\d[+][!] <name>",
 		"Describe a table, view, function, or index",
 	]);
 	eprintln!("{metacmds}");
 
-	eprintln!("Database items (with \\list): table, index, function, view, schema");
+	eprintln!("Database items (with \\list): table, index, function, view, schema, sequence");
 
 	eprintln!("\nQuery modifiers (used after query):");
 	let mut modifiers = Table::new();
