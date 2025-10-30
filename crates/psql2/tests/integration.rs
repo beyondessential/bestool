@@ -165,7 +165,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore] // Run with --ignored flag when DATABASE_URL is set
 	async fn test_list_tables_in_public_schema() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
@@ -234,7 +233,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore]
 	async fn test_list_tables_with_pattern_match() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
@@ -296,7 +294,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore]
 	async fn test_list_tables_in_specific_schema() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
@@ -357,7 +354,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore]
 	async fn test_list_tables_with_detail() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
@@ -433,7 +429,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore]
 	async fn test_list_tables_wildcard_pattern() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
@@ -495,7 +490,6 @@ mod list_command_tests {
 	}
 
 	#[tokio::test]
-	#[ignore]
 	async fn test_list_tables_no_matches() {
 		let pool = get_test_pool().await;
 		let client = pool.get().await.expect("Failed to get client");
