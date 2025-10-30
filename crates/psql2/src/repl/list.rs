@@ -129,6 +129,9 @@ fn parse_pattern(pattern: &str) -> (String, String) {
 		let schema_regex = wildcard_to_regex(schema);
 		let table_regex = wildcard_to_regex(table);
 		(schema_regex, table_regex)
+	} else if pattern == "*" {
+		// Special case: * matches all tables in all schemas
+		(".*".to_string(), ".*".to_string())
 	} else {
 		// Pattern without dot matches table name in public schema
 		("^public$".to_string(), wildcard_to_regex(pattern))
@@ -186,6 +189,20 @@ mod tests {
 		let (schema, table) = parse_pattern("users");
 		assert_eq!(schema, "^public$");
 		assert_eq!(table, "^users$");
+	}
+
+	#[test]
+	fn test_parse_pattern_star_only() {
+		let (schema, table) = parse_pattern("*");
+		assert_eq!(schema, ".*");
+		assert_eq!(table, ".*");
+	}
+
+	#[test]
+	fn test_parse_pattern_star_dot_star() {
+		let (schema, table) = parse_pattern("*.*");
+		assert_eq!(schema, ".*");
+		assert_eq!(table, ".*");
 	}
 
 	#[test]

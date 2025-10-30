@@ -520,4 +520,87 @@ mod list_command_tests {
 
 		assert_eq!(rows.len(), 0);
 	}
+
+	#[tokio::test]
+	async fn test_list_all_tables_with_star() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		let timestamp = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_micros();
+		let schema = format!("psql2_test_star_{}", timestamp);
+		let table1 = "test_table_1";
+		let table2 = format!("psql2_star_test_{}", timestamp);
+
+		client
+			.batch_execute(&format!(
+				"
+				CREATE SCHEMA {};
+				CREATE TABLE {}.{} (id SERIAL PRIMARY KEY, name TEXT);
+				CREATE TABLE public.{} (id SERIAL PRIMARY KEY, data TEXT);
+				",
+				schema, schema, table1, table2
+			))
+			.await
+			.expect("Failed to create test schema and tables");
+
+		// Query for all tables in all schemas using *.*
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relkind = 'r'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&".*", &".*"],
+			)
+			.await
+			.expect("Failed to query tables");
+
+		// Should find tables in both public and test_schema
+		let results: Vec<(String, String)> = rows
+			.iter()
+			.map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+			.collect();
+
+		assert!(
+			results.iter().any(|(s, t)| s == "public" && t == &table2),
+			"Expected to find {} in public schema",
+			table2
+		);
+		assert!(
+			results.iter().any(|(s, t)| s == &schema && t == table1),
+			"Expected to find {} in {} schema",
+			table1,
+			schema
+		);
+
+		// Should have multiple schemas represented
+		let schemas: std::collections::HashSet<String> =
+			results.iter().map(|(s, _)| s.clone()).collect();
+		assert!(
+			schemas.len() >= 2,
+			"Expected tables from at least 2 schemas, got {:?}",
+			schemas
+		);
+
+		// Cleanup
+		client
+			.batch_execute(&format!(
+				"DROP SCHEMA {} CASCADE; DROP TABLE IF EXISTS public.{};",
+				schema, table2
+			))
+			.await
+			.ok();
+	}
 }
