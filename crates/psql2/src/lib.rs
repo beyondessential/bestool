@@ -10,6 +10,7 @@ mod repl;
 mod schema_cache;
 mod signals;
 mod snippets;
+mod table;
 mod theme;
 mod tls;
 

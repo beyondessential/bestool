@@ -2,12 +2,10 @@ use std::ops::ControlFlow;
 
 use comfy_table::Table;
 
-use crate::query::configure_table;
-
 pub fn handle_help() -> ControlFlow<()> {
 	eprintln!("Available metacommands:");
 	let mut metacmds = Table::new();
-	configure_table(&mut metacmds);
+	crate::table::configure(&mut metacmds);
 	metacmds.add_row(vec!["\\?", "Show this help"]);
 	metacmds.add_row(vec!["\\help", "Show this help"]);
 	metacmds.add_row(vec!["\\q", "Quit"]);
@@ -45,7 +43,7 @@ pub fn handle_help() -> ControlFlow<()> {
 
 	eprintln!("\nQuery modifiers (used after query):");
 	let mut modifiers = Table::new();
-	configure_table(&mut modifiers);
+	crate::table::configure(&mut modifiers);
 	modifiers.add_row(vec!["\\g", "Execute query"]);
 	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
 	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
@@ -64,7 +62,7 @@ pub fn handle_help() -> ControlFlow<()> {
 
 	eprintln!("\nVariable interpolation:");
 	let mut vars = Table::new();
-	configure_table(&mut vars);
+	crate::table::configure(&mut vars);
 	vars.add_row(vec![
 		"${name}",
 		"Replace with variable value (errors if not set)",

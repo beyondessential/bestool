@@ -41,7 +41,7 @@ pub fn handle_lookup_var(ctx: &mut ReplContext<'_>, pattern: Option<String>) -> 
 	}
 
 	let mut table = Table::new();
-	crate::query::configure_table(&mut table);
+	crate::table::configure(&mut table);
 	table.set_header(vec!["Name", "Value"]);
 
 	for (name, value) in matching_vars {
