@@ -1,7 +1,7 @@
 use rustyline::history::History;
 
 use super::*;
-use crate::highlighter::Theme;
+use crate::theme::Theme;
 
 #[tokio::test]
 async fn test_psql_config_creation() {
@@ -91,7 +91,7 @@ async fn test_text_cast_for_record_types() {
 	let mut query_ctx = crate::query::QueryContext {
 		client: &*client,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::highlighter::Theme::Dark,
+		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
@@ -117,7 +117,7 @@ async fn test_array_formatting() {
 	let mut query_ctx = crate::query::QueryContext {
 		client: &*client,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::highlighter::Theme::Dark,
+		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,

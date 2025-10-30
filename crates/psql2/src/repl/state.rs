@@ -6,7 +6,7 @@ use std::{
 use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
-use crate::{audit::Audit, completer::SqlCompleter, highlighter::Theme, snippets::Snippets};
+use crate::{audit::Audit, completer::SqlCompleter, theme::Theme, snippets::Snippets};
 
 #[derive(Debug, Clone)]
 pub struct ReplState {

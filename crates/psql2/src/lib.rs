@@ -1,7 +1,6 @@
 mod audit;
 mod completer;
 mod config;
-mod highlighter;
 mod input;
 mod ots;
 mod parser;
@@ -10,14 +9,15 @@ mod query;
 mod repl;
 mod schema_cache;
 mod snippets;
+mod theme;
 mod tls;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use config::{PsqlConfig, PsqlError};
-pub use highlighter::Theme;
 pub use pool::{create_pool, PgConnection, PgPool};
 pub use repl::run;
+pub use theme::Theme;
 
 static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 

@@ -9,7 +9,7 @@ use rustyline::{
 };
 use syntect::{easy::HighlightLines, util::as_24_bit_terminal_escaped};
 
-use crate::highlighter::Theme;
+use crate::theme::Theme;
 
 impl Completer for super::SqlCompleter {
 	type Candidate = Pair;

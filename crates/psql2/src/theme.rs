@@ -1,5 +1,3 @@
-//! SQL syntax highlighting theme configuration
-
 use std::str::FromStr;
 
 /// Theme selection for syntax highlighting

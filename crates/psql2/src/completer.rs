@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use rustyline::completion::Pair;
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
-use crate::{highlighter::Theme, repl::ReplState, schema_cache::SchemaCache};
+use crate::{repl::ReplState, schema_cache::SchemaCache, theme::Theme};
 
 mod debug;
 mod keywords;

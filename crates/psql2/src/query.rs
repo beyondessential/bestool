@@ -79,7 +79,7 @@ fn interpolate_variables(
 pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
 	pub client: &'a tokio_postgres::Client,
 	pub modifiers: QueryModifiers,
-	pub theme: crate::highlighter::Theme,
+	pub theme: crate::theme::Theme,
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub vars: Option<&'a mut std::collections::BTreeMap<String, String>>,
@@ -93,7 +93,7 @@ struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	text_rows: &'a Option<Vec<tokio_postgres::Row>>,
 	writer: &'a mut W,
 	use_colours: bool,
-	theme: crate::highlighter::Theme,
+	theme: crate::theme::Theme,
 }
 
 /// Execute a SQL query and display the results.
@@ -539,9 +539,9 @@ async fn display_json<W: AsyncWrite + Unpin>(
 		.unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
 	let theme_name = match ctx.theme {
-		crate::highlighter::Theme::Light => "base16-ocean.light",
-		crate::highlighter::Theme::Dark => "base16-ocean.dark",
-		crate::highlighter::Theme::Auto => "base16-ocean.dark",
+		crate::theme::Theme::Light => "base16-ocean.light",
+		crate::theme::Theme::Dark => "base16-ocean.dark",
+		crate::theme::Theme::Auto => "base16-ocean.dark",
 	};
 
 	let theme_obj = &theme_set.themes[theme_name];
