@@ -4,12 +4,15 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
+use super::output::OutputWriter;
+
 pub(super) async fn handle_describe_view(
 	ctx: &mut ReplContext<'_>,
 	schema: &str,
 	view_name: &str,
 	detail: bool,
 	sameconn: bool,
+	writer: &OutputWriter,
 ) -> ControlFlow<()> {
 	let columns_query = r#"
 		SELECT
@@ -101,7 +104,9 @@ pub(super) async fn handle_describe_view(
 				_ => "View",
 			};
 
-			println!("{} \"{}.{}\"", view_type, schema, view_name);
+			writer
+				.writeln(&format!("{} \"{}.{}\"", view_type, schema, view_name))
+				.await;
 
 			let mut table = Table::new();
 			crate::table::configure(&mut table);
@@ -117,28 +122,28 @@ pub(super) async fn handle_describe_view(
 			}
 
 			crate::table::style_header(&mut table);
-			println!("{table}");
+			writer.writeln(&format!("{table}")).await;
 
 			if detail {
 				if let Some(definition) = view_definition {
-					println!("\nView definition:");
-					println!("{}", definition);
+					writer.writeln("\nView definition:").await;
+					writer.writeln(&definition).await;
 				}
 			}
 
 			if let Some(sz) = &size {
-				println!("\nSize: {}", sz);
+				writer.writeln(&format!("\nSize: {}", sz)).await;
 			}
 
 			if detail {
 				if let Some(comment) = view_comment {
 					if !comment.is_empty() {
-						println!("Comment: {}", comment);
+						writer.writeln(&format!("Comment: {}", comment)).await;
 					}
 				}
 			}
 
-			println!();
+			writer.writeln("").await;
 			ControlFlow::Continue(())
 		}
 		Err(e) => {

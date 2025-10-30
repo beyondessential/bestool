@@ -1,4 +1,5 @@
 use rustyline::history::History;
+use tokio::fs::File;
 
 use super::*;
 use crate::theme::Theme;
@@ -680,7 +681,17 @@ async fn test_describe_table_with_database() {
 
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
-	let repl_state = ReplState::new();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(
+		temp_dir
+			.path()
+			.join("test_describe_table_with_database.txt"),
+	)
+	.await
+	.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
 	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
 	let completer = SqlCompleter::new(Theme::Dark);
@@ -701,26 +712,53 @@ async fn test_describe_table_with_database() {
 		.expect("Failed to get backend PID")
 		.get(0);
 
-	let mut ctx = ReplContext {
-		client: &*client,
-		monitor_client: &*monitor_client,
-		backend_pid,
-		theme: Theme::Dark,
-		repl_state: &repl_state,
-		rl: &mut rl,
-		pool: &pool,
-	};
+	{
+		let mut ctx = ReplContext {
+			client: &*client,
+			monitor_client: &*monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
 
-	// Test describing the table
-	let result = crate::repl::describe::handle_describe(
-		&mut ctx,
-		format!("{}.test_d_table", schema),
-		false,
-		false,
+		// Test describing the table
+		let result = crate::repl::describe::handle_describe(
+			&mut ctx,
+			format!("{}.test_d_table", schema),
+			false,
+			false,
+		)
+		.await;
+
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output = std::fs::read_to_string(
+		temp_dir
+			.path()
+			.join("test_describe_table_with_database.txt"),
 	)
-	.await;
+	.unwrap();
 
-	assert!(result.is_continue());
+	// Verify expected output
+	assert!(
+		output.contains("test_d_table"),
+		"Output should contain table name"
+	);
+	assert!(
+		output.contains("Column"),
+		"Output should contain Column header"
+	);
+	assert!(output.contains("Type"), "Output should contain Type header");
+	assert!(output.contains("id"), "Output should contain id column");
+	assert!(output.contains("name"), "Output should contain name column");
+	assert!(
+		output.contains("email"),
+		"Output should contain email column"
+	);
 }
 
 #[tokio::test]
@@ -761,7 +799,13 @@ async fn test_describe_view_with_database() {
 
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
-	let repl_state = ReplState::new();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(temp_dir.path().join("test_describe_view_with_database.txt"))
+		.await
+		.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
 	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
 	let completer = SqlCompleter::new(Theme::Dark);
@@ -782,26 +826,49 @@ async fn test_describe_view_with_database() {
 		.expect("Failed to get backend PID")
 		.get(0);
 
-	let mut ctx = ReplContext {
-		client: &*client,
-		monitor_client: &*monitor_client,
-		backend_pid,
-		theme: Theme::Dark,
-		repl_state: &repl_state,
-		rl: &mut rl,
-		pool: &pool,
-	};
+	{
+		let mut ctx = ReplContext {
+			client: &*client,
+			monitor_client: &*monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
 
-	// Test describing the view
-	let result = crate::repl::describe::handle_describe(
-		&mut ctx,
-		format!("{}.test_d_view", schema),
-		false,
-		false,
-	)
-	.await;
+		// Test describing the view
+		let result = crate::repl::describe::handle_describe(
+			&mut ctx,
+			format!("{}.test_d_view", schema),
+			false,
+			false,
+		)
+		.await;
 
-	assert!(result.is_continue());
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output =
+		std::fs::read_to_string(temp_dir.path().join("test_describe_view_with_database.txt"))
+			.unwrap();
+
+	// Verify expected output
+	assert!(
+		output.contains("test_d_view"),
+		"Output should contain view name"
+	);
+	assert!(
+		output.contains("View") || output.contains("view"),
+		"Output should indicate it's a view"
+	);
+	assert!(
+		output.contains("Column"),
+		"Output should contain Column header"
+	);
+	assert!(output.contains("id"), "Output should contain id column");
+	assert!(output.contains("name"), "Output should contain name column");
 }
 
 #[tokio::test]
@@ -845,7 +912,17 @@ async fn test_describe_index_with_database() {
 
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
-	let repl_state = ReplState::new();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(
+		temp_dir
+			.path()
+			.join("test_describe_index_with_database.txt"),
+	)
+	.await
+	.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
 	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
 	let completer = SqlCompleter::new(Theme::Dark);
@@ -866,26 +943,55 @@ async fn test_describe_index_with_database() {
 		.expect("Failed to get backend PID")
 		.get(0);
 
-	let mut ctx = ReplContext {
-		client: &*client,
-		monitor_client: &*monitor_client,
-		backend_pid,
-		theme: Theme::Dark,
-		repl_state: &repl_state,
-		rl: &mut rl,
-		pool: &pool,
-	};
+	{
+		let mut ctx = ReplContext {
+			client: &*client,
+			monitor_client: &*monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
 
-	// Test describing the index
-	let result = crate::repl::describe::handle_describe(
-		&mut ctx,
-		format!("{}.test_d_idx", schema),
-		false,
-		false,
+		// Test describing the index
+		let result = crate::repl::describe::handle_describe(
+			&mut ctx,
+			format!("{}.test_d_idx", schema),
+			false,
+			false,
+		)
+		.await;
+
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output = std::fs::read_to_string(
+		temp_dir
+			.path()
+			.join("test_describe_index_with_database.txt"),
 	)
-	.await;
+	.unwrap();
 
-	assert!(result.is_continue());
+	// Verify expected output
+	dbg!(&output);
+	assert!(
+		output.contains("test_d_idx"),
+		"Output should contain index name"
+	);
+	assert!(
+		output.contains("Index") || output.contains("index"),
+		"Output should indicate it's an index"
+	);
+	assert!(
+		output.contains("test_idx_table"),
+		"Output should contain table name"
+	);
+	assert!(
+		output.contains("btree") || output.contains("Definition"),
+		"Output should contain index type or definition"
+	);
 }
 
 #[tokio::test]
@@ -926,7 +1032,17 @@ async fn test_describe_sequence_with_database() {
 
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
-	let repl_state = ReplState::new();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(
+		temp_dir
+			.path()
+			.join("test_describe_sequence_with_database.txt"),
+	)
+	.await
+	.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
 	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
 	let completer = SqlCompleter::new(Theme::Dark);
@@ -947,26 +1063,55 @@ async fn test_describe_sequence_with_database() {
 		.expect("Failed to get backend PID")
 		.get(0);
 
-	let mut ctx = ReplContext {
-		client: &*client,
-		monitor_client: &*monitor_client,
-		backend_pid,
-		theme: Theme::Dark,
-		repl_state: &repl_state,
-		rl: &mut rl,
-		pool: &pool,
-	};
+	{
+		let mut ctx = ReplContext {
+			client: &*client,
+			monitor_client: &*monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
 
-	// Test describing the sequence
-	let result = crate::repl::describe::handle_describe(
-		&mut ctx,
-		format!("{}.test_d_seq", schema),
-		false,
-		false,
+		// Test describing the sequence
+		let result = crate::repl::describe::handle_describe(
+			&mut ctx,
+			format!("{}.test_d_seq", schema),
+			false,
+			false,
+		)
+		.await;
+
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output = std::fs::read_to_string(
+		temp_dir
+			.path()
+			.join("test_describe_sequence_with_database.txt"),
 	)
-	.await;
+	.unwrap();
 
-	assert!(result.is_continue());
+	// Verify expected output
+	dbg!(&output);
+	assert!(
+		output.contains("test_d_seq"),
+		"Output should contain sequence name"
+	);
+	assert!(
+		output.contains("Sequence") || output.contains("sequence"),
+		"Output should indicate it's a sequence"
+	);
+	assert!(
+		output.contains("100"),
+		"Output should contain start value 100"
+	);
+	assert!(
+		output.contains("5"),
+		"Output should contain increment value 5"
+	);
 }
 
 #[tokio::test]
@@ -1002,7 +1147,17 @@ async fn test_describe_function_with_database() {
 
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
-	let repl_state = ReplState::new();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(
+		temp_dir
+			.path()
+			.join("test_describe_function_with_database.txt"),
+	)
+	.await
+	.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
 	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
 	let completer = SqlCompleter::new(Theme::Dark);
@@ -1023,22 +1178,56 @@ async fn test_describe_function_with_database() {
 		.expect("Failed to get backend PID")
 		.get(0);
 
-	let mut ctx = ReplContext {
-		client: &*client,
-		monitor_client: &*monitor_client,
-		backend_pid,
-		theme: Theme::Dark,
-		repl_state: &repl_state,
-		rl: &mut rl,
-		pool: &pool,
-	};
+	{
+		let mut ctx = ReplContext {
+			client: &*client,
+			monitor_client: &*monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
 
-	// Test describing the function
-	let result =
-		crate::repl::describe::handle_describe(&mut ctx, "test_d_func".to_string(), false, false)
-			.await;
+		// Test describing the function
+		let result = crate::repl::describe::handle_describe(
+			&mut ctx,
+			"test_d_func".to_string(),
+			false,
+			false,
+		)
+		.await;
 
-	assert!(result.is_continue());
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output = std::fs::read_to_string(
+		temp_dir
+			.path()
+			.join("test_describe_function_with_database.txt"),
+	)
+	.unwrap();
+
+	// Verify expected output
+	assert!(
+		output.contains("test_d_func"),
+		"Output should contain function name"
+	);
+	assert!(
+		output.contains("Function") || output.contains("function"),
+		"Output should indicate it's a function"
+	);
+	assert!(output.contains("plpgsql"), "Output should contain language");
+	assert!(
+		output.contains("immutable"),
+		"Output should contain volatility"
+	);
+	assert!(output.contains("Returns"), "Output should contain Returns");
+	assert!(
+		output.contains("integer"),
+		"Output should contain return type"
+	);
 
 	client
 		.batch_execute("DROP FUNCTION IF EXISTS test_d_func(INT, INT)")

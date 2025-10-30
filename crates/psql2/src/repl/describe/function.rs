@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 
 use comfy_table::Table;
 
+use super::output::OutputWriter;
 use crate::repl::state::ReplContext;
 
 pub(super) async fn handle_describe_function(
@@ -10,6 +11,7 @@ pub(super) async fn handle_describe_function(
 	function_name: &str,
 	detail: bool,
 	sameconn: bool,
+	writer: &OutputWriter,
 ) -> ControlFlow<()> {
 	let function_query = r#"
 		SELECT
@@ -91,7 +93,12 @@ pub(super) async fn handle_describe_function(
 			let description: Option<String> = row.get(7);
 			let function_definition: String = row.get(8);
 
-			println!("Function \"{}.{}\"", schema_name, function_name_val);
+			writer
+				.writeln(&format!(
+					"Function \"{}.{}\"",
+					schema_name, function_name_val
+				))
+				.await;
 
 			let mut properties = Vec::new();
 			properties.push(language.as_str());
@@ -101,9 +108,11 @@ pub(super) async fn handle_describe_function(
 			if security == "definer" {
 				properties.push("security definer");
 			}
-			println!("    {}", properties.join(", "));
+			writer
+				.writeln(&format!("    {}", properties.join(", ")))
+				.await;
 
-			println!("Returns: {}", result_type);
+			writer.writeln(&format!("Returns: {}", result_type)).await;
 
 			let args_result = if sameconn {
 				ctx.client
@@ -142,19 +151,20 @@ pub(super) async fn handle_describe_function(
 					}
 
 					crate::table::style_header(&mut table);
-					println!("{table}");
+					writer.writeln(&format!("{table}")).await;
 				}
 			}
 
 			if detail {
 				if let Some(desc) = description {
 					if !desc.is_empty() {
-						println!("\nDescription: {}", desc);
+						writer.writeln(&format!("\nDescription: {}", desc)).await;
 					}
 				}
 
-				println!("\nDefinition:");
-				println!("{}", function_definition);
+				writer
+					.writeln(&format!("\nDefinition:\n{}", function_definition))
+					.await;
 			}
 
 			println!();

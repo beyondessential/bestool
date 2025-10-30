@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 
 use comfy_table::Table;
 
+use super::output::OutputWriter;
 use crate::repl::state::ReplContext;
 
 pub(super) async fn handle_describe_index(
@@ -10,6 +11,7 @@ pub(super) async fn handle_describe_index(
 	index_name: &str,
 	detail: bool,
 	sameconn: bool,
+	writer: &OutputWriter,
 ) -> ControlFlow<()> {
 	let query = r#"
 		SELECT
@@ -109,10 +111,12 @@ pub(super) async fn handle_describe_index(
 			let owner: String = row.get(9);
 			let description: Option<String> = row.get(10);
 
-			println!(
-				"Index \"{}.{}\" on table \"{}.{}\"",
-				schema_name, index_name_val, schema_name, table_name
-			);
+			writer
+				.writeln(&format!(
+					"Index \"{}.{}\" on table \"{}.{}\"",
+					schema_name, index_name_val, schema_name, table_name
+				))
+				.await;
 
 			let mut properties = Vec::new();
 			if is_unique == "yes" {
@@ -127,10 +131,12 @@ pub(super) async fn handle_describe_index(
 			} else {
 				properties.push("invalid");
 			}
-			println!("    {}", properties.join(", "));
+			writer
+				.writeln(&format!("    {}", properties.join(", ")))
+				.await;
 
 			if detail {
-				println!("Size: {}", size);
+				writer.writeln(&format!("Size: {}", size)).await;
 			}
 
 			let columns_result = if sameconn {
@@ -149,7 +155,7 @@ pub(super) async fn handle_describe_index(
 
 			if let Ok(col_rows) = columns_result {
 				if !col_rows.is_empty() {
-					println!();
+					writer.writeln("").await;
 					let mut table = Table::new();
 					crate::table::configure(&mut table);
 
@@ -186,23 +192,23 @@ pub(super) async fn handle_describe_index(
 					}
 
 					crate::table::style_header(&mut table);
-					println!("{table}");
+					writer.writeln(&format!("{table}")).await;
 				}
 			}
 
-			println!("\nDefinition:");
-			println!("    {}", index_definition);
+			writer.writeln("\nDefinition:").await;
+			writer.writeln(&format!("    {}", index_definition)).await;
 
 			if detail {
-				println!("\nOwner: {}", owner);
+				writer.writeln(&format!("\nOwner: {}", owner)).await;
 				if let Some(desc) = description {
 					if !desc.is_empty() {
-						println!("Description: {}", desc);
+						writer.writeln(&format!("Description: {}", desc)).await;
 					}
 				}
 			}
 
-			println!();
+			writer.writeln("").await;
 			ControlFlow::Continue(())
 		}
 		Err(e) => {

@@ -4,9 +4,12 @@ use crate::repl::state::ReplContext;
 
 mod function;
 mod index;
+mod output;
 mod sequence;
 mod table;
 mod view;
+
+use output::OutputWriter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RelationKind {
@@ -53,6 +56,10 @@ pub async fn handle_describe(
 	sameconn: bool,
 ) -> ControlFlow<()> {
 	let (schema, name) = parse_item(&item);
+
+	// Get writer - either output_file or stdout
+	let file_arc_opt = ctx.repl_state.lock().unwrap().output_file.clone();
+	let writer = OutputWriter::new(file_arc_opt);
 
 	// First try to find it as a relation
 	let relation_query = r#"
@@ -109,7 +116,7 @@ pub async fn handle_describe(
 						let count: i64 = func_row.get(0);
 						if count > 0 {
 							return function::handle_describe_function(
-								ctx, &schema, &name, detail, sameconn,
+								ctx, &schema, &name, detail, sameconn, &writer,
 							)
 							.await;
 						}
@@ -127,16 +134,21 @@ pub async fn handle_describe(
 
 			match relation_kind {
 				Some(RelationKind::Table | RelationKind::PartitionedTable) => {
-					table::handle_describe_table(ctx, &schema, &name, detail, sameconn).await
+					table::handle_describe_table(ctx, &schema, &name, detail, sameconn, &writer)
+						.await
 				}
 				Some(RelationKind::View | RelationKind::MaterializedView) => {
-					view::handle_describe_view(ctx, &schema, &name, detail, sameconn).await
+					view::handle_describe_view(ctx, &schema, &name, detail, sameconn, &writer).await
 				}
 				Some(RelationKind::Index | RelationKind::PartitionedIndex) => {
-					index::handle_describe_index(ctx, &schema, &name, detail, sameconn).await
+					index::handle_describe_index(ctx, &schema, &name, detail, sameconn, &writer)
+						.await
 				}
 				Some(RelationKind::Sequence) => {
-					sequence::handle_describe_sequence(ctx, &schema, &name, detail, sameconn).await
+					sequence::handle_describe_sequence(
+						ctx, &schema, &name, detail, sameconn, &writer,
+					)
+					.await
 				}
 				Some(RelationKind::CompositeType) => {
 					eprintln!("Composite types are not yet supported for describe.");

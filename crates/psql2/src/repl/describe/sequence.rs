@@ -4,12 +4,15 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
+use super::output::OutputWriter;
+
 pub(super) async fn handle_describe_sequence(
 	ctx: &mut ReplContext<'_>,
 	schema: &str,
 	sequence_name: &str,
 	detail: bool,
 	sameconn: bool,
+	writer: &OutputWriter,
 ) -> ControlFlow<()> {
 	let sequence_query = r#"
 		SELECT
@@ -18,8 +21,7 @@ pub(super) async fn handle_describe_sequence(
 			seqmax AS max_value,
 			seqincrement AS increment_by,
 			seqcycle AS is_cycle,
-			seqcache AS cache_size,
-			last_value
+			seqcache AS cache_size
 		FROM pg_catalog.pg_sequence s
 		LEFT JOIN pg_catalog.pg_class c ON c.oid = s.seqrelid
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -90,10 +92,11 @@ pub(super) async fn handle_describe_sequence(
 			let increment_by: i64 = row.get(3);
 			let is_cycle: bool = row.get(4);
 			let cache_size: i64 = row.get(5);
-			let last_value: Option<i64> = row.get(6);
 
-			println!("Sequence \"{}.{}\"", schema, sequence_name);
-			println!();
+			writer
+				.writeln(&format!("Sequence \"{}.{}\"", schema, sequence_name))
+				.await;
+			writer.writeln("").await;
 
 			let mut table = Table::new();
 			crate::table::configure(&mut table);
@@ -105,9 +108,6 @@ pub(super) async fn handle_describe_sequence(
 			table.add_row(vec!["Increment by", &increment_by.to_string()]);
 			table.add_row(vec!["Cycle", if is_cycle { "yes" } else { "no" }]);
 			table.add_row(vec!["Cache size", &cache_size.to_string()]);
-			if let Some(last_val) = last_value {
-				table.add_row(vec!["Last value", &last_val.to_string()]);
-			}
 
 			if detail {
 				let info_result = if sameconn {
@@ -146,7 +146,7 @@ pub(super) async fn handle_describe_sequence(
 			}
 
 			crate::table::style_header(&mut table);
-			println!("{table}");
+			writer.writeln(&format!("{table}")).await;
 
 			let owned_result = if sameconn {
 				ctx.client
@@ -168,11 +168,11 @@ pub(super) async fn handle_describe_sequence(
 			if let Ok(owned_rows) = owned_result {
 				if let Some(owned_row) = owned_rows.first() {
 					let owned_by: String = owned_row.get(0);
-					println!("\nOwned by: {}", owned_by);
+					writer.writeln(&format!("\nOwned by: {}", owned_by)).await;
 				}
 			}
 
-			println!();
+			writer.writeln("").await;
 			ControlFlow::Continue(())
 		}
 		Err(e) => {

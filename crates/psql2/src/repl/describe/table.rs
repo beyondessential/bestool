@@ -4,12 +4,15 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
+use super::output::OutputWriter;
+
 pub(super) async fn handle_describe_table(
 	ctx: &mut ReplContext<'_>,
 	schema: &str,
 	table_name: &str,
 	detail: bool,
 	sameconn: bool,
+	writer: &OutputWriter,
 ) -> ControlFlow<()> {
 	let columns_query = r#"
 		SELECT
@@ -167,7 +170,9 @@ pub(super) async fn handle_describe_table(
 				return ControlFlow::Continue(());
 			}
 
-			println!("Table \"{}.{}\"", schema, table_name);
+			writer
+				.writeln(&format!("Table \"{}.{}\"", schema, table_name))
+				.await;
 
 			let mut table = Table::new();
 			crate::table::configure(&mut table);
@@ -223,7 +228,7 @@ pub(super) async fn handle_describe_table(
 			}
 
 			crate::table::style_header(&mut table);
-			println!("{table}");
+			writer.writeln(&format!("{table}")).await;
 
 			let indexes_result = if sameconn {
 				ctx.client
@@ -240,25 +245,29 @@ pub(super) async fn handle_describe_table(
 
 			if let Ok(index_rows) = indexes_result {
 				if !index_rows.is_empty() {
-					println!("\nIndexes:");
+					writer.writeln("\nIndexes:").await;
 					for row in index_rows {
 						let index_name: String = row.get(0);
 						let index_def: String = row.get(1);
 						let constraint_type: String = row.get(2);
 
 						if !constraint_type.is_empty() {
-							println!(
-								"    \"{}\" {} {}",
-								index_name,
-								constraint_type,
-								&index_def[index_def.find("USING").unwrap_or(0)..]
-							);
+							writer
+								.writeln(&format!(
+									"    \"{}\" {} {}",
+									index_name,
+									constraint_type,
+									&index_def[index_def.find("USING").unwrap_or(0)..]
+								))
+								.await;
 						} else {
-							println!(
-								"    \"{}\" {}",
-								index_name,
-								&index_def[index_def.find("USING").unwrap_or(0)..]
-							);
+							writer
+								.writeln(&format!(
+									"    \"{}\" {}",
+									index_name,
+									&index_def[index_def.find("USING").unwrap_or(0)..]
+								))
+								.await;
 						}
 					}
 				}
@@ -283,11 +292,13 @@ pub(super) async fn handle_describe_table(
 
 			if let Ok(fk_rows) = fk_result {
 				if !fk_rows.is_empty() {
-					println!("\nForeign-key constraints:");
+					writer.writeln("\nForeign-key constraints:").await;
 					for row in fk_rows {
 						let constraint_name: String = row.get(0);
 						let constraint_def: String = row.get(1);
-						println!("    \"{}\" {}", constraint_name, constraint_def);
+						writer
+							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+							.await;
 					}
 				}
 			}
@@ -311,11 +322,13 @@ pub(super) async fn handle_describe_table(
 
 			if let Ok(check_rows) = check_result {
 				if !check_rows.is_empty() {
-					println!("\nCheck constraints:");
+					writer.writeln("\nCheck constraints:").await;
 					for row in check_rows {
 						let constraint_name: String = row.get(0);
 						let constraint_def: String = row.get(1);
-						println!("    \"{}\" {}", constraint_name, constraint_def);
+						writer
+							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+							.await;
 					}
 				}
 			}
@@ -339,15 +352,17 @@ pub(super) async fn handle_describe_table(
 
 			if let Ok(ref_rows) = referenced_result {
 				if !ref_rows.is_empty() {
-					println!("\nReferenced by:");
+					writer.writeln("\nReferenced by:").await;
 					for row in ref_rows {
 						let constraint_name: String = row.get(0);
 						let referencing_table: String = row.get(1);
 						let constraint_def: String = row.get(2);
-						println!(
-							"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
-							referencing_table, constraint_name, constraint_def
-						);
+						writer
+							.writeln(&format!(
+								"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+								referencing_table, constraint_name, constraint_def
+							))
+							.await;
 					}
 				}
 			}
@@ -367,10 +382,10 @@ pub(super) async fn handle_describe_table(
 
 			if let Ok(trigger_rows) = triggers_result {
 				if !trigger_rows.is_empty() {
-					println!("\nTriggers:");
+					writer.writeln("\nTriggers:").await;
 					for row in trigger_rows {
 						let trigger_def: String = row.get(1);
-						println!("    {}", trigger_def);
+						writer.writeln(&format!("    {}", trigger_def)).await;
 					}
 				}
 			}
@@ -395,24 +410,24 @@ pub(super) async fn handle_describe_table(
 
 				if let Ok(info_rows) = info_result {
 					if let Some(row) = info_rows.first() {
-						let owner: String = row.get(0);
 						let size: String = row.get(1);
 						let persistence: String = row.get(2);
 						let table_comment: Option<String> = row.get(3);
 
-						println!("\nOwner: {}", owner);
-						println!("Size: {}", size);
-						println!("Persistence: {}", persistence);
+						writer.writeln(&format!("Size: {}", size)).await;
+						writer
+							.writeln(&format!("Persistence: {}", persistence))
+							.await;
 						if let Some(comment) = table_comment {
 							if !comment.is_empty() {
-								println!("Comment: {}", comment);
+								writer.writeln(&format!("Comment: {}", comment)).await;
 							}
 						}
 					}
 				}
 			}
 
-			println!();
+			writer.writeln("").await;
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
