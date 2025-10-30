@@ -1,3 +1,4 @@
+use crossterm::style::{Color, Stylize};
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
@@ -73,8 +74,13 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	let duration = start.elapsed();
 
 	if rows.is_empty() {
+		let msg = if ctx.use_colours {
+			format!("{}\n", "(no rows)".with(Color::Blue).dim())
+		} else {
+			"(no rows)\n".to_string()
+		};
 		ctx.writer
-			.write_all(b"(no rows)\n")
+			.write_all(msg.as_bytes())
 			.await
 			.into_diagnostic()?;
 		ctx.writer.flush().await.into_diagnostic()?;
@@ -124,12 +130,17 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		)
 		.await?;
 
-		let status_msg = format!(
-			"({} row{}, took {:.3}ms)\n",
+		let status_text = format!(
+			"({} row{}, took {:.3}ms)",
 			rows.len(),
 			if rows.len() == 1 { "" } else { "s" },
 			duration.as_secs_f64() * 1000.0
 		);
+		let status_msg = if ctx.use_colours {
+			format!("{}\n", status_text.with(Color::Blue).dim())
+		} else {
+			format!("{status_text}\n")
+		};
 		// Status messages always go to stderr
 		eprint!("{status_msg}");
 
