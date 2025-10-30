@@ -23,29 +23,69 @@ async fn handle_list_tables(
 	detail: bool,
 ) -> ControlFlow<()> {
 	let (schema_pattern, table_pattern) = parse_pattern(pattern);
+	let exclude_schemas = should_exclude_system_schemas(pattern);
 
 	let query = if detail {
+		if exclude_schemas {
+			r#"
+			SELECT
+				n.nspname AS "Schema",
+				c.relname AS "Name",
+				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
+				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
+				CASE c.relpersistence
+					WHEN 'p' THEN 'permanent'
+					WHEN 'u' THEN 'unlogged'
+					WHEN 't' THEN 'temporary'
+				END AS "Persistence",
+				CASE
+					WHEN c.relacl IS NULL THEN NULL
+					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
+				END AS "Access"
+			FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relkind = 'r'
+				AND n.nspname ~ $1
+				AND c.relname ~ $2
+				AND n.nspname NOT IN ('information_schema', 'pg_toast')
+			ORDER BY 1, 2
+			"#
+		} else {
+			r#"
+			SELECT
+				n.nspname AS "Schema",
+				c.relname AS "Name",
+				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
+				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
+				CASE c.relpersistence
+					WHEN 'p' THEN 'permanent'
+					WHEN 'u' THEN 'unlogged'
+					WHEN 't' THEN 'temporary'
+				END AS "Persistence",
+				CASE
+					WHEN c.relacl IS NULL THEN NULL
+					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
+				END AS "Access"
+			FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relkind = 'r'
+				AND n.nspname ~ $1
+				AND c.relname ~ $2
+			ORDER BY 1, 2
+			"#
+		}
+	} else if exclude_schemas {
 		r#"
 		SELECT
 			n.nspname AS "Schema",
 			c.relname AS "Name",
-			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
-			pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
-			CASE c.relpersistence
-				WHEN 'p' THEN 'permanent'
-				WHEN 'u' THEN 'unlogged'
-				WHEN 't' THEN 'temporary'
-			END AS "Persistence",
-			CASE
-				WHEN c.relacl IS NULL THEN NULL
-				ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-			END AS "Access"
+			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		WHERE c.relkind = 'r'
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
-			AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+			AND n.nspname NOT IN ('information_schema', 'pg_toast')
 		ORDER BY 1, 2
 		"#
 	} else {
@@ -59,7 +99,6 @@ async fn handle_list_tables(
 		WHERE c.relkind = 'r'
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
-			AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
 		ORDER BY 1, 2
 		"#
 	};
@@ -121,6 +160,17 @@ async fn handle_list_tables(
 			eprintln!("Error listing tables: {}", e);
 			ControlFlow::Continue(())
 		}
+	}
+}
+
+fn should_exclude_system_schemas(pattern: &str) -> bool {
+	// If the pattern explicitly mentions information_schema or pg_toast, don't exclude them
+	if let Some((schema, _)) = pattern.split_once('.') {
+		// Check if schema part explicitly matches these schemas
+		schema != "information_schema" && schema != "pg_toast"
+	} else {
+		// Single word pattern (matches table in public) - exclude system schemas
+		pattern != "information_schema" && pattern != "pg_toast"
 	}
 }
 
@@ -228,5 +278,20 @@ mod tests {
 	#[test]
 	fn test_wildcard_to_regex_escapes_special_chars() {
 		assert_eq!(wildcard_to_regex("test.table"), "^test\\.table$");
+	}
+
+	#[test]
+	fn test_should_exclude_system_schemas_default() {
+		assert!(should_exclude_system_schemas("public.*"));
+		assert!(should_exclude_system_schemas("*.*"));
+		assert!(should_exclude_system_schemas("users"));
+	}
+
+	#[test]
+	fn test_should_exclude_system_schemas_explicit() {
+		assert!(!should_exclude_system_schemas("information_schema.*"));
+		assert!(!should_exclude_system_schemas("pg_toast.*"));
+		assert!(!should_exclude_system_schemas("information_schema"));
+		assert!(!should_exclude_system_schemas("pg_toast"));
 	}
 }

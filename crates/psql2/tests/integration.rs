@@ -201,7 +201,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&"^public$", &".*"],
@@ -269,7 +269,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&"^public$", &pattern],
@@ -332,7 +332,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&schema_pattern, &".*"],
@@ -396,7 +396,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&"^public$", &pattern],
@@ -465,7 +465,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&"^public$", &pattern],
@@ -507,7 +507,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[
@@ -559,7 +559,7 @@ mod list_command_tests {
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
-					AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
 				ORDER BY 1, 2
 				"#,
 				&[&".*", &".*"],
@@ -602,5 +602,152 @@ mod list_command_tests {
 			))
 			.await
 			.ok();
+	}
+
+	#[tokio::test]
+	async fn test_list_includes_pg_catalog_tables() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		// Query for tables in pg_catalog schema
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relkind = 'r'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&"^pg_catalog$", &".*"],
+			)
+			.await
+			.expect("Failed to query pg_catalog tables");
+
+		// Should find common pg_catalog tables like pg_class, pg_namespace, etc.
+		let table_names: Vec<String> = rows.iter().map(|row| row.get::<_, String>(1)).collect();
+
+		assert!(
+			!table_names.is_empty(),
+			"Expected to find tables in pg_catalog schema"
+		);
+		assert!(
+			table_names.contains(&"pg_class".to_string()),
+			"Expected to find pg_class in pg_catalog"
+		);
+		assert!(
+			table_names.contains(&"pg_namespace".to_string()),
+			"Expected to find pg_namespace in pg_catalog"
+		);
+	}
+
+	#[tokio::test]
+	async fn test_list_information_schema_when_explicit() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		// Query for tables in information_schema when explicitly specified
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relkind = 'r'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+				ORDER BY 1, 2
+				"#,
+				&[&"^information_schema$", &".*"],
+			)
+			.await
+			.expect("Failed to query information_schema tables");
+
+		// Should find tables in information_schema
+		let table_names: Vec<String> = rows.iter().map(|row| row.get::<_, String>(1)).collect();
+
+		assert!(
+			!table_names.is_empty(),
+			"Expected to find tables in information_schema when explicitly queried"
+		);
+	}
+
+	#[tokio::test]
+	async fn test_list_pg_toast_when_explicit() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		// Query for tables in pg_toast when explicitly specified
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relkind = 'r'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+				ORDER BY 1, 2
+				"#,
+				&[&"^pg_toast$", &".*"],
+			)
+			.await
+			.expect("Failed to query pg_toast tables");
+
+		// pg_toast might be empty or have toast tables depending on database state
+		// The important thing is the query succeeds without excluding pg_toast
+		let schemas: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+		for schema in &schemas {
+			assert_eq!(schema, "pg_toast", "All results should be from pg_toast");
+		}
+	}
+
+	#[tokio::test]
+	async fn test_list_excludes_information_schema_by_default() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		// Query with *.* pattern (all schemas) should exclude information_schema
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relkind = 'r'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&".*", &".*"],
+			)
+			.await
+			.expect("Failed to query tables");
+
+		let schemas: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+		assert!(
+			!schemas.iter().any(|s| s == "information_schema"),
+			"information_schema should be excluded by default"
+		);
+		assert!(
+			!schemas.iter().any(|s| s == "pg_toast"),
+			"pg_toast should be excluded by default"
+		);
 	}
 }
