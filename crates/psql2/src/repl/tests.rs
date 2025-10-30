@@ -1283,3 +1283,102 @@ async fn test_describe_function() {
 		.await
 		.ok();
 }
+
+#[tokio::test]
+async fn test_multiple_statements() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	// Create a temporary table to test with
+	client
+		.batch_execute("CREATE TEMP TABLE multi_test (id INT)")
+		.await
+		.expect("Failed to create test table");
+
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use std::sync::{Arc, Mutex};
+	use tempfile::TempDir;
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(temp_dir.path().join("test_multiple_statements.txt"))
+		.await
+		.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+
+	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
+	let repl_state = Arc::new(Mutex::new(repl_state));
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	{
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Execute multiple statements: insert two rows and select them
+		let multi_sql = "INSERT INTO multi_test VALUES (1); INSERT INTO multi_test VALUES (2); SELECT * FROM multi_test ORDER BY id;";
+
+		let result = crate::repl::execute::handle_execute(
+			&mut ctx,
+			multi_sql.to_string(),
+			multi_sql.to_string(),
+			Default::default(),
+		)
+		.await;
+
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	let output =
+		std::fs::read_to_string(temp_dir.path().join("test_multiple_statements.txt")).unwrap();
+
+	// The output should contain both rows
+	assert!(
+		output.contains("1") && output.contains("2"),
+		"Output should contain both inserted values, got: {}",
+		output
+	);
+
+	// Verify the data was actually inserted
+	let rows = client
+		.query("SELECT COUNT(*) FROM multi_test", &[])
+		.await
+		.expect("Failed to query test table");
+	let count: i64 = rows[0].get(0);
+	assert_eq!(count, 2, "Should have inserted 2 rows");
+}

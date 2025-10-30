@@ -38,6 +38,77 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		vars::interpolate_variables(sql, vars)?
 	};
 
+	// Split by semicolons to handle multiple statements
+	let statements = split_statements(&sql_to_execute);
+
+	for statement in statements {
+		let statement = statement.trim();
+		if statement.is_empty() {
+			continue;
+		}
+
+		execute_single_statement(statement, ctx).await?;
+	}
+
+	Ok(())
+}
+
+/// Split SQL into multiple statements by semicolon
+fn split_statements(sql: &str) -> Vec<String> {
+	let mut statements = Vec::new();
+	let mut current = String::new();
+	let mut in_string = false;
+	let mut string_char = ' ';
+	let mut escaped = false;
+
+	for ch in sql.chars() {
+		if escaped {
+			current.push(ch);
+			escaped = false;
+			continue;
+		}
+
+		match ch {
+			'\\' if in_string => {
+				escaped = true;
+				current.push(ch);
+			}
+			'\'' | '"' => {
+				if !in_string {
+					in_string = true;
+					string_char = ch;
+				} else if ch == string_char {
+					in_string = false;
+				}
+				current.push(ch);
+			}
+			';' if !in_string => {
+				let trimmed = current.trim();
+				if !trimmed.is_empty() {
+					statements.push(trimmed.to_string());
+				}
+				current.clear();
+			}
+			_ => {
+				current.push(ch);
+			}
+		}
+	}
+
+	// Add remaining statement if any
+	let trimmed = current.trim();
+	if !trimmed.is_empty() {
+		statements.push(trimmed.to_string());
+	}
+
+	statements
+}
+
+/// Execute a single SQL statement and display the results.
+async fn execute_single_statement<W: AsyncWrite + Unpin>(
+	statement: &str,
+	ctx: &mut QueryContext<'_, W>,
+) -> Result<()> {
 	let start = std::time::Instant::now();
 
 	let cancel_token = ctx.client.cancel_token();
@@ -48,7 +119,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 
 	// Poll for SIGINT while executing query
 	let result = tokio::select! {
-		result = ctx.client.query(&sql_to_execute, &[]) => {
+		result = ctx.client.query(statement, &[]) => {
 			result.into_diagnostic()
 		}
 		_ = async {
@@ -98,7 +169,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		}
 
 		let text_rows = if !unprintable_columns.is_empty() {
-			let sql_trimmed = sql_to_execute.trim_end_matches(';').trim();
+			let sql_trimmed = statement.trim_end_matches(';').trim();
 			let text_query = build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
 			debug!("re-querying with text casts: {text_query}");
 			match ctx.client.query(&text_query, &[]).await {
@@ -215,6 +286,75 @@ fn build_text_cast_query(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn test_split_statements_single() {
+		let sql = "SELECT 1";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 1);
+		assert_eq!(statements[0], "SELECT 1");
+	}
+
+	#[test]
+	fn test_split_statements_multiple() {
+		let sql = "SELECT 1; SELECT 2; SELECT 3";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 3);
+		assert_eq!(statements[0], "SELECT 1");
+		assert_eq!(statements[1], "SELECT 2");
+		assert_eq!(statements[2], "SELECT 3");
+	}
+
+	#[test]
+	fn test_split_statements_with_string_literals() {
+		let sql = "SELECT 'hello; world'; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], "SELECT 'hello; world'");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_with_double_quotes() {
+		let sql = r#"SELECT "table; name"; SELECT 2"#;
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], r#"SELECT "table; name""#);
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_with_escaped_quotes() {
+		let sql = r"SELECT 'it\'s'; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], r"SELECT 'it\'s'");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_empty() {
+		let sql = "";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 0);
+	}
+
+	#[test]
+	fn test_split_statements_trailing_semicolon() {
+		let sql = "SELECT 1;";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 1);
+		assert_eq!(statements[0], "SELECT 1");
+	}
+
+	#[test]
+	fn test_split_statements_multiple_semicolons() {
+		let sql = "SELECT 1;;; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], "SELECT 1");
+		assert_eq!(statements[1], "SELECT 2");
+	}
 
 	#[test]
 	fn test_build_text_cast_query_logic() {
