@@ -754,4 +754,224 @@ mod list_command_tests {
 			"pg_toast should be excluded by default"
 		);
 	}
+
+	#[tokio::test]
+	async fn test_list_indexes_in_public_schema() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		let timestamp = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_micros();
+		let table = format!("psql2_test_idx_table_{}", timestamp);
+		let index1 = format!("psql2_test_idx1_{}", timestamp);
+		let index2 = format!("psql2_test_idx2_{}", timestamp);
+
+		client
+			.batch_execute(&format!(
+				"
+				CREATE TABLE public.{} (id SERIAL PRIMARY KEY, name TEXT, email TEXT);
+				CREATE INDEX {} ON public.{} (name);
+				CREATE INDEX {} ON public.{} (email);
+				",
+				table, index1, table, index2, table
+			))
+			.await
+			.expect("Failed to create test table and indexes");
+
+		// Query for indexes in public schema
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					t.relname AS "Table",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
+				LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+				WHERE c.relkind = 'i'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&"^public$", &".*"],
+			)
+			.await
+			.expect("Failed to query indexes");
+
+		// Check that we have at least our test indexes
+		let index_names: Vec<String> = rows.iter().map(|row| row.get::<_, String>(1)).collect();
+		assert!(
+			index_names.contains(&index1),
+			"Expected to find {} in results",
+			index1
+		);
+		assert!(
+			index_names.contains(&index2),
+			"Expected to find {} in results",
+			index2
+		);
+
+		// Cleanup
+		client
+			.batch_execute(&format!("DROP TABLE IF EXISTS public.{} CASCADE;", table))
+			.await
+			.ok();
+	}
+
+	#[tokio::test]
+	async fn test_list_indexes_with_detail() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		let timestamp = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_micros();
+		let table = format!("psql2_test_idx_detail_{}", timestamp);
+		let index = format!("psql2_test_idx_detail_idx_{}", timestamp);
+
+		client
+			.batch_execute(&format!(
+				"
+				CREATE TABLE public.{} (id SERIAL PRIMARY KEY, name TEXT);
+				CREATE INDEX {} ON public.{} (name);
+				",
+				table, index, table
+			))
+			.await
+			.expect("Failed to create test table and index");
+
+		// Query with detail (additional columns)
+		let pattern = format!("^{}$", index);
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					t.relname AS "Table",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
+					pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
+					CASE c.relpersistence
+						WHEN 'p' THEN 'permanent'
+						WHEN 'u' THEN 'unlogged'
+						WHEN 't' THEN 'temporary'
+					END AS "Persistence",
+					am.amname AS "Access method",
+					CASE
+						WHEN c.relacl IS NULL THEN NULL
+						ELSE pg_catalog.array_to_string(c.relacl, E'\n')
+					END AS "ACL"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
+				LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+				LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
+				WHERE c.relkind = 'i'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&"^public$", &pattern],
+			)
+			.await
+			.expect("Failed to query indexes with detail");
+
+		assert_eq!(rows.len(), 1);
+		let row = &rows[0];
+
+		// Check all columns are present
+		let schema: String = row.get(0);
+		let name: String = row.get(1);
+		let table_name: String = row.get(2);
+		let size: String = row.get(3);
+		let owner: String = row.get(4);
+		let persistence: String = row.get(5);
+		let access_method: Option<String> = row.get(6);
+		let _acl: Option<String> = row.get(7);
+
+		assert_eq!(schema, "public");
+		assert_eq!(name, index);
+		assert_eq!(table_name, table);
+		assert!(!size.is_empty());
+		assert!(!owner.is_empty());
+		assert_eq!(persistence, "permanent");
+		assert!(access_method.is_some(), "Access method should be present");
+
+		// Cleanup
+		client
+			.batch_execute(&format!("DROP TABLE IF EXISTS public.{} CASCADE;", table))
+			.await
+			.ok();
+	}
+
+	#[tokio::test]
+	async fn test_list_indexes_with_pattern_match() {
+		let pool = get_test_pool().await;
+		let client = pool.get().await.expect("Failed to get client");
+
+		let timestamp = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_micros();
+		let table = format!("psql2_test_idx_pat_{}", timestamp);
+		let index1 = format!("psql2_idx_match_{}", timestamp);
+		let index2 = format!("psql2_idx_nomatch_{}", timestamp);
+
+		client
+			.batch_execute(&format!(
+				"
+				CREATE TABLE public.{} (id SERIAL PRIMARY KEY, name TEXT, email TEXT);
+				CREATE INDEX {} ON public.{} (name);
+				CREATE INDEX {} ON public.{} (email);
+				",
+				table, index1, table, index2, table
+			))
+			.await
+			.expect("Failed to create test table and indexes");
+
+		// Query for indexes matching "psql2_idx_match*" pattern
+		let pattern = format!("^psql2_idx_match_{}$", timestamp);
+		let rows = client
+			.query(
+				r#"
+				SELECT
+					n.nspname AS "Schema",
+					c.relname AS "Name",
+					t.relname AS "Table",
+					pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
+				FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				LEFT JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
+				LEFT JOIN pg_catalog.pg_class t ON i.indrelid = t.oid
+				WHERE c.relkind = 'i'
+					AND n.nspname ~ $1
+					AND c.relname ~ $2
+					AND n.nspname NOT IN ('information_schema', 'pg_toast')
+				ORDER BY 1, 2
+				"#,
+				&[&"^public$", &pattern],
+			)
+			.await
+			.expect("Failed to query indexes");
+
+		// Should only match index1
+		let index_names: Vec<String> = rows.iter().map(|row| row.get::<_, String>(1)).collect();
+		assert_eq!(index_names.len(), 1);
+		assert!(index_names.contains(&index1));
+		assert!(!index_names.contains(&index2));
+
+		// Cleanup
+		client
+			.batch_execute(&format!("DROP TABLE IF EXISTS public.{} CASCADE;", table))
+			.await
+			.ok();
+	}
 }

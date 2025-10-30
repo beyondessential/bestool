@@ -9,6 +9,7 @@ use winnow::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListItem {
 	Table,
+	Index,
 }
 
 pub fn parse(
@@ -16,54 +17,68 @@ pub fn parse(
 ) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
 	literal('\\').parse_next(input)?;
 
-	// Try to parse \list[+][!] or \dt[+][!]
-	let (detail, sameconn, is_dt_alias) = alt((
+	// Try to parse \list[+][!] or \dt[+][!] or \di[+][!]
+	let (detail, sameconn, alias_type) = alt((
 		// \list+!
-		literal("list+!").map(|_| (true, true, false)),
+		literal("list+!").map(|_| (true, true, None)),
 		// \list!+
-		literal("list!+").map(|_| (true, true, false)),
+		literal("list!+").map(|_| (true, true, None)),
 		// \list+
-		literal("list+").map(|_| (true, false, false)),
+		literal("list+").map(|_| (true, false, None)),
 		// \list!
-		literal("list!").map(|_| (false, true, false)),
+		literal("list!").map(|_| (false, true, None)),
 		// \list
-		literal("list").map(|_| (false, false, false)),
+		literal("list").map(|_| (false, false, None)),
 		// \dt+!
-		literal("dt+!").map(|_| (true, true, true)),
+		literal("dt+!").map(|_| (true, true, Some(ListItem::Table))),
 		// \dt!+
-		literal("dt!+").map(|_| (true, true, true)),
+		literal("dt!+").map(|_| (true, true, Some(ListItem::Table))),
 		// \dt+
-		literal("dt+").map(|_| (true, false, true)),
+		literal("dt+").map(|_| (true, false, Some(ListItem::Table))),
 		// \dt!
-		literal("dt!").map(|_| (false, true, true)),
+		literal("dt!").map(|_| (false, true, Some(ListItem::Table))),
 		// \dt
-		literal("dt").map(|_| (false, false, true)),
+		literal("dt").map(|_| (false, false, Some(ListItem::Table))),
+		// \di+!
+		literal("di+!").map(|_| (true, true, Some(ListItem::Index))),
+		// \di!+
+		literal("di!+").map(|_| (true, true, Some(ListItem::Index))),
+		// \di+
+		literal("di+").map(|_| (true, false, Some(ListItem::Index))),
+		// \di!
+		literal("di!").map(|_| (false, true, Some(ListItem::Index))),
+		// \di
+		literal("di").map(|_| (false, false, Some(ListItem::Index))),
 	))
 	.parse_next(input)?;
 
-	if is_dt_alias {
-		// For \dt, pattern is optional
+	if let Some(item) = alias_type {
+		// For \dt or \di, pattern is optional
 		let pattern = opt(preceded(space1, parse_pattern)).parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 
 		Ok(super::Metacommand::List {
-			item: ListItem::Table,
+			item,
 			pattern: pattern.unwrap_or_else(|| "public.*".to_string()),
 			detail,
 			sameconn,
 		})
 	} else {
-		// For \list, we need the "table" keyword
+		// For \list, we need the "table" or "index" keyword
 		space1.parse_next(input)?;
-		literal("table").parse_next(input)?;
+		let item = alt((
+			literal("table").map(|_| ListItem::Table),
+			literal("index").map(|_| ListItem::Index),
+		))
+		.parse_next(input)?;
 
 		let pattern = opt(preceded(space1, parse_pattern)).parse_next(input)?;
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 
 		Ok(super::Metacommand::List {
-			item: ListItem::Table,
+			item,
 			pattern: pattern.unwrap_or_else(|| "public.*".to_string()),
 			detail,
 			sameconn,
@@ -318,6 +333,76 @@ mod tests {
 				pattern: "public.*".to_string(),
 				detail: false,
 				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_list_index() {
+		let result = parse_metacommand("\\list index").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_di_alias() {
+		let result = parse_metacommand("\\di").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_di_plus_alias() {
+		let result = parse_metacommand("\\di+").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_di_with_sameconn() {
+		let result = parse_metacommand("\\di!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_di_plus_with_sameconn() {
+		let result = parse_metacommand("\\di+!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: true,
 			})
 		);
 	}

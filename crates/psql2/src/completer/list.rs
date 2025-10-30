@@ -26,25 +26,45 @@ impl super::SqlCompleter {
 		let parts: Vec<&str> = after_list.split_whitespace().collect();
 
 		if parts.is_empty() {
-			// Offer "table" as completion
-			return Some(vec![Pair {
-				display: "table".to_string(),
-				replacement: "table".to_string(),
-			}]);
+			// Offer "table" and "index" as completions
+			return Some(vec![
+				Pair {
+					display: "table".to_string(),
+					replacement: "table".to_string(),
+				},
+				Pair {
+					display: "index".to_string(),
+					replacement: "index".to_string(),
+				},
+			]);
 		}
 
 		if parts.len() == 1 {
 			let partial = parts[0];
+			let mut completions = Vec::new();
+
 			// Check if "table" matches
 			if "table".starts_with(&partial.to_lowercase()) {
-				return Some(vec![Pair {
+				completions.push(Pair {
 					display: "table".to_string(),
 					replacement: "table".to_string(),
-				}]);
+				});
+			}
+
+			// Check if "index" matches
+			if "index".starts_with(&partial.to_lowercase()) {
+				completions.push(Pair {
+					display: "index".to_string(),
+					replacement: "index".to_string(),
+				});
+			}
+
+			if !completions.is_empty() {
+				return Some(completions);
 			}
 		}
 
-		// For pattern completion after "table", we don't offer completions
+		// For pattern completion after "table" or "index", we don't offer completions
 		// to allow users to freely type patterns like "public.*" or "schema.table"
 		Some(Vec::new())
 	}
@@ -73,12 +93,19 @@ mod tests {
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "table"));
+		assert!(completions.iter().any(|c| c.display == "index"));
 
-		// Test with partial argument
+		// Test with partial argument for table
 		let input = "\\list ta";
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "table"));
+
+		// Test with partial argument for index
+		let input = "\\list in";
+		let completions = completer.find_completions(input, input.len());
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "index"));
 
 		// Test with full argument
 		let input = "\\list table";
@@ -95,5 +122,6 @@ mod tests {
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "table"));
+		assert!(completions.iter().any(|c| c.display == "index"));
 	}
 }

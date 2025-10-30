@@ -47,6 +47,14 @@ pub fn handle_help() -> ControlFlow<()> {
 		"\\dt[+][!] [pattern]",
 		"List tables (alias for \\list table)",
 	]);
+	metacmds.add_row(vec![
+		"\\list[+][!] index [pattern]",
+		"List indexes (+ for details, ! for same connection)",
+	]);
+	metacmds.add_row(vec![
+		"\\di[+][!] [pattern]",
+		"List indexes (alias for \\list index)",
+	]);
 	eprintln!("{metacmds}");
 
 	eprintln!("\nQuery modifiers (used after query):");
