@@ -8,6 +8,7 @@ mod function;
 mod index;
 mod pattern;
 mod table;
+mod view;
 
 pub async fn handle_list(
 	ctx: &mut ReplContext<'_>,
@@ -22,5 +23,6 @@ pub async fn handle_list(
 		ListItem::Function => {
 			function::handle_list_functions(ctx, &pattern, detail, sameconn).await
 		}
+		ListItem::View => view::handle_list_views(ctx, &pattern, detail, sameconn).await,
 	}
 }

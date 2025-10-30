@@ -11,6 +11,7 @@ pub enum ListItem {
 	Table,
 	Index,
 	Function,
+	View,
 }
 
 pub fn parse(
@@ -18,50 +19,24 @@ pub fn parse(
 ) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
 	literal('\\').parse_next(input)?;
 
-	// Try to parse \list[+][!] or \dt[+][!] or \di[+][!]
-	let (detail, sameconn, alias_type) = alt((
-		// \list+!
-		literal("list+!").map(|_| (true, true, None)),
-		// \list!+
-		literal("list!+").map(|_| (true, true, None)),
-		// \list+
-		literal("list+").map(|_| (true, false, None)),
-		// \list!
-		literal("list!").map(|_| (false, true, None)),
-		// \list
-		literal("list").map(|_| (false, false, None)),
-		// \dt+!
-		literal("dt+!").map(|_| (true, true, Some(ListItem::Table))),
-		// \dt!+
-		literal("dt!+").map(|_| (true, true, Some(ListItem::Table))),
-		// \dt+
-		literal("dt+").map(|_| (true, false, Some(ListItem::Table))),
-		// \dt!
-		literal("dt!").map(|_| (false, true, Some(ListItem::Table))),
-		// \dt
-		literal("dt").map(|_| (false, false, Some(ListItem::Table))),
-		// \di+!
-		literal("di+!").map(|_| (true, true, Some(ListItem::Index))),
-		// \di!+
-		literal("di!+").map(|_| (true, true, Some(ListItem::Index))),
-		// \di+
-		literal("di+").map(|_| (true, false, Some(ListItem::Index))),
-		// \di!
-		literal("di!").map(|_| (false, true, Some(ListItem::Index))),
-		// \di
-		literal("di").map(|_| (false, false, Some(ListItem::Index))),
-		// \df+!
-		literal("df+!").map(|_| (true, true, Some(ListItem::Function))),
-		// \df!+
-		literal("df!+").map(|_| (true, true, Some(ListItem::Function))),
-		// \df+
-		literal("df+").map(|_| (true, false, Some(ListItem::Function))),
-		// \df!
-		literal("df!").map(|_| (false, true, Some(ListItem::Function))),
-		// \df
-		literal("df").map(|_| (false, false, Some(ListItem::Function))),
+	// Parse the base command first
+	let alias_type = alt((
+		literal("list").map(|_| None),
+		literal("dt").map(|_| Some(ListItem::Table)),
+		literal("di").map(|_| Some(ListItem::Index)),
+		literal("df").map(|_| Some(ListItem::Function)),
+		literal("dv").map(|_| Some(ListItem::View)),
 	))
 	.parse_next(input)?;
+
+	// Parse modifiers: + for detail, ! for sameconn (in any order)
+	let has_plus_first = opt(literal("+")).parse_next(input)?.is_some();
+	let has_exclaim_first = opt(literal("!")).parse_next(input)?.is_some();
+	let has_plus_second = opt(literal("+")).parse_next(input)?.is_some();
+	let has_exclaim_second = opt(literal("!")).parse_next(input)?.is_some();
+
+	let detail = has_plus_first || has_plus_second;
+	let sameconn = has_exclaim_first || has_exclaim_second;
 
 	if let Some(item) = alias_type {
 		// For \dt or \di, pattern is optional
@@ -82,6 +57,7 @@ pub fn parse(
 			literal("table").map(|_| ListItem::Table),
 			literal("index").map(|_| ListItem::Index),
 			literal("function").map(|_| ListItem::Function),
+			literal("view").map(|_| ListItem::View),
 		))
 		.parse_next(input)?;
 
@@ -482,6 +458,76 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Function,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_list_view() {
+		let result = parse_metacommand("\\list view").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::View,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dv_alias() {
+		let result = parse_metacommand("\\dv").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::View,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dv_plus_alias() {
+		let result = parse_metacommand("\\dv+").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::View,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dv_with_sameconn() {
+		let result = parse_metacommand("\\dv!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::View,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dv_plus_with_sameconn() {
+		let result = parse_metacommand("\\dv+!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::View,
 				pattern: "public.*".to_string(),
 				detail: true,
 				sameconn: true,
