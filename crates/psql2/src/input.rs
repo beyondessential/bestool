@@ -55,6 +55,11 @@ pub(crate) enum ReplAction {
 		detail: bool,
 		sameconn: bool,
 	},
+	Describe {
+		item: String,
+		detail: bool,
+		sameconn: bool,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -105,6 +110,15 @@ pub(crate) fn handle_input(
 				} => ReplAction::List {
 					item,
 					pattern,
+					detail,
+					sameconn,
+				},
+				Metacommand::Describe {
+					item,
+					detail,
+					sameconn,
+				} => ReplAction::Describe {
+					item,
 					detail,
 					sameconn,
 				},

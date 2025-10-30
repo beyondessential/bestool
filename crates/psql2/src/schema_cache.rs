@@ -21,6 +21,8 @@ pub struct SchemaCache {
 	pub functions: Vec<String>,
 	/// Schema names
 	pub schemas: Vec<String>,
+	/// Index names by schema
+	pub indexes: HashMap<String, Vec<String>>,
 }
 
 impl SchemaCache {
@@ -37,6 +39,11 @@ impl SchemaCache {
 	/// Get all view names (across all schemas)
 	pub fn all_views(&self) -> Vec<String> {
 		self.views.values().flatten().cloned().collect()
+	}
+
+	/// Get all index names (across all schemas)
+	pub fn all_indexes(&self) -> Vec<String> {
+		self.indexes.values().flatten().cloned().collect()
 	}
 
 	/// Get all column names for a given table
@@ -130,6 +137,12 @@ impl SchemaCacheManager {
 		if let Ok(functions) = self.query_functions(&client).await {
 			new_cache.functions = functions;
 			debug!(count = new_cache.functions.len(), "loaded functions");
+		}
+
+		if let Ok(indexes) = self.query_indexes(&client).await {
+			new_cache.indexes = indexes;
+			let total: usize = new_cache.indexes.values().map(|v| v.len()).sum();
+			debug!(count = total, "loaded indexes");
 		}
 
 		*self.cache.write().unwrap() = new_cache;
@@ -256,5 +269,30 @@ impl SchemaCacheManager {
 			.into_diagnostic()?;
 
 		Ok(rows.into_iter().map(|r| r.get(0)).collect())
+	}
+
+	/// Query all indexes by schema
+	async fn query_indexes(
+		&self,
+		client: &tokio_postgres::Client,
+	) -> Result<HashMap<String, Vec<String>>> {
+		let rows = client
+			.query(
+				"SELECT schemaname, indexname FROM pg_indexes \
+                 WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
+                 ORDER BY schemaname, indexname",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
+
+		let mut indexes: HashMap<String, Vec<String>> = HashMap::new();
+		for row in rows {
+			let schemaname: String = row.get(0);
+			let indexname: String = row.get(1);
+			indexes.entry(schemaname).or_default().push(indexname);
+		}
+
+		Ok(indexes)
 	}
 }

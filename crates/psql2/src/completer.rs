@@ -6,6 +6,7 @@ use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 use crate::{repl::ReplState, schema_cache::SchemaCache, theme::Theme};
 
 mod debug;
+mod describe;
 mod keywords;
 mod list;
 mod paths;
@@ -64,6 +65,10 @@ impl SqlCompleter {
 		}
 
 		if let Some(completions) = self.complete_list(text_before_cursor) {
+			return completions;
+		}
+
+		if let Some(completions) = self.complete_describe(text_before_cursor) {
 			return completions;
 		}
 

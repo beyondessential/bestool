@@ -5,6 +5,7 @@ pub(crate) use debug::DebugWhat;
 pub use list::ListItem;
 
 mod debug;
+mod describe;
 mod edit;
 mod expanded;
 mod help;
@@ -59,6 +60,11 @@ pub(crate) enum Metacommand {
 		detail: bool,
 		sameconn: bool,
 	},
+	Describe {
+		item: String,
+		detail: bool,
+		sameconn: bool,
+	},
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -85,6 +91,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		vars::parse_lookup,
 		vars::parse_get,
 		list::parse,
+		describe::parse,
 	))
 	.parse_next(&mut input_slice)
 	{

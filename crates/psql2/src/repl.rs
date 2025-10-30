@@ -78,6 +78,14 @@ impl ReplAction {
 				detail,
 				sameconn,
 			} => list::handle_list(ctx, item, pattern, detail, sameconn).await,
+			ReplAction::Describe {
+				item,
+				detail,
+				sameconn,
+			} => {
+				eprintln!("Describe not yet implemented: item={item}, detail={detail}, sameconn={sameconn}");
+				ControlFlow::Continue(())
+			}
 			ReplAction::Execute {
 				input,
 				sql,
