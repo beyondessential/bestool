@@ -32,10 +32,7 @@ pub(super) async fn handle_describe_table(
 				WHEN co.collname IS NOT NULL THEN co.collname
 				ELSE ''
 			END AS collation,
-			CASE
-				WHEN a.attcompression IS NOT NULL THEN a.attcompression::text
-				ELSE ''
-			END AS compression,
+			COALESCE(a.attcompression::text, '') AS compression,
 			CASE
 				WHEN a.attstorage = 'p' THEN 'plain'
 				WHEN a.attstorage = 'e' THEN 'external'
@@ -46,9 +43,9 @@ pub(super) async fn handle_describe_table(
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+		LEFT JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
 		LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
 		LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation AND a.attcollation <> t.typcollation
-		LEFT JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
 		WHERE n.nspname = $1
 			AND c.relname = $2
 			AND a.attnum > 0
