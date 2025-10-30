@@ -7,7 +7,10 @@ impl super::SqlCompleter {
 		if text_before_cursor.trim_start().starts_with(r"\i ")
 			|| text_before_cursor.trim_start().starts_with(r"\o ")
 		{
-			let path_start = text_before_cursor.find(r"\o ").unwrap() + 3;
+			let path_start = text_before_cursor
+				.find(r"\o ")
+				.or_else(|| text_before_cursor.find(r"\i "))
+				.unwrap() + 3;
 			let partial_path = &text_before_cursor[path_start..];
 			return Some(partial_path);
 		}
@@ -145,7 +148,7 @@ mod tests {
 
 		// Test completion with partial path
 		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/test", path_str);
+		let input = format!(r"\i {}/test", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		assert!(!completions.is_empty());
@@ -186,7 +189,7 @@ mod tests {
 
 		// Test completion with just the directory path (no partial filename)
 		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/", path_str);
+		let input = format!(r"\i {}/", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		// Should list all files and directories
@@ -202,7 +205,7 @@ mod tests {
 
 		// Test with no path at all (current directory)
 		// This should show files in the current working directory
-		let input = "\\i ";
+		let input = r"\i ";
 		let _completions = completer.find_completions(input, input.len());
 		// Should have some completions (current dir likely has files)
 		// We don't assert specific files since we don't control the working directory
@@ -240,21 +243,21 @@ mod tests {
 
 		// Test lowercase matching uppercase files
 		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\i {}/cargo", path_str);
+		let input = format!(r"\i {}/cargo", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "Cargo.toml"));
 
 		// Test uppercase matching mixed case
-		let input = format!("\\i {}/SCRIPTS", path_str);
+		let input = format!(r"\i {}/SCRIPTS", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "Scripts/"));
 
 		// Test mixed case matching
-		let input = format!("\\i {}/ReAdMe", path_str);
+		let input = format!(r"\i {}/ReAdMe", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		assert!(!completions.is_empty());
@@ -291,7 +294,7 @@ mod tests {
 
 		// Test completion with partial path
 		let path_str = temp_dir.to_string_lossy();
-		let input = format!("\\o {}/output", path_str);
+		let input = format!(r"\o {}/output", path_str);
 		let completions = completer.find_completions(&input, input.len());
 
 		assert!(!completions.is_empty());

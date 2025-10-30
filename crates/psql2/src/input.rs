@@ -16,9 +16,7 @@ pub(crate) enum ReplAction {
 	Exit,
 	ToggleExpanded,
 	ToggleWriteMode,
-	Edit {
-		content: Option<String>,
-	},
+	Edit,
 	IncludeFile {
 		file_path: PathBuf,
 		vars: Vec<(String, String)>,
@@ -74,7 +72,7 @@ pub(crate) fn handle_input(
 				Metacommand::Quit => ReplAction::Exit,
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
 				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
-				Metacommand::Edit { content } => ReplAction::Edit { content },
+				Metacommand::Edit => ReplAction::Edit,
 				Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
 					file_path: file_path.into(),
 					vars,

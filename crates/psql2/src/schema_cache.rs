@@ -57,6 +57,7 @@ impl SchemaCache {
 }
 
 /// Schema cache manager that runs queries on a dedicated background connection
+#[derive(Debug, Clone)]
 pub struct SchemaCacheManager {
 	cache: Arc<RwLock<SchemaCache>>,
 	pool: PgPool,
@@ -255,14 +256,5 @@ impl SchemaCacheManager {
 			.into_diagnostic()?;
 
 		Ok(rows.into_iter().map(|r| r.get(0)).collect())
-	}
-}
-
-impl Clone for SchemaCacheManager {
-	fn clone(&self) -> Self {
-		Self {
-			cache: self.cache.clone(),
-			pool: self.pool.clone(),
-		}
 	}
 }

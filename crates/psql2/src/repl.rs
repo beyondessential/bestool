@@ -51,7 +51,7 @@ impl ReplAction {
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
 			ReplAction::Exit => exit::handle_exit(),
 			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
-			ReplAction::Edit { content } => edit::handle_edit(ctx, content).await,
+			ReplAction::Edit => edit::handle_edit(ctx).await,
 			ReplAction::IncludeFile { file_path, vars } => {
 				include::handle_include(ctx, &file_path, vars).await
 			}

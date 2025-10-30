@@ -6,12 +6,10 @@ use tracing::{debug, warn};
 use super::state::ReplContext;
 use crate::input::{handle_input, ReplAction};
 
-pub async fn handle_edit(ctx: &mut ReplContext<'_>, content: Option<String>) -> ControlFlow<()> {
+pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 	use super::execute::handle_execute;
 
-	let initial_content = if let Some(content) = content {
-		content
-	} else {
+	let initial_content = {
 		let hist_len = ctx.rl.history().len();
 		if hist_len > 0 {
 			match ctx.rl.history().get(hist_len - 1, SearchDirection::Forward) {
