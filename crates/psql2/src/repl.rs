@@ -76,7 +76,8 @@ impl ReplAction {
 				item,
 				pattern,
 				detail,
-			} => list::handle_list(ctx, item, pattern, detail).await,
+				sameconn,
+			} => list::handle_list(ctx, item, pattern, detail, sameconn).await,
 			ReplAction::Execute {
 				input,
 				sql,
@@ -201,6 +202,7 @@ pub async fn run(config: Config) -> Result<()> {
 			theme: config.theme,
 			repl_state: &repl_state,
 			rl: &mut rl,
+			pool: &config.pool,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -245,6 +247,7 @@ pub async fn run(config: Config) -> Result<()> {
 					theme: config.theme,
 					repl_state: &repl_state,
 					rl: &mut rl,
+					pool: &config.pool,
 				};
 
 				if action.handle(&mut ctx, line).await.is_break() {

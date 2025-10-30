@@ -57,6 +57,7 @@ pub(crate) enum Metacommand {
 		item: list::ListItem,
 		pattern: String,
 		detail: bool,
+		sameconn: bool,
 	},
 }
 

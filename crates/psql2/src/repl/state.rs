@@ -6,7 +6,9 @@ use std::{
 use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
-use crate::{audit::Audit, completer::SqlCompleter, snippets::Snippets, theme::Theme};
+use crate::{
+	audit::Audit, completer::SqlCompleter, pool::PgPool, snippets::Snippets, theme::Theme,
+};
 
 #[derive(Debug, Clone)]
 pub struct ReplState {
@@ -45,4 +47,5 @@ pub(crate) struct ReplContext<'a> {
 	pub theme: Theme,
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
 	pub rl: &'a mut Editor<SqlCompleter, Audit>,
+	pub pool: &'a PgPool,
 }

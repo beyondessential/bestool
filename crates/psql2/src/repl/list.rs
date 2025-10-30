@@ -5,15 +5,17 @@ use comfy_table::Table;
 use crate::parser::ListItem;
 
 use super::state::ReplContext;
+use crate::pool::PgPool;
 
 pub async fn handle_list(
 	ctx: &mut ReplContext<'_>,
 	item: ListItem,
 	pattern: String,
 	detail: bool,
+	sameconn: bool,
 ) -> ControlFlow<()> {
 	match item {
-		ListItem::Table => handle_list_tables(ctx, &pattern, detail).await,
+		ListItem::Table => handle_list_tables(ctx, &pattern, detail, sameconn).await,
 	}
 }
 
@@ -21,6 +23,7 @@ async fn handle_list_tables(
 	ctx: &mut ReplContext<'_>,
 	pattern: &str,
 	detail: bool,
+	sameconn: bool,
 ) -> ControlFlow<()> {
 	let (schema_pattern, table_pattern) = parse_pattern(pattern);
 	let exclude_schemas = should_exclude_system_schemas(pattern);
@@ -107,10 +110,25 @@ async fn handle_list_tables(
 		"#
 	};
 
-	let result = ctx
-		.client
-		.query(query, &[&schema_pattern, &table_pattern])
-		.await;
+	let result = if sameconn {
+		// Use the existing connection
+		ctx.client
+			.query(query, &[&schema_pattern, &table_pattern])
+			.await
+	} else {
+		// Get a new connection from the pool
+		match ctx.pool.get().await {
+			Ok(client) => {
+				client
+					.query(query, &[&schema_pattern, &table_pattern])
+					.await
+			}
+			Err(e) => {
+				eprintln!("Error getting connection from pool: {}", e);
+				return ControlFlow::Continue(());
+			}
+		}
+	};
 
 	match result {
 		Ok(rows) => {

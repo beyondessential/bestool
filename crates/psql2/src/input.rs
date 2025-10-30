@@ -53,6 +53,7 @@ pub(crate) enum ReplAction {
 		item: crate::parser::ListItem,
 		pattern: String,
 		detail: bool,
+		sameconn: bool,
 	},
 }
 
@@ -100,10 +101,12 @@ pub(crate) fn handle_input(
 					item,
 					pattern,
 					detail,
+					sameconn,
 				} => ReplAction::List {
 					item,
 					pattern,
 					detail,
+					sameconn,
 				},
 			};
 			return (String::new(), action);
