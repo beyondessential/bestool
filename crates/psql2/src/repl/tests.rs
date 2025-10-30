@@ -376,3 +376,152 @@ async fn test_backend_xmin_vs_xid_in_idle_transaction() {
 
 	client.batch_execute("ROLLBACK").await.ok();
 }
+
+#[tokio::test]
+async fn test_describe_table() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_describe_table (
+				id SERIAL PRIMARY KEY,
+				name TEXT NOT NULL,
+				email TEXT UNIQUE
+			)",
+		)
+		.await
+		.expect("Failed to create test table");
+
+	let rows = client
+		.query(
+			"SELECT n.nspname, c.relname, c.relkind::text
+			FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_describe_table'
+			AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to query test table");
+
+	assert!(!rows.is_empty(), "Test table should exist");
+
+	let row = &rows[0];
+	let relkind: String = row.get(2);
+	assert_eq!(relkind, "r", "Should be a regular table");
+}
+
+#[tokio::test]
+async fn test_describe_view() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute("CREATE TEMP VIEW test_describe_view AS SELECT 1 AS id, 'test' AS name")
+		.await
+		.expect("Failed to create test view");
+
+	let rows = client
+		.query(
+			"SELECT n.nspname, c.relname, c.relkind::text
+			FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_describe_view'
+			AND n.nspname LIKE 'pg_temp%'",
+			&[],
+		)
+		.await
+		.expect("Failed to query test view");
+
+	assert!(!rows.is_empty(), "Test view should exist");
+
+	let row = &rows[0];
+	let relkind: String = row.get(2);
+	assert_eq!(relkind, "v", "Should be a view");
+}
+
+#[tokio::test]
+async fn test_describe_sequence() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute("CREATE TEMP SEQUENCE test_describe_seq START 100 INCREMENT 5")
+		.await
+		.expect("Failed to create test sequence");
+
+	let rows = client
+		.query(
+			"SELECT seqincrement, seqstart
+			FROM pg_catalog.pg_sequence s
+			LEFT JOIN pg_catalog.pg_class c ON c.oid = s.seqrelid
+			WHERE c.relname = 'test_describe_seq'",
+			&[],
+		)
+		.await
+		.expect("Failed to query test sequence");
+
+	assert!(!rows.is_empty(), "Test sequence should exist");
+
+	let row = &rows[0];
+	let increment: i64 = row.get(0);
+	let start: i64 = row.get(1);
+	assert_eq!(increment, 5, "Increment should be 5");
+	assert_eq!(start, 100, "Start should be 100");
+}
+
+#[tokio::test]
+async fn test_describe_index() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_index_table (id INT, name TEXT);
+			CREATE INDEX test_describe_idx ON test_index_table(name)",
+		)
+		.await
+		.expect("Failed to create test table and index");
+
+	let rows = client
+		.query(
+			"SELECT i.relname, ix.indisunique
+			FROM pg_catalog.pg_class i
+			LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid = i.oid
+			WHERE i.relname = 'test_describe_idx'",
+			&[],
+		)
+		.await
+		.expect("Failed to query test index");
+
+	assert!(!rows.is_empty(), "Test index should exist");
+
+	let row = &rows[0];
+	let is_unique: bool = row.get(1);
+	assert!(!is_unique, "Index should not be unique");
+}

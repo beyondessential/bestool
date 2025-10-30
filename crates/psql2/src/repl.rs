@@ -19,6 +19,7 @@ pub use state::ReplState;
 pub use transaction::TransactionState;
 
 mod debug;
+mod describe;
 mod edit;
 mod execute;
 mod exit;
@@ -82,10 +83,7 @@ impl ReplAction {
 				item,
 				detail,
 				sameconn,
-			} => {
-				eprintln!("Describe not yet implemented: item={item}, detail={detail}, sameconn={sameconn}");
-				ControlFlow::Continue(())
-			}
+			} => describe::handle_describe(ctx, item, detail, sameconn).await,
 			ReplAction::Execute {
 				input,
 				sql,
