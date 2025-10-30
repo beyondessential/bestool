@@ -3,9 +3,11 @@ use std::ops::ControlFlow;
 use comfy_table::Table;
 
 pub fn handle_help() -> ControlFlow<()> {
-	eprintln!("Available metacommands:");
+	eprintln!("Metacommands:");
 	let mut metacmds = Table::new();
 	crate::table::configure(&mut metacmds);
+	metacmds.load_preset(comfy_table::presets::NOTHING);
+
 	metacmds.add_row(vec!["\\?", "Show this help"]);
 	metacmds.add_row(vec!["\\help", "Show this help"]);
 	metacmds.add_row(vec!["\\q", "Quit"]);
@@ -40,26 +42,19 @@ pub fn handle_help() -> ControlFlow<()> {
 		"List variables (optionally matching pattern)",
 	]);
 	metacmds.add_row(vec![
-		"\\list[+][!] table [pattern]",
-		"List tables (+ for details, ! for same connection)",
+		"\\list[+][!] <item> [pattern]",
+		"List database items (+ for details, ! for same connection)",
 	]);
-	metacmds.add_row(vec![
-		"\\dt[+][!] [pattern]",
-		"List tables (alias for \\list table)",
-	]);
-	metacmds.add_row(vec![
-		"\\list[+][!] index [pattern]",
-		"List indexes (+ for details, ! for same connection)",
-	]);
-	metacmds.add_row(vec![
-		"\\di[+][!] [pattern]",
-		"List indexes (alias for \\list index)",
-	]);
+	metacmds.add_row(vec!["\\d{t,i,f}", "Aliases for \\list"]);
 	eprintln!("{metacmds}");
+
+	eprintln!("Database items (with \\list): table, index, function");
 
 	eprintln!("\nQuery modifiers (used after query):");
 	let mut modifiers = Table::new();
 	crate::table::configure(&mut modifiers);
+	modifiers.load_preset(comfy_table::presets::NOTHING);
+
 	modifiers.add_row(vec!["\\g", "Execute query"]);
 	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
 	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
@@ -79,6 +74,8 @@ pub fn handle_help() -> ControlFlow<()> {
 	eprintln!("\nVariable interpolation:");
 	let mut vars = Table::new();
 	crate::table::configure(&mut vars);
+	vars.load_preset(comfy_table::presets::NOTHING);
+
 	vars.add_row(vec![
 		"${name}",
 		"Replace with variable value (errors if not set)",

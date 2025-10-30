@@ -1,4 +1,4 @@
-use comfy_table::{Attribute, Cell, CellAlignment, Table};
+use comfy_table::Table;
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -8,14 +8,8 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 	let mut table = Table::new();
 	crate::table::configure(&mut table);
 
-	table.set_header(ctx.columns.iter().map(|col| {
-		let cell = Cell::new(col.name()).set_alignment(CellAlignment::Center);
-		if ctx.use_colours {
-			cell.add_attribute(Attribute::Bold)
-		} else {
-			cell
-		}
-	}));
+	table.set_header(ctx.columns.iter().map(|col| col.name()));
+	crate::table::style_header(&mut table);
 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut row_data = Vec::new();

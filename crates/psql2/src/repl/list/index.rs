@@ -180,7 +180,8 @@ pub(super) async fn handle_list_indexes(
 				}
 			}
 
-			println!("{table}");
+			crate::table::style_header(&mut table);
+			println!("{table}\n");
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
