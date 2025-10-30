@@ -27,11 +27,28 @@ pub(super) async fn handle_describe_table(
 				ELSE ''
 			END AS identity,
 			CASE WHEN a.attgenerated = 's' THEN 'generated' ELSE '' END AS generated,
-			pg_catalog.col_description(c.oid, a.attnum) AS description
+			pg_catalog.col_description(c.oid, a.attnum) AS description,
+			CASE
+				WHEN co.collname IS NOT NULL THEN co.collname
+				ELSE ''
+			END AS collation,
+			CASE
+				WHEN a.attcompression IS NOT NULL THEN a.attcompression::text
+				ELSE ''
+			END AS compression,
+			CASE
+				WHEN a.attstorage = 'p' THEN 'plain'
+				WHEN a.attstorage = 'e' THEN 'external'
+				WHEN a.attstorage = 'm' THEN 'main'
+				WHEN a.attstorage = 'x' THEN 'extended'
+				ELSE ''
+			END AS storage
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
 		LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+		LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation AND a.attcollation <> t.typcollation
+		LEFT JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
 		WHERE n.nspname = $1
 			AND c.relname = $2
 			AND a.attnum > 0
@@ -88,6 +105,35 @@ pub(super) async fn handle_describe_table(
 		ORDER BY conname
 	"#;
 
+	let referenced_by_query = r#"
+		SELECT
+			conname AS constraint_name,
+			conrelid::regclass AS referencing_table,
+			pg_catalog.pg_get_constraintdef(oid, true) AS constraint_def
+		FROM pg_catalog.pg_constraint
+		WHERE confrelid = (
+			SELECT c.oid
+			FROM pg_catalog.pg_class c
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = $1 AND c.relname = $2
+		)
+		AND contype = 'f'
+		ORDER BY conname
+	"#;
+
+	let triggers_query = r#"
+		SELECT
+			t.tgname AS trigger_name,
+			pg_catalog.pg_get_triggerdef(t.oid, true) AS trigger_def
+		FROM pg_catalog.pg_trigger t
+		LEFT JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1
+			AND c.relname = $2
+			AND NOT t.tgisinternal
+		ORDER BY t.tgname
+	"#;
+
 	let table_info_query = r#"
 		SELECT
 			pg_catalog.pg_get_userbyid(c.relowner) AS owner,
@@ -136,10 +182,11 @@ pub(super) async fn handle_describe_table(
 					"Collation",
 					"Nullable",
 					"Default",
-					"Description",
+					"Compression",
+					"Storage",
 				]);
 			} else {
-				table.set_header(vec!["Column", "Type", "Collation", "Nullable", "Default"]);
+				table.set_header(vec!["Column", "Type", "Nullable", "Default"]);
 			}
 
 			for row in rows {
@@ -149,7 +196,10 @@ pub(super) async fn handle_describe_table(
 				let default_value: String = row.get(3);
 				let identity: String = row.get(4);
 				let generated: String = row.get(5);
-				let description: Option<String> = if detail { row.get(6) } else { None };
+				let _description: Option<String> = row.get(6);
+				let collation: String = row.get(7);
+				let compression: String = row.get(8);
+				let storage: String = row.get(9);
 
 				let mut default_str = String::new();
 				if !identity.is_empty() {
@@ -164,19 +214,14 @@ pub(super) async fn handle_describe_table(
 					table.add_row(vec![
 						column_name,
 						data_type,
-						String::new(), // collation placeholder
+						collation,
 						nullable,
 						default_str,
-						description.unwrap_or_default(),
+						compression,
+						storage,
 					]);
 				} else {
-					table.add_row(vec![
-						column_name,
-						data_type,
-						String::new(), // collation placeholder
-						nullable,
-						default_str,
-					]);
+					table.add_row(vec![column_name, data_type, nullable, default_str]);
 				}
 			}
 
@@ -274,6 +319,61 @@ pub(super) async fn handle_describe_table(
 						let constraint_name: String = row.get(0);
 						let constraint_def: String = row.get(1);
 						println!("    \"{}\" {}", constraint_name, constraint_def);
+					}
+				}
+			}
+
+			let referenced_result = if sameconn {
+				ctx.client
+					.query(referenced_by_query, &[&schema, &table_name])
+					.await
+			} else {
+				match ctx.pool.get().await {
+					Ok(client) => {
+						client
+							.query(referenced_by_query, &[&schema, &table_name])
+							.await
+					}
+					Err(_) => {
+						return ControlFlow::Continue(());
+					}
+				}
+			};
+
+			if let Ok(ref_rows) = referenced_result {
+				if !ref_rows.is_empty() {
+					println!("\nReferenced by:");
+					for row in ref_rows {
+						let constraint_name: String = row.get(0);
+						let referencing_table: String = row.get(1);
+						let constraint_def: String = row.get(2);
+						println!(
+							"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+							referencing_table, constraint_name, constraint_def
+						);
+					}
+				}
+			}
+
+			let triggers_result = if sameconn {
+				ctx.client
+					.query(triggers_query, &[&schema, &table_name])
+					.await
+			} else {
+				match ctx.pool.get().await {
+					Ok(client) => client.query(triggers_query, &[&schema, &table_name]).await,
+					Err(_) => {
+						return ControlFlow::Continue(());
+					}
+				}
+			};
+
+			if let Ok(trigger_rows) = triggers_result {
+				if !trigger_rows.is_empty() {
+					println!("\nTriggers:");
+					for row in trigger_rows {
+						let trigger_def: String = row.get(1);
+						println!("    {}", trigger_def);
 					}
 				}
 			}

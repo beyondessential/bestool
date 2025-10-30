@@ -525,3 +525,160 @@ async fn test_describe_index() {
 	let is_unique: bool = row.get(1);
 	assert!(!is_unique, "Index should not be unique");
 }
+
+#[tokio::test]
+async fn test_describe_table_with_foreign_keys() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_parent (id INT PRIMARY KEY);
+			CREATE TEMP TABLE test_child (
+				id INT PRIMARY KEY,
+				parent_id INT REFERENCES test_parent(id)
+			)",
+		)
+		.await
+		.expect("Failed to create test tables with foreign keys");
+
+	let fk_rows = client
+		.query(
+			"SELECT conname
+			FROM pg_catalog.pg_constraint
+			WHERE conrelid = (
+				SELECT c.oid FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relname = 'test_child' AND n.nspname LIKE 'pg_temp%'
+			)
+			AND contype = 'f'",
+			&[],
+		)
+		.await
+		.expect("Failed to query foreign keys");
+
+	assert!(!fk_rows.is_empty(), "Foreign key should exist");
+
+	let ref_rows = client
+		.query(
+			"SELECT conname
+			FROM pg_catalog.pg_constraint
+			WHERE confrelid = (
+				SELECT c.oid FROM pg_catalog.pg_class c
+				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relname = 'test_parent' AND n.nspname LIKE 'pg_temp%'
+			)
+			AND contype = 'f'",
+			&[],
+		)
+		.await
+		.expect("Failed to query referenced by");
+
+	assert!(
+		!ref_rows.is_empty(),
+		"Parent table should be referenced by child"
+	);
+}
+
+#[tokio::test]
+async fn test_describe_table_with_triggers() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE TEMP TABLE test_trigger_table (id INT, updated_at TIMESTAMP);
+			CREATE OR REPLACE FUNCTION update_timestamp()
+			RETURNS TRIGGER AS $$
+			BEGIN
+				NEW.updated_at = NOW();
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER test_trigger
+			BEFORE UPDATE ON test_trigger_table
+			FOR EACH ROW EXECUTE FUNCTION update_timestamp()",
+		)
+		.await
+		.expect("Failed to create test table with trigger");
+
+	let trigger_rows = client
+		.query(
+			"SELECT t.tgname
+			FROM pg_catalog.pg_trigger t
+			LEFT JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = 'test_trigger_table'
+				AND n.nspname LIKE 'pg_temp%'
+				AND NOT t.tgisinternal",
+			&[],
+		)
+		.await
+		.expect("Failed to query triggers");
+
+	assert!(!trigger_rows.is_empty(), "Trigger should exist");
+	let row = &trigger_rows[0];
+	let trigger_name: String = row.get(0);
+	assert_eq!(trigger_name, "test_trigger");
+}
+
+#[tokio::test]
+async fn test_describe_function() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	client
+		.batch_execute(
+			"CREATE OR REPLACE FUNCTION test_describe_func(x INT, y INT)
+			RETURNS INT AS $$
+			BEGIN
+				RETURN x + y;
+			END;
+			$$ LANGUAGE plpgsql IMMUTABLE",
+		)
+		.await
+		.expect("Failed to create test function");
+
+	let rows = client
+		.query(
+			"SELECT p.proname, l.lanname
+			FROM pg_catalog.pg_proc p
+			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+			LEFT JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+			WHERE n.nspname = 'public'
+				AND p.proname = 'test_describe_func'",
+			&[],
+		)
+		.await
+		.expect("Failed to query test function");
+
+	assert!(!rows.is_empty(), "Test function should exist");
+	let row = &rows[0];
+	let function_name: String = row.get(0);
+	let language: String = row.get(1);
+	assert_eq!(function_name, "test_describe_func");
+	assert_eq!(language, "plpgsql");
+
+	client
+		.batch_execute("DROP FUNCTION IF EXISTS test_describe_func(INT, INT)")
+		.await
+		.ok();
+}

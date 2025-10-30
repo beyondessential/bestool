@@ -15,7 +15,13 @@ pub(super) async fn handle_describe_view(
 		SELECT
 			a.attname AS column_name,
 			pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
-			pg_catalog.col_description(c.oid, a.attnum) AS description
+			CASE
+				WHEN a.attstorage = 'p' THEN 'plain'
+				WHEN a.attstorage = 'e' THEN 'external'
+				WHEN a.attstorage = 'm' THEN 'main'
+				WHEN a.attstorage = 'x' THEN 'extended'
+				ELSE ''
+			END AS storage
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
@@ -29,7 +35,7 @@ pub(super) async fn handle_describe_view(
 
 	let view_info_query = r#"
 		SELECT
-			c.relkind AS view_kind,
+			c.relkind::text AS view_kind,
 			pg_catalog.pg_get_viewdef(c.oid, true) AS view_definition,
 			pg_catalog.pg_get_userbyid(c.relowner) AS owner,
 			pg_size_pretty(pg_total_relation_size(c.oid)) AS size,
@@ -103,7 +109,7 @@ pub(super) async fn handle_describe_view(
 			crate::table::configure(&mut table);
 
 			if detail {
-				table.set_header(vec!["Column", "Type", "Description"]);
+				table.set_header(vec!["Column", "Type", "Storage"]);
 			} else {
 				table.set_header(vec!["Column", "Type"]);
 			}
@@ -111,14 +117,10 @@ pub(super) async fn handle_describe_view(
 			for row in rows {
 				let column_name: String = row.get(0);
 				let data_type: String = row.get(1);
-				let description: Option<String> = if detail { row.get(2) } else { None };
+				let storage: String = row.get(2);
 
 				if detail {
-					table.add_row(vec![
-						column_name,
-						data_type,
-						description.unwrap_or_default(),
-					]);
+					table.add_row(vec![column_name, data_type, storage]);
 				} else {
 					table.add_row(vec![column_name, data_type]);
 				}
@@ -127,9 +129,11 @@ pub(super) async fn handle_describe_view(
 			crate::table::style_header(&mut table);
 			println!("{table}");
 
-			if let Some(definition) = view_definition {
-				println!("\nView definition:");
-				println!("{}", definition);
+			if detail {
+				if let Some(definition) = view_definition {
+					println!("\nView definition:");
+					println!("{}", definition);
+				}
 			}
 
 			if detail {

@@ -32,7 +32,8 @@ pub(super) async fn handle_describe_index(
 			END AS is_valid,
 			pg_size_pretty(pg_total_relation_size(i.oid)) AS size,
 			pg_catalog.pg_get_userbyid(i.relowner) AS owner,
-			obj_description(i.oid, 'pg_class') AS description
+			obj_description(i.oid, 'pg_class') AS description,
+			ix.indkey AS index_keys
 		FROM pg_catalog.pg_class i
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = i.relnamespace
 		LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid = i.oid
@@ -41,6 +42,36 @@ pub(super) async fn handle_describe_index(
 		WHERE n.nspname = $1
 			AND i.relname = $2
 			AND i.relkind IN ('i', 'I')
+	"#;
+
+	let columns_query = r#"
+		SELECT
+			a.attname AS column_name,
+			pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+			CASE
+				WHEN a.attnum = ANY(ix.indkey) THEN 'yes'
+				ELSE 'no'
+			END AS is_key,
+			pg_catalog.pg_get_indexdef(i.oid, a.attnum - t.relnatts, true) AS definition,
+			CASE
+				WHEN a.attstorage = 'p' THEN 'plain'
+				WHEN a.attstorage = 'e' THEN 'external'
+				WHEN a.attstorage = 'm' THEN 'main'
+				WHEN a.attstorage = 'x' THEN 'extended'
+				ELSE ''
+			END AS storage
+		FROM pg_catalog.pg_class i
+		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = i.relnamespace
+		LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid = i.oid
+		LEFT JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid
+		LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
+		WHERE n.nspname = $1
+			AND i.relname = $2
+			AND i.relkind IN ('i', 'I')
+			AND a.attnum > 0
+			AND NOT a.attisdropped
+			AND a.attnum = ANY(ix.indkey)
+		ORDER BY array_position(ix.indkey, a.attnum)
 	"#;
 
 	let result = if sameconn {
@@ -78,35 +109,95 @@ pub(super) async fn handle_describe_index(
 			let owner: String = row.get(9);
 			let description: Option<String> = row.get(10);
 
-			println!("Index \"{}.{}\"", schema_name, index_name_val);
-			println!();
+			println!(
+				"Index \"{}.{}\" on table \"{}.{}\"",
+				schema_name, index_name_val, schema_name, table_name
+			);
 
-			let mut table = Table::new();
-			crate::table::configure(&mut table);
-
-			table.set_header(vec!["Property", "Value"]);
-			table.add_row(vec!["Table", &format!("{}.{}", schema_name, table_name)]);
-			table.add_row(vec!["Type", &index_type]);
-			table.add_row(vec!["Unique", &is_unique]);
-			table.add_row(vec!["Primary", &is_primary]);
-			table.add_row(vec!["Valid", &is_valid]);
+			let mut properties = Vec::new();
+			if is_unique == "yes" {
+				properties.push("unique");
+			}
+			if is_primary == "yes" {
+				properties.push("primary key");
+			}
+			properties.push(&index_type);
+			if is_valid == "yes" {
+				properties.push("valid");
+			} else {
+				properties.push("invalid");
+			}
+			println!("    {}", properties.join(", "));
 
 			if detail {
-				table.add_row(vec!["Size", &size]);
-				table.add_row(vec!["Owner", &owner]);
+				println!("Size: {}", size);
 			}
 
-			crate::table::style_header(&mut table);
-			println!("{table}");
+			let columns_result = if sameconn {
+				ctx.client
+					.query(columns_query, &[&schema, &index_name])
+					.await
+			} else {
+				match ctx.pool.get().await {
+					Ok(client) => client.query(columns_query, &[&schema, &index_name]).await,
+					Err(e) => {
+						eprintln!("Error getting connection from pool: {}", e);
+						return ControlFlow::Continue(());
+					}
+				}
+			};
+
+			if let Ok(col_rows) = columns_result {
+				if !col_rows.is_empty() {
+					println!();
+					let mut table = Table::new();
+					crate::table::configure(&mut table);
+
+					if detail {
+						table.set_header(vec!["Column", "Type", "Key?", "Definition", "Storage"]);
+						for col_row in col_rows {
+							let column_name: String = col_row.get(0);
+							let data_type: String = col_row.get(1);
+							let is_key: String = col_row.get(2);
+							let definition: Option<String> = col_row.get(3);
+							let storage: String = col_row.get(4);
+							table.add_row(vec![
+								column_name,
+								data_type,
+								is_key,
+								definition.unwrap_or_default(),
+								storage,
+							]);
+						}
+					} else {
+						table.set_header(vec!["Column", "Type", "Key?", "Definition"]);
+						for col_row in col_rows {
+							let column_name: String = col_row.get(0);
+							let data_type: String = col_row.get(1);
+							let is_key: String = col_row.get(2);
+							let definition: Option<String> = col_row.get(3);
+							table.add_row(vec![
+								column_name,
+								data_type,
+								is_key,
+								definition.unwrap_or_default(),
+							]);
+						}
+					}
+
+					crate::table::style_header(&mut table);
+					println!("{table}");
+				}
+			}
 
 			println!("\nDefinition:");
 			println!("    {}", index_definition);
 
 			if detail {
+				println!("\nOwner: {}", owner);
 				if let Some(desc) = description {
 					if !desc.is_empty() {
-						println!("\nDescription:");
-						println!("    {}", desc);
+						println!("Description: {}", desc);
 					}
 				}
 			}

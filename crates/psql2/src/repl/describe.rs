@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::repl::state::ReplContext;
 
+mod function;
 mod index;
 mod sequence;
 mod table;
@@ -53,7 +54,8 @@ pub async fn handle_describe(
 ) -> ControlFlow<()> {
 	let (schema, name) = parse_item(&item);
 
-	let query = r#"
+	// First try to find it as a relation
+	let relation_query = r#"
 		SELECT
 			n.nspname AS schema_name,
 			c.relname AS relation_name,
@@ -65,11 +67,20 @@ pub async fn handle_describe(
 			AND c.relname = $2
 	"#;
 
-	let result = if sameconn {
-		ctx.client.query(query, &[&schema, &name]).await
+	// Also try to find it as a function
+	let function_query = r#"
+		SELECT COUNT(*)
+		FROM pg_catalog.pg_proc p
+		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+		WHERE n.nspname = $1
+			AND p.proname = $2
+	"#;
+
+	let relation_result = if sameconn {
+		ctx.client.query(relation_query, &[&schema, &name]).await
 	} else {
 		match ctx.pool.get().await {
-			Ok(client) => client.query(query, &[&schema, &name]).await,
+			Ok(client) => client.query(relation_query, &[&schema, &name]).await,
 			Err(e) => {
 				eprintln!("Error getting connection from pool: {}", e);
 				return ControlFlow::Continue(());
@@ -77,10 +88,35 @@ pub async fn handle_describe(
 		}
 	};
 
-	match result {
+	match relation_result {
 		Ok(rows) => {
 			if rows.is_empty() {
-				eprintln!("Did not find any relation named \"{}\".", item);
+				// Not a relation, try function
+				let function_result = if sameconn {
+					ctx.client.query(function_query, &[&schema, &name]).await
+				} else {
+					match ctx.pool.get().await {
+						Ok(client) => client.query(function_query, &[&schema, &name]).await,
+						Err(e) => {
+							eprintln!("Error getting connection from pool: {}", e);
+							return ControlFlow::Continue(());
+						}
+					}
+				};
+
+				if let Ok(func_rows) = function_result {
+					if let Some(func_row) = func_rows.first() {
+						let count: i64 = func_row.get(0);
+						if count > 0 {
+							return function::handle_describe_function(
+								ctx, &schema, &name, detail, sameconn,
+							)
+							.await;
+						}
+					}
+				}
+
+				eprintln!("Did not find any relation or function named \"{}\".", item);
 				return ControlFlow::Continue(());
 			}
 
