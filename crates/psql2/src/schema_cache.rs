@@ -191,16 +191,19 @@ impl SchemaCacheManager {
 		Ok(tables)
 	}
 
-	/// Query all views by schema
+	/// Query all views by schema (includes materialized views)
 	async fn query_views(
 		&self,
 		client: &tokio_postgres::Client,
 	) -> Result<HashMap<String, Vec<String>>> {
 		let rows = client
 			.query(
-				"SELECT schemaname, viewname FROM pg_views \
-                 WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
-                 ORDER BY schemaname, viewname",
+				"SELECT n.nspname, c.relname \
+				 FROM pg_catalog.pg_class c \
+				 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+				 WHERE c.relkind IN ('v', 'm') \
+				 AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+				 ORDER BY n.nspname, c.relname",
 				&[],
 			)
 			.await
