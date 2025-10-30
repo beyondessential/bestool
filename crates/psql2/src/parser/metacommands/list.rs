@@ -10,6 +10,7 @@ use winnow::{
 pub enum ListItem {
 	Table,
 	Index,
+	Function,
 }
 
 pub fn parse(
@@ -49,6 +50,16 @@ pub fn parse(
 		literal("di!").map(|_| (false, true, Some(ListItem::Index))),
 		// \di
 		literal("di").map(|_| (false, false, Some(ListItem::Index))),
+		// \df+!
+		literal("df+!").map(|_| (true, true, Some(ListItem::Function))),
+		// \df!+
+		literal("df!+").map(|_| (true, true, Some(ListItem::Function))),
+		// \df+
+		literal("df+").map(|_| (true, false, Some(ListItem::Function))),
+		// \df!
+		literal("df!").map(|_| (false, true, Some(ListItem::Function))),
+		// \df
+		literal("df").map(|_| (false, false, Some(ListItem::Function))),
 	))
 	.parse_next(input)?;
 
@@ -70,6 +81,7 @@ pub fn parse(
 		let item = alt((
 			literal("table").map(|_| ListItem::Table),
 			literal("index").map(|_| ListItem::Index),
+			literal("function").map(|_| ListItem::Function),
 		))
 		.parse_next(input)?;
 
@@ -400,6 +412,76 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Index,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_list_function() {
+		let result = parse_metacommand("\\list function").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Function,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_df_alias() {
+		let result = parse_metacommand("\\df").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Function,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_df_plus_alias() {
+		let result = parse_metacommand("\\df+").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Function,
+				pattern: "public.*".to_string(),
+				detail: true,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_df_with_sameconn() {
+		let result = parse_metacommand("\\df!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Function,
+				pattern: "public.*".to_string(),
+				detail: false,
+				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_df_plus_with_sameconn() {
+		let result = parse_metacommand("\\df+!").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Function,
 				pattern: "public.*".to_string(),
 				detail: true,
 				sameconn: true,

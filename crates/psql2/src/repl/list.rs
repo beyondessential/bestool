@@ -4,6 +4,7 @@ use crate::parser::ListItem;
 
 use super::state::ReplContext;
 
+mod function;
 mod index;
 mod pattern;
 mod table;
@@ -18,5 +19,8 @@ pub async fn handle_list(
 	match item {
 		ListItem::Table => table::handle_list_tables(ctx, &pattern, detail, sameconn).await,
 		ListItem::Index => index::handle_list_indexes(ctx, &pattern, detail, sameconn).await,
+		ListItem::Function => {
+			function::handle_list_functions(ctx, &pattern, detail, sameconn).await
+		}
 	}
 }
