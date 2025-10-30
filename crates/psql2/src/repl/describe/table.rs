@@ -416,7 +416,10 @@ pub(super) async fn handle_describe_table(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing table: {}", e);
+			eprintln!(
+				"Error describing table \"{}.{}\": {}",
+				schema, table_name, e
+			);
 			ControlFlow::Continue(())
 		}
 	}

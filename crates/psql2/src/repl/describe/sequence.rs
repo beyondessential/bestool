@@ -176,7 +176,10 @@ pub(super) async fn handle_describe_sequence(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing sequence: {}", e);
+			eprintln!(
+				"Error describing sequence \"{}.{}\": {}",
+				schema, sequence_name, e
+			);
 			ControlFlow::Continue(())
 		}
 	}

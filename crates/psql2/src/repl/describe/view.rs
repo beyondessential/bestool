@@ -142,7 +142,7 @@ pub(super) async fn handle_describe_view(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing view: {}", e);
+			eprintln!("Error describing view \"{}.{}\": {}", schema, view_name, e);
 			ControlFlow::Continue(())
 		}
 	}

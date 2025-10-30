@@ -206,7 +206,10 @@ pub(super) async fn handle_describe_index(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing index: {}", e);
+			eprintln!(
+				"Error describing index \"{}.{}\": {}",
+				schema, index_name, e
+			);
 			ControlFlow::Continue(())
 		}
 	}

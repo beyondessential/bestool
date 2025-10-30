@@ -161,7 +161,10 @@ pub(super) async fn handle_describe_function(
 			ControlFlow::Continue(())
 		}
 		Err(e) => {
-			eprintln!("Error describing function: {}", e);
+			eprintln!(
+				"Error describing function \"{}.{}\": {}",
+				schema, function_name, e
+			);
 			ControlFlow::Continue(())
 		}
 	}
