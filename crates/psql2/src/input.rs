@@ -49,6 +49,11 @@ pub(crate) enum ReplAction {
 	SnippetSave {
 		name: String,
 	},
+	List {
+		item: crate::parser::ListItem,
+		pattern: String,
+		detail: bool,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -91,6 +96,15 @@ pub(crate) fn handle_input(
 				Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
 				Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
 				Metacommand::GetVar { name } => ReplAction::GetVar { name },
+				Metacommand::List {
+					item,
+					pattern,
+					detail,
+				} => ReplAction::List {
+					item,
+					pattern,
+					detail,
+				},
 			};
 			return (String::new(), action);
 		}

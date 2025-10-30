@@ -2,12 +2,14 @@ use miette::Result;
 use winnow::{combinator::alt, Parser};
 
 pub(crate) use debug::DebugWhat;
+pub use list::ListItem;
 
 mod debug;
 mod edit;
 mod expanded;
 mod help;
 mod include;
+mod list;
 mod output;
 mod quit;
 mod snippets;
@@ -51,6 +53,11 @@ pub(crate) enum Metacommand {
 	SnippetSave {
 		name: String,
 	},
+	List {
+		item: list::ListItem,
+		pattern: String,
+		detail: bool,
+	},
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -76,6 +83,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		vars::parse_unset,
 		vars::parse_lookup,
 		vars::parse_get,
+		list::parse,
 	))
 	.parse_next(&mut input_slice)
 	{

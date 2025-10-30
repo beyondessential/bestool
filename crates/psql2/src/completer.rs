@@ -7,6 +7,7 @@ use crate::{repl::ReplState, schema_cache::SchemaCache, theme::Theme};
 
 mod debug;
 mod keywords;
+mod list;
 mod paths;
 mod readline;
 mod snippets;
@@ -59,6 +60,10 @@ impl SqlCompleter {
 		}
 
 		if let Some(completions) = self.complete_vars(text_before_cursor) {
+			return completions;
+		}
+
+		if let Some(completions) = self.complete_list(text_before_cursor) {
 			return completions;
 		}
 

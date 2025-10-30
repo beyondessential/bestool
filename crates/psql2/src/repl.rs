@@ -25,6 +25,7 @@ mod exit;
 mod expanded;
 mod help;
 mod include;
+mod list;
 mod output;
 mod prompt;
 mod snippets;
@@ -71,6 +72,11 @@ impl ReplAction {
 			ReplAction::SnippetSave { name } => {
 				snippets::handle_snippet_save(ctx, name, line).await
 			}
+			ReplAction::List {
+				item,
+				pattern,
+				detail,
+			} => list::handle_list(ctx, item, pattern, detail).await,
 			ReplAction::Execute {
 				input,
 				sql,
