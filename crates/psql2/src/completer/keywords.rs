@@ -1,4 +1,4 @@
-pub const METACOMMAND: &'static [&'static str] = &[
+pub const METACOMMAND: &[&str] = &[
 	r"\q", r"\e", r"\i", r"\o", r"\debug", r"\?", r"\help", r"\x", r"\g", r"\go", r"\gx", r"\gset",
 	r"\set", r"\unset", r"\vars", r"\get", r"\list", r"\list+", r"\list!", r"\list+!", r"\list!+",
 	r"\dt", r"\dt+", r"\dt!", r"\dt+!", r"\dt!+", r"\di", r"\di+", r"\di!", r"\di+!", r"\di!+",
@@ -6,7 +6,7 @@ pub const METACOMMAND: &'static [&'static str] = &[
 	r"\dn", r"\dn+", r"\dn!", r"\dn+!", r"\dn!+",
 ];
 
-pub const SQL_KEYWORDS: &'static [&'static str] = &[
+pub const SQL_KEYWORDS: &[&str] = &[
 	"SELECT",
 	"FROM",
 	"WHERE",
