@@ -38,12 +38,14 @@ async fn handle_list_tables(
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
+				am.amname AS "Access method",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "Access"
+				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 			WHERE c.relkind = 'r'
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
@@ -62,12 +64,14 @@ async fn handle_list_tables(
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
+				am.amname AS "Access method",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "Access"
+				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+			LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 			WHERE c.relkind = 'r'
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
@@ -125,7 +129,8 @@ async fn handle_list_tables(
 					"Size",
 					"Owner",
 					"Persistence",
-					"Access",
+					"Access method",
+					"ACL",
 				]);
 				for row in rows {
 					let schema: String = row.get(0);
@@ -133,14 +138,16 @@ async fn handle_list_tables(
 					let size: String = row.get(2);
 					let owner: String = row.get(3);
 					let persistence: String = row.get(4);
-					let access: Option<String> = row.get(5);
+					let access_method: Option<String> = row.get(5);
+					let acl: Option<String> = row.get(6);
 					table.add_row(vec![
 						schema,
 						name,
 						size,
 						owner,
 						persistence,
-						access.unwrap_or_default(),
+						access_method.unwrap_or_default(),
+						acl.unwrap_or_default(),
 					]);
 				}
 			} else {

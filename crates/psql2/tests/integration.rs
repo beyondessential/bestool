@@ -387,12 +387,14 @@ mod list_command_tests {
 						WHEN 'u' THEN 'unlogged'
 						WHEN 't' THEN 'temporary'
 					END AS "Persistence",
+					am.amname AS "Access method",
 					CASE
 						WHEN c.relacl IS NULL THEN NULL
 						ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-					END AS "Access"
+					END AS "ACL"
 				FROM pg_catalog.pg_class c
 				LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+				LEFT JOIN pg_catalog.pg_am am ON c.relam = am.oid
 				WHERE c.relkind = 'r'
 					AND n.nspname ~ $1
 					AND c.relname ~ $2
@@ -413,13 +415,15 @@ mod list_command_tests {
 		let size: String = row.get(2);
 		let owner: String = row.get(3);
 		let persistence: String = row.get(4);
-		let _access: Option<String> = row.get(5);
+		let access_method: Option<String> = row.get(5);
+		let _acl: Option<String> = row.get(6);
 
 		assert_eq!(schema, "public");
 		assert_eq!(name, table);
 		assert!(!size.is_empty());
 		assert!(!owner.is_empty());
 		assert_eq!(persistence, "permanent");
+		assert!(access_method.is_some(), "Access method should be present");
 
 		// Cleanup
 		client
