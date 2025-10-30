@@ -37,7 +37,6 @@ pub(super) async fn handle_describe_view(
 		SELECT
 			c.relkind::text AS view_kind,
 			pg_catalog.pg_get_viewdef(c.oid, true) AS view_definition,
-			pg_catalog.pg_get_userbyid(c.relowner) AS owner,
 			pg_size_pretty(pg_total_relation_size(c.oid)) AS size,
 			obj_description(c.oid, 'pg_class') AS view_comment
 		FROM pg_catalog.pg_class c
@@ -81,20 +80,19 @@ pub(super) async fn handle_describe_view(
 				}
 			};
 
-			let (view_kind, view_definition, owner, size, view_comment) =
+			let (view_kind, view_definition, size, view_comment) =
 				if let Ok(info_rows) = view_info_result {
 					if let Some(row) = info_rows.first() {
 						let kind: String = row.get(0);
 						let def: String = row.get(1);
-						let own: String = row.get(2);
-						let sz: String = row.get(3);
-						let cmt: Option<String> = row.get(4);
-						(Some(kind), Some(def), Some(own), Some(sz), cmt)
+						let sz: String = row.get(2);
+						let cmt: Option<String> = row.get(3);
+						(Some(kind), Some(def), Some(sz), cmt)
 					} else {
-						(None, None, None, None, None)
+						(None, None, None, None)
 					}
 				} else {
-					(None, None, None, None, None)
+					(None, None, None, None)
 				};
 
 			let view_type = match view_kind.as_deref() {
@@ -108,22 +106,14 @@ pub(super) async fn handle_describe_view(
 			let mut table = Table::new();
 			crate::table::configure(&mut table);
 
-			if detail {
-				table.set_header(vec!["Column", "Type", "Storage"]);
-			} else {
-				table.set_header(vec!["Column", "Type"]);
-			}
+			table.set_header(vec!["Column", "Type", "Storage"]);
 
 			for row in rows {
 				let column_name: String = row.get(0);
 				let data_type: String = row.get(1);
 				let storage: String = row.get(2);
 
-				if detail {
-					table.add_row(vec![column_name, data_type, storage]);
-				} else {
-					table.add_row(vec![column_name, data_type]);
-				}
+				table.add_row(vec![column_name, data_type, storage]);
 			}
 
 			crate::table::style_header(&mut table);
@@ -136,13 +126,11 @@ pub(super) async fn handle_describe_view(
 				}
 			}
 
+			if let Some(sz) = &size {
+				println!("\nSize: {}", sz);
+			}
+
 			if detail {
-				if let Some(own) = owner {
-					println!("\nOwner: {}", own);
-				}
-				if let Some(sz) = size {
-					println!("Size: {}", sz);
-				}
 				if let Some(comment) = view_comment {
 					if !comment.is_empty() {
 						println!("Comment: {}", comment);
