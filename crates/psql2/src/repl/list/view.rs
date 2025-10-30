@@ -20,21 +20,24 @@ pub(super) async fn handle_list_views(
 			SELECT
 				n.nspname AS "Schema",
 				c.relname AS "Name",
+				CASE c.relkind
+					WHEN 'v' THEN 'view'
+					WHEN 'm' THEN 'materialized view'
+				END AS "Type",
+				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
 				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
 				CASE c.relpersistence
 					WHEN 'p' THEN 'permanent'
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
-				pg_catalog.pg_get_viewdef(c.oid, true) AS "Definition",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "ACL",
-				pg_catalog.obj_description(c.oid, 'pg_class') AS "Description"
+				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-			WHERE c.relkind = 'v'
+			WHERE c.relkind IN ('v', 'm')
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
 				AND n.nspname NOT IN ('information_schema', 'pg_toast')
@@ -45,21 +48,24 @@ pub(super) async fn handle_list_views(
 			SELECT
 				n.nspname AS "Schema",
 				c.relname AS "Name",
+				CASE c.relkind
+					WHEN 'v' THEN 'view'
+					WHEN 'm' THEN 'materialized view'
+				END AS "Type",
+				pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size",
 				pg_catalog.pg_get_userbyid(c.relowner) AS "Owner",
 				CASE c.relpersistence
 					WHEN 'p' THEN 'permanent'
 					WHEN 'u' THEN 'unlogged'
 					WHEN 't' THEN 'temporary'
 				END AS "Persistence",
-				pg_catalog.pg_get_viewdef(c.oid, true) AS "Definition",
 				CASE
 					WHEN c.relacl IS NULL THEN NULL
 					ELSE pg_catalog.array_to_string(c.relacl, E'\n')
-				END AS "ACL",
-				pg_catalog.obj_description(c.oid, 'pg_class') AS "Description"
+				END AS "ACL"
 			FROM pg_catalog.pg_class c
 			LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-			WHERE c.relkind = 'v'
+			WHERE c.relkind IN ('v', 'm')
 				AND n.nspname ~ $1
 				AND c.relname ~ $2
 			ORDER BY 1, 2
@@ -70,10 +76,14 @@ pub(super) async fn handle_list_views(
 		SELECT
 			n.nspname AS "Schema",
 			c.relname AS "Name",
-			pg_catalog.pg_get_userbyid(c.relowner) AS "Owner"
+			CASE c.relkind
+				WHEN 'v' THEN 'view'
+				WHEN 'm' THEN 'materialized view'
+			END AS "Type",
+			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind = 'v'
+		WHERE c.relkind IN ('v', 'm')
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
 			AND n.nspname NOT IN ('information_schema', 'pg_toast')
@@ -84,10 +94,14 @@ pub(super) async fn handle_list_views(
 		SELECT
 			n.nspname AS "Schema",
 			c.relname AS "Name",
-			pg_catalog.pg_get_userbyid(c.relowner) AS "Owner"
+			CASE c.relkind
+				WHEN 'v' THEN 'view'
+				WHEN 'm' THEN 'materialized view'
+			END AS "Type",
+			pg_size_pretty(pg_total_relation_size(c.oid)) AS "Size"
 		FROM pg_catalog.pg_class c
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind = 'v'
+		WHERE c.relkind IN ('v', 'm')
 			AND n.nspname ~ $1
 			AND c.relname ~ $2
 		ORDER BY 1, 2
@@ -124,37 +138,38 @@ pub(super) async fn handle_list_views(
 				table.set_header(vec![
 					"Schema",
 					"Name",
+					"Type",
+					"Size",
 					"Owner",
 					"Persistence",
-					"Definition",
 					"ACL",
-					"Description",
 				]);
 				for row in rows {
 					let schema: String = row.get(0);
 					let name: String = row.get(1);
-					let owner: String = row.get(2);
-					let persistence: String = row.get(3);
-					let definition: String = row.get(4);
-					let acl: Option<String> = row.get(5);
-					let description: Option<String> = row.get(6);
+					let view_type: Option<String> = row.get(2);
+					let size: String = row.get(3);
+					let owner: String = row.get(4);
+					let persistence: String = row.get(5);
+					let acl: Option<String> = row.get(6);
 					table.add_row(vec![
 						schema,
 						name,
+						view_type.unwrap_or_default(),
+						size,
 						owner,
 						persistence,
-						definition,
 						acl.unwrap_or_default(),
-						description.unwrap_or_default(),
 					]);
 				}
 			} else {
-				table.set_header(vec!["Schema", "Name", "Owner"]);
+				table.set_header(vec!["Schema", "Name", "Type", "Size"]);
 				for row in rows {
 					let schema: String = row.get(0);
 					let name: String = row.get(1);
-					let owner: String = row.get(2);
-					table.add_row(vec![schema, name, owner]);
+					let view_type: Option<String> = row.get(2);
+					let size: String = row.get(3);
+					table.add_row(vec![schema, name, view_type.unwrap_or_default(), size]);
 				}
 			}
 
