@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use bestool_psql::find_postgres_bin;
+use bestool::find_postgres::find_postgres_bin;
 use miette::{Context, IntoDiagnostic, Result};
 use tempfile::TempDir;
 

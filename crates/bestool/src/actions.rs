@@ -46,14 +46,12 @@ pub use subcommands;
 use crate::args::Args;
 
 subcommands! {
-	[Args => {|args: Args| -> Result<(Action, Context<()>)> {
+	[Args => {|args: Args| -> Result<(Action, Context<Args>)> {
 		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
 		trace!(action=?args.action, "action");
-		Ok((args.action, Context::new()))
-	}}](with_top)
+		Ok((args.action.clone(), Context::new().with_top(args)))
+	}}](with_sub)
 
-	#[cfg(feature = "psql-audit")]
-	audit_psql => AuditPsql(AuditPsqlArgs),
 	#[cfg(feature = "caddy")]
 	caddy => Caddy(CaddyArgs),
 	#[cfg(feature = "completions")]

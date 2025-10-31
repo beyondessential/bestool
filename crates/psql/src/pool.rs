@@ -2,15 +2,15 @@ use std::{str::FromStr, time::Duration};
 
 use miette::{IntoDiagnostic, Result};
 use mobc::{Connection, Pool};
-use mobc_postgres::{tokio_postgres, PgConnectionManager};
+use mobc_postgres::{PgConnectionManager, tokio_postgres};
 use tokio_postgres::Config;
 
 pub type PgPool = Pool<PgConnectionManager<crate::tls::MakeRustlsConnectWrapper>>;
 pub type PgConnection = Connection<PgConnectionManager<crate::tls::MakeRustlsConnectWrapper>>;
 
-/// Create a connection pool from a connection string
-pub async fn create_pool(connection_string: &str) -> Result<PgPool> {
-	let config = Config::from_str(connection_string).into_diagnostic()?;
+/// Create a connection pool from a connection URL
+pub async fn create_pool(url: &str) -> Result<PgPool> {
+	let config = Config::from_str(url).into_diagnostic()?;
 	let tls_connector = crate::tls::make_tls_connector()?;
 	let manager = PgConnectionManager::new(config, tls_connector);
 

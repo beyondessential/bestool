@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use miette::Result;
 
+use crate::args::Args;
+
 use super::Context;
 
 pub mod configure_tamanu;
@@ -20,9 +22,9 @@ pub enum CaddyAction {
 	Download(download::DownloadArgs),
 }
 
-pub async fn run(ctx: Context<CaddyArgs>) -> Result<()> {
-	match ctx.args_top.action.clone() {
-		CaddyAction::ConfigureTamanu(subargs) => configure_tamanu::run(ctx.with_sub(subargs)).await,
-		CaddyAction::Download(subargs) => download::run(ctx.with_sub(subargs)).await,
+pub async fn run(ctx: Context<Args, CaddyArgs>) -> Result<()> {
+	match ctx.args_sub.action.clone() {
+		CaddyAction::ConfigureTamanu(subargs) => configure_tamanu::run(ctx.push(subargs)).await,
+		CaddyAction::Download(subargs) => download::run(ctx.push(subargs)).await,
 	}
 }

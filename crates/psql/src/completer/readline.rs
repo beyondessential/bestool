@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 
 use rustyline::{
+	Context, Helper,
 	completion::{Completer, Pair},
 	highlight::{CmdKind, Highlighter},
 	hint::Hinter,
 	validate::{ValidationContext, ValidationResult, Validator},
-	Context, Helper,
 };
 use syntect::{easy::HighlightLines, util::as_24_bit_terminal_escaped};
 
@@ -73,7 +73,7 @@ impl Highlighter for super::SqlCompleter {
 }
 
 impl Validator for super::SqlCompleter {
-	fn validate(&self, _ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+	fn validate(&self, _ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
 		Ok(ValidationResult::Valid(None))
 	}
 }

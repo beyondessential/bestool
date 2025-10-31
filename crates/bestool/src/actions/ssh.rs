@@ -2,13 +2,15 @@ use std::{io::SeekFrom, path::Path};
 
 use clap::{Parser, Subcommand};
 use fs4::tokio::AsyncFileExt;
-use miette::{miette, IntoDiagnostic, Result, WrapErr};
-use ssh_key::{authorized_keys::AuthorizedKeys, PublicKey};
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
+use ssh_key::{PublicKey, authorized_keys::AuthorizedKeys};
 use tokio::{
-	fs::{create_dir_all, try_exists, File, OpenOptions},
+	fs::{File, OpenOptions, create_dir_all, try_exists},
 	io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 use tracing::{debug, info, warn};
+
+use crate::args::Args;
 
 use super::Context;
 
@@ -25,9 +27,9 @@ pub enum SshAction {
 	AddKey(AddKeyArgs),
 }
 
-pub async fn run(ctx: Context<SshArgs>) -> Result<()> {
-	match ctx.args_top.action.clone() {
-		SshAction::AddKey(subargs) => add_key(ctx.with_sub(subargs)).await,
+pub async fn run(ctx: Context<Args, SshArgs>) -> Result<()> {
+	match ctx.args_sub.action.clone() {
+		SshAction::AddKey(subargs) => add_key(ctx.push(subargs)).await,
 	}
 }
 

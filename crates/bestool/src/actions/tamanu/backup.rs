@@ -121,7 +121,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 
-	let pg_dump = bestool_psql::find_postgres_bin("pg_dump")?;
+	let pg_dump = crate::find_postgres::find_postgres_bin("pg_dump")?;
 
 	// check key
 	ctx.args_sub.key.get_public_key().await?;

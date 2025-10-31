@@ -112,8 +112,8 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 
 	let config = load_config(&tamanu_folder, None)?;
 
-	let pg_bin_path =
-		bestool_psql::find_postgres_bin("psql").wrap_err("failed to find psql executable")?;
+	let pg_bin_path = crate::find_postgres::find_postgres_bin("psql")
+		.wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
 
 	let mut transforms_dirs = ctx.args_sub.folders;

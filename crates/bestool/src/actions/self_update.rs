@@ -7,7 +7,10 @@ use detect_targets::{TARGET, get_desired_targets};
 use miette::{IntoDiagnostic, Result, miette};
 use tracing::info;
 
-use crate::download::{DownloadSource, client};
+use crate::{
+	args::Args,
+	download::{DownloadSource, client},
+};
 
 use super::Context;
 
@@ -38,14 +41,14 @@ pub struct SelfUpdateArgs {
 	pub add_to_path: bool,
 }
 
-pub async fn run(ctx: Context<SelfUpdateArgs>) -> Result<()> {
+pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 	let SelfUpdateArgs {
 		version,
 		target,
 		temp_dir,
 		#[cfg(windows)]
 		add_to_path,
-	} = ctx.args_top;
+	} = ctx.args_sub;
 
 	let client = client().await?;
 

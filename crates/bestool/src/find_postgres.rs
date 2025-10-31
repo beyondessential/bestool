@@ -4,7 +4,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use miette::{miette, IntoDiagnostic as _, Result};
+use miette::{IntoDiagnostic as _, Result, miette};
 use tracing::instrument;
 
 #[instrument(level = "debug")]

@@ -13,7 +13,7 @@ use tracing::debug;
 )]
 pub struct Args {
 	#[command(flatten)]
-	logging: LoggingArgs,
+	pub logging: LoggingArgs,
 
 	/// What to do
 	#[command(subcommand)]

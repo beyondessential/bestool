@@ -10,6 +10,8 @@ use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
+use crate::args::Args;
+
 use super::Context;
 
 mod roots;
@@ -26,11 +28,17 @@ pub struct TamanuArgs {
 	/// Tamanu subcommand
 	#[command(subcommand)]
 	pub action: Action,
+
+	#[doc(hidden)]
+	#[arg(long, hide = true)]
+	pub(crate) use_colours: bool,
 }
 
 super::subcommands! {
-	[Context<TamanuArgs> => {|ctx: Context<TamanuArgs>| -> Result<(Action, Context<TamanuArgs>)> {
-		Ok((ctx.args_top.action.clone(), ctx.with_sub(())))
+	[Context<Args, TamanuArgs> => {|ctx: Context<Args, TamanuArgs>| -> Result<(Action, Context<TamanuArgs>)> {
+		let (top, mut ctx) = ctx.take_top();
+		ctx.args_sub.use_colours = top.logging.color.enabled();
+		Ok((ctx.args_sub.action.clone(), ctx.push(())))
 	}}](with_sub)
 
 	#[cfg(feature = "tamanu-alerts")]

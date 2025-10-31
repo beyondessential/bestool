@@ -1,11 +1,12 @@
+use std::{
+	collections::HashMap,
+	sync::{Arc, RwLock},
+};
+
 use miette::{IntoDiagnostic, Result};
-use serde::Deserialize;
-use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::io::Write;
-use std::sync::{Arc, Mutex, RwLock};
-use tempfile::NamedTempFile;
-use tracing::debug;
+use tracing::{debug, warn};
+
+use crate::pool::PgPool;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]
@@ -20,6 +21,8 @@ pub struct SchemaCache {
 	pub functions: Vec<String>,
 	/// Schema names
 	pub schemas: Vec<String>,
+	/// Index names by schema
+	pub indexes: HashMap<String, Vec<String>>,
 }
 
 impl SchemaCache {
@@ -38,18 +41,20 @@ impl SchemaCache {
 		self.views.values().flatten().cloned().collect()
 	}
 
+	/// Get all index names (across all schemas)
+	pub fn all_indexes(&self) -> Vec<String> {
+		self.indexes.values().flatten().cloned().collect()
+	}
+
 	/// Get all column names for a given table
 	#[allow(dead_code)]
 	pub fn columns_for_table(&self, table: &str) -> Option<&Vec<String>> {
-		// Try unqualified name first
 		self.columns
 			.get(table)
-			// Then try with public schema
-			.or_else(|| self.columns.get(&format!("public.{}", table)))
-			// Then try all schemas
+			.or_else(|| self.columns.get(&format!("public.{table}")))
 			.or_else(|| {
 				for schema in &self.schemas {
-					if let Some(cols) = self.columns.get(&format!("{}.{}", schema, table)) {
+					if let Some(cols) = self.columns.get(&format!("{schema}.{table}")) {
 						return Some(cols);
 					}
 				}
@@ -58,61 +63,19 @@ impl SchemaCache {
 	}
 }
 
-/// Schema cache manager that queries through psql PTY
+/// Schema cache manager that runs queries on a dedicated background connection
+#[derive(Debug, Clone)]
 pub struct SchemaCacheManager {
 	cache: Arc<RwLock<SchemaCache>>,
-	pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
-	print_enabled: Arc<Mutex<bool>>,
-	write_mode: Arc<Mutex<bool>>,
-	output_buffer: Arc<Mutex<VecDeque<u8>>>,
-	boundary: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TableRow {
-	schemaname: String,
-	tablename: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ViewRow {
-	schemaname: String,
-	viewname: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ColumnRow {
-	table_schema: String,
-	table_name: String,
-	column_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FunctionRow {
-	proname: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct SchemaRow {
-	schema_name: String,
+	pool: PgPool,
 }
 
 impl SchemaCacheManager {
-	/// Create a new cache manager with PTY writer access
-	pub fn new(
-		pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
-		print_enabled: Arc<Mutex<bool>>,
-		write_mode: Arc<Mutex<bool>>,
-		output_buffer: Arc<Mutex<VecDeque<u8>>>,
-		boundary: String,
-	) -> Self {
+	/// Create a new cache manager
+	pub fn new(pool: PgPool) -> Self {
 		Self {
 			cache: Arc::new(RwLock::new(SchemaCache::new())),
-			pty_writer,
-			print_enabled,
-			write_mode,
-			output_buffer,
-			boundary,
+			pool,
 		}
 	}
 
@@ -121,149 +84,174 @@ impl SchemaCacheManager {
 		self.cache.clone()
 	}
 
-	/// Refresh the schema cache by querying through psql
-	pub fn refresh(&self) -> Result<()> {
+	/// Start background refresh task
+	pub fn start_background_refresh(self) -> tokio::task::JoinHandle<()> {
+		tokio::spawn(async move {
+			if let Err(e) = self.refresh_loop().await {
+				warn!("schema cache refresh task failed: {e}");
+			}
+		})
+	}
+
+	/// Continuously refresh the schema cache
+	async fn refresh_loop(&self) -> Result<()> {
+		loop {
+			if let Err(e) = self.refresh().await {
+				warn!("failed to refresh schema cache: {e}");
+			}
+
+			tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+		}
+	}
+
+	/// Refresh the schema cache by querying the database
+	pub async fn refresh(&self) -> Result<()> {
 		debug!("refreshing schema cache");
 
-		// Disable output printing during schema refresh
-		*self.print_enabled.lock().unwrap() = false;
-
-		// Wait a moment for reader thread to see the flag
-		std::thread::sleep(std::time::Duration::from_millis(50));
-
-		// Clear the output buffer to discard any buffered content
-		self.output_buffer.lock().unwrap().clear();
-
-		// Guard to ensure printing is always re-enabled
-		struct PrintGuard(Arc<Mutex<bool>>);
-		impl Drop for PrintGuard {
-			fn drop(&mut self) {
-				*self.0.lock().unwrap() = true;
-			}
-		}
-		let _guard = PrintGuard(self.print_enabled.clone());
+		let client = self.pool.get().await.into_diagnostic()?;
 
 		let mut new_cache = SchemaCache::new();
 
-		if let Ok(schemas) = self.query_schemas() {
+		if let Ok(schemas) = self.query_schemas(&client).await {
 			new_cache.schemas = schemas;
 			debug!(count = new_cache.schemas.len(), "loaded schemas");
 		}
 
-		if let Ok(tables) = self.query_tables() {
+		if let Ok(tables) = self.query_tables(&client).await {
 			new_cache.tables = tables;
 			let total: usize = new_cache.tables.values().map(|v| v.len()).sum();
 			debug!(count = total, "loaded tables");
 		}
 
-		if let Ok(views) = self.query_views() {
+		if let Ok(views) = self.query_views(&client).await {
 			new_cache.views = views;
 			let total: usize = new_cache.views.values().map(|v| v.len()).sum();
 			debug!(count = total, "loaded views");
 		}
 
-		if let Ok(columns) = self.query_columns() {
+		if let Ok(columns) = self.query_columns(&client).await {
 			new_cache.columns = columns;
 			debug!(count = new_cache.columns.len(), "loaded column mappings");
 		}
 
-		if let Ok(functions) = self.query_functions() {
+		if let Ok(functions) = self.query_functions(&client).await {
 			new_cache.functions = functions;
 			debug!(count = new_cache.functions.len(), "loaded functions");
 		}
 
-		*self.cache.write().unwrap() = new_cache;
-
-		if *self.write_mode.lock().unwrap() {
-			debug!("issuing ROLLBACK after schema refresh in write mode");
-			#[cfg(windows)]
-			let rollback_cmd = "ROLLBACK;\r\n";
-			#[cfg(not(windows))]
-			let rollback_cmd = "ROLLBACK;\n";
-			let mut writer = self.pty_writer.lock().unwrap();
-			writer
-				.write_all(rollback_cmd.as_bytes())
-				.into_diagnostic()?;
-			writer.flush().into_diagnostic()?;
-
-			// Give psql time to process the rollback
-			std::thread::sleep(std::time::Duration::from_millis(50));
+		if let Ok(indexes) = self.query_indexes(&client).await {
+			new_cache.indexes = indexes;
+			let total: usize = new_cache.indexes.values().map(|v| v.len()).sum();
+			debug!(count = total, "loaded indexes");
 		}
+
+		*self.cache.write().unwrap() = new_cache;
 
 		debug!("schema cache refresh complete");
 		Ok(())
 	}
 
 	/// Query all schema names
-	fn query_schemas(&self) -> Result<Vec<String>> {
-		let rows: Vec<SchemaRow> = self.query_json(
-			"SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') \
-             ORDER BY schema_name",
-		)?;
+	async fn query_schemas(&self, client: &tokio_postgres::Client) -> Result<Vec<String>> {
+		let rows = client
+			.query(
+				"SELECT schema_name FROM information_schema.schemata \
+                 WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') \
+                 ORDER BY schema_name",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
-		Ok(rows.into_iter().map(|r| r.schema_name).collect())
+		Ok(rows.into_iter().map(|r| r.get(0)).collect())
 	}
 
 	/// Query all tables by schema
-	fn query_tables(&self) -> Result<HashMap<String, Vec<String>>> {
-		let rows: Vec<TableRow> = self.query_json(
-			"SELECT schemaname, tablename FROM pg_tables \
-             WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY schemaname, tablename",
-		)?;
+	async fn query_tables(
+		&self,
+		client: &tokio_postgres::Client,
+	) -> Result<HashMap<String, Vec<String>>> {
+		let rows = client
+			.query(
+				"SELECT schemaname, tablename FROM pg_tables \
+                 WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
+                 ORDER BY schemaname, tablename",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
 		let mut tables: HashMap<String, Vec<String>> = HashMap::new();
 		for row in rows {
-			tables
-				.entry(row.schemaname)
-				.or_default()
-				.push(row.tablename);
+			let schemaname: String = row.get(0);
+			let tablename: String = row.get(1);
+			tables.entry(schemaname).or_default().push(tablename);
 		}
 
 		Ok(tables)
 	}
 
-	/// Query all views by schema
-	fn query_views(&self) -> Result<HashMap<String, Vec<String>>> {
-		let rows: Vec<ViewRow> = self.query_json(
-			"SELECT schemaname, viewname FROM pg_views \
-             WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY schemaname, viewname",
-		)?;
+	/// Query all views by schema (includes materialized views)
+	async fn query_views(
+		&self,
+		client: &tokio_postgres::Client,
+	) -> Result<HashMap<String, Vec<String>>> {
+		let rows = client
+			.query(
+				"SELECT n.nspname, c.relname \
+				 FROM pg_catalog.pg_class c \
+				 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+				 WHERE c.relkind IN ('v', 'm') \
+				 AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+				 ORDER BY n.nspname, c.relname",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
 		let mut views: HashMap<String, Vec<String>> = HashMap::new();
 		for row in rows {
-			views.entry(row.schemaname).or_default().push(row.viewname);
+			let schemaname: String = row.get(0);
+			let viewname: String = row.get(1);
+			views.entry(schemaname).or_default().push(viewname);
 		}
 
 		Ok(views)
 	}
 
 	/// Query all columns for all tables
-	fn query_columns(&self) -> Result<HashMap<String, Vec<String>>> {
-		let rows: Vec<ColumnRow> = self.query_json(
-			"SELECT table_schema, table_name, column_name \
-             FROM information_schema.columns \
-             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY table_schema, table_name, ordinal_position",
-		)?;
+	async fn query_columns(
+		&self,
+		client: &tokio_postgres::Client,
+	) -> Result<HashMap<String, Vec<String>>> {
+		let rows = client
+			.query(
+				"SELECT table_schema, table_name, column_name \
+                 FROM information_schema.columns \
+                 WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+                 ORDER BY table_schema, table_name, ordinal_position",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
 		let mut columns: HashMap<String, Vec<String>> = HashMap::new();
 		for row in rows {
-			// Store both qualified and unqualified names
-			let qualified = format!("{}.{}", row.table_schema, row.table_name);
+			let table_schema: String = row.get(0);
+			let table_name: String = row.get(1);
+			let column_name: String = row.get(2);
+
+			let qualified = format!("{table_schema}.{table_name}");
 			columns
 				.entry(qualified)
 				.or_default()
-				.push(row.column_name.clone());
+				.push(column_name.clone());
 
-			// Also store unqualified for easier lookup (public schema priority)
-			if row.table_schema == "public" {
+			if table_schema == "public" {
 				columns
-					.entry(row.table_name.clone())
+					.entry(table_name.clone())
 					.or_default()
-					.push(row.column_name);
+					.push(column_name);
 			}
 		}
 
@@ -271,99 +259,43 @@ impl SchemaCacheManager {
 	}
 
 	/// Query all function names
-	fn query_functions(&self) -> Result<Vec<String>> {
-		let rows: Vec<FunctionRow> = self.query_json(
-			"SELECT DISTINCT proname FROM pg_proc \
-             JOIN pg_namespace ON pg_proc.pronamespace = pg_namespace.oid \
-             WHERE pg_namespace.nspname NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY proname",
-		)?;
+	async fn query_functions(&self, client: &tokio_postgres::Client) -> Result<Vec<String>> {
+		let rows = client
+			.query(
+				"SELECT DISTINCT proname FROM pg_proc \
+                 JOIN pg_namespace ON pg_proc.pronamespace = pg_namespace.oid \
+                 WHERE pg_namespace.nspname NOT IN ('pg_catalog', 'information_schema') \
+                 ORDER BY proname",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
-		Ok(rows.into_iter().map(|r| r.proname).collect())
+		Ok(rows.into_iter().map(|r| r.get(0)).collect())
 	}
 
-	/// Execute a query and parse JSON results from a temp file
-	fn query_json<T: for<'de> Deserialize<'de>>(&self, query: &str) -> Result<Vec<T>> {
-		let temp_file = NamedTempFile::new().into_diagnostic()?;
-		let temp_path = temp_file.path().to_path_buf();
+	/// Query all indexes by schema
+	async fn query_indexes(
+		&self,
+		client: &tokio_postgres::Client,
+	) -> Result<HashMap<String, Vec<String>>> {
+		let rows = client
+			.query(
+				"SELECT schemaname, indexname FROM pg_indexes \
+                 WHERE schemaname NOT IN ('pg_catalog', 'information_schema') \
+                 ORDER BY schemaname, indexname",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
 
-		debug!(query = %query, "executing schema query");
-
-		// On Windows, replace backslashes with forward slashes for psql compatibility
-		#[cfg(windows)]
-		let path_for_psql = temp_path.display().to_string().replace('\\', "/");
-		#[cfg(not(windows))]
-		let path_for_psql = temp_path.display().to_string();
-
-		#[cfg(windows)]
-		let commands = format!(
-			"\\t\r\n\\a\r\n\\o {}\r\nSELECT json_agg(t) FROM ({}) t;\r\n\\o\r\n\\t\r\n\\a\r\n",
-			path_for_psql, query
-		);
-		#[cfg(not(windows))]
-		let commands = format!(
-			"\\t\n\\a\n\\o {}\nSELECT json_agg(t) FROM ({}) t;\n\\o\n\\t\n\\a\n",
-			path_for_psql, query
-		);
-
-		{
-			let mut writer = self.pty_writer.lock().unwrap();
-			writer.write_all(commands.as_bytes()).into_diagnostic()?;
-			writer.flush().into_diagnostic()?;
+		let mut indexes: HashMap<String, Vec<String>> = HashMap::new();
+		for row in rows {
+			let schemaname: String = row.get(0);
+			let indexname: String = row.get(1);
+			indexes.entry(schemaname).or_default().push(indexname);
 		}
 
-		// Wait for psql to return to prompt (check for boundary marker)
-		let boundary_marker = format!("<<<{}|||", self.boundary);
-		let timeout = std::time::Duration::from_secs(10);
-		let start = std::time::Instant::now();
-
-		loop {
-			if start.elapsed() > timeout {
-				return Err(miette::miette!(
-					"timeout waiting for schema query to complete"
-				));
-			}
-
-			let buffer = self.output_buffer.lock().unwrap();
-			let buffer_vec: Vec<u8> = buffer.iter().copied().collect();
-			let buffer_str = String::from_utf8_lossy(&buffer_vec);
-
-			if buffer_str.contains(&boundary_marker) {
-				drop(buffer);
-				// Small delay to ensure psql has flushed the file
-				std::thread::sleep(std::time::Duration::from_millis(100));
-				break;
-			}
-			drop(buffer);
-
-			std::thread::sleep(std::time::Duration::from_millis(50));
-		}
-
-		// Read and parse the JSON file
-		let content = fs::read_to_string(&temp_path).into_diagnostic()?;
-		let trimmed = content.trim();
-
-		// Handle empty results (psql outputs "null" for empty json_agg)
-		if trimmed.is_empty() || trimmed == "null" {
-			return Ok(Vec::new());
-		}
-
-		// Parse JSON array
-		let results: Vec<T> = serde_json::from_str(trimmed).into_diagnostic()?;
-
-		Ok(results)
-	}
-}
-
-impl Clone for SchemaCacheManager {
-	fn clone(&self) -> Self {
-		Self {
-			cache: self.cache.clone(),
-			pty_writer: self.pty_writer.clone(),
-			print_enabled: self.print_enabled.clone(),
-			write_mode: self.write_mode.clone(),
-			output_buffer: self.output_buffer.clone(),
-			boundary: self.boundary.clone(),
-		}
+		Ok(indexes)
 	}
 }

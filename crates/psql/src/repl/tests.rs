@@ -2,48 +2,6 @@ use rustyline::history::History;
 use tokio::fs::File;
 
 use super::*;
-use crate::theme::Theme;
-
-#[tokio::test]
-async fn test_psql_config_creation() {
-	let connection_string = "postgresql://localhost/test";
-	let pool = crate::pool::create_pool(connection_string)
-		.await
-		.expect("Failed to create pool");
-
-	let config = Config {
-		pool,
-		user: Some("testuser".to_string()),
-		theme: Theme::Dark,
-		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
-		database_name: "test".to_string(),
-		write: false,
-		use_colours: true,
-	};
-
-	assert_eq!(config.user, Some("testuser".to_string()));
-	assert_eq!(config.database_name, "test");
-}
-
-#[tokio::test]
-async fn test_psql_config_no_user() {
-	let connection_string = "postgresql://localhost/test";
-	let pool = crate::pool::create_pool(connection_string)
-		.await
-		.expect("Failed to create pool");
-
-	let config = Config {
-		pool,
-		user: None,
-		theme: Theme::Dark,
-		audit_path: Some(std::path::PathBuf::from("/tmp/history.redb")),
-		database_name: "test".to_string(),
-		write: false,
-		use_colours: true,
-	};
-
-	assert_eq!(config.user, None);
-}
 
 #[test]
 fn test_snippet_save_excluded_from_preceding_command() {
@@ -132,12 +90,12 @@ async fn test_database_info_query() {
 	let client = pool.get().await.expect("Failed to get connection");
 
 	let info_rows = client
-			.query(
-				"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
-				&[],
-			)
-			.await
-			.expect("Failed to query database info");
+		.query(
+			"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+			&[],
+		)
+		.await
+		.expect("Failed to query database info");
 
 	assert!(!info_rows.is_empty());
 	let row = info_rows.first().expect("No rows returned");

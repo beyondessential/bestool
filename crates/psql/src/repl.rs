@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
-use miette::{bail, IntoDiagnostic, Result};
-use rustyline::{error::ReadlineError, Editor};
+use miette::{IntoDiagnostic, Result, bail, miette};
+use rustyline::{Editor, error::ReadlineError};
 use std::sync::Mutex;
 use tracing::{debug, instrument};
 
@@ -9,7 +9,7 @@ use crate::{
 	audit::Audit,
 	completer::SqlCompleter,
 	config::Config,
-	input::{handle_input, ReplAction},
+	input::{ReplAction, handle_input},
 	schema_cache::SchemaCacheManager,
 	snippets::Snippets,
 };
@@ -100,23 +100,18 @@ pub async fn run(config: Config) -> Result<()> {
 	} else {
 		Audit::default_path()?
 	};
-	let db_user = config.user.clone().unwrap_or_else(|| {
-		std::env::var("USER")
-			.or_else(|_| std::env::var("USERNAME"))
-			.unwrap_or_else(|_| "unknown".to_string())
-	});
 
 	debug!("getting connection from pool");
 	let client = config.pool.get().await.into_diagnostic()?;
 
-	debug!("connected to database");
-
 	if config.write {
-		debug!("setting session to read-write mode with autocommit off");
+		debug!("setting session to read-write mode");
 		client
-			.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN")
+			.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE", &[])
 			.await
 			.into_diagnostic()?;
+		debug!("opening transaction");
+		client.execute("BEGIN", &[]).await.into_diagnostic()?;
 	} else {
 		debug!("setting session to read-only mode");
 		client
@@ -136,20 +131,18 @@ pub async fn run(config: Config) -> Result<()> {
 		println!("{}", version);
 	}
 
-	let info_rows = client
-		.query(
-			"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
-			&[],
-		)
-		.await
-		.into_diagnostic()?;
-
-	let (database_name, is_superuser) = if let Some(row) = info_rows.first() {
-		let db: String = row.get(0);
-		let is_super: bool = row.get(2);
-		(db, is_super)
-	} else {
-		(config.database_name.clone(), false)
+	let (database_name, db_user, is_superuser): (String, String, bool) = {
+		let info_res = client
+			.query(
+				"SELECT current_database(), current_user, usesuper FROM pg_user WHERE usename = current_user",
+				&[],
+			)
+			.await
+			.into_diagnostic()?;
+		let info = info_res
+			.first()
+			.ok_or_else(|| miette!("Unable to fetch connection information"))?;
+		(info.get(0), info.get(1), info.get(2))
 	};
 
 	let backend_pid: i32 = client

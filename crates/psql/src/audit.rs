@@ -10,7 +10,7 @@ mod entry;
 mod history;
 mod tailscale;
 
-pub const HISTORY_TABLE: TableDefinition<u64, &str> = TableDefinition::new("history");
+pub const HISTORY_TABLE: TableDefinition<'_, u64, &str> = TableDefinition::new("history");
 
 /// Audit manager using redb for persistent storage
 ///

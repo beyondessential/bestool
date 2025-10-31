@@ -9,7 +9,7 @@ pub fn get_value(
 		return format_value(row, column_index);
 	}
 
-	if let Some(ref text_rows) = text_rows {
+	if let Some(text_rows) = text_rows {
 		if let Some(text_row) = text_rows.get(row_index) {
 			return text_row
 				.try_get::<_, Option<String>>(column_index)
