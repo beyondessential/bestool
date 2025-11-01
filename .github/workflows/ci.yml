@@ -63,14 +63,16 @@ jobs:
         run: |
           rustup target add aarch64-apple-darwin
 
-      - run: |
-          sudo systemctl start postgresql.service
-          sudo -u postgres psql --command="CREATE ROLE bes SUPERUSER LOGIN PASSWORD 'bes'"
-          sudo -u postgres createdb --owner=bes bes
+      - uses: ikalnytskyi/action-setup-postgres@v8
+        id: postgres
+        with:
+          username: ci
+          database: ci
+          ssl: false
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
         env:
-          DATABASE_URL: postgresql://bes:bes@localhost:5432/bes
+          DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
 
   clippy:
     name: Clippy
