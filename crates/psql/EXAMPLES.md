@@ -70,6 +70,10 @@ database=> select id, created_at, key, value from settings where key like 'fhir.
 ]
 (2 rows, took 56.093ms)
 
+-- Zero output (useful with \re)
+database=> select * from patients \gz
+(49 rows, took 56.927ms)
+
 -- Output to file in one-object per line JSON format
 database=> select id, created_at, key, value from settings where key like 'fhir.%' \gjo file.json
 (2 rows, took 56.619ms)
@@ -282,7 +286,7 @@ database=> \re show cols=id,email,role,display_name
  4bbfb6fd-a1e6-4093-9afd-acbeca759e09 ┆ admin@bes.au         ┆ admin  ┆ Admin
 
 -- Let's make another query (and for demo's sake, hide its output)
-database=> select * from patients \go /dev/null
+database=> select * from patients \gz
 (49 rows, took 56.354ms)
 
 database=> \re list

@@ -16,6 +16,7 @@ pub(crate) enum QueryModifier {
 	Verbatim,
 	VarSet { prefix: Option<String> },
 	Output { file_path: String },
+	Zero,
 }
 
 pub(crate) type QueryModifiers = HashSet<QueryModifier>;
@@ -37,6 +38,7 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 			literal('j').map(|_| 'j'),
 			literal('o').map(|_| 'o'),
 			literal('v').map(|_| 'v'),
+			literal('z').map(|_| 'z'),
 		))
 		.parse_next(input)
 	}
@@ -119,6 +121,9 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 								file_path: file_path.clone(),
 							});
 						}
+					}
+					'z' => {
+						modifiers.insert(QueryModifier::Zero);
 					}
 					_ => {}
 				}
@@ -565,7 +570,36 @@ mod tests {
 		assert!(result.is_some());
 		let (sql, mods) = result.unwrap();
 		assert_eq!(sql, "SELECT * FROM users");
-		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Verbatim));
+		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gz() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gz").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Zero));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gzx() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gzx").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Zero));
+		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxz() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gxz").unwrap();
+		assert!(result.is_some());
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Zero));
+		assert!(mods.contains(&QueryModifier::Expanded));
 	}
 }

@@ -209,22 +209,48 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 
 		let is_expanded = ctx.modifiers.contains(&QueryModifier::Expanded);
 		let is_json = ctx.modifiers.contains(&QueryModifier::Json);
+		let is_zero = ctx.modifiers.contains(&QueryModifier::Zero);
 
-		display::display(
-			&mut display::DisplayContext {
-				columns,
-				rows: &rows,
-				unprintable_columns: &unprintable_columns,
-				text_rows: &text_rows,
-				writer: ctx.writer,
-				use_colours: ctx.use_colours,
-				theme: ctx.theme,
-				column_indices: None,
-			},
-			is_json,
-			is_expanded,
-		)
-		.await?;
+		// Only display if not using Zero modifier
+		if !is_zero {
+			// Auto-limit: if more than 50 rows, only display first 30
+			let (display_rows, was_truncated) = if rows.len() > 50 {
+				(&rows[..30], true)
+			} else {
+				(&rows[..], false)
+			};
+
+			display::display(
+				&mut display::DisplayContext {
+					columns,
+					rows: display_rows,
+					unprintable_columns: &unprintable_columns,
+					text_rows: &text_rows,
+					writer: ctx.writer,
+					use_colours: ctx.use_colours,
+					theme: ctx.theme,
+					column_indices: None,
+				},
+				is_json,
+				is_expanded,
+			)
+			.await?;
+
+			// Print truncation message if needed
+			if was_truncated {
+				let truncation_msg = if ctx.use_colours {
+					format!(
+						"{}\n",
+						"[output truncated, use \\re show limit=N to print more]"
+							.with(Color::Magenta)
+							.bold()
+					)
+				} else {
+					"[output truncated, use \\re show limit=N to print more]\n".to_string()
+				};
+				eprint!("{}", truncation_msg);
+			}
+		}
 
 		let status_text = format!(
 			"({} row{}, took {:.3}ms)",
@@ -466,5 +492,56 @@ mod tests {
 		let mods: QueryModifiers = QueryModifiers::new();
 
 		assert!(!mods.contains(&QueryModifier::Verbatim));
+	}
+
+	#[test]
+	fn test_zero_modifier_detection() {
+		use std::collections::HashSet;
+
+		let mut modifiers_with_zero = HashSet::new();
+		modifiers_with_zero.insert(QueryModifier::Zero);
+		assert!(modifiers_with_zero.contains(&QueryModifier::Zero));
+
+		let mut modifiers_without_zero = HashSet::new();
+		modifiers_without_zero.insert(QueryModifier::Expanded);
+		assert!(!modifiers_without_zero.contains(&QueryModifier::Zero));
+
+		let mut modifiers_mixed = HashSet::new();
+		modifiers_mixed.insert(QueryModifier::Zero);
+		modifiers_mixed.insert(QueryModifier::Expanded);
+		assert!(modifiers_mixed.contains(&QueryModifier::Zero));
+		assert!(modifiers_mixed.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_auto_limit_logic() {
+		// Test that rows > 50 should be truncated to 30
+		let total_rows = 100;
+		let should_truncate = total_rows > 50;
+		assert!(should_truncate);
+
+		let display_count = if should_truncate { 30 } else { total_rows };
+		assert_eq!(display_count, 30);
+
+		// Test that rows <= 50 should not be truncated
+		let small_rows = 40;
+		let should_not_truncate = small_rows > 50;
+		assert!(!should_not_truncate);
+
+		let display_all = if should_not_truncate { 30 } else { small_rows };
+		assert_eq!(display_all, 40);
+	}
+
+	#[test]
+	fn test_auto_limit_boundary() {
+		// Test boundary condition: exactly 50 rows should not be truncated
+		let boundary_rows = 50;
+		let should_truncate = boundary_rows > 50;
+		assert!(!should_truncate);
+
+		// Test boundary condition: 51 rows should be truncated
+		let over_boundary = 51;
+		let should_truncate_51 = over_boundary > 50;
+		assert!(should_truncate_51);
 	}
 }

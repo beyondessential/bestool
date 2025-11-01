@@ -71,6 +71,7 @@ pub fn handle_help() -> ControlFlow<()> {
 	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
 	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
 	modifiers.add_row(vec!["\\gv", "Execute query without variable interpolation"]);
+	modifiers.add_row(vec!["\\gz", "Execute query without displaying output"]);
 	modifiers.add_row(vec![
 		"\\go <file>",
 		"Execute query and write output to file",
@@ -82,6 +83,9 @@ pub fn handle_help() -> ControlFlow<()> {
 	eprintln!("{modifiers}");
 
 	eprintln!("\nModifiers can be combined, e.g. \\gxj for expanded JSON output");
+	eprintln!(
+		"Large result sets (>50 rows) are automatically truncated. Use \\re show to view more."
+	);
 
 	eprintln!("\nVariable interpolation:");
 	let mut vars = Table::new();
