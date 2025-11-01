@@ -4,7 +4,7 @@ use tokio::{fs::File, io};
 use tracing::{error, warn};
 
 use super::{state::ReplContext, transaction::TransactionState};
-use crate::{parser::QueryModifier, query::execute_query};
+use crate::{error::format_miette_error, parser::QueryModifier, query::execute_query};
 
 pub async fn handle_execute(
 	ctx: &mut ReplContext<'_>,
@@ -104,7 +104,7 @@ pub async fn handle_execute(
 			}
 		}
 		Err(e) => {
-			error!("{:?}", e);
+			eprintln!("{}", format_miette_error(&e, None));
 		}
 	}
 

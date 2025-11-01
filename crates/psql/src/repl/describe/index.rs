@@ -4,7 +4,7 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
-use super::{format_db_error, output::OutputWriter};
+use super::output::OutputWriter;
 pub(super) async fn handle_describe_index(
 	ctx: &mut ReplContext<'_>,
 	schema: &str,
@@ -84,7 +84,7 @@ pub(super) async fn handle_describe_index(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					format_db_error(&e)
+					crate::error::format_error(&e)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -152,7 +152,7 @@ pub(super) async fn handle_describe_index(
 					Err(e) => {
 						eprintln!(
 							"Error getting connection from pool: {}",
-							format_db_error(&e)
+							crate::error::format_error(&e)
 						);
 						return ControlFlow::Continue(());
 					}
@@ -222,7 +222,7 @@ pub(super) async fn handle_describe_index(
 				"Error describing index \"{}.{}\": {}",
 				schema,
 				index_name,
-				format_db_error(&e)
+				crate::error::format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

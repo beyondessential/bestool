@@ -1,9 +1,10 @@
 use crossterm::style::{Color, Stylize};
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use crate::{
+	error::PgDatabaseError,
 	parser::{QueryModifier, QueryModifiers},
 	signals::{reset_sigint, sigint_received},
 };
@@ -120,7 +121,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	// Poll for SIGINT while executing query
 	let result = tokio::select! {
 		result = ctx.client.query(statement, &[]) => {
-			result.into_diagnostic()
+			result
 		}
 		_ = async {
 			loop {
@@ -140,7 +141,18 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
-	let rows = result?;
+	let rows = match result {
+		Ok(rows) => rows,
+		Err(e) => {
+			// Convert to our custom error type with query context
+			if let Some(db_error) = e.as_db_error() {
+				return Err(PgDatabaseError::from_db_error(db_error, Some(statement)).into());
+			} else {
+				// Non-database error (connection error, etc)
+				return Err(miette::miette!("Database error: {:?}", e));
+			}
+		}
+	};
 
 	let duration = start.elapsed();
 
@@ -153,8 +165,11 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		ctx.writer
 			.write_all(msg.as_bytes())
 			.await
-			.into_diagnostic()?;
-		ctx.writer.flush().await.into_diagnostic()?;
+			.map_err(|e| miette::miette!("Failed to write output: {}", e))?;
+		ctx.writer
+			.flush()
+			.await
+			.map_err(|e| miette::miette!("Failed to flush output: {}", e))?;
 		return Ok(());
 	}
 

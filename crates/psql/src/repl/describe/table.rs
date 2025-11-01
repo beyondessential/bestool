@@ -4,7 +4,7 @@ use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
 
-use super::{format_db_error, output::OutputWriter};
+use super::output::OutputWriter;
 
 pub(super) async fn handle_describe_table(
 	ctx: &mut ReplContext<'_>,
@@ -24,7 +24,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					format_db_error(&e)
+					crate::error::format_db_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -198,7 +198,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					format_db_error(&e)
+					crate::error::format_db_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -477,7 +477,7 @@ pub(super) async fn handle_describe_table(
 				"Error describing table \"{}.{}\": {}",
 				schema,
 				table_name,
-				format_db_error(&e)
+				crate::error::format_db_error(&e, None)
 			);
 			ControlFlow::Continue(())
 		}
