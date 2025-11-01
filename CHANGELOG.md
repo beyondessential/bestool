@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.2](https://github.com/beyondessential/bestool/compare/v1.1.1..1.1.2) - 2025-11-01
+## [1.1.2](https://github.com/beyondessential/bestool/compare/v1.1.1..v1.1.2) - 2025-11-01
 
 
 - **Deps:** Uzers is only for unix - ([8281df1](https://github.com/beyondessential/bestool/commit/8281df1d1d11569d9c7bff38aaa47efa699a2513))
