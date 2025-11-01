@@ -35,6 +35,7 @@ supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
 sysinfo = "0.32.1"
 tempfile = "3.21.0"
+pg_bigdecimal = "0.1"
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = { version = "0.7.15", features = ["with-jiff-0_2", "with-serde_json-1"] }

@@ -22,6 +22,7 @@ pub fn get_value(
 }
 
 pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
+	// Check for void type first
 	let column = row.columns().get(i);
 	if let Some(col) = column {
 		if col.type_().name() == "void" {
@@ -29,7 +30,13 @@ pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 		}
 	}
 
-	if let Ok(v) = row.try_get::<_, String>(i) {
+	// Try numeric type with pg_bigdecimal
+	if let Ok(v) = row.try_get::<_, pg_bigdecimal::PgNumeric>(i) {
+		return match v.n {
+			Some(decimal) => decimal.to_string(),
+			None => "NaN".to_string(),
+		};
+	} else if let Ok(v) = row.try_get::<_, String>(i) {
 		v
 	} else if let Ok(v) = row.try_get::<_, i16>(i) {
 		v.to_string()
@@ -38,9 +45,9 @@ pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 	} else if let Ok(v) = row.try_get::<_, i64>(i) {
 		v.to_string()
 	} else if let Ok(v) = row.try_get::<_, f32>(i) {
-		v.to_string()
+		format!("{}", v)
 	} else if let Ok(v) = row.try_get::<_, f64>(i) {
-		v.to_string()
+		format!("{}", v)
 	} else if let Ok(v) = row.try_get::<_, bool>(i) {
 		v.to_string()
 	} else if let Ok(v) = row.try_get::<_, Vec<u8>>(i) {
@@ -111,6 +118,7 @@ pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 }
 
 pub fn can_print(row: &tokio_postgres::Row, i: usize) -> bool {
+	// Check for void type
 	let column = row.columns().get(i);
 	if let Some(col) = column {
 		if col.type_().name() == "void" {
@@ -118,7 +126,8 @@ pub fn can_print(row: &tokio_postgres::Row, i: usize) -> bool {
 		}
 	}
 
-	if row.try_get::<_, String>(i).is_ok()
+	if row.try_get::<_, pg_bigdecimal::PgNumeric>(i).is_ok()
+		|| row.try_get::<_, String>(i).is_ok()
 		|| row.try_get::<_, i16>(i).is_ok()
 		|| row.try_get::<_, i32>(i).is_ok()
 		|| row.try_get::<_, i64>(i).is_ok()
@@ -231,12 +240,14 @@ mod tests {
 		assert_eq!(rows.len(), 1);
 		let row = &rows[0];
 
-		// Numeric type should not be directly printable (requires text casting)
-		assert!(!can_print(row, 0));
+		// Numeric type should now be directly printable with pg_bigdecimal
+		assert!(can_print(row, 0));
 
-		// When going through the actual query execution path with text casting,
-		// numeric values will be properly formatted. Here we're just testing
-		// that the type is correctly identified as unprintable.
+		// Check that the value can be formatted
+		let value = format_value(row, 0);
+		assert!(!value.is_empty());
+		assert_ne!(value, "(error)");
+		assert!(value.contains("123.456"));
 	}
 
 	#[tokio::test]
@@ -270,6 +281,36 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn test_numeric_arithmetic_direct() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+
+		// Test numeric arithmetic (the original failing case) - now should work directly
+		let rows = client
+			.query("SELECT 12.34 + 37.28", &[])
+			.await
+			.expect("Query failed");
+
+		assert_eq!(rows.len(), 1);
+		let row = &rows[0];
+
+		// With pg_bigdecimal, numeric should be directly printable
+		assert!(can_print(row, 0));
+
+		// Should be able to format the result
+		let value = format_value(row, 0);
+		assert!(!value.is_empty());
+		assert_ne!(value, "(error)");
+		assert!(value.starts_with("49.6"));
+	}
+
+	#[tokio::test]
 	async fn test_numeric_arithmetic_question_column() {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
@@ -280,8 +321,7 @@ mod tests {
 
 		let client = pool.get().await.expect("Failed to get connection");
 
-		// Test numeric arithmetic with ?column? (this is what fails in the REPL)
-		// The system should detect it as unprintable and use text casting
+		// Test numeric arithmetic with ?column? (this was failing in the REPL)
 		let rows = client
 			.query("SELECT 12.34 + 37.28", &[])
 			.await
@@ -293,28 +333,11 @@ mod tests {
 		// Verify the column name is ?column?
 		assert_eq!(row.columns()[0].name(), "?column?");
 
-		// Numeric type should not be directly printable
-		assert!(!can_print(row, 0));
+		// With pg_bigdecimal, numeric should now be directly printable
+		assert!(can_print(row, 0));
 
-		// Simulate the text cast query that the system will build
-		let columns = row.columns();
-		let unprintable_columns = vec![0];
-		let text_query = crate::query::build_text_cast_query(
-			"SELECT 12.34 + 37.28",
-			columns,
-			&unprintable_columns,
-		);
-
-		// Execute the text cast query
-		let text_rows = client
-			.query(&text_query, &[])
-			.await
-			.expect("Text cast query failed");
-
-		assert_eq!(text_rows.len(), 1);
-
-		// Now we should be able to get the value
-		let value = get_value(row, 0, 0, &unprintable_columns, &Some(text_rows));
+		// Should be able to format directly without text casting
+		let value = format_value(row, 0);
 		assert!(!value.is_empty());
 		assert_ne!(value, "(error)");
 		assert!(value.starts_with("49.6"));
