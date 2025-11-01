@@ -158,20 +158,17 @@ fn estimate_result_size(rows: &[Row]) -> usize {
 			} else if row.try_get::<_, i16>(i).is_ok()
 				|| row.try_get::<_, i32>(i).is_ok()
 				|| row.try_get::<_, i64>(i).is_ok()
+				|| row.try_get::<_, f32>(i).is_ok()
+				|| row.try_get::<_, f64>(i).is_ok()
+				|| row.try_get::<_, jiff::Timestamp>(i).is_ok()
+				|| row.try_get::<_, jiff::civil::DateTime>(i).is_ok()
+				|| row.try_get::<_, jiff::civil::Time>(i).is_ok()
 			{
-				size += 8;
-			} else if row.try_get::<_, f32>(i).is_ok() || row.try_get::<_, f64>(i).is_ok() {
 				size += 8;
 			} else if row.try_get::<_, bool>(i).is_ok() {
 				size += 1;
-			} else if row.try_get::<_, jiff::Timestamp>(i).is_ok()
-				|| row.try_get::<_, jiff::civil::DateTime>(i).is_ok()
-			{
-				size += 8;
 			} else if row.try_get::<_, jiff::civil::Date>(i).is_ok() {
 				size += 4;
-			} else if row.try_get::<_, jiff::civil::Time>(i).is_ok() {
-				size += 8;
 			} else {
 				size += 64;
 			}

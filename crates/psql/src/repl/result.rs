@@ -33,26 +33,26 @@ async fn handle_show(
 	limit: Option<usize>,
 	offset: Option<usize>,
 ) -> ControlFlow<()> {
-	// Get the result to show
-	let state = ctx.repl_state.lock().unwrap();
-	let result = if let Some(index) = n {
-		state.result_store.get(index)
-	} else {
-		state.result_store.get_last()
-	};
-
-	let Some(result) = result else {
-		if let Some(index) = n {
-			eprintln!("No result at index {}", index);
+	let mut result = {
+		let state = ctx.repl_state.lock().unwrap();
+		let result = if let Some(index) = n {
+			state.result_store.get(index)
 		} else {
-			eprintln!("No results available");
-		}
-		return ControlFlow::Continue(());
-	};
+			state.result_store.get_last()
+		};
 
-	// Clone the result so we can release the lock
-	let mut result = result.clone();
-	drop(state);
+		let Some(result) = result else {
+			if let Some(index) = n {
+				eprintln!("No result at index {}", index);
+			} else {
+				eprintln!("No results available");
+			}
+			return ControlFlow::Continue(());
+		};
+
+		// Clone the result so we can release the lock
+		result.clone()
+	};
 
 	// Validate and compute column indices if filtering by column names
 	let column_indices = if !cols.is_empty() {
@@ -75,9 +75,10 @@ async fn handle_show(
 
 	// Apply limit
 	if let Some(limit_val) = limit
-		&& limit_val < result.rows.len() {
-			result.rows.truncate(limit_val);
-		}
+		&& limit_val < result.rows.len()
+	{
+		result.rows.truncate(limit_val);
+	}
 
 	// Determine format (default to table)
 	let format = format.unwrap_or(ResultFormat::Table);
@@ -160,8 +161,10 @@ async fn display_to_global_output(
 	use tokio::io::AsyncWriteExt;
 
 	if result.rows.is_empty() {
-		let state = ctx.repl_state.lock().unwrap();
-		if let Some(output_file) = &state.output_file {
+		if let Some(output_file) = {
+			let state = ctx.repl_state.lock().unwrap();
+			state.output_file.clone()
+		} {
 			let mut file = output_file.lock().await;
 			file.write_all(b"(no rows)\n")
 				.await
@@ -177,8 +180,10 @@ async fn display_to_global_output(
 	let output =
 		format_result_using_display_module(ctx, result, format, false, column_indices).await?;
 
-	let state = ctx.repl_state.lock().unwrap();
-	if let Some(output_file) = &state.output_file {
+	if let Some(output_file) = {
+		let state = ctx.repl_state.lock().unwrap();
+		state.output_file.clone()
+	} {
 		let mut file = output_file.lock().await;
 		file.write_all(output.as_bytes())
 			.await
