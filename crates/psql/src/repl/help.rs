@@ -24,7 +24,11 @@ pub fn handle_help() -> ControlFlow<()> {
 	]);
 	metacmds.add_row(vec![
 		"\\re list[+] [N]",
-		"List the last N (default 10) saved results",
+		"List the last N (default 20) saved results",
+	]);
+	metacmds.add_row(vec![
+		"\\re show [params...]",
+		"Display a saved result (n=N format=FMT to=PATH only=COLS limit=N offset=N)",
 	]);
 	metacmds.add_row(vec![
 		"\\debug [cmd]",

@@ -11,28 +11,30 @@ pub(crate) enum ResultFormat {
 	Table,
 	Expanded,
 	Json,
-	JsonLine,
-	JsonArray,
+	JsonPretty,
 	Csv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResultSubcommand {
-	Format {
-		index: Option<usize>,
-		format: ResultFormat,
-	},
 	Show {
-		index: usize,
+		n: Option<usize>,
+		format: Option<ResultFormat>,
+		to: Option<String>,
+		only: Vec<String>,
+		limit: Option<usize>,
+		offset: Option<usize>,
 	},
 	List {
 		limit: Option<usize>,
 		detail: bool,
 	},
-	Write {
-		index: Option<usize>,
-		file: String,
-	},
+}
+
+fn parse_parameter_value<'a>(
+	input: &mut &'a str,
+) -> winnow::error::Result<&'a str, ErrMode<winnow::error::ContextError>> {
+	take_while(1.., |c: char| !c.is_whitespace()).parse_next(input)
 }
 
 pub fn parse(
@@ -49,62 +51,59 @@ pub fn parse(
 
 	let res = if let Some(cmd_str) = cmd {
 		match cmd_str {
-			"format" => {
-				let index_str: Option<&str> = opt(preceded(
-					space1,
-					take_while(1.., |c: char| c.is_ascii_digit()),
-				))
-				.parse_next(input)?;
+			"show" => {
+				let mut n = None;
+				let mut format = None;
+				let mut to = None;
+				let mut only = Vec::new();
+				let mut limit = None;
+				let mut offset = None;
 
-				let index = index_str.and_then(|s| s.parse::<usize>().ok());
+				loop {
+					// Check if we have at least one space followed by content
+					let has_param =
+						opt(preceded(space1, parse_parameter_value)).parse_next(input)?;
 
-				let format_str: Option<&str> = opt(preceded(
-					space1,
-					take_while(1.., |c: char| !c.is_whitespace()),
-				))
-				.parse_next(input)?;
-
-				space0.parse_next(input)?;
-				eof.parse_next(input)?;
-
-				if let Some(format_name) = format_str {
-					let format = match format_name {
-						"table" => ResultFormat::Table,
-						"expanded" => ResultFormat::Expanded,
-						"json" => ResultFormat::Json,
-						"json-line" => ResultFormat::JsonLine,
-						"json-array" => ResultFormat::JsonArray,
-						"csv" => ResultFormat::Csv,
-						_ => return Ok(super::Metacommand::Help),
+					let Some(param_or_value) = has_param else {
+						// No more parameters
+						space0.parse_next(input)?;
+						eof.parse_next(input)?;
+						break;
 					};
 
-					super::Metacommand::Result {
-						subcommand: ResultSubcommand::Format { index, format },
-					}
-				} else {
-					return Ok(super::Metacommand::Help);
-				}
-			}
-			"show" => {
-				let index_str: Option<&str> = opt(preceded(
-					space1,
-					take_while(1.., |c: char| c.is_ascii_digit()),
-				))
-				.parse_next(input)?;
-
-				space0.parse_next(input)?;
-				eof.parse_next(input)?;
-
-				if let Some(idx_str) = index_str {
-					if let Ok(index) = idx_str.parse::<usize>() {
-						super::Metacommand::Result {
-							subcommand: ResultSubcommand::Show { index },
-						}
+					if let Some(value_str) = param_or_value.strip_prefix("n=") {
+						n = value_str.parse::<usize>().ok();
+					} else if let Some(value_str) = param_or_value.strip_prefix("format=") {
+						format = match value_str {
+							"table" => Some(ResultFormat::Table),
+							"expanded" => Some(ResultFormat::Expanded),
+							"json" => Some(ResultFormat::Json),
+							"json-pretty" => Some(ResultFormat::JsonPretty),
+							"csv" => Some(ResultFormat::Csv),
+							_ => return Ok(super::Metacommand::Help),
+						};
+					} else if let Some(value_str) = param_or_value.strip_prefix("to=") {
+						to = Some(value_str.to_string());
+					} else if let Some(value_str) = param_or_value.strip_prefix("only=") {
+						only = value_str.split(',').map(|s| s.to_string()).collect();
+					} else if let Some(value_str) = param_or_value.strip_prefix("limit=") {
+						limit = value_str.parse::<usize>().ok();
+					} else if let Some(value_str) = param_or_value.strip_prefix("offset=") {
+						offset = value_str.parse::<usize>().ok();
 					} else {
 						return Ok(super::Metacommand::Help);
 					}
-				} else {
-					return Ok(super::Metacommand::Help);
+				}
+
+				super::Metacommand::Result {
+					subcommand: ResultSubcommand::Show {
+						n,
+						format,
+						to,
+						only,
+						limit,
+						offset,
+					},
 				}
 			}
 			"list" | "list+" => {
@@ -123,35 +122,6 @@ pub fn parse(
 
 				super::Metacommand::Result {
 					subcommand: ResultSubcommand::List { limit, detail },
-				}
-			}
-			"write" => {
-				let index_str: Option<&str> = opt(preceded(
-					space1,
-					take_while(1.., |c: char| c.is_ascii_digit()),
-				))
-				.parse_next(input)?;
-
-				let index = index_str.and_then(|s| s.parse::<usize>().ok());
-
-				let file_path: Option<&str> = opt(preceded(
-					space1,
-					take_while(1.., |c: char| !c.is_whitespace()),
-				))
-				.parse_next(input)?;
-
-				space0.parse_next(input)?;
-				eof.parse_next(input)?;
-
-				if let Some(file) = file_path {
-					super::Metacommand::Result {
-						subcommand: ResultSubcommand::Write {
-							index,
-							file: file.to_string(),
-						},
-					}
-				} else {
-					return Ok(super::Metacommand::Help);
 				}
 			}
 			_ => {
@@ -175,72 +145,225 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_parse_re_format_with_index() {
-		let result = parse_metacommand(r"\re format 1 json").unwrap();
+	fn test_parse_re_show_no_params() {
+		let result = parse_metacommand(r"\re show").unwrap();
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Format {
-					index: Some(1),
-					format: ResultFormat::Json
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: None,
+					to: None,
+					only,
+					limit: None,
+					offset: None,
 				}
-			})
+			}) if only.is_empty()
 		));
 	}
 
 	#[test]
-	fn test_parse_re_format_without_index() {
-		let result = parse_metacommand(r"\re format table").unwrap();
+	fn test_parse_re_show_with_n() {
+		let result = parse_metacommand(r"\re show n=5").unwrap();
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Format {
-					index: None,
-					format: ResultFormat::Table
+				subcommand: ResultSubcommand::Show {
+					n: Some(5),
+					format: None,
+					to: None,
+					only,
+					limit: None,
+					offset: None,
 				}
-			})
+			}) if only.is_empty()
 		));
 	}
 
 	#[test]
-	fn test_parse_re_format_all_formats() {
+	fn test_parse_re_show_with_format() {
+		let result = parse_metacommand(r"\re show format=json").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: Some(ResultFormat::Json),
+					to: None,
+					only,
+					limit: None,
+					offset: None,
+				}
+			}) if only.is_empty()
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_all_formats() {
 		let formats = vec![
 			("table", ResultFormat::Table),
 			("expanded", ResultFormat::Expanded),
 			("json", ResultFormat::Json),
-			("json-line", ResultFormat::JsonLine),
-			("json-array", ResultFormat::JsonArray),
+			("json-pretty", ResultFormat::JsonPretty),
 			("csv", ResultFormat::Csv),
 		];
 
 		for (name, expected) in formats {
-			let result = parse_metacommand(&format!(r"\re format {}", name)).unwrap();
+			let result = parse_metacommand(&format!(r"\re show format={}", name)).unwrap();
 			assert!(matches!(
 				result,
 				Some(Metacommand::Result {
-					subcommand: ResultSubcommand::Format {
-						index: None,
-						format: f
+					subcommand: ResultSubcommand::Show {
+						n: None,
+						format: Some(f),
+						to: None,
+						only,
+						limit: None,
+						offset: None,
 					}
-				}) if f == expected
+				}) if f == expected && only.is_empty()
 			));
 		}
 	}
 
 	#[test]
-	fn test_parse_re_show() {
-		let result = parse_metacommand(r"\re show 5").unwrap();
+	fn test_parse_re_show_with_to() {
+		let result = parse_metacommand(r"\re show to=output.json").unwrap();
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Show { index: 5 }
-			})
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: None,
+					to: Some(ref path),
+					only,
+					limit: None,
+					offset: None,
+				}
+			}) if path == "output.json" && only.is_empty()
 		));
 	}
 
 	#[test]
-	fn test_parse_re_show_no_index() {
-		let result = parse_metacommand(r"\re show").unwrap();
+	fn test_parse_re_show_with_only() {
+		let result = parse_metacommand(r"\re show only=col1,col2,col3").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: None,
+					to: None,
+					only,
+					limit: None,
+					offset: None,
+				}
+			}) if only == vec!["col1", "col2", "col3"]
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_with_limit() {
+		let result = parse_metacommand(r"\re show limit=10").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: None,
+					to: None,
+					only,
+					limit: Some(10),
+					offset: None,
+				}
+			}) if only.is_empty()
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_with_offset() {
+		let result = parse_metacommand(r"\re show offset=5").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: None,
+					format: None,
+					to: None,
+					only,
+					limit: None,
+					offset: Some(5),
+				}
+			}) if only.is_empty()
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_multiple_params_any_order() {
+		let result = parse_metacommand(r"\re show format=csv n=3 limit=100 offset=10").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: Some(3),
+					format: Some(ResultFormat::Csv),
+					to: None,
+					only,
+					limit: Some(100),
+					offset: Some(10),
+				}
+			}) if only.is_empty()
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_different_order() {
+		let result = parse_metacommand(r"\re show limit=50 format=expanded n=2").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: Some(2),
+					format: Some(ResultFormat::Expanded),
+					to: None,
+					only,
+					limit: Some(50),
+					offset: None,
+				}
+			}) if only.is_empty()
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_all_params() {
+		let result = parse_metacommand(
+			r"\re show n=1 format=json-pretty to=/tmp/out.json only=id,name limit=20 offset=5",
+		)
+		.unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::Show {
+					n: Some(1),
+					format: Some(ResultFormat::JsonPretty),
+					to: Some(ref path),
+					only,
+					limit: Some(20),
+					offset: Some(5),
+				}
+			}) if path == "/tmp/out.json" && only == vec!["id", "name"]
+		));
+	}
+
+	#[test]
+	fn test_parse_re_show_invalid_format() {
+		let result = parse_metacommand(r"\re show format=invalid").unwrap();
+		assert!(matches!(result, Some(Metacommand::Help)));
+	}
+
+	#[test]
+	fn test_parse_re_show_invalid_param() {
+		let result = parse_metacommand(r"\re show invalid=value").unwrap();
 		assert!(matches!(result, Some(Metacommand::Help)));
 	}
 
@@ -301,40 +424,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_re_write_with_index() {
-		let result = parse_metacommand(r"\re write 2 output.json").unwrap();
-		assert!(matches!(
-			result,
-			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Write {
-					index: Some(2),
-					file
-				}
-			}) if file == "output.json"
-		));
-	}
-
-	#[test]
-	fn test_parse_re_write_without_index() {
-		let result = parse_metacommand(r"\re write results.csv").unwrap();
-		assert!(matches!(
-			result,
-			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Write {
-					index: None,
-					file
-				}
-			}) if file == "results.csv"
-		));
-	}
-
-	#[test]
-	fn test_parse_re_write_no_file() {
-		let result = parse_metacommand(r"\re write").unwrap();
-		assert!(matches!(result, Some(Metacommand::Help)));
-	}
-
-	#[test]
 	fn test_parse_re_no_subcommand() {
 		let result = parse_metacommand(r"\re").unwrap();
 		assert!(matches!(result, Some(Metacommand::Help)));
@@ -347,22 +436,20 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_re_format_invalid_format() {
-		let result = parse_metacommand(r"\re format invalid").unwrap();
-		assert!(matches!(result, Some(Metacommand::Help)));
-	}
-
-	#[test]
 	fn test_parse_re_with_whitespace() {
-		let result = parse_metacommand(r"  \re format 1 json  ").unwrap();
+		let result = parse_metacommand(r"  \re show n=1 format=json  ").unwrap();
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::Format {
-					index: Some(1),
-					format: ResultFormat::Json
+				subcommand: ResultSubcommand::Show {
+					n: Some(1),
+					format: Some(ResultFormat::Json),
+					to: None,
+					only,
+					limit: None,
+					offset: None,
 				}
-			})
+			}) if only.is_empty()
 		));
 	}
 }

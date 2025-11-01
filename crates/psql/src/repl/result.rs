@@ -13,19 +13,15 @@ pub(crate) fn handle_result(
 ) -> ControlFlow<()> {
 	match subcommand {
 		ResultSubcommand::List { limit, detail } => handle_list(ctx, limit, detail),
-		ResultSubcommand::Format {
-			index: _,
+		ResultSubcommand::Show {
+			n: _,
 			format: _,
+			to: _,
+			only: _,
+			limit: _,
+			offset: _,
 		} => {
-			eprintln!("\\re format not yet implemented");
-			ControlFlow::Continue(())
-		}
-		ResultSubcommand::Show { index: _ } => {
 			eprintln!("\\re show not yet implemented");
-			ControlFlow::Continue(())
-		}
-		ResultSubcommand::Write { index: _, file: _ } => {
-			eprintln!("\\re write not yet implemented");
 			ControlFlow::Continue(())
 		}
 	}
