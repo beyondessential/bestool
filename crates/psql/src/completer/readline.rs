@@ -9,7 +9,26 @@ use rustyline::{
 };
 use syntect::{easy::HighlightLines, util::as_24_bit_terminal_escaped};
 
-use crate::theme::Theme;
+use crate::{repl::TransactionState, theme::Theme};
+
+/// Apply ANSI color codes to the prompt based on write mode and transaction state
+fn style_prompt(prompt: &str, write_mode: bool, transaction_state: TransactionState) -> String {
+	if write_mode {
+		let color_code = match transaction_state {
+			TransactionState::Error => "\x1b[1;31m", // Bold red
+			TransactionState::Active => {
+				"\x1b[1;34m" // Bold blue (write mode + transaction)
+			}
+			TransactionState::Idle | TransactionState::None => {
+				"\x1b[1;32m" // Bold green (write mode)
+			}
+		};
+
+		format!("{color_code}{prompt}\x1b[0m")
+	} else {
+		prompt.to_string()
+	}
+}
 
 impl Completer for super::SqlCompleter {
 	type Candidate = Pair;
@@ -69,6 +88,21 @@ impl Highlighter for super::SqlCompleter {
 
 	fn highlight_char(&self, _line: &str, _pos: usize, _forced: CmdKind) -> bool {
 		true
+	}
+
+	fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+		&'s self,
+		prompt: &'p str,
+		_default: bool,
+	) -> Cow<'b, str> {
+		let (write_mode, transaction_state) = if let Some(repl_state) = &self.repl_state {
+			let state = repl_state.lock().unwrap();
+			(state.write_mode, state.transaction_state)
+		} else {
+			(false, TransactionState::None)
+		};
+
+		Cow::Owned(style_prompt(prompt, write_mode, transaction_state))
 	}
 }
 

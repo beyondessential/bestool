@@ -1,5 +1,5 @@
-pub(crate) use metacommands::{parse_metacommand, DebugWhat, ListItem, Metacommand};
-pub(crate) use query_modifiers::{parse_query_modifiers, QueryModifier, QueryModifiers};
+pub(crate) use metacommands::{DebugWhat, ListItem, Metacommand, parse_metacommand};
+pub(crate) use query_modifiers::{QueryModifier, QueryModifiers, parse_query_modifiers};
 
 mod metacommands;
 mod query_modifiers;

@@ -10,6 +10,8 @@ use crate::{
 	audit::Audit, completer::SqlCompleter, pool::PgPool, snippets::Snippets, theme::Theme,
 };
 
+use super::TransactionState;
+
 #[derive(Debug, Clone)]
 pub struct ReplState {
 	pub(crate) db_user: String,
@@ -21,6 +23,7 @@ pub struct ReplState {
 	pub(crate) use_colours: bool,
 	pub(crate) vars: BTreeMap<String, String>,
 	pub(crate) snippets: Snippets,
+	pub(crate) transaction_state: TransactionState,
 }
 
 impl ReplState {
@@ -36,6 +39,7 @@ impl ReplState {
 			use_colours: true,
 			vars: BTreeMap::new(),
 			snippets: Snippets::empty(),
+			transaction_state: TransactionState::None,
 		}
 	}
 }

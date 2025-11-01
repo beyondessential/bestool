@@ -170,6 +170,7 @@ pub async fn run(config: Config) -> Result<()> {
 		use_colours: config.use_colours,
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
+		transaction_state: TransactionState::None,
 	};
 
 	let audit = Audit::open(&audit_path, repl_state.clone())?;
@@ -217,14 +218,18 @@ pub async fn run(config: Config) -> Result<()> {
 
 	loop {
 		let transaction_state = TransactionState::check(&monitor_client, backend_pid).await;
-		let current_write_mode = repl_state.lock().unwrap().write_mode;
+
+		// Update transaction state in ReplState so the highlighter can access it
+		{
+			let mut state = repl_state.lock().unwrap();
+			state.transaction_state = transaction_state;
+		}
 
 		let prompt = prompt::build_prompt(
 			&database_name,
 			is_superuser,
 			buffer.is_empty(),
 			transaction_state,
-			current_write_mode,
 		);
 
 		let readline = rl.readline(&prompt);

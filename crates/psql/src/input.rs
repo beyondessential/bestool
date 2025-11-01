@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::{
-	parser::{parse_metacommand, parse_query_modifiers, DebugWhat, Metacommand},
+	parser::{DebugWhat, Metacommand, parse_metacommand, parse_query_modifiers},
 	repl::ReplState,
 };
 
