@@ -124,8 +124,9 @@ database=>
 -- note that a new idle transaction has been automatically opened
 
 -- Once you're done writing, return to read-only mode
--- This will refuse to work when you're in an active transaction
--- to avoid losing work -- you should either continue, or COMMIT/ROLLBACK
+-- This will refuse when you're in an active transaction to avoid losing work
+-- you should either continue your work, or COMMIT/ROLLBACK to allow the action
+-- Similarly, exiting will also be refused while in an active transaction.
 database=> \W
 SESSION IS NOW READ ONLY
 ```

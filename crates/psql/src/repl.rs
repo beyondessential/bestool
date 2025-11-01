@@ -51,7 +51,7 @@ impl ReplAction {
 		match self {
 			ReplAction::Continue => ControlFlow::Continue(()),
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
-			ReplAction::Exit => exit::handle_exit(),
+			ReplAction::Exit => exit::handle_exit(ctx).await,
 			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit => edit::handle_edit(ctx).await,
 			ReplAction::IncludeFile { file_path, vars } => {
@@ -265,7 +265,19 @@ pub async fn run(config: Config) -> Result<()> {
 			}
 			Err(ReadlineError::Eof) => {
 				debug!("CTRL-D");
-				break;
+				let mut ctx = ReplContext {
+					client: &client,
+					monitor_client: &monitor_client,
+					backend_pid,
+					theme: config.theme,
+					repl_state: &repl_state,
+					rl: &mut rl,
+					pool: &config.pool,
+				};
+
+				if exit::handle_exit(&mut ctx).await.is_break() {
+					break;
+				}
 			}
 			Err(err) => {
 				eprintln!("Error: {:?}", err);

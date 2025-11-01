@@ -1392,3 +1392,225 @@ async fn test_multiple_statements() {
 	let count: i64 = rows[0].get(0);
 	assert_eq!(count, 2, "Should have inserted 2 rows");
 }
+
+#[tokio::test]
+async fn test_exit_blocked_with_active_transaction() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+	// Set up write mode with an active transaction
+	client
+		.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN; CREATE TEMP TABLE test_exit_block (id INT)")
+		.await
+		.expect("Failed to enable write mode and allocate XID");
+
+	tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
+	assert_eq!(state, TransactionState::Active);
+
+	// Create a ReplState in write mode
+	let repl_state = Arc::new(Mutex::new(ReplState {
+		db_user: "test".to_string(),
+		sys_user: "test".to_string(),
+		expanded_mode: false,
+		write_mode: true,
+		ots: Some("test".to_string()),
+		output_file: None,
+		use_colours: false,
+		vars: Default::default(),
+		snippets: crate::snippets::Snippets::new(),
+		transaction_state: TransactionState::Active,
+		result_store: crate::result_store::ResultStore::new(),
+	}));
+
+	// Create a dummy audit and readline editor
+	let temp_dir = tempfile::TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+		rustyline::Editor::with_history(
+			rustyline::Config::builder()
+				.auto_add_history(false)
+				.enable_signals(false)
+				.build(),
+			audit,
+		)
+		.unwrap();
+
+	// Create a ReplContext
+	let mut ctx = ReplContext {
+		client: &client,
+		monitor_client: &monitor_client,
+		backend_pid,
+		theme: crate::theme::Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Attempt to exit - should be blocked
+	let result = crate::repl::exit::handle_exit(&mut ctx).await;
+	assert_eq!(result, std::ops::ControlFlow::Continue(()));
+
+	// Clean up
+	client.batch_execute("ROLLBACK").await.ok();
+}
+
+#[tokio::test]
+async fn test_exit_allowed_after_commit() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+	// Set up write mode with an active transaction, then commit
+	client
+		.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE; BEGIN; CREATE TEMP TABLE test_exit_allow (id INT); COMMIT")
+		.await
+		.expect("Failed to setup and commit transaction");
+
+	tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+	let state = TransactionState::check(&monitor_client, backend_pid).await;
+	// After COMMIT, we're not in a transaction, so state should be None or Idle
+	assert!(
+		matches!(state, TransactionState::None | TransactionState::Idle),
+		"Expected None or Idle after commit, got {:?}",
+		state
+	);
+
+	// Create a ReplState in write mode but with no active transaction
+	let repl_state = Arc::new(Mutex::new(ReplState {
+		db_user: "test".to_string(),
+		sys_user: "test".to_string(),
+		expanded_mode: false,
+		write_mode: true,
+		ots: Some("test".to_string()),
+		output_file: None,
+		use_colours: false,
+		vars: Default::default(),
+		snippets: crate::snippets::Snippets::new(),
+		transaction_state: state,
+		result_store: crate::result_store::ResultStore::new(),
+	}));
+
+	// Create a dummy audit and readline editor
+	let temp_dir = tempfile::TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+		rustyline::Editor::with_history(
+			rustyline::Config::builder()
+				.auto_add_history(false)
+				.enable_signals(false)
+				.build(),
+			audit,
+		)
+		.unwrap();
+
+	// Create a ReplContext
+	let mut ctx = ReplContext {
+		client: &client,
+		monitor_client: &monitor_client,
+		backend_pid,
+		theme: crate::theme::Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Attempt to exit - should be allowed
+	let result = crate::repl::exit::handle_exit(&mut ctx).await;
+	assert_eq!(result, std::ops::ControlFlow::Break(()));
+}
+
+#[tokio::test]
+async fn test_exit_allowed_in_readonly_mode() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+	// Create a ReplState in read-only mode
+	let repl_state = Arc::new(Mutex::new(ReplState {
+		db_user: "test".to_string(),
+		sys_user: "test".to_string(),
+		expanded_mode: false,
+		write_mode: false,
+		ots: None,
+		output_file: None,
+		use_colours: false,
+		vars: Default::default(),
+		snippets: crate::snippets::Snippets::new(),
+		transaction_state: TransactionState::None,
+		result_store: crate::result_store::ResultStore::new(),
+	}));
+
+	// Create a dummy audit and readline editor
+	let temp_dir = tempfile::TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+		rustyline::Editor::with_history(
+			rustyline::Config::builder()
+				.auto_add_history(false)
+				.enable_signals(false)
+				.build(),
+			audit,
+		)
+		.unwrap();
+
+	// Create a ReplContext
+	let mut ctx = ReplContext {
+		client: &client,
+		monitor_client: &monitor_client,
+		backend_pid,
+		theme: crate::theme::Theme::Dark,
+		repl_state: &repl_state,
+		rl: &mut rl,
+		pool: &pool,
+	};
+
+	// Attempt to exit - should be allowed (not in write mode)
+	let result = crate::repl::exit::handle_exit(&mut ctx).await;
+	assert_eq!(result, std::ops::ControlFlow::Break(()));
+}
