@@ -155,6 +155,199 @@ database=> \run fhir_settings
 -- and it also prohibits "smuggling" queries past the audit log.
 ```
 
+## Results
+
+Have you ever done a query and then immediately after that, run it again
+in a different display mode because the original was unreadable? With the
+`\re` commands, you can re-print any of the last queries' results without
+have to re-run them, in the same or a different format, and even apply
+simple transformations.
+
+```sql
+-- Let's get a query's results in the buffer
+database=> SELECT * FROM usersselect * from users;
+    id   ┆ created ┆ updated ┆ deleted ┆  email  ┆ passwo ┆ displa ┆  role  ┆ displa ┆ visibi ┆ phone_ ┆ update ┆ device
+         ┆   _at   ┆   _at   ┆   _at   ┆         ┆   rd   ┆ y_name ┆        ┆  y_id  ┆ lity_s ┆ number ┆ d_at_s ┆ _regis
+         ┆         ┆         ┆         ┆         ┆        ┆        ┆        ┆        ┆  tatus ┆        ┆ ync_ti ┆ tratio
+         ┆         ┆         ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆   ck   ┆ n_quot
+         ┆         ┆         ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆        ┆    a
+═════════╪═════════╪═════════╪═════════╪═════════╪════════╪════════╪════════╪════════╪════════╪════════╪════════╪════════
+ 0000000 ┆ 2025-09 ┆ 2025-09 ┆ NULL    ┆ system  ┆ NULL   ┆ System ┆ system ┆ NULL   ┆ curren ┆ NULL   ┆ 0      ┆ 0
+ 0-0000- ┆ -16T06: ┆ -16T06: ┆         ┆         ┆        ┆        ┆        ┆        ┆ t      ┆        ┆        ┆
+ 0000-00 ┆ 33:12.9 ┆ 33:12.9 ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆        ┆
+ 00-0000 ┆ 13596Z  ┆ 13596Z  ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆        ┆
+ 0000000 ┆         ┆         ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆        ┆
+ 0       ┆         ┆         ┆         ┆         ┆        ┆        ┆        ┆        ┆        ┆        ┆        ┆
+╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌
+ 88085a0 ┆ 2025-09 ┆ 2025-09 ┆ NULL    ┆ admin@t ┆ $2b$12 ┆ Initia ┆ admin  ┆ NULL   ┆ curren ┆ NULL   ┆ 3      ┆ 0
+ 2-6f4d- ┆ -16T06: ┆ -16T06: ┆         ┆ amanu.i ┆ $JRZEj ┆ l      ┆        ┆        ┆ t      ┆        ┆        ┆
+ 43ae-ae ┆ 36:33.3 ┆ 36:33.3 ┆         ┆ o       ┆ eHQcqq ┆ Admin  ┆        ┆        ┆        ┆        ┆        ┆
+ cb-6cd8 ┆ Z       ┆ Z       ┆         ┆         ┆ qg9bO0 ┆        ┆        ┆        ┆        ┆        ┆        ┆
+ fd603f1 ┆         ┆         ┆         ┆         ┆ xucR.z ┆        ┆        ┆        ┆        ┆        ┆        ┆
+ c       ┆         ┆         ┆         ┆         ┆ xQZKOM ┆        ┆        ┆        ┆        ┆        ┆        ┆
+         ┆         ┆         ┆         ┆         ┆ QntRrp ┆        ┆        ┆        ┆        ┆        ┆        ┆
+         ┆         ┆         ┆         ┆         ┆ cFvMMy ┆        ┆        ┆        ┆        ┆        ┆        ┆
+         ┆         ┆         ┆         ┆         ┆ l/NetX ┆        ┆        ┆        ┆        ┆        ┆        ┆
+         ┆         ┆         ┆         ┆         ┆ 6K83EO ┆        ┆        ┆        ┆        ┆        ┆        ┆
+╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌
+(4 rows, took 84.806ms)
+-- (not all rows shown)
+-- That's pretty cramped. I should have used \gx...
+
+-- List out the available results
+database=> \re list
+Past query results (1 of 1):
+
+ N ┆         When        ┆   Took   ┆   Size  ┆ Rows ┆ Cols
+═══╪═════════════════════╪══════════╪═════════╪══════╪══════
+ 0 ┆ 2025-10-30 10:45:52 ┆ 84.81 ms ┆ 1.68 KB ┆ 4    ┆ 13
+
+Total memory used: 1.68 KB
+Memory limit: 1.00 GB
+
+-- Now lets print the users again, but in JSON format:
+database=> \re show format=json
+{"created_at":"2025-09-16T06:33:12.913596Z","deleted_at":null,"device_registration_quota":0,"display_id":null,"display_name":"System","email":"system","id":"00000000-0000-0000-0000-000000000000","password":null,"phone_number":null,"role":"system","updated_at":"2025-09-16T06:33:12.913596Z","updated_at_sync_tick":0,"visibility_status":"current"}
+{"created_at":"2025-09-16T06:36:33.3Z","deleted_at":null,"device_registration_quota":0,"display_id":null,"display_name":"Initial Admin","email":"admin@tamanu.io","id":"88085a02-6f4d-43ae-aecb-6cd8fd603f1c","password":"$2b$12$JRZEjeHQcqqqg9bO0xucR.zxQZKOMQntRrpcFvMMyl/NetX6K83EO","phone_number":null,"role":"admin","updated_at":"2025-09-16T06:36:33.3Z","updated_at_sync_tick":3,"visibility_status":"current"}
+{"created_at":"2025-09-16T06:36:33.495Z","deleted_at":null,"device_registration_quota":0,"display_id":null,"display_name":"System: facility-a sync","email":"facility-a@tamanu.io","id":"4345bd44-d6e4-48fd-85c3-c006bbc786e3","password":"$2b$12$ehgYV1nSi.1UePwtS7T5pObCcjtP35rL/MVDnc/u9YwmjU2oFNGwG","phone_number":null,"role":"admin","updated_at":"2025-09-16T06:36:33.495Z","updated_at_sync_tick":3,"visibility_status":"current"}
+{"created_at":"2025-11-01T11:45:21.392383Z","deleted_at":null,"device_registration_quota":0,"display_id":null,"display_name":"Admin","email":"admin@bes.au","id":"4bbfb6fd-a1e6-4093-9afd-acbeca759e09","password":null,"phone_number":null,"role":"admin","updated_at":"2025-11-01T01:45:21.392383Z","updated_at_sync_tick":31,"visibility_status":"current"}
+
+-- Let's page through the results one at a time, in expanded format
+database=> \re show format=expanded limit=1 offset=0
+-[ RECORD 1 ]-
+ id                        ┆ 00000000-0000-0000-0000-000000000000
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ created_at                ┆ 2025-09-16T06:33:12.913596Z
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ updated_at                ┆ 2025-09-16T06:33:12.913596Z
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ deleted_at                ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ email                     ┆ system
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ password                  ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ display_name              ┆ System
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ role                      ┆ system
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ display_id                ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ visibility_status         ┆ current
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ phone_number              ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ updated_at_sync_tick      ┆ 0
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ device_registration_quota ┆ 0
+
+database=> \re show format=expanded limit=1 offset=1
+-[ RECORD 1 ]-
+ id                        ┆ 88085a02-6f4d-43ae-aecb-6cd8fd603f1c
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ created_at                ┆ 2025-09-16T06:36:33.3Z
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ updated_at                ┆ 2025-09-16T06:36:33.3Z
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ deleted_at                ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ email                     ┆ admin@tamanu.io
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ password                  ┆ $2b$12$JRZEjeHQcqqqg9bO0xucR.zxQZKOMQntRrpcFvMMyl/NetX6K83EO
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ display_name              ┆ Initial Admin
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ role                      ┆ admin
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ display_id                ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ visibility_status         ┆ current
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ phone_number              ┆ NULL
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ updated_at_sync_tick      ┆ 3
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ device_registration_quota ┆ 0
+
+-- Lets only show the columns we're interested in
+database=> \re show cols=id,email,role,display_name
+                  id                  ┆         email        ┆  role  ┆       display_name
+══════════════════════════════════════╪══════════════════════╪════════╪═════════════════════════
+ 00000000-0000-0000-0000-000000000000 ┆ system               ┆ system ┆ System
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 88085a02-6f4d-43ae-aecb-6cd8fd603f1c ┆ admin@tamanu.io      ┆ admin  ┆ Initial Admin
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 4345bd44-d6e4-48fd-85c3-c006bbc786e3 ┆ facility-a@tamanu.io ┆ admin  ┆ System: facility-a sync
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 4bbfb6fd-a1e6-4093-9afd-acbeca759e09 ┆ admin@bes.au         ┆ admin  ┆ Admin
+
+-- Let's make another query (and for demo's sake, hide its output)
+database=> select * from patients \go /dev/null
+(49 rows, took 56.354ms)
+
+database=> \re list
+Past query results (3 of 3):
+
+ N ┆         When        ┆   Took   ┆   Size   ┆ Rows ┆ Cols
+═══╪═════════════════════╪══════════╪══════════╪══════╪══════
+ 0 ┆ 2025-10-30 10:45:52 ┆ 84.81 ms ┆ 1.68 KB  ┆ 4    ┆ 13
+╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌
+ 1 ┆ 2025-10-30 10:58:39 ┆ 66.08 ms ┆ 34.59 KB ┆ 49   ┆ 20
+
+Total memory used: 36.27 KB
+Memory limit: 1.00 GB
+
+-- But how do we tell which query was which? With +
+database=> \re list+
+Past query results (5 of 5):
+
+ N ┆         When        ┆   Took   ┆   Size   ┆ Rows ┆                Columns                ┆           Query
+═══╪═════════════════════╪══════════╪══════════╪══════╪═══════════════════════════════════════╪══════════════════════════
+ 0 ┆ 2025-10-30 10:45:52 ┆ 84.81 ms ┆ 1.68 KB  ┆ 4    ┆ id, created_at, updated_at,           ┆ select * from users
+   ┆                     ┆          ┆          ┆      ┆ deleted_at, email, password,          ┆
+   ┆                     ┆          ┆          ┆      ┆ display_name, role, display_id,       ┆
+   ┆                     ┆          ┆          ┆      ┆ visibility_status, phone_number,      ┆
+   ┆                     ┆          ┆          ┆      ┆ updated_at_sync_tick,                 ┆
+   ┆                     ┆          ┆          ┆      ┆ device_registration_quota             ┆
+╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1 ┆ 2025-10-30 10:58:39 ┆ 66.08 ms ┆ 34.59 KB ┆ 49   ┆ id, created_at, updated_at,           ┆ select * from patients
+   ┆                     ┆          ┆          ┆      ┆ deleted_at, display_id, first_name,   ┆
+   ┆                     ┆          ┆          ┆      ┆ middle_name, last_name,               ┆
+   ┆                     ┆          ┆          ┆      ┆ cultural_name, email, date_of_birth,  ┆
+   ┆                     ┆          ┆          ┆      ┆ sex, village_id, additional_details,  ┆
+   ┆                     ┆          ┆          ┆      ┆ date_of_death, merged_into_id,        ┆
+   ┆                     ┆          ┆          ┆      ┆ visibility_status,                    ┆
+   ┆                     ┆          ┆          ┆      ┆ date_of_birth_legacy,                 ┆
+   ┆                     ┆          ┆          ┆      ┆ date_of_death_legacy,                 ┆
+   ┆                     ┆          ┆          ┆      ┆ updated_at_sync_tick                  ┆
+
+Total memory used: 36.27 KB
+Memory limit: 1.00 GB
+
+-- Now we can reformat the output of that second query:
+database=> \re show limit=1 cols=id,last_name,first_name
+                  id                  ┆ last_name ┆ first_name
+══════════════════════════════════════╪═══════════╪════════════
+ 3aa63a3c-bb1e-4f3c-a185-ad18b5218256 ┆ Milani    ┆ Esther
+
+-- And if we want, we can still re-display the users...
+database=> \re show n=0 cols=created_at format=json-pretty
+[
+  {
+    "created_at": "2025-09-16T06:33:12.913596Z"
+  },
+  {
+    "created_at": "2025-09-16T06:36:33.3Z"
+  },
+  {
+    "created_at": "2025-09-16T06:36:33.495Z"
+  },
+  {
+    "created_at": "2025-11-01T11:45:21.392383Z"
+  }
+]
+```
+
 ## Variables
 
 Variables have a different syntax and command set than in native psql.

@@ -17,10 +17,10 @@ pub(crate) async fn handle_result(
 			n,
 			format,
 			to,
-			only: _,
-			limit: _,
-			offset: _,
-		} => handle_show(ctx, n, format, to).await,
+			cols,
+			limit,
+			offset,
+		} => handle_show(ctx, n, format, to, cols, limit, offset).await,
 	}
 }
 
@@ -29,6 +29,9 @@ async fn handle_show(
 	n: Option<usize>,
 	format: Option<ResultFormat>,
 	to: Option<String>,
+	cols: Vec<String>,
+	limit: Option<usize>,
+	offset: Option<usize>,
 ) -> ControlFlow<()> {
 	// Get the result to show
 	let state = ctx.repl_state.lock().unwrap();
@@ -48,8 +51,34 @@ async fn handle_show(
 	};
 
 	// Clone the result so we can release the lock
-	let result = result.clone();
+	let mut result = result.clone();
 	drop(state);
+
+	// Validate and compute column indices if filtering by column names
+	let column_indices = if !cols.is_empty() {
+		match compute_column_indices(&result, &cols) {
+			ControlFlow::Continue(indices) => Some(indices),
+			ControlFlow::Break(()) => return ControlFlow::Continue(()),
+		}
+	} else {
+		None
+	};
+
+	// Apply offset
+	if let Some(offset_val) = offset {
+		if offset_val < result.rows.len() {
+			result.rows.drain(..offset_val);
+		} else {
+			result.rows.clear();
+		}
+	}
+
+	// Apply limit
+	if let Some(limit_val) = limit {
+		if limit_val < result.rows.len() {
+			result.rows.truncate(limit_val);
+		}
+	}
 
 	// Determine format (default to table)
 	let format = format.unwrap_or(ResultFormat::Table);
@@ -60,11 +89,11 @@ async fn handle_show(
 	};
 
 	let display_result = if let Some(path) = to {
-		display_to_file(ctx, &result, format, &path).await
+		display_to_file(ctx, &result, format, &path, column_indices.as_deref()).await
 	} else if use_global_output {
-		display_to_global_output(ctx, &result, format).await
+		display_to_global_output(ctx, &result, format, column_indices.as_deref()).await
 	} else {
-		display_to_stdout(ctx, &result, format).await
+		display_to_stdout(ctx, &result, format, column_indices.as_deref()).await
 	};
 
 	if let Err(e) = display_result {
@@ -78,6 +107,7 @@ async fn display_to_stdout(
 	ctx: &mut ReplContext<'_>,
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
+	column_indices: Option<&[usize]>,
 ) -> miette::Result<()> {
 	if result.rows.is_empty() {
 		println!("(no rows)");
@@ -85,7 +115,9 @@ async fn display_to_stdout(
 	}
 
 	let use_colours = ctx.repl_state.lock().unwrap().use_colours;
-	let output = format_result_using_display_module(ctx, result, format, use_colours).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, use_colours, column_indices)
+			.await?;
 	print!("{}", output);
 	Ok(())
 }
@@ -95,6 +127,7 @@ async fn display_to_file(
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
 	path: &str,
+	column_indices: Option<&[usize]>,
 ) -> miette::Result<()> {
 	use std::io::Write;
 
@@ -107,7 +140,8 @@ async fn display_to_file(
 		return Ok(());
 	}
 
-	let output = format_result_using_display_module(ctx, result, format, false).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, false, column_indices).await?;
 
 	let mut file = std::fs::File::create(path)
 		.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
@@ -122,6 +156,7 @@ async fn display_to_global_output(
 	ctx: &mut ReplContext<'_>,
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
+	column_indices: Option<&[usize]>,
 ) -> miette::Result<()> {
 	use tokio::io::AsyncWriteExt;
 
@@ -140,7 +175,8 @@ async fn display_to_global_output(
 	}
 
 	// Format without colors for file output
-	let output = format_result_using_display_module(ctx, result, format, false).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, false, column_indices).await?;
 
 	let state = ctx.repl_state.lock().unwrap();
 	if let Some(output_file) = &state.output_file {
@@ -156,11 +192,43 @@ async fn display_to_global_output(
 	Ok(())
 }
 
+fn compute_column_indices(
+	result: &crate::result_store::StoredResult,
+	cols: &[String],
+) -> ControlFlow<(), Vec<usize>> {
+	if result.rows.is_empty() {
+		return ControlFlow::Continue(Vec::new());
+	}
+
+	// Get column names from the first row
+	let columns = result.rows[0].columns();
+	let column_names: Vec<String> = columns.iter().map(|c| c.name().to_string()).collect();
+
+	// Find indices of requested columns
+	let mut indices = Vec::new();
+	for col_name in cols {
+		if let Some(idx) = column_names.iter().position(|name| name == col_name) {
+			indices.push(idx);
+		} else {
+			eprintln!("Column '{}' not found in result", col_name);
+			return ControlFlow::Break(());
+		}
+	}
+
+	if indices.is_empty() {
+		eprintln!("No valid columns specified");
+		return ControlFlow::Break(());
+	}
+
+	ControlFlow::Continue(indices)
+}
+
 async fn format_result_using_display_module(
 	ctx: &mut ReplContext<'_>,
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
 	use_colours: bool,
+	column_indices: Option<&[usize]>,
 ) -> miette::Result<String> {
 	let first_row = &result.rows[0];
 	let columns = first_row.columns();
@@ -196,6 +264,7 @@ async fn format_result_using_display_module(
 		writer: &mut buffer,
 		use_colours,
 		theme: ctx.theme,
+		column_indices,
 	};
 
 	match format {
@@ -437,7 +506,7 @@ mod tests {
 				n: None,
 				format: None,
 				to: None,
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -515,7 +584,7 @@ mod tests {
 				n: Some(0),
 				format: None,
 				to: None,
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -595,7 +664,7 @@ mod tests {
 					n: None,
 					format: Some(format.clone()),
 					to: None,
-					only: vec![],
+					cols: vec![],
 					limit: None,
 					offset: None,
 				},
@@ -673,7 +742,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::Table),
 				to: Some(file_path.clone()),
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -758,7 +827,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::Json),
 				to: Some(file_path_json.clone()),
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -786,7 +855,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::JsonPretty),
 				to: Some(file_path_pretty.clone()),
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -869,7 +938,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::Json),
 				to: None,
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -887,7 +956,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::JsonPretty),
 				to: Some(file_path.clone()),
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -978,7 +1047,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::Table),
 				to: None,
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -1007,7 +1076,7 @@ mod tests {
 				n: None,
 				format: Some(crate::parser::ResultFormat::Table),
 				to: Some(file_path2.clone()),
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -1069,7 +1138,7 @@ mod tests {
 				n: None,
 				format: None,
 				to: None,
-				only: vec![],
+				cols: vec![],
 				limit: None,
 				offset: None,
 			},
@@ -1474,5 +1543,567 @@ mod tests {
 		)
 		.await;
 		assert_eq!(result, std::ops::ControlFlow::Continue(()));
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_limit() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query that returns multiple rows
+		crate::query::execute_query(
+			"SELECT n as num FROM generate_series(1, 10) n",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with limit=3
+		let result = handle_show(&mut ctx, None, None, None, vec![], Some(3), None).await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify the stored result still has all 10 rows (not mutated)
+		{
+			let state = repl_state.lock().unwrap();
+			let stored = state.result_store.get_last().unwrap();
+			assert_eq!(stored.rows.len(), 10);
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_offset() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query that returns multiple rows
+		crate::query::execute_query(
+			"SELECT n as num FROM generate_series(1, 10) n",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with offset=5
+		let result = handle_show(&mut ctx, None, None, None, vec![], None, Some(5)).await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify the stored result still has all 10 rows (not mutated)
+		{
+			let state = repl_state.lock().unwrap();
+			let stored = state.result_store.get_last().unwrap();
+			assert_eq!(stored.rows.len(), 10);
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_limit_and_offset() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query that returns multiple rows
+		crate::query::execute_query(
+			"SELECT n as num FROM generate_series(1, 10) n",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with offset=3 and limit=4 (should show rows 4-7)
+		let result = handle_show(&mut ctx, None, None, None, vec![], Some(4), Some(3)).await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify the stored result still has all 10 rows (not mutated)
+		{
+			let state = repl_state.lock().unwrap();
+			let stored = state.result_store.get_last().unwrap();
+			assert_eq!(stored.rows.len(), 10);
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_cols_column() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query with multiple columns
+		crate::query::execute_query(
+			"SELECT 1 as num, 'test' as text, true as flag",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with cols=text (should show only the text column)
+		let result = handle_show(
+			&mut ctx,
+			None,
+			None,
+			None,
+			vec!["text".to_string()],
+			None,
+			None,
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_cols_invalid_column() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query
+		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with cols=nonexistent (should error and continue)
+		let result = handle_show(
+			&mut ctx,
+			None,
+			None,
+			None,
+			vec!["nonexistent".to_string()],
+			None,
+			None,
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_limit_offset_output() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query that returns multiple rows with identifiable values
+		crate::query::execute_query(
+			"SELECT n as num FROM generate_series(1, 10) n",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with offset=2 and limit=3 (should show rows 3, 4, 5)
+		let temp_file = tempfile::NamedTempFile::new().unwrap();
+		let temp_path = temp_file.path().to_str().unwrap().to_string();
+
+		let result = handle_show(
+			&mut ctx,
+			None,
+			None,
+			Some(temp_path.clone()),
+			vec![],
+			Some(3),
+			Some(2),
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Read the output file and verify it contains rows 3, 4, 5
+		let output = std::fs::read_to_string(&temp_path).expect("Failed to read output file");
+		assert!(output.contains(" 3"), "Output should contain row 3");
+		assert!(output.contains(" 4"), "Output should contain row 4");
+		assert!(output.contains(" 5"), "Output should contain row 5");
+		assert!(!output.contains(" 1"), "Output should not contain row 1");
+		assert!(!output.contains(" 2"), "Output should not contain row 2");
+		assert!(!output.contains(" 6"), "Output should not contain row 6");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_cols_multiple_columns() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: false,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query with multiple columns
+		crate::query::execute_query("SELECT 1 as a, 2 as b, 3 as c, 4 as d", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = crate::repl::ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test with cols=b,d (should show only columns b and d)
+		let temp_file = tempfile::NamedTempFile::new().unwrap();
+		let temp_path = temp_file.path().to_str().unwrap().to_string();
+
+		let result = handle_show(
+			&mut ctx,
+			None,
+			None,
+			Some(temp_path.clone()),
+			vec!["b".to_string(), "d".to_string()],
+			None,
+			None,
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Read the output file and verify it contains only b and d columns
+		let output = std::fs::read_to_string(&temp_path).expect("Failed to read output file");
+		assert!(
+			output.contains(" b "),
+			"Output should contain column b header"
+		);
+		assert!(
+			output.contains(" d"),
+			"Output should contain column d header"
+		);
+		assert!(
+			!output.contains(" a "),
+			"Output should not contain column a header"
+		);
+		assert!(
+			!output.contains(" c"),
+			"Output should not contain column c header"
+		);
+		assert!(
+			output.contains(" 2"),
+			"Output should contain value from column b"
+		);
+		assert!(
+			output.contains(" 4"),
+			"Output should contain value from column d"
+		);
 	}
 }

@@ -219,6 +219,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				writer: ctx.writer,
 				use_colours: ctx.use_colours,
 				theme: ctx.theme,
+				column_indices: None,
 			},
 			is_json,
 			is_expanded,

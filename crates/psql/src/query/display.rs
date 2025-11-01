@@ -14,6 +14,8 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub theme: crate::theme::Theme,
+	/// Optional column indices to filter display (None means show all columns)
+	pub column_indices: Option<&'a [usize]>,
 }
 
 pub async fn display<W: AsyncWrite + Unpin>(

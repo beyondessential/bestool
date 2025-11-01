@@ -21,7 +21,7 @@ pub(crate) enum ResultSubcommand {
 		n: Option<usize>,
 		format: Option<ResultFormat>,
 		to: Option<String>,
-		only: Vec<String>,
+		cols: Vec<String>,
 		limit: Option<usize>,
 		offset: Option<usize>,
 	},
@@ -55,7 +55,7 @@ pub fn parse(
 				let mut n = None;
 				let mut format = None;
 				let mut to = None;
-				let mut only = Vec::new();
+				let mut cols = Vec::new();
 				let mut limit = None;
 				let mut offset = None;
 
@@ -84,8 +84,8 @@ pub fn parse(
 						};
 					} else if let Some(value_str) = param_or_value.strip_prefix("to=") {
 						to = Some(value_str.to_string());
-					} else if let Some(value_str) = param_or_value.strip_prefix("only=") {
-						only = value_str.split(',').map(|s| s.to_string()).collect();
+					} else if let Some(value_str) = param_or_value.strip_prefix("cols=") {
+						cols = value_str.split(',').map(|s| s.to_string()).collect();
 					} else if let Some(value_str) = param_or_value.strip_prefix("limit=") {
 						limit = value_str.parse::<usize>().ok();
 					} else if let Some(value_str) = param_or_value.strip_prefix("offset=") {
@@ -100,7 +100,7 @@ pub fn parse(
 						n,
 						format,
 						to,
-						only,
+						cols,
 						limit,
 						offset,
 					},
@@ -154,11 +154,11 @@ mod tests {
 					n: None,
 					format: None,
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -172,11 +172,11 @@ mod tests {
 					n: Some(5),
 					format: None,
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -190,11 +190,11 @@ mod tests {
 					n: None,
 					format: Some(ResultFormat::Json),
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -217,11 +217,11 @@ mod tests {
 						n: None,
 						format: Some(f),
 						to: None,
-						only,
+						cols,
 						limit: None,
 						offset: None,
 					}
-				}) if f == expected && only.is_empty()
+				}) if f == expected && cols.is_empty()
 			));
 		}
 	}
@@ -236,17 +236,17 @@ mod tests {
 					n: None,
 					format: None,
 					to: Some(ref path),
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if path == "output.json" && only.is_empty()
+			}) if path == "output.json" && cols.is_empty()
 		));
 	}
 
 	#[test]
-	fn test_parse_re_show_with_only() {
-		let result = parse_metacommand(r"\re show only=col1,col2,col3").unwrap();
+	fn test_parse_re_show_with_cols() {
+		let result = parse_metacommand(r"\re show cols=col1,col2,col3").unwrap();
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
@@ -254,11 +254,11 @@ mod tests {
 					n: None,
 					format: None,
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if only == vec!["col1", "col2", "col3"]
+			}) if cols == vec!["col1", "col2", "col3"]
 		));
 	}
 
@@ -272,11 +272,11 @@ mod tests {
 					n: None,
 					format: None,
 					to: None,
-					only,
+					cols,
 					limit: Some(10),
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -290,11 +290,11 @@ mod tests {
 					n: None,
 					format: None,
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: Some(5),
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -308,11 +308,11 @@ mod tests {
 					n: Some(3),
 					format: Some(ResultFormat::Csv),
 					to: None,
-					only,
+					cols,
 					limit: Some(100),
 					offset: Some(10),
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
@@ -326,18 +326,18 @@ mod tests {
 					n: Some(2),
 					format: Some(ResultFormat::Expanded),
 					to: None,
-					only,
+					cols,
 					limit: Some(50),
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 
 	#[test]
 	fn test_parse_re_show_all_params() {
 		let result = parse_metacommand(
-			r"\re show n=1 format=json-pretty to=/tmp/out.json only=id,name limit=20 offset=5",
+			r"\re show n=1 format=json-pretty to=/tmp/out.json cols=id,name limit=20 offset=5",
 		)
 		.unwrap();
 		assert!(matches!(
@@ -347,11 +347,11 @@ mod tests {
 					n: Some(1),
 					format: Some(ResultFormat::JsonPretty),
 					to: Some(ref path),
-					only,
+					cols,
 					limit: Some(20),
 					offset: Some(5),
 				}
-			}) if path == "/tmp/out.json" && only == vec!["id", "name"]
+			}) if path == "/tmp/out.json" && cols == vec!["id", "name"]
 		));
 	}
 
@@ -445,11 +445,11 @@ mod tests {
 					n: Some(1),
 					format: Some(ResultFormat::Json),
 					to: None,
-					only,
+					cols,
 					limit: None,
 					offset: None,
 				}
-			}) if only.is_empty()
+			}) if cols.is_empty()
 		));
 	}
 }

@@ -8,12 +8,20 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 	let mut table = Table::new();
 	crate::table::configure(&mut table);
 
-	table.set_header(ctx.columns.iter().map(|col| col.name()));
+	// Determine which columns to display
+	let column_indices: Vec<usize> = if let Some(indices) = ctx.column_indices {
+		indices.to_vec()
+	} else {
+		(0..ctx.columns.len()).collect()
+	};
+
+	// Set header with filtered columns
+	table.set_header(column_indices.iter().map(|&i| ctx.columns[i].name()));
 	crate::table::style_header(&mut table);
 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut row_data = Vec::new();
-		for (i, _column) in ctx.columns.iter().enumerate() {
+		for &i in &column_indices {
 			let value_str =
 				column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 			row_data.push(value_str);

@@ -59,7 +59,7 @@ impl super::SqlCompleter {
 
 	fn get_all_param_completions(existing_parts: &[&str]) -> Vec<Pair> {
 		let mut completions = Vec::new();
-		let all_params = vec!["n=", "format=", "to=", "only=", "limit=", "offset="];
+		let all_params = vec!["n=", "format=", "to=", "cols=", "limit=", "offset="];
 
 		for param in all_params {
 			let param_name = param.trim_end_matches('=');
@@ -76,7 +76,7 @@ impl super::SqlCompleter {
 
 	fn get_param_name_completions(partial: &str, existing_parts: &[&str]) -> Vec<Pair> {
 		let mut completions = Vec::new();
-		let all_params = vec!["n=", "format=", "to=", "only=", "limit=", "offset="];
+		let all_params = vec!["n=", "format=", "to=", "cols=", "limit=", "offset="];
 
 		for param in all_params {
 			if param.starts_with(partial) {
@@ -130,7 +130,7 @@ impl super::SqlCompleter {
 					})
 					.collect()
 			}
-			// For other parameters (n, only, limit, offset), we don't provide completions
+			// For other parameters (n, cols, limit, offset), we don't provide completions
 			// as they require user-specific values
 			_ => Vec::new(),
 		}
@@ -173,7 +173,7 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "n="));
 		assert!(completions.iter().any(|c| c.display == "format="));
 		assert!(completions.iter().any(|c| c.display == "to="));
-		assert!(completions.iter().any(|c| c.display == "only="));
+		assert!(completions.iter().any(|c| c.display == "cols="));
 		assert!(completions.iter().any(|c| c.display == "limit="));
 		assert!(completions.iter().any(|c| c.display == "offset="));
 	}

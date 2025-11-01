@@ -47,6 +47,8 @@ The crate also exposes a library interface which embeds the tool in another CLI 
 | `\e [query]` | Edit query in external editor |
 | `\i <file> [var=val...]` | Execute commands from file |
 | `\o [file]` | Send query results to file (or close if no file) |
+| `\re list[+] [N]` | List the last N (default 20) saved results |
+| `\re show [n=N] [format=FMT] [to=PATH] [cols=COLS] [limit=N] [offset=N]` | Display a saved result |
 | `\snip run <name> [var=val...]` | Run a saved snippet |
 | `\snip save <name>` | Save the preceding command as a snippet |
 | `\set <name> <value>` | Set a variable |

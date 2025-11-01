@@ -28,7 +28,7 @@ pub fn handle_help() -> ControlFlow<()> {
 	]);
 	metacmds.add_row(vec![
 		"\\re show [params...]",
-		"Display a saved result (n=N format=FMT to=PATH only=COLS limit=N offset=N)",
+		"Display a saved result (n=N format=FMT to=PATH cols=COLS limit=N offset=N)",
 	]);
 	metacmds.add_row(vec![
 		"\\debug [cmd]",

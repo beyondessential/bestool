@@ -12,11 +12,19 @@ pub async fn display<W: AsyncWrite + Unpin>(
 	ctx: &mut super::DisplayContext<'_, W>,
 	expanded: bool,
 ) -> Result<()> {
+	// Determine which columns to display
+	let column_indices: Vec<usize> = if let Some(indices) = ctx.column_indices {
+		indices.to_vec()
+	} else {
+		(0..ctx.columns.len()).collect()
+	};
+
 	let mut objects = Vec::new();
 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut obj = Map::new();
-		for (i, column) in ctx.columns.iter().enumerate() {
+		for &i in &column_indices {
+			let column = &ctx.columns[i];
 			let value_str =
 				column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 

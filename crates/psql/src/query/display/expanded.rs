@@ -5,6 +5,13 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use crate::query::column;
 
 pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, W>) -> Result<()> {
+	// Determine which columns to display
+	let column_indices: Vec<usize> = if let Some(indices) = ctx.column_indices {
+		indices.to_vec()
+	} else {
+		(0..ctx.columns.len()).collect()
+	};
+
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let header = format!("-[ RECORD {num} ]-\n", num = row_idx + 1);
 		ctx.writer
@@ -16,7 +23,8 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		crate::table::configure(&mut table);
 
 		// No header in expanded mode, just column-value pairs
-		for (i, column) in ctx.columns.iter().enumerate() {
+		for &i in &column_indices {
+			let column = &ctx.columns[i];
 			let value_str =
 				column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 
