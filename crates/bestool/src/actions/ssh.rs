@@ -88,7 +88,7 @@ pub async fn add_key(ctx: Context<SshArgs, AddKeyArgs>) -> Result<()> {
 	}
 
 	#[cfg(windows)]
-	if is_root::is_root() {
+	if is_root() {
 		duct::cmd!(
 			"icacls.exe",
 			&filepath,

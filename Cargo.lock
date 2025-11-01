@@ -424,6 +424,7 @@ dependencies = [
  "uuid",
  "uzers",
  "walkdir",
+ "winapi",
  "windows 0.62.2",
  "windows-acl",
  "windows-env",
