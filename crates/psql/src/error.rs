@@ -419,13 +419,4 @@ mod tests {
 		assert!(formatted.contains("SELECT"));
 		assert!(formatted2.contains("SELECT"));
 	}
-
-	#[test]
-	fn test_format_non_db_error() {
-		// Create a non-database error (connection error for example)
-		let error_str = "connection failed";
-		// We can't easily construct a tokio_postgres::Error in tests,
-		// so we just verify the function signature is correct
-		assert_eq!(error_str.len(), 17);
-	}
 }
