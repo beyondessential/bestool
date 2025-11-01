@@ -39,6 +39,7 @@ async fn test_text_cast_for_record_types() {
 
 	let client = pool.get().await.expect("Failed to get connection");
 
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
 		client: &client,
@@ -47,6 +48,7 @@ async fn test_text_cast_for_record_types() {
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
+		repl_state: &repl_state,
 	};
 	let result =
 		crate::query::execute_query("SELECT row(1, 'foo', true) as record", &mut query_ctx).await;
@@ -65,6 +67,7 @@ async fn test_array_formatting() {
 
 	let client = pool.get().await.expect("Failed to get connection");
 
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
 		client: &client,
@@ -73,11 +76,58 @@ async fn test_array_formatting() {
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
+		repl_state: &repl_state,
 	};
 	let result =
 		crate::query::execute_query("SELECT ARRAY[1, 2, 3] as numbers", &mut query_ctx).await;
 
 	assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_result_store_populated_on_query() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
+	let mut stdout = tokio::io::stdout();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut stdout,
+		use_colours: true,
+		vars: None,
+		repl_state: &repl_state,
+	};
+
+	// Execute a query
+	let result = crate::query::execute_query("SELECT 42 as answer", &mut query_ctx).await;
+	assert!(result.is_ok());
+
+	// Verify the result was stored
+	let state = repl_state.lock().unwrap();
+	assert_eq!(state.result_store.len(), 1);
+	let stored = state.result_store.get(0).unwrap();
+	assert_eq!(stored.query, "SELECT 42 as answer");
+	assert_eq!(stored.rows.len(), 1);
+
+	// Execute another query
+	drop(state);
+	let result = crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx).await;
+	assert!(result.is_ok());
+
+	// Verify both results are stored
+	let state = repl_state.lock().unwrap();
+	assert_eq!(state.result_store.len(), 2);
+	let last = state.result_store.get_last().unwrap();
+	assert_eq!(last.query, "SELECT 'hello' as greeting");
 }
 
 #[tokio::test]

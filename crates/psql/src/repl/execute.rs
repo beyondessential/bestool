@@ -41,6 +41,7 @@ pub async fn handle_execute(
 					writer: &mut file,
 					use_colours,
 					vars: Some(&mut vars),
+					repl_state: ctx.repl_state,
 				};
 				let result = execute_query(&sql, &mut query_ctx).await;
 				ctx.repl_state.lock().unwrap().vars = vars;
@@ -67,6 +68,7 @@ pub async fn handle_execute(
 				writer: &mut *file,
 				use_colours,
 				vars: Some(&mut vars),
+				repl_state: ctx.repl_state,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 
@@ -85,6 +87,7 @@ pub async fn handle_execute(
 				writer: &mut stdout,
 				use_colours,
 				vars: Some(&mut vars),
+				repl_state: ctx.repl_state,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 			ctx.repl_state.lock().unwrap().vars = vars;

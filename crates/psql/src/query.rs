@@ -21,6 +21,7 @@ pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub vars: Option<&'a mut std::collections::BTreeMap<String, String>>,
+	pub repl_state: &'a std::sync::Arc<std::sync::Mutex<crate::repl::ReplState>>,
 }
 
 /// Execute a SQL query and display the results.
@@ -197,6 +198,12 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		} else {
 			None
 		};
+
+		// Store results in the result store (before formatting)
+		if !rows.is_empty() {
+			let mut state = ctx.repl_state.lock().unwrap();
+			state.result_store.push(statement.to_string(), rows.clone());
+		}
 
 		let is_expanded = ctx.modifiers.contains(&QueryModifier::Expanded);
 		let is_json = ctx.modifiers.contains(&QueryModifier::Json);
