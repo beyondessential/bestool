@@ -30,12 +30,9 @@ pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 		}
 	}
 
-	// Try numeric type with pg_bigdecimal
-	if let Ok(v) = row.try_get::<_, pg_bigdecimal::PgNumeric>(i) {
-		return match v.n {
-			Some(decimal) => decimal.to_string(),
-			None => "NaN".to_string(),
-		};
+	// Try numeric type with fraction crate
+	if let Ok(v) = row.try_get::<_, fraction::Decimal>(i) {
+		return v.to_string();
 	} else if let Ok(v) = row.try_get::<_, String>(i) {
 		v
 	} else if let Ok(v) = row.try_get::<_, i16>(i) {
@@ -126,7 +123,7 @@ pub fn can_print(row: &tokio_postgres::Row, i: usize) -> bool {
 		}
 	}
 
-	if row.try_get::<_, pg_bigdecimal::PgNumeric>(i).is_ok()
+	if row.try_get::<_, fraction::Decimal>(i).is_ok()
 		|| row.try_get::<_, String>(i).is_ok()
 		|| row.try_get::<_, i16>(i).is_ok()
 		|| row.try_get::<_, i32>(i).is_ok()
@@ -240,7 +237,7 @@ mod tests {
 		assert_eq!(rows.len(), 1);
 		let row = &rows[0];
 
-		// Numeric type should now be directly printable with pg_bigdecimal
+		// Numeric type should now be directly printable with fraction crate
 		assert!(can_print(row, 0));
 
 		// Check that the value can be formatted
@@ -300,7 +297,7 @@ mod tests {
 		assert_eq!(rows.len(), 1);
 		let row = &rows[0];
 
-		// With pg_bigdecimal, numeric should be directly printable
+		// With fraction crate, numeric should be directly printable
 		assert!(can_print(row, 0));
 
 		// Should be able to format the result
@@ -333,7 +330,7 @@ mod tests {
 		// Verify the column name is ?column?
 		assert_eq!(row.columns()[0].name(), "?column?");
 
-		// With pg_bigdecimal, numeric should now be directly printable
+		// With fraction crate, numeric should now be directly printable
 		assert!(can_print(row, 0));
 
 		// Should be able to format directly without text casting

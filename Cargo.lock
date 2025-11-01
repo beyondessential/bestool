@@ -443,6 +443,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "edit",
+ "fraction",
  "hex",
  "jiff",
  "libc",
@@ -450,7 +451,6 @@ dependencies = [
  "miette",
  "mobc",
  "mobc-postgres",
- "pg_bigdecimal",
  "redb",
  "rustls",
  "rustls-native-certs",
@@ -468,17 +468,6 @@ dependencies = [
  "tokio-postgres-rustls",
  "tracing",
  "winnow 0.7.13",
-]
-
-[[package]]
-name = "bigdecimal"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6773ddc0eafc0e509fb60e48dff7f450f8e674a0686ae8605e8d9901bd5eefa"
-dependencies = [
- "num-bigint",
- "num-integer",
- "num-traits",
 ]
 
 [[package]]
@@ -1847,6 +1836,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fraction"
+version = "0.15.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f158e3ff0a1b334408dc9fb811cd99b446986f4d8b741bb08f9df1604085ae7"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "lazy_static",
+ "num",
+ "postgres-types",
 ]
 
 [[package]]
@@ -3722,19 +3724,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg_bigdecimal"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9855a94c74528af62c0ea236577af5e601263c1c404a6ac939b07c97c8e0216"
-dependencies = [
- "bigdecimal",
- "byteorder",
- "bytes",
- "num",
- "postgres",
-]
-
-[[package]]
 name = "phf"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3899,20 +3888,6 @@ dependencies = [
  "byteorder",
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "postgres"
-version = "0.19.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c48ece1c6cda0db61b058c1721378da76855140e9214339fa1317decacb176"
-dependencies = [
- "bytes",
- "fallible-iterator",
- "futures-util",
- "log",
- "tokio",
- "tokio-postgres",
 ]
 
 [[package]]
