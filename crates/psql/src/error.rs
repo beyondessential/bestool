@@ -174,6 +174,14 @@ impl PgDatabaseError {
 	}
 }
 
+/// Format a mobc<tokio-postgres> Error for display
+pub fn format_mobc_error(error: &mobc::Error<Error>, query: Option<&str>) -> String {
+	match error {
+		mobc::Error::Inner(error) => format_db_error(error, query),
+		error => format_error(error),
+	}
+}
+
 /// Format a tokio-postgres Error for display
 pub fn format_db_error(error: &Error, query: Option<&str>) -> String {
 	match error.as_db_error() {

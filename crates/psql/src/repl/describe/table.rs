@@ -24,7 +24,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_db_error(&e, None)
+					crate::error::format_mobc_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -198,7 +198,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_db_error(&e, None)
+					crate::error::format_mobc_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}

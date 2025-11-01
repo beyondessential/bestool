@@ -18,7 +18,6 @@ mod theme;
 mod tls;
 
 pub use config::Config;
-pub use error::{PgDatabaseError, format_db_error, format_miette_error};
 pub use pool::{PgConnection, PgPool, create_pool};
 pub use repl::run;
 pub use signals::register_sigint_handler;
