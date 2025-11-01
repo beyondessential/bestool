@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub(crate) mod column;
-mod display;
+pub(crate) mod display;
 mod vars;
 
 /// Context for executing a query.
@@ -284,7 +284,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	Ok(())
 }
 
-fn build_text_cast_query(
+pub(crate) fn build_text_cast_query(
 	sql: &str,
 	columns: &[tokio_postgres::Column],
 	unprintable_columns: &[usize],

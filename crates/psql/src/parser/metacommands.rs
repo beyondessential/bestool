@@ -3,7 +3,7 @@ use winnow::{Parser, combinator::alt};
 
 pub(crate) use debug::DebugWhat;
 pub use list::ListItem;
-pub(crate) use result::ResultSubcommand;
+pub(crate) use result::{ResultFormat, ResultSubcommand};
 
 mod debug;
 mod describe;

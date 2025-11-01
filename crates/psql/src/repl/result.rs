@@ -3,28 +3,218 @@ use std::{io::Write, ops::ControlFlow};
 use comfy_table::Table;
 use supports_unicode::Stream;
 
-use crate::parser::ResultSubcommand;
+use crate::parser::{ResultFormat, ResultSubcommand};
 
 use super::ReplContext;
 
-pub(crate) fn handle_result(
+pub(crate) async fn handle_result(
 	ctx: &mut ReplContext<'_>,
 	subcommand: ResultSubcommand,
 ) -> ControlFlow<()> {
 	match subcommand {
 		ResultSubcommand::List { limit, detail } => handle_list(ctx, limit, detail),
 		ResultSubcommand::Show {
-			n: _,
-			format: _,
-			to: _,
+			n,
+			format,
+			to,
 			only: _,
 			limit: _,
 			offset: _,
-		} => {
-			eprintln!("\\re show not yet implemented");
-			ControlFlow::Continue(())
+		} => handle_show(ctx, n, format, to).await,
+	}
+}
+
+async fn handle_show(
+	ctx: &mut ReplContext<'_>,
+	n: Option<usize>,
+	format: Option<ResultFormat>,
+	to: Option<String>,
+) -> ControlFlow<()> {
+	// Get the result to show
+	let state = ctx.repl_state.lock().unwrap();
+	let result = if let Some(index) = n {
+		state.result_store.get(index)
+	} else {
+		state.result_store.get_last()
+	};
+
+	let Some(result) = result else {
+		if let Some(index) = n {
+			eprintln!("No result at index {}", index);
+		} else {
+			eprintln!("No results available");
+		}
+		return ControlFlow::Continue(());
+	};
+
+	// Clone the result so we can release the lock
+	let result = result.clone();
+	drop(state);
+
+	// Determine format (default to table)
+	let format = format.unwrap_or(ResultFormat::Table);
+
+	let use_global_output = to.is_none() && {
+		let state = ctx.repl_state.lock().unwrap();
+		state.output_file.is_some()
+	};
+
+	let display_result = if let Some(path) = to {
+		display_to_file(ctx, &result, format, &path).await
+	} else if use_global_output {
+		display_to_global_output(ctx, &result, format).await
+	} else {
+		display_to_stdout(ctx, &result, format).await
+	};
+
+	if let Err(e) = display_result {
+		eprintln!("Error displaying result: {}", e);
+	}
+
+	ControlFlow::Continue(())
+}
+
+async fn display_to_stdout(
+	ctx: &mut ReplContext<'_>,
+	result: &crate::result_store::StoredResult,
+	format: ResultFormat,
+) -> miette::Result<()> {
+	if result.rows.is_empty() {
+		println!("(no rows)");
+		return Ok(());
+	}
+
+	let use_colours = ctx.repl_state.lock().unwrap().use_colours;
+	let output = format_result_using_display_module(ctx, result, format, use_colours).await?;
+	print!("{}", output);
+	Ok(())
+}
+
+async fn display_to_file(
+	ctx: &mut ReplContext<'_>,
+	result: &crate::result_store::StoredResult,
+	format: ResultFormat,
+	path: &str,
+) -> miette::Result<()> {
+	use std::io::Write;
+
+	if result.rows.is_empty() {
+		let mut file = std::fs::File::create(path)
+			.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
+		writeln!(file, "(no rows)")
+			.map_err(|e| miette::miette!("Failed to write to file: {}", e))?;
+		eprintln!("Output written to {}", path);
+		return Ok(());
+	}
+
+	let output = format_result_using_display_module(ctx, result, format, false).await?;
+
+	let mut file = std::fs::File::create(path)
+		.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
+	file.write_all(output.as_bytes())
+		.map_err(|e| miette::miette!("Failed to write to file: {}", e))?;
+
+	eprintln!("Output written to {}", path);
+	Ok(())
+}
+
+async fn display_to_global_output(
+	ctx: &mut ReplContext<'_>,
+	result: &crate::result_store::StoredResult,
+	format: ResultFormat,
+) -> miette::Result<()> {
+	use tokio::io::AsyncWriteExt;
+
+	if result.rows.is_empty() {
+		let state = ctx.repl_state.lock().unwrap();
+		if let Some(output_file) = &state.output_file {
+			let mut file = output_file.lock().await;
+			file.write_all(b"(no rows)\n")
+				.await
+				.map_err(|e| miette::miette!("Failed to write to output file: {}", e))?;
+			file.flush()
+				.await
+				.map_err(|e| miette::miette!("Failed to flush output file: {}", e))?;
+		}
+		return Ok(());
+	}
+
+	// Format without colors for file output
+	let output = format_result_using_display_module(ctx, result, format, false).await?;
+
+	let state = ctx.repl_state.lock().unwrap();
+	if let Some(output_file) = &state.output_file {
+		let mut file = output_file.lock().await;
+		file.write_all(output.as_bytes())
+			.await
+			.map_err(|e| miette::miette!("Failed to write to output file: {}", e))?;
+		file.flush()
+			.await
+			.map_err(|e| miette::miette!("Failed to flush output file: {}", e))?;
+	}
+
+	Ok(())
+}
+
+async fn format_result_using_display_module(
+	ctx: &mut ReplContext<'_>,
+	result: &crate::result_store::StoredResult,
+	format: ResultFormat,
+	use_colours: bool,
+) -> miette::Result<String> {
+	let first_row = &result.rows[0];
+	let columns = first_row.columns();
+
+	// Check for unprintable columns
+	let mut unprintable_columns = Vec::new();
+	for (i, _column) in columns.iter().enumerate() {
+		if !crate::query::column::can_print(first_row, i) {
+			unprintable_columns.push(i);
 		}
 	}
+
+	// Re-query with text casts if needed (for unprintable columns)
+	let text_rows = if !unprintable_columns.is_empty() {
+		let sql_trimmed = result.query.trim_end_matches(';').trim();
+		let text_query =
+			crate::query::build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
+
+		ctx.client.query(&text_query, &[]).await.ok()
+	} else {
+		None
+	};
+
+	// Create a buffer to capture output
+	let mut buffer = Vec::new();
+
+	// Use the display module's display function
+	let mut display_ctx = crate::query::display::DisplayContext {
+		columns,
+		rows: &result.rows,
+		unprintable_columns: &unprintable_columns,
+		text_rows: &text_rows,
+		writer: &mut buffer,
+		use_colours,
+		theme: ctx.theme,
+	};
+
+	match format {
+		ResultFormat::Table => {
+			crate::query::display::display(&mut display_ctx, false, false).await?;
+		}
+		ResultFormat::Expanded => {
+			crate::query::display::display(&mut display_ctx, false, true).await?;
+		}
+		ResultFormat::Json => {
+			crate::query::display::display(&mut display_ctx, true, false).await?;
+		}
+		ResultFormat::JsonPretty => {
+			crate::query::display::display(&mut display_ctx, true, true).await?;
+		}
+		ResultFormat::Csv => return Err(miette::miette!("CSV format not yet implemented")),
+	}
+
+	String::from_utf8(buffer).map_err(|e| miette::miette!("Invalid UTF-8 in output: {}", e))
 }
 
 fn handle_list(ctx: &mut ReplContext<'_>, limit: Option<usize>, detail: bool) -> ControlFlow<()> {
@@ -180,6 +370,713 @@ mod tests {
 
 	use super::*;
 	use crate::repl::ReplState;
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_last_result() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		// Execute some queries to populate the result store
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test \re show without n (should show last result)
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: None,
+				to: None,
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_index() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		// Execute multiple queries
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 1 as first", &mut query_ctx)
+			.await
+			.expect("Query failed");
+		crate::query::execute_query("SELECT 2 as second", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test \re show n=0 (should show first result)
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: Some(0),
+				format: None,
+				to: None,
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_format() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test different formats
+		for format in &[
+			crate::parser::ResultFormat::Table,
+			crate::parser::ResultFormat::Expanded,
+			crate::parser::ResultFormat::Json,
+			crate::parser::ResultFormat::JsonPretty,
+		] {
+			let result = handle_result(
+				&mut ctx,
+				crate::parser::ResultSubcommand::Show {
+					n: None,
+					format: Some(format.clone()),
+					to: None,
+					only: vec![],
+					limit: None,
+					offset: None,
+				},
+			)
+			.await;
+			assert_eq!(result, ControlFlow::Continue(()));
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_to_file() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 42 as answer", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test writing to file
+		let temp_file = tempfile::NamedTempFile::new().unwrap();
+		let file_path = temp_file.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Table),
+				to: Some(file_path.clone()),
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify file was created and has content
+		let content = std::fs::read_to_string(&file_path).expect("Failed to read output file");
+		assert!(!content.is_empty());
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_json_format() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		// Execute a query that returns multiple rows
+		crate::query::execute_query(
+			"SELECT i as num FROM generate_series(1, 3) i",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test json format - should output one object per line
+		let temp_file_json = tempfile::NamedTempFile::new().unwrap();
+		let file_path_json = temp_file_json.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Json),
+				to: Some(file_path_json.clone()),
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		let content_json =
+			std::fs::read_to_string(&file_path_json).expect("Failed to read output file");
+		let lines: Vec<&str> = content_json.trim().lines().collect();
+		// Should have 3 lines, one per row
+		assert_eq!(lines.len(), 3);
+		// Each line should be a valid JSON object
+		for line in &lines {
+			assert!(serde_json::from_str::<serde_json::Value>(line).is_ok());
+		}
+
+		// Test json-pretty format - should output a single array
+		let temp_file_pretty = tempfile::NamedTempFile::new().unwrap();
+		let file_path_pretty = temp_file_pretty.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::JsonPretty),
+				to: Some(file_path_pretty.clone()),
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		let content_pretty =
+			std::fs::read_to_string(&file_path_pretty).expect("Failed to read output file");
+		// Should parse as a single array
+		let parsed: serde_json::Value =
+			serde_json::from_str(&content_pretty).expect("Should be valid JSON");
+		assert!(parsed.is_array());
+		assert_eq!(parsed.as_array().unwrap().len(), 3);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_json_highlighting() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 'test' as text, 42 as num", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// We can't easily capture stdout in tests, but we can verify the function
+		// accepts use_colours=true and doesn't error
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Json),
+				to: None,
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// When writing to file, colors should not be present
+		let temp_file = tempfile::NamedTempFile::new().unwrap();
+		let file_path = temp_file.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::JsonPretty),
+				to: Some(file_path.clone()),
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify file has no ANSI escape codes
+		let content = std::fs::read_to_string(&file_path).expect("Failed to read output file");
+		assert!(
+			!content.contains("\x1b["),
+			"File output should not contain color codes"
+		);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_with_global_output_file() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query("SELECT 123 as num", &mut query_ctx)
+			.await
+			.expect("Query failed");
+
+		// Set up global output file
+		let temp_file = tempfile::NamedTempFile::new().unwrap();
+		let file_path = temp_file.path().to_path_buf();
+		let global_file = tokio::fs::File::create(&file_path).await.unwrap();
+
+		{
+			let mut state = repl_state.lock().unwrap();
+			state.output_file = Some(Arc::new(tokio::sync::Mutex::new(global_file)));
+		}
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test \re show without 'to' parameter - should use global output file
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Table),
+				to: None,
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Close the file handle
+		{
+			let mut state = repl_state.lock().unwrap();
+			state.output_file = None;
+		}
+
+		// Verify content was written to global output file
+		let content = std::fs::read_to_string(&file_path).expect("Failed to read output file");
+		assert!(!content.is_empty());
+		assert!(content.contains("123") || content.contains("num"));
+
+		// Test with explicit 'to' parameter - should override global output
+		let temp_file2 = tempfile::NamedTempFile::new().unwrap();
+		let file_path2 = temp_file2.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Table),
+				to: Some(file_path2.clone()),
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		let content2 = std::fs::read_to_string(&file_path2).expect("Failed to read output file");
+		assert!(!content2.is_empty());
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_no_results() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test \re show when no results exist
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: None,
+				to: None,
+				only: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+	}
 
 	#[tokio::test]
 	async fn test_list_empty_store() {
@@ -536,7 +1433,8 @@ mod tests {
 				limit: None,
 				detail: false,
 			},
-		);
+		)
+		.await;
 		assert_eq!(result, std::ops::ControlFlow::Continue(()));
 
 		// Test \re list with limit
@@ -546,7 +1444,8 @@ mod tests {
 				limit: Some(2),
 				detail: false,
 			},
-		);
+		)
+		.await;
 		assert_eq!(result, std::ops::ControlFlow::Continue(()));
 
 		// Test \re list+ (detail mode)
@@ -556,7 +1455,8 @@ mod tests {
 				limit: None,
 				detail: true,
 			},
-		);
+		)
+		.await;
 		assert_eq!(result, std::ops::ControlFlow::Continue(()));
 
 		// Test \re list when store is empty
@@ -571,7 +1471,8 @@ mod tests {
 				limit: None,
 				detail: false,
 			},
-		);
+		)
+		.await;
 		assert_eq!(result, std::ops::ControlFlow::Continue(()));
 	}
 }

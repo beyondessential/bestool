@@ -85,7 +85,7 @@ impl ReplAction {
 				detail,
 				sameconn,
 			} => describe::handle_describe(ctx, item, detail, sameconn).await,
-			ReplAction::Result { subcommand } => result::handle_result(ctx, subcommand),
+			ReplAction::Result { subcommand } => result::handle_result(ctx, subcommand).await,
 			ReplAction::Execute {
 				input,
 				sql,
