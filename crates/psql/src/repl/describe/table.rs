@@ -387,77 +387,77 @@ pub(super) async fn handle_describe_table(
 				}
 			}
 
-			let referenced_result = if sameconn {
-				ctx.client
-					.query(referenced_by_query, &[&schema, &table_name])
-					.await
-			} else {
-				match ctx.pool.get().await {
-					Ok(client) => {
-						client
-							.query(referenced_by_query, &[&schema, &table_name])
-							.await
-					}
-					Err(_) => {
-						return ControlFlow::Continue(());
-					}
-				}
-			};
-
-			if let Ok(ref_rows) = referenced_result
-				&& !ref_rows.is_empty()
-			{
-				writer.writeln("\nReferenced by:").await;
-				for row in ref_rows {
-					match (
-						row.try_get::<_, String>(0),
-						row.try_get::<_, String>(1),
-						row.try_get::<_, String>(2),
-					) {
-						(Ok(constraint_name), Ok(referencing_table), Ok(constraint_def)) => {
-							writer
-								.writeln(&format!(
-									"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
-									referencing_table, constraint_name, constraint_def
-								))
-								.await;
-						}
-						err => {
-							writer
-								.writeln(&format!("    Invalid foreign key data: {:?}", err))
-								.await;
-						}
-					}
-				}
-			}
-
-			let triggers_result = if sameconn {
-				ctx.client
-					.query(triggers_query, &[&schema, &table_name])
-					.await
-			} else {
-				match ctx.pool.get().await {
-					Ok(client) => client.query(triggers_query, &[&schema, &table_name]).await,
-					Err(_) => {
-						return ControlFlow::Continue(());
-					}
-				}
-			};
-
-			if let Ok(trigger_rows) = triggers_result
-				&& !trigger_rows.is_empty()
-			{
-				writer.writeln("\nTriggers:").await;
-				for row in trigger_rows {
-					if let Ok(trigger_def) = row.try_get::<_, String>(1) {
-						writer.writeln(&format!("    {}", trigger_def)).await;
-					} else {
-						writer.writeln("    Invalid trigger data").await;
-					}
-				}
-			}
-
 			if detail {
+				let referenced_result = if sameconn {
+					ctx.client
+						.query(referenced_by_query, &[&schema, &table_name])
+						.await
+				} else {
+					match ctx.pool.get().await {
+						Ok(client) => {
+							client
+								.query(referenced_by_query, &[&schema, &table_name])
+								.await
+						}
+						Err(_) => {
+							return ControlFlow::Continue(());
+						}
+					}
+				};
+
+				if let Ok(ref_rows) = referenced_result
+					&& !ref_rows.is_empty()
+				{
+					writer.writeln("\nReferenced by:").await;
+					for row in ref_rows {
+						match (
+							row.try_get::<_, String>(0),
+							row.try_get::<_, String>(1),
+							row.try_get::<_, String>(2),
+						) {
+							(Ok(constraint_name), Ok(referencing_table), Ok(constraint_def)) => {
+								writer
+									.writeln(&format!(
+										"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+										referencing_table, constraint_name, constraint_def
+									))
+									.await;
+							}
+							err => {
+								writer
+									.writeln(&format!("    Invalid foreign key data: {:?}", err))
+									.await;
+							}
+						}
+					}
+				}
+
+				let triggers_result = if sameconn {
+					ctx.client
+						.query(triggers_query, &[&schema, &table_name])
+						.await
+				} else {
+					match ctx.pool.get().await {
+						Ok(client) => client.query(triggers_query, &[&schema, &table_name]).await,
+						Err(_) => {
+							return ControlFlow::Continue(());
+						}
+					}
+				};
+
+				if let Ok(trigger_rows) = triggers_result
+					&& !trigger_rows.is_empty()
+				{
+					writer.writeln("\nTriggers:").await;
+					for row in trigger_rows {
+						if let Ok(trigger_def) = row.try_get::<_, String>(1) {
+							writer.writeln(&format!("    {}", trigger_def)).await;
+						} else {
+							writer.writeln("    Invalid trigger data").await;
+						}
+					}
+				}
+
 				let info_result = if sameconn {
 					ctx.client
 						.query(table_info_query, &[&schema, &table_name])
