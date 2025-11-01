@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.0](https://github.com/beyondessential/bestool/compare/v1.0.13..1.1.0) - 2025-11-01
+## [1.1.1](https://github.com/beyondessential/bestool/compare/v1.1.0..1.1.1) - 2025-11-01
+
+
+- **Deps:** Replace unsafe serde-yml with unmaintained-but-safe serde-yaml - ([b76d8ec](https://github.com/beyondessential/bestool/commit/b76d8ec8480288f27365a02d16ba6ef869d17762))
+- **Deps:** Replace unsound users with maintained uzers - ([d76d720](https://github.com/beyondessential/bestool/commit/d76d720df28a94ebea5a25d972bac6f054f36791))
+
+---
+## [1.1.0](https://github.com/beyondessential/bestool/compare/v1.0.13..v1.1.0) - 2025-11-01
 
 
 

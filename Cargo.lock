@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "age",
  "age-core",
@@ -362,7 +362,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "algae-cli",
  "bestool-psql",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "clap",
  "comfy-table",
@@ -4288,7 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-st7789v2-driver"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "bitvec",
  "embedded-graphics",
