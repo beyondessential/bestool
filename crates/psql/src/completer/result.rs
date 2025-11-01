@@ -95,11 +95,10 @@ impl super::SqlCompleter {
 
 	fn is_param_already_used(param_name: &str, existing_parts: &[&str]) -> bool {
 		for part in existing_parts {
-			if let Some((name, _)) = part.split_once('=') {
-				if name == param_name {
+			if let Some((name, _)) = part.split_once('=')
+				&& name == param_name {
 					return true;
 				}
-			}
 		}
 		false
 	}

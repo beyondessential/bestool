@@ -74,11 +74,10 @@ async fn handle_show(
 	}
 
 	// Apply limit
-	if let Some(limit_val) = limit {
-		if limit_val < result.rows.len() {
+	if let Some(limit_val) = limit
+		&& limit_val < result.rows.len() {
 			result.rows.truncate(limit_val);
 		}
-	}
 
 	// Determine format (default to table)
 	let format = format.unwrap_or(ResultFormat::Table);

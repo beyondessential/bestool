@@ -102,8 +102,8 @@ impl SqlCompleter {
 		} else {
 			let input_lower = text_before_cursor.to_lowercase();
 
-			if input_lower.contains(" from ") || input_lower.starts_with("from ") {
-				if let Some(cache) = &self.schema_cache {
+			if (input_lower.contains(" from ") || input_lower.starts_with("from "))
+				&& let Some(cache) = &self.schema_cache {
 					let cache = cache.read().unwrap();
 					for table in cache.all_tables() {
 						if table
@@ -128,7 +128,6 @@ impl SqlCompleter {
 						}
 					}
 				}
-			}
 
 			if let Some(cache) = &self.schema_cache {
 				let cache = cache.read().unwrap();

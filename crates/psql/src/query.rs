@@ -292,15 +292,15 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		eprint!("{status_msg}");
 
 		// Handle VarSet modifier: if exactly one row, store column values as variables
-		if rows.len() == 1 {
-			if let Some(var_prefix) = ctx.modifiers.iter().find_map(|m| {
+		if rows.len() == 1
+			&& let Some(var_prefix) = ctx.modifiers.iter().find_map(|m| {
 				if let QueryModifier::VarSet { prefix } = m {
 					Some(prefix)
 				} else {
 					None
 				}
-			}) {
-				if let Some(vars_map) = ctx.vars.as_mut() {
+			})
+				&& let Some(vars_map) = ctx.vars.as_mut() {
 					let row = &rows[0];
 					for (i, column) in columns.iter().enumerate() {
 						let var_name = if let Some(prefix_str) = var_prefix {
@@ -329,8 +329,6 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 						vars_map.insert(var_name, value);
 					}
 				}
-			}
-		}
 	}
 
 	Ok(())

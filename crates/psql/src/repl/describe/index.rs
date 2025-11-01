@@ -159,8 +159,8 @@ pub(super) async fn handle_describe_index(
 				}
 			};
 
-			if let Ok(col_rows) = columns_result {
-				if !col_rows.is_empty() {
+			if let Ok(col_rows) = columns_result
+				&& !col_rows.is_empty() {
 					writer.writeln("").await;
 					let mut table = Table::new();
 					crate::table::configure(&mut table);
@@ -200,18 +200,16 @@ pub(super) async fn handle_describe_index(
 					crate::table::style_header(&mut table);
 					writer.writeln(&format!("{table}")).await;
 				}
-			}
 
 			writer.writeln("\nDefinition:").await;
 			writer.writeln(&format!("    {}", index_definition)).await;
 
 			if detail {
 				writer.writeln(&format!("\nOwner: {}", owner)).await;
-				if let Some(desc) = description {
-					if !desc.is_empty() {
+				if let Some(desc) = description
+					&& !desc.is_empty() {
 						writer.writeln(&format!("Description: {}", desc)).await;
 					}
-				}
 			}
 
 			writer.writeln("").await;

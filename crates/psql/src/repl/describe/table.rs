@@ -285,8 +285,8 @@ pub(super) async fn handle_describe_table(
 				}
 			};
 
-			if let Ok(index_rows) = indexes_result {
-				if !index_rows.is_empty() {
+			if let Ok(index_rows) = indexes_result
+				&& !index_rows.is_empty() {
 					writer.writeln("\nIndexes:").await;
 					for row in index_rows {
 						let index_name: String = row.get(0);
@@ -313,7 +313,6 @@ pub(super) async fn handle_describe_table(
 						}
 					}
 				}
-			}
 
 			let fk_result = if sameconn {
 				ctx.client
@@ -332,8 +331,8 @@ pub(super) async fn handle_describe_table(
 				}
 			};
 
-			if let Ok(fk_rows) = fk_result {
-				if !fk_rows.is_empty() {
+			if let Ok(fk_rows) = fk_result
+				&& !fk_rows.is_empty() {
 					writer.writeln("\nForeign-key constraints:").await;
 					for row in fk_rows {
 						let constraint_name: String = row.get(0);
@@ -343,7 +342,6 @@ pub(super) async fn handle_describe_table(
 							.await;
 					}
 				}
-			}
 
 			let check_result = if sameconn {
 				ctx.client
@@ -362,8 +360,8 @@ pub(super) async fn handle_describe_table(
 				}
 			};
 
-			if let Ok(check_rows) = check_result {
-				if !check_rows.is_empty() {
+			if let Ok(check_rows) = check_result
+				&& !check_rows.is_empty() {
 					writer.writeln("\nCheck constraints:").await;
 					for row in check_rows {
 						let constraint_name: String = row.get(0);
@@ -373,7 +371,6 @@ pub(super) async fn handle_describe_table(
 							.await;
 					}
 				}
-			}
 
 			let referenced_result = if sameconn {
 				ctx.client
@@ -392,8 +389,8 @@ pub(super) async fn handle_describe_table(
 				}
 			};
 
-			if let Ok(ref_rows) = referenced_result {
-				if !ref_rows.is_empty() {
+			if let Ok(ref_rows) = referenced_result
+				&& !ref_rows.is_empty() {
 					writer.writeln("\nReferenced by:").await;
 					for row in ref_rows {
 						let constraint_name: String = row.get(0);
@@ -407,7 +404,6 @@ pub(super) async fn handle_describe_table(
 							.await;
 					}
 				}
-			}
 
 			let triggers_result = if sameconn {
 				ctx.client
@@ -422,15 +418,14 @@ pub(super) async fn handle_describe_table(
 				}
 			};
 
-			if let Ok(trigger_rows) = triggers_result {
-				if !trigger_rows.is_empty() {
+			if let Ok(trigger_rows) = triggers_result
+				&& !trigger_rows.is_empty() {
 					writer.writeln("\nTriggers:").await;
 					for row in trigger_rows {
 						let trigger_def: String = row.get(1);
 						writer.writeln(&format!("    {}", trigger_def)).await;
 					}
 				}
-			}
 
 			if detail {
 				let info_result = if sameconn {
@@ -450,8 +445,8 @@ pub(super) async fn handle_describe_table(
 					}
 				};
 
-				if let Ok(info_rows) = info_result {
-					if let Some(row) = info_rows.first() {
+				if let Ok(info_rows) = info_result
+					&& let Some(row) = info_rows.first() {
 						let size: String = row.get(1);
 						let persistence: String = row.get(2);
 						let table_comment: Option<String> = row.get(3);
@@ -460,13 +455,11 @@ pub(super) async fn handle_describe_table(
 						writer
 							.writeln(&format!("Persistence: {}", persistence))
 							.await;
-						if let Some(comment) = table_comment {
-							if !comment.is_empty() {
+						if let Some(comment) = table_comment
+							&& !comment.is_empty() {
 								writer.writeln(&format!("Comment: {}", comment)).await;
 							}
-						}
 					}
-				}
 			}
 
 			writer.writeln("").await;

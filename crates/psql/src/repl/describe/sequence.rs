@@ -130,8 +130,8 @@ pub(super) async fn handle_describe_sequence(
 					}
 				};
 
-				if let Ok(info_rows) = info_result {
-					if let Some(info_row) = info_rows.first() {
+				if let Ok(info_rows) = info_result
+					&& let Some(info_row) = info_rows.first() {
 						let owner: String = info_row.get(0);
 						let description: Option<String> = info_row.get(1);
 						let data_type: String = info_row.get(2);
@@ -139,13 +139,11 @@ pub(super) async fn handle_describe_sequence(
 						table.add_row(vec!["Type", &data_type]);
 						table.add_row(vec!["Owner", &owner]);
 
-						if let Some(desc) = description {
-							if !desc.is_empty() {
+						if let Some(desc) = description
+							&& !desc.is_empty() {
 								table.add_row(vec!["Description", &desc]);
 							}
-						}
 					}
-				}
 			}
 
 			crate::table::style_header(&mut table);
@@ -168,12 +166,11 @@ pub(super) async fn handle_describe_sequence(
 				}
 			};
 
-			if let Ok(owned_rows) = owned_result {
-				if let Some(owned_row) = owned_rows.first() {
+			if let Ok(owned_rows) = owned_result
+				&& let Some(owned_row) = owned_rows.first() {
 					let owned_by: String = owned_row.get(0);
 					writer.writeln(&format!("\nOwned by: {}", owned_by)).await;
 				}
-			}
 
 			writer.writeln("").await;
 			ControlFlow::Continue(())

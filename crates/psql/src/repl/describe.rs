@@ -111,8 +111,8 @@ pub async fn handle_describe(
 					}
 				};
 
-				if let Ok(func_rows) = function_result {
-					if let Some(func_row) = func_rows.first() {
+				if let Ok(func_rows) = function_result
+					&& let Some(func_row) = func_rows.first() {
 						let count: i64 = func_row.get(0);
 						if count > 0 {
 							return function::handle_describe_function(
@@ -121,7 +121,6 @@ pub async fn handle_describe(
 							.await;
 						}
 					}
-				}
 
 				eprintln!("Did not find any relation or function named \"{}\".", item);
 				return ControlFlow::Continue(());

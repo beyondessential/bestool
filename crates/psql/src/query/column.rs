@@ -9,14 +9,13 @@ pub fn get_value(
 		return format_value(row, column_index);
 	}
 
-	if let Some(text_rows) = text_rows {
-		if let Some(text_row) = text_rows.get(row_index) {
+	if let Some(text_rows) = text_rows
+		&& let Some(text_row) = text_rows.get(row_index) {
 			return text_row
 				.try_get::<_, String>(column_index)
 				.ok()
 				.unwrap_or_else(|| "NULL".to_string());
 		}
-	}
 
 	"(error)".to_string()
 }
@@ -24,15 +23,14 @@ pub fn get_value(
 pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 	// Check for void type first
 	let column = row.columns().get(i);
-	if let Some(col) = column {
-		if col.type_().name() == "void" {
+	if let Some(col) = column
+		&& col.type_().name() == "void" {
 			return "(void)".to_string();
 		}
-	}
 
 	// Try numeric type with fraction crate
 	if let Ok(v) = row.try_get::<_, fraction::Decimal>(i) {
-		return v.to_string();
+		v.to_string()
 	} else if let Ok(v) = row.try_get::<_, String>(i) {
 		v
 	} else if let Ok(v) = row.try_get::<_, i16>(i) {
@@ -117,11 +115,10 @@ pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {
 pub fn can_print(row: &tokio_postgres::Row, i: usize) -> bool {
 	// Check for void type
 	let column = row.columns().get(i);
-	if let Some(col) = column {
-		if col.type_().name() == "void" {
+	if let Some(col) = column
+		&& col.type_().name() == "void" {
 			return true;
 		}
-	}
 
 	if row.try_get::<_, fraction::Decimal>(i).is_ok()
 		|| row.try_get::<_, String>(i).is_ok()

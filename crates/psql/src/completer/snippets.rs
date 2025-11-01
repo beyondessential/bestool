@@ -28,10 +28,9 @@ impl super::SqlCompleter {
 		}
 
 		// Check if we're completing snippet names after \snip run or \snip save
-		if text_before_cursor.trim_start().starts_with(r"\snip run ")
-			|| text_before_cursor.trim_start().starts_with(r"\snip save ")
-		{
-			if let Some(repl_state_arc) = &self.repl_state {
+		if (text_before_cursor.trim_start().starts_with(r"\snip run ")
+			|| text_before_cursor.trim_start().starts_with(r"\snip save "))
+			&& let Some(repl_state_arc) = &self.repl_state {
 				let repl_state = repl_state_arc.lock().unwrap();
 
 				let cmd_start = if let Some(pos) = text_before_cursor.find(r"\snip run ") {
@@ -75,7 +74,6 @@ impl super::SqlCompleter {
 				completions.sort_by(|a, b| a.display.cmp(&b.display));
 				return Some(completions);
 			}
-		}
 
 		None
 	}

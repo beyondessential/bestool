@@ -76,11 +76,10 @@ pub async fn run_with_update_check(args: Args) -> Result<()> {
 	let action = args.action.clone();
 
 	#[cfg(all(feature = "download", feature = "self-update"))]
-	if !matches!(action, Action::SelfUpdate(_)) {
-		if let Err(err) = crate::download::check_for_update().await {
+	if !matches!(action, Action::SelfUpdate(_))
+		&& let Err(err) = crate::download::check_for_update().await {
 			debug!("Failed to check for updates: {}", err);
 		}
-	}
 
 	run(args).await
 }

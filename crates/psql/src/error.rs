@@ -118,9 +118,9 @@ impl PgDatabaseError {
 		let routine = db_error.routine().map(|s| s.to_string());
 
 		// Create source code and label if we have both query and position
-		if let (Some(query_str), Some(pos_str)) = (query, &position) {
-			if let Some(pos_str) = pos_str.strip_prefix("position ") {
-				if let Ok(pos) = pos_str.parse::<usize>() {
+		if let (Some(query_str), Some(pos_str)) = (query, &position)
+			&& let Some(pos_str) = pos_str.strip_prefix("position ")
+				&& let Ok(pos) = pos_str.parse::<usize>() {
 					// PostgreSQL positions are 1-based, convert to 0-based
 					let pos_zero_based = pos.saturating_sub(1);
 
@@ -149,8 +149,6 @@ impl PgDatabaseError {
 						routine,
 					};
 				}
-			}
-		}
 
 		Self {
 			message,

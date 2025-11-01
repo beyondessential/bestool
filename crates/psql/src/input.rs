@@ -80,8 +80,8 @@ pub(crate) fn handle_input(
 	let user_input = new_buffer.trim().to_string();
 
 	// Check for metacommands first (only if buffer is empty, i.e., command starts on first character)
-	if buffer.is_empty() {
-		if let Ok(Some(metacmd)) = parse_metacommand(&user_input) {
+	if buffer.is_empty()
+		&& let Ok(Some(metacmd)) = parse_metacommand(&user_input) {
 			let action = match metacmd {
 				Metacommand::Quit => ReplAction::Exit,
 				Metacommand::Expanded => ReplAction::ToggleExpanded,
@@ -129,7 +129,6 @@ pub(crate) fn handle_input(
 			};
 			return (String::new(), action);
 		}
-	}
 
 	// Handle legacy "quit" command for compatibility
 	if buffer.is_empty() && user_input.eq_ignore_ascii_case("quit") {

@@ -139,8 +139,8 @@ pub(super) async fn handle_describe_function(
 				}
 			};
 
-			if let Ok(arg_rows) = args_result {
-				if !arg_rows.is_empty() {
+			if let Ok(arg_rows) = args_result
+				&& !arg_rows.is_empty() {
 					println!();
 					let mut table = Table::new();
 					crate::table::configure(&mut table);
@@ -160,14 +160,12 @@ pub(super) async fn handle_describe_function(
 					crate::table::style_header(&mut table);
 					writer.writeln(&format!("{table}")).await;
 				}
-			}
 
 			if detail {
-				if let Some(desc) = description {
-					if !desc.is_empty() {
+				if let Some(desc) = description
+					&& !desc.is_empty() {
 						writer.writeln(&format!("\nDescription: {}", desc)).await;
 					}
-				}
 
 				writer
 					.writeln(&format!("\nDefinition:\n{}", function_definition))

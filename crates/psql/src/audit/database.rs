@@ -40,11 +40,10 @@ impl super::Audit {
 		let mut timestamps = load_timestamps(&db)?;
 
 		// Import plain text psql history if this is a new database
-		if new_db_import_psql_history && is_new_db && timestamps.is_empty() {
-			if let Err(e) = import_psql_history(&db, &mut timestamps) {
+		if new_db_import_psql_history && is_new_db && timestamps.is_empty()
+			&& let Err(e) = import_psql_history(&db, &mut timestamps) {
 				debug!("could not import psql history: {e}");
 			}
-		}
 
 		cull_db_if_oversize(&db, path, &mut timestamps)?;
 
@@ -128,11 +127,10 @@ fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) ->
 
 		// Remove oldest entries in batches until we reach target size
 		while !timestamps.is_empty() {
-			if let Ok(metadata) = std::fs::metadata(path) {
-				if metadata.len() <= TARGET_SIZE {
+			if let Ok(metadata) = std::fs::metadata(path)
+				&& metadata.len() <= TARGET_SIZE {
 					break;
 				}
-			}
 
 			let to_remove = CULL_BATCH.min(timestamps.len());
 			let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
