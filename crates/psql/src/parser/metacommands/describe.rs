@@ -1,16 +1,16 @@
 use winnow::{
+	Parser,
 	ascii::{space0, space1},
-	combinator::{eof, opt},
+	combinator::{alt, eof, opt},
 	error::ErrMode,
 	token::literal,
-	Parser,
 };
 
 pub fn parse(
 	input: &mut &str,
 ) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
 	literal('\\').parse_next(input)?;
-	literal('d').parse_next(input)?;
+	alt((literal('d'), literal("describe"))).parse_next(input)?;
 
 	// Parse modifiers: + for detail, ! for sameconn (in any order)
 	let has_plus_first = opt(literal("+")).parse_next(input)?.is_some();

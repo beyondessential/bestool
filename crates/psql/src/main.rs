@@ -48,10 +48,10 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 		None => args
 			.logging
 			.setup(|v| match v {
-				0 => "bestool_psql2=info",
-				1 => "info,bestool_psql2=debug",
+				0 => "bestool_psql=info",
+				1 => "info,bestool_psql=debug",
 				2 => "debug",
-				3 => "debug,bestool_psql2=trace",
+				3 => "debug,bestool_psql=trace",
 				_ => "trace",
 			})
 			.map_err(|err| miette!("{err}"))?,

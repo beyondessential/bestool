@@ -31,7 +31,7 @@ pub fn get_args() -> Result<(Args, WorkerGuard)> {
 		None => args
 			.logging
 			.setup(|v| match v {
-				0 => "info",
+				0 => "warn,bestool=info,bestool_psql=info,algae_cli=info",
 				1 => "info,bestool=debug",
 				2 => "debug",
 				3 => "debug,bestool=trace",
