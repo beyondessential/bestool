@@ -68,18 +68,20 @@ tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
 uuid = "1.18.1"
-uzers = { version = "0.12.1", optional = true }
 walkdir = { version = "2.5.0", optional = true }
 zip = { version = "6.0.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
 
-[target.'cfg(target_os = "windows")'.dependencies]
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.0", features = ["Win32_System_Console"], optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.2.0", optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 openssl-sys = { version = "0.9.109", features = ["vendored"] }
+
+[target.'cfg(unix)'.dependencies]
+uzers = { version = "0.12.1", optional = true }
 
 [build-dependencies]
 windows_exe_info = { version = "0.5.2", features = ["manifest"] }
