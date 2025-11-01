@@ -57,7 +57,6 @@ pub async fn handle_snippet_save(
 	}
 
 	let history = ctx.rl.history_mut();
-	history.set_repl_state(&ctx.repl_state.lock().unwrap());
 	if let Err(e) = history.add_entry(line.into()) {
 		debug!("failed to add SnippetSave to history: {e}");
 	}

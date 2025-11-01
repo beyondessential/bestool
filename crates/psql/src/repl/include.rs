@@ -26,7 +26,6 @@ pub async fn handle_include(
 		debug!("read {} bytes from file '{file_path:?}'", content.len());
 
 		let history = ctx.rl.history_mut();
-		history.set_repl_state(&ctx.repl_state.lock().unwrap());
 		if let Err(e) = history.add_entry(content.clone()) {
 			debug!("failed to add to history: {e}");
 		}

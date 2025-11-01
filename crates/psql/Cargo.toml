@@ -33,6 +33,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
+sysinfo = "0.32.1"
 tempfile = "3.21.0"
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }

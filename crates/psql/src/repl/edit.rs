@@ -29,7 +29,6 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 				debug!("editor returned content, processing it");
 
 				let history = ctx.rl.history_mut();
-				history.set_repl_state(&ctx.repl_state.lock().unwrap());
 				if let Err(e) = history.add_entry(edited_content.clone()) {
 					debug!("failed to add to history: {e}");
 				}

@@ -10,6 +10,7 @@ mod parser;
 mod pool;
 mod query;
 mod repl;
+mod result_store;
 mod schema_cache;
 mod signals;
 mod snippets;

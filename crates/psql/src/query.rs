@@ -9,7 +9,7 @@ use crate::{
 	signals::{reset_sigint, sigint_received},
 };
 
-mod column;
+pub(crate) mod column;
 mod display;
 mod vars;
 

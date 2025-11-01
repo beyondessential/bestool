@@ -10,6 +10,7 @@ use crate::{
 	completer::SqlCompleter,
 	config::Config,
 	input::{ReplAction, handle_input},
+	result_store::ResultStore,
 	schema_cache::SchemaCacheManager,
 	snippets::Snippets,
 };
@@ -42,7 +43,6 @@ impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
 		if !matches!(self, ReplAction::Continue | ReplAction::SnippetSave { .. }) {
 			let history = ctx.rl.history_mut();
-			history.set_repl_state(&ctx.repl_state.lock().unwrap());
 			if let Err(e) = history.add_entry(line.into()) {
 				debug!("failed to add to history: {e}");
 			}
@@ -171,10 +171,11 @@ pub async fn run(config: Config) -> Result<()> {
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
 		transaction_state: TransactionState::None,
+		result_store: ResultStore::new(),
 	};
 
-	let audit = Audit::open(&audit_path, repl_state.clone())?;
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state))?;
 
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(config.pool.clone());

@@ -3,8 +3,6 @@ use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use tracing::{instrument, trace};
 
-use crate::repl::ReplState;
-
 /// A single audit entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -25,12 +23,6 @@ pub struct AuditEntry {
 }
 
 impl super::Audit {
-	/// Set the context for new history entries from REPL state
-	#[instrument(level = "debug")]
-	pub fn set_repl_state(&mut self, repl_state: &ReplState) {
-		self.repl_state = repl_state.clone();
-	}
-
 	/// Get entry by timestamp
 	///
 	/// Returns None if the entry doesn't exist (may have been deleted by another process)
@@ -58,14 +50,16 @@ impl super::Audit {
 			.ok()
 			.unwrap_or_default();
 
+		let state = self.repl_state.lock().unwrap();
 		let entry = AuditEntry {
 			query,
-			db_user: self.repl_state.db_user.clone(),
-			sys_user: self.repl_state.sys_user.clone(),
-			writemode: self.repl_state.write_mode,
+			db_user: state.db_user.clone(),
+			sys_user: state.sys_user.clone(),
+			writemode: state.write_mode,
 			tailscale,
-			ots: self.repl_state.ots.clone(),
+			ots: state.ots.clone(),
 		};
+		drop(state);
 
 		let json = serde_json::to_string(&entry).into_diagnostic()?;
 		let timestamp = std::time::SystemTime::now()
@@ -116,22 +110,17 @@ mod tests {
 
 		let mut audit = Audit::open_empty(db_path).unwrap();
 
-		let mut state = ReplState {
-			db_user: "dbuser".to_string(),
-			sys_user: "testuser".to_string(),
-			write_mode: false,
-			ots: None,
-			..ReplState::new()
-		};
-		audit.set_repl_state(&state);
-
 		// Add some entries
 		audit.add_entry("SELECT 1;".to_string()).unwrap();
 		audit.add_entry("SELECT 2;".to_string()).unwrap();
 
-		state.write_mode = true;
-		state.ots = Some("John Doe".to_string());
-		audit.set_repl_state(&state);
+		{
+			let mut state = audit.repl_state.lock().unwrap();
+			state.db_user = "dbuser".to_string();
+			state.sys_user = "testuser".to_string();
+			state.write_mode = true;
+			state.ots = Some("John Doe".to_string());
+		}
 		audit.add_entry("INSERT INTO foo;".to_string()).unwrap();
 
 		// List all entries

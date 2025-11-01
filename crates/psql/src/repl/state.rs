@@ -7,7 +7,8 @@ use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	audit::Audit, completer::SqlCompleter, pool::PgPool, snippets::Snippets, theme::Theme,
+	audit::Audit, completer::SqlCompleter, pool::PgPool, result_store::ResultStore,
+	snippets::Snippets, theme::Theme,
 };
 
 use super::TransactionState;
@@ -24,6 +25,7 @@ pub struct ReplState {
 	pub(crate) vars: BTreeMap<String, String>,
 	pub(crate) snippets: Snippets,
 	pub(crate) transaction_state: TransactionState,
+	pub(crate) result_store: ResultStore,
 }
 
 impl ReplState {
@@ -40,6 +42,7 @@ impl ReplState {
 			vars: BTreeMap::new(),
 			snippets: Snippets::empty(),
 			transaction_state: TransactionState::None,
+			result_store: ResultStore::new(),
 		}
 	}
 }

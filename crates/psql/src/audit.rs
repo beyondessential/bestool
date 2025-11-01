@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use redb::{Database, TableDefinition};
 
@@ -26,5 +26,5 @@ pub struct Audit {
 	/// Sorted list of timestamps for indexed access (may be stale with concurrent writers)
 	pub(crate) timestamps: Vec<u64>,
 	/// State to record as context for new entries
-	pub repl_state: ReplState,
+	pub repl_state: Arc<Mutex<ReplState>>,
 }

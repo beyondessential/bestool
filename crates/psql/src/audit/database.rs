@@ -1,7 +1,7 @@
 use std::{
 	mem::replace,
 	path::{Path, PathBuf},
-	sync::Arc,
+	sync::{Arc, Mutex},
 };
 
 use miette::{IntoDiagnostic, Result};
@@ -12,7 +12,7 @@ use crate::repl::ReplState;
 
 impl super::Audit {
 	/// Open or create an audit database at the given path
-	pub fn open(path: impl AsRef<Path>, repl_state: ReplState) -> Result<Self> {
+	pub fn open(path: impl AsRef<Path>, repl_state: Arc<Mutex<ReplState>>) -> Result<Self> {
 		let path = path.as_ref();
 		Self::open_internal(path, repl_state, true)
 	}
@@ -23,13 +23,13 @@ impl super::Audit {
 	#[cfg(test)]
 	pub fn open_empty(path: impl AsRef<Path>) -> Result<Self> {
 		let path = path.as_ref();
-		Self::open_internal(path, ReplState::new(), false)
+		Self::open_internal(path, Arc::new(Mutex::new(ReplState::new())), false)
 	}
 
 	#[instrument(level = "debug")]
 	fn open_internal(
 		path: &Path,
-		repl_state: ReplState,
+		repl_state: Arc<Mutex<ReplState>>,
 		new_db_import_psql_history: bool,
 	) -> Result<Self> {
 		let is_new_db = !path.exists();

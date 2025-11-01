@@ -1,3 +1,72 @@
+pub fn get_json_value(
+	row: &tokio_postgres::Row,
+	column_index: usize,
+	column: &tokio_postgres::Column,
+) -> Option<serde_json::Value> {
+	use serde_json::Value;
+
+	if row.try_get::<_, Option<String>>(column_index).ok()? == None {
+		return Some(Value::Null);
+	}
+
+	if let Ok(v) = row.try_get::<_, String>(column_index) {
+		Some(Value::String(v))
+	} else if let Ok(v) = row.try_get::<_, i16>(column_index) {
+		Some(Value::Number(v.into()))
+	} else if let Ok(v) = row.try_get::<_, i32>(column_index) {
+		Some(Value::Number(v.into()))
+	} else if let Ok(v) = row.try_get::<_, i64>(column_index) {
+		Some(Value::Number(v.into()))
+	} else if let Ok(v) = row.try_get::<_, f32>(column_index) {
+		serde_json::Number::from_f64(v as f64).map(Value::Number)
+	} else if let Ok(v) = row.try_get::<_, f64>(column_index) {
+		serde_json::Number::from_f64(v).map(Value::Number)
+	} else if let Ok(v) = row.try_get::<_, bool>(column_index) {
+		Some(Value::Bool(v))
+	} else if let Ok(v) = row.try_get::<_, Vec<u8>>(column_index) {
+		Some(Value::String(format!("\\x{}", hex::encode(v))))
+	} else if let Ok(v) = row.try_get::<_, jiff::Timestamp>(column_index) {
+		Some(Value::String(v.to_string()))
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::Date>(column_index) {
+		Some(Value::String(v.to_string()))
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::Time>(column_index) {
+		Some(Value::String(v.to_string()))
+	} else if let Ok(v) = row.try_get::<_, jiff::civil::DateTime>(column_index) {
+		Some(Value::String(v.to_string()))
+	} else if let Ok(v) = row.try_get::<_, serde_json::Value>(column_index) {
+		Some(v)
+	} else if let Ok(v) = row.try_get::<_, Vec<String>>(column_index) {
+		Some(Value::Array(v.into_iter().map(Value::String).collect()))
+	} else if let Ok(v) = row.try_get::<_, Vec<i32>>(column_index) {
+		Some(Value::Array(
+			v.into_iter().map(|x| Value::Number(x.into())).collect(),
+		))
+	} else if let Ok(v) = row.try_get::<_, Vec<i64>>(column_index) {
+		Some(Value::Array(
+			v.into_iter().map(|x| Value::Number(x.into())).collect(),
+		))
+	} else if let Ok(v) = row.try_get::<_, Vec<f32>>(column_index) {
+		Some(Value::Array(
+			v.into_iter()
+				.filter_map(|x| serde_json::Number::from_f64(x as f64).map(Value::Number))
+				.collect(),
+		))
+	} else if let Ok(v) = row.try_get::<_, Vec<f64>>(column_index) {
+		Some(Value::Array(
+			v.into_iter()
+				.filter_map(|x| serde_json::Number::from_f64(x).map(Value::Number))
+				.collect(),
+		))
+	} else if let Ok(v) = row.try_get::<_, Vec<bool>>(column_index) {
+		Some(Value::Array(v.into_iter().map(Value::Bool).collect()))
+	} else {
+		Some(Value::String(format!(
+			"(unprintable: {})",
+			column.type_().name()
+		)))
+	}
+}
+
 pub fn get_value(
 	row: &tokio_postgres::Row,
 	column_index: usize,

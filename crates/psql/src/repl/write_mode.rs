@@ -29,7 +29,6 @@ pub async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<
 			Ok(_) => {
 				debug!("Write mode disabled");
 				eprintln!("SESSION IS NOW READ ONLY");
-				ctx.rl.history_mut().set_repl_state(&new_state);
 				*ctx.repl_state.lock().unwrap() = new_state;
 			}
 			Err(e) => {
@@ -53,7 +52,6 @@ pub async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<
 					Ok(_) => {
 						debug!("Write mode enabled");
 						eprintln!("AUTOCOMMIT IS OFF -- REMEMBER TO `COMMIT;` YOUR WRITES");
-						ctx.rl.history_mut().set_repl_state(&new_state);
 						*ctx.repl_state.lock().unwrap() = new_state;
 					}
 					Err(e) => {

@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use rustyline::history::History;
 use tokio::fs::File;
 
@@ -11,8 +13,8 @@ fn test_snippet_save_excluded_from_preceding_command() {
 	let temp_dir = TempDir::new().unwrap();
 	let audit_path = temp_dir.path().join("history.redb");
 
-	let repl_state = ReplState::new();
-	let mut audit = Audit::open(&audit_path, repl_state).unwrap();
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
+	let mut audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	audit.add_entry("SELECT 1;".into()).unwrap();
 	audit.add_entry("SELECT 2;".into()).unwrap();
 
@@ -650,8 +652,8 @@ async fn test_describe_table_with_database() {
 	.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
@@ -764,8 +766,8 @@ async fn test_describe_view_with_database() {
 		.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
@@ -881,8 +883,8 @@ async fn test_describe_index_with_database() {
 	.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
@@ -1001,8 +1003,8 @@ async fn test_describe_sequence_with_database() {
 	.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
@@ -1116,8 +1118,8 @@ async fn test_describe_function_with_database() {
 	.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
@@ -1276,8 +1278,8 @@ async fn test_multiple_statements() {
 		.unwrap();
 	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
 
-	let audit = Audit::open(&audit_path, repl_state.clone()).unwrap();
 	let repl_state = Arc::new(Mutex::new(repl_state));
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let completer = SqlCompleter::new(Theme::Dark);
 	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
 		rustyline::Config::builder()
