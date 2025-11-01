@@ -13,10 +13,10 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
+clap = { version = "4.5.51", features = ["cargo", "derive", "wrap_help"], optional = true }
 comfy-table = "7.2.1"
 crossterm = "0.29.0"
-ctrlc = "3.4.4"
+ctrlc = "3.5.1"
 dirs = "6.0.0"
 edit = "0.1.5"
 hex = "0.4.3"
