@@ -221,6 +221,13 @@ database=> select '${{foo}}';
 (1 row, took 55.336ms)
 -- (using three braces outputs two, and so on)
 
+-- Alternatively, use verbatim mode:
+database=> select '${foo}' \gv
+ ?column?
+══════════
+ ${foo}
+(1 row, took 55.336ms)
+
 -- You can use \gset to extract variables from the output of a query
 database=> select id from settings limit 1 \gset
                   id
