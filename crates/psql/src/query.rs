@@ -346,9 +346,9 @@ pub(crate) fn build_text_cast_query(
 		.enumerate()
 		.map(|(i, col)| {
 			if unprintable_columns.contains(&i) {
-				format!("(subq.{col_name})::text", col_name = col.name())
+				format!("(subq.\"{col_name}\")::text", col_name = col.name())
 			} else {
-				format!("subq.{col_name}", col_name = col.name())
+				format!("subq.\"{col_name}\"", col_name = col.name())
 			}
 		})
 		.collect();
