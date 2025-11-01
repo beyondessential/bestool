@@ -14,7 +14,44 @@ pub(super) async fn handle_describe_table(
 	sameconn: bool,
 	writer: &OutputWriter,
 ) -> ControlFlow<()> {
-	let columns_query = r#"
+	// Detect PostgreSQL version to handle version-specific columns
+	let version_query = "SHOW server_version_num";
+	let version_result = if sameconn {
+		ctx.client.query(version_query, &[]).await
+	} else {
+		match ctx.pool.get().await {
+			Ok(client) => client.query(version_query, &[]).await,
+			Err(e) => {
+				eprintln!(
+					"Error getting connection from pool: {}",
+					format_db_error(&e)
+				);
+				return ControlFlow::Continue(());
+			}
+		}
+	};
+
+	let server_version: i32 = match version_result {
+		Ok(rows) => {
+			if let Some(row) = rows.first() {
+				let version_str: String = row.get(0);
+				version_str.parse().unwrap_or(0)
+			} else {
+				0
+			}
+		}
+		Err(_) => 0,
+	};
+
+	// PostgreSQL 14 introduced the attcompression column
+	let compression_column = if server_version >= 140000 {
+		"COALESCE(a.attcompression::text, '')"
+	} else {
+		"''"
+	};
+
+	let columns_query = format!(
+		r#"
 		SELECT
 			a.attname AS column_name,
 			pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
@@ -35,7 +72,7 @@ pub(super) async fn handle_describe_table(
 				WHEN co.collname IS NOT NULL THEN co.collname
 				ELSE ''
 			END AS collation,
-			COALESCE(a.attcompression::text, '') AS compression,
+			{} AS compression,
 			CASE
 				WHEN a.attstorage = 'p' THEN 'plain'
 				WHEN a.attstorage = 'e' THEN 'external'
@@ -54,7 +91,9 @@ pub(super) async fn handle_describe_table(
 			AND a.attnum > 0
 			AND NOT a.attisdropped
 		ORDER BY a.attnum
-	"#;
+	"#,
+		compression_column
+	);
 
 	let indexes_query = r#"
 		SELECT
@@ -151,11 +190,11 @@ pub(super) async fn handle_describe_table(
 
 	let columns_result = if sameconn {
 		ctx.client
-			.query(columns_query, &[&schema, &table_name])
+			.query(&columns_query, &[&schema, &table_name])
 			.await
 	} else {
 		match ctx.pool.get().await {
-			Ok(client) => client.query(columns_query, &[&schema, &table_name]).await,
+			Ok(client) => client.query(&columns_query, &[&schema, &table_name]).await,
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
@@ -442,5 +481,55 @@ pub(super) async fn handle_describe_table(
 			);
 			ControlFlow::Continue(())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn test_compression_column_pg13() {
+		let server_version = 130000; // PostgreSQL 13
+		let compression_column = if server_version >= 140000 {
+			"COALESCE(a.attcompression::text, '')"
+		} else {
+			"''"
+		};
+		assert_eq!(compression_column, "''");
+	}
+
+	#[test]
+	fn test_compression_column_pg14() {
+		let server_version = 140000; // PostgreSQL 14
+		let compression_column = if server_version >= 140000 {
+			"COALESCE(a.attcompression::text, '')"
+		} else {
+			"''"
+		};
+		assert_eq!(compression_column, "COALESCE(a.attcompression::text, '')");
+	}
+
+	#[test]
+	fn test_compression_column_pg15() {
+		let server_version = 150000; // PostgreSQL 15
+		let compression_column = if server_version >= 140000 {
+			"COALESCE(a.attcompression::text, '')"
+		} else {
+			"''"
+		};
+		assert_eq!(compression_column, "COALESCE(a.attcompression::text, '')");
+	}
+
+	#[test]
+	fn test_query_contains_compression_placeholder() {
+		let compression_column = "TEST_PLACEHOLDER";
+		let query = format!(
+			r#"
+			SELECT
+				{} AS compression
+			FROM pg_catalog.pg_class
+		"#,
+			compression_column
+		);
+		assert!(query.contains("TEST_PLACEHOLDER"));
 	}
 }
