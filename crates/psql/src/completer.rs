@@ -11,6 +11,7 @@ mod keywords;
 mod list;
 mod paths;
 mod readline;
+mod result;
 mod snippets;
 mod vars;
 
@@ -69,6 +70,10 @@ impl SqlCompleter {
 		}
 
 		if let Some(completions) = self.complete_describe(text_before_cursor) {
+			return completions;
+		}
+
+		if let Some(completions) = self.complete_result(text_before_cursor) {
 			return completions;
 		}
 

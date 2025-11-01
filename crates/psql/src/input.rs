@@ -122,6 +122,7 @@ pub(crate) fn handle_input(
 					detail,
 					sameconn,
 				},
+				Metacommand::Result { .. } => todo!(r"\re"),
 			};
 			return (String::new(), action);
 		}

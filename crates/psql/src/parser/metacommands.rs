@@ -13,6 +13,7 @@ mod include;
 mod list;
 mod output;
 mod quit;
+mod result;
 mod snippets;
 mod vars;
 mod write_mode;
@@ -65,6 +66,9 @@ pub(crate) enum Metacommand {
 		detail: bool,
 		sameconn: bool,
 	},
+	Result {
+		subcommand: result::ResultSubcommand,
+	},
 }
 
 pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
@@ -92,6 +96,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		vars::parse_get,
 		list::parse,
 		describe::parse,
+		result::parse,
 	))
 	.parse_next(&mut input_slice)
 	{
