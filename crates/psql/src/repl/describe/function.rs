@@ -140,32 +140,34 @@ pub(super) async fn handle_describe_function(
 			};
 
 			if let Ok(arg_rows) = args_result
-				&& !arg_rows.is_empty() {
-					println!();
-					let mut table = Table::new();
-					crate::table::configure(&mut table);
+				&& !arg_rows.is_empty()
+			{
+				println!();
+				let mut table = Table::new();
+				crate::table::configure(&mut table);
 
-					table.set_header(vec!["Argument name", "Type"]);
-					for arg_row in arg_rows {
-						let arg_name: String = arg_row.get(0);
-						let arg_type: String = arg_row.get(1);
-						let name_display = if arg_name.is_empty() {
-							"(unnamed)".to_string()
-						} else {
-							arg_name
-						};
-						table.add_row(vec![name_display, arg_type]);
-					}
-
-					crate::table::style_header(&mut table);
-					writer.writeln(&format!("{table}")).await;
+				table.set_header(vec!["Argument name", "Type"]);
+				for arg_row in arg_rows {
+					let arg_name: String = arg_row.get(0);
+					let arg_type: String = arg_row.get(1);
+					let name_display = if arg_name.is_empty() {
+						"(unnamed)".to_string()
+					} else {
+						arg_name
+					};
+					table.add_row(vec![name_display, arg_type]);
 				}
+
+				crate::table::style_header(&mut table);
+				writer.writeln(&format!("{table}")).await;
+			}
 
 			if detail {
 				if let Some(desc) = description
-					&& !desc.is_empty() {
-						writer.writeln(&format!("\nDescription: {}", desc)).await;
-					}
+					&& !desc.is_empty()
+				{
+					writer.writeln(&format!("\nDescription: {}", desc)).await;
+				}
 
 				writer
 					.writeln(&format!("\nDefinition:\n{}", function_definition))

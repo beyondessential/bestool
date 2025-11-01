@@ -286,33 +286,34 @@ pub(super) async fn handle_describe_table(
 			};
 
 			if let Ok(index_rows) = indexes_result
-				&& !index_rows.is_empty() {
-					writer.writeln("\nIndexes:").await;
-					for row in index_rows {
-						let index_name: String = row.get(0);
-						let index_def: String = row.get(1);
-						let constraint_type: String = row.get(2);
+				&& !index_rows.is_empty()
+			{
+				writer.writeln("\nIndexes:").await;
+				for row in index_rows {
+					let index_name: String = row.get(0);
+					let index_def: String = row.get(1);
+					let constraint_type: String = row.get(2);
 
-						if !constraint_type.is_empty() {
-							writer
-								.writeln(&format!(
-									"    \"{}\" {} {}",
-									index_name,
-									constraint_type,
-									&index_def[index_def.find("USING").unwrap_or(0)..]
-								))
-								.await;
-						} else {
-							writer
-								.writeln(&format!(
-									"    \"{}\" {}",
-									index_name,
-									&index_def[index_def.find("USING").unwrap_or(0)..]
-								))
-								.await;
-						}
+					if !constraint_type.is_empty() {
+						writer
+							.writeln(&format!(
+								"    \"{}\" {} {}",
+								index_name,
+								constraint_type,
+								&index_def[index_def.find("USING").unwrap_or(0)..]
+							))
+							.await;
+					} else {
+						writer
+							.writeln(&format!(
+								"    \"{}\" {}",
+								index_name,
+								&index_def[index_def.find("USING").unwrap_or(0)..]
+							))
+							.await;
 					}
 				}
+			}
 
 			let fk_result = if sameconn {
 				ctx.client
@@ -332,16 +333,17 @@ pub(super) async fn handle_describe_table(
 			};
 
 			if let Ok(fk_rows) = fk_result
-				&& !fk_rows.is_empty() {
-					writer.writeln("\nForeign-key constraints:").await;
-					for row in fk_rows {
-						let constraint_name: String = row.get(0);
-						let constraint_def: String = row.get(1);
-						writer
-							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
-							.await;
-					}
+				&& !fk_rows.is_empty()
+			{
+				writer.writeln("\nForeign-key constraints:").await;
+				for row in fk_rows {
+					let constraint_name: String = row.get(0);
+					let constraint_def: String = row.get(1);
+					writer
+						.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+						.await;
 				}
+			}
 
 			let check_result = if sameconn {
 				ctx.client
@@ -361,16 +363,17 @@ pub(super) async fn handle_describe_table(
 			};
 
 			if let Ok(check_rows) = check_result
-				&& !check_rows.is_empty() {
-					writer.writeln("\nCheck constraints:").await;
-					for row in check_rows {
-						let constraint_name: String = row.get(0);
-						let constraint_def: String = row.get(1);
-						writer
-							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
-							.await;
-					}
+				&& !check_rows.is_empty()
+			{
+				writer.writeln("\nCheck constraints:").await;
+				for row in check_rows {
+					let constraint_name: String = row.get(0);
+					let constraint_def: String = row.get(1);
+					writer
+						.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+						.await;
 				}
+			}
 
 			let referenced_result = if sameconn {
 				ctx.client
@@ -390,20 +393,21 @@ pub(super) async fn handle_describe_table(
 			};
 
 			if let Ok(ref_rows) = referenced_result
-				&& !ref_rows.is_empty() {
-					writer.writeln("\nReferenced by:").await;
-					for row in ref_rows {
-						let constraint_name: String = row.get(0);
-						let referencing_table: String = row.get(1);
-						let constraint_def: String = row.get(2);
-						writer
-							.writeln(&format!(
-								"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
-								referencing_table, constraint_name, constraint_def
-							))
-							.await;
-					}
+				&& !ref_rows.is_empty()
+			{
+				writer.writeln("\nReferenced by:").await;
+				for row in ref_rows {
+					let constraint_name: String = row.get(0);
+					let referencing_table: String = row.get(1);
+					let constraint_def: String = row.get(2);
+					writer
+						.writeln(&format!(
+							"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+							referencing_table, constraint_name, constraint_def
+						))
+						.await;
 				}
+			}
 
 			let triggers_result = if sameconn {
 				ctx.client
@@ -419,13 +423,14 @@ pub(super) async fn handle_describe_table(
 			};
 
 			if let Ok(trigger_rows) = triggers_result
-				&& !trigger_rows.is_empty() {
-					writer.writeln("\nTriggers:").await;
-					for row in trigger_rows {
-						let trigger_def: String = row.get(1);
-						writer.writeln(&format!("    {}", trigger_def)).await;
-					}
+				&& !trigger_rows.is_empty()
+			{
+				writer.writeln("\nTriggers:").await;
+				for row in trigger_rows {
+					let trigger_def: String = row.get(1);
+					writer.writeln(&format!("    {}", trigger_def)).await;
 				}
+			}
 
 			if detail {
 				let info_result = if sameconn {
@@ -446,20 +451,22 @@ pub(super) async fn handle_describe_table(
 				};
 
 				if let Ok(info_rows) = info_result
-					&& let Some(row) = info_rows.first() {
-						let size: String = row.get(1);
-						let persistence: String = row.get(2);
-						let table_comment: Option<String> = row.get(3);
+					&& let Some(row) = info_rows.first()
+				{
+					let size: String = row.get(1);
+					let persistence: String = row.get(2);
+					let table_comment: Option<String> = row.get(3);
 
-						writer.writeln(&format!("Size: {}", size)).await;
-						writer
-							.writeln(&format!("Persistence: {}", persistence))
-							.await;
-						if let Some(comment) = table_comment
-							&& !comment.is_empty() {
-								writer.writeln(&format!("Comment: {}", comment)).await;
-							}
+					writer.writeln(&format!("Size: {}", size)).await;
+					writer
+						.writeln(&format!("Persistence: {}", persistence))
+						.await;
+					if let Some(comment) = table_comment
+						&& !comment.is_empty()
+					{
+						writer.writeln(&format!("Comment: {}", comment)).await;
 					}
+				}
 			}
 
 			writer.writeln("").await;

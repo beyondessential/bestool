@@ -160,46 +160,47 @@ pub(super) async fn handle_describe_index(
 			};
 
 			if let Ok(col_rows) = columns_result
-				&& !col_rows.is_empty() {
-					writer.writeln("").await;
-					let mut table = Table::new();
-					crate::table::configure(&mut table);
+				&& !col_rows.is_empty()
+			{
+				writer.writeln("").await;
+				let mut table = Table::new();
+				crate::table::configure(&mut table);
 
-					if detail {
-						table.set_header(vec!["Column", "Type", "Key?", "Definition", "Storage"]);
-						for col_row in col_rows {
-							let column_name: String = col_row.get(0);
-							let data_type: String = col_row.get(1);
-							let is_key: String = col_row.get(2);
-							let definition: Option<String> = col_row.get(3);
-							let storage: String = col_row.get(4);
-							table.add_row(vec![
-								column_name,
-								data_type,
-								is_key,
-								definition.unwrap_or_default(),
-								storage,
-							]);
-						}
-					} else {
-						table.set_header(vec!["Column", "Type", "Key?", "Definition"]);
-						for col_row in col_rows {
-							let column_name: String = col_row.get(0);
-							let data_type: String = col_row.get(1);
-							let is_key: String = col_row.get(2);
-							let definition: Option<String> = col_row.get(3);
-							table.add_row(vec![
-								column_name,
-								data_type,
-								is_key,
-								definition.unwrap_or_default(),
-							]);
-						}
+				if detail {
+					table.set_header(vec!["Column", "Type", "Key?", "Definition", "Storage"]);
+					for col_row in col_rows {
+						let column_name: String = col_row.get(0);
+						let data_type: String = col_row.get(1);
+						let is_key: String = col_row.get(2);
+						let definition: Option<String> = col_row.get(3);
+						let storage: String = col_row.get(4);
+						table.add_row(vec![
+							column_name,
+							data_type,
+							is_key,
+							definition.unwrap_or_default(),
+							storage,
+						]);
 					}
-
-					crate::table::style_header(&mut table);
-					writer.writeln(&format!("{table}")).await;
+				} else {
+					table.set_header(vec!["Column", "Type", "Key?", "Definition"]);
+					for col_row in col_rows {
+						let column_name: String = col_row.get(0);
+						let data_type: String = col_row.get(1);
+						let is_key: String = col_row.get(2);
+						let definition: Option<String> = col_row.get(3);
+						table.add_row(vec![
+							column_name,
+							data_type,
+							is_key,
+							definition.unwrap_or_default(),
+						]);
+					}
 				}
+
+				crate::table::style_header(&mut table);
+				writer.writeln(&format!("{table}")).await;
+			}
 
 			writer.writeln("\nDefinition:").await;
 			writer.writeln(&format!("    {}", index_definition)).await;
@@ -207,9 +208,10 @@ pub(super) async fn handle_describe_index(
 			if detail {
 				writer.writeln(&format!("\nOwner: {}", owner)).await;
 				if let Some(desc) = description
-					&& !desc.is_empty() {
-						writer.writeln(&format!("Description: {}", desc)).await;
-					}
+					&& !desc.is_empty()
+				{
+					writer.writeln(&format!("Description: {}", desc)).await;
+				}
 			}
 
 			writer.writeln("").await;

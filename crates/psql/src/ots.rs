@@ -56,9 +56,11 @@ fn load_ots_history(audit: &Audit) -> Result<Vec<String>> {
 	let mut seen = std::collections::HashSet::new();
 	for (_timestamp, entry) in entries.into_iter().rev() {
 		if let Some(ots) = entry.ots
-			&& !ots.is_empty() && seen.insert(ots.clone()) {
-				ots_values.push(ots);
-			}
+			&& !ots.is_empty()
+			&& seen.insert(ots.clone())
+		{
+			ots_values.push(ots);
+		}
 	}
 
 	debug!(count = ots_values.len(), "loaded OTS history");

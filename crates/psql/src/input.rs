@@ -81,54 +81,55 @@ pub(crate) fn handle_input(
 
 	// Check for metacommands first (only if buffer is empty, i.e., command starts on first character)
 	if buffer.is_empty()
-		&& let Ok(Some(metacmd)) = parse_metacommand(&user_input) {
-			let action = match metacmd {
-				Metacommand::Quit => ReplAction::Exit,
-				Metacommand::Expanded => ReplAction::ToggleExpanded,
-				Metacommand::WriteMode => ReplAction::ToggleWriteMode,
-				Metacommand::Edit => ReplAction::Edit,
-				Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
-					file_path: file_path.into(),
-					vars,
-				},
-				Metacommand::SnippetRun { name, vars } => ReplAction::RunSnippet { name, vars },
-				Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
-				Metacommand::Output {
-					file_path: Some(file_path),
-				} => ReplAction::SetOutputFile {
-					file_path: file_path.into(),
-				},
-				Metacommand::Output { file_path: None } => ReplAction::UnsetOutputFile,
-				Metacommand::Debug { what } => ReplAction::Debug { what },
-				Metacommand::Help => ReplAction::Help,
-				Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
-				Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
-				Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
-				Metacommand::GetVar { name } => ReplAction::GetVar { name },
-				Metacommand::List {
-					item,
-					pattern,
-					detail,
-					sameconn,
-				} => ReplAction::List {
-					item,
-					pattern,
-					detail,
-					sameconn,
-				},
-				Metacommand::Describe {
-					item,
-					detail,
-					sameconn,
-				} => ReplAction::Describe {
-					item,
-					detail,
-					sameconn,
-				},
-				Metacommand::Result { subcommand } => ReplAction::Result { subcommand },
-			};
-			return (String::new(), action);
-		}
+		&& let Ok(Some(metacmd)) = parse_metacommand(&user_input)
+	{
+		let action = match metacmd {
+			Metacommand::Quit => ReplAction::Exit,
+			Metacommand::Expanded => ReplAction::ToggleExpanded,
+			Metacommand::WriteMode => ReplAction::ToggleWriteMode,
+			Metacommand::Edit => ReplAction::Edit,
+			Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
+				file_path: file_path.into(),
+				vars,
+			},
+			Metacommand::SnippetRun { name, vars } => ReplAction::RunSnippet { name, vars },
+			Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
+			Metacommand::Output {
+				file_path: Some(file_path),
+			} => ReplAction::SetOutputFile {
+				file_path: file_path.into(),
+			},
+			Metacommand::Output { file_path: None } => ReplAction::UnsetOutputFile,
+			Metacommand::Debug { what } => ReplAction::Debug { what },
+			Metacommand::Help => ReplAction::Help,
+			Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
+			Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
+			Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
+			Metacommand::GetVar { name } => ReplAction::GetVar { name },
+			Metacommand::List {
+				item,
+				pattern,
+				detail,
+				sameconn,
+			} => ReplAction::List {
+				item,
+				pattern,
+				detail,
+				sameconn,
+			},
+			Metacommand::Describe {
+				item,
+				detail,
+				sameconn,
+			} => ReplAction::Describe {
+				item,
+				detail,
+				sameconn,
+			},
+			Metacommand::Result { subcommand } => ReplAction::Result { subcommand },
+		};
+		return (String::new(), action);
+	}
 
 	// Handle legacy "quit" command for compatibility
 	if buffer.is_empty() && user_input.eq_ignore_ascii_case("quit") {

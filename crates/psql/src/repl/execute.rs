@@ -100,9 +100,10 @@ pub async fn handle_execute(
 			let tx_state = TransactionState::check(ctx.monitor_client, ctx.backend_pid).await;
 			if ctx.repl_state.lock().unwrap().write_mode
 				&& matches!(tx_state, TransactionState::None)
-				&& let Err(e) = ctx.client.batch_execute("BEGIN").await {
-					warn!("Failed to start transaction: {e}");
-				}
+				&& let Err(e) = ctx.client.batch_execute("BEGIN").await
+			{
+				warn!("Failed to start transaction: {e}");
+			}
 		}
 		Err(e) => {
 			eprintln!("{}", format_miette_error(&e, None));

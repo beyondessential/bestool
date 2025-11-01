@@ -127,11 +127,10 @@ pub(super) async fn handle_describe_view(
 			crate::table::style_header(&mut table);
 			writer.writeln(&format!("{table}")).await;
 
-			if detail
-				&& let Some(definition) = view_definition {
-					writer.writeln("\nView definition:").await;
-					writer.writeln(&definition).await;
-				}
+			if detail && let Some(definition) = view_definition {
+				writer.writeln("\nView definition:").await;
+				writer.writeln(&definition).await;
+			}
 
 			if let Some(sz) = &size {
 				writer.writeln(&format!("\nSize: {}", sz)).await;
@@ -139,9 +138,10 @@ pub(super) async fn handle_describe_view(
 
 			if detail
 				&& let Some(comment) = view_comment
-					&& !comment.is_empty() {
-						writer.writeln(&format!("Comment: {}", comment)).await;
-					}
+				&& !comment.is_empty()
+			{
+				writer.writeln(&format!("Comment: {}", comment)).await;
+			}
 
 			writer.writeln("").await;
 			ControlFlow::Continue(())

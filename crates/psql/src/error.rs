@@ -120,35 +120,36 @@ impl PgDatabaseError {
 		// Create source code and label if we have both query and position
 		if let (Some(query_str), Some(pos_str)) = (query, &position)
 			&& let Some(pos_str) = pos_str.strip_prefix("position ")
-				&& let Ok(pos) = pos_str.parse::<usize>() {
-					// PostgreSQL positions are 1-based, convert to 0-based
-					let pos_zero_based = pos.saturating_sub(1);
+			&& let Ok(pos) = pos_str.parse::<usize>()
+		{
+			// PostgreSQL positions are 1-based, convert to 0-based
+			let pos_zero_based = pos.saturating_sub(1);
 
-					// Ensure position is within query bounds
-					let actual_pos = pos_zero_based.min(query_str.len().saturating_sub(1));
+			// Ensure position is within query bounds
+			let actual_pos = pos_zero_based.min(query_str.len().saturating_sub(1));
 
-					let source = NamedSource::new("query", query_str.to_string());
-					let span = miette::SourceSpan::from(actual_pos..actual_pos + 1);
-					return Self {
-						message,
-						hint,
-						source_code: Some(source),
-						label: Some(span),
-						label_text: "error here".to_string(),
-						severity,
-						code,
-						detail,
-						where_clause,
-						schema,
-						table,
-						column,
-						datatype,
-						constraint,
-						file,
-						line,
-						routine,
-					};
-				}
+			let source = NamedSource::new("query", query_str.to_string());
+			let span = miette::SourceSpan::from(actual_pos..actual_pos + 1);
+			return Self {
+				message,
+				hint,
+				source_code: Some(source),
+				label: Some(span),
+				label_text: "error here".to_string(),
+				severity,
+				code,
+				detail,
+				where_clause,
+				schema,
+				table,
+				column,
+				datatype,
+				constraint,
+				file,
+				line,
+				routine,
+			};
+		}
 
 		Self {
 			message,

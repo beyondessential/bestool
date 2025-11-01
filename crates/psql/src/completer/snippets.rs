@@ -30,50 +30,49 @@ impl super::SqlCompleter {
 		// Check if we're completing snippet names after \snip run or \snip save
 		if (text_before_cursor.trim_start().starts_with(r"\snip run ")
 			|| text_before_cursor.trim_start().starts_with(r"\snip save "))
-			&& let Some(repl_state_arc) = &self.repl_state {
-				let repl_state = repl_state_arc.lock().unwrap();
+			&& let Some(repl_state_arc) = &self.repl_state
+		{
+			let repl_state = repl_state_arc.lock().unwrap();
 
-				let cmd_start = if let Some(pos) = text_before_cursor.find(r"\snip run ") {
-					pos + 10
-				} else if let Some(pos) = text_before_cursor.find(r"\snip save ") {
-					pos + 11
-				} else {
-					return Some(Vec::new());
-				};
+			let cmd_start = if let Some(pos) = text_before_cursor.find(r"\snip run ") {
+				pos + 10
+			} else if let Some(pos) = text_before_cursor.find(r"\snip save ") {
+				pos + 11
+			} else {
+				return Some(Vec::new());
+			};
 
-				let partial_name = text_before_cursor[cmd_start..].trim();
+			let partial_name = text_before_cursor[cmd_start..].trim();
 
-				let mut completions = Vec::new();
+			let mut completions = Vec::new();
 
-				// Try to get snippet names from all snippet directories
-				for dir in &repl_state.snippets.dirs {
-					if let Ok(entries) = std::fs::read_dir(dir) {
-						for entry in entries.flatten() {
-							if let Ok(file_name) = entry.file_name().into_string() {
-								// Look for .sql files
-								if file_name.ends_with(".sql") {
-									let snippet_name = &file_name[..file_name.len() - 4];
-									if snippet_name
-										.to_lowercase()
-										.starts_with(&partial_name.to_lowercase())
-										&& !completions
-											.iter()
-											.any(|c: &Pair| c.display == snippet_name)
-									{
-										completions.push(Pair {
-											display: snippet_name.to_string(),
-											replacement: snippet_name.to_string(),
-										});
-									}
+			// Try to get snippet names from all snippet directories
+			for dir in &repl_state.snippets.dirs {
+				if let Ok(entries) = std::fs::read_dir(dir) {
+					for entry in entries.flatten() {
+						if let Ok(file_name) = entry.file_name().into_string() {
+							// Look for .sql files
+							if file_name.ends_with(".sql") {
+								let snippet_name = &file_name[..file_name.len() - 4];
+								if snippet_name
+									.to_lowercase()
+									.starts_with(&partial_name.to_lowercase())
+									&& !completions.iter().any(|c: &Pair| c.display == snippet_name)
+								{
+									completions.push(Pair {
+										display: snippet_name.to_string(),
+										replacement: snippet_name.to_string(),
+									});
 								}
 							}
 						}
 					}
 				}
-
-				completions.sort_by(|a, b| a.display.cmp(&b.display));
-				return Some(completions);
 			}
+
+			completions.sort_by(|a, b| a.display.cmp(&b.display));
+			return Some(completions);
+		}
 
 		None
 	}

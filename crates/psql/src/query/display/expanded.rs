@@ -42,13 +42,14 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 			col.set_constraint(ColumnConstraint::ContentWidth);
 		}
 		if let Some(col) = table.column_mut(1)
-			&& let Ok((width, _)) = crossterm::terminal::size() {
-				// Reserve space for column name, borders, and padding
-				let max_value_width = width.saturating_sub(20).max(30);
-				col.set_constraint(ColumnConstraint::UpperBoundary(Width::Fixed(
-					max_value_width,
-				)));
-			}
+			&& let Ok((width, _)) = crossterm::terminal::size()
+		{
+			// Reserve space for column name, borders, and padding
+			let max_value_width = width.saturating_sub(20).max(30);
+			col.set_constraint(ColumnConstraint::UpperBoundary(Width::Fixed(
+				max_value_width,
+			)));
+		}
 
 		let table_output = format!("{table}\n");
 		ctx.writer

@@ -103,31 +103,32 @@ impl SqlCompleter {
 			let input_lower = text_before_cursor.to_lowercase();
 
 			if (input_lower.contains(" from ") || input_lower.starts_with("from "))
-				&& let Some(cache) = &self.schema_cache {
-					let cache = cache.read().unwrap();
-					for table in cache.all_tables() {
-						if table
-							.to_lowercase()
-							.starts_with(&current_word.to_lowercase())
-						{
-							completions.push(Pair {
-								display: table.clone(),
-								replacement: table,
-							});
-						}
-					}
-					for view in cache.all_views() {
-						if view
-							.to_lowercase()
-							.starts_with(&current_word.to_lowercase())
-						{
-							completions.push(Pair {
-								display: view.clone(),
-								replacement: view,
-							});
-						}
+				&& let Some(cache) = &self.schema_cache
+			{
+				let cache = cache.read().unwrap();
+				for table in cache.all_tables() {
+					if table
+						.to_lowercase()
+						.starts_with(&current_word.to_lowercase())
+					{
+						completions.push(Pair {
+							display: table.clone(),
+							replacement: table,
+						});
 					}
 				}
+				for view in cache.all_views() {
+					if view
+						.to_lowercase()
+						.starts_with(&current_word.to_lowercase())
+					{
+						completions.push(Pair {
+							display: view.clone(),
+							replacement: view,
+						});
+					}
+				}
+			}
 
 			if let Some(cache) = &self.schema_cache {
 				let cache = cache.read().unwrap();

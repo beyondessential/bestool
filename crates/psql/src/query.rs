@@ -299,36 +299,36 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				} else {
 					None
 				}
-			})
-				&& let Some(vars_map) = ctx.vars.as_mut() {
-					let row = &rows[0];
-					for (i, column) in columns.iter().enumerate() {
-						let var_name = if let Some(prefix_str) = var_prefix {
-							format!("{prefix_str}{col_name}", col_name = column.name())
-						} else {
-							column.name().to_string()
-						};
+			}) && let Some(vars_map) = ctx.vars.as_mut()
+		{
+			let row = &rows[0];
+			for (i, column) in columns.iter().enumerate() {
+				let var_name = if let Some(prefix_str) = var_prefix {
+					format!("{prefix_str}{col_name}", col_name = column.name())
+				} else {
+					column.name().to_string()
+				};
 
-						// Get the value as a string
-						let value = if unprintable_columns.contains(&i) {
-							if let Some(ref text_rows) = text_rows {
-								if let Some(text_row) = text_rows.first() {
-									text_row
-										.try_get::<_, String>(i)
-										.unwrap_or_else(|_| String::new())
-								} else {
-									String::new()
-								}
-							} else {
-								String::new()
-							}
+				// Get the value as a string
+				let value = if unprintable_columns.contains(&i) {
+					if let Some(ref text_rows) = text_rows {
+						if let Some(text_row) = text_rows.first() {
+							text_row
+								.try_get::<_, String>(i)
+								.unwrap_or_else(|_| String::new())
 						} else {
-							column::get_value(row, i, 0, &unprintable_columns, &text_rows)
-						};
-
-						vars_map.insert(var_name, value);
+							String::new()
+						}
+					} else {
+						String::new()
 					}
-				}
+				} else {
+					column::get_value(row, i, 0, &unprintable_columns, &text_rows)
+				};
+
+				vars_map.insert(var_name, value);
+			}
+		}
 	}
 
 	Ok(())

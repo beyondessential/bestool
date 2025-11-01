@@ -19,11 +19,12 @@ impl super::SqlCompleter {
 			let after_g = &text_before_cursor[g_pos + 2..];
 			// Check if it contains 'o' and is followed by a space
 			if after_g.chars().any(|c| c == 'o')
-				&& let Some(space_pos) = after_g.find(' ') {
-					// Extract the file path after the space
-					let partial_path = &after_g[space_pos + 1..];
-					return Some(partial_path);
-				}
+				&& let Some(space_pos) = after_g.find(' ')
+			{
+				// Extract the file path after the space
+				let partial_path = &after_g[space_pos + 1..];
+				return Some(partial_path);
+			}
 		}
 
 		None
