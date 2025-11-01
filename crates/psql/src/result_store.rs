@@ -81,10 +81,8 @@ impl ResultStore {
 			}
 		}
 
-		if result_size <= self.max_size {
-			self.total_size += result_size;
-			self.results.push_back(result);
-		}
+		self.total_size += result_size;
+		self.results.push_back(result);
 	}
 
 	pub fn get(&self, index: usize) -> Option<&StoredResult> {
