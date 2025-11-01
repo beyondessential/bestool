@@ -27,6 +27,7 @@ pub(crate) enum ResultSubcommand {
 	},
 	List {
 		limit: Option<usize>,
+		detail: bool,
 	},
 	Write {
 		index: Option<usize>,
@@ -106,7 +107,9 @@ pub fn parse(
 					return Ok(super::Metacommand::Help);
 				}
 			}
-			"list" => {
+			"list" | "list+" => {
+				let detail = cmd_str == "list+";
+
 				let limit_str: Option<&str> = opt(preceded(
 					space1,
 					take_while(1.., |c: char| c.is_ascii_digit()),
@@ -119,7 +122,7 @@ pub fn parse(
 				let limit = limit_str.and_then(|s| s.parse::<usize>().ok());
 
 				super::Metacommand::Result {
-					subcommand: ResultSubcommand::List { limit },
+					subcommand: ResultSubcommand::List { limit, detail },
 				}
 			}
 			"write" => {
@@ -247,7 +250,10 @@ mod tests {
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::List { limit: None }
+				subcommand: ResultSubcommand::List {
+					limit: None,
+					detail: false
+				}
 			})
 		));
 	}
@@ -258,7 +264,38 @@ mod tests {
 		assert!(matches!(
 			result,
 			Some(Metacommand::Result {
-				subcommand: ResultSubcommand::List { limit: Some(10) }
+				subcommand: ResultSubcommand::List {
+					limit: Some(10),
+					detail: false
+				}
+			})
+		));
+	}
+
+	#[test]
+	fn test_parse_re_list_plus() {
+		let result = parse_metacommand(r"\re list+").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::List {
+					limit: None,
+					detail: true
+				}
+			})
+		));
+	}
+
+	#[test]
+	fn test_parse_re_list_plus_with_limit() {
+		let result = parse_metacommand(r"\re list+ 5").unwrap();
+		assert!(matches!(
+			result,
+			Some(Metacommand::Result {
+				subcommand: ResultSubcommand::List {
+					limit: Some(5),
+					detail: true
+				}
 			})
 		));
 	}

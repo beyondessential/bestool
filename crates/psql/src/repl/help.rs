@@ -23,6 +23,10 @@ pub fn handle_help() -> ControlFlow<()> {
 		"Send query results to file (or close if no file)",
 	]);
 	metacmds.add_row(vec![
+		"\\re list[+] [N]",
+		"List the last N (default 10) saved results",
+	]);
+	metacmds.add_row(vec![
 		"\\debug [cmd]",
 		"Debug commands (run \\debug for options)",
 	]);

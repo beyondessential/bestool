@@ -16,4 +16,6 @@
 - When writing parsers, unless very trivial, implement them using winnow or chumsky.
 - Use the newer `foo.rs` / `foo/sub.rs` style of modules.
 - `use` statements always go before `mod` statements.
+- ALWAYS use the edit tool to edit or write file, NEVER use "cat >> EOF". YOU WILL LOSE DATA.
+- Never write long summaries at the end of responses. Maximum 50 words if absolutely necessary.
 <!-- end rules -->

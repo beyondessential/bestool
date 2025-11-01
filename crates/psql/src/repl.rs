@@ -30,6 +30,7 @@ mod include;
 mod list;
 mod output;
 mod prompt;
+mod result;
 mod snippets;
 mod state;
 mod transaction;
@@ -84,6 +85,7 @@ impl ReplAction {
 				detail,
 				sameconn,
 			} => describe::handle_describe(ctx, item, detail, sameconn).await,
+			ReplAction::Result { subcommand } => result::handle_result(ctx, subcommand),
 			ReplAction::Execute {
 				input,
 				sql,

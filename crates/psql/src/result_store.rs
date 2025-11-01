@@ -6,6 +6,8 @@ pub(crate) struct StoredResult {
 	pub query: String,
 	pub rows: Vec<Row>,
 	pub estimated_size: usize,
+	pub timestamp: jiff::Timestamp,
+	pub duration: std::time::Duration,
 }
 
 impl std::fmt::Debug for StoredResult {
@@ -14,6 +16,8 @@ impl std::fmt::Debug for StoredResult {
 			.field("query", &self.query)
 			.field("row_count", &self.rows.len())
 			.field("estimated_size", &self.estimated_size)
+			.field("timestamp", &self.timestamp)
+			.field("duration", &self.duration)
 			.finish()
 	}
 }
@@ -24,18 +28,22 @@ impl Clone for StoredResult {
 			query: self.query.clone(),
 			rows: self.rows.clone(),
 			estimated_size: self.estimated_size,
+			timestamp: self.timestamp,
+			duration: self.duration,
 		}
 	}
 }
 
 impl StoredResult {
-	pub fn from_query_result(query: String, rows: Vec<Row>) -> Self {
+	pub fn from_query_result(query: String, rows: Vec<Row>, duration: std::time::Duration) -> Self {
 		let estimated_size = estimate_result_size(&rows);
 
 		Self {
 			query,
 			rows,
 			estimated_size,
+			timestamp: jiff::Timestamp::now(),
+			duration,
 		}
 	}
 }
@@ -63,8 +71,8 @@ impl ResultStore {
 		}
 	}
 
-	pub fn push(&mut self, query: String, rows: Vec<Row>) {
-		let result = StoredResult::from_query_result(query, rows);
+	pub fn push(&mut self, query: String, rows: Vec<Row>, duration: std::time::Duration) {
+		let result = StoredResult::from_query_result(query, rows, duration);
 		let result_size = result.estimated_size;
 
 		while self.total_size + result_size > self.max_size && !self.results.is_empty() {
@@ -208,7 +216,11 @@ mod tests {
 		let rows = client.query("SELECT 1 as num", &[]).await.unwrap();
 
 		let mut store = ResultStore::new();
-		store.push("SELECT 1 as num".to_string(), rows);
+		store.push(
+			"SELECT 1 as num".to_string(),
+			rows,
+			std::time::Duration::from_millis(10),
+		);
 
 		assert_eq!(store.len(), 1);
 		assert!(store.get(0).is_some());
@@ -222,8 +234,16 @@ mod tests {
 		let rows2 = client.query("SELECT 2", &[]).await.unwrap();
 
 		let mut store = ResultStore::new();
-		store.push("SELECT 1".to_string(), rows1);
-		store.push("SELECT 2".to_string(), rows2);
+		store.push(
+			"SELECT 1".to_string(),
+			rows1,
+			std::time::Duration::from_millis(10),
+		);
+		store.push(
+			"SELECT 2".to_string(),
+			rows2,
+			std::time::Duration::from_millis(10),
+		);
 
 		assert_eq!(store.get_last().unwrap().query, "SELECT 2");
 	}
@@ -235,8 +255,16 @@ mod tests {
 		let rows2 = client.query("SELECT 2", &[]).await.unwrap();
 
 		let mut store = ResultStore::new();
-		store.push("SELECT 1".to_string(), rows1);
-		store.push("SELECT 2".to_string(), rows2);
+		store.push(
+			"SELECT 1".to_string(),
+			rows1,
+			std::time::Duration::from_millis(10),
+		);
+		store.push(
+			"SELECT 2".to_string(),
+			rows2,
+			std::time::Duration::from_millis(10),
+		);
 
 		let queries: Vec<String> = store.iter().map(|r| r.query.clone()).collect();
 		assert_eq!(queries, vec!["SELECT 1", "SELECT 2"]);
@@ -247,7 +275,11 @@ mod tests {
 		let client = create_test_client().await;
 		let rows = client.query("SELECT 'hello' as text", &[]).await.unwrap();
 
-		let stored = StoredResult::from_query_result("SELECT 'hello' as text".to_string(), rows);
+		let stored = StoredResult::from_query_result(
+			"SELECT 'hello' as text".to_string(),
+			rows,
+			std::time::Duration::from_millis(10),
+		);
 		assert!(stored.estimated_size > 0);
 		assert!(stored.estimated_size < 1000);
 	}
@@ -272,8 +304,16 @@ mod tests {
 		let rows1 = client.query(large_query, &[]).await.unwrap();
 		let rows2 = client.query(large_query, &[]).await.unwrap();
 
-		store.push("query1".to_string(), rows1);
-		store.push("query2".to_string(), rows2);
+		store.push(
+			"query1".to_string(),
+			rows1,
+			std::time::Duration::from_millis(10),
+		);
+		store.push(
+			"query2".to_string(),
+			rows2,
+			std::time::Duration::from_millis(10),
+		);
 
 		assert!(store.total_size() <= store.max_size());
 	}
@@ -286,8 +326,11 @@ mod tests {
 			.await
 			.unwrap();
 
-		let stored =
-			StoredResult::from_query_result("SELECT 42 as num, 'test' as text".to_string(), rows);
+		let stored = StoredResult::from_query_result(
+			"SELECT 42 as num, 'test' as text".to_string(),
+			rows,
+			std::time::Duration::from_millis(10),
+		);
 
 		let cloned = stored.clone();
 		assert_eq!(stored.query, cloned.query);

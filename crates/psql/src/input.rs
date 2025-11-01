@@ -60,6 +60,9 @@ pub(crate) enum ReplAction {
 		detail: bool,
 		sameconn: bool,
 	},
+	Result {
+		subcommand: crate::parser::ResultSubcommand,
+	},
 }
 
 pub(crate) fn handle_input(
@@ -122,7 +125,7 @@ pub(crate) fn handle_input(
 					detail,
 					sameconn,
 				},
-				Metacommand::Result { .. } => todo!(r"\re"),
+				Metacommand::Result { subcommand } => ReplAction::Result { subcommand },
 			};
 			return (String::new(), action);
 		}

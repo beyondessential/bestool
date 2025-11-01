@@ -14,7 +14,7 @@ impl super::SqlCompleter {
 			let partial_cmd = after_re.trim();
 			let mut completions = Vec::new();
 
-			for cmd in &["format", "show", "list", "write"] {
+			for cmd in &["format", "show", "list", "list+", "write"] {
 				if cmd.starts_with(&partial_cmd.to_lowercase()) {
 					completions.push(Pair {
 						display: cmd.to_string(),
@@ -87,6 +87,7 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "format"));
 		assert!(completions.iter().any(|c| c.display == "show"));
 		assert!(completions.iter().any(|c| c.display == "list"));
+		assert!(completions.iter().any(|c| c.display == "list+"));
 		assert!(completions.iter().any(|c| c.display == "write"));
 	}
 

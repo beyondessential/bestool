@@ -1,7 +1,7 @@
 use miette::{IntoDiagnostic, Result};
 use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
-use tracing::{instrument, trace};
+use tracing::trace;
 
 /// A single audit entry
 #[derive(Debug, Clone, Serialize, Deserialize)]

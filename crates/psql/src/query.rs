@@ -202,7 +202,9 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		// Store results in the result store (before formatting)
 		if !rows.is_empty() {
 			let mut state = ctx.repl_state.lock().unwrap();
-			state.result_store.push(statement.to_string(), rows.clone());
+			state
+				.result_store
+				.push(statement.to_string(), rows.clone(), duration);
 		}
 
 		let is_expanded = ctx.modifiers.contains(&QueryModifier::Expanded);
