@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.0.13](https://github.com/beyondessential/bestool/compare/v1.0.12..1.0.13) - 2025-10-23
+## [1.1.0](https://github.com/beyondessential/bestool/compare/v1.0.13..1.1.0) - 2025-11-01
+
+
+
+### Psql
+
+- **Documentation:** Write full readme - ([7bb2f3d](https://github.com/beyondessential/bestool/commit/7bb2f3defeb57e8da1eac6e5a16c76065a513fee))
+- **Feature:** Integrate new psql2 into bestool - ([fee167d](https://github.com/beyondessential/bestool/commit/fee167d7bab5fd93920f6924cdf07a7a5af77ff6))
+
+---
+## [1.0.13](https://github.com/beyondessential/bestool/compare/v1.0.12..v1.0.13) - 2025-10-23
 
 
 
