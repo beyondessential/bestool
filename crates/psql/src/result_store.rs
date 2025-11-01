@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use sysinfo::System;
 use tokio_postgres::Row;
+use tracing::warn;
 
 pub(crate) struct StoredResult {
 	pub query: String,
@@ -64,6 +65,11 @@ impl Clone for ResultStore {
 impl ResultStore {
 	pub fn new() -> Self {
 		let max_size = calculate_max_size();
+		if max_size < 50 * 1024 * 1024 {
+			warn!("Less than 50MB available for result storage (5% of available system memory)");
+			warn!("You might only be able to store a few results and may run out of memory");
+		}
+
 		Self {
 			results: VecDeque::new(),
 			total_size: 0,
