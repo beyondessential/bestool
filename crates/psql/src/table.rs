@@ -1,4 +1,4 @@
-use comfy_table::{presets, CellAlignment, ContentArrangement, Table};
+use comfy_table::{CellAlignment, ContentArrangement, Table, presets};
 
 use supports_unicode::Stream;
 

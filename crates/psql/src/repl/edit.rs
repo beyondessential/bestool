@@ -4,7 +4,7 @@ use rustyline::history::{History, SearchDirection};
 use tracing::{debug, warn};
 
 use super::state::ReplContext;
-use crate::input::{handle_input, ReplAction};
+use crate::input::{ReplAction, handle_input};
 
 pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 	use super::execute::handle_execute;

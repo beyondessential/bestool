@@ -1,5 +1,5 @@
 use miette::Result;
-use winnow::{combinator::alt, Parser};
+use winnow::{Parser, combinator::alt};
 
 pub(crate) use debug::DebugWhat;
 pub use list::ListItem;

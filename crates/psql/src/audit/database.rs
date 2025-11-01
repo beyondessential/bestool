@@ -5,7 +5,7 @@ use std::{
 };
 
 use miette::{IntoDiagnostic, Result};
-use redb::{backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable, backends::InMemoryBackend};
 use tracing::{debug, info, instrument, warn};
 
 use crate::repl::ReplState;

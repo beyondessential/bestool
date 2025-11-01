@@ -2,11 +2,11 @@ use std::collections::HashSet;
 
 use miette::Result;
 use winnow::{
+	Parser,
 	ascii::{space0, space1},
 	combinator::{alt, opt, preceded},
 	error::ErrMode,
 	token::{literal, rest, take_till},
-	Parser,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -148,9 +148,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(!mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -161,9 +163,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(!mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -174,9 +178,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(!mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -187,9 +193,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -248,9 +256,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -288,9 +298,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -320,9 +332,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(!mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -333,9 +347,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -346,9 +362,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -402,9 +420,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -415,9 +435,11 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Expanded));
 		assert!(mods.contains(&QueryModifier::Json));
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::VarSet { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
+		);
 	}
 
 	#[test]
@@ -511,9 +533,11 @@ mod tests {
 		let (sql, mods) = result.unwrap();
 		assert_eq!(sql, "SELECT * FROM users");
 		// Should not contain Output modifier if no path provided
-		assert!(!mods
-			.iter()
-			.any(|m| matches!(m, QueryModifier::Output { .. })));
+		assert!(
+			!mods
+				.iter()
+				.any(|m| matches!(m, QueryModifier::Output { .. }))
+		);
 	}
 
 	#[test]

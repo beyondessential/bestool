@@ -1,9 +1,9 @@
 use winnow::{
+	Parser,
 	ascii::space0,
 	combinator::{alt, eof},
 	error::ErrMode,
 	token::literal,
-	Parser,
 };
 
 pub fn parse(

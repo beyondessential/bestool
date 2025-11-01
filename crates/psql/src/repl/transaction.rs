@@ -44,7 +44,9 @@ impl TransactionState {
 							let backend_xid: Option<String> = row.get(1);
 
 							if xact_start.is_some() {
-								if backend_xid.is_some() && !backend_xid.as_ref().unwrap().is_empty() {
+								if backend_xid.is_some()
+									&& !backend_xid.as_ref().unwrap().is_empty()
+								{
 									TransactionState::Active
 								} else {
 									TransactionState::Idle

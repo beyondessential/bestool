@@ -1,8 +1,8 @@
 use winnow::{
+	Parser,
 	ascii::space1,
 	error::ErrMode,
 	token::{literal, take_while},
-	Parser,
 };
 
 pub fn parse(

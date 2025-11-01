@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 
 #[derive(Debug, Clone)]
 pub struct Snippets {
@@ -64,11 +64,7 @@ impl Snippets {
 
 	fn try_path(dir: &Path, name: &str) -> Option<PathBuf> {
 		let path = dir.join(format!("{name}.sql"));
-		if path.exists() {
-			Some(path)
-		} else {
-			None
-		}
+		if path.exists() { Some(path) } else { None }
 	}
 
 	pub fn path(&self, name: &str) -> Result<PathBuf> {

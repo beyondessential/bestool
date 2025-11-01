@@ -1,7 +1,7 @@
 use miette::{IntoDiagnostic, Result};
 use rustyline::{
-	history::{History as HistoryTrait, MemHistory},
 	Config, Editor,
+	history::{History as HistoryTrait, MemHistory},
 };
 use tracing::debug;
 

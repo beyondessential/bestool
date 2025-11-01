@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result};
 use rustls::{
-	pki_types::{CertificateDer, ServerName},
 	ClientConfig,
+	pki_types::{CertificateDer, ServerName},
 };
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::debug;

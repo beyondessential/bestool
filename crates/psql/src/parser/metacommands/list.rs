@@ -1,9 +1,9 @@
 use winnow::{
+	Parser,
 	ascii::{space0, space1},
 	combinator::{alt, eof, opt, preceded},
 	error::ErrMode,
 	token::literal,
-	Parser,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

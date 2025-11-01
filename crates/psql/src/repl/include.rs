@@ -3,7 +3,7 @@ use std::{fs, ops::ControlFlow, path::Path};
 use tracing::debug;
 
 use super::state::ReplContext;
-use crate::input::{handle_input, ReplAction};
+use crate::input::{ReplAction, handle_input};
 
 pub async fn handle_include(
 	ctx: &mut ReplContext<'_>,

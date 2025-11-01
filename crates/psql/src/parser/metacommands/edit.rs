@@ -1,4 +1,4 @@
-use winnow::{ascii::space0, combinator::eof, error::ErrMode, token::literal, Parser};
+use winnow::{Parser, ascii::space0, combinator::eof, error::ErrMode, token::literal};
 
 pub fn parse(
 	input: &mut &str,
