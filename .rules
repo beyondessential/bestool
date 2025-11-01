@@ -1,5 +1,6 @@
 ## LLM Rules to follow
 - For tests, set the env var `DATABASE_URL=postgresql://localhost/tamanu_meta`.
+- NEVER hardcode database credentials. Always use the environment variable or existing client.
 - When adding or changing features, or when fixing bugs, add tests whenever possible.
 - Never write documentation files or readmes.
 - Always run `cargo clippy` and `cargo fmt` before committing changes.

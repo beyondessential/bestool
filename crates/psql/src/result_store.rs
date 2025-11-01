@@ -187,7 +187,7 @@ mod tests {
 
 	async fn create_test_client() -> tokio_postgres::Client {
 		let (client, connection) = tokio_postgres::connect(
-			"host=localhost user=postgres dbname=tamanu_meta",
+			&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
 			tokio_postgres::NoTls,
 		)
 		.await
