@@ -1,6 +1,7 @@
 use std::ops::ControlFlow;
 
 use comfy_table::Table;
+use miette::IntoDiagnostic;
 
 use crate::repl::state::ReplContext;
 
@@ -290,27 +291,28 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nIndexes:").await;
 				for row in index_rows {
-					let index_name: String = row.get(0);
-					let index_def: String = row.get(1);
-					let constraint_type: String = row.get(2);
-
-					if !constraint_type.is_empty() {
-						writer
-							.writeln(&format!(
-								"    \"{}\" {} {}",
-								index_name,
-								constraint_type,
-								&index_def[index_def.find("USING").unwrap_or(0)..]
-							))
-							.await;
+					if let (Ok(index_name), Ok(index_def), Ok(constraint_type)) = (
+						row.try_get::<_, String>(0),
+						row.try_get::<_, String>(1),
+						row.try_get::<_, String>(2),
+					) {
+						if !constraint_type.is_empty() {
+							writer
+								.writeln(&format!(
+									"    \"{index_name}\" {constraint_type} {}",
+									&index_def[index_def.find("USING").unwrap_or(0)..]
+								))
+								.await;
+						} else {
+							writer
+								.writeln(&format!(
+									"    \"{index_name}\" {}",
+									&index_def[index_def.find("USING").unwrap_or(0)..]
+								))
+								.await;
+						}
 					} else {
-						writer
-							.writeln(&format!(
-								"    \"{}\" {}",
-								index_name,
-								&index_def[index_def.find("USING").unwrap_or(0)..]
-							))
-							.await;
+						writer.writeln("    Invalid index data").await;
 					}
 				}
 			}
@@ -337,11 +339,15 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nForeign-key constraints:").await;
 				for row in fk_rows {
-					let constraint_name: String = row.get(0);
-					let constraint_def: String = row.get(1);
-					writer
-						.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
-						.await;
+					if let (Ok(constraint_name), Ok(constraint_def)) =
+						(row.try_get::<_, String>(0), row.try_get::<_, String>(1))
+					{
+						writer
+							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+							.await;
+					} else {
+						writer.writeln("    Invalid foreign key data").await;
+					}
 				}
 			}
 
@@ -367,11 +373,15 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nCheck constraints:").await;
 				for row in check_rows {
-					let constraint_name: String = row.get(0);
-					let constraint_def: String = row.get(1);
-					writer
-						.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
-						.await;
+					if let (Ok(constraint_name), Ok(constraint_def)) =
+						(row.try_get::<_, String>(0), row.try_get::<_, String>(1))
+					{
+						writer
+							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+							.await;
+					} else {
+						writer.writeln("    Invalid check constraint data").await;
+					}
 				}
 			}
 
@@ -397,15 +407,20 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nReferenced by:").await;
 				for row in ref_rows {
-					let constraint_name: String = row.get(0);
-					let referencing_table: String = row.get(1);
-					let constraint_def: String = row.get(2);
-					writer
-						.writeln(&format!(
-							"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
-							referencing_table, constraint_name, constraint_def
-						))
-						.await;
+					if let (Ok(constraint_name), Ok(referencing_table), Ok(constraint_def)) = (
+						row.try_get::<_, String>(0),
+						row.try_get::<_, String>(1),
+						row.try_get::<_, String>(2),
+					) {
+						writer
+							.writeln(&format!(
+								"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+								referencing_table, constraint_name, constraint_def
+							))
+							.await;
+					} else {
+						writer.writeln("    Invalid foreign key data").await;
+					}
 				}
 			}
 
@@ -427,8 +442,11 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nTriggers:").await;
 				for row in trigger_rows {
-					let trigger_def: String = row.get(1);
-					writer.writeln(&format!("    {}", trigger_def)).await;
+					if let Ok(trigger_def) = row.try_get::<_, String>(1) {
+						writer.writeln(&format!("    {}", trigger_def)).await;
+					} else {
+						writer.writeln("    Invalid trigger data").await;
+					}
 				}
 			}
 
@@ -453,18 +471,15 @@ pub(super) async fn handle_describe_table(
 				if let Ok(info_rows) = info_result
 					&& let Some(row) = info_rows.first()
 				{
-					let size: String = row.get(1);
-					let persistence: String = row.get(2);
-					let table_comment: Option<String> = row.get(3);
-
-					writer.writeln(&format!("Size: {}", size)).await;
-					writer
-						.writeln(&format!("Persistence: {}", persistence))
-						.await;
-					if let Some(comment) = table_comment
-						&& !comment.is_empty()
+					if let (Ok(size), Ok(persistence)) =
+						(row.try_get::<_, String>(1), row.try_get::<_, String>(2))
 					{
-						writer.writeln(&format!("Comment: {}", comment)).await;
+						writer.writeln(&format!("Size: {}", size)).await;
+						writer
+							.writeln(&format!("Persistence: {}", persistence))
+							.await;
+					} else {
+						writer.writeln("    Invalid table info data").await;
 					}
 				}
 			}
