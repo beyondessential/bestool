@@ -1,7 +1,6 @@
 use std::ops::ControlFlow;
 
 use comfy_table::Table;
-use miette::IntoDiagnostic;
 
 use crate::repl::state::ReplContext;
 
@@ -148,7 +147,7 @@ pub(super) async fn handle_describe_table(
 	let referenced_by_query = r#"
 		SELECT
 			conname AS constraint_name,
-			conrelid::regclass AS referencing_table,
+			conrelid::regclass::text AS referencing_table,
 			pg_catalog.pg_get_constraintdef(oid, true) AS constraint_def
 		FROM pg_catalog.pg_constraint
 		WHERE confrelid = (
@@ -339,14 +338,17 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nForeign-key constraints:").await;
 				for row in fk_rows {
-					if let (Ok(constraint_name), Ok(constraint_def)) =
-						(row.try_get::<_, String>(0), row.try_get::<_, String>(1))
-					{
-						writer
-							.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
-							.await;
-					} else {
-						writer.writeln("    Invalid foreign key data").await;
+					match (row.try_get::<_, String>(0), row.try_get::<_, String>(1)) {
+						(Ok(constraint_name), Ok(constraint_def)) => {
+							writer
+								.writeln(&format!("    \"{}\" {}", constraint_name, constraint_def))
+								.await;
+						}
+						err => {
+							writer
+								.writeln(&format!("    Invalid foreign key data: {:?}", err))
+								.await;
+						}
 					}
 				}
 			}
@@ -407,19 +409,24 @@ pub(super) async fn handle_describe_table(
 			{
 				writer.writeln("\nReferenced by:").await;
 				for row in ref_rows {
-					if let (Ok(constraint_name), Ok(referencing_table), Ok(constraint_def)) = (
+					match (
 						row.try_get::<_, String>(0),
 						row.try_get::<_, String>(1),
 						row.try_get::<_, String>(2),
 					) {
-						writer
-							.writeln(&format!(
-								"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
-								referencing_table, constraint_name, constraint_def
-							))
-							.await;
-					} else {
-						writer.writeln("    Invalid foreign key data").await;
+						(Ok(constraint_name), Ok(referencing_table), Ok(constraint_def)) => {
+							writer
+								.writeln(&format!(
+									"    TABLE \"{}\" CONSTRAINT \"{}\" {}",
+									referencing_table, constraint_name, constraint_def
+								))
+								.await;
+						}
+						err => {
+							writer
+								.writeln(&format!("    Invalid foreign key data: {:?}", err))
+								.await;
+						}
 					}
 				}
 			}
