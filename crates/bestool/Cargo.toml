@@ -56,7 +56,7 @@ rpi-st7789v2-driver = { version = "0.3.8", path = "../rpi-st7789v2-driver", feat
 rppal = { version = "0.22.1", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
-serde_yml = { version = "0.0.12", optional = true }
+serde_yaml = { version = "0.9.33", optional = true }
 ssh-key = { version = "0.6.6", optional = true }
 sysinfo = { version = "0.37.0", optional = true }
 target-tuples = { version = "0.5.13", optional = true }
@@ -118,7 +118,7 @@ tamanu-alerts = [
 	"dep:humantime",
 	"dep:mailgun-rs",
 	"dep:pulldown-cmark",
-	"dep:serde_yml",
+	"dep:serde_yaml",
 	"dep:sysinfo",
 	"dep:tera",
 	"dep:tokio-postgres",
@@ -131,7 +131,7 @@ tamanu-config = ["__tamanu"]
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
-tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yml", "dep:walkdir"]
+tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:dirs",

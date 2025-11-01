@@ -323,7 +323,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 			.ok()
 			.and_then(|content| {
 				debug!(path=?external_targets_path, "parsing external targets");
-				serde_yml::from_str::<AlertTargets>(&content)
+				serde_yaml::from_str::<AlertTargets>(&content)
 					.map_err(
 						|err| warn!(path=?external_targets_path, "_targets.yml has errors! {err}"),
 					)
@@ -345,10 +345,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 				.map(|entry| {
 					let file = entry.path();
 
-					if !file
-						.extension()
-						.is_some_and(|e| e == "yaml" || e == "yml")
-					{
+					if !file.extension().is_some_and(|e| e == "yaml" || e == "yml") {
 						return Ok(None);
 					}
 
@@ -360,7 +357,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 					let content = std::fs::read_to_string(file)
 						.into_diagnostic()
 						.wrap_err(format!("{file:?}"))?;
-					let mut alert: AlertDefinition = serde_yml::from_str(&content)
+					let mut alert: AlertDefinition = serde_yaml::from_str(&content)
 						.into_diagnostic()
 						.wrap_err(format!("{file:?}"))?;
 
@@ -451,8 +448,8 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 
 	while let Some(res) = set.join_next().await {
 		if let Err(err) = res {
-  				error!("task: {err:?}");
-  			}
+			error!("task: {err:?}");
+		}
 	}
 
 	Ok(())

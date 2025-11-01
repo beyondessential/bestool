@@ -3,7 +3,7 @@ use std::{collections::HashMap, env::temp_dir, ffi::OsString, fs, path::PathBuf}
 use clap::{Parser, ValueHint};
 use dunce::canonicalize;
 use miette::{Context as _, IntoDiagnostic, Result};
-use serde_yml::Value;
+use serde_yaml::Value;
 use tracing::{debug, info, instrument, warn};
 use walkdir::WalkDir;
 
@@ -145,7 +145,8 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 			}
 
 			let content = fs::read_to_string(&path).into_diagnostic()?;
-			let value: GreenmaskTransformation = serde_yml::from_str(&content).into_diagnostic()?;
+			let value: GreenmaskTransformation =
+				serde_yaml::from_str(&content).into_diagnostic()?;
 
 			debug!(path=%path.display(), "loading transformation");
 			transforms
@@ -197,7 +198,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 
 	println!(
 		"{}",
-		serde_yml::to_string(&greenmask_config)
+		serde_yaml::to_string(&greenmask_config)
 			.into_diagnostic()
 			.wrap_err("failed to serialize Greenmask config")?
 	);
@@ -206,7 +207,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 }
 
 #[instrument(level = "trace")]
-fn merge_yaml(mut base: serde_yml::Value, mut overlay: serde_yml::Value) -> serde_yml::Value {
+fn merge_yaml(mut base: serde_yaml::Value, mut overlay: serde_yaml::Value) -> serde_yaml::Value {
 	if let (Some(base), Some(overlay)) = (base.as_mapping_mut(), overlay.as_mapping_mut()) {
 		for (key, value) in overlay {
 			if let Some(base_value) = base.get_mut(key) {
