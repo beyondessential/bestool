@@ -119,19 +119,44 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	// Reset the flag before starting
 	reset_sigint();
 
-	// Poll for SIGINT while executing query
+	// Poll for SIGINT while executing query, with progress indicator for long queries
+	let start_time = std::time::Instant::now();
+	let mut progress_shown = false;
+
 	let result = tokio::select! {
 		result = ctx.client.query(statement, &[]) => {
+			// Clear progress indicator if it was shown
+			if progress_shown {
+				eprint!("\r\x1b[K"); // Clear the line
+			}
 			result
 		}
 		_ = async {
 			loop {
 				tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+				let elapsed = start_time.elapsed();
+
+				// After 1 seconds, start showing progress indicator
+				if elapsed.as_secs() >= 1 && ctx.use_colours {
+					let secs = elapsed.as_secs();
+					let progress_msg = format!("(running, so far {}s)", secs);
+					let colored_msg = progress_msg.with(Color::Blue).dim();
+					eprint!("\r{}", colored_msg);
+					progress_shown = true;
+				}
+
 				if sigint_received() {
+					if progress_shown {
+						eprint!("\r\x1b[K"); // Clear the line
+					}
 					break;
 				}
 			}
 		} => {
+			if progress_shown {
+				eprint!("\r\x1b[K"); // Clear the line
+			}
 			eprintln!("\nCancelling query...");
 			if let Err(e) = cancel_token.cancel_query(tls_connector).await {
 				warn!("Failed to cancel query: {:?}", e);
