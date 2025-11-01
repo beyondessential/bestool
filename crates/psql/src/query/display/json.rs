@@ -1,5 +1,6 @@
+use indexmap::IndexMap;
 use miette::{IntoDiagnostic, Result};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use syntect::{
 	easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
 	util::as_24_bit_terminal_escaped,
@@ -22,7 +23,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 	let mut objects = Vec::new();
 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
-		let mut obj = Map::new();
+		let mut obj = IndexMap::new();
 		for &i in &column_indices {
 			let column = &ctx.columns[i];
 			let value_str =
@@ -40,7 +41,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 			obj.insert(column.name().to_string(), json_value);
 		}
 
-		objects.push(Value::Object(obj));
+		objects.push(obj);
 	}
 
 	let syntax_set = SyntaxSet::load_defaults_newlines();
@@ -60,7 +61,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 
 	if expanded {
 		// Pretty-print a single array containing all objects
-		let json_str = serde_json::to_string_pretty(&objects).unwrap();
+		let json_str = serde_json::to_string_pretty(&objects).into_diagnostic()?;
 		if ctx.use_colours {
 			let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 			ctx.writer
@@ -76,7 +77,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 	} else {
 		// Compact-print one object per line
 		for obj in objects {
-			let json_str = serde_json::to_string(&obj).unwrap();
+			let json_str = serde_json::to_string(&obj).into_diagnostic()?;
 			if ctx.use_colours {
 				let highlighted = highlight_json(&json_str, syntax, theme_obj, &syntax_set);
 				ctx.writer

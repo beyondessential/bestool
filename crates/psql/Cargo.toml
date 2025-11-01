@@ -25,6 +25,7 @@ lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
 mobc = "0.9.0"
 mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
+indexmap = { version = "2.12.0", features = ["serde"] }
 redb = "3.1.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
