@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.1](https://github.com/beyondessential/bestool/compare/v1.1.0..1.1.1) - 2025-11-01
+## [1.1.2](https://github.com/beyondessential/bestool/compare/v1.1.1..1.1.2) - 2025-11-01
+
+
+- **Deps:** Uzers is only for unix - ([8281df1](https://github.com/beyondessential/bestool/commit/8281df1d1d11569d9c7bff38aaa47efa699a2513))
+
+### Ssh
+
+- **Bugfix:** Windows deps again - ([2b36eaa](https://github.com/beyondessential/bestool/commit/2b36eaa247be87e04032b01e0a7cbe14fb3a7c74))
+
+---
+## [1.1.1](https://github.com/beyondessential/bestool/compare/v1.1.0..v1.1.1) - 2025-11-01
 
 
 - **Deps:** Replace unsafe serde-yml with unmaintained-but-safe serde-yaml - ([b76d8ec](https://github.com/beyondessential/bestool/commit/b76d8ec8480288f27365a02d16ba6ef869d17762))
