@@ -47,23 +47,22 @@ database=> select * from settings where key like 'fhir.%' limit 1 \gx
 
 -- JSON output prints one object per row
 database=> select id, key, facility_id from settings where key like 'fhir.%' \gj
-{"facility_id":null,"id":"37fa67a4-0c4c-4cfe-9afe-0c32046b6658","key":"fhir.worker.heartbeat"}
-{"facility_id":null,"id":"30410735-12f3-4733-a39f-dce7ea1b3635","key":"fhir.worker.assumeDroppedAfter"}
+{"id":"37fa67a4-0c4c-4cfe-9afe-0c32046b6658","key":"fhir.worker.heartbeat","facility_id":null}
+{"id":"30410735-12f3-4733-a39f-dce7ea1b3635","key":"fhir.worker.assumeDroppedAfter","facility_id":null}
 (2 rows, took 57.717ms)
--- the object key order is arbitrary and cannot be relied upon
 
 -- Expanded JSON output pretty-prints an array of objects
 database=> select id, created_at, key, value from settings where key like 'fhir.%' \gjx
 [
   {
-    "created_at": "2025-09-16T06:33:09.865Z",
     "id": "37fa67a4-0c4c-4cfe-9afe-0c32046b6658",
+    "created_at": "2025-09-16T06:33:09.865Z",
     "key": "fhir.worker.heartbeat",
     "value": "1 minute"
   },
   {
-    "created_at": "2025-09-16T06:33:09.865Z",
     "id": "30410735-12f3-4733-a39f-dce7ea1b3635",
+    "created_at": "2025-09-16T06:33:09.865Z",
     "key": "fhir.worker.assumeDroppedAfter",
     "value": "10 minutes"
   }
