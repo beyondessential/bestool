@@ -1,4 +1,4 @@
-use bestool_psql::{Audit, QueryOptions};
+use bestool_psql::audit::{Audit, AuditEntryWithTimestamp, QueryOptions};
 
 #[test]
 fn test_audit_export_basic() {
@@ -119,10 +119,8 @@ fn test_audit_export_json_serialization() {
 	assert_eq!(entries.len(), 1);
 
 	// Verify JSON serialization with timestamp
-	let entry_with_ts = bestool_psql::AuditEntryWithTimestamp::from_entry_and_timestamp(
-		entries[0].1.clone(),
-		entries[0].0,
-	);
+	let entry_with_ts =
+		AuditEntryWithTimestamp::from_entry_and_timestamp(entries[0].1.clone(), entries[0].0);
 	let json = serde_json::to_string(&entry_with_ts).unwrap();
 
 	// Verify ts field is present and in RFC3339 format

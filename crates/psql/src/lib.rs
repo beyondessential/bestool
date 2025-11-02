@@ -1,5 +1,7 @@
 #![deny(rust_2018_idioms)]
+// #[doc(hidden)] items must not be used! Only pub for testing purposes.
 
+#[doc(hidden)]
 pub mod audit;
 mod completer;
 mod config;
@@ -9,10 +11,13 @@ mod ots;
 mod parser;
 mod pool;
 mod query;
+#[doc(hidden)]
 pub mod repl;
+#[doc(hidden)]
 pub mod result_store;
 mod schema_cache;
 mod signals;
+#[doc(hidden)]
 pub mod snippets;
 mod table;
 mod theme;
