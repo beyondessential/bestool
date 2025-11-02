@@ -1,6 +1,7 @@
 use miette::Result;
 use tokio::io::AsyncWrite;
 
+mod csv;
 mod expanded;
 mod json;
 mod normal;
@@ -30,4 +31,8 @@ pub async fn display<W: AsyncWrite + Unpin>(
 	} else {
 		normal::display(ctx).await
 	}
+}
+
+pub async fn display_csv<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
+	csv::display(ctx).await
 }

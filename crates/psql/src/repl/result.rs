@@ -284,7 +284,9 @@ async fn format_result_using_display_module(
 		ResultFormat::JsonPretty => {
 			crate::query::display::display(&mut display_ctx, true, true).await?;
 		}
-		ResultFormat::Csv => return Err(miette::miette!("CSV format not yet implemented")),
+		ResultFormat::Csv => {
+			crate::query::display::display_csv(&mut display_ctx).await?;
+		}
 	}
 
 	String::from_utf8(buffer).map_err(|e| miette::miette!("Invalid UTF-8 in output: {}", e))
@@ -874,6 +876,99 @@ mod tests {
 			serde_json::from_str(&content_pretty).expect("Should be valid JSON");
 		assert!(parsed.is_array());
 		assert_eq!(parsed.as_array().unwrap().len(), 3);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_csv_format() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		// Execute query to populate the result store
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query(
+			"SELECT 1 as id, 'Alice' as name, 25 as age UNION ALL SELECT 2, 'Bob', 30 UNION ALL SELECT 3, 'Charlie', 35",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test csv format
+		let temp_file_csv = tempfile::NamedTempFile::new().unwrap();
+		let file_path_csv = temp_file_csv.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Csv),
+				to: Some(file_path_csv.clone()),
+				cols: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		let content_csv =
+			std::fs::read_to_string(&file_path_csv).expect("Failed to read output file");
+		let lines: Vec<&str> = content_csv.trim().lines().collect();
+		// Should have 4 lines: 1 header + 3 data rows
+		assert_eq!(lines.len(), 4);
+		// First line should be the header
+		assert_eq!(lines[0], "id,name,age");
+		// Check data rows
+		assert_eq!(lines[1], "1,Alice,25");
+		assert_eq!(lines[2], "2,Bob,30");
+		assert_eq!(lines[3], "3,Charlie,35");
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
