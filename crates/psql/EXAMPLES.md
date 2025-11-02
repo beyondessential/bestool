@@ -432,6 +432,7 @@ database=> select id from settings limit 1 \gset
  37fa67a4-0c4c-4cfe-9afe-0c32046b6658
 (1 row, took 55.586ms)
 -- unlike native psql, the output is still printed to screen (or wherever)
+-- you can use \gzset if you want to hide the output
 
 -- You can add a prefix to the variable names generated
 database=> select id, key from settings limit 1 \gjset set_
