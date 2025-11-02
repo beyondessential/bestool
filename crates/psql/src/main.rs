@@ -32,7 +32,7 @@ pub struct Args {
 	#[arg(long, default_value = "auto")]
 	pub theme: bestool_psql::Theme,
 
-	/// Path to audit database (default: ~/.local/state/bestool-psql/history.redb)
+	/// Path to audit database directory (default: ~/.local/state/bestool-psql/)
 	#[arg(long)]
 	pub audit_path: Option<PathBuf>,
 }

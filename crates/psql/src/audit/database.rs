@@ -31,12 +31,17 @@ impl super::Audit {
 
 	#[instrument(level = "debug")]
 	fn open_internal(
-		path: &Path,
+		dir: &Path,
 		repl_state: Arc<Mutex<ReplState>>,
 		new_db_import_psql_history: bool,
 	) -> Result<Self> {
-		let is_new_db = !path.exists();
-		debug!(?path, is_new_db, "opening audit database");
+		// Validate that the path is a directory
+		if dir.exists() && !dir.is_dir() {
+			return Err(miette::miette!(
+				"audit path must be a directory, not a file: {:?}",
+				dir
+			));
+		}
 
 		let db = Database::create(path).into_diagnostic()?;
 		let db = Arc::new(db);
