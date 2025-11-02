@@ -141,15 +141,15 @@ impl super::Audit {
 
 		// Try to open main database and copy it
 		let copy_result = (|| -> Result<()> {
-			// Open main database read-only with retries
+			// Open main database read-only with retries to verify it's accessible
 			let main_db =
 				working_info.open_main_readonly(super::multi_process::MAX_STARTUP_RETRIES, true)?;
 
+			// Close main database before copying to avoid file locking issues on Windows
+			drop(main_db);
+
 			// Copy to working file
 			working_info.copy_from_main()?;
-
-			// Close main database
-			drop(main_db);
 
 			Ok(())
 		})();
@@ -163,7 +163,7 @@ impl super::Audit {
 			Err(e) => {
 				// Failed to copy after retries, create empty working database and warn
 				warn!(
-					"could not access main audit database after {} attempts, creating empty working database: {}",
+					"could not access main audit database after {} attempts, creating empty working database: {:?}",
 					super::multi_process::MAX_STARTUP_RETRIES,
 					e
 				);
