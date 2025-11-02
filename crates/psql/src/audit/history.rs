@@ -9,11 +9,16 @@ impl RustylineHistory for super::Audit {
 		index: usize,
 		_dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
-		if index >= self.timestamps.len() {
-			return Ok(None);
-		}
+		let timestamp = match self.hist_index_get(index as u64) {
+			Ok(Some(ts)) => ts,
+			Ok(None) => return Ok(None),
+			Err(e) => {
+				return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
+					e.to_string(),
+				)));
+			}
+		};
 
-		let timestamp = self.timestamps[index];
 		let entry = self.get_entry(timestamp).map_err(|e| {
 			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
 		})?;
@@ -42,11 +47,11 @@ impl RustylineHistory for super::Audit {
 	}
 
 	fn len(&self) -> usize {
-		self.timestamps.len()
+		self.hist_index_len().unwrap_or(0) as usize
 	}
 
 	fn is_empty(&self) -> bool {
-		self.timestamps.is_empty()
+		self.hist_index_len().unwrap_or(0) == 0
 	}
 
 	fn set_max_len(&mut self, _len: usize) -> rustyline::Result<()> {
@@ -89,15 +94,19 @@ impl RustylineHistory for super::Audit {
 		start: usize,
 		dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
+		let len = self.hist_index_len().map_err(|e| {
+			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
+		})? as usize;
+
 		let range: Box<dyn Iterator<Item = usize>> = match dir {
 			SearchDirection::Forward => {
-				if start >= self.timestamps.len() {
+				if start >= len {
 					return Ok(None);
 				}
-				Box::new(start..self.timestamps.len())
+				Box::new(start..len)
 			}
 			SearchDirection::Reverse => {
-				if start >= self.timestamps.len() {
+				if start >= len {
 					return Ok(None);
 				}
 				Box::new((0..=start).rev())
@@ -105,7 +114,16 @@ impl RustylineHistory for super::Audit {
 		};
 
 		for idx in range {
-			let timestamp = self.timestamps[idx];
+			let timestamp = match self.hist_index_get(idx as u64) {
+				Ok(Some(ts)) => ts,
+				Ok(None) => continue,
+				Err(e) => {
+					return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
+						e.to_string(),
+					)));
+				}
+			};
+
 			let entry = self.get_entry(timestamp).map_err(|e| {
 				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
 			})?;
@@ -133,15 +151,19 @@ impl RustylineHistory for super::Audit {
 		start: usize,
 		dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
+		let len = self.hist_index_len().map_err(|e| {
+			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
+		})? as usize;
+
 		let range: Box<dyn Iterator<Item = usize>> = match dir {
 			SearchDirection::Forward => {
-				if start >= self.timestamps.len() {
+				if start >= len {
 					return Ok(None);
 				}
-				Box::new(start..self.timestamps.len())
+				Box::new(start..len)
 			}
 			SearchDirection::Reverse => {
-				if start >= self.timestamps.len() {
+				if start >= len {
 					return Ok(None);
 				}
 				Box::new((0..=start).rev())
@@ -149,7 +171,16 @@ impl RustylineHistory for super::Audit {
 		};
 
 		for idx in range {
-			let timestamp = self.timestamps[idx];
+			let timestamp = match self.hist_index_get(idx as u64) {
+				Ok(Some(ts)) => ts,
+				Ok(None) => continue,
+				Err(e) => {
+					return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
+						e.to_string(),
+					)));
+				}
+			};
+
 			let entry = self.get_entry(timestamp).map_err(|e| {
 				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
 			})?;

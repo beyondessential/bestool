@@ -5,7 +5,10 @@ use std::{
 };
 
 use miette::{IntoDiagnostic, Result};
-use redb::{Database, ReadableDatabase, ReadableTable, backends::InMemoryBackend};
+use redb::{
+	Database, ReadableDatabase, ReadableTable, ReadableTableMetadata as _,
+	backends::InMemoryBackend,
+};
 use tracing::{debug, info, instrument, warn};
 
 use crate::repl::ReplState;
@@ -36,28 +39,27 @@ impl super::Audit {
 		debug!(?path, is_new_db, "opening audit database");
 
 		let db = Database::create(path).into_diagnostic()?;
-
-		let mut timestamps = load_timestamps(&db)?;
-
-		// Import plain text psql history if this is a new database
-		if new_db_import_psql_history
-			&& is_new_db
-			&& timestamps.is_empty()
-			&& let Err(e) = import_psql_history(&db, &mut timestamps)
-		{
-			debug!("could not import psql history: {e}");
-		}
-
-		cull_db_if_oversize(&db, path, &mut timestamps)?;
-
-		debug!(?db, "opened audit database");
 		let db = Arc::new(db);
 
-		Ok(Self {
-			db,
-			timestamps,
-			repl_state,
-		})
+		let audit = Self { db, repl_state };
+
+		ensure_index_table(&audit)?;
+
+		// Import plain text psql history if this is a new database
+		if new_db_import_psql_history && is_new_db {
+			let index_len = audit.hist_index_len()?;
+			if index_len == 0
+				&& let Err(e) = import_psql_history(&audit)
+			{
+				debug!("could not import psql history: {e}");
+			}
+		}
+
+		cull_db_if_oversize(&audit, path)?;
+
+		debug!(?audit.db, "opened audit database");
+
+		Ok(audit)
 	}
 
 	/// Compact the database to reclaim space from deleted entries
@@ -95,27 +97,56 @@ impl super::Audit {
 	}
 }
 
-/// Load all timestamps from the database
-#[instrument(level = "trace", skip(db))]
-fn load_timestamps(db: &Database) -> Result<Vec<u64>> {
+/// Ensure the index table exists and is populated from the history table
+#[instrument(level = "trace", skip(audit))]
+fn ensure_index_table(audit: &super::Audit) -> Result<()> {
+	let db = &audit.db;
 	let read_txn = db.begin_read().into_diagnostic()?;
 
-	let table = match read_txn.open_table(super::HISTORY_TABLE) {
+	// Check if index table exists and has entries
+	if let Ok(index_table) = read_txn.open_table(super::INDEX_TABLE)
+		&& index_table.len().into_diagnostic()? > 0
+	{
+		// Index table already populated
+		return Ok(());
+	}
+
+	// Need to build index from history table
+	let history_table = match read_txn.open_table(super::HISTORY_TABLE) {
 		Ok(table) => table,
-		Err(_) => return Ok(Vec::new()),
+		Err(_) => return Ok(()), // No history yet
 	};
 
 	let mut timestamps = Vec::new();
-	for item in table.iter().into_diagnostic()? {
+	for item in history_table.iter().into_diagnostic()? {
 		let (timestamp, _) = item.into_diagnostic()?;
 		timestamps.push(timestamp.value());
 	}
+	drop(history_table);
+	drop(read_txn);
 
-	Ok(timestamps)
+	if timestamps.is_empty() {
+		return Ok(());
+	}
+
+	// Timestamps are already sorted because redb stores them in order
+	let write_txn = db.begin_write().into_diagnostic()?;
+	{
+		let mut index_table = write_txn.open_table(super::INDEX_TABLE).into_diagnostic()?;
+		for (idx, timestamp) in timestamps.into_iter().enumerate() {
+			index_table
+				.insert(idx as u64, timestamp)
+				.into_diagnostic()?;
+		}
+	}
+	write_txn.commit().into_diagnostic()?;
+
+	Ok(())
 }
 
-#[instrument(level = "trace", skip(db, path, timestamps))]
-fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) -> Result<()> {
+#[instrument(level = "trace", skip(audit, path))]
+fn cull_db_if_oversize(audit: &super::Audit, path: &Path) -> Result<()> {
+	let db = &audit.db;
 	const MAX_SIZE: u64 = 100 * 1024 * 1024; // 100MB
 	const TARGET_SIZE: u64 = 90 * 1024 * 1024; // 90MB
 	const CULL_BATCH: usize = 100; // Remove 100 entries at a time
@@ -129,34 +160,51 @@ fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) ->
 		info!(size_mb, "audit database is too large, reducing size");
 
 		// Remove oldest entries in batches until we reach target size
-		while !timestamps.is_empty() {
+		loop {
+			let index_len = audit.hist_index_len()?;
+			if index_len == 0 {
+				break;
+			}
+
 			if let Ok(metadata) = std::fs::metadata(path)
 				&& metadata.len() <= TARGET_SIZE
 			{
 				break;
 			}
 
-			let to_remove = CULL_BATCH.min(timestamps.len());
-			let old_timestamps: Vec<u64> = timestamps.drain(..to_remove).collect();
+			let to_remove = CULL_BATCH.min(index_len as usize) as u64;
 
+			// Read timestamps to remove
+			let mut old_timestamps = Vec::with_capacity(to_remove as usize);
+			for i in 0..to_remove {
+				if let Some(timestamp) = audit.hist_index_get(i)? {
+					old_timestamps.push(timestamp);
+				}
+			}
+
+			// Remove from history table
 			let write_txn = db.begin_write().into_diagnostic()?;
 			{
-				let mut table = write_txn
+				let mut history_table = write_txn
 					.open_table(super::HISTORY_TABLE)
 					.into_diagnostic()?;
-				for ts in old_timestamps {
-					table.remove(ts).into_diagnostic()?;
+				for ts in &old_timestamps {
+					history_table.remove(*ts).into_diagnostic()?;
 				}
 			}
 			write_txn.commit().into_diagnostic()?;
+
+			// Rebuild index by removing prefix
+			audit.hist_index_remove_prefix(to_remove)?;
 		}
 
 		let final_size_mb = std::fs::metadata(path)
 			.map(|m| m.len() / (1024 * 1024))
 			.unwrap_or(0);
+		let final_len = audit.hist_index_len()?;
 		debug!(
 			size_mb = final_size_mb,
-			entries = timestamps.len(),
+			entries = final_len,
 			"culled audit database"
 		);
 	}
@@ -165,8 +213,9 @@ fn cull_db_if_oversize(db: &Database, path: &Path, timestamps: &mut Vec<u64>) ->
 }
 
 /// Import entries from plain text psql history file (~/.psql_history)
-#[instrument(level = "trace", skip(db, timestamps))]
-fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
+#[instrument(level = "trace", skip(audit))]
+fn import_psql_history(audit: &super::Audit) -> Result<()> {
+	let db = &audit.db;
 	let psql_history_path = if let Some(home) = std::env::var_os("HOME") {
 		PathBuf::from(home).join(".psql_history")
 	} else if let Some(userprofile) = std::env::var_os("USERPROFILE") {
@@ -190,12 +239,14 @@ fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
 		return Ok(());
 	}
 
+	let mut timestamp = 0u64;
+	let mut count = 0usize;
+
 	let write_txn = db.begin_write().into_diagnostic()?;
 	{
-		let mut table = write_txn
+		let mut history_table = write_txn
 			.open_table(super::HISTORY_TABLE)
 			.into_diagnostic()?;
-		let mut timestamp = 0u64;
 
 		for line in lines {
 			let line = line.trim();
@@ -214,13 +265,20 @@ fn import_psql_history(db: &Database, timestamps: &mut Vec<u64>) -> Result<()> {
 			};
 
 			let json = serde_json::to_string(&entry).into_diagnostic()?;
-			table.insert(timestamp, json.as_str()).into_diagnostic()?;
-			timestamps.push(timestamp);
+			history_table
+				.insert(timestamp, json.as_str())
+				.into_diagnostic()?;
 			timestamp += 1;
+			count += 1;
 		}
 	}
 	write_txn.commit().into_diagnostic()?;
 
-	info!("imported {} entries from psql history", timestamps.len());
+	// Build index
+	for i in 0..count {
+		audit.hist_index_push(i as u64)?;
+	}
+
+	info!("imported {} entries from psql history", count);
 	Ok(())
 }

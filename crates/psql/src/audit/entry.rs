@@ -69,14 +69,17 @@ impl super::Audit {
 
 		let write_txn = self.db.begin_write().into_diagnostic()?;
 		{
-			let mut table = write_txn
+			let mut history_table = write_txn
 				.open_table(super::HISTORY_TABLE)
 				.into_diagnostic()?;
-			table.insert(timestamp, json.as_str()).into_diagnostic()?;
+			history_table
+				.insert(timestamp, json.as_str())
+				.into_diagnostic()?;
 		}
 		write_txn.commit().into_diagnostic()?;
 
-		self.timestamps.push(timestamp);
+		// Add to index table
+		self.hist_index_push(timestamp)?;
 
 		Ok(())
 	}
