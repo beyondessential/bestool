@@ -8,7 +8,7 @@ pub struct Config {
 	/// Syntax highlighting theme
 	pub theme: Theme,
 
-	/// Path to audit database
+	/// Path to audit database directory
 	pub audit_path: Option<std::path::PathBuf>,
 
 	/// Whether write mode is enabled upon entering the REPL

@@ -9,9 +9,11 @@ use redb::{
 	Database, ReadableDatabase, ReadableTable, ReadableTableMetadata as _,
 	backends::InMemoryBackend,
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::repl::ReplState;
+
+use super::multi_process::{WorkingDatabase, spawn_sync_task, sync_to_main};
 
 impl super::Audit {
 	/// Open or create an audit database at the given path
@@ -43,26 +45,102 @@ impl super::Audit {
 			));
 		}
 
-		let db = Database::create(path).into_diagnostic()?;
-		let db = Arc::new(db);
-
-		let audit = Self { db, repl_state };
-
-		ensure_index_table(&audit)?;
-
-		// Import plain text psql history if this is a new database
-		if new_db_import_psql_history && is_new_db {
-			let index_len = audit.hist_index_len()?;
-			if index_len == 0
-				&& let Err(e) = import_psql_history(&audit)
-			{
-				debug!("could not import psql history: {e}");
-			}
+		// Create directory if it doesn't exist
+		if !dir.exists() {
+			std::fs::create_dir_all(dir).into_diagnostic()?;
 		}
 
-		cull_db_if_oversize(&audit, path)?;
+		// Migrate old database if needed
+		Self::migrate_old_database(dir)?;
 
-		debug!(?audit.db, "opened audit database");
+		let main_path = Self::main_db_path(dir);
+		let is_new_main_db = !main_path.exists();
+
+		// Step 1: If main database doesn't exist, create it and import psql history
+		if is_new_main_db {
+			debug!(?main_path, "creating new main audit database");
+			let db = Database::create(&main_path).into_diagnostic()?;
+			let db = Arc::new(db);
+
+			let temp_audit = Self {
+				db: db.clone(),
+				repl_state: repl_state.clone(),
+				working_info: None,
+			};
+
+			ensure_index_table(&temp_audit)?;
+
+			if new_db_import_psql_history {
+				let index_len = temp_audit.hist_index_len()?;
+				if index_len == 0
+					&& let Err(e) = import_psql_history(&temp_audit)
+				{
+					debug!("could not import psql history: {e}");
+				}
+			}
+
+			drop(temp_audit);
+			drop(db);
+		}
+
+		// Step 2: Copy main database to working file
+		let (working_path, uuid) = WorkingDatabase::generate_path(&main_path);
+		let working_info = Arc::new(WorkingDatabase::new(
+			main_path.clone(),
+			working_path.clone(),
+			uuid,
+		));
+
+		// Try to open main database and copy it
+		let copy_result = (|| -> Result<()> {
+			// Open main database read-only with retries
+			let main_db =
+				working_info.open_main_readonly(super::multi_process::MAX_STARTUP_RETRIES, true)?;
+
+			// Copy to working file
+			working_info.copy_from_main()?;
+
+			// Close main database
+			drop(main_db);
+
+			Ok(())
+		})();
+
+		// Step 3: Open working database read-write
+		let working_db = match copy_result {
+			Ok(()) => {
+				// Successfully copied, open the working database
+				Database::create(&working_path).into_diagnostic()?
+			}
+			Err(e) => {
+				// Failed to copy after retries, create empty working database and warn
+				warn!(
+					"could not access main audit database after {} attempts, creating empty working database: {}",
+					super::multi_process::MAX_STARTUP_RETRIES,
+					e
+				);
+				Database::create(&working_path).into_diagnostic()?
+			}
+		};
+
+		let working_db = Arc::new(working_db);
+
+		let audit = Self {
+			db: working_db.clone(),
+			repl_state,
+			working_info: Some(working_info.clone()),
+		};
+
+		ensure_index_table(&audit)?;
+		cull_db_if_oversize(&audit, &working_path)?;
+
+		// Step 4: Spawn background sync task
+		spawn_sync_task(working_db, working_info.clone());
+
+		// Step 5: Spawn orphan database recovery task
+		WorkingDatabase::spawn_orphan_recovery(main_path);
+
+		debug!(?audit.db, ?working_path, "opened working audit database");
 
 		Ok(audit)
 	}
@@ -83,7 +161,47 @@ impl super::Audit {
 		Ok(())
 	}
 
-	/// Get the default audit database path
+	/// Sync and cleanup on shutdown
+	pub(crate) fn shutdown(&self) -> Result<()> {
+		if let Some(working_info) = &self.working_info {
+			// Signal shutdown to background task
+			working_info
+				.shutdown
+				.store(true, std::sync::atomic::Ordering::Relaxed);
+
+			// Give background task a moment to stop
+			std::thread::sleep(std::time::Duration::from_millis(100));
+
+			// Perform final sync
+			debug!("performing final sync before shutdown");
+			match sync_to_main(&self.db, working_info) {
+				Ok(()) => {
+					debug!("final sync completed successfully");
+					// Delete working database on successful sync
+					if let Err(e) = working_info.delete() {
+						warn!("failed to delete working database: {}", e);
+					}
+				}
+				Err(e) => {
+					error!(
+						"failed to sync to main database on shutdown after {} attempts: {}",
+						super::multi_process::MAX_EXIT_RETRIES,
+						e
+					);
+					// Mark as orphaned for recovery by next instance
+					// (database will be closed when Arc is dropped at end of scope)
+					if let Err(e) = working_info.mark_as_orphaned() {
+						error!("failed to mark working database as orphaned: {}", e);
+					} else {
+						info!("working database marked as orphaned for recovery");
+					}
+				}
+			}
+		}
+		Ok(())
+	}
+
+	/// Get the default audit database directory
 	pub fn default_path() -> Result<PathBuf> {
 		let state_dir = if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
 			PathBuf::from(dir)
@@ -98,7 +216,39 @@ impl super::Audit {
 
 		let history_dir = state_dir.join("bestool-psql");
 		std::fs::create_dir_all(&history_dir).into_diagnostic()?;
-		Ok(history_dir.join("history.redb"))
+		Ok(history_dir)
+	}
+
+	/// Get the main database file path from a directory
+	pub fn main_db_path(dir: &Path) -> PathBuf {
+		dir.join("audit-main.redb")
+	}
+
+	/// Migrate old history.redb to audit-main.redb if it exists
+	fn migrate_old_database(dir: &Path) -> Result<()> {
+		let old_path = dir.join("history.redb");
+		let new_path = Self::main_db_path(dir);
+
+		if old_path.exists() && !new_path.exists() {
+			// Try to open the old database exclusively to check if it's in use
+			match Database::create(&old_path) {
+				Ok(_db) => {
+					// Successfully opened exclusively, safe to migrate
+					drop(_db);
+					info!("migrating audit database from history.redb to audit-main.redb");
+					std::fs::rename(&old_path, &new_path).into_diagnostic()?;
+				}
+				Err(_) => {
+					// Database is in use by another process
+					return Err(miette::miette!(
+						"Cannot migrate audit database: history.redb is currently in use.\n\
+						Please close all other bestool-psql instances and try again."
+					));
+				}
+			}
+		}
+
+		Ok(())
 	}
 }
 

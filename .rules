@@ -19,4 +19,5 @@
 - `use` statements always go before `mod` statements.
 - ALWAYS use the edit tool to edit or write file, NEVER use "cat >> EOF". YOU WILL LOSE DATA.
 - Never write long summaries at the end of responses. Maximum 50 words if absolutely necessary.
+- To silence a warning, use `#[expect(..., reason = "...")]` instead of `#[allow(...)]`.
 <!-- end rules -->

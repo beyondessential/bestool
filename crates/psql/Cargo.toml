@@ -27,7 +27,9 @@ miette = "7.6.0"
 mobc = "0.9.0"
 mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
 indexmap = { version = "2.12.0", features = ["serde"] }
+rand = "0.8.5"
 redb = "3.1.0"
+reflink-copy = "0.1.20"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
 rusqlite = "0.32.1"
@@ -45,11 +47,15 @@ tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = { version = "0.7.15", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-postgres-rustls = "0.13.0"
 tracing = "0.1.41"
+uuid = { version = "1.11.0", features = ["v4"] }
 winnow = "0.7.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"
 signal-hook = "0.3.18"
+
+[dev-dependencies]
+filetime = "0.2"
 
 [features]
 default = ["cli"]
