@@ -1270,28 +1270,32 @@ mod tests {
 
 		// Verify the SQLite database was created and has correct data
 		assert!(std::path::Path::new(&file_path_sqlite).exists());
-		let verify_conn = rusqlite::Connection::open(&file_path_sqlite).unwrap();
-		let mut stmt = verify_conn
-			.prepare("SELECT id, name, age FROM results ORDER BY id")
+		let verify_db = libsql::Builder::new_local(&file_path_sqlite)
+			.build()
+			.await
 			.unwrap();
-		let mut result_rows = stmt.query([]).unwrap();
+		let verify_conn = verify_db.connect().unwrap();
+		let mut result_rows = verify_conn
+			.query("SELECT id, name, age FROM results ORDER BY id", ())
+			.await
+			.unwrap();
 
-		let row1 = result_rows.next().unwrap().unwrap();
-		assert_eq!(row1.get::<_, String>(0).unwrap(), "1");
-		assert_eq!(row1.get::<_, String>(1).unwrap(), "Alice");
-		assert_eq!(row1.get::<_, String>(2).unwrap(), "25");
+		let row1 = result_rows.next().await.unwrap().unwrap();
+		assert_eq!(row1.get::<String>(0).unwrap(), "1");
+		assert_eq!(row1.get::<String>(1).unwrap(), "Alice");
+		assert_eq!(row1.get::<String>(2).unwrap(), "25");
 
-		let row2 = result_rows.next().unwrap().unwrap();
-		assert_eq!(row2.get::<_, String>(0).unwrap(), "2");
-		assert_eq!(row2.get::<_, String>(1).unwrap(), "Bob");
-		assert_eq!(row2.get::<_, String>(2).unwrap(), "30");
+		let row2 = result_rows.next().await.unwrap().unwrap();
+		assert_eq!(row2.get::<String>(0).unwrap(), "2");
+		assert_eq!(row2.get::<String>(1).unwrap(), "Bob");
+		assert_eq!(row2.get::<String>(2).unwrap(), "30");
 
-		let row3 = result_rows.next().unwrap().unwrap();
-		assert_eq!(row3.get::<_, String>(0).unwrap(), "3");
-		assert_eq!(row3.get::<_, String>(1).unwrap(), "Charlie");
-		assert_eq!(row3.get::<_, String>(2).unwrap(), "35");
+		let row3 = result_rows.next().await.unwrap().unwrap();
+		assert_eq!(row3.get::<String>(0).unwrap(), "3");
+		assert_eq!(row3.get::<String>(1).unwrap(), "Charlie");
+		assert_eq!(row3.get::<String>(2).unwrap(), "35");
 
-		assert!(result_rows.next().unwrap().is_none());
+		assert!(result_rows.next().await.unwrap().is_none());
 	}
 
 	#[tokio::test(flavor = "multi_thread")]

@@ -1,6 +1,4 @@
 use miette::{IntoDiagnostic, Result};
-use rusqlite::Connection;
-use std::path::Path;
 
 use crate::query::column;
 
@@ -16,7 +14,11 @@ pub async fn display(
 	};
 
 	// Create or open SQLite database
-	let mut conn = Connection::open(Path::new(file_path)).into_diagnostic()?;
+	let db = libsql::Builder::new_local(file_path)
+		.build()
+		.await
+		.into_diagnostic()?;
+	let conn = db.connect().into_diagnostic()?;
 
 	// Build CREATE TABLE statement
 	let mut create_sql = String::from("CREATE TABLE IF NOT EXISTS results (");
@@ -30,7 +32,7 @@ pub async fn display(
 	}
 	create_sql.push(')');
 
-	conn.execute(&create_sql, []).into_diagnostic()?;
+	conn.execute(&create_sql, ()).await.into_diagnostic()?;
 
 	// Build INSERT statement
 	let mut insert_sql = String::from("INSERT INTO results (");
@@ -50,32 +52,28 @@ pub async fn display(
 	insert_sql.push(')');
 
 	// Insert data rows
-	let tx = conn.transaction().into_diagnostic()?;
+	let tx = conn.transaction().await.into_diagnostic()?;
 	{
-		let mut stmt = tx.prepare(&insert_sql).into_diagnostic()?;
-
 		for (row_idx, row) in ctx.rows.iter().enumerate() {
-			let values: Vec<Option<String>> = column_indices
+			let values: Vec<libsql::Value> = column_indices
 				.iter()
 				.map(|&i| {
 					let value_str =
 						column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
 					if value_str == "NULL" {
-						None
+						libsql::Value::Null
 					} else {
-						Some(value_str)
+						libsql::Value::Text(value_str)
 					}
 				})
 				.collect();
 
-			// Convert Vec<Option<String>> to Vec<&dyn ToSql>
-			let params: Vec<&dyn rusqlite::ToSql> =
-				values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-
-			stmt.execute(params.as_slice()).into_diagnostic()?;
+			tx.execute(&insert_sql, libsql::params_from_iter(values))
+				.await
+				.into_diagnostic()?;
 		}
 	}
-	tx.commit().into_diagnostic()?;
+	tx.commit().await.into_diagnostic()?;
 
 	Ok(())
 }
@@ -123,24 +121,28 @@ mod tests {
 		display(&ctx, &file_path).await.expect("Display failed");
 
 		// Verify the SQLite database was created and has the correct data
-		let verify_conn = rusqlite::Connection::open(&file_path).unwrap();
-		let mut stmt = verify_conn
-			.prepare("SELECT id, name, age, notes FROM results ORDER BY id")
+		let verify_db = libsql::Builder::new_local(&file_path)
+			.build()
+			.await
 			.unwrap();
-		let mut result_rows = stmt.query([]).unwrap();
+		let verify_conn = verify_db.connect().unwrap();
+		let mut result_rows = verify_conn
+			.query("SELECT id, name, age, notes FROM results ORDER BY id", ())
+			.await
+			.unwrap();
 
-		let row1 = result_rows.next().unwrap().unwrap();
-		assert_eq!(row1.get::<_, String>(0).unwrap(), "1");
-		assert_eq!(row1.get::<_, String>(1).unwrap(), "Alice");
-		assert_eq!(row1.get::<_, String>(2).unwrap(), "25");
-		assert!(row1.get::<_, Option<String>>(3).unwrap().is_none());
+		let row1 = result_rows.next().await.unwrap().unwrap();
+		assert_eq!(row1.get::<String>(0).unwrap(), "1");
+		assert_eq!(row1.get::<String>(1).unwrap(), "Alice");
+		assert_eq!(row1.get::<String>(2).unwrap(), "25");
+		assert!(row1.get::<Option<String>>(3).unwrap().is_none());
 
-		let row2 = result_rows.next().unwrap().unwrap();
-		assert_eq!(row2.get::<_, String>(0).unwrap(), "2");
-		assert_eq!(row2.get::<_, String>(1).unwrap(), "Bob");
-		assert_eq!(row2.get::<_, String>(2).unwrap(), "30");
-		assert_eq!(row2.get::<_, String>(3).unwrap(), "test note");
+		let row2 = result_rows.next().await.unwrap().unwrap();
+		assert_eq!(row2.get::<String>(0).unwrap(), "2");
+		assert_eq!(row2.get::<String>(1).unwrap(), "Bob");
+		assert_eq!(row2.get::<String>(2).unwrap(), "30");
+		assert_eq!(row2.get::<String>(3).unwrap(), "test note");
 
-		assert!(result_rows.next().unwrap().is_none());
+		assert!(result_rows.next().await.unwrap().is_none());
 	}
 }
