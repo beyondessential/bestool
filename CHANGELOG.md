@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.8](https://github.com/beyondessential/bestool/compare/v1.1.7..1.1.8) - 2025-11-02
+## [1.1.8](https://github.com/beyondessential/bestool/compare/v1.1.7..v1.1.8) - 2025-11-02
 
 
 
