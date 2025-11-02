@@ -36,6 +36,8 @@ The crate also exposes a library interface which embeds the tool in another CLI 
 
 ## Interactive Commands
 
+All commands and some of the SQL has extensive tab completion, give it a try!
+
 ### Metacommands
 
 | Command | Description |

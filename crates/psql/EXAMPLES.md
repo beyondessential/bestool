@@ -334,21 +334,12 @@ database=> \re show limit=1 cols=id,last_name,first_name
  3aa63a3c-bb1e-4f3c-a185-ad18b5218256 ┆ Milani    ┆ Esther
 
 -- And if we want, we can still re-display the users...
-database=> \re show n=0 cols=created_at format=json-pretty
-[
-  {
-    "created_at": "2025-09-16T06:33:12.913596Z"
-  },
-  {
-    "created_at": "2025-09-16T06:36:33.3Z"
-  },
-  {
-    "created_at": "2025-09-16T06:36:33.495Z"
-  },
-  {
-    "created_at": "2025-11-01T11:45:21.392383Z"
-  }
-]
+database=> \re show n=0 format=csv cols=id,created_at
+id,created_at
+00000000-0000-0000-0000-000000000000,2025-09-16T06:33:12.913596Z
+88085a02-6f4d-43ae-aecb-6cd8fd603f1c,2025-09-16T06:36:33.3Z
+4345bd44-d6e4-48fd-85c3-c006bbc786e3,2025-09-16T06:36:33.495Z
+4bbfb6fd-a1e6-4093-9afd-acbeca759e09,2025-11-01T11:45:21.392383Z
 ```
 
 ## Variables
