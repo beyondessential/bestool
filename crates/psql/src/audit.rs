@@ -15,9 +15,6 @@ pub const HISTORY_TABLE: TableDefinition<'_, u64, &str> = TableDefinition::new("
 pub const INDEX_TABLE: TableDefinition<'_, u64, u64> = TableDefinition::new("index");
 
 /// Audit manager using redb for persistent storage
-///
-/// This struct is safe for use with concurrent writers. Multiple psql processes
-/// can write to the same database simultaneously using redb's MVCC for consistency.
 #[derive(Debug)]
 pub struct Audit {
 	pub(crate) db: Arc<Database>,
