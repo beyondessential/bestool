@@ -8,6 +8,12 @@ pub struct Snippets {
 	pub dirs: Vec<PathBuf>,
 }
 
+impl Default for Snippets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Snippets {
 	pub fn new() -> Self {
 		let mut savedir = None;

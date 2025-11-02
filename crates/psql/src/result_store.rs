@@ -62,6 +62,12 @@ impl Clone for ResultStore {
 	}
 }
 
+impl Default for ResultStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResultStore {
 	pub fn new() -> Self {
 		let max_size = calculate_max_size();

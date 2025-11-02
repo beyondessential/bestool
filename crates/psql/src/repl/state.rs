@@ -28,6 +28,12 @@ pub struct ReplState {
 	pub result_store: ResultStore,
 }
 
+impl Default for ReplState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReplState {
 	pub fn new() -> Self {
 		Self {
