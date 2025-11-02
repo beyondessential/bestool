@@ -3,7 +3,7 @@ use sysinfo::System;
 use tokio_postgres::Row;
 use tracing::warn;
 
-pub(crate) struct StoredResult {
+pub struct StoredResult {
 	pub query: String,
 	pub rows: Vec<Row>,
 	pub estimated_size: usize,
@@ -50,7 +50,7 @@ impl StoredResult {
 }
 
 #[derive(Debug)]
-pub(crate) struct ResultStore {
+pub struct ResultStore {
 	results: VecDeque<StoredResult>,
 	total_size: usize,
 	max_size: usize,

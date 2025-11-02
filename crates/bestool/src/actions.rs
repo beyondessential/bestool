@@ -52,6 +52,8 @@ subcommands! {
 		Ok((args.action.clone(), Context::new().with_top(args)))
 	}}](with_sub)
 
+	#[cfg(feature = "tamanu-psql")]
+	audit_psql => AuditPsql(AuditPsqlArgs),
 	#[cfg(feature = "caddy")]
 	caddy => Caddy(CaddyArgs),
 	#[cfg(feature = "completions")]

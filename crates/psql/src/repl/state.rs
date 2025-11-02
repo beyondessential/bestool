@@ -15,21 +15,20 @@ use super::TransactionState;
 
 #[derive(Debug, Clone)]
 pub struct ReplState {
-	pub(crate) db_user: String,
-	pub(crate) sys_user: String,
-	pub(crate) expanded_mode: bool,
-	pub(crate) write_mode: bool,
-	pub(crate) ots: Option<String>,
-	pub(crate) output_file: Option<Arc<TokioMutex<File>>>,
-	pub(crate) use_colours: bool,
-	pub(crate) vars: BTreeMap<String, String>,
-	pub(crate) snippets: Snippets,
-	pub(crate) transaction_state: TransactionState,
-	pub(crate) result_store: ResultStore,
+	pub db_user: String,
+	pub sys_user: String,
+	pub expanded_mode: bool,
+	pub write_mode: bool,
+	pub ots: Option<String>,
+	pub output_file: Option<Arc<TokioMutex<File>>>,
+	pub use_colours: bool,
+	pub vars: BTreeMap<String, String>,
+	pub snippets: Snippets,
+	pub transaction_state: TransactionState,
+	pub result_store: ResultStore,
 }
 
 impl ReplState {
-	#[cfg(test)]
 	pub fn new() -> Self {
 		Self {
 			db_user: "testuser".to_string(),

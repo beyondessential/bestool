@@ -1,3 +1,4 @@
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result};
 use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,27 @@ pub struct AuditEntry {
 	/// Instance ID (working database UUID) for tracking which instance recorded this entry
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub instance_id: Option<Uuid>,
+}
+
+/// Audit entry with timestamp for JSON export
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEntryWithTimestamp {
+	/// RFC3339 formatted timestamp
+	pub ts: String,
+	/// The audit entry
+	#[serde(flatten)]
+	pub entry: AuditEntry,
+}
+
+impl AuditEntryWithTimestamp {
+	/// Create from an AuditEntry and microsecond timestamp
+	pub fn from_entry_and_timestamp(entry: AuditEntry, timestamp_micros: u64) -> Self {
+		let timestamp = Timestamp::from_microsecond(timestamp_micros as i64).unwrap();
+		Self {
+			ts: timestamp.to_string(),
+			entry,
+		}
+	}
 }
 
 impl super::Audit {

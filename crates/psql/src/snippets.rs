@@ -46,7 +46,6 @@ impl Snippets {
 		Self { savedir, dirs }
 	}
 
-	#[cfg(test)]
 	pub fn empty() -> Self {
 		Self {
 			savedir: None,

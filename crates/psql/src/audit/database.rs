@@ -320,20 +320,77 @@ impl super::Audit {
 
 	/// Get the default audit database directory
 	pub fn default_path() -> Result<PathBuf> {
-		let state_dir = if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
-			PathBuf::from(dir)
-		} else if let Some(home) = std::env::var_os("HOME") {
-			PathBuf::from(home).join(".local").join("state")
-		} else if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
-			// Windows
-			PathBuf::from(localappdata)
-		} else {
-			return Err(miette::miette!("Could not determine state directory"));
+		let history_dir = {
+			// On Linux, use dirs::state_dir() which returns ~/.local/state
+			#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+			{
+				if let Some(dir) = dirs::state_dir() {
+					dir.join("bestool-psql")
+				} else if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+					PathBuf::from(dir).join("bestool-psql")
+				} else if let Some(home) = std::env::var_os("HOME") {
+					PathBuf::from(home)
+						.join(".local")
+						.join("state")
+						.join("bestool-psql")
+				} else {
+					return Err(miette::miette!("Could not determine home directory"));
+				}
+			}
+			// On macOS and Windows, use dirs::data_local_dir()
+			#[cfg(any(target_os = "macos", target_os = "windows"))]
+			{
+				if let Some(dir) = dirs::data_local_dir() {
+					dir.join("bestool-psql")
+				} else {
+					// Fallback to hardcoded paths
+					#[cfg(target_os = "macos")]
+					{
+						if let Some(home) = std::env::var_os("HOME") {
+							PathBuf::from(home)
+								.join("Library")
+								.join("Application Support")
+								.join("bestool-psql")
+						} else {
+							return Err(miette::miette!("Could not determine home directory"));
+						}
+					}
+					#[cfg(target_os = "windows")]
+					{
+						if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
+							PathBuf::from(localappdata).join("bestool-psql")
+						} else {
+							return Err(miette::miette!(
+								"Could not determine LOCALAPPDATA directory"
+							));
+						}
+					}
+				}
+			}
 		};
 
-		let history_dir = state_dir.join("bestool-psql");
 		std::fs::create_dir_all(&history_dir).into_diagnostic()?;
 		Ok(history_dir)
+	}
+
+	/// Get the default audit database directory for help text
+	pub fn help_text_default_dir() -> String {
+		if let Ok(path) = Self::default_path() {
+			return path.display().to_string();
+		}
+
+		#[cfg(target_os = "macos")]
+		{
+			"~/Library/Application Support/bestool-psql".into()
+		}
+		#[cfg(target_os = "windows")]
+		{
+			"%LOCALAPPDATA%\\bestool-psql".into()
+		}
+		#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+		{
+			"~/.local/state/bestool-psql".into()
+		}
 	}
 
 	/// Get the main database file path from a directory

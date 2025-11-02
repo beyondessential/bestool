@@ -32,9 +32,16 @@ pub struct Args {
 	#[arg(long, default_value = "auto")]
 	pub theme: bestool_psql::Theme,
 
-	/// Path to audit database directory (default: ~/.local/state/bestool-psql/)
-	#[arg(long)]
+	/// Path to audit database directory
+	#[arg(long, value_name = "PATH", help = help_audit_path())]
 	pub audit_path: Option<PathBuf>,
+}
+
+fn help_audit_path() -> String {
+	format!(
+		"Path to audit database directory (default: {})",
+		bestool_psql::default_audit_dir()
+	)
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
