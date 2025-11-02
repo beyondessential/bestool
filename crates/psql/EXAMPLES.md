@@ -289,7 +289,7 @@ database=> select * from patients \gz
 (49 rows, took 56.354ms)
 
 database=> \re list
-Past query results (3 of 3):
+Past query results (2 of 2):
 
  N ┆         When        ┆   Took   ┆   Size   ┆ Rows ┆ Cols
 ═══╪═════════════════════╪══════════╪══════════╪══════╪══════
@@ -302,7 +302,7 @@ Memory limit: 1.00 GB
 
 -- But how do we tell which query was which? With +
 database=> \re list+
-Past query results (5 of 5):
+Past query results (2 of 2):
 
  N ┆         When        ┆   Took   ┆   Size   ┆ Rows ┆                Columns                ┆           Query
 ═══╪═════════════════════╪══════════╪══════════╪══════╪═══════════════════════════════════════╪══════════════════════════
