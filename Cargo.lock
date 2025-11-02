@@ -510,6 +510,7 @@ dependencies = [
  "tokio-postgres-rustls",
  "tracing",
  "turso",
+ "turso_core",
  "uuid",
  "winnow 0.7.13",
 ]
