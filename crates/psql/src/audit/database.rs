@@ -4,7 +4,7 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr};
 use redb::{
 	Database, ReadableDatabase, ReadableTable, ReadableTableMetadata as _,
 	backends::InMemoryBackend,
@@ -66,6 +66,7 @@ impl super::Audit {
 				db: db.clone(),
 				repl_state: repl_state.clone(),
 				working_info: None,
+				sync_thread: None,
 			};
 
 			ensure_index_table(&temp_audit)?;
@@ -78,6 +79,9 @@ impl super::Audit {
 					debug!("could not import psql history: {e}");
 				}
 			}
+
+			// Cull and compact main database if needed before closing
+			cull_db_if_oversize(&temp_audit, &main_path)?;
 
 			drop(temp_audit);
 			drop(db);
@@ -125,17 +129,18 @@ impl super::Audit {
 
 		let working_db = Arc::new(working_db);
 
+		// Step 4: Spawn background sync task
+		let sync_thread = spawn_sync_task(working_db.clone(), working_info.clone());
+
 		let audit = Self {
 			db: working_db.clone(),
 			repl_state,
 			working_info: Some(working_info.clone()),
+			sync_thread: Some(Mutex::new(Some(sync_thread))),
 		};
 
 		ensure_index_table(&audit)?;
 		cull_db_if_oversize(&audit, &working_path)?;
-
-		// Step 4: Spawn background sync task
-		spawn_sync_task(working_db, working_info.clone());
 
 		// Step 5: Spawn orphan database recovery task
 		WorkingDatabase::spawn_orphan_recovery(main_path);
@@ -146,7 +151,18 @@ impl super::Audit {
 	}
 
 	/// Compact the database to reclaim space from deleted entries
+	///
+	/// Note: In multi-process mode (with working databases), this is a no-op since
+	/// working databases are ephemeral. Only the main database gets compacted during culling.
 	pub fn compact(&mut self) -> Result<()> {
+		// In multi-process mode, working databases are ephemeral and don't need compaction
+		// They will be deleted on clean shutdown or recovered as orphans on crash
+		if self.working_info.is_some() {
+			debug!("compact: skipping compact in multi-process mode (working database)");
+			return Ok(());
+		}
+
+		debug!("compact: compacting database");
 		let db = replace(
 			&mut self.db,
 			Arc::new(
@@ -163,41 +179,99 @@ impl super::Audit {
 
 	/// Sync and cleanup on shutdown
 	pub(crate) fn shutdown(&self) -> Result<()> {
+		debug!("shutdown: starting audit database shutdown sequence");
 		if let Some(working_info) = &self.working_info {
+			debug!(
+				"shutdown: multi-process mode active, working db: {:?}",
+				working_info.path
+			);
+
 			// Signal shutdown to background task
+			debug!("shutdown: signaling background sync thread to stop");
 			working_info
 				.shutdown
 				.store(true, std::sync::atomic::Ordering::Relaxed);
 
-			// Give background task a moment to stop
-			std::thread::sleep(std::time::Duration::from_millis(100));
+			// Wait for background sync thread to exit and release Arc references
+			if let Some(thread_mutex) = &self.sync_thread
+				&& let Ok(mut guard) = thread_mutex.lock()
+				&& let Some(handle) = guard.take()
+			{
+				debug!("shutdown: waiting for sync thread to exit");
+				drop(guard); // Release lock before joining
+				if let Err(e) = handle.join() {
+					warn!("shutdown: sync thread panicked: {:?}", e);
+				} else {
+					debug!("shutdown: sync thread exited successfully");
+				}
+			} else {
+				debug!("shutdown: no sync thread to wait for");
+			}
+
+			// Check Arc reference count
+			let arc_count = Arc::strong_count(&self.db);
+			debug!("shutdown: database Arc reference count: {}", arc_count);
 
 			// Perform final sync
-			debug!("performing final sync before shutdown");
-			match sync_to_main(&self.db, working_info) {
+			debug!("shutdown: performing final sync before shutdown");
+			match sync_to_main(&self.db, working_info).wrap_err("final sync failed") {
 				Ok(()) => {
-					debug!("final sync completed successfully");
-					// Delete working database on successful sync
-					if let Err(e) = working_info.delete() {
-						warn!("failed to delete working database: {}", e);
+					debug!("shutdown: final sync completed successfully");
+					// Only delete if we hold the only reference to the database
+					if arc_count == 1 {
+						debug!(
+							"shutdown: we hold the only Arc reference, attempting to delete working database"
+						);
+						// Database will be closed when Arc drops at end of scope
+						// Give OS a moment to finalize the file handle
+						std::thread::sleep(std::time::Duration::from_millis(50));
+						if let Err(e) = working_info.delete() {
+							warn!("shutdown: failed to delete working database: {:?}", e);
+						} else {
+							debug!("shutdown: successfully deleted working database");
+						}
+					} else {
+						debug!(
+							"shutdown: cannot delete working database, {} Arc references still exist",
+							arc_count
+						);
+						// Database file will be cleaned up on next startup as an old orphan
 					}
 				}
 				Err(e) => {
 					error!(
-						"failed to sync to main database on shutdown after {} attempts: {}",
+						"shutdown: failed to sync to main database after {} attempts: {:?}",
 						super::multi_process::MAX_EXIT_RETRIES,
 						e
 					);
-					// Mark as orphaned for recovery by next instance
-					// (database will be closed when Arc is dropped at end of scope)
-					if let Err(e) = working_info.mark_as_orphaned() {
-						error!("failed to mark working database as orphaned: {}", e);
+					// Only rename if we hold the only reference to the database
+					if arc_count == 1 {
+						debug!(
+							"shutdown: we hold the only Arc reference, attempting to mark as orphaned"
+						);
+						// Give OS a moment to finalize the file handle
+						std::thread::sleep(std::time::Duration::from_millis(50));
+						if let Err(e) = working_info.mark_as_orphaned() {
+							error!(
+								"shutdown: failed to mark working database as orphaned: {:?}",
+								e
+							);
+						} else {
+							info!("shutdown: working database marked as orphaned for recovery");
+						}
 					} else {
-						info!("working database marked as orphaned for recovery");
+						warn!(
+							"shutdown: cannot mark working database as orphaned, {} Arc references still exist - will be recovered as crash orphan",
+							arc_count
+						);
+						// Database file will be cleaned up on next startup as an old orphan
 					}
 				}
 			}
+		} else {
+			debug!("shutdown: no working database to clean up (non-multi-process mode)");
 		}
+		debug!("shutdown: audit database shutdown sequence complete");
 		Ok(())
 	}
 

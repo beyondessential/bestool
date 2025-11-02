@@ -9,7 +9,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr};
 use rand::Rng;
 use redb::{Database, ReadableDatabase, ReadableTable};
 use tracing::{debug, info, warn};
@@ -147,8 +147,14 @@ impl WorkingDatabase {
 
 	/// Copy main database to working database using reflink if possible
 	pub fn copy_from_main(&self) -> Result<()> {
-		debug!("copying main database to working database: {:?}", self.path);
-		reflink_copy::reflink_or_copy(&self.main_path, &self.path).into_diagnostic()?;
+		debug!(
+			"copying main database {:?} to working database {:?}",
+			self.main_path, self.path
+		);
+		reflink_copy::reflink_or_copy(&self.main_path, &self.path)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("failed to copy {:?} to {:?}", self.main_path, self.path))?;
+		debug!("successfully copied main database to working database");
 		Ok(())
 	}
 
@@ -156,7 +162,12 @@ impl WorkingDatabase {
 	pub fn delete(&self) -> Result<()> {
 		debug!("deleting working database: {:?}", self.path);
 		if self.path.exists() {
-			fs::remove_file(&self.path).into_diagnostic()?;
+			fs::remove_file(&self.path)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("failed to delete working database {:?}", self.path))?;
+			debug!("successfully deleted working database: {:?}", self.path);
+		} else {
+			debug!("working database already deleted: {:?}", self.path);
 		}
 		Ok(())
 	}
@@ -169,7 +180,17 @@ impl WorkingDatabase {
 			self.path, orphaned_path
 		);
 		if self.path.exists() {
-			fs::rename(&self.path, &orphaned_path).into_diagnostic()?;
+			fs::rename(&self.path, &orphaned_path)
+				.into_diagnostic()
+				.wrap_err_with(|| {
+					format!(
+						"failed to rename working database {:?} to orphaned {:?}",
+						self.path, orphaned_path
+					)
+				})?;
+			debug!("successfully marked working database as orphaned");
+		} else {
+			debug!("working database does not exist: {:?}", self.path);
 		}
 		Ok(())
 	}
@@ -213,15 +234,19 @@ impl WorkingDatabase {
 	/// Merge working database into main database
 	pub fn merge_working_into_main(working_path: &Path, main_path: &Path) -> Result<()> {
 		debug!(
-			"merging working database {:?} into main database",
-			working_path
+			"merging working database {:?} into main database {:?}",
+			working_path, main_path
 		);
 
 		// Open working database
-		let working_db = Database::open(working_path).into_diagnostic()?;
+		let working_db = Database::open(working_path)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("failed to open working database {:?}", working_path))?;
 
 		// Open main database read-write
-		let main_db = Database::create(main_path).into_diagnostic()?;
+		let main_db = Database::create(main_path)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("failed to open main database {:?}", main_path))?;
 
 		// Read all entries from working database
 		let working_read_txn = working_db.begin_read().into_diagnostic()?;
@@ -457,9 +482,13 @@ mod tests {
 
 /// Sync new entries from working database to main database
 pub fn sync_to_main(working_db: &Database, working_info: &WorkingDatabase) -> Result<()> {
-	debug!("syncing working database to main database");
+	debug!(
+		"syncing working database {:?} to main database {:?}",
+		working_info.path, working_info.main_path
+	);
 
 	let last_synced = working_info.last_synced_timestamp.load(Ordering::Relaxed);
+	debug!("last synced timestamp: {}", last_synced);
 
 	// Read entries from working database that are newer than last_synced
 	let working_read_txn = working_db.begin_read().into_diagnostic()?;
@@ -491,7 +520,10 @@ pub fn sync_to_main(working_db: &Database, working_info: &WorkingDatabase) -> Re
 	}
 
 	// Open main database and write entries
-	let main_db = working_info.open_main_readwrite(MAX_EXIT_RETRIES, true)?;
+	debug!("opening main database for sync");
+	let main_db = working_info
+		.open_main_readwrite(MAX_EXIT_RETRIES, true)
+		.wrap_err("failed to open main database for sync")?;
 	let main_write_txn = main_db.begin_write().into_diagnostic()?;
 	{
 		let mut main_history = main_write_txn
@@ -512,12 +544,19 @@ pub fn sync_to_main(working_db: &Database, working_info: &WorkingDatabase) -> Re
 		.last_synced_timestamp
 		.store(max_timestamp, Ordering::Relaxed);
 
-	debug!("synced {} new entries to main database", new_entries.len());
+	debug!(
+		"synced {} new entries to main database, new timestamp: {}",
+		new_entries.len(),
+		max_timestamp
+	);
 	Ok(())
 }
 
 /// Spawn background sync task
-pub fn spawn_sync_task(working_db: Arc<Database>, working_info: Arc<WorkingDatabase>) {
+pub fn spawn_sync_task(
+	working_db: Arc<Database>,
+	working_info: Arc<WorkingDatabase>,
+) -> thread::JoinHandle<()> {
 	thread::spawn(move || {
 		loop {
 			// Wait for sync interval or shutdown
@@ -540,5 +579,5 @@ pub fn spawn_sync_task(working_db: Arc<Database>, working_info: Arc<WorkingDatab
 				debug!("periodic sync completed");
 			}
 		}
-	});
+	})
 }
