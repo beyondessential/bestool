@@ -37,7 +37,7 @@ redb = "3.1.0"
 reflink-copy = "0.1.20"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
-rusqlite = "0.32.1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 rust_xlsxwriter = "0.80.0"
 rustyline = { version = "17.0.2", features = ["signal-hook"] }
 serde = { version = "1.0.228", features = ["derive"] }
