@@ -81,7 +81,9 @@ impl super::Audit {
 			}
 
 			// Cull and compact main database if needed before closing
-			cull_db_if_oversize(&temp_audit, &main_path)?;
+			if let Err(e) = cull_db_if_oversize(&temp_audit, &main_path) {
+				warn!("failed to cull main database: {:?}", e);
+			}
 
 			drop(temp_audit);
 			drop(db);
@@ -140,7 +142,6 @@ impl super::Audit {
 		};
 
 		ensure_index_table(&audit)?;
-		cull_db_if_oversize(&audit, &working_path)?;
 
 		// Step 5: Spawn orphan database recovery task
 		WorkingDatabase::spawn_orphan_recovery(main_path);
