@@ -25,10 +25,52 @@ impl super::Audit {
 	/// Open an audit database without importing from ~/.psql_history
 	///
 	/// This is useful for tests where we want a clean database.
+	/// Note: This bypasses multi-process mode and opens the database directly.
 	#[cfg(test)]
 	pub fn open_empty(path: impl AsRef<Path>) -> Result<Self> {
 		let path = path.as_ref();
-		Self::open_internal(path, Arc::new(Mutex::new(ReplState::new())), false)
+		Self::open_internal_simple(path, Arc::new(Mutex::new(ReplState::new())), false)
+	}
+
+	/// Open a database directly without multi-process setup (for tests)
+	#[cfg(test)]
+	fn open_internal_simple(
+		path: &Path,
+		repl_state: Arc<Mutex<ReplState>>,
+		new_db_import_psql_history: bool,
+	) -> Result<Self> {
+		let is_new_db = !path.exists();
+		debug!(?path, is_new_db, "opening audit database (simple mode)");
+
+		let db = Database::create(path).into_diagnostic()?;
+		let db = Arc::new(db);
+
+		let audit = Self {
+			db,
+			repl_state,
+			working_info: None,
+			sync_thread: None,
+		};
+
+		ensure_index_table(&audit)?;
+
+		// Import plain text psql history if this is a new database
+		if new_db_import_psql_history && is_new_db {
+			let index_len = audit.hist_index_len()?;
+			if index_len == 0
+				&& let Err(e) = import_psql_history(&audit)
+			{
+				debug!("could not import psql history: {e}");
+			}
+		}
+
+		if let Err(e) = cull_db_if_oversize(&audit, path) {
+			warn!("failed to cull database: {:?}", e);
+		}
+
+		debug!(?audit.db, "opened audit database (simple mode)");
+
+		Ok(audit)
 	}
 
 	#[instrument(level = "debug")]
@@ -492,6 +534,7 @@ fn import_psql_history(audit: &super::Audit) -> Result<()> {
 				writemode: true,
 				tailscale: Vec::new(),
 				ots: None,
+				instance_id: None,
 			};
 
 			let json = serde_json::to_string(&entry).into_diagnostic()?;

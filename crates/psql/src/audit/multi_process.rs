@@ -464,19 +464,26 @@ mod tests {
 	fn test_multi_process_basic() {
 		let temp_dir = tempfile::tempdir().unwrap();
 
-		// Create first audit instance using open_empty to avoid psql history import
-		let mut audit1 = crate::audit::Audit::open_empty(temp_dir.path()).unwrap();
+		// Temporarily set HOME to temp dir to avoid importing real psql_history
+		temp_env::with_var("HOME", Some(temp_dir.path().to_str().unwrap()), || {
+			// Create first audit instance in multi-process mode
+			let mut audit1 = crate::audit::Audit::open(
+				temp_dir.path(),
+				std::sync::Arc::new(std::sync::Mutex::new(crate::repl::ReplState::new())),
+			)
+			.unwrap();
 
-		// Add some entries
-		audit1.add_entry("SELECT 1;".to_string()).unwrap();
-		audit1.add_entry("SELECT 2;".to_string()).unwrap();
+			// Add some entries
+			audit1.add_entry("SELECT 1;".to_string()).unwrap();
+			audit1.add_entry("SELECT 2;".to_string()).unwrap();
 
-		// Verify entries are in the working database
-		let entries = audit1.list().unwrap();
-		assert_eq!(entries.len(), 2);
+			// Verify entries are in the working database
+			let entries = audit1.list().unwrap();
+			assert_eq!(entries.len(), 2);
 
-		// Cleanup
-		drop(audit1);
+			// Cleanup
+			drop(audit1);
+		});
 	}
 }
 

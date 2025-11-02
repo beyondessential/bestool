@@ -2,6 +2,7 @@ use miette::{IntoDiagnostic, Result};
 use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
+use uuid::Uuid;
 
 /// A single audit entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +21,9 @@ pub struct AuditEntry {
 	/// OTS (Over The Shoulder) value for write mode sessions
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub ots: Option<String>,
+	/// Instance ID (working database UUID) for tracking which instance recorded this entry
+	#[serde(skip_serializing_if = "Option::is_none", default)]
+	pub instance_id: Option<Uuid>,
 }
 
 impl super::Audit {
@@ -51,6 +55,7 @@ impl super::Audit {
 			.unwrap_or_default();
 
 		let state = self.repl_state.lock().unwrap();
+		let instance_id = self.working_info.as_ref().map(|info| info.uuid);
 		let entry = AuditEntry {
 			query,
 			db_user: state.db_user.clone(),
@@ -58,6 +63,7 @@ impl super::Audit {
 			writemode: state.write_mode,
 			tailscale,
 			ots: state.ots.clone(),
+			instance_id,
 		};
 		drop(state);
 
@@ -136,5 +142,38 @@ mod tests {
 		assert_eq!(entries[2].1.db_user, "dbuser");
 		assert_eq!(entries[2].1.sys_user, "testuser");
 		assert_eq!(entries[2].1.ots, Some("John Doe".to_string()));
+		// In test mode (open_empty), there's no working_info, so instance_id should be None
+		assert_eq!(entries[0].1.instance_id, None);
+		assert_eq!(entries[1].1.instance_id, None);
+		assert_eq!(entries[2].1.instance_id, None);
+	}
+
+	#[test]
+	fn test_audit_instance_id() {
+		let temp_dir = tempfile::tempdir().unwrap();
+		// Use a subdirectory to avoid any existing psql_history
+		let db_dir = temp_dir.path().join("audit_dir");
+		std::fs::create_dir(&db_dir).unwrap();
+
+		// Temporarily set HOME to temp dir to avoid importing real psql_history
+		let _guard = temp_env::with_var("HOME", Some(db_dir.to_str().unwrap()), || {
+			// Open in multi-process mode (using open instead of open_empty)
+			let mut audit = Audit::open(
+				&db_dir,
+				std::sync::Arc::new(std::sync::Mutex::new(crate::repl::ReplState::new())),
+			)
+			.unwrap();
+
+			// Add an entry
+			audit.add_entry("SELECT 1;".to_string()).unwrap();
+
+			// List entries
+			let entries = audit.list().unwrap();
+			assert_eq!(entries.len(), 1);
+
+			// In multi-process mode, instance_id should be set to the working database UUID
+			assert!(entries[0].1.instance_id.is_some());
+			// Just verify it's a valid UUID (no need to check string length)
+		});
 	}
 }
