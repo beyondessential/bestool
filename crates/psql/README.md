@@ -105,6 +105,18 @@ Note this is a different syntax from native psql.
 | `${name}` | Replace with variable value (errors if not set) |
 | `${{name}}` | Escape: produces `${name}` without replacement |
 
+### Formats
+
+| Format | Use with | Description |
+|--------|----------|-------------|
+| Table | `query \g` or `\re show format=table` | Default table format |
+| Expanded | `query \gx` or `\re show format=expanded` | One table per result row |
+| JSON | `query \gj` or `\re show format=json` | JSON lines: one row (as object) per line |
+| Expanded JSON | `query \gxj` or `\re show format=json-pretty` | An array of objects (one per row), pretty-printed |
+| CSV | `\re show format=csv` | Comma-separated values |
+| Excel | `\re show format=excel to=<filename>` | XLSX-format spreadsheet |
+| SQLite | `\re show format=sqlite to=<filename>` | SQLite database with a table named `results` |
+
 ## Usage
 
 ### Basic Connection

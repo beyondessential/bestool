@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use comfy_table::Table;
+use comfy_table::{Row, Table};
 
 pub fn handle_help() -> ControlFlow<()> {
 	eprintln!("Metacommands:");
@@ -54,10 +54,7 @@ pub fn handle_help() -> ControlFlow<()> {
 		"List database objects (+ for details, ! for same connection)",
 	]);
 	metacmds.add_row(vec!["\\d{t,i,f,v,n,s}", "Aliases for \\list"]);
-	metacmds.add_row(vec![
-		"\\describe[+][!] <name>",
-		"Describe a database object (\\d for short)",
-	]);
+	metacmds.add_row(vec!["\\d[+][!] <name>", "Describe a database object"]);
 	eprintln!("{metacmds}");
 
 	eprintln!("Database objects (with \\list): table, index, function, view, schema, sequence");
@@ -68,17 +65,14 @@ pub fn handle_help() -> ControlFlow<()> {
 	modifiers.load_preset(comfy_table::presets::NOTHING);
 
 	modifiers.add_row(vec!["\\g", "Execute query"]);
-	modifiers.add_row(vec!["\\gx", "Execute query with expanded output"]);
-	modifiers.add_row(vec!["\\gj", "Execute query with JSON output"]);
-	modifiers.add_row(vec!["\\gv", "Execute query without variable interpolation"]);
-	modifiers.add_row(vec!["\\gz", "Execute query without displaying output"]);
-	modifiers.add_row(vec![
-		"\\go <file>",
-		"Execute query and write output to file",
-	]);
+	modifiers.add_row(vec!["\\gx", "...with expanded output"]);
+	modifiers.add_row(vec!["\\gj", "...with JSON output"]);
+	modifiers.add_row(vec!["\\gv", "...without variable interpolation"]);
+	modifiers.add_row(vec!["\\gz", "...without displaying output"]);
+	modifiers.add_row(vec!["\\go <file>", "...and write output to file"]);
 	modifiers.add_row(vec![
 		"\\gset [prefix]",
-		"Execute query and store results in variables",
+		"...and store cells in variables (one row only)",
 	]);
 	eprintln!("{modifiers}");
 
@@ -101,6 +95,30 @@ pub fn handle_help() -> ControlFlow<()> {
 		"Escape: produces ${name} without replacement",
 	]);
 	eprintln!("{vars}");
+
+	let mut fmts = Table::new();
+	crate::table::configure(&mut fmts);
+	fmts.load_preset(comfy_table::presets::NOTHING);
+
+	fmts.set_header(Row::from(vec![
+		r"\re show format=",
+		r"\g modifier",
+		"Description",
+	]));
+	crate::table::style_header(&mut fmts);
+
+	fmts.add_row(vec!["table", r"\g", "Default table format"]);
+	fmts.add_row(vec!["expanded", r"\gx", "One table per row"]);
+	fmts.add_row(vec!["json", r"\gj", "Row=object, one per line"]);
+	fmts.add_row(vec![
+		"json-pretty",
+		r"\gjx",
+		"Array of objects, pretty-printed",
+	]);
+	fmts.add_row(vec!["csv", "", "CSV spreadsheet, with header"]);
+	fmts.add_row(vec!["excel", "", "XLSX spreadsheet, only using to="]);
+	fmts.add_row(vec!["sqlite", "", "SQLite database, only using to="]);
+	eprintln!("{fmts}");
 
 	ControlFlow::Continue(())
 }

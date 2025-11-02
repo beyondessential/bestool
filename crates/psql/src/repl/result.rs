@@ -83,6 +83,22 @@ async fn handle_show(
 	// Determine format (default to table)
 	let format = format.unwrap_or(ResultFormat::Table);
 
+	// Check if format requires file output
+	if format.is_file_only() && to.is_none() {
+		let state = ctx.repl_state.lock().unwrap();
+		if state.output_file.is_none() {
+			eprintln!(
+				"Error: {} format can only be written to a file. Use 'to=<path>' to specify output file.",
+				match format {
+					ResultFormat::Excel => "Excel",
+					ResultFormat::Sqlite => "SQLite",
+					_ => "This",
+				}
+			);
+			return ControlFlow::Continue(());
+		}
+	}
+
 	let use_global_output = to.is_none() && {
 		let state = ctx.repl_state.lock().unwrap();
 		state.output_file.is_some()
@@ -136,7 +152,64 @@ async fn display_to_file(
 			.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
 		writeln!(file, "(no rows)")
 			.map_err(|e| miette::miette!("Failed to write to file: {}", e))?;
-		eprintln!("Output written to {}", path);
+
+		// Get absolute path for display
+		let display_path =
+			std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+		eprintln!("Output written to {}", display_path.display());
+		return Ok(());
+	}
+
+	// Handle file-only formats directly
+	if matches!(format, ResultFormat::Excel | ResultFormat::Sqlite) {
+		let first_row = &result.rows[0];
+		let columns = first_row.columns();
+
+		// Check for unprintable columns
+		let mut unprintable_columns = Vec::new();
+		for (i, _column) in columns.iter().enumerate() {
+			if !crate::query::column::can_print(first_row, i) {
+				unprintable_columns.push(i);
+			}
+		}
+
+		// Re-query with text casts if needed
+		let text_rows = if !unprintable_columns.is_empty() {
+			let sql_trimmed = result.query.trim_end_matches(';').trim();
+			let text_query =
+				crate::query::build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
+
+			ctx.client.query(&text_query, &[]).await.ok()
+		} else {
+			None
+		};
+
+		let mut buffer = Vec::new();
+		let display_ctx = crate::query::display::DisplayContext {
+			columns,
+			rows: &result.rows,
+			unprintable_columns: &unprintable_columns,
+			text_rows: &text_rows,
+			writer: &mut buffer,
+			use_colours: false,
+			theme: ctx.theme,
+			column_indices,
+		};
+
+		match format {
+			ResultFormat::Excel => {
+				crate::query::display::display_excel(&display_ctx, path).await?;
+			}
+			ResultFormat::Sqlite => {
+				crate::query::display::display_sqlite(&display_ctx, path).await?;
+			}
+			_ => unreachable!(),
+		}
+
+		// Get absolute path for display
+		let display_path =
+			std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+		eprintln!("Output written to {}", display_path.display());
 		return Ok(());
 	}
 
@@ -148,7 +221,10 @@ async fn display_to_file(
 	file.write_all(output.as_bytes())
 		.map_err(|e| miette::miette!("Failed to write to file: {}", e))?;
 
-	eprintln!("Output written to {}", path);
+	// Get absolute path for display
+	let display_path =
+		std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+	eprintln!("Output written to {}", display_path.display());
 	Ok(())
 }
 
@@ -174,6 +250,24 @@ async fn display_to_global_output(
 				.map_err(|e| miette::miette!("Failed to flush output file: {}", e))?;
 		}
 		return Ok(());
+	}
+
+	// File-only formats cannot use global output file
+	// because we can't get the path from tokio::fs::File
+	let output_path: Option<String> = None;
+
+	// Handle file-only formats
+	if matches!(format, ResultFormat::Excel | ResultFormat::Sqlite) {
+		if output_path.is_none() {
+			return Err(miette::miette!(
+				"File-only formats require a file path, but global output file path is not available"
+			));
+		}
+		// For file-only formats with global output, we can't support them properly
+		// because we don't have a way to get the file path from tokio::fs::File
+		return Err(miette::miette!(
+			"File-only formats (Excel, SQLite) are not supported with global output file. Use 'to=<path>' instead."
+		));
 	}
 
 	// Format without colors for file output
@@ -286,6 +380,11 @@ async fn format_result_using_display_module(
 		}
 		ResultFormat::Csv => {
 			crate::query::display::display_csv(&mut display_ctx).await?;
+		}
+		ResultFormat::Excel | ResultFormat::Sqlite => {
+			return Err(miette::miette!(
+				"File-only formats should be handled by display_to_file"
+			));
 		}
 	}
 
@@ -969,6 +1068,230 @@ mod tests {
 		assert_eq!(lines[1], "1,Alice,25");
 		assert_eq!(lines[2], "2,Bob,30");
 		assert_eq!(lines[3], "3,Charlie,35");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_excel_format() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		// Execute query to populate the result store
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query(
+			"SELECT 1 as id, 'Alice' as name, 25 as age UNION ALL SELECT 2, 'Bob', 30 UNION ALL SELECT 3, 'Charlie', 35",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test excel format - should require to= parameter
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Excel),
+				to: None,
+				cols: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		// Should return Continue (error printed to stderr)
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Test excel format with file output
+		let temp_file_excel = tempfile::NamedTempFile::new().unwrap();
+		let file_path_excel = temp_file_excel.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Excel),
+				to: Some(file_path_excel.clone()),
+				cols: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify the Excel file was created
+		assert!(std::path::Path::new(&file_path_excel).exists());
+		let metadata = std::fs::metadata(&file_path_excel).unwrap();
+		assert!(metadata.len() > 0);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn test_re_show_sqlite_format() {
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::pool::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+		let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+
+		let backend_pid: i32 = client
+			.query_one("SELECT pg_backend_pid()", &[])
+			.await
+			.expect("Failed to get backend PID")
+			.get(0);
+
+		let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+		// Execute query to populate the result store
+		let mut stdout = tokio::io::stdout();
+		let mut query_ctx = crate::query::QueryContext {
+			client: &client,
+			modifiers: crate::parser::QueryModifiers::new(),
+			theme: crate::theme::Theme::Dark,
+			writer: &mut stdout,
+			use_colours: true,
+			vars: None,
+			repl_state: &repl_state,
+		};
+
+		crate::query::execute_query(
+			"SELECT 1 as id, 'Alice' as name, 25 as age UNION ALL SELECT 2, 'Bob', 30 UNION ALL SELECT 3, 'Charlie', 35",
+			&mut query_ctx,
+		)
+		.await
+		.expect("Query failed");
+
+		let audit_path = tempfile::NamedTempFile::new()
+			.unwrap()
+			.into_temp_path()
+			.to_path_buf();
+		let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+
+		let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
+			rustyline::Editor::with_history(
+				rustyline::Config::builder().auto_add_history(false).build(),
+				audit,
+			)
+			.unwrap();
+
+		let mut ctx = ReplContext {
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			theme: crate::theme::Theme::Dark,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+		};
+
+		// Test sqlite format - should require to= parameter
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Sqlite),
+				to: None,
+				cols: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		// Should return Continue (error printed to stderr)
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Test sqlite format with file output
+		let temp_file_sqlite = tempfile::NamedTempFile::new().unwrap();
+		let file_path_sqlite = temp_file_sqlite.path().to_string_lossy().to_string();
+
+		let result = handle_result(
+			&mut ctx,
+			crate::parser::ResultSubcommand::Show {
+				n: None,
+				format: Some(crate::parser::ResultFormat::Sqlite),
+				to: Some(file_path_sqlite.clone()),
+				cols: vec![],
+				limit: None,
+				offset: None,
+			},
+		)
+		.await;
+		assert_eq!(result, ControlFlow::Continue(()));
+
+		// Verify the SQLite database was created and has correct data
+		assert!(std::path::Path::new(&file_path_sqlite).exists());
+		let verify_conn = rusqlite::Connection::open(&file_path_sqlite).unwrap();
+		let mut stmt = verify_conn
+			.prepare("SELECT id, name, age FROM results ORDER BY id")
+			.unwrap();
+		let mut result_rows = stmt.query([]).unwrap();
+
+		let row1 = result_rows.next().unwrap().unwrap();
+		assert_eq!(row1.get::<_, String>(0).unwrap(), "1");
+		assert_eq!(row1.get::<_, String>(1).unwrap(), "Alice");
+		assert_eq!(row1.get::<_, String>(2).unwrap(), "25");
+
+		let row2 = result_rows.next().unwrap().unwrap();
+		assert_eq!(row2.get::<_, String>(0).unwrap(), "2");
+		assert_eq!(row2.get::<_, String>(1).unwrap(), "Bob");
+		assert_eq!(row2.get::<_, String>(2).unwrap(), "30");
+
+		let row3 = result_rows.next().unwrap().unwrap();
+		assert_eq!(row3.get::<_, String>(0).unwrap(), "3");
+		assert_eq!(row3.get::<_, String>(1).unwrap(), "Charlie");
+		assert_eq!(row3.get::<_, String>(2).unwrap(), "35");
+
+		assert!(result_rows.next().unwrap().is_none());
 	}
 
 	#[tokio::test(flavor = "multi_thread")]

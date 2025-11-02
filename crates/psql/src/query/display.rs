@@ -2,9 +2,11 @@ use miette::Result;
 use tokio::io::AsyncWrite;
 
 mod csv;
+mod excel;
 mod expanded;
 mod json;
 mod normal;
+mod sqlite;
 
 /// Context for displaying query results.
 pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
@@ -35,4 +37,18 @@ pub async fn display<W: AsyncWrite + Unpin>(
 
 pub async fn display_csv<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
 	csv::display(ctx).await
+}
+
+pub async fn display_excel<W: AsyncWrite + Unpin>(
+	ctx: &DisplayContext<'_, W>,
+	file_path: &str,
+) -> Result<()> {
+	excel::display(ctx, file_path).await
+}
+
+pub async fn display_sqlite<W: AsyncWrite + Unpin>(
+	ctx: &DisplayContext<'_, W>,
+	file_path: &str,
+) -> Result<()> {
+	sqlite::display(ctx, file_path).await
 }

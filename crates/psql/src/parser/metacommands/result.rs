@@ -13,6 +13,15 @@ pub(crate) enum ResultFormat {
 	Json,
 	JsonPretty,
 	Csv,
+	Excel,
+	Sqlite,
+}
+
+impl ResultFormat {
+	/// Returns true if this format can only be written to a file (not displayed on screen)
+	pub fn is_file_only(&self) -> bool {
+		matches!(self, ResultFormat::Excel | ResultFormat::Sqlite)
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +89,8 @@ pub fn parse(
 							"json" => Some(ResultFormat::Json),
 							"json-pretty" => Some(ResultFormat::JsonPretty),
 							"csv" => Some(ResultFormat::Csv),
+							"excel" => Some(ResultFormat::Excel),
+							"sqlite" => Some(ResultFormat::Sqlite),
 							_ => return Ok(super::Metacommand::Help),
 						};
 					} else if let Some(value_str) = param_or_value.strip_prefix("to=") {
@@ -206,6 +217,8 @@ mod tests {
 			("json", ResultFormat::Json),
 			("json-pretty", ResultFormat::JsonPretty),
 			("csv", ResultFormat::Csv),
+			("excel", ResultFormat::Excel),
+			("sqlite", ResultFormat::Sqlite),
 		];
 
 		for (name, expected) in formats {

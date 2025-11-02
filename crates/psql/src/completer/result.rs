@@ -107,7 +107,15 @@ impl super::SqlCompleter {
 	fn complete_param_value(&self, param_name: &str, value_partial: &str) -> Vec<Pair> {
 		match param_name {
 			"format" => {
-				let formats = vec!["table", "expanded", "json", "json-pretty", "csv"];
+				let formats = vec![
+					"table",
+					"expanded",
+					"json",
+					"json-pretty",
+					"csv",
+					"excel",
+					"sqlite",
+				];
 				let mut completions = Vec::new();
 				for format in formats {
 					if format.starts_with(value_partial) {
@@ -200,6 +208,8 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "json"));
 		assert!(completions.iter().any(|c| c.display == "json-pretty"));
 		assert!(completions.iter().any(|c| c.display == "csv"));
+		assert!(completions.iter().any(|c| c.display == "excel"));
+		assert!(completions.iter().any(|c| c.display == "sqlite"));
 	}
 
 	#[test]

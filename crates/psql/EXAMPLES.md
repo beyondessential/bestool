@@ -342,6 +342,21 @@ id,created_at
 4bbfb6fd-a1e6-4093-9afd-acbeca759e09,2025-11-01T11:45:21.392383Z
 ```
 
+### File-only formats
+
+With `\re show` you can also export results as file-only formats.
+These will error if you try using them without specifying `to=`.
+
+```sql
+-- Write an Excel spreadsheet (in XLSX format)
+database=> \re show n=0 format=excel to=data.xlsx
+Output written to /home/myself/data.xlsx
+
+-- Write a SQLite database (data is in the table `results`)
+database=> \re show n=0 format=sqlite to=/data/export.db
+Output written to /data/export.db
+```
+
 ## Variables
 
 Variables have a different syntax and command set than in native psql.
