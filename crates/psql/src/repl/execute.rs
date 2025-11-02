@@ -28,6 +28,12 @@ pub async fn handle_execute(
 		};
 
 	let result = if let Some(path) = output_file_path {
+		if std::path::Path::new(&path).exists() {
+			error!("File already exists: {path}");
+			eprintln!("Error: File already exists: {}", path);
+			return ControlFlow::Continue(());
+		}
+
 		match File::create(&path).await {
 			Ok(mut file) => {
 				let mut vars = {

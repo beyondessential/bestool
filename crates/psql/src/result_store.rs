@@ -63,9 +63,9 @@ impl Clone for ResultStore {
 }
 
 impl Default for ResultStore {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl ResultStore {

@@ -9,9 +9,9 @@ pub struct Snippets {
 }
 
 impl Default for Snippets {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl Snippets {

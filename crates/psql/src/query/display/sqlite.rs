@@ -137,6 +137,7 @@ mod tests {
 
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let file_path = temp_file.path().to_string_lossy().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let ctx = crate::query::display::DisplayContext {
 			columns,

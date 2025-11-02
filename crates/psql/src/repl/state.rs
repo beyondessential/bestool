@@ -29,9 +29,9 @@ pub struct ReplState {
 }
 
 impl Default for ReplState {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl ReplState {

@@ -9,6 +9,12 @@ use std::sync::Arc;
 pub async fn handle_set_output(ctx: &mut ReplContext<'_>, file_path: &Path) -> ControlFlow<()> {
 	let _ = handle_unset_output(ctx).await;
 
+	if file_path.exists() {
+		error!("File already exists: {file_path:?}");
+		eprintln!("Error: File already exists: {}", file_path.display());
+		return ControlFlow::Continue(());
+	}
+
 	match File::create(file_path).await {
 		Ok(file) => {
 			debug!("opened output file: {file_path:?}");

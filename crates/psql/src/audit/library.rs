@@ -74,16 +74,17 @@ impl Audit {
 
 		// Apply limit (0 means unlimited)
 		if let Some(limit) = options.limit
-			&& limit > 0 {
-				if options.from_oldest {
-					// Take first N entries (oldest)
-					entries.truncate(limit);
-				} else {
-					// Take last N entries (newest), but result is still oldest-first
-					let start = entries.len().saturating_sub(limit);
-					entries.drain(..start);
-				}
+			&& limit > 0
+		{
+			if options.from_oldest {
+				// Take first N entries (oldest)
+				entries.truncate(limit);
+			} else {
+				// Take last N entries (newest), but result is still oldest-first
+				let start = entries.len().saturating_sub(limit);
+				entries.drain(..start);
 			}
+		}
 
 		debug!(count = entries.len(), "returning audit entries");
 		Ok(entries)

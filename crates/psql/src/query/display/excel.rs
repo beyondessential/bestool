@@ -8,6 +8,10 @@ pub async fn display(
 	ctx: &super::DisplayContext<'_, impl tokio::io::AsyncWrite + Unpin>,
 	file_path: &str,
 ) -> Result<()> {
+	if Path::new(file_path).exists() {
+		return Err(miette::miette!("File already exists"));
+	}
+
 	// Determine which columns to display
 	let column_indices: Vec<usize> = if let Some(indices) = ctx.column_indices {
 		indices.to_vec()
@@ -101,6 +105,7 @@ mod tests {
 
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let file_path = temp_file.path().to_string_lossy().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let ctx = crate::query::display::DisplayContext {
 			columns,

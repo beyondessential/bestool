@@ -147,6 +147,11 @@ async fn display_to_file(
 ) -> miette::Result<()> {
 	use std::io::Write;
 
+	// Check if file already exists
+	if std::path::Path::new(path).exists() {
+		return Err(miette::miette!("File already exists: {}", path));
+	}
+
 	if result.rows.is_empty() {
 		let mut file = std::fs::File::create(path)
 			.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
@@ -840,6 +845,7 @@ mod tests {
 		// Test writing to file
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let file_path = temp_file.path().to_string_lossy().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -925,6 +931,7 @@ mod tests {
 		// Test json format - should output one object per line
 		let temp_file_json = tempfile::NamedTempFile::new().unwrap();
 		let file_path_json = temp_file_json.path().to_string_lossy().to_string();
+		drop(temp_file_json); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -953,6 +960,7 @@ mod tests {
 		// Test json-pretty format - should output a single array
 		let temp_file_pretty = tempfile::NamedTempFile::new().unwrap();
 		let file_path_pretty = temp_file_pretty.path().to_string_lossy().to_string();
+		drop(temp_file_pretty); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -1042,6 +1050,7 @@ mod tests {
 		// Test csv format
 		let temp_file_csv = tempfile::NamedTempFile::new().unwrap();
 		let file_path_csv = temp_file_csv.path().to_string_lossy().to_string();
+		drop(temp_file_csv); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -1151,6 +1160,7 @@ mod tests {
 		// Test excel format with file output
 		let temp_file_excel = tempfile::NamedTempFile::new().unwrap();
 		let file_path_excel = temp_file_excel.path().to_string_lossy().to_string();
+		drop(temp_file_excel); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -1253,6 +1263,7 @@ mod tests {
 		// Test sqlite format with file output
 		let temp_file_sqlite = tempfile::NamedTempFile::new().unwrap();
 		let file_path_sqlite = temp_file_sqlite.path().to_string_lossy().to_string();
+		drop(temp_file_sqlite); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -1375,6 +1386,7 @@ mod tests {
 		// When writing to file, colors should not be present
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let file_path = temp_file.path().to_string_lossy().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -1436,6 +1448,7 @@ mod tests {
 		// Set up global output file
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let file_path = temp_file.path().to_path_buf();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 		let global_file = tokio::fs::File::create(&file_path).await.unwrap();
 
 		{
@@ -1495,6 +1508,7 @@ mod tests {
 		// Test with explicit 'to' parameter - should override global output
 		let temp_file2 = tempfile::NamedTempFile::new().unwrap();
 		let file_path2 = temp_file2.path().to_string_lossy().to_string();
+		drop(temp_file2); // Delete the temp file so the path doesn't exist
 
 		let result = handle_result(
 			&mut ctx,
@@ -2407,6 +2421,7 @@ mod tests {
 		// Test with offset=2 and limit=3 (should show rows 3, 4, 5)
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let temp_path = temp_file.path().to_str().unwrap().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let result = handle_show(
 			&mut ctx,
@@ -2492,6 +2507,7 @@ mod tests {
 		// Test with cols=b,d (should show only columns b and d)
 		let temp_file = tempfile::NamedTempFile::new().unwrap();
 		let temp_path = temp_file.path().to_str().unwrap().to_string();
+		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let result = handle_show(
 			&mut ctx,
