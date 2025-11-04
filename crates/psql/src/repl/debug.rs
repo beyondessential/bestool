@@ -23,7 +23,7 @@ pub async fn handle_debug(
 		DebugWhat::Help => {
 			eprintln!("Available debug commands:");
 			eprintln!("  \\debug state           - Show current REPL state");
-			eprintln!("  \\debug refresh-schema  - Refresh schema cache");
+			eprintln!("  \\debug refresh-schema  - Refresh schema cache (for completion)");
 		}
 	}
 

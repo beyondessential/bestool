@@ -1,10 +1,11 @@
 use std::{
 	collections::HashMap,
 	sync::{Arc, RwLock},
+	time::Duration,
 };
 
 use miette::{IntoDiagnostic, Result};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::pool::PgPool;
 
@@ -92,37 +93,93 @@ impl SchemaCacheManager {
 
 		let mut new_cache = SchemaCache::new();
 
-		if let Ok(schemas) = self.query_schemas(&client).await {
-			new_cache.schemas = schemas;
-			debug!(count = new_cache.schemas.len(), "loaded schemas");
+		// Run all queries in parallel with timeouts
+		let timeout = Duration::from_secs(15);
+
+		let schemas_future = tokio::time::timeout(timeout, self.query_schemas(&client));
+		let tables_future = tokio::time::timeout(timeout, self.query_tables(&client));
+		let views_future = tokio::time::timeout(timeout, self.query_views(&client));
+		let columns_future = tokio::time::timeout(timeout, self.query_columns(&client));
+		let functions_future = tokio::time::timeout(timeout, self.query_functions(&client));
+		let indexes_future = tokio::time::timeout(timeout, self.query_indexes(&client));
+
+		let (
+			schemas_result,
+			tables_result,
+			views_result,
+			columns_result,
+			functions_result,
+			indexes_result,
+		) = tokio::join!(
+			schemas_future,
+			tables_future,
+			views_future,
+			columns_future,
+			functions_future,
+			indexes_future
+		);
+
+		// Process schemas
+		match schemas_result {
+			Ok(Ok(schemas)) => {
+				new_cache.schemas = schemas;
+				debug!(count = new_cache.schemas.len(), "loaded schemas");
+			}
+			Ok(Err(e)) => warn!("failed to load schemas: {e}"),
+			Err(_) => warn!("schemas query timed out after 15s"),
 		}
 
-		if let Ok(tables) = self.query_tables(&client).await {
-			new_cache.tables = tables;
-			let total: usize = new_cache.tables.values().map(|v| v.len()).sum();
-			debug!(count = total, "loaded tables");
+		// Process tables
+		match tables_result {
+			Ok(Ok(tables)) => {
+				new_cache.tables = tables;
+				let total: usize = new_cache.tables.values().map(|v| v.len()).sum();
+				debug!(count = total, "loaded tables");
+			}
+			Ok(Err(e)) => warn!("failed to load tables: {e}"),
+			Err(_) => warn!("tables query timed out after 15s"),
 		}
 
-		if let Ok(views) = self.query_views(&client).await {
-			new_cache.views = views;
-			let total: usize = new_cache.views.values().map(|v| v.len()).sum();
-			debug!(count = total, "loaded views");
+		// Process views
+		match views_result {
+			Ok(Ok(views)) => {
+				new_cache.views = views;
+				let total: usize = new_cache.views.values().map(|v| v.len()).sum();
+				debug!(count = total, "loaded views");
+			}
+			Ok(Err(e)) => warn!("failed to load views: {e}"),
+			Err(_) => warn!("views query timed out after 15s"),
 		}
 
-		if let Ok(columns) = self.query_columns(&client).await {
-			new_cache.columns = columns;
-			debug!(count = new_cache.columns.len(), "loaded column mappings");
+		// Process columns
+		match columns_result {
+			Ok(Ok(columns)) => {
+				new_cache.columns = columns;
+				debug!(count = new_cache.columns.len(), "loaded column mappings");
+			}
+			Ok(Err(e)) => warn!("failed to load columns: {e}"),
+			Err(_) => warn!("columns query timed out after 15s"),
 		}
 
-		if let Ok(functions) = self.query_functions(&client).await {
-			new_cache.functions = functions;
-			debug!(count = new_cache.functions.len(), "loaded functions");
+		// Process functions
+		match functions_result {
+			Ok(Ok(functions)) => {
+				new_cache.functions = functions;
+				debug!(count = new_cache.functions.len(), "loaded functions");
+			}
+			Ok(Err(e)) => warn!("failed to load functions: {e}"),
+			Err(_) => warn!("functions query timed out after 15s"),
 		}
 
-		if let Ok(indexes) = self.query_indexes(&client).await {
-			new_cache.indexes = indexes;
-			let total: usize = new_cache.indexes.values().map(|v| v.len()).sum();
-			debug!(count = total, "loaded indexes");
+		// Process indexes
+		match indexes_result {
+			Ok(Ok(indexes)) => {
+				new_cache.indexes = indexes;
+				let total: usize = new_cache.indexes.values().map(|v| v.len()).sum();
+				debug!(count = total, "loaded indexes");
+			}
+			Ok(Err(e)) => warn!("failed to load indexes: {e}"),
+			Err(_) => warn!("indexes query timed out after 15s"),
 		}
 
 		*self.cache.write().unwrap() = new_cache;
