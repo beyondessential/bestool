@@ -104,7 +104,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		format!("postgresql://{username}:{password}@{host}:{port}/{name}")
 	};
 
-	debug!("creating connection pool");
+	debug!(url, "creating connection pool");
 	let pool = bestool_psql::create_pool(&url).await?;
 
 	// Install a Ctrl-C handler that sets a flag for query cancellation
