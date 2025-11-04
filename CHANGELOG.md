@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.1.11](https://github.com/beyondessential/bestool/compare/v1.1.10..1.1.11) - 2025-11-04
+
+
+
+### Tamanu/psql
+
+- **Tweak:** Log the url for debugging - ([8d231ea](https://github.com/beyondessential/bestool/commit/8d231eab89b9e75b0647b47887f02837059e2f9a))
+
+---
 ## [1.1.8](https://github.com/beyondessential/bestool/compare/v1.1.7..v1.1.8) - 2025-11-02
 
 
