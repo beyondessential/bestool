@@ -9,6 +9,7 @@ use winnow::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DebugWhat {
 	State,
+	RefreshSchema,
 	Help,
 }
 
@@ -25,11 +26,10 @@ pub fn parse(
 
 	let what = if let Some(arg_str) = arg {
 		let arg_trimmed = arg_str.trim();
-		if arg_trimmed == "state" {
-			DebugWhat::State
-		} else {
-			// Unknown argument, show help
-			DebugWhat::Help
+		match arg_trimmed {
+			"state" => DebugWhat::State,
+			"refresh-schema" => DebugWhat::RefreshSchema,
+			_ => DebugWhat::Help,
 		}
 	} else {
 		// No argument, show help
@@ -95,6 +95,28 @@ mod tests {
 			result,
 			Some(Metacommand::Debug {
 				what: DebugWhat::Help
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_refresh_schema() {
+		let result = parse_metacommand("\\debug refresh-schema").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::RefreshSchema
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_refresh_schema_with_whitespace() {
+		let result = parse_metacommand("  \\debug refresh-schema  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::RefreshSchema
 			})
 		);
 	}

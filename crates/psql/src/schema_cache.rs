@@ -4,7 +4,7 @@ use std::{
 };
 
 use miette::{IntoDiagnostic, Result};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::pool::PgPool;
 
@@ -82,26 +82,6 @@ impl SchemaCacheManager {
 	/// Get an Arc to the cache for sharing
 	pub fn cache_arc(&self) -> Arc<RwLock<SchemaCache>> {
 		self.cache.clone()
-	}
-
-	/// Start background refresh task
-	pub fn start_background_refresh(self) -> tokio::task::JoinHandle<()> {
-		tokio::spawn(async move {
-			if let Err(e) = self.refresh_loop().await {
-				warn!("schema cache refresh task failed: {e}");
-			}
-		})
-	}
-
-	/// Continuously refresh the schema cache
-	async fn refresh_loop(&self) -> Result<()> {
-		loop {
-			if let Err(e) = self.refresh().await {
-				warn!("failed to refresh schema cache: {e}");
-			}
-
-			tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-		}
 	}
 
 	/// Refresh the schema cache by querying the database

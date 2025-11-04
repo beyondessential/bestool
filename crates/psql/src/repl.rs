@@ -65,7 +65,7 @@ impl ReplAction {
 				output::handle_set_output(ctx, &file_path).await
 			}
 			ReplAction::UnsetOutputFile => output::handle_unset_output(ctx).await,
-			ReplAction::Debug { what } => debug::handle_debug(ctx, what),
+			ReplAction::Debug { what } => debug::handle_debug(ctx, what).await,
 			ReplAction::Help => help::handle_help(),
 			ReplAction::SetVar { name, value } => vars::handle_set_var(ctx, name, value),
 			ReplAction::UnsetVar { name } => vars::handle_unset_var(ctx, name),
@@ -182,7 +182,6 @@ pub async fn run(config: Config) -> Result<()> {
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(config.pool.clone());
 	let cache_arc = schema_cache_manager.cache_arc();
-	let _cache_task = schema_cache_manager.start_background_refresh();
 
 	let completer = SqlCompleter::new(config.theme)
 		.with_schema_cache(cache_arc)
@@ -206,6 +205,7 @@ pub async fn run(config: Config) -> Result<()> {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &config.pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -255,6 +255,7 @@ pub async fn run(config: Config) -> Result<()> {
 					repl_state: &repl_state,
 					rl: &mut rl,
 					pool: &config.pool,
+					schema_cache_manager: &schema_cache_manager,
 				};
 
 				if action.handle(&mut ctx, line).await.is_break() {
@@ -275,6 +276,7 @@ pub async fn run(config: Config) -> Result<()> {
 					repl_state: &repl_state,
 					rl: &mut rl,
 					pool: &config.pool,
+					schema_cache_manager: &schema_cache_manager,
 				};
 
 				if exit::handle_exit(&mut ctx).await.is_break() {

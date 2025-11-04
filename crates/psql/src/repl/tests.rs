@@ -723,6 +723,8 @@ async fn test_describe_table_with_database() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -731,6 +733,7 @@ async fn test_describe_table_with_database() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test describing the table
@@ -837,6 +840,8 @@ async fn test_describe_view_with_database() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -845,6 +850,7 @@ async fn test_describe_view_with_database() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test describing the view
@@ -954,6 +960,8 @@ async fn test_describe_index_with_database() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -962,6 +970,7 @@ async fn test_describe_index_with_database() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test describing the index
@@ -1074,6 +1083,8 @@ async fn test_describe_sequence_with_database() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1082,6 +1093,7 @@ async fn test_describe_sequence_with_database() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test describing the sequence
@@ -1189,6 +1201,8 @@ async fn test_describe_function_with_database() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1197,6 +1211,7 @@ async fn test_describe_function_with_database() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test describing the function
@@ -1349,6 +1364,8 @@ async fn test_multiple_statements() {
 		.get(0);
 
 	{
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1357,6 +1374,7 @@ async fn test_multiple_statements() {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Execute multiple statements: insert two rows and select them
@@ -1452,6 +1470,8 @@ async fn test_exit_blocked_with_active_transaction() {
 		)
 		.unwrap();
 
+	let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 	// Create a ReplContext
 	let mut ctx = ReplContext {
 		client: &client,
@@ -1461,6 +1481,7 @@ async fn test_exit_blocked_with_active_transaction() {
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
+		schema_cache_manager: &schema_cache_manager,
 	};
 
 	// Attempt to exit - should be blocked
@@ -1535,6 +1556,8 @@ async fn test_exit_allowed_after_commit() {
 		)
 		.unwrap();
 
+	let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 	// Create a ReplContext
 	let mut ctx = ReplContext {
 		client: &client,
@@ -1544,6 +1567,7 @@ async fn test_exit_allowed_after_commit() {
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
+		schema_cache_manager: &schema_cache_manager,
 	};
 
 	// Attempt to exit - should be allowed
@@ -1599,6 +1623,8 @@ async fn test_exit_allowed_in_readonly_mode() {
 		)
 		.unwrap();
 
+	let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 	// Create a ReplContext
 	let mut ctx = ReplContext {
 		client: &client,
@@ -1608,6 +1634,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
+		schema_cache_manager: &schema_cache_manager,
 	};
 
 	// Attempt to exit - should be allowed (not in write mode)

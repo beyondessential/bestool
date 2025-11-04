@@ -10,15 +10,25 @@ impl super::SqlCompleter {
 		let debug_start = text_before_cursor.find(r"\debug ").unwrap() + 7;
 		let partial_arg = &text_before_cursor[debug_start..].trim();
 
+		let mut completions = Vec::new();
+
 		// Offer "state" as completion
 		if "state".starts_with(&partial_arg.to_lowercase()) {
-			return Some(vec![Pair {
+			completions.push(Pair {
 				display: "state".to_string(),
 				replacement: "state".to_string(),
-			}]);
+			});
 		}
 
-		Some(Vec::new())
+		// Offer "refresh-schema" as completion
+		if "refresh-schema".starts_with(&partial_arg.to_lowercase()) {
+			completions.push(Pair {
+				display: "refresh-schema".to_string(),
+				replacement: "refresh-schema".to_string(),
+			});
+		}
+
+		Some(completions)
 	}
 }
 
@@ -42,12 +52,19 @@ mod tests {
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "state"));
+		assert!(completions.iter().any(|c| c.display == "refresh-schema"));
 
-		// Test with partial argument
+		// Test with partial argument for state
 		let input = "\\debug st";
 		let completions = completer.find_completions(input, input.len());
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "state"));
+
+		// Test with partial argument for refresh-schema
+		let input = "\\debug ref";
+		let completions = completer.find_completions(input, input.len());
+		assert!(!completions.is_empty());
+		assert!(completions.iter().any(|c| c.display == "refresh-schema"));
 
 		// Test with full argument should still match
 		let input = "\\debug state";

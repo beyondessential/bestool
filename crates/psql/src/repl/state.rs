@@ -8,7 +8,7 @@ use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
 	audit::Audit, completer::SqlCompleter, pool::PgPool, result_store::ResultStore,
-	snippets::Snippets, theme::Theme,
+	schema_cache::SchemaCacheManager, snippets::Snippets, theme::Theme,
 };
 
 use super::TransactionState;
@@ -60,4 +60,5 @@ pub(crate) struct ReplContext<'a> {
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
 	pub rl: &'a mut Editor<SqlCompleter, Audit>,
 	pub pool: &'a PgPool,
+	pub schema_cache_manager: &'a SchemaCacheManager,
 }

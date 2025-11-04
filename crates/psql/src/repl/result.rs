@@ -599,6 +599,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -607,6 +609,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test \re show without n (should show last result)
@@ -677,6 +680,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -685,6 +690,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test \re show n=0 (should show first result)
@@ -751,6 +757,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -759,6 +767,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test different formats
@@ -832,6 +841,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -840,6 +851,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test writing to file
@@ -918,6 +930,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -926,6 +940,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test json format - should output one object per line
@@ -1037,6 +1052,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1045,6 +1062,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test csv format
@@ -1131,6 +1149,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1139,6 +1159,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test excel format - should require to= parameter
@@ -1234,6 +1255,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1242,6 +1265,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test sqlite format - should require to= parameter
@@ -1357,6 +1381,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1365,6 +1391,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// We can't easily capture stdout in tests, but we can verify the function
@@ -1469,6 +1496,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1477,6 +1506,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test \re show without 'to' parameter - should use global output file
@@ -1561,6 +1591,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1569,6 +1601,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test \re show when no results exist
@@ -1620,6 +1653,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1628,6 +1663,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		let mut output = Vec::new();
@@ -1690,6 +1726,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1698,6 +1736,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test basic list
@@ -1771,6 +1810,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1779,6 +1820,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		let mut output = Vec::new();
@@ -1840,6 +1882,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1848,6 +1892,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		let mut output = Vec::new();
@@ -1925,6 +1970,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -1933,6 +1980,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test \re list with no limit (should default to 20)
@@ -2037,6 +2085,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2045,6 +2095,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with limit=3
@@ -2111,6 +2162,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2119,6 +2172,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with offset=5
@@ -2185,6 +2239,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2193,6 +2249,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with offset=3 and limit=4 (should show rows 4-7)
@@ -2259,6 +2316,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2267,6 +2326,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with cols=text (should show only the text column)
@@ -2332,6 +2392,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2340,6 +2402,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with cols=nonexistent (should error and continue)
@@ -2408,6 +2471,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2416,6 +2481,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with offset=2 and limit=3 (should show rows 3, 4, 5)
@@ -2494,6 +2560,8 @@ mod tests {
 			)
 			.unwrap();
 
+		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
 		let mut ctx = crate::repl::ReplContext {
 			client: &client,
 			monitor_client: &monitor_client,
@@ -2502,6 +2570,7 @@ mod tests {
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
 		};
 
 		// Test with cols=b,d (should show only columns b and d)
