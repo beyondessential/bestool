@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use mobc::{Connection, Pool};
 use mobc_postgres::{PgConnectionManager, tokio_postgres};
 use tokio_postgres::Config;
@@ -10,15 +10,50 @@ pub type PgConnection = Connection<PgConnectionManager<crate::tls::MakeRustlsCon
 
 /// Create a connection pool from a connection URL
 pub async fn create_pool(url: &str) -> Result<PgPool> {
-	let config = Config::from_str(url).into_diagnostic()?;
-	let tls_connector = crate::tls::make_tls_connector()?;
+	let config = Config::from_str(url)
+		.into_diagnostic()
+		.wrap_err("parsing connection string")?;
+	let tls_connector = crate::tls::make_tls_connector().wrap_err("setting up TLS")?;
 	let manager = PgConnectionManager::new(config, tls_connector);
 
-	Ok(Pool::builder()
+	let pool = Pool::builder()
 		.max_open(10)
 		.max_idle(5)
 		.max_lifetime(Some(Duration::from_secs(3600)))
-		.build(manager))
+		.build(manager);
+
+	check_pool(&pool).await?;
+
+	Ok(pool)
+}
+
+/// Check if we can actually establish a connection
+async fn check_pool(pool: &PgPool) -> Result<()> {
+	let conn = match pool.get().await {
+		Err(mobc::Error::Inner(db_err)) => Err(match db_err.as_db_error() {
+			Some(db_err) => miette!(
+				"E{code} at {func} in {file}:{line}",
+				code = db_err.code().code(),
+				func = db_err.routine().unwrap_or("{unknown}"),
+				file = db_err.file().unwrap_or("unknown.c"),
+				line = db_err.line().unwrap_or(0)
+			),
+			_ => miette!("{db_err}"),
+		})
+		.wrap_err(
+			db_err
+				.as_db_error()
+				.map(|e| e.to_string())
+				.unwrap_or_default(),
+		)?,
+		Err(mobc_err) => Err(mobc_err).into_diagnostic()?,
+		Ok(conn) => conn,
+	};
+	conn.simple_query("SELECT 1")
+		.await
+		.into_diagnostic()
+		.wrap_err("checking connection")?;
+	Ok(())
 }
 
 #[cfg(test)]
