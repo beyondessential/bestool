@@ -14,6 +14,7 @@ use crate::args::Args;
 
 use super::Context;
 
+mod connection_url;
 mod roots;
 
 /// Interact with Tamanu.

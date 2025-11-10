@@ -6,7 +6,7 @@ use tracing::debug;
 
 use crate::actions::Context;
 
-use super::{TamanuArgs, config::load_config, find_tamanu};
+use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
 
 /// Connect to Tamanu's database.
 ///
@@ -72,36 +72,64 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	} else {
 		let (_, root) = find_tamanu(&ctx.args_top)?;
 		let config = load_config(&root, None)?;
-		let name = &config.db.name;
+
 		let (username, password) = if let Some(ref user) = username {
 			// First, check if this matches a report schema connection
 			if let Some(ref report_schemas) = config.db.report_schemas {
 				if let Some(connection) = report_schemas.connections.get(user)
 					&& !connection.username.is_empty()
 				{
-					(connection.username.as_str(), connection.password.as_str())
+					(
+						Some(connection.username.clone()),
+						Some(connection.password.clone()),
+					)
 				} else if user == &config.db.username {
 					// User matches main db user
-					(config.db.username.as_str(), config.db.password.as_str())
+					(
+						Some(config.db.username.clone()),
+						Some(config.db.password.clone()),
+					)
 				} else {
 					// User doesn't match anything, rely on psql password prompt
-					(user.as_str(), "")
+					(Some(user.clone()), None)
 				}
 			} else if user == &config.db.username {
 				// No report schemas, check if matches main user
-				(config.db.username.as_str(), config.db.password.as_str())
+				(
+					Some(config.db.username.clone()),
+					Some(config.db.password.clone()),
+				)
 			} else {
 				// User doesn't match, rely on psql password prompt
-				(user.as_str(), "")
+				(Some(user.clone()), None)
 			}
 		} else {
 			// No user specified, use main db credentials
-			(config.db.username.as_str(), config.db.password.as_str())
+			(
+				Some(config.db.username.clone()),
+				Some(config.db.password.clone()),
+			)
 		};
 
-		let host = config.db.host.as_deref().unwrap_or("localhost");
-		let port = config.db.port.unwrap_or(5432);
-		format!("postgresql://{username}:{password}@{host}:{port}/{name}")
+		let username = username.unwrap_or_else(|| config.db.username.clone());
+		let password = if password.as_ref().is_some_and(|p| p.is_empty()) {
+			None
+		} else {
+			password
+		};
+
+		let builder = ConnectionUrlBuilder {
+			username,
+			password,
+			host: config
+				.db
+				.host
+				.clone()
+				.unwrap_or_else(|| "localhost".to_string()),
+			port: config.db.port,
+			database: config.db.name.clone(),
+		};
+		builder.build()
 	};
 
 	debug!(url, "creating connection pool");

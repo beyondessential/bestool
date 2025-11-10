@@ -1,22 +1,10 @@
 use clap::Parser;
 use miette::Result;
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, config::load_config, find_tamanu},
+	tamanu::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu},
 };
-
-/// Characters to encode in userinfo (username:password) part of URL
-const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
-	.add(b':')
-	.add(b'@')
-	.add(b'/')
-	.add(b'?')
-	.add(b'#')
-	.add(b'[')
-	.add(b']')
-	.add(b'$');
 
 /// Generate a DATABASE_URL connection string
 ///
@@ -38,9 +26,11 @@ pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 
-	let (username, mut password) = if let Some(ref user) = ctx.args_sub.username {
+	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
 		if let Some(ref report_schemas) = config.db.report_schemas {
-			if let Some(connection) = report_schemas.connections.get(user) && !connection.username.is_empty() {
+			if let Some(connection) = report_schemas.connections.get(user)
+				&& !connection.username.is_empty()
+			{
 				(
 					connection.username.clone(),
 					Some(connection.password.clone()),
@@ -59,32 +49,24 @@ pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
 		(config.db.username.clone(), Some(config.db.password.clone()))
 	};
 
-	if password.as_ref().is_some_and(|p| p.is_empty()) {
-		password = None;
-	}
-
-	let host = config.db.host.as_deref().unwrap_or("localhost");
-	let database = &config.db.name;
-
-	let host_with_port = if let Some(port) = config.db.port {
-		format!("{}:{}", host, port)
+	let password = if password.as_ref().is_some_and(|p| p.is_empty()) {
+		None
 	} else {
-		host.to_string()
+		password
 	};
 
-	let encoded_username = utf8_percent_encode(&username, USERINFO_ENCODE_SET);
-	let url = if let Some(password) = password {
-		let encoded_password = utf8_percent_encode(&password, USERINFO_ENCODE_SET);
-		format!(
-			"postgresql://{}:{}@{}/{}",
-			encoded_username, encoded_password, host_with_port, database
-		)
-	} else {
-		format!(
-			"postgresql://{}@{}/{}",
-			encoded_username, host_with_port, database
-		)
+	let builder = ConnectionUrlBuilder {
+		username,
+		password,
+		host: config
+			.db
+			.host
+			.clone()
+			.unwrap_or_else(|| "localhost".to_string()),
+		port: config.db.port,
+		database: config.db.name.clone(),
 	};
+	let url = builder.build();
 
 	println!("{}", url);
 
