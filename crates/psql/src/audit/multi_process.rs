@@ -86,8 +86,8 @@ impl WorkingDatabase {
 
 	/// Get a random retry delay between MIN_RETRY_DELAY and MAX_RETRY_DELAY
 	pub fn random_retry_delay() -> Duration {
-		let mut rng = rand::thread_rng();
-		let millis = rng.gen_range(MIN_RETRY_DELAY.as_millis()..=MAX_RETRY_DELAY.as_millis());
+		let mut rng = rand::rng();
+		let millis = rng.random_range(MIN_RETRY_DELAY.as_millis()..=MAX_RETRY_DELAY.as_millis());
 		Duration::from_millis(millis as u64)
 	}
 
