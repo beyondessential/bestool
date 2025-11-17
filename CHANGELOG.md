@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.12](https://github.com/beyondessential/bestool/compare/v1.1.11..1.1.12) - 2025-11-10
+## [1.1.13](https://github.com/beyondessential/bestool/compare/v1.1.12..1.1.13) - 2025-11-17
+
+
+- **Deps:** Switch reqwest to rustls - ([0893484](https://github.com/beyondessential/bestool/commit/089348402854911ed664a293749c62dead35d34b))
+- **Deps:** Bump the deps group across 1 directory with 3 updates (#240) - ([7eb3b60](https://github.com/beyondessential/bestool/commit/7eb3b6034915d92bded1ec2b9fbfb5942f2b84bd))
+
+### Psql
+
+- **Bugfix:** Special-case /var/sock-like database host - ([b355db6](https://github.com/beyondessential/bestool/commit/b355db664ebf96ba97a1ec2c8dc44c7465cedbab))
+- **Feature:** Support unix sockets - ([ef3ca49](https://github.com/beyondessential/bestool/commit/ef3ca49022f9b3939fea141483660ffc62924742))
+
+---
+## [1.1.12](https://github.com/beyondessential/bestool/compare/v1.1.11..v1.1.12) - 2025-11-10
 
 
 
