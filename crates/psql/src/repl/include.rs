@@ -43,18 +43,22 @@ pub async fn handle_include(
 			saved
 		};
 
-		let (_, action) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
+		let (_, actions) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
 
-		let result = if let ReplAction::Execute {
-			input,
-			sql,
-			modifiers,
-		} = action
-		{
-			handle_execute(ctx, input, sql, modifiers).await
-		} else {
-			ControlFlow::Continue(())
-		};
+		let mut result = ControlFlow::Continue(());
+		for action in actions {
+			if let ReplAction::Execute {
+				input,
+				sql,
+				modifiers,
+			} = action
+			{
+				result = handle_execute(ctx, input, sql, modifiers).await;
+				if result.is_break() {
+					break;
+				}
+			}
+		}
 
 		{
 			let mut state = ctx.repl_state.lock().unwrap();

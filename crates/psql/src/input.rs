@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
 use crate::{
-	parser::{DebugWhat, Metacommand, parse_metacommand, parse_query_modifiers},
+	parser::{DebugWhat, parse_multi_input},
 	repl::ReplState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplAction {
-	Continue,
 	Execute {
 		input: String,
 		sql: String,
@@ -70,7 +69,7 @@ pub(crate) fn handle_input(
 	buffer: &str,
 	new_line: &str,
 	state: &ReplState,
-) -> (String, ReplAction) {
+) -> (String, Vec<ReplAction>) {
 	let mut new_buffer = buffer.to_string();
 
 	if !new_buffer.is_empty() {
@@ -80,88 +79,21 @@ pub(crate) fn handle_input(
 
 	let user_input = new_buffer.trim().to_string();
 
-	// Check for metacommands first (only if buffer is empty, i.e., command starts on first character)
-	if buffer.is_empty()
-		&& let Ok(Some(metacmd)) = parse_metacommand(&user_input)
-	{
-		let action = match metacmd {
-			Metacommand::Quit => ReplAction::Exit,
-			Metacommand::Expanded => ReplAction::ToggleExpanded,
-			Metacommand::WriteMode => ReplAction::ToggleWriteMode,
-			Metacommand::Edit => ReplAction::Edit,
-			Metacommand::Copy => ReplAction::Copy,
-			Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
-				file_path: file_path.into(),
-				vars,
-			},
-			Metacommand::SnippetRun { name, vars } => ReplAction::RunSnippet { name, vars },
-			Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
-			Metacommand::Output {
-				file_path: Some(file_path),
-			} => ReplAction::SetOutputFile {
-				file_path: file_path.into(),
-			},
-			Metacommand::Output { file_path: None } => ReplAction::UnsetOutputFile,
-			Metacommand::Debug { what } => ReplAction::Debug { what },
-			Metacommand::Help => ReplAction::Help,
-			Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
-			Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
-			Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
-			Metacommand::GetVar { name } => ReplAction::GetVar { name },
-			Metacommand::List {
-				item,
-				pattern,
-				detail,
-				sameconn,
-			} => ReplAction::List {
-				item,
-				pattern,
-				detail,
-				sameconn,
-			},
-			Metacommand::Describe {
-				item,
-				detail,
-				sameconn,
-			} => ReplAction::Describe {
-				item,
-				detail,
-				sameconn,
-			},
-			Metacommand::Result { subcommand } => ReplAction::Result { subcommand },
-		};
-		return (String::new(), action);
-	}
-
 	// Handle legacy "quit" command for compatibility
 	if buffer.is_empty() && user_input.eq_ignore_ascii_case("quit") {
-		return (String::new(), ReplAction::Exit);
+		return (String::new(), vec![ReplAction::Exit]);
 	}
 
-	let parse_result = parse_query_modifiers(&user_input);
+	// Try to parse multiple statements
+	let (actions, remaining) = parse_multi_input(&user_input, state);
 
-	let action = match parse_result {
-		Ok(Some((sql, mut modifiers))) => {
-			// Apply expanded mode state if enabled
-			if state.expanded_mode {
-				modifiers.insert(crate::parser::QueryModifier::Expanded);
-			}
-			ReplAction::Execute {
-				input: user_input.clone(),
-				sql,
-				modifiers,
-			}
-		}
-		Ok(None) | Err(_) => ReplAction::Continue,
-	};
-
-	let buffer_state = if let ReplAction::Continue = &action {
-		new_buffer
+	if actions.is_empty() {
+		// No complete statements found
+		(new_buffer, vec![])
 	} else {
-		String::new()
-	};
-
-	(buffer_state, action)
+		// Return completed actions and remaining buffer
+		(remaining, actions)
+	}
 }
 
 #[cfg(test)]
@@ -171,31 +103,32 @@ mod tests {
 	#[test]
 	fn test_handle_input_empty_line() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "", &state);
+		let (buffer, actions) = handle_input("", "", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Continue);
+		assert_eq!(actions.len(), 0);
 	}
 
 	#[test]
 	fn test_handle_input_incomplete_query() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "SELECT * FROM users", &state);
+		let (buffer, actions) = handle_input("", "SELECT * FROM users", &state);
 		assert_eq!(buffer, "SELECT * FROM users");
-		assert_eq!(action, ReplAction::Continue);
+		assert_eq!(actions.len(), 0);
 	}
 
 	#[test]
 	fn test_handle_input_complete_query_semicolon() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "SELECT * FROM users;", &state);
+		let (buffer, actions) = handle_input("", "SELECT * FROM users;", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
 			} => {
-				assert_eq!(input, "SELECT * FROM users;");
+				assert_eq!(input, "SELECT * FROM users");
 				assert_eq!(sql, "SELECT * FROM users");
 				assert!(modifiers.is_empty());
 			}
@@ -206,15 +139,16 @@ mod tests {
 	#[test]
 	fn test_handle_input_complete_query_backslash_g() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "SELECT * FROM users\\g", &state);
+		let (buffer, actions) = handle_input("", "SELECT * FROM users\\g", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
 			} => {
-				assert_eq!(input, "SELECT * FROM users\\g");
+				assert_eq!(input, "SELECT * FROM users");
 				assert_eq!(sql, "SELECT * FROM users");
 				assert!(modifiers.is_empty());
 			}
@@ -225,15 +159,16 @@ mod tests {
 	#[test]
 	fn test_handle_input_multiline_query() {
 		let state = ReplState::new();
-		let (buffer1, action1) = handle_input("", "SELECT *", &state);
+		let (buffer1, actions1) = handle_input("", "SELECT *", &state);
 		assert_eq!(buffer1, "SELECT *");
-		assert_eq!(action1, ReplAction::Continue);
+		assert_eq!(actions1.len(), 0);
 
-		let (buffer2, action2) = handle_input(&buffer1, "FROM users;", &state);
+		let (buffer2, actions2) = handle_input(&buffer1, "FROM users;", &state);
 		assert_eq!(buffer2, "");
-		match action2 {
+		assert_eq!(actions2.len(), 1);
+		match &actions2[0] {
 			ReplAction::Execute { input, sql, .. } => {
-				assert_eq!(input, "SELECT *\nFROM users;");
+				assert_eq!(input, "SELECT *\nFROM users");
 				assert_eq!(sql, "SELECT *\nFROM users");
 			}
 			_ => panic!("Expected Execute action"),
@@ -243,38 +178,42 @@ mod tests {
 	#[test]
 	fn test_handle_input_quit_command() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "\\q", &state);
+		let (buffer, actions) = handle_input("", "\\q", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Exit);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::Exit));
 	}
 
 	#[test]
 	fn test_handle_input_quit_command_case_insensitive() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "QUIT", &state);
+		let (buffer, actions) = handle_input("", "QUIT", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Exit);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::Exit));
 	}
 
 	#[test]
 	fn test_handle_input_quit_after_incomplete() {
 		let state = ReplState::new();
-		let (buffer1, action1) = handle_input("", "SELECT *", &state);
+		let (buffer1, actions1) = handle_input("", "SELECT *", &state);
 		assert_eq!(buffer1, "SELECT *");
-		assert_eq!(action1, ReplAction::Continue);
+		assert_eq!(actions1.len(), 0);
 
-		// \q after incomplete query is not treated as quit - it's part of the query
-		let (buffer2, action2) = handle_input(&buffer1, "\\q", &state);
-		assert_eq!(buffer2, "SELECT *\n\\q");
-		assert_eq!(action2, ReplAction::Continue);
+		// \q after incomplete query triggers quit
+		let (buffer2, actions2) = handle_input(&buffer1, "\\q", &state);
+		assert_eq!(buffer2, "");
+		assert_eq!(actions2.len(), 1);
+		assert!(matches!(actions2[0], ReplAction::Exit));
 	}
 
 	#[test]
 	fn test_handle_input_expanded_metacommand() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "\\x", &state);
+		let (buffer, actions) = handle_input("", "\\x", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::ToggleExpanded);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::ToggleExpanded));
 	}
 
 	#[test]
@@ -289,11 +228,12 @@ mod tests {
 		assert_eq!(cleared_buffer, "");
 
 		// Can start fresh after Ctrl-C
-		let (new_buffer, action) = handle_input(cleared_buffer, "SELECT 1;", &state);
+		let (new_buffer, actions) = handle_input(cleared_buffer, "SELECT 1;", &state);
 		assert_eq!(new_buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute { input, sql, .. } => {
-				assert_eq!(input, "SELECT 1;");
+				assert_eq!(input, "SELECT 1");
 				assert_eq!(sql, "SELECT 1");
 			}
 			_ => panic!("Expected Execute action"),
@@ -318,15 +258,16 @@ mod tests {
 	#[test]
 	fn test_handle_input_preserves_modifiers() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "select 1+1 \\gx", &state);
+		let (buffer, actions) = handle_input("", "select 1+1 \\gx", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute {
 				input,
 				sql,
 				modifiers,
 			} => {
-				assert_eq!(input, "select 1+1 \\gx");
+				assert_eq!(input, "select 1+1");
 				assert_eq!(sql, "select 1+1");
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -342,9 +283,10 @@ mod tests {
 			ots: None,
 			..ReplState::new()
 		};
-		let (buffer, action) = handle_input("", "SELECT 1;", &state);
+		let (buffer, actions) = handle_input("", "SELECT 1;", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -355,9 +297,10 @@ mod tests {
 	#[test]
 	fn test_expanded_mode_not_applied_when_off() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "SELECT 1;", &state);
+		let (buffer, actions) = handle_input("", "SELECT 1;", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(!modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -373,9 +316,10 @@ mod tests {
 			ots: None,
 			..ReplState::new()
 		};
-		let (buffer, action) = handle_input("", "SELECT 1\\gx", &state);
+		let (buffer, actions) = handle_input("", "SELECT 1\\gx", &state);
 		assert_eq!(buffer, "");
-		match action {
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -386,16 +330,45 @@ mod tests {
 	#[test]
 	fn test_copy_metacommand() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "\\copy", &state);
+		let (buffer, actions) = handle_input("", "\\copy", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Copy);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::Copy));
 	}
 
 	#[test]
 	fn test_copy_metacommand_with_args() {
 		let state = ReplState::new();
-		let (buffer, action) = handle_input("", "\\copy (select from blah) with headers", &state);
+		let (buffer, actions) = handle_input("", "\\copy (select from blah) with headers", &state);
 		assert_eq!(buffer, "");
-		assert_eq!(action, ReplAction::Copy);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::Copy));
+	}
+
+	#[test]
+	fn test_multiple_statements() {
+		let state = ReplState::new();
+		let input = "select 1 + 2 \\gx\nselect 2 + 3;\n\\re list";
+		let (buffer, actions) = handle_input("", input, &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 3);
+
+		match &actions[0] {
+			ReplAction::Execute { sql, modifiers, .. } => {
+				assert_eq!(sql, "select 1 + 2");
+				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute for first action"),
+		}
+
+		match &actions[1] {
+			ReplAction::Execute { sql, modifiers, .. } => {
+				assert_eq!(sql, "select 2 + 3");
+				assert!(!modifiers.contains(&crate::parser::QueryModifier::Expanded));
+			}
+			_ => panic!("Expected Execute for second action"),
+		}
+
+		assert!(matches!(actions[2], ReplAction::Result { .. }));
 	}
 }

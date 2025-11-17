@@ -33,16 +33,21 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 					debug!("failed to add to history: {e}");
 				}
 
-				let (_, action) =
+				let (_, actions) =
 					handle_input("", &edited_content, &ctx.repl_state.lock().unwrap());
 
-				if let ReplAction::Execute {
-					input,
-					sql,
-					modifiers,
-				} = action
-				{
-					return handle_execute(ctx, input, sql, modifiers).await;
+				for action in actions {
+					if let ReplAction::Execute {
+						input,
+						sql,
+						modifiers,
+					} = action
+					{
+						let flow = handle_execute(ctx, input, sql, modifiers).await;
+						if flow.is_break() {
+							return flow;
+						}
+					}
 				}
 			} else {
 				debug!("editor returned empty content, skipping");

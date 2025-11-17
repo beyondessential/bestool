@@ -43,7 +43,7 @@ mod tests;
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		if !matches!(self, ReplAction::Continue | ReplAction::SnippetSave { .. }) {
+		if !matches!(self, ReplAction::SnippetSave { .. }) {
 			let history = ctx.rl.history_mut();
 			if let Err(e) = history.add_entry(line.into()) {
 				debug!("failed to add to history: {e}");
@@ -51,7 +51,6 @@ impl ReplAction {
 		}
 
 		match self {
-			ReplAction::Continue => ControlFlow::Continue(()),
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
 			ReplAction::Exit => exit::handle_exit(ctx).await,
 			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
@@ -245,7 +244,7 @@ pub async fn run(config: Config) -> Result<()> {
 					continue;
 				}
 
-				let (new_buffer, action) =
+				let (new_buffer, actions) =
 					{ handle_input(&buffer, line, &repl_state.lock().unwrap()) };
 				buffer = new_buffer;
 
@@ -260,8 +259,11 @@ pub async fn run(config: Config) -> Result<()> {
 					schema_cache_manager: &schema_cache_manager,
 				};
 
-				if action.handle(&mut ctx, line).await.is_break() {
-					break;
+				// Handle all actions
+				for action in actions {
+					if action.handle(&mut ctx, line).await.is_break() {
+						break;
+					}
 				}
 			}
 			Err(ReadlineError::Interrupted) => {
