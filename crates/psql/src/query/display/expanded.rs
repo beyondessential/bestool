@@ -3,6 +3,7 @@ use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::query::column;
+use crate::query::text_cast::CellRef;
 
 pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, W>) -> Result<()> {
 	// Determine which columns to display
@@ -11,6 +12,35 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 	} else {
 		(0..ctx.columns.len()).collect()
 	};
+
+	// Collect all unprintable cells first
+	let mut unprintable_cells = Vec::new();
+	for (row_idx, _row) in ctx.rows.iter().enumerate() {
+		for &col_idx in &column_indices {
+			if ctx.unprintable_columns.contains(&col_idx) {
+				unprintable_cells.push(CellRef { row_idx, col_idx });
+			}
+		}
+	}
+
+	// Batch cast all unprintable cells if we have a text caster
+	let cast_results = if !unprintable_cells.is_empty() {
+		if let Some(text_caster) = &ctx.text_caster {
+			Some(text_caster.cast_batch(ctx.rows, &unprintable_cells).await)
+		} else {
+			None
+		}
+	} else {
+		None
+	};
+
+	// Build index for looking up cast results
+	let mut cast_map = std::collections::HashMap::new();
+	if let Some(results) = cast_results {
+		for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+			cast_map.insert(*cell, result);
+		}
+	}
 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let header = format!("-[ RECORD {num} ]-\n", num = row_idx + 1);
@@ -23,10 +53,21 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		crate::table::configure(&mut table);
 
 		// No header in expanded mode, just column-value pairs
-		for &i in &column_indices {
-			let column = &ctx.columns[i];
-			let value_str =
-				column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
+		for &col_idx in &column_indices {
+			let column = &ctx.columns[col_idx];
+			let value_str = if ctx.unprintable_columns.contains(&col_idx) {
+				let cell_ref = CellRef { row_idx, col_idx };
+				if let Some(result) = cast_map.get(&cell_ref) {
+					match result {
+						Ok(text) => text.clone(),
+						Err(_) => "(error)".to_string(),
+					}
+				} else {
+					"(binary data)".to_string()
+				}
+			} else {
+				column::get_value(row, col_idx, ctx.unprintable_columns)
+			};
 
 			let name_cell = if ctx.use_colours {
 				Cell::new(column.name()).add_attribute(Attribute::Bold)

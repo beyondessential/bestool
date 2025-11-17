@@ -1809,3 +1809,68 @@ async fn test_dml_commands_show_row_counts() {
 		output
 	);
 }
+
+#[tokio::test]
+async fn test_gset_with_multiple_unprintable_columns() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
+	let mut stdout = Vec::new();
+	let mut vars = std::collections::BTreeMap::new();
+
+	let mut modifiers = crate::parser::QueryModifiers::new();
+	modifiers.insert(crate::parser::QueryModifier::VarSet { prefix: None });
+
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers,
+		theme: crate::theme::Theme::Dark,
+		writer: &mut stdout,
+		use_colours: false,
+		vars: Some(&mut vars),
+		repl_state: &repl_state,
+	};
+
+	// Execute a query with multiple unprintable columns (money type)
+	let result = crate::query::execute_query(
+		"SELECT '$100.50'::money as a, '$200.75'::money as b, '$300.25'::money as c",
+		&mut query_ctx,
+	)
+	.await;
+
+	assert!(result.is_ok(), "Query failed: {:?}", result.err());
+
+	// Verify all three variables were set
+	assert!(vars.contains_key("a"), "Variable 'a' not set");
+	assert!(vars.contains_key("b"), "Variable 'b' not set");
+	assert!(vars.contains_key("c"), "Variable 'c' not set");
+
+	// Verify the values contain the expected amounts
+	let a_val = vars.get("a").unwrap();
+	let b_val = vars.get("b").unwrap();
+	let c_val = vars.get("c").unwrap();
+
+	assert!(
+		a_val.contains("100"),
+		"Variable 'a' has unexpected value: {}",
+		a_val
+	);
+	assert!(
+		b_val.contains("200"),
+		"Variable 'b' has unexpected value: {}",
+		b_val
+	);
+	assert!(
+		c_val.contains("300"),
+		"Variable 'c' has unexpected value: {}",
+		c_val
+	);
+}

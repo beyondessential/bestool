@@ -21,6 +21,7 @@ use crate::{
 
 pub(crate) mod column;
 pub(crate) mod display;
+pub(crate) mod text_cast;
 mod vars;
 
 /// Context for executing a query.
@@ -218,7 +219,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
-	let mut row_stream = match row_stream {
+	let row_stream = match row_stream {
 		Ok(stream) => stream,
 		Err(e) => {
 			// Convert to our custom error type with query context
@@ -315,17 +316,10 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 			}
 		}
 
-		let text_rows = if !unprintable_columns.is_empty() {
-			let sql_trimmed = statement.trim_end_matches(';').trim();
-			let text_query = build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
-			debug!("re-querying with text casts: {text_query}");
-			match ctx.client.query(&text_query, &[]).await {
-				Ok(rows) => Some(rows),
-				Err(e) => {
-					debug!("failed to re-query with text casts: {e:?}");
-					None
-				}
-			}
+		// Create a text caster for on-demand conversion of unprintable values
+		// This uses a separate connection from the pool and caches results
+		let text_caster = if !unprintable_columns.is_empty() {
+			Some(text_cast::TextCaster::new(ctx.pool.clone()))
 		} else {
 			None
 		};
@@ -356,7 +350,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 					columns,
 					rows: display_rows,
 					unprintable_columns: &unprintable_columns,
-					text_rows: &text_rows,
+					text_caster: text_caster.clone(),
 					writer: ctx.writer,
 					use_colours: ctx.use_colours,
 					theme: ctx.theme,
@@ -409,6 +403,34 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				}
 			}) && let Some(vars_map) = ctx.vars.as_mut()
 		{
+			// Collect all unprintable columns that need casting
+			let unprintable_cells: Vec<text_cast::CellRef> = unprintable_columns
+				.iter()
+				.map(|&col_idx| text_cast::CellRef {
+					row_idx: 0,
+					col_idx,
+				})
+				.collect();
+
+			// Batch cast all unprintable columns at once
+			let cast_results = if !unprintable_cells.is_empty() {
+				if let Some(text_caster) = &text_caster {
+					Some(text_caster.cast_batch(&rows[..1], &unprintable_cells).await)
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+
+			// Build a map of column index to cast result
+			let mut cast_map = std::collections::HashMap::new();
+			if let Some(results) = cast_results {
+				for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+					cast_map.insert(cell.col_idx, result);
+				}
+			}
+
 			let row = &rows[0];
 			for (i, column) in columns.iter().enumerate() {
 				let var_name = if let Some(prefix_str) = var_prefix {
@@ -419,19 +441,13 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 
 				// Get the value as a string
 				let value = if unprintable_columns.contains(&i) {
-					if let Some(ref text_rows) = text_rows {
-						if let Some(text_row) = text_rows.first() {
-							text_row
-								.try_get::<_, String>(i)
-								.unwrap_or_else(|_| String::new())
-						} else {
-							String::new()
-						}
-					} else {
-						String::new()
-					}
+					cast_map
+						.get(&i)
+						.and_then(|r| r.as_ref().ok())
+						.cloned()
+						.unwrap_or_else(String::new)
 				} else {
-					column::get_value(row, i, 0, &unprintable_columns, &text_rows)
+					column::get_value(row, i, &unprintable_columns)
 				};
 
 				vars_map.insert(var_name, value);
@@ -440,29 +456,6 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	}
 
 	Ok(())
-}
-
-pub(crate) fn build_text_cast_query(
-	sql: &str,
-	columns: &[tokio_postgres::Column],
-	unprintable_columns: &[usize],
-) -> String {
-	let column_exprs: Vec<String> = columns
-		.iter()
-		.enumerate()
-		.map(|(i, col)| {
-			if unprintable_columns.contains(&i) {
-				format!("(subq.\"{col_name}\")::text", col_name = col.name())
-			} else {
-				format!("subq.\"{col_name}\"", col_name = col.name())
-			}
-		})
-		.collect();
-
-	format!(
-		"SELECT {cols} FROM ({sql}) AS subq",
-		cols = column_exprs.join(", ")
-	)
 }
 
 #[cfg(test)]

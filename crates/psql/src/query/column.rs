@@ -1,24 +1,15 @@
 pub fn get_value(
 	row: &tokio_postgres::Row,
 	column_index: usize,
-	row_index: usize,
 	unprintable_columns: &[usize],
-	text_rows: &Option<Vec<tokio_postgres::Row>>,
 ) -> String {
 	if !unprintable_columns.contains(&column_index) {
 		return format_value(row, column_index);
 	}
 
-	if let Some(text_rows) = text_rows
-		&& let Some(text_row) = text_rows.get(row_index)
-	{
-		return text_row
-			.try_get::<_, String>(column_index)
-			.ok()
-			.unwrap_or_else(|| "NULL".to_string());
-	}
-
-	"(error)".to_string()
+	// For unprintable columns without async context, show a placeholder
+	// The actual text casting happens in the display layer which is async
+	"(binary data)".to_string()
 }
 
 pub fn format_value(row: &tokio_postgres::Row, i: usize) -> String {

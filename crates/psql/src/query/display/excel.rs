@@ -3,9 +3,10 @@ use rust_xlsxwriter::Workbook;
 use std::path::Path;
 
 use crate::query::column;
+use crate::query::text_cast::CellRef;
 
 pub async fn display(
-	ctx: &super::DisplayContext<'_, impl tokio::io::AsyncWrite + Unpin>,
+	ctx: &mut super::DisplayContext<'_, impl tokio::io::AsyncWrite + Unpin>,
 	file_path: &str,
 ) -> Result<()> {
 	if Path::new(file_path).exists() {
@@ -31,11 +32,54 @@ pub async fn display(
 			.into_diagnostic()?;
 	}
 
+	// Collect all unprintable cells first
+	let mut unprintable_cells = Vec::new();
+	for (row_idx, _row) in ctx.rows.iter().enumerate() {
+		for &col_idx in &column_indices {
+			if ctx.unprintable_columns.contains(&col_idx) {
+				unprintable_cells.push(CellRef { row_idx, col_idx });
+			}
+		}
+	}
+
+	// Batch cast all unprintable cells if we have a text caster
+	let cast_results = if !unprintable_cells.is_empty() {
+		if let Some(text_caster) = &ctx.text_caster {
+			Some(text_caster.cast_batch(ctx.rows, &unprintable_cells).await)
+		} else {
+			None
+		}
+	} else {
+		None
+	};
+
+	// Build index for looking up cast results
+	let mut cast_map = std::collections::HashMap::new();
+	if let Some(results) = cast_results {
+		for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+			cast_map.insert(*cell, result);
+		}
+	}
+
 	// Write data rows
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		for (col_idx, &i) in column_indices.iter().enumerate() {
-			let value_str =
-				column::get_value(row, i, row_idx, ctx.unprintable_columns, ctx.text_rows);
+			let value_str = if ctx.unprintable_columns.contains(&i) {
+				let cell_ref = CellRef {
+					row_idx,
+					col_idx: i,
+				};
+				if let Some(result) = cast_map.get(&cell_ref) {
+					match result {
+						Ok(text) => text.clone(),
+						Err(_) => "(error)".to_string(),
+					}
+				} else {
+					"(binary data)".to_string()
+				}
+			} else {
+				column::get_value(row, i, ctx.unprintable_columns)
+			};
 
 			// Excel row numbers are 1-based after the header
 			let excel_row = (row_idx + 1) as u32;
@@ -107,18 +151,18 @@ mod tests {
 		let file_path = temp_file.path().to_string_lossy().to_string();
 		drop(temp_file); // Delete the temp file so the path doesn't exist
 
-		let ctx = crate::query::display::DisplayContext {
+		let mut ctx = crate::query::display::DisplayContext {
 			columns,
 			rows: &rows,
 			unprintable_columns: &[],
-			text_rows: &None,
+			text_caster: None,
 			writer: &mut buffer,
 			use_colours: false,
 			theme: crate::theme::Theme::Dark,
 			column_indices: None,
 		};
 
-		display(&ctx, &file_path).await.expect("Display failed");
+		display(&mut ctx, &file_path).await.expect("Display failed");
 
 		// Verify the file was created and is a valid Excel file
 		assert!(std::path::Path::new(&file_path).exists());

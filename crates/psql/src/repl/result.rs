@@ -178,23 +178,19 @@ async fn display_to_file(
 			}
 		}
 
-		// Re-query with text casts if needed
-		let text_rows = if !unprintable_columns.is_empty() {
-			let sql_trimmed = result.query.trim_end_matches(';').trim();
-			let text_query =
-				crate::query::build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
-
-			ctx.client.query(&text_query, &[]).await.ok()
+		// Create text caster for unprintable columns
+		let text_caster = if !unprintable_columns.is_empty() {
+			Some(crate::query::text_cast::TextCaster::new(ctx.pool.clone()))
 		} else {
 			None
 		};
 
 		let mut buffer = Vec::new();
-		let display_ctx = crate::query::display::DisplayContext {
+		let mut display_ctx = crate::query::display::DisplayContext {
 			columns,
 			rows: &result.rows,
 			unprintable_columns: &unprintable_columns,
-			text_rows: &text_rows,
+			text_caster,
 			writer: &mut buffer,
 			use_colours: false,
 			theme: ctx.theme,
@@ -203,10 +199,10 @@ async fn display_to_file(
 
 		match format {
 			ResultFormat::Excel => {
-				crate::query::display::display_excel(&display_ctx, path).await?;
+				crate::query::display::display_excel(&mut display_ctx, path).await?;
 			}
 			ResultFormat::Sqlite => {
-				crate::query::display::display_sqlite(&display_ctx, path).await?;
+				crate::query::display::display_sqlite(&mut display_ctx, path).await?;
 			}
 			_ => unreachable!(),
 		}
@@ -344,13 +340,9 @@ async fn format_result_using_display_module(
 		}
 	}
 
-	// Re-query with text casts if needed (for unprintable columns)
-	let text_rows = if !unprintable_columns.is_empty() {
-		let sql_trimmed = result.query.trim_end_matches(';').trim();
-		let text_query =
-			crate::query::build_text_cast_query(sql_trimmed, columns, &unprintable_columns);
-
-		ctx.client.query(&text_query, &[]).await.ok()
+	// Create text caster for unprintable columns
+	let text_caster = if !unprintable_columns.is_empty() {
+		Some(crate::query::text_cast::TextCaster::new(ctx.pool.clone()))
 	} else {
 		None
 	};
@@ -363,7 +355,7 @@ async fn format_result_using_display_module(
 		columns,
 		rows: &result.rows,
 		unprintable_columns: &unprintable_columns,
-		text_rows: &text_rows,
+		text_caster,
 		writer: &mut buffer,
 		use_colours,
 		theme: ctx.theme,

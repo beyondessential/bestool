@@ -13,7 +13,7 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub columns: &'a [tokio_postgres::Column],
 	pub rows: &'a [tokio_postgres::Row],
 	pub unprintable_columns: &'a [usize],
-	pub text_rows: &'a Option<Vec<tokio_postgres::Row>>,
+	pub text_caster: Option<crate::query::text_cast::TextCaster>,
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub theme: crate::theme::Theme,
@@ -40,14 +40,14 @@ pub async fn display_csv<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>)
 }
 
 pub async fn display_excel<W: AsyncWrite + Unpin>(
-	ctx: &DisplayContext<'_, W>,
+	ctx: &mut DisplayContext<'_, W>,
 	file_path: &str,
 ) -> Result<()> {
 	excel::display(ctx, file_path).await
 }
 
 pub async fn display_sqlite<W: AsyncWrite + Unpin>(
-	ctx: &DisplayContext<'_, W>,
+	ctx: &mut DisplayContext<'_, W>,
 	file_path: &str,
 ) -> Result<()> {
 	sqlite::display(ctx, file_path).await

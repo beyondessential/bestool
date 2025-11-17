@@ -70,16 +70,15 @@ fn handle_unix_sockets(mut config: Config, original_url: &str) -> Result<Config>
 		}
 
 		#[cfg(unix)]
-		if !is_unix_socket {
-			if let Some(extracted_host) = extract_host_from_url(original_url)
-				&& extracted_host.starts_with('/')
-			{
-				// Special case: URL encoding might have mangled the path
-				// The original URL had a path, but it got parsed as TCP
-				let socket_path = Path::new(&extracted_host);
-				config.host_path(socket_path);
-				is_unix_socket = true;
-			}
+		if !is_unix_socket
+			&& let Some(extracted_host) = extract_host_from_url(original_url)
+			&& extracted_host.starts_with('/')
+		{
+			// Special case: URL encoding might have mangled the path
+			// The original URL had a path, but it got parsed as TCP
+			let socket_path = Path::new(&extracted_host);
+			config.host_path(socket_path);
+			is_unix_socket = true;
 		}
 	}
 
