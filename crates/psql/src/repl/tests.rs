@@ -43,6 +43,7 @@ async fn test_text_cast_for_record_types() {
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
 		client: &client,
+		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
 		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
@@ -71,6 +72,7 @@ async fn test_array_formatting() {
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
 		client: &client,
+		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
 		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
@@ -99,6 +101,7 @@ async fn test_result_store_populated_on_query() {
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
 		client: &client,
+		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
 		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,

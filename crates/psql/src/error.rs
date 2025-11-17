@@ -1,6 +1,8 @@
 use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode};
 use tokio_postgres::error::{DbError, Error};
 
+use crate::pool::PgError;
+
 /// Custom error type for formatting PostgreSQL database errors as miette diagnostics
 #[derive(Debug, thiserror::Error)]
 pub struct PgDatabaseError {
@@ -174,9 +176,9 @@ impl PgDatabaseError {
 }
 
 /// Format a mobc<tokio-postgres> Error for display
-pub fn format_mobc_error(error: &mobc::Error<Error>, query: Option<&str>) -> String {
+pub fn format_mobc_error(error: &mobc::Error<PgError>, query: Option<&str>) -> String {
 	match error {
-		mobc::Error::Inner(error) => format_db_error(error, query),
+		mobc::Error::Inner(PgError::Pg(error)) => format_db_error(error, query),
 		error => format_error(error),
 	}
 }

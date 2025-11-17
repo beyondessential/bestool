@@ -121,11 +121,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		let builder = ConnectionUrlBuilder {
 			username,
 			password,
-			host: config
-				.db
-				.host
-				.clone()
-				.unwrap_or_else(|| "localhost".to_string()),
+			host: config.db.host.clone().unwrap_or_default(),
 			port: config.db.port,
 			database: config.db.name.clone(),
 		};

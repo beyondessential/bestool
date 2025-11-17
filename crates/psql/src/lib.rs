@@ -21,7 +21,6 @@ mod signals;
 pub mod snippets;
 mod table;
 mod theme;
-mod tls;
 
 pub use audit::{ExportOptions, QueryOptions, export_audit_entries};
 pub use config::Config;

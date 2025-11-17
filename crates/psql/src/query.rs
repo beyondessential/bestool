@@ -1,12 +1,20 @@
+use std::{
+	collections::BTreeMap,
+	sync::{Arc, Mutex},
+};
+
 use crossterm::style::{Color, Stylize};
 use miette::Result;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use crate::{
+	PgPool,
 	error::PgDatabaseError,
 	parser::{QueryModifier, QueryModifiers},
+	repl::ReplState,
 	signals::{reset_sigint, sigint_received},
+	theme::Theme,
 };
 
 pub(crate) mod column;
@@ -16,12 +24,13 @@ mod vars;
 /// Context for executing a query.
 pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
 	pub client: &'a tokio_postgres::Client,
+	pub pool: &'a PgPool,
 	pub modifiers: QueryModifiers,
-	pub theme: crate::theme::Theme,
+	pub theme: Theme,
 	pub writer: &'a mut W,
 	pub use_colours: bool,
-	pub vars: Option<&'a mut std::collections::BTreeMap<String, String>>,
-	pub repl_state: &'a std::sync::Arc<std::sync::Mutex<crate::repl::ReplState>>,
+	pub vars: Option<&'a mut BTreeMap<String, String>>,
+	pub repl_state: &'a Arc<Mutex<ReplState>>,
 }
 
 /// Execute a SQL query and display the results.
@@ -35,7 +44,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	let sql_to_execute = if ctx.modifiers.contains(&QueryModifier::Verbatim) {
 		sql.to_string()
 	} else {
-		let empty_vars = std::collections::BTreeMap::new();
+		let empty_vars = BTreeMap::new();
 		let vars = ctx.vars.as_ref().map_or(&empty_vars, |v| v);
 		vars::interpolate_variables(sql, vars)?
 	};
@@ -114,7 +123,6 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	let start = std::time::Instant::now();
 
 	let cancel_token = ctx.client.cancel_token();
-	let tls_connector = crate::tls::make_tls_connector()?;
 
 	// Reset the flag before starting
 	reset_sigint();
@@ -158,7 +166,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				eprint!("\r\x1b[K"); // Clear the line
 			}
 			eprintln!("\nCancelling query...");
-			if let Err(e) = cancel_token.cancel_query(tls_connector).await {
+			if let Err(e) = ctx.pool.manager.cancel(&cancel_token).await {
 				warn!("Failed to cancel query: {:?}", e);
 			}
 			// Reset flag for next time

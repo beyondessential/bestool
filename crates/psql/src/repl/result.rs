@@ -574,6 +574,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -652,6 +653,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -732,6 +734,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -816,6 +819,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -901,6 +905,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1024,6 +1029,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1121,6 +1127,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1227,6 +1234,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1356,6 +1364,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1460,6 +1469,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1698,6 +1708,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1783,6 +1794,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1854,6 +1866,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -1932,6 +1945,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2056,6 +2070,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2133,6 +2148,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2210,6 +2226,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2287,6 +2304,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2366,6 +2384,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2442,6 +2461,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
@@ -2534,6 +2554,7 @@ mod tests {
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
 			client: &client,
+			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
 			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,

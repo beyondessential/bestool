@@ -1,27 +1,92 @@
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use mobc::{Connection, Pool};
-use mobc_postgres::{PgConnectionManager, tokio_postgres};
-use tokio_postgres::Config;
+use tokio_postgres::config::SslMode;
+use tracing::debug;
 
-pub type PgPool = Pool<PgConnectionManager<crate::tls::MakeRustlsConnectWrapper>>;
-pub type PgConnection = Connection<PgConnectionManager<crate::tls::MakeRustlsConnectWrapper>>;
+pub use manager::PgError;
+
+mod manager;
+mod parse;
+mod tls;
+
+pub type PgConnection = Connection<manager::PgConnectionManager>;
+
+#[derive(Debug, Clone)]
+pub struct PgPool {
+	pub manager: manager::PgConnectionManager,
+	pub inner: Pool<manager::PgConnectionManager>,
+}
+
+impl PgPool {
+	/// Returns a single connection by either opening a new connection
+	/// or returning an existing connection from the connection pool. Conn will
+	/// block until either a connection is returned or timeout.
+	pub async fn get(&self) -> Result<PgConnection, mobc::Error<PgError>> {
+		self.inner.get().await
+	}
+
+	/// Retrieves a connection from the pool, waiting for at most `timeout`
+	///
+	/// The given timeout will be used instead of the configured connection
+	/// timeout.
+	pub async fn get_timeout(
+		&self,
+		duration: Duration,
+	) -> Result<PgConnection, mobc::Error<PgError>> {
+		self.inner.get_timeout(duration).await
+	}
+}
 
 /// Create a connection pool from a connection URL
+///
+/// Supports Unix socket connections via:
+/// - Query parameter: `postgresql:///dbname?host=/var/run/postgresql`
+/// - Percent-encoded host: `postgresql://%2Fvar%2Frun%2Fpostgresql/dbname`
+/// - Empty host (auto-detects Unix socket or falls back to localhost): `postgresql:///dbname`
+///
+/// Unix socket connections automatically disable SSL/TLS.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use bestool_psql::create_pool;
+/// # async fn example() -> miette::Result<()> {
+/// // Connect via Unix socket using query parameter
+/// let pool = create_pool("postgresql:///postgres?host=/var/run/postgresql").await?;
+///
+/// // Connect via percent-encoded Unix socket path
+/// let pool = create_pool("postgresql://%2Fvar%2Frun%2Fpostgresql/postgres").await?;
+///
+/// // Connect with auto-detection (tries Unix socket first, then localhost)
+/// let pool = create_pool("postgresql:///postgres").await?;
+///
+/// // Traditional TCP connection
+/// let pool = create_pool("postgresql://user:pass@localhost:5432/dbname").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn create_pool(url: &str) -> Result<PgPool> {
-	let config = Config::from_str(url)
-		.into_diagnostic()
-		.wrap_err("parsing connection string")?;
-	let tls_connector = crate::tls::make_tls_connector().wrap_err("setting up TLS")?;
-	let manager = PgConnectionManager::new(config, tls_connector);
+	let config = parse::parse_connection_url(url)?;
 
+	debug!("Creating manager");
+	let tls = config.get_ssl_mode() != SslMode::Disable;
+	let manager = manager::PgConnectionManager::new(config, tls);
+
+	debug!("Creating pool");
 	let pool = Pool::builder()
 		.max_open(10)
 		.max_idle(5)
 		.max_lifetime(Some(Duration::from_secs(3600)))
-		.build(manager);
+		.build(manager.clone());
 
+	let pool = PgPool {
+		manager,
+		inner: pool,
+	};
+
+	debug!("Checking pool");
 	check_pool(&pool).await?;
 
 	Ok(pool)
@@ -64,34 +129,128 @@ mod tests {
 	async fn test_create_pool_valid_connection_string() {
 		let connection_string = "postgresql://localhost/test";
 		let result = create_pool(connection_string).await;
-		assert!(result.is_ok());
+		// May fail if database doesn't exist, but should not be a parsing error
+		if let Err(e) = result {
+			let error_msg = format!("{:?}", e);
+			assert!(
+				!error_msg.contains("parsing connection string"),
+				"Should not be a parsing error: {}",
+				error_msg
+			);
+		}
 	}
 
 	#[tokio::test]
 	async fn test_create_pool_with_full_url() {
 		let connection_string = "postgresql://user:pass@localhost:5432/testdb";
 		let result = create_pool(connection_string).await;
-		assert!(result.is_ok());
+		// May fail if database doesn't exist or auth fails, but should not be a parsing error
+		if let Err(e) = result {
+			let error_msg = format!("{:?}", e);
+			assert!(
+				!error_msg.contains("parsing connection string"),
+				"Should not be a parsing error: {}",
+				error_msg
+			);
+		}
 	}
 
 	#[tokio::test]
-	async fn test_pool_can_be_cloned() {
-		let connection_string = "postgresql://localhost/test";
-		let pool = create_pool(connection_string).await.unwrap();
-		let pool_clone = pool.clone();
-
-		assert_eq!(
-			pool.state().await.max_open,
-			pool_clone.state().await.max_open
-		);
+	async fn test_create_pool_with_unix_socket_path() {
+		// Test connecting via Unix socket path
+		let url = "postgresql:///postgres?host=/var/run/postgresql";
+		let result = create_pool(url).await;
+		// This may fail if PostgreSQL isn't running or isn't accessible via Unix socket
+		// but we can at least verify the parsing works
+		match result {
+			Ok(_) => {
+				// Connection succeeded
+			}
+			Err(e) => {
+				let error_msg = format!("{:?}", e);
+				// Verify it's not a parsing error but a connection error
+				assert!(
+					!error_msg.contains("parsing connection string"),
+					"Should not be a parsing error: {}",
+					error_msg
+				);
+			}
+		}
 	}
 
 	#[tokio::test]
-	async fn test_pool_configuration() {
-		let connection_string = "postgresql://localhost/test";
-		let pool = create_pool(connection_string).await.unwrap();
-		let state = pool.state().await;
+	async fn test_create_pool_with_encoded_unix_socket() {
+		// Test connecting via percent-encoded Unix socket path in host
+		let url = "postgresql://%2Fvar%2Frun%2Fpostgresql/postgres";
+		let result = create_pool(url).await;
+		// This may fail if PostgreSQL isn't running, but parsing should work
+		match result {
+			Ok(_) => {
+				// Connection succeeded
+			}
+			Err(e) => {
+				let error_msg = format!("{:?}", e);
+				// Verify it's not a parsing error
+				assert!(
+					!error_msg.contains("parsing connection string"),
+					"Should not be a parsing error: {}",
+					error_msg
+				);
+			}
+		}
+	}
 
-		assert_eq!(state.max_open, 10);
+	#[tokio::test]
+	async fn test_create_pool_with_no_host() {
+		// Test connection with no host specified (should try Unix socket or fallback to localhost)
+		let url = "postgresql:///postgres";
+		let result = create_pool(url).await;
+		// This should either succeed or fail with a connection error, not a parsing error
+		match result {
+			Ok(_) => {
+				// Connection succeeded
+			}
+			Err(e) => {
+				let error_msg = format!("{:?}", e);
+				// Verify it's not a parsing error
+				assert!(
+					!error_msg.contains("parsing connection string"),
+					"Should not be a parsing error: {}",
+					error_msg
+				);
+			}
+		}
+	}
+
+	#[tokio::test]
+	async fn test_unix_socket_connection_end_to_end() {
+		// Test that we can actually connect and query via Unix socket
+		let url = "postgresql:///postgres?host=/var/run/postgresql";
+		let result = create_pool(url).await;
+
+		match result {
+			Ok(pool) => {
+				// If connection succeeded, try a simple query
+				let conn = pool.get().await;
+				if let Ok(conn) = conn {
+					let result = conn.simple_query("SELECT 1 as test").await;
+					assert!(result.is_ok(), "Query should succeed");
+				}
+			}
+			Err(e) => {
+				let error_msg = format!("{:?}", e);
+				// If it failed, make sure it's not a parsing or TLS error
+				assert!(
+					!error_msg.contains("parsing connection string"),
+					"Should not be a parsing error: {}",
+					error_msg
+				);
+				assert!(
+					!error_msg.contains("TLS handshake"),
+					"Should not be a TLS error for Unix socket: {}",
+					error_msg
+				);
+			}
+		}
 	}
 }

@@ -483,6 +483,7 @@ dependencies = [
  "miette",
  "mobc",
  "mobc-postgres",
+ "percent-encoding",
  "rand 0.8.5",
  "redb",
  "reflink-copy",

@@ -42,6 +42,7 @@ pub async fn handle_execute(
 				};
 				let mut query_ctx = crate::query::QueryContext {
 					client: ctx.client,
+					pool: ctx.pool,
 					modifiers: modifiers.clone(),
 					theme: ctx.theme,
 					writer: &mut file,
@@ -69,6 +70,7 @@ pub async fn handle_execute(
 			let mut file = file_arc.lock().await;
 			let mut query_ctx = crate::query::QueryContext {
 				client: ctx.client,
+				pool: ctx.pool,
 				modifiers: modifiers.clone(),
 				theme: ctx.theme,
 				writer: &mut *file,
@@ -88,6 +90,7 @@ pub async fn handle_execute(
 			};
 			let mut query_ctx = crate::query::QueryContext {
 				client: ctx.client,
+				pool: ctx.pool,
 				modifiers,
 				theme: ctx.theme,
 				writer: &mut stdout,
