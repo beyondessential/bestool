@@ -1644,3 +1644,168 @@ async fn test_exit_allowed_in_readonly_mode() {
 	let result = crate::repl::exit::handle_exit(&mut ctx).await;
 	assert_eq!(result, std::ops::ControlFlow::Break(()));
 }
+
+#[tokio::test]
+async fn test_dml_commands_show_row_counts() {
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::pool::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
+
+	// Test CREATE TABLE (should show row count)
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result = crate::query::execute_query(
+		"CREATE TEMP TABLE test_dml (id INT, name TEXT)",
+		&mut query_ctx,
+	)
+	.await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// Output now goes to stderr, so buffer should be empty for DML/DDL
+	assert!(
+		output.is_empty(),
+		"Expected empty stdout for CREATE: {}",
+		output
+	);
+
+	// Test INSERT (should show row count)
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result = crate::query::execute_query(
+		"INSERT INTO test_dml VALUES (1, 'foo'), (2, 'bar')",
+		&mut query_ctx,
+	)
+	.await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// Output now goes to stderr, so buffer should be empty for DML/DDL
+	assert!(
+		output.is_empty(),
+		"Expected empty stdout for INSERT: {}",
+		output
+	);
+
+	// Test UPDATE (should show row count)
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result = crate::query::execute_query(
+		"UPDATE test_dml SET name = 'baz' WHERE id = 1",
+		&mut query_ctx,
+	)
+	.await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// Output now goes to stderr, so buffer should be empty for DML/DDL
+	assert!(
+		output.is_empty(),
+		"Expected empty stdout for UPDATE: {}",
+		output
+	);
+
+	// Test DELETE (should show row count)
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result =
+		crate::query::execute_query("DELETE FROM test_dml WHERE id = 2", &mut query_ctx).await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// Output now goes to stderr, so buffer should be empty for DML/DDL
+	assert!(
+		output.is_empty(),
+		"Expected empty stdout for DELETE: {}",
+		output
+	);
+
+	// Test SELECT with no rows (should show "(0 rows)")
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result =
+		crate::query::execute_query("SELECT * FROM test_dml WHERE id = 999", &mut query_ctx).await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// Output now goes to stderr for empty SELECT results
+	assert!(
+		output.is_empty(),
+		"Expected empty stdout for SELECT with no rows: {}",
+		output
+	);
+
+	// Test SELECT with rows (should show "(N rows)")
+	let mut buffer = Vec::new();
+	let mut query_ctx = crate::query::QueryContext {
+		client: &client,
+		pool: &pool,
+		modifiers: crate::parser::QueryModifiers::new(),
+		theme: crate::theme::Theme::Dark,
+		writer: &mut buffer,
+		use_colours: false,
+		vars: None,
+		repl_state: &repl_state,
+	};
+	let result = crate::query::execute_query("SELECT * FROM test_dml", &mut query_ctx).await;
+	assert!(result.is_ok());
+	let output = String::from_utf8_lossy(&buffer);
+	// For SELECT with rows, the table data goes to stdout
+	assert!(
+		output.contains("id"),
+		"Expected column 'id' in output: {}",
+		output
+	);
+	assert!(
+		output.contains("name"),
+		"Expected column 'name' in output: {}",
+		output
+	);
+}

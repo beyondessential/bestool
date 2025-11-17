@@ -475,6 +475,7 @@ dependencies = [
  "edit",
  "filetime",
  "fraction",
+ "futures",
  "hex",
  "indexmap",
  "jiff",

@@ -116,12 +116,12 @@ database=>
 -- bold red     -- write mode, failed transaction (you should issue a ROLLBACK)
 
 database=> insert into users (email, role, display_name) values ('admin@bes.au', 'admin', 'Admin');
-(no rows)
+(inserted 1 row, took 2.345 ms)
 database=*>
 -- Along with being bold blue, in an active transaction the prompt will have a *
 
 database=*> commit;
-(no rows)
+(committed 0 rows, took 1.234 ms)
 database=>
 -- COMMIT or ROLLBACK to return to a bold green idle state
 -- note that a new idle transaction has been automatically opened

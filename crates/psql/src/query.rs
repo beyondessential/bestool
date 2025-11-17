@@ -1,9 +1,11 @@
 use std::{
 	collections::BTreeMap,
+	pin::pin,
 	sync::{Arc, Mutex},
 };
 
 use crossterm::style::{Color, Stylize};
+use futures::StreamExt as _;
 use miette::Result;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
@@ -115,6 +117,46 @@ fn split_statements(sql: &str) -> Vec<String> {
 	statements
 }
 
+/// Convert SQL command to past tense verb for output
+fn command_to_verb(command: &str) -> &str {
+	match command.to_uppercase().as_str() {
+		"INSERT" => "inserted",
+		"UPDATE" => "updated",
+		"DELETE" => "deleted",
+		"CREATE" => "created",
+		"DROP" => "dropped",
+		"ALTER" => "altered",
+		"TRUNCATE" => "truncated",
+		"BEGIN" => "began",
+		"COMMIT" => "committed",
+		"ROLLBACK" => "rolled back",
+		"GRANT" => "granted",
+		"REVOKE" => "revoked",
+		"COPY" => "copied",
+		"MERGE" => "merged",
+		"REPLACE" => "replaced",
+		"SET" => "set",
+		"RESET" => "reset",
+		"SAVEPOINT" => "savepoint",
+		"RELEASE" => "released",
+		"PREPARE" => "prepared",
+		"EXECUTE" => "executed",
+		"DEALLOCATE" => "deallocated",
+		"DISCARD" => "discarded",
+		"LOCK" => "locked",
+		"UNLISTEN" => "unlistened",
+		"LISTEN" => "listened",
+		"NOTIFY" => "notified",
+		"VACUUM" => "vacuumed",
+		"ANALYZE" => "analyzed",
+		"CLUSTER" => "clustered",
+		"REINDEX" => "reindexed",
+		"COMMENT" => "commented",
+		"EXPLAIN" => "explained",
+		_ => "affected",
+	}
+}
+
 /// Execute a single SQL statement and display the results.
 async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	statement: &str,
@@ -131,8 +173,9 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	let start_time = std::time::Instant::now();
 	let mut progress_shown = false;
 
-	let result = tokio::select! {
-		result = ctx.client.query(statement, &[]) => {
+	// Use query_raw to get both typed rows and affected count
+	let row_stream = tokio::select! {
+		result = ctx.client.query_raw(statement, &[] as &[i32; 0]) => {
 			// Clear progress indicator if it was shown
 			if progress_shown {
 				eprint!("\r\x1b[K"); // Clear the line
@@ -175,8 +218,8 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
-	let rows = match result {
-		Ok(rows) => rows,
+	let mut row_stream = match row_stream {
+		Ok(stream) => stream,
 		Err(e) => {
 			// Convert to our custom error type with query context
 			if let Some(db_error) = e.as_db_error() {
@@ -188,18 +231,52 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
+	// Collect all rows from the stream (need to pin for next())
+	let mut row_stream = pin!(row_stream);
+	let mut rows = Vec::new();
+	while let Some(row_result) = row_stream.next().await {
+		match row_result {
+			Ok(row) => rows.push(row),
+			Err(e) => {
+				// Convert to our custom error type with query context
+				if let Some(db_error) = e.as_db_error() {
+					return Err(PgDatabaseError::from_db_error(db_error, Some(statement)).into());
+				} else {
+					// Non-database error (connection error, etc)
+					return Err(miette::miette!("Database error: {:?}", e));
+				}
+			}
+		}
+	}
+
 	let duration = start.elapsed();
 
-	if rows.is_empty() {
-		let msg = if ctx.use_colours {
-			format!("{}\n", "(no rows)".with(Color::Blue).dim())
+	// Get the affected rows count from the stream (only available after exhausting the stream)
+	let rows_affected = row_stream.rows_affected();
+
+	// Handle DML/DDL commands (no rows returned)
+	if rows.is_empty()
+		&& let Some(count) = rows_affected
+	{
+		let command = statement.split_whitespace().next().unwrap_or("QUERY");
+		let verb = command_to_verb(command);
+		let status_text = format!(
+			"({} {} row{}, took {:.3} ms)",
+			verb,
+			count,
+			if count == 1 { "" } else { "s" },
+			duration.as_secs_f64() * 1000.0
+		);
+
+		let status_msg = if ctx.use_colours {
+			format!("{}\n", status_text.with(Color::Blue).dim())
 		} else {
-			"(no rows)\n".to_string()
+			format!("{status_text}\n")
 		};
-		ctx.writer
-			.write_all(msg.as_bytes())
-			.await
-			.map_err(|e| miette::miette!("Failed to write output: {}", e))?;
+
+		// Status message goes to stderr like psql
+		eprint!("{status_msg}");
+
 		ctx.writer
 			.flush()
 			.await
@@ -207,6 +284,27 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		return Ok(());
 	}
 
+	// Handle SELECT queries with no results
+	if rows.is_empty() {
+		let status_text = format!("(0 rows, took {:.3} ms)", duration.as_secs_f64() * 1000.0);
+
+		let status_msg = if ctx.use_colours {
+			format!("{}\n", status_text.with(Color::Blue).dim())
+		} else {
+			format!("{status_text}\n")
+		};
+
+		// Status message goes to stderr like psql
+		eprint!("{status_msg}");
+
+		ctx.writer
+			.flush()
+			.await
+			.map_err(|e| miette::miette!("Failed to flush output: {}", e))?;
+		return Ok(());
+	}
+
+	// Handle SELECT queries with results
 	if let Some(first_row) = rows.first() {
 		let columns = first_row.columns();
 
@@ -286,17 +384,19 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 
 		let status_text = format!(
-			"({} row{}, took {:.3}ms)",
+			"({} row{}, took {:.3} ms)",
 			rows.len(),
 			if rows.len() == 1 { "" } else { "s" },
 			duration.as_secs_f64() * 1000.0
 		);
+
 		let status_msg = if ctx.use_colours {
 			format!("{}\n", status_text.with(Color::Blue).dim())
 		} else {
 			format!("{status_text}\n")
 		};
-		// Status messages always go to stderr
+
+		// Status message goes to stderr
 		eprint!("{status_msg}");
 
 		// Handle VarSet modifier: if exactly one row, store column values as variables
@@ -574,5 +674,28 @@ mod tests {
 		let over_boundary = 51;
 		let should_truncate_51 = over_boundary > 50;
 		assert!(should_truncate_51);
+	}
+
+	#[test]
+	fn test_command_to_verb() {
+		assert_eq!(command_to_verb("INSERT"), "inserted");
+		assert_eq!(command_to_verb("insert"), "inserted");
+		assert_eq!(command_to_verb("UPDATE"), "updated");
+		assert_eq!(command_to_verb("DELETE"), "deleted");
+		assert_eq!(command_to_verb("CREATE"), "created");
+		assert_eq!(command_to_verb("DROP"), "dropped");
+		assert_eq!(command_to_verb("ALTER"), "altered");
+		assert_eq!(command_to_verb("TRUNCATE"), "truncated");
+		assert_eq!(command_to_verb("BEGIN"), "began");
+		assert_eq!(command_to_verb("COMMIT"), "committed");
+		assert_eq!(command_to_verb("ROLLBACK"), "rolled back");
+		assert_eq!(command_to_verb("GRANT"), "granted");
+		assert_eq!(command_to_verb("REVOKE"), "revoked");
+		assert_eq!(command_to_verb("COPY"), "copied");
+		assert_eq!(command_to_verb("MERGE"), "merged");
+		assert_eq!(command_to_verb("SET"), "set");
+		assert_eq!(command_to_verb("VACUUM"), "vacuumed");
+		assert_eq!(command_to_verb("ANALYZE"), "analyzed");
+		assert_eq!(command_to_verb("UNKNOWN"), "affected");
 	}
 }
