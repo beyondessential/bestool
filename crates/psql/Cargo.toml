@@ -33,18 +33,18 @@ mobc = "0.9.0"
 mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
 indexmap = { version = "2.12.0", features = ["serde"] }
 percent-encoding = "2.3"
-rand = "0.8.5"
+rand = "0.9.2"
 redb = "3.1.0"
 reflink-copy = "0.1.20"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
-rust_xlsxwriter = "0.80.0"
+rust_xlsxwriter = "0.92.0"
 rustyline = { version = "17.0.2", features = ["signal-hook"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
-sysinfo = "0.32.1"
+sysinfo = "0.37.2"
 tempfile = "3.21.0"
 fraction = { version = "0.15", features = ["with-postgres-support"] }
 thiserror = "2.0.17"
