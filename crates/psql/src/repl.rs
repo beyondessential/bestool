@@ -1,7 +1,9 @@
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
 use miette::{IntoDiagnostic, Result, bail, miette};
-use rustyline::{Editor, error::ReadlineError};
+use rustyline::{
+	Cmd, Editor, EventHandler, KeyEvent, config::CompletionType, error::ReadlineError,
+};
 use std::sync::Mutex;
 use tracing::{debug, instrument};
 
@@ -191,11 +193,15 @@ pub async fn run(config: Config) -> Result<()> {
 		rustyline::Config::builder()
 			.auto_add_history(false)
 			.enable_signals(false)
+			.completion_type(CompletionType::List)
 			.build(),
 		audit,
 	)
 	.into_diagnostic()?;
 	rl.set_helper(Some(completer));
+
+	// Bind Alt+Enter to insert a literal newline
+	rl.bind_sequence(KeyEvent::alt('\r'), EventHandler::Simple(Cmd::Newline));
 
 	if config.write {
 		let mut ctx = ReplContext {
