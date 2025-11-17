@@ -1,5 +1,6 @@
 pub const METACOMMAND: &[&str] = &[
 	r"\?",
+	r"\copy",
 	r"\d!",
 	r"\d!+",
 	r"\d",

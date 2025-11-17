@@ -17,6 +17,7 @@ pub(crate) enum ReplAction {
 	ToggleExpanded,
 	ToggleWriteMode,
 	Edit,
+	Copy,
 	IncludeFile {
 		file_path: PathBuf,
 		vars: Vec<(String, String)>,
@@ -88,6 +89,7 @@ pub(crate) fn handle_input(
 			Metacommand::Expanded => ReplAction::ToggleExpanded,
 			Metacommand::WriteMode => ReplAction::ToggleWriteMode,
 			Metacommand::Edit => ReplAction::Edit,
+			Metacommand::Copy => ReplAction::Copy,
 			Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {
 				file_path: file_path.into(),
 				vars,
@@ -379,5 +381,21 @@ mod tests {
 			}
 			_ => panic!("Expected Execute action"),
 		}
+	}
+
+	#[test]
+	fn test_copy_metacommand() {
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "\\copy", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(action, ReplAction::Copy);
+	}
+
+	#[test]
+	fn test_copy_metacommand_with_args() {
+		let state = ReplState::new();
+		let (buffer, action) = handle_input("", "\\copy (select from blah) with headers", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(action, ReplAction::Copy);
 	}
 }

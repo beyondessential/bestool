@@ -19,6 +19,7 @@ pub(crate) use state::ReplContext;
 pub use state::ReplState;
 pub use transaction::TransactionState;
 
+mod copy;
 mod debug;
 mod describe;
 mod edit;
@@ -55,6 +56,7 @@ impl ReplAction {
 			ReplAction::Exit => exit::handle_exit(ctx).await,
 			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
 			ReplAction::Edit => edit::handle_edit(ctx).await,
+			ReplAction::Copy => copy::handle_copy(),
 			ReplAction::IncludeFile { file_path, vars } => {
 				include::handle_include(ctx, &file_path, vars).await
 			}

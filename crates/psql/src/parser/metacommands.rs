@@ -5,6 +5,7 @@ pub(crate) use debug::DebugWhat;
 pub use list::ListItem;
 pub(crate) use result::{ResultFormat, ResultSubcommand};
 
+mod copy;
 mod debug;
 mod describe;
 mod edit;
@@ -25,6 +26,7 @@ pub(crate) enum Metacommand {
 	Expanded,
 	WriteMode,
 	Edit,
+	Copy,
 	Include {
 		file_path: String,
 		vars: Vec<(String, String)>,
@@ -86,6 +88,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		expanded::parse,
 		write_mode::parse,
 		edit::parse,
+		copy::parse,
 		include::parse,
 		output::parse,
 		debug::parse,
