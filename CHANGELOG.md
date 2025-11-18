@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.13](https://github.com/beyondessential/bestool/compare/v1.1.12..1.1.13) - 2025-11-17
+## [1.1.13](https://github.com/beyondessential/bestool/compare/v1.1.12..v1.1.13) - 2025-11-17
 
 
 - **Deps:** Switch reqwest to rustls - ([0893484](https://github.com/beyondessential/bestool/commit/089348402854911ed664a293749c62dead35d34b))
