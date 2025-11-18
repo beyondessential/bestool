@@ -10,6 +10,7 @@ mod describe;
 mod keywords;
 mod list;
 mod paths;
+mod query_modifiers;
 mod readline;
 mod result;
 mod snippets;
@@ -114,24 +115,18 @@ impl SqlCompleter {
 		if current_word.starts_with('\\') {
 			let is_query_context = is_sql_query_context(text_before_cursor);
 
-			for cmd in keywords::METACOMMAND {
-				let is_query_modifier = cmd.starts_with("\\g");
-
-				// Skip query modifiers when completing metacommands at line start
-				if !is_query_context && is_query_modifier {
-					continue;
-				}
-
-				// Skip metacommands when completing query modifiers after SQL
-				if is_query_context && !is_query_modifier {
-					continue;
-				}
-
-				if cmd.to_lowercase().starts_with(&current_word.to_lowercase()) {
-					completions.push(Pair {
-						display: cmd.to_string(),
-						replacement: cmd.to_string(),
-					});
+			if is_query_context {
+				// In SQL query context, generate query modifier completions
+				completions.extend(query_modifiers::generate_completions(current_word));
+			} else {
+				// At line start, show metacommands (excluding query modifiers)
+				for cmd in keywords::METACOMMAND {
+					if cmd.to_lowercase().starts_with(&current_word.to_lowercase()) {
+						completions.push(Pair {
+							display: cmd.to_string(),
+							replacement: cmd.to_string(),
+						});
+					}
 				}
 			}
 		} else {
@@ -297,9 +292,14 @@ mod tests {
 	fn test_backslash_only_no_query_modifiers() {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions(r"\", 1);
-		// Should not include query modifiers like \g, \gx when completing from just \
-		assert!(!completions.iter().any(|c| c.display == r"\g"));
-		assert!(!completions.iter().any(|c| c.display == r"\gx"));
+		// Should not include query modifiers when completing from just \
+		// \get is a metacommand and should be present, but \gx etc should not
+		assert!(completions.iter().any(|c| c.display == r"\get"));
+		assert!(
+			!completions
+				.iter()
+				.any(|c| c.display == r"\gx" || c.display == r"\gj" || c.display == r"\gz")
+		);
 		// But should include metacommands
 		assert!(completions.iter().any(|c| c.display == r"\q"));
 		assert!(completions.iter().any(|c| c.display == r"\d"));
@@ -308,12 +308,23 @@ mod tests {
 	#[test]
 	fn test_query_context_only_modifiers() {
 		let completer = SqlCompleter::new(Theme::Dark);
-		let completions = completer.find_completions(r"select 1 \", 10);
+		let completions = completer.find_completions(r"select 1 \g", 11);
 		// Should include query modifiers
 		assert!(completions.iter().any(|c| c.display == r"\g"));
 		assert!(completions.iter().any(|c| c.display == r"\gx"));
+		assert!(completions.iter().any(|c| c.display == r"\gj"));
 		// But should not include metacommands
 		assert!(!completions.iter().any(|c| c.display == r"\q"));
 		assert!(!completions.iter().any(|c| c.display == r"\d"));
+	}
+
+	#[test]
+	fn test_query_modifier_combinations() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions(r"select 1 \gx", 12);
+		// Should suggest combinations with x already present
+		assert!(completions.iter().any(|c| c.display == r"\gxj"));
+		assert!(completions.iter().any(|c| c.display == r"\gxz"));
+		assert!(completions.iter().any(|c| c.display == r"\gxset"));
 	}
 }
