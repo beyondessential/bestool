@@ -1,6 +1,8 @@
+// \copy is explicitly excluded from this list because we don't want to suggest it
+// (its only purpose and action is to say we don't support it)
+
 pub const METACOMMAND: &[&str] = &[
 	r"\?",
-	r"\copy",
 	r"\d!",
 	r"\d!+",
 	r"\d",

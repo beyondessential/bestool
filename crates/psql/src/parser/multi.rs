@@ -1,4 +1,4 @@
-use super::{Metacommand, QueryModifiers, parse_metacommand, parse_query_modifiers};
+use super::{Metacommand, QueryModifiers, parse_metacommand, parse_query_modifiers, strip_comment};
 use crate::input::ReplAction;
 use crate::repl::ReplState;
 
@@ -6,6 +6,11 @@ use crate::repl::ReplState;
 pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplAction>, String) {
 	let input = input.trim();
 	if input.is_empty() {
+		return (vec![], String::new());
+	}
+
+	// Check if the entire input is just a comment
+	if strip_comment(input).is_none() {
 		return (vec![], String::new());
 	}
 
@@ -26,8 +31,11 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 			let line_end = remaining.find('\n').unwrap_or(remaining.len());
 			let line = &remaining[..line_end];
 
-			match parse_metacommand(line) {
-				Ok(Some(metacmd)) => {
+			// Strip comments from the line before parsing
+			let line_without_comment = strip_comment(line);
+
+			if let Some(stripped_line) = line_without_comment {
+				if let Ok(Some(metacmd)) = parse_metacommand(stripped_line) {
 					let action = metacommand_to_action(metacmd);
 					actions.push(action);
 
@@ -39,7 +47,14 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 					}
 					continue;
 				}
-				Ok(None) | Err(_) => {}
+			} else {
+				// Line is only a comment, skip it
+				if line_end < remaining.len() {
+					remaining = &remaining[line_end + 1..];
+				} else {
+					remaining = "";
+				}
+				continue;
 			}
 		}
 
@@ -107,11 +122,37 @@ fn try_parse_query(input: &str) -> Option<(String, QueryModifiers, &str)> {
 		(Some(semi_pos), Some(bs_pos)) if semi_pos < bs_pos => {
 			let sql = trimmed[..semi_pos].trim().to_string();
 			let rest = &trimmed[semi_pos + 1..];
+			// Check if rest of line is just a comment
+			let rest = if let Some(newline_pos) = rest.find('\n') {
+				let line = &rest[..newline_pos];
+				if strip_comment(line).is_none() {
+					&rest[newline_pos + 1..]
+				} else {
+					rest
+				}
+			} else if strip_comment(rest).is_none() {
+				""
+			} else {
+				rest
+			};
 			Some((sql, QueryModifiers::new(), rest))
 		}
 		(Some(semi_pos), None) => {
 			let sql = trimmed[..semi_pos].trim().to_string();
 			let rest = &trimmed[semi_pos + 1..];
+			// Check if rest of line is just a comment
+			let rest = if let Some(newline_pos) = rest.find('\n') {
+				let line = &rest[..newline_pos];
+				if strip_comment(line).is_none() {
+					&rest[newline_pos + 1..]
+				} else {
+					rest
+				}
+			} else if strip_comment(rest).is_none() {
+				""
+			} else {
+				rest
+			};
 			Some((sql, QueryModifiers::new(), rest))
 		}
 		(_, Some(bs_pos)) => {
@@ -126,12 +167,10 @@ fn try_parse_query(input: &str) -> Option<(String, QueryModifiers, &str)> {
 					let rest = &modifier_part[newline_pos + 1..];
 					return Some((sql, modifiers, rest));
 				}
-			} else {
-				if let Ok(Some((sql, modifiers))) =
-					parse_query_modifiers(&format!("{}{}", query_part, modifier_part))
-				{
-					return Some((sql, modifiers, ""));
-				}
+			} else if let Ok(Some((sql, modifiers))) =
+				parse_query_modifiers(&format!("{}{}", query_part, modifier_part))
+			{
+				return Some((sql, modifiers, ""));
 			}
 
 			None
@@ -178,10 +217,10 @@ fn find_statement_end_backslash_g(input: &str) -> Option<usize> {
 				in_double_quote = !in_double_quote;
 			}
 			'\\' if !in_single_quote && !in_double_quote => {
-				if let Some(next_ch) = input[i + 1..].chars().next() {
-					if next_ch == 'g' || next_ch == 'G' {
-						return Some(i);
-					}
+				if let Some(next_ch) = input[i + 1..].chars().next()
+					&& (next_ch == 'g' || next_ch == 'G')
+				{
+					return Some(i);
 				}
 			}
 			'\n' if !in_single_quote && !in_double_quote => {
@@ -190,11 +229,12 @@ fn find_statement_end_backslash_g(input: &str) -> Option<usize> {
 				let trimmed_rest = rest.trim_start();
 				if trimmed_rest.starts_with('\\') {
 					// Check if it's actually a metacommand (not just \g)
-					if let Some(second_char) = trimmed_rest.chars().nth(1) {
-						if second_char != 'g' && second_char != 'G' {
-							// This is a metacommand, end the query here
-							return Some(i);
-						}
+					if let Some(second_char) = trimmed_rest.chars().nth(1)
+						&& second_char != 'g'
+						&& second_char != 'G'
+					{
+						// This is a metacommand, end the query here
+						return Some(i);
 					}
 				}
 			}
@@ -432,6 +472,96 @@ mod tests {
 		);
 		if !actions.is_empty() {
 			assert_eq!(actions.len(), 1);
+		}
+	}
+
+	#[test]
+	fn test_comment_only_input() {
+		let state = make_state();
+		let (actions, remaining) = parse_multi_input("-- foo", &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 0);
+	}
+
+	#[test]
+	fn test_metacommand_with_comment() {
+		let state = make_state();
+		let (actions, remaining) = parse_multi_input("\\vars -- foo", &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::LookupVar { pattern } => {
+				assert_eq!(pattern, &None);
+			}
+			_ => panic!("Expected LookupVar"),
+		}
+	}
+
+	#[test]
+	fn test_metacommand_with_pattern_and_comment() {
+		let state = make_state();
+		let (actions, remaining) = parse_multi_input("\\vars my* -- foo", &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::LookupVar { pattern } => {
+				assert_eq!(pattern, &Some("my*".to_string()));
+			}
+			_ => panic!("Expected LookupVar"),
+		}
+	}
+
+	#[test]
+	fn test_query_with_comment() {
+		let state = make_state();
+		let (actions, remaining) = parse_multi_input("select 1 + 1; -- foo", &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "select 1 + 1");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_multiline_with_comment() {
+		let state = make_state();
+		let input = "select 1 + -- bar\n1;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				// The SQL will contain the comment because Postgres handles it
+				assert!(sql.contains("select 1 +"));
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_comment_line_between_statements() {
+		let state = make_state();
+		let input = "select 1;\n-- foo\nselect 2;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 2);
+	}
+
+	#[test]
+	fn test_comment_not_in_string() {
+		let state = make_state();
+		let input = "select '-- not a comment';";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "select '-- not a comment'");
+			}
+			_ => panic!("Expected Execute"),
 		}
 	}
 }

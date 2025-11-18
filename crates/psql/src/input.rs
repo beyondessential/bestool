@@ -89,7 +89,12 @@ pub(crate) fn handle_input(
 
 	if actions.is_empty() {
 		// No complete statements found
-		(new_buffer, vec![])
+		// If remaining is empty, it means the input was comment-only
+		if remaining.is_empty() {
+			(String::new(), vec![])
+		} else {
+			(new_buffer, vec![])
+		}
 	} else {
 		// Return completed actions and remaining buffer
 		(remaining, actions)
@@ -328,6 +333,42 @@ mod tests {
 	}
 
 	#[test]
+	fn test_comment_only_input() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "-- foo", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 0);
+	}
+
+	#[test]
+	fn test_metacommand_with_comment() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "\\vars -- foo", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::LookupVar { pattern } => {
+				assert_eq!(pattern, &None);
+			}
+			_ => panic!("Expected LookupVar action"),
+		}
+	}
+
+	#[test]
+	fn test_query_with_inline_comment() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "SELECT 1 + 1; -- foo", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 1 + 1");
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
 	fn test_copy_metacommand() {
 		let state = ReplState::new();
 		let (buffer, actions) = handle_input("", "\\copy", &state);
@@ -370,5 +411,50 @@ mod tests {
 		}
 
 		assert!(matches!(actions[2], ReplAction::Result { .. }));
+	}
+
+	#[test]
+	fn test_multiline_query_with_comments() {
+		let state = ReplState::new();
+		let (buffer1, actions1) = handle_input("", "select 1 + -- adding", &state);
+		assert_eq!(buffer1, "select 1 + -- adding");
+		assert_eq!(actions1.len(), 0);
+
+		let (buffer2, actions2) = handle_input(&buffer1, "1; -- result is 2", &state);
+		assert_eq!(buffer2, "");
+		assert_eq!(actions2.len(), 1);
+		match &actions2[0] {
+			ReplAction::Execute { sql, .. } => {
+				// The SQL contains the comment because Postgres handles it
+				assert!(sql.contains("select 1 +"));
+				assert!(sql.contains("1"));
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_comment_between_incomplete_query_lines() {
+		let state = ReplState::new();
+		let (buffer1, actions1) = handle_input("", "select", &state);
+		assert_eq!(buffer1, "select");
+		assert_eq!(actions1.len(), 0);
+
+		let (buffer2, actions2) = handle_input(&buffer1, "-- this is a comment", &state);
+		// Comment is preserved in buffer for Postgres to handle
+		assert_eq!(buffer2, "select\n-- this is a comment");
+		assert_eq!(actions2.len(), 0);
+
+		let (buffer3, actions3) = handle_input(&buffer2, "1;", &state);
+		assert_eq!(buffer3, "");
+		assert_eq!(actions3.len(), 1);
+		match &actions3[0] {
+			ReplAction::Execute { sql, .. } => {
+				// SQL contains the comment for Postgres to handle
+				assert!(sql.contains("select"));
+				assert!(sql.contains("-- this is a comment"));
+			}
+			_ => panic!("Expected Execute action"),
+		}
 	}
 }

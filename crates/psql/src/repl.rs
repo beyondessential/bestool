@@ -266,9 +266,17 @@ pub async fn run(config: Config) -> Result<()> {
 				};
 
 				// Handle all actions
-				for action in actions {
-					if action.handle(&mut ctx, line).await.is_break() {
-						break;
+				if actions.is_empty() {
+					// No actions to execute, but still add to history
+					let history = ctx.rl.history_mut();
+					if let Err(e) = history.add_entry(line.into()) {
+						debug!("failed to add to history: {e}");
+					}
+				} else {
+					for action in actions {
+						if action.handle(&mut ctx, line).await.is_break() {
+							break;
+						}
 					}
 				}
 			}
