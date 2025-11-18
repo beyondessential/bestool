@@ -61,6 +61,7 @@ pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 		ext = if cfg!(windows) { ".exe" } else { "" }
 	);
 	let dest = dir.join(&filename);
+	let _ = tokio::fs::remove_file(&dest).await;
 
 	let host = DownloadSource::Tools.host();
 	let url = host
