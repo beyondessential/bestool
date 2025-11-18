@@ -5,6 +5,26 @@ const MODIFIER_CHARS: &[char] = &['x', 'j', 'o', 'v', 'z'];
 
 /// Generate query modifier completions based on what the user has typed
 pub(super) fn generate_completions(current_word: &str) -> Vec<Pair> {
+	// Handle just backslash - suggest all \g variants
+	if current_word == "\\" {
+		let mut completions = vec![Pair {
+			display: "\\g".to_string(),
+			replacement: "\\g".to_string(),
+		}];
+
+		// Add all single-modifier variants
+		for &modifier in MODIFIER_CHARS {
+			let mut completion = String::from("\\g");
+			completion.push(modifier);
+			completions.push(Pair {
+				display: completion.clone(),
+				replacement: completion,
+			});
+		}
+
+		return completions;
+	}
+
 	if !current_word.starts_with("\\g") && !current_word.starts_with("\\G") {
 		return Vec::new();
 	}
@@ -183,6 +203,12 @@ mod tests {
 	#[test]
 	fn test_backslash_only() {
 		let completions = generate_completions("\\");
-		assert!(completions.is_empty());
+		// Should suggest \g and all single-modifier variants
+		assert!(completions.iter().any(|c| c.display == "\\g"));
+		assert!(completions.iter().any(|c| c.display == "\\gx"));
+		assert!(completions.iter().any(|c| c.display == "\\gj"));
+		assert!(completions.iter().any(|c| c.display == "\\go"));
+		assert!(completions.iter().any(|c| c.display == "\\gv"));
+		assert!(completions.iter().any(|c| c.display == "\\gz"));
 	}
 }

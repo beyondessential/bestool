@@ -327,4 +327,13 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == r"\gxz"));
 		assert!(completions.iter().any(|c| c.display == r"\gxset"));
 	}
+
+	#[test]
+	fn test_query_context_backslash_alone() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions(r"select true \", 13);
+		// Should get \g completion when just backslash is typed after SQL
+		assert!(completions.iter().any(|c| c.display == r"\g"));
+		assert!(completions.iter().any(|c| c.display == r"\gx"));
+	}
 }
