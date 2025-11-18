@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.1.15](https://github.com/beyondessential/bestool/compare/v1.1.14..1.1.15) - 2025-11-18
+
+
+
+### Self-update
+
+- **Bugfix:** Delete temp file before downloading update - ([08b2102](https://github.com/beyondessential/bestool/commit/08b2102559562d5a3d911f67c06b0fa3042effe6))
+
+---
 ## [1.1.13](https://github.com/beyondessential/bestool/compare/v1.1.12..v1.1.13) - 2025-11-17
 
 
