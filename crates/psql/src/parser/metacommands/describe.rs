@@ -10,7 +10,7 @@ pub fn parse(
 	input: &mut &str,
 ) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
 	literal('\\').parse_next(input)?;
-	alt((literal('d'), literal("describe"))).parse_next(input)?;
+	alt((literal("describe"), literal('d'))).parse_next(input)?;
 
 	// Parse modifiers: + for detail, ! for sameconn (in any order)
 	let has_plus_first = opt(literal("+")).parse_next(input)?.is_some();
@@ -129,6 +129,32 @@ mod tests {
 			Some(Metacommand::Describe {
 				item: "public.users".to_string(),
 				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_describe_long_form() {
+		let result = parse_metacommand("\\describe users").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Describe {
+				item: "users".to_string(),
+				detail: false,
+				sameconn: false,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_describe_long_form_plus() {
+		let result = parse_metacommand("\\describe+ users").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Describe {
+				item: "users".to_string(),
+				detail: true,
 				sameconn: false,
 			})
 		);

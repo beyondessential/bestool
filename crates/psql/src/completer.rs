@@ -15,6 +15,27 @@ mod result;
 mod snippets;
 mod vars;
 
+/// Check if text appears to be a SQL query (not a metacommand context)
+fn is_sql_query_context(text: &str) -> bool {
+	let trimmed = text.trim_start();
+	if trimmed.starts_with('\\') && !trimmed.contains(char::is_whitespace) {
+		// Just a backslash or metacommand without spaces - not a query context
+		return false;
+	}
+
+	// Check if there's SQL-like content before the backslash
+	if let Some(pos) = text.rfind('\\') {
+		let before_backslash = text[..pos].trim();
+		if before_backslash.is_empty() {
+			return false;
+		}
+		// Has content before backslash - likely a query with a modifier
+		return true;
+	}
+
+	false
+}
+
 /// SQL keywords and psql commands for autocompletion
 pub struct SqlCompleter {
 	schema_cache: Option<Arc<RwLock<SchemaCache>>>,
@@ -91,7 +112,21 @@ impl SqlCompleter {
 		let mut completions = Vec::new();
 
 		if current_word.starts_with('\\') {
+			let is_query_context = is_sql_query_context(text_before_cursor);
+
 			for cmd in keywords::METACOMMAND {
+				let is_query_modifier = cmd.starts_with("\\g");
+
+				// Skip query modifiers when completing metacommands at line start
+				if !is_query_context && is_query_modifier {
+					continue;
+				}
+
+				// Skip metacommands when completing query modifiers after SQL
+				if is_query_context && !is_query_modifier {
+					continue;
+				}
+
 				if cmd.to_lowercase().starts_with(&current_word.to_lowercase()) {
 					completions.push(Pair {
 						display: cmd.to_string(),
@@ -256,5 +291,29 @@ mod tests {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions(r"\hel", 4);
 		assert!(completions.iter().any(|c| c.display == r"\help"));
+	}
+
+	#[test]
+	fn test_backslash_only_no_query_modifiers() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions(r"\", 1);
+		// Should not include query modifiers like \g, \gx when completing from just \
+		assert!(!completions.iter().any(|c| c.display == r"\g"));
+		assert!(!completions.iter().any(|c| c.display == r"\gx"));
+		// But should include metacommands
+		assert!(completions.iter().any(|c| c.display == r"\q"));
+		assert!(completions.iter().any(|c| c.display == r"\d"));
+	}
+
+	#[test]
+	fn test_query_context_only_modifiers() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions(r"select 1 \", 10);
+		// Should include query modifiers
+		assert!(completions.iter().any(|c| c.display == r"\g"));
+		assert!(completions.iter().any(|c| c.display == r"\gx"));
+		// But should not include metacommands
+		assert!(!completions.iter().any(|c| c.display == r"\q"));
+		assert!(!completions.iter().any(|c| c.display == r"\d"));
 	}
 }
