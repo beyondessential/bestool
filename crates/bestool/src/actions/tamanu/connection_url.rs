@@ -9,6 +9,7 @@ const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
 	.add(b'#')
 	.add(b'[')
 	.add(b']')
+	.add(b'%')
 	.add(b'$');
 
 /// Builds a PostgreSQL connection URL with proper encoding
