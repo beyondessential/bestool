@@ -266,6 +266,7 @@ pub async fn run(config: Config) -> Result<()> {
 				};
 
 				// Handle all actions
+				let mut should_exit = false;
 				if actions.is_empty() {
 					// No actions to execute, but still add to history
 					let history = ctx.rl.history_mut();
@@ -275,9 +276,14 @@ pub async fn run(config: Config) -> Result<()> {
 				} else {
 					for action in actions {
 						if action.handle(&mut ctx, line).await.is_break() {
+							should_exit = true;
 							break;
 						}
 					}
+				}
+
+				if should_exit {
+					break;
 				}
 			}
 			Err(ReadlineError::Interrupted) => {
