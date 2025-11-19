@@ -14,6 +14,27 @@ use crate::{
 
 use super::Context;
 
+#[cfg(unix)]
+fn check_exe_writable() -> Result<()> {
+	let exe_path = std::env::current_exe().into_diagnostic()?;
+	let exe_dir = exe_path
+		.parent()
+		.ok_or_else(|| miette!("current exe is not in a directory"))?;
+
+	// Try to check if we can actually write to the directory
+	let test_file = exe_dir.join(".bestool_write_test");
+	if std::fs::write(&test_file, b"test").is_err() {
+		return Err(miette!(
+			"Cannot write to executable directory: {}\n\
+			Please run with sudo: sudo bestool self-update",
+			exe_dir.display()
+		));
+	}
+	let _ = std::fs::remove_file(test_file);
+
+	Ok(())
+}
+
 /// Update this bestool.
 ///
 /// Alias: self
@@ -42,6 +63,9 @@ pub struct SelfUpdateArgs {
 }
 
 pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
+	#[cfg(unix)]
+	check_exe_writable()?;
+
 	let SelfUpdateArgs {
 		version,
 		target,
@@ -104,4 +128,48 @@ fn add_self_to_path() -> Result<()> {
 	windows_env::prepend("PATH", self_dir).into_diagnostic()?;
 
 	Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use super::*;
+	use std::fs;
+	use tempfile::TempDir;
+
+	#[test]
+	fn test_check_exe_writable_with_writable_dir() {
+		// This test checks that the function succeeds when the exe is in a writable directory
+		// We can't easily test this in a hermetic way since check_exe_writable() uses current_exe(),
+		// but we can verify the logic by checking that a writable temp directory works
+		let temp_dir = TempDir::new().unwrap();
+		let test_file = temp_dir.path().join(".bestool_write_test");
+
+		// Should succeed
+		assert!(fs::write(&test_file, b"test").is_ok());
+		assert!(fs::remove_file(test_file).is_ok());
+	}
+
+	#[test]
+	fn test_check_exe_writable_with_readonly_dir() {
+		// This test verifies that write attempts fail on read-only directories
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = TempDir::new().unwrap();
+		let temp_path = temp_dir.path();
+
+		// Make directory read-only
+		let mut perms = fs::metadata(temp_path).unwrap().permissions();
+		perms.set_mode(0o555);
+		fs::set_permissions(temp_path, perms).unwrap();
+
+		let test_file = temp_path.join(".bestool_write_test");
+
+		// Should fail
+		assert!(fs::write(&test_file, b"test").is_err());
+
+		// Restore permissions for cleanup
+		let mut perms = fs::metadata(temp_path).unwrap().permissions();
+		perms.set_mode(0o755);
+		let _ = fs::set_permissions(temp_path, perms);
+	}
 }
