@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use miette::{IntoDiagnostic, Result, WrapErr, miette};
+use miette::{IntoDiagnostic, Report, Result, WrapErr, miette};
 use mobc::{Connection, Pool};
 use tokio_postgres::config::SslMode;
 use tracing::debug;
@@ -10,6 +10,26 @@ pub use manager::PgError;
 mod manager;
 mod parse;
 mod tls;
+
+/// Check if an error is an authentication error
+fn is_auth_error(error: &Report) -> bool {
+	if let Some(db_error) = error.downcast_ref::<tokio_postgres::Error>() {
+		if let Some(db_error) = db_error.as_db_error() {
+			// PostgreSQL error codes for authentication failures:
+			// 28000 - invalid_authorization_specification
+			// 28P01 - invalid_password
+			let code = db_error.code().code();
+			return code == "28000" || code == "28P01";
+		}
+	}
+
+	// Check for other connection errors that might indicate auth issues
+	let message = error.to_string();
+	message.contains("password authentication failed")
+		|| message.contains("no password supplied")
+		|| message.contains("authentication failed")
+		|| message.contains("invalid configuration")
+}
 
 pub type PgConnection = Connection<manager::PgConnectionManager>;
 
@@ -48,6 +68,12 @@ impl PgPool {
 ///
 /// Unix socket connections automatically disable SSL/TLS.
 ///
+/// # Password Prompting
+///
+/// If the connection fails with an authentication error and no password was provided
+/// in the connection URL, the function will prompt the user to enter a password
+/// interactively. The password will be read securely without echoing to the terminal.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -64,30 +90,46 @@ impl PgPool {
 ///
 /// // Traditional TCP connection
 /// let pool = create_pool("postgresql://user:pass@localhost:5432/dbname").await?;
+///
+/// // Connection without password (will prompt if authentication required)
+/// let pool = create_pool("postgresql://user@localhost/dbname").await?;
 /// # Ok(())
 /// # }
 /// ```
 pub async fn create_pool(url: &str) -> Result<PgPool> {
-	let config = parse::parse_connection_url(url)?;
+	let mut config = parse::parse_connection_url(url)?;
 
-	debug!("Creating manager");
-	let tls = config.get_ssl_mode() != SslMode::Disable;
-	let manager = manager::PgConnectionManager::new(config, tls);
+	// Try to connect, and if it fails with auth error, prompt for password
+	let pool = loop {
+		debug!("Creating manager");
+		let tls = config.get_ssl_mode() != SslMode::Disable;
+		let manager = manager::PgConnectionManager::new(config.clone(), tls);
 
-	debug!("Creating pool");
-	let pool = Pool::builder()
-		.max_open(10)
-		.max_idle(5)
-		.max_lifetime(Some(Duration::from_secs(3600)))
-		.build(manager.clone());
+		debug!("Creating pool");
+		let pool = Pool::builder()
+			.max_lifetime(Some(Duration::from_secs(3600)))
+			.build(manager.clone());
 
-	let pool = PgPool {
-		manager,
-		inner: pool,
+		let pool = PgPool {
+			manager,
+			inner: pool,
+		};
+
+		debug!("Checking pool");
+		match check_pool(&pool).await {
+			Ok(_) => break pool,
+			Err(e) => {
+				if is_auth_error(&e) && config.get_password().is_none() {
+					let password = rpassword::prompt_password("Password: ").into_diagnostic()?;
+					config.password(password);
+					// Loop will retry with the new password
+				} else {
+					// Not an auth error or we already have a password, re-throw
+					return Err(e);
+				}
+			}
+		}
 	};
-
-	debug!("Checking pool");
-	check_pool(&pool).await?;
 
 	Ok(pool)
 }
@@ -95,23 +137,34 @@ pub async fn create_pool(url: &str) -> Result<PgPool> {
 /// Check if we can actually establish a connection
 async fn check_pool(pool: &PgPool) -> Result<()> {
 	let conn = match pool.get().await {
-		Err(mobc::Error::Inner(db_err)) => Err(match db_err.as_db_error() {
-			Some(db_err) => miette!(
-				"E{code} at {func} in {file}:{line}",
-				code = db_err.code().code(),
-				func = db_err.routine().unwrap_or("{unknown}"),
-				file = db_err.file().unwrap_or("unknown.c"),
-				line = db_err.line().unwrap_or(0)
-			),
-			_ => miette!("{db_err}"),
-		})
-		.wrap_err(
-			db_err
-				.as_db_error()
-				.map(|e| e.to_string())
-				.unwrap_or_default(),
-		)?,
-		Err(mobc_err) => Err(mobc_err).into_diagnostic()?,
+		Err(mobc::Error::Inner(db_err)) => {
+			return Err(match db_err.as_db_error() {
+				Some(db_err) => miette!(
+					"E{code} at {func} in {file}:{line}",
+					code = db_err.code().code(),
+					func = db_err.routine().unwrap_or("{unknown}"),
+					file = db_err.file().unwrap_or("unknown.c"),
+					line = db_err.line().unwrap_or(0)
+				),
+				_ => miette!("{db_err}"),
+			})
+			.wrap_err(
+				db_err
+					.as_db_error()
+					.map(|e| e.to_string())
+					.unwrap_or_default(),
+			)?;
+		}
+		res @ Err(_) => {
+			let res = res.map(drop).into_diagnostic();
+			return if let Err(ref err) = res
+				&& is_auth_error(err)
+			{
+				res.wrap_err("hint: check the password")
+			} else {
+				res
+			};
+		}
 		Ok(conn) => conn,
 	};
 	conn.simple_query("SELECT 1")
