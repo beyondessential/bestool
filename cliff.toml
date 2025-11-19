@@ -24,20 +24,18 @@ body = """
 {%- for commit in commits | sort(attribute="group") %}
 	{%- if commit.scope -%}
 	{% else -%}
-        - **{{commit.group | striptags | trim | upper_first}}:** \
+        - **{{commit.group | striptags | trim}}:** \
 			{% if commit.breaking %} [**⚠️ breaking ⚠️**] {% endif %}\
 			{{ commit.message | upper_first }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
 	{% endif -%}
 {% endfor -%}
 
 {% for scope, commits in commits | filter(attribute="group") | group_by(attribute="scope") %}
-    ### {{ scope | striptags | trim | upper_first }}
     {% for commit in commits | sort(attribute="group") %}
-        - **{{commit.group | striptags | trim | upper_first}}:** \
+        - **{{commit.group | striptags | trim}}({{ commit.scope }}):** \
 			{% if commit.breaking %} [**⚠️ breaking ⚠️**] {% endif %}\
             {{ commit.message | upper_first }} - ([{{ commit.id | truncate(length=7, end="") }}]($REPO/commit/{{ commit.id }}))
     {%- endfor -%}
-    {% raw %}\n{% endraw %}\
 {% endfor %}\n
 """
 postprocessors = [
@@ -61,15 +59,15 @@ link_parsers = [
 
 commit_parsers = [
   { message = "^(draft|wip|(repo: )?(release|Initial commit)|merge|fmt|chore|ci)", skip = true },
-  { message = "^deps", group = "Deps" },
-  { message = "^doc", group = "Documentation" },
-  { message = "^feat", group = "Feature" },
-  { message = "^fix", group = "Bugfix" },
-  { message = "^perf", group = "Performance" },
-  { message = "^refactor", group = "Refactor" },
-  { message = "^repo", group = "Repo" },
-  { message = "^revert", group = "Revert" },
-  { message = "^style", group = "Style" },
-  { message = "^test", group = "Test" },
-  { message = "^tweak", group = "Tweak" },
+  { message = "^deps", group = "deps" },
+  { message = "^doc", group = "doc" },
+  { message = "^feat", group = "feat" },
+  { message = "^fix", group = "fix" },
+  { message = "^perf", group = "perf" },
+  { message = "^refactor", group = "refactor" },
+  { message = "^repo", group = "repo" },
+  { message = "^revert", group = "revert" },
+  { message = "^style", group = "style" },
+  { message = "^test", group = "test" },
+  { message = "^tweak", group = "tweak" },
 ]
