@@ -102,19 +102,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check alertd USAGE.md is up to date
         run: |
-          echo "# Usage" > /tmp/expected-usage.md
-          echo "" >> /tmp/expected-usage.md
-          echo '```' >> /tmp/expected-usage.md
-          cargo run -p bestool-alertd --quiet -- --help >> /tmp/expected-usage.md
-          echo '```' >> /tmp/expected-usage.md
-          if ! diff -u crates/alertd/USAGE.md /tmp/expected-usage.md; then
+          cp crates/alertd/USAGE.md /tmp/original-usage.md
+          ./crates/alertd/update-usage.sh
+          if ! diff -u /tmp/original-usage.md crates/alertd/USAGE.md; then
             echo "ERROR: crates/alertd/USAGE.md is out of date"
-            echo "Run the following to update it:"
-            echo "  echo '# Usage' > crates/alertd/USAGE.md"
-            echo "  echo '' >> crates/alertd/USAGE.md"
-            echo "  echo '\`\`\`' >> crates/alertd/USAGE.md"
-            echo "  cargo run -p bestool-alertd --quiet -- --help >> crates/alertd/USAGE.md"
-            echo "  echo '\`\`\`' >> crates/alertd/USAGE.md"
+            echo "Run: ./crates/alertd/update-usage.sh"
             exit 1
           fi
 
