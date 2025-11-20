@@ -19,24 +19,51 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
 
+	// Load external targets from files
+	for external_targets_path in &resolved.files {
+		if let Some(name) = external_targets_path.file_name()
+			&& (name.to_ascii_lowercase() == "_targets.yml"
+				|| name.to_ascii_lowercase() == "_targets.yaml")
+		{
+			if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
+				.ok()
+				.and_then(|content| {
+					debug!(path=?external_targets_path, "parsing external targets");
+					serde_yaml::from_str::<AlertTargets>(&content)
+						.map_err(
+							|err| warn!(path=?external_targets_path, "_targets.yml has errors! {err}"),
+						)
+						.ok()
+				}) {
+				for target in targets {
+					external_targets
+						.entry(target.id.clone())
+						.or_insert(Vec::new())
+						.push(target);
+				}
+			}
+		}
+	}
+
 	// Load external targets from directories
 	for dir in &resolved.dirs {
-		let external_targets_path = dir.join("_targets.yml");
-		if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
-			.ok()
-			.and_then(|content| {
-				debug!(path=?external_targets_path, "parsing external targets");
-				serde_yaml::from_str::<AlertTargets>(&content)
-					.map_err(
-						|err| warn!(path=?external_targets_path, "_targets.yml has errors! {err}"),
-					)
-					.ok()
-			}) {
-			for target in targets {
-				external_targets
-					.entry(target.id.clone())
-					.or_insert(Vec::new())
-					.push(target);
+		for external_targets_path in vec![dir.join("_targets.yml"), dir.join("_targets.yaml")] {
+			if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
+				.ok()
+				.and_then(|content| {
+					debug!(path=?external_targets_path, "parsing external targets");
+					serde_yaml::from_str::<AlertTargets>(&content)
+						.map_err(
+							|err| warn!(path=?external_targets_path, "_targets.yml has errors! {err}"),
+						)
+						.ok()
+				}) {
+				for target in targets {
+					external_targets
+						.entry(target.id.clone())
+						.or_insert(Vec::new())
+						.push(target);
+				}
 			}
 		}
 	}
