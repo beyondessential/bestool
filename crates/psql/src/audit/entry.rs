@@ -178,7 +178,7 @@ mod tests {
 		std::fs::create_dir(&db_dir).unwrap();
 
 		// Temporarily set HOME to temp dir to avoid importing real psql_history
-		let _guard = temp_env::with_var("HOME", Some(db_dir.to_str().unwrap()), || {
+		temp_env::with_var("HOME", Some(db_dir.to_str().unwrap()), || {
 			// Open in multi-process mode (using open instead of open_empty)
 			let mut audit = Audit::open(
 				&db_dir,

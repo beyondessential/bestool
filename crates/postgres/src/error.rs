@@ -344,20 +344,19 @@ mod tests {
 
 		// Test 1: Syntax error
 		let result = client.query("SELECT 1+;", &[]).await;
-		if let Err(e) = result {
-			if let Some(db_error) = e.as_db_error() {
+		if let Err(e) = result
+			&& let Some(db_error) = e.as_db_error() {
 				let pg_error = PgDatabaseError::from_db_error(db_error, Some("SELECT 1+;"));
 				let output = format!("{}", pg_error);
 				println!("=== Syntax Error Output ===\n{}", output);
 				assert!(output.contains("Code:"));
 				assert!(output.contains("Position:") || output.contains("Source:"));
 			}
-		}
 
 		// Test 2: Column does not exist
 		let result = client.query("SELECT nonexistent FROM pg_class", &[]).await;
-		if let Err(e) = result {
-			if let Some(db_error) = e.as_db_error() {
+		if let Err(e) = result
+			&& let Some(db_error) = e.as_db_error() {
 				let pg_error = PgDatabaseError::from_db_error(
 					db_error,
 					Some("SELECT nonexistent FROM pg_class"),
@@ -366,7 +365,6 @@ mod tests {
 				println!("=== Column Error Output ===\n{}", output);
 				assert!(output.contains("Code:"));
 			}
-		}
 	}
 
 	#[test]

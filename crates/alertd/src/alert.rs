@@ -551,11 +551,13 @@ send:
 		};
 
 		// Not triggered yet, value 150 >= alert_at 100, should trigger
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], false).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), false).unwrap();
 		assert!(result);
 
 		// Already triggered, value 150 > clear_at 50, should stay triggered
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], true).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), true).unwrap();
 		assert!(result);
 
 		// Already triggered, value 30 <= clear_at 50, should clear
@@ -582,11 +584,13 @@ send:
 		};
 
 		// Not triggered yet, value 5 <= alert_at 10, should trigger (inverted)
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], false).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), false).unwrap();
 		assert!(result);
 
 		// Already triggered, value 5 < clear_at 50, should stay triggered
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], true).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), true).unwrap();
 		assert!(result);
 
 		// Already triggered, value 60 >= clear_at 50, should clear
@@ -612,11 +616,13 @@ send:
 		let mut row = serde_json::Map::new();
 		row.insert("errors".to_string(), serde_json::Value::Number(10.into()));
 		let rows = vec![row];
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], false).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), false).unwrap();
 		assert!(result);
 
 		// Still triggered when >= 5
-		let result = check_numerical_thresholds(&rows, &[threshold.clone()], true).unwrap();
+		let result =
+			check_numerical_thresholds(&rows, std::slice::from_ref(&threshold), true).unwrap();
 		assert!(result);
 
 		// Clear when < 5

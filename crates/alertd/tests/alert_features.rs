@@ -235,7 +235,7 @@ send:
 	let ctx = Arc::new(InternalContext { pg_pool: pool });
 
 	// First execution - should trigger (first run always triggers)
-	let _result = alert.execute(ctx.clone(), None, true, &[]).await.unwrap();
+	alert.execute(ctx.clone(), None, true, &[]).await.unwrap();
 	// No error means it executed
 
 	// Second execution with same data - would trigger but when-changed should prevent it
@@ -300,7 +300,7 @@ send:
 		.unwrap();
 
 	let rows = tera_ctx.get("rows").unwrap();
-	assert!(rows.as_array().unwrap().len() > 0);
+	assert!(!rows.as_array().unwrap().is_empty());
 
 	// Update only timestamps - when-changed should consider this unchanged
 	tokio::time::sleep(Duration::from_millis(10)).await;

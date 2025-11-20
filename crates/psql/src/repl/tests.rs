@@ -114,15 +114,16 @@ async fn test_result_store_populated_on_query() {
 	let result = crate::query::execute_query("SELECT 42 as answer", &mut query_ctx).await;
 	assert!(result.is_ok());
 
-	// Verify the result was stored
-	let state = repl_state.lock().unwrap();
-	assert_eq!(state.result_store.len(), 1);
-	let stored = state.result_store.get(0).unwrap();
-	assert_eq!(stored.query, "SELECT 42 as answer");
-	assert_eq!(stored.rows.len(), 1);
+	{
+		// Verify the result was stored
+		let state = repl_state.lock().unwrap();
+		assert_eq!(state.result_store.len(), 1);
+		let stored = state.result_store.get(0).unwrap();
+		assert_eq!(stored.query, "SELECT 42 as answer");
+		assert_eq!(stored.rows.len(), 1);
+	}
 
 	// Execute another query
-	drop(state);
 	let result = crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx).await;
 	assert!(result.is_ok());
 

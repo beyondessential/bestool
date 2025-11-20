@@ -381,6 +381,108 @@ impl WorkingDatabase {
 	}
 }
 
+/// Sync new entries from working database to main database
+pub fn sync_to_main(working_db: &Database, working_info: &WorkingDatabase) -> Result<()> {
+	debug!(
+		"syncing working database {:?} to main database {:?}",
+		working_info.path, working_info.main_path
+	);
+
+	let last_synced = working_info.last_synced_timestamp.load(Ordering::Relaxed);
+	debug!("last synced timestamp: {}", last_synced);
+
+	// Read entries from working database that are newer than last_synced
+	let working_read_txn = working_db.begin_read().into_diagnostic()?;
+	let working_history = match working_read_txn.open_table(super::HISTORY_TABLE) {
+		Ok(table) => table,
+		Err(_) => {
+			debug!("working database has no history table");
+			return Ok(());
+		}
+	};
+
+	let mut new_entries = Vec::new();
+	let mut max_timestamp = last_synced;
+
+	for item in working_history.iter().into_diagnostic()? {
+		let (timestamp, json) = item.into_diagnostic()?;
+		let ts = timestamp.value();
+		if ts > last_synced {
+			new_entries.push((ts, json.value().to_string()));
+			max_timestamp = max_timestamp.max(ts);
+		}
+	}
+	drop(working_history);
+	drop(working_read_txn);
+
+	if new_entries.is_empty() {
+		debug!("no new entries to sync");
+		return Ok(());
+	}
+
+	// Open main database and write entries
+	debug!("opening main database for sync");
+	let main_db = working_info
+		.open_main_readwrite(MAX_EXIT_RETRIES, true)
+		.wrap_err("failed to open main database for sync")?;
+	let main_write_txn = main_db.begin_write().into_diagnostic()?;
+	{
+		let mut main_history = main_write_txn
+			.open_table(super::HISTORY_TABLE)
+			.into_diagnostic()?;
+
+		for (timestamp, json) in &new_entries {
+			main_history
+				.insert(*timestamp, json.as_str())
+				.into_diagnostic()?;
+		}
+	}
+	main_write_txn.commit().into_diagnostic()?;
+	drop(main_db);
+
+	// Update last synced timestamp
+	working_info
+		.last_synced_timestamp
+		.store(max_timestamp, Ordering::Relaxed);
+
+	debug!(
+		"synced {} new entries to main database, new timestamp: {}",
+		new_entries.len(),
+		max_timestamp
+	);
+	Ok(())
+}
+
+/// Spawn background sync task
+pub fn spawn_sync_task(
+	working_db: Arc<Database>,
+	working_info: Arc<WorkingDatabase>,
+) -> thread::JoinHandle<()> {
+	thread::spawn(move || {
+		loop {
+			// Wait for sync interval or shutdown
+			let start = std::time::Instant::now();
+			while start.elapsed() < SYNC_INTERVAL {
+				if working_info.shutdown.load(Ordering::Relaxed) {
+					return;
+				}
+				thread::sleep(Duration::from_millis(100));
+			}
+
+			if working_info.shutdown.load(Ordering::Relaxed) {
+				return;
+			}
+
+			// Perform sync
+			if let Err(e) = sync_to_main(&working_db, &working_info) {
+				warn!("periodic sync failed: {}", e);
+			} else {
+				debug!("periodic sync completed");
+			}
+		}
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -485,106 +587,4 @@ mod tests {
 			drop(audit1);
 		});
 	}
-}
-
-/// Sync new entries from working database to main database
-pub fn sync_to_main(working_db: &Database, working_info: &WorkingDatabase) -> Result<()> {
-	debug!(
-		"syncing working database {:?} to main database {:?}",
-		working_info.path, working_info.main_path
-	);
-
-	let last_synced = working_info.last_synced_timestamp.load(Ordering::Relaxed);
-	debug!("last synced timestamp: {}", last_synced);
-
-	// Read entries from working database that are newer than last_synced
-	let working_read_txn = working_db.begin_read().into_diagnostic()?;
-	let working_history = match working_read_txn.open_table(super::HISTORY_TABLE) {
-		Ok(table) => table,
-		Err(_) => {
-			debug!("working database has no history table");
-			return Ok(());
-		}
-	};
-
-	let mut new_entries = Vec::new();
-	let mut max_timestamp = last_synced;
-
-	for item in working_history.iter().into_diagnostic()? {
-		let (timestamp, json) = item.into_diagnostic()?;
-		let ts = timestamp.value();
-		if ts > last_synced {
-			new_entries.push((ts, json.value().to_string()));
-			max_timestamp = max_timestamp.max(ts);
-		}
-	}
-	drop(working_history);
-	drop(working_read_txn);
-
-	if new_entries.is_empty() {
-		debug!("no new entries to sync");
-		return Ok(());
-	}
-
-	// Open main database and write entries
-	debug!("opening main database for sync");
-	let main_db = working_info
-		.open_main_readwrite(MAX_EXIT_RETRIES, true)
-		.wrap_err("failed to open main database for sync")?;
-	let main_write_txn = main_db.begin_write().into_diagnostic()?;
-	{
-		let mut main_history = main_write_txn
-			.open_table(super::HISTORY_TABLE)
-			.into_diagnostic()?;
-
-		for (timestamp, json) in &new_entries {
-			main_history
-				.insert(*timestamp, json.as_str())
-				.into_diagnostic()?;
-		}
-	}
-	main_write_txn.commit().into_diagnostic()?;
-	drop(main_db);
-
-	// Update last synced timestamp
-	working_info
-		.last_synced_timestamp
-		.store(max_timestamp, Ordering::Relaxed);
-
-	debug!(
-		"synced {} new entries to main database, new timestamp: {}",
-		new_entries.len(),
-		max_timestamp
-	);
-	Ok(())
-}
-
-/// Spawn background sync task
-pub fn spawn_sync_task(
-	working_db: Arc<Database>,
-	working_info: Arc<WorkingDatabase>,
-) -> thread::JoinHandle<()> {
-	thread::spawn(move || {
-		loop {
-			// Wait for sync interval or shutdown
-			let start = std::time::Instant::now();
-			while start.elapsed() < SYNC_INTERVAL {
-				if working_info.shutdown.load(Ordering::Relaxed) {
-					return;
-				}
-				thread::sleep(Duration::from_millis(100));
-			}
-
-			if working_info.shutdown.load(Ordering::Relaxed) {
-				return;
-			}
-
-			// Perform sync
-			if let Err(e) = sync_to_main(&working_db, &working_info) {
-				warn!("periodic sync failed: {}", e);
-			} else {
-				debug!("periodic sync completed");
-			}
-		}
-	})
 }

@@ -435,7 +435,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert!(
-			actions.len() >= 1,
+			!actions.is_empty(),
 			"Expected at least 1 action, got {}",
 			actions.len()
 		);
