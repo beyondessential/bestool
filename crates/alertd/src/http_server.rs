@@ -57,7 +57,13 @@ pub async fn start_server(reload_tx: mpsc::Sender<()>) {
 	let listener = match tokio::net::TcpListener::bind("127.0.0.1:8271").await {
 		Ok(listener) => listener,
 		Err(e) => {
-			error!("failed to bind HTTP server to 127.0.0.1:8271: {}", e);
+			warn!("failed to bind HTTP server to 127.0.0.1:8271: {}", e);
+			warn!("waiting 10 seconds before continuing without");
+			warn!("use --no-server to disable the HTTP server and this warning");
+
+			tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+			info!("continuing without HTTP server");
 			return;
 		}
 	};

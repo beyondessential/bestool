@@ -116,7 +116,9 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 	let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
 
 	// Start HTTP server
-	tokio::spawn(http_server::start_server(reload_tx));
+	if !daemon_config.no_server {
+		tokio::spawn(http_server::start_server(reload_tx.clone()));
+	}
 
 	// Set up file watcher
 	let watch_manager = Arc::new(RwLock::new(WatchManager::new(event_tx.clone())?));

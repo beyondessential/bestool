@@ -28,7 +28,7 @@ pub struct AlertdArgs {
 	///
 	/// Connects to the running daemon's HTTP API and triggers a reload.
 	/// This is an alternative to SIGHUP that works on all platforms including Windows.
-	#[arg(long, conflicts_with_all = ["dir", "dry_run"])]
+	#[arg(long, conflicts_with_all = ["dir", "dry_run", "no_server"])]
 	pub reload: bool,
 
 	/// Glob patterns for alert definitions.
@@ -42,6 +42,10 @@ pub struct AlertdArgs {
 	/// Don't actually send alerts, just print them to stdout.
 	#[arg(long)]
 	pub dry_run: bool,
+
+	/// Disable the HTTP server
+	#[arg(long, conflicts_with = "reload")]
+	pub no_server: bool,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
@@ -88,8 +92,9 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			mailgun_domain: mg.domain.clone(),
 		});
 
-	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(dirs, database_url).with_dry_run(ctx.args_sub.dry_run);
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(dirs, database_url)
+		.with_dry_run(ctx.args_sub.dry_run)
+		.with_no_server(ctx.args_sub.no_server);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);

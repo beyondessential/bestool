@@ -101,6 +101,9 @@ pub struct DaemonConfig {
 
 	/// Whether to perform a dry run (execute all alerts once and quit)
 	pub dry_run: bool,
+
+	/// Whether to disable the HTTP server
+	pub no_server: bool,
 }
 
 impl DaemonConfig {
@@ -110,6 +113,7 @@ impl DaemonConfig {
 			database_url,
 			email: None,
 			dry_run: false,
+			no_server: false,
 		}
 	}
 
@@ -120,6 +124,11 @@ impl DaemonConfig {
 
 	pub fn with_dry_run(mut self, dry_run: bool) -> Self {
 		self.dry_run = dry_run;
+		self
+	}
+
+	pub fn with_no_server(mut self, no_server: bool) -> Self {
+		self.no_server = no_server;
 		self
 	}
 }

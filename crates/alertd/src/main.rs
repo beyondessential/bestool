@@ -48,6 +48,10 @@ pub struct Args {
 	/// Execute all alerts once and quit (ignoring intervals)
 	#[arg(long)]
 	pub dry_run: bool,
+
+	/// Disable the HTTP server
+	#[arg(long, conflicts_with = "reload")]
+	pub no_server: bool,
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -104,8 +108,9 @@ async fn main() -> Result<()> {
 		}
 	};
 
-	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(args.glob, database_url).with_dry_run(args.dry_run);
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(args.glob, database_url)
+		.with_dry_run(args.dry_run)
+		.with_no_server(args.no_server);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
