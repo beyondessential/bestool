@@ -6,13 +6,7 @@ use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
 use tracing::{instrument, warn};
 
-use crate::{
-	alert::AlertDefinition,
-	targets::{
-		SendTarget,
-		zendesk::{TargetZendesk, ZendeskMethod},
-	},
-};
+use crate::{alert::AlertDefinition, targets::SendTarget};
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";
 
@@ -23,7 +17,6 @@ pub enum TemplateField {
 	Subject,
 	Body,
 	Hostname,
-	Requester,
 	Interval,
 }
 
@@ -34,7 +27,6 @@ impl TemplateField {
 			Self::Subject => "subject",
 			Self::Body => "body",
 			Self::Hostname => "hostname",
-			Self::Requester => "requester",
 			Self::Interval => "interval",
 		}
 	}
@@ -54,12 +46,6 @@ pub fn load_templates(target: &SendTarget) -> Result<Tera> {
 		SendTarget::Email {
 			subject, template, ..
 		}
-		| SendTarget::Zendesk {
-			subject, template, ..
-		}
-		| SendTarget::Slack {
-			subject, template, ..
-		}
 		| SendTarget::External {
 			subject, template, ..
 		} => {
@@ -75,18 +61,6 @@ pub fn load_templates(target: &SendTarget) -> Result<Tera> {
 		}
 	}
 
-	if let SendTarget::Zendesk {
-		conn: TargetZendesk {
-			method: ZendeskMethod::Anonymous { requester },
-			..
-		},
-		..
-	} = target
-	{
-		tera.add_raw_template(TemplateField::Requester.as_str(), requester)
-			.into_diagnostic()
-			.wrap_err("compiling requester template")?;
-	}
 	Ok(tera)
 }
 
@@ -114,10 +88,7 @@ pub fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>
 }
 
 #[instrument(skip(tera, context))]
-pub fn render_alert(
-	tera: &Tera,
-	context: &mut TeraCtx,
-) -> Result<(String, String, Option<String>)> {
+pub fn render_alert(tera: &Tera, context: &mut TeraCtx) -> Result<(String, String)> {
 	let subject = tera
 		.render(TemplateField::Subject.as_str(), context)
 		.into_diagnostic()
@@ -130,15 +101,5 @@ pub fn render_alert(
 		.into_diagnostic()
 		.wrap_err("rendering email template")?;
 
-	let requester = tera
-		.render(TemplateField::Requester.as_str(), context)
-		.map(Some)
-		.or_else(|err| match err.kind {
-			tera::ErrorKind::TemplateNotFound(_) => Ok(None),
-			_ => Err(err),
-		})
-		.into_diagnostic()
-		.wrap_err("rendering requester template")?;
-
-	Ok((subject, body, requester))
+	Ok((subject, body))
 }

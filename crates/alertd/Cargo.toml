@@ -25,7 +25,6 @@ miette = { workspace = true }
 notify = "7.0.0"
 pulldown-cmark = "0.12.2"
 rand = "0.9.2"
-reqwest = { version = "0.12.12", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 serde_yaml = "0.9.34"

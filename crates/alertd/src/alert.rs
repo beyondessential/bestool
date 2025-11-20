@@ -168,10 +168,7 @@ impl AlertDefinition {
 		}
 
 		for target in &self.send {
-			if let Err(err) = target
-				.send(self, ctx.clone(), &mut tera_ctx, email, dry_run)
-				.await
-			{
+			if let Err(err) = target.send(self, &mut tera_ctx, email, dry_run).await {
 				error!("sending: {err:?}");
 			}
 		}
@@ -182,7 +179,6 @@ impl AlertDefinition {
 
 pub struct InternalContext {
 	pub pg_client: tokio_postgres::Client,
-	pub http_client: reqwest::Client,
 }
 
 fn rows_to_value_map(

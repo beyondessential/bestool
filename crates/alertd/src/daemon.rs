@@ -32,10 +32,7 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 		}
 	});
 
-	let ctx = Arc::new(InternalContext {
-		pg_client: client,
-		http_client: reqwest::Client::new(),
-	});
+	let ctx = Arc::new(InternalContext { pg_client: client });
 
 	let default_interval = Duration::from_secs(60 * 15); // 15 minutes default
 

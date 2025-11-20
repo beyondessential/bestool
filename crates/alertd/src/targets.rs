@@ -1,20 +1,16 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use miette::Result;
 
 use crate::{
 	EmailConfig,
-	alert::{AlertDefinition, InternalContext},
+	alert::AlertDefinition,
 	templates::{load_templates, render_alert},
 };
 
 mod email;
-mod slack;
-pub mod zendesk;
 
 pub use email::TargetEmail;
-pub use slack::TargetSlack;
-pub use zendesk::TargetZendesk;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case", tag = "target")]
@@ -24,18 +20,6 @@ pub enum SendTarget {
 		template: String,
 		#[serde(flatten)]
 		conn: TargetEmail,
-	},
-	Zendesk {
-		subject: Option<String>,
-		template: String,
-		#[serde(flatten)]
-		conn: TargetZendesk,
-	},
-	Slack {
-		subject: Option<String>,
-		template: String,
-		#[serde(flatten)]
-		conn: TargetSlack,
 	},
 	External {
 		subject: Option<String>,
@@ -62,16 +46,6 @@ impl SendTarget {
 							template: template.clone(),
 							conn: conn.clone(),
 						},
-						ExternalTarget::Zendesk { conn, .. } => SendTarget::Zendesk {
-							subject: subject.clone(),
-							template: template.clone(),
-							conn: conn.clone(),
-						},
-						ExternalTarget::Slack { conn, .. } => SendTarget::Slack {
-							subject: subject.clone(),
-							template: template.clone(),
-							conn: conn.clone(),
-						},
 					})
 					.collect()
 			}),
@@ -82,35 +56,16 @@ impl SendTarget {
 	pub async fn send(
 		&self,
 		alert: &AlertDefinition,
-		ctx: Arc<InternalContext>,
 		tera_ctx: &mut tera::Context,
 		email: Option<&EmailConfig>,
 		dry_run: bool,
 	) -> Result<()> {
 		let tera = load_templates(self)?;
-		let (subject, body, requester) = render_alert(&tera, tera_ctx)?;
+		let (subject, body) = render_alert(&tera, tera_ctx)?;
 
 		match self {
 			SendTarget::Email { conn, .. } => {
 				conn.send(alert, email, &subject, &body, dry_run).await?;
-			}
-
-			SendTarget::Slack { conn, .. } => {
-				conn.send(slack::SlackSendParams {
-					alert,
-					ctx: &ctx,
-					subject: &subject,
-					body: &body,
-					tera: &tera,
-					tera_ctx,
-					dry_run,
-				})
-				.await?;
-			}
-
-			SendTarget::Zendesk { conn, .. } => {
-				conn.send(alert, &ctx, &subject, &body, requester.as_deref(), dry_run)
-					.await?;
 			}
 
 			SendTarget::External { .. } => {
@@ -135,24 +90,12 @@ pub enum ExternalTarget {
 		#[serde(flatten)]
 		conn: TargetEmail,
 	},
-	Zendesk {
-		id: String,
-		#[serde(flatten)]
-		conn: TargetZendesk,
-	},
-	Slack {
-		id: String,
-		#[serde(flatten)]
-		conn: TargetSlack,
-	},
 }
 
 impl ExternalTarget {
 	pub fn id(&self) -> &str {
 		match self {
 			Self::Email { id, .. } => id,
-			Self::Zendesk { id, .. } => id,
-			Self::Slack { id, .. } => id,
 		}
 	}
 }
