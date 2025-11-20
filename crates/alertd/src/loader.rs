@@ -4,10 +4,15 @@ use miette::Result;
 use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
-use crate::{alert::AlertDefinition, glob_resolver::ResolvedPaths, targets::AlertTargets};
+use crate::{
+	alert::AlertDefinition,
+	glob_resolver::ResolvedPaths,
+	targets::{AlertTargets, ExternalTarget},
+};
 
 pub struct LoadedAlerts {
 	pub alerts: Vec<(AlertDefinition, Vec<crate::targets::ResolvedTarget>)>,
+	pub external_targets: HashMap<String, Vec<ExternalTarget>>,
 }
 
 pub fn load_alerts_from_paths(
@@ -70,6 +75,7 @@ pub fn load_alerts_from_paths(
 
 	Ok(LoadedAlerts {
 		alerts: alerts_with_targets,
+		external_targets,
 	})
 }
 

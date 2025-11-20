@@ -11,7 +11,8 @@ use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-	EmailConfig, pg_interval::Interval, targets::ExternalTarget, templates::build_context,
+	EmailConfig, events::EventType, pg_interval::Interval, targets::ExternalTarget,
+	templates::build_context,
 };
 
 fn enabled() -> bool {
@@ -45,6 +46,9 @@ pub enum TicketSource {
 	Shell {
 		shell: String,
 		run: String,
+	},
+	Event {
+		event: EventType,
 	},
 
 	#[default]
@@ -82,6 +86,11 @@ impl AlertDefinition {
 		match &self.source {
 			TicketSource::None => {
 				debug!(?self.file, "no source, skipping");
+				return Ok(ControlFlow::Break(()));
+			}
+			TicketSource::Event { .. } => {
+				// Event sources are triggered externally, not by this method
+				debug!(?self.file, "event source, skipping normal execution");
 				return Ok(ControlFlow::Break(()));
 			}
 			TicketSource::Sql { sql } => {
@@ -243,5 +252,26 @@ fn postgres_to_value(row: &tokio_postgres::Row, idx: usize) -> serde_json::Value
 			.get::<_, Option<String>>(idx)
 			.map(serde_json::Value::String)
 			.unwrap_or(serde_json::Value::Null),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_alert_with_event_source() {
+		let yaml = r#"
+event: source-error
+send:
+  - id: test-target
+    subject: Test
+    template: Test template
+"#;
+		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+		assert!(matches!(alert.source, TicketSource::Event { .. }));
+		if let TicketSource::Event { event } = alert.source {
+			assert_eq!(event, EventType::SourceError);
+		}
 	}
 }

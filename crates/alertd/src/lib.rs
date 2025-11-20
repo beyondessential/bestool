@@ -2,6 +2,7 @@
 
 mod alert;
 mod daemon;
+mod events;
 mod glob_resolver;
 mod loader;
 mod pg_interval;
@@ -11,6 +12,7 @@ mod templates;
 
 pub use alert::{AlertDefinition, TicketSource};
 pub use daemon::run;
+pub use events::EventType;
 pub use targets::{AlertTargets, ExternalTarget, SendTarget};
 
 /// Email server configuration

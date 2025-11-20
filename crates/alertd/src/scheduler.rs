@@ -10,7 +10,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
 	EmailConfig,
-	alert::{AlertDefinition, InternalContext},
+	alert::{AlertDefinition, InternalContext, TicketSource},
+	events::{EventContext, EventManager, EventType},
 	glob_resolver::{GlobResolver, ResolvedPaths},
 	loader::{LoadedAlerts, load_alerts_from_paths},
 	targets::ResolvedTarget,
@@ -24,6 +25,7 @@ pub struct Scheduler {
 	email: Option<EmailConfig>,
 	dry_run: bool,
 	tasks: Arc<RwLock<HashMap<PathBuf, JoinHandle<()>>>>,
+	event_manager: Arc<RwLock<Option<EventManager>>>,
 }
 
 impl Scheduler {
@@ -46,6 +48,7 @@ impl Scheduler {
 			email,
 			dry_run,
 			tasks: Arc::new(RwLock::new(HashMap::new())),
+			event_manager: Arc::new(RwLock::new(None)),
 		}
 	}
 
@@ -59,22 +62,34 @@ impl Scheduler {
 			"resolved paths from globs"
 		);
 
-		let LoadedAlerts { alerts } = load_alerts_from_paths(&resolved, self.default_interval)?;
+		let LoadedAlerts {
+			alerts,
+			external_targets,
+		} = load_alerts_from_paths(&resolved, self.default_interval)?;
 
 		// Update resolved paths
 		*self.resolved_paths.write().await = resolved;
 
-		if alerts.is_empty() {
-			warn!("no alerts found");
+		// Separate event alerts from regular alerts
+		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
+			.into_iter()
+			.partition(|(alert, _)| matches!(alert.source, TicketSource::Event { .. }));
+
+		// Create event manager with event alerts and external targets
+		let event_manager = EventManager::new(event_alerts, &external_targets);
+		*self.event_manager.write().await = Some(event_manager);
+
+		if regular_alerts.is_empty() {
+			warn!("no regular alerts found");
 			return Ok(());
 		}
 
-		info!(count = alerts.len(), "scheduling alerts");
+		info!(count = regular_alerts.len(), "scheduling regular alerts");
 
 		let mut tasks = self.tasks.write().await;
 		tasks.clear();
 
-		for (alert, resolved_targets) in alerts {
+		for (alert, resolved_targets) in regular_alerts {
 			let file = alert.file.clone();
 			let task = self.spawn_alert_task(alert, resolved_targets);
 			tasks.insert(file, task);
@@ -87,16 +102,28 @@ impl Scheduler {
 		info!("executing all alerts once");
 
 		let resolved = self.glob_resolver.resolve()?;
-		let LoadedAlerts { alerts } = load_alerts_from_paths(&resolved, self.default_interval)?;
+		let LoadedAlerts {
+			alerts,
+			external_targets,
+		} = load_alerts_from_paths(&resolved, self.default_interval)?;
 
-		if alerts.is_empty() {
-			warn!("no alerts found");
+		// Separate event alerts from regular alerts
+		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
+			.into_iter()
+			.partition(|(alert, _)| matches!(alert.source, TicketSource::Event { .. }));
+
+		// Update event manager
+		let event_manager = EventManager::new(event_alerts, &external_targets);
+		*self.event_manager.write().await = Some(event_manager);
+
+		if regular_alerts.is_empty() {
+			warn!("no regular alerts found");
 			return Ok(());
 		}
 
-		info!(count = alerts.len(), "executing alerts");
+		info!(count = regular_alerts.len(), "executing alerts");
 
-		for (alert, resolved_targets) in alerts {
+		for (alert, resolved_targets) in regular_alerts {
 			let ctx = self.ctx.clone();
 			let email = self.email.clone();
 			let dry_run = self.dry_run;
@@ -164,6 +191,8 @@ impl Scheduler {
 		let dry_run = self.dry_run;
 		let interval_duration = alert.interval;
 
+		let event_manager = self.event_manager.clone();
+
 		tokio::spawn(async move {
 			let file = alert.file.clone();
 			debug!(?file, ?interval_duration, "starting alert task");
@@ -184,6 +213,26 @@ impl Scheduler {
 					.await
 				{
 					error!(?file, "error executing alert: {err:?}");
+
+					// Trigger source_error event
+					if let Some(ref event_mgr) = *event_manager.read().await {
+						let event_context = EventContext {
+							alert_file: file.display().to_string(),
+							error_message: format!("{err:?}"),
+						};
+						if let Err(event_err) = event_mgr
+							.trigger_event(
+								EventType::SourceError,
+								&ctx,
+								email.as_ref(),
+								dry_run,
+								event_context,
+							)
+							.await
+						{
+							error!("failed to trigger source_error event: {event_err:?}");
+						}
+					}
 				}
 			}
 		})

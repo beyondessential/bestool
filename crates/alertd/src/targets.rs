@@ -8,8 +8,10 @@ use crate::{
 	templates::{load_templates, render_alert},
 };
 
+mod default;
 mod email;
 
+pub use default::determine_default_target;
 pub use email::TargetEmail;
 
 #[derive(serde::Deserialize, Debug, Clone)]
