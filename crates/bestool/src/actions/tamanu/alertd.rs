@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use miette::{Result, miette};
+use miette::Result;
 use tracing::{debug, info};
 
 use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
@@ -120,217 +120,31 @@ enum Command {
 	},
 }
 
-fn default_server_addrs() -> Vec<std::net::SocketAddr> {
-	vec![
-		"[::1]:8271".parse().unwrap(),
-		"127.0.0.1:8271".parse().unwrap(),
-	]
-}
-
-async fn try_connect_daemon(addrs: &[std::net::SocketAddr]) -> Result<(reqwest::Client, String)> {
-	let client = reqwest::Client::new();
-	let mut last_error = None;
-
-	for addr in addrs {
-		let url = format!("http://{}", addr);
-		info!("trying to connect to daemon at {}", url);
-
-		// Try to connect with a simple status check
-		let test_response = match client.get(format!("{}/status", url)).send().await {
-			Ok(resp) => resp,
-			Err(e) => {
-				info!("failed to connect to {}: {}", url, e);
-				last_error = Some(e);
-				continue;
-			}
-		};
-
-		if test_response.status().is_success() {
-			info!("connected to daemon at {}", url);
-			return Ok((client, url));
-		}
-	}
-
-	if let Some(err) = last_error {
-		Err(miette!(
-			"failed to connect to daemon at any of {} address(es): {}",
-			addrs.len(),
-			err
-		))
-	} else {
-		Err(miette!(
-			"no daemon found at any of {} address(es)",
-			addrs.len()
-		))
-	}
-}
-
-async fn validate_alert(file: &std::path::Path, addrs: &[std::net::SocketAddr]) -> Result<()> {
-	use miette::{Context as _, IntoDiagnostic, NamedSource, SourceSpan};
-
-	// Read the file
-	let content = std::fs::read_to_string(file)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("failed to read file: {}", file.display()))?;
-
-	// Connect to daemon
-	let (client, base_url) = try_connect_daemon(addrs).await?;
-
-	// Check daemon version
-	let status_response = client
-		.get(format!("{}/status", base_url))
-		.send()
-		.await
-		.into_diagnostic()
-		.wrap_err("failed to get daemon status")?;
-
-	#[derive(serde::Deserialize)]
-	struct StatusResponse {
-		version: String,
-	}
-
-	if let Ok(status) = status_response.json::<StatusResponse>().await {
-		let daemon_version = &status.version;
-		let cli_version = bestool_alertd::VERSION;
-		if daemon_version != cli_version {
-			tracing::warn!(
-				"version mismatch: daemon is running {} but CLI is {}",
-				daemon_version,
-				cli_version
-			);
-			eprintln!(
-				"⚠ Warning: Version mismatch detected!\n  Daemon version: {}\n  CLI version: {}\n",
-				daemon_version, cli_version
-			);
-		}
-	}
-
-	// Send validation request
-	let response = client
-		.post(format!("{}/validate", base_url))
-		.body(content.clone())
-		.send()
-		.await
-		.into_diagnostic()
-		.wrap_err("failed to send validation request")?;
-
-	if !response.status().is_success() {
-		return Err(miette!(
-			"validation request failed with status: {}",
-			response.status()
-		));
-	}
-
-	// Parse response
-	#[derive(serde::Deserialize)]
-	struct ValidationResponse {
-		valid: bool,
-		error: Option<String>,
-		error_location: Option<ErrorLocation>,
-		info: Option<ValidationInfo>,
-	}
-
-	#[derive(serde::Deserialize)]
-	struct ErrorLocation {
-		line: usize,
-		column: usize,
-	}
-
-	#[derive(serde::Deserialize)]
-	struct ValidationInfo {
-		enabled: bool,
-		interval: String,
-		source_type: String,
-		targets: usize,
-	}
-
-	let validation: ValidationResponse = response
-		.json()
-		.await
-		.into_diagnostic()
-		.wrap_err("failed to parse validation response")?;
-
-	if validation.valid {
-		println!("✓ Alert definition is valid");
-		println!("  File: {}", file.display());
-		if let Some(info) = validation.info {
-			println!("  Enabled: {}", info.enabled);
-			println!("  Interval: {}", info.interval);
-			println!("  Source: {}", info.source_type);
-			println!("  Targets: {}", info.targets);
-
-			if info.targets == 0 {
-				println!("\n⚠ Warning: Alert has no resolved targets.");
-				println!("  This alert may not send notifications. Check your _targets.yml file.");
-			}
-		}
-		Ok(())
-	} else {
-		// Display error with source location if available
-		if let Some(error_msg) = validation.error {
-			if let Some(loc) = validation.error_location {
-				// Calculate byte offset for miette
-				let mut byte_offset = 0;
-				for (idx, line_content) in content.lines().enumerate() {
-					if idx + 1 < loc.line {
-						byte_offset += line_content.len() + 1; // +1 for newline
-					} else if idx + 1 == loc.line {
-						byte_offset += loc.column.saturating_sub(1);
-						break;
-					}
-				}
-
-				let span_start = byte_offset;
-				let span_len = content[span_start..]
-					.lines()
-					.next()
-					.map(|l| l.len().min(80))
-					.unwrap_or(1);
-
-				Err(miette!(
-					labels = vec![miette::LabeledSpan::at(
-						SourceSpan::new(span_start.into(), span_len.into()),
-						"here"
-					)],
-					"{}",
-					error_msg
-				)
-				.with_source_code(NamedSource::new(file.display().to_string(), content)))
-			} else {
-				Err(miette!("{}", error_msg)
-					.with_source_code(NamedSource::new(file.display().to_string(), content)))
-			}
-		} else {
-			Err(miette!("validation failed with no error message"))
-		}
-	}
-}
-
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 	match ctx.args_sub.command {
 		Command::Validate { file, server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				default_server_addrs()
+				bestool_alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			validate_alert(&file, &addrs).await
+			bestool_alertd::commands::validate_alert(&file, &addrs).await
 		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				default_server_addrs()
+				bestool_alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			bestool_alertd::send_reload(&addrs).await
+			bestool_alertd::commands::send_reload(&addrs).await
 		}
 		Command::LoadedAlerts { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				default_server_addrs()
+				bestool_alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			get_loaded_alerts(&addrs).await
+			bestool_alertd::commands::get_loaded_alerts(&addrs).await
 		}
 		Command::PauseAlert {
 			alert,
@@ -338,11 +152,11 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			server_addr,
 		} => {
 			let addrs = if server_addr.is_empty() {
-				default_server_addrs()
+				bestool_alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			pause_alert(&alert, until.as_deref(), &addrs).await
+			bestool_alertd::commands::pause_alert(&alert, until.as_deref(), &addrs).await
 		}
 		Command::Run {
 			dir,
@@ -401,170 +215,6 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			bestool_alertd::run(daemon_config).await
 		}
 	}
-}
-
-async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
-	let (client, base_url) = try_connect_daemon(addrs).await?;
-
-	let response = client
-		.get(format!("{}/alerts", base_url))
-		.send()
-		.await
-		.map_err(|e| miette!("failed to get alerts: {}", e))?;
-
-	if !response.status().is_success() {
-		return Err(miette!(
-			"failed to get alerts (status: {})",
-			response.status()
-		));
-	}
-
-	let alerts: Vec<String> = response
-		.json()
-		.await
-		.map_err(|e| miette!("failed to parse response: {}", e))?;
-
-	if alerts.is_empty() {
-		println!("No alerts currently loaded");
-	} else {
-		println!("Loaded alerts ({}):", alerts.len());
-		for alert in alerts {
-			println!("  {}", alert);
-		}
-	}
-
-	Ok(())
-}
-
-async fn pause_alert(
-	alert_path: &str,
-	until: Option<&str>,
-	addrs: &[std::net::SocketAddr],
-) -> Result<()> {
-	use std::io::{self, Write};
-
-	// Parse or default the until time
-	let until_timestamp = if let Some(until_str) = until {
-		// Try parsing as timestamp first
-		if let Ok(ts) = until_str.parse::<jiff::Timestamp>() {
-			ts
-		} else {
-			// Try parsing as relative time using jiff's Span
-			let span: jiff::Span = until_str
-				.parse()
-				.map_err(|e| miette!("failed to parse time '{}': {}", until_str, e))?;
-			jiff::Timestamp::now()
-				.checked_add(span)
-				.map_err(|e| miette!("time calculation overflow: {}", e))?
-		}
-	} else {
-		// Default to 1 week from now
-		jiff::Timestamp::now()
-			.checked_add(jiff::Span::new().days(7))
-			.map_err(|e| miette!("time calculation overflow: {}", e))?
-	};
-
-	let (client, base_url) = try_connect_daemon(addrs).await?;
-
-	// Try to pause the alert
-	let url = format!("{}/alerts", base_url);
-
-	let body = serde_json::json!({
-		"alert": alert_path,
-		"until": until_timestamp.to_string(),
-	});
-
-	let response = client
-		.delete(&url)
-		.json(&body)
-		.send()
-		.await
-		.map_err(|e| miette!("failed to send pause request: {}", e))?;
-
-	if response.status() == reqwest::StatusCode::NOT_FOUND {
-		// Alert not found, try to find a partial match
-		info!("alert not found, trying to find partial match");
-
-		let alerts_response = client
-			.get(format!("{}/alerts", base_url))
-			.send()
-			.await
-			.map_err(|e| miette!("failed to get alerts list: {}", e))?;
-
-		let alerts: Vec<String> = alerts_response
-			.json()
-			.await
-			.map_err(|e| miette!("failed to parse alerts list: {}", e))?;
-
-		// Find partial matches
-		let matches: Vec<&String> = alerts.iter().filter(|a| a.contains(alert_path)).collect();
-
-		if matches.is_empty() {
-			return Err(miette!(
-				"alert '{}' not found and no partial matches",
-				alert_path
-			));
-		} else if matches.len() == 1 {
-			// Exactly one match, ask for confirmation
-			println!("Alert '{}' not found.", alert_path);
-			println!("Did you mean: {}", matches[0]);
-			print!("Pause this alert? [y/N] ");
-			io::stdout().flush().unwrap();
-
-			let mut input = String::new();
-			io::stdin()
-				.read_line(&mut input)
-				.map_err(|e| miette!("failed to read input: {}", e))?;
-
-			if input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes") {
-				// Retry with the matched path
-				let retry_url = format!("{}/alerts", base_url);
-				let retry_body = serde_json::json!({
-					"alert": matches[0],
-					"until": until_timestamp.to_string(),
-				});
-
-				let retry_response = client
-					.delete(&retry_url)
-					.json(&retry_body)
-					.send()
-					.await
-					.map_err(|e| miette!("failed to send pause request: {}", e))?;
-
-				if !retry_response.status().is_success() {
-					return Err(miette!(
-						"failed to pause alert (status: {})",
-						retry_response.status()
-					));
-				}
-
-				println!("Alert paused until {}", until_timestamp);
-				return Ok(());
-			} else {
-				return Err(miette!("pause cancelled"));
-			}
-		} else {
-			// Multiple matches
-			println!(
-				"Alert '{}' not found. Did you mean one of these?",
-				alert_path
-			);
-			for (i, m) in matches.iter().enumerate() {
-				println!("  {}. {}", i + 1, m);
-			}
-			return Err(miette!("multiple matches found, please be more specific"));
-		}
-	}
-
-	if !response.status().is_success() {
-		return Err(miette!(
-			"failed to pause alert (status: {})",
-			response.status()
-		));
-	}
-
-	println!("Alert paused until {}", until_timestamp);
-	Ok(())
 }
 
 async fn default_dirs(root: &std::path::Path) -> Vec<String> {
