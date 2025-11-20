@@ -1,3 +1,4 @@
+use bestool_postgres::text_cast::TextCaster;
 use miette::Result;
 use tokio::io::AsyncWrite;
 
@@ -13,7 +14,7 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub columns: &'a [tokio_postgres::Column],
 	pub rows: &'a [tokio_postgres::Row],
 	pub unprintable_columns: &'a [usize],
-	pub text_caster: Option<crate::TextCaster>,
+	pub text_caster: Option<TextCaster>,
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub theme: crate::theme::Theme,

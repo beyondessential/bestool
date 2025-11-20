@@ -21,14 +21,7 @@ mod table;
 mod theme;
 
 pub use audit::{ExportOptions, QueryOptions, export_audit_entries};
-pub use bestool_postgres::{
-	error::{
-		PgDatabaseError, format_db_error, format_error, format_miette_error, format_mobc_error,
-	},
-	pool::{PgConnection, PgPool},
-	stringify::{can_print, format_value, get_value},
-	text_cast::{CellRef, TextCaster},
-};
+pub use bestool_postgres::pool::PgPool;
 pub use config::Config;
 pub use repl::run;
 pub use signals::register_sigint_handler;

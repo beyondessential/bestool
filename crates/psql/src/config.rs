@@ -1,4 +1,6 @@
-use crate::{PgPool, theme::Theme};
+use bestool_postgres::pool::PgPool;
+
+use crate::theme::Theme;
 
 #[derive(Clone, Debug)]
 pub struct Config {

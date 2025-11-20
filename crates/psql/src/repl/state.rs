@@ -3,11 +3,12 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
+use bestool_postgres::pool::PgPool;
 use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	PgPool, audit::Audit, completer::SqlCompleter, result_store::ResultStore,
+	audit::Audit, completer::SqlCompleter, result_store::ResultStore,
 	schema_cache::SchemaCacheManager, snippets::Snippets, theme::Theme,
 };
 

@@ -1,5 +1,6 @@
 use std::ops::ControlFlow;
 
+use bestool_postgres::error::format_error;
 use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
@@ -57,10 +58,7 @@ pub(super) async fn handle_describe_view(
 		match ctx.pool.get().await {
 			Ok(client) => client.query(columns_query, &[&schema, &view_name]).await,
 			Err(e) => {
-				eprintln!(
-					"Error getting connection from pool: {}",
-					crate::format_error(&e)
-				);
+				eprintln!("Error getting connection from pool: {}", format_error(&e));
 				return ControlFlow::Continue(());
 			}
 		}
@@ -151,7 +149,7 @@ pub(super) async fn handle_describe_view(
 				"Error describing view \"{}.{}\": {}",
 				schema,
 				view_name,
-				crate::format_error(&e)
+				format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

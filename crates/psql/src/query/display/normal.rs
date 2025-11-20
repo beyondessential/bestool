@@ -1,8 +1,7 @@
+use bestool_postgres::{stringify::get_value, text_cast::CellRef};
 use comfy_table::Table;
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-
-use crate::{CellRef, get_value};
 
 pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, W>) -> Result<()> {
 	let mut table = Table::new();

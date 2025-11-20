@@ -1,3 +1,4 @@
+use bestool_postgres::{stringify::get_value, text_cast::CellRef};
 use indexmap::IndexMap;
 use miette::{IntoDiagnostic, Result};
 use serde_json::Value;
@@ -6,8 +7,6 @@ use syntect::{
 	util::as_24_bit_terminal_escaped,
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-
-use crate::{CellRef, get_value};
 
 pub async fn display<W: AsyncWrite + Unpin>(
 	ctx: &mut super::DisplayContext<'_, W>,

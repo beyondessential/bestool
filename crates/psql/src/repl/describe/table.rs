@@ -1,5 +1,6 @@
 use std::ops::ControlFlow;
 
+use bestool_postgres::error::{format_db_error, format_mobc_error};
 use comfy_table::Table;
 
 use crate::repl::state::ReplContext;
@@ -24,7 +25,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::format_mobc_error(&e, None)
+					format_mobc_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -198,7 +199,7 @@ pub(super) async fn handle_describe_table(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::format_mobc_error(&e, None)
+					format_mobc_error(&e, None)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -499,7 +500,7 @@ pub(super) async fn handle_describe_table(
 				"Error describing table \"{}.{}\": {}",
 				schema,
 				table_name,
-				crate::format_db_error(&e, None)
+				format_db_error(&e, None)
 			);
 			ControlFlow::Continue(())
 		}

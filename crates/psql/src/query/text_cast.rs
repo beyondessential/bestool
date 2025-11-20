@@ -1,9 +1,8 @@
 use std::error::Error;
 
+use bestool_postgres::pool::PgPool;
 use tokio_postgres::types::{FromSql, Type};
 use tracing::debug;
-
-use crate::PgPool;
 
 /// Raw bytes wrapper that can extract any PostgreSQL value
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -289,7 +288,7 @@ mod tests {
 	#[tokio::test]
 	async fn basic_int() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -324,7 +323,7 @@ mod tests {
 	#[tokio::test]
 	async fn batch_multiple_values() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -375,7 +374,7 @@ mod tests {
 	#[tokio::test]
 	async fn batch_large_number() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -414,7 +413,7 @@ mod tests {
 	#[tokio::test]
 	async fn batch_query_verification() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -489,7 +488,7 @@ mod tests {
 	#[tokio::test]
 	async fn batch_mixed_types() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -552,7 +551,7 @@ mod tests {
 	#[ignore = "FIXME: figure out a workaround for (anonymous?) composite types"]
 	async fn composite() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -591,7 +590,7 @@ mod tests {
 	#[tokio::test]
 	async fn money_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -622,7 +621,7 @@ mod tests {
 	#[tokio::test]
 	async fn uuid_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -656,7 +655,7 @@ mod tests {
 	#[tokio::test]
 	async fn json_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -687,7 +686,7 @@ mod tests {
 	#[tokio::test]
 	async fn jsonb_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -718,7 +717,7 @@ mod tests {
 	#[tokio::test]
 	async fn array_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -749,7 +748,7 @@ mod tests {
 	#[tokio::test]
 	async fn bytea_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -780,7 +779,7 @@ mod tests {
 	#[tokio::test]
 	async fn inet_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -811,7 +810,7 @@ mod tests {
 	#[tokio::test]
 	async fn interval_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -842,7 +841,7 @@ mod tests {
 	#[tokio::test]
 	async fn null_value() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -873,7 +872,7 @@ mod tests {
 	#[tokio::test]
 	async fn point_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -904,7 +903,7 @@ mod tests {
 	#[tokio::test]
 	async fn box_type() {
 		let connection_string = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 

@@ -1,6 +1,8 @@
 use std::ops::ControlFlow;
 
-use crate::{format_error, repl::state::ReplContext};
+use bestool_postgres::error::{format_db_error, format_error};
+
+use crate::repl::state::ReplContext;
 
 mod function;
 mod index;
@@ -165,10 +167,7 @@ pub async fn handle_describe(
 			}
 		}
 		Err(e) => {
-			eprintln!(
-				"Error describing relation: {}",
-				crate::format_db_error(&e, None)
-			);
+			eprintln!("Error describing relation: {}", format_db_error(&e, None));
 			ControlFlow::Continue(())
 		}
 	}

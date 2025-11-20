@@ -3,10 +3,9 @@ use std::{io::Write, ops::ControlFlow};
 use comfy_table::Table;
 use supports_unicode::Stream;
 
-use crate::{
-	TextCaster, can_print,
-	parser::{ResultFormat, ResultSubcommand},
-};
+use bestool_postgres::{stringify::can_print, text_cast::TextCaster};
+
+use crate::parser::{ResultFormat, ResultSubcommand};
 
 use super::ReplContext;
 

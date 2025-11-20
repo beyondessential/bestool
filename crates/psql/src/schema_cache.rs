@@ -4,10 +4,9 @@ use std::{
 	time::Duration,
 };
 
+use bestool_postgres::pool::PgPool;
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, warn};
-
-use crate::PgPool;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]
