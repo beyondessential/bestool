@@ -262,62 +262,12 @@ fn rows_to_value_map(
 		.map(|row| {
 			let mut map = serde_json::Map::new();
 			for (idx, column) in row.columns().iter().enumerate() {
-				let value = postgres_to_value(row, idx);
+				let value = bestool_postgres::stringify::postgres_to_json_value(row, idx);
 				map.insert(column.name().to_string(), value);
 			}
 			map
 		})
 		.collect()
-}
-
-fn postgres_to_value(row: &tokio_postgres::Row, idx: usize) -> serde_json::Value {
-	use tokio_postgres::types::Type;
-
-	let column = &row.columns()[idx];
-	match column.type_() {
-		&Type::BOOL => row
-			.get::<_, Option<bool>>(idx)
-			.map(serde_json::Value::Bool)
-			.unwrap_or(serde_json::Value::Null),
-		&Type::INT2 => row
-			.get::<_, Option<i16>>(idx)
-			.map(|v| serde_json::Value::Number(v.into()))
-			.unwrap_or(serde_json::Value::Null),
-		&Type::INT4 => row
-			.get::<_, Option<i32>>(idx)
-			.map(|v| serde_json::Value::Number(v.into()))
-			.unwrap_or(serde_json::Value::Null),
-		&Type::INT8 => row
-			.get::<_, Option<i64>>(idx)
-			.map(|v| serde_json::Value::Number(v.into()))
-			.unwrap_or(serde_json::Value::Null),
-		&Type::FLOAT4 => row
-			.get::<_, Option<f32>>(idx)
-			.and_then(|v| serde_json::Number::from_f64(v as f64))
-			.map(serde_json::Value::Number)
-			.unwrap_or(serde_json::Value::Null),
-		&Type::FLOAT8 => row
-			.get::<_, Option<f64>>(idx)
-			.and_then(serde_json::Number::from_f64)
-			.map(serde_json::Value::Number)
-			.unwrap_or(serde_json::Value::Null),
-		&Type::TEXT | &Type::VARCHAR => row
-			.get::<_, Option<String>>(idx)
-			.map(serde_json::Value::String)
-			.unwrap_or(serde_json::Value::Null),
-		&Type::JSON | &Type::JSONB => {
-			let val: Option<::serde_json::Value> = row.get(idx);
-			val.unwrap_or(::serde_json::Value::Null)
-		}
-		&Type::TIMESTAMP | &Type::TIMESTAMPTZ => row
-			.get::<_, Option<chrono::NaiveDateTime>>(idx)
-			.map(|dt| serde_json::Value::String(dt.to_string()))
-			.unwrap_or(serde_json::Value::Null),
-		_ => row
-			.get::<_, Option<String>>(idx)
-			.map(serde_json::Value::String)
-			.unwrap_or(serde_json::Value::Null),
-	}
 }
 
 fn check_numerical_thresholds(

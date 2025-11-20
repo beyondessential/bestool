@@ -234,7 +234,6 @@ async fn validate_alert(file: &std::path::Path, addrs: &[std::net::SocketAddr]) 
 	struct ErrorLocation {
 		line: usize,
 		column: usize,
-		path: String,
 	}
 
 	#[derive(serde::Deserialize)]

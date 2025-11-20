@@ -1,3 +1,151 @@
+use fraction::ToPrimitive;
+
+/// Convert a PostgreSQL row column to a JSON value
+///
+/// This function handles common PostgreSQL types and converts them to appropriate
+/// serde_json::Value representations. Unsupported types are converted to JSON strings
+/// using their text representation.
+pub fn postgres_to_json_value(row: &tokio_postgres::Row, idx: usize) -> serde_json::Value {
+	use tokio_postgres::types::Type;
+
+	let column = &row.columns()[idx];
+	match column.type_() {
+		&Type::BOOL => row
+			.get::<_, Option<bool>>(idx)
+			.map(serde_json::Value::Bool)
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT2 => row
+			.get::<_, Option<i16>>(idx)
+			.map(|v| serde_json::Value::Number(v.into()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT4 => row
+			.get::<_, Option<i32>>(idx)
+			.map(|v| serde_json::Value::Number(v.into()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT8 => row
+			.get::<_, Option<i64>>(idx)
+			.map(|v| serde_json::Value::Number(v.into()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::FLOAT4 => row
+			.get::<_, Option<f32>>(idx)
+			.and_then(|v| serde_json::Number::from_f64(v as f64))
+			.map(serde_json::Value::Number)
+			.unwrap_or(serde_json::Value::Null),
+		&Type::FLOAT8 => row
+			.get::<_, Option<f64>>(idx)
+			.and_then(serde_json::Number::from_f64)
+			.map(serde_json::Value::Number)
+			.unwrap_or(serde_json::Value::Null),
+		&Type::NUMERIC => row
+			.get::<_, Option<fraction::Decimal>>(idx)
+			.and_then(|v| {
+				// Convert Decimal to f64, then to JSON number
+				let float_val = v.to_f64()?;
+				serde_json::Number::from_f64(float_val)
+			})
+			.map(serde_json::Value::Number)
+			.unwrap_or(serde_json::Value::Null),
+		&Type::TEXT | &Type::VARCHAR | &Type::BPCHAR | &Type::NAME => row
+			.get::<_, Option<String>>(idx)
+			.map(serde_json::Value::String)
+			.unwrap_or(serde_json::Value::Null),
+		&Type::JSON | &Type::JSONB => {
+			let val: Option<serde_json::Value> = row.get(idx);
+			val.unwrap_or(serde_json::Value::Null)
+		}
+		&Type::TIMESTAMP => row
+			.get::<_, Option<jiff::civil::DateTime>>(idx)
+			.map(|dt| serde_json::Value::String(dt.to_string()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::TIMESTAMPTZ => row
+			.get::<_, Option<jiff::Timestamp>>(idx)
+			.map(|ts| serde_json::Value::String(ts.to_string()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::DATE => row
+			.get::<_, Option<jiff::civil::Date>>(idx)
+			.map(|d| serde_json::Value::String(d.to_string()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::TIME => row
+			.get::<_, Option<jiff::civil::Time>>(idx)
+			.map(|t| serde_json::Value::String(t.to_string()))
+			.unwrap_or(serde_json::Value::Null),
+		&Type::BYTEA => row
+			.get::<_, Option<Vec<u8>>>(idx)
+			.map(|v| serde_json::Value::String(format!("\\x{}", hex::encode(v))))
+			.unwrap_or(serde_json::Value::Null),
+		// Array types
+		&Type::TEXT_ARRAY | &Type::VARCHAR_ARRAY => row
+			.get::<_, Option<Vec<String>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(v.into_iter().map(serde_json::Value::String).collect())
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT2_ARRAY => row
+			.get::<_, Option<Vec<i16>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(
+					v.into_iter()
+						.map(|n| serde_json::Value::Number(n.into()))
+						.collect(),
+				)
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT4_ARRAY => row
+			.get::<_, Option<Vec<i32>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(
+					v.into_iter()
+						.map(|n| serde_json::Value::Number(n.into()))
+						.collect(),
+				)
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::INT8_ARRAY => row
+			.get::<_, Option<Vec<i64>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(
+					v.into_iter()
+						.map(|n| serde_json::Value::Number(n.into()))
+						.collect(),
+				)
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::FLOAT4_ARRAY => row
+			.get::<_, Option<Vec<f32>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(
+					v.into_iter()
+						.filter_map(|n| {
+							serde_json::Number::from_f64(n as f64).map(serde_json::Value::Number)
+						})
+						.collect(),
+				)
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::FLOAT8_ARRAY => row
+			.get::<_, Option<Vec<f64>>>(idx)
+			.map(|v| {
+				serde_json::Value::Array(
+					v.into_iter()
+						.filter_map(|n| {
+							serde_json::Number::from_f64(n).map(serde_json::Value::Number)
+						})
+						.collect(),
+				)
+			})
+			.unwrap_or(serde_json::Value::Null),
+		&Type::BOOL_ARRAY => row
+			.get::<_, Option<Vec<bool>>>(idx)
+			.map(|v| serde_json::Value::Array(v.into_iter().map(serde_json::Value::Bool).collect()))
+			.unwrap_or(serde_json::Value::Null),
+		// For unknown types, try to get as string
+		_ => row
+			.get::<_, Option<String>>(idx)
+			.map(serde_json::Value::String)
+			.unwrap_or(serde_json::Value::Null),
+	}
+}
+
 pub fn get_value(
 	row: &tokio_postgres::Row,
 	column_index: usize,
