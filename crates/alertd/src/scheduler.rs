@@ -102,6 +102,7 @@ impl Scheduler {
 		let LoadedAlerts {
 			alerts,
 			external_targets,
+			definition_errors,
 		} = load_alerts_from_paths(&resolved)?;
 
 		// Update resolved paths
@@ -117,7 +118,30 @@ impl Scheduler {
 
 		// Create event manager with event alerts and external targets
 		let event_manager = EventManager::new(event_alerts, &external_targets);
-		*self.event_manager.write().await = Some(event_manager);
+		*self.event_manager.write().await = Some(event_manager.clone());
+
+		// Send definition error events for any failed alert loads
+		for def_err in definition_errors {
+			let event_context = EventContext::DefinitionError {
+				alert_file: def_err.file.display().to_string(),
+				error_message: def_err.error,
+			};
+			if let Err(err) = event_manager
+				.trigger_event(
+					EventType::DefinitionError,
+					&self.ctx,
+					self.email.as_ref(),
+					self.dry_run,
+					event_context,
+				)
+				.await
+			{
+				error!(
+					"failed to trigger definition-error event: {}",
+					LogError(&err)
+				);
+			}
+		}
 
 		if regular_alerts.is_empty() {
 			warn!("no regular alerts found");
@@ -148,6 +172,7 @@ impl Scheduler {
 		let LoadedAlerts {
 			alerts,
 			external_targets,
+			definition_errors,
 		} = load_alerts_from_paths(&resolved)?;
 
 		// Separate event alerts from regular alerts
@@ -160,7 +185,30 @@ impl Scheduler {
 
 		// Update event manager
 		let event_manager = EventManager::new(event_alerts, &external_targets);
-		*self.event_manager.write().await = Some(event_manager);
+		*self.event_manager.write().await = Some(event_manager.clone());
+
+		// Send definition error events for any failed alert loads
+		for def_err in definition_errors {
+			let event_context = EventContext::DefinitionError {
+				alert_file: def_err.file.display().to_string(),
+				error_message: def_err.error,
+			};
+			if let Err(err) = event_manager
+				.trigger_event(
+					EventType::DefinitionError,
+					&self.ctx,
+					self.email.as_ref(),
+					self.dry_run,
+					event_context,
+				)
+				.await
+			{
+				error!(
+					"failed to trigger definition-error event: {}",
+					LogError(&err)
+				);
+			}
+		}
 
 		if regular_alerts.is_empty() {
 			warn!("no regular alerts found");

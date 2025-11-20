@@ -15,6 +15,7 @@ use crate::{
 #[serde(rename_all = "kebab-case")]
 pub enum EventType {
 	SourceError,
+	DefinitionError,
 	Http,
 }
 
@@ -22,6 +23,7 @@ impl EventType {
 	pub fn as_str(&self) -> &'static str {
 		match self {
 			Self::SourceError => "source-error",
+			Self::DefinitionError => "definition-error",
 			Self::Http => "http",
 		}
 	}
@@ -31,6 +33,10 @@ impl EventType {
 #[derive(Debug, Clone)]
 pub enum EventContext {
 	SourceError {
+		alert_file: String,
+		error_message: String,
+	},
+	DefinitionError {
 		alert_file: String,
 		error_message: String,
 	},
@@ -46,6 +52,13 @@ impl EventContext {
 		let mut ctx = TeraCtx::new();
 		match self {
 			Self::SourceError {
+				alert_file,
+				error_message,
+			} => {
+				ctx.insert("alert_file", alert_file);
+				ctx.insert("error_message", error_message);
+			}
+			Self::DefinitionError {
 				alert_file,
 				error_message,
 			} => {
@@ -159,6 +172,10 @@ impl EventManager {
 					"[Tamanu Alert] Failed alert: {{ alert_file }}".to_string(),
 					"{{ error_message }}".to_string(),
 				),
+				EventType::DefinitionError => (
+					"[Tamanu Alert] Invalid alert definition: {{ alert_file }}".to_string(),
+					"{{ error_message }}".to_string(),
+				),
 				EventType::Http => (
 					"{{ hostname }}: {{ subject }}".to_string(),
 					"{{ message }}".to_string(),
@@ -217,6 +234,7 @@ mod tests {
 	#[test]
 	fn test_event_type_as_str() {
 		assert_eq!(EventType::SourceError.as_str(), "source-error");
+		assert_eq!(EventType::DefinitionError.as_str(), "definition-error");
 		assert_eq!(EventType::Http.as_str(), "http");
 	}
 
@@ -277,6 +295,31 @@ mod tests {
 		assert_eq!(
 			tera_ctx.get("subject").unwrap().as_str().unwrap(),
 			"Custom alert"
+		);
+	}
+
+	#[test]
+	fn test_event_type_definition_error() {
+		let yaml = "definition-error";
+		let event: EventType = serde_yaml::from_str(yaml).unwrap();
+		assert_eq!(event, EventType::DefinitionError);
+	}
+
+	#[test]
+	fn test_event_context_to_tera_definition_error() {
+		let ctx = EventContext::DefinitionError {
+			alert_file: "/etc/alerts/broken.yml".to_string(),
+			error_message: "Invalid YAML syntax".to_string(),
+		};
+
+		let tera_ctx = ctx.to_tera_context();
+		assert_eq!(
+			tera_ctx.get("alert_file").unwrap().as_str().unwrap(),
+			"/etc/alerts/broken.yml"
+		);
+		assert_eq!(
+			tera_ctx.get("error_message").unwrap().as_str().unwrap(),
+			"Invalid YAML syntax"
 		);
 	}
 }

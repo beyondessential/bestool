@@ -14,11 +14,19 @@ use crate::{
 pub struct LoadedAlerts {
 	pub alerts: Vec<(AlertDefinition, Vec<crate::targets::ResolvedTarget>)>,
 	pub external_targets: HashMap<String, Vec<ExternalTarget>>,
+	pub definition_errors: Vec<DefinitionError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DefinitionError {
+	pub file: std::path::PathBuf,
+	pub error: String,
 }
 
 pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
+	let mut definition_errors = Vec::new();
 
 	// Load external targets from files
 	for external_targets_path in &resolved.files {
@@ -75,19 +83,25 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 
 	// Load alerts from directories (recursively)
 	for dir in &resolved.dirs {
-		alerts.extend(
-			WalkDir::new(dir)
-				.into_iter()
-				.filter_map(|e| e.ok())
-				.filter(|e| e.file_type().is_file())
-				.filter_map(|entry| load_alert_from_file(entry.path())),
-		);
+		for entry in WalkDir::new(dir)
+			.into_iter()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_type().is_file())
+		{
+			match load_alert_from_file(entry.path()) {
+				LoadAlertResult::Success(alert) => alerts.push(alert),
+				LoadAlertResult::Error(err) => definition_errors.push(err),
+				LoadAlertResult::Disabled | LoadAlertResult::Skip => {}
+			}
+		}
 	}
 
 	// Load alerts from individual files
 	for file in &resolved.files {
-		if let Some(alert) = load_alert_from_file(file) {
-			alerts.push(alert);
+		match load_alert_from_file(file) {
+			LoadAlertResult::Success(alert) => alerts.push(alert),
+			LoadAlertResult::Error(err) => definition_errors.push(err),
+			LoadAlertResult::Disabled | LoadAlertResult::Skip => {}
 		}
 	}
 
@@ -116,6 +130,10 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 				Ok(normalized) => Some(normalized),
 				Err(err) => {
 					error!(file=?file, "failed to normalise alert: {}", LogError(&err));
+					definition_errors.push(DefinitionError {
+						file: file.clone(),
+						error: format!("{:#}", err),
+					});
 					None
 				}
 			}
@@ -124,19 +142,31 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 
 	debug!(count=%alerts_with_targets.len(), "found some alerts");
 
+	if !definition_errors.is_empty() {
+		warn!(count=%definition_errors.len(), "found alert definition errors");
+	}
+
 	Ok(LoadedAlerts {
 		alerts: alerts_with_targets,
 		external_targets,
+		definition_errors,
 	})
 }
 
-fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
+enum LoadAlertResult {
+	Success(AlertDefinition),
+	Disabled,
+	Skip,
+	Error(DefinitionError),
+}
+
+fn load_alert_from_file(file: &Path) -> LoadAlertResult {
 	if !file.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-		return None;
+		return LoadAlertResult::Skip;
 	}
 
 	if file.file_stem().is_some_and(|n| n == "_targets") {
-		return None;
+		return LoadAlertResult::Skip;
 	}
 
 	debug!(?file, "parsing YAML file");
@@ -144,7 +174,10 @@ fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
 		Ok(content) => content,
 		Err(err) => {
 			error!(?file, "failed to read file: {err}");
-			return None;
+			return LoadAlertResult::Error(DefinitionError {
+				file: file.to_path_buf(),
+				error: format!("Failed to read file: {}", err),
+			});
 		}
 	};
 
@@ -152,12 +185,19 @@ fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
 		Ok(alert) => alert,
 		Err(err) => {
 			error!(?file, "failed to parse YAML: {err}");
-			return None;
+			return LoadAlertResult::Error(DefinitionError {
+				file: file.to_path_buf(),
+				error: format!("Failed to parse YAML: {}", err),
+			});
 		}
 	};
 
 	alert.file = file.to_path_buf();
 	debug!(?alert, "parsed alert file");
 
-	if alert.enabled { Some(alert) } else { None }
+	if alert.enabled {
+		LoadAlertResult::Success(alert)
+	} else {
+		LoadAlertResult::Disabled
+	}
 }
