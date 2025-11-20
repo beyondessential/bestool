@@ -29,6 +29,7 @@ pub struct Scheduler {
 	event_manager: Arc<RwLock<Option<EventManager>>>,
 	paused_until: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
 	triggered_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
+	last_sent_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
 	last_output: Arc<RwLock<HashMap<PathBuf, String>>>,
 	external_targets:
 		Arc<RwLock<std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>>>>,
@@ -55,6 +56,7 @@ impl Scheduler {
 			event_manager: Arc::new(RwLock::new(None)),
 			paused_until: Arc::new(RwLock::new(HashMap::new())),
 			triggered_at: Arc::new(RwLock::new(HashMap::new())),
+			last_sent_at: Arc::new(RwLock::new(HashMap::new())),
 			last_output: Arc::new(RwLock::new(HashMap::new())),
 			external_targets: Arc::new(RwLock::new(HashMap::new())),
 		}
@@ -369,8 +371,9 @@ impl Scheduler {
 		let event_manager = self.event_manager.clone();
 		let paused_until = self.paused_until.clone();
 		let triggered_at = self.triggered_at.clone();
+		let last_sent_at = self.last_sent_at.clone();
 		let last_output = self.last_output.clone();
-		let always_send = alert.always_send;
+		let always_send = alert.always_send.clone();
 		let when_changed = alert.when_changed.clone();
 
 		tokio::spawn(async move {
@@ -455,7 +458,28 @@ impl Scheduler {
 
 				if is_triggering {
 					// Alert is in triggering state
-					let mut should_send = always_send || !was_triggered;
+					let mut should_send = match &always_send {
+						crate::alert::AlwaysSend::Boolean(true) => true,
+						crate::alert::AlwaysSend::Boolean(false) => !was_triggered,
+						crate::alert::AlwaysSend::Timed(config) => {
+							// Check if enough time has passed since last send
+							let last_sent = last_sent_at.read().await;
+							match last_sent.get(&file) {
+								Some(last_sent_time) => {
+									let now = Timestamp::now();
+									let elapsed = now.duration_since(*last_sent_time);
+									if let Ok(after_duration) =
+										jiff::SignedDuration::try_from(config.after_duration)
+									{
+										elapsed >= after_duration
+									} else {
+										false
+									}
+								}
+								None => true, // Never sent before, should send
+							}
+						}
+					};
 
 					// Check when-changed logic if configured
 					if should_send
@@ -493,7 +517,10 @@ impl Scheduler {
 						}
 
 						metrics::inc_alerts_sent();
-						triggered.insert(file.clone(), Timestamp::now());
+
+						// Update last sent timestamp
+						let mut last_sent = last_sent_at.write().await;
+						last_sent.insert(file.clone(), Timestamp::now());
 					} else {
 						debug!(?file, "alert still triggered, not sending (already sent)");
 					}
@@ -507,6 +534,10 @@ impl Scheduler {
 					if was_triggered {
 						info!(?file, "alert cleared");
 						triggered.remove(&file);
+
+						// Clear last sent timestamp when alert clears
+						let mut last_sent = last_sent_at.write().await;
+						last_sent.remove(&file);
 
 						// Clear last output when alert clears
 						if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {

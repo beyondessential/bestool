@@ -53,6 +53,28 @@ pub struct WhenChangedConfig {
 	pub only: Vec<String>,
 }
 
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+#[serde(untagged)]
+pub enum AlwaysSend {
+	Boolean(bool),
+	Timed(AlwaysSendConfig),
+}
+
+impl Default for AlwaysSend {
+	fn default() -> Self {
+		AlwaysSend::Boolean(false)
+	}
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AlwaysSendConfig {
+	pub after: String,
+	#[serde(skip)]
+	pub after_duration: Duration,
+}
+
 #[derive(serde::Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct AlertDefinition {
@@ -69,7 +91,7 @@ pub struct AlertDefinition {
 	pub interval_duration: Duration,
 
 	#[serde(default)]
-	pub always_send: bool,
+	pub always_send: AlwaysSend,
 
 	#[serde(default)]
 	pub when_changed: WhenChanged,
@@ -109,6 +131,12 @@ impl AlertDefinition {
 		// Parse interval string into duration
 		self.interval_duration = parse_interval(&self.interval)
 			.wrap_err_with(|| format!("failed to parse interval: {}", self.interval))?;
+
+		// Parse always_send after duration if configured
+		if let AlwaysSend::Timed(ref mut config) = self.always_send {
+			config.after_duration = parse_interval(&config.after)
+				.wrap_err_with(|| format!("failed to parse always-send after: {}", config.after))?;
+		}
 
 		// Validate templates before resolving targets
 		// This catches template syntax errors early
@@ -471,7 +499,7 @@ send:
     template: Test
 "#;
 		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
-		assert!(!alert.always_send);
+		assert!(matches!(alert.always_send, AlwaysSend::Boolean(false)));
 	}
 
 	#[test]
@@ -485,7 +513,54 @@ send:
     template: Test
 "#;
 		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
-		assert!(alert.always_send);
+		assert!(matches!(alert.always_send, AlwaysSend::Boolean(true)));
+	}
+
+	#[test]
+	fn test_always_send_timed() {
+		let yaml = r#"
+always-send:
+  after: 8h
+sql: "SELECT 1"
+send:
+  - id: test
+    subject: Test
+    template: Test
+"#;
+		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+		match alert.always_send {
+			AlwaysSend::Timed(config) => {
+				assert_eq!(config.after, "8h");
+			}
+			_ => panic!("Expected AlwaysSend::Timed"),
+		}
+	}
+
+	#[test]
+	fn test_always_send_timed_normalised() {
+		let yaml = r#"
+always-send:
+  after: 8 hours
+sql: "SELECT 1"
+send:
+  - id: test
+    subject: Test
+    template: Test
+"#;
+		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+		let external_targets = std::collections::HashMap::new();
+		let (normalised, _) = alert.normalise(&external_targets).unwrap();
+
+		match normalised.always_send {
+			AlwaysSend::Timed(config) => {
+				assert_eq!(config.after, "8 hours");
+				assert_eq!(
+					config.after_duration,
+					std::time::Duration::from_secs(8 * 3600)
+				);
+			}
+			_ => panic!("Expected AlwaysSend::Timed"),
+		}
 	}
 
 	#[test]

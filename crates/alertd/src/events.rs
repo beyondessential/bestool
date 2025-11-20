@@ -212,7 +212,7 @@ impl EventManager {
 				enabled: true,
 				interval: "0 seconds".to_string(),
 				interval_duration: std::time::Duration::from_secs(0),
-				always_send: false,
+				always_send: crate::alert::AlwaysSend::Boolean(false),
 				when_changed: crate::alert::WhenChanged::default(),
 				send: Vec::new(),
 				source: crate::alert::TicketSource::Event {
