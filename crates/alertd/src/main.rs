@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{Result, miette};
-use tracing::debug;
+use tracing::{debug, info};
 
 /// BES tooling: Alert daemon
 ///
@@ -94,6 +94,29 @@ enum Command {
 	/// Connects to the running daemon's HTTP API and retrieves the list of
 	/// currently loaded alert definition files.
 	LoadedAlerts {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
+	},
+
+	/// Temporarily pause an alert
+	///
+	/// Pauses an alert until the specified time. The alert will not execute during
+	/// this period. The pause is lost when the daemon restarts.
+	PauseAlert {
+		/// Alert file path to pause
+		alert: String,
+
+		/// Time until which to pause the alert (fuzzy time format)
+		///
+		/// Examples: "1 hour", "2 days", "next monday", "2024-12-25T10:00:00Z"
+		/// Defaults to 1 week from now if not specified.
+		#[arg(long)]
+		until: Option<String>,
+
 		/// HTTP server address(es) to try
 		///
 		/// Can be provided multiple times. Will attempt to connect to each address
@@ -259,17 +282,23 @@ async fn run_daemon(daemon: DaemonArgs) -> Result<()> {
 	bestool_alertd::run(daemon_config).await
 }
 
-async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
-	use tracing::info;
+fn default_server_addrs() -> Vec<std::net::SocketAddr> {
+	vec![
+		"[::1]:8271".parse().unwrap(),
+		"127.0.0.1:8271".parse().unwrap(),
+	]
+}
 
+async fn try_connect_daemon(addrs: &[std::net::SocketAddr]) -> Result<(reqwest::Client, String)> {
 	let client = reqwest::Client::new();
 	let mut last_error = None;
 
 	for addr in addrs {
-		let url = format!("http://{}/alerts", addr);
-		info!("querying daemon at {}", url);
+		let url = format!("http://{}", addr);
+		info!("trying to connect to daemon at {}", url);
 
-		let response = match client.get(&url).send().await {
+		// Try to connect with a simple status check
+		let test_response = match client.get(format!("{}/status", url)).send().await {
 			Ok(resp) => resp,
 			Err(e) => {
 				info!("failed to connect to {}: {}", url, e);
@@ -278,29 +307,10 @@ async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
 			}
 		};
 
-		if !response.status().is_success() {
-			info!("daemon at {} returned status: {}", url, response.status());
-			continue;
+		if test_response.status().is_success() {
+			info!("connected to daemon at {}", url);
+			return Ok((client, url));
 		}
-
-		let alerts: Vec<String> = match response.json().await {
-			Ok(a) => a,
-			Err(e) => {
-				info!("failed to parse response from {}: {}", url, e);
-				continue;
-			}
-		};
-
-		if alerts.is_empty() {
-			println!("No alerts currently loaded");
-		} else {
-			println!("Loaded alerts ({}):", alerts.len());
-			for alert in alerts {
-				println!("  {}", alert);
-			}
-		}
-
-		return Ok(());
 	}
 
 	if let Some(err) = last_error {
@@ -317,6 +327,170 @@ async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
 	}
 }
 
+async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
+	let (client, base_url) = try_connect_daemon(addrs).await?;
+
+	let response = client
+		.get(format!("{}/alerts", base_url))
+		.send()
+		.await
+		.map_err(|e| miette!("failed to get alerts: {}", e))?;
+
+	if !response.status().is_success() {
+		return Err(miette!(
+			"failed to get alerts (status: {})",
+			response.status()
+		));
+	}
+
+	let alerts: Vec<String> = response
+		.json()
+		.await
+		.map_err(|e| miette!("failed to parse response: {}", e))?;
+
+	if alerts.is_empty() {
+		println!("No alerts currently loaded");
+	} else {
+		println!("Loaded alerts ({}):", alerts.len());
+		for alert in alerts {
+			println!("  {}", alert);
+		}
+	}
+
+	Ok(())
+}
+
+async fn pause_alert(
+	alert_path: &str,
+	until: Option<&str>,
+	addrs: &[std::net::SocketAddr],
+) -> Result<()> {
+	use std::io::{self, Write};
+
+	// Parse or default the until time
+	let until_timestamp = if let Some(until_str) = until {
+		// Try parsing as timestamp first
+		if let Ok(ts) = until_str.parse::<jiff::Timestamp>() {
+			ts
+		} else {
+			// Try parsing as relative time using jiff's Span
+			let span: jiff::Span = until_str
+				.parse()
+				.map_err(|e| miette!("failed to parse time '{}': {}", until_str, e))?;
+			jiff::Timestamp::now()
+				.checked_add(span)
+				.map_err(|e| miette!("time calculation overflow: {}", e))?
+		}
+	} else {
+		// Default to 1 week from now
+		jiff::Timestamp::now()
+			.checked_add(jiff::Span::new().days(7))
+			.map_err(|e| miette!("time calculation overflow: {}", e))?
+	};
+
+	let (client, base_url) = try_connect_daemon(addrs).await?;
+
+	// Try to pause the alert
+	let url = format!("{}/alerts", base_url);
+
+	let body = serde_json::json!({
+		"alert": alert_path,
+		"until": until_timestamp.to_string(),
+	});
+
+	let response = client
+		.delete(&url)
+		.json(&body)
+		.send()
+		.await
+		.map_err(|e| miette!("failed to send pause request: {}", e))?;
+
+	if response.status() == reqwest::StatusCode::NOT_FOUND {
+		// Alert not found, try to find a partial match
+		info!("alert not found, trying to find partial match");
+
+		let alerts_response = client
+			.get(format!("{}/alerts", base_url))
+			.send()
+			.await
+			.map_err(|e| miette!("failed to get alerts list: {}", e))?;
+
+		let alerts: Vec<String> = alerts_response
+			.json()
+			.await
+			.map_err(|e| miette!("failed to parse alerts list: {}", e))?;
+
+		// Find partial matches
+		let matches: Vec<&String> = alerts.iter().filter(|a| a.contains(alert_path)).collect();
+
+		if matches.is_empty() {
+			return Err(miette!(
+				"alert '{}' not found and no partial matches",
+				alert_path
+			));
+		} else if matches.len() == 1 {
+			// Exactly one match, ask for confirmation
+			println!("Alert '{}' not found.", alert_path);
+			println!("Did you mean: {}", matches[0]);
+			print!("Pause this alert? [y/N] ");
+			io::stdout().flush().unwrap();
+
+			let mut input = String::new();
+			io::stdin()
+				.read_line(&mut input)
+				.map_err(|e| miette!("failed to read input: {}", e))?;
+
+			if input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes") {
+				// Retry with the matched path
+				let retry_url = format!("{}/alerts", base_url);
+				let retry_body = serde_json::json!({
+					"alert": matches[0],
+					"until": until_timestamp.to_string(),
+				});
+
+				let retry_response = client
+					.delete(&retry_url)
+					.json(&retry_body)
+					.send()
+					.await
+					.map_err(|e| miette!("failed to send pause request: {}", e))?;
+
+				if !retry_response.status().is_success() {
+					return Err(miette!(
+						"failed to pause alert (status: {})",
+						retry_response.status()
+					));
+				}
+
+				println!("Alert paused until {}", until_timestamp);
+				return Ok(());
+			} else {
+				return Err(miette!("pause cancelled"));
+			}
+		} else {
+			// Multiple matches
+			println!(
+				"Alert '{}' not found. Did you mean one of these?",
+				alert_path
+			);
+			for (i, m) in matches.iter().enumerate() {
+				println!("  {}. {}", i + 1, m);
+			}
+			return Err(miette!("multiple matches found, please be more specific"));
+		}
+	}
+
+	if !response.status().is_success() {
+		return Err(miette!(
+			"failed to pause alert (status: {})",
+			response.status()
+		));
+	}
+
+	println!("Alert paused until {}", until_timestamp);
+	Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
@@ -325,10 +499,7 @@ async fn main() -> Result<()> {
 		Command::Run { daemon } => run_daemon(daemon).await,
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				vec![
-					"[::1]:8271".parse().unwrap(),
-					"127.0.0.1:8271".parse().unwrap(),
-				]
+				default_server_addrs()
 			} else {
 				server_addr
 			};
@@ -336,14 +507,23 @@ async fn main() -> Result<()> {
 		}
 		Command::LoadedAlerts { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				vec![
-					"[::1]:8271".parse().unwrap(),
-					"127.0.0.1:8271".parse().unwrap(),
-				]
+				default_server_addrs()
 			} else {
 				server_addr
 			};
 			get_loaded_alerts(&addrs).await
+		}
+		Command::PauseAlert {
+			alert,
+			until,
+			server_addr,
+		} => {
+			let addrs = if server_addr.is_empty() {
+				default_server_addrs()
+			} else {
+				server_addr
+			};
+			pause_alert(&alert, until.as_deref(), &addrs).await
 		}
 		#[cfg(windows)]
 		Command::Install => install_service(),

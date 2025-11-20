@@ -60,6 +60,12 @@ struct AlertRequest {
 	custom: serde_json::Value,
 }
 
+#[derive(Deserialize)]
+struct PauseAlertRequest {
+	alert: String,
+	until: String,
+}
+
 pub async fn start_server(
 	reload_tx: mpsc::Sender<()>,
 	event_manager: Option<Arc<EventManager>>,
@@ -87,7 +93,7 @@ pub async fn start_server(
 		.route("/", get(handle_index))
 		.route("/reload", post(handle_reload))
 		.route("/alert", post(handle_alert))
-		.route("/alerts", get(handle_alerts))
+		.route("/alerts", get(handle_alerts).delete(handle_pause_alert))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
@@ -233,6 +239,43 @@ async fn handle_alerts(State(state): State<Arc<ServerState>>) -> impl IntoRespon
 	Json(alerts)
 }
 
+async fn handle_pause_alert(
+	State(state): State<Arc<ServerState>>,
+	Json(payload): Json<PauseAlertRequest>,
+) -> impl IntoResponse {
+	use std::path::PathBuf;
+
+	info!(alert = %payload.alert, until = %payload.until, "pausing alert");
+
+	let until = match payload.until.parse::<jiff::Timestamp>() {
+		Ok(ts) => ts,
+		Err(e) => {
+			error!("failed to parse timestamp: {e:?}");
+			return (
+				StatusCode::BAD_REQUEST,
+				format!("Invalid timestamp: {}\n", e),
+			)
+				.into_response();
+		}
+	};
+
+	let path = PathBuf::from(&payload.alert);
+	match state.scheduler.pause_alert(&path, until).await {
+		Ok(true) => {
+			info!("alert paused successfully");
+			(StatusCode::OK, "Alert paused\n").into_response()
+		}
+		Ok(false) => {
+			info!("alert not found");
+			(StatusCode::NOT_FOUND, "Alert not found\n").into_response()
+		}
+		Err(e) => {
+			error!("failed to pause alert: {e:?}");
+			(StatusCode::INTERNAL_SERVER_ERROR, "Failed to pause alert\n").into_response()
+		}
+	}
+}
+
 async fn handle_index() -> impl IntoResponse {
 	let endpoints = serde_json::json!([
 		{
@@ -254,6 +297,11 @@ async fn handle_index() -> impl IntoResponse {
 			"method": "GET",
 			"path": "/alerts",
 			"description": "List currently loaded alert files"
+		},
+		{
+			"method": "DELETE",
+			"path": "/alerts",
+			"description": "Temporarily pause an alert until the specified timestamp (JSON body: {\"alert\": \"PATH\", \"until\": \"TIMESTAMP\"})"
 		},
 		{
 			"method": "GET",
@@ -420,7 +468,7 @@ mod tests {
 
 		assert!(endpoints.is_array());
 		let endpoints = endpoints.as_array().unwrap();
-		assert_eq!(endpoints.len(), 6);
+		assert_eq!(endpoints.len(), 7);
 
 		// Check that all expected endpoints are present
 		let paths: Vec<&str> = endpoints

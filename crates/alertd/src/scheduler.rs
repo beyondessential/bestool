@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
+use jiff::Timestamp;
 use miette::Result;
 use tokio::{
 	sync::RwLock,
@@ -27,6 +28,7 @@ pub struct Scheduler {
 	dry_run: bool,
 	tasks: Arc<RwLock<HashMap<PathBuf, JoinHandle<()>>>>,
 	event_manager: Arc<RwLock<Option<EventManager>>>,
+	paused_until: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
 }
 
 impl Scheduler {
@@ -50,6 +52,7 @@ impl Scheduler {
 			dry_run,
 			tasks: Arc::new(RwLock::new(HashMap::new())),
 			event_manager: Arc::new(RwLock::new(None)),
+			paused_until: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
 
@@ -62,6 +65,18 @@ impl Scheduler {
 		let mut files: Vec<PathBuf> = tasks.keys().cloned().collect();
 		files.sort();
 		files
+	}
+
+	pub async fn pause_alert(&self, path: &PathBuf, until: Timestamp) -> Result<bool> {
+		let tasks = self.tasks.read().await;
+		if !tasks.contains_key(path) {
+			return Ok(false);
+		}
+
+		let mut paused = self.paused_until.write().await;
+		paused.insert(path.clone(), until);
+		info!(?path, until = %until, "paused alert");
+		Ok(true)
 	}
 
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
@@ -207,6 +222,7 @@ impl Scheduler {
 		let interval_duration = alert.interval;
 
 		let event_manager = self.event_manager.clone();
+		let paused_until = self.paused_until.clone();
 
 		tokio::spawn(async move {
 			let file = alert.file.clone();
@@ -221,6 +237,22 @@ impl Scheduler {
 
 			loop {
 				ticker.tick().await;
+
+				// Check if alert is paused
+				let is_paused = {
+					let paused = paused_until.read().await;
+					if let Some(until) = paused.get(&file) {
+						let now = Timestamp::now();
+						now < *until
+					} else {
+						false
+					}
+				};
+
+				if is_paused {
+					debug!(?file, "alert is paused, skipping execution");
+					continue;
+				}
 
 				debug!(?file, "executing alert");
 				match alert
