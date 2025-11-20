@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use miette::Result;
 use tera::Context as TeraCtx;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
 	LogError,
@@ -100,12 +100,15 @@ impl EventManager {
 		let mut event_alerts: HashMap<EventType, Vec<(AlertDefinition, Vec<ResolvedTarget>)>> =
 			HashMap::new();
 
+		debug!(total_alerts = alerts.len(), "initializing event manager");
+
 		// Separate event-based alerts from regular alerts
 		for (alert, targets) in alerts {
 			if let crate::alert::TicketSource::Event { event } = &alert.source {
 				debug!(
 					file = ?alert.file,
 					event = event.as_str(),
+					targets = targets.len(),
 					"registered event alert"
 				);
 				event_alerts
@@ -114,6 +117,12 @@ impl EventManager {
 					.push((alert, targets));
 			}
 		}
+
+		info!(
+			event_types = ?event_alerts.keys().collect::<Vec<_>>(),
+			total_event_alerts = event_alerts.values().map(|v| v.len()).sum::<usize>(),
+			"event manager initialized"
+		);
 
 		let default_target = determine_default_target(external_targets).map(|t| ResolvedTarget {
 			subject: None,
@@ -147,11 +156,16 @@ impl EventManager {
 		dry_run: bool,
 		event_context: EventContext,
 	) -> Result<()> {
-		info!(event = event_type.as_str(), "triggering event");
+		info!(
+			event = event_type.as_str(),
+			has_alerts = self.event_alerts.contains_key(&event_type),
+			has_default_target = self.default_target.is_some(),
+			"triggering event"
+		);
 
 		// Check if there are explicit alerts for this event
 		if let Some(alerts) = self.event_alerts.get(&event_type) {
-			debug!(count = alerts.len(), "executing event alerts");
+			info!(count = alerts.len(), "executing event alerts");
 			for (alert, targets) in alerts {
 				let mut tera_ctx = crate::templates::build_context(alert, chrono::Utc::now());
 				// Merge event context
@@ -165,19 +179,23 @@ impl EventManager {
 			}
 		} else if let Some(ref default_target) = self.default_target {
 			// No explicit alert, use default target with event-specific template
-			debug!("using default target for event");
+			info!(
+				event = event_type.as_str(),
+				"using default target for event (no explicit alert configured)"
+			);
 
 			let (subject_template, body_template) = match event_type {
 				EventType::SourceError => (
-					"[Tamanu Alert] Failed alert: {{ alert_file }}".to_string(),
-					"{{ error_message }}".to_string(),
+					"[bestool-alertd] {{ hostname }}: Failed alert: {{ alert_file }}".to_string(),
+					"<pre>{{ error_message }}</pre>".to_string(),
 				),
 				EventType::DefinitionError => (
-					"[Tamanu Alert] Invalid alert definition: {{ alert_file }}".to_string(),
-					"{{ error_message }}".to_string(),
+					"[bestool-alertd] {{ hostname }}: Invalid alert definition: {{ alert_file }}"
+						.to_string(),
+					"<pre>{{ error_message }}</pre>".to_string(),
 				),
 				EventType::Http => (
-					"{{ hostname }}: {{ subject }}".to_string(),
+					"[bestool-alertd] {{ hostname }}: {{ subject }}".to_string(),
 					"{{ message }}".to_string(),
 				),
 			};
@@ -213,7 +231,10 @@ impl EventManager {
 				error!("failed to send default event alert: {}", LogError(&err));
 			}
 		} else {
-			debug!("no alerts or default target for event, skipping");
+			warn!(
+				event = event_type.as_str(),
+				"no alerts or default target for event, skipping notification"
+			);
 		}
 
 		Ok(())
