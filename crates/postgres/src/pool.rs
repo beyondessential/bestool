@@ -73,29 +73,6 @@ impl PgPool {
 /// If the connection fails with an authentication error and no password was provided
 /// in the connection URL, the function will prompt the user to enter a password
 /// interactively. The password will be read securely without echoing to the terminal.
-///
-/// # Examples
-///
-/// ```no_run
-/// # use bestool_postgres::create_pool;
-/// # async fn example() -> miette::Result<()> {
-/// // Connect via Unix socket using query parameter
-/// let pool = create_pool("postgresql:///postgres?host=/var/run/postgresql", "myapp", "test").await?;
-///
-/// // Connect via percent-encoded Unix socket path
-/// let pool = create_pool("postgresql://%2Fvar%2Frun%2Fpostgresql/postgres", "myapp", "test").await?;
-///
-/// // Connect with auto-detection (tries Unix socket first, then localhost)
-/// let pool = create_pool("postgresql:///postgres", "myapp", "test").await?;
-///
-/// // Traditional TCP connection
-/// let pool = create_pool("postgresql://user:pass@localhost:5432/dbname", "myapp", "test").await?;
-///
-/// // Connection without password (will prompt if authentication required)
-/// let pool = create_pool("postgresql://user@localhost/dbname", "myapp", "test").await?;
-/// # Ok(())
-/// # }
-/// ```
 pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 	let mut config = url::parse_connection_url(url)?;
 
