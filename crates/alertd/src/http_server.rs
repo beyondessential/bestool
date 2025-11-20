@@ -28,6 +28,7 @@ use crate::{
 	alert::InternalContext,
 	events::{EventContext, EventManager, EventType},
 	metrics,
+	scheduler::Scheduler,
 };
 
 #[derive(Clone)]
@@ -39,6 +40,7 @@ pub struct ServerState {
 	pub internal_context: Arc<InternalContext>,
 	pub email_config: Option<EmailConfig>,
 	pub dry_run: bool,
+	pub scheduler: Arc<Scheduler>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,6 +67,7 @@ pub async fn start_server(
 	email_config: Option<EmailConfig>,
 	dry_run: bool,
 	addrs: Vec<std::net::SocketAddr>,
+	scheduler: Arc<Scheduler>,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -77,12 +80,14 @@ pub async fn start_server(
 		internal_context,
 		email_config,
 		dry_run,
+		scheduler,
 	};
 
 	let app = Router::new()
 		.route("/", get(handle_index))
 		.route("/reload", post(handle_reload))
 		.route("/alert", post(handle_alert))
+		.route("/alerts", get(handle_alerts))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
@@ -222,6 +227,12 @@ async fn handle_alert(
 	}
 }
 
+async fn handle_alerts(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+	let files = state.scheduler.get_loaded_alerts().await;
+	let alerts: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+	Json(alerts)
+}
+
 async fn handle_index() -> impl IntoResponse {
 	let endpoints = serde_json::json!([
 		{
@@ -238,6 +249,11 @@ async fn handle_index() -> impl IntoResponse {
 			"method": "POST",
 			"path": "/alert",
 			"description": "Trigger a custom HTTP alert with JSON payload"
+		},
+		{
+			"method": "GET",
+			"path": "/alerts",
+			"description": "List currently loaded alert files"
 		},
 		{
 			"method": "GET",
@@ -264,23 +280,44 @@ mod tests {
 
 	async fn create_test_state() -> Arc<ServerState> {
 		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
-		let (client, connection) = tokio_postgres::connect(
-			"host=localhost user=postgres dbname=tamanu_meta",
-			tokio_postgres::NoTls,
-		)
-		.await
-		.unwrap();
+		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+			.await
+			.unwrap();
 		tokio::spawn(async move {
 			let _ = connection.await;
 		});
+
+		// Create a second client for the scheduler
+		let (scheduler_client, scheduler_connection) =
+			tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+				.await
+				.unwrap();
+		tokio::spawn(async move {
+			let _ = scheduler_connection.await;
+		});
+
+		let ctx = Arc::new(InternalContext { pg_client: client });
+		let scheduler_ctx = Arc::new(InternalContext {
+			pg_client: scheduler_client,
+		});
+		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
+			vec![],
+			std::time::Duration::from_secs(60),
+			scheduler_ctx,
+			None,
+			true,
+		));
+
 		Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
 			pid: std::process::id(),
 			event_manager: None,
-			internal_context: Arc::new(InternalContext { pg_client: client }),
+			internal_context: ctx,
 			email_config: None,
 			dry_run: true,
+			scheduler,
 		})
 	}
 
@@ -319,23 +356,31 @@ mod tests {
 	#[tokio::test]
 	async fn test_reload_endpoint() {
 		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
-		let (client, connection) = tokio_postgres::connect(
-			"host=localhost user=postgres dbname=tamanu_meta",
-			tokio_postgres::NoTls,
-		)
-		.await
-		.unwrap();
+		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+			.await
+			.unwrap();
 		tokio::spawn(async move {
 			let _ = connection.await;
 		});
+		let ctx = Arc::new(InternalContext { pg_client: client });
+		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
+			vec![],
+			std::time::Duration::from_secs(60),
+			ctx.clone(),
+			None,
+			true,
+		));
+
 		let state = Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
 			pid: std::process::id(),
 			event_manager: None,
-			internal_context: Arc::new(InternalContext { pg_client: client }),
+			internal_context: ctx,
 			email_config: None,
 			dry_run: true,
+			scheduler,
 		});
 
 		let response = handle_reload(State(state)).await.into_response();
@@ -375,7 +420,7 @@ mod tests {
 
 		assert!(endpoints.is_array());
 		let endpoints = endpoints.as_array().unwrap();
-		assert_eq!(endpoints.len(), 5);
+		assert_eq!(endpoints.len(), 6);
 
 		// Check that all expected endpoints are present
 		let paths: Vec<&str> = endpoints
@@ -385,6 +430,7 @@ mod tests {
 		assert!(paths.contains(&"/"));
 		assert!(paths.contains(&"/reload"));
 		assert!(paths.contains(&"/alert"));
+		assert!(paths.contains(&"/alerts"));
 		assert!(paths.contains(&"/metrics"));
 		assert!(paths.contains(&"/status"));
 	}
@@ -411,12 +457,10 @@ mod tests {
 		use std::collections::HashMap;
 
 		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
-		let (client, connection) = tokio_postgres::connect(
-			"host=localhost user=postgres dbname=tamanu_meta",
-			tokio_postgres::NoTls,
-		)
-		.await
-		.unwrap();
+		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+			.await
+			.unwrap();
 		tokio::spawn(async move {
 			let _ = connection.await;
 		});
@@ -424,14 +468,24 @@ mod tests {
 		// Create a mock event manager
 		let event_manager = crate::events::EventManager::new(Vec::new(), &HashMap::new());
 
+		let ctx = Arc::new(crate::InternalContext { pg_client: client });
+		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
+			vec![],
+			std::time::Duration::from_secs(60),
+			ctx.clone(),
+			None,
+			true,
+		));
+
 		let state = Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
 			pid: std::process::id(),
 			event_manager: Some(Arc::new(event_manager)),
-			internal_context: Arc::new(crate::InternalContext { pg_client: client }),
+			internal_context: ctx,
 			email_config: None,
 			dry_run: true,
+			scheduler,
 		});
 
 		let payload = AlertRequest {
@@ -450,5 +504,21 @@ mod tests {
 			.unwrap();
 		let body_str = String::from_utf8(body.to_vec()).unwrap();
 		assert_eq!(body_str, "Alert triggered\n");
+	}
+
+	#[tokio::test]
+	async fn test_alerts_endpoint() {
+		let state = create_test_state().await;
+
+		let response = handle_alerts(State(state)).await.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let alerts: Vec<String> = serde_json::from_slice(&body).unwrap();
+
+		// Should be empty for test state
+		assert!(alerts.is_empty());
 	}
 }

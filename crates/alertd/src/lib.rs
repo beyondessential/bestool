@@ -8,7 +8,7 @@ pub mod http_server;
 mod loader;
 mod metrics;
 mod pg_interval;
-mod scheduler;
+pub mod scheduler;
 mod targets;
 mod templates;
 

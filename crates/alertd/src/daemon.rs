@@ -129,6 +129,7 @@ pub async fn run_with_shutdown(
 		let ctx_for_server = ctx.clone();
 		let email_for_server = daemon_config.email.clone();
 		let dry_run_for_server = daemon_config.dry_run;
+		let scheduler_for_server = scheduler.clone();
 		tokio::spawn(async move {
 			// Wait for event manager to be initialised
 			let event_mgr = loop {
@@ -146,6 +147,7 @@ pub async fn run_with_shutdown(
 				email_for_server,
 				dry_run_for_server,
 				daemon_config.server_addrs.clone(),
+				scheduler_for_server,
 			)
 			.await;
 		});

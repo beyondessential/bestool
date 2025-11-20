@@ -23,30 +23,46 @@ async fn test_reload_command_when_no_daemon_running() {
 async fn test_status_endpoint_response_format() {
 	// Start a mock HTTP server
 	let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
-
-	// We can't easily test the full reload flow without running the daemon,
-	// but we can verify the status endpoint returns the expected format
 	let started_at = jiff::Timestamp::now();
 	let pid = std::process::id();
 
-	let (client, connection) = tokio_postgres::connect(
-		"host=localhost user=postgres dbname=tamanu_meta",
-		tokio_postgres::NoTls,
-	)
-	.await
-	.unwrap();
+	let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+	let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+		.await
+		.unwrap();
 	tokio::spawn(async move {
 		let _ = connection.await;
 	});
+
+	let (scheduler_client, scheduler_connection) =
+		tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+			.await
+			.unwrap();
+	tokio::spawn(async move {
+		let _ = scheduler_connection.await;
+	});
+
+	let ctx = Arc::new(bestool_alertd::InternalContext { pg_client: client });
+	let scheduler_ctx = Arc::new(bestool_alertd::InternalContext {
+		pg_client: scheduler_client,
+	});
+	let scheduler = Arc::new(bestool_alertd::scheduler::Scheduler::new(
+		vec![],
+		std::time::Duration::from_secs(60),
+		scheduler_ctx,
+		None,
+		true,
+	));
 
 	let state = Arc::new(bestool_alertd::http_server::ServerState {
 		reload_tx,
 		started_at,
 		pid,
 		event_manager: None,
-		internal_context: Arc::new(bestool_alertd::InternalContext { pg_client: client }),
+		internal_context: ctx,
 		email_config: None,
 		dry_run: true,
+		scheduler,
 	});
 
 	// This verifies the response structure without needing a full daemon

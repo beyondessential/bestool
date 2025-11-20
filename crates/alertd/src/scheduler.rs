@@ -57,6 +57,13 @@ impl Scheduler {
 		self.event_manager.clone()
 	}
 
+	pub async fn get_loaded_alerts(&self) -> Vec<PathBuf> {
+		let tasks = self.tasks.read().await;
+		let mut files: Vec<PathBuf> = tasks.keys().cloned().collect();
+		files.sort();
+		files
+	}
+
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
 		info!("resolving glob patterns and loading alerts");
 
