@@ -100,6 +100,10 @@ enum Command {
 		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 		#[arg(long)]
 		server_addr: Vec<std::net::SocketAddr>,
+
+		/// Show detailed state information for each alert
+		#[arg(long)]
+		detail: bool,
 	},
 
 	/// Temporarily pause an alert
@@ -313,13 +317,16 @@ async fn main() -> Result<()> {
 			};
 			bestool_alertd::commands::send_reload(&addrs).await
 		}
-		Command::LoadedAlerts { server_addr } => {
+		Command::LoadedAlerts {
+			server_addr,
+			detail,
+		} => {
 			let addrs = if server_addr.is_empty() {
 				bestool_alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			bestool_alertd::commands::get_loaded_alerts(&addrs).await
+			bestool_alertd::commands::get_loaded_alerts(&addrs, detail).await
 		}
 		Command::PauseAlert {
 			alert,

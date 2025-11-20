@@ -19,18 +19,45 @@ use crate::{
 	targets::ResolvedTarget,
 };
 
+#[derive(Debug, Clone)]
+pub struct AlertState {
+	pub definition: AlertDefinition,
+	pub resolved_targets: Vec<ResolvedTarget>,
+	pub triggered_at: Option<Timestamp>,
+	pub last_sent_at: Option<Timestamp>,
+	pub last_output: Option<String>,
+	pub paused_until: Option<Timestamp>,
+}
+
+impl AlertState {
+	pub fn new(definition: AlertDefinition, resolved_targets: Vec<ResolvedTarget>) -> Self {
+		Self {
+			definition,
+			resolved_targets,
+			triggered_at: None,
+			last_sent_at: None,
+			last_output: None,
+			paused_until: None,
+		}
+	}
+
+	pub fn preserve_state_from(&mut self, old_state: &AlertState) {
+		self.triggered_at = old_state.triggered_at;
+		self.last_sent_at = old_state.last_sent_at;
+		self.last_output = old_state.last_output.clone();
+		self.paused_until = old_state.paused_until;
+	}
+}
+
 pub struct Scheduler {
 	glob_resolver: GlobResolver,
 	resolved_paths: Arc<RwLock<ResolvedPaths>>,
 	ctx: Arc<InternalContext>,
 	email: Option<EmailConfig>,
 	dry_run: bool,
+	alerts: Arc<RwLock<HashMap<PathBuf, Arc<RwLock<AlertState>>>>>,
 	tasks: Arc<RwLock<HashMap<PathBuf, JoinHandle<()>>>>,
 	event_manager: Arc<RwLock<Option<EventManager>>>,
-	paused_until: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
-	triggered_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
-	last_sent_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
-	last_output: Arc<RwLock<HashMap<PathBuf, String>>>,
 	external_targets:
 		Arc<RwLock<std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>>>>,
 }
@@ -52,12 +79,9 @@ impl Scheduler {
 			ctx,
 			email,
 			dry_run,
+			alerts: Arc::new(RwLock::new(HashMap::new())),
 			tasks: Arc::new(RwLock::new(HashMap::new())),
 			event_manager: Arc::new(RwLock::new(None)),
-			paused_until: Arc::new(RwLock::new(HashMap::new())),
-			triggered_at: Arc::new(RwLock::new(HashMap::new())),
-			last_sent_at: Arc::new(RwLock::new(HashMap::new())),
-			last_output: Arc::new(RwLock::new(HashMap::new())),
 			external_targets: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
@@ -67,22 +91,32 @@ impl Scheduler {
 	}
 
 	pub async fn get_loaded_alerts(&self) -> Vec<PathBuf> {
-		let tasks = self.tasks.read().await;
-		let mut files: Vec<PathBuf> = tasks.keys().cloned().collect();
+		let alerts = self.alerts.read().await;
+		let mut files: Vec<PathBuf> = alerts.keys().cloned().collect();
 		files.sort();
 		files
 	}
 
-	pub async fn pause_alert(&self, path: &PathBuf, until: Timestamp) -> Result<bool> {
-		let tasks = self.tasks.read().await;
-		if !tasks.contains_key(path) {
-			return Ok(false);
+	pub async fn get_alert_states(&self) -> HashMap<PathBuf, AlertState> {
+		let alerts = self.alerts.read().await;
+		let mut states = HashMap::new();
+		for (path, state_lock) in alerts.iter() {
+			let state = state_lock.read().await;
+			states.insert(path.clone(), state.clone());
 		}
+		states
+	}
 
-		let mut paused = self.paused_until.write().await;
-		paused.insert(path.clone(), until);
-		info!(?path, until = %until, "paused alert");
-		Ok(true)
+	pub async fn pause_alert(&self, path: &PathBuf, until: Timestamp) -> Result<bool> {
+		let alerts = self.alerts.read().await;
+		if let Some(alert_state) = alerts.get(path) {
+			let mut state = alert_state.write().await;
+			state.paused_until = Some(until);
+			info!(?path, until = %until, "paused alert");
+			Ok(true)
+		} else {
+			Ok(false)
+		}
 	}
 
 	pub async fn get_external_targets(
@@ -162,17 +196,37 @@ impl Scheduler {
 
 		info!(count = regular_alerts.len(), "scheduling regular alerts");
 
-		let mut tasks = self.tasks.write().await;
-		tasks.clear();
+		// Get old alerts to preserve state
+		let old_alerts = self.alerts.read().await.clone();
 
-		for (alert, resolved_targets) in regular_alerts {
-			let file = alert.file.clone();
-			let task = self.spawn_alert_task(alert, resolved_targets);
+		let mut new_alerts = HashMap::new();
+		let mut tasks = HashMap::new();
+
+		for (definition, resolved_targets) in regular_alerts {
+			let file = definition.file.clone();
+
+			// Create new alert state
+			let mut new_state = AlertState::new(definition.clone(), resolved_targets.clone());
+
+			// Preserve state from old alert if it exists
+			if let Some(old_alert_lock) = old_alerts.get(&file) {
+				let old_state = old_alert_lock.read().await;
+				new_state.preserve_state_from(&*old_state);
+			}
+
+			let state_lock = Arc::new(RwLock::new(new_state));
+			let task = self.spawn_alert_task(state_lock.clone());
+
+			new_alerts.insert(file.clone(), state_lock);
 			tasks.insert(file, task);
 		}
 
+		// Update alerts and tasks atomically
+		*self.alerts.write().await = new_alerts;
+		*self.tasks.write().await = tasks;
+
 		// Update metrics with count of loaded alerts
-		metrics::set_alerts_loaded(tasks.len());
+		metrics::set_alerts_loaded(self.alerts.read().await.len());
 
 		Ok(())
 	}
@@ -297,11 +351,7 @@ impl Scheduler {
 		self.load_and_schedule_alerts().await
 	}
 
-	fn spawn_alert_task(
-		&self,
-		alert: AlertDefinition,
-		resolved_targets: Vec<ResolvedTarget>,
-	) -> JoinHandle<()> {
+	fn spawn_alert_task(&self, alert_state: Arc<RwLock<AlertState>>) -> JoinHandle<()> {
 		fn serialize_context_for_comparison(
 			context: &tera::Context,
 			when_changed: &crate::alert::WhenChanged,
@@ -366,18 +416,17 @@ impl Scheduler {
 		let ctx = self.ctx.clone();
 		let email = self.email.clone();
 		let dry_run = self.dry_run;
-		let interval_duration = alert.interval_duration;
-
 		let event_manager = self.event_manager.clone();
-		let paused_until = self.paused_until.clone();
-		let triggered_at = self.triggered_at.clone();
-		let last_sent_at = self.last_sent_at.clone();
-		let last_output = self.last_output.clone();
-		let always_send = alert.always_send.clone();
-		let when_changed = alert.when_changed.clone();
 
 		tokio::spawn(async move {
-			let file = alert.file.clone();
+			// Read initial values from state
+			let (file, interval_duration) = {
+				let state = alert_state.read().await;
+				(
+					state.definition.file.clone(),
+					state.definition.interval_duration,
+				)
+			};
 			debug!(?file, ?interval_duration, "starting alert task");
 
 			// Add a small random delay to prevent all alerts from firing at exactly the same time
@@ -392,10 +441,10 @@ impl Scheduler {
 
 				// Check if alert is paused
 				let is_paused = {
-					let paused = paused_until.read().await;
-					if let Some(until) = paused.get(&file) {
+					let state = alert_state.read().await;
+					if let Some(until) = state.paused_until {
 						let now = Timestamp::now();
-						now < *until
+						now < until
 					} else {
 						false
 					}
@@ -408,16 +457,22 @@ impl Scheduler {
 
 				debug!(?file, "executing alert");
 
+				// Get alert definition and state
+				let (alert, resolved_targets, was_triggered, always_send, when_changed) = {
+					let state = alert_state.read().await;
+					(
+						state.definition.clone(),
+						state.resolved_targets.clone(),
+						state.triggered_at.is_some(),
+						state.definition.always_send.clone(),
+						state.definition.when_changed.clone(),
+					)
+				};
+
 				// Check the triggering state
 				let mut tera_ctx = crate::templates::build_context(&alert, chrono::Utc::now());
 				let now = chrono::Utc::now();
 				let not_before = now - alert.interval_duration;
-
-				// Check if this alert was previously triggered
-				let was_triggered = {
-					let triggered = triggered_at.read().await;
-					triggered.contains_key(&file)
-				};
 
 				let is_triggering = match alert
 					.read_sources(&ctx.pg_pool, not_before, &mut tera_ctx, was_triggered)
@@ -454,20 +509,19 @@ impl Scheduler {
 					}
 				};
 
-				let mut triggered = triggered_at.write().await;
-
 				if is_triggering {
 					// Alert is in triggering state
+					let mut state = alert_state.write().await;
+
 					let mut should_send = match &always_send {
 						crate::alert::AlwaysSend::Boolean(true) => true,
 						crate::alert::AlwaysSend::Boolean(false) => !was_triggered,
 						crate::alert::AlwaysSend::Timed(config) => {
 							// Check if enough time has passed since last send
-							let last_sent = last_sent_at.read().await;
-							match last_sent.get(&file) {
+							match state.last_sent_at {
 								Some(last_sent_time) => {
 									let now = Timestamp::now();
-									let elapsed = now.duration_since(*last_sent_time);
+									let elapsed = now.duration_since(last_sent_time);
 									if let Ok(after_duration) =
 										jiff::SignedDuration::try_from(config.after_duration)
 									{
@@ -487,16 +541,15 @@ impl Scheduler {
 					{
 						let current_output =
 							serialize_context_for_comparison(&tera_ctx, &when_changed);
-						let mut last = last_output.write().await;
 
-						let output_changed = match last.get(&file) {
+						let output_changed = match &state.last_output {
 							Some(prev_output) => prev_output != &current_output,
 							None => true, // First run, consider it changed
 						};
 
 						if output_changed {
 							debug!(?file, "output changed, will send");
-							last.insert(file.clone(), current_output);
+							state.last_output = Some(current_output);
 						} else {
 							debug!(?file, "output unchanged, skipping");
 							should_send = false;
@@ -519,30 +572,26 @@ impl Scheduler {
 						metrics::inc_alerts_sent();
 
 						// Update last sent timestamp
-						let mut last_sent = last_sent_at.write().await;
-						last_sent.insert(file.clone(), Timestamp::now());
+						state.last_sent_at = Some(Timestamp::now());
 					} else {
 						debug!(?file, "alert still triggered, not sending (already sent)");
 					}
 
 					// Update the triggered timestamp even if we didn't send
 					if !was_triggered {
-						triggered.insert(file.clone(), Timestamp::now());
+						state.triggered_at = Some(Timestamp::now());
 					}
 				} else {
 					// Alert is not in triggering state
 					if was_triggered {
 						info!(?file, "alert cleared");
-						triggered.remove(&file);
-
-						// Clear last sent timestamp when alert clears
-						let mut last_sent = last_sent_at.write().await;
-						last_sent.remove(&file);
+						let mut state = alert_state.write().await;
+						state.triggered_at = None;
+						state.last_sent_at = None;
 
 						// Clear last output when alert clears
 						if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {
-							let mut last = last_output.write().await;
-							last.remove(&file);
+							state.last_output = None;
 						}
 					}
 				}
