@@ -3,46 +3,48 @@ use std::{sync::Arc, time::Duration};
 use bestool_alertd::{AlertDefinition, InternalContext};
 use bestool_postgres::pool::{PgPool, create_pool};
 
-async fn setup_test_db() -> PgPool {
+async fn setup_test_db(table_name: &str) -> (PgPool, String) {
 	let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
 	let pool = create_pool(&db_url, "bestool-alertd-test").await.unwrap();
 
-	// Create a test table
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"CREATE TEMP TABLE test_metrics (
-				id SERIAL PRIMARY KEY,
-				name TEXT NOT NULL,
-				value REAL NOT NULL,
-				error_count INTEGER NOT NULL,
-				created_at TIMESTAMP DEFAULT NOW(),
-				updated_at TIMESTAMP DEFAULT NOW()
-			)",
-			&[],
-		)
-		.await
-		.unwrap();
 
-	pool
+	// Create a unique test table for this test
+	let create_sql = format!(
+		"CREATE TABLE IF NOT EXISTS {} (
+			id SERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			value REAL NOT NULL,
+			error_count INTEGER NOT NULL,
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW()
+		)",
+		table_name
+	);
+	client.execute(&create_sql, &[]).await.unwrap();
+
+	// Clean up any existing test data in this table
+	let delete_sql = format!("DELETE FROM {}", table_name);
+	client.execute(&delete_sql, &[]).await.unwrap();
+
+	(pool, table_name.to_string())
 }
 
 #[tokio::test]
 async fn test_numerical_threshold_normal_trigger() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_normal").await;
 
 	// Insert test data
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count) VALUES ('cpu_usage', 95.5, 10)",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count) VALUES ('cpu_usage', 95.5, 10)",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT value FROM test_metrics WHERE name = 'cpu_usage'"
+	let yaml = format!(
+		r#"
+sql: "SELECT value FROM {} WHERE name = 'cpu_usage'"
 numerical:
   - field: value
     alert-at: 90
@@ -51,9 +53,11 @@ send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -92,13 +96,11 @@ send:
 
 	// Update to clear the alert
 	let client = ctx.pg_pool.get().await.unwrap();
-	client
-		.execute(
-			"UPDATE test_metrics SET value = 40 WHERE name = 'cpu_usage'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql = format!(
+		"UPDATE {} SET value = 40 WHERE name = 'cpu_usage'",
+		table_name
+	);
+	client.execute(&update_sql, &[]).await.unwrap();
 
 	// Third run - should clear because value <= clear-at
 	let result = alert
@@ -118,20 +120,19 @@ send:
 
 #[tokio::test]
 async fn test_numerical_threshold_inverted_trigger() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_inverted").await;
 
 	// Insert test data with low free space
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count) VALUES ('free_space_gb', 5.0, 0)",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count) VALUES ('free_space_gb', 5.0, 0)",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT value FROM test_metrics WHERE name = 'free_space_gb'"
+	let yaml = format!(
+		r#"
+sql: "SELECT value FROM {} WHERE name = 'free_space_gb'"
 numerical:
   - field: value
     alert-at: 10
@@ -140,9 +141,11 @@ send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -181,13 +184,11 @@ send:
 
 	// Update to clear the alert
 	let client = ctx.pg_pool.get().await.unwrap();
-	client
-		.execute(
-			"UPDATE test_metrics SET value = 60 WHERE name = 'free_space_gb'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql = format!(
+		"UPDATE {} SET value = 60 WHERE name = 'free_space_gb'",
+		table_name
+	);
+	client.execute(&update_sql, &[]).await.unwrap();
 
 	// Third run - should clear because value >= clear-at (inverted)
 	let result = alert
@@ -207,28 +208,29 @@ send:
 
 #[tokio::test]
 async fn test_when_changed_simple() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_changed_simple").await;
 
 	// Insert initial data
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count) VALUES ('errors', 100.0, 5)",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count) VALUES ('errors', 100.0, 5)",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT error_count FROM test_metrics WHERE name = 'errors'"
+	let yaml = format!(
+		r#"
+sql: "SELECT error_count FROM {} WHERE name = 'errors'"
 when-changed: true
 send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -258,30 +260,31 @@ send:
 
 #[tokio::test]
 async fn test_when_changed_with_except() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_changed_except").await;
 
 	// Insert initial data
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count, created_at, updated_at)
-			 VALUES ('test', 100.0, 5, NOW(), NOW())",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count, created_at, updated_at)
+		 VALUES ('test', 100.0, 5, NOW(), NOW())",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT error_count, created_at, updated_at FROM test_metrics WHERE name = 'test'"
+	let yaml = format!(
+		r#"
+sql: "SELECT error_count, created_at, updated_at FROM {} WHERE name = 'test'"
 when-changed:
   except: [created_at, updated_at]
 send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -305,13 +308,11 @@ send:
 	// Update only timestamps - when-changed should consider this unchanged
 	tokio::time::sleep(Duration::from_millis(10)).await;
 	let client = ctx.pg_pool.get().await.unwrap();
-	client
-		.execute(
-			"UPDATE test_metrics SET updated_at = NOW() WHERE name = 'test'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql = format!(
+		"UPDATE {} SET updated_at = NOW() WHERE name = 'test'",
+		table_name
+	);
+	client.execute(&update_sql, &[]).await.unwrap();
 
 	// The serialization should be the same because we excluded timestamp columns
 	// This would be verified in the scheduler's change detection logic
@@ -319,29 +320,30 @@ send:
 
 #[tokio::test]
 async fn test_when_changed_with_only() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_changed_only").await;
 
 	// Insert initial data
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count) VALUES ('test', 100.0, 5)",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count) VALUES ('test', 100.0, 5)",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT error_count, value FROM test_metrics WHERE name = 'test'"
+	let yaml = format!(
+		r#"
+sql: "SELECT error_count, value FROM {} WHERE name = 'test'"
 when-changed:
   only: [error_count]
 send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -361,22 +363,15 @@ send:
 
 	// Update value (not in 'only' list) - should be considered unchanged
 	let client = ctx.pg_pool.get().await.unwrap();
-	client
-		.execute(
-			"UPDATE test_metrics SET value = 200 WHERE name = 'test'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql1 = format!("UPDATE {} SET value = 200 WHERE name = 'test'", table_name);
+	client.execute(&update_sql1, &[]).await.unwrap();
 
 	// Update error_count (in 'only' list) - should be considered changed
-	client
-		.execute(
-			"UPDATE test_metrics SET error_count = 10 WHERE name = 'test'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql2 = format!(
+		"UPDATE {} SET error_count = 10 WHERE name = 'test'",
+		table_name
+	);
+	client.execute(&update_sql2, &[]).await.unwrap();
 
 	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 	let _ = alert
@@ -396,21 +391,20 @@ send:
 
 #[tokio::test]
 async fn test_numerical_and_when_changed_together() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_combo").await;
 
 	// Insert initial data
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count, created_at)
-			 VALUES ('combo', 95.0, 100, NOW())",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count, created_at)
+		 VALUES ('combo', 95.0, 100, NOW())",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT value, error_count, created_at FROM test_metrics WHERE name = 'combo'"
+	let yaml = format!(
+		r#"
+sql: "SELECT value, error_count, created_at FROM {} WHERE name = 'combo'"
 numerical:
   - field: value
     alert-at: 90
@@ -421,9 +415,11 @@ send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -453,20 +449,19 @@ send:
 
 #[tokio::test]
 async fn test_multiple_numerical_thresholds() {
-	let pool = setup_test_db().await;
+	let (pool, table_name) = setup_test_db("test_metrics_multi").await;
 
 	// Insert test data with multiple fields
 	let client = pool.get().await.unwrap();
-	client
-		.execute(
-			"INSERT INTO test_metrics (name, value, error_count) VALUES ('multi', 95.0, 150)",
-			&[],
-		)
-		.await
-		.unwrap();
+	let insert_sql = format!(
+		"INSERT INTO {} (name, value, error_count) VALUES ('multi', 95.0, 150)",
+		table_name
+	);
+	client.execute(&insert_sql, &[]).await.unwrap();
 
-	let yaml = r#"
-sql: "SELECT value as cpu, error_count as errors FROM test_metrics WHERE name = 'multi'"
+	let yaml = format!(
+		r#"
+sql: "SELECT value as cpu, error_count as errors FROM {} WHERE name = 'multi'"
 numerical:
   - field: cpu
     alert-at: 90
@@ -478,9 +473,11 @@ send:
   - id: test
     subject: Test
     template: Test
-"#;
+"#,
+		table_name
+	);
 
-	let mut alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+	let mut alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
@@ -504,13 +501,8 @@ send:
 
 	// Lower cpu but keep errors high
 	let client = ctx.pg_pool.get().await.unwrap();
-	client
-		.execute(
-			"UPDATE test_metrics SET value = 40 WHERE name = 'multi'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql1 = format!("UPDATE {} SET value = 40 WHERE name = 'multi'", table_name);
+	client.execute(&update_sql1, &[]).await.unwrap();
 
 	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 	let result = alert
@@ -528,13 +520,11 @@ send:
 	);
 
 	// Lower both to clear
-	client
-		.execute(
-			"UPDATE test_metrics SET error_count = 30 WHERE name = 'multi'",
-			&[],
-		)
-		.await
-		.unwrap();
+	let update_sql2 = format!(
+		"UPDATE {} SET error_count = 30 WHERE name = 'multi'",
+		table_name
+	);
+	client.execute(&update_sql2, &[]).await.unwrap();
 
 	let mut tera_ctx3 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 	let result = alert

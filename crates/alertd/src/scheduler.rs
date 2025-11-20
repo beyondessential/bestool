@@ -211,7 +211,7 @@ impl Scheduler {
 			// Preserve state from old alert if it exists
 			if let Some(old_alert_lock) = old_alerts.get(&file) {
 				let old_state = old_alert_lock.read().await;
-				new_state.preserve_state_from(&*old_state);
+				new_state.preserve_state_from(&old_state);
 			}
 
 			let state_lock = Arc::new(RwLock::new(new_state));

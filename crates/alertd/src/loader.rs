@@ -31,10 +31,9 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 	// Load external targets from files
 	for external_targets_path in &resolved.files {
 		if let Some(name) = external_targets_path.file_name()
-			&& (name.to_ascii_lowercase() == "_targets.yml"
-				|| name.to_ascii_lowercase() == "_targets.yaml")
-		{
-			if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
+			&& (name.eq_ignore_ascii_case("_targets.yml")
+				|| name.eq_ignore_ascii_case("_targets.yaml"))
+			&& let Some(AlertTargets { targets }) = std::fs::read_to_string(external_targets_path)
 				.ok()
 				.and_then(|content| {
 					debug!(path=?external_targets_path, "parsing external targets");
@@ -44,21 +43,20 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 						)
 						.ok()
 				}) {
-				debug!(path=?external_targets_path, count=targets.len(), "loaded external targets from file");
-				for target in targets {
-					debug!(id=%target.id, path=?external_targets_path, "adding external target");
-					external_targets
-						.entry(target.id.clone())
-						.or_insert(Vec::new())
-						.push(target);
-				}
+			debug!(path=?external_targets_path, count=targets.len(), "loaded external targets from file");
+			for target in targets {
+				debug!(id=%target.id, path=?external_targets_path, "adding external target");
+				external_targets
+					.entry(target.id.clone())
+					.or_insert(Vec::new())
+					.push(target);
 			}
 		}
 	}
 
 	// Load external targets from directories
 	for dir in &resolved.dirs {
-		for external_targets_path in vec![dir.join("_targets.yml"), dir.join("_targets.yaml")] {
+		for external_targets_path in [dir.join("_targets.yml"), dir.join("_targets.yaml")] {
 			if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
 				.ok()
 				.and_then(|content| {
