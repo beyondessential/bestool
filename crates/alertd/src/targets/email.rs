@@ -38,22 +38,22 @@ impl TargetEmail {
 		debug!(?self.addresses, "sending email");
 		let email_config = email.ok_or_else(|| miette!("missing email config"))?;
 		let sender = EmailAddress::address(&email_config.from);
+		let message = Message {
+			to: self
+				.addresses
+				.iter()
+				.map(|email| EmailAddress::address(email))
+				.collect(),
+			subject: subject.into(),
+			html: body,
+			..Default::default()
+		};
 		let mailgun = Mailgun {
 			api_key: email_config.mailgun_api_key.clone(),
 			domain: email_config.mailgun_domain.clone(),
-			message: Message {
-				to: self
-					.addresses
-					.iter()
-					.map(|email| EmailAddress::address(email))
-					.collect(),
-				subject: subject.into(),
-				html: body,
-				..Default::default()
-			},
 		};
 		mailgun
-			.async_send(mailgun_rs::MailgunRegion::US, &sender)
+			.async_send(mailgun_rs::MailgunRegion::US, &sender, message, None)
 			.await
 			.into_diagnostic()
 			.wrap_err("sending email")
