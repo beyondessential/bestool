@@ -24,12 +24,13 @@ use crate::actions::Context;
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertdArgs {
-	/// Folder containing alert definitions.
+	/// Glob patterns for alert definitions.
 	///
-	/// This folder will be read recursively for files with the `.yaml` or `.yml` extension.
+	/// Patterns can match directories (which will be read recursively) or individual files.
 	/// Can be provided multiple times.
+	/// Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
 	#[arg(long)]
-	pub dir: Vec<PathBuf>,
+	pub dir: Vec<String>,
 
 	/// Don't actually send alerts, just print them to stdout.
 	#[arg(long)]
@@ -86,7 +87,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 	bestool_alertd::run(daemon_config).await
 }
 
-async fn default_dirs(root: &std::path::Path) -> Vec<PathBuf> {
+async fn default_dirs(root: &std::path::Path) -> Vec<String> {
 	use futures::future::join_all;
 
 	let mut dirs = vec![
@@ -107,5 +108,6 @@ async fn default_dirs(root: &std::path::Path) -> Vec<PathBuf> {
 	.await
 	.into_iter()
 	.flatten()
+	.map(|p| p.display().to_string())
 	.collect()
 }

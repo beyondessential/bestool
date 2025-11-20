@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
 use miette::{Result, miette};
@@ -20,12 +18,13 @@ pub struct Args {
 	#[arg(long, env = "DATABASE_URL")]
 	pub database_url: String,
 
-	/// Folder containing alert definitions
+	/// Glob patterns for alert definitions
 	///
-	/// This folder will be read recursively for files with the `.yaml` or `.yml` extension.
+	/// Patterns can match directories (which will be read recursively) or individual files.
 	/// Can be provided multiple times.
+	/// Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
 	#[arg(long)]
-	pub dir: Vec<PathBuf>,
+	pub glob: Vec<String>,
 
 	/// Email sender address
 	#[arg(long, env = "EMAIL_FROM")]
@@ -72,8 +71,8 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	if args.dir.is_empty() {
-		return Err(miette!("at least one --dir must be specified"));
+	if args.glob.is_empty() {
+		return Err(miette!("at least one --glob must be specified"));
 	}
 
 	let email = match (args.email_from, args.mailgun_api_key, args.mailgun_domain) {
@@ -91,7 +90,7 @@ async fn main() -> Result<()> {
 	};
 
 	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(args.dir, args.database_url).with_dry_run(args.dry_run);
+		bestool_alertd::DaemonConfig::new(args.glob, args.database_url).with_dry_run(args.dry_run);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);

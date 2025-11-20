@@ -1,9 +1,8 @@
 #![deny(rust_2018_idioms)]
 
-use std::path::PathBuf;
-
 mod alert;
 mod daemon;
+mod glob_resolver;
 mod loader;
 mod pg_interval;
 mod scheduler;
@@ -25,8 +24,11 @@ pub struct EmailConfig {
 /// Configuration for the alertd daemon
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-	/// Directories containing alert definitions
-	pub alert_dirs: Vec<PathBuf>,
+	/// Glob patterns for directories/files containing alert definitions
+	///
+	/// Patterns are resolved to directories and files, and watched for changes.
+	/// On occasion, patterns are re-evaluated to pick up newly created paths.
+	pub alert_globs: Vec<String>,
 
 	/// Database connection URL
 	pub database_url: String,
@@ -39,9 +41,9 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-	pub fn new(alert_dirs: Vec<PathBuf>, database_url: String) -> Self {
+	pub fn new(alert_globs: Vec<String>, database_url: String) -> Self {
 		Self {
-			alert_dirs,
+			alert_globs,
 			database_url,
 			email: None,
 			dry_run: false,

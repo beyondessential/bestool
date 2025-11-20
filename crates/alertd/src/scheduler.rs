@@ -11,11 +11,13 @@ use tracing::{debug, error, info, warn};
 use crate::{
 	EmailConfig,
 	alert::{AlertDefinition, InternalContext},
-	loader::{LoadedAlerts, load_alerts_from_dirs},
+	glob_resolver::{GlobResolver, ResolvedPaths},
+	loader::{LoadedAlerts, load_alerts_from_paths},
 };
 
 pub struct Scheduler {
-	alert_dirs: Vec<PathBuf>,
+	glob_resolver: GlobResolver,
+	resolved_paths: Arc<RwLock<ResolvedPaths>>,
 	default_interval: Duration,
 	ctx: Arc<InternalContext>,
 	email: Option<EmailConfig>,
@@ -25,14 +27,19 @@ pub struct Scheduler {
 
 impl Scheduler {
 	pub fn new(
-		alert_dirs: Vec<PathBuf>,
+		alert_globs: Vec<String>,
 		default_interval: Duration,
 		ctx: Arc<InternalContext>,
 		email: Option<EmailConfig>,
 		dry_run: bool,
 	) -> Self {
+		let glob_resolver = GlobResolver::new(alert_globs);
 		Self {
-			alert_dirs,
+			glob_resolver,
+			resolved_paths: Arc::new(RwLock::new(ResolvedPaths {
+				dirs: Vec::new(),
+				files: Vec::new(),
+			})),
 			default_interval,
 			ctx,
 			email,
@@ -42,9 +49,19 @@ impl Scheduler {
 	}
 
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
-		info!("loading alerts from directories");
-		let LoadedAlerts { alerts, .. } =
-			load_alerts_from_dirs(&self.alert_dirs, self.default_interval)?;
+		info!("resolving glob patterns and loading alerts");
+
+		let resolved = self.glob_resolver.resolve()?;
+		debug!(
+			dirs = resolved.dirs.len(),
+			files = resolved.files.len(),
+			"resolved paths from globs"
+		);
+
+		let LoadedAlerts { alerts, .. } = load_alerts_from_paths(&resolved, self.default_interval)?;
+
+		// Update resolved paths
+		*self.resolved_paths.write().await = resolved;
 
 		if alerts.is_empty() {
 			warn!("no alerts found");
@@ -67,8 +84,9 @@ impl Scheduler {
 
 	pub async fn execute_all_alerts_once(&self) -> Result<()> {
 		info!("executing all alerts once");
-		let LoadedAlerts { alerts, .. } =
-			load_alerts_from_dirs(&self.alert_dirs, self.default_interval)?;
+
+		let resolved = self.glob_resolver.resolve()?;
+		let LoadedAlerts { alerts, .. } = load_alerts_from_paths(&resolved, self.default_interval)?;
 
 		if alerts.is_empty() {
 			warn!("no alerts found");
@@ -90,6 +108,30 @@ impl Scheduler {
 		}
 
 		Ok(())
+	}
+
+	pub async fn check_and_reload_if_paths_changed(&self) -> Result<()> {
+		debug!("checking if resolved paths have changed");
+
+		let new_resolved = self.glob_resolver.resolve()?;
+		let old_resolved = self.resolved_paths.read().await;
+
+		if new_resolved.differs_from(&old_resolved) {
+			drop(old_resolved); // Release read lock before reloading
+			info!("resolved paths have changed, reloading alerts");
+			self.reload_alerts().await?;
+		}
+
+		Ok(())
+	}
+
+	pub async fn get_resolved_paths(&self) -> Vec<PathBuf> {
+		let resolved = self.resolved_paths.read().await;
+		resolved
+			.all_paths()
+			.iter()
+			.map(|p| p.to_path_buf())
+			.collect()
 	}
 
 	pub async fn reload_alerts(&self) -> Result<()> {

@@ -1,11 +1,12 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::Path, time::Duration};
 
-use miette::{Context as _, IntoDiagnostic, Result};
+use miette::Result;
 use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
 use crate::{
 	alert::AlertDefinition,
+	glob_resolver::ResolvedPaths,
 	targets::{AlertTargets, ExternalTarget},
 };
 
@@ -15,16 +16,15 @@ pub struct LoadedAlerts {
 	pub external_targets: HashMap<String, Vec<ExternalTarget>>,
 }
 
-pub fn load_alerts_from_dirs(dirs: &[PathBuf], default_interval: Duration) -> Result<LoadedAlerts> {
+pub fn load_alerts_from_paths(
+	resolved: &ResolvedPaths,
+	default_interval: Duration,
+) -> Result<LoadedAlerts> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
 
-	for dir in dirs {
-		if !dir.exists() {
-			warn!(?dir, "alert directory does not exist, skipping");
-			continue;
-		}
-
+	// Load external targets from directories
+	for dir in &resolved.dirs {
 		let external_targets_path = dir.join("_targets.yml");
 		if let Some(AlertTargets { targets }) = std::fs::read_to_string(&external_targets_path)
 			.ok()
@@ -43,44 +43,24 @@ pub fn load_alerts_from_dirs(dirs: &[PathBuf], default_interval: Duration) -> Re
 					.push(target);
 			}
 		}
+	}
 
+	// Load alerts from directories (recursively)
+	for dir in &resolved.dirs {
 		alerts.extend(
 			WalkDir::new(dir)
 				.into_iter()
 				.filter_map(|e| e.ok())
 				.filter(|e| e.file_type().is_file())
-				.map(|entry| {
-					let file = entry.path();
-
-					if !file.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-						return Ok(None);
-					}
-
-					if file.file_stem().is_some_and(|n| n == "_targets") {
-						return Ok(None);
-					}
-
-					debug!(?file, "parsing YAML file");
-					let content = std::fs::read_to_string(file)
-						.into_diagnostic()
-						.wrap_err(format!("{file:?}"))?;
-					let mut alert: AlertDefinition = serde_yaml::from_str(&content)
-						.into_diagnostic()
-						.wrap_err(format!("{file:?}"))?;
-
-					alert.file = file.to_path_buf();
-					alert.interval = default_interval;
-					debug!(?alert, "parsed alert file");
-					Ok(if alert.enabled { Some(alert) } else { None })
-				})
-				.filter_map(|def: Result<Option<AlertDefinition>>| match def {
-					Err(err) => {
-						error!("{err:?}");
-						None
-					}
-					Ok(def) => def,
-				}),
+				.filter_map(|entry| load_alert_from_file(entry.path(), default_interval)),
 		);
+	}
+
+	// Load alerts from individual files
+	for file in &resolved.files {
+		if let Some(alert) = load_alert_from_file(file, default_interval) {
+			alerts.push(alert);
+		}
 	}
 
 	if !external_targets.is_empty() {
@@ -96,4 +76,37 @@ pub fn load_alerts_from_dirs(dirs: &[PathBuf], default_interval: Duration) -> Re
 		alerts,
 		external_targets,
 	})
+}
+
+fn load_alert_from_file(file: &Path, default_interval: Duration) -> Option<AlertDefinition> {
+	if !file.extension().is_some_and(|e| e == "yaml" || e == "yml") {
+		return None;
+	}
+
+	if file.file_stem().is_some_and(|n| n == "_targets") {
+		return None;
+	}
+
+	debug!(?file, "parsing YAML file");
+	let content = match std::fs::read_to_string(file) {
+		Ok(content) => content,
+		Err(err) => {
+			error!(?file, "failed to read file: {err:?}");
+			return None;
+		}
+	};
+
+	let mut alert: AlertDefinition = match serde_yaml::from_str(&content) {
+		Ok(alert) => alert,
+		Err(err) => {
+			error!(?file, "failed to parse YAML: {err:?}");
+			return None;
+		}
+	};
+
+	alert.file = file.to_path_buf();
+	alert.interval = default_interval;
+	debug!(?alert, "parsed alert file");
+
+	if alert.enabled { Some(alert) } else { None }
 }

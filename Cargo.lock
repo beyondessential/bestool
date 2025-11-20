@@ -472,6 +472,7 @@ dependencies = [
  "clap",
  "folktime",
  "futures",
+ "glob",
  "humantime",
  "lloggs",
  "mailgun-rs 0.1.12",
