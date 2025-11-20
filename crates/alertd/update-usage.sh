@@ -13,7 +13,7 @@ run_with_fixed_cols() {
 		COLUMNS=80 NO_COLOR=1 script -q -c "$1" /dev/null | cat
 	else
 		# Fallback: just run the command
-		eval "$1"
+		COLUMNS=80 NO_COLOR=1 eval "$1"
 	fi
 }
 
