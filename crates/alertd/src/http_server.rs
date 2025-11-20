@@ -23,9 +23,9 @@ use crate::metrics;
 
 #[derive(Clone)]
 pub struct ServerState {
-	reload_tx: mpsc::Sender<()>,
-	started_at: Timestamp,
-	pid: u32,
+	pub reload_tx: mpsc::Sender<()>,
+	pub started_at: Timestamp,
+	pub pid: u32,
 }
 
 #[derive(Serialize, serde::Deserialize)]
@@ -97,7 +97,7 @@ async fn handle_metrics() -> impl IntoResponse {
 	}
 }
 
-async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
 	let status = StatusResponse {
 		name: "bestool-alertd".to_string(),
 		version: env!("CARGO_PKG_VERSION").to_string(),

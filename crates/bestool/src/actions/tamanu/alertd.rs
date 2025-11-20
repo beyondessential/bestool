@@ -24,6 +24,13 @@ use crate::actions::Context;
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertdArgs {
+	/// Send reload signal to running daemon and exit
+	///
+	/// Connects to the running daemon's HTTP API and triggers a reload.
+	/// This is an alternative to SIGHUP that works on all platforms including Windows.
+	#[arg(long, conflicts_with_all = ["dir", "dry_run"])]
+	pub reload: bool,
+
 	/// Glob patterns for alert definitions.
 	///
 	/// Patterns can match directories (which will be read recursively) or individual files.
@@ -38,6 +45,10 @@ pub struct AlertdArgs {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
+	if ctx.args_sub.reload {
+		return bestool_alertd::send_reload().await;
+	}
+
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");

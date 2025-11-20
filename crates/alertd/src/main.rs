@@ -12,11 +12,18 @@ pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
+	/// Send reload signal to running daemon and exit
+	///
+	/// Connects to the running daemon's HTTP API and triggers a reload.
+	/// This is an alternative to SIGHUP that works on all platforms including Windows.
+	#[arg(long, conflicts_with_all = ["database_url", "glob", "email_from", "mailgun_api_key", "mailgun_domain", "dry_run"])]
+	pub reload: bool,
+
 	/// Database connection URL
 	///
 	/// PostgreSQL connection URL, e.g., postgresql://user:pass@localhost/dbname
 	#[arg(long, env = "DATABASE_URL")]
-	pub database_url: String,
+	pub database_url: Option<String>,
 
 	/// Glob patterns for alert definitions
 	///
@@ -71,6 +78,14 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
+	if args.reload {
+		return bestool_alertd::send_reload().await;
+	}
+
+	let database_url = args
+		.database_url
+		.ok_or_else(|| miette!("--database-url is required"))?;
+
 	if args.glob.is_empty() {
 		return Err(miette!("at least one --glob must be specified"));
 	}
@@ -90,7 +105,7 @@ async fn main() -> Result<()> {
 	};
 
 	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(args.glob, args.database_url).with_dry_run(args.dry_run);
+		bestool_alertd::DaemonConfig::new(args.glob, database_url).with_dry_run(args.dry_run);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);

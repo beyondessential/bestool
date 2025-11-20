@@ -4,7 +4,7 @@ mod alert;
 mod daemon;
 mod events;
 mod glob_resolver;
-mod http_server;
+pub mod http_server;
 mod loader;
 mod metrics;
 mod pg_interval;
@@ -16,6 +16,65 @@ pub use alert::{AlertDefinition, TicketSource};
 pub use daemon::run;
 pub use events::EventType;
 pub use targets::{AlertTargets, ExternalTarget, SendTarget};
+
+use miette::IntoDiagnostic;
+use tracing::info;
+
+/// Send a reload signal to a running alertd daemon
+///
+/// Connects to the daemon's HTTP API at http://127.0.0.1:8271 and triggers a reload.
+/// This is an alternative to SIGHUP that works on all platforms including Windows.
+pub async fn send_reload() -> miette::Result<()> {
+	let client = reqwest::Client::new();
+
+	// First, check if daemon is running by fetching status
+	info!("checking if daemon is running at http://127.0.0.1:8271");
+	let status_response = client
+		.get("http://127.0.0.1:8271/status")
+		.send()
+		.await
+		.into_diagnostic()?;
+
+	if !status_response.status().is_success() {
+		return Err(miette::miette!(
+			"daemon not responding on http://127.0.0.1:8271 (status: {})",
+			status_response.status()
+		));
+	}
+
+	let status: serde_json::Value = status_response.json().await.into_diagnostic()?;
+
+	// Verify it's the correct daemon
+	if status.get("name").and_then(|n| n.as_str()) != Some("bestool-alertd") {
+		return Err(miette::miette!(
+			"unexpected daemon running on http://127.0.0.1:8271: {:?}",
+			status.get("name")
+		));
+	}
+
+	info!(
+		"found bestool-alertd daemon (pid: {})",
+		status.get("pid").unwrap_or(&serde_json::Value::Null)
+	);
+
+	// Send reload request
+	info!("sending reload request");
+	let reload_response = client
+		.post("http://127.0.0.1:8271/reload")
+		.send()
+		.await
+		.into_diagnostic()?;
+
+	if !reload_response.status().is_success() {
+		return Err(miette::miette!(
+			"reload request failed (status: {})",
+			reload_response.status()
+		));
+	}
+
+	info!("reload request sent successfully");
+	Ok(())
+}
 
 /// Email server configuration
 #[derive(Debug, Clone)]
