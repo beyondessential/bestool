@@ -356,6 +356,18 @@ async fn handle_validate(body: String) -> impl IntoResponse {
 		}
 	};
 
+	// Validate templates BEFORE normalizing (normalization clears send targets)
+	if let Err(err) = validate_templates(&alert) {
+		let response = ValidationResponse {
+			valid: false,
+			error: Some(format!("Template validation error: {:#}", err)),
+			error_location: None,
+			info: None,
+		};
+
+		return (StatusCode::OK, Json(response)).into_response();
+	}
+
 	// Try to normalize the alert (this validates send targets and other fields)
 	let external_targets = std::collections::HashMap::new();
 	match alert.normalise(&external_targets) {
@@ -367,18 +379,6 @@ async fn handle_validate(body: String) -> impl IntoResponse {
 				TicketSource::None => "none",
 			}
 			.to_string();
-
-			// Validate templates with appropriate context for the source type
-			if let Err(err) = validate_templates(&alert) {
-				let response = ValidationResponse {
-					valid: false,
-					error: Some(format!("Template validation error: {:#}", err)),
-					error_location: None,
-					info: None,
-				};
-
-				return (StatusCode::OK, Json(response)).into_response();
-			}
 
 			let response = ValidationResponse {
 				valid: true,
@@ -409,49 +409,18 @@ async fn handle_validate(body: String) -> impl IntoResponse {
 }
 
 fn validate_templates(alert: &crate::alert::AlertDefinition) -> miette::Result<()> {
-	use crate::alert::TicketSource;
 	use crate::templates;
 	use miette::Context as _;
 
-	// Build base context with common fields
-	let base_context = templates::build_context(alert, chrono::Utc::now());
-
-	// Validate each send target's templates
+	// Validate each send target's templates by compiling them
+	// We only compile, not render, because we don't know the actual data structure
+	// that will be available at runtime (e.g., SQL column names, shell output format)
+	// Compilation catches syntax errors, which is the main goal
 	for (idx, target) in alert.send.iter().enumerate() {
-		let mut context = base_context.clone();
-
-		// Add source-specific mock data to validate templates
-		match &alert.source {
-			TicketSource::Sql { .. } => {
-				// Mock SQL result with a single row
-				let mock_row = serde_json::json!({
-					"column1": "value1",
-					"column2": 42,
-					"column3": true,
-				});
-				context.insert("rows", &vec![mock_row]);
-			}
-			TicketSource::Shell { .. } => {
-				// Mock shell output
-				context.insert("output", "mock shell output");
-			}
-			TicketSource::Event { .. } => {
-				// Events might have custom fields, add some common ones
-				context.insert("message", "mock event message");
-				context.insert("event", "mock_event");
-			}
-			TicketSource::None => {
-				// No additional context needed
-			}
-		}
-
 		// Load and compile templates for this target
-		let tera = templates::load_templates(target.subject(), target.template())
+		// This will catch syntax errors like mismatched tags, invalid filters, etc.
+		templates::load_templates(target.subject(), target.template())
 			.wrap_err_with(|| format!("validating templates for send target #{}", idx + 1))?;
-
-		// Try to render both subject and body templates
-		templates::render_alert(&tera, &mut context)
-			.wrap_err_with(|| format!("rendering templates for send target #{}", idx + 1))?;
 	}
 
 	Ok(())
@@ -899,5 +868,86 @@ send:
 		assert!(validation.info.is_some());
 		let info = validation.info.unwrap();
 		assert_eq!(info.source_type, "event");
+	}
+
+	#[tokio::test]
+	async fn test_validate_template_syntax_error() {
+		let alert_yaml = r#"
+enabled: true
+interval: 1 minute
+
+sql: "SELECT 1 as value"
+
+send:
+  - id: test
+    subject: "Test Alert"
+    template: |
+      Alert triggered!
+      {% if true %}test{% endunknown %}
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			!validation.valid,
+			"Expected invalid alert due to template syntax error"
+		);
+		assert!(validation.error.is_some());
+		let error = validation.error.unwrap();
+		assert!(
+			error.contains("Template validation error")
+				|| error.contains("compiling body template"),
+			"Expected template error, got: {}",
+			error
+		);
+	}
+
+	#[tokio::test]
+	async fn test_validate_template_mismatched_tags() {
+		let alert_yaml = r#"
+enabled: true
+interval: 1 minute
+
+sql: "SELECT 1 as value"
+
+send:
+  - id: test
+    subject: "Test"
+    template: |
+      {% if true %}
+      Some content
+      {% endfor %}
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			!validation.valid,
+			"Expected invalid alert due to mismatched template tags"
+		);
+		assert!(validation.error.is_some());
+		let error = validation.error.unwrap();
+		assert!(
+			error.contains("Template validation error")
+				|| error.contains("compiling body template"),
+			"Expected template error, got: {}",
+			error
+		);
 	}
 }
