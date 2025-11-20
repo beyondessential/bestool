@@ -13,6 +13,7 @@ use crate::{
 	alert::{AlertDefinition, InternalContext},
 	glob_resolver::{GlobResolver, ResolvedPaths},
 	loader::{LoadedAlerts, load_alerts_from_paths},
+	targets::ResolvedTarget,
 };
 
 pub struct Scheduler {
@@ -58,7 +59,7 @@ impl Scheduler {
 			"resolved paths from globs"
 		);
 
-		let LoadedAlerts { alerts, .. } = load_alerts_from_paths(&resolved, self.default_interval)?;
+		let LoadedAlerts { alerts } = load_alerts_from_paths(&resolved, self.default_interval)?;
 
 		// Update resolved paths
 		*self.resolved_paths.write().await = resolved;
@@ -73,9 +74,9 @@ impl Scheduler {
 		let mut tasks = self.tasks.write().await;
 		tasks.clear();
 
-		for alert in alerts {
+		for (alert, resolved_targets) in alerts {
 			let file = alert.file.clone();
-			let task = self.spawn_alert_task(alert);
+			let task = self.spawn_alert_task(alert, resolved_targets);
 			tasks.insert(file, task);
 		}
 
@@ -86,7 +87,7 @@ impl Scheduler {
 		info!("executing all alerts once");
 
 		let resolved = self.glob_resolver.resolve()?;
-		let LoadedAlerts { alerts, .. } = load_alerts_from_paths(&resolved, self.default_interval)?;
+		let LoadedAlerts { alerts } = load_alerts_from_paths(&resolved, self.default_interval)?;
 
 		if alerts.is_empty() {
 			warn!("no alerts found");
@@ -95,14 +96,17 @@ impl Scheduler {
 
 		info!(count = alerts.len(), "executing alerts");
 
-		for alert in alerts {
+		for (alert, resolved_targets) in alerts {
 			let ctx = self.ctx.clone();
 			let email = self.email.clone();
 			let dry_run = self.dry_run;
 			let file = alert.file.clone();
 
 			debug!(?file, "executing alert");
-			if let Err(err) = alert.execute(ctx, email.as_ref(), dry_run).await {
+			if let Err(err) = alert
+				.execute(ctx, email.as_ref(), dry_run, &resolved_targets)
+				.await
+			{
 				error!(?file, "error executing alert: {err:?}");
 			}
 		}
@@ -150,7 +154,11 @@ impl Scheduler {
 		self.load_and_schedule_alerts().await
 	}
 
-	fn spawn_alert_task(&self, alert: AlertDefinition) -> JoinHandle<()> {
+	fn spawn_alert_task(
+		&self,
+		alert: AlertDefinition,
+		resolved_targets: Vec<ResolvedTarget>,
+	) -> JoinHandle<()> {
 		let ctx = self.ctx.clone();
 		let email = self.email.clone();
 		let dry_run = self.dry_run;
@@ -171,7 +179,10 @@ impl Scheduler {
 				ticker.tick().await;
 
 				debug!(?file, "executing alert");
-				if let Err(err) = alert.execute(ctx.clone(), email.as_ref(), dry_run).await {
+				if let Err(err) = alert
+					.execute(ctx.clone(), email.as_ref(), dry_run, &resolved_targets)
+					.await
+				{
 					error!(?file, "error executing alert: {err:?}");
 				}
 			}

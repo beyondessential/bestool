@@ -11,10 +11,7 @@ use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-	EmailConfig,
-	pg_interval::Interval,
-	targets::{ExternalTarget, SendTarget},
-	templates::build_context,
+	EmailConfig, pg_interval::Interval, targets::ExternalTarget, templates::build_context,
 };
 
 fn enabled() -> bool {
@@ -33,7 +30,7 @@ pub struct AlertDefinition {
 	pub interval: Duration,
 
 	#[serde(default)]
-	pub send: Vec<SendTarget>,
+	pub send: Vec<crate::targets::SendTarget>,
 
 	#[serde(flatten)]
 	pub source: TicketSource,
@@ -55,22 +52,24 @@ pub enum TicketSource {
 }
 
 impl AlertDefinition {
-	pub fn normalise(mut self, external_targets: &HashMap<String, Vec<ExternalTarget>>) -> Self {
-		self.send = self
+	pub fn normalise(
+		mut self,
+		external_targets: &HashMap<String, Vec<ExternalTarget>>,
+	) -> (Self, Vec<crate::targets::ResolvedTarget>) {
+		let resolved = self
 			.send
 			.iter()
-			.flat_map(|target| match target {
-				target @ SendTarget::External { id, .. } => target
-					.resolve_external(external_targets)
-					.unwrap_or_else(|| {
-						error!(id, "external target not found");
-						Vec::new()
-					}),
-				other => vec![other.clone()],
+			.flat_map(|target| {
+				let resolved_targets = target.resolve_external(external_targets);
+				if resolved_targets.is_empty() {
+					error!(id = %target.id(), "external target not found");
+				}
+				resolved_targets
 			})
 			.collect();
 
-		self
+		self.send.clear(); // Clear send targets after resolution
+		(self, resolved)
 	}
 
 	#[instrument(skip(self, client, not_before, context))]
@@ -151,6 +150,7 @@ impl AlertDefinition {
 		ctx: Arc<InternalContext>,
 		email: Option<&EmailConfig>,
 		dry_run: bool,
+		resolved_targets: &[crate::targets::ResolvedTarget],
 	) -> Result<()> {
 		info!(?self.file, "executing alert");
 
@@ -167,7 +167,7 @@ impl AlertDefinition {
 			return Ok(());
 		}
 
-		for target in &self.send {
+		for target in resolved_targets {
 			if let Err(err) = target.send(self, &mut tera_ctx, email, dry_run).await {
 				error!("sending: {err:?}");
 			}

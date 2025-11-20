@@ -4,16 +4,10 @@ use miette::Result;
 use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
-use crate::{
-	alert::AlertDefinition,
-	glob_resolver::ResolvedPaths,
-	targets::{AlertTargets, ExternalTarget},
-};
+use crate::{alert::AlertDefinition, glob_resolver::ResolvedPaths, targets::AlertTargets};
 
 pub struct LoadedAlerts {
-	pub alerts: Vec<AlertDefinition>,
-	#[expect(dead_code, reason = "kept for potential future use")]
-	pub external_targets: HashMap<String, Vec<ExternalTarget>>,
+	pub alerts: Vec<(AlertDefinition, Vec<crate::targets::ResolvedTarget>)>,
 }
 
 pub fn load_alerts_from_paths(
@@ -38,7 +32,7 @@ pub fn load_alerts_from_paths(
 			}) {
 			for target in targets {
 				external_targets
-					.entry(target.id().into())
+					.entry(target.id.clone())
 					.or_insert(Vec::new())
 					.push(target);
 			}
@@ -67,14 +61,15 @@ pub fn load_alerts_from_paths(
 		debug!(count=%external_targets.len(), "found some external targets");
 	}
 
-	for alert in &mut alerts {
-		*alert = std::mem::take(alert).normalise(&external_targets);
-	}
-	debug!(count=%alerts.len(), "found some alerts");
+	let alerts_with_targets: Vec<_> = alerts
+		.into_iter()
+		.map(|alert| alert.normalise(&external_targets))
+		.collect();
+
+	debug!(count=%alerts_with_targets.len(), "found some alerts");
 
 	Ok(LoadedAlerts {
-		alerts,
-		external_targets,
+		alerts: alerts_with_targets,
 	})
 }
 

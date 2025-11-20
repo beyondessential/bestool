@@ -4,9 +4,9 @@ use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
-use tracing::{instrument, warn};
+use tracing::instrument;
 
-use crate::{alert::AlertDefinition, targets::SendTarget};
+use crate::alert::AlertDefinition;
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";
 
@@ -39,27 +39,18 @@ impl Display for TemplateField {
 }
 
 #[instrument]
-pub fn load_templates(target: &SendTarget) -> Result<Tera> {
+pub fn load_templates(subject: &Option<String>, template: &str) -> Result<Tera> {
 	let mut tera = tera::Tera::default();
 
-	match target {
-		SendTarget::Email {
-			subject, template, ..
-		}
-		| SendTarget::External {
-			subject, template, ..
-		} => {
-			tera.add_raw_template(
-				TemplateField::Subject.as_str(),
-				subject.as_deref().unwrap_or(DEFAULT_SUBJECT_TEMPLATE),
-			)
-			.into_diagnostic()
-			.wrap_err("compiling subject template")?;
-			tera.add_raw_template(TemplateField::Body.as_str(), template)
-				.into_diagnostic()
-				.wrap_err("compiling body template")?;
-		}
-	}
+	tera.add_raw_template(
+		TemplateField::Subject.as_str(),
+		subject.as_deref().unwrap_or(DEFAULT_SUBJECT_TEMPLATE),
+	)
+	.into_diagnostic()
+	.wrap_err("compiling subject template")?;
+	tera.add_raw_template(TemplateField::Body.as_str(), template)
+		.into_diagnostic()
+		.wrap_err("compiling body template")?;
 
 	Ok(tera)
 }
