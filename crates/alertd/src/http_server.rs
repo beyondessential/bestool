@@ -20,8 +20,9 @@ use axum::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::warn;
-use tracing::{error, info};
+use tracing::{Level, error, info};
 
 use crate::{
 	EmailConfig,
@@ -124,6 +125,26 @@ pub async fn start_server(
 		.route("/validate", post(handle_validate))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
+		.layer(
+			TraceLayer::new_for_http()
+				.make_span_with(
+					DefaultMakeSpan::new()
+						.level(Level::INFO)
+						.include_headers(false),
+				)
+				.on_request(|request: &axum::http::Request<_>, _span: &tracing::Span| {
+					info!(
+						method = %request.method(),
+						uri = %request.uri(),
+						"HTTP request"
+					);
+				})
+				.on_response(
+					DefaultOnResponse::new()
+						.level(Level::INFO)
+						.include_headers(false),
+				),
+		)
 		.with_state(Arc::new(state));
 
 	// Use default if no addresses provided
