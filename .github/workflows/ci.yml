@@ -90,6 +90,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features
 
+  check-docs:
+    name: Check documentation is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check alertd USAGE.md is up to date
+        run: |
+          echo "# Usage" > /tmp/expected-usage.md
+          echo "" >> /tmp/expected-usage.md
+          echo '```' >> /tmp/expected-usage.md
+          cargo run -p bestool-alertd --quiet -- --help >> /tmp/expected-usage.md
+          echo '```' >> /tmp/expected-usage.md
+          if ! diff -u crates/alertd/USAGE.md /tmp/expected-usage.md; then
+            echo "ERROR: crates/alertd/USAGE.md is out of date"
+            echo "Run the following to update it:"
+            echo "  echo '# Usage' > crates/alertd/USAGE.md"
+            echo "  echo '' >> crates/alertd/USAGE.md"
+            echo "  echo '\`\`\`' >> crates/alertd/USAGE.md"
+            echo "  cargo run -p bestool-alertd --quiet -- --help >> crates/alertd/USAGE.md"
+            echo "  echo '\`\`\`' >> crates/alertd/USAGE.md"
+            exit 1
+          fi
+
   build:
     if: github.ref_type != 'pull_request'
     permissions:
@@ -246,7 +274,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test]
+    needs: [test, check-docs]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
