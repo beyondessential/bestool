@@ -110,6 +110,20 @@ impl AlertDefinition {
 		self.interval_duration = parse_interval(&self.interval)
 			.wrap_err_with(|| format!("failed to parse interval: {}", self.interval))?;
 
+		// Validate templates before resolving targets
+		// This catches template syntax errors early
+		for (idx, target) in self.send.iter().enumerate() {
+			crate::templates::load_templates(target.subject(), target.template()).wrap_err_with(
+				|| {
+					format!(
+						"validating templates for send target #{} (id: {})",
+						idx + 1,
+						target.id()
+					)
+				},
+			)?;
+		}
+
 		let resolved = self
 			.send
 			.iter()

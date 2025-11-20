@@ -121,10 +121,20 @@ impl Scheduler {
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads
+		if !definition_errors.is_empty() {
+			info!(
+				count = definition_errors.len(),
+				"triggering definition-error events for failed alerts"
+			);
+		}
 		for def_err in definition_errors {
+			info!(
+				file = %def_err.file.display(),
+				"triggering definition-error event"
+			);
 			let event_context = EventContext::DefinitionError {
 				alert_file: def_err.file.display().to_string(),
-				error_message: def_err.error,
+				error_message: def_err.error.clone(),
 			};
 			if let Err(err) = event_manager
 				.trigger_event(
@@ -188,10 +198,20 @@ impl Scheduler {
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads
+		if !definition_errors.is_empty() {
+			info!(
+				count = definition_errors.len(),
+				"triggering definition-error events for failed alerts"
+			);
+		}
 		for def_err in definition_errors {
+			info!(
+				file = %def_err.file.display(),
+				"triggering definition-error event"
+			);
 			let event_context = EventContext::DefinitionError {
 				alert_file: def_err.file.display().to_string(),
-				error_message: def_err.error,
+				error_message: def_err.error.clone(),
 			};
 			if let Err(err) = event_manager
 				.trigger_event(
