@@ -1,6 +1,7 @@
 //! HTTP server for alertd daemon control and metrics.
 //!
 //! Provides a simple HTTP API listening on localhost:8271 with the following endpoints:
+//! - `GET /`: List of available endpoints
 //! - `POST /reload`: Trigger a configuration reload (equivalent to SIGHUP)
 //! - `GET /metrics`: Prometheus-formatted metrics for monitoring
 //! - `GET /status`: Daemon status information in JSON format
@@ -47,6 +48,7 @@ pub async fn start_server(reload_tx: mpsc::Sender<()>) {
 	};
 
 	let app = Router::new()
+		.route("/", get(handle_index))
 		.route("/reload", post(handle_reload))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
@@ -105,6 +107,37 @@ pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoRe
 		pid: state.pid,
 	};
 	Json(status)
+}
+
+async fn handle_index() -> impl IntoResponse {
+	let endpoints = serde_json::json!([
+		{
+			"method": "GET",
+			"path": "/",
+			"description": "List of available endpoints"
+		},
+		{
+			"method": "POST",
+			"path": "/reload",
+			"description": "Trigger a configuration reload (equivalent to SIGHUP)"
+		},
+		{
+			"method": "GET",
+			"path": "/metrics",
+			"description": "Prometheus-formatted metrics for monitoring"
+		},
+		{
+			"method": "GET",
+			"path": "/status",
+			"description": "Daemon status information in JSON format"
+		}
+	]);
+
+	(
+		StatusCode::OK,
+		[(axum::http::header::CONTENT_TYPE, "application/json")],
+		serde_json::to_string_pretty(&endpoints).unwrap(),
+	)
 }
 
 #[cfg(test)]
@@ -183,5 +216,30 @@ mod tests {
 		assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
 		assert_eq!(status.pid, pid);
 		assert!(!status.started_at.is_empty());
+	}
+
+	#[tokio::test]
+	async fn test_index_endpoint() {
+		let response = handle_index().await.into_response();
+		assert_eq!(response.status(), StatusCode::OK);
+
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let endpoints: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+		assert!(endpoints.is_array());
+		let endpoints = endpoints.as_array().unwrap();
+		assert_eq!(endpoints.len(), 4);
+
+		// Check that all expected endpoints are present
+		let paths: Vec<&str> = endpoints
+			.iter()
+			.filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+			.collect();
+		assert!(paths.contains(&"/"));
+		assert!(paths.contains(&"/reload"));
+		assert!(paths.contains(&"/metrics"));
+		assert!(paths.contains(&"/status"));
 	}
 }
