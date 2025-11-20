@@ -12,8 +12,11 @@ mod scheduler;
 mod targets;
 mod templates;
 
+#[cfg(windows)]
+pub mod windows_service;
+
 pub use alert::{AlertDefinition, TicketSource};
-pub use daemon::run;
+pub use daemon::{run, run_with_shutdown};
 pub use events::EventType;
 pub use targets::{AlertTargets, ExternalTarget, SendTarget};
 

@@ -2,7 +2,7 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
 use miette::{IntoDiagnostic, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::{DaemonConfig, alert::InternalContext, http_server, metrics, scheduler::Scheduler};
@@ -68,6 +68,14 @@ impl WatchManager {
 }
 
 pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
+	let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+	run_with_shutdown(daemon_config, shutdown_rx).await
+}
+
+pub async fn run_with_shutdown(
+	daemon_config: DaemonConfig,
+	external_shutdown: oneshot::Receiver<()>,
+) -> Result<()> {
 	info!("starting alertd daemon");
 
 	// Initialize metrics
@@ -140,6 +148,14 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 				error!("unable to listen for shutdown signal: {}", err);
 			}
 		}
+	});
+
+	// External shutdown signal (for Windows service)
+	let external_signal_tx = event_tx.clone();
+	tokio::spawn(async move {
+		let _ = external_shutdown.await;
+		info!("received external shutdown signal");
+		let _ = external_signal_tx.send(DaemonEvent::Shutdown).await;
 	});
 
 	#[cfg(unix)]

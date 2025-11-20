@@ -18,6 +18,7 @@ use axum::{
 use jiff::Timestamp;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tracing::warn;
 use tracing::{error, info};
 
 use crate::metrics;
