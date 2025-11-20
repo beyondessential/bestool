@@ -14,7 +14,7 @@ required-features = ["cli"]
 
 [dependencies]
 axum = "0.7.5"
-bestool-postgres = { version = "0.1.0", path = "../postgres" }
+bestool-postgres = { version = "1.0.0", path = "../postgres" }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 bytes = "1.9.0"
