@@ -21,6 +21,7 @@ folktime = "0.2.1"
 futures = { workspace = true }
 glob = "0.3.3"
 humantime = "2.1.0"
+jiff = "0.2.15"
 lloggs = { version = "1.1.0", optional = true }
 mailgun-rs = "0.1.11"
 miette = { workspace = true }

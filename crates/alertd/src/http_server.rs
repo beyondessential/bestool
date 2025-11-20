@@ -3,16 +3,19 @@
 //! Provides a simple HTTP API listening on localhost:8271 with the following endpoints:
 //! - `POST /reload`: Trigger a configuration reload (equivalent to SIGHUP)
 //! - `GET /metrics`: Prometheus-formatted metrics for monitoring
+//! - `GET /status`: Daemon status information in JSON format
 
 use std::sync::Arc;
 
 use axum::{
-	Router,
+	Json, Router,
 	extract::State,
 	http::StatusCode,
 	response::IntoResponse,
 	routing::{get, post},
 };
+use jiff::Timestamp;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -21,14 +24,32 @@ use crate::metrics;
 #[derive(Clone)]
 pub struct ServerState {
 	reload_tx: mpsc::Sender<()>,
+	started_at: Timestamp,
+	pid: u32,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct StatusResponse {
+	name: String,
+	version: String,
+	started_at: String,
+	pid: u32,
 }
 
 pub async fn start_server(reload_tx: mpsc::Sender<()>) {
-	let state = ServerState { reload_tx };
+	let started_at = Timestamp::now();
+	let pid = std::process::id();
+
+	let state = ServerState {
+		reload_tx,
+		started_at,
+		pid,
+	};
 
 	let app = Router::new()
 		.route("/reload", post(handle_reload))
 		.route("/metrics", get(handle_metrics))
+		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
 
 	let listener = match tokio::net::TcpListener::bind("127.0.0.1:8271").await {
@@ -76,6 +97,16 @@ async fn handle_metrics() -> impl IntoResponse {
 	}
 }
 
+async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+	let status = StatusResponse {
+		name: "bestool-alertd".to_string(),
+		version: env!("CARGO_PKG_VERSION").to_string(),
+		started_at: state.started_at.to_string(),
+		pid: state.pid,
+	};
+	Json(status)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -115,12 +146,42 @@ mod tests {
 	#[tokio::test]
 	async fn test_reload_endpoint() {
 		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
-		let state = Arc::new(ServerState { reload_tx });
+		let state = Arc::new(ServerState {
+			reload_tx,
+			started_at: Timestamp::now(),
+			pid: std::process::id(),
+		});
 
 		let response = handle_reload(State(state)).await.into_response();
 		assert_eq!(response.status(), StatusCode::OK);
 
 		// Verify the reload signal was sent
 		assert!(reload_rx.try_recv().is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_status_endpoint() {
+		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
+		let started_at = Timestamp::now();
+		let pid = std::process::id();
+
+		let state = Arc::new(ServerState {
+			reload_tx,
+			started_at,
+			pid,
+		});
+
+		let response = handle_status(State(state)).await.into_response();
+		assert_eq!(response.status(), StatusCode::OK);
+
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let status: StatusResponse = serde_json::from_slice(&body).unwrap();
+
+		assert_eq!(status.name, "bestool-alertd");
+		assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
+		assert_eq!(status.pid, pid);
+		assert!(!status.started_at.is_empty());
 	}
 }
