@@ -12,24 +12,21 @@ use tracing::debug;
 /// 'install' subcommand. See 'bestool-alertd install --help' for details.
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
-	#[command(subcommand)]
-	command: Option<Command>,
-
 	#[command(flatten)]
 	logging: LoggingArgs,
 
-	/// Send reload signal to running daemon and exit
-	///
-	/// Connects to the running daemon's HTTP API and triggers a reload.
-	/// This is an alternative to SIGHUP that works on all platforms including Windows.
-	#[arg(long, conflicts_with_all = ["database_url", "glob", "email_from", "mailgun_api_key", "mailgun_domain", "dry_run"])]
-	pub reload: bool,
+	#[command(subcommand)]
+	command: Command,
+}
 
+/// Common arguments for running the daemon
+#[derive(Debug, Clone, Parser)]
+struct DaemonArgs {
 	/// Database connection URL
 	///
 	/// PostgreSQL connection URL, e.g., postgresql://user:pass@localhost/dbname
 	#[arg(long, env = "DATABASE_URL")]
-	pub database_url: Option<String>,
+	database_url: Option<String>,
 
 	/// Glob patterns for alert definitions
 	///
@@ -37,31 +34,47 @@ pub struct Args {
 	/// Can be provided multiple times.
 	/// Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
 	#[arg(long)]
-	pub glob: Vec<String>,
+	glob: Vec<String>,
 
 	/// Email sender address
 	#[arg(long, env = "EMAIL_FROM")]
-	pub email_from: Option<String>,
+	email_from: Option<String>,
 
 	/// Mailgun API key
 	#[arg(long, env = "MAILGUN_API_KEY")]
-	pub mailgun_api_key: Option<String>,
+	mailgun_api_key: Option<String>,
 
 	/// Mailgun domain
 	#[arg(long, env = "MAILGUN_DOMAIN")]
-	pub mailgun_domain: Option<String>,
+	mailgun_domain: Option<String>,
 
 	/// Execute all alerts once and quit (ignoring intervals)
 	#[arg(long)]
-	pub dry_run: bool,
+	dry_run: bool,
 
 	/// Disable the HTTP server
-	#[arg(long, conflicts_with = "reload")]
-	pub no_server: bool,
+	#[arg(long)]
+	no_server: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
+	/// Run the alert daemon
+	///
+	/// Starts the daemon which monitors alert definition files and executes alerts
+	/// based on their configured schedules. The daemon will watch for file changes
+	/// and automatically reload when definitions are modified.
+	Run {
+		#[command(flatten)]
+		daemon: DaemonArgs,
+	},
+
+	/// Send reload signal to running daemon
+	///
+	/// Connects to the running daemon's HTTP API and triggers a reload.
+	/// This is an alternative to SIGHUP that works on all platforms including Windows.
+	Reload,
+
 	#[cfg(windows)]
 	/// Install the daemon as a Windows service
 	///
@@ -78,12 +91,11 @@ enum Command {
 	Uninstall,
 
 	#[cfg(windows)]
-	/// Run as a Windows service (used by Windows Service Manager)
-	///
-	/// This command is invoked by the Windows Service Control Manager and should
-	/// not be called directly. Use 'install' to set up the service, then manage
-	/// it through Windows service management tools.
-	Service,
+	#[command(hide = true)]
+	Service {
+		#[command(flatten)]
+		daemon: DaemonArgs,
+	},
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -176,66 +188,20 @@ fn uninstall_service() -> Result<()> {
 	Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-	let (args, _guard) = get_args()?;
-
-	#[cfg(windows)]
-	if let Some(command) = args.command {
-		return match command {
-			Command::Install => install_service(),
-			Command::Uninstall => uninstall_service(),
-			Command::Service => {
-				let database_url = args
-					.database_url
-					.ok_or_else(|| miette!("--database-url is required"))?;
-
-				if args.glob.is_empty() {
-					return Err(miette!("at least one --glob must be specified"));
-				}
-
-				let email = match (args.email_from, args.mailgun_api_key, args.mailgun_domain) {
-					(Some(from), Some(api_key), Some(domain)) => {
-						Some(bestool_alertd::EmailConfig {
-							from,
-							mailgun_api_key: api_key,
-							mailgun_domain: domain,
-						})
-					}
-					(None, None, None) => None,
-					_ => {
-						return Err(miette!(
-							"either provide all email options (--email-from, --mailgun-api-key, --mailgun-domain) or none"
-						));
-					}
-				};
-
-				let mut daemon_config = bestool_alertd::DaemonConfig::new(args.glob, database_url)
-					.with_dry_run(args.dry_run)
-					.with_no_server(args.no_server);
-
-				if let Some(email) = email {
-					daemon_config = daemon_config.with_email(email);
-				}
-
-				return bestool_alertd::windows_service::run_service(daemon_config);
-			}
-		};
-	}
-
-	if args.reload {
-		return bestool_alertd::send_reload().await;
-	}
-
-	let database_url = args
+fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+	let database_url = daemon
 		.database_url
 		.ok_or_else(|| miette!("--database-url is required"))?;
 
-	if args.glob.is_empty() {
+	if daemon.glob.is_empty() {
 		return Err(miette!("at least one --glob must be specified"));
 	}
 
-	let email = match (args.email_from, args.mailgun_api_key, args.mailgun_domain) {
+	let email = match (
+		daemon.email_from,
+		daemon.mailgun_api_key,
+		daemon.mailgun_domain,
+	) {
 		(Some(from), Some(api_key), Some(domain)) => Some(bestool_alertd::EmailConfig {
 			from,
 			mailgun_api_key: api_key,
@@ -249,13 +215,37 @@ async fn main() -> Result<()> {
 		}
 	};
 
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(args.glob, database_url)
-		.with_dry_run(args.dry_run)
-		.with_no_server(args.no_server);
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(daemon.glob, database_url)
+		.with_dry_run(daemon.dry_run)
+		.with_no_server(daemon.no_server);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
 	}
 
+	Ok(daemon_config)
+}
+
+async fn run_daemon(daemon: DaemonArgs) -> Result<()> {
+	let daemon_config = build_daemon_config(daemon)?;
 	bestool_alertd::run(daemon_config).await
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let (args, _guard) = get_args()?;
+
+	match args.command {
+		Command::Run { daemon } => run_daemon(daemon).await,
+		Command::Reload => bestool_alertd::send_reload().await,
+		#[cfg(windows)]
+		Command::Install => install_service(),
+		#[cfg(windows)]
+		Command::Uninstall => uninstall_service(),
+		#[cfg(windows)]
+		Command::Service { daemon } => {
+			let daemon_config = build_daemon_config(daemon)?;
+			bestool_alertd::windows_service::run_service(daemon_config)
+		}
+	}
 }
