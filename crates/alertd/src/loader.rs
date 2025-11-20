@@ -5,6 +5,7 @@ use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
 use crate::{
+	LogError,
 	alert::AlertDefinition,
 	glob_resolver::ResolvedPaths,
 	targets::{AlertTargets, ExternalTarget},
@@ -97,7 +98,7 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 			match alert.normalise(&external_targets) {
 				Ok(normalized) => Some(normalized),
 				Err(err) => {
-					error!(file=?file, "failed to normalise alert: {err:?}");
+					error!(file=?file, "failed to normalise alert: {}", LogError(&err));
 					None
 				}
 			}
@@ -125,7 +126,7 @@ fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
 	let content = match std::fs::read_to_string(file) {
 		Ok(content) => content,
 		Err(err) => {
-			error!(?file, "failed to read file: {err:?}");
+			error!(?file, "failed to read file: {err}");
 			return None;
 		}
 	};
@@ -133,7 +134,7 @@ fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
 	let mut alert: AlertDefinition = match serde_yaml::from_str(&content) {
 		Ok(alert) => alert,
 		Err(err) => {
-			error!(?file, "failed to parse YAML: {err:?}");
+			error!(?file, "failed to parse YAML: {err}");
 			return None;
 		}
 	};

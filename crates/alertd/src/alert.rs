@@ -10,7 +10,9 @@ use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{EmailConfig, events::EventType, targets::ExternalTarget, templates::build_context};
+use crate::{
+	EmailConfig, LogError, events::EventType, targets::ExternalTarget, templates::build_context,
+};
 
 fn enabled() -> bool {
 	true
@@ -242,7 +244,7 @@ impl AlertDefinition {
 
 		for target in resolved_targets {
 			if let Err(err) = target.send(self, &mut tera_ctx, email, dry_run).await {
-				error!("sending: {err:?}");
+				error!("sending: {}", LogError(&err));
 			}
 		}
 

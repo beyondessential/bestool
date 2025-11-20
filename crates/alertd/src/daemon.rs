@@ -5,7 +5,9 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use crate::{DaemonConfig, alert::InternalContext, http_server, metrics, scheduler::Scheduler};
+use crate::{
+	DaemonConfig, LogError, alert::InternalContext, http_server, metrics, scheduler::Scheduler,
+};
 
 enum DaemonEvent {
 	FileChanged,
@@ -189,12 +191,12 @@ pub async fn run_with_shutdown(
 				info!("received SIGHUP, reloading configuration");
 				metrics::inc_reloads();
 				if let Err(err) = scheduler_hup.reload_alerts().await {
-					error!("failed to reload alerts: {err:?}");
+					error!("failed to reload alerts: {}", LogError(&err));
 				} else {
 					// Update watches after reload
 					let new_paths = scheduler_hup.get_resolved_paths().await;
 					if let Err(err) = watch_manager_hup.write().await.update_watches(&new_paths) {
-						error!("failed to update watches: {err:?}");
+						error!("failed to update watches: {}", LogError(&err));
 					}
 				}
 			}
@@ -229,12 +231,12 @@ pub async fn run_with_shutdown(
 					DaemonEvent::ResolveGlobs => {
 						debug!("re-resolving glob patterns");
 						if let Err(err) = scheduler.check_and_reload_if_paths_changed().await {
-							error!("failed to check and reload: {err:?}");
+							error!("failed to check and reload: {}", LogError(&err));
 						} else {
 							// Update watches with new paths
 							let new_paths = scheduler.get_resolved_paths().await;
 							if let Err(err) = watch_manager.write().await.update_watches(&new_paths) {
-								error!("failed to update watches: {err:?}");
+								error!("failed to update watches: {}", LogError(&err));
 							}
 						}
 					}
@@ -249,12 +251,12 @@ pub async fn run_with_shutdown(
 				info!("reloading alerts via HTTP");
 				metrics::inc_reloads();
 				if let Err(err) = scheduler.reload_alerts().await {
-					error!("failed to reload alerts: {err:?}");
+					error!("failed to reload alerts: {}", LogError(&err));
 				} else {
 					// Update watches after reload
 					let new_paths = scheduler.get_resolved_paths().await;
 					if let Err(err) = watch_manager.write().await.update_watches(&new_paths) {
-						error!("failed to update watches: {err:?}");
+						error!("failed to update watches: {}", LogError(&err));
 					}
 				}
 			}
@@ -264,12 +266,12 @@ pub async fn run_with_shutdown(
 					info!("reloading alerts due to file system changes");
 					metrics::inc_reloads();
 					if let Err(err) = scheduler.reload_alerts().await {
-						error!("failed to reload alerts: {err:?}");
+						error!("failed to reload alerts: {}", LogError(&err));
 					} else {
 						// Update watches after reload
 						let new_paths = scheduler.get_resolved_paths().await;
 						if let Err(err) = watch_manager.write().await.update_watches(&new_paths) {
-							error!("failed to update watches: {err:?}");
+							error!("failed to update watches: {}", LogError(&err));
 						}
 					}
 				}

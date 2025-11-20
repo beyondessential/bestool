@@ -5,6 +5,7 @@ use tera::Context as TeraCtx;
 use tracing::{debug, error, info};
 
 use crate::{
+	LogError,
 	alert::{AlertDefinition, InternalContext},
 	targets::{ExternalTarget, ResolvedTarget, determine_default_target},
 };
@@ -145,7 +146,7 @@ impl EventManager {
 
 				for target in targets {
 					if let Err(err) = target.send(alert, &mut tera_ctx, email, dry_run).await {
-						error!(file = ?alert.file, "failed to send event alert: {err:?}");
+						error!(file = ?alert.file, "failed to send event alert: {}", LogError(&err));
 					}
 				}
 			}
@@ -192,7 +193,7 @@ impl EventManager {
 				.send(&synthetic_alert, &mut tera_ctx, email, dry_run)
 				.await
 			{
-				error!("failed to send default event alert: {err:?}");
+				error!("failed to send default event alert: {}", LogError(&err));
 			}
 		} else {
 			debug!("no alerts or default target for event, skipping");

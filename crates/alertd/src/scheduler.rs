@@ -10,7 +10,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-	EmailConfig,
+	EmailConfig, LogError,
 	alert::{AlertDefinition, InternalContext, TicketSource},
 	events::{EventContext, EventManager, EventType},
 	glob_resolver::{GlobResolver, ResolvedPaths},
@@ -165,7 +165,7 @@ impl Scheduler {
 				.execute(ctx, email.as_ref(), dry_run, &resolved_targets)
 				.await
 			{
-				error!(?file, "error executing alert: {err:?}");
+				error!(?file, "error executing alert: {}", LogError(&err));
 			}
 		}
 
@@ -339,7 +339,7 @@ impl Scheduler {
 				{
 					Ok(flow) => flow.is_continue(),
 					Err(err) => {
-						error!(?file, "error reading sources: {err:?}");
+						error!(?file, "error reading sources: {}", LogError(&err));
 						metrics::inc_alerts_failed();
 
 						// Trigger source_error event
@@ -358,7 +358,10 @@ impl Scheduler {
 								)
 								.await
 							{
-								error!("failed to trigger source_error event: {event_err:?}");
+								error!(
+									"failed to trigger source_error event: {}",
+									LogError(&event_err)
+								);
 							}
 						}
 						continue;
@@ -402,7 +405,7 @@ impl Scheduler {
 								.send(&alert, &mut tera_ctx, email.as_ref(), dry_run)
 								.await
 							{
-								error!("sending: {err:?}");
+								error!("sending: {}", LogError(&err));
 							}
 						}
 

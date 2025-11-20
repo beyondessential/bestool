@@ -1,5 +1,7 @@
 #![deny(rust_2018_idioms)]
 
+use std::fmt;
+
 mod alert;
 pub mod commands;
 mod daemon;
@@ -87,5 +89,22 @@ impl DaemonConfig {
 	pub fn with_server_addrs(mut self, server_addrs: Vec<std::net::SocketAddr>) -> Self {
 		self.server_addrs = server_addrs;
 		self
+	}
+}
+
+/// Helper to format miette errors for logging without ANSI codes
+pub(crate) struct LogError<'a>(pub &'a miette::Report);
+
+impl fmt::Display for LogError<'_> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		use miette::ReportHandler;
+
+		let handler = miette::NarratableReportHandler::new();
+
+		if let Err(e) = handler.debug(self.0.as_ref(), f) {
+			write!(f, "{}: {}", self.0, e)
+		} else {
+			Ok(())
+		}
 	}
 }
