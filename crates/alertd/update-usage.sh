@@ -10,7 +10,7 @@ echo "Updating USAGE.md..."
 run_with_fixed_cols() {
 	if command -v script >/dev/null 2>&1; then
 		# Linux/BSD: Use script with a pseudo-terminal
-		COLUMNS=80 script -q -c "$1" /dev/null | cat
+		COLUMNS=80 NO_COLOR=1 script -q -c "$1" /dev/null | cat
 	else
 		# Fallback: just run the command
 		eval "$1"
