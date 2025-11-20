@@ -101,7 +101,7 @@ pub struct AlertTargets {
 	pub targets: Vec<ExternalTarget>,
 }
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct ExternalTarget {
 	pub id: String,

@@ -36,7 +36,9 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 						)
 						.ok()
 				}) {
+				debug!(path=?external_targets_path, count=targets.len(), "loaded external targets from file");
 				for target in targets {
+					debug!(id=%target.id, path=?external_targets_path, "adding external target");
 					external_targets
 						.entry(target.id.clone())
 						.or_insert(Vec::new())
@@ -59,7 +61,9 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 						)
 						.ok()
 				}) {
+				debug!(path=?external_targets_path, count=targets.len(), "loaded external targets from directory");
 				for target in targets {
+					debug!(id=%target.id, path=?external_targets_path, "adding external target");
 					external_targets
 						.entry(target.id.clone())
 						.or_insert(Vec::new())
@@ -88,13 +92,26 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 	}
 
 	if !external_targets.is_empty() {
-		debug!(count=%external_targets.len(), "found some external targets");
+		debug!(
+			count=%external_targets.len(),
+			ids=?external_targets.keys().collect::<Vec<_>>(),
+			"found external targets"
+		);
+	} else {
+		warn!("no external targets found");
 	}
 
 	let alerts_with_targets: Vec<_> = alerts
 		.into_iter()
 		.filter_map(|alert| {
 			let file = alert.file.clone();
+			let send_target_ids: Vec<_> = alert.send.iter().map(|t| t.id()).collect();
+			debug!(
+				file=?file,
+				send_targets=?send_target_ids,
+				available_targets=?external_targets.keys().collect::<Vec<_>>(),
+				"normalising alert"
+			);
 			match alert.normalise(&external_targets) {
 				Ok(normalized) => Some(normalized),
 				Err(err) => {

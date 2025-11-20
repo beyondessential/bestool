@@ -116,7 +116,12 @@ impl AlertDefinition {
 			.flat_map(|target| {
 				let resolved_targets = target.resolve_external(external_targets);
 				if resolved_targets.is_empty() {
-					error!(id = %target.id(), "external target not found");
+					error!(
+						file=?self.file,
+						id = %target.id(),
+						available_targets=?external_targets.keys().collect::<Vec<_>>(),
+						"external target not found"
+					);
 				}
 				resolved_targets
 			})

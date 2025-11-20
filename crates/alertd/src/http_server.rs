@@ -66,7 +66,7 @@ struct PauseAlertRequest {
 	until: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ValidationResponse {
 	valid: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -77,14 +77,14 @@ struct ValidationResponse {
 	info: Option<ValidationInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ErrorLocation {
 	line: usize,
 	column: usize,
 	path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ValidationInfo {
 	enabled: bool,
 	interval: String,
@@ -120,6 +120,7 @@ pub async fn start_server(
 		.route("/reload", post(handle_reload))
 		.route("/alert", post(handle_alert))
 		.route("/alerts", get(handle_alerts).delete(handle_pause_alert))
+		.route("/targets", get(handle_targets))
 		.route("/validate", post(handle_validate))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
@@ -266,6 +267,11 @@ async fn handle_alerts(State(state): State<Arc<ServerState>>) -> impl IntoRespon
 	Json(alerts)
 }
 
+async fn handle_targets(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+	let targets = state.scheduler.get_external_targets().await;
+	Json(targets)
+}
+
 async fn handle_pause_alert(
 	State(state): State<Arc<ServerState>>,
 	Json(payload): Json<PauseAlertRequest>,
@@ -341,6 +347,18 @@ async fn handle_validate(body: String) -> impl IntoResponse {
 			}
 			.to_string();
 
+			// Validate templates with appropriate context for the source type
+			if let Err(err) = validate_templates(&alert) {
+				let response = ValidationResponse {
+					valid: false,
+					error: Some(format!("Template validation error: {:#}", err)),
+					error_location: None,
+					info: None,
+				};
+
+				return (StatusCode::OK, Json(response)).into_response();
+			}
+
 			let response = ValidationResponse {
 				valid: true,
 				error: None,
@@ -369,6 +387,55 @@ async fn handle_validate(body: String) -> impl IntoResponse {
 	}
 }
 
+fn validate_templates(alert: &crate::alert::AlertDefinition) -> miette::Result<()> {
+	use crate::alert::TicketSource;
+	use crate::templates;
+	use miette::Context as _;
+
+	// Build base context with common fields
+	let base_context = templates::build_context(alert, chrono::Utc::now());
+
+	// Validate each send target's templates
+	for (idx, target) in alert.send.iter().enumerate() {
+		let mut context = base_context.clone();
+
+		// Add source-specific mock data to validate templates
+		match &alert.source {
+			TicketSource::Sql { .. } => {
+				// Mock SQL result with a single row
+				let mock_row = serde_json::json!({
+					"column1": "value1",
+					"column2": 42,
+					"column3": true,
+				});
+				context.insert("rows", &vec![mock_row]);
+			}
+			TicketSource::Shell { .. } => {
+				// Mock shell output
+				context.insert("output", "mock shell output");
+			}
+			TicketSource::Event { .. } => {
+				// Events might have custom fields, add some common ones
+				context.insert("message", "mock event message");
+				context.insert("event", "mock_event");
+			}
+			TicketSource::None => {
+				// No additional context needed
+			}
+		}
+
+		// Load and compile templates for this target
+		let tera = templates::load_templates(target.subject(), target.template())
+			.wrap_err_with(|| format!("validating templates for send target #{}", idx + 1))?;
+
+		// Try to render both subject and body templates
+		templates::render_alert(&tera, &mut context)
+			.wrap_err_with(|| format!("rendering templates for send target #{}", idx + 1))?;
+	}
+
+	Ok(())
+}
+
 async fn handle_index() -> impl IntoResponse {
 	let endpoints = serde_json::json!([
 		{
@@ -395,6 +462,11 @@ async fn handle_index() -> impl IntoResponse {
 			"method": "DELETE",
 			"path": "/alerts",
 			"description": "Temporarily pause an alert until the specified timestamp (JSON body: {\"alert\": \"PATH\", \"until\": \"TIMESTAMP\"})"
+		},
+		{
+			"method": "GET",
+			"path": "/targets",
+			"description": "List all currently loaded external targets"
 		},
 		{
 			"method": "POST",
@@ -622,5 +694,189 @@ mod tests {
 
 		// Should be empty for test state
 		assert!(alerts.is_empty());
+	}
+
+	#[tokio::test]
+	async fn test_targets_endpoint() {
+		let state = create_test_state().await;
+
+		let response = handle_targets(State(state)).await.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let targets: std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>> =
+			serde_json::from_slice(&body).unwrap();
+
+		// Should be empty for test state since we didn't load any _targets.yml files
+		assert!(targets.is_empty());
+	}
+
+	#[tokio::test]
+	async fn test_validate_valid_sql_alert() {
+		let alert_yaml = r#"
+enabled: true
+interval: 1 minute
+
+sql: "SELECT 1 as value, 'test' as name"
+
+send:
+  - id: test
+    subject: "SQL Alert - {{ filename }}"
+    template: |
+      Alert triggered on {{ hostname }}
+      Found {{ rows | length }} rows.
+      {% for row in rows %}
+      Value: {{ row.value }}, Name: {{ row.name }}
+      {% endfor %}
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			validation.valid,
+			"Expected valid alert, got error: {:?}",
+			validation.error
+		);
+		assert!(validation.info.is_some());
+		let info = validation.info.unwrap();
+		assert_eq!(info.source_type, "sql");
+	}
+
+	#[tokio::test]
+	async fn test_validate_valid_shell_alert() {
+		let alert_yaml = r#"
+enabled: true
+interval: 5 minutes
+
+shell: bash
+run: "echo 'test output'"
+
+send:
+  - id: test
+    subject: "Shell Alert"
+    template: |
+      Shell command output:
+      {{ output }}
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			validation.valid,
+			"Expected valid alert, got error: {:?}",
+			validation.error
+		);
+		assert!(validation.info.is_some());
+		let info = validation.info.unwrap();
+		assert_eq!(info.source_type, "shell");
+	}
+
+	#[tokio::test]
+	async fn test_validate_invalid_yaml() {
+		let alert_yaml = r#"
+enabled: true
+interval: 1 minute
+this is: invalid: yaml: syntax
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(!validation.valid);
+		assert!(validation.error.is_some());
+	}
+
+	#[tokio::test]
+	async fn test_validate_multiple_targets() {
+		let alert_yaml = r#"
+enabled: true
+interval: 1 minute
+
+sql: "SELECT * FROM users"
+
+send:
+  - id: target1
+    subject: "Target 1: {{ filename }}"
+    template: "Rows: {{ rows | length }}"
+  - id: target2
+    subject: "Target 2"
+    template: "Data: {% for row in rows %}{{ row }}{% endfor %}"
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			validation.valid,
+			"Expected valid alert, got error: {:?}",
+			validation.error
+		);
+	}
+
+	#[tokio::test]
+	async fn test_validate_event_alert() {
+		let alert_yaml = r#"
+enabled: true
+
+event: http
+
+send:
+  - id: test
+    subject: "Event Alert"
+    template: |
+      Event: {{ event }}
+      Message: {{ message }}
+"#;
+
+		let response = handle_validate(alert_yaml.to_string())
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let validation: ValidationResponse = serde_json::from_slice(&body).unwrap();
+
+		assert!(
+			validation.valid,
+			"Expected valid alert, got error: {:?}",
+			validation.error
+		);
+		assert!(validation.info.is_some());
+		let info = validation.info.unwrap();
+		assert_eq!(info.source_type, "event");
 	}
 }

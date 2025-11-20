@@ -70,7 +70,11 @@ pub fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>
 	);
 	context.insert(
 		TemplateField::Filename.as_str(),
-		&alert.file.file_name().unwrap().to_string_lossy(),
+		&alert
+			.file
+			.file_name()
+			.map(|f| f.to_string_lossy().to_string())
+			.unwrap_or_else(|| "alert.yml".to_string()),
 	);
 	context.insert("now", &now.to_string());
 

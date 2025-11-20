@@ -30,6 +30,8 @@ pub struct Scheduler {
 	paused_until: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
 	triggered_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
 	last_output: Arc<RwLock<HashMap<PathBuf, String>>>,
+	external_targets:
+		Arc<RwLock<std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>>>>,
 }
 
 impl Scheduler {
@@ -54,6 +56,7 @@ impl Scheduler {
 			paused_until: Arc::new(RwLock::new(HashMap::new())),
 			triggered_at: Arc::new(RwLock::new(HashMap::new())),
 			last_output: Arc::new(RwLock::new(HashMap::new())),
+			external_targets: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
 
@@ -80,6 +83,12 @@ impl Scheduler {
 		Ok(true)
 	}
 
+	pub async fn get_external_targets(
+		&self,
+	) -> std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>> {
+		self.external_targets.read().await.clone()
+	}
+
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
 		info!("resolving glob patterns and loading alerts");
 
@@ -102,6 +111,9 @@ impl Scheduler {
 		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
 			.into_iter()
 			.partition(|(alert, _)| matches!(alert.source, TicketSource::Event { .. }));
+
+		// Store external targets
+		*self.external_targets.write().await = external_targets.clone();
 
 		// Create event manager with event alerts and external targets
 		let event_manager = EventManager::new(event_alerts, &external_targets);
@@ -142,6 +154,9 @@ impl Scheduler {
 		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
 			.into_iter()
 			.partition(|(alert, _)| matches!(alert.source, TicketSource::Event { .. }));
+
+		// Store external targets
+		*self.external_targets.write().await = external_targets.clone();
 
 		// Update event manager
 		let event_manager = EventManager::new(event_alerts, &external_targets);
