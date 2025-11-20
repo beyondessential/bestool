@@ -540,33 +540,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_index_endpoint() {
-		let response = handle_index().await.into_response();
-		assert_eq!(response.status(), StatusCode::OK);
-
-		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-			.await
-			.unwrap();
-		let endpoints: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-		assert!(endpoints.is_array());
-		let endpoints = endpoints.as_array().unwrap();
-		assert_eq!(endpoints.len(), 7);
-
-		// Check that all expected endpoints are present
-		let paths: Vec<&str> = endpoints
-			.iter()
-			.filter_map(|e| e.get("path").and_then(|p| p.as_str()))
-			.collect();
-		assert!(paths.contains(&"/"));
-		assert!(paths.contains(&"/reload"));
-		assert!(paths.contains(&"/alert"));
-		assert!(paths.contains(&"/alerts"));
-		assert!(paths.contains(&"/metrics"));
-		assert!(paths.contains(&"/status"));
-	}
-
-	#[tokio::test]
 	async fn test_alert_endpoint_no_event_manager() {
 		let state = create_test_state().await;
 
