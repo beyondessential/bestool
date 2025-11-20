@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 mod alert;
-mod config;
 mod daemon;
 mod loader;
 mod pg_interval;
@@ -12,9 +11,16 @@ mod targets;
 mod templates;
 
 pub use alert::{AlertDefinition, TicketSource};
-pub use config::{Config, DatabaseConfig, EmailConfig};
 pub use daemon::run;
 pub use targets::{AlertTargets, ExternalTarget, SendTarget};
+
+/// Email server configuration
+#[derive(Debug, Clone)]
+pub struct EmailConfig {
+	pub from: String,
+	pub mailgun_api_key: String,
+	pub mailgun_domain: String,
+}
 
 /// Configuration for the alertd daemon
 #[derive(Debug, Clone)]
@@ -22,14 +28,14 @@ pub struct DaemonConfig {
 	/// Directories containing alert definitions
 	pub alert_dirs: Vec<PathBuf>,
 
-	/// Database connection string
+	/// Database connection URL
 	pub database_url: String,
 
-	/// Whether to perform a dry run (no actual sending)
-	pub dry_run: bool,
+	/// Email server configuration
+	pub email: Option<EmailConfig>,
 
-	/// Whether to use colors in output
-	pub use_colours: bool,
+	/// Whether to perform a dry run (execute all alerts once and quit)
+	pub dry_run: bool,
 }
 
 impl DaemonConfig {
@@ -37,18 +43,18 @@ impl DaemonConfig {
 		Self {
 			alert_dirs,
 			database_url,
+			email: None,
 			dry_run: false,
-			use_colours: true,
 		}
+	}
+
+	pub fn with_email(mut self, email: EmailConfig) -> Self {
+		self.email = Some(email);
+		self
 	}
 
 	pub fn with_dry_run(mut self, dry_run: bool) -> Self {
 		self.dry_run = dry_run;
-		self
-	}
-
-	pub fn with_colours(mut self, use_colours: bool) -> Self {
-		self.use_colours = use_colours;
 		self
 	}
 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{Result, miette};
 use tracing::debug;
 
 /// BES tooling: Alert daemon
@@ -14,11 +14,11 @@ pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
-	/// Path to Tamanu configuration file (config.json)
+	/// Database connection URL
 	///
-	/// This file should contain database and email configuration.
-	#[arg(long, env = "TAMANU_CONFIG")]
-	pub config: PathBuf,
+	/// PostgreSQL connection URL, e.g., postgresql://user:pass@localhost/dbname
+	#[arg(long, env = "DATABASE_URL")]
+	pub database_url: String,
 
 	/// Folder containing alert definitions
 	///
@@ -27,7 +27,19 @@ pub struct Args {
 	#[arg(long)]
 	pub dir: Vec<PathBuf>,
 
-	/// Don't actually send alerts, just print them to stdout
+	/// Email sender address
+	#[arg(long, env = "EMAIL_FROM")]
+	pub email_from: Option<String>,
+
+	/// Mailgun API key
+	#[arg(long, env = "MAILGUN_API_KEY")]
+	pub mailgun_api_key: Option<String>,
+
+	/// Mailgun domain
+	#[arg(long, env = "MAILGUN_DOMAIN")]
+	pub mailgun_domain: Option<String>,
+
+	/// Execute all alerts once and quit (ignoring intervals)
 	#[arg(long)]
 	pub dry_run: bool,
 }
@@ -64,21 +76,26 @@ async fn main() -> Result<()> {
 		return Err(miette!("at least one --dir must be specified"));
 	}
 
-	debug!(?args.config, "reading Tamanu configuration");
-	let config_content = std::fs::read_to_string(&args.config)
-		.into_diagnostic()
-		.map_err(|e| miette!("failed to read config file: {e}"))?;
-
-	let tamanu_config = if args.config.extension().is_some_and(|ext| ext == "json") {
-		bestool_alertd::Config::from_json(&config_content)
-			.map_err(|e| miette!("failed to parse config.json: {e}"))?
-	} else {
-		bestool_alertd::Config::from_toml(&config_content)?
+	let email = match (args.email_from, args.mailgun_api_key, args.mailgun_domain) {
+		(Some(from), Some(api_key), Some(domain)) => Some(bestool_alertd::EmailConfig {
+			from,
+			mailgun_api_key: api_key,
+			mailgun_domain: domain,
+		}),
+		(None, None, None) => None,
+		_ => {
+			return Err(miette!(
+				"either provide all email options (--email-from, --mailgun-api-key, --mailgun-domain) or none"
+			));
+		}
 	};
 
-	let daemon_config = bestool_alertd::DaemonConfig::new(args.dir, String::new())
-		.with_dry_run(args.dry_run)
-		.with_colours(args.logging.color.enabled());
+	let mut daemon_config =
+		bestool_alertd::DaemonConfig::new(args.dir, args.database_url).with_dry_run(args.dry_run);
 
-	bestool_alertd::run(daemon_config, tamanu_config).await
+	if let Some(email) = email {
+		daemon_config = daemon_config.with_email(email);
+	}
+
+	bestool_alertd::run(daemon_config).await
 }

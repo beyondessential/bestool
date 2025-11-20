@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use miette::Result;
 
 use crate::{
+	EmailConfig,
 	alert::{AlertDefinition, InternalContext},
-	config::Config,
 	templates::{load_templates, render_alert},
 };
 
@@ -84,7 +84,7 @@ impl SendTarget {
 		alert: &AlertDefinition,
 		ctx: Arc<InternalContext>,
 		tera_ctx: &mut tera::Context,
-		config: &Config,
+		email: Option<&EmailConfig>,
 		dry_run: bool,
 	) -> Result<()> {
 		let tera = load_templates(self)?;
@@ -92,7 +92,7 @@ impl SendTarget {
 
 		match self {
 			SendTarget::Email { conn, .. } => {
-				conn.send(alert, config, &subject, &body, dry_run).await?;
+				conn.send(alert, email, &subject, &body, dry_run).await?;
 			}
 
 			SendTarget::Slack { conn, .. } => {

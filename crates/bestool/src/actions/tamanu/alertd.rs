@@ -4,7 +4,7 @@ use clap::Parser;
 use miette::Result;
 use tracing::{debug, info};
 
-use super::{TamanuArgs, config::load_config, find_tamanu};
+use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
 use crate::actions::Context;
 
 /// Run the alert daemon
@@ -54,28 +54,36 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 
 	info!("starting alertd daemon");
 
-	let tamanu_config = bestool_alertd::Config {
-		db: bestool_alertd::DatabaseConfig {
-			host: config.db.host.clone(),
-			username: config.db.username.clone(),
-			password: config.db.password.clone(),
-			name: config.db.name.clone(),
-		},
-		email: config
-			.mailgun
-			.as_ref()
-			.map(|mg| bestool_alertd::EmailConfig {
-				from: mg.sender.clone(),
-				mailgun_api_key: mg.api_key.clone(),
-				mailgun_domain: mg.domain.clone(),
-			}),
-	};
+	let database_url = ConnectionUrlBuilder {
+		username: config.db.username.clone(),
+		password: Some(config.db.password.clone()),
+		host: config
+			.db
+			.host
+			.clone()
+			.unwrap_or_else(|| "localhost".to_string()),
+		port: config.db.port,
+		database: config.db.name.clone(),
+	}
+	.build();
 
-	let daemon_config = bestool_alertd::DaemonConfig::new(dirs, String::new())
-		.with_dry_run(ctx.args_sub.dry_run)
-		.with_colours(ctx.args_top.use_colours);
+	let email = config
+		.mailgun
+		.as_ref()
+		.map(|mg| bestool_alertd::EmailConfig {
+			from: mg.sender.clone(),
+			mailgun_api_key: mg.api_key.clone(),
+			mailgun_domain: mg.domain.clone(),
+		});
 
-	bestool_alertd::run(daemon_config, tamanu_config).await
+	let mut daemon_config =
+		bestool_alertd::DaemonConfig::new(dirs, database_url).with_dry_run(ctx.args_sub.dry_run);
+
+	if let Some(email) = email {
+		daemon_config = daemon_config.with_email(email);
+	}
+
+	bestool_alertd::run(daemon_config).await
 }
 
 async fn default_dirs(root: &std::path::Path) -> Vec<PathBuf> {

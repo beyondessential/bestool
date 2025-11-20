@@ -11,7 +11,7 @@ use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-	Config,
+	EmailConfig,
 	pg_interval::Interval,
 	targets::{ExternalTarget, SendTarget},
 	templates::build_context,
@@ -149,7 +149,7 @@ impl AlertDefinition {
 	pub async fn execute(
 		&self,
 		ctx: Arc<InternalContext>,
-		config: &Config,
+		email: Option<&EmailConfig>,
 		dry_run: bool,
 	) -> Result<()> {
 		info!(?self.file, "executing alert");
@@ -169,7 +169,7 @@ impl AlertDefinition {
 
 		for target in &self.send {
 			if let Err(err) = target
-				.send(self, ctx.clone(), &mut tera_ctx, config, dry_run)
+				.send(self, ctx.clone(), &mut tera_ctx, email, dry_run)
 				.await
 			{
 				error!("sending: {err:?}");

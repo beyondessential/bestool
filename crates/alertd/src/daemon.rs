@@ -5,20 +5,20 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::{DaemonConfig, alert::InternalContext, config::Config, scheduler::Scheduler};
+use crate::{DaemonConfig, alert::InternalContext, scheduler::Scheduler};
 
 enum DaemonEvent {
 	FileChanged,
 	Shutdown,
 }
 
-pub async fn run(daemon_config: DaemonConfig, tamanu_config: Config) -> Result<()> {
+pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 	info!("starting alertd daemon");
 
-	let database_url = build_database_url(&tamanu_config.db);
-	info!(?database_url, "connecting to database");
+	debug!(database_url = %daemon_config.database_url, "connecting to database");
 
-	let pg_config = database_url
+	let pg_config = daemon_config
+		.database_url
 		.parse::<tokio_postgres::Config>()
 		.into_diagnostic()?;
 	let (client, connection) = pg_config
@@ -37,18 +37,25 @@ pub async fn run(daemon_config: DaemonConfig, tamanu_config: Config) -> Result<(
 		http_client: reqwest::Client::new(),
 	});
 
-	let config = Arc::new(tamanu_config);
 	let default_interval = Duration::from_secs(60 * 15); // 15 minutes default
 
 	let scheduler = Arc::new(Scheduler::new(
 		daemon_config.alert_dirs.clone(),
 		default_interval,
 		ctx,
-		config,
+		daemon_config.email.clone(),
 		daemon_config.dry_run,
 	));
 
 	scheduler.load_and_schedule_alerts().await?;
+
+	// If dry run, execute all alerts once and quit
+	if daemon_config.dry_run {
+		info!("dry run mode: executing all alerts once");
+		scheduler.execute_all_alerts_once().await?;
+		info!("dry run complete");
+		return Ok(());
+	}
 
 	let (event_tx, mut event_rx) = mpsc::channel(100);
 
@@ -154,12 +161,4 @@ pub async fn run(daemon_config: DaemonConfig, tamanu_config: Config) -> Result<(
 	}
 
 	Ok(())
-}
-
-fn build_database_url(db: &crate::config::DatabaseConfig) -> String {
-	let host = db.host.as_deref().unwrap_or("localhost");
-	format!(
-		"postgresql://{}:{}@{}/{}",
-		db.username, db.password, host, db.name
-	)
 }

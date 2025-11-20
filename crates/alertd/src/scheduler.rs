@@ -9,8 +9,8 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
+	EmailConfig,
 	alert::{AlertDefinition, InternalContext},
-	config::Config,
 	loader::{LoadedAlerts, load_alerts_from_dirs},
 };
 
@@ -18,7 +18,7 @@ pub struct Scheduler {
 	alert_dirs: Vec<PathBuf>,
 	default_interval: Duration,
 	ctx: Arc<InternalContext>,
-	config: Arc<Config>,
+	email: Option<EmailConfig>,
 	dry_run: bool,
 	tasks: Arc<RwLock<HashMap<PathBuf, JoinHandle<()>>>>,
 }
@@ -28,14 +28,14 @@ impl Scheduler {
 		alert_dirs: Vec<PathBuf>,
 		default_interval: Duration,
 		ctx: Arc<InternalContext>,
-		config: Arc<Config>,
+		email: Option<EmailConfig>,
 		dry_run: bool,
 	) -> Self {
 		Self {
 			alert_dirs,
 			default_interval,
 			ctx,
-			config,
+			email,
 			dry_run,
 			tasks: Arc::new(RwLock::new(HashMap::new())),
 		}
@@ -65,6 +65,33 @@ impl Scheduler {
 		Ok(())
 	}
 
+	pub async fn execute_all_alerts_once(&self) -> Result<()> {
+		info!("executing all alerts once");
+		let LoadedAlerts { alerts, .. } =
+			load_alerts_from_dirs(&self.alert_dirs, self.default_interval)?;
+
+		if alerts.is_empty() {
+			warn!("no alerts found");
+			return Ok(());
+		}
+
+		info!(count = alerts.len(), "executing alerts");
+
+		for alert in alerts {
+			let ctx = self.ctx.clone();
+			let email = self.email.clone();
+			let dry_run = self.dry_run;
+			let file = alert.file.clone();
+
+			debug!(?file, "executing alert");
+			if let Err(err) = alert.execute(ctx, email.as_ref(), dry_run).await {
+				error!(?file, "error executing alert: {err:?}");
+			}
+		}
+
+		Ok(())
+	}
+
 	pub async fn reload_alerts(&self) -> Result<()> {
 		info!("reloading alerts");
 
@@ -83,7 +110,7 @@ impl Scheduler {
 
 	fn spawn_alert_task(&self, alert: AlertDefinition) -> JoinHandle<()> {
 		let ctx = self.ctx.clone();
-		let config = self.config.clone();
+		let email = self.email.clone();
 		let dry_run = self.dry_run;
 		let interval_duration = alert.interval;
 
@@ -102,7 +129,7 @@ impl Scheduler {
 				ticker.tick().await;
 
 				debug!(?file, "executing alert");
-				if let Err(err) = alert.execute(ctx.clone(), &config, dry_run).await {
+				if let Err(err) = alert.execute(ctx.clone(), email.as_ref(), dry_run).await {
 					error!(?file, "error executing alert: {err:?}");
 				}
 			}

@@ -2,7 +2,7 @@ use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use tracing::debug;
 
-use crate::{alert::AlertDefinition, config::Config};
+use crate::{EmailConfig, alert::AlertDefinition};
 
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -14,7 +14,7 @@ impl TargetEmail {
 	pub async fn send(
 		&self,
 		alert: &AlertDefinition,
-		config: &Config,
+		email: Option<&EmailConfig>,
 		subject: &str,
 		body: &str,
 		dry_run: bool,
@@ -36,10 +36,7 @@ impl TargetEmail {
 		}
 
 		debug!(?self.addresses, "sending email");
-		let email_config = config
-			.email
-			.as_ref()
-			.ok_or_else(|| miette!("missing email config"))?;
+		let email_config = email.ok_or_else(|| miette!("missing email config"))?;
 		let sender = EmailAddress::address(&email_config.from);
 		let mailgun = Mailgun {
 			api_key: email_config.mailgun_api_key.clone(),
