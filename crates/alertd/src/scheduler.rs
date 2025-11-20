@@ -14,6 +14,7 @@ use crate::{
 	events::{EventContext, EventManager, EventType},
 	glob_resolver::{GlobResolver, ResolvedPaths},
 	loader::{LoadedAlerts, load_alerts_from_paths},
+	metrics,
 	targets::ResolvedTarget,
 };
 
@@ -94,6 +95,9 @@ impl Scheduler {
 			let task = self.spawn_alert_task(alert, resolved_targets);
 			tasks.insert(file, task);
 		}
+
+		// Update metrics with count of loaded alerts
+		metrics::set_alerts_loaded(tasks.len());
 
 		Ok(())
 	}
@@ -208,29 +212,35 @@ impl Scheduler {
 				ticker.tick().await;
 
 				debug!(?file, "executing alert");
-				if let Err(err) = alert
+				match alert
 					.execute(ctx.clone(), email.as_ref(), dry_run, &resolved_targets)
 					.await
 				{
-					error!(?file, "error executing alert: {err:?}");
+					Ok(()) => {
+						metrics::inc_alerts_sent();
+					}
+					Err(err) => {
+						error!(?file, "error executing alert: {err:?}");
+						metrics::inc_alerts_failed();
 
-					// Trigger source_error event
-					if let Some(ref event_mgr) = *event_manager.read().await {
-						let event_context = EventContext {
-							alert_file: file.display().to_string(),
-							error_message: format!("{err:?}"),
-						};
-						if let Err(event_err) = event_mgr
-							.trigger_event(
-								EventType::SourceError,
-								&ctx,
-								email.as_ref(),
-								dry_run,
-								event_context,
-							)
-							.await
-						{
-							error!("failed to trigger source_error event: {event_err:?}");
+						// Trigger source_error event
+						if let Some(ref event_mgr) = *event_manager.read().await {
+							let event_context = EventContext {
+								alert_file: file.display().to_string(),
+								error_message: format!("{err:?}"),
+							};
+							if let Err(event_err) = event_mgr
+								.trigger_event(
+									EventType::SourceError,
+									&ctx,
+									email.as_ref(),
+									dry_run,
+									event_context,
+								)
+								.await
+							{
+								error!("failed to trigger source_error event: {event_err:?}");
+							}
 						}
 					}
 				}

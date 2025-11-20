@@ -13,6 +13,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
+axum = "0.7.5"
 bytes = "1.9.0"
 chrono = "0.4.38"
 clap = { workspace = true, optional = true, features = ["env"] }
@@ -24,6 +25,7 @@ lloggs = { version = "1.1.0", optional = true }
 mailgun-rs = "0.1.11"
 miette = { workspace = true }
 notify = "7.0.0"
+prometheus = "0.13.4"
 pulldown-cmark = "0.12.2"
 rand = "0.9.2"
 serde = { version = "1.0.228", features = ["derive"] }

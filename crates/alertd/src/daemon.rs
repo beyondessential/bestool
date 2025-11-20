@@ -5,7 +5,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use crate::{DaemonConfig, alert::InternalContext, scheduler::Scheduler};
+use crate::{DaemonConfig, alert::InternalContext, http_server, metrics, scheduler::Scheduler};
 
 enum DaemonEvent {
 	FileChanged,
@@ -70,6 +70,9 @@ impl WatchManager {
 pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 	info!("starting alertd daemon");
 
+	// Initialize metrics
+	metrics::init_metrics();
+
 	debug!(database_url = %daemon_config.database_url, "connecting to database");
 
 	let pg_config = daemon_config
@@ -110,6 +113,10 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 	}
 
 	let (event_tx, mut event_rx) = mpsc::channel(100);
+	let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
+
+	// Start HTTP server
+	tokio::spawn(http_server::start_server(reload_tx));
 
 	// Set up file watcher
 	let watch_manager = Arc::new(RwLock::new(WatchManager::new(event_tx.clone())?));
@@ -145,7 +152,6 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 			let _ = signal_tx_term.send(DaemonEvent::Shutdown).await;
 		});
 
-		let _signal_tx_hup = event_tx.clone();
 		let scheduler_hup = scheduler.clone();
 		let watch_manager_hup = watch_manager.clone();
 		tokio::spawn(async move {
@@ -153,6 +159,7 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 			loop {
 				sighup.recv().await;
 				info!("received SIGHUP, reloading configuration");
+				metrics::inc_reloads();
 				if let Err(err) = scheduler_hup.reload_alerts().await {
 					error!("failed to reload alerts: {err:?}");
 				} else {
@@ -210,10 +217,24 @@ pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 					}
 				}
 			}
+			Some(()) = reload_rx.recv() => {
+				info!("reloading alerts via HTTP");
+				metrics::inc_reloads();
+				if let Err(err) = scheduler.reload_alerts().await {
+					error!("failed to reload alerts: {err:?}");
+				} else {
+					// Update watches after reload
+					let new_paths = scheduler.get_resolved_paths().await;
+					if let Err(err) = watch_manager.write().await.update_watches(&new_paths) {
+						error!("failed to update watches: {err:?}");
+					}
+				}
+			}
 			_ = reload_debounce.tick() => {
 				if needs_reload {
 					needs_reload = false;
 					info!("reloading alerts due to file system changes");
+					metrics::inc_reloads();
 					if let Err(err) = scheduler.reload_alerts().await {
 						error!("failed to reload alerts: {err:?}");
 					} else {
