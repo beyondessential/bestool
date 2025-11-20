@@ -55,6 +55,13 @@ struct DaemonArgs {
 	/// Disable the HTTP server
 	#[arg(long)]
 	no_server: bool,
+
+	/// HTTP server bind address(es)
+	///
+	/// Can be provided multiple times. The server will attempt to bind to each address
+	/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+	#[arg(long)]
+	server_addr: Vec<std::net::SocketAddr>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -73,7 +80,14 @@ enum Command {
 	///
 	/// Connects to the running daemon's HTTP API and triggers a reload.
 	/// This is an alternative to SIGHUP that works on all platforms including Windows.
-	Reload,
+	Reload {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
+	},
 
 	#[cfg(windows)]
 	/// Install the daemon as a Windows service
@@ -217,7 +231,8 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(daemon.glob, database_url)
 		.with_dry_run(daemon.dry_run)
-		.with_no_server(daemon.no_server);
+		.with_no_server(daemon.no_server)
+		.with_server_addrs(daemon.server_addr);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
@@ -237,7 +252,17 @@ async fn main() -> Result<()> {
 
 	match args.command {
 		Command::Run { daemon } => run_daemon(daemon).await,
-		Command::Reload => bestool_alertd::send_reload().await,
+		Command::Reload { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				vec![
+					"[::1]:8271".parse().unwrap(),
+					"127.0.0.1:8271".parse().unwrap(),
+				]
+			} else {
+				server_addr
+			};
+			bestool_alertd::send_reload(&addrs).await
+		}
 		#[cfg(windows)]
 		Command::Install => install_service(),
 		#[cfg(windows)]

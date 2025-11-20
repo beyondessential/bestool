@@ -20,63 +20,99 @@ pub use daemon::{run, run_with_shutdown};
 pub use events::EventType;
 pub use targets::{AlertTargets, ExternalTarget, SendTarget};
 
-use miette::IntoDiagnostic;
 use tracing::info;
 
 /// Send a reload signal to a running alertd daemon
 ///
-/// Connects to the daemon's HTTP API at http://127.0.0.1:8271 and triggers a reload.
-/// This is an alternative to SIGHUP that works on all platforms including Windows.
-pub async fn send_reload() -> miette::Result<()> {
+/// Tries to connect to the daemon's HTTP API at each of the provided addresses in order
+/// until one succeeds. This is an alternative to SIGHUP that works on all platforms
+/// including Windows.
+pub async fn send_reload(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
 	let client = reqwest::Client::new();
 
-	// First, check if daemon is running by fetching status
-	info!("checking if daemon is running at http://127.0.0.1:8271");
-	let status_response = client
-		.get("http://127.0.0.1:8271/status")
-		.send()
-		.await
-		.into_diagnostic()?;
+	let mut last_error = None;
 
-	if !status_response.status().is_success() {
-		return Err(miette::miette!(
-			"daemon not responding on http://127.0.0.1:8271 (status: {})",
-			status_response.status()
-		));
+	for addr in addrs {
+		let url = format!("http://{}", addr);
+		info!("checking if daemon is running at {}", url);
+
+		// First, check if daemon is running by fetching status
+		let status_response = match client.get(format!("{}/status", url)).send().await {
+			Ok(resp) => resp,
+			Err(e) => {
+				info!("failed to connect to {}: {}", url, e);
+				last_error = Some(e);
+				continue;
+			}
+		};
+
+		if !status_response.status().is_success() {
+			info!(
+				"daemon at {} returned status: {}",
+				url,
+				status_response.status()
+			);
+			continue;
+		}
+
+		let status: serde_json::Value = match status_response.json().await {
+			Ok(s) => s,
+			Err(e) => {
+				info!("failed to parse status response from {}: {}", url, e);
+				continue;
+			}
+		};
+
+		// Verify it's the correct daemon
+		if status.get("name").and_then(|n| n.as_str()) != Some("bestool-alertd") {
+			info!(
+				"unexpected daemon running at {}: {:?}",
+				url,
+				status.get("name")
+			);
+			continue;
+		}
+
+		info!(
+			"found bestool-alertd daemon at {} (pid: {})",
+			url,
+			status.get("pid").unwrap_or(&serde_json::Value::Null)
+		);
+
+		// Send reload request
+		info!("sending reload request to {}", url);
+		let reload_response = match client.post(format!("{}/reload", url)).send().await {
+			Ok(resp) => resp,
+			Err(e) => {
+				return Err(miette::miette!("reload request to {} failed: {}", url, e));
+			}
+		};
+
+		if !reload_response.status().is_success() {
+			return Err(miette::miette!(
+				"reload request to {} failed (status: {})",
+				url,
+				reload_response.status()
+			));
+		}
+
+		info!("reload request sent successfully to {}", url);
+		return Ok(());
 	}
 
-	let status: serde_json::Value = status_response.json().await.into_diagnostic()?;
-
-	// Verify it's the correct daemon
-	if status.get("name").and_then(|n| n.as_str()) != Some("bestool-alertd") {
-		return Err(miette::miette!(
-			"unexpected daemon running on http://127.0.0.1:8271: {:?}",
-			status.get("name")
-		));
+	// If we get here, we couldn't connect to any address
+	if let Some(err) = last_error {
+		Err(miette::miette!(
+			"failed to connect to daemon at any of {} address(es): {}",
+			addrs.len(),
+			err
+		))
+	} else {
+		Err(miette::miette!(
+			"no daemon found at any of {} address(es)",
+			addrs.len()
+		))
 	}
-
-	info!(
-		"found bestool-alertd daemon (pid: {})",
-		status.get("pid").unwrap_or(&serde_json::Value::Null)
-	);
-
-	// Send reload request
-	info!("sending reload request");
-	let reload_response = client
-		.post("http://127.0.0.1:8271/reload")
-		.send()
-		.await
-		.into_diagnostic()?;
-
-	if !reload_response.status().is_success() {
-		return Err(miette::miette!(
-			"reload request failed (status: {})",
-			reload_response.status()
-		));
-	}
-
-	info!("reload request sent successfully");
-	Ok(())
 }
 
 /// Email server configuration
@@ -107,6 +143,9 @@ pub struct DaemonConfig {
 
 	/// Whether to disable the HTTP server
 	pub no_server: bool,
+
+	/// HTTP server bind addresses
+	pub server_addrs: Vec<std::net::SocketAddr>,
 }
 
 impl DaemonConfig {
@@ -117,6 +156,7 @@ impl DaemonConfig {
 			email: None,
 			dry_run: false,
 			no_server: false,
+			server_addrs: Vec::new(),
 		}
 	}
 
@@ -132,6 +172,11 @@ impl DaemonConfig {
 
 	pub fn with_no_server(mut self, no_server: bool) -> Self {
 		self.no_server = no_server;
+		self
+	}
+
+	pub fn with_server_addrs(mut self, server_addrs: Vec<std::net::SocketAddr>) -> Self {
+		self.server_addrs = server_addrs;
 		self
 	}
 }

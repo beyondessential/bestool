@@ -1,6 +1,7 @@
 //! HTTP server for alertd daemon control and metrics.
 //!
-//! Provides a simple HTTP API listening on localhost:8271 with the following endpoints:
+//! Provides a simple HTTP API listening on [::1]:8271 and 127.0.0.1:8271 by default
+//! with the following endpoints:
 //! - `GET /`: List of available endpoints
 //! - `POST /reload`: Trigger a configuration reload (equivalent to SIGHUP)
 //! - `POST /alert`: Trigger a custom HTTP alert
@@ -63,6 +64,7 @@ pub async fn start_server(
 	internal_context: Arc<InternalContext>,
 	email_config: Option<EmailConfig>,
 	dry_run: bool,
+	addrs: Vec<std::net::SocketAddr>,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -85,10 +87,42 @@ pub async fn start_server(
 		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
 
-	let listener = match tokio::net::TcpListener::bind("127.0.0.1:8271").await {
-		Ok(listener) => listener,
-		Err(e) => {
-			warn!("failed to bind HTTP server to 127.0.0.1:8271: {}", e);
+	// Use default if no addresses provided
+	let addrs_to_try = if addrs.is_empty() {
+		vec![
+			"[::1]:8271".parse().unwrap(),
+			"127.0.0.1:8271".parse().unwrap(),
+		]
+	} else {
+		addrs
+	};
+
+	let mut listener = None;
+	let mut last_error = None;
+
+	// Try each address in order until one succeeds
+	for addr in &addrs_to_try {
+		match tokio::net::TcpListener::bind(addr).await {
+			Ok(l) => {
+				info!("HTTP server listening on http://{}", addr);
+				listener = Some(l);
+				break;
+			}
+			Err(e) => {
+				warn!("failed to bind HTTP server to {}: {}", addr, e);
+				last_error = Some(e);
+			}
+		}
+	}
+
+	let listener = match listener {
+		Some(l) => l,
+		None => {
+			if let Some(e) = last_error {
+				warn!("failed to bind HTTP server to any address: {}", e);
+			} else {
+				warn!("no addresses provided for HTTP server");
+			}
 			warn!("waiting 10 seconds before continuing without");
 			warn!("use --no-server to disable the HTTP server and this warning");
 
@@ -98,8 +132,6 @@ pub async fn start_server(
 			return;
 		}
 	};
-
-	info!("HTTP server listening on http://127.0.0.1:8271");
 
 	if let Err(e) = axum::serve(listener, app).await {
 		error!("HTTP server error: {}", e);

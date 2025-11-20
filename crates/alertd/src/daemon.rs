@@ -145,6 +145,7 @@ pub async fn run_with_shutdown(
 				ctx_for_server,
 				email_for_server,
 				dry_run_for_server,
+				daemon_config.server_addrs.clone(),
 			)
 			.await;
 		});
