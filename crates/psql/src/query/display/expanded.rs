@@ -2,8 +2,7 @@ use comfy_table::{Attribute, Cell, ColumnConstraint, Table, Width};
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::query::column;
-use crate::query::text_cast::CellRef;
+use crate::{CellRef, get_value};
 
 pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, W>) -> Result<()> {
 	// Determine which columns to display
@@ -66,7 +65,7 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 					"(binary data)".to_string()
 				}
 			} else {
-				column::get_value(row, col_idx, ctx.unprintable_columns)
+				get_value(row, col_idx, ctx.unprintable_columns)
 			};
 
 			let name_cell = if ctx.use_colours {

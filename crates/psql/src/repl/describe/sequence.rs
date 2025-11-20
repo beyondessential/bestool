@@ -71,7 +71,7 @@ pub(super) async fn handle_describe_sequence(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_error(&e)
+					crate::format_error(&e)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -183,7 +183,7 @@ pub(super) async fn handle_describe_sequence(
 				"Error describing sequence \"{}.{}\": {}",
 				schema,
 				sequence_name,
-				crate::error::format_error(&e)
+				crate::format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

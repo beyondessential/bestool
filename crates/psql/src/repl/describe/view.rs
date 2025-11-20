@@ -59,7 +59,7 @@ pub(super) async fn handle_describe_view(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_error(&e)
+					crate::format_error(&e)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -151,7 +151,7 @@ pub(super) async fn handle_describe_view(
 				"Error describing view \"{}.{}\": {}",
 				schema,
 				view_name,
-				crate::error::format_error(&e)
+				crate::format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

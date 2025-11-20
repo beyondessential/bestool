@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::response::IntoResponse;
+use bestool_alertd::InternalContext;
 use tokio::sync::mpsc;
 
 #[tokio::test]
@@ -27,29 +28,16 @@ async fn test_status_endpoint_response_format() {
 	let pid = std::process::id();
 
 	let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-	let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+	let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 		.await
 		.unwrap();
-	tokio::spawn(async move {
-		let _ = connection.await;
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool.clone(),
 	});
 
-	let (scheduler_client, scheduler_connection) =
-		tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
-			.await
-			.unwrap();
-	tokio::spawn(async move {
-		let _ = scheduler_connection.await;
-	});
-
-	let ctx = Arc::new(bestool_alertd::InternalContext { pg_client: client });
-	let scheduler_ctx = Arc::new(bestool_alertd::InternalContext {
-		pg_client: scheduler_client,
-	});
 	let scheduler = Arc::new(bestool_alertd::scheduler::Scheduler::new(
 		vec![],
-		std::time::Duration::from_secs(60),
-		scheduler_ctx,
+		ctx.clone(),
 		None,
 		true,
 	));

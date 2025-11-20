@@ -101,6 +101,23 @@ enum Command {
 		#[arg(long)]
 		server_addr: Vec<std::net::SocketAddr>,
 	},
+
+	/// Validate an alert definition file
+	///
+	/// Parses an alert definition file and reports any syntax or validation errors.
+	/// Uses pretty error reporting to pinpoint the exact location of problems.
+	/// Requires the daemon to be running.
+	Validate {
+		/// Path to the alert definition file to validate
+		file: std::path::PathBuf,
+
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
+	},
 }
 
 fn default_server_addrs() -> Vec<std::net::SocketAddr> {
@@ -148,8 +165,158 @@ async fn try_connect_daemon(addrs: &[std::net::SocketAddr]) -> Result<(reqwest::
 	}
 }
 
+async fn validate_alert(file: &std::path::Path, addrs: &[std::net::SocketAddr]) -> Result<()> {
+	use miette::{Context as _, IntoDiagnostic, NamedSource, SourceSpan};
+
+	// Read the file
+	let content = std::fs::read_to_string(file)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("failed to read file: {}", file.display()))?;
+
+	// Connect to daemon
+	let (client, base_url) = try_connect_daemon(addrs).await?;
+
+	// Check daemon version
+	let status_response = client
+		.get(format!("{}/status", base_url))
+		.send()
+		.await
+		.into_diagnostic()
+		.wrap_err("failed to get daemon status")?;
+
+	#[derive(serde::Deserialize)]
+	struct StatusResponse {
+		version: String,
+	}
+
+	if let Ok(status) = status_response.json::<StatusResponse>().await {
+		let daemon_version = &status.version;
+		let cli_version = bestool_alertd::VERSION;
+		if daemon_version != cli_version {
+			tracing::warn!(
+				"version mismatch: daemon is running {} but CLI is {}",
+				daemon_version,
+				cli_version
+			);
+			eprintln!(
+				"⚠ Warning: Version mismatch detected!\n  Daemon version: {}\n  CLI version: {}\n",
+				daemon_version, cli_version
+			);
+		}
+	}
+
+	// Send validation request
+	let response = client
+		.post(format!("{}/validate", base_url))
+		.body(content.clone())
+		.send()
+		.await
+		.into_diagnostic()
+		.wrap_err("failed to send validation request")?;
+
+	if !response.status().is_success() {
+		return Err(miette!(
+			"validation request failed with status: {}",
+			response.status()
+		));
+	}
+
+	// Parse response
+	#[derive(serde::Deserialize)]
+	struct ValidationResponse {
+		valid: bool,
+		error: Option<String>,
+		error_location: Option<ErrorLocation>,
+		info: Option<ValidationInfo>,
+	}
+
+	#[derive(serde::Deserialize)]
+	struct ErrorLocation {
+		line: usize,
+		column: usize,
+		path: String,
+	}
+
+	#[derive(serde::Deserialize)]
+	struct ValidationInfo {
+		enabled: bool,
+		interval: String,
+		source_type: String,
+		targets: usize,
+	}
+
+	let validation: ValidationResponse = response
+		.json()
+		.await
+		.into_diagnostic()
+		.wrap_err("failed to parse validation response")?;
+
+	if validation.valid {
+		println!("✓ Alert definition is valid");
+		println!("  File: {}", file.display());
+		if let Some(info) = validation.info {
+			println!("  Enabled: {}", info.enabled);
+			println!("  Interval: {}", info.interval);
+			println!("  Source: {}", info.source_type);
+			println!("  Targets: {}", info.targets);
+
+			if info.targets == 0 {
+				println!("\n⚠ Warning: Alert has no resolved targets.");
+				println!("  This alert may not send notifications. Check your _targets.yml file.");
+			}
+		}
+		Ok(())
+	} else {
+		// Display error with source location if available
+		if let Some(error_msg) = validation.error {
+			if let Some(loc) = validation.error_location {
+				// Calculate byte offset for miette
+				let mut byte_offset = 0;
+				for (idx, line_content) in content.lines().enumerate() {
+					if idx + 1 < loc.line {
+						byte_offset += line_content.len() + 1; // +1 for newline
+					} else if idx + 1 == loc.line {
+						byte_offset += loc.column.saturating_sub(1);
+						break;
+					}
+				}
+
+				let span_start = byte_offset;
+				let span_len = content[span_start..]
+					.lines()
+					.next()
+					.map(|l| l.len().min(80))
+					.unwrap_or(1);
+
+				Err(miette!(
+					labels = vec![miette::LabeledSpan::at(
+						SourceSpan::new(span_start.into(), span_len.into()),
+						"here"
+					)],
+					"{}",
+					error_msg
+				)
+				.with_source_code(NamedSource::new(file.display().to_string(), content)))
+			} else {
+				Err(miette!("{}", error_msg)
+					.with_source_code(NamedSource::new(file.display().to_string(), content)))
+			}
+		} else {
+			Err(miette!("validation failed with no error message"))
+		}
+	}
+}
+
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 	match ctx.args_sub.command {
+		Command::Validate { file, server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				default_server_addrs()
+			} else {
+				server_addr
+			};
+			validate_alert(&file, &addrs).await
+		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
 				default_server_addrs()

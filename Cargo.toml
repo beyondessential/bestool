@@ -4,6 +4,7 @@ members = [
 	"crates/alertd",
 	"crates/algae-cli",
 	"crates/bestool",
+	"crates/postgres",
 	"crates/psql",
 	"crates/rpi-st7789v2-driver",
 ]

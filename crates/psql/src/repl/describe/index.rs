@@ -84,7 +84,7 @@ pub(super) async fn handle_describe_index(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_error(&e)
+					crate::format_error(&e)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -152,7 +152,7 @@ pub(super) async fn handle_describe_index(
 					Err(e) => {
 						eprintln!(
 							"Error getting connection from pool: {}",
-							crate::error::format_error(&e)
+							crate::format_error(&e)
 						);
 						return ControlFlow::Continue(());
 					}
@@ -222,7 +222,7 @@ pub(super) async fn handle_describe_index(
 				"Error describing index \"{}.{}\": {}",
 				schema,
 				index_name,
-				crate::error::format_error(&e)
+				crate::format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

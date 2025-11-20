@@ -132,7 +132,6 @@ fn add_self_to_path() -> Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
-	use super::*;
 	use std::fs;
 	use tempfile::TempDir;
 

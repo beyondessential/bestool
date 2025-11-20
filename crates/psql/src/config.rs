@@ -1,4 +1,4 @@
-use crate::{pool::PgPool, theme::Theme};
+use crate::{PgPool, theme::Theme};
 
 #[derive(Clone, Debug)]
 pub struct Config {

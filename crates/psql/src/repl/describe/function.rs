@@ -69,7 +69,7 @@ pub(super) async fn handle_describe_function(
 			Err(e) => {
 				eprintln!(
 					"Error getting connection from pool: {}",
-					crate::error::format_error(&e)
+					crate::format_error(&e)
 				);
 				return ControlFlow::Continue(());
 			}
@@ -132,7 +132,7 @@ pub(super) async fn handle_describe_function(
 					Err(e) => {
 						eprintln!(
 							"Error getting connection from pool: {}",
-							crate::error::format_error(&e)
+							crate::format_error(&e)
 						);
 						return ControlFlow::Continue(());
 					}
@@ -182,7 +182,7 @@ pub(super) async fn handle_describe_function(
 				"Error describing function \"{}.{}\": {}",
 				schema,
 				function_name,
-				crate::error::format_error(&e)
+				crate::format_error(&e)
 			);
 			ControlFlow::Continue(())
 		}

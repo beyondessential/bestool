@@ -7,7 +7,7 @@ use std::{
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, warn};
 
-use crate::pool::PgPool;
+use crate::PgPool;
 
 /// Cached database schema information
 #[derive(Debug, Clone, Default)]

@@ -11,17 +11,14 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use crate::{
-	PgPool,
-	error::PgDatabaseError,
+	CellRef, PgDatabaseError, PgPool, TextCaster, can_print, get_value,
 	parser::{QueryModifier, QueryModifiers},
 	repl::ReplState,
 	signals::{reset_sigint, sigint_received},
 	theme::Theme,
 };
 
-pub(crate) mod column;
 pub(crate) mod display;
-pub(crate) mod text_cast;
 mod vars;
 
 /// Context for executing a query.
@@ -311,7 +308,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 
 		let mut unprintable_columns = Vec::new();
 		for (i, _column) in columns.iter().enumerate() {
-			if !column::can_print(first_row, i) {
+			if !can_print(first_row, i) {
 				unprintable_columns.push(i);
 			}
 		}
@@ -319,7 +316,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		// Create a text caster for on-demand conversion of unprintable values
 		// This uses a separate connection from the pool and caches results
 		let text_caster = if !unprintable_columns.is_empty() {
-			Some(text_cast::TextCaster::new(ctx.pool.clone()))
+			Some(TextCaster::new(ctx.pool.clone()))
 		} else {
 			None
 		};
@@ -404,9 +401,9 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 			}) && let Some(vars_map) = ctx.vars.as_mut()
 		{
 			// Collect all unprintable columns that need casting
-			let unprintable_cells: Vec<text_cast::CellRef> = unprintable_columns
+			let unprintable_cells: Vec<CellRef> = unprintable_columns
 				.iter()
-				.map(|&col_idx| text_cast::CellRef {
+				.map(|&col_idx| CellRef {
 					row_idx: 0,
 					col_idx,
 				})
@@ -447,7 +444,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 						.cloned()
 						.unwrap_or_else(String::new)
 				} else {
-					column::get_value(row, i, &unprintable_columns)
+					get_value(row, i, &unprintable_columns)
 				};
 
 				vars_map.insert(var_name, value);

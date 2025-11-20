@@ -1,8 +1,7 @@
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::query::column;
-use crate::query::text_cast::CellRef;
+use crate::{CellRef, get_value};
 
 pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, W>) -> Result<()> {
 	// Determine which columns to display
@@ -67,7 +66,7 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 					"(binary data)".to_string()
 				}
 			} else {
-				column::get_value(row, col_idx, ctx.unprintable_columns)
+				get_value(row, col_idx, ctx.unprintable_columns)
 			};
 			record.push(value_str);
 		}
@@ -93,7 +92,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -155,7 +154,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 

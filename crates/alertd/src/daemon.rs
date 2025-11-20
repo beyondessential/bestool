@@ -81,30 +81,15 @@ pub async fn run_with_shutdown(
 	// Initialize metrics
 	metrics::init_metrics();
 
-	debug!(database_url = %daemon_config.database_url, "connecting to database");
+	debug!(database_url = %daemon_config.database_url, "creating database connection pool");
 
-	let pg_config = daemon_config
-		.database_url
-		.parse::<tokio_postgres::Config>()
-		.into_diagnostic()?;
-	let (client, connection) = pg_config
-		.connect(tokio_postgres::NoTls)
-		.await
-		.into_diagnostic()?;
+	let pool =
+		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
 
-	tokio::spawn(async move {
-		if let Err(e) = connection.await {
-			error!("database connection error: {}", e);
-		}
-	});
-
-	let ctx = Arc::new(InternalContext { pg_client: client });
-
-	let default_interval = Duration::from_secs(60 * 15); // 15 minutes default
+	let ctx = Arc::new(InternalContext { pg_pool: pool });
 
 	let scheduler = Arc::new(Scheduler::new(
 		daemon_config.alert_globs.clone(),
-		default_interval,
 		ctx.clone(),
 		daemon_config.email.clone(),
 		daemon_config.dry_run,

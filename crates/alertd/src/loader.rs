@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::HashMap, path::Path};
 
 use miette::Result;
 use tracing::{debug, error, warn};
@@ -15,10 +15,7 @@ pub struct LoadedAlerts {
 	pub external_targets: HashMap<String, Vec<ExternalTarget>>,
 }
 
-pub fn load_alerts_from_paths(
-	resolved: &ResolvedPaths,
-	default_interval: Duration,
-) -> Result<LoadedAlerts> {
+pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
 
@@ -51,13 +48,13 @@ pub fn load_alerts_from_paths(
 				.into_iter()
 				.filter_map(|e| e.ok())
 				.filter(|e| e.file_type().is_file())
-				.filter_map(|entry| load_alert_from_file(entry.path(), default_interval)),
+				.filter_map(|entry| load_alert_from_file(entry.path())),
 		);
 	}
 
 	// Load alerts from individual files
 	for file in &resolved.files {
-		if let Some(alert) = load_alert_from_file(file, default_interval) {
+		if let Some(alert) = load_alert_from_file(file) {
 			alerts.push(alert);
 		}
 	}
@@ -68,7 +65,16 @@ pub fn load_alerts_from_paths(
 
 	let alerts_with_targets: Vec<_> = alerts
 		.into_iter()
-		.map(|alert| alert.normalise(&external_targets))
+		.filter_map(|alert| {
+			let file = alert.file.clone();
+			match alert.normalise(&external_targets) {
+				Ok(normalized) => Some(normalized),
+				Err(err) => {
+					error!(file=?file, "failed to normalise alert: {err:?}");
+					None
+				}
+			}
+		})
 		.collect();
 
 	debug!(count=%alerts_with_targets.len(), "found some alerts");
@@ -79,7 +85,7 @@ pub fn load_alerts_from_paths(
 	})
 }
 
-fn load_alert_from_file(file: &Path, default_interval: Duration) -> Option<AlertDefinition> {
+fn load_alert_from_file(file: &Path) -> Option<AlertDefinition> {
 	if !file.extension().is_some_and(|e| e == "yaml" || e == "yml") {
 		return None;
 	}
@@ -106,7 +112,6 @@ fn load_alert_from_file(file: &Path, default_interval: Duration) -> Option<Alert
 	};
 
 	alert.file = file.to_path_buf();
-	alert.interval = default_interval;
 	debug!(?alert, "parsed alert file");
 
 	if alert.enabled { Some(alert) } else { None }

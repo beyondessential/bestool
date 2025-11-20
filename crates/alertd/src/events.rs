@@ -174,7 +174,10 @@ impl EventManager {
 			let synthetic_alert = AlertDefinition {
 				file: format!("[internal:{}]", event_type.as_str()).into(),
 				enabled: true,
-				interval: std::time::Duration::from_secs(0),
+				interval: "0 seconds".to_string(),
+				interval_duration: std::time::Duration::from_secs(0),
+				always_send: false,
+				when_changed: crate::alert::WhenChanged::default(),
 				send: Vec::new(),
 				source: crate::alert::TicketSource::Event {
 					event: event_type.clone(),

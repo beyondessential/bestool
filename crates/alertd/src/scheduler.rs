@@ -22,19 +22,19 @@ use crate::{
 pub struct Scheduler {
 	glob_resolver: GlobResolver,
 	resolved_paths: Arc<RwLock<ResolvedPaths>>,
-	default_interval: Duration,
 	ctx: Arc<InternalContext>,
 	email: Option<EmailConfig>,
 	dry_run: bool,
 	tasks: Arc<RwLock<HashMap<PathBuf, JoinHandle<()>>>>,
 	event_manager: Arc<RwLock<Option<EventManager>>>,
 	paused_until: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
+	triggered_at: Arc<RwLock<HashMap<PathBuf, Timestamp>>>,
+	last_output: Arc<RwLock<HashMap<PathBuf, String>>>,
 }
 
 impl Scheduler {
 	pub fn new(
 		alert_globs: Vec<String>,
-		default_interval: Duration,
 		ctx: Arc<InternalContext>,
 		email: Option<EmailConfig>,
 		dry_run: bool,
@@ -46,13 +46,14 @@ impl Scheduler {
 				dirs: Vec::new(),
 				files: Vec::new(),
 			})),
-			default_interval,
 			ctx,
 			email,
 			dry_run,
 			tasks: Arc::new(RwLock::new(HashMap::new())),
 			event_manager: Arc::new(RwLock::new(None)),
 			paused_until: Arc::new(RwLock::new(HashMap::new())),
+			triggered_at: Arc::new(RwLock::new(HashMap::new())),
+			last_output: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
 
@@ -92,7 +93,7 @@ impl Scheduler {
 		let LoadedAlerts {
 			alerts,
 			external_targets,
-		} = load_alerts_from_paths(&resolved, self.default_interval)?;
+		} = load_alerts_from_paths(&resolved)?;
 
 		// Update resolved paths
 		*self.resolved_paths.write().await = resolved;
@@ -135,7 +136,7 @@ impl Scheduler {
 		let LoadedAlerts {
 			alerts,
 			external_targets,
-		} = load_alerts_from_paths(&resolved, self.default_interval)?;
+		} = load_alerts_from_paths(&resolved)?;
 
 		// Separate event alerts from regular alerts
 		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
@@ -216,13 +217,78 @@ impl Scheduler {
 		alert: AlertDefinition,
 		resolved_targets: Vec<ResolvedTarget>,
 	) -> JoinHandle<()> {
+		fn serialize_context_for_comparison(
+			context: &tera::Context,
+			when_changed: &crate::alert::WhenChanged,
+		) -> String {
+			use crate::alert::WhenChanged;
+
+			// Get the rows from the context
+			let rows = match context.get("rows") {
+				Some(value) => value,
+				None => return String::new(),
+			};
+
+			// Parse rows as array of objects
+			let rows_array = match rows.as_array() {
+				Some(arr) => arr,
+				None => return serde_json::to_string(rows).unwrap_or_default(),
+			};
+
+			match when_changed {
+				WhenChanged::Boolean(true) => {
+					// Simple mode: serialize everything
+					serde_json::to_string(rows).unwrap_or_default()
+				}
+				WhenChanged::Boolean(false) => {
+					// Not enabled
+					String::new()
+				}
+				WhenChanged::Detailed(config) => {
+					// Filter columns based on config
+					let filtered_rows: Vec<serde_json::Map<String, serde_json::Value>> = rows_array
+						.iter()
+						.filter_map(|row| {
+							let obj = row.as_object()?;
+							let mut filtered = serde_json::Map::new();
+
+							for (key, value) in obj {
+								let include = if !config.only.is_empty() {
+									// Only mode: include only specified columns
+									config.only.contains(key)
+								} else if !config.except.is_empty() {
+									// Except mode: include all except specified columns
+									!config.except.contains(key)
+								} else {
+									// No filters specified, include all
+									true
+								};
+
+								if include {
+									filtered.insert(key.clone(), value.clone());
+								}
+							}
+
+							Some(filtered)
+						})
+						.collect();
+
+					serde_json::to_string(&filtered_rows).unwrap_or_default()
+				}
+			}
+		}
+
 		let ctx = self.ctx.clone();
 		let email = self.email.clone();
 		let dry_run = self.dry_run;
-		let interval_duration = alert.interval;
+		let interval_duration = alert.interval_duration;
 
 		let event_manager = self.event_manager.clone();
 		let paused_until = self.paused_until.clone();
+		let triggered_at = self.triggered_at.clone();
+		let last_output = self.last_output.clone();
+		let always_send = alert.always_send;
+		let when_changed = alert.when_changed.clone();
 
 		tokio::spawn(async move {
 			let file = alert.file.clone();
@@ -255,15 +321,25 @@ impl Scheduler {
 				}
 
 				debug!(?file, "executing alert");
-				match alert
-					.execute(ctx.clone(), email.as_ref(), dry_run, &resolved_targets)
+
+				// Check the triggering state
+				let mut tera_ctx = crate::templates::build_context(&alert, chrono::Utc::now());
+				let now = chrono::Utc::now();
+				let not_before = now - alert.interval_duration;
+
+				// Check if this alert was previously triggered
+				let was_triggered = {
+					let triggered = triggered_at.read().await;
+					triggered.contains_key(&file)
+				};
+
+				let is_triggering = match alert
+					.read_sources(&ctx.pg_pool, not_before, &mut tera_ctx, was_triggered)
 					.await
 				{
-					Ok(()) => {
-						metrics::inc_alerts_sent();
-					}
+					Ok(flow) => flow.is_continue(),
 					Err(err) => {
-						error!(?file, "error executing alert: {err:?}");
+						error!(?file, "error reading sources: {err:?}");
 						metrics::inc_alerts_failed();
 
 						// Trigger source_error event
@@ -284,6 +360,72 @@ impl Scheduler {
 							{
 								error!("failed to trigger source_error event: {event_err:?}");
 							}
+						}
+						continue;
+					}
+				};
+
+				let mut triggered = triggered_at.write().await;
+
+				if is_triggering {
+					// Alert is in triggering state
+					let mut should_send = always_send || !was_triggered;
+
+					// Check when-changed logic if configured
+					if should_send
+						&& !matches!(when_changed, crate::alert::WhenChanged::Boolean(false))
+					{
+						let current_output =
+							serialize_context_for_comparison(&tera_ctx, &when_changed);
+						let mut last = last_output.write().await;
+
+						let output_changed = match last.get(&file) {
+							Some(prev_output) => prev_output != &current_output,
+							None => true, // First run, consider it changed
+						};
+
+						if output_changed {
+							debug!(?file, "output changed, will send");
+							last.insert(file.clone(), current_output);
+						} else {
+							debug!(?file, "output unchanged, skipping");
+							should_send = false;
+						}
+					}
+
+					if should_send {
+						debug!(?file, "alert triggered, sending notifications");
+
+						// Send to targets
+						for target in &resolved_targets {
+							if let Err(err) = target
+								.send(&alert, &mut tera_ctx, email.as_ref(), dry_run)
+								.await
+							{
+								error!("sending: {err:?}");
+							}
+						}
+
+						metrics::inc_alerts_sent();
+						triggered.insert(file.clone(), Timestamp::now());
+					} else {
+						debug!(?file, "alert still triggered, not sending (already sent)");
+					}
+
+					// Update the triggered timestamp even if we didn't send
+					if !was_triggered {
+						triggered.insert(file.clone(), Timestamp::now());
+					}
+				} else {
+					// Alert is not in triggering state
+					if was_triggered {
+						info!(?file, "alert cleared");
+						triggered.remove(&file);
+
+						// Clear last output when alert clears
+						if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {
+							let mut last = last_output.write().await;
+							last.remove(&file);
 						}
 					}
 				}

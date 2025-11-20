@@ -33,7 +33,7 @@ async fn test_text_cast_for_record_types() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -62,7 +62,7 @@ async fn test_array_formatting() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -91,7 +91,7 @@ async fn test_result_store_populated_on_query() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -138,7 +138,7 @@ async fn test_database_info_query() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -166,7 +166,7 @@ async fn test_transaction_state_none() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -190,7 +190,7 @@ async fn test_transaction_state_idle() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -220,7 +220,7 @@ async fn test_transaction_state_active() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -252,7 +252,7 @@ async fn test_transaction_state_error() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -286,7 +286,7 @@ async fn test_write_mode_disable_with_idle_transaction() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -322,7 +322,7 @@ async fn test_write_mode_disable_blocked_with_active_transaction() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -354,7 +354,7 @@ async fn test_backend_xmin_vs_xid_in_idle_transaction() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -396,7 +396,7 @@ async fn test_describe_table() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -437,7 +437,7 @@ async fn test_describe_view() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -472,7 +472,7 @@ async fn test_describe_sequence() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -508,7 +508,7 @@ async fn test_describe_index() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -545,7 +545,7 @@ async fn test_describe_table_with_foreign_keys() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -605,7 +605,7 @@ async fn test_describe_table_with_triggers() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -653,7 +653,7 @@ async fn test_describe_table_with_database() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -782,7 +782,7 @@ async fn test_describe_view_with_database() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -895,7 +895,7 @@ async fn test_describe_index_with_database() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1021,7 +1021,7 @@ async fn test_describe_sequence_with_database() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1144,7 +1144,7 @@ async fn test_describe_function_with_database() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1268,7 +1268,7 @@ async fn test_describe_function() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1317,7 +1317,7 @@ async fn test_multiple_statements() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1419,7 +1419,7 @@ async fn test_exit_blocked_with_active_transaction() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1500,7 +1500,7 @@ async fn test_exit_allowed_after_commit() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1583,7 +1583,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1650,7 +1650,7 @@ async fn test_dml_commands_show_row_counts() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 
@@ -1815,7 +1815,7 @@ async fn test_gset_with_multiple_unprintable_columns() {
 	let connection_string =
 		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-	let pool = crate::pool::create_pool(&connection_string)
+	let pool = crate::create_pool(&connection_string)
 		.await
 		.expect("Failed to create pool");
 

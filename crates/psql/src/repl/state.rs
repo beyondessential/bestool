@@ -7,7 +7,7 @@ use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	audit::Audit, completer::SqlCompleter, pool::PgPool, result_store::ResultStore,
+	PgPool, audit::Audit, completer::SqlCompleter, result_store::ResultStore,
 	schema_cache::SchemaCacheManager, snippets::Snippets, theme::Theme,
 };
 

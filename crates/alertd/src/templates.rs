@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use folktime::duration::{Duration as Folktime, Style as FolkStyle};
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
 use tera::{Context as TeraCtx, Tera};
@@ -60,10 +59,10 @@ pub fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>
 	let mut context = TeraCtx::new();
 	context.insert(
 		TemplateField::Interval.as_str(),
-		&format!(
-			"{}",
-			Folktime::new(alert.interval).with_style(FolkStyle::OneUnitWhole)
-		),
+		&jiff::Span::try_from(alert.interval_duration)
+			.ok()
+			.map(|s| format!("{s:#}"))
+			.unwrap_or_else(|| format!("{:?}", alert.interval_duration)),
 	);
 	context.insert(
 		TemplateField::Hostname.as_str(),

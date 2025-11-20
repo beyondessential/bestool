@@ -7,10 +7,10 @@ mod glob_resolver;
 pub mod http_server;
 mod loader;
 mod metrics;
-mod pg_interval;
+
 pub mod scheduler;
 mod targets;
-mod templates;
+pub mod templates;
 
 #[cfg(windows)]
 pub mod windows_service;
@@ -18,7 +18,10 @@ pub mod windows_service;
 pub use alert::{AlertDefinition, InternalContext, TicketSource};
 pub use daemon::{run, run_with_shutdown};
 pub use events::EventType;
-pub use targets::{AlertTargets, ExternalTarget, SendTarget};
+pub use targets::{AlertTargets, ExternalTarget, ResolvedTarget, SendTarget};
+
+/// The version of the alertd library
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use tracing::info;
 

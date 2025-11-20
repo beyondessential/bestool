@@ -66,6 +66,32 @@ struct PauseAlertRequest {
 	until: String,
 }
 
+#[derive(Serialize)]
+struct ValidationResponse {
+	valid: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	error: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	error_location: Option<ErrorLocation>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	info: Option<ValidationInfo>,
+}
+
+#[derive(Serialize)]
+struct ErrorLocation {
+	line: usize,
+	column: usize,
+	path: String,
+}
+
+#[derive(Serialize)]
+struct ValidationInfo {
+	enabled: bool,
+	interval: String,
+	source_type: String,
+	targets: usize,
+}
+
 pub async fn start_server(
 	reload_tx: mpsc::Sender<()>,
 	event_manager: Option<Arc<EventManager>>,
@@ -94,6 +120,7 @@ pub async fn start_server(
 		.route("/reload", post(handle_reload))
 		.route("/alert", post(handle_alert))
 		.route("/alerts", get(handle_alerts).delete(handle_pause_alert))
+		.route("/validate", post(handle_validate))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
@@ -276,6 +303,72 @@ async fn handle_pause_alert(
 	}
 }
 
+async fn handle_validate(body: String) -> impl IntoResponse {
+	use crate::alert::{AlertDefinition, TicketSource};
+
+	// Try to parse as YAML with serde_path_to_error for better error messages
+	let deserializer = serde_yaml::Deserializer::from_str(&body);
+	let alert: AlertDefinition = match serde_path_to_error::deserialize(deserializer) {
+		Ok(alert) => alert,
+		Err(err) => {
+			// Parse error - return detailed error information
+			let path = err.path().to_string();
+			let inner = err.into_inner();
+			let error_msg = format!("{}", inner);
+
+			// The inner error is already a serde_yaml::Error, extract location if available
+			// Note: serde_yaml::Error doesn't expose location() in all cases
+			let response = ValidationResponse {
+				valid: false,
+				error: Some(format!("Parse error at '{}': {}", path, error_msg)),
+				error_location: None, // Location info is included in the error message
+				info: None,
+			};
+
+			return (StatusCode::OK, Json(response)).into_response();
+		}
+	};
+
+	// Try to normalize the alert (this validates send targets and other fields)
+	let external_targets = std::collections::HashMap::new();
+	match alert.normalise(&external_targets) {
+		Ok((alert, resolved_targets)) => {
+			let source_type = match &alert.source {
+				TicketSource::Sql { .. } => "sql",
+				TicketSource::Shell { .. } => "shell",
+				TicketSource::Event { .. } => "event",
+				TicketSource::None => "none",
+			}
+			.to_string();
+
+			let response = ValidationResponse {
+				valid: true,
+				error: None,
+				error_location: None,
+				info: Some(ValidationInfo {
+					enabled: alert.enabled,
+					interval: alert.interval.clone(),
+					source_type,
+					targets: resolved_targets.len(),
+				}),
+			};
+
+			(StatusCode::OK, Json(response)).into_response()
+		}
+		Err(err) => {
+			// Normalization error (e.g., invalid interval, missing targets)
+			let response = ValidationResponse {
+				valid: false,
+				error: Some(format!("Validation error: {:#}", err)),
+				error_location: None,
+				info: None,
+			};
+
+			(StatusCode::OK, Json(response)).into_response()
+		}
+	}
+}
+
 async fn handle_index() -> impl IntoResponse {
 	let endpoints = serde_json::json!([
 		{
@@ -304,6 +397,11 @@ async fn handle_index() -> impl IntoResponse {
 			"description": "Temporarily pause an alert until the specified timestamp (JSON body: {\"alert\": \"PATH\", \"until\": \"TIMESTAMP\"})"
 		},
 		{
+			"method": "POST",
+			"path": "/validate",
+			"description": "Validate an alert definition (send YAML as request body, returns validation result as JSON)"
+		},
+		{
 			"method": "GET",
 			"path": "/metrics",
 			"description": "Prometheus-formatted metrics for monitoring"
@@ -327,36 +425,22 @@ mod tests {
 	use super::*;
 
 	async fn create_test_state() -> Arc<ServerState> {
-		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+		let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 			.await
 			.unwrap();
-		tokio::spawn(async move {
-			let _ = connection.await;
+		let ctx = Arc::new(InternalContext {
+			pg_pool: pool.clone(),
 		});
 
-		// Create a second client for the scheduler
-		let (scheduler_client, scheduler_connection) =
-			tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
-				.await
-				.unwrap();
-		tokio::spawn(async move {
-			let _ = scheduler_connection.await;
-		});
-
-		let ctx = Arc::new(InternalContext { pg_client: client });
-		let scheduler_ctx = Arc::new(InternalContext {
-			pg_client: scheduler_client,
-		});
 		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
 			vec![],
-			std::time::Duration::from_secs(60),
-			scheduler_ctx,
+			ctx.clone(),
 			None,
 			true,
 		));
 
+		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 		Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
@@ -403,23 +487,22 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_reload_endpoint() {
-		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
 		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+		let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 			.await
 			.unwrap();
-		tokio::spawn(async move {
-			let _ = connection.await;
+		let ctx = Arc::new(InternalContext {
+			pg_pool: pool.clone(),
 		});
-		let ctx = Arc::new(InternalContext { pg_client: client });
+
 		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
 			vec![],
-			std::time::Duration::from_secs(60),
 			ctx.clone(),
 			None,
 			true,
 		));
 
+		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
 		let state = Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
@@ -504,27 +587,25 @@ mod tests {
 	async fn test_alert_endpoint_with_event_manager() {
 		use std::collections::HashMap;
 
-		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-		let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+		let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 			.await
 			.unwrap();
-		tokio::spawn(async move {
-			let _ = connection.await;
+		let ctx = Arc::new(InternalContext {
+			pg_pool: pool.clone(),
 		});
 
 		// Create a mock event manager
 		let event_manager = crate::events::EventManager::new(Vec::new(), &HashMap::new());
 
-		let ctx = Arc::new(crate::InternalContext { pg_client: client });
 		let scheduler = Arc::new(crate::scheduler::Scheduler::new(
 			vec![],
-			std::time::Duration::from_secs(60),
 			ctx.clone(),
 			None,
 			true,
 		));
 
+		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 		let state = Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),

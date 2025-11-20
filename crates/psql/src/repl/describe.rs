@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use crate::{error::format_error, repl::state::ReplContext};
+use crate::{format_error, repl::state::ReplContext};
 
 mod function;
 mod index;
@@ -167,7 +167,7 @@ pub async fn handle_describe(
 		Err(e) => {
 			eprintln!(
 				"Error describing relation: {}",
-				crate::error::format_db_error(&e, None)
+				crate::format_db_error(&e, None)
 			);
 			ControlFlow::Continue(())
 		}

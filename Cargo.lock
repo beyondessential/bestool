@@ -493,6 +493,7 @@ dependencies = [
  "rppal",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "serde_yaml",
  "ssh-key",
  "sysinfo",
@@ -523,6 +524,7 @@ name = "bestool-alertd"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bestool-postgres",
  "bytes",
  "chrono",
  "clap",
@@ -541,6 +543,7 @@ dependencies = [
  "reqwest 0.12.24",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "serde_yaml",
  "sysinfo",
  "temp-env",
@@ -556,9 +559,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "bestool-postgres"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "fraction",
+ "hex",
+ "jiff",
+ "miette",
+ "mobc",
+ "mobc-postgres",
+ "percent-encoding",
+ "rpassword",
+ "rustls",
+ "rustls-native-certs",
+ "serde_json",
+ "temp-env",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "bestool-psql"
 version = "1.1.7"
 dependencies = [
+ "bestool-postgres",
  "clap",
  "comfy-table",
  "crossterm",
@@ -575,16 +603,11 @@ dependencies = [
  "libc",
  "lloggs",
  "miette",
- "mobc",
- "mobc-postgres",
  "percent-encoding",
  "rand 0.9.2",
  "redb",
  "reflink-copy",
- "rpassword",
  "rust_xlsxwriter",
- "rustls",
- "rustls-native-certs",
  "rustyline",
  "serde",
  "serde_json",

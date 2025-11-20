@@ -3,7 +3,10 @@ use std::{io::Write, ops::ControlFlow};
 use comfy_table::Table;
 use supports_unicode::Stream;
 
-use crate::parser::{ResultFormat, ResultSubcommand};
+use crate::{
+	TextCaster, can_print,
+	parser::{ResultFormat, ResultSubcommand},
+};
 
 use super::ReplContext;
 
@@ -173,14 +176,14 @@ async fn display_to_file(
 		// Check for unprintable columns
 		let mut unprintable_columns = Vec::new();
 		for (i, _column) in columns.iter().enumerate() {
-			if !crate::query::column::can_print(first_row, i) {
+			if !can_print(first_row, i) {
 				unprintable_columns.push(i);
 			}
 		}
 
 		// Create text caster for unprintable columns
 		let text_caster = if !unprintable_columns.is_empty() {
-			Some(crate::query::text_cast::TextCaster::new(ctx.pool.clone()))
+			Some(TextCaster::new(ctx.pool.clone()))
 		} else {
 			None
 		};
@@ -335,14 +338,14 @@ async fn format_result_using_display_module(
 	// Check for unprintable columns
 	let mut unprintable_columns = Vec::new();
 	for (i, _column) in columns.iter().enumerate() {
-		if !crate::query::column::can_print(first_row, i) {
+		if !can_print(first_row, i) {
 			unprintable_columns.push(i);
 		}
 	}
 
 	// Create text caster for unprintable columns
 	let text_caster = if !unprintable_columns.is_empty() {
-		Some(crate::query::text_cast::TextCaster::new(ctx.pool.clone()))
+		Some(TextCaster::new(ctx.pool.clone()))
 	} else {
 		None
 	};
@@ -547,7 +550,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -626,7 +629,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -708,7 +711,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -793,7 +796,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -879,7 +882,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1002,7 +1005,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1100,7 +1103,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1207,7 +1210,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1338,7 +1341,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1443,7 +1446,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1565,7 +1568,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1627,7 +1630,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1681,7 +1684,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1768,7 +1771,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1840,7 +1843,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -1918,7 +1921,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2044,7 +2047,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2122,7 +2125,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2200,7 +2203,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2278,7 +2281,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2358,7 +2361,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2435,7 +2438,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 
@@ -2528,7 +2531,7 @@ mod tests {
 		let connection_string =
 			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
 
-		let pool = crate::pool::create_pool(&connection_string)
+		let pool = crate::create_pool(&connection_string)
 			.await
 			.expect("Failed to create pool");
 

@@ -13,7 +13,7 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub columns: &'a [tokio_postgres::Column],
 	pub rows: &'a [tokio_postgres::Row],
 	pub unprintable_columns: &'a [usize],
-	pub text_caster: Option<crate::query::text_cast::TextCaster>,
+	pub text_caster: Option<crate::TextCaster>,
 	pub writer: &'a mut W,
 	pub use_colours: bool,
 	pub theme: crate::theme::Theme,
