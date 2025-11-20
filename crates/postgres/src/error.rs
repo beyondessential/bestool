@@ -175,7 +175,7 @@ impl PgDatabaseError {
 	}
 }
 
-/// Format a mobc<tokio-postgres> Error for display
+/// Format a `mobc::Error<PgError>` Error for display
 pub fn format_mobc_error(error: &mobc::Error<PgError>, query: Option<&str>) -> String {
 	match error {
 		mobc::Error::Inner(PgError::Pg(error)) => format_db_error(error, query),
