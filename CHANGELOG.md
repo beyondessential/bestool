@@ -5,7 +5,24 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.1.16](https://github.com/beyondessential/bestool/compare/v1.1.15..1.1.16) - 2025-11-20
+## [1.2.0](https://github.com/beyondessential/bestool/compare/v1.1.16..1.2.0) - 2025-11-20
+
+
+
+
+- **feat(alertd):** Support globs for dirs - ([fbe8fee](https://github.com/beyondessential/bestool/commit/fbe8feefcf9fbc6095341118c29c1b752d1e2af8))
+- **feat(alertd):** Add --reload so we can do manual reloads on windows - ([e743c8d](https://github.com/beyondessential/bestool/commit/e743c8def53158f3741b6f10e1214a90e7c111e8))
+- **feat(alertd):** Be loud but graceful if we can't bind the server - ([79346a5](https://github.com/beyondessential/bestool/commit/79346a502e3f878e57f34cfa43e6e260c5546048))
+- **feat(alertd):** Add loaded-alerts command and endpoint - ([1532392](https://github.com/beyondessential/bestool/commit/15323929ded07d944957a8b7cc8a47c828dafb03))
+- **feat(alertd):** Add pause-alert command and endpoint - ([ab0275f](https://github.com/beyondessential/bestool/commit/ab0275f70515f93820268ca52012ba5f08bfd57d))
+- **feat(alertd):** Add GET /alerts?detail=true to see the internal state of - ([1217094](https://github.com/beyondessential/bestool/commit/1217094c95d898992a42de457b6034f4d569a91a))
+- **refactor(alertd):** Move implementations of commands into the lib - ([3336a59](https://github.com/beyondessential/bestool/commit/3336a590b1751cdcba446ab7d41717b750550039))
+
+- **refactor(bestool):** Update tamanu alertd to use run/reload subcommands - ([8371196](https://github.com/beyondessential/bestool/commit/8371196ce5f031340b64d265a99ab751366472ac))
+
+- **refactor(postgres):** Add postgres_to_json_value and deduplicate from alertd - ([e09c675](https://github.com/beyondessential/bestool/commit/e09c6750419aee36ab413846814a78afb15d8161))
+---
+## [1.1.16](https://github.com/beyondessential/bestool/compare/v1.1.15..v1.1.16) - 2025-11-20
 
 
 
