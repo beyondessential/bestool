@@ -65,6 +65,19 @@ enum Command {
 		#[arg(long)]
 		server_addr: Vec<std::net::SocketAddr>,
 	},
+
+	/// List currently loaded alert files
+	///
+	/// Connects to the running daemon's HTTP API and retrieves the list of
+	/// currently loaded alert definition files.
+	LoadedAlerts {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
+	},
 }
 
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
@@ -79,6 +92,17 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 				server_addr
 			};
 			bestool_alertd::send_reload(&addrs).await
+		}
+		Command::LoadedAlerts { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				vec![
+					"[::1]:8271".parse().unwrap(),
+					"127.0.0.1:8271".parse().unwrap(),
+				]
+			} else {
+				server_addr
+			};
+			get_loaded_alerts(&addrs).await
 		}
 		Command::Run {
 			dir,
@@ -136,6 +160,62 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 
 			bestool_alertd::run(daemon_config).await
 		}
+	}
+}
+
+async fn get_loaded_alerts(addrs: &[std::net::SocketAddr]) -> Result<()> {
+	let client = reqwest::Client::new();
+	let mut last_error = None;
+
+	for addr in addrs {
+		let url = format!("http://{}/alerts", addr);
+		info!("querying daemon at {}", url);
+
+		let response = match client.get(&url).send().await {
+			Ok(resp) => resp,
+			Err(e) => {
+				info!("failed to connect to {}: {}", url, e);
+				last_error = Some(e);
+				continue;
+			}
+		};
+
+		if !response.status().is_success() {
+			info!("daemon at {} returned status: {}", url, response.status());
+			continue;
+		}
+
+		let alerts: Vec<String> = match response.json().await {
+			Ok(a) => a,
+			Err(e) => {
+				info!("failed to parse response from {}: {}", url, e);
+				continue;
+			}
+		};
+
+		if alerts.is_empty() {
+			println!("No alerts currently loaded");
+		} else {
+			println!("Loaded alerts ({}):", alerts.len());
+			for alert in alerts {
+				println!("  {}", alert);
+			}
+		}
+
+		return Ok(());
+	}
+
+	if let Some(err) = last_error {
+		Err(miette::miette!(
+			"failed to connect to daemon at any of {} address(es): {}",
+			addrs.len(),
+			err
+		))
+	} else {
+		Err(miette::miette!(
+			"no daemon found at any of {} address(es)",
+			addrs.len()
+		))
 	}
 }
 
