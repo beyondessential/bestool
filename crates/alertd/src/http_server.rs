@@ -1,12 +1,4 @@
 //! HTTP server for alertd daemon control and metrics.
-//!
-//! Provides a simple HTTP API listening on [::1]:8271 and 127.0.0.1:8271 by default
-//! with the following endpoints:
-//! - `GET /`: List of available endpoints
-//! - `POST /reload`: Trigger a configuration reload (equivalent to SIGHUP)
-//! - `POST /alert`: Trigger a custom HTTP alert
-//! - `GET /metrics`: Prometheus-formatted metrics for monitoring
-//! - `GET /status`: Daemon status information in JSON format
 
 use std::sync::Arc;
 
