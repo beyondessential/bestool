@@ -3,6 +3,7 @@
 //! Provides a simple HTTP API listening on localhost:8271 with the following endpoints:
 //! - `GET /`: List of available endpoints
 //! - `POST /reload`: Trigger a configuration reload (equivalent to SIGHUP)
+//! - `POST /alert`: Trigger a custom HTTP alert
 //! - `GET /metrics`: Prometheus-formatted metrics for monitoring
 //! - `GET /status`: Daemon status information in JSON format
 
@@ -16,21 +17,30 @@ use axum::{
 	routing::{get, post},
 };
 use jiff::Timestamp;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
 use tracing::{error, info};
 
-use crate::metrics;
+use crate::{
+	EmailConfig,
+	alert::InternalContext,
+	events::{EventContext, EventManager, EventType},
+	metrics,
+};
 
 #[derive(Clone)]
 pub struct ServerState {
 	pub reload_tx: mpsc::Sender<()>,
 	pub started_at: Timestamp,
 	pub pid: u32,
+	pub event_manager: Option<Arc<EventManager>>,
+	pub internal_context: Arc<InternalContext>,
+	pub email_config: Option<EmailConfig>,
+	pub dry_run: bool,
 }
 
-#[derive(Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct StatusResponse {
 	name: String,
 	version: String,
@@ -38,7 +48,22 @@ struct StatusResponse {
 	pid: u32,
 }
 
-pub async fn start_server(reload_tx: mpsc::Sender<()>) {
+#[derive(Deserialize)]
+struct AlertRequest {
+	message: String,
+	#[serde(default)]
+	subject: Option<String>,
+	#[serde(flatten)]
+	custom: serde_json::Value,
+}
+
+pub async fn start_server(
+	reload_tx: mpsc::Sender<()>,
+	event_manager: Option<Arc<EventManager>>,
+	internal_context: Arc<InternalContext>,
+	email_config: Option<EmailConfig>,
+	dry_run: bool,
+) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
 
@@ -46,11 +71,16 @@ pub async fn start_server(reload_tx: mpsc::Sender<()>) {
 		reload_tx,
 		started_at,
 		pid,
+		event_manager,
+		internal_context,
+		email_config,
+		dry_run,
 	};
 
 	let app = Router::new()
 		.route("/", get(handle_index))
 		.route("/reload", post(handle_reload))
+		.route("/alert", post(handle_alert))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.with_state(Arc::new(state));
@@ -116,6 +146,50 @@ pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoRe
 	Json(status)
 }
 
+async fn handle_alert(
+	State(state): State<Arc<ServerState>>,
+	Json(payload): Json<AlertRequest>,
+) -> impl IntoResponse {
+	info!(message = %payload.message, "received HTTP alert");
+
+	let event_context = EventContext::Http {
+		message: payload.message,
+		subject: payload.subject,
+		custom: payload.custom,
+	};
+
+	if let Some(ref event_mgr) = state.event_manager {
+		match event_mgr
+			.trigger_event(
+				EventType::Http,
+				&state.internal_context,
+				state.email_config.as_ref(),
+				state.dry_run,
+				event_context,
+			)
+			.await
+		{
+			Ok(()) => {
+				info!("HTTP alert triggered successfully");
+				(StatusCode::OK, "Alert triggered\n")
+			}
+			Err(e) => {
+				error!("failed to trigger HTTP alert: {e:?}");
+				(
+					StatusCode::INTERNAL_SERVER_ERROR,
+					"Failed to trigger alert\n",
+				)
+			}
+		}
+	} else {
+		error!("no event manager available");
+		(
+			StatusCode::SERVICE_UNAVAILABLE,
+			"Event manager not available\n",
+		)
+	}
+}
+
 async fn handle_index() -> impl IntoResponse {
 	let endpoints = serde_json::json!([
 		{
@@ -127,6 +201,11 @@ async fn handle_index() -> impl IntoResponse {
 			"method": "POST",
 			"path": "/reload",
 			"description": "Trigger a configuration reload (equivalent to SIGHUP)"
+		},
+		{
+			"method": "POST",
+			"path": "/alert",
+			"description": "Trigger a custom HTTP alert with JSON payload"
 		},
 		{
 			"method": "GET",
@@ -150,6 +229,28 @@ async fn handle_index() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	async fn create_test_state() -> Arc<ServerState> {
+		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
+		let (client, connection) = tokio_postgres::connect(
+			"host=localhost user=postgres dbname=tamanu_meta",
+			tokio_postgres::NoTls,
+		)
+		.await
+		.unwrap();
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+		Arc::new(ServerState {
+			reload_tx,
+			started_at: Timestamp::now(),
+			pid: std::process::id(),
+			event_manager: None,
+			internal_context: Arc::new(InternalContext { pg_client: client }),
+			email_config: None,
+			dry_run: true,
+		})
+	}
 
 	#[tokio::test]
 	async fn test_metrics_endpoint() {
@@ -186,10 +287,23 @@ mod tests {
 	#[tokio::test]
 	async fn test_reload_endpoint() {
 		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
+		let (client, connection) = tokio_postgres::connect(
+			"host=localhost user=postgres dbname=tamanu_meta",
+			tokio_postgres::NoTls,
+		)
+		.await
+		.unwrap();
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
 		let state = Arc::new(ServerState {
 			reload_tx,
 			started_at: Timestamp::now(),
 			pid: std::process::id(),
+			event_manager: None,
+			internal_context: Arc::new(InternalContext { pg_client: client }),
+			email_config: None,
+			dry_run: true,
 		});
 
 		let response = handle_reload(State(state)).await.into_response();
@@ -201,17 +315,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_status_endpoint() {
-		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
-		let started_at = Timestamp::now();
-		let pid = std::process::id();
+		let state = create_test_state().await;
 
-		let state = Arc::new(ServerState {
-			reload_tx,
-			started_at,
-			pid,
-		});
-
-		let response = handle_status(State(state)).await.into_response();
+		let response = handle_status(State(state.clone())).await.into_response();
 		assert_eq!(response.status(), StatusCode::OK);
 
 		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -221,7 +327,7 @@ mod tests {
 
 		assert_eq!(status.name, "bestool-alertd");
 		assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
-		assert_eq!(status.pid, pid);
+		assert_eq!(status.pid, state.pid);
 		assert!(!status.started_at.is_empty());
 	}
 
@@ -237,7 +343,7 @@ mod tests {
 
 		assert!(endpoints.is_array());
 		let endpoints = endpoints.as_array().unwrap();
-		assert_eq!(endpoints.len(), 4);
+		assert_eq!(endpoints.len(), 5);
 
 		// Check that all expected endpoints are present
 		let paths: Vec<&str> = endpoints
@@ -246,7 +352,71 @@ mod tests {
 			.collect();
 		assert!(paths.contains(&"/"));
 		assert!(paths.contains(&"/reload"));
+		assert!(paths.contains(&"/alert"));
 		assert!(paths.contains(&"/metrics"));
 		assert!(paths.contains(&"/status"));
+	}
+
+	#[tokio::test]
+	async fn test_alert_endpoint_no_event_manager() {
+		let state = create_test_state().await;
+
+		let payload = AlertRequest {
+			message: "Test message".to_string(),
+			subject: Some("Test subject".to_string()),
+			custom: serde_json::json!({"extra": "data"}),
+		};
+
+		let response = handle_alert(State(state), Json(payload))
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+	}
+
+	#[tokio::test]
+	async fn test_alert_endpoint_with_event_manager() {
+		use std::collections::HashMap;
+
+		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
+		let (client, connection) = tokio_postgres::connect(
+			"host=localhost user=postgres dbname=tamanu_meta",
+			tokio_postgres::NoTls,
+		)
+		.await
+		.unwrap();
+		tokio::spawn(async move {
+			let _ = connection.await;
+		});
+
+		// Create a mock event manager
+		let event_manager = crate::events::EventManager::new(Vec::new(), &HashMap::new());
+
+		let state = Arc::new(ServerState {
+			reload_tx,
+			started_at: Timestamp::now(),
+			pid: std::process::id(),
+			event_manager: Some(Arc::new(event_manager)),
+			internal_context: Arc::new(crate::InternalContext { pg_client: client }),
+			email_config: None,
+			dry_run: true,
+		});
+
+		let payload = AlertRequest {
+			message: "Test alert message".to_string(),
+			subject: Some("Test alert".to_string()),
+			custom: serde_json::json!({"priority": "high", "source": "test"}),
+		};
+
+		let response = handle_alert(State(state), Json(payload))
+			.await
+			.into_response();
+
+		assert_eq!(response.status(), StatusCode::OK);
+		let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+			.await
+			.unwrap();
+		let body_str = String::from_utf8(body.to_vec()).unwrap();
+		assert_eq!(body_str, "Alert triggered\n");
 	}
 }

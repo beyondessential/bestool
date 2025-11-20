@@ -14,32 +14,63 @@ use crate::{
 #[serde(rename_all = "kebab-case")]
 pub enum EventType {
 	SourceError,
+	Http,
 }
 
 impl EventType {
 	pub fn as_str(&self) -> &'static str {
 		match self {
 			Self::SourceError => "source-error",
+			Self::Http => "http",
 		}
 	}
 }
 
 /// Context data for an event
-pub struct EventContext {
-	pub alert_file: String,
-	pub error_message: String,
+#[derive(Debug, Clone)]
+pub enum EventContext {
+	SourceError {
+		alert_file: String,
+		error_message: String,
+	},
+	Http {
+		message: String,
+		subject: Option<String>,
+		custom: serde_json::Value,
+	},
 }
 
 impl EventContext {
 	pub fn to_tera_context(&self) -> TeraCtx {
 		let mut ctx = TeraCtx::new();
-		ctx.insert("alert_file", &self.alert_file);
-		ctx.insert("error_message", &self.error_message);
+		match self {
+			Self::SourceError {
+				alert_file,
+				error_message,
+			} => {
+				ctx.insert("alert_file", alert_file);
+				ctx.insert("error_message", error_message);
+			}
+			Self::Http {
+				message,
+				subject,
+				custom,
+			} => {
+				ctx.insert("message", message);
+				ctx.insert("subject", subject.as_deref().unwrap_or("Custom alert"));
+				if let serde_json::Value::Object(map) = custom {
+					for (key, value) in map {
+						ctx.insert(key, value);
+					}
+				}
+			}
+		}
 		ctx
 	}
 }
 
 /// Manages event-triggered alerts
+#[derive(Clone)]
 pub struct EventManager {
 	/// Alerts that listen for specific events
 	event_alerts: HashMap<EventType, Vec<(AlertDefinition, Vec<ResolvedTarget>)>>,
@@ -71,8 +102,8 @@ impl EventManager {
 		}
 
 		let default_target = determine_default_target(external_targets).map(|t| ResolvedTarget {
-			subject: Some("[Tamanu Alert] Failed alert: {{ alert_file }}".to_string()),
-			template: "{{ error_message }}".to_string(),
+			subject: None,
+			template: String::new(),
 			conn: t.conn.clone(),
 		});
 		if let Some(ref target) = default_target {
@@ -119,8 +150,25 @@ impl EventManager {
 				}
 			}
 		} else if let Some(ref default_target) = self.default_target {
-			// No explicit alert, use default target
+			// No explicit alert, use default target with event-specific template
 			debug!("using default target for event");
+
+			let (subject_template, body_template) = match event_type {
+				EventType::SourceError => (
+					"[Tamanu Alert] Failed alert: {{ alert_file }}".to_string(),
+					"{{ error_message }}".to_string(),
+				),
+				EventType::Http => (
+					"{{ hostname }}: {{ subject }}".to_string(),
+					"{{ message }}".to_string(),
+				),
+			};
+
+			let default_target_for_event = ResolvedTarget {
+				subject: Some(subject_template),
+				template: body_template,
+				conn: default_target.conn.clone(),
+			};
 
 			// Create a synthetic alert for the default notification
 			let synthetic_alert = AlertDefinition {
@@ -137,7 +185,7 @@ impl EventManager {
 				crate::templates::build_context(&synthetic_alert, chrono::Utc::now());
 			tera_ctx.extend(event_context.to_tera_context());
 
-			if let Err(err) = default_target
+			if let Err(err) = default_target_for_event
 				.send(&synthetic_alert, &mut tera_ctx, email, dry_run)
 				.await
 			{
@@ -165,6 +213,7 @@ mod tests {
 	#[test]
 	fn test_event_type_as_str() {
 		assert_eq!(EventType::SourceError.as_str(), "source-error");
+		assert_eq!(EventType::Http.as_str(), "http");
 	}
 
 	#[test]
@@ -175,8 +224,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_event_context_to_tera() {
-		let ctx = EventContext {
+	fn test_event_context_to_tera_source_error() {
+		let ctx = EventContext::SourceError {
 			alert_file: "/etc/alerts/test.yml".to_string(),
 			error_message: "Something went wrong".to_string(),
 		};
@@ -189,6 +238,41 @@ mod tests {
 		assert_eq!(
 			tera_ctx.get("error_message").unwrap().as_str().unwrap(),
 			"Something went wrong"
+		);
+	}
+
+	#[test]
+	fn test_event_context_to_tera_http() {
+		let ctx = EventContext::Http {
+			message: "Test message".to_string(),
+			subject: Some("Test subject".to_string()),
+			custom: serde_json::json!({"extra": "data"}),
+		};
+
+		let tera_ctx = ctx.to_tera_context();
+		assert_eq!(
+			tera_ctx.get("message").unwrap().as_str().unwrap(),
+			"Test message"
+		);
+		assert_eq!(
+			tera_ctx.get("subject").unwrap().as_str().unwrap(),
+			"Test subject"
+		);
+		assert_eq!(tera_ctx.get("extra").unwrap().as_str().unwrap(), "data");
+	}
+
+	#[test]
+	fn test_event_context_http_default_subject() {
+		let ctx = EventContext::Http {
+			message: "Test message".to_string(),
+			subject: None,
+			custom: serde_json::json!({}),
+		};
+
+		let tera_ctx = ctx.to_tera_context();
+		assert_eq!(
+			tera_ctx.get("subject").unwrap().as_str().unwrap(),
+			"Custom alert"
 		);
 	}
 }

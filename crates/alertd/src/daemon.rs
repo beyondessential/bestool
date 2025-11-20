@@ -105,7 +105,7 @@ pub async fn run_with_shutdown(
 	let scheduler = Arc::new(Scheduler::new(
 		daemon_config.alert_globs.clone(),
 		default_interval,
-		ctx,
+		ctx.clone(),
 		daemon_config.email.clone(),
 		daemon_config.dry_run,
 	));
@@ -125,7 +125,29 @@ pub async fn run_with_shutdown(
 
 	// Start HTTP server
 	if !daemon_config.no_server {
-		tokio::spawn(http_server::start_server(reload_tx.clone()));
+		let event_manager_for_server = scheduler.get_event_manager();
+		let ctx_for_server = ctx.clone();
+		let email_for_server = daemon_config.email.clone();
+		let dry_run_for_server = daemon_config.dry_run;
+		tokio::spawn(async move {
+			// Wait for event manager to be initialised
+			let event_mgr = loop {
+				let guard = event_manager_for_server.read().await;
+				if let Some(ref mgr) = *guard {
+					break Some(Arc::new(mgr.clone()));
+				}
+				drop(guard);
+				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+			};
+			http_server::start_server(
+				reload_tx.clone(),
+				event_mgr,
+				ctx_for_server,
+				email_for_server,
+				dry_run_for_server,
+			)
+			.await;
+		});
 	}
 
 	// Set up file watcher

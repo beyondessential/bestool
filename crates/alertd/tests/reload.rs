@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::response::IntoResponse;
 use tokio::sync::mpsc;
@@ -29,10 +29,24 @@ async fn test_status_endpoint_response_format() {
 	let started_at = jiff::Timestamp::now();
 	let pid = std::process::id();
 
-	let state = std::sync::Arc::new(bestool_alertd::http_server::ServerState {
+	let (client, connection) = tokio_postgres::connect(
+		"host=localhost user=postgres dbname=tamanu_meta",
+		tokio_postgres::NoTls,
+	)
+	.await
+	.unwrap();
+	tokio::spawn(async move {
+		let _ = connection.await;
+	});
+
+	let state = Arc::new(bestool_alertd::http_server::ServerState {
 		reload_tx,
 		started_at,
 		pid,
+		event_manager: None,
+		internal_context: Arc::new(bestool_alertd::InternalContext { pg_client: client }),
+		email_config: None,
+		dry_run: true,
 	});
 
 	// This verifies the response structure without needing a full daemon

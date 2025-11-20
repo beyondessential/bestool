@@ -53,6 +53,10 @@ impl Scheduler {
 		}
 	}
 
+	pub fn get_event_manager(&self) -> Arc<RwLock<Option<EventManager>>> {
+		self.event_manager.clone()
+	}
+
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
 		info!("resolving glob patterns and loading alerts");
 
@@ -225,7 +229,7 @@ impl Scheduler {
 
 						// Trigger source_error event
 						if let Some(ref event_mgr) = *event_manager.read().await {
-							let event_context = EventContext {
+							let event_context = EventContext::SourceError {
 								alert_file: file.display().to_string(),
 								error_message: format!("{err:?}"),
 							};
