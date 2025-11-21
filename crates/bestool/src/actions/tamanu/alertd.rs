@@ -9,9 +9,9 @@ use crate::actions::Context;
 
 /// Run the alert daemon
 ///
-/// This is a long-lived daemon that manages alert execution on scheduled intervals.
-/// Unlike the `alerts` subcommand which is designed to run via cron, this daemon
-/// manages its own timers and watches for configuration file changes.
+/// The alert and target definitions are documented online at:
+/// <https://github.com/beyondessential/bestool/blob/main/crates/alertd/ALERTS.md>
+/// and <https://github.com/beyondessential/bestool/blob/main/crates/alertd/TARGETS.md>.
 ///
 /// Configuration for database and email is read from Tamanu's config files.
 #[derive(Debug, Clone, Parser)]
