@@ -39,6 +39,10 @@ enum Command {
 	Keygen(keygen::KeygenArgs),
 	Protect(protect::ProtectArgs),
 	Reveal(reveal::RevealArgs),
+
+	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
+	#[command(hide = true, name = "_docs")]
+	Docs,
 }
 
 fn main() -> miette::Result<()> {
@@ -54,6 +58,11 @@ fn main() -> miette::Result<()> {
 				Command::Keygen(args) => keygen::run(args).await,
 				Command::Protect(args) => protect::run(args).await,
 				Command::Reveal(args) => reveal::run(args).await,
+				Command::Docs => {
+					let markdown = clap_markdown::help_markdown::<Command>();
+					println!("{}", markdown);
+					Ok(())
+				}
 			}
 		})
 }

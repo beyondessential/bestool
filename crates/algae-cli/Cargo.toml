@@ -19,6 +19,7 @@ name = "algae"
 age = { version = "0.11.1", features = ["async"] }
 age-core = "0.11.0"
 clap = { workspace = true }
+clap-markdown = "0.1.5"
 dialoguer = { version = "0.12.0", features = ["password"], default-features = false }
 diceware_wordlists = "1.2.3"
 futures = { workspace = true }

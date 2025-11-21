@@ -11,11 +11,15 @@ pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
+	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
+	#[arg(long = "_docs", hide = true)]
+	pub docs: bool,
+
 	/// Database name or connection URL
 	///
 	/// Can be a simple database name (e.g., 'mydb') or full connection string
 	/// (e.g., 'postgresql://user:password@localhost:5432/dbname')
-	pub connstring: String,
+	pub connstring: Option<String>,
 
 	/// Enable write mode for this session
 	///
@@ -72,13 +76,23 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
+	if args.docs {
+		let markdown = clap_markdown::help_markdown::<Args>();
+		println!("{}", markdown);
+		return Ok(());
+	}
+
+	let connstring = args
+		.connstring
+		.ok_or_else(|| miette!("database name or connection URL is required"))?;
+
 	let theme = args.theme.resolve();
 	debug!(?theme, "using syntax highlighting theme");
 
-	let url = if args.connstring.contains("://") {
-		args.connstring
+	let url = if connstring.contains("://") {
+		connstring
 	} else {
-		format!("postgresql://localhost/{}", args.connstring)
+		format!("postgresql://localhost/{}", connstring)
 	};
 	debug!(url, "using connection url");
 

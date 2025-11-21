@@ -167,6 +167,10 @@ enum Command {
 		#[command(flatten)]
 		daemon: DaemonArgs,
 	},
+
+	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
+	#[command(hide = true, name = "_docs")]
+	Docs,
 }
 
 fn get_args() -> Result<(Args, WorkerGuard)> {
@@ -356,6 +360,11 @@ async fn main() -> Result<()> {
 		Command::Service { daemon } => {
 			let daemon_config = build_daemon_config(daemon)?;
 			bestool_alertd::windows_service::run_service(daemon_config)
+		}
+		Command::Docs => {
+			let markdown = clap_markdown::help_markdown::<Args>();
+			println!("{}", markdown);
+			Ok(())
 		}
 	}
 }

@@ -60,6 +60,9 @@ subcommands! {
 	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
 	crypto => Crypto(CryptoArgs),
+	#[clap(hide = true)]
+	#[clap(name = "_docs")]
+	docs => Docs(DocsArgs),
 	#[cfg(feature = "file")]
 	file => File(FileArgs),
 	#[cfg(feature = "__iti")]
