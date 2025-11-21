@@ -58,12 +58,10 @@ pub struct AlertsArgs {
 	/// skipped. Defaults to 30 seconds.
 	///
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--interval DURATION`"))]
 	#[arg(long, default_value = "30s")]
 	pub timeout: humantime::Duration,
 
 	/// Don't actually send alerts, just print them to stdout.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--dry-run`"))]
 	#[arg(long)]
 	pub dry_run: bool,
 }

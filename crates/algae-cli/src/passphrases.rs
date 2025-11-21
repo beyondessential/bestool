@@ -35,7 +35,6 @@ pub struct PassphraseArgs {
 	/// Path to a file containing a passphrase.
 	///
 	/// The contents of the file will be trimmed of whitespace.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-P, --passphrase-path PATH`"))]
 	#[arg(short = 'P', long)]
 	pub passphrase_path: Option<PathBuf>,
 
@@ -44,7 +43,6 @@ pub struct PassphraseArgs {
 	/// This is extremely insecure, only use when there is no other option. When on an interactive
 	/// terminal, make sure to wipe this command line from your history, or better yet not record it
 	/// in the first place (in Bash you often can do that by prepending a space to your command).
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--insecure-passphrase STRING`"))]
 	#[arg(long, conflicts_with = "passphrase_path")]
 	pub insecure_passphrase: Option<SecretString>,
 }

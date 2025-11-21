@@ -1,41 +1,35 @@
 use clap::Parser;
-use miette::{bail, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, bail};
 
 use crate::actions::{
-	tamanu::{find_tamanu, TamanuArgs},
 	Context,
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 /// Find and print the current Tamanu config.
 ///
 /// Alias: c
-#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigArgs {
 	/// Package to look at
 	///
 	/// If not provided, will look first for central then facility package.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-p, --package central|facility`"))]
 	#[arg(short, long)]
 	pub package: Option<String>,
 
 	/// Print compact JSON instead of pretty
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-c, --compact`"))]
 	#[arg(short, long)]
 	pub compact: bool,
 
 	/// Print null if key not found
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-n, --or-null`"))]
 	#[arg(short = 'n', long)]
 	pub or_null: bool,
 
 	/// Path to a subkey
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key`"))]
 	#[arg(short, long)]
 	pub key: Option<String>,
 
 	/// If the value is a string, print it directly (without quotes)
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-r, --raw`"))]
 	#[arg(short, long)]
 	pub raw: bool,
 }

@@ -12,7 +12,6 @@ use crate::actions::Context;
 use super::{TamanuArgs, config::load_config, find_tamanu};
 
 /// Generate a Greenmask config file.
-#[cfg_attr(docsrs, doc("\n\n**Command**: `bestool tamanu greenmask-config`"))]
 #[derive(Debug, Clone, Parser)]
 pub struct GreenmaskConfigArgs {
 	/// Folders containing table masking definitions.
@@ -21,7 +20,6 @@ pub struct GreenmaskConfigArgs {
 	///
 	/// By default, it will look in the `greenmask/config` folder in the Tamanu root, and the
 	/// `greenmask` folder in the Tamanu release folder. Non-existent folders are ignored.
-	#[cfg_attr(docsrs, doc("\n\n**Argument**: `PATH`"))]
 	#[arg(value_hint = ValueHint::DirPath)]
 	pub folders: Vec<PathBuf>,
 
@@ -30,7 +28,6 @@ pub struct GreenmaskConfigArgs {
 	/// By default, this is the `greenmask/dumps` folder in the Tamanu root.
 	///
 	/// If the folder does not exist, it will be created.
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `--storage-dir PATH`"))]
 	#[arg(long, value_hint = ValueHint::DirPath)]
 	pub storage_dir: Option<PathBuf>,
 }

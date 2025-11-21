@@ -75,7 +75,6 @@ pub struct KeyArgs {
 	/// ```identity.key
 	/// AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-k, --key-path PATH`"))]
 	#[arg(short, long, verbatim_doc_comment)]
 	pub key_path: Option<PathBuf>,
 
@@ -102,7 +101,6 @@ pub struct KeyArgs {
 	/// ```console
 	/// --key AGE-SECRET-KEY-1N84CR29PJTUQA22ALHP4YDL5ZFMXPW5GVETVY3UK58ZD6NPNPDLS4MCZFS
 	/// ```
-	#[cfg_attr(docsrs, doc("\n\n**Flag**: `-K, --key STRING`"))]
 	#[arg(short = 'K', verbatim_doc_comment, conflicts_with = "key_path")]
 	pub key: Option<String>,
 
