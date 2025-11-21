@@ -104,7 +104,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: /home/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -1260,7 +1260,14 @@ Aliases: p, pg, sql
    Controls the color scheme for SQL syntax highlighting in the input line. 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
 
   Default value: `auto`
-* `--audit-path <PATH>` — Path to audit database directory (default: /home/.local/state/bestool-psql)
+
+  Possible values:
+  - `light`
+  - `dark`
+  - `auto`:
+    Auto-detect terminal theme
+
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 
 
 

@@ -66,7 +66,7 @@ Async PostgreSQL client
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: /home/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 
 
 

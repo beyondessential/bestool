@@ -40,7 +40,7 @@ enum Command {
 	Protect(protect::ProtectArgs),
 	Reveal(reveal::RevealArgs),
 
-	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
+	/// Generate markdown documentation
 	#[command(hide = true, name = "_docs")]
 	Docs,
 }

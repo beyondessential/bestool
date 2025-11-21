@@ -172,7 +172,7 @@ enum Command {
 		daemon: DaemonArgs,
 	},
 
-	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
+	/// Generate markdown documentation
 	#[command(hide = true, name = "_docs")]
 	Docs,
 }

@@ -5,7 +5,7 @@ use crate::args::Args;
 
 use super::Context;
 
-/// Generate markdown documentation for all subcommands (hidden command for maintainers).
+/// Generate markdown documentation
 #[derive(Debug, Clone, Parser)]
 pub struct DocsArgs {}
 

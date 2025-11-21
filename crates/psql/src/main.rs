@@ -11,8 +11,8 @@ pub struct Args {
 	#[command(flatten)]
 	logging: LoggingArgs,
 
-	/// Generate markdown documentation for all subcommands (hidden command for maintainers)
-	#[arg(long = "_docs", hide = true)]
+	/// Generate markdown documentation
+	#[arg(long, hide = true)]
 	pub docs: bool,
 
 	/// Database name or connection URL
@@ -76,7 +76,7 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 async fn main() -> Result<()> {
 	let (args, _guard) = get_args()?;
 
-	if args.docs {
+	if args.docs || args.connstring.as_ref().is_some_and(|c| c == "_docs") {
 		let markdown = clap_markdown::help_markdown::<Args>();
 		println!("{}", markdown);
 		return Ok(());

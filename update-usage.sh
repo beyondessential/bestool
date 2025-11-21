@@ -3,22 +3,21 @@ set -eu
 
 cd "$(dirname "$0")"
 
+genusage() {
+	bin="$1"
+	folder="$2"
+	file="crates/$folder/USAGE.md"
+
+	echo "  - $bin..."
+	cargo run --bin "$bin" --quiet -- _docs > "$file"
+	sed -i "s|$HOME|~|g" "$file"
+}
+
 echo "Updating USAGE.md files..."
 
-# bestool
-echo "  - bestool..."
-cargo run -p bestool --quiet -- _docs > crates/bestool/USAGE.md
-
-# bestool-alertd
-echo "  - bestool-alertd..."
-cargo run -p bestool-alertd --quiet -- _docs > crates/alertd/USAGE.md
-
-# algae-cli
-echo "  - algae-cli..."
-cargo run -p algae-cli --quiet -- _docs > crates/algae-cli/USAGE.md
-
-# bestool-psql
-echo "  - bestool-psql..."
-cargo run -p bestool-psql --bin bestool-psql --quiet -- --_docs > crates/psql/USAGE.md
+genusage algae algae-cli
+genusage bestool bestool
+genusage bestool-alertd alertd
+genusage bestool-psql psql
 
 echo "All USAGE.md files updated successfully"
