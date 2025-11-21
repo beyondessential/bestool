@@ -1,6 +1,13 @@
+use winnow::{
+	Parser,
+	ascii::multispace0,
+	combinator::opt,
+	error::{ContextError, ErrMode},
+	token::{any, take_till},
+};
+
 use super::{Metacommand, QueryModifiers, parse_metacommand, parse_query_modifiers, strip_comment};
-use crate::input::ReplAction;
-use crate::repl::ReplState;
+use crate::{input::ReplAction, repl::ReplState};
 
 /// Parse multiple statements from input, returning completed actions and remaining buffer
 pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplAction>, String) {
@@ -14,90 +21,49 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 		return (vec![], String::new());
 	}
 
-	let mut actions = Vec::new();
 	let mut remaining = input;
+	let mut actions = Vec::new();
 
 	loop {
-		let start_remaining = remaining;
-		remaining = remaining.trim_start();
+		// Skip leading whitespace
+		let _ = multispace0::<_, ContextError>.parse_next(&mut remaining);
 
 		if remaining.is_empty() {
 			break;
 		}
 
-		// Try to parse metacommand first (must be at start of line)
-		if remaining.starts_with('\\') {
-			// Extract just the first line for parsing (metacommand parsers expect EOF)
-			let line_end = remaining.find('\n').unwrap_or(remaining.len());
-			let line = &remaining[..line_end];
+		let start_remaining = remaining;
 
-			// Strip comments from the line before parsing
-			let line_without_comment = strip_comment(line);
+		// Try to parse a metacommand
+		if let Ok(action) = parse_metacommand_action(&mut remaining) {
+			actions.push(action);
+			continue;
+		}
 
-			if let Some(stripped_line) = line_without_comment {
-				if let Ok(Some(metacmd)) = parse_metacommand(stripped_line) {
-					let action = metacommand_to_action(metacmd);
-					actions.push(action);
+		// Reset and try to parse a query
+		remaining = start_remaining;
+		if let Ok((sql, modifiers)) = parse_query_statement(&mut remaining, state) {
+			actions.push(ReplAction::Execute {
+				input: sql.clone(),
+				sql,
+				modifiers,
+			});
+			continue;
+		}
 
-					// Move past the line and newline
-					if line_end < remaining.len() {
-						remaining = &remaining[line_end + 1..];
-					} else {
-						remaining = "";
-					}
-					continue;
-				}
-			} else {
-				// Line is only a comment, skip it
-				if line_end < remaining.len() {
-					remaining = &remaining[line_end + 1..];
-				} else {
-					remaining = "";
-				}
+		// No progress made, check if there's a metacommand on a following line
+		remaining = start_remaining;
+		if let Some(newline_pos) = remaining.find('\n') {
+			let after_newline = remaining[newline_pos + 1..].trim_start();
+			if after_newline.starts_with('\\') {
+				// Skip to the metacommand line
+				remaining = &remaining[newline_pos + 1..];
 				continue;
 			}
 		}
 
-		// Try to parse query
-		match try_parse_query(remaining) {
-			Some((sql, modifiers, rest)) => {
-				let mut mods = modifiers;
-				if state.expanded_mode
-					&& !mods
-						.iter()
-						.any(|m| matches!(m, super::QueryModifier::Expanded))
-				{
-					mods.insert(super::QueryModifier::Expanded);
-				}
-
-				actions.push(ReplAction::Execute {
-					input: sql.clone(),
-					sql: sql.clone(),
-					modifiers: mods,
-				});
-
-				remaining = rest;
-				continue;
-			}
-			None => {
-				// No complete statement found
-				// Check if there's a metacommand on a following line
-				if let Some(newline_pos) = remaining.find('\n') {
-					let after_newline = &remaining[newline_pos + 1..].trim_start();
-					if after_newline.starts_with('\\') {
-						// There's a metacommand after incomplete SQL
-						// Skip to the metacommand line
-						remaining = after_newline;
-						continue;
-					}
-				}
-
-				if start_remaining == remaining {
-					// No progress made, break to avoid infinite loop
-					break;
-				}
-			}
-		}
+		// No progress possible, break
+		break;
 	}
 
 	if actions.is_empty() {
@@ -109,154 +75,179 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 	}
 }
 
-fn try_parse_query(input: &str) -> Option<(String, QueryModifiers, &str)> {
-	let trimmed = input.trim_start();
-	if trimmed.is_empty() {
-		return None;
+fn parse_metacommand_action(input: &mut &str) -> Result<ReplAction, ErrMode<ContextError>> {
+	// Must start with backslash
+	'\\'.parse_next(input)?;
+
+	// Get the rest of the line
+	let line_end = input.find('\n').unwrap_or(input.len());
+	let line = &input[..line_end];
+	*input = &input[line_end..];
+
+	let full_line = format!("\\{}", line);
+
+	// Skip the newline if present
+	let _: Result<_, ContextError> = opt('\n').parse_next(input);
+
+	// Strip comments from the line before parsing
+	let line_without_comment = strip_comment(&full_line);
+
+	if let Some(stripped_line) = line_without_comment
+		&& let Ok(Some(metacmd)) = parse_metacommand(stripped_line)
+	{
+		return Ok(metacommand_to_action(metacmd));
 	}
 
-	let semicolon_pos = find_statement_end_semicolon(trimmed);
-	let backslash_pos = find_statement_end_backslash_g(trimmed);
+	Err(ErrMode::Backtrack(ContextError::new()))
+}
 
-	match (semicolon_pos, backslash_pos) {
-		(Some(semi_pos), Some(bs_pos)) if semi_pos < bs_pos => {
-			let sql = trimmed[..semi_pos].trim().to_string();
-			let rest = &trimmed[semi_pos + 1..];
-			// Check if rest of line is just a comment
-			let rest = if let Some(newline_pos) = rest.find('\n') {
-				let line = &rest[..newline_pos];
-				if strip_comment(line).is_none() {
-					&rest[newline_pos + 1..]
-				} else {
-					rest
-				}
-			} else if strip_comment(rest).is_none() {
-				""
-			} else {
-				rest
-			};
-			Some((sql, QueryModifiers::new(), rest))
-		}
-		(Some(semi_pos), None) => {
-			let sql = trimmed[..semi_pos].trim().to_string();
-			let rest = &trimmed[semi_pos + 1..];
-			// Check if rest of line is just a comment
-			let rest = if let Some(newline_pos) = rest.find('\n') {
-				let line = &rest[..newline_pos];
-				if strip_comment(line).is_none() {
-					&rest[newline_pos + 1..]
-				} else {
-					rest
-				}
-			} else if strip_comment(rest).is_none() {
-				""
-			} else {
-				rest
-			};
-			Some((sql, QueryModifiers::new(), rest))
-		}
-		(_, Some(bs_pos)) => {
-			let query_part = &trimmed[..bs_pos];
-			let modifier_part = &trimmed[bs_pos..];
+fn parse_query_statement(
+	input: &mut &str,
+	state: &ReplState,
+) -> Result<(String, QueryModifiers), ErrMode<ContextError>> {
+	let start = *input;
+	let sql_result = sql_until_terminator(input)?;
 
-			if let Some(newline_pos) = modifier_part.find('\n') {
-				let modifier_line = &modifier_part[..newline_pos];
-				if let Ok(Some((sql, modifiers))) =
-					parse_query_modifiers(&format!("{}{}", query_part, modifier_line))
-				{
-					let rest = &modifier_part[newline_pos + 1..];
-					return Some((sql, modifiers, rest));
+	match sql_result {
+		SqlResult::Semicolon(sql) => {
+			// Skip the semicolon
+			';'.parse_next(input)?;
+			// Skip any trailing comment on the same line
+			let _ = skip_line_comment(input);
+			let mut mods = QueryModifiers::new();
+			if state.expanded_mode {
+				mods.insert(super::QueryModifier::Expanded);
+			}
+			Ok((sql, mods))
+		}
+		SqlResult::BackslashG(sql) => {
+			// We need to parse \g and any modifiers
+			// The input currently points to the \g part
+
+			// Consume \g
+			let ch1: char = any::<_, ContextError>
+				.parse_next(input)
+				.map_err(ErrMode::Backtrack)?;
+			let ch2: char = any::<_, ContextError>
+				.parse_next(input)
+				.map_err(ErrMode::Backtrack)?;
+
+			if ch1 != '\\' || (ch2 != 'g' && ch2 != 'G') {
+				*input = start;
+				return Err(ErrMode::Backtrack(ContextError::new()));
+			}
+
+			// Successfully parsed \g, now check for modifiers
+			let remaining_line: &str = take_till(0.., '\n').parse_next(input)?;
+			let _: Result<_, ContextError> = opt('\n').parse_next(input);
+
+			// Check if there were modifiers after \g
+			let mut mods = QueryModifiers::new();
+			if !remaining_line.trim().is_empty() {
+				// Try to parse the full query with modifiers
+				let full_query = format!("{}\\g{}", sql, remaining_line);
+				if let Ok(Some((_, parsed_mods))) = parse_query_modifiers(&full_query) {
+					mods = parsed_mods;
 				}
-			} else if let Ok(Some((sql, modifiers))) =
-				parse_query_modifiers(&format!("{}{}", query_part, modifier_part))
+			}
+
+			if state.expanded_mode
+				&& !mods
+					.iter()
+					.any(|m| matches!(m, super::QueryModifier::Expanded))
 			{
-				return Some((sql, modifiers, ""));
+				mods.insert(super::QueryModifier::Expanded);
 			}
-
-			None
+			Ok((sql, mods))
 		}
-		(None, None) => None,
 	}
 }
 
-fn find_statement_end_semicolon(input: &str) -> Option<usize> {
+#[derive(Debug)]
+enum SqlResult {
+	Semicolon(String),
+	BackslashG(String),
+}
+
+fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextError>> {
+	let mut result = String::new();
 	let mut in_single_quote = false;
 	let mut in_double_quote = false;
 	let mut in_comment = false;
 	let mut prev_char = '\0';
 
-	for (i, ch) in input.char_indices() {
+	while !input.is_empty() {
+		let before = *input;
+		let ch: char = any::<_, ContextError>
+			.parse_next(input)
+			.map_err(ErrMode::Backtrack)?;
+
 		match ch {
 			'\n' => {
 				in_comment = false;
-			}
-			'-' if !in_single_quote && !in_double_quote && !in_comment && prev_char == '-' => {
-				in_comment = true;
-			}
-			'\'' if !in_double_quote && !in_comment && prev_char != '\\' => {
-				in_single_quote = !in_single_quote;
-			}
-			'"' if !in_single_quote && !in_comment && prev_char != '\\' => {
-				in_double_quote = !in_double_quote;
-			}
-			';' if !in_single_quote && !in_double_quote && !in_comment => {
-				return Some(i);
-			}
-			_ => {}
-		}
-		prev_char = ch;
-	}
+				result.push(ch);
 
-	None
-}
-
-fn find_statement_end_backslash_g(input: &str) -> Option<usize> {
-	let mut in_single_quote = false;
-	let mut in_double_quote = false;
-	let mut in_comment = false;
-	let mut prev_char = '\0';
-
-	for (i, ch) in input.char_indices() {
-		match ch {
-			'\n' => {
-				in_comment = false;
+				// Check if next non-whitespace is a metacommand
 				if !in_single_quote && !in_double_quote {
-					// Check if next non-whitespace is a metacommand
-					let rest = &input[i + 1..];
-					let trimmed_rest = rest.trim_start();
-					if trimmed_rest.starts_with('\\') {
-						// Check if it's actually a metacommand (not just \g)
-						if let Some(second_char) = trimmed_rest.chars().nth(1)
-							&& second_char != 'g' && second_char != 'G'
-						{
-							// This is a metacommand, end the query here
-							return Some(i);
-						}
+					let rest = input.trim_start();
+					if rest.starts_with('\\')
+						&& let Some(second_char) = rest.chars().nth(1)
+						&& second_char != 'g'
+						&& second_char != 'G'
+					{
+						// This is a metacommand, end the query here
+						result.pop(); // Remove the newline
+						return Ok(SqlResult::BackslashG(result.trim().to_string()));
 					}
 				}
 			}
 			'-' if !in_single_quote && !in_double_quote && !in_comment && prev_char == '-' => {
 				in_comment = true;
+				result.push(ch);
 			}
 			'\'' if !in_double_quote && !in_comment && prev_char != '\\' => {
 				in_single_quote = !in_single_quote;
+				result.push(ch);
 			}
 			'"' if !in_single_quote && !in_comment && prev_char != '\\' => {
 				in_double_quote = !in_double_quote;
+				result.push(ch);
+			}
+			';' if !in_single_quote && !in_double_quote && !in_comment => {
+				// Found terminating semicolon
+				*input = before;
+				return Ok(SqlResult::Semicolon(result.trim().to_string()));
 			}
 			'\\' if !in_single_quote && !in_double_quote && !in_comment => {
-				if let Some(next_ch) = input[i + 1..].chars().next()
+				// Check if next char is 'g' or 'G'
+				if let Some(next_ch) = input.chars().next()
 					&& (next_ch == 'g' || next_ch == 'G')
 				{
-					return Some(i);
+					// Found \g terminator
+					*input = before;
+					return Ok(SqlResult::BackslashG(result.trim().to_string()));
 				}
+				result.push(ch);
 			}
-			_ => {}
+			_ => {
+				result.push(ch);
+			}
 		}
+
 		prev_char = ch;
 	}
 
-	None
+	// No terminator found
+	Err(ErrMode::Backtrack(ContextError::new()))
+}
+
+fn skip_line_comment(input: &mut &str) -> Result<(), ErrMode<ContextError>> {
+	let line_rest: &str = take_till(0.., '\n').parse_next(input)?;
+	if strip_comment(line_rest).is_none() {
+		// Line is only a comment, skip the newline too
+		let _: Result<_, ContextError> = opt('\n').parse_next(input);
+	}
+	Ok(())
 }
 
 fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
@@ -581,8 +572,7 @@ mod tests {
 	#[test]
 	fn test_user_query_with_comments() {
 		let state = make_state();
-		let input = r#"
-			WITH group_analysis AS (
+		let input = r#"WITH group_analysis AS (
   SELECT
     table_schema,
     table_name,
