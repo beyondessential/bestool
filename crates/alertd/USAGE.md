@@ -19,6 +19,8 @@ The daemon watches for changes to alert definition files and automatically reloa
 
 On Windows, the daemon can be installed as a native Windows service using the 'install' subcommand. See 'bestool-alertd install --help' for details.
 
+The alert and target definitions are documented online at: <https://github.com/beyondessential/bestool/blob/main/crates/alertd/ALERTS.md> and <https://github.com/beyondessential/bestool/blob/main/crates/alertd/TARGETS.md>.
+
 **Usage:** `bestool-alertd [OPTIONS] <COMMAND>`
 
 ###### **Subcommands:**
