@@ -9,8 +9,8 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 		return (vec![], String::new());
 	}
 
-	// Check if the entire input is just a comment
-	if strip_comment(input).is_none() {
+	// Check if the entire input is just a comment (only for single-line input)
+	if !input.contains('\n') && strip_comment(input).is_none() {
 		return (vec![], String::new());
 	}
 

@@ -33,8 +33,19 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 					debug!("failed to add to history: {e}");
 				}
 
-				let (_, actions) =
+				let (remaining, mut actions) =
 					handle_input("", &edited_content, &ctx.repl_state.lock().unwrap());
+
+				// If there's remaining input (incomplete query), auto-execute it by appending a semicolon.
+				// This handles both cases:
+				// 1. File with only incomplete query (actions empty)
+				// 2. File with complete queries followed by incomplete (actions not empty)
+				if !remaining.trim().is_empty() {
+					let completed = format!("{};", remaining);
+					let (_, new_actions) =
+						handle_input("", &completed, &ctx.repl_state.lock().unwrap());
+					actions.extend(new_actions);
+				}
 
 				for action in actions {
 					if let ReplAction::Execute {

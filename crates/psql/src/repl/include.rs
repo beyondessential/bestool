@@ -43,7 +43,17 @@ pub async fn handle_include(
 			saved
 		};
 
-		let (_, actions) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
+		let (remaining, mut actions) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
+
+		// If there's remaining input (incomplete query), auto-execute it by appending a semicolon.
+		// This handles both cases:
+		// 1. File with only incomplete query (actions empty)
+		// 2. File with complete queries followed by incomplete (actions not empty)
+		if !remaining.trim().is_empty() {
+			let completed = format!("{};", remaining);
+			let (_, new_actions) = handle_input("", &completed, &ctx.repl_state.lock().unwrap());
+			actions.extend(new_actions);
+		}
 
 		let mut result = ControlFlow::Continue(());
 		for action in actions {

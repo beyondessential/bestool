@@ -457,4 +457,144 @@ mod tests {
 			_ => panic!("Expected Execute action"),
 		}
 	}
+
+	#[test]
+	fn test_auto_execute_by_appending_semicolon() {
+		let state = ReplState::new();
+		let incomplete_query = "SELECT 1 + 1";
+
+		// Parse the incomplete query
+		let (remaining, actions) = handle_input("", incomplete_query, &state);
+
+		// Should have no actions and remaining buffer
+		assert_eq!(actions.len(), 0);
+		assert_eq!(remaining, incomplete_query);
+
+		// Now auto-complete by appending semicolon (simulating \i or \e behavior)
+		let completed = format!("{};", remaining);
+		let (remaining2, actions2) = handle_input("", &completed, &state);
+
+		// Should now have one action and no remaining
+		assert_eq!(remaining2, "");
+		assert_eq!(actions2.len(), 1);
+		match &actions2[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 1 + 1");
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_auto_execute_with_comments() {
+		let state = ReplState::new();
+		let incomplete_query = "-- Comment\nSELECT 1 + 1";
+
+		// Parse the incomplete query
+		let (remaining, actions) = handle_input("", incomplete_query, &state);
+
+		// Should have no actions and remaining buffer
+		assert_eq!(actions.len(), 0);
+		assert_eq!(remaining, incomplete_query);
+
+		// Now auto-complete by appending semicolon
+		let completed = format!("{};", remaining);
+		let (remaining2, actions2) = handle_input("", &completed, &state);
+
+		// Should now have one action and no remaining
+		assert_eq!(remaining2, "");
+		assert_eq!(actions2.len(), 1);
+		match &actions2[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert!(sql.contains("SELECT 1 + 1"));
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_auto_execute_mixed_complete_and_incomplete() {
+		let state = ReplState::new();
+		let mixed_query = "SELECT 1 + 1;\nSELECT 2 + 3";
+
+		// Parse the mixed query
+		let (remaining, actions) = handle_input("", mixed_query, &state);
+
+		// Should have one action (first complete query) and remaining buffer (second incomplete)
+		assert_eq!(actions.len(), 1);
+		assert_eq!(remaining.trim(), "SELECT 2 + 3");
+
+		// Now auto-complete the remaining by appending semicolon
+		let completed = format!("{};", remaining);
+		let (remaining2, actions2) = handle_input("", &completed, &state);
+
+		// Should now have one more action and no remaining
+		assert_eq!(remaining2, "");
+		assert_eq!(actions2.len(), 1);
+		match &actions2[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 2 + 3");
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_auto_execute_multiple_complete_then_incomplete() {
+		let state = ReplState::new();
+		let query = "SELECT 1;\nSELECT 2;\nSELECT 3";
+
+		// Parse the query
+		let (remaining, actions) = handle_input("", query, &state);
+
+		// Should have two actions (first two complete queries) and remaining (third incomplete)
+		assert_eq!(actions.len(), 2);
+		assert_eq!(remaining.trim(), "SELECT 3");
+
+		// Auto-complete the remaining
+		let completed = format!("{};", remaining);
+		let (remaining2, actions2) = handle_input("", &completed, &state);
+
+		// Should have one more action
+		assert_eq!(remaining2, "");
+		assert_eq!(actions2.len(), 1);
+	}
+
+	#[test]
+	fn test_already_complete_query_not_affected() {
+		let state = ReplState::new();
+		let complete_query = "SELECT 1 + 1;";
+
+		// Parse the complete query
+		let (remaining, actions) = handle_input("", complete_query, &state);
+
+		// Should have one action and no remaining
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 1 + 1");
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
+	fn test_auto_execute_with_backslash_g() {
+		let state = ReplState::new();
+		let complete_query = "SELECT 1 + 1 \\g";
+
+		// Parse the query with \g
+		let (remaining, actions) = handle_input("", complete_query, &state);
+
+		// Should have one action and no remaining
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 1 + 1");
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
 }
