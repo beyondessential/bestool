@@ -182,17 +182,24 @@ fn try_parse_query(input: &str) -> Option<(String, QueryModifiers, &str)> {
 fn find_statement_end_semicolon(input: &str) -> Option<usize> {
 	let mut in_single_quote = false;
 	let mut in_double_quote = false;
+	let mut in_comment = false;
 	let mut prev_char = '\0';
 
 	for (i, ch) in input.char_indices() {
 		match ch {
-			'\'' if !in_double_quote && prev_char != '\\' => {
+			'\n' => {
+				in_comment = false;
+			}
+			'-' if !in_single_quote && !in_double_quote && !in_comment && prev_char == '-' => {
+				in_comment = true;
+			}
+			'\'' if !in_double_quote && !in_comment && prev_char != '\\' => {
 				in_single_quote = !in_single_quote;
 			}
-			'"' if !in_single_quote && prev_char != '\\' => {
+			'"' if !in_single_quote && !in_comment && prev_char != '\\' => {
 				in_double_quote = !in_double_quote;
 			}
-			';' if !in_single_quote && !in_double_quote => {
+			';' if !in_single_quote && !in_double_quote && !in_comment => {
 				return Some(i);
 			}
 			_ => {}
@@ -206,36 +213,42 @@ fn find_statement_end_semicolon(input: &str) -> Option<usize> {
 fn find_statement_end_backslash_g(input: &str) -> Option<usize> {
 	let mut in_single_quote = false;
 	let mut in_double_quote = false;
+	let mut in_comment = false;
 	let mut prev_char = '\0';
 
 	for (i, ch) in input.char_indices() {
 		match ch {
-			'\'' if !in_double_quote && prev_char != '\\' => {
+			'\n' => {
+				in_comment = false;
+				if !in_single_quote && !in_double_quote {
+					// Check if next non-whitespace is a metacommand
+					let rest = &input[i + 1..];
+					let trimmed_rest = rest.trim_start();
+					if trimmed_rest.starts_with('\\') {
+						// Check if it's actually a metacommand (not just \g)
+						if let Some(second_char) = trimmed_rest.chars().nth(1)
+							&& second_char != 'g' && second_char != 'G'
+						{
+							// This is a metacommand, end the query here
+							return Some(i);
+						}
+					}
+				}
+			}
+			'-' if !in_single_quote && !in_double_quote && !in_comment && prev_char == '-' => {
+				in_comment = true;
+			}
+			'\'' if !in_double_quote && !in_comment && prev_char != '\\' => {
 				in_single_quote = !in_single_quote;
 			}
-			'"' if !in_single_quote && prev_char != '\\' => {
+			'"' if !in_single_quote && !in_comment && prev_char != '\\' => {
 				in_double_quote = !in_double_quote;
 			}
-			'\\' if !in_single_quote && !in_double_quote => {
+			'\\' if !in_single_quote && !in_double_quote && !in_comment => {
 				if let Some(next_ch) = input[i + 1..].chars().next()
 					&& (next_ch == 'g' || next_ch == 'G')
 				{
 					return Some(i);
-				}
-			}
-			'\n' if !in_single_quote && !in_double_quote => {
-				// Check if next non-whitespace is a metacommand
-				let rest = &input[i + 1..];
-				let trimmed_rest = rest.trim_start();
-				if trimmed_rest.starts_with('\\') {
-					// Check if it's actually a metacommand (not just \g)
-					if let Some(second_char) = trimmed_rest.chars().nth(1)
-						&& second_char != 'g'
-						&& second_char != 'G'
-					{
-						// This is a metacommand, end the query here
-						return Some(i);
-					}
 				}
 			}
 			_ => {}
@@ -563,5 +576,155 @@ mod tests {
 			}
 			_ => panic!("Expected Execute"),
 		}
+	}
+
+	#[test]
+	fn test_user_query_with_comments() {
+		let state = make_state();
+		let input = r#"
+			WITH group_analysis AS (
+  SELECT
+    table_schema,
+    table_name,
+    record_id,
+    -- Condition 1: Does a non-zero user for 2.40.5 row exist?
+    BOOL_OR(
+      version = '2.40.5'
+      AND updated_by_user_id <> '00000000-0000-0000-0000-000000000000'
+    ) AS has_non_zero_2_40_5,
+    -- Condition 2: Does a lower version exist?
+    BOOL_OR(
+      version <> 'unknown'
+      AND string_to_array(version, '.')::int[]
+            < string_to_array('2.40.5', '.')::int[]
+    ) AS has_lower_version,
+    -- Condition 3: Does an 000-user, outside of backfill time for 2.40.5 row exist
+    BOOL_OR(
+      version = '2.40.5'
+      AND updated_by_user_id = '00000000-0000-0000-0000-000000000000'
+      AND NOT (
+        (created_at >= '2025-10-23 09:17:37.222+11' AND created_at < '2025-10-23 09:17:37.223+11')
+        OR
+        (created_at >= '2025-10-23 09:41:14.330+11' AND created_at < '2025-10-23 09:41:14.331+11')
+      )
+    ) AS has_outlier_zero_user_2_40_5
+  FROM logs.changes_backup
+  GROUP BY
+    table_schema,
+    table_name,
+    record_id
+),
+flagged_targets AS (
+  SELECT
+    cb.id,
+    ga.has_lower_version,
+    ga.has_non_zero_2_40_5,
+    ga.has_outlier_zero_user_2_40_5,
+    ROW_NUMBER() OVER (
+      PARTITION BY cb.table_schema, cb.table_name, cb.record_id
+      ORDER BY cb.created_at ASC, cb.id
+    ) AS rn
+  FROM logs.changes_backup AS cb
+  JOIN group_analysis AS ga
+    ON cb.table_schema = ga.table_schema
+   AND cb.table_name   = ga.table_name
+   AND cb.record_id    = ga.record_id
+  WHERE
+    -- Target only the 000-user, 2.40.5 rows *inside* the backfill windows
+    cb.updated_by_user_id = '00000000-0000-0000-0000-000000000000'
+    AND cb.version = '2.40.5'
+    AND (
+      (cb.created_at >= '2025-10-23 09:17:37.222+11' AND cb.created_at < '2025-10-23 09:17:37.223+11')
+      OR
+      (cb.created_at >= '2025-10-23 09:41:14.330+11' AND cb.created_at < '2025-10-23 09:41:14.331+11')
+    )
+)
+DELETE FROM logs.changes_backup
+WHERE id IN (
+  SELECT id
+  FROM flagged_targets
+  WHERE
+    -- Rule 1: Delete if a non-zero user, 2.40.5 row exists
+    has_non_zero_2_40_5
+    -- Rule 2: OR delete if a lower version exists
+    OR has_lower_version
+    -- Rule 3: OR delete if an "outlier" 000-user 2.40.5 row already exists
+    OR has_outlier_zero_user_2_40_5
+    -- Rule 4: OR (if all above are false) delete if it's a duplicate
+    OR rn > 1
+    );
+"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(
+			remaining, "",
+			"Query should be complete, but got remaining: {}",
+			remaining
+		);
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert!(sql.contains("WITH group_analysis"));
+				assert!(sql.contains("DELETE FROM logs.changes_backup"));
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_comment_with_quotes_in_middle() {
+		let state = make_state();
+		let input = r#"SELECT 1 AS first,
+-- This is a "quoted" comment
+2 AS second;"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert!(sql.contains("SELECT 1 AS first"));
+				assert!(sql.contains("2 AS second"));
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_comment_with_single_quote() {
+		let state = make_state();
+		let input = "SELECT 1 -- don't worry\n;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+	}
+
+	#[test]
+	fn test_multiple_comments_with_quotes() {
+		let state = make_state();
+		let input = r#"SELECT
+-- This "has" quotes
+1 AS id,
+-- And 'this' too
+2 AS value;"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+	}
+
+	#[test]
+	fn test_comment_with_semicolon() {
+		let state = make_state();
+		let input = "SELECT 1 -- ; this semicolon is in a comment\n;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+	}
+
+	#[test]
+	fn test_comment_with_backslash_g() {
+		let state = make_state();
+		let input = "SELECT 1 -- \\g this is in a comment\n;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
 	}
 }
