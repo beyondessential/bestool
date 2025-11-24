@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.2.3](https://github.com/beyondessential/bestool/compare/v1.2.2..1.2.3) - 2025-11-24
+## [1.2.4](https://github.com/beyondessential/bestool/compare/v1.2.3..1.2.4) - 2025-11-24
+
+
+
+
+- **fix(psql):** Argument parsing and overriding - ([aeaa712](https://github.com/beyondessential/bestool/commit/aeaa71287e5a42c7821b88d9ed681672a62393e0))
+- **refactor(psql):** Provisionally add facet to our types - ([4f8cc4d](https://github.com/beyondessential/bestool/commit/4f8cc4df6161cf1155efa4b92eb6df3b05a2094b))
+---
+## [1.2.3](https://github.com/beyondessential/bestool/compare/v1.2.2..v1.2.3) - 2025-11-24
 
 
 - **feat:** Add _docs hidden command to generate USAGE.md files - ([f08d8ee](https://github.com/beyondessential/bestool/commit/f08d8eedfab94eacab0aea93dfd0f9c1684445fc))
