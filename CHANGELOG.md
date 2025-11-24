@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.2.3](https://github.com/beyondessential/bestool/compare/v1.2.2..1.2.3) - 2025-11-24
+
+
+- **feat:** Add _docs hidden command to generate USAGE.md files - ([f08d8ee](https://github.com/beyondessential/bestool/commit/f08d8eedfab94eacab0aea93dfd0f9c1684445fc))
+- **tweak:** Support _docs on standalone psql too - ([63cb023](https://github.com/beyondessential/bestool/commit/63cb0236985ca51f5b92a1baa43a778eafe4d323))
+
+
+- **fix(psql):** Downgrade to notls if sslmode=prefer (default) and tls setup - ([41c0522](https://github.com/beyondessential/bestool/commit/41c0522cf2db60c10d0397362932641558badd5f))
+---
 ## [1.2.0](https://github.com/beyondessential/bestool/compare/v1.1.16..v1.2.0) - 2025-11-20
 
 
