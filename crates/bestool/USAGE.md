@@ -1248,6 +1248,18 @@ Aliases: p, pg, sql
 * `-U`, `--username <USERNAME>` — Connect to postgres with a different username.
 
    This may prompt for a password depending on your local settings and pg_hba config.
+* `--ssl <SSL>` — SSL mode for the connection.
+
+   Defaults to 'prefer' which attempts SSL but falls back to non-SSL. Use 'disable' to skip SSL entirely (useful on Windows with certificate issues). Use 'require' to enforce SSL connections.
+
+  Possible values:
+  - `disable`:
+    Disable SSL/TLS encryption
+  - `prefer`:
+    Prefer SSL/TLS but allow unencrypted connections
+  - `require`:
+    Require SSL/TLS encryption
+
 * `-W`, `--write` — Enable write mode for this psql.
 
    By default we set `TRANSACTION READ ONLY` for the session, which prevents writes. To enable writes, either pass this flag, or call `\W` within the session.
