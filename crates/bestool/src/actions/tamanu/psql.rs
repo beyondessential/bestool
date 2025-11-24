@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use miette::Result;
+use miette::{IntoDiagnostic as _, Result};
 use tracing::debug;
 
 use crate::actions::Context;
@@ -9,11 +9,12 @@ use crate::actions::Context;
 use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
 
 /// SSL mode for PostgreSQL connections
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Default, Clone, Copy, ValueEnum)]
 pub enum SslMode {
 	/// Disable SSL/TLS encryption
 	Disable,
 	/// Prefer SSL/TLS but allow unencrypted connections
+	#[default]
 	Prefer,
 	/// Require SSL/TLS encryption
 	Require,
@@ -45,8 +46,10 @@ pub struct PsqlArgs {
 	/// Defaults to 'prefer' which attempts SSL but falls back to non-SSL.
 	/// Use 'disable' to skip SSL entirely (useful on Windows with certificate issues).
 	/// Use 'require' to enforce SSL connections.
-	#[arg(long, value_enum, conflicts_with = "url")]
-	pub ssl: Option<SslMode>,
+	///
+	/// Ignored if a database URL is provided and it contains an sslmode parameter.
+	#[arg(long, value_enum, default_value_t = SslMode::default())]
+	pub ssl: SslMode,
 
 	/// Connect to postgres with a connection URL.
 	///
@@ -97,7 +100,11 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	} = ctx.args_sub;
 
 	let url = if let Some(url) = url {
-		url
+		let mut url = reqwest::Url::parse(&url).into_diagnostic()?;
+		if !url.query_pairs().any(|(key, _)| key == "sslmode") {
+			url.query_pairs_mut().append_pair("sslmode", ssl.as_str());
+		}
+		url.to_string()
 	} else {
 		let (_, root) = find_tamanu(&ctx.args_top)?;
 		let config = load_config(&root, None)?;
@@ -153,7 +160,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			host: config.db.host.clone().unwrap_or_default(),
 			port: config.db.port,
 			database: config.db.name.clone(),
-			ssl_mode: ssl.map(|s| s.as_str().to_string()),
+			ssl_mode: Some(ssl.as_str().to_string()),
 		};
 		builder.build()
 	};

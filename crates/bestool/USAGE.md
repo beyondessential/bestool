@@ -1252,6 +1252,10 @@ Aliases: p, pg, sql
 
    Defaults to 'prefer' which attempts SSL but falls back to non-SSL. Use 'disable' to skip SSL entirely (useful on Windows with certificate issues). Use 'require' to enforce SSL connections.
 
+   Ignored if a database URL is provided and it contains an sslmode parameter.
+
+  Default value: `prefer`
+
   Possible values:
   - `disable`:
     Disable SSL/TLS encryption

@@ -26,7 +26,7 @@ pub struct Args {
 	/// Defaults to 'prefer' which attempts TLS but falls back to non-TLS.
 	/// Use 'disable' to skip TLS entirely (useful on Windows with certificate issues).
 	/// Use 'require' to enforce TLS connections.
-	#[arg(long, value_enum, conflicts_with = "url")]
+	#[arg(long, value_enum, default_value_t = TlsMode::default())]
 	pub ssl: TlsMode,
 
 	/// Enable write mode for this session
