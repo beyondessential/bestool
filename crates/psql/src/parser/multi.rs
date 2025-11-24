@@ -169,12 +169,40 @@ enum SqlResult {
 	BackslashG(String),
 }
 
+/// Parse SQL until a terminator (semicolon or \g) is found
+///
+/// This function handles various PostgreSQL syntax features to avoid
+/// treating content inside strings or comments as statement terminators:
+///
+/// Supported:
+/// - Single-quoted strings: 'text'
+/// - Double-quoted identifiers: "identifier"
+/// - Dollar-quoted strings: $tag$text$tag$ (including empty tags: $$text$$)
+/// - Line comments: -- comment
+/// - Block comments: /* comment */ (including nested: /* outer /* inner */ */)
+/// - Escape sequences in strings (handled naturally by tracking quote state)
+///
+/// The parser correctly handles:
+/// - Semicolons inside strings and comments
+/// - Operators that look like comments (e.g., `- -` for subtraction)
+/// - Arrays with string literals: ARRAY['a;b', 'c;d']
+///
+/// Not specifically handled (but work correctly due to quote tracking):
+/// - Escape strings: E'text\n' (treated as regular strings)
+/// - Unicode strings: U&'text' (treated as regular strings)
+/// - Bit/hex strings: B'101', X'1a2b' (treated as regular strings)
+///
+/// Potential future additions if needed:
+/// - C-style escape sequences: E'\\' vs E'\' (currently relies on prev_char check)
+/// - String continuation across lines (PostgreSQL allows this)
+/// - Special handling for specific operators
 fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextError>> {
 	let mut result = String::new();
 	let mut in_single_quote = false;
 	let mut in_double_quote = false;
 	let mut in_dollar_quote: Option<String> = None;
-	let mut in_comment = false;
+	let mut in_line_comment = false;
+	let mut block_comment_depth: usize = 0;
 	let mut prev_char = '\0';
 
 	while !input.is_empty() {
@@ -185,11 +213,15 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 
 		match ch {
 			'\n' => {
-				in_comment = false;
+				in_line_comment = false;
 				result.push(ch);
 
 				// Check if next non-whitespace is a metacommand
-				if !in_single_quote && !in_double_quote && in_dollar_quote.is_none() {
+				if !in_single_quote
+					&& !in_double_quote
+					&& in_dollar_quote.is_none()
+					&& block_comment_depth == 0
+				{
 					let rest = input.trim_start();
 					if rest.starts_with('\\')
 						&& let Some(second_char) = rest.chars().nth(1)
@@ -205,15 +237,38 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 			'-' if !in_single_quote
 				&& !in_double_quote
 				&& in_dollar_quote.is_none()
-				&& !in_comment
+				&& block_comment_depth == 0
+				&& !in_line_comment
 				&& prev_char == '-' =>
 			{
-				in_comment = true;
+				in_line_comment = true;
+				result.push(ch);
+			}
+			'/' if !in_single_quote
+				&& !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_line_comment
+				&& prev_char == '*'
+				&& block_comment_depth > 0 =>
+			{
+				// End of block comment
+				block_comment_depth -= 1;
+				result.push(ch);
+			}
+			'*' if !in_single_quote
+				&& !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_line_comment
+				&& prev_char == '/' =>
+			{
+				// Start of block comment
+				block_comment_depth += 1;
 				result.push(ch);
 			}
 			'\'' if !in_double_quote
 				&& in_dollar_quote.is_none()
-				&& !in_comment
+				&& !in_line_comment
+				&& block_comment_depth == 0
 				&& prev_char != '\\' =>
 			{
 				in_single_quote = !in_single_quote;
@@ -221,13 +276,18 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 			}
 			'"' if !in_single_quote
 				&& in_dollar_quote.is_none()
-				&& !in_comment
+				&& !in_line_comment
+				&& block_comment_depth == 0
 				&& prev_char != '\\' =>
 			{
 				in_double_quote = !in_double_quote;
 				result.push(ch);
 			}
-			'$' if !in_single_quote && !in_double_quote && !in_comment => {
+			'$' if !in_single_quote
+				&& !in_double_quote
+				&& !in_line_comment
+				&& block_comment_depth == 0 =>
+			{
 				// Check for dollar-quoted string
 				result.push(ch);
 				*input = before;
@@ -266,7 +326,8 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 			';' if !in_single_quote
 				&& !in_double_quote
 				&& in_dollar_quote.is_none()
-				&& !in_comment =>
+				&& !in_line_comment
+				&& block_comment_depth == 0 =>
 			{
 				// Found terminating semicolon
 				*input = before;
@@ -275,7 +336,8 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 			'\\' if !in_single_quote
 				&& !in_double_quote
 				&& in_dollar_quote.is_none()
-				&& !in_comment =>
+				&& !in_line_comment
+				&& block_comment_depth == 0 =>
 			{
 				// Check if next char is 'g' or 'G'
 				if let Some(next_ch) = input.chars().next()
@@ -743,6 +805,132 @@ $$;"#;
 					sql,
 					"CREATE FUNCTION test() RETURNS void AS $$ BEGIN SELECT 1; SELECT 2; END; $$ LANGUAGE plpgsql"
 				);
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_block_comment_with_semicolon() {
+		let state = make_state();
+		let input = "SELECT /* this is a block comment; with semicolon */ 1;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(
+					sql,
+					"SELECT /* this is a block comment; with semicolon */ 1"
+				);
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_nested_block_comments() {
+		let state = make_state();
+		let input = "SELECT /* outer /* inner */ comment */ 2;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT /* outer /* inner */ comment */ 2");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_escape_string() {
+		let state = make_state();
+		let input = r"SELECT E'hello\nworld';";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, r"SELECT E'hello\nworld'");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_minus_operator_vs_comment() {
+		let state = make_state();
+		let input = "SELECT 10 - -5;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 10 - -5");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_array_with_semicolons_in_strings() {
+		let state = make_state();
+		let input = "SELECT ARRAY['a;b', 'c;d'];";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT ARRAY['a;b', 'c;d']");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_block_comment_multiline() {
+		let state = make_state();
+		let input = "SELECT /*\n this spans\n multiple lines;\n with semicolons\n*/ 1;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(
+					sql,
+					"SELECT /*\n this spans\n multiple lines;\n with semicolons\n*/ 1"
+				);
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_block_comment_at_end() {
+		let state = make_state();
+		let input = "SELECT 1 /* comment at end */;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT 1 /* comment at end */");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_multiple_block_comments() {
+		let state = make_state();
+		let input = "SELECT /* first */ 1 /* second; */ + /* third */ 2;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT /* first */ 1 /* second; */ + /* third */ 2");
 			}
 			_ => panic!("Expected Execute"),
 		}
