@@ -625,6 +625,7 @@ dependencies = [
  "tracing",
  "turso",
  "turso_core",
+ "url",
  "uuid",
  "winnow 0.7.13",
 ]

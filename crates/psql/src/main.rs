@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use lloggs::{LoggingArgs, PreArgs, WorkerGuard};
-use miette::{Result, miette};
+use miette::{IntoDiagnostic, Result, miette};
 use tracing::debug;
 
 /// Async PostgreSQL client
@@ -20,6 +20,14 @@ pub struct Args {
 	/// Can be a simple database name (e.g., 'mydb') or full connection string
 	/// (e.g., 'postgresql://user:password@localhost:5432/dbname')
 	pub connstring: Option<String>,
+
+	/// TLS mode for the connection (if sslmode is not set in the URL).
+	///
+	/// Defaults to 'prefer' which attempts TLS but falls back to non-TLS.
+	/// Use 'disable' to skip TLS entirely (useful on Windows with certificate issues).
+	/// Use 'require' to enforce TLS connections.
+	#[arg(long, value_enum, conflicts_with = "url")]
+	pub ssl: TlsMode,
 
 	/// Enable write mode for this session
 	///
@@ -39,6 +47,28 @@ pub struct Args {
 	/// Path to audit database directory
 	#[arg(long, value_name = "PATH", help = help_audit_path())]
 	pub audit_path: Option<PathBuf>,
+}
+
+/// TLS mode for PostgreSQL connections
+#[derive(Debug, Default, Clone, Copy, ValueEnum)]
+pub enum TlsMode {
+	/// Disable TLS encryption
+	Disable,
+	/// Prefer TLS but allow unencrypted connections
+	#[default]
+	Prefer,
+	/// Require TLS encryption
+	Require,
+}
+
+impl TlsMode {
+	fn as_str(self) -> &'static str {
+		match self {
+			TlsMode::Disable => "disable",
+			TlsMode::Prefer => "prefer",
+			TlsMode::Require => "require",
+		}
+	}
 }
 
 fn help_audit_path() -> String {
@@ -90,9 +120,18 @@ async fn main() -> Result<()> {
 	debug!(?theme, "using syntax highlighting theme");
 
 	let url = if connstring.contains("://") {
-		connstring
+		let mut url = url::Url::parse(&connstring).into_diagnostic()?;
+		if !url.query_pairs().any(|(key, _)| key == "sslmode") {
+			url.query_pairs_mut()
+				.append_pair("sslmode", args.ssl.as_str());
+		}
+		url.to_string()
 	} else {
-		format!("postgresql://localhost/{}", connstring)
+		format!(
+			"postgresql://localhost/{}?sslmode={}",
+			connstring,
+			args.ssl.as_str()
+		)
 	};
 	debug!(url, "using connection url");
 

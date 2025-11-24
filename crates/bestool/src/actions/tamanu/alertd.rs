@@ -198,6 +198,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 					.unwrap_or_else(|| "localhost".to_string()),
 				port: config.db.port,
 				database: config.db.name.clone(),
+				ssl_mode: None,
 			}
 			.build();
 

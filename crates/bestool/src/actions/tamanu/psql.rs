@@ -1,12 +1,33 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use miette::Result;
 use tracing::debug;
 
 use crate::actions::Context;
 
 use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
+
+/// SSL mode for PostgreSQL connections
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SslMode {
+	/// Disable SSL/TLS encryption
+	Disable,
+	/// Prefer SSL/TLS but allow unencrypted connections
+	Prefer,
+	/// Require SSL/TLS encryption
+	Require,
+}
+
+impl SslMode {
+	fn as_str(self) -> &'static str {
+		match self {
+			SslMode::Disable => "disable",
+			SslMode::Prefer => "prefer",
+			SslMode::Require => "require",
+		}
+	}
+}
 
 /// Connect to Tamanu's database.
 ///
@@ -16,13 +37,20 @@ pub struct PsqlArgs {
 	/// Connect to postgres with a different username.
 	///
 	/// This may prompt for a password depending on your local settings and pg_hba config.
-	#[arg(short = 'U', long)]
+	#[arg(short = 'U', long, conflicts_with = "url")]
 	pub username: Option<String>,
+
+	/// SSL mode for the connection.
+	///
+	/// Defaults to 'prefer' which attempts SSL but falls back to non-SSL.
+	/// Use 'disable' to skip SSL entirely (useful on Windows with certificate issues).
+	/// Use 'require' to enforce SSL connections.
+	#[arg(long, value_enum, conflicts_with = "url")]
+	pub ssl: Option<SslMode>,
 
 	/// Connect to postgres with a connection URL.
 	///
 	/// This bypasses the discovery of credentials from Tamanu.
-	#[arg(conflicts_with = "username")]
 	pub url: Option<String>,
 
 	/// Enable write mode for this psql.
@@ -61,6 +89,7 @@ fn help_audit_path() -> String {
 pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 	let PsqlArgs {
 		username,
+		ssl,
 		url,
 		write,
 		theme,
@@ -124,6 +153,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			host: config.db.host.clone().unwrap_or_default(),
 			port: config.db.port,
 			database: config.db.name.clone(),
+			ssl_mode: ssl.map(|s| s.as_str().to_string()),
 		};
 		builder.build()
 	};

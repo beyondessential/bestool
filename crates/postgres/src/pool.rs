@@ -11,6 +11,29 @@ mod manager;
 mod tls;
 mod url;
 
+/// Check if an error is a TLS/SSL error
+fn is_tls_error(error: &Report) -> bool {
+	if error.downcast_ref::<rustls::Error>().is_some() {
+		return true;
+	}
+
+	// Check the error chain for PgError::Tls
+	let mut source = error.source();
+	while let Some(err) = source {
+		if err.downcast_ref::<rustls::Error>().is_some() {
+			return true;
+		}
+		source = err.source();
+	}
+
+	let message = error.to_string();
+	message.contains("tls:")
+		|| message.contains("rustls")
+		|| message.contains("certificate")
+		|| message.contains("TLS handshake")
+		|| message.contains("invalid configuration")
+}
+
 /// Check if an error is an authentication error
 fn is_auth_error(error: &Report) -> bool {
 	if let Some(db_error) = error.downcast_ref::<tokio_postgres::Error>()
@@ -28,7 +51,6 @@ fn is_auth_error(error: &Report) -> bool {
 	message.contains("password authentication failed")
 		|| message.contains("no password supplied")
 		|| message.contains("authentication failed")
-		|| message.contains("invalid configuration")
 }
 
 pub type PgConnection = Connection<manager::PgConnectionManager>;
@@ -78,6 +100,8 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 
 	config.application_name(application_name);
 
+	let mut tried_ssl_fallback = false;
+
 	// Try to connect, and if it fails with auth error, prompt for password
 	let pool = loop {
 		debug!("Creating manager");
@@ -96,9 +120,36 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 
 		debug!("Checking pool");
 		match check_pool(&pool).await {
-			Ok(_) => break pool,
+			Ok(_) => {
+				if tried_ssl_fallback {
+					tracing::info!("Connected successfully with SSL disabled after TLS error");
+				}
+				break pool;
+			}
 			Err(e) => {
-				if is_auth_error(&e) && config.get_password().is_none() {
+				debug!("Connection error: {:#}", e);
+				debug!(
+					"is_tls_error: {}, is_auth_error: {}",
+					is_tls_error(&e),
+					is_auth_error(&e)
+				);
+
+				if is_tls_error(&e) {
+					// If SSL mode is prefer and we haven't tried fallback yet, retry with SSL disabled
+					if config.get_ssl_mode() == SslMode::Prefer && !tried_ssl_fallback {
+						debug!("TLS failed with prefer mode, retrying with SSL disabled");
+						config.ssl_mode(SslMode::Disable);
+						tried_ssl_fallback = true;
+						continue;
+					}
+
+					// TLS error - suggest disabling SSL
+					return Err(e).wrap_err(
+						"TLS/SSL connection failed. Try using --ssl disable, \
+						or use a connection URL with sslmode=disable: \
+						postgresql://user@host/db?sslmode=disable",
+					);
+				} else if is_auth_error(&e) && config.get_password().is_none() {
 					let password = rpassword::prompt_password("Password: ").into_diagnostic()?;
 					config.password(password);
 					// Loop will retry with the new password

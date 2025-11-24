@@ -19,6 +19,7 @@ pub struct ConnectionUrlBuilder {
 	pub host: String,
 	pub port: Option<u16>,
 	pub database: String,
+	pub ssl_mode: Option<String>,
 }
 
 impl ConnectionUrlBuilder {
@@ -29,7 +30,7 @@ impl ConnectionUrlBuilder {
 	pub fn build(&self) -> String {
 		let is_unix_socket = self.host.starts_with('/');
 
-		let (host_part, query_part) = if is_unix_socket {
+		let (host_part, mut query_part) = if is_unix_socket {
 			// Use query parameter format for Unix sockets
 			let port_param = self
 				.port
@@ -44,6 +45,12 @@ impl ConnectionUrlBuilder {
 		} else {
 			(self.host.clone(), String::new())
 		};
+
+		// Add SSL mode if specified
+		if let Some(ssl_mode) = &self.ssl_mode {
+			let separator = if query_part.is_empty() { "?" } else { "&" };
+			query_part.push_str(&format!("{}sslmode={}", separator, ssl_mode));
+		}
 
 		let encoded_username = utf8_percent_encode(&self.username, USERINFO_ENCODE_SET);
 		if let Some(password) = &self.password {
@@ -73,6 +80,7 @@ mod tests {
 			host: "/var/run/postgresql".to_string(),
 			port: None,
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(
@@ -89,6 +97,7 @@ mod tests {
 			host: "/var/run/postgresql".to_string(),
 			port: Some(5433),
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(
@@ -105,6 +114,7 @@ mod tests {
 			host: "".to_string(),
 			port: None,
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(url, "postgresql://testuser:testpass@/testdb");
@@ -118,6 +128,7 @@ mod tests {
 			host: "localhost".to_string(),
 			port: Some(5432),
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(url, "postgresql://testuser:testpass@localhost:5432/testdb");
@@ -131,6 +142,7 @@ mod tests {
 			host: "localhost".to_string(),
 			port: None,
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(url, "postgresql://testuser@localhost/testdb");
@@ -144,11 +156,46 @@ mod tests {
 			host: "localhost".to_string(),
 			port: None,
 			database: "testdb".to_string(),
+			ssl_mode: None,
 		};
 		let url = builder.build();
 		assert_eq!(
 			url,
 			"postgresql://testuser:p%40ss%3Aword%2Ftest@localhost/testdb"
+		);
+	}
+
+	#[test]
+	fn test_build_with_ssl_mode() {
+		let builder = ConnectionUrlBuilder {
+			username: "testuser".to_string(),
+			password: Some("testpass".to_string()),
+			host: "localhost".to_string(),
+			port: None,
+			database: "testdb".to_string(),
+			ssl_mode: Some("disable".to_string()),
+		};
+		let url = builder.build();
+		assert_eq!(
+			url,
+			"postgresql://testuser:testpass@localhost/testdb?sslmode=disable"
+		);
+	}
+
+	#[test]
+	fn test_build_with_ssl_mode_and_unix_socket() {
+		let builder = ConnectionUrlBuilder {
+			username: "testuser".to_string(),
+			password: Some("testpass".to_string()),
+			host: "/var/run/postgresql".to_string(),
+			port: None,
+			database: "testdb".to_string(),
+			ssl_mode: Some("require".to_string()),
+		};
+		let url = builder.build();
+		assert_eq!(
+			url,
+			"postgresql://testuser:testpass@/testdb?host=/var/run/postgresql&sslmode=require"
 		);
 	}
 }

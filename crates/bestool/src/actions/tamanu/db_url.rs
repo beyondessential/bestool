@@ -65,6 +65,7 @@ pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
 			.unwrap_or_else(|| "localhost".to_string()),
 		port: config.db.port,
 		database: config.db.name.clone(),
+		ssl_mode: None,
 	};
 	let url = builder.build();
 
