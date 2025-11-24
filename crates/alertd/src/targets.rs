@@ -96,12 +96,13 @@ impl ResolvedTarget {
 	}
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, facet::Facet, Debug)]
 pub struct AlertTargets {
 	pub targets: Vec<ExternalTarget>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, facet::Facet, Clone, Debug)]
+#[facet(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub struct ExternalTarget {
 	pub id: String,

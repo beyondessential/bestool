@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use miette::{miette, Context as _, IntoDiagnostic, Result};
+use miette::{Context as _, IntoDiagnostic, Result, miette};
 use tera::Context as TeraCtx;
 use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::ToSql;
@@ -13,10 +13,10 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::{actions::tamanu::config::TamanuConfig, postgres_to_value::rows_to_value_map};
 
 use super::{
+	InternalContext,
 	pg_interval::Interval,
 	targets::{ExternalTarget, SendTarget},
 	templates::build_context,
-	InternalContext,
 };
 
 fn enabled() -> bool {

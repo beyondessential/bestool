@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, facet::Facet)]
 pub struct StatusResponse {
 	pub name: String,
 	pub version: String,
@@ -17,13 +17,13 @@ pub struct AlertRequest {
 	pub custom: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, facet::Facet)]
 pub struct PauseAlertRequest {
 	pub alert: String,
 	pub until: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, facet::Facet)]
 pub struct ValidationResponse {
 	pub valid: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -34,14 +34,14 @@ pub struct ValidationResponse {
 	pub info: Option<ValidationInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, facet::Facet)]
 pub struct ErrorLocation {
 	pub line: usize,
 	pub column: usize,
 	pub path: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, facet::Facet)]
 pub struct ValidationInfo {
 	pub enabled: bool,
 	pub interval: String,
@@ -49,13 +49,13 @@ pub struct ValidationInfo {
 	pub targets: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, facet::Facet)]
 pub struct AlertsQuery {
 	#[serde(default)]
 	pub detail: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, facet::Facet)]
 pub struct AlertStateInfo {
 	pub path: String,
 	pub enabled: bool,

@@ -4,7 +4,8 @@ use tracing::debug;
 
 use crate::actions::tamanu::{alerts::definition::AlertDefinition, config::TamanuConfig};
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, facet::Facet, Clone, Debug)]
+#[facet(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub struct TargetEmail {
 	pub addresses: Vec<String>,
@@ -36,7 +37,10 @@ impl TargetEmail {
 		}
 
 		debug!(?self.addresses, "sending email");
-		let mailgun_config = config.mailgun.as_ref().ok_or_else(|| miette!("missing mailgun config"))?;
+		let mailgun_config = config
+			.mailgun
+			.as_ref()
+			.ok_or_else(|| miette!("missing mailgun config"))?;
 		let sender = EmailAddress::address(&mailgun_config.sender);
 		let mailgun = Mailgun {
 			api_key: mailgun_config.api_key.clone(),

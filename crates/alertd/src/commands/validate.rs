@@ -24,7 +24,7 @@ pub async fn validate_alert(
 		.into_diagnostic()
 		.wrap_err("failed to get daemon status")?;
 
-	#[derive(serde::Deserialize)]
+	#[derive(serde::Deserialize, facet::Facet)]
 	struct StatusResponse {
 		version: String,
 	}
@@ -61,7 +61,7 @@ pub async fn validate_alert(
 	}
 
 	// Parse response
-	#[derive(serde::Deserialize)]
+	#[derive(serde::Deserialize, facet::Facet)]
 	struct ValidationResponse {
 		valid: bool,
 		error: Option<String>,
@@ -69,13 +69,13 @@ pub async fn validate_alert(
 		info: Option<ValidationInfo>,
 	}
 
-	#[derive(serde::Deserialize)]
+	#[derive(serde::Deserialize, facet::Facet)]
 	struct ErrorLocation {
 		line: usize,
 		column: usize,
 	}
 
-	#[derive(serde::Deserialize)]
+	#[derive(serde::Deserialize, facet::Facet)]
 	struct ValidationInfo {
 		enabled: bool,
 		interval: String,

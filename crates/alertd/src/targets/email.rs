@@ -4,7 +4,8 @@ use tracing::debug;
 
 use crate::{EmailConfig, alert::AlertDefinition};
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, facet::Facet, Clone, Debug)]
+#[facet(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub struct TargetEmail {
 	pub addresses: Vec<String>,

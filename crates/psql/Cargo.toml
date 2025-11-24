@@ -22,6 +22,7 @@ bestool-postgres = { version = "1.0.2", path = "../postgres" }
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"], optional = true }
 clap-markdown = { version = "0.1.5", optional = true }
 comfy-table = "7.2.1"
+facet = { workspace = true }
 futures = { workspace = true }
 csv = "1.3.1"
 crossterm = "0.29.0"

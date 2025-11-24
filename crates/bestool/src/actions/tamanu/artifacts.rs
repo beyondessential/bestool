@@ -1,11 +1,11 @@
 use clap::Parser;
-use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, ContentArrangement, Table};
+use comfy_table::{ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use detect_targets::detect_targets;
 use miette::{IntoDiagnostic, Result};
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::str::FromStr;
-use target_tuples::{Target, OS};
+use target_tuples::{OS, Target};
 
 use crate::actions::Context;
 
@@ -109,7 +109,9 @@ pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec
 				host_targets.iter().any(|t| t.arch_name() == "x86_64")
 			} else if artifact.platform.contains("arm64") {
 				host_targets.iter().any(|t| t.arch_name() == "aarch64")
-			} else { !artifact.platform.contains("-") };
+			} else {
+				!artifact.platform.contains("-")
+			};
 
 			os && arch
 		}

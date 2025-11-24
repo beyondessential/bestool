@@ -11,8 +11,8 @@ use tracing::{instrument, warn};
 use super::{
 	definition::AlertDefinition,
 	targets::{
-		zendesk::{TargetZendesk, ZendeskMethod},
 		SendTarget,
+		zendesk::{TargetZendesk, ZendeskMethod},
 	},
 };
 

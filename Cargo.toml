@@ -11,6 +11,7 @@ members = [
 
 [workspace.dependencies]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"] }
+facet = "0.31.4"
 futures = "0.3.30"
 indicatif = { version = "0.18.2", features = ["tokio"] }
 itertools = "0.14.0"

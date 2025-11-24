@@ -1,5 +1,5 @@
 use embedded_graphics::{
-	mono_font::{ascii::FONT_10X20, MonoTextStyle},
+	mono_font::{MonoTextStyle, ascii::FONT_10X20},
 	pixelcolor::Rgb565,
 	prelude::*,
 	primitives::{PrimitiveStyle, Rectangle},
@@ -37,7 +37,7 @@ impl Drawable for Screen {
 	}
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, facet::Facet)]
 pub struct Item {
 	pub x: i32,
 	pub y: i32,

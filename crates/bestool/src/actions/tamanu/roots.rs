@@ -56,10 +56,11 @@ pub fn version_of_root(root: impl AsRef<Path> + std::fmt::Debug) -> Result<Optio
 		static RE: LazyLock<Regex> =
 			LazyLock::new(|| Regex::new(r"(release-)?v?(\d+\.\d+\.\d+)($|/)").unwrap());
 		if let Some(ver) = RE.find(name)
-			&& let Ok(semver) = Version::parse(ver.as_str()) {
-				trace!(?semver, "parsed version from path");
-				return Ok(Some(semver));
-			}
+			&& let Ok(semver) = Version::parse(ver.as_str())
+		{
+			trace!(?semver, "parsed version from path");
+			return Ok(Some(semver));
+		}
 	}
 
 	let pkg_file = root.join("package.json");
@@ -81,7 +82,8 @@ struct PackageJson {
 
 #[instrument(level = "debug")]
 pub fn find_versions() -> Result<Vec<(Version, PathBuf)>> {
-	let mut roots: Vec<_> = find_roots().wrap_err("find roots for versions")?
+	let mut roots: Vec<_> = find_roots()
+		.wrap_err("find roots for versions")?
 		.into_iter()
 		.filter_map(|root| {
 			version_of_root(root.clone())

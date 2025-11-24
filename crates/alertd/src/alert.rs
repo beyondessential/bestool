@@ -22,7 +22,8 @@ fn default_interval() -> String {
 	"1 minute".to_string()
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(serde::Deserialize, facet::Facet, Debug, Clone)]
+#[facet(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 pub struct NumericalThreshold {
 	pub field: String,
@@ -44,7 +45,8 @@ impl Default for WhenChanged {
 	}
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(serde::Deserialize, facet::Facet, Debug, Clone)]
+#[facet(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 pub struct WhenChangedConfig {
 	#[serde(default)]

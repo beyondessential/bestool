@@ -1,13 +1,13 @@
 use std::{
 	collections::BTreeMap,
-	io::{stderr, IsTerminal as _},
+	io::{IsTerminal as _, stderr},
 	num::NonZero,
 	path::{Path, PathBuf},
 };
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use miette::{miette, Context as _, IntoDiagnostic as _, Result};
+use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use tokio::{
 	fs::{self, create_dir_all},
 	io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -100,14 +100,17 @@ impl ChunkSize {
 					Self::Mib(unsafe { NonZero::new_unchecked(64) }).max_chunk_bytes(full_size);
 				let if_max_chunks = (full_size / MAX_AUTO_CHUNKS / MINPAGE) * MINPAGE;
 
-				debug!(if_8_mib, if_64_mib, if_max_chunks, "auto chunk size parameters");
+				debug!(
+					if_8_mib,
+					if_64_mib, if_max_chunks, "auto chunk size parameters"
+				);
 				if_max_chunks.min(if_64_mib).max(if_8_mib)
 			}
 		}
 	}
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, facet::Facet)]
 pub(super) struct ChunkedMetadata {
 	pub full_size: u64,
 	pub full_sum: String,
@@ -144,7 +147,14 @@ pub(crate) async fn copy_into_chunks(
 	let n_chunks = input_length.div_ceil(chunk_size);
 	let chunk_digits = usize::try_from(n_chunks.ilog10() + 1).unwrap();
 
-	debug!(chunk_size, n_chunks, chunk_digits, input_length, ?target_dir, "chunking parameters");
+	debug!(
+		chunk_size,
+		n_chunks,
+		chunk_digits,
+		input_length,
+		?target_dir,
+		"chunking parameters"
+	);
 
 	let mut chunks = BTreeMap::new();
 

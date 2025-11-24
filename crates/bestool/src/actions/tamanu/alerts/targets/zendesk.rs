@@ -2,7 +2,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use reqwest::Url;
 use serde_json::json;
 
-use crate::actions::tamanu::alerts::{definition::AlertDefinition, InternalContext};
+use crate::actions::tamanu::alerts::{InternalContext, definition::AlertDefinition};
 
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -28,13 +28,13 @@ pub enum ZendeskMethod {
 	Anonymous { requester: String },
 }
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, facet::Facet, Clone, Debug)]
 pub struct ZendeskCredentials {
 	pub email: String,
 	pub password: String,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, facet::Facet, Clone, Debug)]
 pub struct ZendeskCustomField {
 	pub id: u64,
 	pub value: String,
