@@ -173,6 +173,7 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 	let mut result = String::new();
 	let mut in_single_quote = false;
 	let mut in_double_quote = false;
+	let mut in_dollar_quote: Option<String> = None;
 	let mut in_comment = false;
 	let mut prev_char = '\0';
 
@@ -188,7 +189,7 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 				result.push(ch);
 
 				// Check if next non-whitespace is a metacommand
-				if !in_single_quote && !in_double_quote {
+				if !in_single_quote && !in_double_quote && in_dollar_quote.is_none() {
 					let rest = input.trim_start();
 					if rest.starts_with('\\')
 						&& let Some(second_char) = rest.chars().nth(1)
@@ -201,24 +202,81 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 					}
 				}
 			}
-			'-' if !in_single_quote && !in_double_quote && !in_comment && prev_char == '-' => {
+			'-' if !in_single_quote
+				&& !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_comment
+				&& prev_char == '-' =>
+			{
 				in_comment = true;
 				result.push(ch);
 			}
-			'\'' if !in_double_quote && !in_comment && prev_char != '\\' => {
+			'\'' if !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_comment
+				&& prev_char != '\\' =>
+			{
 				in_single_quote = !in_single_quote;
 				result.push(ch);
 			}
-			'"' if !in_single_quote && !in_comment && prev_char != '\\' => {
+			'"' if !in_single_quote
+				&& in_dollar_quote.is_none()
+				&& !in_comment
+				&& prev_char != '\\' =>
+			{
 				in_double_quote = !in_double_quote;
 				result.push(ch);
 			}
-			';' if !in_single_quote && !in_double_quote && !in_comment => {
+			'$' if !in_single_quote && !in_double_quote && !in_comment => {
+				// Check for dollar-quoted string
+				result.push(ch);
+				*input = before;
+				let _ = any::<_, ContextError>.parse_next(input); // consume the $
+
+				// Extract the tag (alphanumeric/underscore characters between the dollars)
+				let tag_start = *input;
+				let mut tag = String::new();
+				while let Some(next_ch) = input.chars().next() {
+					if next_ch.is_alphanumeric() || next_ch == '_' {
+						tag.push(next_ch);
+						let _ = any::<_, ContextError>.parse_next(input);
+						result.push(next_ch);
+					} else if next_ch == '$' {
+						// Found closing $, this is a dollar quote
+						let _ = any::<_, ContextError>.parse_next(input);
+						result.push('$');
+
+						if let Some(ref current_tag) = in_dollar_quote {
+							// Check if this closes the current dollar quote
+							if &tag == current_tag {
+								in_dollar_quote = None;
+							}
+						} else {
+							// Starting a new dollar quote
+							in_dollar_quote = Some(tag);
+						}
+						break;
+					} else {
+						// Not a dollar quote, just a regular $ character
+						*input = tag_start;
+						break;
+					}
+				}
+			}
+			';' if !in_single_quote
+				&& !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_comment =>
+			{
 				// Found terminating semicolon
 				*input = before;
 				return Ok(SqlResult::Semicolon(result.trim().to_string()));
 			}
-			'\\' if !in_single_quote && !in_double_quote && !in_comment => {
+			'\\' if !in_single_quote
+				&& !in_double_quote
+				&& in_dollar_quote.is_none()
+				&& !in_comment =>
+			{
 				// Check if next char is 'g' or 'G'
 				if let Some(next_ch) = input.chars().next()
 					&& (next_ch == 'g' || next_ch == 'G')
@@ -564,6 +622,127 @@ mod tests {
 		match &actions[0] {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "select '-- not a comment'");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_user_query_with_function_dollar_quoted() {
+		let state = make_state();
+		let input = r#"
+CREATE OR REPLACE FUNCTION public.find_potential_patient_duplicates(patient_data json)
+  RETURNS SETOF patients
+  LANGUAGE plpgsql
+  STABLE PARALLEL SAFE
+AS $function$
+    BEGIN
+      RETURN QUERY
+    SELECT
+      p.*
+    FROM patients p
+    WHERE p.deleted_at IS NULL
+      AND soundex(p.last_name) = soundex(patient_data->>'lastName')
+				  AND levenshtein(
+        lower(concat(p.last_name, p.first_name)),
+        lower(concat(patient_data->>'lastName', patient_data->>'firstName'))
+      ) <= 6
+				  AND (levenshtein(
+        p.date_of_birth,
+        (patient_data->>'dateOfBirth')
+      ) <= 1
+      OR p.date_of_birth = concat_ws('-',
+				  	substring(patient_data->>'dateOfBirth', 1, 4),
+				  	substring(patient_data->>'dateOfBirth', 9, 2),
+				  	substring(patient_data->>'dateOfBirth', 6, 2)))
+				LIMIT 5;
+    END;
+    $function$
+;"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(
+			remaining, "",
+			"Query should be complete, but got remaining: {}",
+			remaining
+		);
+		assert_eq!(actions.len(), 1);
+		assert!(
+			matches!(&actions[0], ReplAction::Execute { .. }),
+			"expected execute"
+		);
+	}
+
+	#[test]
+	fn test_user_query_with_function_dollar_quoted_untagged() {
+		let state = make_state();
+		let input = r#"
+CREATE OR REPLACE FUNCTION public.find_potential_patient_duplicates(patient_data json)
+  RETURNS SETOF patients
+  LANGUAGE plpgsql
+  STABLE PARALLEL SAFE
+AS $$
+    BEGIN
+    END;
+$$;"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(
+			remaining, "",
+			"Query should be complete, but got remaining: {}",
+			remaining
+		);
+		assert_eq!(actions.len(), 1);
+		assert!(
+			matches!(&actions[0], ReplAction::Execute { .. }),
+			"expected execute"
+		);
+	}
+
+	#[test]
+	fn test_dollar_quoted_empty_tag() {
+		let state = make_state();
+		let input = "SELECT $$hello; world$$;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT $$hello; world$$");
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_dollar_quoted_nested() {
+		let state = make_state();
+		let input = r#"SELECT $outer$This has $inner$nested$inner$ quotes$outer$;"#;
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(
+					sql,
+					r#"SELECT $outer$This has $inner$nested$inner$ quotes$outer$"#
+				);
+			}
+			_ => panic!("Expected Execute"),
+		}
+	}
+
+	#[test]
+	fn test_dollar_quoted_with_semicolon_inside() {
+		let state = make_state();
+		let input = "CREATE FUNCTION test() RETURNS void AS $$ BEGIN SELECT 1; SELECT 2; END; $$ LANGUAGE plpgsql;";
+		let (actions, remaining) = parse_multi_input(input, &state);
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(
+					sql,
+					"CREATE FUNCTION test() RETURNS void AS $$ BEGIN SELECT 1; SELECT 2; END; $$ LANGUAGE plpgsql"
+				);
 			}
 			_ => panic!("Expected Execute"),
 		}
