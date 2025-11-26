@@ -44,6 +44,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
+terminal-colorsaurus = "1.0.1"
 sysinfo = "0.37.2"
 tempfile = "3.21.0"
 fraction = { version = "0.15", features = ["with-postgres-support"] }
