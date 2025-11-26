@@ -187,6 +187,53 @@ jobs:
         if: runner.os == 'Windows'
         with:
           subject-path: target/*/dist/bestool.exe
+      - name: Package DEB
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version=$(grep '^version' crates/bestool/Cargo.toml | head -n1 | cut -d'"' -f2)
+          target="${{ matrix.target }}"
+          arch=""
+          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+            arch="amd64"
+          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+            arch="arm64"
+          fi
+
+          deb_dir="target/deb"
+          mkdir -p "$deb_dir/DEBIAN"
+          install -Dm755 "target/$target/dist/bestool" "$deb_dir/usr/bin/bestool"
+
+          # Generate shell completions
+          mkdir -p "$deb_dir/usr/share/bash-completion/completions"
+          mkdir -p "$deb_dir/usr/share/fish/vendor_completions.d"
+          mkdir -p "$deb_dir/usr/share/zsh/vendor-completions"
+
+          "$deb_dir/usr/bin/bestool" completions --shell bash > "$deb_dir/usr/share/bash-completion/completions/bestool"
+          "$deb_dir/usr/bin/bestool" completions --shell fish > "$deb_dir/usr/share/fish/vendor_completions.d/bestool.fish"
+          "$deb_dir/usr/bin/bestool" completions --shell zsh > "$deb_dir/usr/share/zsh/vendor-completions/_bestool"
+
+          # Install license/copyright and documentation
+          install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool/copyright"
+          install -Dm644 crates/bestool/USAGE.md "$deb_dir/usr/share/doc/bestool/USAGE.md"
+          install -Dm644 crates/alertd/ALERTS.md "$deb_dir/usr/share/doc/bestool/ALERTS.md"
+          install -Dm644 crates/alertd/TARGETS.md "$deb_dir/usr/share/doc/bestool/TARGETS.md"
+          install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool/PSQL-EXAMPLES.md"
+
+          cat > "$deb_dir/DEBIAN/control" << EOF
+          Package: bestool
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $arch
+          Maintainer: BES Developers <contact@bes.au>
+          Description: BES Deployment tooling
+          Homepage: https://github.com/beyondessential/bestool
+          License: GPL-3.0-or-later
+          EOF
+
+          dpkg-deb --build --root-owner-group "$deb_dir" "bestool-${target}-${version}.deb"
+
       - uses: actions/upload-artifact@v5
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}
@@ -195,6 +242,7 @@ jobs:
           path: |
             target/*/dist/bestool
             target/*/dist/bestool.exe
+            bestool-*.deb
 
       - name: Configure AWS Credentials
         if: startsWith(github.ref, 'refs/tags/v')
@@ -216,6 +264,13 @@ jobs:
           else
             aws s3 cp "$src" "$dest" --no-progress
           fi
+
+          if ls bestool-*.deb 1> /dev/null 2>&1; then
+            for deb in bestool-*.deb; do
+              aws s3 cp "$deb" "s3://bes-ops-tools/bestool/${version}/" --no-progress
+            done
+          fi
+
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths "/bestool/${version}/*"
 
       - name: Upload latest
@@ -229,6 +284,7 @@ jobs:
           else
             aws s3 cp "$src" "$dest" --no-progress
           fi
+
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest/*'
 
       - name: Upload version file

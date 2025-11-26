@@ -35,6 +35,29 @@ fn check_exe_writable() -> Result<()> {
 	Ok(())
 }
 
+#[cfg(unix)]
+pub(crate) fn is_package_manager_install() -> bool {
+	std::path::Path::new("/usr/share/doc/bestool/copyright").exists()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_package_manager_install() -> bool {
+	false
+}
+
+#[cfg(unix)]
+fn check_package_manager_install(force: bool) -> Result<()> {
+	if is_package_manager_install() && !force {
+		return Err(miette!(
+			"bestool appears to be installed via a package manager.\n\
+			Please use your package manager to update bestool (e.g., 'apt update && apt upgrade bestool').\n\
+			If you want to override this and self-update anyway, use: bestool self-update --force"
+		));
+	}
+
+	Ok(())
+}
+
 /// Update this bestool.
 ///
 /// Alias: self
@@ -60,11 +83,18 @@ pub struct SelfUpdateArgs {
 	#[cfg(windows)]
 	#[arg(short = 'P', long)]
 	pub add_to_path: bool,
+
+	/// Force self-update even if installed via package manager.
+	#[arg(long)]
+	pub force: bool,
 }
 
 pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 	#[cfg(unix)]
-	check_exe_writable()?;
+	{
+		check_exe_writable()?;
+		check_package_manager_install(ctx.args_sub.force)?;
+	}
 
 	let SelfUpdateArgs {
 		version,
@@ -72,6 +102,7 @@ pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 		temp_dir,
 		#[cfg(windows)]
 		add_to_path,
+		..
 	} = ctx.args_sub;
 
 	let client = client().await?;
