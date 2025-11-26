@@ -8,6 +8,8 @@ use syntect::{
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use crate::colors;
+
 pub async fn display<W: AsyncWrite + Unpin>(
 	ctx: &mut super::DisplayContext<'_, W>,
 	expanded: bool,
@@ -149,7 +151,7 @@ fn highlight_json(
 		match highlighter.highlight_line(line, syntax_set) {
 			Ok(ranges) => {
 				let mut escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-				escaped.push_str("\x1b[0m");
+				escaped.push_str(&colors::reset_code());
 				result.push_str(&escaped);
 				result.push('\n');
 			}

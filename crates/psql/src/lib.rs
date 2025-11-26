@@ -3,6 +3,7 @@
 
 #[doc(hidden)]
 pub mod audit;
+mod colors;
 mod completer;
 mod config;
 mod input;

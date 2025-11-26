@@ -4,11 +4,12 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
-use crossterm::style::{Color, Stylize};
 use futures::StreamExt as _;
 use miette::Result;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
+
+use crate::colors;
 
 use bestool_postgres::{
 	error::PgDatabaseError,
@@ -182,7 +183,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		result = ctx.client.query_raw(statement, &[] as &[i32; 0]) => {
 			// Clear progress indicator if it was shown
 			if progress_shown {
-				eprint!("\r\x1b[K"); // Clear the line
+				eprint!("{}", colors::CLEAR_LINE);
 			}
 			result
 		}
@@ -196,21 +197,21 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				if elapsed.as_secs() >= 1 && ctx.use_colours {
 					let secs = elapsed.as_secs();
 					let progress_msg = format!("(running, so far {}s)", secs);
-					let colored_msg = progress_msg.with(Color::Blue).dim();
+					let colored_msg = colors::style_progress(&progress_msg, ctx.use_colours);
 					eprint!("\r{}", colored_msg);
 					progress_shown = true;
 				}
 
 				if sigint_received() {
 					if progress_shown {
-						eprint!("\r\x1b[K"); // Clear the line
+						eprint!("{}", colors::CLEAR_LINE);
 					}
 					break;
 				}
 			}
 		} => {
 			if progress_shown {
-				eprint!("\r\x1b[K"); // Clear the line
+				eprint!("{}", colors::CLEAR_LINE);
 			}
 			eprintln!("\nCancelling query...");
 			if let Err(e) = ctx.pool.manager.cancel(&cancel_token).await {
@@ -272,11 +273,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 			duration.as_secs_f64() * 1000.0
 		);
 
-		let status_msg = if ctx.use_colours {
-			format!("{}\n", status_text.with(Color::Blue).dim())
-		} else {
-			format!("{status_text}\n")
-		};
+		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
 		// Status message goes to stderr like psql
 		eprint!("{status_msg}");
@@ -292,11 +289,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	if rows.is_empty() {
 		let status_text = format!("(0 rows, took {:.3} ms)", duration.as_secs_f64() * 1000.0);
 
-		let status_msg = if ctx.use_colours {
-			format!("{}\n", status_text.with(Color::Blue).dim())
-		} else {
-			format!("{status_text}\n")
-		};
+		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
 		// Status message goes to stderr like psql
 		eprint!("{status_msg}");
@@ -366,16 +359,13 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 
 			// Print truncation message if needed
 			if was_truncated {
-				let truncation_msg = if ctx.use_colours {
-					format!(
-						"{}\n",
-						"[output truncated, use \\re show limit=N to print more]"
-							.with(Color::Magenta)
-							.bold()
+				let truncation_msg = format!(
+					"{}\n",
+					colors::style_warning(
+						"[output truncated, use \\re show limit=N to print more]",
+						ctx.use_colours
 					)
-				} else {
-					"[output truncated, use \\re show limit=N to print more]\n".to_string()
-				};
+				);
 				eprint!("{}", truncation_msg);
 			}
 		}
@@ -387,11 +377,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 			duration.as_secs_f64() * 1000.0
 		);
 
-		let status_msg = if ctx.use_colours {
-			format!("{}\n", status_text.with(Color::Blue).dim())
-		} else {
-			format!("{status_text}\n")
-		};
+		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
 		// Status message goes to stderr
 		eprint!("{status_msg}");
