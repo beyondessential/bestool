@@ -480,6 +480,7 @@ dependencies = [
  "node-semver",
  "openssl-sys",
  "percent-encoding",
+ "privilege",
  "pulldown-cmark",
  "regex",
  "reqwest",
@@ -502,7 +503,6 @@ dependencies = [
  "trycmd",
  "upgrade",
  "uuid",
- "uzers",
  "walkdir",
  "winapi",
  "windows 0.62.2",
@@ -4448,6 +4448,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "privilege"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "765ec92721e112ffe07f5c06fb0654da0b708990888981d05cf12a7c9909df30"
+dependencies = [
+ "libc",
+ "security-framework-sys",
+ "which",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6746,16 +6758,6 @@ dependencies = [
  "serde",
  "sha1_smol",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "uzers"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4df81ff504e7d82ad53e95ed1ad5b72103c11253f39238bcc0235b90768a97dd"
-dependencies = [
- "libc",
- "log",
 ]
 
 [[package]]

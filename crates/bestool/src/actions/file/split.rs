@@ -5,6 +5,15 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+const CHUNK_8_MIB: NonZero<u16> = match NonZero::new(8) {
+	Some(n) => n,
+	None => unreachable!(),
+};
+const CHUNK_64_MIB: NonZero<u16> = match NonZero::new(64) {
+	Some(n) => n,
+	None => unreachable!(),
+};
+
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
@@ -93,11 +102,8 @@ impl ChunkSize {
 				}
 			}
 			Self::Auto => {
-				// SAFETY: constants
-				let if_8_mib =
-					Self::Mib(unsafe { NonZero::new_unchecked(8) }).max_chunk_bytes(full_size);
-				let if_64_mib =
-					Self::Mib(unsafe { NonZero::new_unchecked(64) }).max_chunk_bytes(full_size);
+				let if_8_mib = Self::Mib(CHUNK_8_MIB).max_chunk_bytes(full_size);
+				let if_64_mib = Self::Mib(CHUNK_64_MIB).max_chunk_bytes(full_size);
 				let if_max_chunks = (full_size / MAX_AUTO_CHUNKS / MINPAGE) * MINPAGE;
 
 				debug!(
