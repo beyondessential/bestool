@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.2.6](https://github.com/beyondessential/bestool/compare/v1.2.5..1.2.6) - 2025-11-26
+
+
+- **feat:** Produce a deb - ([6e07df2](https://github.com/beyondessential/bestool/commit/6e07df2bf2a3a550ca01257fdee669890aa8c405))
+
+---
 ## [1.2.4](https://github.com/beyondessential/bestool/compare/v1.2.3..v1.2.4) - 2025-11-24
 
 

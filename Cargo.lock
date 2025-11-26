@@ -438,7 +438,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "algae-cli",
  "bestool-alertd",
