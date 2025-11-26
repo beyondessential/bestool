@@ -48,9 +48,15 @@ pub fn parse(
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 
+		let default_pattern = if item == ListItem::Schema {
+			"*".to_string()
+		} else {
+			"public.*".to_string()
+		};
+
 		Ok(super::Metacommand::List {
 			item,
-			pattern: pattern.unwrap_or_else(|| "public.*".to_string()),
+			pattern: pattern.unwrap_or(default_pattern),
 			detail,
 			sameconn,
 		})
@@ -71,9 +77,15 @@ pub fn parse(
 		space0.parse_next(input)?;
 		eof.parse_next(input)?;
 
+		let default_pattern = if item == ListItem::Schema {
+			"*".to_string()
+		} else {
+			"public.*".to_string()
+		};
+
 		Ok(super::Metacommand::List {
 			item,
-			pattern: pattern.unwrap_or_else(|| "public.*".to_string()),
+			pattern: pattern.unwrap_or(default_pattern),
 			detail,
 			sameconn,
 		})
@@ -548,7 +560,7 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
-				pattern: "public.*".to_string(),
+				pattern: "*".to_string(),
 				detail: false,
 				sameconn: false,
 			})
@@ -562,7 +574,7 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
-				pattern: "public.*".to_string(),
+				pattern: "*".to_string(),
 				detail: false,
 				sameconn: false,
 			})
@@ -576,7 +588,7 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
-				pattern: "public.*".to_string(),
+				pattern: "*".to_string(),
 				detail: true,
 				sameconn: false,
 			})
@@ -590,7 +602,7 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
-				pattern: "public.*".to_string(),
+				pattern: "*".to_string(),
 				detail: false,
 				sameconn: true,
 			})
@@ -604,9 +616,23 @@ mod tests {
 			result,
 			Some(Metacommand::List {
 				item: ListItem::Schema,
-				pattern: "public.*".to_string(),
+				pattern: "*".to_string(),
 				detail: true,
 				sameconn: true,
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_dn_with_star_pattern() {
+		let result = parse_metacommand("\\dn *").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::List {
+				item: ListItem::Schema,
+				pattern: "*".to_string(),
+				detail: false,
+				sameconn: false,
 			})
 		);
 	}
