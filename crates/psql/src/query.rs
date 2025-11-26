@@ -162,6 +162,32 @@ fn command_to_verb(command: &str) -> &str {
 	}
 }
 
+/// Determine if a command should hide the row count in the output.
+/// Commands like COMMIT, ROLLBACK, TRUNCATE, etc. don't have meaningful row counts.
+fn should_hide_row_count(command: &str) -> bool {
+	matches!(
+		command.to_uppercase().as_str(),
+		"BEGIN"
+			| "COMMIT"
+			| "ROLLBACK"
+			| "TRUNCATE"
+			| "SAVEPOINT"
+			| "RELEASE"
+			| "SET" | "RESET"
+			| "PREPARE"
+			| "DEALLOCATE"
+			| "DISCARD"
+			| "LOCK" | "UNLISTEN"
+			| "LISTEN"
+			| "NOTIFY"
+			| "VACUUM"
+			| "ANALYZE"
+			| "CLUSTER"
+			| "REINDEX"
+			| "COMMENT"
+	)
+}
+
 /// Execute a single SQL statement and display the results.
 async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	statement: &str,
@@ -265,13 +291,17 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	{
 		let command = statement.split_whitespace().next().unwrap_or("QUERY");
 		let verb = command_to_verb(command);
-		let status_text = format!(
-			"({} {} row{}, took {:.3} ms)",
-			verb,
-			count,
-			if count == 1 { "" } else { "s" },
-			duration.as_secs_f64() * 1000.0
-		);
+		let status_text = if should_hide_row_count(command) {
+			format!("({}, took {:.3} ms)", verb, duration.as_secs_f64() * 1000.0)
+		} else {
+			format!(
+				"({} {} row{}, took {:.3} ms)",
+				verb,
+				count,
+				if count == 1 { "" } else { "s" },
+				duration.as_secs_f64() * 1000.0
+			)
+		};
 
 		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
@@ -679,5 +709,43 @@ mod tests {
 		assert_eq!(command_to_verb("VACUUM"), "vacuumed");
 		assert_eq!(command_to_verb("ANALYZE"), "analyzed");
 		assert_eq!(command_to_verb("UNKNOWN"), "affected");
+	}
+
+	#[test]
+	fn test_should_hide_row_count() {
+		// Commands that should hide row count
+		assert!(should_hide_row_count("COMMIT"));
+		assert!(should_hide_row_count("commit"));
+		assert!(should_hide_row_count("ROLLBACK"));
+		assert!(should_hide_row_count("BEGIN"));
+		assert!(should_hide_row_count("TRUNCATE"));
+		assert!(should_hide_row_count("SAVEPOINT"));
+		assert!(should_hide_row_count("RELEASE"));
+		assert!(should_hide_row_count("SET"));
+		assert!(should_hide_row_count("RESET"));
+		assert!(should_hide_row_count("PREPARE"));
+		assert!(should_hide_row_count("DEALLOCATE"));
+		assert!(should_hide_row_count("DISCARD"));
+		assert!(should_hide_row_count("LOCK"));
+		assert!(should_hide_row_count("UNLISTEN"));
+		assert!(should_hide_row_count("LISTEN"));
+		assert!(should_hide_row_count("NOTIFY"));
+		assert!(should_hide_row_count("VACUUM"));
+		assert!(should_hide_row_count("ANALYZE"));
+		assert!(should_hide_row_count("CLUSTER"));
+		assert!(should_hide_row_count("REINDEX"));
+		assert!(should_hide_row_count("COMMENT"));
+
+		// Commands that should show row count
+		assert!(!should_hide_row_count("INSERT"));
+		assert!(!should_hide_row_count("UPDATE"));
+		assert!(!should_hide_row_count("DELETE"));
+		assert!(!should_hide_row_count("CREATE"));
+		assert!(!should_hide_row_count("DROP"));
+		assert!(!should_hide_row_count("ALTER"));
+		assert!(!should_hide_row_count("GRANT"));
+		assert!(!should_hide_row_count("REVOKE"));
+		assert!(!should_hide_row_count("COPY"));
+		assert!(!should_hide_row_count("MERGE"));
 	}
 }

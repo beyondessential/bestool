@@ -121,7 +121,7 @@ database=*>
 -- Along with being bold blue, in an active transaction the prompt will have a *
 
 database=*> commit;
-(committed 0 rows, took 1.234 ms)
+(committed, took 1.234 ms)
 database=>
 -- COMMIT or ROLLBACK to return to a bold green idle state
 -- note that a new idle transaction has been automatically opened
