@@ -27,6 +27,17 @@ If you already have bestool, it can self-update to the latest version:
 $ bestool self-update
 ```
 
+### APT repository
+
+If you're on Debian or a derivative, you can use our APT repo:
+
+```bash
+curl -fsSL https://tools.ops.tamanu.io/apt/bes-tools.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/bes-tools.gpg
+echo "deb [signed-by=/etc/apt/keyrings/bes-tools.gpg] https://tools.ops.tamanu.io/apt stable main" | sudo tee /etc/apt/sources.list.d/bes-tools.list
+sudo apt-get update
+sudo apt-get install bestool
+```
+
 ### Always-latest URLs
 
 The above URLs are for the current release. If you want to always get the latest version, you can use the following URLs:
