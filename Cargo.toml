@@ -9,6 +9,10 @@ members = [
 	"crates/rpi-st7789v2-driver",
 ]
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
 [workspace.dependencies]
 clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"] }
 facet = "0.31.4"

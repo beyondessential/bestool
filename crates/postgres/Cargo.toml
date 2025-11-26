@@ -7,6 +7,9 @@ license = "GPL-3.0-or-later"
 description = "PostgreSQL connection pool utilities for BES tooling"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/postgres"
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = "1.9.0"
 fraction = { version = "0.15", features = ["with-postgres-support"] }

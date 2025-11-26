@@ -151,8 +151,6 @@
 //!
 //! Algae (pronounced al-gay or al-ghee) is a lightweight (a)ge. Algae are also fond of water.
 
-#![deny(rust_2018_idioms)]
-#![deny(unsafe_code)]
 #![deny(missing_docs)]
 
 /// Clap argument parsers and implementations for the algae CLI functions.

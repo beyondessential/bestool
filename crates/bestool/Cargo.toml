@@ -11,6 +11,9 @@ keywords = ["bes", "tamanu", "tupaia"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
 
+[lints]
+workspace = true
+
 [dependencies]
 algae-cli = { version = "1.0.11", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "1.0.4", path = "../alertd", default-features = false, optional = true }

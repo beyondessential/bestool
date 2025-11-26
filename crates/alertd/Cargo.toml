@@ -7,6 +7,9 @@ license = "GPL-3.0-or-later"
 description = "(Internal) BES tooling: Alert daemon"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/alertd"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "bestool-alertd"
 path = "src/main.rs"

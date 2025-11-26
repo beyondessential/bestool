@@ -11,6 +11,9 @@ keywords = ["age", "cryptography", "encryption"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/algae-cli"
 
+[lints]
+workspace = true
+
 [[bin]]
 path = "src/main.rs"
 name = "algae"

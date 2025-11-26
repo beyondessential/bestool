@@ -12,6 +12,9 @@ keywords = ["embedded-graphics", "waveshare", "st7789v2", "lcd", "raspberry-pi"]
 categories = ["embedded", "hardware-support"]
 repository = "https://github.com/beyondessential/bestool"
 
+[lints]
+workspace = true
+
 [dependencies]
 bitvec = "1.0.1"
 embedded-graphics = "0.8.1"
