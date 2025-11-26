@@ -175,9 +175,9 @@ jobs:
       # zigbuild isn't compatible with auditable
       # https://github.com/rust-secure-code/cargo-auditable/issues/179
       - if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo zigbuild -p bestool --profile dist --target ${{ matrix.target }} --features iti
+        run: cargo zigbuild --profile dist --target ${{ matrix.target }} --features iti
       - if: matrix.target != 'aarch64-unknown-linux-musl'
-        run: cargo auditable build -p bestool --profile dist --target ${{ matrix.target }}
+        run: cargo auditable build --profile dist --target ${{ matrix.target }}
 
       - uses: actions/attest-build-provenance@v3
         if: runner.os != 'Windows'
@@ -187,7 +187,8 @@ jobs:
         if: runner.os == 'Windows'
         with:
           subject-path: target/*/dist/bestool.exe
-      - name: Package DEB
+
+      - name: Package bestool DEB
         if: contains(matrix.target, 'linux-gnu')
         shell: bash
         run: |
@@ -226,13 +227,121 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: $arch
-          Maintainer: BES Developers <contact@bes.au>
+          Maintainer: BES Developers <support@bes.au>
           Description: BES Deployment tooling
           Homepage: https://github.com/beyondessential/bestool
           License: GPL-3.0-or-later
           EOF
 
           dpkg-deb --build --root-owner-group "$deb_dir" "bestool-${target}-${version}.deb"
+
+      - name: Package bestool-alertd DEB
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version=$(grep '^version' crates/alertd/Cargo.toml | head -n1 | cut -d'"' -f2)
+          target="${{ matrix.target }}"
+          arch=""
+          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+            arch="amd64"
+          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+            arch="arm64"
+          fi
+
+          deb_dir="target/deb-alertd"
+          mkdir -p "$deb_dir/DEBIAN"
+          install -Dm755 "target/$target/dist/bestool-alertd" "$deb_dir/usr/bin/bestool-alertd"
+
+          install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool-alertd/copyright"
+          install -Dm644 crates/alertd/USAGE.md "$deb_dir/usr/share/doc/bestool-alertd/USAGE.md"
+          install -Dm644 crates/alertd/ALERTS.md "$deb_dir/usr/share/doc/bestool-alertd/ALERTS.md"
+          install -Dm644 crates/alertd/TARGETS.md "$deb_dir/usr/share/doc/bestool-alertd/TARGETS.md"
+
+          cat > "$deb_dir/DEBIAN/control" << EOF
+          Package: bestool-alertd
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $arch
+          Maintainer: BES Developers <support@bes.au>
+          Description: BES tooling: Alert daemon (standalone)
+          Homepage: https://github.com/beyondessential/bestool
+          License: GPL-3.0-or-later
+          EOF
+
+          dpkg-deb --build --root-owner-group "$deb_dir" "bestool-alertd-${target}-${version}.deb"
+
+      - name: Package bestool-psql DEB
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version=$(grep '^version' crates/psql/Cargo.toml | head -n1 | cut -d'"' -f2)
+          target="${{ matrix.target }}"
+          arch=""
+          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+            arch="amd64"
+          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+            arch="arm64"
+          fi
+
+          deb_dir="target/deb-psql"
+          mkdir -p "$deb_dir/DEBIAN"
+          install -Dm755 "target/$target/dist/bestool-psql" "$deb_dir/usr/bin/bestool-psql"
+          install -Dm755 "target/$target/dist/bestool-psql-audit" "$deb_dir/usr/bin/bestool-psql-audit"
+
+          install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool-psql/copyright"
+          install -Dm644 crates/psql/USAGE.md "$deb_dir/usr/share/doc/bestool-psql/USAGE.md"
+          install -Dm644 crates/psql/README.md "$deb_dir/usr/share/doc/bestool-psql/README.md"
+          install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool-psql/EXAMPLES.md"
+
+          cat > "$deb_dir/DEBIAN/control" << EOF
+          Package: bestool-psql
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $arch
+          Maintainer: BES Developers <support@bes.au>
+          Description: psql-inspired client for PostgreSQL (BES Tooling)
+          Homepage: https://github.com/beyondessential/bestool
+          License: GPL-3.0-or-later
+          EOF
+
+          dpkg-deb --build --root-owner-group "$deb_dir" "bestool-psql-${target}-${version}.deb"
+
+      - name: Package algae DEB
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version=$(grep '^version' crates/algae-cli/Cargo.toml | head -n1 | cut -d'"' -f2)
+          target="${{ matrix.target }}"
+          arch=""
+          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+            arch="amd64"
+          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+            arch="arm64"
+          fi
+
+          deb_dir="target/deb-algae"
+          mkdir -p "$deb_dir/DEBIAN"
+          install -Dm755 "target/$target/dist/algae" "$deb_dir/usr/bin/algae"
+
+          install -Dm644 COPYING "$deb_dir/usr/share/doc/algae/copyright"
+          install -Dm644 crates/algae-cli/README.md "$deb_dir/usr/share/doc/algae/README.md"
+          install -Dm644 crates/algae-cli/USAGE.md "$deb_dir/usr/share/doc/algae/USAGE.md"
+
+          cat > "$deb_dir/DEBIAN/control" << EOF
+          Package: algae
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $arch
+          Maintainer: BES Developers <support@bes.au>
+          Description: Lightweight age profile for user-friendly encryption
+          Homepage: https://github.com/beyondessential/bestool
+          License: GPL-3.0-or-later
+          EOF
+
+          dpkg-deb --build --root-owner-group "$deb_dir" "algae-${target}-${version}.deb"
 
       - uses: actions/upload-artifact@v5
         with:
@@ -242,7 +351,7 @@ jobs:
           path: |
             target/*/dist/bestool
             target/*/dist/bestool.exe
-            bestool-*.deb
+            *.deb
 
       - name: Configure AWS Credentials
         if: startsWith(github.ref, 'refs/tags/v')
@@ -265,8 +374,9 @@ jobs:
             aws s3 cp "$src" "$dest" --no-progress
           fi
 
-          if ls bestool-*.deb 1> /dev/null 2>&1; then
-            for deb in bestool-*.deb; do
+          # Upload DEBs if they exist
+          if ls *.deb 1>/dev/null 2>&1; then
+            for deb in *.deb; do
               aws s3 cp "$deb" "s3://bes-ops-tools/bestool/${version}/" --no-progress
             done
           fi
