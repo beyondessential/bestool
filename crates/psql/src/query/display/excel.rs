@@ -150,16 +150,15 @@ mod tests {
 		drop(temp_file); // Delete the temp file so the path doesn't exist
 
 		let mut ctx = crate::query::display::DisplayContext {
+			config: &Default::default(),
 			columns,
 			rows: &rows,
 			unprintable_columns: &[],
 			text_caster: None,
 			writer: &mut buffer,
 			use_colours: false,
-			theme: crate::theme::Theme::Dark,
 			column_indices: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 			column_refs: &[],
 		};
 

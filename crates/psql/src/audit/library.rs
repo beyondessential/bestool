@@ -109,13 +109,14 @@ impl Audit {
 		let db = std::sync::Arc::new(db);
 
 		let repl_state = crate::repl::ReplState {
+			config: Default::default(),
 			output_file: None,
 			sys_user: String::new(),
 			db_user: String::new(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: false,
 			ots: None,
-			use_colours: false,
 			vars: std::collections::BTreeMap::new(),
 			snippets: crate::snippets::Snippets::new(),
 			transaction_state: crate::repl::TransactionState::None,

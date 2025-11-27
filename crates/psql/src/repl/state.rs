@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, HashSet},
+	collections::BTreeMap,
 	sync::{Arc, Mutex},
 };
 
@@ -8,21 +8,22 @@ use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	audit::Audit, column_extractor::ColumnRef, completer::SqlCompleter, result_store::ResultStore,
-	schema_cache::SchemaCacheManager, snippets::Snippets, theme::Theme,
+	Config, audit::Audit, completer::SqlCompleter, result_store::ResultStore,
+	schema_cache::SchemaCacheManager, snippets::Snippets,
 };
 
 use super::TransactionState;
 
 #[derive(Debug, Clone)]
 pub struct ReplState {
+	pub config: Arc<Config>,
 	pub db_user: String,
 	pub sys_user: String,
 	pub expanded_mode: bool,
 	pub write_mode: bool,
+	pub redact_mode: bool,
 	pub ots: Option<String>,
 	pub output_file: Option<Arc<TokioMutex<File>>>,
-	pub use_colours: bool,
 	pub vars: BTreeMap<String, String>,
 	pub snippets: Snippets,
 	pub transaction_state: TransactionState,
@@ -38,13 +39,14 @@ impl Default for ReplState {
 impl ReplState {
 	pub fn new() -> Self {
 		Self {
+			config: Arc::new(Config::default()),
 			db_user: "testuser".to_string(),
 			sys_user: "localuser".to_string(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: false,
 			ots: None,
 			output_file: None,
-			use_colours: true,
 			vars: BTreeMap::new(),
 			snippets: Snippets::empty(),
 			transaction_state: TransactionState::None,
@@ -54,14 +56,13 @@ impl ReplState {
 }
 
 pub(crate) struct ReplContext<'a> {
+	pub config: &'a Arc<Config>,
 	pub client: &'a tokio_postgres::Client,
 	pub monitor_client: &'a tokio_postgres::Client,
 	pub backend_pid: i32,
-	pub theme: Theme,
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
 	pub rl: &'a mut Editor<SqlCompleter, Audit>,
 	pub pool: &'a PgPool,
 	pub schema_cache_manager: &'a SchemaCacheManager,
 	pub redact_mode: bool,
-	pub redactions: &'a HashSet<ColumnRef>,
 }

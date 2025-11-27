@@ -42,17 +42,16 @@ async fn test_text_cast_for_record_types() {
 	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result =
 		crate::query::execute_query("SELECT row(1, 'foo', true) as record", &mut query_ctx).await;
@@ -74,17 +73,16 @@ async fn test_array_formatting() {
 	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result =
 		crate::query::execute_query("SELECT ARRAY[1, 2, 3] as numbers", &mut query_ctx).await;
@@ -106,17 +104,16 @@ async fn test_result_store_populated_on_query() {
 	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut stdout = tokio::io::stdout();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 
 	// Execute a query
@@ -739,14 +736,15 @@ async fn test_describe_table_with_database() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test describing the table
@@ -856,14 +854,15 @@ async fn test_describe_view_with_database() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test describing the view
@@ -976,14 +975,15 @@ async fn test_describe_index_with_database() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test describing the index
@@ -1099,14 +1099,15 @@ async fn test_describe_sequence_with_database() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test describing the sequence
@@ -1217,14 +1218,15 @@ async fn test_describe_function_with_database() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test describing the function
@@ -1380,14 +1382,15 @@ async fn test_multiple_statements() {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Execute multiple statements: insert two rows and select them
@@ -1456,13 +1459,14 @@ async fn test_exit_blocked_with_active_transaction() {
 
 	// Create a ReplState in write mode
 	let repl_state = Arc::new(Mutex::new(ReplState {
+		config: Default::default(),
 		db_user: "test".to_string(),
 		sys_user: "test".to_string(),
 		expanded_mode: false,
 		write_mode: true,
+		redact_mode: false,
 		ots: Some("test".to_string()),
 		output_file: None,
-		use_colours: false,
 		vars: Default::default(),
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: TransactionState::Active,
@@ -1487,14 +1491,15 @@ async fn test_exit_blocked_with_active_transaction() {
 
 	// Create a ReplContext
 	let mut ctx = ReplContext {
+		config: &Default::default(),
 		client: &client,
 		monitor_client: &monitor_client,
 		backend_pid,
-		theme: crate::theme::Theme::Dark,
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
+		redact_mode: false,
 	};
 
 	// Attempt to exit - should be blocked
@@ -1542,13 +1547,14 @@ async fn test_exit_allowed_after_commit() {
 
 	// Create a ReplState in write mode but with no active transaction
 	let repl_state = Arc::new(Mutex::new(ReplState {
+		config: Default::default(),
 		db_user: "test".to_string(),
 		sys_user: "test".to_string(),
 		expanded_mode: false,
 		write_mode: true,
+		redact_mode: false,
 		ots: Some("test".to_string()),
 		output_file: None,
-		use_colours: false,
 		vars: Default::default(),
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: state,
@@ -1573,14 +1579,15 @@ async fn test_exit_allowed_after_commit() {
 
 	// Create a ReplContext
 	let mut ctx = ReplContext {
+		config: &Default::default(),
 		client: &client,
 		monitor_client: &monitor_client,
 		backend_pid,
-		theme: crate::theme::Theme::Dark,
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
+		redact_mode: false,
 	};
 
 	// Attempt to exit - should be allowed
@@ -1609,13 +1616,14 @@ async fn test_exit_allowed_in_readonly_mode() {
 
 	// Create a ReplState in read-only mode
 	let repl_state = Arc::new(Mutex::new(ReplState {
+		config: Default::default(),
 		db_user: "test".to_string(),
 		sys_user: "test".to_string(),
 		expanded_mode: false,
 		write_mode: false,
+		redact_mode: false,
 		ots: None,
 		output_file: None,
-		use_colours: false,
 		vars: Default::default(),
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: TransactionState::None,
@@ -1640,14 +1648,15 @@ async fn test_exit_allowed_in_readonly_mode() {
 
 	// Create a ReplContext
 	let mut ctx = ReplContext {
+		config: &Default::default(),
 		client: &client,
 		monitor_client: &monitor_client,
 		backend_pid,
-		theme: crate::theme::Theme::Dark,
 		repl_state: &repl_state,
 		rl: &mut rl,
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
+		redact_mode: false,
 	};
 
 	// Attempt to exit - should be allowed (not in write mode)
@@ -1671,17 +1680,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test CREATE TABLE (should show row count)
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result = crate::query::execute_query(
 		"CREATE TEMP TABLE test_dml (id INT, name TEXT)",
@@ -1700,17 +1708,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test INSERT (should show row count)
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result = crate::query::execute_query(
 		"INSERT INTO test_dml VALUES (1, 'foo'), (2, 'bar')",
@@ -1729,17 +1736,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test UPDATE (should show row count)
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result = crate::query::execute_query(
 		"UPDATE test_dml SET name = 'baz' WHERE id = 1",
@@ -1758,17 +1764,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test DELETE (should show row count)
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result =
 		crate::query::execute_query("DELETE FROM test_dml WHERE id = 2", &mut query_ctx).await;
@@ -1784,17 +1789,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test SELECT with no rows (should show "(0 rows)")
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result =
 		crate::query::execute_query("SELECT * FROM test_dml WHERE id = 999", &mut query_ctx).await;
@@ -1810,17 +1814,16 @@ async fn test_dml_commands_show_row_counts() {
 	// Test SELECT with rows (should show "(N rows)")
 	let mut buffer = Vec::new();
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers: crate::parser::QueryModifiers::new(),
-		theme: crate::theme::Theme::Dark,
 		writer: &mut buffer,
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 	let result = crate::query::execute_query("SELECT * FROM test_dml", &mut query_ctx).await;
 	assert!(result.is_ok());
@@ -1857,17 +1860,16 @@ async fn test_gset_with_multiple_unprintable_columns() {
 	modifiers.insert(crate::parser::QueryModifier::VarSet { prefix: None });
 
 	let mut query_ctx = crate::query::QueryContext {
+		config: &Default::default(),
 		client: &client,
 		pool: &pool,
 		modifiers,
-		theme: crate::theme::Theme::Dark,
 		writer: &mut stdout,
 		use_colours: false,
 		vars: Some(&mut vars),
 		repl_state: &repl_state,
 		schema_cache_manager: None,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 	};
 
 	// Execute a query with multiple unprintable columns (money type)

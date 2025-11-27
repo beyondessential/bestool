@@ -25,7 +25,7 @@ pub async fn handle_execute(
 		if output_file_path.is_some() || ctx.repl_state.lock().unwrap().output_file.is_some() {
 			false
 		} else {
-			ctx.repl_state.lock().unwrap().use_colours
+			ctx.config.use_colours
 		};
 
 	let result = if let Some(path) = output_file_path {
@@ -42,17 +42,16 @@ pub async fn handle_execute(
 					state.vars.clone()
 				};
 				let mut query_ctx = crate::query::QueryContext {
+					config: ctx.config,
 					client: ctx.client,
 					pool: ctx.pool,
 					modifiers: modifiers.clone(),
-					theme: ctx.theme,
 					writer: &mut file,
 					use_colours,
 					vars: Some(&mut vars),
 					repl_state: ctx.repl_state,
 					schema_cache_manager: Some(ctx.schema_cache_manager),
 					redact_mode: ctx.redact_mode,
-					redactions: ctx.redactions,
 				};
 				let result = execute_query(&sql, &mut query_ctx).await;
 				ctx.repl_state.lock().unwrap().vars = vars;
@@ -73,17 +72,16 @@ pub async fn handle_execute(
 
 			let mut file = file_arc.lock().await;
 			let mut query_ctx = crate::query::QueryContext {
+				config: ctx.config,
 				client: ctx.client,
 				pool: ctx.pool,
 				modifiers: modifiers.clone(),
-				theme: ctx.theme,
 				writer: &mut *file,
 				use_colours,
 				vars: Some(&mut vars),
 				repl_state: ctx.repl_state,
 				schema_cache_manager: Some(ctx.schema_cache_manager),
 				redact_mode: ctx.redact_mode,
-				redactions: ctx.redactions,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 
@@ -96,17 +94,16 @@ pub async fn handle_execute(
 				state.vars.clone()
 			};
 			let mut query_ctx = crate::query::QueryContext {
+				config: ctx.config,
 				client: ctx.client,
 				pool: ctx.pool,
 				modifiers,
-				theme: ctx.theme,
 				writer: &mut stdout,
 				use_colours,
 				vars: Some(&mut vars),
 				repl_state: ctx.repl_state,
 				schema_cache_manager: Some(ctx.schema_cache_manager),
 				redact_mode: ctx.redact_mode,
-				redactions: ctx.redactions,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 			ctx.repl_state.lock().unwrap().vars = vars;

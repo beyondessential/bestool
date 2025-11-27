@@ -121,13 +121,14 @@ mod tests {
 
 		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
 		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
+			config: Default::default(),
 			db_user: "test".to_string(),
 			sys_user: "test".to_string(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: false,
 			ots: None,
 			output_file: None,
-			use_colours: true,
 			vars: Default::default(),
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
@@ -160,13 +161,14 @@ mod tests {
 
 		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
 		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
+			config: Default::default(),
 			db_user: "test".to_string(),
 			sys_user: "test".to_string(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: false,
 			ots: None,
 			output_file: None,
-			use_colours: true,
 			vars: Default::default(),
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
@@ -197,13 +199,14 @@ mod tests {
 
 		let snippets = crate::snippets::Snippets::with_savedir(path.to_path_buf());
 		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
+			config: Default::default(),
 			db_user: "test".to_string(),
 			sys_user: "test".to_string(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: true,
 			ots: None,
 			output_file: None,
-			use_colours: true,
 			vars: Default::default(),
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
@@ -237,13 +240,14 @@ mod tests {
 		snippets.dirs.push(temp_dir2.path().to_path_buf());
 
 		let repl_state = Arc::new(Mutex::new(crate::repl::ReplState {
+			config: Default::default(),
 			db_user: "test".to_string(),
 			sys_user: "test".to_string(),
 			expanded_mode: false,
 			write_mode: false,
+			redact_mode: false,
 			ots: None,
 			output_file: None,
-			use_colours: true,
 			vars: Default::default(),
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,

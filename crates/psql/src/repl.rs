@@ -6,7 +6,7 @@ use rustyline::{
 	Cmd, Editor, EventHandler, KeyEvent, config::CompletionType, error::ReadlineError,
 };
 use std::sync::Mutex;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, warn};
 
 use crate::{
 	audit::Audit,
@@ -99,14 +99,7 @@ impl ReplAction {
 	}
 }
 
-#[instrument(level = "debug")]
-pub async fn run(pool: PgPool, config: Config) -> Result<()> {
-	let audit_path = if let Some(path) = config.audit_path {
-		path.clone()
-	} else {
-		Audit::default_path()?
-	};
-
+pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 	debug!("getting connection from pool");
 	let client = pool.get().await.into_diagnostic()?;
 
@@ -168,13 +161,14 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 		.unwrap_or_else(|_| "unknown".to_string());
 
 	let repl_state = ReplState {
+		config: config.clone(),
 		output_file: None,
 		sys_user,
 		db_user,
 		expanded_mode: false,
 		write_mode: false,
+		redact_mode: config.redact_mode,
 		ots: None,
-		use_colours: config.use_colours,
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
 		transaction_state: TransactionState::None,
@@ -182,7 +176,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 	};
 
 	let repl_state = Arc::new(Mutex::new(repl_state));
-	let audit = Audit::open(&audit_path, Arc::clone(&repl_state))?;
+	let audit = Audit::open(config.audit_path.as_ref().unwrap(), Arc::clone(&repl_state))?;
 
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(pool.clone());
@@ -214,16 +208,15 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 
 	if config.write {
 		let mut ctx = ReplContext {
+			config: &config,
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: config.theme,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: config.redact_mode,
-			redactions: &config.redactions,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -266,16 +259,15 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 				buffer = new_buffer;
 
 				let mut ctx = ReplContext {
+					config: &config,
 					client: &client,
 					monitor_client: &monitor_client,
 					backend_pid,
-					theme: config.theme,
 					repl_state: &repl_state,
 					rl: &mut rl,
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
-					redact_mode: config.redact_mode,
-					redactions: &config.redactions,
+					redact_mode: repl_state.lock().unwrap().redact_mode,
 				};
 
 				// Handle all actions
@@ -306,16 +298,15 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 			Err(ReadlineError::Eof) => {
 				debug!("CTRL-D");
 				let mut ctx = ReplContext {
+					config: &config,
 					client: &client,
 					monitor_client: &monitor_client,
 					backend_pid,
-					theme: config.theme,
 					repl_state: &repl_state,
 					rl: &mut rl,
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
-					redact_mode: config.redact_mode,
-					redactions: &config.redactions,
+					redact_mode: repl_state.lock().unwrap().redact_mode,
 				};
 
 				if exit::handle_exit(&mut ctx).await.is_break() {

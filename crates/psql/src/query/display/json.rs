@@ -92,10 +92,9 @@ pub async fn display<W: AsyncWrite + Unpin>(
 		.find_syntax_by_extension("json")
 		.unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
-	let theme_name = match ctx.theme {
+	let theme_name = match ctx.config.theme {
 		crate::theme::Theme::Light => "base16-ocean.light",
-		crate::theme::Theme::Dark => "base16-ocean.dark",
-		crate::theme::Theme::Auto => "base16-ocean.dark",
+		crate::theme::Theme::Dark | crate::theme::Theme::Auto => "base16-ocean.dark",
 	};
 
 	let theme_obj = &theme_set.themes[theme_name];

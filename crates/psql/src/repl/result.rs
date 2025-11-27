@@ -132,10 +132,7 @@ async fn display_to_stdout(
 		return Ok(());
 	}
 
-	let use_colours = ctx.repl_state.lock().unwrap().use_colours;
-	let output =
-		format_result_using_display_module(ctx, result, format, use_colours, column_indices)
-			.await?;
+	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
 	print!("{}", output);
 	Ok(())
 }
@@ -189,16 +186,15 @@ async fn display_to_file(
 
 		let mut buffer = Vec::new();
 		let mut display_ctx = crate::query::display::DisplayContext {
+			config: ctx.config,
 			columns,
 			rows: &result.rows,
 			unprintable_columns: &unprintable_columns,
 			text_caster,
 			writer: &mut buffer,
 			use_colours: false,
-			theme: ctx.theme,
 			column_indices,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 			column_refs: &[],
 		};
 
@@ -219,8 +215,7 @@ async fn display_to_file(
 		return Ok(());
 	}
 
-	let output =
-		format_result_using_display_module(ctx, result, format, false, column_indices).await?;
+	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
 
 	let mut file = std::fs::File::create(path)
 		.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
@@ -277,8 +272,7 @@ async fn display_to_global_output(
 	}
 
 	// Format without colors for file output
-	let output =
-		format_result_using_display_module(ctx, result, format, false, column_indices).await?;
+	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
 
 	if let Some(output_file) = {
 		let state = ctx.repl_state.lock().unwrap();
@@ -331,7 +325,6 @@ async fn format_result_using_display_module(
 	ctx: &mut ReplContext<'_>,
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
-	use_colours: bool,
 	column_indices: Option<&[usize]>,
 ) -> miette::Result<String> {
 	let first_row = &result.rows[0];
@@ -357,16 +350,15 @@ async fn format_result_using_display_module(
 
 	// Use the display module's display function
 	let mut display_ctx = crate::query::display::DisplayContext {
+		config: ctx.config,
 		columns,
 		rows: &result.rows,
 		unprintable_columns: &unprintable_columns,
 		text_caster,
 		writer: &mut buffer,
 		use_colours: true,
-		theme: crate::theme::Theme::Dark,
 		column_indices,
 		redact_mode: false,
-		redactions: &std::collections::HashSet::new(),
 		column_refs: &[],
 	};
 
@@ -573,17 +565,16 @@ mod tests {
 		// Execute some queries to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -606,14 +597,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test \re show without n (should show last result)
@@ -655,17 +647,16 @@ mod tests {
 		// Execute multiple queries
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
+			redact_mode: false,
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
-			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as first", &mut query_ctx)
@@ -691,10 +682,11 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
+			redact_mode: false,
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
@@ -739,17 +731,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx)
@@ -772,14 +763,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: true,
 		};
 
 		// Test different formats
@@ -827,17 +819,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 42 as answer", &mut query_ctx)
@@ -860,14 +851,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test writing to file
@@ -916,17 +908,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -953,14 +944,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test json format - should output one object per line
@@ -1043,17 +1035,16 @@ mod tests {
 		// Execute query to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1079,14 +1070,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test csv format
@@ -1144,17 +1136,16 @@ mod tests {
 		// Execute query to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1180,14 +1171,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test excel format - should require to= parameter
@@ -1254,17 +1246,16 @@ mod tests {
 		// Execute query to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1290,14 +1281,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test sqlite format - should require to= parameter
@@ -1387,17 +1379,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 'test' as text, 42 as num", &mut query_ctx)
@@ -1420,14 +1411,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// We can't easily capture stdout in tests, but we can verify the function
@@ -1495,17 +1487,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 123 as num", &mut query_ctx)
@@ -1539,14 +1530,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test \re show without 'to' parameter - should use global output file
@@ -1634,14 +1626,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test \re show when no results exist
@@ -1696,14 +1689,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		let mut output = Vec::new();
@@ -1737,17 +1731,16 @@ mod tests {
 		// Execute some queries to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -1773,14 +1766,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test basic list
@@ -1826,17 +1820,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		for i in 1..=5 {
@@ -1861,14 +1854,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		let mut output = Vec::new();
@@ -1901,17 +1895,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1937,14 +1930,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		let mut output = Vec::new();
@@ -1983,17 +1977,16 @@ mod tests {
 		// Execute some queries to populate the result store
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -2029,14 +2022,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test \re list with no limit (should default to 20)
@@ -2111,17 +2105,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2148,14 +2141,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with limit=3
@@ -2192,17 +2186,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2229,14 +2222,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: true,
 		};
 
 		// Test with offset=5
@@ -2273,17 +2267,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2310,14 +2303,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with offset=3 and limit=4 (should show rows 4-7)
@@ -2354,17 +2348,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query with multiple columns
@@ -2391,14 +2384,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with cols=text (should show only the text column)
@@ -2437,17 +2431,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query
@@ -2471,14 +2464,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with cols=nonexistent (should error and continue)
@@ -2517,17 +2511,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows with identifiable values
@@ -2554,14 +2547,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with offset=2 and limit=3 (should show rows 3, 4, 5)
@@ -2613,17 +2607,16 @@ mod tests {
 
 		let mut stdout = tokio::io::stdout();
 		let mut query_ctx = crate::query::QueryContext {
+			config: &Default::default(),
 			client: &client,
 			pool: &pool,
 			modifiers: crate::parser::QueryModifiers::new(),
-			theme: crate::theme::Theme::Dark,
 			writer: &mut stdout,
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
 			redact_mode: false,
-			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query with multiple columns
@@ -2647,14 +2640,15 @@ mod tests {
 		let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
 
 		let mut ctx = crate::repl::ReplContext {
+			config: &Default::default(),
 			client: &client,
 			monitor_client: &monitor_client,
 			backend_pid,
-			theme: crate::theme::Theme::Dark,
 			repl_state: &repl_state,
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
 		};
 
 		// Test with cols=b,d (should show only columns b and d)

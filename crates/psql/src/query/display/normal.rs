@@ -56,7 +56,7 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 			// Check if this column should be redacted
 			let should_redact = if ctx.redact_mode {
 				ctx.column_refs.iter().any(|col_ref| {
-					col_ref.column == column_name && ctx.redactions.contains(col_ref)
+					col_ref.column == column_name && ctx.config.redactions.contains(col_ref)
 				})
 			} else {
 				false

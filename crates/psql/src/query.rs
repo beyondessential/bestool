@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, HashSet},
+	collections::BTreeMap,
 	pin::pin,
 	sync::{Arc, Mutex},
 };
@@ -9,7 +9,7 @@ use miette::Result;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::{debug, warn};
 
-use crate::colors;
+use crate::{Config, colors};
 
 use bestool_postgres::{
 	error::PgDatabaseError,
@@ -19,12 +19,11 @@ use bestool_postgres::{
 };
 
 use crate::{
-	column_extractor::{self, extract_column_refs},
+	column_extractor::extract_column_refs,
 	parser::{QueryModifier, QueryModifiers},
 	repl::ReplState,
 	schema_cache::SchemaCacheManager,
 	signals::{reset_sigint, sigint_received},
-	theme::Theme,
 };
 
 pub(crate) mod display;
@@ -32,17 +31,16 @@ mod vars;
 
 /// Context for executing a query.
 pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
+	pub config: &'a Arc<Config>,
 	pub client: &'a tokio_postgres::Client,
 	pub pool: &'a PgPool,
 	pub modifiers: QueryModifiers,
-	pub theme: Theme,
 	pub writer: &'a mut W,
-	pub use_colours: bool,
 	pub vars: Option<&'a mut BTreeMap<String, String>>,
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
 	pub schema_cache_manager: Option<&'a SchemaCacheManager>,
 	pub redact_mode: bool,
-	pub redactions: &'a HashSet<column_extractor::ColumnRef>,
+	pub use_colours: bool,
 }
 
 /// Execute a SQL query and display the results.
@@ -403,16 +401,15 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 
 			display::display(
 				&mut display::DisplayContext {
+					config: ctx.config,
 					columns,
 					rows: display_rows,
 					unprintable_columns: &unprintable_columns,
 					text_caster: text_caster.clone(),
 					writer: ctx.writer,
 					use_colours: ctx.use_colours,
-					theme: ctx.theme,
 					column_indices: None,
 					redact_mode: ctx.redact_mode,
-					redactions: &ctx.redactions,
 					column_refs: &column_refs,
 				},
 				is_json,
