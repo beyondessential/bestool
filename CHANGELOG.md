@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.2.6](https://github.com/beyondessential/bestool/compare/v1.2.5..1.2.6) - 2025-11-26
+## [1.2.7](https://github.com/beyondessential/bestool/compare/v1.2.6..1.2.7) - 2025-11-27
+
+
+- **refactor:** Eliminate unsafe code - ([7d181e4](https://github.com/beyondessential/bestool/commit/7d181e44c24237de5cf2d2a3a164aa66dbdb4e47))
+- **refactor:** Apply unsafe lint workspace-wide - ([0ca615f](https://github.com/beyondessential/bestool/commit/0ca615fd50daffa93ff874b81ab108ed183d24a5))
+
+
+- **tweak(backups):** Include fhir materialised resources in the lean backup (#246) - ([7c5ee14](https://github.com/beyondessential/bestool/commit/7c5ee14413eeb411d43af3443511ba824b09f279))
+---
+## [1.2.6](https://github.com/beyondessential/bestool/compare/v1.2.5..v1.2.6) - 2025-11-26
 
 
 - **feat:** Produce a deb - ([6e07df2](https://github.com/beyondessential/bestool/commit/6e07df2bf2a3a550ca01257fdee669890aa8c405))
