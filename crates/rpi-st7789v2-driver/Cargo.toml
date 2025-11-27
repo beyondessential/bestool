@@ -1,6 +1,6 @@
 [package]
 name = "rpi-st7789v2-driver"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 rust-version = "1.76.0"
 resolver = "2"

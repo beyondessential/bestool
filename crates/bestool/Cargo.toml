@@ -15,9 +15,9 @@ repository = "https://github.com/beyondessential/bestool"
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.0.11", path = "../algae-cli", optional = true }
-bestool-alertd = { version = "1.0.4", path = "../alertd", default-features = false, optional = true }
-bestool-psql = { version = "1.1.13", path = "../psql", default-features = false, optional = true }
+algae-cli = { version = "1.0.12", path = "../algae-cli", optional = true }
+bestool-alertd = { version = "1.0.5", path = "../alertd", default-features = false, optional = true }
+bestool-psql = { version = "1.1.14", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.22", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
@@ -58,7 +58,7 @@ privilege = { version = "0.3.0", optional = true }
 pulldown-cmark = { version = "0.13.0", optional = true }
 regex = { version = "1.11.2", optional = true }
 reqwest = { workspace = true }
-rpi-st7789v2-driver = { version = "0.3.9", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
+rpi-st7789v2-driver = { version = "0.3.10", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.22.1", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
