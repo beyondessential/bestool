@@ -19,8 +19,10 @@ use bestool_postgres::{
 };
 
 use crate::{
+	column_extractor::extract_column_refs,
 	parser::{QueryModifier, QueryModifiers},
 	repl::ReplState,
+	schema_cache::SchemaCacheManager,
 	signals::{reset_sigint, sigint_received},
 	theme::Theme,
 };
@@ -38,6 +40,7 @@ pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
 	pub use_colours: bool,
 	pub vars: Option<&'a mut BTreeMap<String, String>>,
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
+	pub schema_cache_manager: Option<&'a SchemaCacheManager>,
 }
 
 /// Execute a SQL query and display the results.
@@ -46,6 +49,28 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	ctx: &mut QueryContext<'_, W>,
 ) -> Result<()> {
 	debug!(?ctx.modifiers, %sql, "executing query");
+
+	// Extract column references from the query
+	if let Some(schema_cache_manager) = ctx.schema_cache_manager {
+		let cache = schema_cache_manager.cache_arc();
+		let cache_guard = cache.read().unwrap();
+		match extract_column_refs(sql, Some(&cache_guard)) {
+			Ok(column_refs) => {
+				if !column_refs.is_empty() {
+					debug!("extracted column references:");
+					for col_ref in &column_refs {
+						debug!(
+							"  ({}, {}, {})",
+							col_ref.schema, col_ref.table, col_ref.column
+						);
+					}
+				}
+			}
+			Err(e) => {
+				debug!("failed to extract column references: {}", e);
+			}
+		}
+	}
 
 	// Interpolate variables unless Verbatim modifier is used
 	let sql_to_execute = if ctx.modifiers.contains(&QueryModifier::Verbatim) {

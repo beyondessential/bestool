@@ -3,6 +3,7 @@
 #[doc(hidden)]
 pub mod audit;
 mod colors;
+mod column_extractor;
 mod completer;
 mod config;
 mod input;

@@ -50,6 +50,7 @@ async fn test_text_cast_for_record_types() {
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result =
 		crate::query::execute_query("SELECT row(1, 'foo', true) as record", &mut query_ctx).await;
@@ -79,6 +80,7 @@ async fn test_array_formatting() {
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result =
 		crate::query::execute_query("SELECT ARRAY[1, 2, 3] as numbers", &mut query_ctx).await;
@@ -108,6 +110,7 @@ async fn test_result_store_populated_on_query() {
 		use_colours: true,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 
 	// Execute a query
@@ -1670,6 +1673,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result = crate::query::execute_query(
 		"CREATE TEMP TABLE test_dml (id INT, name TEXT)",
@@ -1696,6 +1700,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result = crate::query::execute_query(
 		"INSERT INTO test_dml VALUES (1, 'foo'), (2, 'bar')",
@@ -1722,6 +1727,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result = crate::query::execute_query(
 		"UPDATE test_dml SET name = 'baz' WHERE id = 1",
@@ -1748,6 +1754,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result =
 		crate::query::execute_query("DELETE FROM test_dml WHERE id = 2", &mut query_ctx).await;
@@ -1771,6 +1778,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result =
 		crate::query::execute_query("SELECT * FROM test_dml WHERE id = 999", &mut query_ctx).await;
@@ -1794,6 +1802,7 @@ async fn test_dml_commands_show_row_counts() {
 		use_colours: false,
 		vars: None,
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 	let result = crate::query::execute_query("SELECT * FROM test_dml", &mut query_ctx).await;
 	assert!(result.is_ok());
@@ -1838,6 +1847,7 @@ async fn test_gset_with_multiple_unprintable_columns() {
 		use_colours: false,
 		vars: Some(&mut vars),
 		repl_state: &repl_state,
+		schema_cache_manager: None,
 	};
 
 	// Execute a query with multiple unprintable columns (money type)

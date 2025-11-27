@@ -575,6 +575,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -654,6 +655,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 1 as first", &mut query_ctx)
@@ -735,6 +737,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx)
@@ -820,6 +823,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 42 as answer", &mut query_ctx)
@@ -906,6 +910,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query that returns multiple rows
@@ -1030,6 +1035,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query(
@@ -1128,6 +1134,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query(
@@ -1235,6 +1242,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query(
@@ -1365,6 +1373,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 'test' as text, 42 as num", &mut query_ctx)
@@ -1470,6 +1479,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 123 as num", &mut query_ctx)
@@ -1709,6 +1719,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -1795,6 +1806,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		for i in 1..=5 {
@@ -1867,6 +1879,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query(
@@ -1946,6 +1959,7 @@ mod tests {
 			use_colours: true,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -2071,6 +2085,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query that returns multiple rows
@@ -2149,6 +2164,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query that returns multiple rows
@@ -2227,6 +2243,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query that returns multiple rows
@@ -2305,6 +2322,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query with multiple columns
@@ -2385,6 +2403,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query
@@ -2462,6 +2481,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query that returns multiple rows with identifiable values
@@ -2555,6 +2575,7 @@ mod tests {
 			use_colours: false,
 			vars: None,
 			repl_state: &repl_state,
+			schema_cache_manager: None,
 		};
 
 		// Execute a query with multiple columns
