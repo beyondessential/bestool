@@ -145,6 +145,8 @@ async fn main() -> Result<()> {
 		audit_path: args.audit_path,
 		write: args.write,
 		use_colours: args.logging.color.enabled(),
+		redact_mode: false,
+		redactions: std::collections::HashSet::new(),
 	})
 	.await
 }

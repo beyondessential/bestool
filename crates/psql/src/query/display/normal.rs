@@ -1,5 +1,5 @@
 use bestool_postgres::{stringify::get_value, text_cast::CellRef};
-use comfy_table::Table;
+use comfy_table::{Cell, Color, Table};
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -49,22 +49,43 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 
 	// Now build the table with all values
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
-		let mut row_data = Vec::new();
+		let mut row_data: Vec<Cell> = Vec::new();
 		for &col_idx in &column_indices {
-			let value_str = if ctx.unprintable_columns.contains(&col_idx) {
-				let cell_ref = CellRef { row_idx, col_idx };
-				if let Some(result) = cast_map.get(&cell_ref) {
-					match result {
-						Ok(text) => text.clone(),
-						Err(_) => "(error)".to_string(),
-					}
+			let column_name = ctx.columns[col_idx].name();
+
+			// Check if this column should be redacted
+			let should_redact = if ctx.redact_mode {
+				ctx.column_refs.iter().any(|col_ref| {
+					col_ref.column == column_name && ctx.redactions.contains(col_ref)
+				})
+			} else {
+				false
+			};
+
+			let cell = if should_redact {
+				// Redact the value with yellow color
+				if ctx.use_colours {
+					Cell::new("[redacted]").fg(Color::Yellow)
 				} else {
-					"(binary data)".to_string()
+					Cell::new("[redacted]")
 				}
 			} else {
-				get_value(row, col_idx, ctx.unprintable_columns)
+				let value_str = if ctx.unprintable_columns.contains(&col_idx) {
+					let cell_ref = CellRef { row_idx, col_idx };
+					if let Some(result) = cast_map.get(&cell_ref) {
+						match result {
+							Ok(text) => text.clone(),
+							Err(_) => "(error)".to_string(),
+						}
+					} else {
+						"(binary data)".to_string()
+					}
+				} else {
+					get_value(row, col_idx, ctx.unprintable_columns)
+				};
+				Cell::new(value_str)
 			};
-			row_data.push(value_str);
+			row_data.push(cell);
 		}
 		table.add_row(row_data);
 	}

@@ -1,6 +1,10 @@
+use std::collections::HashSet;
+
 use bestool_postgres::text_cast::TextCaster;
 use miette::Result;
 use tokio::io::AsyncWrite;
+
+use crate::column_extractor::ColumnRef;
 
 mod csv;
 mod excel;
@@ -20,6 +24,12 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub theme: crate::theme::Theme,
 	/// Optional column indices to filter display (None means show all columns)
 	pub column_indices: Option<&'a [usize]>,
+	/// Whether redaction mode is enabled
+	pub redact_mode: bool,
+	/// Set of columns to redact
+	pub redactions: &'a HashSet<ColumnRef>,
+	/// Extracted column references from the query (for redaction matching)
+	pub column_refs: &'a [ColumnRef],
 }
 
 pub async fn display<W: AsyncWrite + Unpin>(

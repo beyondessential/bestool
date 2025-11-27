@@ -197,6 +197,9 @@ async fn display_to_file(
 			use_colours: false,
 			theme: ctx.theme,
 			column_indices,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
+			column_refs: &[],
 		};
 
 		match format {
@@ -359,9 +362,12 @@ async fn format_result_using_display_module(
 		unprintable_columns: &unprintable_columns,
 		text_caster,
 		writer: &mut buffer,
-		use_colours,
-		theme: ctx.theme,
+		use_colours: true,
+		theme: crate::theme::Theme::Dark,
 		column_indices,
+		redact_mode: false,
+		redactions: &std::collections::HashSet::new(),
+		column_refs: &[],
 	};
 
 	match format {
@@ -576,6 +582,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -656,6 +664,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as first", &mut query_ctx)
@@ -738,6 +748,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 'hello' as greeting", &mut query_ctx)
@@ -824,6 +836,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 42 as answer", &mut query_ctx)
@@ -911,6 +925,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -1036,6 +1052,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1135,6 +1153,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1243,6 +1263,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1374,6 +1396,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 'test' as text, 42 as num", &mut query_ctx)
@@ -1480,6 +1504,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 123 as num", &mut query_ctx)
@@ -1720,6 +1746,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -1807,6 +1835,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		for i in 1..=5 {
@@ -1880,6 +1910,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query(
@@ -1960,6 +1992,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		crate::query::execute_query("SELECT 1 as num", &mut query_ctx)
@@ -2086,6 +2120,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2165,6 +2201,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2244,6 +2282,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows
@@ -2323,6 +2363,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query with multiple columns
@@ -2404,6 +2446,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query
@@ -2482,6 +2526,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query that returns multiple rows with identifiable values
@@ -2576,6 +2622,8 @@ mod tests {
 			vars: None,
 			repl_state: &repl_state,
 			schema_cache_manager: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
 		};
 
 		// Execute a query with multiple columns

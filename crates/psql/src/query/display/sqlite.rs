@@ -181,6 +181,9 @@ mod tests {
 			use_colours: false,
 			theme: crate::theme::Theme::Dark,
 			column_indices: None,
+			redact_mode: false,
+			redactions: &std::collections::HashSet::new(),
+			column_refs: &[],
 		};
 
 		display(&mut ctx, &file_path).await.expect("Display failed");

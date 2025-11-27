@@ -51,6 +51,8 @@ pub async fn handle_execute(
 					vars: Some(&mut vars),
 					repl_state: ctx.repl_state,
 					schema_cache_manager: Some(ctx.schema_cache_manager),
+					redact_mode: ctx.redact_mode,
+					redactions: ctx.redactions,
 				};
 				let result = execute_query(&sql, &mut query_ctx).await;
 				ctx.repl_state.lock().unwrap().vars = vars;
@@ -80,6 +82,8 @@ pub async fn handle_execute(
 				vars: Some(&mut vars),
 				repl_state: ctx.repl_state,
 				schema_cache_manager: Some(ctx.schema_cache_manager),
+				redact_mode: ctx.redact_mode,
+				redactions: ctx.redactions,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 
@@ -101,6 +105,8 @@ pub async fn handle_execute(
 				vars: Some(&mut vars),
 				repl_state: ctx.repl_state,
 				schema_cache_manager: Some(ctx.schema_cache_manager),
+				redact_mode: ctx.redact_mode,
+				redactions: ctx.redactions,
 			};
 			let result = execute_query(&sql, &mut query_ctx).await;
 			ctx.repl_state.lock().unwrap().vars = vars;

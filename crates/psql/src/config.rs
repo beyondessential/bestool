@@ -1,12 +1,9 @@
-use bestool_postgres::pool::PgPool;
+use std::collections::HashSet;
 
-use crate::theme::Theme;
+use crate::{column_extractor::ColumnRef, theme::Theme};
 
 #[derive(Clone, Debug)]
 pub struct Config {
-	/// Database connection pool
-	pub pool: PgPool,
-
 	/// Syntax highlighting theme
 	pub theme: Theme,
 
@@ -18,4 +15,23 @@ pub struct Config {
 
 	/// Whether to use colours in output
 	pub use_colours: bool,
+
+	/// Whether redaction mode is enabled
+	pub redact_mode: bool,
+
+	/// Set of columns to redact
+	pub redactions: HashSet<ColumnRef>,
+}
+
+impl Default for Config {
+	fn default() -> Self {
+		Self {
+			theme: Theme::Dark,
+			audit_path: None,
+			write: false,
+			use_colours: true,
+			redact_mode: false,
+			redactions: HashSet::new(),
+		}
+	}
 }

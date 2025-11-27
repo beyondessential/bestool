@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
 use miette::{IntoDiagnostic as _, Result};
@@ -170,12 +170,22 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	// Install a Ctrl-C handler that sets a flag for query cancellation
 	bestool_psql::register_sigint_handler()?;
+	// Hardcode redaction for testing
+	let mut redactions = HashSet::new();
+	redactions.insert(bestool_psql::column_extractor::ColumnRef {
+		schema: "public".to_string(),
+		table: "local_system_facts".to_string(),
+		column: "value".to_string(),
+	});
+
 	bestool_psql::run(bestool_psql::Config {
 		pool,
 		theme: theme.resolve(),
 		audit_path,
 		write,
 		use_colours: ctx.args_top.use_colours,
+		redact_mode: true,
+		redactions,
 	})
 	.await
 }

@@ -1,5 +1,5 @@
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, HashSet},
 	pin::pin,
 	sync::{Arc, Mutex},
 };
@@ -19,7 +19,7 @@ use bestool_postgres::{
 };
 
 use crate::{
-	column_extractor::extract_column_refs,
+	column_extractor::{self, extract_column_refs},
 	parser::{QueryModifier, QueryModifiers},
 	repl::ReplState,
 	schema_cache::SchemaCacheManager,
@@ -41,6 +41,8 @@ pub(crate) struct QueryContext<'a, W: AsyncWrite + Unpin> {
 	pub vars: Option<&'a mut BTreeMap<String, String>>,
 	pub repl_state: &'a Arc<Mutex<ReplState>>,
 	pub schema_cache_manager: Option<&'a SchemaCacheManager>,
+	pub redact_mode: bool,
+	pub redactions: &'a HashSet<column_extractor::ColumnRef>,
 }
 
 /// Execute a SQL query and display the results.
@@ -212,6 +214,15 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	statement: &str,
 	ctx: &mut QueryContext<'_, W>,
 ) -> Result<()> {
+	// Extract column references for redaction
+	let column_refs = if let Some(schema_cache_manager) = ctx.schema_cache_manager {
+		let cache = schema_cache_manager.cache_arc();
+		let cache_guard = cache.read().unwrap();
+		extract_column_refs(statement, Some(&cache_guard)).unwrap_or_default()
+	} else {
+		Vec::new()
+	};
+
 	let start = std::time::Instant::now();
 
 	let cancel_token = ctx.client.cancel_token();
@@ -400,6 +411,9 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 					use_colours: ctx.use_colours,
 					theme: ctx.theme,
 					column_indices: None,
+					redact_mode: ctx.redact_mode,
+					redactions: &ctx.redactions,
+					column_refs: &column_refs,
 				},
 				is_json,
 				is_expanded,

@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
+use bestool_postgres::pool::PgPool;
 use miette::{IntoDiagnostic, Result, bail, miette};
 use rustyline::{
 	Cmd, Editor, EventHandler, KeyEvent, config::CompletionType, error::ReadlineError,
@@ -99,7 +100,7 @@ impl ReplAction {
 }
 
 #[instrument(level = "debug")]
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 	let audit_path = if let Some(path) = config.audit_path {
 		path.clone()
 	} else {
@@ -107,7 +108,7 @@ pub async fn run(config: Config) -> Result<()> {
 	};
 
 	debug!("getting connection from pool");
-	let client = config.pool.get().await.into_diagnostic()?;
+	let client = pool.get().await.into_diagnostic()?;
 
 	if config.write {
 		debug!("setting session to read-write mode");
@@ -183,7 +184,7 @@ pub async fn run(config: Config) -> Result<()> {
 	let audit = Audit::open(&audit_path, Arc::clone(&repl_state))?;
 
 	debug!("initializing schema cache");
-	let schema_cache_manager = SchemaCacheManager::new(config.pool.clone());
+	let schema_cache_manager = SchemaCacheManager::new(pool.clone());
 
 	// Refresh schema cache on startup for column extraction
 	debug!("refreshing schema cache on startup");
@@ -218,8 +219,10 @@ pub async fn run(config: Config) -> Result<()> {
 			theme: config.theme,
 			repl_state: &repl_state,
 			rl: &mut rl,
-			pool: &config.pool,
+			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			redact_mode: config.redact_mode,
+			redactions: &config.redactions,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -268,8 +271,10 @@ pub async fn run(config: Config) -> Result<()> {
 					theme: config.theme,
 					repl_state: &repl_state,
 					rl: &mut rl,
-					pool: &config.pool,
+					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
+					redact_mode: config.redact_mode,
+					redactions: &config.redactions,
 				};
 
 				// Handle all actions
@@ -306,8 +311,10 @@ pub async fn run(config: Config) -> Result<()> {
 					theme: config.theme,
 					repl_state: &repl_state,
 					rl: &mut rl,
-					pool: &config.pool,
+					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
+					redact_mode: config.redact_mode,
+					redactions: &config.redactions,
 				};
 
 				if exit::handle_exit(&mut ctx).await.is_break() {

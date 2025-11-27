@@ -1,5 +1,5 @@
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, HashSet},
 	sync::{Arc, Mutex},
 };
 
@@ -8,7 +8,7 @@ use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	audit::Audit, completer::SqlCompleter, result_store::ResultStore,
+	audit::Audit, column_extractor::ColumnRef, completer::SqlCompleter, result_store::ResultStore,
 	schema_cache::SchemaCacheManager, snippets::Snippets, theme::Theme,
 };
 
@@ -62,4 +62,6 @@ pub(crate) struct ReplContext<'a> {
 	pub rl: &'a mut Editor<SqlCompleter, Audit>,
 	pub pool: &'a PgPool,
 	pub schema_cache_manager: &'a SchemaCacheManager,
+	pub redact_mode: bool,
+	pub redactions: &'a HashSet<ColumnRef>,
 }
