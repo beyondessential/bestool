@@ -5,7 +5,7 @@ use rustyline::{
 	Cmd, Editor, EventHandler, KeyEvent, config::CompletionType, error::ReadlineError,
 };
 use std::sync::Mutex;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use crate::{
 	audit::Audit,
@@ -184,6 +184,13 @@ pub async fn run(config: Config) -> Result<()> {
 
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(config.pool.clone());
+
+	// Refresh schema cache on startup for column extraction
+	debug!("refreshing schema cache on startup");
+	if let Err(e) = schema_cache_manager.refresh().await {
+		warn!("failed to refresh schema cache on startup: {}", e);
+	}
+
 	let cache_arc = schema_cache_manager.cache_arc();
 
 	let completer = SqlCompleter::new(config.theme)
