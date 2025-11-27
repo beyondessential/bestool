@@ -160,7 +160,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 	debug!(pid=%backend_pid, "main connection backend PID");
 
 	debug!("getting monitor connection from pool");
-	let monitor_client = config.pool.get().await.into_diagnostic()?;
+	let monitor_client = pool.get().await.into_diagnostic()?;
 	debug!("monitor connection established");
 
 	let sys_user = std::env::var("USER")

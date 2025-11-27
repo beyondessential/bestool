@@ -178,14 +178,17 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		column: "value".to_string(),
 	});
 
-	bestool_psql::run(bestool_psql::Config {
+	bestool_psql::run(
 		pool,
-		theme: theme.resolve(),
-		audit_path,
-		write,
-		use_colours: ctx.args_top.use_colours,
-		redact_mode: true,
-		redactions,
-	})
+		bestool_psql::Config {
+			theme: theme.resolve(),
+			audit_path,
+			write,
+			use_colours: ctx.args_top.use_colours,
+			redact_mode: true,
+			redactions,
+			..Default::default()
+		},
+	)
 	.await
 }

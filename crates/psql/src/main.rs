@@ -139,14 +139,15 @@ async fn main() -> Result<()> {
 	let pool = bestool_psql::create_pool(&url).await?;
 
 	bestool_psql::register_sigint_handler()?;
-	bestool_psql::run(bestool_psql::Config {
+	bestool_psql::run(
 		pool,
-		theme,
-		audit_path: args.audit_path,
-		write: args.write,
-		use_colours: args.logging.color.enabled(),
-		redact_mode: false,
-		redactions: std::collections::HashSet::new(),
-	})
+		bestool_psql::Config {
+			theme,
+			audit_path: args.audit_path,
+			write: args.write,
+			use_colours: args.logging.color.enabled(),
+			..Default::default()
+		},
+	)
 	.await
 }
