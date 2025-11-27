@@ -132,9 +132,10 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 		.await
 		.into_diagnostic()?;
 
-	if let Some(row) = rows.first() {
-		let version: String = row.get(0);
-		println!("{}", version);
+	if let Some(row) = rows.first()
+		&& let Ok(version) = row.try_get::<_, String>(0)
+	{
+		eprintln!("{version}");
 	}
 
 	let (database_name, db_user, is_superuser): (String, String, bool) = {
