@@ -57,13 +57,7 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 		match extract_column_refs(sql, Some(&cache_guard)) {
 			Ok(column_refs) => {
 				if !column_refs.is_empty() {
-					debug!("extracted column references:");
-					for col_ref in &column_refs {
-						debug!(
-							"  ({}, {}, {})",
-							col_ref.schema, col_ref.table, col_ref.column
-						);
-					}
+					debug!(?column_refs, "extracted column references");
 				}
 			}
 			Err(e) => {
