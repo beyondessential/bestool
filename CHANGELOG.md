@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.3](https://github.com/beyondessential/bestool/compare/v1.3.2..1.3.3) - 2025-11-28
+## [1.3.4](https://github.com/beyondessential/bestool/compare/v1.3.3..1.3.4) - 2025-11-28
+
+
+- **fix:** Fix tests - ([98398c9](https://github.com/beyondessential/bestool/commit/98398c9cf9f4420ba0454e011d8e97901902fefd))
+
+---
+## [1.3.3](https://github.com/beyondessential/bestool/compare/v1.3.2..v1.3.3) - 2025-11-28
 
 
 
