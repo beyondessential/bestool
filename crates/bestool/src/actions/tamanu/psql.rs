@@ -196,6 +196,10 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	bestool_psql::run(
 		pool,
+		#[expect(
+			clippy::needless_update,
+			reason = "future-proofing for when Config gains new fields"
+		)]
 		bestool_psql::Config {
 			theme: theme.resolve(),
 			audit_path,
@@ -253,16 +257,65 @@ async fn fetch_and_cache_redactions(version: &str) -> Result<HashSet<ColumnRef>>
 	if let Ok(contents) = fs::read_to_string(&cache_file).await
 		&& let Ok(redactions) = serde_json::from_str(&contents)
 	{
-		debug!("loaded redactions from cache");
+		debug!("loaded redactions from cache for {}", version);
 		return Ok(redactions);
 	}
 
-	let redactions = fetch_redactions_from_source(version).await?;
+	match fetch_redactions_from_source(version).await {
+		Ok(redactions) => {
+			let json = serde_json::to_string_pretty(&redactions).into_diagnostic()?;
+			fs::write(&cache_file, json).await.into_diagnostic()?;
+			Ok(redactions)
+		}
+		Err(e) => {
+			if let Some(base_version) = get_base_version(version)
+				&& base_version != version
+			{
+				debug!(
+					"failed to fetch redactions for {}, trying {}: {}",
+					version, base_version, e
+				);
 
-	let json = serde_json::to_string_pretty(&redactions).into_diagnostic()?;
-	fs::write(&cache_file, json).await.into_diagnostic()?;
+				let base_cache_file = cache_dir.join(format!("redactions-{base_version}.json"));
 
-	Ok(redactions)
+				if let Ok(contents) = fs::read_to_string(&base_cache_file).await
+					&& let Ok(redactions) = serde_json::from_str(&contents)
+				{
+					debug!(
+						"loaded redactions from cache for base version {}",
+						base_version
+					);
+					return Ok(redactions);
+				}
+
+				let redactions = fetch_redactions_from_source(&base_version).await?;
+
+				let json = serde_json::to_string_pretty(&redactions).into_diagnostic()?;
+				fs::write(&base_cache_file, json).await.into_diagnostic()?;
+
+				Ok(redactions)
+			} else {
+				Err(e)
+			}
+		}
+	}
+}
+
+fn get_base_version(version: &str) -> Option<String> {
+	let parts: Vec<&str> = version.split('.').collect();
+	if parts.len() != 3 {
+		return None;
+	}
+
+	if parts[1].parse::<u32>().is_err() || parts[2].parse::<u32>().is_err() {
+		return None;
+	}
+
+	if parts[2] == "0" {
+		None
+	} else {
+		Some(format!("{}.{}.0", parts[0], parts[1]))
+	}
 }
 
 #[instrument(level = "debug")]
@@ -449,5 +502,16 @@ mod tests {
 		})));
 
 		assert!(!has_masking(&json!({})));
+	}
+
+	#[test]
+	fn test_get_base_version() {
+		assert_eq!(get_base_version("2.38.7"), Some("2.38.0".to_string()));
+		assert_eq!(get_base_version("1.2.3"), Some("1.2.0".to_string()));
+		assert_eq!(get_base_version("2.38.0"), None);
+		assert_eq!(get_base_version("1.0.0"), None);
+		assert_eq!(get_base_version("invalid"), None);
+		assert_eq!(get_base_version("2.38"), None);
+		assert_eq!(get_base_version("2.38.7.1"), None);
 	}
 }
