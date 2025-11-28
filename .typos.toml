@@ -2,3 +2,6 @@
 
 [files]
 extend-exclude = ["CHANGELOG.md", "crates/psql/EXAMPLES.md"]
+
+[default.extend-words]
+larg = "larg" # left arg (in parsers)
