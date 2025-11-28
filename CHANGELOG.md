@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.2.7](https://github.com/beyondessential/bestool/compare/v1.2.6..1.2.7) - 2025-11-27
+## [1.3.0](https://github.com/beyondessential/bestool/compare/v1.2.7..1.3.0) - 2025-11-28
+
+
+- **doc:** Update usage - ([5717e51](https://github.com/beyondessential/bestool/commit/5717e51010ecaeb4a0c586af40c80aab826c22f9))
+
+
+- **feat(psql):** Implement redaction - ([5c02d89](https://github.com/beyondessential/bestool/commit/5c02d898de20f5e6eb49aa3ae9956929c70338f4))
+- **feat(psql):** Fetch redactions from dbt manifest - ([2aa48d9](https://github.com/beyondessential/bestool/commit/2aa48d9d07a7053865cf74ab0d6f14e0fb9b3428))
+- **refactor(psql):** Make Config proof against future changes - ([a8bf4c7](https://github.com/beyondessential/bestool/commit/a8bf4c7e7dc9d09c6fac660366eb37d67758eec1))
+---
+## [1.2.7](https://github.com/beyondessential/bestool/compare/v1.2.6..v1.2.7) - 2025-11-27
 
 
 - **refactor:** Eliminate unsafe code - ([7d181e4](https://github.com/beyondessential/bestool/commit/7d181e44c24237de5cf2d2a3a164aa66dbdb4e47))
