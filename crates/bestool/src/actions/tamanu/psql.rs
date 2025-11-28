@@ -464,9 +464,9 @@ mod tests {
 
 	#[test]
 	fn test_parse_manifest_malformed() {
-		assert_eq!(parse_manifest("not json").unwrap().len(), 0);
-		assert_eq!(parse_manifest("{}").unwrap().len(), 0);
-		assert_eq!(parse_manifest(r#"{"sources": null}"#).unwrap().len(), 0);
+		assert!(parse_manifest("not json").is_err());
+		assert!(parse_manifest("{}").is_err());
+		assert!(parse_manifest(r#"{"sources": null}"#).is_err());
 	}
 
 	#[test]
