@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.0.12", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "1.0.5", path = "../alertd", default-features = false, optional = true }
-bestool-psql = { version = "1.2.0", path = "../psql", default-features = false, optional = true }
+bestool-psql = { version = "1.2.1", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.22", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
