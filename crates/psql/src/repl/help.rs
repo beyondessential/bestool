@@ -13,6 +13,10 @@ pub fn handle_help() -> ControlFlow<()> {
 	metacmds.add_row(vec!["\\q", "Quit"]);
 	metacmds.add_row(vec!["\\x", "Toggle expanded output mode"]);
 	metacmds.add_row(vec!["\\W", "Toggle write mode"]);
+	metacmds.add_row(vec![
+		"\\R",
+		"Toggle redaction mode (when redactions are configured)",
+	]);
 	metacmds.add_row(vec!["\\e [query]", "Edit query in external editor"]);
 	metacmds.add_row(vec![
 		"\\i <file> [var=val...]",

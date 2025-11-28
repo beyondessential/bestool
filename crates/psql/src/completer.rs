@@ -275,6 +275,13 @@ mod tests {
 	}
 
 	#[test]
+	fn test_redaction_command_completion() {
+		let completer = SqlCompleter::new(Theme::Dark);
+		let completions = completer.find_completions(r"\", 1);
+		assert!(completions.iter().any(|c| c.display == r"\R"));
+	}
+
+	#[test]
 	fn test_help_question_mark_completion() {
 		let completer = SqlCompleter::new(Theme::Dark);
 		let completions = completer.find_completions(r"\?", 2);

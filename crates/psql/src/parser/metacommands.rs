@@ -15,6 +15,7 @@ mod include;
 mod list;
 mod output;
 mod quit;
+mod redaction;
 mod result;
 mod snippets;
 mod vars;
@@ -25,6 +26,7 @@ pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
 	WriteMode,
+	ToggleRedaction,
 	Edit,
 	Copy,
 	Include {
@@ -87,6 +89,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		quit::parse,
 		expanded::parse,
 		write_mode::parse,
+		redaction::parse,
 		edit::parse,
 		copy::parse,
 		include::parse,

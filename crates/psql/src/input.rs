@@ -15,6 +15,7 @@ pub(crate) enum ReplAction {
 	Exit,
 	ToggleExpanded,
 	ToggleWriteMode,
+	ToggleRedaction,
 	Edit,
 	Copy,
 	IncludeFile {
@@ -219,6 +220,15 @@ mod tests {
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
 		assert!(matches!(actions[0], ReplAction::ToggleExpanded));
+	}
+
+	#[test]
+	fn test_handle_input_toggle_redaction_metacommand() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "\\R", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0], ReplAction::ToggleRedaction));
 	}
 
 	#[test]

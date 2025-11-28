@@ -55,10 +55,12 @@ pub const METACOMMAND: &[&str] = &[
 	r"\list+",
 	r"\o",
 	r"\q",
+	r"\R",
 	r"\re",
 	r"\set",
 	r"\unset",
 	r"\vars",
+	r"\W",
 	r"\x",
 ];
 

@@ -375,6 +375,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 		Metacommand::Quit => ReplAction::Exit,
 		Metacommand::Expanded => ReplAction::ToggleExpanded,
 		Metacommand::WriteMode => ReplAction::ToggleWriteMode,
+		Metacommand::ToggleRedaction => ReplAction::ToggleRedaction,
 		Metacommand::Edit => ReplAction::Edit,
 		Metacommand::Copy => ReplAction::Copy,
 		Metacommand::Include { file_path, vars } => ReplAction::IncludeFile {

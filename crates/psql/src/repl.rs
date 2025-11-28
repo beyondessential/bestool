@@ -34,6 +34,7 @@ mod include;
 mod list;
 mod output;
 mod prompt;
+mod redaction;
 mod result;
 mod snippets;
 mod state;
@@ -57,6 +58,7 @@ impl ReplAction {
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
 			ReplAction::Exit => exit::handle_exit(ctx).await,
 			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
+			ReplAction::ToggleRedaction => redaction::handle_toggle_redaction(ctx),
 			ReplAction::Edit => edit::handle_edit(ctx).await,
 			ReplAction::Copy => copy::handle_copy(),
 			ReplAction::IncludeFile { file_path, vars } => {
