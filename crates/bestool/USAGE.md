@@ -1285,6 +1285,9 @@ Aliases: p, pg, sql
     Auto-detect terminal theme
 
 * `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--no-redact` — Don't redact data
+
+   This will also skip loading redactions.
 
 
 
