@@ -2,7 +2,8 @@ use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use bestool_psql::column_extractor::ColumnRef;
 use clap::{Parser, ValueEnum};
-use miette::{IntoDiagnostic as _, Result};
+use miette::{IntoDiagnostic as _, Result, WrapErr, bail};
+use serde_json::Value;
 use tokio::{fs, time::timeout};
 use tracing::{debug, instrument, warn};
 
@@ -330,21 +331,14 @@ async fn fetch_redactions_from_source(version: &str) -> Result<HashSet<ColumnRef
 }
 
 fn parse_manifest(json: &str) -> Result<HashSet<ColumnRef>> {
-	use serde_json::Value;
-
 	let mut redactions = HashSet::new();
 
-	let manifest: Value = match serde_json::from_str(json) {
-		Ok(v) => v,
-		Err(e) => {
-			warn!("failed to parse manifest JSON: {}", e);
-			return Ok(redactions);
-		}
-	};
+	let manifest: Value = serde_json::from_str(json)
+		.into_diagnostic()
+		.wrap_err("failed to parse dbt manifest")?;
 
 	let Some(sources) = manifest.get("sources").and_then(|v| v.as_object()) else {
-		debug!("manifest missing 'sources' object");
-		return Ok(redactions);
+		bail!("manifest missing 'sources' object");
 	};
 
 	for (source_name, source_def) in sources {
