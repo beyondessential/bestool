@@ -3,6 +3,8 @@ use miette::{IntoDiagnostic, Result};
 use rust_xlsxwriter::Workbook;
 use std::path::Path;
 
+use crate::colors::REDACTED_VALUE;
+
 pub async fn display(
 	ctx: &mut super::DisplayContext<'_, impl tokio::io::AsyncWrite + Unpin>,
 	file_path: &str,
@@ -63,7 +65,7 @@ pub async fn display(
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		for (col_idx, &i) in column_indices.iter().enumerate() {
 			let value_str = if ctx.should_redact(i) {
-				ctx.redacted_value()
+				REDACTED_VALUE.to_string()
 			} else if ctx.unprintable_columns.contains(&i) {
 				let cell_ref = CellRef {
 					row_idx,

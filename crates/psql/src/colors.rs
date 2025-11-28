@@ -5,6 +5,9 @@
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor, Stylize};
 
+/// The redacted value placeholder
+pub const REDACTED_VALUE: &str = "[redacted]";
+
 /// Colors used throughout the application
 pub struct Colors;
 
@@ -26,6 +29,9 @@ impl Colors {
 
 	/// Progress indicators
 	pub const PROGRESS: Color = Color::Magenta;
+
+	/// Redacted values
+	pub const REDACTED: Color = Color::Yellow;
 }
 
 /// Style a status message (e.g., "(N rows, took X ms)")
@@ -73,6 +79,15 @@ pub fn prompt_write_mode_code() -> String {
 /// Get ANSI code to reset colors
 pub fn reset_code() -> String {
 	format!("{}", ResetColor)
+}
+
+/// Style a redacted value
+pub fn style_redacted(use_colours: bool) -> String {
+	if use_colours {
+		format!("{}", REDACTED_VALUE.with(Colors::REDACTED))
+	} else {
+		REDACTED_VALUE.to_string()
+	}
 }
 
 /// Clear current line

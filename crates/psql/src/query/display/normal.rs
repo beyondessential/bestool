@@ -1,5 +1,5 @@
 use bestool_postgres::{stringify::get_value, text_cast::CellRef};
-use comfy_table::{Cell, Color, Table};
+use comfy_table::{Cell, Table};
 use miette::{IntoDiagnostic, Result};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -52,12 +52,7 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		let mut row_data: Vec<Cell> = Vec::new();
 		for &col_idx in &column_indices {
 			let cell = if ctx.should_redact(col_idx) {
-				// Redact the value with yellow color
-				if ctx.use_colours {
-					Cell::new(ctx.redacted_value()).fg(Color::Yellow)
-				} else {
-					Cell::new(ctx.redacted_value())
-				}
+				Cell::new(crate::colors::style_redacted(ctx.use_colours))
 			} else {
 				let value_str = if ctx.unprintable_columns.contains(&col_idx) {
 					let cell_ref = CellRef { row_idx, col_idx };

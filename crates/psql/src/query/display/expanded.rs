@@ -54,7 +54,7 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		for &col_idx in &column_indices {
 			let column = &ctx.columns[col_idx];
 			let value_str = if ctx.should_redact(col_idx) {
-				ctx.redacted_value()
+				crate::colors::style_redacted(ctx.use_colours)
 			} else if ctx.unprintable_columns.contains(&col_idx) {
 				let cell_ref = CellRef { row_idx, col_idx };
 				if let Some(result) = cast_map.get(&cell_ref) {

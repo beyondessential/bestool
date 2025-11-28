@@ -8,7 +8,7 @@ use syntect::{
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::colors;
+use crate::colors::{self, REDACTED_VALUE};
 
 pub async fn display<W: AsyncWrite + Unpin>(
 	ctx: &mut super::DisplayContext<'_, W>,
@@ -57,7 +57,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 		for &col_idx in &column_indices {
 			let column = &ctx.columns[col_idx];
 			let value_str = if ctx.should_redact(col_idx) {
-				ctx.redacted_value()
+				REDACTED_VALUE.to_string()
 			} else if ctx.unprintable_columns.contains(&col_idx) {
 				let cell_ref = CellRef { row_idx, col_idx };
 				if let Some(result) = cast_map.get(&cell_ref) {

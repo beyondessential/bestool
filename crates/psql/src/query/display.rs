@@ -42,11 +42,6 @@ impl<'a, W: AsyncWrite + Unpin> DisplayContext<'a, W> {
 			col_ref.column == column_name && self.config.redactions.contains(col_ref)
 		})
 	}
-
-	/// Get the redacted value string (with or without colors).
-	pub fn redacted_value(&self) -> String {
-		"[redacted]".to_string()
-	}
 }
 
 pub async fn display<W: AsyncWrite + Unpin>(

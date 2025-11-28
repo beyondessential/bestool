@@ -4,6 +4,8 @@ use bestool_postgres::{stringify::get_value, text_cast::CellRef};
 use miette::{IntoDiagnostic, Result};
 use turso_core::{CheckpointMode, PlatformIO};
 
+use crate::colors::REDACTED_VALUE;
+
 pub async fn display(
 	ctx: &mut super::DisplayContext<'_, impl tokio::io::AsyncWrite + Unpin>,
 	file_path: &str,
@@ -94,7 +96,7 @@ pub async fn display(
 				let mut values = Vec::new();
 				for &col_idx in column_indices.iter() {
 					let value_str = if ctx.should_redact(col_idx) {
-						ctx.redacted_value()
+						REDACTED_VALUE.to_string()
 					} else if ctx.unprintable_columns.contains(&col_idx) {
 						let cell_ref = CellRef { row_idx, col_idx };
 						if let Some(result) = cast_map.get(&cell_ref) {
