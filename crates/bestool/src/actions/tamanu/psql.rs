@@ -1,8 +1,10 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
+use bestool_psql::column_extractor::ColumnRef;
 use clap::{Parser, ValueEnum};
 use miette::{IntoDiagnostic as _, Result};
-use tracing::debug;
+use tokio::{fs, time::timeout};
+use tracing::{debug, instrument, warn};
 
 use crate::actions::Context;
 
@@ -80,6 +82,12 @@ pub struct PsqlArgs {
 	/// Path to audit database directory
 	#[arg(long, value_name = "PATH", help = help_audit_path())]
 	pub audit_path: Option<PathBuf>,
+
+	/// Don't redact data
+	///
+	/// This will also skip loading redactions.
+	#[arg(long)]
+	pub no_redact: bool,
 }
 
 fn help_audit_path() -> String {
@@ -97,6 +105,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		write,
 		theme,
 		audit_path,
+		no_redact,
 	} = ctx.args_sub;
 
 	let url = if let Some(url) = url {
@@ -170,13 +179,20 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 
 	// Install a Ctrl-C handler that sets a flag for query cancellation
 	bestool_psql::register_sigint_handler()?;
-	// Hardcode redaction for testing
-	let mut redactions = HashSet::new();
-	redactions.insert(bestool_psql::column_extractor::ColumnRef {
-		schema: "public".to_string(),
-		table: "local_system_facts".to_string(),
-		column: "value".to_string(),
-	});
+
+	let version = get_tamanu_version(&pool).await;
+
+	let (redact_mode, redactions) = if let Some(ref version) = version {
+		if no_redact {
+			debug!("skipping redaction loading");
+			(false, HashSet::new())
+		} else {
+			load_redactions(version).await
+		}
+	} else {
+		debug!("skipping redaction loading");
+		(false, HashSet::new())
+	};
 
 	bestool_psql::run(
 		pool,
@@ -185,10 +201,253 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			audit_path,
 			write,
 			use_colours: ctx.args_top.use_colours,
-			redact_mode: true,
+			redact_mode,
 			redactions,
 			..Default::default()
 		},
 	)
 	.await
+}
+
+async fn get_tamanu_version(pool: &bestool_psql::PgPool) -> Option<String> {
+	let client = pool.get().await.ok()?;
+	let row = client
+		.query_one(
+			"SELECT value FROM local_system_facts WHERE key = 'currentVersion'",
+			&[],
+		)
+		.await
+		.ok()?;
+	row.try_get(0).ok()
+}
+
+#[instrument(level = "debug")]
+async fn load_redactions(version: &str) -> (bool, HashSet<ColumnRef>) {
+	match timeout(Duration::from_secs(2), fetch_and_cache_redactions(version)).await {
+		Ok(Ok(redactions)) => {
+			debug!("loaded {} redaction rules", redactions.len());
+			(!redactions.is_empty(), redactions)
+		}
+		Ok(Err(e)) => {
+			warn!("failed to load redactions: {}", e);
+			(false, HashSet::new())
+		}
+		Err(_) => {
+			warn!("failed to load redactions: timed out");
+			(false, HashSet::new())
+		}
+	}
+}
+
+async fn fetch_and_cache_redactions(version: &str) -> Result<HashSet<ColumnRef>> {
+	let cache_dir = if let Some(dir) = dirs::cache_dir() {
+		dir.join("bestool").join("redactions")
+	} else {
+		std::env::temp_dir().join("bestool").join("redactions")
+	};
+
+	fs::create_dir_all(&cache_dir).await.into_diagnostic()?;
+
+	let cache_file = cache_dir.join(format!("redactions-{version}.json"));
+
+	if let Ok(contents) = fs::read_to_string(&cache_file).await
+		&& let Ok(redactions) = serde_json::from_str(&contents)
+	{
+		debug!("loaded redactions from cache");
+		return Ok(redactions);
+	}
+
+	let redactions = fetch_redactions_from_source(version).await?;
+
+	let json = serde_json::to_string_pretty(&redactions).into_diagnostic()?;
+	fs::write(&cache_file, json).await.into_diagnostic()?;
+
+	Ok(redactions)
+}
+
+#[instrument(level = "debug")]
+async fn fetch_redactions_from_source(version: &str) -> Result<HashSet<ColumnRef>> {
+	let url = format!("https://docs.data.bes.au/tamanu/v{version}/manifest.json");
+	debug!("fetching redactions from {}", url);
+
+	let response = reqwest::get(&url).await.into_diagnostic()?;
+	let text = response.text().await.into_diagnostic()?;
+
+	parse_manifest(&text)
+}
+
+fn parse_manifest(json: &str) -> Result<HashSet<ColumnRef>> {
+	use serde_json::Value;
+
+	let mut redactions = HashSet::new();
+
+	let manifest: Value = match serde_json::from_str(json) {
+		Ok(v) => v,
+		Err(e) => {
+			warn!("failed to parse manifest JSON: {}", e);
+			return Ok(redactions);
+		}
+	};
+
+	let Some(sources) = manifest.get("sources").and_then(|v| v.as_object()) else {
+		debug!("manifest missing 'sources' object");
+		return Ok(redactions);
+	};
+
+	for (source_name, source_def) in sources {
+		if let Some((schema, table)) = parse_source_name(source_name)
+			&& let Some(columns) = source_def.get("columns").and_then(|v| v.as_object())
+		{
+			for (column_name, column_def) in columns {
+				if has_masking(column_def) {
+					redactions.insert(ColumnRef {
+						schema: schema.to_string(),
+						table: table.to_string(),
+						column: column_name.clone(),
+					});
+				}
+			}
+		}
+	}
+
+	debug!("parsed {} redactions from manifest", redactions.len());
+	Ok(redactions)
+}
+
+fn parse_source_name(source_name: &str) -> Option<(&str, &str)> {
+	let parts: Vec<&str> = source_name.split('.').collect();
+	if parts.len() != 4 || parts[0] != "source" || parts[1] != "tamanu" {
+		return None;
+	}
+
+	let schema_part = parts[2];
+	let table = parts[3];
+
+	let schema = if schema_part == "tamanu" {
+		"public"
+	} else if let Some(stripped) = schema_part.strip_suffix("__tamanu") {
+		stripped
+	} else {
+		return None;
+	};
+
+	Some((schema, table))
+}
+
+fn has_masking(column_def: &serde_json::Value) -> bool {
+	column_def
+		.get("config")
+		.and_then(|v| v.get("meta"))
+		.and_then(|v| v.get("masking"))
+		.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_parse_source_name_public_schema() {
+		assert_eq!(
+			parse_source_name("source.tamanu.tamanu.users"),
+			Some(("public", "users"))
+		);
+	}
+
+	#[test]
+	fn test_parse_source_name_custom_schema() {
+		assert_eq!(
+			parse_source_name("source.tamanu.fhir__tamanu.patient"),
+			Some(("fhir", "patient"))
+		);
+	}
+
+	#[test]
+	fn test_parse_source_name_invalid() {
+		assert_eq!(parse_source_name("invalid.format"), None);
+		assert_eq!(parse_source_name("source.wrong.tamanu.users"), None);
+		assert_eq!(parse_source_name("source.tamanu.invalid.users"), None);
+	}
+
+	#[test]
+	fn test_parse_manifest_with_masking() {
+		let json = r#"{
+			"sources": {
+				"source.tamanu.tamanu.users": {
+					"columns": {
+						"email": {
+							"config": {
+								"meta": {
+									"masking": "email"
+								}
+							}
+						},
+						"name": {}
+					}
+				},
+				"source.tamanu.fhir__tamanu.patient": {
+					"columns": {
+						"ssn": {
+							"config": {
+								"meta": {
+									"masking": {
+										"type": "hash"
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}"#;
+
+		let result = parse_manifest(json).unwrap();
+		assert_eq!(result.len(), 2);
+		assert!(result.contains(&ColumnRef {
+			schema: "public".to_string(),
+			table: "users".to_string(),
+			column: "email".to_string(),
+		}));
+		assert!(result.contains(&ColumnRef {
+			schema: "fhir".to_string(),
+			table: "patient".to_string(),
+			column: "ssn".to_string(),
+		}));
+	}
+
+	#[test]
+	fn test_parse_manifest_malformed() {
+		assert_eq!(parse_manifest("not json").unwrap().len(), 0);
+		assert_eq!(parse_manifest("{}").unwrap().len(), 0);
+		assert_eq!(parse_manifest(r#"{"sources": null}"#).unwrap().len(), 0);
+	}
+
+	#[test]
+	fn test_has_masking() {
+		use serde_json::json;
+
+		assert!(has_masking(&json!({
+			"config": {
+				"meta": {
+					"masking": "email"
+				}
+			}
+		})));
+
+		assert!(has_masking(&json!({
+			"config": {
+				"meta": {
+					"masking": {"type": "hash"}
+				}
+			}
+		})));
+
+		assert!(!has_masking(&json!({
+			"config": {
+				"meta": {}
+			}
+		})));
+
+		assert!(!has_masking(&json!({})));
+	}
 }

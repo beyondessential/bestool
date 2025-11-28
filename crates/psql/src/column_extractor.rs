@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::schema_cache::SchemaCache;
 
 /// A tuple representing (schema, table, column)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ColumnRef {
 	pub schema: String,
 	pub table: String,
