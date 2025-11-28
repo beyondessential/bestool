@@ -46,6 +46,7 @@ All commands and some of the SQL has extensive tab completion, give it a try!
 | `\q` or Ctrl-D | Quit |
 | `\x` | Toggle expanded output mode |
 | `\W` | Toggle write mode |
+| `\R` | Toggle redaction mode |
 | `\e [query]` | Edit query in external editor |
 | `\i <file> [var=val...]` | Execute commands from file |
 | `\o [file]` | Send query results to file (or close if no file) |
