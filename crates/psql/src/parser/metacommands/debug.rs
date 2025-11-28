@@ -10,6 +10,7 @@ use winnow::{
 pub(crate) enum DebugWhat {
 	State,
 	RefreshSchema,
+	Redactions,
 	Help,
 }
 
@@ -29,6 +30,7 @@ pub fn parse(
 		match arg_trimmed {
 			"state" => DebugWhat::State,
 			"refresh-schema" => DebugWhat::RefreshSchema,
+			"redactions" => DebugWhat::Redactions,
 			_ => DebugWhat::Help,
 		}
 	} else {
@@ -117,6 +119,17 @@ mod tests {
 			result,
 			Some(Metacommand::Debug {
 				what: DebugWhat::RefreshSchema
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_debug_redactions() {
+		let result = parse_metacommand("\\debug redactions").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::Debug {
+				what: DebugWhat::Redactions
 			})
 		);
 	}

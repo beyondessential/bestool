@@ -28,6 +28,14 @@ impl super::SqlCompleter {
 			});
 		}
 
+		// Offer "redactions" as completion
+		if "redactions".starts_with(&partial_arg.to_lowercase()) {
+			completions.push(Pair {
+				display: "redactions".to_string(),
+				replacement: "redactions".to_string(),
+			});
+		}
+
 		Some(completions)
 	}
 }
@@ -53,6 +61,7 @@ mod tests {
 		assert!(!completions.is_empty());
 		assert!(completions.iter().any(|c| c.display == "state"));
 		assert!(completions.iter().any(|c| c.display == "refresh-schema"));
+		assert!(completions.iter().any(|c| c.display == "redactions"));
 
 		// Test with partial argument for state
 		let input = "\\debug st";
