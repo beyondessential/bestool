@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.0](https://github.com/beyondessential/bestool/compare/v1.2.7..1.3.0) - 2025-11-28
+## [1.3.1](https://github.com/beyondessential/bestool/compare/v1.3.0..1.3.1) - 2025-11-28
+
+
+
+
+- **fix(psql):** Try for the manifest in the base version if we can't find the - ([a6c463f](https://github.com/beyondessential/bestool/commit/a6c463f02064ccf249c1b30bd2f25aadbfb1eaf6))
+---
+## [1.3.0](https://github.com/beyondessential/bestool/compare/v1.2.7..v1.3.0) - 2025-11-28
 
 
 - **doc:** Update usage - ([5717e51](https://github.com/beyondessential/bestool/commit/5717e51010ecaeb4a0c586af40c80aab826c22f9))
