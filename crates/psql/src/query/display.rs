@@ -30,6 +30,25 @@ pub struct DisplayContext<'a, W: AsyncWrite + Unpin> {
 	pub column_refs: &'a [ColumnRef],
 }
 
+impl<'a, W: AsyncWrite + Unpin> DisplayContext<'a, W> {
+	/// Check if a column at the given index should be redacted.
+	pub fn should_redact(&self, col_idx: usize) -> bool {
+		if !self.redact_mode {
+			return false;
+		}
+
+		let column_name = self.columns[col_idx].name();
+		self.column_refs.iter().any(|col_ref| {
+			col_ref.column == column_name && self.config.redactions.contains(col_ref)
+		})
+	}
+
+	/// Get the redacted value string (with or without colors).
+	pub fn redacted_value(&self) -> String {
+		"[redacted]".to_string()
+	}
+}
+
 pub async fn display<W: AsyncWrite + Unpin>(
 	ctx: &mut DisplayContext<'_, W>,
 	is_json: bool,

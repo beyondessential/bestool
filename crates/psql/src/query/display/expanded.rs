@@ -11,11 +11,11 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		(0..ctx.columns.len()).collect()
 	};
 
-	// Collect all unprintable cells first
+	// Collect all unprintable cells first (excluding redacted ones)
 	let mut unprintable_cells = Vec::new();
 	for (row_idx, _row) in ctx.rows.iter().enumerate() {
 		for &col_idx in &column_indices {
-			if ctx.unprintable_columns.contains(&col_idx) {
+			if ctx.unprintable_columns.contains(&col_idx) && !ctx.should_redact(col_idx) {
 				unprintable_cells.push(CellRef { row_idx, col_idx });
 			}
 		}
@@ -53,7 +53,9 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		// No header in expanded mode, just column-value pairs
 		for &col_idx in &column_indices {
 			let column = &ctx.columns[col_idx];
-			let value_str = if ctx.unprintable_columns.contains(&col_idx) {
+			let value_str = if ctx.should_redact(col_idx) {
+				ctx.redacted_value()
+			} else if ctx.unprintable_columns.contains(&col_idx) {
 				let cell_ref = CellRef { row_idx, col_idx };
 				if let Some(result) = cast_map.get(&cell_ref) {
 					match result {

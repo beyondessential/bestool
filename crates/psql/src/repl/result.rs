@@ -132,7 +132,8 @@ async fn display_to_stdout(
 		return Ok(());
 	}
 
-	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, column_indices, true).await?;
 	print!("{}", output);
 	Ok(())
 }
@@ -215,7 +216,8 @@ async fn display_to_file(
 		return Ok(());
 	}
 
-	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, column_indices, false).await?;
 
 	let mut file = std::fs::File::create(path)
 		.map_err(|e| miette::miette!("Failed to create file '{}': {}", path, e))?;
@@ -272,7 +274,8 @@ async fn display_to_global_output(
 	}
 
 	// Format without colors for file output
-	let output = format_result_using_display_module(ctx, result, format, column_indices).await?;
+	let output =
+		format_result_using_display_module(ctx, result, format, column_indices, false).await?;
 
 	if let Some(output_file) = {
 		let state = ctx.repl_state.lock().unwrap();
@@ -326,6 +329,7 @@ async fn format_result_using_display_module(
 	result: &crate::result_store::StoredResult,
 	format: ResultFormat,
 	column_indices: Option<&[usize]>,
+	use_colours: bool,
 ) -> miette::Result<String> {
 	let first_row = &result.rows[0];
 	let columns = first_row.columns();
@@ -356,7 +360,7 @@ async fn format_result_using_display_module(
 		unprintable_columns: &unprintable_columns,
 		text_caster,
 		writer: &mut buffer,
-		use_colours: true,
+		use_colours,
 		column_indices,
 		redact_mode: false,
 		column_refs: &[],

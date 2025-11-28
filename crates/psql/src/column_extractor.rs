@@ -14,16 +14,6 @@ pub struct ColumnRef {
 	pub column: String,
 }
 
-impl ColumnRef {
-	fn new(schema: String, table: String, column: String) -> Self {
-		Self {
-			schema,
-			table,
-			column,
-		}
-	}
-}
-
 /// Extract column references from a SQL query
 pub fn extract_column_refs(
 	sql: &str,
@@ -104,17 +94,17 @@ fn process_node(node: &Option<NodeEnum>, ctx: &mut ExtractionContext<'_>) {
 			ctx.in_select_list = true;
 
 			for target in &select.target_list {
-				if let Some(NodeEnum::ResTarget(res)) = &target.node {
-					if let Some(val) = &res.val {
-						// Check if this is a simple ColumnRef (not a computed expression)
-						if let Some(NodeEnum::ColumnRef(_)) = &val.node {
-							process_node(&val.node, ctx);
-						} else if let Some(NodeEnum::AStar(_)) = &val.node {
-							// SELECT * - expand to all columns
-							expand_wildcard(None, ctx);
-						}
-						// For other expressions (computed columns), we don't extract
+				if let Some(NodeEnum::ResTarget(res)) = &target.node
+					&& let Some(val) = &res.val
+				{
+					// Check if this is a simple ColumnRef (not a computed expression)
+					if let Some(NodeEnum::ColumnRef(_)) = &val.node {
+						process_node(&val.node, ctx);
+					} else if let Some(NodeEnum::AStar(_)) = &val.node {
+						// SELECT * - expand to all columns
+						expand_wildcard(None, ctx);
 					}
+					// For other expressions (computed columns), we don't extract
 				}
 			}
 
@@ -280,14 +270,14 @@ fn process_column_ref(col_ref: &pg_query::protobuf::ColumnRef, ctx: &mut Extract
 			let column_name = &fields[0];
 
 			// If there's only one table, use it
-			if ctx.table_aliases.len() == 1 {
-				if let Some((schema, table)) = ctx.table_aliases.values().next() {
-					ctx.column_refs.push(ColumnRef::new(
-						schema.clone(),
-						table.clone(),
-						column_name.clone(),
-					));
-				}
+			if ctx.table_aliases.len() == 1
+				&& let Some((schema, table)) = ctx.table_aliases.values().next()
+			{
+				ctx.column_refs.push(ColumnRef {
+					schema: schema.clone(),
+					table: table.clone(),
+					column: column_name.clone(),
+				});
 			}
 			// Otherwise, we can't determine which table without more analysis
 		}
@@ -297,11 +287,11 @@ fn process_column_ref(col_ref: &pg_query::protobuf::ColumnRef, ctx: &mut Extract
 			let column_name = &fields[1];
 
 			if let Some((schema, table)) = ctx.table_aliases.get(table_or_alias) {
-				ctx.column_refs.push(ColumnRef::new(
-					schema.clone(),
-					table.clone(),
-					column_name.clone(),
-				));
+				ctx.column_refs.push(ColumnRef {
+					schema: schema.clone(),
+					table: table.clone(),
+					column: column_name.clone(),
+				});
 			}
 		}
 		3 => {
@@ -309,11 +299,11 @@ fn process_column_ref(col_ref: &pg_query::protobuf::ColumnRef, ctx: &mut Extract
 			let schema = &fields[0];
 			let table = &fields[1];
 			let column = &fields[2];
-			ctx.column_refs.push(ColumnRef::new(
-				schema.clone(),
-				table.clone(),
-				column.clone(),
-			));
+			ctx.column_refs.push(ColumnRef {
+				schema: schema.clone(),
+				table: table.clone(),
+				column: column.clone(),
+			});
 		}
 		_ => {}
 	}
@@ -326,27 +316,27 @@ fn expand_wildcard(table_qualifier: Option<&str>, ctx: &mut ExtractionContext<'_
 
 	if let Some(table_name) = table_qualifier {
 		// Expand table.*
-		if let Some((schema, table)) = ctx.table_aliases.get(table_name) {
-			if let Some(columns) = cache.columns_for_table(table) {
-				for column in columns {
-					ctx.column_refs.push(ColumnRef::new(
-						schema.clone(),
-						table.clone(),
-						column.clone(),
-					));
-				}
+		if let Some((schema, table)) = ctx.table_aliases.get(table_name)
+			&& let Some(columns) = cache.columns_for_table(table)
+		{
+			for column in columns {
+				ctx.column_refs.push(ColumnRef {
+					schema: schema.clone(),
+					table: table.clone(),
+					column: column.clone(),
+				});
 			}
 		}
 	} else {
 		// Expand * - all columns from all tables
-		for (_, (schema, table)) in &ctx.table_aliases {
+		for (schema, table) in ctx.table_aliases.values() {
 			if let Some(columns) = cache.columns_for_table(table) {
 				for column in columns {
-					ctx.column_refs.push(ColumnRef::new(
-						schema.clone(),
-						table.clone(),
-						column.clone(),
-					));
+					ctx.column_refs.push(ColumnRef {
+						schema: schema.clone(),
+						table: table.clone(),
+						column: column.clone(),
+					});
 				}
 			}
 		}
@@ -418,16 +408,16 @@ mod tests {
 		let refs = extract_column_refs(sql, Some(&cache)).unwrap();
 
 		assert_eq!(refs.len(), 2);
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"foo".into()
-		)));
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"bar".into()
-		)));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "foo".into()
+		}));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "bar".into()
+		}));
 	}
 
 	#[test]
@@ -438,11 +428,11 @@ mod tests {
 
 		// Should only return 'bar', not 'foo' because it's part of an expression
 		assert_eq!(refs.len(), 1);
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"bar".into()
-		)));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "bar".into()
+		}));
 	}
 
 	#[test]
@@ -452,21 +442,21 @@ mod tests {
 		let refs = extract_column_refs(sql, Some(&cache)).unwrap();
 
 		assert_eq!(refs.len(), 3);
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"foo".into()
-		)));
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"bar".into()
-		)));
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"baz".into()
-		)));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "foo".into()
+		}));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "bar".into()
+		}));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "baz".into()
+		}));
 	}
 
 	#[test]
@@ -476,15 +466,15 @@ mod tests {
 		let refs = extract_column_refs(sql, Some(&cache)).unwrap();
 
 		assert_eq!(refs.len(), 2);
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"foo".into()
-		)));
-		assert!(refs.contains(&ColumnRef::new(
-			"public".into(),
-			"patient".into(),
-			"bar".into()
-		)));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "foo".into()
+		}));
+		assert!(refs.contains(&ColumnRef {
+			schema: "public".into(),
+			table: "patient".into(),
+			column: "bar".into()
+		}));
 	}
 }

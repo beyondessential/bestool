@@ -30,11 +30,11 @@ pub async fn display(
 			.into_diagnostic()?;
 	}
 
-	// Collect all unprintable cells first
+	// Collect all unprintable cells first (excluding redacted ones)
 	let mut unprintable_cells = Vec::new();
 	for (row_idx, _row) in ctx.rows.iter().enumerate() {
 		for &col_idx in &column_indices {
-			if ctx.unprintable_columns.contains(&col_idx) {
+			if ctx.unprintable_columns.contains(&col_idx) && !ctx.should_redact(col_idx) {
 				unprintable_cells.push(CellRef { row_idx, col_idx });
 			}
 		}
@@ -62,7 +62,9 @@ pub async fn display(
 	// Write data rows
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		for (col_idx, &i) in column_indices.iter().enumerate() {
-			let value_str = if ctx.unprintable_columns.contains(&i) {
+			let value_str = if ctx.should_redact(i) {
+				ctx.redacted_value()
+			} else if ctx.unprintable_columns.contains(&i) {
 				let cell_ref = CellRef {
 					row_idx,
 					col_idx: i,

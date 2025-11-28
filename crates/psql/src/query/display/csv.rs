@@ -21,11 +21,11 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		.collect();
 	writer.write_record(&headers).into_diagnostic()?;
 
-	// Collect all unprintable cells first
+	// Collect all unprintable cells first (excluding redacted ones)
 	let mut unprintable_cells = Vec::new();
 	for (row_idx, _row) in ctx.rows.iter().enumerate() {
 		for &col_idx in &column_indices {
-			if ctx.unprintable_columns.contains(&col_idx) {
+			if ctx.unprintable_columns.contains(&col_idx) && !ctx.should_redact(col_idx) {
 				unprintable_cells.push(CellRef { row_idx, col_idx });
 			}
 		}
@@ -54,7 +54,9 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut record = Vec::new();
 		for &col_idx in &column_indices {
-			let value_str = if ctx.unprintable_columns.contains(&col_idx) {
+			let value_str = if ctx.should_redact(col_idx) {
+				ctx.redacted_value()
+			} else if ctx.unprintable_columns.contains(&col_idx) {
 				let cell_ref = CellRef { row_idx, col_idx };
 				if let Some(result) = cast_map.get(&cell_ref) {
 					match result {
@@ -191,5 +193,85 @@ mod tests {
 		assert_eq!(lines.len(), 2);
 		assert_eq!(lines[0], "id,nullable,text");
 		assert_eq!(lines[1], "1,NULL,value");
+	}
+
+	#[tokio::test]
+	async fn test_csv_display_with_redaction() {
+		use std::collections::HashSet;
+		use std::sync::Arc;
+
+		let connection_string =
+			std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+		let pool = crate::create_pool(&connection_string)
+			.await
+			.expect("Failed to create pool");
+
+		let client = pool.get().await.expect("Failed to get connection");
+
+		// Test redaction
+		let rows = client
+			.query(
+				"SELECT 'Alice' as name, 'secret123' as password, 25 as age",
+				&[],
+			)
+			.await
+			.expect("Query failed");
+
+		let columns = rows[0].columns();
+		let mut buffer = Vec::new();
+
+		// Set up redaction for the password column
+		let mut redactions = HashSet::new();
+		redactions.insert(crate::column_extractor::ColumnRef {
+			schema: "".to_string(),
+			table: "".to_string(),
+			column: "password".to_string(),
+		});
+
+		let config = Arc::new(crate::Config {
+			redactions,
+			..Default::default()
+		});
+
+		let column_refs = vec![
+			crate::column_extractor::ColumnRef {
+				schema: "".to_string(),
+				table: "".to_string(),
+				column: "name".to_string(),
+			},
+			crate::column_extractor::ColumnRef {
+				schema: "".to_string(),
+				table: "".to_string(),
+				column: "password".to_string(),
+			},
+			crate::column_extractor::ColumnRef {
+				schema: "".to_string(),
+				table: "".to_string(),
+				column: "age".to_string(),
+			},
+		];
+
+		let mut ctx = crate::query::display::DisplayContext {
+			config: &config,
+			columns,
+			rows: &rows,
+			unprintable_columns: &[],
+			text_caster: None,
+			writer: &mut buffer,
+			use_colours: false,
+			column_indices: None,
+			redact_mode: true,
+			column_refs: &column_refs,
+		};
+
+		display(&mut ctx).await.expect("Display failed");
+
+		let output = String::from_utf8(buffer).expect("Invalid UTF-8");
+		let lines: Vec<&str> = output.trim().lines().collect();
+
+		assert_eq!(lines.len(), 2);
+		assert_eq!(lines[0], "name,password,age");
+		assert_eq!(lines[1], "Alice,[redacted],25");
 	}
 }

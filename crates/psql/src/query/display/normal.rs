@@ -51,23 +51,12 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 	for (row_idx, row) in ctx.rows.iter().enumerate() {
 		let mut row_data: Vec<Cell> = Vec::new();
 		for &col_idx in &column_indices {
-			let column_name = ctx.columns[col_idx].name();
-
-			// Check if this column should be redacted
-			let should_redact = if ctx.redact_mode {
-				ctx.column_refs.iter().any(|col_ref| {
-					col_ref.column == column_name && ctx.config.redactions.contains(col_ref)
-				})
-			} else {
-				false
-			};
-
-			let cell = if should_redact {
+			let cell = if ctx.should_redact(col_idx) {
 				// Redact the value with yellow color
 				if ctx.use_colours {
-					Cell::new("[redacted]").fg(Color::Yellow)
+					Cell::new(ctx.redacted_value()).fg(Color::Yellow)
 				} else {
-					Cell::new("[redacted]")
+					Cell::new(ctx.redacted_value())
 				}
 			} else {
 				let value_str = if ctx.unprintable_columns.contains(&col_idx) {
