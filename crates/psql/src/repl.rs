@@ -183,11 +183,13 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 	debug!("initializing schema cache");
 	let schema_cache_manager = SchemaCacheManager::new(pool.clone());
 
-	// Refresh schema cache on startup for column extraction
-	debug!("refreshing schema cache on startup");
-	if let Err(e) = schema_cache_manager.refresh().await {
-		warn!("failed to refresh schema cache on startup: {}", e);
-	}
+	debug!("spawning schema cache refresh");
+	let schema_cache_manager_clone = schema_cache_manager.clone();
+	tokio::spawn(async move {
+		if let Err(e) = schema_cache_manager_clone.refresh().await {
+			warn!("failed to refresh schema cache on startup: {}", e);
+		}
+	});
 
 	let cache_arc = schema_cache_manager.cache_arc();
 
