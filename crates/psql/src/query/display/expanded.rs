@@ -53,21 +53,6 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		// No header in expanded mode, just column-value pairs
 		for &col_idx in &column_indices {
 			let column = &ctx.columns[col_idx];
-			let value_str = if ctx.should_redact(col_idx) {
-				crate::colors::style_redacted(ctx.use_colours)
-			} else if ctx.unprintable_columns.contains(&col_idx) {
-				let cell_ref = CellRef { row_idx, col_idx };
-				if let Some(result) = cast_map.get(&cell_ref) {
-					match result {
-						Ok(text) => text.clone(),
-						Err(_) => "(error)".to_string(),
-					}
-				} else {
-					"(binary data)".to_string()
-				}
-			} else {
-				get_value(row, col_idx, ctx.unprintable_columns)
-			};
 
 			let name_cell = if ctx.use_colours {
 				Cell::new(column.name()).add_attribute(Attribute::Bold)
@@ -75,7 +60,33 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 				Cell::new(column.name())
 			};
 
-			table.add_row(vec![name_cell, Cell::new(value_str)]);
+			let value_cell = if ctx.should_redact(col_idx) {
+				let cell = Cell::new(crate::colors::REDACTED_VALUE);
+				if ctx.use_colours {
+					cell.fg(crate::colors::to_comfy_color(
+						crate::colors::Colors::REDACTED,
+					))
+				} else {
+					cell
+				}
+			} else {
+				let value_str = if ctx.unprintable_columns.contains(&col_idx) {
+					let cell_ref = CellRef { row_idx, col_idx };
+					if let Some(result) = cast_map.get(&cell_ref) {
+						match result {
+							Ok(text) => text.clone(),
+							Err(_) => "(error)".to_string(),
+						}
+					} else {
+						"(binary data)".to_string()
+					}
+				} else {
+					get_value(row, col_idx, ctx.unprintable_columns)
+				};
+				Cell::new(value_str)
+			};
+
+			table.add_row(vec![name_cell, value_cell]);
 		}
 
 		// Set column constraints: fixed width for column names, flexible for values

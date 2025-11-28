@@ -52,7 +52,14 @@ pub async fn display<W: AsyncWrite + Unpin>(ctx: &mut super::DisplayContext<'_, 
 		let mut row_data: Vec<Cell> = Vec::new();
 		for &col_idx in &column_indices {
 			let cell = if ctx.should_redact(col_idx) {
-				Cell::new(crate::colors::style_redacted(ctx.use_colours))
+				let cell = Cell::new(crate::colors::REDACTED_VALUE);
+				if ctx.use_colours {
+					cell.fg(crate::colors::to_comfy_color(
+						crate::colors::Colors::REDACTED,
+					))
+				} else {
+					cell
+				}
 			} else {
 				let value_str = if ctx.unprintable_columns.contains(&col_idx) {
 					let cell_ref = CellRef { row_idx, col_idx };
