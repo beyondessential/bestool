@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.3.3](https://github.com/beyondessential/bestool/compare/v1.3.2..1.3.3) - 2025-11-28
+
+
+
+
+- **fix(psql):** Stop saving bad manifests - ([a06d96c](https://github.com/beyondessential/bestool/commit/a06d96c34b5ba2fc6df0968afef14872178f2064))
+---
 ## [1.3.1](https://github.com/beyondessential/bestool/compare/v1.3.0..v1.3.1) - 2025-11-28
 
 
