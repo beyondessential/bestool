@@ -44,7 +44,7 @@ humantime = { version = "2.2.0", optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = "0.2.15"
-json5 = { version = "0.4.1", optional = true }
+json5 = { version = "1.0.0", optional = true }
 leon = { version = "3.0.1", optional = true }
 leon-macros = { version = "1.0.2", optional = true }
 lloggs = "1.1.0"
