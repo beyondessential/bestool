@@ -24,7 +24,7 @@ reqwest = { version = "0.12.23", features = ["rustls-tls-native-roots", "json"],
 thiserror = "2.0.16"
 tokio = "1.47.1"
 tokio-util = "0.7.16"
-tracing = { version = "0.1.41", features = ["attributes"] }
+tracing = { version = "0.1.43", features = ["attributes"] }
 
 [profile.release]
 lto = false
