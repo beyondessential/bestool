@@ -343,7 +343,7 @@ jobs:
 
           dpkg-deb --build --root-owner-group "$deb_dir" "algae-${target}-${version}.deb"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}
           if-no-files-found: error
