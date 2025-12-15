@@ -19,7 +19,7 @@ path = "src/main.rs"
 name = "algae"
 
 [dependencies]
-age = { version = "0.11.1", features = ["async"] }
+age = { version = "0.11.2", features = ["async"] }
 age-core = "0.11.0"
 clap = { workspace = true }
 clap-markdown = "0.1.5"
