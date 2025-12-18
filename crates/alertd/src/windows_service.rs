@@ -250,6 +250,24 @@ fn run_diagnostics() {
 ///
 /// Returns an error if the service cannot be created, configured, or started.
 pub fn install_service() -> Result<()> {
+	install_service_with_args(&[OsString::from("service")])
+}
+
+/// Install the alertd daemon as a Windows service with custom launch arguments.
+///
+/// Creates a Windows service named 'bestool-alertd' that will start automatically.
+/// After installation, starts the service immediately.
+///
+/// # Arguments
+///
+/// * `launch_arguments` - Command-line arguments to pass when starting the service
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be created, configured, or started.
+pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
+	run_diagnostics();
+
 	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
 	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
 		.map_err(|e| {
@@ -271,7 +289,7 @@ pub fn install_service() -> Result<()> {
 		start_type: ServiceStartType::AutoStart,
 		error_control: ServiceErrorControl::Normal,
 		executable_path: service_binary_path,
-		launch_arguments: vec![OsString::from("service")],
+		launch_arguments: launch_arguments.to_vec(),
 		dependencies: vec![],
 		account_name: None,
 		account_password: None,

@@ -204,7 +204,14 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			bestool_alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
-		Command::Install => bestool_alertd::windows_service::install_service(),
+		Command::Install => {
+			use std::ffi::OsString;
+			bestool_alertd::windows_service::install_service_with_args(&[
+				OsString::from("tamanu"),
+				OsString::from("alertd"),
+				OsString::from("service"),
+			])
+		}
 		#[cfg(windows)]
 		Command::Uninstall => bestool_alertd::windows_service::uninstall_service(),
 		#[cfg(windows)]
