@@ -94,6 +94,11 @@ fn run_service_main() -> Result<()> {
 	let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
 	let shutdown_tx_clone = shutdown_tx.clone();
 
+	// Create reload channel for TIME_CHANGE events
+	let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel(10);
+	let reload_tx = Arc::new(Mutex::new(reload_tx));
+	let reload_tx_clone = reload_tx.clone();
+
 	// Event handler receives control events from Windows SCM
 	let event_handler = move |control_event| -> ServiceControlHandlerResult {
 		match control_event {
@@ -105,6 +110,13 @@ fn run_service_main() -> Result<()> {
 				if let Some(tx) = tx_guard.take() {
 					let _ = tx.send(());
 				}
+				ServiceControlHandlerResult::NoError
+			}
+			ServiceControl::TimeChange => {
+				info!("received system time change event, triggering reload");
+				// Signal daemon to reload alerts
+				let tx_guard = reload_tx_clone.lock().unwrap();
+				let _ = tx_guard.try_send(());
 				ServiceControlHandlerResult::NoError
 			}
 			_ => ServiceControlHandlerResult::NotImplemented,
@@ -175,7 +187,7 @@ fn run_service_main() -> Result<()> {
 			}
 		});
 
-		let daemon_result = crate::daemon::run_with_shutdown(config, shutdown_rx).await;
+		let daemon_result = crate::daemon::run_with_shutdown_and_reload(config, shutdown_rx, Some(reload_rx)).await;
 
 		// Cancel the status update task
 		status_task.abort();

@@ -78,6 +78,14 @@ pub async fn run_with_shutdown(
 	daemon_config: DaemonConfig,
 	external_shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
+	run_with_shutdown_and_reload(daemon_config, external_shutdown, None).await
+}
+
+pub async fn run_with_shutdown_and_reload(
+	daemon_config: DaemonConfig,
+	external_shutdown: oneshot::Receiver<()>,
+	external_reload: Option<tokio::sync::mpsc::Receiver<()>>,
+) -> Result<()> {
 	info!("starting alertd daemon");
 
 	// Initialize metrics
@@ -117,6 +125,7 @@ pub async fn run_with_shutdown(
 		let email_for_server = daemon_config.email.clone();
 		let dry_run_for_server = daemon_config.dry_run;
 		let scheduler_for_server = scheduler.clone();
+		let reload_tx_for_server = reload_tx.clone();
 		tokio::spawn(async move {
 			// Wait for event manager to be initialised
 			let event_mgr = loop {
@@ -128,7 +137,7 @@ pub async fn run_with_shutdown(
 				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 			};
 			http_server::start_server(
-				reload_tx.clone(),
+				reload_tx_for_server,
 				event_mgr,
 				ctx_for_server,
 				email_for_server,
@@ -214,6 +223,17 @@ pub async fn run_with_shutdown(
 			let _ = glob_resolve_tx.send(DaemonEvent::ResolveGlobs).await;
 		}
 	});
+
+	// Listen for external reload signals (e.g., from Windows TIME_CHANGE event)
+	if let Some(mut external_reload_rx) = external_reload {
+		let reload_tx = reload_tx.clone();
+		tokio::spawn(async move {
+			while let Some(_) = external_reload_rx.recv().await {
+				info!("received external reload signal");
+				let _ = reload_tx.send(()).await;
+			}
+		});
+	}
 
 	let mut reload_debounce = tokio::time::interval(Duration::from_secs(2));
 	reload_debounce.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

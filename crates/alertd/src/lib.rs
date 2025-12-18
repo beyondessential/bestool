@@ -17,7 +17,7 @@ pub mod templates;
 pub mod windows_service;
 
 pub use alert::{AlertDefinition, InternalContext, TicketSource};
-pub use daemon::{run, run_with_shutdown};
+pub use daemon::{run, run_with_shutdown, run_with_shutdown_and_reload};
 pub use events::EventType;
 pub use targets::{AlertTargets, ExternalTarget, ResolvedTarget, SendTarget};
 
