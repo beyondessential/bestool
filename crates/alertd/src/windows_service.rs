@@ -92,7 +92,7 @@ fn service_main(_arguments: Vec<OsString>) {
 fn run_service_main() -> Result<()> {
 	// Copy executable to temp directory to avoid file locks during updates
 	let _temp_exec = copy_executable_to_temp()?;
-	
+
 	let config = {
 		let mut guard = SERVICE_CONFIG.lock().unwrap();
 		guard
@@ -198,7 +198,8 @@ fn run_service_main() -> Result<()> {
 			}
 		});
 
-		let daemon_result = crate::daemon::run_with_shutdown_and_reload(config, shutdown_rx, Some(reload_rx)).await;
+		let daemon_result =
+			crate::daemon::run_with_shutdown_and_reload(config, shutdown_rx, Some(reload_rx)).await;
 
 		// Cancel the status update task
 		status_task.abort();
@@ -278,7 +279,11 @@ fn cleanup_temp_executable() {
 	if let Some(temp_path) = guard.as_ref() {
 		match std::fs::remove_file(temp_path) {
 			Ok(_) => info!("cleaned up temp executable: {}", temp_path.display()),
-			Err(e) => warn!("failed to clean up temp executable {}: {}", temp_path.display(), e),
+			Err(e) => warn!(
+				"failed to clean up temp executable {}: {}",
+				temp_path.display(),
+				e
+			),
 		}
 	}
 }

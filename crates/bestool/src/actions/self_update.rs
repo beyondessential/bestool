@@ -143,6 +143,14 @@ pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 	info!(?dest, "downloaded, self-upgrading");
 	upgrade::run_upgrade(&dest, true, vec!["--version"])
 		.map_err(|err| miette!("upgrade: {err:?}"))?;
+	
+	#[cfg(windows)]
+	if is_alertd_service_running().await {
+		if let Err(err) = schedule_service_restart() {
+			tracing::warn!("failed to schedule service restart: {err:?}");
+		}
+	}
+	
 	Ok(())
 }
 
@@ -158,6 +166,41 @@ fn add_self_to_path() -> Result<()> {
 
 	windows_env::prepend("PATH", self_dir).into_diagnostic()?;
 
+	Ok(())
+}
+
+#[cfg(windows)]
+async fn is_alertd_service_running() -> bool {
+	// Try to query the alertd HTTP API status endpoint
+	match reqwest::get("http://127.0.0.1:8271/status").await {
+		Ok(response) => response.status().is_success(),
+		Err(_) => false,
+	}
+}
+
+#[cfg(windows)]
+fn schedule_service_restart() -> Result<()> {
+	use std::process::Command;
+	
+	// Schedule a service restart using a PowerShell command that waits 60 seconds
+	// then restarts the service
+	let ps_command = "Start-Sleep -Seconds 60; Restart-Service -Name bestool-alertd -Force";
+	
+	let output = Command::new("powershell")
+		.args(&[
+			"-NoProfile",
+			"-Command",
+			&format!("Start-Process powershell -ArgumentList '-NoProfile', '-Command', '{}' -WindowStyle Hidden", ps_command),
+		])
+		.output()
+		.into_diagnostic()?;
+	
+	if !output.status.success() {
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		return Err(miette!("failed to schedule service restart: {}", stderr));
+	}
+	
+	info!("scheduled service restart for 1 minute later");
 	Ok(())
 }
 
