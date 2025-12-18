@@ -8,7 +8,6 @@
 
 use std::{
 	ffi::{OsStr, OsString},
-	io,
 	process::Command,
 	sync::{Arc, Mutex},
 	time::Duration,

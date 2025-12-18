@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::str::FromStr;
 
 use miette::{IntoDiagnostic, Result, WrapErr};
 use mobc_postgres::tokio_postgres;
@@ -27,70 +27,74 @@ pub fn parse_connection_url(url: &str) -> Result<Config> {
 }
 
 /// Handle Unix socket paths in the configuration
+#[allow(unused_variables)]
 fn handle_unix_sockets(mut config: Config, original_url: &str) -> Result<Config> {
 	// Check if any of the configured hosts look like Unix socket paths
 	let hosts: Vec<_> = config.get_hosts().to_vec();
-	let mut is_unix_socket = false;
-
-	if hosts.is_empty() {
-		// No host specified - try to detect default PostgreSQL socket location
-		#[cfg(unix)]
-		if let Some(socket_dir) = detect_default_postgres_socket() {
-			config.host_path(&socket_dir);
-			is_unix_socket = true;
-		}
-
-		#[cfg(not(unix))]
-		{
-			// On non-Unix systems, always use localhost
-			config.host("localhost");
-		}
-
-		#[cfg(unix)]
-		if !is_unix_socket {
-			// Fall back to localhost if we can't find a socket
-			config.host("localhost");
-		}
-	}
-
+	
 	#[cfg(unix)]
-	if let Some(tokio_postgres::config::Host::Unix(_)) = hosts.first() {
-		// Already configured as Unix socket
-		is_unix_socket = true;
-	}
+	{
+		use std::path::Path;
+		let mut is_unix_socket = false;
 
-	if let Some(tokio_postgres::config::Host::Tcp(hostname)) = hosts.first() {
-		#[cfg(unix)]
-		if hostname.starts_with('/') {
-			// It's a path string but was parsed as TCP host
-			// Rebuild config with proper Unix socket path
-			let socket_path = Path::new(hostname);
-			config.host_path(socket_path);
+		if hosts.is_empty() {
+			// No host specified - try to detect default PostgreSQL socket location
+			if let Some(socket_dir) = detect_default_postgres_socket() {
+				config.host_path(&socket_dir);
+				is_unix_socket = true;
+			}
+
+			if !is_unix_socket {
+				// Fall back to localhost if we can't find a socket
+				config.host("localhost");
+			}
+		}
+
+		if let Some(tokio_postgres::config::Host::Unix(_)) = hosts.first() {
+			// Already configured as Unix socket
 			is_unix_socket = true;
 		}
 
-		#[cfg(unix)]
-		if !is_unix_socket
-			&& let Some(extracted_host) = extract_host_from_url(original_url)
-			&& extracted_host.starts_with('/')
-		{
-			// Special case: URL encoding might have mangled the path
-			// The original URL had a path, but it got parsed as TCP
-			let socket_path = Path::new(&extracted_host);
-			config.host_path(socket_path);
-			is_unix_socket = true;
+		if let Some(tokio_postgres::config::Host::Tcp(hostname)) = hosts.first() {
+			if hostname.starts_with('/') {
+				// It's a path string but was parsed as TCP host
+				// Rebuild config with proper Unix socket path
+				let socket_path = Path::new(hostname);
+				config.host_path(socket_path);
+				is_unix_socket = true;
+			}
+
+			if !is_unix_socket
+				&& let Some(extracted_host) = extract_host_from_url(original_url)
+				&& extracted_host.starts_with('/')
+			{
+				// Special case: URL encoding might have mangled the path
+				// The original URL had a path, but it got parsed as TCP
+				let socket_path = Path::new(&extracted_host);
+				config.host_path(socket_path);
+				is_unix_socket = true;
+			}
+		}
+
+		// Disable SSL for Unix socket connections
+		if is_unix_socket {
+			config.ssl_mode(tokio_postgres::config::SslMode::Disable);
 		}
 	}
 
-	// Disable SSL for Unix socket connections
-	if is_unix_socket {
-		config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+	#[cfg(not(unix))]
+	{
+		// On non-Unix systems, always use localhost if no host specified
+		if hosts.is_empty() {
+			config.host("localhost");
+		}
 	}
 
 	Ok(config)
 }
 
 /// Extract the host part from a PostgreSQL connection URL
+#[cfg(unix)]
 fn extract_host_from_url(url: &str) -> Option<String> {
 	// Handle postgresql:// or postgres:// schemes
 	let url = url
@@ -129,6 +133,8 @@ fn extract_host_from_url(url: &str) -> Option<String> {
 /// Detect the default PostgreSQL Unix socket directory on the system
 #[cfg(unix)]
 fn detect_default_postgres_socket() -> Option<std::path::PathBuf> {
+	use std::path::Path;
+	
 	// Common PostgreSQL Unix socket locations, in order of preference
 	let candidates = [
 		"/var/run/postgresql",
