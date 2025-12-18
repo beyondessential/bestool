@@ -8,13 +8,14 @@
 
 use std::{
 	ffi::{OsStr, OsString},
+	path::PathBuf,
 	process::Command,
 	sync::{Arc, Mutex},
 	time::Duration,
 };
 
 use miette::{IntoDiagnostic, Result, miette};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use windows_service::{
 	define_windows_service,
 	service::{
@@ -36,6 +37,12 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 /// Required because the Windows service dispatcher calls service_main with only
 /// command line arguments, so we store the config here before dispatching.
 static SERVICE_CONFIG: Mutex<Option<DaemonConfig>> = Mutex::new(None);
+
+/// Global storage for the path to the temporary copy of the executable.
+///
+/// This ensures the temp file persists for the lifetime of the service
+/// and can be cleaned up on shutdown.
+static TEMP_EXEC_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -72,16 +79,20 @@ fn service_main(_arguments: Vec<OsString>) {
 /// Main service logic that manages the daemon lifecycle.
 ///
 /// This function:
-/// 1. Retrieves the daemon configuration from global storage
-/// 2. Sets up a control handler for Windows service events (stop, shutdown)
-/// 3. Reports service status to Windows SCM
-/// 4. Runs the daemon with shutdown signal integration
-/// 5. Handles graceful shutdown when requested by Windows
+/// 1. Copies the executable to a temporary directory to avoid file locks
+/// 2. Retrieves the daemon configuration from global storage
+/// 3. Sets up a control handler for Windows service events (stop, shutdown)
+/// 4. Reports service status to Windows SCM
+/// 5. Runs the daemon with shutdown signal integration
+/// 6. Handles graceful shutdown when requested by Windows
 ///
 /// # Errors
 ///
 /// Returns an error if the daemon fails to start or encounters a fatal error.
 fn run_service_main() -> Result<()> {
+	// Copy executable to temp directory to avoid file locks during updates
+	let _temp_exec = copy_executable_to_temp()?;
+	
 	let config = {
 		let mut guard = SERVICE_CONFIG.lock().unwrap();
 		guard
@@ -95,7 +106,7 @@ fn run_service_main() -> Result<()> {
 	let shutdown_tx_clone = shutdown_tx.clone();
 
 	// Create reload channel for TIME_CHANGE events
-	let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel(10);
+	let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(10);
 	let reload_tx = Arc::new(Mutex::new(reload_tx));
 	let reload_tx_clone = reload_tx.clone();
 
@@ -223,10 +234,54 @@ fn run_service_main() -> Result<()> {
 		.set_service_status(final_state)
 		.into_diagnostic()?;
 
+	// Clean up temporary executable
+	cleanup_temp_executable();
+
 	result
 }
 
-/// Performs pre-flight checks before attempting to install the service.
+/// Copy the executable to a temporary directory to avoid file locks.
+///
+/// This allows the original executable to be updated while the service is running.
+/// Returns the path to the temporary copy.
+fn copy_executable_to_temp() -> Result<PathBuf> {
+	let original = std::env::current_exe()
+		.map_err(|e| miette!("Failed to get current executable path: {}", e))?;
+
+	let temp_dir = std::env::temp_dir();
+	let exe_name = original
+		.file_name()
+		.and_then(|n| n.to_str())
+		.ok_or_else(|| miette!("Failed to get executable name"))?;
+
+	// Include the process ID to make the temp file somewhat unique per service instance
+	let temp_name = format!("{}.{}.tmp", exe_name, std::process::id());
+	let temp_path = temp_dir.join(&temp_name);
+
+	// Copy the executable to the temp directory
+	std::fs::copy(&original, &temp_path)
+		.map_err(|e| miette!("Failed to copy executable to temp directory: {}", e))?;
+
+	// Store the temp path for later cleanup
+	{
+		let mut guard = TEMP_EXEC_PATH.lock().unwrap();
+		*guard = Some(temp_path.clone());
+	}
+
+	info!("copied executable to temp: {}", temp_path.display());
+	Ok(temp_path)
+}
+
+/// Clean up the temporary executable copy.
+fn cleanup_temp_executable() {
+	let guard = TEMP_EXEC_PATH.lock().unwrap();
+	if let Some(temp_path) = guard.as_ref() {
+		match std::fs::remove_file(temp_path) {
+			Ok(_) => info!("cleaned up temp executable: {}", temp_path.display()),
+			Err(e) => warn!("failed to clean up temp executable {}: {}", temp_path.display(), e),
+		}
+	}
+}
 ///
 /// Checks for common issues like Service Control Manager availability,
 /// disk space, and executable accessibility.
