@@ -242,6 +242,27 @@ fn run_diagnostics() {
 	println!();
 }
 
+/// Get the log file path for the Windows service.
+///
+/// Returns a path in the Windows ProgramData directory.
+fn get_service_log_path() -> Result<std::path::PathBuf> {
+	use std::path::PathBuf;
+
+	// Use ProgramData directory for service logs (typically C:\ProgramData)
+	let log_dir = std::env::var("ProgramData")
+		.map(PathBuf::from)
+		.unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"));
+
+	let log_dir = log_dir.join("BES").join("bestool-alertd");
+
+	// Try to create the directory if it doesn't exist
+	if !log_dir.exists() {
+		std::fs::create_dir_all(&log_dir).ok();
+	}
+
+	Ok(log_dir)
+}
+
 /// Install the alertd daemon as a Windows service.
 ///
 /// Creates a Windows service named 'bestool-alertd' that will start automatically.
@@ -283,6 +304,12 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	let service_binary_path = std::env::current_exe()
 		.map_err(|e| miette!("Failed to get current executable path: {}\n\nTroubleshoot:\n  - Ensure the bestool executable is accessible\n  - Check that the path is readable and not corrupted", e))?;
 
+	// Get log file path and append logging arguments
+	let log_path = get_service_log_path()?;
+	let mut final_arguments = launch_arguments.to_vec();
+	final_arguments.push(OsString::from("--log-file"));
+	final_arguments.push(OsString::from(log_path.as_os_str()));
+
 	let service_info = ServiceInfo {
 		name: OsString::from("bestool-alertd"),
 		display_name: OsString::from("BES Alert Daemon"),
@@ -290,7 +317,7 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		start_type: ServiceStartType::AutoStart,
 		error_control: ServiceErrorControl::Normal,
 		executable_path: service_binary_path,
-		launch_arguments: launch_arguments.to_vec(),
+		launch_arguments: final_arguments,
 		dependencies: vec![],
 		account_name: None,
 		account_password: None,
@@ -357,6 +384,17 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		}
 	}
 
+	let log_path = get_service_log_path()?;
+	println!("\nService installed and started successfully!");
+	println!("\nTo monitor the service:");
+	println!("  • Open Services.msc and find 'BES Alert Daemon'");
+	println!("  • Check status and startup type (should be 'Automatic')");
+	println!("\nService logs:");
+	println!("  • Location: {}", log_path.display());
+	println!("  • Logs are stored in JSON format with timestamps");
+	println!("\nFor errors:");
+	println!("  • Check the log files in the directory above");
+	println!("  • Or check Windows Event Viewer: Windows Logs > System (search for 'bestool-alertd')");
 	Ok(())
 }
 
