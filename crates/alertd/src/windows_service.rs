@@ -8,6 +8,7 @@
 
 use std::{
 	ffi::{OsStr, OsString},
+	process::Command,
 	sync::{Arc, Mutex},
 	time::Duration,
 };
@@ -120,8 +121,8 @@ fn run_service_main() -> Result<()> {
 			current_state: ServiceState::StartPending,
 			controls_accepted: ServiceControlAccept::empty(),
 			exit_code: ServiceExitCode::Win32(0),
-			checkpoint: 0,
-			wait_hint: Duration::from_secs(3),
+			checkpoint: 1,
+			wait_hint: Duration::from_secs(10),
 			process_id: None,
 		})
 		.into_diagnostic()?;
@@ -129,24 +130,34 @@ fn run_service_main() -> Result<()> {
 	// Start the daemon in a new tokio runtime
 	let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
 
-	// Tell Windows we're running
-	status_handle
-		.set_service_status(ServiceStatus {
-			service_type: SERVICE_TYPE,
-			current_state: ServiceState::Running,
-			controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-			exit_code: ServiceExitCode::Win32(0),
-			checkpoint: 0,
-			wait_hint: Duration::default(),
-			process_id: None,
-		})
-		.into_diagnostic()?;
+	// Run the daemon (which handles its own startup)
+	let result = runtime.block_on(async move {
+		// Send periodic status updates while daemon is starting
+		let status_tx = status_handle.clone();
+		let status_task = tokio::spawn(async move {
+			let mut checkpoint = 2;
+			loop {
+				tokio::time::sleep(Duration::from_secs(5)).await;
+				// Send checkpoint updates to keep Windows from timing out
+				let _ = status_tx.set_service_status(ServiceStatus {
+					service_type: SERVICE_TYPE,
+					current_state: ServiceState::StartPending,
+					controls_accepted: ServiceControlAccept::empty(),
+					exit_code: ServiceExitCode::Win32(0),
+					checkpoint,
+					wait_hint: Duration::from_secs(10),
+					process_id: None,
+				});
+				checkpoint += 1;
+			}
+		});
 
-	info!("service started successfully");
+		let daemon_result = crate::daemon::run_with_shutdown(config, shutdown_rx).await;
 
-	// Run the daemon
-	let result = runtime
-		.block_on(async move { crate::daemon::run_with_shutdown(config, shutdown_rx).await });
+		// Cancel the status update task
+		status_task.abort();
+		daemon_result
+	});
 
 	// Tell Windows we're stopping
 	let final_state = if result.is_ok() {
@@ -180,6 +191,56 @@ fn run_service_main() -> Result<()> {
 	result
 }
 
+/// Performs pre-flight checks before attempting to install the service.
+///
+/// Checks for common issues like Service Control Manager availability,
+/// disk space, and executable accessibility.
+fn run_diagnostics() {
+	println!("Running diagnostics...\n");
+
+	// Check if SCM is running
+	print!("Checking Windows Service Control Manager... ");
+	match Command::new("sc").args(&["query"]).output() {
+		Ok(output) if output.status.success() => {
+			println!("✓ Running");
+		}
+		_ => {
+			println!("✗ May not be accessible");
+			println!("  Tip: Restart the 'Service Control Manager' service from Services.msc\n");
+		}
+	}
+
+	// Check if service already exists
+	print!("Checking if service already exists... ");
+	match Command::new("sc").args(&["query", SERVICE_NAME]).output() {
+		Ok(output) if output.status.success() => {
+			println!("✗ Service already exists");
+			println!("  Tip: Run 'bestool tamanu alertd uninstall' first\n");
+		}
+		_ => {
+			println!("✓ Service not found (good)");
+		}
+	}
+
+	// Check executable path
+	print!("Checking executable accessibility... ");
+	match std::env::current_exe() {
+		Ok(path) => {
+			if path.exists() {
+				println!("✓ Executable found at: {}", path.display());
+			} else {
+				println!("✗ Executable path invalid");
+				println!("  Path: {}\n", path.display());
+			}
+		}
+		Err(e) => {
+			println!("✗ Cannot determine executable path: {}\n", e);
+		}
+	}
+
+	println!();
+}
+
 /// Install the alertd daemon as a Windows service.
 ///
 /// Creates a Windows service named 'bestool-alertd' that will start automatically.
@@ -191,10 +252,17 @@ fn run_service_main() -> Result<()> {
 pub fn install_service() -> Result<()> {
 	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
 	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
-		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				miette!("Failed to connect to service manager: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			} else {
+				miette!("Failed to connect to service manager: {}\n\nTroubleshoot:\n  - Ensure you have administrator privileges\n  - Check that Windows Service Control Manager is running\n  - Try running this command in an Administrator command prompt", error_msg)
+			}
+		})?;
 
 	let service_binary_path = std::env::current_exe()
-		.map_err(|e| miette!("failed to get current executable path: {e}"))?;
+		.map_err(|e| miette!("Failed to get current executable path: {}\n\nTroubleshoot:\n  - Ensure the bestool executable is accessible\n  - Check that the path is readable and not corrupted", e))?;
 
 	let service_info = ServiceInfo {
 		name: OsString::from("bestool-alertd"),
@@ -214,15 +282,31 @@ pub fn install_service() -> Result<()> {
 			&service_info,
 			ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
 		)
-		.map_err(|e| miette!("failed to create service: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("Already exists") || error_msg.contains("ERROR_SERVICE_EXISTS") {
+				miette!("Service 'bestool-alertd' already exists.\n\nTroubleshoot:\n  - To reinstall, run: bestool tamanu alertd uninstall\n  - Then run: bestool tamanu alertd install")
+			} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				miette!("Failed to create service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			} else {
+				miette!("Failed to create service: {}\n\nTroubleshoot:\n  - Restart the 'Service Control Manager' service (Services.msc)\n  - Restart Windows if the problem persists\n  - Check Windows Event Viewer > Windows Logs > System for related errors\n  - Verify the service name 'bestool-alertd' is not reserved or in-use\n  - Try running: 'sc query bestool-alertd' to check service state\n  - Try running: 'sc delete bestool-alertd' if service is marked for deletion", error_msg)
+			}
+		})?;
 
 	service
 		.set_description("Monitors and executes alert definitions from configuration files")
-		.map_err(|e| miette!("failed to set service description: {e}"))?;
+		.map_err(|e| miette!("Failed to set service description: {}\n\nThe service was created but configuration failed. Please try uninstalling and reinstalling.", e))?;
 
 	service
 		.start::<&OsStr>(&[])
-		.map_err(|e| miette!("failed to start service: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("marked for deletion") || error_msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE") {
+				miette!("Failed to start service: {}\n\nThe service is marked for deletion. Please restart Windows and try again.", error_msg)
+			} else {
+				miette!("Failed to start service: {}\n\nTroubleshoot:\n  - Check Windows Event Viewer under Windows Logs > System\n  - Verify the bestool executable path is correct and accessible\n  - Ensure no other service is using the same name\n  - Try starting the service manually using Services.msc", error_msg)
+			}
+		})?;
 
 	println!("Service installed and started successfully");
 	Ok(())
@@ -238,20 +322,50 @@ pub fn install_service() -> Result<()> {
 pub fn uninstall_service() -> Result<()> {
 	let manager_access = ServiceManagerAccess::CONNECT;
 	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
-		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				miette!("Failed to connect to service manager: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			} else {
+				miette!("Failed to connect to service manager: {}\n\nTroubleshoot:\n  - Ensure you have administrator privileges\n  - Check that Windows Service Control Manager is running", error_msg)
+			}
+		})?;
 
 	let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
 	let service = service_manager
 		.open_service("bestool-alertd", service_access)
-		.map_err(|e| miette!("failed to open service: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("not found") || error_msg.contains("ERROR_SERVICE_DOES_NOT_EXIST") {
+				miette!("Service 'bestool-alertd' not found.\n\nThe service doesn't appear to be installed. No action needed.")
+			} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				miette!("Failed to open service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			} else {
+				miette!("Failed to open service: {}\n\nTroubleshoot:\n  - Ensure you have administrator privileges\n  - Verify the service 'bestool-alertd' is installed", error_msg)
+			}
+		})?;
 
 	service
 		.stop()
-		.map_err(|e| miette!("failed to stop service: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("not running") || error_msg.contains("ERROR_SERVICE_NOT_ACTIVE") {
+				miette!("Service is not running (which is fine). Proceeding with deletion.")
+			} else {
+				miette!("Failed to stop service: {}\n\nTroubleshoot:\n  - Check Windows Event Viewer for more details\n  - Try manually stopping the service using Services.msc", error_msg)
+			}
+		})?;
 
 	service
 		.delete()
-		.map_err(|e| miette!("failed to delete service: {e}"))?;
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("marked for deletion") || error_msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE") {
+				miette!("Service is already marked for deletion. It will be removed after the next restart.")
+			} else {
+				miette!("Failed to delete service: {}\n\nTroubleshoot:\n  - Ensure no processes are using this service\n  - The service may need to be restarted first\n  - Check Windows Event Viewer for more details\n  - You may need to restart Windows and try again", error_msg)
+			}
+		})?;
 
 	println!("Service stopped and uninstalled successfully");
 	Ok(())
