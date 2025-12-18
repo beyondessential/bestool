@@ -31,7 +31,7 @@ pub fn parse_connection_url(url: &str) -> Result<Config> {
 fn handle_unix_sockets(mut config: Config, original_url: &str) -> Result<Config> {
 	// Check if any of the configured hosts look like Unix socket paths
 	let hosts: Vec<_> = config.get_hosts().to_vec();
-	
+
 	#[cfg(unix)]
 	{
 		use std::path::Path;
@@ -134,7 +134,7 @@ fn extract_host_from_url(url: &str) -> Option<String> {
 #[cfg(unix)]
 fn detect_default_postgres_socket() -> Option<std::path::PathBuf> {
 	use std::path::Path;
-	
+
 	// Common PostgreSQL Unix socket locations, in order of preference
 	let candidates = [
 		"/var/run/postgresql",

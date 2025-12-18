@@ -136,9 +136,32 @@ fn run_service_main() -> Result<()> {
 		let status_tx = status_handle.clone();
 		let status_task = tokio::spawn(async move {
 			let mut checkpoint = 2;
+			let mut is_running_reported = false;
 			loop {
+				// After first checkpoint, report as running
+				if !is_running_reported && checkpoint > 2 {
+					let _ = status_tx.set_service_status(ServiceStatus {
+						service_type: SERVICE_TYPE,
+						current_state: ServiceState::Running,
+						controls_accepted: ServiceControlAccept::STOP
+							| ServiceControlAccept::SHUTDOWN,
+						exit_code: ServiceExitCode::Win32(0),
+						checkpoint: 0,
+						wait_hint: Duration::default(),
+						process_id: None,
+					});
+					is_running_reported = true;
+					info!("service reported as Running to Windows SCM");
+				}
+
 				tokio::time::sleep(Duration::from_secs(5)).await;
-				// Send checkpoint updates to keep Windows from timing out
+
+				// If already running, just send interrogate response
+				if is_running_reported {
+					continue;
+				}
+
+				// Still starting, send checkpoint updates to keep Windows from timing out
 				let _ = status_tx.set_service_status(ServiceStatus {
 					service_type: SERVICE_TYPE,
 					current_state: ServiceState::StartPending,
@@ -373,13 +396,18 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 			}
 			Err(e) => {
 				println!();
-				return Err(miette!("Failed to query service status while waiting for startup: {}", e));
+				return Err(miette!(
+					"Failed to query service status while waiting for startup: {}",
+					e
+				));
 			}
 		}
 
 		if start.elapsed() > max_wait {
 			println!();
-			return Err(miette!("Service failed to reach Running state within 30 seconds. Check Windows Event Viewer for details."));
+			return Err(miette!(
+				"Service failed to reach Running state within 30 seconds. Check Windows Event Viewer for details."
+			));
 		}
 	}
 
@@ -393,7 +421,9 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	println!("  • Logs are stored in JSON format with timestamps");
 	println!("\nFor errors:");
 	println!("  • Check the log files in the directory above");
-	println!("  • Or check Windows Event Viewer: Windows Logs > System (search for 'bestool-alertd')");
+	println!(
+		"  • Or check Windows Event Viewer: Windows Logs > System (search for 'bestool-alertd')"
+	);
 	Ok(())
 }
 
@@ -442,7 +472,9 @@ pub fn uninstall_service() -> Result<()> {
 				}
 				Err(e) => {
 					let error_msg = e.to_string();
-					if error_msg.contains("not running") || error_msg.contains("ERROR_SERVICE_NOT_ACTIVE") {
+					if error_msg.contains("not running")
+						|| error_msg.contains("ERROR_SERVICE_NOT_ACTIVE")
+					{
 						// Service is already stopped, that's fine
 					} else {
 						// Warn but continue with deletion
