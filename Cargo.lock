@@ -510,8 +510,6 @@ dependencies = [
  "upgrade",
  "uuid",
  "walkdir",
- "winapi",
- "windows 0.62.2",
  "windows-acl",
  "windows-env",
  "windows_exe_info",
