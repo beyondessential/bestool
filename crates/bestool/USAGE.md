@@ -764,7 +764,7 @@ Starts the daemon which monitors alert definition files and executes alerts base
 
 ###### **Options:**
 
-* `--dir <DIR>` — Glob patterns for alert definitions
+* `--glob <GLOB>` — Glob patterns for alert definitions
 
    Patterns can match directories (which will be read recursively) or individual files. Can be provided multiple times. Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
 * `--dry-run` — Execute all alerts once and quit (ignoring intervals)
