@@ -45,7 +45,14 @@ Async PostgreSQL client
 
    This writes diagnostic logs to a file, instead of the terminal, in JSON format.
 
-   If the path provided is a directory, a file will be created in that directory. The file name will be the current date and time, in the format `programname.YYYY-MM-DDTHH-MM-SSZ.log`.
+   If the path provided is a directory, a file will be created in that directory with daily rotation. The initial file name will be in the format `programname.YYYY-MM-DDTHH-MM-SSZ.log`, and a new file will be created each day at midnight UTC.
+
+   If the path is a file, logs will be written to that specific file without rotation.
+* `--log-file-keep <COUNT>` — Limit the number of log files to keep.
+
+   When used with a directory in `--log-file`, this controls how many rotated log files are kept. Older files are automatically deleted when this limit is reached. Defaults to 32 days of logs. Pass 0 to disable rotation and keep all files.
+
+  Default value: `32`
 * `--log-timeless` — Omit timestamps in logs.
 
    This can be useful when running under service managers that capture logs, to avoid having two timestamps. When run under systemd, this is automatically enabled.
