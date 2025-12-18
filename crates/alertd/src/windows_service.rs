@@ -8,6 +8,7 @@
 
 use std::{
 	ffi::{OsStr, OsString},
+	io,
 	process::Command,
 	sync::{Arc, Mutex},
 	time::Duration,
@@ -326,7 +327,36 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 			}
 		})?;
 
-	println!("Service installed and started successfully");
+	// Wait for the service to reach Running state
+	print!("Waiting for service to start");
+	let max_wait = Duration::from_secs(30);
+	let start = std::time::Instant::now();
+	let poll_interval = Duration::from_millis(500);
+
+	loop {
+		std::thread::sleep(poll_interval);
+		print!(".");
+		std::io::Write::flush(&mut std::io::stdout()).ok();
+
+		match service.query_status() {
+			Ok(status) => {
+				if status.current_state == ServiceState::Running {
+					println!(" ✓");
+					break;
+				}
+			}
+			Err(e) => {
+				println!();
+				return Err(miette!("Failed to query service status while waiting for startup: {}", e));
+			}
+		}
+
+		if start.elapsed() > max_wait {
+			println!();
+			return Err(miette!("Service failed to reach Running state within 30 seconds. Check Windows Event Viewer for details."));
+		}
+	}
+
 	Ok(())
 }
 
@@ -369,7 +399,7 @@ pub fn uninstall_service() -> Result<()> {
 		if status.current_state != ServiceState::Stopped {
 			// Try to stop the service, but warn on error rather than fail
 			match service.stop() {
-				Ok(()) => {
+				Ok(_) => {
 					// Wait a moment for the service to stop
 					std::thread::sleep(Duration::from_millis(500));
 				}
