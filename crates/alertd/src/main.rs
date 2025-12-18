@@ -150,19 +150,17 @@ enum Command {
 		server_addr: Vec<std::net::SocketAddr>,
 	},
 
-	#[cfg(windows)]
 	/// Install the daemon as a Windows service
 	///
-	/// Creates a Windows service named 'bestool-alertd' that will start automatically.
-	/// After installation, configure the service with environment variables or command
-	/// line arguments, then start it with: sc start bestool-alertd
+	/// Creates a Windows service named 'bestool-alertd' that will start automatically
+	/// and starts it immediately.
+	#[cfg(windows)]
 	Install,
 
-	#[cfg(windows)]
 	/// Uninstall the Windows service
 	///
-	/// Removes the 'bestool-alertd' Windows service. The service must be stopped
-	/// before uninstallation. Use: sc stop bestool-alertd
+	/// Stops the 'bestool-alertd' Windows service if running and then removes it.
+	#[cfg(windows)]
 	Uninstall,
 
 	#[cfg(windows)]
@@ -199,72 +197,6 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 
 	debug!(?args, "got arguments");
 	Ok((args, log_guard))
-}
-
-#[cfg(windows)]
-fn install_service() -> Result<()> {
-	use std::ffi::OsString;
-	use windows_service::{
-		service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType},
-		service_manager::{ServiceManager, ServiceManagerAccess},
-	};
-
-	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
-	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
-		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
-
-	let service_binary_path = std::env::current_exe()
-		.map_err(|e| miette!("failed to get current executable path: {e}"))?;
-
-	let service_info = ServiceInfo {
-		name: OsString::from("bestool-alertd"),
-		display_name: OsString::from("BES Alert Daemon"),
-		service_type: ServiceType::OWN_PROCESS,
-		start_type: ServiceStartType::AutoStart,
-		error_control: ServiceErrorControl::Normal,
-		executable_path: service_binary_path,
-		launch_arguments: vec![OsString::from("service")],
-		dependencies: vec![],
-		account_name: None,
-		account_password: None,
-	};
-
-	let service = service_manager
-		.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)
-		.map_err(|e| miette!("failed to create service: {e}"))?;
-
-	service
-		.set_description("Monitors and executes alert definitions from configuration files")
-		.map_err(|e| miette!("failed to set service description: {e}"))?;
-
-	println!("Service installed successfully");
-	println!("Configure the service with environment variables or registry settings");
-	println!("Start the service with: sc start bestool-alertd");
-	Ok(())
-}
-
-#[cfg(windows)]
-fn uninstall_service() -> Result<()> {
-	use windows_service::{
-		service::ServiceAccess,
-		service_manager::{ServiceManager, ServiceManagerAccess},
-	};
-
-	let manager_access = ServiceManagerAccess::CONNECT;
-	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
-		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
-
-	let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
-	let service = service_manager
-		.open_service("bestool-alertd", service_access)
-		.map_err(|e| miette!("failed to open service: {e}"))?;
-
-	service
-		.delete()
-		.map_err(|e| miette!("failed to delete service: {e}"))?;
-
-	println!("Service uninstalled successfully");
-	Ok(())
 }
 
 fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
@@ -357,9 +289,9 @@ async fn main() -> Result<()> {
 			bestool_alertd::commands::validate_alert(&file, &addrs).await
 		}
 		#[cfg(windows)]
-		Command::Install => install_service(),
+		Command::Install => bestool_alertd::windows_service::install_service(),
 		#[cfg(windows)]
-		Command::Uninstall => uninstall_service(),
+		Command::Uninstall => bestool_alertd::windows_service::uninstall_service(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
 			let daemon_config = build_daemon_config(daemon)?;

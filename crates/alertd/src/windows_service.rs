@@ -7,21 +7,22 @@
 //! to the SCM throughout its lifecycle.
 
 use std::{
-	ffi::OsString,
+	ffi::{OsStr, OsString},
 	sync::{Arc, Mutex},
 	time::Duration,
 };
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use tracing::{error, info};
 use windows_service::{
 	define_windows_service,
 	service::{
-		ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-		ServiceType,
+		ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+		ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 	},
 	service_control_handler::{self, ServiceControlHandlerResult},
 	service_dispatcher,
+	service_manager::{ServiceManager, ServiceManagerAccess},
 };
 
 use crate::DaemonConfig;
@@ -177,4 +178,81 @@ fn run_service_main() -> Result<()> {
 		.into_diagnostic()?;
 
 	result
+}
+
+/// Install the alertd daemon as a Windows service.
+///
+/// Creates a Windows service named 'bestool-alertd' that will start automatically.
+/// After installation, starts the service immediately.
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be created, configured, or started.
+pub fn install_service() -> Result<()> {
+	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
+		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
+
+	let service_binary_path = std::env::current_exe()
+		.map_err(|e| miette!("failed to get current executable path: {e}"))?;
+
+	let service_info = ServiceInfo {
+		name: OsString::from("bestool-alertd"),
+		display_name: OsString::from("BES Alert Daemon"),
+		service_type: ServiceType::OWN_PROCESS,
+		start_type: ServiceStartType::AutoStart,
+		error_control: ServiceErrorControl::Normal,
+		executable_path: service_binary_path,
+		launch_arguments: vec![OsString::from("service")],
+		dependencies: vec![],
+		account_name: None,
+		account_password: None,
+	};
+
+	let service = service_manager
+		.create_service(
+			&service_info,
+			ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+		)
+		.map_err(|e| miette!("failed to create service: {e}"))?;
+
+	service
+		.set_description("Monitors and executes alert definitions from configuration files")
+		.map_err(|e| miette!("failed to set service description: {e}"))?;
+
+	service
+		.start::<&OsStr>(&[])
+		.map_err(|e| miette!("failed to start service: {e}"))?;
+
+	println!("Service installed and started successfully");
+	Ok(())
+}
+
+/// Uninstall the alertd Windows service.
+///
+/// Stops the 'bestool-alertd' Windows service if running, then removes it.
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be opened, stopped, or deleted.
+pub fn uninstall_service() -> Result<()> {
+	let manager_access = ServiceManagerAccess::CONNECT;
+	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
+		.map_err(|e| miette!("failed to connect to service manager: {e}"))?;
+
+	let service_access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+	let service = service_manager
+		.open_service("bestool-alertd", service_access)
+		.map_err(|e| miette!("failed to open service: {e}"))?;
+
+	service
+		.stop()
+		.map_err(|e| miette!("failed to stop service: {e}"))?;
+
+	service
+		.delete()
+		.map_err(|e| miette!("failed to delete service: {e}"))?;
+
+	println!("Service stopped and uninstalled successfully");
+	Ok(())
 }
