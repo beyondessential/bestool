@@ -303,11 +303,18 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	let service_binary_path = std::env::current_exe()
 		.map_err(|e| miette!("Failed to get current executable path: {}\n\nTroubleshoot:\n  - Ensure the bestool executable is accessible\n  - Check that the path is readable and not corrupted", e))?;
 
-	// Get log file path and append logging arguments
+	// Get log file path and add logging arguments
+	// For both bestool and standalone alertd: --log-file "PATH" then the subcommand(s)
 	let log_path = get_service_log_path()?;
-	let mut final_arguments = launch_arguments.to_vec();
+	let mut final_arguments = Vec::new();
+	
+	// Quote the log path in case it contains spaces
+	let quoted_log_path = format!("\"{}\"", log_path.display());
+	
+	// Always insert --log-file before the subcommands
 	final_arguments.push(OsString::from("--log-file"));
-	final_arguments.push(OsString::from(log_path.as_os_str()));
+	final_arguments.push(OsString::from(&quoted_log_path));
+	final_arguments.extend_from_slice(launch_arguments);
 
 	let service_info = ServiceInfo {
 		name: OsString::from("bestool-alertd"),
@@ -317,6 +324,8 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		error_control: ServiceErrorControl::Normal,
 		executable_path: service_binary_path,
 		launch_arguments: final_arguments,
+		// Note: launch_arguments are stored in the ImagePath registry value, not Parameters.
+		// Services.msc may display the full command in "Path to executable" field.
 		dependencies: vec![],
 		account_name: None,
 		account_password: None,
