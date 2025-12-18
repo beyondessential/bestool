@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.5](https://github.com/beyondessential/bestool/compare/v1.3.4..1.3.5) - 2025-12-18
+## [1.3.6](https://github.com/beyondessential/bestool/compare/v1.3.5..1.3.6) - 2025-12-18
+
+
+- **deps:** Remove winapi - ([db83a96](https://github.com/beyondessential/bestool/commit/db83a96b1ca40e12404f2455ebd0d094893bdf94))
+- **doc:** Usage - ([233360f](https://github.com/beyondessential/bestool/commit/233360fa56d991cb054b336e724ed936ce7413b4))
+- **doc:** New options from the lloggs upgrade - ([8dd8f8f](https://github.com/beyondessential/bestool/commit/8dd8f8f894bb9ce7e4d06e950c9de2404651c9bb))
+
+
+- **fix(alertd):** Wrong arguments for the service - ([d5e0aab](https://github.com/beyondessential/bestool/commit/d5e0aabd64cfcd25c63b47c804ec0ae2bebd8662))
+- **tweak(alertd):** Trigger an alertd restart when bestool self-updates - ([39a8b2b](https://github.com/beyondessential/bestool/commit/39a8b2b25eb46f3dace62cb2bd48ac8ac1f38b98))
+---
+## [1.3.5](https://github.com/beyondessential/bestool/compare/v1.3.4..v1.3.5) - 2025-12-18
 
 
 - **deps:** Bump the deps group across 1 directory with 10 updates (#250) - ([14105f2](https://github.com/beyondessential/bestool/commit/14105f270f6baa5d166d683e58dbfedb4fc6f976))
