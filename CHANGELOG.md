@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.4](https://github.com/beyondessential/bestool/compare/v1.3.3..1.3.4) - 2025-11-28
+## [1.3.5](https://github.com/beyondessential/bestool/compare/v1.3.4..1.3.5) - 2025-12-18
+
+
+- **deps:** Bump the deps group across 1 directory with 10 updates (#250) - ([14105f2](https://github.com/beyondessential/bestool/commit/14105f270f6baa5d166d683e58dbfedb4fc6f976))
+
+
+- **tweak(alertd):** Port the service management commands to bestool - ([13bfded](https://github.com/beyondessential/bestool/commit/13bfded05fa879222127298a820a3a274bb7cd11))
+---
+## [1.3.4](https://github.com/beyondessential/bestool/compare/v1.3.3..v1.3.4) - 2025-11-28
 
 
 - **fix:** Fix tests - ([98398c9](https://github.com/beyondessential/bestool/commit/98398c9cf9f4420ba0454e011d8e97901902fefd))
