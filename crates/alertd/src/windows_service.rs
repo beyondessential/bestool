@@ -363,17 +363,31 @@ pub fn uninstall_service() -> Result<()> {
 			}
 		})?;
 
-	service
-		.stop()
-		.map_err(|e| {
-			let error_msg = e.to_string();
-			if error_msg.contains("not running") || error_msg.contains("ERROR_SERVICE_NOT_ACTIVE") {
-				miette!("Service is not running (which is fine). Proceeding with deletion.")
-			} else {
-				miette!("Failed to stop service: {}\n\nTroubleshoot:\n  - Check Windows Event Viewer for more details\n  - Try manually stopping the service using Services.msc", error_msg)
+	// Check current service state
+	let service_status = service.query_status().ok();
+	if let Some(status) = service_status {
+		if status.current_state != ServiceState::Stopped {
+			// Try to stop the service, but warn on error rather than fail
+			match service.stop() {
+				Ok(()) => {
+					// Wait a moment for the service to stop
+					std::thread::sleep(Duration::from_millis(500));
+				}
+				Err(e) => {
+					let error_msg = e.to_string();
+					if error_msg.contains("not running") || error_msg.contains("ERROR_SERVICE_NOT_ACTIVE") {
+						// Service is already stopped, that's fine
+					} else {
+						// Warn but continue with deletion
+						eprintln!("Warning: Failed to stop service cleanly: {}", error_msg);
+						eprintln!("  Attempting to delete service anyway...");
+					}
+				}
 			}
-		})?;
+		}
+	}
 
+	// Attempt to delete the service regardless of stop result
 	service
 		.delete()
 		.map_err(|e| {
