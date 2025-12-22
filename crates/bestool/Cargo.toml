@@ -24,7 +24,7 @@ boxcar = "0.2.14"
 bytes = "1.10.0"
 chrono = "0.4.41"
 clap = { workspace = true, features = ["env", "unicode", "string"] }
-clap_complete = { version = "4.5.57", optional = true }
+clap_complete = { version = "4.5.62", optional = true }
 facet = { workspace = true }
 clap_complete_nushell = { version = "4.5.8", optional = true }
 clap-markdown = "0.1.5"
@@ -77,7 +77,7 @@ tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
 uuid = "1.19.0"
 walkdir = { version = "2.5.0", optional = true }
-zip = { version = "6.0.0", optional = true, default-features = false, features = ["time"] }
+zip = { version = "7.0.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]

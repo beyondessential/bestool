@@ -323,9 +323,9 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b098575ebe77cb6d14fc7f32749631a6e44edbef6b796f89b020e99ba20d425"
+checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
  "bytes",
@@ -513,7 +513,7 @@ dependencies = [
  "windows-acl",
  "windows-env",
  "windows_exe_info",
- "zip",
+ "zip 7.0.0",
  "zmq",
 ]
 
@@ -1100,9 +1100,9 @@ dependencies = [
 
 [[package]]
 name = "clap_complete"
-version = "4.5.61"
+version = "4.5.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39615915e2ece2550c0149addac32fb5bd312c657f43845bb9088cb9c8a7c992"
+checksum = "004eef6b14ce34759aa7de4aea3217e368f463f46a3ed3764ca4b5a4404003b4"
 dependencies = [
  "clap",
 ]
@@ -1932,9 +1932,9 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "facet"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e16908c1c614bd11635c37fc22e10ba6273ac987d253c8eef4dd331697982e03"
+checksum = "f3c2b30c3706922ddbff8a8ebd9124d2e15b3943f00ad071b131312883d09d54"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -1944,9 +1944,9 @@ dependencies = [
 
 [[package]]
 name = "facet-core"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d1f4584a9378cc7b8598ffa3cd63b169fe9b89a262e90db8a4e2e607fd2e0e"
+checksum = "dbf01c609390d3289978288044d0d1ccaaabaa608f56d3aa0cc18381934d4220"
 dependencies = [
  "autocfg",
  "impls",
@@ -1954,9 +1954,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-parse"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa4483074a9ece385a103b2d3c6eadcd3cf9f9763d5d281a52d9ef70f78e2e26"
+checksum = "230c782499d4364c9b792aa3b259f9294325ef7afd81c35b74cf278a9070c621"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -1965,9 +1965,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-types"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "522838218ea4b979d2b5db42cc03f23516823ce66ccfcb8c23b2b52b01bc77d8"
+checksum = "319965f8fb0fc0c683f3316db442bd80d93112affec94df4146a8c6deb33f415"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1976,18 +1976,18 @@ dependencies = [
 
 [[package]]
 name = "facet-macros"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9083e8ff729fdc6145573c46649b99efbff06046817ac38f09e4b45967bd8c7d"
+checksum = "3ceb9ace94d4d9a01f710bf9094e6432be4bc2ce0323911ba3ecf9afa270493a"
 dependencies = [
  "facet-macros-impl",
 ]
 
 [[package]]
 name = "facet-macros-impl"
-version = "0.32.3"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac43634853b8eb0867c4abbfa055b9242283bba40b2f867d908ad790283da4ab"
+checksum = "014d2411e4d8ab1fb006c3207c7eb1cd85a732b0ee52d6e4beb96bc743a5aa56"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -5206,7 +5206,7 @@ version = "0.92.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca8b9faf2c68874f865272c92493e9bb811e5fdff197a56ecc4748885ec5a874"
 dependencies = [
- "zip",
+ "zip 6.0.0",
 ]
 
 [[package]]
@@ -6539,9 +6539,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"
-version = "0.1.43"
+version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d15d90a0b5c19378952d479dc858407149d7bb45a14de0142f6c534b16fc647"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
@@ -6574,9 +6574,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-core"
-version = "0.1.35"
+version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a04e24fab5c89c6a36eb8558c9656f30d81de51dfa4d3b45f26b21d61fa0a6c"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
@@ -7946,8 +7946,20 @@ dependencies = [
  "flate2",
  "indexmap",
  "memchr",
- "time",
  "zopfli",
+]
+
+[[package]]
+name = "zip"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd8a47718a4ee5fe78e07667cd36f3de80e7c2bfe727c7074245ffc7303c037"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "indexmap",
+ "memchr",
+ "time",
 ]
 
 [[package]]
