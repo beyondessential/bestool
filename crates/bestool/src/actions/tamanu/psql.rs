@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use miette::{IntoDiagnostic as _, Result, WrapErr, bail};
 use serde_json::Value;
 use tokio::{fs, sync::RwLock, time::timeout};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::actions::Context;
 use crate::download::{DownloadSource, reqwest_client};
@@ -15,8 +15,8 @@ use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilde
 
 /// Asynchronous snippet provider that fetches snippets from an API.
 ///
-/// Snippets are loaded asynchronously and cached. Until they're loaded,
-/// lookups return None and the list is empty.
+/// Snippets are cached to disk. On startup, cached snippets are loaded immediately,
+/// then the remote API is fetched in the background to update the cache.
 struct AsyncSnippetProvider {
 	snippets: Arc<RwLock<Option<BTreeMap<String, String>>>>,
 }
@@ -28,16 +28,76 @@ impl AsyncSnippetProvider {
 		}
 	}
 
+	/// Get the cache file path
+	fn cache_path() -> Result<std::path::PathBuf> {
+		if let Some(cache_dir) = dirs::cache_dir() {
+			let path = cache_dir.join("bestool").join("snippets.json");
+			Ok(path)
+		} else {
+			Err(miette::miette!("Unable to determine cache directory"))
+		}
+	}
+
+	/// Load snippets from cache file
+	fn load_from_cache(&self) -> Result<()> {
+		let path = Self::cache_path()?;
+		if !path.exists() {
+			return Ok(());
+		}
+
+		let content = std::fs::read_to_string(&path).into_diagnostic()?;
+		let snippets_json: serde_json::Value = serde_json::from_str(&content).into_diagnostic()?;
+
+		let mut snippets = BTreeMap::new();
+		if let Some(obj) = snippets_json.as_object() {
+			for (name, snippet_data) in obj {
+				if let Some(sql) = snippet_data.get("sql").and_then(|v| v.as_str()) {
+					snippets.insert(name.clone(), sql.to_string());
+				}
+			}
+		}
+
+		let count = snippets.len();
+		let mut cached = self.snippets.blocking_write();
+		*cached = Some(snippets);
+		info!(count, "loaded snippets from cache file");
+
+		Ok(())
+	}
+
+	/// Save snippets to cache file
+	async fn save_to_cache(&self, snippets_json: &serde_json::Value) -> Result<()> {
+		let path = Self::cache_path()?;
+		if let Some(parent) = path.parent() {
+			tokio::fs::create_dir_all(parent).await.into_diagnostic()?;
+		}
+
+		let count = snippets_json
+			.as_object()
+			.map(|obj| obj.len())
+			.unwrap_or(0);
+		let json_str = serde_json::to_string(snippets_json).into_diagnostic()?;
+		tokio::fs::write(&path, json_str).await.into_diagnostic()?;
+		info!(count, "saved snippets to cache file");
+
+		Ok(())
+	}
+
 	/// Start loading snippets asynchronously in the background.
+	/// First load from cache file if available, then fetch remote.
 	fn load_snippets_background(self: Arc<Self>) {
+		if let Err(e) = self.load_from_cache() {
+			debug!("failed to load snippets from cache: {e:#}");
+		}
+
 		tokio::spawn(async move {
-			if let Err(e) = self.load_snippets().await {
-				warn!("failed to load snippets: {e:#}");
+			if let Err(e) = self.fetch_and_update_snippets().await {
+				warn!("failed to fetch snippets from remote: {e:#}");
 			}
 		});
 	}
 
-	async fn load_snippets(&self) -> Result<()> {
+	async fn fetch_and_update_snippets(&self) -> Result<()> {
 		let url = DownloadSource::Meta
 			.host()
 			.join("bestool/snippets")
@@ -61,9 +121,12 @@ impl AsyncSnippetProvider {
 			}
 		}
 
+		let count = snippets.len();
 		let mut cached = self.snippets.write().await;
 		*cached = Some(snippets);
-		debug!("loaded snippets cache");
+		info!(count, "loaded snippets from remote");
+
+		self.save_to_cache(&snippets_json).await?;
 
 		Ok(())
 	}
