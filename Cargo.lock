@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-postgres"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "bytes",
  "fraction",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "bestool-postgres",
  "clap",
