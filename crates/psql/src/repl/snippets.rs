@@ -37,13 +37,9 @@ pub async fn handle_run_snippet(
 		Some(content) => {
 			use crate::input::{ReplAction, handle_input};
 
-			let history = ctx.rl.history_mut();
-			if let Err(e) = history.add_entry(content.clone()) {
-				tracing::debug!("failed to add to history: {e}");
-			}
-
 			let saved_vars: Vec<(String, Option<String>)> = {
 				let mut state = ctx.repl_state.lock().unwrap();
+				state.from_snippet_or_include = true;
 				let saved: Vec<(String, Option<String>)> = vars
 					.iter()
 					.map(|(name, _)| (name.clone(), state.vars.get(name).cloned()))
@@ -83,6 +79,7 @@ pub async fn handle_run_snippet(
 
 			{
 				let mut state = ctx.repl_state.lock().unwrap();
+				state.from_snippet_or_include = false;
 				for (name, original_value) in saved_vars {
 					match original_value {
 						Some(value) => state.vars.insert(name, value),

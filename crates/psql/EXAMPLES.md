@@ -151,11 +151,9 @@ Snippet saved to /home/.local/share/snippets/fhir_settings.sql
 database=> \run fhir_settings
 (2 rows, took 52.163ms)
 
--- In your history (and in the audit log) you will now have two things:
--- 1. The snippet invocation
--- 2. The actual snippet contents
--- This means you can hit "up arrow" to edit the snippet contents,
--- and it also prohibits "smuggling" queries past the audit log.
+-- In your history you have the snippet invocation, but in the audit log
+-- the actual contents of the snippet will also be saved, so you can't
+-- "smuggle" a query past the log, but your history isn't polluted either.
 ```
 
 ## Results

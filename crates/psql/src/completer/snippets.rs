@@ -149,6 +149,7 @@ mod tests {
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
+			from_snippet_or_include: false,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -189,6 +190,7 @@ mod tests {
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
+			from_snippet_or_include: false,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -227,6 +229,7 @@ mod tests {
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
+			from_snippet_or_include: false,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -268,6 +271,7 @@ mod tests {
 			snippets,
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
+			from_snippet_or_include: false,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);

@@ -591,6 +591,7 @@ fn import_psql_history(audit: &super::Audit) -> Result<()> {
 				writemode: true,
 				tailscale: Vec::new(),
 				ots: None,
+				recall: true,
 				instance_id: None,
 			};
 

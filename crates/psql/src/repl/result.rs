@@ -610,6 +610,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test \re show without n (should show last result)
@@ -695,6 +696,7 @@ mod tests {
 			rl: &mut rl,
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
+			from_snippet_or_include: false,
 		};
 
 		// Test \re show n=0 (should show first result)
@@ -776,6 +778,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: true,
+			from_snippet_or_include: false,
 		};
 
 		// Test different formats
@@ -864,6 +867,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test writing to file
@@ -957,6 +961,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test json format - should output one object per line
@@ -1083,6 +1088,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test csv format
@@ -1184,6 +1190,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test excel format - should require to= parameter
@@ -1294,6 +1301,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test sqlite format - should require to= parameter
@@ -1424,6 +1432,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// We can't easily capture stdout in tests, but we can verify the function
@@ -1543,6 +1552,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test \re show without 'to' parameter - should use global output file
@@ -1639,6 +1649,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test \re show when no results exist
@@ -1702,6 +1713,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		let mut output = Vec::new();
@@ -1779,6 +1791,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test basic list
@@ -1867,6 +1880,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		let mut output = Vec::new();
@@ -1943,6 +1957,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		let mut output = Vec::new();
@@ -2035,6 +2050,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test \re list with no limit (should default to 20)
@@ -2154,6 +2170,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with limit=3
@@ -2235,6 +2252,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: true,
+			from_snippet_or_include: false,
 		};
 
 		// Test with offset=5
@@ -2316,6 +2334,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with offset=3 and limit=4 (should show rows 4-7)
@@ -2397,6 +2416,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with cols=text (should show only the text column)
@@ -2477,6 +2497,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with cols=nonexistent (should error and continue)
@@ -2560,6 +2581,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with offset=2 and limit=3 (should show rows 3, 4, 5)
@@ -2653,6 +2675,7 @@ mod tests {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test with cols=b,d (should show only columns b and d)

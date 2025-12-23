@@ -121,6 +121,7 @@ impl Audit {
 			snippets: crate::snippets::Snippets::new(),
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
+			from_snippet_or_include: false,
 		};
 
 		let audit = Self {

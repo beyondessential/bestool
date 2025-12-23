@@ -29,6 +29,11 @@ impl RustylineHistory for super::Audit {
 			None => return Ok(None),
 		};
 
+		// Skip entries marked as not to be recalled in history
+		if !entry.recall {
+			return Ok(None);
+		}
+
 		Ok(Some(SearchResult {
 			entry: Cow::Owned(entry.query),
 			idx: index,
@@ -133,6 +138,11 @@ impl RustylineHistory for super::Audit {
 				None => continue,
 			};
 
+			// Skip entries marked as not to be recalled in history
+			if !entry.recall {
+				continue;
+			}
+
 			if let Some(pos) = entry.query.find(term) {
 				return Ok(Some(SearchResult {
 					entry: Cow::Owned(entry.query),
@@ -189,6 +199,11 @@ impl RustylineHistory for super::Audit {
 				Some(e) => e,
 				None => continue,
 			};
+
+			// Skip entries marked as not to be recalled in history
+			if !entry.recall {
+				continue;
+			}
 
 			if entry.query.starts_with(term) {
 				return Ok(Some(SearchResult {

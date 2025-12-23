@@ -171,6 +171,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		expanded_mode: false,
 		write_mode: false,
 		redact_mode: config.redact_mode,
+		from_snippet_or_include: false,
 		ots: None,
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
@@ -222,6 +223,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: config.redact_mode,
+			from_snippet_or_include: false,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -273,6 +275,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
 					redact_mode: repl_state.lock().unwrap().redact_mode,
+					from_snippet_or_include: false,
 				};
 
 				// Handle all actions
@@ -312,6 +315,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
 					redact_mode: repl_state.lock().unwrap().redact_mode,
+					from_snippet_or_include: false,
 				};
 
 				if exit::handle_exit(&mut ctx).await.is_break() {

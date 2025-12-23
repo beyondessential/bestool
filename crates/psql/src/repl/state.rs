@@ -28,6 +28,8 @@ pub struct ReplState {
 	pub snippets: Snippets,
 	pub transaction_state: TransactionState,
 	pub result_store: ResultStore,
+	/// Whether queries are being executed from a snippet or include (don't recall in history)
+	pub from_snippet_or_include: bool,
 }
 
 impl Default for ReplState {
@@ -51,6 +53,7 @@ impl ReplState {
 			snippets: Snippets::empty(),
 			transaction_state: TransactionState::None,
 			result_store: ResultStore::new(),
+			from_snippet_or_include: false,
 		}
 	}
 }
@@ -65,4 +68,6 @@ pub(crate) struct ReplContext<'a> {
 	pub pool: &'a PgPool,
 	pub schema_cache_manager: &'a SchemaCacheManager,
 	pub redact_mode: bool,
+	/// Whether the current execution is from a snippet or include (don't recall in history)
+	pub from_snippet_or_include: bool,
 }

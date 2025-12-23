@@ -745,6 +745,7 @@ async fn test_describe_table_with_database() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test describing the table
@@ -863,6 +864,7 @@ async fn test_describe_view_with_database() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test describing the view
@@ -984,6 +986,7 @@ async fn test_describe_index_with_database() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test describing the index
@@ -1108,6 +1111,7 @@ async fn test_describe_sequence_with_database() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test describing the sequence
@@ -1227,6 +1231,7 @@ async fn test_describe_function_with_database() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Test describing the function
@@ -1391,6 +1396,7 @@ async fn test_multiple_statements() {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: false,
+			from_snippet_or_include: false,
 		};
 
 		// Execute multiple statements: insert two rows and select them
@@ -1465,6 +1471,7 @@ async fn test_exit_blocked_with_active_transaction() {
 		expanded_mode: false,
 		write_mode: true,
 		redact_mode: false,
+		from_snippet_or_include: false,
 		ots: Some("test".to_string()),
 		output_file: None,
 		vars: Default::default(),
@@ -1500,6 +1507,7 @@ async fn test_exit_blocked_with_active_transaction() {
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
 		redact_mode: false,
+		from_snippet_or_include: false,
 	};
 
 	// Attempt to exit - should be blocked
@@ -1559,6 +1567,7 @@ async fn test_exit_allowed_after_commit() {
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: state,
 		result_store: crate::result_store::ResultStore::new(),
+		from_snippet_or_include: false,
 	}));
 
 	// Create a dummy audit and readline editor
@@ -1588,6 +1597,7 @@ async fn test_exit_allowed_after_commit() {
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
 		redact_mode: false,
+		from_snippet_or_include: false,
 	};
 
 	// Attempt to exit - should be allowed
@@ -1628,6 +1638,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: TransactionState::None,
 		result_store: crate::result_store::ResultStore::new(),
+		from_snippet_or_include: false,
 	}));
 
 	// Create a dummy audit and readline editor
@@ -1657,6 +1668,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 		pool: &pool,
 		schema_cache_manager: &schema_cache_manager,
 		redact_mode: false,
+		from_snippet_or_include: false,
 	};
 
 	// Attempt to exit - should be allowed (not in write mode)

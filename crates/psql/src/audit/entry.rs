@@ -25,6 +25,13 @@ pub struct AuditEntry {
 	/// Instance ID (working database UUID) for tracking which instance recorded this entry
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub instance_id: Option<Uuid>,
+	/// Whether this entry should be loaded into shell history (defaults to true if absent)
+	#[serde(default = "default_recall")]
+	pub recall: bool,
+}
+
+fn default_recall() -> bool {
+	true
 }
 
 /// Audit entry with timestamp for JSON export
@@ -71,6 +78,13 @@ impl super::Audit {
 
 	/// Add a new entry to the audit
 	pub fn add_entry(&mut self, query: String) -> Result<()> {
+		let state = self.repl_state.lock().unwrap();
+		let recall = !state.from_snippet_or_include;
+		drop(state);
+		self.add_entry_with_recall(query, recall)
+	}
+
+	pub fn add_entry_with_recall(&mut self, query: String, recall: bool) -> Result<()> {
 		trace!("adding audit entry");
 		let tailscale = super::tailscale::get_active_peers()
 			.ok()
@@ -86,6 +100,7 @@ impl super::Audit {
 			tailscale,
 			ots: state.ots.clone(),
 			instance_id,
+			recall,
 		};
 		drop(state);
 
