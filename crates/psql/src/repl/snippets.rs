@@ -15,15 +15,89 @@ pub async fn handle_run_snippet(
 	let file_path = {
 		let state = ctx.repl_state.lock().unwrap();
 		match state.snippets.path(&name) {
-			Ok(path) => path,
-			Err(err) => {
-				tracing::error!("Failed to find snippet '{name}': {err}");
-				return ControlFlow::Continue(());
-			}
+			Ok(path) => Some(path),
+			Err(_) => None,
 		}
 	};
 
-	handle_include(ctx, &file_path, vars).await
+	if let Some(file_path) = file_path {
+		return handle_include(ctx, &file_path, vars).await;
+	}
+
+	let lookup_content = {
+		let state = ctx.repl_state.lock().unwrap();
+		if let Some(lookup_provider) = &state.config.snippet_lookup {
+			lookup_provider.lookup(&name)
+		} else {
+			None
+		}
+	};
+
+	match lookup_content {
+		Some(content) => {
+			use crate::input::{ReplAction, handle_input};
+
+			let history = ctx.rl.history_mut();
+			if let Err(e) = history.add_entry(content.clone()) {
+				tracing::debug!("failed to add to history: {e}");
+			}
+
+			let saved_vars: Vec<(String, Option<String>)> = {
+				let mut state = ctx.repl_state.lock().unwrap();
+				let saved: Vec<(String, Option<String>)> = vars
+					.iter()
+					.map(|(name, _)| (name.clone(), state.vars.get(name).cloned()))
+					.collect();
+
+				for (name, value) in &vars {
+					state.vars.insert(name.clone(), value.clone());
+				}
+				saved
+			};
+
+			let (remaining, mut actions) =
+				handle_input("", &content, &ctx.repl_state.lock().unwrap());
+
+			if !remaining.trim().is_empty() {
+				let completed = format!("{};", remaining);
+				let (_, new_actions) =
+					handle_input("", &completed, &ctx.repl_state.lock().unwrap());
+				actions.extend(new_actions);
+			}
+
+			let mut result = ControlFlow::Continue(());
+			for action in actions {
+				if let ReplAction::Execute {
+					input,
+					sql,
+					modifiers,
+				} = action
+				{
+					use super::execute::handle_execute;
+					result = handle_execute(ctx, input, sql, modifiers).await;
+					if result.is_break() {
+						break;
+					}
+				}
+			}
+
+			{
+				let mut state = ctx.repl_state.lock().unwrap();
+				for (name, original_value) in saved_vars {
+					match original_value {
+						Some(value) => state.vars.insert(name, value),
+						None => state.vars.remove(&name),
+					};
+				}
+			}
+
+			result
+		}
+		None => {
+			tracing::error!("Failed to find snippet '{name}'");
+			ControlFlow::Continue(())
+		}
+	}
 }
 
 pub async fn handle_snippet_save(

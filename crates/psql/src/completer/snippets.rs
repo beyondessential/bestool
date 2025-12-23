@@ -45,19 +45,19 @@ impl super::SqlCompleter {
 			let partial_name = text_before_cursor[cmd_start..].trim();
 
 			let mut completions = Vec::new();
+			let mut seen_names = std::collections::HashSet::new();
 
-			// Try to get snippet names from all snippet directories
+			// Try to get snippet names from all snippet directories (local snippets take precedence)
 			for dir in &repl_state.snippets.dirs {
 				if let Ok(entries) = std::fs::read_dir(dir) {
 					for entry in entries.flatten() {
 						if let Ok(file_name) = entry.file_name().into_string() {
-							// Look for .sql files
 							if file_name.ends_with(".sql") {
 								let snippet_name = &file_name[..file_name.len() - 4];
 								if snippet_name
 									.to_lowercase()
 									.starts_with(&partial_name.to_lowercase())
-									&& !completions.iter().any(|c: &Pair| c.display == snippet_name)
+									&& seen_names.insert(snippet_name.to_string())
 								{
 									completions.push(Pair {
 										display: snippet_name.to_string(),
@@ -66,6 +66,22 @@ impl super::SqlCompleter {
 								}
 							}
 						}
+					}
+				}
+			}
+
+			// Add completions from custom lookup if available
+			if let Some(lookup_provider) = &repl_state.config.snippet_lookup {
+				for name in lookup_provider.list_names() {
+					if name
+						.to_lowercase()
+						.starts_with(&partial_name.to_lowercase())
+						&& seen_names.insert(name.clone())
+					{
+						completions.push(Pair {
+							display: name.clone(),
+							replacement: name,
+						});
 					}
 				}
 			}

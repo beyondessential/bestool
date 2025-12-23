@@ -1,8 +1,17 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{column_extractor::ColumnRef, theme::Theme};
 
-#[derive(Clone, Debug)]
+pub trait SnippetLookupProvider: Send + Sync {
+	fn lookup(&self, name: &str) -> Option<String>;
+	fn list_names(&self) -> Vec<String> {
+		Vec::new()
+	}
+}
+
+pub type SnippetLookup = Arc<dyn SnippetLookupProvider>;
+
+#[derive(Clone)]
 pub struct Config {
 	/// Syntax highlighting theme
 	pub theme: Theme,
@@ -21,6 +30,26 @@ pub struct Config {
 
 	/// Set of columns to redact
 	pub redactions: HashSet<ColumnRef>,
+
+	/// Optional provider for custom snippet lookup
+	pub snippet_lookup: Option<SnippetLookup>,
+}
+
+impl std::fmt::Debug for Config {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Config")
+			.field("theme", &self.theme)
+			.field("audit_path", &self.audit_path)
+			.field("write", &self.write)
+			.field("use_colours", &self.use_colours)
+			.field("redact_mode", &self.redact_mode)
+			.field("redactions", &self.redactions)
+			.field(
+				"snippet_lookup",
+				&self.snippet_lookup.as_ref().map(|_| "<closure>"),
+			)
+			.finish()
+	}
 }
 
 impl Default for Config {
@@ -32,6 +61,7 @@ impl Default for Config {
 			use_colours: true,
 			redact_mode: false,
 			redactions: HashSet::new(),
+			snippet_lookup: None,
 		}
 	}
 }

@@ -82,6 +82,28 @@ impl Snippets {
 		Err(miette!("Snippet '{name}' not found"))
 	}
 
+	pub fn lookup_with_fallback(
+		&self,
+		name: &str,
+		lookup: Option<&crate::config::SnippetLookup>,
+	) -> Result<String> {
+		for dir in &self.dirs {
+			if let Some(path) = Self::try_path(dir, name) {
+				if let Ok(content) = std::fs::read_to_string(&path) {
+					return Ok(content);
+				}
+			}
+		}
+
+		if let Some(lookup_provider) = lookup {
+			if let Some(content) = lookup_provider.lookup(name) {
+				return Ok(content);
+			}
+		}
+
+		Err(miette!("Snippet '{name}' not found"))
+	}
+
 	pub async fn save(&self, name: &str, content: &str) -> Result<PathBuf> {
 		let savedir = self.savedir.as_ref().ok_or(miette!("No savedir"))?;
 		tokio::fs::create_dir_all(savedir).await.into_diagnostic()?;
