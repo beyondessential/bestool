@@ -71,7 +71,7 @@ impl DownloadSource {
 			.lookup_ip(match self {
 				Self::Tools => "bestool-proxy-tools",
 				Self::Servers => "bestool-proxy-servers",
-				Self::Meta => "tamanu-meta-prod",
+				Self::Meta => "tamanu-meta-prod-disabled",
 			})
 			.await
 			.ok()
