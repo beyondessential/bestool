@@ -7,6 +7,10 @@ pub trait SnippetLookupProvider: Send + Sync {
 	fn list_names(&self) -> Vec<String> {
 		Vec::new()
 	}
+	fn get_description(&self, name: &str) -> Option<String> {
+		let _ = name;
+		None
+	}
 }
 
 pub type SnippetLookup = Arc<dyn SnippetLookupProvider>;

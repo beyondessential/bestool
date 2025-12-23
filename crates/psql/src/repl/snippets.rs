@@ -137,3 +137,54 @@ pub async fn handle_snippet_save(
 
 	ControlFlow::Continue(())
 }
+
+pub async fn handle_snippet_list(ctx: &ReplContext<'_>) -> ControlFlow<()> {
+	use comfy_table::{Row, Table};
+
+	let state = ctx.repl_state.lock().unwrap();
+
+	let mut all_snippets = std::collections::BTreeMap::new();
+
+	// Add snippets from filesystem (highest priority)
+	for dir in &state.snippets.dirs {
+		if let Ok(entries) = std::fs::read_dir(dir) {
+			for entry in entries.flatten() {
+				if let Ok(file_name) = entry.file_name().into_string() {
+					if file_name.ends_with(".sql") {
+						let snippet_name = &file_name[..file_name.len() - 4];
+						all_snippets
+							.entry(snippet_name.to_string())
+							.or_insert(("local".to_string(), None));
+					}
+				}
+			}
+		}
+	}
+
+	// Add snippets from lookup provider (if not already present)
+	if let Some(lookup_provider) = &state.config.snippet_lookup {
+		for name in lookup_provider.list_names() {
+			if !all_snippets.contains_key(&name) {
+				let description = lookup_provider.get_description(&name);
+				all_snippets.insert(name, ("remote".to_string(), description));
+			}
+		}
+	}
+
+	if all_snippets.is_empty() {
+		println!("No snippets available");
+	} else {
+		let mut table = Table::new();
+		table.load_preset(comfy_table::presets::NOTHING);
+		table.set_header(Row::from(vec!["Name", "Source", "Description"]));
+
+		for (name, (source, description)) in all_snippets {
+			let desc = description.unwrap_or_else(String::new);
+			table.add_row(Row::from(vec![name, source, desc]));
+		}
+
+		println!("{table}");
+	}
+
+	ControlFlow::Continue(())
+}

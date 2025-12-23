@@ -41,6 +41,11 @@ pub fn parse(
 					name: name.to_string(),
 				}
 			}
+			("list", None) => {
+				space0.parse_next(input)?;
+				eof.parse_next(input)?;
+				super::Metacommand::SnippetList
+			}
 			_ => {
 				space0.parse_next(input)?;
 				eof.parse_next(input)?;
@@ -112,5 +117,11 @@ mod tests {
 		} else {
 			panic!("Expected SnippetRun");
 		}
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_list() {
+		let cmd = parse_metacommand(r"\snip list").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::SnippetList)));
 	}
 }

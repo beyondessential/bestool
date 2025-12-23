@@ -12,7 +12,7 @@ impl super::SqlCompleter {
 				let mut completions = Vec::new();
 
 				// Offer snip subcommands
-				for cmd in &["run", "save"] {
+				for cmd in &["list", "run", "save"] {
 					if cmd.starts_with(&partial_cmd.to_lowercase()) {
 						completions.push(Pair {
 							display: cmd.to_string(),

@@ -80,6 +80,7 @@ impl ReplAction {
 			ReplAction::SnippetSave { name } => {
 				snippets::handle_snippet_save(ctx, name, line).await
 			}
+			ReplAction::SnippetList => snippets::handle_snippet_list(ctx).await,
 			ReplAction::List {
 				item,
 				pattern,

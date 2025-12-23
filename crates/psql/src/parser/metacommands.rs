@@ -60,6 +60,7 @@ pub(crate) enum Metacommand {
 	SnippetSave {
 		name: String,
 	},
+	SnippetList,
 	List {
 		item: list::ListItem,
 		pattern: String,

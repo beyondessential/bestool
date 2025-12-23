@@ -6115,9 +6115,9 @@ dependencies = [
 
 [[package]]
 name = "terminal-colorsaurus"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8909f33134da34b43f69145e748790de650a6abd84faf1f82e773444dd293ec8"
+checksum = "3d857562778b687a4e918ccff8c329ff821610d3589fe011821b89f9d40688cc"
 dependencies = [
  "cfg-if",
  "libc",
