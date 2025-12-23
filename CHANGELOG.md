@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.6](https://github.com/beyondessential/bestool/compare/v1.3.5..1.3.6) - 2025-12-18
+## [1.3.7](https://github.com/beyondessential/bestool/compare/v1.3.6..1.3.7) - 2025-12-23
+
+
+- **deps:** Update transitives and zip to 7 - ([adea2de](https://github.com/beyondessential/bestool/commit/adea2de038c89e1fe4bfb0ce0a4a0ce707302dc0))
+
+
+- **fix(bestool):** Disable meta server tailscale alt for now - ([792cf75](https://github.com/beyondessential/bestool/commit/792cf755fa1a33f7f44610c771e751ebea252fb2))
+
+- **feat(psql):** Load snippets from meta server - ([91049f7](https://github.com/beyondessential/bestool/commit/91049f7ae049449db6736b73bf6a8f3814bd859b))
+---
+## [1.3.6](https://github.com/beyondessential/bestool/compare/v1.3.5..v1.3.6) - 2025-12-18
 
 
 - **deps:** Remove winapi - ([db83a96](https://github.com/beyondessential/bestool/commit/db83a96b1ca40e12404f2455ebd0d094893bdf94))
