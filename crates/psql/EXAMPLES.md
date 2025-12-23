@@ -156,6 +156,10 @@ database=> \run fhir_settings
 -- "smuggle" a query past the log, but your history isn't polluted either.
 ```
 
+You can use `\snip edit <name>` to load the contents of a snippet in the prompt,
+as if you had typed it in. You can then edit and run the query as normal, and
+subsequently you can save the edit as usual.
+
 ## Results
 
 Have you ever done a query and then immediately after that, run it again

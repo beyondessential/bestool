@@ -1,17 +1,12 @@
 use std::ops::ControlFlow;
 
 use rustyline::history::History;
+use tokio::fs;
 use tracing::debug;
 
 use super::state::ReplContext;
 
-pub async fn handle_run_snippet(
-	ctx: &mut ReplContext<'_>,
-	name: String,
-	vars: Vec<(String, String)>,
-) -> ControlFlow<()> {
-	use super::include::handle_include;
-
+pub async fn get_snippet(ctx: &mut ReplContext<'_>, name: &str) -> Option<String> {
 	let file_path = {
 		let state = ctx.repl_state.lock().unwrap();
 		match state.snippets.path(&name) {
@@ -21,19 +16,29 @@ pub async fn handle_run_snippet(
 	};
 
 	if let Some(file_path) = file_path {
-		return handle_include(ctx, &file_path, vars).await;
-	}
-
-	let lookup_content = {
+		match fs::read_to_string(&file_path).await {
+			Ok(content) => Some(content.trim().into()),
+			Err(e) => {
+				tracing::error!("Failed to read file '{file_path:?}': {e}");
+				None
+			}
+		}
+	} else {
 		let state = ctx.repl_state.lock().unwrap();
 		if let Some(lookup_provider) = &state.config.snippet_lookup {
 			lookup_provider.lookup(&name)
 		} else {
 			None
 		}
-	};
+	}
+}
 
-	match lookup_content {
+pub async fn handle_run_snippet(
+	ctx: &mut ReplContext<'_>,
+	name: String,
+	vars: Vec<(String, String)>,
+) -> ControlFlow<()> {
+	match get_snippet(ctx, &name).await {
 		Some(content) => {
 			use crate::input::{ReplAction, handle_input};
 
@@ -183,5 +188,16 @@ pub async fn handle_snippet_list(ctx: &ReplContext<'_>) -> ControlFlow<()> {
 		println!("{table}");
 	}
 
+	ControlFlow::Continue(())
+}
+
+pub async fn handle_snippet_edit(ctx: &mut ReplContext<'_>, name: String) -> ControlFlow<()> {
+	if let Some(content) = get_snippet(ctx, &name).await {
+		let mut state = ctx.repl_state.lock().unwrap();
+		state.initial_content = Some(content);
+		return ControlFlow::Continue(());
+	}
+
+	println!("Snippet '{name}' not found");
 	ControlFlow::Continue(())
 }

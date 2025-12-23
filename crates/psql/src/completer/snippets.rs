@@ -12,7 +12,7 @@ impl super::SqlCompleter {
 				let mut completions = Vec::new();
 
 				// Offer snip subcommands
-				for cmd in &["list", "run", "save"] {
+				for cmd in &["list", "run", "save", "edit"] {
 					if cmd.starts_with(&partial_cmd.to_lowercase()) {
 						completions.push(Pair {
 							display: cmd.to_string(),
@@ -29,7 +29,8 @@ impl super::SqlCompleter {
 
 		// Check if we're completing snippet names after \snip run or \snip save
 		if (text_before_cursor.trim_start().starts_with(r"\snip run ")
-			|| text_before_cursor.trim_start().starts_with(r"\snip save "))
+			|| text_before_cursor.trim_start().starts_with(r"\snip save ")
+			|| text_before_cursor.trim_start().starts_with(r"\snip edit "))
 			&& let Some(repl_state_arc) = &self.repl_state
 		{
 			let repl_state = repl_state_arc.lock().unwrap();
@@ -37,6 +38,8 @@ impl super::SqlCompleter {
 			let cmd_start = if let Some(pos) = text_before_cursor.find(r"\snip run ") {
 				pos + 10
 			} else if let Some(pos) = text_before_cursor.find(r"\snip save ") {
+				pos + 11
+			} else if let Some(pos) = text_before_cursor.find(r"\snip edit ") {
 				pos + 11
 			} else {
 				return Some(Vec::new());
@@ -150,6 +153,7 @@ mod tests {
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
 			from_snippet_or_include: false,
+			initial_content: None,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -191,6 +195,7 @@ mod tests {
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
 			from_snippet_or_include: false,
+			initial_content: None,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -230,6 +235,7 @@ mod tests {
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
 			from_snippet_or_include: false,
+			initial_content: None,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);
@@ -272,6 +278,7 @@ mod tests {
 			transaction_state: crate::repl::TransactionState::None,
 			result_store: crate::result_store::ResultStore::new(),
 			from_snippet_or_include: false,
+			initial_content: None,
 		}));
 
 		let mut completer = SqlCompleter::new(Theme::Dark);

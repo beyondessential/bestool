@@ -47,6 +47,7 @@ mod tests;
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
+		// Add to history, except for SnippetSave
 		if !matches!(self, ReplAction::SnippetSave { .. }) {
 			let history = ctx.rl.history_mut();
 			if let Err(e) = history.add_entry(line.into()) {
@@ -80,6 +81,7 @@ impl ReplAction {
 			ReplAction::SnippetSave { name } => {
 				snippets::handle_snippet_save(ctx, name, line).await
 			}
+			ReplAction::SnippetEdit { name } => snippets::handle_snippet_edit(ctx, name).await,
 			ReplAction::SnippetList => snippets::handle_snippet_list(ctx).await,
 			ReplAction::List {
 				item,
@@ -177,6 +179,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		snippets: Snippets::new(),
 		transaction_state: TransactionState::None,
 		result_store: ResultStore::new(),
+		initial_content: None,
 	};
 
 	let repl_state = Arc::new(Mutex::new(repl_state));
@@ -223,7 +226,6 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 			pool: &pool,
 			schema_cache_manager: &schema_cache_manager,
 			redact_mode: config.redact_mode,
-			from_snippet_or_include: false,
 		};
 
 		if ReplAction::ToggleWriteMode
@@ -240,11 +242,12 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 	loop {
 		let transaction_state = TransactionState::check(&monitor_client, backend_pid).await;
 
-		// Update transaction state in ReplState so the highlighter can access it
-		{
+		let initial_content = {
 			let mut state = repl_state.lock().unwrap();
+			// Update transaction state in ReplState so the highlighter can access it
 			state.transaction_state = transaction_state;
-		}
+			state.initial_content.take()
+		};
 
 		let prompt = prompt::build_prompt(
 			&database_name,
@@ -253,7 +256,12 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 			transaction_state,
 		);
 
-		let readline = rl.readline(&prompt);
+		let readline = if let Some(initial) = initial_content {
+			rl.readline_with_initial(&prompt, (&initial, ""))
+		} else {
+			rl.readline(&prompt)
+		};
+
 		match readline {
 			Ok(line) => {
 				let line = line.trim();
@@ -275,7 +283,6 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
 					redact_mode: repl_state.lock().unwrap().redact_mode,
-					from_snippet_or_include: false,
 				};
 
 				// Handle all actions
@@ -315,7 +322,6 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					pool: &pool,
 					schema_cache_manager: &schema_cache_manager,
 					redact_mode: repl_state.lock().unwrap().redact_mode,
-					from_snippet_or_include: false,
 				};
 
 				if exit::handle_exit(&mut ctx).await.is_break() {

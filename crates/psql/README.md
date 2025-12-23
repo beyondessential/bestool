@@ -55,6 +55,7 @@ All commands and some of the SQL has extensive tab completion, give it a try!
 | `\snip run <name> [var=val...]` | Run a saved snippet |
 | `\snip save <name>` | Save the preceding command as a snippet |
 | `\snip list` | Show the list of available snippets |
+| `\snip edit <name>` | Load the snippet into the edit buffer without running it |
 | `\set <name> <value>` | Set a variable |
 | `\unset <name>` | Unset a variable |
 | `\get <name>` | Print a variable value |

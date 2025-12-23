@@ -50,6 +50,9 @@ pub(crate) enum ReplAction {
 	SnippetSave {
 		name: String,
 	},
+	SnippetEdit {
+		name: String,
+	},
 	SnippetList,
 	List {
 		item: crate::parser::ListItem,
