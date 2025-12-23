@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.3.7](https://github.com/beyondessential/bestool/compare/v1.3.6..1.3.7) - 2025-12-23
+## [1.3.8](https://github.com/beyondessential/bestool/compare/v1.3.7..1.3.8) - 2025-12-23
+
+
+
+
+- **feat(psql):** Add \snip list - ([8700d35](https://github.com/beyondessential/bestool/commit/8700d355d40ef91fb75c6901da5d8c45aba85f91))
+- **tweak(psql):** Cache snippets locally - ([938ea1c](https://github.com/beyondessential/bestool/commit/938ea1cd7816298a7e1dc448c54745e41e146332))
+---
+## [1.3.7](https://github.com/beyondessential/bestool/compare/v1.3.6..v1.3.7) - 2025-12-23
 
 
 - **deps:** Update transitives and zip to 7 - ([adea2de](https://github.com/beyondessential/bestool/commit/adea2de038c89e1fe4bfb0ce0a4a0ce707302dc0))
