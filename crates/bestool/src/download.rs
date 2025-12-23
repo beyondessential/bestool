@@ -13,6 +13,27 @@ use hickory_resolver::{
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, info, instrument};
 
+pub async fn reqwest_client() -> Result<reqwest::Client> {
+	let mut builder = reqwest::Client::builder();
+	for source in [
+		DownloadSource::Tools,
+		DownloadSource::Servers,
+		DownloadSource::Meta,
+	] {
+		let addrs = source.source_alternatives().await;
+		if !addrs.is_empty() {
+			debug!(
+				?source,
+				?addrs,
+				"using alternative addresses for a download source"
+			);
+			builder = builder.resolve_to_addrs(&source.domain(), &addrs);
+		}
+	}
+
+	builder.build().into_diagnostic()
+}
+
 pub async fn client() -> Result<Client> {
 	let mut builder = Client::default_builder(crate::APP_NAME, None, &mut iter::empty());
 	for source in [

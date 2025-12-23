@@ -1,15 +1,100 @@
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{collections::{BTreeMap, HashSet}, path::PathBuf, sync::Arc, time::Duration};
 
 use bestool_psql::column_extractor::ColumnRef;
+use bestool_psql::SnippetLookupProvider;
 use clap::{Parser, ValueEnum};
 use miette::{IntoDiagnostic as _, Result, WrapErr, bail};
 use serde_json::Value;
-use tokio::{fs, time::timeout};
+use tokio::{fs, sync::RwLock, time::timeout};
 use tracing::{debug, instrument, warn};
 
 use crate::actions::Context;
+use crate::download::{DownloadSource, reqwest_client};
 
 use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
+
+/// Asynchronous snippet provider that fetches snippets from an API.
+///
+/// Snippets are loaded asynchronously and cached. Until they're loaded,
+/// lookups return None and the list is empty.
+struct AsyncSnippetProvider {
+	snippets: Arc<RwLock<Option<BTreeMap<String, String>>>>,
+}
+
+impl AsyncSnippetProvider {
+	fn new() -> Self {
+		Self {
+			snippets: Arc::new(RwLock::new(None)),
+		}
+	}
+
+	/// Start loading snippets asynchronously in the background.
+	fn load_snippets_background(self: Arc<Self>) {
+		tokio::spawn(async move {
+			if let Err(e) = self.load_snippets().await {
+				warn!("failed to load snippets: {e:#}");
+			}
+		});
+	}
+
+	async fn load_snippets(&self) -> Result<()> {
+		let url = DownloadSource::Meta
+			.host()
+			.join("bestool/snippets")
+			.into_diagnostic()?;
+
+		let response = reqwest_client()
+			.await?
+			.get(url.to_string())
+			.send()
+			.await
+			.into_diagnostic()?;
+
+		let snippets_json: serde_json::Value = response.json().await.into_diagnostic()?;
+
+		let mut snippets = BTreeMap::new();
+		if let Some(obj) = snippets_json.as_object() {
+			for (name, snippet_data) in obj {
+				if let Some(sql) = snippet_data.get("sql").and_then(|v| v.as_str()) {
+					snippets.insert(name.clone(), sql.to_string());
+				}
+			}
+		}
+
+		let mut cached = self.snippets.write().await;
+		*cached = Some(snippets);
+		debug!("loaded snippets cache");
+
+		Ok(())
+	}
+}
+
+impl Default for AsyncSnippetProvider {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl SnippetLookupProvider for AsyncSnippetProvider {
+	fn lookup(&self, name: &str) -> Option<String> {
+		if let Ok(snippets) = self.snippets.try_read() {
+			snippets.as_ref().and_then(|s| s.get(name).cloned())
+		} else {
+			None
+		}
+	}
+
+	fn list_names(&self) -> Vec<String> {
+		if let Ok(snippets) = self.snippets.try_read() {
+			snippets
+				.as_ref()
+				.map(|s| s.keys().cloned().collect())
+				.unwrap_or_default()
+		} else {
+			Vec::new()
+		}
+	}
+}
 
 /// SSL mode for PostgreSQL connections
 #[derive(Debug, Default, Clone, Copy, ValueEnum)]
@@ -195,6 +280,9 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		(false, HashSet::new())
 	};
 
+	let snippet_provider = Arc::new(AsyncSnippetProvider::new());
+	snippet_provider.clone().load_snippets_background();
+
 	bestool_psql::run(
 		pool,
 		#[expect(
@@ -208,6 +296,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			use_colours: ctx.args_top.use_colours,
 			redact_mode,
 			redactions,
+			snippet_lookup: Some(snippet_provider),
 			..Default::default()
 		},
 	)

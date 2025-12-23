@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 pub use audit::{ExportOptions, QueryOptions, export_audit_entries};
 pub use bestool_postgres::pool::PgPool;
-pub use config::Config;
+pub use config::{Config, SnippetLookupProvider};
 pub use signals::register_sigint_handler;
 pub use theme::Theme;
 
