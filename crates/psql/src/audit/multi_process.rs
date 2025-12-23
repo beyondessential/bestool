@@ -515,6 +515,7 @@ mod tests {
 	#[test]
 	fn test_find_orphan_databases() {
 		let temp_dir = tempfile::tempdir().unwrap();
+		#[cfg(unix)]
 		let main_path = temp_dir.path().join("audit-main.redb");
 
 		// Create an explicitly orphaned database

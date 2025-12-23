@@ -170,6 +170,7 @@ mod tests {
 	use super::*;
 
 	#[test]
+	#[cfg(unix)]
 	fn test_extract_host_from_url_with_tcp_host() {
 		let url = "postgresql://user:pass@localhost:5432/dbname";
 		let host = extract_host_from_url(url);
@@ -177,6 +178,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(unix)]
 	fn test_extract_host_from_url_with_unix_socket() {
 		// Unix socket paths need to be percent-encoded in URLs
 		let url = "postgresql://user:pass@%2Fvar%2Frun%2Fpostgresql:5432/dbname";
@@ -185,6 +187,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(unix)]
 	fn test_extract_host_from_url_with_encoded_path() {
 		let url = "postgresql://user:pass@%2Fvar%2Frun%2Fpostgresql/dbname";
 		let host = extract_host_from_url(url);
@@ -192,6 +195,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(unix)]
 	fn test_extract_host_from_url_no_credentials() {
 		let url = "postgresql://localhost/dbname";
 		let host = extract_host_from_url(url);
@@ -199,6 +203,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(unix)]
 	fn test_extract_host_from_url_with_port() {
 		let url = "postgresql://localhost:5433/dbname";
 		let host = extract_host_from_url(url);
