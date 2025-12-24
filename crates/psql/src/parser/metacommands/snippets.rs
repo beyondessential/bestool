@@ -29,6 +29,8 @@ pub fn parse(
 			("run", Some(name)) => {
 				// Parse optional variable arguments
 				let vars = super::vars::parse_variable_args(input)?;
+				space0.parse_next(input)?;
+				eof.parse_next(input)?;
 				super::Metacommand::SnippetRun {
 					name: name.to_string(),
 					vars,
@@ -136,5 +138,13 @@ mod tests {
 	fn test_parse_metacommand_snip_edit() {
 		let cmd = parse_metacommand(r"\snip edit mysnippet").unwrap();
 		assert!(matches!(cmd, Some(Metacommand::SnippetEdit { name }) if name == "mysnippet"));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_run_with_gx() {
+		let result = parse_metacommand(r"\snip run foo \gx");
+		// Before the fix this would panic; after the fix it should fail gracefully
+		// Either returning None or an error is acceptable, as long as it doesn't crash
+		let _ = result;
 	}
 }

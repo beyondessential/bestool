@@ -113,20 +113,20 @@ pub fn parse_variable_args(
 		}
 
 		// Try to parse name=value
-		let start_pos = input.len();
+		let saved_input = *input;
 		let name_part: &str =
 			take_while(1.., |c: char| c != '=' && !c.is_whitespace()).parse_next(input)?;
 
 		if name_part.is_empty() {
 			// Not a variable assignment, stop parsing
-			*input = &input[start_pos..];
+			*input = saved_input;
 			break;
 		}
 
 		// Check for =
 		if opt(literal('=')).parse_next(input)?.is_none() {
 			// Not a variable assignment, rewind
-			*input = &input[start_pos..];
+			*input = saved_input;
 			break;
 		}
 
@@ -136,8 +136,6 @@ pub fn parse_variable_args(
 		vars.push((name_part.to_string(), value_part.to_string()));
 	}
 
-	space0.parse_next(input)?;
-	eof.parse_next(input)?;
 	Ok(vars)
 }
 
