@@ -38,6 +38,7 @@ pub fn handle_help() -> ControlFlow<()> {
 		"\\debug [cmd]",
 		"Debug commands (run \\debug for options)",
 	]);
+	metacmds.add_row(vec!["\\snip list", "Show all available snippets"]);
 	metacmds.add_row(vec![
 		"\\snip run <name> [var=val...]",
 		"Run a saved snippet",
@@ -46,7 +47,15 @@ pub fn handle_help() -> ControlFlow<()> {
 		"\\snip save <name>",
 		"Save the preceding command as a snippet",
 	]);
+	metacmds.add_row(vec![
+		"\\snip edit <name>",
+		"Load the snippet without running it",
+	]);
 	metacmds.add_row(vec!["\\set <name> <value>", "Set a variable"]);
+	metacmds.add_row(vec![
+		"\\default <name> <value>",
+		"Set a variable if not already set",
+	]);
 	metacmds.add_row(vec!["\\unset <name>", "Unset a variable"]);
 	metacmds.add_row(vec!["\\get <name>", "Get and print a variable value"]);
 	metacmds.add_row(vec![

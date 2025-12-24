@@ -38,6 +38,10 @@ pub(crate) enum ReplAction {
 		name: String,
 		value: String,
 	},
+	DefaultVar {
+		name: String,
+		value: String,
+	},
 	UnsetVar {
 		name: String,
 	},
@@ -269,8 +273,8 @@ mod tests {
 
 	#[test]
 	fn test_ctrl_d_exits() {
-		// Ctrl-D behavior is tested via ReadlineError::Eof in the main loop
-		// This is a documentation test showing the expected behavior
+		// Ctrl-D behaviour is tested via ReadlineError::Eof in the main loop
+		// This is a documentation test showing the expected behaviour
 		// Ctrl-D (EOF) should exit the REPL regardless of buffer state
 	}
 
@@ -484,7 +488,7 @@ mod tests {
 		assert_eq!(actions.len(), 0);
 		assert_eq!(remaining, incomplete_query);
 
-		// Now auto-complete by appending semicolon (simulating \i or \e behavior)
+		// Now auto-complete by appending semicolon (simulating \i or \e behaviour)
 		let completed = format!("{};", remaining);
 		let (remaining2, actions2) = handle_input("", &completed, &state);
 

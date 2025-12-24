@@ -57,6 +57,7 @@ All commands and some of the SQL has extensive tab completion, give it a try!
 | `\snip list` | Show the list of available snippets |
 | `\snip edit <name>` | Load the snippet into the edit buffer without running it |
 | `\set <name> <value>` | Set a variable |
+| `\default <name> <value>` | Set a variable if not already set |
 | `\unset <name>` | Unset a variable |
 | `\get <name>` | Print a variable value |
 | `\vars [pattern]` | List variables (optionally matching pattern) |
@@ -85,7 +86,7 @@ Look [in EXAMPLES.md](./EXAMPLES.md#database-exploration) for more.
 
 ### Query Modifiers
 
-Query modifiers are used after a query to modify its execution behavior.
+Query modifiers are used after a query to modify its execution behaviour.
 
 | Modifier | Description |
 |----------|-------------|
@@ -145,11 +146,23 @@ bestool-psql -W mydb
 -- Set a variable
 \set table_name users
 
+-- Set a variable with a default value (only if not already set)
+\default schema_name public
+
 -- Use in query
 SELECT * FROM ${table_name};
 
+-- Get a variable value
+\get table_name
+
 -- Escape variable syntax
 SELECT '${{table_name}}' as literal_text;
+
+-- Unset a variable
+\unset table_name
+
+-- List all variables
+\vars
 ```
 
 ### Snippets

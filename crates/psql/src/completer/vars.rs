@@ -4,7 +4,8 @@ impl super::SqlCompleter {
 	pub(super) fn complete_vars(&self, text_before_cursor: &str) -> Option<Vec<Pair>> {
 		if !(text_before_cursor.trim_start().starts_with(r"\get ")
 			|| text_before_cursor.trim_start().starts_with(r"\unset ")
-			|| text_before_cursor.trim_start().starts_with(r"\set "))
+			|| text_before_cursor.trim_start().starts_with(r"\set ")
+			|| text_before_cursor.trim_start().starts_with(r"\default "))
 		{
 			return None;
 		}
@@ -15,19 +16,22 @@ impl super::SqlCompleter {
 
 		let repl_state = repl_state_arc.lock().unwrap();
 
-		// For \set, only complete the variable name (first argument)
-		let is_set_command = text_before_cursor.trim_start().starts_with(r"\set ");
-		if is_set_command {
+		// For \set and \default, only complete the variable name (first argument)
+		let is_set_or_default = text_before_cursor.trim_start().starts_with(r"\set ")
+			|| text_before_cursor.trim_start().starts_with(r"\default ");
+		if is_set_or_default {
 			// Check if we're on the first or second argument
-			let after_set = if let Some(pos) = text_before_cursor.find(r"\set ") {
+			let after_cmd = if let Some(pos) = text_before_cursor.find(r"\set ") {
 				&text_before_cursor[pos + 5..]
+			} else if let Some(pos) = text_before_cursor.find(r"\default ") {
+				&text_before_cursor[pos + 9..]
 			} else {
 				return Some(Vec::new());
 			};
 
 			// Count spaces to determine which argument we're on
-			let space_count = after_set.chars().filter(|&c| c == ' ').count();
-			if space_count > 0 && !after_set.ends_with(' ') {
+			let space_count = after_cmd.chars().filter(|&c| c == ' ').count();
+			if space_count > 0 && !after_cmd.ends_with(' ') {
 				// We're on the second argument (value), don't complete
 				return Some(Vec::new());
 			}
@@ -39,6 +43,8 @@ impl super::SqlCompleter {
 			pos + 8
 		} else if let Some(pos) = text_before_cursor.find(r"\set ") {
 			pos + 5
+		} else if let Some(pos) = text_before_cursor.find(r"\default ") {
+			pos + 9
 		} else {
 			return Some(Vec::new());
 		};

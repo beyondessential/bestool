@@ -75,6 +75,7 @@ impl ReplAction {
 			ReplAction::Debug { what } => debug::handle_debug(ctx, what).await,
 			ReplAction::Help => help::handle_help(),
 			ReplAction::SetVar { name, value } => vars::handle_set_var(ctx, name, value),
+			ReplAction::DefaultVar { name, value } => vars::handle_default_var(ctx, name, value),
 			ReplAction::UnsetVar { name } => vars::handle_unset_var(ctx, name),
 			ReplAction::LookupVar { pattern } => vars::handle_lookup_var(ctx, pattern),
 			ReplAction::GetVar { name } => vars::handle_get_var(ctx, name),

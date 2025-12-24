@@ -29,6 +29,29 @@ pub fn parse_set(
 	})
 }
 
+pub fn parse_default(
+	input: &mut &str,
+) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
+	literal('\\').parse_next(input)?;
+	literal("default").parse_next(input)?;
+	space1.parse_next(input)?;
+	let rest_str = rest.parse_next(input)?;
+	let rest_trimmed = rest_str.trim();
+
+	// Split on first whitespace to get name and value
+	let parts: Vec<&str> = rest_trimmed
+		.splitn(2, |c: char| c.is_whitespace())
+		.collect();
+	if parts.len() != 2 || parts[0].is_empty() || parts[1].trim().is_empty() {
+		return Err(ErrMode::Cut(winnow::error::ContextError::default()));
+	}
+
+	Ok(super::Metacommand::DefaultVar {
+		name: parts[0].to_string(),
+		value: parts[1].trim().to_string(),
+	})
+}
+
 pub fn parse_unset(
 	input: &mut &str,
 ) -> winnow::error::Result<super::Metacommand, ErrMode<winnow::error::ContextError>> {
@@ -130,6 +153,42 @@ mod tests {
 			Some(Metacommand::SetVar {
 				name: "myvar".to_string(),
 				value: "myvalue".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_default_var() {
+		let result = parse_metacommand(r"\default myvar myvalue").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::DefaultVar {
+				name: "myvar".to_string(),
+				value: "myvalue".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_default_var_with_whitespace() {
+		let result = parse_metacommand(r"  \default  myvar  myvalue  ").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::DefaultVar {
+				name: "myvar".to_string(),
+				value: "myvalue".to_string(),
+			})
+		);
+	}
+
+	#[test]
+	fn test_parse_metacommand_default_var_multiword_value() {
+		let result = parse_metacommand(r"\default myvar this is a long value").unwrap();
+		assert_eq!(
+			result,
+			Some(Metacommand::DefaultVar {
+				name: "myvar".to_string(),
+				value: "this is a long value".to_string(),
 			})
 		);
 	}

@@ -58,6 +58,7 @@ pub const METACOMMAND: &[&str] = &[
 	r"\R",
 	r"\re",
 	r"\set",
+	r"\default",
 	r"\unset",
 	r"\vars",
 	r"\W",

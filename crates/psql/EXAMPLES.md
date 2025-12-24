@@ -369,6 +369,9 @@ nor variables that are set by the tool: it's all your content.
 -- Set a variable manually
 database=> \set my_var Hello
 
+-- Set a variable with a default value (only if not already set)
+database=> \default my_default Goodbye
+
 -- Print a variable
 database=> \get my_var
 Hello

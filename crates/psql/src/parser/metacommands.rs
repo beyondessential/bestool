@@ -44,6 +44,10 @@ pub(crate) enum Metacommand {
 		name: String,
 		value: String,
 	},
+	DefaultVar {
+		name: String,
+		value: String,
+	},
 	UnsetVar {
 		name: String,
 	},
@@ -102,6 +106,7 @@ pub(crate) fn parse_metacommand(input: &str) -> Result<Option<Metacommand>> {
 		help::parse,
 		snippets::parse,
 		vars::parse_set,
+		vars::parse_default,
 		vars::parse_unset,
 		vars::parse_lookup,
 		vars::parse_get,

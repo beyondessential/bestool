@@ -395,6 +395,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 		Metacommand::Debug { what } => ReplAction::Debug { what },
 		Metacommand::Help => ReplAction::Help,
 		Metacommand::SetVar { name, value } => ReplAction::SetVar { name, value },
+		Metacommand::DefaultVar { name, value } => ReplAction::DefaultVar { name, value },
 		Metacommand::UnsetVar { name } => ReplAction::UnsetVar { name },
 		Metacommand::LookupVar { pattern } => ReplAction::LookupVar { pattern },
 		Metacommand::GetVar { name } => ReplAction::GetVar { name },
