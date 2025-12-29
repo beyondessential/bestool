@@ -35,7 +35,7 @@ fraction = { version = "0.15", features = ["with-postgres-support"] }
 futures = { workspace = true }
 hex = "0.4.3"
 indexmap = { version = "2.12.0", features = ["serde"] }
-jiff = "0.2.15"
+jiff = "0.2.17"
 lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
 percent-encoding = "2.3.2"
@@ -46,12 +46,12 @@ reflink-copy = "0.1.20"
 rust_xlsxwriter = "0.92.0"
 rustyline = { version = "17.0.2", features = ["signal-hook"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.148"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
 sysinfo = "0.37.2"
 tempfile = "3.21.0"
-terminal-colorsaurus = "1.0.1"
+terminal-colorsaurus = "1.0.3"
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = { version = "0.7.15", features = ["with-jiff-0_2", "with-serde_json-1"] }
@@ -65,7 +65,7 @@ winnow = "0.7.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.178"
-signal-hook = "0.3.18"
+signal-hook = "0.4.1"
 
 [dev-dependencies]
 filetime = "0.2.26"
