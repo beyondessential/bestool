@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [1.4.0](https://github.com/beyondessential/bestool/compare/v1.3.9..1.4.0) - 2026-01-07
+
+
+- **deps:** Update turso and transitives - ([22dd1e5](https://github.com/beyondessential/bestool/commit/22dd1e5de1efddd3f9fcfe7710147705e7001a95))
+
+
+- **tweak(psql):** Add \snip refetch - ([bad3dcd](https://github.com/beyondessential/bestool/commit/bad3dcd4a14bcc4d3f0e7660f188a1d34f231a53))
+---
 ## [1.3.8](https://github.com/beyondessential/bestool/compare/v1.3.7..v1.3.8) - 2025-12-23
 
 
