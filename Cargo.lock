@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "age",
  "age-core",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "axum",
  "bestool-postgres",
