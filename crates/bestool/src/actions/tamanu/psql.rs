@@ -25,6 +25,7 @@ struct Snippet {
 ///
 /// Snippets are cached to disk. On startup, cached snippets are loaded immediately,
 /// then the remote API is fetched in the background to update the cache.
+#[derive(Clone)]
 struct AsyncSnippetProvider {
 	snippets: Arc<RwLock<Option<BTreeMap<String, Snippet>>>>,
 }
@@ -172,6 +173,18 @@ impl SnippetLookupProvider for AsyncSnippetProvider {
 		} else {
 			None
 		}
+	}
+
+	fn refresh(&self) {
+		let self_clone = self.clone();
+		tokio::spawn(async move {
+			if let Err(e) = self_clone.fetch_and_update_snippets().await {
+				warn!("failed to refresh snippets: {e:#}");
+			} else {
+				let count = self_clone.list_names().len();
+				info!(count, "snippets refreshed successfully");
+			}
+		});
 	}
 }
 

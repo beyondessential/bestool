@@ -386,6 +386,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 		Metacommand::SnippetSave { name } => ReplAction::SnippetSave { name },
 		Metacommand::SnippetEdit { name } => ReplAction::SnippetEdit { name },
 		Metacommand::SnippetList => ReplAction::SnippetList,
+		Metacommand::SnippetRefetch => ReplAction::SnippetRefetch,
 		Metacommand::Output {
 			file_path: Some(file_path),
 		} => ReplAction::SetOutputFile {

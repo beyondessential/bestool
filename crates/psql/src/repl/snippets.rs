@@ -201,3 +201,14 @@ pub async fn handle_snippet_edit(ctx: &mut ReplContext<'_>, name: String) -> Con
 	println!("Snippet '{name}' not found");
 	ControlFlow::Continue(())
 }
+
+pub async fn handle_snippet_refetch(ctx: &ReplContext<'_>) -> ControlFlow<()> {
+	let state = ctx.repl_state.lock().unwrap();
+	if let Some(lookup_provider) = &state.config.snippet_lookup {
+		lookup_provider.refresh();
+		println!("Snippet cache refreshed");
+	} else {
+		println!("No remote snippet provider configured");
+	}
+	ControlFlow::Continue(())
+}

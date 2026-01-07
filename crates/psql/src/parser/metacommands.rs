@@ -68,6 +68,7 @@ pub(crate) enum Metacommand {
 		name: String,
 	},
 	SnippetList,
+	SnippetRefetch,
 	List {
 		item: list::ListItem,
 		pattern: String,

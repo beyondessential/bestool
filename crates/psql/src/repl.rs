@@ -84,6 +84,7 @@ impl ReplAction {
 			}
 			ReplAction::SnippetEdit { name } => snippets::handle_snippet_edit(ctx, name).await,
 			ReplAction::SnippetList => snippets::handle_snippet_list(ctx).await,
+			ReplAction::SnippetRefetch => snippets::handle_snippet_refetch(ctx).await,
 			ReplAction::List {
 				item,
 				pattern,

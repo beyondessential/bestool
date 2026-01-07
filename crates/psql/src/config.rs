@@ -11,6 +11,9 @@ pub trait SnippetLookupProvider: Send + Sync {
 		let _ = name;
 		None
 	}
+	fn refresh(&self) {
+		// noop default implementation
+	}
 }
 
 pub type SnippetLookup = Arc<dyn SnippetLookupProvider>;

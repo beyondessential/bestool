@@ -55,6 +55,11 @@ pub fn parse(
 				eof.parse_next(input)?;
 				super::Metacommand::SnippetList
 			}
+			("refetch", None) => {
+				space0.parse_next(input)?;
+				eof.parse_next(input)?;
+				super::Metacommand::SnippetRefetch
+			}
 			_ => {
 				space0.parse_next(input)?;
 				eof.parse_next(input)?;
@@ -132,6 +137,12 @@ mod tests {
 	fn test_parse_metacommand_snip_list() {
 		let cmd = parse_metacommand(r"\snip list").unwrap();
 		assert!(matches!(cmd, Some(Metacommand::SnippetList)));
+	}
+
+	#[test]
+	fn test_parse_metacommand_snip_refetch() {
+		let cmd = parse_metacommand(r"\snip refetch").unwrap();
+		assert!(matches!(cmd, Some(Metacommand::SnippetRefetch)));
 	}
 
 	#[test]

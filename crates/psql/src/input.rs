@@ -58,6 +58,7 @@ pub(crate) enum ReplAction {
 		name: String,
 	},
 	SnippetList,
+	SnippetRefetch,
 	List {
 		item: crate::parser::ListItem,
 		pattern: String,

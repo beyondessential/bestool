@@ -10,7 +10,11 @@ pub fn handle_set_var(ctx: &mut ReplContext<'_>, name: String, value: String) ->
 	ControlFlow::Continue(())
 }
 
-pub fn handle_default_var(ctx: &mut ReplContext<'_>, name: String, value: String) -> ControlFlow<()> {
+pub fn handle_default_var(
+	ctx: &mut ReplContext<'_>,
+	name: String,
+	value: String,
+) -> ControlFlow<()> {
 	let mut state = ctx.repl_state.lock().unwrap();
 	state.vars.entry(name).or_insert(value);
 	ControlFlow::Continue(())
@@ -108,30 +112,41 @@ fn matches_pattern(text: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::{Arc, Mutex};
 	use crate::repl::state::ReplState;
+	use std::sync::{Arc, Mutex};
 
 	#[test]
 	fn test_default_sets_variable_when_not_exists() {
 		let state = Arc::new(Mutex::new(ReplState::new()));
 		let mut repl_state_ref = state.lock().unwrap();
-		
+
 		// Simulate the default handler behaviour
-		repl_state_ref.vars.entry("myvar".to_string()).or_insert("initial".to_string());
-		
-		assert_eq!(repl_state_ref.vars.get("myvar"), Some(&"initial".to_string()));
+		repl_state_ref
+			.vars
+			.entry("myvar".to_string())
+			.or_insert("initial".to_string());
+
+		assert_eq!(
+			repl_state_ref.vars.get("myvar"),
+			Some(&"initial".to_string())
+		);
 	}
 
 	#[test]
 	fn test_default_does_not_override_existing_variable() {
 		let mut repl_state = ReplState::new();
-		
+
 		// Set initial value
-		repl_state.vars.insert("myvar".to_string(), "original".to_string());
+		repl_state
+			.vars
+			.insert("myvar".to_string(), "original".to_string());
 		assert_eq!(repl_state.vars.get("myvar"), Some(&"original".to_string()));
 
 		// Try to default a different value
-		repl_state.vars.entry("myvar".to_string()).or_insert("new".to_string());
+		repl_state
+			.vars
+			.entry("myvar".to_string())
+			.or_insert("new".to_string());
 
 		// Should still be original
 		assert_eq!(repl_state.vars.get("myvar"), Some(&"original".to_string()));
@@ -142,11 +157,16 @@ mod tests {
 		let mut repl_state = ReplState::new();
 
 		// Set with default
-		repl_state.vars.entry("myvar".to_string()).or_insert("default".to_string());
+		repl_state
+			.vars
+			.entry("myvar".to_string())
+			.or_insert("default".to_string());
 		assert_eq!(repl_state.vars.get("myvar"), Some(&"default".to_string()));
 
 		// Override with set
-		repl_state.vars.insert("myvar".to_string(), "override".to_string());
+		repl_state
+			.vars
+			.insert("myvar".to_string(), "override".to_string());
 		assert_eq!(repl_state.vars.get("myvar"), Some(&"override".to_string()));
 	}
 
@@ -155,7 +175,9 @@ mod tests {
 		let mut repl_state = ReplState::new();
 
 		// Set a value
-		repl_state.vars.insert("myvar".to_string(), "initial".to_string());
+		repl_state
+			.vars
+			.insert("myvar".to_string(), "initial".to_string());
 		assert_eq!(repl_state.vars.get("myvar"), Some(&"initial".to_string()));
 
 		// Unset it
@@ -163,24 +185,41 @@ mod tests {
 		assert_eq!(repl_state.vars.get("myvar"), None);
 
 		// Default should now set it
-		repl_state.vars.entry("myvar".to_string()).or_insert("after_unset".to_string());
-		assert_eq!(repl_state.vars.get("myvar"), Some(&"after_unset".to_string()));
+		repl_state
+			.vars
+			.entry("myvar".to_string())
+			.or_insert("after_unset".to_string());
+		assert_eq!(
+			repl_state.vars.get("myvar"),
+			Some(&"after_unset".to_string())
+		);
 	}
 
 	#[test]
 	fn test_multiple_variables_independent() {
 		let mut repl_state = ReplState::new();
 
-		repl_state.vars.insert("var1".to_string(), "value1".to_string());
-		repl_state.vars.entry("var2".to_string()).or_insert("value2".to_string());
-		repl_state.vars.entry("var3".to_string()).or_insert("default3".to_string());
+		repl_state
+			.vars
+			.insert("var1".to_string(), "value1".to_string());
+		repl_state
+			.vars
+			.entry("var2".to_string())
+			.or_insert("value2".to_string());
+		repl_state
+			.vars
+			.entry("var3".to_string())
+			.or_insert("default3".to_string());
 
 		assert_eq!(repl_state.vars.get("var1"), Some(&"value1".to_string()));
 		assert_eq!(repl_state.vars.get("var2"), Some(&"value2".to_string()));
 		assert_eq!(repl_state.vars.get("var3"), Some(&"default3".to_string()));
 
 		// Trying to default var1 should not change it
-		repl_state.vars.entry("var1".to_string()).or_insert("new".to_string());
+		repl_state
+			.vars
+			.entry("var1".to_string())
+			.or_insert("new".to_string());
 		assert_eq!(repl_state.vars.get("var1"), Some(&"value1".to_string()));
 	}
 
@@ -188,7 +227,13 @@ mod tests {
 	fn test_default_with_whitespace_values() {
 		let mut repl_state = ReplState::new();
 
-		repl_state.vars.entry("var".to_string()).or_insert("value with spaces".to_string());
-		assert_eq!(repl_state.vars.get("var"), Some(&"value with spaces".to_string()));
+		repl_state
+			.vars
+			.entry("var".to_string())
+			.or_insert("value with spaces".to_string());
+		assert_eq!(
+			repl_state.vars.get("var"),
+			Some(&"value with spaces".to_string())
+		);
 	}
 }
