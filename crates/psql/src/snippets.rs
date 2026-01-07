@@ -88,17 +88,17 @@ impl Snippets {
 		lookup: Option<&crate::config::SnippetLookup>,
 	) -> Result<String> {
 		for dir in &self.dirs {
-			if let Some(path) = Self::try_path(dir, name) {
-				if let Ok(content) = std::fs::read_to_string(&path) {
-					return Ok(content);
-				}
+			if let Some(path) = Self::try_path(dir, name)
+				&& let Ok(content) = std::fs::read_to_string(&path)
+			{
+				return Ok(content);
 			}
 		}
 
-		if let Some(lookup_provider) = lookup {
-			if let Some(content) = lookup_provider.lookup(name) {
-				return Ok(content);
-			}
+		if let Some(lookup_provider) = lookup
+			&& let Some(content) = lookup_provider.lookup(name)
+		{
+			return Ok(content);
 		}
 
 		Err(miette!("Snippet '{name}' not found"))

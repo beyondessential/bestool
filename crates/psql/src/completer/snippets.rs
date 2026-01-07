@@ -54,19 +54,19 @@ impl super::SqlCompleter {
 			for dir in &repl_state.snippets.dirs {
 				if let Ok(entries) = std::fs::read_dir(dir) {
 					for entry in entries.flatten() {
-						if let Ok(file_name) = entry.file_name().into_string() {
-							if file_name.ends_with(".sql") {
-								let snippet_name = &file_name[..file_name.len() - 4];
-								if snippet_name
-									.to_lowercase()
-									.starts_with(&partial_name.to_lowercase())
-									&& seen_names.insert(snippet_name.to_string())
-								{
-									completions.push(Pair {
-										display: snippet_name.to_string(),
-										replacement: snippet_name.to_string(),
-									});
-								}
+						if let Ok(file_name) = entry.file_name().into_string()
+							&& file_name.ends_with(".sql")
+						{
+							let snippet_name = &file_name[..file_name.len() - 4];
+							if snippet_name
+								.to_lowercase()
+								.starts_with(&partial_name.to_lowercase())
+								&& seen_names.insert(snippet_name.to_string())
+							{
+								completions.push(Pair {
+									display: snippet_name.to_string(),
+									replacement: snippet_name.to_string(),
+								});
 							}
 						}
 					}

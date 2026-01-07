@@ -9,10 +9,7 @@ use super::state::ReplContext;
 pub async fn get_snippet(ctx: &mut ReplContext<'_>, name: &str) -> Option<String> {
 	let file_path = {
 		let state = ctx.repl_state.lock().unwrap();
-		match state.snippets.path(&name) {
-			Ok(path) => Some(path),
-			Err(_) => None,
-		}
+		state.snippets.path(name).ok()
 	};
 
 	if let Some(file_path) = file_path {
@@ -26,7 +23,7 @@ pub async fn get_snippet(ctx: &mut ReplContext<'_>, name: &str) -> Option<String
 	} else {
 		let state = ctx.repl_state.lock().unwrap();
 		if let Some(lookup_provider) = &state.config.snippet_lookup {
-			lookup_provider.lookup(&name)
+			lookup_provider.lookup(name)
 		} else {
 			None
 		}
@@ -151,13 +148,13 @@ pub async fn handle_snippet_list(ctx: &ReplContext<'_>) -> ControlFlow<()> {
 	for dir in &state.snippets.dirs {
 		if let Ok(entries) = std::fs::read_dir(dir) {
 			for entry in entries.flatten() {
-				if let Ok(file_name) = entry.file_name().into_string() {
-					if file_name.ends_with(".sql") {
-						let snippet_name = &file_name[..file_name.len() - 4];
-						all_snippets
-							.entry(snippet_name.to_string())
-							.or_insert(("local".to_string(), None));
-					}
+				if let Ok(file_name) = entry.file_name().into_string()
+					&& file_name.ends_with(".sql")
+				{
+					let snippet_name = &file_name[..file_name.len() - 4];
+					all_snippets
+						.entry(snippet_name.to_string())
+						.or_insert(("local".to_string(), None));
 				}
 			}
 		}
@@ -166,10 +163,10 @@ pub async fn handle_snippet_list(ctx: &ReplContext<'_>) -> ControlFlow<()> {
 	// Add snippets from lookup provider (if not already present)
 	if let Some(lookup_provider) = &state.config.snippet_lookup {
 		for name in lookup_provider.list_names() {
-			if !all_snippets.contains_key(&name) {
+			all_snippets.entry(name.clone()).or_insert_with(|| {
 				let description = lookup_provider.get_description(&name);
-				all_snippets.insert(name, ("remote".to_string(), description));
-			}
+				("remote".to_string(), description)
+			});
 		}
 	}
 

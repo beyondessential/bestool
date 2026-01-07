@@ -228,7 +228,7 @@ pub async fn run_with_shutdown_and_reload(
 	if let Some(mut external_reload_rx) = external_reload {
 		let reload_tx = reload_tx.clone();
 		tokio::spawn(async move {
-			while let Some(_) = external_reload_rx.recv().await {
+			while (external_reload_rx.recv().await).is_some() {
 				info!("received external reload signal");
 				let _ = reload_tx.send(()).await;
 			}
