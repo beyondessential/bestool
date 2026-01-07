@@ -131,7 +131,7 @@ pub async fn display(
 	// See also <https://github.com/tursodatabase/turso/issues/1906>
 	{
 		let io = Arc::new(PlatformIO::new().into_diagnostic()?);
-		let db = turso_core::Database::open_file(io, file_path, false, false).into_diagnostic()?;
+		let db = turso_core::Database::open_file(io, file_path).into_diagnostic()?;
 		let conn = db.connect().into_diagnostic()?;
 		conn.checkpoint(CheckpointMode::Truncate {
 			upper_bound_inclusive: None,
