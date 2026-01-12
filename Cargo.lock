@@ -617,7 +617,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
- "signal-hook",
+ "signal-hook 0.4.1",
  "supports-unicode",
  "syntect",
  "sysinfo",
@@ -800,15 +800,16 @@ dependencies = [
 
 [[package]]
 name = "blake3"
-version = "1.8.2"
+version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3888aaa89e4b2a40fca9848e400f6a658a5a3978de7be858e209cafa8be9a4a0"
+checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
 dependencies = [
  "arrayref",
  "arrayvec",
  "cc",
  "cfg-if",
  "constant_time_eq",
+ "cpufeatures",
 ]
 
 [[package]]
@@ -1150,9 +1151,9 @@ dependencies = [
 
 [[package]]
 name = "clap_complete"
-version = "4.5.64"
+version = "4.5.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c0da80818b2d95eca9aa614a30783e42f62bf5fdfee24e68cfb960b071ba8d1"
+checksum = "430b4dc2b5e3861848de79627b2bedc9f3342c7da5173a14eaa5d0f8dc18ae5d"
 dependencies = [
  "clap",
 ]
@@ -1278,9 +1279,9 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "constant_time_eq"
-version = "0.3.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "content_inspector"
@@ -1453,7 +1454,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rustix 1.1.3",
- "signal-hook",
+ "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
 ]
@@ -2007,21 +2008,20 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "facet"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c2b30c3706922ddbff8a8ebd9124d2e15b3943f00ad071b131312883d09d54"
+checksum = "ac3244604535a5d0a7c79403f3c6a6184b49be89be99f33c4e8177aebca0167b"
 dependencies = [
  "autocfg",
  "facet-core",
  "facet-macros",
- "static_assertions",
 ]
 
 [[package]]
 name = "facet-core"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbf01c609390d3289978288044d0d1ccaaabaa608f56d3aa0cc18381934d4220"
+checksum = "6337f704e6988f9cfee38f5b2c9001e84c498eb70cb420f6dc0e14ca7c1f85eb"
 dependencies = [
  "autocfg",
  "impls",
@@ -2029,9 +2029,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-parse"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "230c782499d4364c9b792aa3b259f9294325ef7afd81c35b74cf278a9070c621"
+checksum = "65b6c80c8dd3925eb08d246ffa6c7c9ccb2f1bc2a9dbe0cccea6c33a0f62cf66"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -2040,9 +2040,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-types"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "319965f8fb0fc0c683f3316db442bd80d93112affec94df4146a8c6deb33f415"
+checksum = "15c6cacc78f28f5508765bc9625859ca34551bb62e3b9f9e172d325b13490b77"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2051,18 +2051,18 @@ dependencies = [
 
 [[package]]
 name = "facet-macros"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ceb9ace94d4d9a01f710bf9094e6432be4bc2ce0323911ba3ecf9afa270493a"
+checksum = "26a4aed1abc3de7cccbf7a162ae64b4aa3d3d1f0a5136c140f83c87b934a9775"
 dependencies = [
  "facet-macros-impl",
 ]
 
 [[package]]
 name = "facet-macros-impl"
-version = "0.33.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014d2411e4d8ab1fb006c3207c7eb1cd85a732b0ee52d6e4beb96bc743a5aa56"
+checksum = "d5e1e176fdc8615d7a023e1b1c4c05db5cb1dc5764add5ca1a5efc8f8b2ccb1d"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -3079,9 +3079,9 @@ checksum = "7a46645bbd70538861a90d0f26c31537cdf1e44aae99a794fb75a664b70951bc"
 
 [[package]]
 name = "indexmap"
-version = "2.12.1"
+version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad4bb2b565bca0645f4d68c5c9af97fba094e9791da685bf83cb5f3ce74acf2"
+checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown",
@@ -3396,9 +3396,9 @@ checksum = "2c4a545a15244c7d945065b5d392b2d2d7f21526fba56ce51467b06ed445e8f7"
 
 [[package]]
 name = "libc"
-version = "0.2.179"
+version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a2d376baa530d1238d133232d15e239abad80d05838b4b59354e5268af431f"
+checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
 
 [[package]]
 name = "libgit2-sys"
@@ -5533,7 +5533,7 @@ dependencies = [
  "memchr",
  "nix",
  "radix_trie",
- "signal-hook",
+ "signal-hook 0.3.18",
  "unicode-segmentation",
  "unicode-width 0.2.2",
  "utf8parse",
@@ -5845,7 +5845,7 @@ checksum = "47106eded3c154e70176fc83df9737335c94ce22f821c32d17ed1db1f83badb1"
 dependencies = [
  "libc",
  "os_pipe",
- "signal-hook",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]
@@ -5859,6 +5859,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a37d01603c37b5466f808de79f845c7116049b0579adb70a6b7d47c1fa3a952"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-mio"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5866,7 +5876,7 @@ checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio",
- "signal-hook",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]
@@ -6852,9 +6862,9 @@ dependencies = [
 
 [[package]]
 name = "turso"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389cc71c6d55ca3e26f4a51f43152921271153b0373cdba1d572968baeef5316"
+checksum = "5cb1fc704a264a439634eb514e8875ba0648e550ed1a283f5a732dfa42772392"
 dependencies = [
  "thiserror 2.0.17",
  "tracing",
@@ -6865,9 +6875,9 @@ dependencies = [
 
 [[package]]
 name = "turso_core"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddf5a59347662f721208a8daa09bbd50343a8bc51c9628bac130571f4a5b3549"
+checksum = "9ec66212231c66fdb4be353be9c61caaea584a5b0ebfa9e1acd8ab69a6220f4f"
 dependencies = [
  "aegis",
  "aes",
@@ -6920,9 +6930,9 @@ dependencies = [
 
 [[package]]
 name = "turso_ext"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a88980b0b068c148c0aed9eb6c3c20e6a2bfb6ae0fb8c876931f709032cdda8"
+checksum = "24d7cfcd88fd58cc0b3d09966af2defd18def1c9ab070b103772728c96281838"
 dependencies = [
  "chrono",
  "getrandom 0.3.4",
@@ -6931,9 +6941,9 @@ dependencies = [
 
 [[package]]
 name = "turso_macros"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940aea152913a3f9c74b4d5e090d075145b584145899921f31ea57df9b5efd0d"
+checksum = "e0b8ac58ce98aff824005a75ca21c804a0132bf3c20345d9473101d5164a3c54"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6942,9 +6952,9 @@ dependencies = [
 
 [[package]]
 name = "turso_parser"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fabd95b1f4c7a3b3e2b8d9f727d4e602c7b37cef8917c80de8572ab7e205214"
+checksum = "1836c13dfb5eb35c19ff88a5acbea79005b5534113aa3d8ce7a82ef5670ec629"
 dependencies = [
  "bitflags 2.10.0",
  "memchr",
@@ -6957,9 +6967,9 @@ dependencies = [
 
 [[package]]
 name = "turso_sdk_kit"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4082490b8a1231eda1b6e223fe55f0502eaca65838315e4980ade25fec6324ce"
+checksum = "93da151ac3d39c4686ebcfb14140e43af672deacd278dcd1ff3b6b0ad213f090"
 dependencies = [
  "bindgen 0.69.5",
  "env_logger",
@@ -6972,9 +6982,9 @@ dependencies = [
 
 [[package]]
 name = "turso_sdk_kit_macros"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53a4bb9686518a6f8138313c6f4abc304a0db2fff4eb73a8284f9622b6e4047a"
+checksum = "0af301e2fbaa4e71bcb2b4d0af1ec43cf68b51bb45e416737104419db4496179"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6983,9 +6993,9 @@ dependencies = [
 
 [[package]]
 name = "turso_sync_engine"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77d62e80b1a207b69c2f6ae1c635cd4b33ffdfbd48518850f3b0a573f0d12ae8"
+checksum = "a0761ae817413f71e4f8f7afad9167134d0e9d9ebf99a43521a931b48a9d2d8a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -7005,9 +7015,9 @@ dependencies = [
 
 [[package]]
 name = "turso_sync_sdk_kit"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca6ab55f57a4ecb2d6e80e254260e58b68e163037e49128afcdc7a421237085"
+checksum = "71f3bb4d9f905eaed1b07f125d8e1001c7f8cb320892b7b0457f53354d7bb721"
 dependencies = [
  "bindgen 0.69.5",
  "env_logger",
