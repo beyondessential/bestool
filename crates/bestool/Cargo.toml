@@ -18,19 +18,19 @@ workspace = true
 algae-cli = { version = "1.0.14", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "1.0.9", path = "../alertd", default-features = false, optional = true }
 bestool-psql = { version = "1.4.0", path = "../psql", default-features = false, optional = true }
-binstalk-downloader = { version = "0.13.29", optional = true, features = ["hickory-dns"] }
-blake3 = { version = "1.8.2", optional = true }
+binstalk-downloader = { version = "0.13.32", optional = true, features = ["hickory-dns"] }
+blake3 = { version = "1.8.3", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
-chrono = "0.4.41"
+chrono = "0.4.43"
 clap = { workspace = true, features = ["env", "unicode", "string"] }
-clap_complete = { version = "4.5.57", optional = true }
+clap_complete = { version = "4.5.65", optional = true }
 facet = { workspace = true }
 clap_complete_nushell = { version = "4.5.8", optional = true }
 clap-markdown = "0.1.5"
-comfy-table = { version = "7.2.0", optional = true }
+comfy-table = { version = "7.2.2", optional = true }
 ctrlc = { version = "3.5.0", optional = true }
-detect-targets = { version = "0.1.73", optional = true }
+detect-targets = { version = "0.1.79", optional = true }
 dirs = { version = "6.0.0", optional = true }
 duct = { version = "1.1.0", optional = true }
 dunce = { version = "1.0.5", optional = true }
@@ -65,19 +65,19 @@ serde_json = "1.0.143"
 serde_path_to_error = { version = "0.1.17", optional = true }
 serde_yaml = { version = "0.9.33", optional = true }
 ssh-key = { version = "0.6.6", optional = true }
-sysinfo = { version = "0.37.2", optional = true }
+sysinfo = { version = "0.38.0", optional = true }
 target-tuples = { version = "0.5.13", optional = true }
 tempfile = "3.21.0"
 tera = { version = "1.19.1", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
+tokio-postgres = { version = "0.7.16", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
-uuid = "1.19.0"
+uuid = "1.20.0"
 walkdir = { version = "2.5.0", optional = true }
-zip = { version = "7.0.0", optional = true, default-features = false, features = ["time"] }
+zip = { version = "7.2.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
