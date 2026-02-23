@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 bitvec = "1.0.1"
-embedded-graphics = "0.8.1"
+embedded-graphics = "0.8.2"
 itertools = { workspace = true }
 miette = { workspace = true, optional = true }
 thiserror = { workspace = true }
