@@ -11,10 +11,10 @@ repository = "https://github.com/beyondessential/bestool/tree/main/crates/postgr
 workspace = true
 
 [dependencies]
-bytes = "1.9.0"
+bytes = "1.11.1"
 fraction = { version = "0.15", features = ["with-postgres-support"] }
 hex = "0.4.3"
-jiff = "0.2.15"
+jiff = "0.2.22"
 miette = { workspace = true }
 mobc = "0.9.0"
 mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
@@ -25,7 +25,7 @@ rustls-native-certs = "0.8.2"
 serde_json = "1.0.145"
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-postgres = { version = "0.7.15", features = ["with-jiff-0_2", "with-serde_json-1"] }
+tokio-postgres = { version = "0.7.16", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-postgres-rustls = "0.13.0"
 tracing = { workspace = true }
 
