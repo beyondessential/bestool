@@ -104,6 +104,10 @@ template if none is defined through the alert files.
 
 ## Send Targets
 
+The `id` field references a target defined in `_targets.yml`. The target type (email, Slack, etc.)
+is determined by the target definition, not the alert. If multiple targets share the same `id`,
+the alert is sent to all of them. See [TARGETS.md](TARGETS.md) for target configuration.
+
 ### Simple Format
 
 ```yaml

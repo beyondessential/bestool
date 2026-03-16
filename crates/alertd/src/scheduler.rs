@@ -562,7 +562,13 @@ impl Scheduler {
 						// Send to targets
 						for target in &resolved_targets {
 							if let Err(err) = target
-								.send(&alert, &mut tera_ctx, email.as_ref(), dry_run)
+								.send(
+									&alert,
+									&mut tera_ctx,
+									email.as_ref(),
+									Some(&ctx.http_client),
+									dry_run,
+								)
 								.await
 							{
 								error!("sending: {}", LogError(&err));

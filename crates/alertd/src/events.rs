@@ -130,13 +130,18 @@ impl EventManager {
 			conn: t.conn.clone(),
 		});
 		if let Some(ref target) = default_target {
-			info!(
-				from = target
-					.conn
+			let target_desc = match &target.conn {
+				crate::targets::TargetConnection::Email(email) => email
 					.addresses
 					.first()
-					.map(|s| s.as_str())
-					.unwrap_or("unknown"),
+					.cloned()
+					.unwrap_or_else(|| "unknown".into()),
+				crate::targets::TargetConnection::Slack(slack) => {
+					format!("slack:{}", slack.webhook.host_str().unwrap_or("unknown"))
+				}
+			};
+			info!(
+				from = %target_desc,
 				"determined default target for fallback alerts"
 			);
 		}
@@ -151,7 +156,7 @@ impl EventManager {
 	pub async fn trigger_event(
 		&self,
 		event_type: EventType,
-		_ctx: &InternalContext,
+		ctx: &InternalContext,
 		email: Option<&crate::EmailConfig>,
 		dry_run: bool,
 		event_context: EventContext,
@@ -172,7 +177,10 @@ impl EventManager {
 				tera_ctx.extend(event_context.to_tera_context());
 
 				for target in targets {
-					if let Err(err) = target.send(alert, &mut tera_ctx, email, dry_run).await {
+					if let Err(err) = target
+						.send(alert, &mut tera_ctx, email, Some(&ctx.http_client), dry_run)
+						.await
+					{
 						error!(file = ?alert.file, "failed to send event alert: {}", LogError(&err));
 					}
 				}
@@ -225,7 +233,13 @@ impl EventManager {
 			tera_ctx.extend(event_context.to_tera_context());
 
 			if let Err(err) = default_target_for_event
-				.send(&synthetic_alert, &mut tera_ctx, email, dry_run)
+				.send(
+					&synthetic_alert,
+					&mut tera_ctx,
+					email,
+					Some(&ctx.http_client),
+					dry_run,
+				)
 				.await
 			{
 				error!("failed to send default event alert: {}", LogError(&err));

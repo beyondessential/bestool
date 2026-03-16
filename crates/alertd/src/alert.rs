@@ -22,8 +22,7 @@ fn default_interval() -> String {
 	"1 minute".to_string()
 }
 
-#[derive(serde::Deserialize, facet::Facet, Debug, Clone)]
-#[facet(rename_all = "kebab-case")]
+#[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct NumericalThreshold {
 	pub field: String,
@@ -45,8 +44,7 @@ impl Default for WhenChanged {
 	}
 }
 
-#[derive(serde::Deserialize, facet::Facet, Debug, Clone)]
-#[facet(rename_all = "kebab-case")]
+#[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct WhenChangedConfig {
 	#[serde(default)]
@@ -292,7 +290,10 @@ impl AlertDefinition {
 		}
 
 		for target in resolved_targets {
-			if let Err(err) = target.send(self, &mut tera_ctx, email, dry_run).await {
+			if let Err(err) = target
+				.send(self, &mut tera_ctx, email, Some(&ctx.http_client), dry_run)
+				.await
+			{
 				error!("sending: {}", LogError(&err));
 			}
 		}
@@ -304,6 +305,7 @@ impl AlertDefinition {
 #[derive(Debug, Clone)]
 pub struct InternalContext {
 	pub pg_pool: bestool_postgres::pool::PgPool,
+	pub http_client: reqwest::Client,
 }
 
 fn rows_to_value_map(
