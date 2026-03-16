@@ -19,8 +19,7 @@ impl TamanuConfig {
 	}
 }
 
-#[derive(Debug, Clone, serde::Deserialize, facet::Facet)]
-#[facet(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Database {
 	pub host: Option<String>,
@@ -31,19 +30,18 @@ pub struct Database {
 	pub report_schemas: Option<ReportSchemas>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, facet::Facet)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ReportSchemas {
 	pub connections: HashMap<String, ReportConnection>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, facet::Facet)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ReportConnection {
 	pub username: String,
 	pub password: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, facet::Facet)]
-#[facet(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mailgun {
 	pub domain: String,

@@ -4,7 +4,7 @@ use miette::{IntoDiagnostic as _, Result};
 use serde::{Deserialize, Serialize};
 
 /// Information about a Tailscale peer
-#[derive(Debug, Clone, Serialize, Deserialize, facet::Facet)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TailscalePeer {
 	/// Device hostname
 	pub device: String,

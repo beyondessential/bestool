@@ -5,7 +5,10 @@ use miette::{IntoDiagnostic, Result};
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::str::FromStr;
-use target_tuples::{OS, Target};
+use target_tuples::{
+	CanonicalTarget, TargetRef,
+	pieces::{Architecture, OS},
+};
 
 use crate::actions::Context;
 
@@ -79,8 +82,12 @@ pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec
 	let host_targets = detect_targets()
 		.await
 		.into_iter()
-		.filter_map(|target| Target::from_str(&target).ok())
-		.collect::<Vec<Target>>();
+		.filter_map(|target| {
+			TargetRef::try_parse(&target)
+				.map(|target| target.canonical())
+				.ok()
+		})
+		.collect::<Vec<CanonicalTarget>>();
 
 	artifacts.retain(|artifact| match &for_platform {
 		Platform::All => true,
@@ -90,25 +97,23 @@ pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec
 			}
 
 			let os = if artifact.platform.contains("linux") {
-				host_targets
-					.iter()
-					.any(|t| t.operating_system() == Some(OS::Linux))
+				host_targets.iter().any(|t| t.sys.os() == Some(OS::Linux))
 			} else if artifact.platform.contains("windows") {
-				host_targets
-					.iter()
-					.any(|t| t.operating_system() == Some(OS::Win32))
+				host_targets.iter().any(|t| t.sys.os() == Some(OS::Win32))
 			} else if artifact.platform.contains("macos") {
-				host_targets
-					.iter()
-					.any(|t| t.operating_system() == Some(OS::Darwin))
+				host_targets.iter().any(|t| t.sys.os() == Some(OS::Darwin))
 			} else {
 				false
 			};
 
 			let arch = if artifact.platform.contains("amd64") {
-				host_targets.iter().any(|t| t.arch_name() == "x86_64")
+				host_targets
+					.iter()
+					.any(|t| matches!(t.arch, Architecture::X86_64 { .. }))
 			} else if artifact.platform.contains("arm64") {
-				host_targets.iter().any(|t| t.arch_name() == "aarch64")
+				host_targets
+					.iter()
+					.any(|t| matches!(t.arch, Architecture::Aarch64))
 			} else {
 				!artifact.platform.contains("-")
 			};

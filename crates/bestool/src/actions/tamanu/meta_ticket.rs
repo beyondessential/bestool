@@ -160,43 +160,41 @@ fn detect_hosting() -> Option<String> {
 }
 
 fn is_raspberry_pi() -> bool {
-	if let Ok(model) = std::fs::read_to_string("/proc/device-tree/model") {
-		if model.to_lowercase().contains("raspberry pi") {
-			return true;
-		}
+	if let Ok(model) = std::fs::read_to_string("/proc/device-tree/model")
+		&& model.to_lowercase().contains("raspberry pi")
+	{
+		return true;
 	}
 
 	false
 }
 
 fn is_ec2() -> bool {
-	if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor") {
-		if vendor.trim() == "Amazon EC2" {
-			return true;
-		}
+	if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor")
+		&& vendor.trim() == "Amazon EC2"
+	{
+		return true;
 	}
 
-	if let Ok(bios) = std::fs::read_to_string("/sys/class/dmi/id/bios_vendor") {
-		if bios.trim().contains("Amazon") {
-			return true;
-		}
+	if let Ok(bios) = std::fs::read_to_string("/sys/class/dmi/id/bios_vendor")
+		&& bios.trim().contains("Amazon")
+	{
+		return true;
 	}
 
-	if let Ok(hypervisor) = std::fs::read_to_string("/sys/hypervisor/uuid") {
-		if hypervisor.trim().starts_with("ec2") {
-			return true;
-		}
+	if let Ok(hypervisor) = std::fs::read_to_string("/sys/hypervisor/uuid")
+		&& hypervisor.trim().starts_with("ec2")
+	{
+		return true;
 	}
 
 	if std::fs::metadata("/sys/devices/virtual/dmi/id/board_asset_tag")
 		.map(|m| m.is_file())
 		.unwrap_or(false)
+		&& let Ok(tag) = std::fs::read_to_string("/sys/devices/virtual/dmi/id/board_asset_tag")
+		&& tag.trim().starts_with("i-")
 	{
-		if let Ok(tag) = std::fs::read_to_string("/sys/devices/virtual/dmi/id/board_asset_tag") {
-			if tag.trim().starts_with("i-") {
-				return true;
-			}
-		}
+		return true;
 	}
 
 	false
