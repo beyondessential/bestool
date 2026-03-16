@@ -50,7 +50,7 @@ pub async fn handle_index() -> impl IntoResponse {
 		{
 			"method": "GET",
 			"path": "/health",
-			"description": "Health check endpoint (returns 200 if healthy, 503 if stalled)"
+			"description": "Health check endpoint (returns 200 if healthy, 530 if stalled)"
 		}
 	]);
 
