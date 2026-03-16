@@ -490,7 +490,6 @@ dependencies = [
  "duct",
  "dunce",
  "embedded-graphics",
- "facet",
  "folktime",
  "fs4",
  "futures",
@@ -551,7 +550,6 @@ dependencies = [
  "chrono",
  "clap",
  "clap-markdown",
- "facet",
  "futures",
  "glob",
  "jiff",
@@ -619,7 +617,6 @@ dependencies = [
  "ctrlc",
  "dirs",
  "edit",
- "facet",
  "filetime",
  "fraction",
  "futures",
@@ -2065,73 +2062,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
-name = "facet"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c2b30c3706922ddbff8a8ebd9124d2e15b3943f00ad071b131312883d09d54"
-dependencies = [
- "autocfg",
- "facet-core",
- "facet-macros",
- "static_assertions",
-]
-
-[[package]]
-name = "facet-core"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbf01c609390d3289978288044d0d1ccaaabaa608f56d3aa0cc18381934d4220"
-dependencies = [
- "autocfg",
- "impls",
-]
-
-[[package]]
-name = "facet-macro-parse"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "230c782499d4364c9b792aa3b259f9294325ef7afd81c35b74cf278a9070c621"
-dependencies = [
- "facet-macro-types",
- "proc-macro2",
- "quote",
-]
-
-[[package]]
-name = "facet-macro-types"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "319965f8fb0fc0c683f3316db442bd80d93112affec94df4146a8c6deb33f415"
-dependencies = [
- "proc-macro2",
- "quote",
- "unsynn",
-]
-
-[[package]]
-name = "facet-macros"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ceb9ace94d4d9a01f710bf9094e6432be4bc2ce0323911ba3ecf9afa270493a"
-dependencies = [
- "facet-macros-impl",
-]
-
-[[package]]
-name = "facet-macros-impl"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014d2411e4d8ab1fb006c3207c7eb1cd85a732b0ee52d6e4beb96bc743a5aa56"
-dependencies = [
- "facet-macro-parse",
- "facet-macro-types",
- "proc-macro2",
- "quote",
- "strsim",
- "unsynn",
-]
-
-[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3129,12 +3059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "impls"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a46645bbd70538861a90d0f26c31537cdf1e44aae99a794fb75a664b70951bc"
-
-[[package]]
 name = "indexmap"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3859,12 +3783,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
-name = "mutants"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 
 [[package]]
 name = "native-tls"
@@ -7322,17 +7240,6 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
-name = "unsynn"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "501a7adf1a4bd9951501e5c66621e972ef8874d787628b7f90e64f936ef7ec0a"
-dependencies = [
- "mutants",
- "proc-macro2",
- "rustc-hash 2.1.1",
-]
 
 [[package]]
 name = "untrusted"

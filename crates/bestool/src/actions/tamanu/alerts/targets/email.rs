@@ -4,8 +4,7 @@ use tracing::debug;
 
 use crate::actions::tamanu::{alerts::definition::AlertDefinition, config::TamanuConfig};
 
-#[derive(serde::Deserialize, facet::Facet, Clone, Debug)]
-#[facet(rename_all = "snake_case")]
+#[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct TargetEmail {
 	pub addresses: Vec<String>,
