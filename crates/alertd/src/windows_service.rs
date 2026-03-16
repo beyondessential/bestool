@@ -629,6 +629,49 @@ pub fn configure_recovery() -> Result<()> {
 	Ok(())
 }
 
+/// Check whether the service has failure recovery actions configured.
+///
+/// Returns `Ok(true)` if at least one restart action is configured and
+/// failure-actions-on-non-crash-failures is enabled. Returns `Ok(false)`
+/// if the service exists but recovery is not (fully) configured.
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be opened or queried.
+pub fn is_recovery_configured() -> Result<bool> {
+	let manager_access = ServiceManagerAccess::CONNECT;
+	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
+		.map_err(|e| miette!("Failed to connect to service manager: {}", e))?;
+
+	let service_access = ServiceAccess::QUERY_CONFIG;
+	let service = service_manager
+		.open_service(SERVICE_NAME, service_access)
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("not found") || error_msg.contains("ERROR_SERVICE_DOES_NOT_EXIST")
+			{
+				miette!("Service 'bestool-alertd' not found.")
+			} else {
+				miette!("Failed to open service: {}", error_msg)
+			}
+		})?;
+
+	let actions = service
+		.get_failure_actions()
+		.map_err(|e| miette!("Failed to query failure actions: {}", e))?;
+
+	let has_restart_action = actions.actions.as_ref().is_some_and(|a| {
+		a.iter()
+			.any(|act| act.action_type == ServiceActionType::Restart)
+	});
+
+	let non_crash_enabled = service
+		.get_failure_actions_on_non_crash_failures()
+		.unwrap_or(false);
+
+	Ok(has_restart_action && non_crash_enabled)
+}
+
 fn apply_failure_actions(service: &windows_service::service::Service) -> Result<()> {
 	let failure_actions = ServiceFailureActions {
 		reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86400)),
