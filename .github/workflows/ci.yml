@@ -179,11 +179,11 @@ jobs:
       - if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo auditable build --profile dist --target ${{ matrix.target }}
 
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         if: runner.os != 'Windows'
         with:
           subject-path: target/*/dist/bestool
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         if: runner.os == 'Windows'
         with:
           subject-path: target/*/dist/bestool.exe
