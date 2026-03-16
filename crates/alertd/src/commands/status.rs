@@ -41,8 +41,17 @@ pub async fn get_status(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
 
 	info!("connected to daemon at {url}");
 
+	let local_version = crate::VERSION;
+
 	println!("Name:      {}", status.name);
 	println!("Version:   {}", status.version);
+	if status.version != local_version {
+		println!(
+			"           WARNING: running daemon is {}, but this CLI is {local_version}",
+			status.version
+		);
+		println!("           Consider restarting the service to pick up the new version.");
+	}
 	println!("PID:       {}", status.pid);
 	println!("Started:   {}", status.started_at);
 
