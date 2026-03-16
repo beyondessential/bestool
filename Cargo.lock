@@ -660,7 +660,7 @@ dependencies = [
  "signal-hook",
  "supports-unicode",
  "syntect",
- "sysinfo 0.37.2",
+ "sysinfo 0.38.4",
  "temp-env",
  "tempfile",
  "terminal-colorsaurus",
