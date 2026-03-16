@@ -52,6 +52,7 @@ mod tests {
 			email_config: None,
 			dry_run: true,
 			scheduler,
+			watchdog_timeout: None,
 		});
 
 		let response = handle_reload(State(state)).await.into_response();

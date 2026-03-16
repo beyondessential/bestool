@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, time::Duration};
 
 mod alert;
 pub mod commands;
@@ -55,6 +55,13 @@ pub struct DaemonConfig {
 
 	/// HTTP server bind addresses
 	pub server_addrs: Vec<std::net::SocketAddr>,
+
+	/// Watchdog timeout duration
+	///
+	/// If no alert task reports activity within this duration, the daemon
+	/// will exit with an error so it can be restarted by the service manager.
+	/// Set to `None` to disable the watchdog.
+	pub watchdog_timeout: Option<Duration>,
 }
 
 impl DaemonConfig {
@@ -66,6 +73,7 @@ impl DaemonConfig {
 			dry_run: false,
 			no_server: false,
 			server_addrs: Vec::new(),
+			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
 		}
 	}
 
@@ -86,6 +94,11 @@ impl DaemonConfig {
 
 	pub fn with_server_addrs(mut self, server_addrs: Vec<std::net::SocketAddr>) -> Self {
 		self.server_addrs = server_addrs;
+		self
+	}
+
+	pub fn with_watchdog_timeout(mut self, watchdog_timeout: Option<Duration>) -> Self {
+		self.watchdog_timeout = watchdog_timeout;
 		self
 	}
 }

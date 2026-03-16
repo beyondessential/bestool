@@ -5,9 +5,12 @@
 //! - `bes_alertd_alerts_sent_total`: Total number of alerts sent successfully (counter)
 //! - `bes_alertd_alerts_failed_total`: Total number of alerts that failed to send (counter)
 //! - `bes_alertd_reloads_total`: Total number of configuration reloads (counter)
+//! - `bes_alertd_last_activity_unix`: Unix timestamp of the last activity (gauge)
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result};
 use prometheus::{Encoder, IntCounter, IntGauge, Registry, TextEncoder};
 
@@ -16,6 +19,8 @@ static ALERTS_LOADED: OnceLock<IntGauge> = OnceLock::new();
 static ALERTS_SENT_TOTAL: OnceLock<IntCounter> = OnceLock::new();
 static ALERTS_FAILED_TOTAL: OnceLock<IntCounter> = OnceLock::new();
 static RELOADS_TOTAL: OnceLock<IntCounter> = OnceLock::new();
+static LAST_ACTIVITY_GAUGE: OnceLock<IntGauge> = OnceLock::new();
+static LAST_ACTIVITY: AtomicI64 = AtomicI64::new(0);
 
 pub fn init_metrics() {
 	let registry = Registry::new();
@@ -44,6 +49,12 @@ pub fn init_metrics() {
 	)
 	.expect("failed to create reloads_total metric");
 
+	let last_activity_gauge = IntGauge::new(
+		"bes_alertd_last_activity_unix",
+		"Unix timestamp of the last activity",
+	)
+	.expect("failed to create last_activity_gauge metric");
+
 	registry
 		.register(Box::new(alerts_loaded.clone()))
 		.expect("failed to register alerts_loaded metric");
@@ -56,6 +67,9 @@ pub fn init_metrics() {
 	registry
 		.register(Box::new(reloads_total.clone()))
 		.expect("failed to register reloads_total metric");
+	registry
+		.register(Box::new(last_activity_gauge.clone()))
+		.expect("failed to register last_activity_gauge metric");
 
 	REGISTRY.set(registry).expect("metrics already initialized");
 	ALERTS_LOADED
@@ -69,6 +83,9 @@ pub fn init_metrics() {
 		.expect("metrics already initialized");
 	RELOADS_TOTAL
 		.set(reloads_total)
+		.expect("metrics already initialized");
+	LAST_ACTIVITY_GAUGE
+		.set(last_activity_gauge)
 		.expect("metrics already initialized");
 }
 
@@ -94,6 +111,18 @@ pub fn inc_reloads() {
 	if let Some(metric) = RELOADS_TOTAL.get() {
 		metric.inc();
 	}
+}
+
+pub fn record_activity() {
+	let now = Timestamp::now().as_second();
+	LAST_ACTIVITY.store(now, Ordering::Relaxed);
+	if let Some(metric) = LAST_ACTIVITY_GAUGE.get() {
+		metric.set(now);
+	}
+}
+
+pub fn last_activity_timestamp() -> i64 {
+	LAST_ACTIVITY.load(Ordering::Relaxed)
 }
 
 pub fn gather_metrics() -> Result<String> {

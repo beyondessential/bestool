@@ -19,7 +19,8 @@ use tracing::{error, info, warn};
 use windows_service::{
 	define_windows_service,
 	service::{
-		ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+		ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+		ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
 		ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 	},
 	service_control_handler::{self, ServiceControlHandlerResult},
@@ -437,6 +438,8 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		.set_description("Monitors and executes alert definitions from configuration files")
 		.map_err(|e| miette!("Failed to set service description: {}\n\nThe service was created but configuration failed. Please try uninstalling and reinstalling.", e))?;
 
+	apply_failure_actions(&service)?;
+
 	service
 		.start::<&OsStr>(&[])
 		.map_err(|e| {
@@ -571,5 +574,93 @@ pub fn uninstall_service() -> Result<()> {
 		})?;
 
 	println!("Service stopped and uninstalled successfully");
+	Ok(())
+}
+
+/// Configure failure recovery actions on an existing Windows service.
+///
+/// Opens the already-installed 'bestool-alertd' service and updates its failure
+/// recovery settings to automatically restart on failure.
+///
+/// # Errors
+///
+/// Returns an error if the service cannot be opened or configured.
+pub fn configure_recovery() -> Result<()> {
+	let manager_access = ServiceManagerAccess::CONNECT;
+	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				miette!("Failed to connect to service manager: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			} else {
+				miette!("Failed to connect to service manager: {}", error_msg)
+			}
+		})?;
+
+	let service_access = ServiceAccess::QUERY_CONFIG | ServiceAccess::CHANGE_CONFIG;
+	let service = service_manager
+		.open_service(SERVICE_NAME, service_access)
+		.map_err(|e| {
+			let error_msg = e.to_string();
+			if error_msg.contains("not found") || error_msg.contains("ERROR_SERVICE_DOES_NOT_EXIST")
+			{
+				miette!(
+					"Service 'bestool-alertd' not found.\n\nInstall the service first with: bestool-alertd install"
+				)
+			} else if error_msg.contains("Access is denied")
+				|| error_msg.contains("ERROR_ACCESS_DENIED")
+			{
+				miette!(
+					"Failed to open service: {}\n\nThis requires administrator privileges.",
+					error_msg
+				)
+			} else {
+				miette!("Failed to open service: {}", error_msg)
+			}
+		})?;
+
+	apply_failure_actions(&service)?;
+
+	println!("Failure recovery actions configured successfully");
+	println!("  1st failure: restart after 10 seconds");
+	println!("  2nd failure: restart after 30 seconds");
+	println!("  3rd+ failure: restart after 60 seconds");
+	println!("  Reset counter after: 24 hours");
+	Ok(())
+}
+
+fn apply_failure_actions(service: &windows_service::service::Service) -> Result<()> {
+	let failure_actions = ServiceFailureActions {
+		reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86400)),
+		reboot_msg: None,
+		command: None,
+		actions: Some(vec![
+			ServiceAction {
+				action_type: ServiceActionType::Restart,
+				delay: Duration::from_secs(10),
+			},
+			ServiceAction {
+				action_type: ServiceActionType::Restart,
+				delay: Duration::from_secs(30),
+			},
+			ServiceAction {
+				action_type: ServiceActionType::Restart,
+				delay: Duration::from_secs(60),
+			},
+		]),
+	};
+	service
+		.update_failure_actions(failure_actions)
+		.map_err(|e| miette!("Failed to configure failure recovery actions: {}", e))?;
+
+	service
+		.set_failure_actions_on_non_crash_failures(true)
+		.map_err(|e| {
+			miette!(
+				"Failed to enable failure actions on non-crash failures: {}",
+				e
+			)
+		})?;
+
 	Ok(())
 }

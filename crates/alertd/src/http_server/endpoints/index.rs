@@ -46,6 +46,11 @@ pub async fn handle_index() -> impl IntoResponse {
 			"method": "GET",
 			"path": "/status",
 			"description": "Daemon status information in JSON format"
+		},
+		{
+			"method": "GET",
+			"path": "/health",
+			"description": "Health check endpoint (returns 200 if healthy, 503 if stalled)"
 		}
 	]);
 

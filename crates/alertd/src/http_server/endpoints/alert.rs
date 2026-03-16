@@ -105,6 +105,7 @@ mod tests {
 			email_config: None,
 			dry_run: true,
 			scheduler,
+			watchdog_timeout: None,
 		});
 
 		let payload = AlertRequest {
