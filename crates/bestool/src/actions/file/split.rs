@@ -116,7 +116,7 @@ impl ChunkSize {
 	}
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, facet::Facet)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct ChunkedMetadata {
 	pub full_size: u64,
 	pub full_sum: String,
