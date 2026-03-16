@@ -165,7 +165,7 @@ tamanu-upgrade = []
 walg = []
 
 [dev-dependencies]
-trycmd = "0.15.10"
+trycmd = "1.1.1"
 
 [package.metadata.binstall]
 pkg-url = "https://tools.ops.tamanu.io/bestool/{ version }/{ target }/{ name }{ binary-ext }"
