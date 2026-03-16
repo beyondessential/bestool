@@ -6,8 +6,17 @@ use reqwest::Url;
 #[serde(rename_all = "camelCase")]
 pub struct TamanuConfig {
 	pub canonical_host_name: Option<Url>,
+	pub canonical_url: Option<Url>,
 	pub db: Database,
 	pub mailgun: Option<Mailgun>,
+}
+
+impl TamanuConfig {
+	pub fn canonical_url(&self) -> Option<&Url> {
+		self.canonical_host_name
+			.as_ref()
+			.or(self.canonical_url.as_ref())
+	}
 }
 
 #[derive(Debug, Clone, serde::Deserialize, facet::Facet)]

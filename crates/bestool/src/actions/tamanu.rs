@@ -67,6 +67,8 @@ super::subcommands! {
 	find => Find(FindArgs),
 	#[cfg(feature = "tamanu-greenmask")]
 	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
+	#[cfg(feature = "tamanu-meta-ticket")]
+	meta_ticket => MetaTicket(MetaTicketArgs),
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs)
