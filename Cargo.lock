@@ -6263,10 +6263,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
-name = "target-tuples"
-version = "0.5.13"
+name = "target-tuple-pieces"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79f244e96093a636944c070a216397df56fc85b1d4b8bb1810668d392462d588"
+checksum = "d338c509912e8b9160bef265e5c51c97e2003dc685f12c284c801acff3102893"
+
+[[package]]
+name = "target-tuples"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e60b420a8644a7d5edb4dcb3041490298863e05f14da6b11614e08a5f0fad207"
+dependencies = [
+ "target-tuple-pieces",
+ "target-tuples-macro",
+]
+
+[[package]]
+name = "target-tuples-macro"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc1f6cc6aeffa5004ecd92a138885d33760401ee1ecb538174a387c3a8d85ba1"
+dependencies = [
+ "target-tuple-pieces",
+]
 
 [[package]]
 name = "temp-env"
