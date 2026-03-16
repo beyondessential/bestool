@@ -487,7 +487,6 @@ dependencies = [
  "miette",
  "mimalloc",
  "node-semver",
- "openssl-sys",
  "percent-encoding",
  "privilege",
  "pulldown-cmark",
