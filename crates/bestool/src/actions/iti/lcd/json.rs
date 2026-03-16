@@ -37,7 +37,7 @@ impl Drawable for Screen {
 	}
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, facet::Facet)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Item {
 	pub x: i32,
 	pub y: i32,

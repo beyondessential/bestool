@@ -28,13 +28,13 @@ pub enum ZendeskMethod {
 	Anonymous { requester: String },
 }
 
-#[derive(serde::Deserialize, facet::Facet, Clone, Debug)]
+#[derive(serde::Deserialize, Clone, Debug)]
 pub struct ZendeskCredentials {
 	pub email: String,
 	pub password: String,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, facet::Facet, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct ZendeskCustomField {
 	pub id: u64,
 	pub value: String,

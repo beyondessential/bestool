@@ -1,7 +1,7 @@
 use super::try_connect_daemon;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, facet::Facet)]
+#[derive(Debug, Deserialize)]
 struct AlertStateInfo {
 	path: String,
 	enabled: bool,
