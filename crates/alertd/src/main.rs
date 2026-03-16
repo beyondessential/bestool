@@ -94,6 +94,19 @@ enum Command {
 		daemon: DaemonArgs,
 	},
 
+	/// Show status and health of a running daemon
+	///
+	/// Connects to the running daemon's HTTP API and displays version, uptime,
+	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+	Status {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
+	},
+
 	/// Send reload signal to running daemon
 	///
 	/// Connects to the running daemon's HTTP API and triggers a reload.
@@ -278,6 +291,14 @@ async fn main() -> Result<()> {
 
 	match args.command {
 		Command::Run { daemon } => run_daemon(daemon).await,
+		Command::Status { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::get_status(&addrs).await
+		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
 				bestool_alertd::commands::default_server_addrs()
