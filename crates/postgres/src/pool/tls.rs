@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rustls::ClientConfig;
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::debug;
@@ -18,7 +20,10 @@ pub fn make_tls_connector() -> Result<MakeRustlsConnect, rustls::Error> {
 		root_store.add(cert)?;
 	}
 
-	let config = ClientConfig::builder()
+	let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+	let config = ClientConfig::builder_with_provider(provider)
+		.with_safe_default_protocol_versions()
+		.map_err(|e| rustls::Error::General(e.to_string()))?
 		.with_root_certificates(root_store)
 		.with_no_client_auth();
 
