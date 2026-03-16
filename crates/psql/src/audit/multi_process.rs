@@ -10,7 +10,7 @@ use std::{
 };
 
 use miette::{IntoDiagnostic, Result, WrapErr};
-use rand::Rng;
+use rand::RngExt;
 use redb::{Database, ReadableDatabase, ReadableTable};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
