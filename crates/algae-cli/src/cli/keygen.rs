@@ -109,7 +109,7 @@ pub async fn run(
 			use rand::prelude::*;
 			let rng = &mut rand::rng();
 			let words: [_; 6] = diceware_wordlists::MINILOCK_WORDLIST
-				.choose_multiple_array(rng)
+				.sample_array(rng)
 				.unwrap();
 
 			let phrase: String = Itertools::intersperse(words.into_iter(), "-").collect();
