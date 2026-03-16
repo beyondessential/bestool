@@ -499,7 +499,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_yaml",
  "ssh-key",
- "sysinfo",
+ "sysinfo 0.38.4",
  "target-tuples",
  "tempfile",
  "tera",
@@ -545,7 +545,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_yaml",
- "sysinfo",
+ "sysinfo 0.37.2",
  "temp-env",
  "tempfile",
  "tera",
@@ -619,7 +619,7 @@ dependencies = [
  "signal-hook",
  "supports-unicode",
  "syntect",
- "sysinfo",
+ "sysinfo 0.37.2",
  "temp-env",
  "tempfile",
  "terminal-colorsaurus",
@@ -6208,6 +6208,20 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows 0.62.2",
 ]
 
 [[package]]
