@@ -40,6 +40,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
+* [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 
 ## `bestool`
@@ -693,6 +694,7 @@ Alias: t
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
 * `greenmask-config` — Generate a Greenmask config file
+* `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
 
 ###### **Options:**
@@ -1260,6 +1262,16 @@ Generate a Greenmask config file
    By default, this is the `greenmask/dumps` folder in the Tamanu root.
 
    If the folder does not exist, it will be created.
+
+
+
+## `bestool tamanu meta-ticket`
+
+Generate a meta-ticket for this Tamanu server
+
+Connects to the Tamanu database, retrieves the device key, and produces a base64-encoded JSON ticket containing server identity information.
+
+**Usage:** `bestool tamanu meta-ticket`
 
 
 

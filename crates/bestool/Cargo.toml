@@ -23,6 +23,7 @@ blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
 chrono = "0.4.41"
+base64 = { version = "0.22.1", optional = true }
 clap = { workspace = true, features = ["env", "unicode", "string"] }
 clap_complete = { version = "4.5.57", optional = true }
 clap_complete_nushell = { version = "4.5.8", optional = true }
@@ -52,6 +53,7 @@ merkle_hash = { version = "3.8.0", optional = true }
 miette = { workspace = true, features = ["fancy"] }
 mimalloc = "0.1.48"
 node-semver = { version = "2.2.0", optional = true }
+p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
 percent-encoding = { version = "2.3.1", optional = true }
 privilege = { version = "0.3.0", optional = true }
 pulldown-cmark = { version = "0.13.0", optional = true }
@@ -74,7 +76,7 @@ tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-uuid
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
-uuid = "1.19.0"
+uuid = { version = "1.19.0", features = ["v4"] }
 walkdir = { version = "2.5.0", optional = true }
 zip = { version = "8.2.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
@@ -112,6 +114,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-download",
 	"tamanu-find",
 	"tamanu-greenmask",
+	"tamanu-meta-ticket",
 	"tamanu-psql",
 ]
 tamanu-alerts = [
@@ -137,6 +140,7 @@ tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
+tamanu-meta-ticket = ["__tamanu", "tamanu-config", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:sysinfo"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:dirs",

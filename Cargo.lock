@@ -484,6 +484,7 @@ name = "bestool"
 version = "1.4.0"
 dependencies = [
  "algae-cli",
+ "base64 0.22.1",
  "bestool-alertd",
  "bestool-psql",
  "binstalk-downloader",
@@ -520,6 +521,7 @@ dependencies = [
  "miette",
  "mimalloc",
  "node-semver",
+ "p256",
  "percent-encoding",
  "privilege",
  "pulldown-cmark",
@@ -1708,6 +1710,7 @@ dependencies = [
  "const-oid",
  "der_derive",
  "flagset",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -1935,6 +1938,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
+ "pem-rfc7468",
  "pkcs8",
  "rand_core 0.6.4",
  "sec1",
