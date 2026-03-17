@@ -98,7 +98,10 @@ pub async fn run_with_shutdown_and_reload(
 	let pool =
 		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 
 	let scheduler = Arc::new(Scheduler::new(
 		daemon_config.alert_globs.clone(),

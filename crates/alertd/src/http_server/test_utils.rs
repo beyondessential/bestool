@@ -12,7 +12,10 @@ pub async fn create_test_state() -> Arc<ServerState> {
 	let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 		.await
 		.unwrap();
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let scheduler = Arc::new(Scheduler::new(
 		vec![],
 		ctx.clone(),

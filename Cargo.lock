@@ -588,6 +588,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "walkdir",
  "windows-service",
 ]
