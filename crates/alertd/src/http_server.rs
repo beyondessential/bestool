@@ -1,6 +1,6 @@
 //! HTTP server for alertd daemon control and metrics.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
 	Router,
@@ -23,6 +23,10 @@ pub use endpoints::*;
 pub use state::ServerState;
 pub use types::*;
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "server startup needs all these pieces"
+)]
 pub async fn start_server(
 	reload_tx: mpsc::Sender<()>,
 	event_manager: Option<Arc<EventManager>>,
@@ -31,6 +35,7 @@ pub async fn start_server(
 	dry_run: bool,
 	addrs: Vec<std::net::SocketAddr>,
 	scheduler: Arc<Scheduler>,
+	watchdog_timeout: Option<Duration>,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -44,6 +49,7 @@ pub async fn start_server(
 		email_config,
 		dry_run,
 		scheduler,
+		watchdog_timeout,
 	};
 
 	let app = Router::new()
@@ -55,6 +61,7 @@ pub async fn start_server(
 		.route("/validate", post(handle_validate))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
+		.route("/health", get(handle_health))
 		.layer(
 			TraceLayer::new_for_http()
 				.make_span_with(

@@ -26,7 +26,7 @@ futures = { workspace = true }
 glob = "0.3.3"
 jiff = "0.2.15"
 lloggs = { workspace = true, optional = true }
-mailgun-rs = "2.0.1"
+mailgun-rs = "2.0.2"
 miette = { workspace = true }
 notify = "8.2.0"
 prometheus = "0.14.0"
@@ -47,6 +47,7 @@ tokio-util = { workspace = true }
 tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["trace"] }
 tracing = { workspace = true }
+url = { version = "2.5.8", features = ["serde"] }
 walkdir = "2.5.0"
 
 [target.'cfg(windows)'.dependencies]

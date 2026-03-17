@@ -89,7 +89,10 @@ mod tests {
 		let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
 			.await
 			.unwrap();
-		let ctx = Arc::new(InternalContext { pg_pool: pool });
+		let ctx = Arc::new(InternalContext {
+			pg_pool: pool,
+			http_client: reqwest::Client::new(),
+		});
 		let scheduler = Arc::new(Scheduler::new(vec![], ctx.clone(), None, true));
 
 		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
@@ -105,6 +108,7 @@ mod tests {
 			email_config: None,
 			dry_run: true,
 			scheduler,
+			watchdog_timeout: None,
 		});
 
 		let payload = AlertRequest {

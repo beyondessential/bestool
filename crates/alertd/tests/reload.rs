@@ -33,6 +33,7 @@ async fn test_status_endpoint_response_format() {
 		.unwrap();
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool.clone(),
+		http_client: reqwest::Client::new(),
 	});
 
 	let scheduler = Arc::new(bestool_alertd::scheduler::Scheduler::new(
@@ -51,6 +52,7 @@ async fn test_status_endpoint_response_format() {
 		email_config: None,
 		dry_run: true,
 		scheduler,
+		watchdog_timeout: None,
 	});
 
 	// This verifies the response structure without needing a full daemon

@@ -61,7 +61,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// First run - not yet triggered, should trigger because value >= 90
@@ -149,7 +152,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// First run - not yet triggered, should trigger because value <= 10 (inverted)
@@ -234,7 +240,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 
 	// First execution - should trigger (first run always triggers)
 	alert.execute(ctx.clone(), None, true, &[]).await.unwrap();
@@ -288,7 +297,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// Read initial data
@@ -347,7 +359,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// Read initial data
@@ -423,7 +438,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// First run - should trigger due to numerical threshold
@@ -481,7 +499,10 @@ send:
 	alert.file = "test.yml".into();
 	let (alert, _) = alert.normalise(&Default::default()).unwrap();
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
 
 	// Should trigger because both thresholds are exceeded

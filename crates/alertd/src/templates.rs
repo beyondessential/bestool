@@ -9,7 +9,7 @@ use crate::alert::AlertDefinition;
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";
 
-#[derive(serde::Deserialize, Clone, Copy, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum TemplateField {
 	Filename,

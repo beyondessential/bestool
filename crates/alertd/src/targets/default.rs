@@ -40,7 +40,7 @@ pub fn determine_default_target(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::targets::TargetEmail;
+	use crate::targets::{TargetConnection, TargetEmail};
 
 	#[test]
 	fn test_determine_default_target_single() {
@@ -49,9 +49,9 @@ mod tests {
 			"only-target".to_string(),
 			vec![ExternalTarget {
 				id: "only-target".to_string(),
-				conn: TargetEmail {
+				conn: TargetConnection::Email(TargetEmail {
 					addresses: vec!["test@example.com".to_string()],
-				},
+				}),
 			}],
 		);
 
@@ -66,25 +66,28 @@ mod tests {
 			"default".to_string(),
 			vec![ExternalTarget {
 				id: "default".to_string(),
-				conn: TargetEmail {
+				conn: TargetConnection::Email(TargetEmail {
 					addresses: vec!["default@example.com".to_string()],
-				},
+				}),
 			}],
 		);
 		targets.insert(
 			"other".to_string(),
 			vec![ExternalTarget {
 				id: "other".to_string(),
-				conn: TargetEmail {
+				conn: TargetConnection::Email(TargetEmail {
 					addresses: vec!["other@example.com".to_string()],
-				},
+				}),
 			}],
 		);
 
 		let default = determine_default_target(&targets);
 		assert!(default.is_some());
 		let default = default.unwrap();
-		assert_eq!(default.conn.addresses[0], "default@example.com");
+		match &default.conn {
+			TargetConnection::Email(email) => assert_eq!(email.addresses[0], "default@example.com"),
+			_ => panic!("expected email target"),
+		}
 	}
 
 	#[test]
@@ -94,24 +97,27 @@ mod tests {
 			"zebra".to_string(),
 			vec![ExternalTarget {
 				id: "zebra".to_string(),
-				conn: TargetEmail {
+				conn: TargetConnection::Email(TargetEmail {
 					addresses: vec!["zebra@example.com".to_string()],
-				},
+				}),
 			}],
 		);
 		targets.insert(
 			"alpha".to_string(),
 			vec![ExternalTarget {
 				id: "alpha".to_string(),
-				conn: TargetEmail {
+				conn: TargetConnection::Email(TargetEmail {
 					addresses: vec!["alpha@example.com".to_string()],
-				},
+				}),
 			}],
 		);
 
 		let default = determine_default_target(&targets);
 		assert!(default.is_some());
 		let default = default.unwrap();
-		assert_eq!(default.conn.addresses[0], "alpha@example.com");
+		match &default.conn {
+			TargetConnection::Email(email) => assert_eq!(email.addresses[0], "alpha@example.com"),
+			_ => panic!("expected email target"),
+		}
 	}
 }

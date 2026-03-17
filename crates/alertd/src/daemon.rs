@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
@@ -12,6 +12,7 @@ use crate::{
 enum DaemonEvent {
 	FileChanged,
 	Shutdown,
+	WatchdogTimeout,
 	ResolveGlobs,
 }
 
@@ -90,13 +91,17 @@ pub async fn run_with_shutdown_and_reload(
 
 	// Initialize metrics
 	metrics::init_metrics();
+	metrics::record_activity();
 
 	debug!(database_url = %daemon_config.database_url, "creating database connection pool");
 
 	let pool =
 		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
 
-	let ctx = Arc::new(InternalContext { pg_pool: pool });
+	let ctx = Arc::new(InternalContext {
+		pg_pool: pool,
+		http_client: reqwest::Client::new(),
+	});
 
 	let scheduler = Arc::new(Scheduler::new(
 		daemon_config.alert_globs.clone(),
@@ -136,6 +141,7 @@ pub async fn run_with_shutdown_and_reload(
 				drop(guard);
 				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 			};
+			let watchdog_timeout_for_server = daemon_config.watchdog_timeout;
 			http_server::start_server(
 				reload_tx_for_server,
 				event_mgr,
@@ -144,6 +150,7 @@ pub async fn run_with_shutdown_and_reload(
 				dry_run_for_server,
 				daemon_config.server_addrs.clone(),
 				scheduler_for_server,
+				watchdog_timeout_for_server,
 			)
 			.await;
 		});
@@ -224,6 +231,35 @@ pub async fn run_with_shutdown_and_reload(
 		}
 	});
 
+	// Watchdog: if no alert task has ticked within the timeout, shut down so the
+	// service manager (Windows SCM / systemd / etc.) can restart us.
+	if let Some(watchdog_timeout) = daemon_config.watchdog_timeout {
+		let watchdog_tx = event_tx.clone();
+		tokio::spawn(async move {
+			// Give the daemon time to start up and run its first tick
+			let grace = watchdog_timeout.max(Duration::from_secs(60));
+			tokio::time::sleep(grace).await;
+
+			let mut check_interval = tokio::time::interval(Duration::from_secs(30));
+			check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+			loop {
+				check_interval.tick().await;
+				let last = metrics::last_activity_timestamp();
+				let now = jiff::Timestamp::now().as_second();
+				let elapsed = Duration::from_secs(now.saturating_sub(last) as u64);
+				if elapsed > watchdog_timeout {
+					error!(
+						?elapsed,
+						?watchdog_timeout,
+						"watchdog: no alert activity detected within timeout, shutting down"
+					);
+					let _ = watchdog_tx.send(DaemonEvent::WatchdogTimeout).await;
+					break;
+				}
+			}
+		});
+	}
+
 	// Listen for external reload signals (e.g., from Windows TIME_CHANGE event)
 	if let Some(mut external_reload_rx) = external_reload {
 		let reload_tx = reload_tx.clone();
@@ -261,10 +297,15 @@ pub async fn run_with_shutdown_and_reload(
 						}
 					}
 					DaemonEvent::Shutdown => {
-						scheduler.shutdown().await;
-						info!("daemon stopped");
-						break;
-					}
+							scheduler.shutdown().await;
+							info!("daemon stopped");
+							break;
+						}
+						DaemonEvent::WatchdogTimeout => {
+							scheduler.shutdown().await;
+							error!("daemon exiting due to watchdog timeout");
+							return Err(miette!("watchdog timeout: no alert activity detected"));
+						}
 				}
 			}
 			Some(()) = reload_rx.recv() => {
