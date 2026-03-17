@@ -16,10 +16,12 @@ pub mod templates;
 #[cfg(windows)]
 pub mod windows_service;
 
-pub use alert::{AlertDefinition, InternalContext, TicketSource};
+pub use alert::{AlertDefinition, AlwaysSend, InternalContext, TicketSource, WhenChanged};
 pub use daemon::{run, run_with_shutdown, run_with_shutdown_and_reload};
 pub use events::EventType;
-pub use targets::{AlertTargets, ExternalTarget, ResolvedTarget, SendTarget};
+pub use targets::{
+	AlertTargets, ExternalTarget, ResolvedTarget, SendTarget, TargetConnection, TargetEmail,
+};
 
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
