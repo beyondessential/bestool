@@ -6,7 +6,11 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-	DaemonConfig, LogError, alert::InternalContext, http_server, metrics, scheduler::Scheduler,
+	DaemonConfig, LogError,
+	alert::InternalContext,
+	events::{EventContext, EventType},
+	http_server, metrics,
+	scheduler::Scheduler,
 };
 
 enum DaemonEvent {
@@ -230,6 +234,76 @@ pub async fn run_with_shutdown_and_reload(
 			let _ = glob_resolve_tx.send(DaemonEvent::ResolveGlobs).await;
 		}
 	});
+
+	// Periodic database health check (every 30 seconds)
+	{
+		let health_ctx = ctx.clone();
+		let health_scheduler = scheduler.clone();
+		let health_email = daemon_config.email.clone();
+		let health_dry_run = daemon_config.dry_run;
+		let health_db_url = daemon_config.database_url.clone();
+		tokio::spawn(async move {
+			let mut was_down = false;
+			let mut check_interval = tokio::time::interval(Duration::from_secs(30));
+			check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+			loop {
+				check_interval.tick().await;
+
+				let healthy = match health_ctx.pg_pool.get_timeout(Duration::from_secs(5)).await {
+					Ok(conn) => conn.simple_query("SELECT 1").await.is_ok(),
+					Err(_) => false,
+				};
+
+				if healthy {
+					if was_down {
+						info!("database connection restored");
+						was_down = false;
+					}
+				} else if !was_down {
+					was_down = true;
+					error!("database health check failed, triggering database-down event");
+
+					// Redact password from URL for the alert context
+					let redacted_url = match url::Url::parse(&health_db_url) {
+						Ok(mut parsed) => {
+							if parsed.password().is_some() {
+								let _ = parsed.set_password(Some("***"));
+							}
+							parsed.to_string()
+						}
+						Err(_) => "(unparsable)".to_string(),
+					};
+
+					let event_context = EventContext::DatabaseDown {
+						database_url: redacted_url,
+						error_message: "health check SELECT 1 failed or timed out".to_string(),
+					};
+
+					if let Some(ref event_mgr) = *health_scheduler.get_event_manager().read().await
+					{
+						if let Err(err) = event_mgr
+							.trigger_event(
+								EventType::DatabaseDown,
+								&health_ctx,
+								health_email.as_ref(),
+								health_dry_run,
+								event_context,
+							)
+							.await
+						{
+							error!("failed to trigger database-down event: {}", LogError(&err));
+						}
+					} else {
+						warn!(
+							"event manager not yet initialized, cannot trigger database-down event"
+						);
+					}
+				} else {
+					debug!("database still unreachable");
+				}
+			}
+		});
+	}
 
 	// Watchdog: if no alert task has ticked within the timeout, shut down so the
 	// service manager (Windows SCM / systemd / etc.) can restart us.

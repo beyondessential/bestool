@@ -17,6 +17,7 @@ pub enum EventType {
 	SourceError,
 	DefinitionError,
 	Http,
+	DatabaseDown,
 }
 
 impl EventType {
@@ -25,6 +26,7 @@ impl EventType {
 			Self::SourceError => "source-error",
 			Self::DefinitionError => "definition-error",
 			Self::Http => "http",
+			Self::DatabaseDown => "database-down",
 		}
 	}
 }
@@ -44,6 +46,10 @@ pub enum EventContext {
 		message: String,
 		subject: Option<String>,
 		custom: serde_json::Value,
+	},
+	DatabaseDown {
+		database_url: String,
+		error_message: String,
 	},
 }
 
@@ -77,6 +83,13 @@ impl EventContext {
 						ctx.insert(key, value);
 					}
 				}
+			}
+			Self::DatabaseDown {
+				database_url,
+				error_message,
+			} => {
+				ctx.insert("database_url", database_url);
+				ctx.insert("error_message", error_message);
 			}
 		}
 		ctx
@@ -206,6 +219,14 @@ impl EventManager {
 					"[bestool-alertd] {{ hostname }}: {{ subject }}".to_string(),
 					"{{ message }}".to_string(),
 				),
+				EventType::DatabaseDown => (
+					"[bestool-alertd] {{ hostname }}: Database unreachable".to_string(),
+					"The PostgreSQL database is unreachable.\n\n\
+					 Database URL: {{ database_url }}\n\
+					 Error: <pre>{{ error_message }}</pre>\n\n\
+					 All SQL-based alerts are non-functional until the database is restored."
+						.to_string(),
+				),
 			};
 
 			let default_target_for_event = ResolvedTarget {
@@ -271,6 +292,7 @@ mod tests {
 		assert_eq!(EventType::SourceError.as_str(), "source-error");
 		assert_eq!(EventType::DefinitionError.as_str(), "definition-error");
 		assert_eq!(EventType::Http.as_str(), "http");
+		assert_eq!(EventType::DatabaseDown.as_str(), "database-down");
 	}
 
 	#[test]
@@ -316,6 +338,31 @@ mod tests {
 			"Test subject"
 		);
 		assert_eq!(tera_ctx.get("extra").unwrap().as_str().unwrap(), "data");
+	}
+
+	#[test]
+	fn test_event_type_database_down() {
+		let yaml = "database-down";
+		let event: EventType = serde_yaml::from_str(yaml).unwrap();
+		assert_eq!(event, EventType::DatabaseDown);
+	}
+
+	#[test]
+	fn test_event_context_to_tera_database_down() {
+		let ctx = EventContext::DatabaseDown {
+			database_url: "postgresql://localhost/mydb".to_string(),
+			error_message: "connection refused".to_string(),
+		};
+
+		let tera_ctx = ctx.to_tera_context();
+		assert_eq!(
+			tera_ctx.get("database_url").unwrap().as_str().unwrap(),
+			"postgresql://localhost/mydb"
+		);
+		assert_eq!(
+			tera_ctx.get("error_message").unwrap().as_str().unwrap(),
+			"connection refused"
+		);
 	}
 
 	#[test]
