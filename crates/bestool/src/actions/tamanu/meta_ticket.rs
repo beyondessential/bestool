@@ -219,9 +219,9 @@ mod tests {
 	fn test_derive_public_key_pem() {
 		let private_pem = "\
 -----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2Z3qX2BTLS4e+KB3
-Q1eiSGKALDmSoP6AxoL+ZbTxyBahRANCAARi2dKHWXpBA3Ol/rpiYZTBGVknHUJh
-Lnfy16zm2PPZGUKC/sCFTMmvRflAHv6jDG4YNMjTqMNWQ7JlEcjmizjL
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVvhzsYiidp38GYn1
+KxD5Wipc/h8lglVsy1UFZq/SZbGhRANCAAT2EsEq7xjeWVnim9XwdYXga/LBbppm
+fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 -----END PRIVATE KEY-----";
 
 		let public_pem = derive_public_key_pem(private_pem).unwrap();
