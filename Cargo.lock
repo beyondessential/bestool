@@ -623,6 +623,7 @@ dependencies = [
 name = "bestool-psql"
 version = "1.4.1"
 dependencies = [
+ "aegis",
  "bestool-postgres",
  "clap",
  "clap-markdown",
