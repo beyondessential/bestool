@@ -15,9 +15,9 @@ repository = "https://github.com/beyondessential/bestool"
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.0.15", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.0.16", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "1.0.9", path = "../alertd", default-features = false, optional = true }
-bestool-psql = { version = "1.4.1", path = "../psql", default-features = false, optional = true }
+bestool-psql = { version = "1.4.2", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.36", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
