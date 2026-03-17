@@ -76,7 +76,7 @@ tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-uuid
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
-uuid = "1.19.0"
+uuid = { version = "1.19.0", features = ["v4"] }
 walkdir = { version = "2.5.0", optional = true }
 zip = { version = "8.2.0", optional = true, default-features = false, features = ["time"] }
 zmq = { version = "0.10.0", optional = true }
