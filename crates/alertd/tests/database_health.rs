@@ -33,7 +33,7 @@ send:
 #[test]
 fn test_database_down_default_template_renders() {
 	let subject_template = "[bestool-alertd] {{ hostname }}: Database unreachable";
-	let body_template = "The PostgreSQL database that alertd depends on is unreachable.\n\n\
+	let body_template = "The PostgreSQL database is unreachable.\n\n\
 		Database URL: {{ database_url }}\n\
 		Error: <pre>{{ error_message }}</pre>\n\n\
 		All SQL-based alerts are non-functional until the database is restored.";
@@ -76,8 +76,8 @@ fn test_database_down_default_template_renders() {
 		"Body should contain the error message, got: {body}"
 	);
 	assert!(
-		body.contains("All SQL-based alerts are non-functional"),
-		"Body should mention alerts are non-functional, got: {body}"
+		body.contains("The PostgreSQL database is unreachable"),
+		"Body should mention database is unreachable, got: {body}"
 	);
 }
 
@@ -176,7 +176,7 @@ fn test_database_url_redaction_without_password() {
 }
 
 #[test]
-fn test_database_url_redaction_unparseable() {
+fn test_database_url_redaction_unparsable() {
 	let bad_url = "not a url at all";
 	let result = match url::Url::parse(bad_url) {
 		Ok(mut parsed) => {
@@ -185,7 +185,7 @@ fn test_database_url_redaction_unparseable() {
 			}
 			parsed.to_string()
 		}
-		Err(_) => "(unparseable)".to_string(),
+		Err(_) => "(unparsable)".to_string(),
 	};
-	assert_eq!(result, "(unparseable)");
+	assert_eq!(result, "(unparsable)");
 }

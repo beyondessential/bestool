@@ -271,7 +271,7 @@ pub async fn run_with_shutdown_and_reload(
 							}
 							parsed.to_string()
 						}
-						Err(_) => "(unparseable)".to_string(),
+						Err(_) => "(unparsable)".to_string(),
 					};
 
 					let event_context = EventContext::DatabaseDown {

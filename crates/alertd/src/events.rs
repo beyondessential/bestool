@@ -221,7 +221,7 @@ impl EventManager {
 				),
 				EventType::DatabaseDown => (
 					"[bestool-alertd] {{ hostname }}: Database unreachable".to_string(),
-					"The PostgreSQL database that alertd depends on is unreachable.\n\n\
+					"The PostgreSQL database is unreachable.\n\n\
 					 Database URL: {{ database_url }}\n\
 					 Error: <pre>{{ error_message }}</pre>\n\n\
 					 All SQL-based alerts are non-functional until the database is restored."
