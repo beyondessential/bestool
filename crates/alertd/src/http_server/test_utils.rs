@@ -31,5 +31,6 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		email_config: None,
 		dry_run: true,
 		scheduler,
+		watchdog_timeout: Some(std::time::Duration::from_secs(600)),
 	})
 }

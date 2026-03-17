@@ -438,6 +438,7 @@ impl Scheduler {
 
 			loop {
 				ticker.tick().await;
+				metrics::record_activity();
 
 				// Check if alert is paused
 				let is_paused = {

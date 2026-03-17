@@ -66,6 +66,20 @@ struct DaemonArgs {
 	/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 	#[arg(long)]
 	server_addr: Vec<std::net::SocketAddr>,
+
+	/// Watchdog timeout in seconds
+	///
+	/// If no alert task reports activity within this many seconds, the daemon
+	/// will exit so the service manager can restart it. Defaults to 600 (10 minutes).
+	#[arg(long, default_value = "600")]
+	watchdog_timeout: u64,
+
+	/// Disable the watchdog
+	///
+	/// By default, the daemon will exit if no alert activity is detected within
+	/// the watchdog timeout. This flag disables that behavior.
+	#[arg(long)]
+	no_watchdog: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -78,6 +92,19 @@ enum Command {
 	Run {
 		#[command(flatten)]
 		daemon: DaemonArgs,
+	},
+
+	/// Show status and health of a running daemon
+	///
+	/// Connects to the running daemon's HTTP API and displays version, uptime,
+	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+	Status {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<std::net::SocketAddr>,
 	},
 
 	/// Send reload signal to running daemon
@@ -163,6 +190,14 @@ enum Command {
 	#[cfg(windows)]
 	Uninstall,
 
+	/// Configure failure recovery on an existing Windows service
+	///
+	/// Updates the 'bestool-alertd' service to automatically restart on failure.
+	/// This is done automatically on new installs, but can be run separately to
+	/// update an already-installed service.
+	#[cfg(windows)]
+	ConfigureRecovery,
+
 	#[cfg(windows)]
 	#[command(hide = true)]
 	Service {
@@ -226,10 +261,17 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 		}
 	};
 
+	let watchdog_timeout = if daemon.no_watchdog {
+		None
+	} else {
+		Some(std::time::Duration::from_secs(daemon.watchdog_timeout))
+	};
+
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(daemon.glob, database_url)
 		.with_dry_run(daemon.dry_run)
 		.with_no_server(daemon.no_server)
-		.with_server_addrs(daemon.server_addr);
+		.with_server_addrs(daemon.server_addr)
+		.with_watchdog_timeout(watchdog_timeout);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
@@ -249,6 +291,14 @@ async fn main() -> Result<()> {
 
 	match args.command {
 		Command::Run { daemon } => run_daemon(daemon).await,
+		Command::Status { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::get_status(&addrs).await
+		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
 				bestool_alertd::commands::default_server_addrs()
@@ -292,6 +342,8 @@ async fn main() -> Result<()> {
 		Command::Install => bestool_alertd::windows_service::install_service(),
 		#[cfg(windows)]
 		Command::Uninstall => bestool_alertd::windows_service::uninstall_service(),
+		#[cfg(windows)]
+		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
 			let daemon_config = build_daemon_config(daemon)?;

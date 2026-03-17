@@ -1,11 +1,13 @@
 mod loaded_alerts;
 mod pause;
 mod reload;
+mod status;
 mod validate;
 
 pub use loaded_alerts::get_loaded_alerts;
 pub use pause::pause_alert;
 pub use reload::send_reload;
+pub use status::get_status;
 pub use validate::validate_alert;
 
 use tracing::info;

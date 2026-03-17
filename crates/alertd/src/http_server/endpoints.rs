@@ -1,5 +1,6 @@
 mod alert;
 mod alerts;
+mod health;
 mod index;
 mod metrics;
 mod pause_alert;
@@ -10,6 +11,7 @@ mod validate;
 
 pub use alert::handle_alert;
 pub use alerts::handle_alerts;
+pub use health::handle_health;
 pub use index::handle_index;
 pub use metrics::handle_metrics;
 pub use pause_alert::handle_pause_alert;

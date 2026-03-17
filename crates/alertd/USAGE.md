@@ -6,6 +6,7 @@ This document contains the help content for the `bestool-alertd` command-line pr
 
 * [`bestool-alertd`↴](#bestool-alertd)
 * [`bestool-alertd run`↴](#bestool-alertd-run)
+* [`bestool-alertd status`↴](#bestool-alertd-status)
 * [`bestool-alertd reload`↴](#bestool-alertd-reload)
 * [`bestool-alertd loaded-alerts`↴](#bestool-alertd-loaded-alerts)
 * [`bestool-alertd pause-alert`↴](#bestool-alertd-pause-alert)
@@ -26,6 +27,7 @@ The alert and target definitions are documented online at: <https://github.com/b
 ###### **Subcommands:**
 
 * `run` — Run the alert daemon
+* `status` — Show status and health of a running daemon
 * `reload` — Send reload signal to running daemon
 * `loaded-alerts` — List currently loaded alert files
 * `pause-alert` — Temporarily pause an alert
@@ -98,6 +100,30 @@ Starts the daemon which monitors alert definition files and executes alerts base
 * `--server-addr <SERVER_ADDR>` — HTTP server bind address(es)
 
    Can be provided multiple times. The server will attempt to bind to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+* `--watchdog-timeout <WATCHDOG_TIMEOUT>` — Watchdog timeout in seconds
+
+   If no alert task reports activity within this many seconds, the daemon will exit so the service manager can restart it. Defaults to 600 (10 minutes).
+
+  Default value: `600`
+* `--no-watchdog` — Disable the watchdog
+
+   By default, the daemon will exit if no alert activity is detected within the watchdog timeout. This flag disables that behavior.
+
+
+
+## `bestool-alertd status`
+
+Show status and health of a running daemon
+
+Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+
+**Usage:** `bestool-alertd status [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
+
+   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 
 
 

@@ -1,10 +1,18 @@
-use std::{path::{Path, PathBuf}, net::SocketAddr};
+use std::{
+	net::SocketAddr,
+	path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
 use tracing::{debug, info};
 
-use super::{TamanuArgs, config::{TamanuConfig, load_config}, connection_url::ConnectionUrlBuilder, find_tamanu};
+use super::{
+	TamanuArgs,
+	config::{TamanuConfig, load_config},
+	connection_url::ConnectionUrlBuilder,
+	find_tamanu,
+};
 use crate::actions::Context;
 
 /// Run the alert daemon
@@ -46,8 +54,21 @@ struct DaemonArgs {
 	/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 	#[arg(long)]
 	server_addr: Vec<SocketAddr>,
-}
 
+	/// Watchdog timeout in seconds
+	///
+	/// If no alert task reports activity within this many seconds, the daemon
+	/// will exit so the service manager can restart it. Defaults to 600 (10 minutes).
+	#[arg(long, default_value = "600")]
+	watchdog_timeout: u64,
+
+	/// Disable the watchdog
+	///
+	/// By default, the daemon will exit if no alert activity is detected within
+	/// the watchdog timeout. This flag disables that behavior.
+	#[arg(long)]
+	no_watchdog: bool,
+}
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
@@ -59,6 +80,19 @@ enum Command {
 	Run {
 		#[command(flatten)]
 		daemon: DaemonArgs,
+	},
+
+	/// Show status and health of a running daemon
+	///
+	/// Connects to the running daemon's HTTP API and displays version, uptime,
+	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+	Status {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
 	},
 
 	/// Send reload signal to running daemon
@@ -144,6 +178,14 @@ enum Command {
 	#[cfg(windows)]
 	Uninstall,
 
+	/// Configure failure recovery on an existing Windows service
+	///
+	/// Updates the 'bestool-alertd' service to automatically restart on failure.
+	/// This is done automatically on new installs, but can be run separately to
+	/// update an already-installed service.
+	#[cfg(windows)]
+	ConfigureRecovery,
+
 	#[cfg(windows)]
 	#[command(hide = true)]
 	Service {
@@ -154,31 +196,23 @@ enum Command {
 
 pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 	match ctx.args_sub.command {
+		Command::Status { server_addr } => {
+			let addrs = resolve_addrs(server_addr);
+			bestool_alertd::commands::get_status(&addrs).await
+		}
 		Command::Validate { file, server_addr } => {
-			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
-			} else {
-				server_addr
-			};
+			let addrs = resolve_addrs(server_addr);
 			bestool_alertd::commands::validate_alert(&file, &addrs).await
 		}
 		Command::Reload { server_addr } => {
-			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
-			} else {
-				server_addr
-			};
+			let addrs = resolve_addrs(server_addr);
 			bestool_alertd::commands::send_reload(&addrs).await
 		}
 		Command::LoadedAlerts {
 			server_addr,
 			detail,
 		} => {
-			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
-			} else {
-				server_addr
-			};
+			let addrs = resolve_addrs(server_addr);
 			bestool_alertd::commands::get_loaded_alerts(&addrs, detail).await
 		}
 		Command::PauseAlert {
@@ -186,16 +220,10 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			until,
 			server_addr,
 		} => {
-			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
-			} else {
-				server_addr
-			};
+			let addrs = resolve_addrs(server_addr);
 			bestool_alertd::commands::pause_alert(&alert, until.as_deref(), &addrs).await
 		}
-		Command::Run {
-			daemon,
-		} => {
+		Command::Run { daemon } => {
 			let (_, root) = find_tamanu(&ctx.args_top)?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
@@ -215,14 +243,38 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 		#[cfg(windows)]
 		Command::Uninstall => bestool_alertd::windows_service::uninstall_service(),
 		#[cfg(windows)]
+		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
+		#[cfg(windows)]
 		Command::Service { daemon } => {
 			let (_, root) = find_tamanu(&ctx.args_top)?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
+			// Check and auto-apply recovery configuration if needed
+			match bestool_alertd::windows_service::is_recovery_configured() {
+				Ok(false) => {
+					info!("failure recovery not configured, applying automatically");
+					if let Err(e) = bestool_alertd::windows_service::configure_recovery() {
+						tracing::warn!("failed to auto-configure recovery: {e}");
+					}
+				}
+				Err(e) => {
+					tracing::warn!("failed to check recovery configuration: {e}");
+				}
+				Ok(true) => {}
+			}
+
 			let daemon_config = build_config(&root, config, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
+	}
+}
+
+fn resolve_addrs(server_addr: Vec<SocketAddr>) -> Vec<SocketAddr> {
+	if server_addr.is_empty() {
+		bestool_alertd::commands::default_server_addrs()
+	} else {
+		server_addr
 	}
 }
 
@@ -234,6 +286,8 @@ async fn build_config(
 		dry_run,
 		no_server,
 		server_addr,
+		watchdog_timeout,
+		no_watchdog,
 	}: DaemonArgs,
 ) -> Result<bestool_alertd::DaemonConfig> {
 	let dirs = if glob.is_empty() {
@@ -272,10 +326,17 @@ async fn build_config(
 			mailgun_domain: mg.domain.clone(),
 		});
 
+	let watchdog = if no_watchdog {
+		None
+	} else {
+		Some(std::time::Duration::from_secs(watchdog_timeout))
+	};
+
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(dirs, database_url)
 		.with_dry_run(dry_run)
 		.with_no_server(no_server)
-		.with_server_addrs(server_addr);
+		.with_server_addrs(server_addr)
+		.with_watchdog_timeout(watchdog);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);

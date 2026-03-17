@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 use tokio::sync::mpsc;
@@ -15,4 +15,5 @@ pub struct ServerState {
 	pub email_config: Option<EmailConfig>,
 	pub dry_run: bool,
 	pub scheduler: Arc<Scheduler>,
+	pub watchdog_timeout: Option<Duration>,
 }
