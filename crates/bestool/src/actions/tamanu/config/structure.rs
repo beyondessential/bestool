@@ -7,6 +7,7 @@ use reqwest::Url;
 pub struct TamanuConfig {
 	pub canonical_host_name: Option<Url>,
 	pub canonical_url: Option<Url>,
+	pub server_facility_ids: Option<Vec<String>>,
 	pub db: Database,
 	pub mailgun: Option<Mailgun>,
 }
@@ -16,6 +17,12 @@ impl TamanuConfig {
 		self.canonical_host_name
 			.as_ref()
 			.or(self.canonical_url.as_ref())
+	}
+
+	pub fn is_facility(&self) -> bool {
+		self.server_facility_ids
+			.as_ref()
+			.is_some_and(|ids| !ids.is_empty())
 	}
 }
 

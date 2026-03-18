@@ -25,6 +25,7 @@ pub struct MetaTicketArgs;
 #[serde(rename_all = "camelCase")]
 struct Ticket {
 	v: &'static str,
+	kind: &'static str,
 	server_id: String,
 	public_key: String,
 	hostname: Option<String>,
@@ -76,8 +77,15 @@ pub async fn run(ctx: Context<TamanuArgs, MetaTicketArgs>) -> Result<()> {
 	let (tailscale_ip, tailscale_name) = get_tailscale_info();
 	let hosting = detect_hosting();
 
+	let kind = if config.is_facility() {
+		"facility"
+	} else {
+		"central"
+	};
+
 	let ticket = Ticket {
 		v: "ticket-1",
+		kind,
 		server_id,
 		public_key: public_key_pem,
 		hostname: System::host_name(),
@@ -348,6 +356,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	fn test_ticket_serialization() {
 		let ticket = Ticket {
 			v: "ticket-1",
+			kind: "central",
 			server_id: "abc-123".to_string(),
 			public_key: "test-key".to_string(),
 			hostname: Some("test-host".to_string()),
@@ -360,6 +369,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let json = serde_json::to_string(&ticket).unwrap();
 		let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 		assert_eq!(parsed["v"], "ticket-1");
+		assert_eq!(parsed["kind"], "central");
 		assert_eq!(parsed["serverId"], "abc-123");
 		assert_eq!(parsed["publicKey"], "test-key");
 		assert_eq!(parsed["hostname"], "test-host");
@@ -373,6 +383,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	fn test_ticket_base64_roundtrip() {
 		let ticket = Ticket {
 			v: "ticket-1",
+			kind: "facility",
 			server_id: "id-1".to_string(),
 			public_key: "pk".to_string(),
 			hostname: Some("h".to_string()),
