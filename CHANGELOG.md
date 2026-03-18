@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.5.0](https://github.com/beyondessential/bestool/compare/v1.4.0..1.5.0) - 2026-03-17
+## [1.5.1](https://github.com/beyondessential/bestool/compare/v1.5.0..1.5.1) - 2026-03-18
+
+
+
+
+- **feat(tamanu):** KAM-486: add kind field to meta-ticket (#275) - ([a402b95](https://github.com/beyondessential/bestool/commit/a402b9533aac13c06cdb5f19170acefcd32c159b))
+---
+## [1.5.0](https://github.com/beyondessential/bestool/compare/v1.4.0..v1.5.0) - 2026-03-17
 
 
 - **deps:** Update to zip 8.2.0 - ([3b69e33](https://github.com/beyondessential/bestool/commit/3b69e33c6c0e740a693a87dadccbc39f1c59560d))
