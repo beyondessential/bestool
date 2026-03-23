@@ -29,9 +29,9 @@ dependencies = [
 
 [[package]]
 name = "aegis"
-version = "0.9.7"
+version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae1572243695de9c6c8d16c7889899abac907d14c148f1939d837122bbeca79"
+checksum = "78412fa53e6da95324e8902c3641b3ff32ab45258582ea997eb9169c68ffa219"
 dependencies = [
  "cc",
  "softaes",
@@ -276,9 +276,9 @@ checksum = "bfdc70193dadb9d7287fa4b633f15f90c876915b31f6af17da307fc59c9859a8"
 
 [[package]]
 name = "astral-tokio-tar"
-version = "0.5.6"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec179a06c1769b1e42e1e2cbe74c7dcdb3d6383c838454d063eaac5bbb7ebbe5"
+checksum = "3c23f3af104b40a3430ccb90ed5f7bd877a8dc5c26fc92fde51a22b40890dcf9"
 dependencies = [
  "filetime",
  "futures-core",
@@ -550,7 +550,7 @@ dependencies = [
  "windows-acl",
  "windows-env",
  "windows_exe_info",
- "zip 8.2.0",
+ "zip 8.3.1",
  "zmq",
 ]
 
@@ -667,7 +667,7 @@ dependencies = [
  "turso_core",
  "url",
  "uuid",
- "winnow 0.7.15",
+ "winnow 1.0.0",
 ]
 
 [[package]]
@@ -740,9 +740,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.13.36"
+version = "0.13.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94c57ab803af543405ff3bf48a889905ef7f32adf3c469d276c7325315cf5e7"
+checksum = "f9b61553f3960739a0ea898c831178563c35cd6e2b930dc1a9e48ef09b9acd12"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -1759,9 +1759,9 @@ dependencies = [
 
 [[package]]
 name = "detect-targets"
-version = "0.1.82"
+version = "0.1.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f900fc8ae948c77185ffdcfbe40eb0d785db476cfd1de9f877688a36b7810957"
+checksum = "be60da2bc7cd8e3e64cf996908713f835f643395a322ee1417574799b0f14f8a"
 dependencies = [
  "cfg-if",
  "guess_host_triple",
@@ -1861,9 +1861,9 @@ dependencies = [
 
 [[package]]
 name = "dlopen2"
-version = "0.5.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09b4f5f101177ff01b8ec4ecc81eead416a8aa42819a2869311b3420fa114ffa"
+checksum = "5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4"
 dependencies = [
  "libc",
  "once_cell",
@@ -3892,9 +3892,9 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "0.40.1"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b0a0096d9613ee878dba89bbe595f079d373e3f1960d882e4f2f78ff9c30a0a"
+checksum = "395f1acaf7a073f756fc22068e0b526d2cf22d09f5e13802b516ef8eeaeee5eb"
 dependencies = [
  "block2",
  "dispatch2",
@@ -3909,7 +3909,7 @@ dependencies = [
  "objc2-system-configuration",
  "once_cell",
  "plist",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5000,9 +5000,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.1"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83c41efbf8f90ac44de7f3a868f0867851d261b56291732d0cbf7cceaaeb55a6"
+checksum = "7c3a14896dfa883796f1cb410461aef38810ea05f2b2c33c5aded3649095fdad"
 dependencies = [
  "bitflags 2.11.0",
  "getopts",
@@ -8278,6 +8278,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "winnow"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a90e88e4667264a994d34e6d1ab2d26d398dcdca8b7f52bec8668957517fc7d8"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "winreg"
 version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8584,9 +8593,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.2.0"
+version = "8.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b680f2a0cd479b4cff6e1233c483fdead418106eae419dc60200ae9850f6d004"
+checksum = "5c546feb4481b0fbafb4ef0d79b6204fc41c6f9884b1b73b1d73f82442fc0845"
 dependencies = [
  "crc32fast",
  "indexmap",
