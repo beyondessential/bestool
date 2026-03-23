@@ -30,7 +30,7 @@ mailgun-rs = "2.0.2"
 miette = { workspace = true }
 notify = "8.2.0"
 prometheus = "0.14.0"
-pulldown-cmark = "0.13.0"
+pulldown-cmark = "0.13.3"
 rand.workspace = true
 reqwest = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
