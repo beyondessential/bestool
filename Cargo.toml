@@ -7,7 +7,6 @@ members = [
 	"crates/postgres",
 	"crates/psql",
 	"crates/rpi-st7789v2-driver",
-	"crates/winsvc",
 ]
 
 [workspace.lints.rust]

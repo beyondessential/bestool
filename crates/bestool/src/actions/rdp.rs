@@ -12,8 +12,6 @@ pub mod tailscale;
 
 #[cfg(windows)]
 pub mod notify;
-#[cfg(windows)]
-pub mod service_runtime;
 
 /// Windows RDP session tooling.
 #[derive(Debug, Clone, Parser)]

@@ -58,7 +58,7 @@ pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 
 	if args.service {
 		#[cfg(windows)]
-		return tokio::task::spawn_blocking(move || super::service_runtime::dispatch(args))
+		return tokio::task::spawn_blocking(move || super::service::dispatch_service_mode(args))
 			.await
 			.into_diagnostic()
 			.wrap_err("service dispatcher task panicked")?;

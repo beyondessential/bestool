@@ -10,10 +10,9 @@ use super::RdpArgs;
 #[cfg(windows)]
 pub(crate) const SERVICE_NAME: &str = "bestool-rdp-monitor";
 #[cfg(windows)]
-pub(crate) const SERVICE_DISPLAY_NAME: &str = "BES RDP Monitor";
+const SERVICE_DISPLAY_NAME: &str = "BES RDP Monitor";
 #[cfg(windows)]
-pub(crate) const SERVICE_DESCRIPTION: &str =
-	"Watches RDP sessions for fast user-switch (kick) events, writes a JSONL audit log, and raises a toast on the incoming session.";
+const SERVICE_DESCRIPTION: &str = "Watches RDP sessions for fast user-switch (kick) events, writes a JSONL audit log, and raises a toast on the incoming session.";
 
 /// Install, remove, start, stop, or query the `bestool-rdp-monitor` Windows
 /// Service. All subcommands except `status` require Administrator rights.
@@ -73,25 +72,42 @@ pub async fn run(ctx: Context<RdpArgs, ServiceArgs>) -> Result<()> {
 	#[cfg(not(windows))]
 	{
 		let _ = ctx;
-		Err(miette!("rdp service management is only available on Windows"))
+		Err(miette!(
+			"rdp service management is only available on Windows"
+		))
 	}
 }
 
 #[cfg(windows)]
+pub use imp::dispatch_service_mode;
+
+#[cfg(windows)]
 mod imp {
-	use std::ffi::OsString;
+	use std::{ffi::OsString, sync::Mutex, time::Duration};
 
 	use miette::{IntoDiagnostic, Result, WrapErr, miette};
-	use tracing::info;
+	use tokio::sync::watch;
+	use tracing::{debug, info, warn};
 	use windows_service::{
+		define_windows_service,
 		service::{
-			ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState,
-			ServiceType,
+			ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
+			ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 		},
+		service_control_handler::{self, ServiceControlHandlerResult},
+		service_dispatcher,
 		service_manager::{ServiceManager, ServiceManagerAccess},
 	};
 
 	use super::{InstallArgs, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_NAME};
+	use crate::actions::rdp::{
+		audit::AuditLog,
+		events::poll_events,
+		monitor::{MonitorArgs, handle_event},
+		state::Tracker,
+	};
+
+	const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
 	fn require_admin() -> Result<()> {
 		if !privilege::user::privileged() {
@@ -136,7 +152,7 @@ mod imp {
 		let info = ServiceInfo {
 			name: OsString::from(SERVICE_NAME),
 			display_name: OsString::from(SERVICE_DISPLAY_NAME),
-			service_type: ServiceType::OWN_PROCESS,
+			service_type: SERVICE_TYPE,
 			start_type: ServiceStartType::AutoStart,
 			error_control: ServiceErrorControl::Normal,
 			executable_path: exe,
@@ -224,4 +240,134 @@ mod imp {
 		Ok(())
 	}
 
+	static SERVICE_ARGS: Mutex<Option<MonitorArgs>> = Mutex::new(None);
+
+	define_windows_service!(ffi_service_main, service_main);
+
+	fn service_main(_args: Vec<OsString>) {
+		if let Err(err) = run_as_service() {
+			warn!(?err, "service main exited with error");
+		}
+	}
+
+	fn run_as_service() -> Result<()> {
+		let args = SERVICE_ARGS
+			.lock()
+			.unwrap()
+			.take()
+			.ok_or_else(|| miette!("service args were not set before dispatch"))?;
+
+		let (shutdown_tx, shutdown_rx) = watch::channel(false);
+		let handler = move |event| -> ServiceControlHandlerResult {
+			match event {
+				ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+				ServiceControl::Stop | ServiceControl::Shutdown => {
+					let _ = shutdown_tx.send(true);
+					ServiceControlHandlerResult::NoError
+				}
+				_ => ServiceControlHandlerResult::NotImplemented,
+			}
+		};
+
+		let status_handle = service_control_handler::register(SERVICE_NAME, handler)
+			.into_diagnostic()
+			.wrap_err("registering service control handler")?;
+
+		status_handle
+			.set_service_status(running_status())
+			.into_diagnostic()?;
+
+		let runtime = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.into_diagnostic()
+			.wrap_err("building service-mode tokio runtime")?;
+
+		let result = runtime.block_on(service_loop(args, shutdown_rx));
+
+		let exit = match &result {
+			Ok(()) => ServiceExitCode::Win32(0),
+			Err(_) => ServiceExitCode::Win32(1),
+		};
+		status_handle
+			.set_service_status(stopped_status(exit))
+			.into_diagnostic()?;
+
+		result
+	}
+
+	async fn service_loop(args: MonitorArgs, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+		let mut audit = AuditLog::open(&args.audit_log)
+			.await
+			.wrap_err("opening audit log")?;
+		let mut tracker = Tracker::new(Duration::from_secs(args.kick_window));
+		let mut since =
+			chrono::Utc::now() - chrono::Duration::seconds(args.poll_interval as i64);
+		let mut last_record_id: u64 = 0;
+		let mut interval = tokio::time::interval(Duration::from_secs(args.poll_interval));
+		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+		info!(service = SERVICE_NAME, "service monitor loop started");
+
+		loop {
+			tokio::select! {
+				_ = interval.tick() => {
+					let now = chrono::Utc::now();
+					match poll_events(since).await {
+						Ok(events) => {
+							since = now;
+							for ev in events {
+								if ev.record_id <= last_record_id { continue; }
+								last_record_id = ev.record_id;
+								handle_event(ev, &mut tracker, &mut audit, args.tailscale_only).await;
+							}
+						}
+						Err(err) => warn!(?err, "failed to poll event log; will retry"),
+					}
+				}
+				changed = shutdown.changed() => {
+					changed.into_diagnostic().wrap_err("shutdown channel closed")?;
+					if *shutdown.borrow() {
+						debug!("shutdown signalled; exiting monitor loop");
+						break;
+					}
+				}
+			}
+		}
+
+		Ok(())
+	}
+
+	fn running_status() -> ServiceStatus {
+		ServiceStatus {
+			service_type: SERVICE_TYPE,
+			current_state: ServiceState::Running,
+			controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+			exit_code: ServiceExitCode::Win32(0),
+			checkpoint: 0,
+			wait_hint: Duration::default(),
+			process_id: None,
+		}
+	}
+
+	fn stopped_status(exit: ServiceExitCode) -> ServiceStatus {
+		ServiceStatus {
+			service_type: SERVICE_TYPE,
+			current_state: ServiceState::Stopped,
+			controls_accepted: ServiceControlAccept::empty(),
+			exit_code: exit,
+			checkpoint: 0,
+			wait_hint: Duration::default(),
+			process_id: None,
+		}
+	}
+
+	/// Entry point invoked by `rdp monitor --service`. Blocks until the SCM
+	/// signals the service to stop, or until the dispatcher returns an error.
+	pub fn dispatch_service_mode(args: MonitorArgs) -> Result<()> {
+		*SERVICE_ARGS.lock().unwrap() = Some(args);
+		service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+			.into_diagnostic()
+			.wrap_err("service dispatcher failed")
+	}
 }
