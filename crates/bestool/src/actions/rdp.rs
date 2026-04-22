@@ -12,6 +12,8 @@ pub mod tailscale;
 
 #[cfg(windows)]
 pub mod notify;
+#[cfg(windows)]
+pub mod service_runtime;
 
 /// Windows RDP session tooling.
 #[derive(Debug, Clone, Parser)]
@@ -26,5 +28,6 @@ super::subcommands! {
 		Ok((ctx.args_sub.action.clone(), ctx.push(())))
 	}}](with_sub)
 
-	monitor => Monitor(MonitorArgs)
+	monitor => Monitor(MonitorArgs),
+	service => Service(ServiceArgs)
 }

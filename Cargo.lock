@@ -487,6 +487,7 @@ dependencies = [
  "base64 0.22.1",
  "bestool-alertd",
  "bestool-psql",
+ "bestool-winsvc",
  "binstalk-downloader",
  "blake3",
  "boxcar",
@@ -551,6 +552,7 @@ dependencies = [
  "walkdir",
  "windows-acl",
  "windows-env",
+ "windows-service",
  "windows_exe_info",
  "zip 8.2.0",
  "zmq",
@@ -670,6 +672,14 @@ dependencies = [
  "url",
  "uuid",
  "winnow 0.7.15",
+]
+
+[[package]]
+name = "bestool-winsvc"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "windows-service",
 ]
 
 [[package]]

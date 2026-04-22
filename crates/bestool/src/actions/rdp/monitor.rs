@@ -3,6 +3,8 @@ use std::{net::IpAddr, path::PathBuf, time::Duration};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use miette::{Result, WrapErr};
+#[cfg(windows)]
+use miette::IntoDiagnostic;
 use tracing::{debug, info, warn};
 
 use super::{
@@ -43,10 +45,28 @@ pub struct MonitorArgs {
 	/// When false, any source IP can trigger the notification.
 	#[arg(long, default_value_t = false)]
 	pub tailscale_only: bool,
+
+	/// Internal: set when launched by the Windows Service Control Manager.
+	/// Routes through the service dispatcher so the SCM sees a properly
+	/// lifecycled process. Do not set this by hand — use `rdp service install`.
+	#[arg(long, hide = true, default_value_t = false)]
+	pub service: bool,
 }
 
 pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 	let args = ctx.args_sub;
+
+	if args.service {
+		#[cfg(windows)]
+		return tokio::task::spawn_blocking(move || super::service_runtime::dispatch(args))
+			.await
+			.into_diagnostic()
+			.wrap_err("service dispatcher task panicked")?;
+		#[cfg(not(windows))]
+		return Err(miette::miette!(
+			"--service is only valid on Windows; run without it or use `rdp service install`"
+		));
+	}
 
 	let mut audit = AuditLog::open(&args.audit_log)
 		.await
@@ -86,7 +106,7 @@ pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 	}
 }
 
-async fn handle_event(
+pub(super) async fn handle_event(
 	ev: Event,
 	tracker: &mut Tracker,
 	audit: &mut AuditLog,
