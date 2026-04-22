@@ -67,6 +67,8 @@ subcommands! {
 	file => File(FileArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
+	#[cfg(feature = "rdp")]
+	rdp => Rdp(RdpArgs),
 	#[cfg(feature = "self-update")]
 	#[clap(alias = "self")]
 	self_update => SelfUpdate(SelfUpdateArgs),

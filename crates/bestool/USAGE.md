@@ -20,6 +20,14 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool file`↴](#bestool-file)
 * [`bestool file join`↴](#bestool-file-join)
 * [`bestool file split`↴](#bestool-file-split)
+* [`bestool rdp`↴](#bestool-rdp)
+* [`bestool rdp monitor`↴](#bestool-rdp-monitor)
+* [`bestool rdp service`↴](#bestool-rdp-service)
+* [`bestool rdp service install`↴](#bestool-rdp-service-install)
+* [`bestool rdp service uninstall`↴](#bestool-rdp-service-uninstall)
+* [`bestool rdp service start`↴](#bestool-rdp-service-start)
+* [`bestool rdp service stop`↴](#bestool-rdp-service-stop)
+* [`bestool rdp service status`↴](#bestool-rdp-service-status)
 * [`bestool self-update`↴](#bestool-self-update)
 * [`bestool ssh`↴](#bestool-ssh)
 * [`bestool ssh add-key`↴](#bestool-ssh-add-key)
@@ -58,6 +66,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `completions` — Generate a shell completions script
 * `crypto` — Cryptographic operations
 * `file` — File utilities
+* `rdp` — Windows RDP session tooling
 * `self-update` — Update this bestool
 * `ssh` — SSH helpers
 * `tamanu` — Interact with Tamanu
@@ -614,6 +623,109 @@ The checksums are compatible with the ones written and verified by the `crypto h
    Takes a non-zero integer size in mibibytes.
 
    If not present, the default is to pick a chunk size between 8 MiB and 64 MiB inclusive, such that the input file is divided in 1000 chunks. The resulting size is rounded to the nearest 8 KiB, to make copying and disk usage more efficient.
+
+
+
+## `bestool rdp`
+
+Windows RDP session tooling
+
+**Usage:** `bestool rdp <COMMAND>`
+
+###### **Subcommands:**
+
+* `monitor` — Watch RDP sessions and notify on fast user-switch ("kick")
+* `service` — Install, remove, start, stop, or query the `bestool-rdp-monitor` Windows Service. All subcommands except `status` require Administrator rights
+
+
+
+## `bestool rdp monitor`
+
+Watch RDP sessions and notify on fast user-switch ("kick").
+
+Runs a long-lived loop that polls the TerminalServices event log for session connect/disconnect events, cross-references source IPs with Tailscale to identify users, and raises a Windows toast on the incoming session when a different user was connected moments before.
+
+Intended to run as a Windows service or startup task with sufficient privilege to read the TerminalServices-LocalSessionManager log (typically LocalSystem or Administrators).
+
+**Usage:** `bestool rdp monitor [OPTIONS]`
+
+###### **Options:**
+
+* `--audit-log <AUDIT_LOG>` — Path to append-only JSONL audit log of every RDP session event
+
+  Default value: `C:\ProgramData\bestool\rdp-audit.jsonl`
+* `--poll-interval <POLL_INTERVAL>` — Seconds between event log polls
+
+  Default value: `3`
+* `--kick-window <KICK_WINDOW>` — Max seconds between a disconnect and a new logon to count as a "kick" and raise a toast
+
+  Default value: `60`
+* `--tailscale-only` — Only consider Tailscale source IPs (100.64.0.0/10) for kick detection. When false, any source IP can trigger the notification
+
+  Default value: `false`
+
+
+
+## `bestool rdp service`
+
+Install, remove, start, stop, or query the `bestool-rdp-monitor` Windows Service. All subcommands except `status` require Administrator rights
+
+**Usage:** `bestool rdp service <COMMAND>`
+
+###### **Subcommands:**
+
+* `install` — Register the service with the Service Control Manager (auto-start)
+* `uninstall` — Remove the service from the Service Control Manager
+* `start` — Start the installed service
+* `stop` — Stop the running service
+* `status` — Print the current service state
+
+
+
+## `bestool rdp service install`
+
+Register the service with the Service Control Manager (auto-start)
+
+**Usage:** `bestool rdp service install [OPTIONS]`
+
+###### **Options:**
+
+* `--audit-log <AUDIT_LOG>` — Path to append-only JSONL audit log of every RDP session event
+* `--poll-interval <POLL_INTERVAL>` — Seconds between event log polls
+* `--kick-window <KICK_WINDOW>` — Max seconds between a disconnect and a new logon to count as a "kick"
+* `--tailscale-only` — Only consider Tailscale source IPs for kick detection
+
+
+
+## `bestool rdp service uninstall`
+
+Remove the service from the Service Control Manager
+
+**Usage:** `bestool rdp service uninstall`
+
+
+
+## `bestool rdp service start`
+
+Start the installed service
+
+**Usage:** `bestool rdp service start`
+
+
+
+## `bestool rdp service stop`
+
+Stop the running service
+
+**Usage:** `bestool rdp service stop`
+
+
+
+## `bestool rdp service status`
+
+Print the current service state
+
+**Usage:** `bestool rdp service status`
 
 
 
