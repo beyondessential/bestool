@@ -123,7 +123,7 @@ fn parse_events(xml: &str) -> Result<Vec<Event>> {
 	for raw in events.event {
 		match decode(raw) {
 			Ok(ev) => out.push(ev),
-			Err(err) => debug!(?err, "skipping unparseable event"),
+			Err(err) => debug!(?err, "skipping unparsable event"),
 		}
 	}
 	out.sort_by_key(|e| e.record_id);
