@@ -22,7 +22,7 @@ binstalk-downloader = { version = "0.13.36", optional = true, features = ["hicko
 blake3 = { version = "1.8.2", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
-chrono = "0.4.41"
+chrono = { version = "0.4.41", features = ["serde"] }
 base64 = { version = "0.22.1", optional = true }
 clap = { workspace = true, features = ["env", "unicode", "string"] }
 clap_complete = { version = "4.5.57", optional = true }
@@ -57,6 +57,7 @@ p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
 percent-encoding = { version = "2.3.1", optional = true }
 privilege = { version = "0.3.0", optional = true }
 pulldown-cmark = { version = "0.13.0", optional = true }
+quick-xml = { version = "0.39.2", features = ["serialize"], optional = true }
 regex = { version = "1.11.2", optional = true }
 reqwest = { workspace = true }
 rpi-st7789v2-driver = { version = "0.3.10", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
@@ -82,6 +83,7 @@ zip = { version = "8.2.0", optional = true, default-features = false, features =
 zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = { version = "0.7.2", optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.2.0", optional = true }
 
@@ -89,7 +91,7 @@ windows-env = { version = "0.2.0", optional = true }
 windows_exe_info = { version = "0.5.2", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "self-update", "ssh", "tamanu"]
+default = ["caddy", "completions", "crypto", "rdp", "self-update", "ssh", "tamanu"]
 
 ## Common dep groups (not meant to be used directly)
 download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolver"]
@@ -99,6 +101,7 @@ caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
 file = ["dep:blake3", "dep:indicatif", "dep:tokio-util"]
+rdp = ["dep:duct", "dep:quick-xml", "dep:tauri-winrt-notification"]
 self-update = ["download", "dep:upgrade", "dep:windows-env"]
 ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:ssh-key", "dep:privilege", "dep:windows-acl"]
 
