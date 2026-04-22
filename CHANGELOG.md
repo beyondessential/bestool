@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.5.1](https://github.com/beyondessential/bestool/compare/v1.5.0..1.5.1) - 2026-03-18
+## [1.6.0](https://github.com/beyondessential/bestool/compare/v1.5.1..1.6.0) - 2026-04-22
+
+
+- **feat:** RDP monitor for kick detection (#280) - ([53ebfc4](https://github.com/beyondessential/bestool/commit/53ebfc4f82c5b4cf1b12a0b27d71f9ef3e0783ca))
+- **fix:** Fix ai rule - ([3872a97](https://github.com/beyondessential/bestool/commit/3872a97e46292898153d95d0a3d3f0a85432f445))
+
+---
+## [1.5.1](https://github.com/beyondessential/bestool/compare/v1.5.0..v1.5.1) - 2026-03-18
 
 
 
