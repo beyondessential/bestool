@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.6.0](https://github.com/beyondessential/bestool/compare/v1.5.1..1.6.0) - 2026-04-22
+## [1.6.1](https://github.com/beyondessential/bestool/compare/v1.6.0..1.6.1) - 2026-04-23
+
+
+
+
+- **feat(rdp):** Keep raw Windows address, add tailscale peer fallback - ([fb4ffd0](https://github.com/beyondessential/bestool/commit/fb4ffd0652bc4bdfd66c39d7af6c2e635e33c84a))
+- **fix(rdp):** Identify kicked user from stored session state (#281) - ([9691ec9](https://github.com/beyondessential/bestool/commit/9691ec945498d9c76166214049dcb5f3d7077c59))
+---
+## [1.6.0](https://github.com/beyondessential/bestool/compare/v1.5.1..v1.6.0) - 2026-04-22
 
 
 - **feat:** RDP monitor for kick detection (#280) - ([53ebfc4](https://github.com/beyondessential/bestool/commit/53ebfc4f82c5b4cf1b12a0b27d71f9ef3e0783ca))
