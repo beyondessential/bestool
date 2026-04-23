@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.6.3](https://github.com/beyondessential/bestool/compare/v1.6.2..1.6.3) - 2026-04-23
+## [1.6.4](https://github.com/beyondessential/bestool/compare/v1.6.3..1.6.4) - 2026-04-23
+
+
+
+
+- **feat(rdp):** Only toast when the kicker has a Tailscale identity (#284) - ([5801fb1](https://github.com/beyondessential/bestool/commit/5801fb1cfd581b7a74331c885a791ce433c34038))
+---
+## [1.6.3](https://github.com/beyondessential/bestool/compare/v1.6.2..v1.6.3) - 2026-04-23
 
 
 
