@@ -1,4 +1,4 @@
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -40,11 +40,6 @@ pub struct MonitorArgs {
 	/// and raise a toast.
 	#[arg(long, default_value_t = 60)]
 	pub kick_window: u64,
-
-	/// Only consider Tailscale source IPs (100.64.0.0/10) for kick detection.
-	/// When false, any source IP can trigger the notification.
-	#[arg(long, default_value_t = false)]
-	pub tailscale_only: bool,
 
 	/// Internal: set when launched by the Windows Service Control Manager.
 	/// Routes through the service dispatcher so the SCM sees a properly
@@ -101,19 +96,12 @@ pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 				continue;
 			}
 			last_record_id = ev.record_id;
-			handle_event(ev, &mut tracker, &mut audit, args.tailscale_only).await;
+			handle_event(ev, &mut tracker, &mut audit).await;
 		}
 	}
 }
 
-pub(super) async fn handle_event(
-	ev: Event,
-	tracker: &mut Tracker,
-	audit: &mut AuditLog,
-	tailscale_only: bool,
-) {
-	let is_tailscale = ev.ip().map(is_tailscale_ip).unwrap_or(false);
-
+pub(super) async fn handle_event(ev: Event, tracker: &mut Tracker, audit: &mut AuditLog) {
 	match ev.kind {
 		EventKind::Logon | EventKind::Reconnect => {
 			// Resolve Tailscale identity *now*: at logon time the most recent
@@ -123,8 +111,12 @@ pub(super) async fn handle_event(
 			let (tailscale_user, tailscale_source) = resolve_tailscale(&ev).await;
 			write_audit(audit, &ev, tailscale_user.as_deref(), tailscale_source).await;
 
+			// Only raise a toast when the *incoming* user is identifiable on
+			// Tailscale. A connection from console / LAN / unknown source
+			// can't be addressed back to a person, so the notification would
+			// have nowhere useful to go.
 			if let Some(kick) = tracker.on_connect(&ev, tailscale_user.clone())
-				&& (!tailscale_only || is_tailscale || tailscale_user.is_some())
+				&& tailscale_user.is_some()
 			{
 				emit_kick(&ev, kick);
 			}
@@ -190,21 +182,6 @@ async fn resolve_tailscale(ev: &Event) -> (Option<String>, Option<&'static str>)
 }
 
 const HANDSHAKE_WINDOW_SECS: i64 = 300;
-
-/// Tailscale's CGNAT range is `100.64.0.0/10` (IPv4) and
-/// `fd7a:115c:a1e0::/48` (IPv6 ULA).
-fn is_tailscale_ip(ip: IpAddr) -> bool {
-	match ip {
-		IpAddr::V4(v4) => {
-			let [a, b, ..] = v4.octets();
-			a == 100 && (64..128).contains(&b)
-		}
-		IpAddr::V6(v6) => {
-			let s = v6.segments();
-			s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0
-		}
-	}
-}
 
 fn emit_kick(ev: &Event, kick: KickDetection) {
 	info!(

@@ -660,9 +660,6 @@ Intended to run as a Windows service or startup task with sufficient privilege t
 * `--kick-window <KICK_WINDOW>` — Max seconds between a disconnect and a new logon to count as a "kick" and raise a toast
 
   Default value: `60`
-* `--tailscale-only` — Only consider Tailscale source IPs (100.64.0.0/10) for kick detection. When false, any source IP can trigger the notification
-
-  Default value: `false`
 
 
 
@@ -693,7 +690,6 @@ Register the service with the Service Control Manager (auto-start)
 * `--audit-log <AUDIT_LOG>` — Path to append-only JSONL audit log of every RDP session event
 * `--poll-interval <POLL_INTERVAL>` — Seconds between event log polls
 * `--kick-window <KICK_WINDOW>` — Max seconds between a disconnect and a new logon to count as a "kick"
-* `--tailscale-only` — Only consider Tailscale source IPs for kick detection
 
 
 
