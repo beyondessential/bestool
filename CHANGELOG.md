@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.6.1](https://github.com/beyondessential/bestool/compare/v1.6.0..1.6.1) - 2026-04-23
+## [1.6.2](https://github.com/beyondessential/bestool/compare/v1.6.1..1.6.2) - 2026-04-23
+
+
+
+
+- **fix(rdp):** Detect kicks on shared Windows accounts (#282) - ([8864903](https://github.com/beyondessential/bestool/commit/88649034dda015ffb8773ea16a08199319913010))
+---
+## [1.6.1](https://github.com/beyondessential/bestool/compare/v1.6.0..v1.6.1) - 2026-04-23
 
 
 
