@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde::{Deserialize, Serialize};
@@ -18,23 +16,6 @@ pub struct Event {
 	pub address: Option<String>,
 	pub time: DateTime<Utc>,
 	pub record_id: u64,
-}
-
-impl Event {
-	/// Parse [`Self::address`] as an [`IpAddr`], stripping any `%<zone>` scope
-	/// identifier (which Rust's stdlib parser rejects). Returns `None` for
-	/// missing addresses, the sentinel `LOCAL`, or unparsable values.
-	pub fn ip(&self) -> Option<IpAddr> {
-		let raw = self.address.as_deref()?;
-		parse_address(raw)
-	}
-}
-
-pub(crate) fn parse_address(raw: &str) -> Option<IpAddr> {
-	if raw.is_empty() || raw.eq_ignore_ascii_case("LOCAL") {
-		return None;
-	}
-	raw.split('%').next().unwrap_or(raw).parse().ok()
 }
 
 /// The subset of event IDs we care about.
@@ -280,7 +261,6 @@ mod tests {
 		assert_eq!(events[0].session_id, 2);
 		assert_eq!(events[0].user, r"CORP\alice");
 		assert_eq!(events[0].address.as_deref(), Some("100.64.1.5"));
-		assert_eq!(events[0].ip(), "100.64.1.5".parse::<IpAddr>().ok());
 
 		assert_eq!(events[1].kind, EventKind::Logon);
 		assert_eq!(events[1].session_id, 3);
@@ -288,7 +268,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_ipv6_with_zone_suffix() {
+	fn preserves_ipv6_zone_suffix_verbatim() {
 		let xml = r#"<Events>
 <Event><System><EventID>25</EventID><TimeCreated SystemTime='2026-04-22T10:00:00Z'/><EventRecordID>1</EventRecordID></System><UserData><EventXML><User>CORP\alice</User><SessionID>2</SessionID><Address>0:0:fd7a:115c:a1e0::%2318139703</Address></EventXML></UserData></Event>
 </Events>"#;
@@ -298,14 +278,6 @@ mod tests {
 			events[0].address.as_deref(),
 			Some("0:0:fd7a:115c:a1e0::%2318139703")
 		);
-		// Zone suffix is stripped for IpAddr parsing, so this returns Some(...)
-		assert!(events[0].ip().is_some());
-	}
-
-	#[test]
-	fn local_address_parses_to_none() {
-		assert_eq!(parse_address("LOCAL"), None);
-		assert_eq!(parse_address(""), None);
 	}
 
 	#[test]

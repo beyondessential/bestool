@@ -51,10 +51,6 @@ pub struct InstallArgs {
 	/// Max seconds between a disconnect and a new logon to count as a "kick".
 	#[arg(long)]
 	pub kick_window: Option<u64>,
-
-	/// Only consider Tailscale source IPs for kick detection.
-	#[arg(long)]
-	pub tailscale_only: bool,
 }
 
 pub async fn run(ctx: Context<RdpArgs, ServiceArgs>) -> Result<()> {
@@ -143,9 +139,6 @@ mod imp {
 		if let Some(n) = args.kick_window {
 			launch.push("--kick-window".into());
 			launch.push(n.to_string().into());
-		}
-		if args.tailscale_only {
-			launch.push("--tailscale-only".into());
 		}
 
 		let m = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
@@ -319,7 +312,7 @@ mod imp {
 							for ev in events {
 								if ev.record_id <= last_record_id { continue; }
 								last_record_id = ev.record_id;
-								handle_event(ev, &mut tracker, &mut audit, args.tailscale_only).await;
+								handle_event(ev, &mut tracker, &mut audit).await;
 							}
 						}
 						Err(err) => warn!(?err, "failed to poll event log; will retry"),
