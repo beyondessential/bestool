@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.6.2](https://github.com/beyondessential/bestool/compare/v1.6.1..1.6.2) - 2026-04-23
+## [1.6.3](https://github.com/beyondessential/bestool/compare/v1.6.2..1.6.3) - 2026-04-23
+
+
+
+
+- **fix(rdp):** Ignore Tailscale tagged-devices (#283) - ([969883e](https://github.com/beyondessential/bestool/commit/969883e097379990e2fe4fbe001aa176abb1611a))
+---
+## [1.6.2](https://github.com/beyondessential/bestool/compare/v1.6.1..v1.6.2) - 2026-04-23
 
 
 
