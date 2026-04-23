@@ -90,17 +90,17 @@ impl Tracker {
 			ev.session_id,
 			SessionState {
 				user: ev.user.clone(),
-				tailscale,
+				tailscale: tailscale.clone(),
 				connect_time: ev.time,
 			},
 		);
 
-		// Most recent *different* user is considered the kicked user.
+		// Most recent *different* identity is considered the kicked user.
 		let kick = self
 			.recent_disconnects
 			.iter()
 			.rev()
-			.find(|d| !same_user(&d.user, &ev.user))
+			.find(|d| !same_identity(d, ev, tailscale.as_deref()))
 			.map(|d| KickDetection {
 				kicked_user: d.user.clone(),
 				kicked_tailscale: d.tailscale.clone(),
@@ -127,6 +127,18 @@ impl Tracker {
 			}
 		}
 	}
+}
+
+/// Decide whether a recent-disconnect entry and an incoming connect event
+/// represent the same human. Compares Tailscale logins when both are known
+/// (this is the common case on a shared Administrator account where every
+/// session has the same Windows username but a different Tailscale identity),
+/// and falls back to the Windows username otherwise.
+fn same_identity(d: &RecentDisconnect, ev: &Event, incoming_tailscale: Option<&str>) -> bool {
+	if let (Some(dt), Some(it)) = (d.tailscale.as_deref(), incoming_tailscale) {
+		return dt.eq_ignore_ascii_case(it);
+	}
+	same_user(&d.user, &ev.user)
 }
 
 /// RDP user strings are often `DOMAIN\user`; consider two users the same if
@@ -243,5 +255,73 @@ mod tests {
 		assert!(same_user(r"CORP\alice", r"WORKGROUP\alice"));
 		assert!(same_user(r"alice", r"CORP\alice"));
 		assert!(!same_user(r"CORP\alice", r"CORP\bob"));
+	}
+
+	/// BES's shared Administrator account: every RDP session is
+	/// `TONGA-CENTRAL\Administrator`, but different humans have different
+	/// Tailscale logins. A kick must still be detected when the Tailscale
+	/// identity changes.
+	#[test]
+	fn detects_kick_on_shared_windows_account() {
+		let mut tr = Tracker::new(Duration::from_secs(60));
+		tr.on_connect(
+			&ev(
+				EventKind::Logon,
+				2,
+				r"TONGA-CENTRAL\Administrator",
+				"2026-04-23T01:56:21Z",
+			),
+			Some("felix@bes.au".into()),
+		);
+		tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"TONGA-CENTRAL\Administrator",
+			"2026-04-23T01:58:09Z",
+		));
+		let kick = tr
+			.on_connect(
+				&ev(
+					EventKind::Reconnect,
+					2,
+					r"TONGA-CENTRAL\Administrator",
+					"2026-04-23T01:58:10Z",
+				),
+				Some("harnesh@bes.au".into()),
+			)
+			.expect("different Tailscale user on a shared Windows account is a kick");
+		assert_eq!(kick.kicked_tailscale.as_deref(), Some("felix@bes.au"));
+	}
+
+	#[test]
+	fn same_tailscale_user_reconnecting_is_not_a_kick() {
+		let mut tr = Tracker::new(Duration::from_secs(60));
+		tr.on_connect(
+			&ev(
+				EventKind::Logon,
+				2,
+				r"TONGA-CENTRAL\Administrator",
+				"2026-04-23T01:59:36Z",
+			),
+			Some("harnesh@bes.au".into()),
+		);
+		tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"TONGA-CENTRAL\Administrator",
+			"2026-04-23T01:59:45Z",
+		));
+		assert!(
+			tr.on_connect(
+				&ev(
+					EventKind::Reconnect,
+					2,
+					r"TONGA-CENTRAL\Administrator",
+					"2026-04-23T01:59:46Z",
+				),
+				Some("harnesh@bes.au".into()),
+			)
+			.is_none()
+		);
 	}
 }
