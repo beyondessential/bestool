@@ -42,7 +42,15 @@ pub async fn whois(addr: &str) -> Result<Option<String>> {
 
 	Ok(parsed
 		.user_profile
-		.and_then(|u| u.login_name.or(u.display_name)))
+		.and_then(|u| u.login_name.or(u.display_name))
+		.filter(|login| !is_tagged_devices(login)))
+}
+
+/// Tailscale reports tagged devices (e.g. servers with `tag:ci`) with the
+/// synthetic login name `tagged-devices`. Skip them — a kick can only be
+/// attributed to a real human.
+fn is_tagged_devices(login: &str) -> bool {
+	login.eq_ignore_ascii_case("tagged-devices")
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +125,9 @@ fn parse_status(bytes: &[u8]) -> Result<Vec<ActivePeer>> {
 				.as_ref()
 				.and_then(|users| users.get(&p.user_id?))
 				.and_then(|u| u.login_name.clone().or_else(|| u.display_name.clone()))?;
+			if is_tagged_devices(&login) {
+				return None;
+			}
 			Some(ActivePeer {
 				login,
 				host_name: p.host_name.unwrap_or_default(),
@@ -198,5 +209,39 @@ mod tests {
 	fn empty_status_gives_empty_list() {
 		let json = br#"{"Peer": {}, "User": {}}"#;
 		assert!(parse_status(json).unwrap().is_empty());
+	}
+
+	#[test]
+	fn tagged_devices_are_excluded() {
+		// Peer TTTT has the freshest handshake but belongs to a tagged device;
+		// real user BBBB should come out on top.
+		let json = br#"{
+			"Peer": {
+				"TTTT": {
+					"HostName": "ci-runner",
+					"UserID": 99,
+					"LastHandshake": "2026-04-23T02:00:00Z"
+				},
+				"BBBB": {
+					"HostName": "laptop",
+					"UserID": 1,
+					"LastHandshake": "2026-04-22T23:23:00Z"
+				}
+			},
+			"User": {
+				"1": { "LoginName": "alice@bes.au" },
+				"99": { "LoginName": "tagged-devices" }
+			}
+		}"#;
+		let peers = parse_status(json).unwrap();
+		assert_eq!(peers.len(), 1);
+		assert_eq!(peers[0].login, "alice@bes.au");
+	}
+
+	#[test]
+	fn tagged_devices_sentinel_matches_case_insensitively() {
+		assert!(is_tagged_devices("tagged-devices"));
+		assert!(is_tagged_devices("Tagged-Devices"));
+		assert!(!is_tagged_devices("alice@bes.au"));
 	}
 }
