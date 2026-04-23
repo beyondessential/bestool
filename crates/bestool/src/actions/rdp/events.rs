@@ -11,9 +11,30 @@ pub struct Event {
 	pub kind: EventKind,
 	pub session_id: u32,
 	pub user: String,
-	pub address: Option<IpAddr>,
+	/// The raw `Address` string as Windows wrote it (e.g. an IPv4 dotted-quad,
+	/// an IPv6 literal with a `%<zone>` suffix, the string `LOCAL`, or
+	/// something else entirely). Kept verbatim so the audit log preserves what
+	/// Windows reported even when we can't parse it.
+	pub address: Option<String>,
 	pub time: DateTime<Utc>,
 	pub record_id: u64,
+}
+
+impl Event {
+	/// Parse [`Self::address`] as an [`IpAddr`], stripping any `%<zone>` scope
+	/// identifier (which Rust's stdlib parser rejects). Returns `None` for
+	/// missing addresses, the sentinel `LOCAL`, or unparseable values.
+	pub fn ip(&self) -> Option<IpAddr> {
+		let raw = self.address.as_deref()?;
+		parse_address(raw)
+	}
+}
+
+pub(crate) fn parse_address(raw: &str) -> Option<IpAddr> {
+	if raw.is_empty() || raw.eq_ignore_ascii_case("LOCAL") {
+		return None;
+	}
+	raw.split('%').next().unwrap_or(raw).parse().ok()
 }
 
 /// The subset of event IDs we care about.
@@ -195,11 +216,7 @@ fn decode(raw: RawEvent) -> Result<Event> {
 		.ok_or_else(|| miette!("event {id} missing SessionID"))?
 		.text;
 	let user = inner.user.map(|u| u.text).unwrap_or_default();
-	let address = inner
-		.address
-		.map(|a| a.text)
-		.filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("LOCAL"))
-		.and_then(|s| s.parse::<IpAddr>().ok());
+	let address = inner.address.map(|a| a.text).filter(|s| !s.is_empty());
 	let time = raw
 		.system
 		.time_created
@@ -262,14 +279,33 @@ mod tests {
 		assert_eq!(events[0].kind, EventKind::Disconnect);
 		assert_eq!(events[0].session_id, 2);
 		assert_eq!(events[0].user, r"CORP\alice");
-		assert_eq!(
-			events[0].address,
-			Some("100.64.1.5".parse::<IpAddr>().unwrap())
-		);
+		assert_eq!(events[0].address.as_deref(), Some("100.64.1.5"));
+		assert_eq!(events[0].ip(), "100.64.1.5".parse::<IpAddr>().ok());
 
 		assert_eq!(events[1].kind, EventKind::Logon);
 		assert_eq!(events[1].session_id, 3);
 		assert_eq!(events[1].user, r"CORP\bob");
+	}
+
+	#[test]
+	fn parses_ipv6_with_zone_suffix() {
+		let xml = r#"<Events>
+<Event><System><EventID>25</EventID><TimeCreated SystemTime='2026-04-22T10:00:00Z'/><EventRecordID>1</EventRecordID></System><UserData><EventXML><User>CORP\alice</User><SessionID>2</SessionID><Address>0:0:fd7a:115c:a1e0::%2318139703</Address></EventXML></UserData></Event>
+</Events>"#;
+		let events = parse_events(xml).unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(
+			events[0].address.as_deref(),
+			Some("0:0:fd7a:115c:a1e0::%2318139703")
+		);
+		// Zone suffix is stripped for IpAddr parsing, so this returns Some(...)
+		assert!(events[0].ip().is_some());
+	}
+
+	#[test]
+	fn local_address_parses_to_none() {
+		assert_eq!(parse_address("LOCAL"), None);
+		assert_eq!(parse_address(""), None);
 	}
 
 	#[test]

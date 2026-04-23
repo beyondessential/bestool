@@ -130,8 +130,6 @@ fn same_user(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use std::net::{IpAddr, Ipv4Addr};
-
 	use super::{super::events::EventKind, *};
 
 	fn ev(kind: EventKind, session: u32, user: &str, t: &str) -> Event {
@@ -139,7 +137,7 @@ mod tests {
 			kind,
 			session_id: session,
 			user: user.to_owned(),
-			address: Some(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))),
+			address: Some("100.64.0.1".into()),
 			time: t.parse().unwrap(),
 			record_id: 0,
 		}

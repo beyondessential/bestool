@@ -12,7 +12,7 @@ use super::{
 	audit::AuditLog,
 	events::{Event, EventKind, poll_events},
 	state::{KickDetection, Tracker},
-	tailscale::whois,
+	tailscale::{active_peers, whois},
 };
 use crate::actions::Context;
 
@@ -112,24 +112,21 @@ pub(super) async fn handle_event(
 	audit: &mut AuditLog,
 	tailscale_only: bool,
 ) {
-	let tailscale_user = match &ev.address {
-		Some(ip) => whois(ip).await.unwrap_or_else(|err| {
-			debug!(?err, ip=%ip, "tailscale whois failed");
-			None
-		}),
-		None => None,
-	};
+	let (tailscale_user, tailscale_source) = resolve_tailscale(&ev).await;
 
-	if let Err(err) = audit.append(&ev, tailscale_user.as_deref()).await {
+	if let Err(err) = audit
+		.append(&ev, tailscale_user.as_deref(), tailscale_source)
+		.await
+	{
 		warn!(?err, "audit log write failed");
 	}
 
-	let is_tailscale = ev.address.map(is_tailscale_ip).unwrap_or(false);
+	let is_tailscale = ev.ip().map(is_tailscale_ip).unwrap_or(false);
 
 	match ev.kind {
 		EventKind::Logon | EventKind::Reconnect => {
 			if let Some(kick) = tracker.on_connect(&ev)
-				&& (!tailscale_only || is_tailscale)
+				&& (!tailscale_only || is_tailscale || tailscale_user.is_some())
 			{
 				emit_kick(&ev, kick);
 			}
@@ -141,14 +138,56 @@ pub(super) async fn handle_event(
 	}
 }
 
-/// Tailscale's CGNAT range is `100.64.0.0/10`.
+/// Identify the Tailscale user behind an RDP event. Prefers `tailscale whois`
+/// on the reported address; falls back to the peer with the most recent
+/// wireguard handshake if whois can't resolve the address (common for the
+/// Tailscale-over-IPv6 endpoint Windows logs on some configurations).
+async fn resolve_tailscale(ev: &Event) -> (Option<String>, Option<&'static str>) {
+	if let Some(addr) = &ev.address {
+		match whois(addr).await {
+			Ok(Some(user)) => return (Some(user), Some("whois")),
+			Ok(None) => debug!(addr = %addr, "tailscale whois: peer not found; will try handshake fallback"),
+			Err(err) => debug!(?err, addr = %addr, "tailscale whois failed"),
+		}
+	}
+
+	match active_peers().await {
+		Ok(peers) => {
+			if let Some(peer) = peers.into_iter().next() {
+				let age = (ev.time - peer.last_handshake).num_seconds().abs();
+				if age <= HANDSHAKE_WINDOW_SECS {
+					debug!(
+						peer = %peer.login,
+						host = %peer.host_name,
+						age_secs = age,
+						"tailscale fallback: most-recent peer handshake"
+					);
+					return (Some(peer.login), Some("peer_handshake"));
+				} else {
+					debug!(age_secs = age, "most-recent handshake too old for fallback");
+				}
+			}
+		}
+		Err(err) => debug!(?err, "tailscale status failed"),
+	}
+
+	(None, None)
+}
+
+const HANDSHAKE_WINDOW_SECS: i64 = 300;
+
+/// Tailscale's CGNAT range is `100.64.0.0/10` (IPv4) and
+/// `fd7a:115c:a1e0::/48` (IPv6 ULA).
 fn is_tailscale_ip(ip: IpAddr) -> bool {
 	match ip {
 		IpAddr::V4(v4) => {
 			let [a, b, ..] = v4.octets();
 			a == 100 && (64..128).contains(&b)
 		}
-		IpAddr::V6(_) => false,
+		IpAddr::V6(v6) => {
+			let s = v6.segments();
+			s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0
+		}
 	}
 }
 
