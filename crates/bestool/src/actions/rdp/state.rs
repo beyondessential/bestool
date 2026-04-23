@@ -19,6 +19,7 @@ pub struct Tracker {
 #[derive(Debug, Clone)]
 struct SessionState {
 	user: String,
+	tailscale: Option<String>,
 	connect_time: DateTime<Utc>,
 }
 
@@ -50,36 +51,46 @@ impl Tracker {
 
 	/// Process a disconnect/logoff event. Records session duration (when known)
 	/// so a subsequent logon can be identified as a kick.
-	pub fn on_disconnect(&mut self, ev: &Event, tailscale: Option<String>) {
+	///
+	/// Returns the Tailscale identity that was recorded for this session at
+	/// logon time, so the caller can emit it into the audit log. We look it up
+	/// here (rather than re-querying Tailscale on the disconnect event) because
+	/// at disconnect time the freshest handshake on the tailnet is typically
+	/// the *incoming* user whose RDP connection just triggered the kick.
+	pub fn on_disconnect(&mut self, ev: &Event) -> Option<String> {
 		let prior = self.sessions.remove(&ev.session_id);
-		let (user, connected_for) = match prior {
+		let (user, tailscale, connected_for) = match prior {
 			Some(s) => {
 				let dur = (ev.time - s.connect_time)
 					.to_std()
 					.unwrap_or(Duration::ZERO);
-				(s.user, dur)
+				(s.user, s.tailscale, dur)
 			}
-			None => (ev.user.clone(), Duration::ZERO),
+			None => (ev.user.clone(), None, Duration::ZERO),
 		};
 
 		self.recent_disconnects.push_back(RecentDisconnect {
 			when: ev.time,
 			user,
-			tailscale,
+			tailscale: tailscale.clone(),
 			connected_for,
 		});
 		self.prune(ev.time);
+		tailscale
 	}
 
-	/// Process a logon/reconnect event. If a *different* user disconnected
-	/// within the kick window, returns a [`KickDetection`].
-	pub fn on_connect(&mut self, ev: &Event) -> Option<KickDetection> {
+	/// Process a logon/reconnect event with the Tailscale identity resolved for
+	/// the incoming user. If a *different* user disconnected within the kick
+	/// window, returns a [`KickDetection`] carrying the previously-stored
+	/// identity of the kicked user.
+	pub fn on_connect(&mut self, ev: &Event, tailscale: Option<String>) -> Option<KickDetection> {
 		self.prune(ev.time);
 
 		self.sessions.insert(
 			ev.session_id,
 			SessionState {
 				user: ev.user.clone(),
+				tailscale,
 				connect_time: ev.time,
 			},
 		);
@@ -146,13 +157,23 @@ mod tests {
 	#[test]
 	fn detects_kick_within_window() {
 		let mut tr = Tracker::new(Duration::from_secs(60));
-		tr.on_connect(&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"));
-		tr.on_disconnect(
-			&ev(EventKind::Disconnect, 2, r"CORP\alice", "2026-04-22T10:24:00Z"),
+		tr.on_connect(
+			&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"),
 			Some("alice@bes.au".into()),
 		);
+		let stored = tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"CORP\alice",
+			"2026-04-22T10:24:00Z",
+		));
+		assert_eq!(stored.as_deref(), Some("alice@bes.au"));
+
 		let kick = tr
-			.on_connect(&ev(EventKind::Logon, 3, r"CORP\bob", "2026-04-22T10:24:10Z"))
+			.on_connect(
+				&ev(EventKind::Logon, 3, r"CORP\bob", "2026-04-22T10:24:10Z"),
+				Some("bob@bes.au".into()),
+			)
 			.expect("should detect kick");
 		assert_eq!(kick.kicked_user, r"CORP\alice");
 		assert_eq!(kick.kicked_tailscale.as_deref(), Some("alice@bes.au"));
@@ -162,30 +183,59 @@ mod tests {
 	#[test]
 	fn no_kick_when_same_user_reconnects() {
 		let mut tr = Tracker::new(Duration::from_secs(60));
-		tr.on_connect(&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"));
-		tr.on_disconnect(
-			&ev(EventKind::Disconnect, 2, r"CORP\alice", "2026-04-22T10:10:00Z"),
+		tr.on_connect(
+			&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"),
 			None,
 		);
+		tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"CORP\alice",
+			"2026-04-22T10:10:00Z",
+		));
 		assert!(
-			tr.on_connect(&ev(EventKind::Reconnect, 2, r"CORP\alice", "2026-04-22T10:10:05Z"))
-				.is_none()
+			tr.on_connect(
+				&ev(EventKind::Reconnect, 2, r"CORP\alice", "2026-04-22T10:10:05Z"),
+				None,
+			)
+			.is_none()
 		);
 	}
 
 	#[test]
 	fn no_kick_outside_window() {
 		let mut tr = Tracker::new(Duration::from_secs(30));
-		tr.on_connect(&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"));
-		tr.on_disconnect(
-			&ev(EventKind::Disconnect, 2, r"CORP\alice", "2026-04-22T10:10:00Z"),
+		tr.on_connect(
+			&ev(EventKind::Logon, 2, r"CORP\alice", "2026-04-22T10:00:00Z"),
 			None,
 		);
+		tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"CORP\alice",
+			"2026-04-22T10:10:00Z",
+		));
 		// New user logs in 45s later — outside 30s window.
 		assert!(
-			tr.on_connect(&ev(EventKind::Logon, 3, r"CORP\bob", "2026-04-22T10:10:45Z"))
-				.is_none()
+			tr.on_connect(
+				&ev(EventKind::Logon, 3, r"CORP\bob", "2026-04-22T10:10:45Z"),
+				None,
+			)
+			.is_none()
 		);
+	}
+
+	#[test]
+	fn disconnect_of_untracked_session_yields_none() {
+		let mut tr = Tracker::new(Duration::from_secs(60));
+		// Monitor started mid-session; we never saw the logon.
+		let stored = tr.on_disconnect(&ev(
+			EventKind::Disconnect,
+			2,
+			r"CORP\alice",
+			"2026-04-22T10:00:00Z",
+		));
+		assert!(stored.is_none());
 	}
 
 	#[test]
