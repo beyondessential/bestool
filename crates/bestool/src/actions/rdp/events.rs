@@ -23,7 +23,7 @@ pub struct Event {
 impl Event {
 	/// Parse [`Self::address`] as an [`IpAddr`], stripping any `%<zone>` scope
 	/// identifier (which Rust's stdlib parser rejects). Returns `None` for
-	/// missing addresses, the sentinel `LOCAL`, or unparseable values.
+	/// missing addresses, the sentinel `LOCAL`, or unparsable values.
 	pub fn ip(&self) -> Option<IpAddr> {
 		let raw = self.address.as_deref()?;
 		parse_address(raw)
