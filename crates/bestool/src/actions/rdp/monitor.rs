@@ -112,29 +112,44 @@ pub(super) async fn handle_event(
 	audit: &mut AuditLog,
 	tailscale_only: bool,
 ) {
-	let (tailscale_user, tailscale_source) = resolve_tailscale(&ev).await;
-
-	if let Err(err) = audit
-		.append(&ev, tailscale_user.as_deref(), tailscale_source)
-		.await
-	{
-		warn!(?err, "audit log write failed");
-	}
-
 	let is_tailscale = ev.ip().map(is_tailscale_ip).unwrap_or(false);
 
 	match ev.kind {
 		EventKind::Logon | EventKind::Reconnect => {
-			if let Some(kick) = tracker.on_connect(&ev)
+			// Resolve Tailscale identity *now*: at logon time the most recent
+			// wireguard handshake on the tailnet is the incoming user's. The
+			// identity is then stashed in the tracker so the matching
+			// disconnect (e.g. the old user getting kicked) can retrieve it.
+			let (tailscale_user, tailscale_source) = resolve_tailscale(&ev).await;
+			write_audit(audit, &ev, tailscale_user.as_deref(), tailscale_source).await;
+
+			if let Some(kick) = tracker.on_connect(&ev, tailscale_user.clone())
 				&& (!tailscale_only || is_tailscale || tailscale_user.is_some())
 			{
 				emit_kick(&ev, kick);
 			}
 		}
 		EventKind::Disconnect | EventKind::Logoff => {
-			tracker.on_disconnect(&ev, tailscale_user);
+			// Don't query Tailscale here: at disconnect time the freshest
+			// handshake belongs to the *incoming* user whose RDP connection
+			// triggered the kick, not the departing user. Use the identity we
+			// stored when this session logged on.
+			let stored = tracker.on_disconnect(&ev);
+			let source = stored.as_ref().map(|_| "session_tracker");
+			write_audit(audit, &ev, stored.as_deref(), source).await;
 		}
 		EventKind::ShellStart => {}
+	}
+}
+
+async fn write_audit(
+	audit: &mut AuditLog,
+	ev: &Event,
+	tailscale_user: Option<&str>,
+	tailscale_source: Option<&str>,
+) {
+	if let Err(err) = audit.append(ev, tailscale_user, tailscale_source).await {
+		warn!(?err, "audit log write failed");
 	}
 }
 
