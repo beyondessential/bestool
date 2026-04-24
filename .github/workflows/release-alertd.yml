@@ -1,0 +1,164 @@
+name: Release bestool-alertd
+
+on:
+  push:
+    tags:
+      - "bestool-alertd-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. bestool-alertd-v1.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_UNSTABLE_SPARSE_REGISTRY: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+
+    name: Build / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup target add ${{ matrix.target }}
+          rustup default stable
+
+      - if: runner.os == 'Windows'
+        name: Use GNU tar
+        shell: cmd
+        run: |
+          echo "Adding GNU tar to PATH"
+          echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+
+      - if: runner.os == 'Windows'
+        name: Statically link crt
+        shell: bash
+        run: |
+          echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
+
+      - if: runner.os == 'Linux'
+        run: pip install ziglang
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: alertd-${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-auditable
+
+      # zigbuild isn't compatible with auditable
+      # https://github.com/rust-secure-code/cargo-auditable/issues/179
+      - if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cargo zigbuild --profile dist --target ${{ matrix.target }} -p bestool-alertd
+      - if: matrix.target != 'aarch64-unknown-linux-musl'
+        run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool-alertd
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          ref="${{ inputs.tag || github.ref_name }}"
+          version="${ref#bestool-alertd-v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Package archive
+        id: package
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          name="bestool-alertd-${version}-${target}"
+          src_dir="target/${target}/dist"
+          ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ext=".exe"
+          fi
+
+          mkdir -p staging
+          install -Dm644 crates/alertd/USAGE.md "staging/USAGE.md"
+          install -Dm644 crates/alertd/ALERTS.md "staging/ALERTS.md"
+          install -Dm644 crates/alertd/TARGETS.md "staging/TARGETS.md"
+          install -Dm644 COPYING "staging/COPYING"
+          install -Dm755 "$src_dir/bestool-alertd${ext}" "staging/bestool-alertd${ext}"
+
+          tar -C staging --zstd -cf "${name}.tar.zst" .
+          echo "asset=${name}.tar.zst" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.package.outputs.asset }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alertd-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: alertd-*
+          merge-multiple: true
+          path: assets
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          version="${TAG#bestool-alertd-v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "bestool-alertd $version" \
+              --verify-tag \
+              --generate-notes \
+              assets/*
+          fi
