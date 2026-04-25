@@ -22,4 +22,5 @@
 - Never write long summaries at the end of responses. Maximum 50 words if absolutely necessary.
 - To silence a warning, use `#[expect(..., reason = "...")]` instead of `#[allow(...)]`.
 - When changing Windows-specific code, run `cargo check` with a Windows GNU target (unless currently running on Windows).
+- To cut a release, run `./release.sh` (wraps `cargo release` and keeps jj in sync); don't invoke `cargo release` directly in a jj-colocated checkout.
 <!-- end rules -->
