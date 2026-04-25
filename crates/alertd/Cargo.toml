@@ -59,3 +59,7 @@ temp-env = "0.3"
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:clap-markdown", "dep:lloggs", "miette/fancy"]
+
+[package.metadata.binstall]
+pkg-url = "https://github.com/beyondessential/bestool/releases/download/{ name }-v{ version }/{ name }-{ version }-{ target }{ archive-suffix }"
+pkg-fmt = "tzstd"
