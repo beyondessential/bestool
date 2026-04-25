@@ -112,11 +112,11 @@ jobs:
           fi
 
           mkdir -p staging
-          install -Dm644 crates/alertd/USAGE.md "staging/USAGE.md"
-          install -Dm644 crates/alertd/ALERTS.md "staging/ALERTS.md"
-          install -Dm644 crates/alertd/TARGETS.md "staging/TARGETS.md"
-          install -Dm644 COPYING "staging/COPYING"
-          install -Dm755 "$src_dir/bestool-alertd${ext}" "staging/bestool-alertd${ext}"
+          install -m644 crates/alertd/USAGE.md "staging/USAGE.md"
+          install -m644 crates/alertd/ALERTS.md "staging/ALERTS.md"
+          install -m644 crates/alertd/TARGETS.md "staging/TARGETS.md"
+          install -m644 COPYING "staging/COPYING"
+          install -m755 "$src_dir/bestool-alertd${ext}" "staging/bestool-alertd${ext}"
 
           tar -C staging --zstd -cf "${name}.tar.zst" .
           echo "asset=${name}.tar.zst" >> "$GITHUB_OUTPUT"

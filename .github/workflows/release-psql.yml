@@ -112,12 +112,12 @@ jobs:
           fi
 
           mkdir -p staging
-          install -Dm644 crates/psql/README.md "staging/README.md"
-          install -Dm644 crates/psql/EXAMPLES.md "staging/EXAMPLES.md"
-          install -Dm644 crates/psql/USAGE.md "staging/USAGE.md"
-          install -Dm644 COPYING "staging/COPYING"
-          install -Dm755 "$src_dir/bestool-psql${ext}" "staging/bestool-psql${ext}"
-          install -Dm755 "$src_dir/bestool-psql-audit${ext}" "staging/bestool-psql-audit${ext}"
+          install -m644 crates/psql/README.md "staging/README.md"
+          install -m644 crates/psql/EXAMPLES.md "staging/EXAMPLES.md"
+          install -m644 crates/psql/USAGE.md "staging/USAGE.md"
+          install -m644 COPYING "staging/COPYING"
+          install -m755 "$src_dir/bestool-psql${ext}" "staging/bestool-psql${ext}"
+          install -m755 "$src_dir/bestool-psql-audit${ext}" "staging/bestool-psql-audit${ext}"
 
           tar -C staging --zstd -cf "${name}.tar.zst" .
           echo "asset=${name}.tar.zst" >> "$GITHUB_OUTPUT"
