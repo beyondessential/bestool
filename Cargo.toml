@@ -14,13 +14,13 @@ unsafe_code = "forbid"
 rust_2018_idioms = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
-clap = { version = "4.5.47", features = ["cargo", "derive", "wrap_help"] }
+clap = { version = "4.6.1", features = ["cargo", "derive", "wrap_help"] }
 futures = "0.3.30"
 indicatif = { version = "0.18.2", features = ["tokio"] }
 itertools = "0.14.0"
 lloggs = "1.3.0"
 miette = "7.6.0"
-rand = "0.10.0"
+rand = "0.10.1"
 reqwest = { version = "0.13.2", features = ["json"] }
 sysinfo = "0.38.4"
 thiserror = "2.0.16"
