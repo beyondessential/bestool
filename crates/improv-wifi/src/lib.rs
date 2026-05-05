@@ -11,11 +11,17 @@ use bluer::Uuid;
 
 mod backend;
 mod error;
+mod gatt;
 pub mod rpc;
+mod service;
 mod state;
+
+#[cfg(feature = "networkmanager")]
+pub mod networkmanager;
 
 pub use backend::{DeviceInfo, Network, WifiConfigurator};
 pub use error::Error;
+pub use service::{AuthorizeMode, ImprovWifi, ImprovWifiConfig};
 pub use state::{Capabilities, Status};
 
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268000);

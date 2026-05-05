@@ -74,16 +74,8 @@ fn decode_command(id: u8, data: &[u8]) -> Result<Command, ParseError> {
 		0x02 => expect_empty(data).map(|_| Command::Identify),
 		0x03 => expect_empty(data).map(|_| Command::DeviceInfo),
 		0x04 => expect_empty(data).map(|_| Command::Scan),
-		0x05 => decode_hostname_or_get(
-			data,
-			|| Command::GetHostname,
-			Command::SetHostname,
-		),
-		0x06 => decode_hostname_or_get(
-			data,
-			|| Command::GetDeviceName,
-			Command::SetDeviceName,
-		),
+		0x05 => decode_hostname_or_get(data, || Command::GetHostname, Command::SetHostname),
+		0x06 => decode_hostname_or_get(data, || Command::GetDeviceName, Command::SetDeviceName),
 		other => Err(ParseError::UnknownCommand(other)),
 	}
 }
@@ -151,7 +143,10 @@ mod tests {
 	#[test]
 	fn empty_buffer_is_incomplete() {
 		assert_eq!(parse_packet(&[]), Err(ParseError::Incomplete { needed: 2 }));
-		assert_eq!(parse_packet(&[0x02]), Err(ParseError::Incomplete { needed: 1 }));
+		assert_eq!(
+			parse_packet(&[0x02]),
+			Err(ParseError::Incomplete { needed: 1 })
+		);
 	}
 
 	#[test]
@@ -266,7 +261,9 @@ mod tests {
 			Command::GetDeviceName
 		);
 		assert_eq!(
-			parse_packet(&build(0x06, "Frosty's Device".as_bytes())).unwrap().command,
+			parse_packet(&build(0x06, "Frosty's Device".as_bytes()))
+				.unwrap()
+				.command,
 			Command::SetDeviceName("Frosty's Device".into())
 		);
 	}
