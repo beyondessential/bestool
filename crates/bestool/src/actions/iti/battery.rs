@@ -13,11 +13,6 @@ use crate::actions::{
 		samplers::battery::{BatteryEstimate, BatteryEstimator, BatterySample, sample},
 	},
 };
-#[cfg(feature = "iti-lcd")]
-use crate::actions::iti::lcd::{
-	json::{Item, Screen},
-	send,
-};
 
 /// Get battery information from the X1201 board.
 #[derive(Debug, Clone, Parser)]
@@ -25,20 +20,6 @@ pub struct BatteryArgs {
 	/// Output in JSON format.
 	#[arg(long)]
 	pub json: bool,
-
-	/// Update screen with battery status.
-	///
-	/// Argument is the Y position of the battery status. The X position is always 240 (right edge).
-	///
-	/// With --estimate, this will also print the time remaining on the left edge (X=20).
-	#[cfg(feature = "iti-lcd")]
-	#[arg(long)]
-	pub update_screen: Option<i32>,
-
-	/// ZMQ socket to use for screen updates.
-	#[cfg(feature = "iti-lcd")]
-	#[arg(default_value = "tcp://[::1]:2009")]
-	pub zmq_socket: String,
 
 	/// Keep updating at an interval.
 	///
@@ -142,11 +123,6 @@ fn report(args: &BatteryArgs, sample: BatterySample, estimate: Option<BatteryEst
 			}
 		}
 	}
-
-	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = args.update_screen {
-		update_screen(args, y, display_capacity, estimate);
-	}
 }
 
 fn folktime_pretty(d: Duration) -> Folktime {
@@ -158,78 +134,4 @@ fn folktime_pretty(d: Duration) -> Folktime {
 			Folkstyle::OneUnitWhole
 		},
 	)
-}
-
-#[cfg(feature = "iti-lcd")]
-fn update_screen(
-	args: &BatteryArgs,
-	y: i32,
-	capacity: f64,
-	estimate: Option<BatteryEstimate>,
-) {
-	const GREEN: [u8; 3] = [0, 255, 0];
-	const RED: [u8; 3] = [255, 0, 0];
-	const BLACK: [u8; 3] = [0, 0, 0];
-	const WHITE: [u8; 3] = [255, 255, 255];
-
-	let charging = estimate.is_some_and(|e| e.rate_per_second > 0.0);
-	let (fill, stroke) = if charging {
-		(GREEN, BLACK)
-	} else if capacity <= 3.0 {
-		(RED, WHITE)
-	} else if capacity <= 15.0 {
-		(BLACK, RED)
-	} else {
-		(BLACK, WHITE)
-	};
-
-	let mut items = vec![Item {
-		x: 230,
-		y,
-		stroke: Some(stroke),
-		text: Some(format!("{capacity:>3.0}%")),
-		..Default::default()
-	}];
-
-	let (bg_x, bg_w) = if let Some((rate, time_remaining)) = estimate
-		.and_then(|e| e.time_remaining.map(|d| (e.rate_per_second, d)))
-	{
-		items.push(Item {
-			x: 20,
-			y,
-			stroke: Some(stroke),
-			text: Some(if rate < 0.0 {
-				format!("{} left", folktime_pretty(time_remaining))
-			} else {
-				format!("full in {}", folktime_pretty(time_remaining))
-			}),
-			..Default::default()
-		});
-		(18, 254)
-	} else if estimate.is_some_and(|e| e.rate_per_second == 0.0) && capacity == 100.0 {
-		items.push(Item {
-			x: 20,
-			y,
-			stroke: Some(stroke),
-			text: Some("fully charged".into()),
-			..Default::default()
-		});
-		(18, 254)
-	} else {
-		(238, 34)
-	};
-
-	items.insert(
-		0,
-		Item {
-			x: bg_x,
-			y: y - 16,
-			width: Some(bg_w),
-			height: Some(20),
-			fill: Some(fill),
-			..Default::default()
-		},
-	);
-
-	let _ = send(&args.zmq_socket, Screen::Layout(items));
 }
