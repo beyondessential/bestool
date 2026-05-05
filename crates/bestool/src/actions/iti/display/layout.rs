@@ -45,11 +45,10 @@ impl FromStr for WidgetKind {
 	}
 }
 
-/// Layout entry: one widget, its area on the panel, and its default refresh interval in seconds.
+/// Layout entry: one widget and its area on the panel.
 pub struct LayoutEntry {
 	pub kind: WidgetKind,
 	pub area: Rectangle,
-	pub interval_secs: u64,
 }
 
 const fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
@@ -64,31 +63,25 @@ pub const LAYOUT: &[LayoutEntry] = &[
 	LayoutEntry {
 		kind: WidgetKind::Clock,
 		area: rect(100, 4, 160, 20),
-		interval_secs: 10,
 	},
 	LayoutEntry {
 		kind: WidgetKind::Sparks,
 		area: rect(10, 30, 260, 27),
-		interval_secs: 10,
 	},
 	LayoutEntry {
 		kind: WidgetKind::Addresses,
 		area: rect(10, 65, 260, 80),
-		interval_secs: 60,
 	},
 	LayoutEntry {
 		kind: WidgetKind::Wifi,
 		area: rect(10, 180, 200, 20),
-		interval_secs: 60,
 	},
 	LayoutEntry {
 		kind: WidgetKind::Temperature,
 		area: rect(218, 180, 62, 20),
-		interval_secs: 10,
 	},
 	LayoutEntry {
 		kind: WidgetKind::Battery,
 		area: rect(18, 205, 254, 20),
-		interval_secs: 10,
 	},
 ];

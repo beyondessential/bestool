@@ -1,8 +1,4 @@
-use std::{
-	collections::HashSet,
-	str::FromStr,
-	time::{Duration, Instant},
-};
+use std::{collections::HashSet, str::FromStr, time::Instant};
 
 use clap::Parser;
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
@@ -16,9 +12,10 @@ use crate::actions::{Context, iti::ItiArgs};
 mod canvas;
 mod layout;
 mod widget;
+mod widgets;
 
 pub use canvas::Canvas;
-pub use layout::{LAYOUT, LayoutEntry, WidgetKind};
+pub use layout::{LAYOUT, WidgetKind};
 pub use widget::{DynWidget, Widget};
 
 /// Drive the Iti's LCD with a fixed widget layout.
@@ -116,10 +113,22 @@ async fn serve(args: &DisplayArgs) -> Result<()> {
 	Ok(())
 }
 
-async fn build_widgets(_disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn DynWidget>>> {
-	// Widgets are added in subsequent commits. For each `LAYOUT` entry whose `kind` is not in
-	// `disabled`, push a constructor result here.
-	Ok(Vec::new())
+async fn build_widgets(disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn DynWidget>>> {
+	let mut out: Vec<Box<dyn DynWidget>> = Vec::new();
+	for entry in LAYOUT {
+		if disabled.contains(&entry.kind) {
+			info!(widget = entry.kind.name(), "disabled");
+			continue;
+		}
+		match entry.kind {
+			WidgetKind::Clock => {
+				out.push(Box::new(widgets::clock::ClockWidget::new(entry.area)));
+			}
+			// Other widget kinds land in subsequent commits.
+			_ => {}
+		}
+	}
+	Ok(out)
 }
 
 async fn tick_loop(mut widgets: Vec<Box<dyn DynWidget>>, lcd: &mut Driver) -> Result<()> {

@@ -33,10 +33,4 @@ impl<'d> Canvas<'d> {
 	pub fn clear_area(&mut self, rect: Rectangle) -> Result<()> {
 		self.fill(rect, Rgb565::BLACK)
 	}
-
-	/// Direct access to the underlying driver, for things that need it (e.g. spark lines that draw
-	/// many small rectangles efficiently).
-	pub fn driver(&mut self) -> &mut Driver {
-		self.driver
-	}
 }
