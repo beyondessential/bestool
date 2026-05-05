@@ -1,13 +1,15 @@
 use clap::Parser;
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use tokio::time::sleep;
 
 use crate::actions::{
-	iti::{ItiArgs, lcd::{
-		json::{Item, Screen},
-		send,
-	}},
 	Context,
+	iti::{ItiArgs, samplers::temperature::sample},
+};
+#[cfg(feature = "iti-lcd")]
+use crate::actions::iti::lcd::{
+	json::{Item, Screen},
+	send,
 };
 
 /// Get core temperature from the Raspberry Pi.
@@ -39,68 +41,63 @@ pub struct TemperatureArgs {
 pub async fn run(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
 	if let Some(n) = ctx.args_sub.watch {
 		loop {
-			once(ctx.clone()).await?;
+			once(&ctx.args_sub)?;
 			sleep(*n).await;
 		}
 	} else {
-		once(ctx).await
+		once(&ctx.args_sub)
 	}
 }
 
-pub async fn once(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
-	let temperature = duct::cmd!("vcgencmd", "measure_temp")
-		.read()
-		.into_diagnostic()?
-		.trim_start_matches("temp=")
-		.trim_end_matches("'C")
-		.parse::<f32>()
-		.into_diagnostic()?;
-
-	if ctx.args_sub.json {
-		println!(
-			"{}",
-			serde_json::json!({
-				"temperature": temperature,
-			})
-		);
+fn once(args: &TemperatureArgs) -> Result<()> {
+	let temperature = sample()?;
+	if args.json {
+		println!("{}", serde_json::json!({ "temperature": temperature }));
 	} else {
 		println!("{:.1}°C", temperature);
 	}
 
 	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = ctx.args_sub.update_screen {
-		const GREEN: [u8; 3] = [0, 255, 0];
-		const RED: [u8; 3] = [255, 0, 0];
-		const BLACK: [u8; 3] = [0, 0, 0];
-		const YELLOW: [u8; 3] = [255, 255, 0];
-
-		send(
-			&ctx.args_sub.zmq_socket,
-			Screen::Layout(vec![
-				Item {
-					x: 218,
-					y: y - 16,
-					width: Some(62),
-					height: Some(20),
-					fill: Some(BLACK),
-					..Default::default()
-				},
-				Item {
-					x: 220,
-					y,
-					stroke: Some(if temperature < 60.0 {
-						GREEN
-					} else if temperature > 80.0 {
-						RED
-					} else {
-						YELLOW
-					}),
-					text: Some(format!("{temperature:>5.1}C")),
-					..Default::default()
-				},
-			]),
-		)?;
+	if let Some(y) = args.update_screen {
+		update_screen(args, y, temperature);
 	}
 
 	Ok(())
+}
+
+#[cfg(feature = "iti-lcd")]
+fn update_screen(args: &TemperatureArgs, y: i32, temperature: f32) {
+	const GREEN: [u8; 3] = [0, 255, 0];
+	const RED: [u8; 3] = [255, 0, 0];
+	const BLACK: [u8; 3] = [0, 0, 0];
+	const YELLOW: [u8; 3] = [255, 255, 0];
+
+	let stroke = if temperature < 60.0 {
+		GREEN
+	} else if temperature > 80.0 {
+		RED
+	} else {
+		YELLOW
+	};
+
+	let _ = send(
+		&args.zmq_socket,
+		Screen::Layout(vec![
+			Item {
+				x: 218,
+				y: y - 16,
+				width: Some(62),
+				height: Some(20),
+				fill: Some(BLACK),
+				..Default::default()
+			},
+			Item {
+				x: 220,
+				y,
+				stroke: Some(stroke),
+				text: Some(format!("{temperature:>5.1}C")),
+				..Default::default()
+			},
+		]),
+	);
 }
