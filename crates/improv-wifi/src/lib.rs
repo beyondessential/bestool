@@ -7,11 +7,11 @@
 //! [Improv Wi-Fi]: https://www.improv-wifi.com
 #![cfg(target_os = "linux")]
 
-use bluer::Uuid;
+use uuid::Uuid;
 
 mod backend;
+mod bluez;
 mod error;
-mod gatt;
 pub mod rpc;
 mod service;
 mod state;
@@ -21,8 +21,9 @@ pub mod networkmanager;
 
 pub use backend::{DeviceInfo, Network, WifiConfigurator};
 pub use error::Error;
-pub use service::{AuthorizeMode, ImprovWifi, ImprovWifiConfig};
+pub use service::{AuthorizeMode, ImprovWifi, ImprovWifiConfig, find_adapter, power_on_adapter};
 pub use state::{Capabilities, Status};
+pub use zbus::{Connection, zvariant::OwnedObjectPath};
 
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x00467768_6228_2272_4663_277478268000);
 pub const CHARACTERISTIC_UUID_CAPABILITIES: Uuid =

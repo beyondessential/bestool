@@ -1,18 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
-use bluer::{
-	Adapter,
-	adv::{Advertisement, AdvertisementHandle, Type as AdvType},
-	gatt::local::ApplicationHandle,
-};
-use tokio::sync::{
-	Mutex, broadcast,
-	watch::{Receiver as WatchReceiver, Sender as WatchSender},
-};
-use tracing::{debug, info, instrument, warn};
+use tokio::sync::{Mutex, broadcast, watch::Sender as WatchSender};
+use tracing::{debug, instrument, warn};
+use zbus::{Connection, zvariant::OwnedObjectPath};
 
 use crate::{
 	Capabilities, Error, Status, WifiConfigurator,
+	bluez::{self, AppHandles},
 	rpc::{Command, Reassembler, Yielded, encode_response},
 };
 
@@ -89,7 +83,7 @@ where
 		self.inner.lock().await.rpc_result.clone()
 	}
 
-	async fn set_status(&self, new: Status) {
+	pub(crate) async fn set_status(&self, new: Status) {
 		{
 			let mut inner = self.inner.lock().await;
 			if inner.status == new {
@@ -248,120 +242,56 @@ where
 	}
 }
 
-pub struct ImprovWifi<T> {
-	pub(crate) state: Arc<State<T>>,
-	pub(crate) adapter: Adapter,
-	pub(crate) provisioned_rx: WatchReceiver<bool>,
-	pub(crate) status_change_for_adv: broadcast::Receiver<Status>,
-	pub(crate) local_name: Option<String>,
-	pub(crate) auth_timeout: Duration,
-	pub(crate) _app_handle: ApplicationHandle,
+/// Improv-Wi-Fi service handle. Construct via [`ImprovWifi::install`], then call
+/// [`ImprovWifi::run`] to drive advertising, the authorization timeout, and the
+/// shutdown-on-`Provisioned` behaviour.
+pub struct ImprovWifi<T: WifiConfigurator + 'static> {
+	state: Arc<State<T>>,
+	handles: AppHandles<T>,
 }
 
 impl<T> ImprovWifi<T>
 where
-	T: WifiConfigurator,
+	T: WifiConfigurator + 'static,
 {
+	/// Register the Improv-Wi-Fi GATT application + advertisement on the given BlueZ adapter.
+	///
+	/// `connection` should be a system-bus connection. `adapter_path` is the BlueZ adapter
+	/// object path (typically `/org/bluez/hciN`); use [`find_adapter`] to discover one.
+	pub async fn install(
+		connection: Connection,
+		adapter_path: OwnedObjectPath,
+		configurator: T,
+		config: ImprovWifiConfig,
+	) -> Result<Self, Error> {
+		let handles = bluez::install(connection, adapter_path, configurator, config).await?;
+		let state = handles.state.clone();
+		Ok(Self { state, handles })
+	}
+
 	/// Signal that the user has authorized the device (e.g. by pressing a button).
 	pub async fn authorize(&self) {
 		self.state.set_status(Status::Authorized).await;
 	}
 
-	pub(crate) fn build_advertisement(&self, status_byte: u8) -> Advertisement {
-		let cap_byte = self.state.capabilities.as_byte();
-		let service_data = vec![status_byte, cap_byte, 0, 0, 0, 0];
-		let mut sd = std::collections::BTreeMap::new();
-		sd.insert(crate::ADVERTISEMENT_SERVICE_DATA_UUID, service_data);
-
-		let mut uuids = std::collections::BTreeSet::new();
-		uuids.insert(crate::SERVICE_UUID);
-
-		Advertisement {
-			advertisement_type: AdvType::Peripheral,
-			service_uuids: uuids,
-			service_data: sd,
-			discoverable: Some(true),
-			local_name: self.local_name.clone(),
-			..Default::default()
-		}
-	}
-
 	/// Drive the service until provisioning succeeds, then tear down BLE.
-	pub async fn run(mut self) -> bluer::Result<()> {
-		let mut provisioned = self.provisioned_rx.clone();
-		let mut adv_handle: Option<AdvertisementHandle> = Some(
-			self.adapter
-				.advertise(self.build_advertisement(self.state.current_state_byte().await))
-				.await?,
-		);
-
-		// Authorization timeout task: only relevant when authorization is required. We re-arm
-		// the timer on each `auth_reset_tx` tick, and on expiry transition Authorized →
-		// AuthorizationRequired.
-		let auth_required = self.state.auth_required;
-		let auth_timeout = self.auth_timeout;
-		let timeout_state = self.state.clone();
-		let mut auth_reset_rx = self.state.auth_reset_tx.subscribe();
-		let mut provisioned_for_timeout = self.provisioned_rx.clone();
-		let timeout_task = tokio::spawn(async move {
-			if !auth_required {
-				return;
-			}
-			loop {
-				let sleep = tokio::time::sleep(auth_timeout);
-				tokio::pin!(sleep);
-				tokio::select! {
-					biased;
-					_ = provisioned_for_timeout.changed() => {
-						if *provisioned_for_timeout.borrow() {
-							return;
-						}
-					}
-					res = auth_reset_rx.changed() => {
-						if res.is_err() {
-							return;
-						}
-						continue;
-					}
-					_ = &mut sleep => {
-						if matches!(timeout_state.inner.lock().await.status, Status::Authorized) {
-							info!("authorization timed out, reverting to AuthorizationRequired");
-							timeout_state.set_status(Status::AuthorizationRequired).await;
-						}
-					}
-				}
-			}
-		});
-
-		// Wait for either a status change (re-issue advertisement to update service-data byte) or
-		// `provisioned` becoming true (tear down).
-		loop {
-			tokio::select! {
-				res = self.status_change_for_adv.recv() => {
-					match res {
-						Ok(_) => {
-							drop(adv_handle.take());
-							let new_byte = self.state.current_state_byte().await;
-							adv_handle = Some(self.adapter.advertise(self.build_advertisement(new_byte)).await?);
-						}
-						Err(broadcast::error::RecvError::Lagged(_)) => continue,
-						Err(broadcast::error::RecvError::Closed) => break,
-					}
-				}
-				res = provisioned.changed() => {
-					if res.is_err() {
-						break;
-					}
-					if *provisioned.borrow() {
-						info!("provisioning successful, shutting down Improv service");
-						break;
-					}
-				}
-			}
-		}
-
-		drop(adv_handle);
-		timeout_task.abort();
-		Ok(())
+	pub async fn run(self) -> Result<(), Error> {
+		bluez::run(self.handles).await
 	}
+}
+
+/// Resolve a BlueZ adapter object path. Pass `None` for the first adapter found.
+pub async fn find_adapter(
+	connection: &Connection,
+	name: Option<&str>,
+) -> Result<OwnedObjectPath, Error> {
+	bluez::find_adapter(connection, name).await
+}
+
+/// Power on the BlueZ adapter at `adapter_path` (sets the `Powered` property to `true`).
+pub async fn power_on_adapter(
+	connection: &Connection,
+	adapter_path: &OwnedObjectPath,
+) -> Result<(), Error> {
+	bluez::power_on_adapter(connection, adapter_path).await
 }

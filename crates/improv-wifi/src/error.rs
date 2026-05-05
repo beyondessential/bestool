@@ -2,7 +2,6 @@ use thiserror::Error;
 
 /// Improv Wi-Fi error codes, as transmitted on the Error State characteristic.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "miette", derive(miette::Diagnostic))]
 #[repr(u8)]
 pub enum Error {
 	/// RPC packet was malformed or had a bad checksum.

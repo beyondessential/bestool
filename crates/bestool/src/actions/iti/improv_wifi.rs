@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use improv_wifi::{
-	AuthorizeMode, ImprovWifi, ImprovWifiConfig, networkmanager::NetworkManagerBackend,
+	AuthorizeMode, Connection, ImprovWifi, ImprovWifiConfig, find_adapter,
+	networkmanager::NetworkManagerBackend, power_on_adapter,
 };
 use miette::{IntoDiagnostic, Result, WrapErr};
 use tracing::info;
@@ -43,27 +44,20 @@ pub struct ImprovWifiArgs {
 pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
 	let args = ctx.args_sub;
 
-	let session = bluer::Session::new()
+	let connection = Connection::system()
 		.await
 		.into_diagnostic()
-		.wrap_err("bluer: open session")?;
+		.wrap_err("zbus: connect to system bus")?;
 
-	let adapter = match args.adapter.as_deref() {
-		Some(name) => session
-			.adapter(name)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("bluer: adapter {name}"))?,
-		None => session
-			.default_adapter()
-			.await
-			.into_diagnostic()
-			.wrap_err("bluer: default adapter")?,
-	};
-	adapter
-		.set_powered(true)
+	let adapter_path = find_adapter(&connection, args.adapter.as_deref())
 		.await
 		.into_diagnostic()
-		.wrap_err("bluer: power on adapter")?;
+		.wrap_err("BlueZ: locate adapter")?;
+
+	power_on_adapter(&connection, &adapter_path)
+		.await
+		.into_diagnostic()
+		.wrap_err("BlueZ: power on adapter")?;
 
 	let hostname = read_hostname();
 	let device_name = args.device_name.unwrap_or_else(|| hostname.clone());
@@ -85,7 +79,7 @@ pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
 	};
 
 	info!("starting Improv-Wi-Fi service");
-	let service = ImprovWifi::install(&adapter, backend, config)
+	let service = ImprovWifi::install(connection, adapter_path, backend, config)
 		.await
 		.into_diagnostic()
 		.wrap_err("improv-wifi: install GATT service")?;
