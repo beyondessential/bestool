@@ -129,6 +129,9 @@ async fn build_widgets(disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn Dyn
 					entry.area,
 				)));
 			}
+			WidgetKind::Wifi => {
+				out.push(Box::new(widgets::wifi::WifiWidget::new(entry.area)));
+			}
 			// Other widget kinds land in subsequent commits.
 			_ => {}
 		}
