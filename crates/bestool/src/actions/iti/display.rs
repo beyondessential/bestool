@@ -1,17 +1,25 @@
-use clap::{Parser, Subcommand};
+use std::{
+	collections::HashSet,
+	str::FromStr,
+	time::{Duration, Instant},
+};
+
+use clap::Parser;
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rpi_st7789v2_driver::{Driver, DriverArgs};
 use tokio::signal::unix::{SignalKind, signal};
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::actions::{Context, iti::ItiArgs};
 
 mod canvas;
+mod layout;
 mod widget;
 
 pub use canvas::Canvas;
-pub use widget::Widget;
+pub use layout::{LAYOUT, LayoutEntry, WidgetKind};
+pub use widget::{DynWidget, Widget};
 
 /// Drive the Iti's LCD with a fixed widget layout.
 ///
@@ -47,9 +55,11 @@ pub struct DisplayArgs {
 	#[arg(long, default_value = "20000000")]
 	pub frequency: u32,
 
-	/// Subcommand
-	#[command(subcommand)]
-	pub action: DisplayAction,
+	/// Disable named widgets. Repeatable; comma-separated also accepted.
+	///
+	/// Valid widgets: clock, addresses, wifi, temperature, battery, sparks.
+	#[arg(long, value_delimiter = ',', value_parser = clap::builder::ValueParser::new(WidgetKind::from_str))]
+	pub disable: Vec<WidgetKind>,
 }
 
 impl From<&DisplayArgs> for DriverArgs {
@@ -65,16 +75,8 @@ impl From<&DisplayArgs> for DriverArgs {
 	}
 }
 
-#[derive(Debug, Clone, Subcommand)]
-pub enum DisplayAction {
-	/// Run the display service in the foreground.
-	Run,
-}
-
 pub async fn run(ctx: Context<ItiArgs, DisplayArgs>) -> Result<()> {
-	match ctx.args_sub.action {
-		DisplayAction::Run => serve(&ctx.args_sub).await,
-	}
+	serve(&ctx.args_sub).await
 }
 
 #[instrument(level = "debug", skip(args))]
@@ -87,7 +89,11 @@ async fn serve(args: &DisplayArgs) -> Result<()> {
 	lcd.backlight(true);
 	lcd.wake()?;
 
-	info!("display ready, awaiting SIGTERM/SIGINT");
+	let disabled: HashSet<WidgetKind> = args.disable.iter().copied().collect();
+	let widgets = build_widgets(&disabled).await?;
+	if widgets.is_empty() {
+		warn!("no widgets enabled; the display will stay blank");
+	}
 
 	let mut term = signal(SignalKind::terminate())
 		.into_diagnostic()
@@ -97,6 +103,7 @@ async fn serve(args: &DisplayArgs) -> Result<()> {
 		.wrap_err("signal: SIGINT")?;
 
 	tokio::select! {
+		res = tick_loop(widgets, &mut lcd) => res?,
 		_ = term.recv() => info!("SIGTERM received, shutting down"),
 		_ = int.recv() => info!("SIGINT received, shutting down"),
 	}
@@ -107,4 +114,44 @@ async fn serve(args: &DisplayArgs) -> Result<()> {
 	lcd.sleep()?;
 
 	Ok(())
+}
+
+async fn build_widgets(_disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn DynWidget>>> {
+	// Widgets are added in subsequent commits. For each `LAYOUT` entry whose `kind` is not in
+	// `disabled`, push a constructor result here.
+	Ok(Vec::new())
+}
+
+async fn tick_loop(mut widgets: Vec<Box<dyn DynWidget>>, lcd: &mut Driver) -> Result<()> {
+	if widgets.is_empty() {
+		std::future::pending::<()>().await;
+		unreachable!();
+	}
+
+	let now = Instant::now();
+	let mut next_tick: Vec<Instant> = widgets.iter().map(|_| now).collect();
+
+	loop {
+		// Find the widget whose tick is due first, sleep until then, run it.
+		let (idx, due) = next_tick
+			.iter()
+			.enumerate()
+			.min_by_key(|(_, t)| *t)
+			.map(|(i, t)| (i, *t))
+			.expect("widgets is non-empty");
+
+		let now = Instant::now();
+		if due > now {
+			tokio::time::sleep(due - now).await;
+		}
+
+		let interval = widgets[idx].interval();
+		let name = widgets[idx].name();
+		debug!(widget = name, "ticking");
+		let mut canvas = Canvas::new(lcd);
+		if let Err(err) = widgets[idx].tick(&mut canvas).await {
+			warn!(widget = name, ?err, "widget tick failed");
+		}
+		next_tick[idx] = Instant::now() + interval;
+	}
 }

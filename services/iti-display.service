@@ -3,7 +3,7 @@ Description=Iti LCD display
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/bestool --log-timeless iti display run
+ExecStart=/usr/local/bin/bestool --log-timeless iti display
 Restart=always
 RestartSec=5s
 KillSignal=SIGTERM
