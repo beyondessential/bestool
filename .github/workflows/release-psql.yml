@@ -79,7 +79,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: psql-${{ matrix.target }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.75.19
         with:
           tool: cargo-zigbuild,cargo-auditable
 

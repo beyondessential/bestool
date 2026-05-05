@@ -55,7 +55,7 @@ jobs:
           rustup target add aarch64-unknown-linux-musl
 
       - if: runner.os == 'Linux'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.75.19
         with:
           tool: cross
 
@@ -84,7 +84,7 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
           rustup component add clippy
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.75.19
         with:
           tool: just
       - uses: Swatinem/rust-cache@v2
@@ -168,7 +168,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
 
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.75.19
         with:
           tool: cargo-zigbuild,cargo-auditable
 
