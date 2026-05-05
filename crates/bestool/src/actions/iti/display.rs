@@ -124,6 +124,11 @@ async fn build_widgets(disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn Dyn
 			WidgetKind::Clock => {
 				out.push(Box::new(widgets::clock::ClockWidget::new(entry.area)));
 			}
+			WidgetKind::Addresses => {
+				out.push(Box::new(widgets::addresses::AddressesWidget::new(
+					entry.area,
+				)));
+			}
 			// Other widget kinds land in subsequent commits.
 			_ => {}
 		}

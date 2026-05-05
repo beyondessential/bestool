@@ -41,6 +41,7 @@ futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
 hickory-resolver = { version = "0.25.2", optional = true }
 humantime = { version = "2.2.0", optional = true }
+if-addrs = { version = "0.15.0", optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = "0.2.15"
@@ -165,7 +166,7 @@ iti = [ # enable all iti subcommands
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
-iti-display = ["__iti", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
+iti-display = ["__iti", "dep:embedded-graphics", "dep:if-addrs", "dep:rpi-st7789v2-driver"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
