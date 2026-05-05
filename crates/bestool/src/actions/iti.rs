@@ -5,6 +5,8 @@ use crate::args::Args;
 
 use super::Context;
 
+pub mod samplers;
+
 /// Tamanu Iti subcommands.
 #[derive(Debug, Clone, Parser)]
 pub struct ItiArgs {
