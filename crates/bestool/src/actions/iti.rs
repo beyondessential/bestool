@@ -27,6 +27,8 @@ super::subcommands! {
 
 	#[cfg(feature = "iti-battery")]
 	battery => Battery(BatteryArgs),
+	#[cfg(feature = "iti-improv-wifi")]
+	improv_wifi => ImprovWifi(ImprovWifiArgs),
 	#[cfg(feature = "iti-lcd")]
 	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-lcd")]
