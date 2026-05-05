@@ -7,23 +7,28 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      actions-patches:
+        update-types:
+          - patch
+          - minor
+
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     commit-message:
       prefix: deps
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
-      deps:
+      deps-patches:
         patterns:
           - "*"
-  - package-ecosystem: cargo
-    directory: /crates/bestool
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: deps
-    groups:
-      deps:
-        patterns:
-          - "*"
+        update-types:
+          - patch
+          - minor
