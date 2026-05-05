@@ -167,7 +167,7 @@ iti = [ # enable all iti subcommands
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
-iti-display = ["__iti", "iti-battery", "iti-temperature", "dep:embedded-graphics", "dep:if-addrs", "dep:rpi-st7789v2-driver", "dep:zbus"]
+iti-display = ["__iti", "iti-battery", "iti-temperature", "dep:embedded-graphics", "dep:if-addrs", "dep:rpi-st7789v2-driver", "dep:sysinfo", "dep:zbus"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code

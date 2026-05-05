@@ -140,8 +140,9 @@ async fn build_widgets(disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn Dyn
 			WidgetKind::Battery => {
 				out.push(Box::new(widgets::battery::BatteryWidget::new(entry.area)));
 			}
-			// Sparks lands in the next commit.
-			WidgetKind::Sparks => {}
+			WidgetKind::Sparks => {
+				out.push(Box::new(widgets::sparks::SparksWidget::new(entry.area)));
+			}
 		}
 	}
 	Ok(out)
