@@ -8,8 +8,7 @@ updates:
       prefix: ci
       include: scope
     cooldown:
-      default-days: 7
-      semver-major-days: 14
+      default-days: 14
     groups:
       actions-patches:
         update-types:
