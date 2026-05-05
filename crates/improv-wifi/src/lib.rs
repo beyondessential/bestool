@@ -9,10 +9,12 @@
 
 use bluer::Uuid;
 
+mod backend;
 mod error;
 pub mod rpc;
 mod state;
 
+pub use backend::{DeviceInfo, Network, WifiConfigurator};
 pub use error::Error;
 pub use state::{Capabilities, Status};
 
