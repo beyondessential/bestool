@@ -160,10 +160,12 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 ## Iti subcommands
 iti = [ # enable all iti subcommands
 	"iti-battery",
+	"iti-display",
 	"iti-lcd",
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
+iti-display = ["__iti", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code

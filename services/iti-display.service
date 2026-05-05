@@ -1,0 +1,13 @@
+[Unit]
+Description=Iti LCD display
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/bestool --log-timeless iti display run
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=multi-user.target
