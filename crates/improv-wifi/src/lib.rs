@@ -10,6 +10,7 @@
 use bluer::Uuid;
 
 mod error;
+pub mod rpc;
 mod state;
 
 pub use error::Error;
