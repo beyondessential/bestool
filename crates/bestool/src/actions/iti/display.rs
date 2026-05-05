@@ -137,8 +137,11 @@ async fn build_widgets(disabled: &HashSet<WidgetKind>) -> Result<Vec<Box<dyn Dyn
 					entry.area,
 				)));
 			}
-			// Other widget kinds land in subsequent commits.
-			_ => {}
+			WidgetKind::Battery => {
+				out.push(Box::new(widgets::battery::BatteryWidget::new(entry.area)));
+			}
+			// Sparks lands in the next commit.
+			WidgetKind::Sparks => {}
 		}
 	}
 	Ok(out)
