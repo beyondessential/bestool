@@ -24,8 +24,6 @@ super::subcommands! {
 	battery => Battery(BatteryArgs),
 	#[cfg(feature = "iti-display")]
 	display => Display(DisplayArgs),
-	#[cfg(feature = "iti-lcd")]
-	lcd => Lcd(LcdArgs),
 	#[cfg(feature = "iti-temperature")]
 	temperature => Temperature(TemperatureArgs)
 }
