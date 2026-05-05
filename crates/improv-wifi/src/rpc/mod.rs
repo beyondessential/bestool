@@ -10,9 +10,11 @@
 //! (including `command_id` and `data_length`).
 
 mod parse;
+mod reassembly;
 mod result;
 
 pub use parse::{ParseError, parse_packet};
+pub use reassembly::{Reassembler, Yielded};
 pub use result::encode_response;
 
 /// A parsed RPC command from the client.
