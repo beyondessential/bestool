@@ -7,6 +7,12 @@ use tracing::{info, instrument};
 
 use crate::actions::{Context, iti::ItiArgs};
 
+mod canvas;
+mod widget;
+
+pub use canvas::Canvas;
+pub use widget::Widget;
+
 /// Drive the Iti's LCD with a fixed widget layout.
 ///
 /// This is a single long-running service that owns the SPI/GPIO link to the panel and renders
