@@ -16,8 +16,8 @@ pub enum Error {
 	#[error("unable to connect to the requested network")]
 	UnableToConnect = 0x03,
 
-	/// Credentials were sent via RPC but the Improv service is not authorized.
-	#[error("not authorized")]
+	/// Credentials were sent via RPC but the Improv service is not authorised.
+	#[error("not authorised")]
 	NotAuthorized = 0x04,
 
 	/// A hostname value is not RFC 1123 compliant.

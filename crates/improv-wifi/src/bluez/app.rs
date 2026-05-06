@@ -91,7 +91,7 @@ pub(crate) struct AppHandles<T: WifiConfigurator + 'static> {
 	pub(crate) provisioned_rx: watch::Receiver<bool>,
 	pub(crate) status_change_for_adv: broadcast::Receiver<Status>,
 	pub(crate) local_name: Option<String>,
-	pub(crate) auth_timeout: Duration,
+	pub(crate) auth_timeout: Option<Duration>,
 	pub(crate) notify_tasks: Vec<JoinHandle<()>>,
 	pub(crate) auth_tx: mpsc::UnboundedSender<()>,
 	pub(crate) auth_rx: mpsc::UnboundedReceiver<()>,
@@ -314,35 +314,35 @@ pub(crate) async fn run<T: WifiConfigurator + 'static>(
 	let timeout_state = handles.state.clone();
 	let mut auth_reset_rx = handles.state.auth_reset_tx.subscribe();
 	let mut provisioned_for_timeout = handles.provisioned_rx.clone();
-	let timeout_task: JoinHandle<()> = tokio::spawn(async move {
-		if !auth_required {
-			return;
-		}
-		loop {
-			let sleep = tokio::time::sleep(auth_timeout);
-			tokio::pin!(sleep);
-			tokio::select! {
-				biased;
-				_ = provisioned_for_timeout.changed() => {
-					if *provisioned_for_timeout.borrow() {
-						return;
+	let timeout_task: Option<JoinHandle<()>> = match (auth_required, auth_timeout) {
+		(true, Some(auth_timeout)) => Some(tokio::spawn(async move {
+			loop {
+				let sleep = tokio::time::sleep(auth_timeout);
+				tokio::pin!(sleep);
+				tokio::select! {
+					biased;
+					_ = provisioned_for_timeout.changed() => {
+						if *provisioned_for_timeout.borrow() {
+							return;
+						}
 					}
-				}
-				res = auth_reset_rx.changed() => {
-					if res.is_err() {
-						return;
+					res = auth_reset_rx.changed() => {
+						if res.is_err() {
+							return;
+						}
+						continue;
 					}
-					continue;
-				}
-				_ = &mut sleep => {
-					if matches!(timeout_state.inner.lock().await.status, Status::Authorized) {
-						info!("authorization timed out, reverting to AuthorizationRequired");
-						timeout_state.set_status(Status::AuthorizationRequired).await;
+					_ = &mut sleep => {
+						if matches!(timeout_state.inner.lock().await.status, Status::Authorized) {
+							info!("authorisation timed out, reverting to AuthorizationRequired");
+							timeout_state.set_status(Status::AuthorizationRequired).await;
+						}
 					}
 				}
 			}
-		}
-	});
+		})),
+		_ => None,
+	};
 
 	let mut provisioned = handles.provisioned_rx.clone();
 
@@ -365,7 +365,7 @@ pub(crate) async fn run<T: WifiConfigurator + 'static>(
 				}
 			}
 			Some(()) = handles.auth_rx.recv() => {
-				debug!("authorization signal received");
+				debug!("authorisation signal received");
 				handles.state.set_status(Status::Authorized).await;
 			}
 			res = provisioned.changed() => {
@@ -380,7 +380,9 @@ pub(crate) async fn run<T: WifiConfigurator + 'static>(
 		}
 	}
 
-	timeout_task.abort();
+	if let Some(task) = timeout_task {
+		task.abort();
+	}
 	for task in handles.notify_tasks.drain(..) {
 		task.abort();
 	}

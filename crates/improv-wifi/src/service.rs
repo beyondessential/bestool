@@ -10,40 +10,31 @@ use crate::{
 	rpc::{Command, Reassembler, Yielded, encode_response},
 };
 
-/// Whether the device requires explicit user authorization before accepting credentials.
+/// Whether the device requires explicit user authorisation before accepting credentials.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizeMode {
-	/// Start in [`Status::AuthorizationRequired`]; caller must signal authorization (button press,
+	/// Start in [`Status::AuthorizationRequired`]; caller must signal authorisation (button press,
 	/// etc.) via [`ImprovWifi::authorize`].
 	Required,
 
-	/// Start already in [`Status::Authorized`]. The authorization timeout is not enforced.
+	/// Start already in [`Status::Authorized`]. The authorisation timeout is not enforced.
 	#[default]
 	NotRequired,
 }
 
 /// Top-level configuration for the Improv-Wi-Fi service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ImprovWifiConfig {
 	/// How the device gates access to the credential-write commands.
 	pub authorize: AuthorizeMode,
 
 	/// How long the device stays in [`Status::Authorized`] before reverting (only meaningful for
-	/// [`AuthorizeMode::Required`]). Per spec, ~60 seconds is suggested.
-	pub auth_timeout: Duration,
+	/// [`AuthorizeMode::Required`]). `None` (the default) disables the timeout — the device stays
+	/// authorised until provisioned or shut down.
+	pub auth_timeout: Option<Duration>,
 
 	/// Local name advertised over BLE. Defaults to the configurator's device name.
 	pub local_name: Option<String>,
-}
-
-impl Default for ImprovWifiConfig {
-	fn default() -> Self {
-		Self {
-			authorize: AuthorizeMode::default(),
-			auth_timeout: Duration::from_secs(60),
-			local_name: None,
-		}
-	}
 }
 
 #[derive(Debug)]
@@ -243,7 +234,7 @@ where
 }
 
 /// Improv-Wi-Fi service handle. Construct via [`ImprovWifi::install`], then call
-/// [`ImprovWifi::run`] to drive advertising, the authorization timeout, and the
+/// [`ImprovWifi::run`] to drive advertising, the authorisation timeout, and the
 /// shutdown-on-`Provisioned` behaviour.
 pub struct ImprovWifi<T: WifiConfigurator + 'static> {
 	state: Arc<State<T>>,
@@ -269,12 +260,12 @@ where
 		Ok(Self { state, handles })
 	}
 
-	/// Signal that the user has authorized the device (e.g. by pressing a button).
+	/// Signal that the user has authorised the device (e.g. by pressing a button).
 	pub async fn authorize(&self) {
 		self.state.set_status(Status::Authorized).await;
 	}
 
-	/// Get a cloneable handle that can signal authorization from another task.
+	/// Get a cloneable handle that can signal authorisation from another task.
 	///
 	/// The handle stays valid for the lifetime of the channel: triggers fired after
 	/// [`Self::run`] returns (i.e. after the service has shut down) are silently dropped.
@@ -290,7 +281,7 @@ where
 	}
 }
 
-/// Cloneable handle for triggering authorization from another task.
+/// Cloneable handle for triggering authorisation from another task.
 ///
 /// Obtain via [`ImprovWifi::auth_handle`]. Each call to [`Self::authorize`] drives the
 /// service into [`Status::Authorized`] (subject to the existing auth-timeout behaviour).
@@ -300,7 +291,7 @@ pub struct AuthHandle {
 }
 
 impl AuthHandle {
-	/// Signal authorization. No-op if the service has already shut down.
+	/// Signal authorisation. No-op if the service has already shut down.
 	pub fn authorize(&self) {
 		let _ = self.tx.send(());
 	}

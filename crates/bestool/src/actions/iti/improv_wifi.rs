@@ -30,14 +30,14 @@ pub struct ImprovWifiArgs {
 	#[arg(long)]
 	pub device_name: Option<String>,
 
-	/// Authorize when a line is received on stdin (the line content is ignored).
+	/// Authorise when a line is received on stdin (the line content is ignored).
 	///
 	/// When set, the device starts in `AuthorizationRequired` and only accepts credentials
 	/// after the first line on stdin.
 	#[arg(long)]
 	pub auth_stdin: bool,
 
-	/// Authorize on a button press on this BCM GPIO pin.
+	/// Authorise on a button press on this BCM GPIO pin.
 	///
 	/// The pin is configured as input with the internal pull-up resistor; wire a momentary
 	/// switch from the pin to GND. When set, the device starts in `AuthorizationRequired`
@@ -49,10 +49,11 @@ pub struct ImprovWifiArgs {
 	#[arg(long, default_value = "50ms")]
 	pub auth_gpio_debounce: humantime::Duration,
 
-	/// How long an authorization stays valid before the device reverts to
-	/// `AuthorizationRequired`. Only meaningful with `--auth-stdin` / `--auth-gpio`.
-	#[arg(long, default_value = "60s")]
-	pub auth_timeout: humantime::Duration,
+	/// How long an authorisation stays valid before the device reverts to
+	/// `AuthorizationRequired`. If unset, the device stays authorised until provisioned or
+	/// shut down. Only meaningful with `--auth-stdin` / `--auth-gpio`.
+	#[arg(long)]
+	pub auth_timeout: Option<humantime::Duration>,
 }
 
 pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
@@ -90,7 +91,7 @@ pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
 		} else {
 			AuthorizeMode::NotRequired
 		},
-		auth_timeout: Duration::from(args.auth_timeout),
+		auth_timeout: args.auth_timeout.map(Duration::from),
 		local_name,
 	};
 
@@ -143,7 +144,7 @@ fn spawn_stdin_authorizer(auth: AuthHandle) -> tokio::task::JoinHandle<()> {
 		loop {
 			match lines.next_line().await {
 				Ok(Some(_)) => {
-					info!("stdin line received, authorizing");
+					info!("stdin line received, authorising");
 					auth.authorize();
 				}
 				Ok(None) => {
@@ -172,7 +173,7 @@ fn install_gpio_authorizer(
 		.into_input_pullup();
 	input
 		.set_async_interrupt(Trigger::FallingEdge, Some(debounce), move |_event| {
-			info!(pin, "gpio button press, authorizing");
+			info!(pin, "gpio button press, authorising");
 			auth.authorize();
 		})
 		.into_diagnostic()

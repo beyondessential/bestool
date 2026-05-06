@@ -2,7 +2,7 @@
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Status {
-	/// Awaiting authorization via physical interaction with the device.
+	/// Awaiting authorisation via physical interaction with the device.
 	#[default]
 	AuthorizationRequired = 0x01,
 
