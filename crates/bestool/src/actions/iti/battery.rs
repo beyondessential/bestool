@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, time::Duration};
 
 use clap::Parser;
-use folktime::duration::{Duration as Folktime, Style as Folkstyle};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rppal::{gpio::Gpio, i2c::I2c};
 use tokio::time::sleep;
@@ -11,9 +10,30 @@ use crate::actions::{
 	iti::{ItiArgs, lcd::{
 		json::{Item, Screen},
 		send,
-	}},
+	}, parse_friendly_duration},
 	Context,
 };
+
+/// Format a duration in the most useful unit(s) for the battery readout.
+///
+/// Folktime equivalent: `OneUnitWhole` (drops fractional unit) for short
+/// durations, `TwoUnitsWhole` (e.g. "1h 30m") for >1h.
+fn humanize_battery_duration(dur: Duration) -> String {
+	let secs = dur.as_secs();
+	if secs >= 3600 {
+		let h = secs / 3600;
+		let m = (secs % 3600) / 60;
+		if m > 0 {
+			format!("{h}h {m}m")
+		} else {
+			format!("{h}h")
+		}
+	} else if secs >= 60 {
+		format!("{}m", secs / 60)
+	} else {
+		format!("{secs}s")
+	}
+}
 
 /// Get battery information from the X1201 board.
 #[derive(Debug, Clone, Parser)]
@@ -39,8 +59,8 @@ pub struct BatteryArgs {
 	/// Keep updating at an interval.
 	///
 	/// Syntax is a number followed by a unit, such as "5s" or "1m".
-	#[arg(long)]
-	pub watch: Option<humantime::Duration>,
+	#[arg(long, value_parser = parse_friendly_duration)]
+	pub watch: Option<Duration>,
 
 	/// With --watch, also estimate charging rate and time remaining.
 	///
@@ -52,8 +72,6 @@ pub struct BatteryArgs {
 
 pub async fn run(ctx: Context<ItiArgs, BatteryArgs>) -> Result<()> {
 	if let Some(n) = ctx.args_sub.watch {
-		let n = n.as_ref().clone();
-
 		// gather info only for initial round
 		let mut rolling = if ctx.args_sub.estimate {
 			let first = once(ctx.clone(), None).await?;
@@ -114,7 +132,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 			.unwrap_or(rolling.len() - 1);
 
 		let mut rate = (capacity - rolling.get(index_to_first_difference).unwrap_or(&capacity))
-			/ ((rolling.len() as u64 * ctx.args_sub.watch.unwrap().as_ref().as_secs()) as f64);
+			/ ((rolling.len() as u64 * ctx.args_sub.watch.unwrap().as_secs()) as f64);
 		let capacity_left = if rate > 0.0 {
 			(100.0 - capacity).abs()
 		} else {
@@ -159,16 +177,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 
 		Some((
 			rate,
-			time_remaining.map(|dur| {
-				Folktime(
-					dur,
-					if dur > Duration::from_secs(60 * 60) {
-						Folkstyle::TwoUnitsWhole
-					} else {
-						Folkstyle::OneUnitWhole
-					},
-				)
-			}),
+			time_remaining.map(|dur| (dur, humanize_battery_duration(dur))),
 		))
 	} else {
 		None
@@ -201,8 +210,8 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 					"capacity": capacity,
 					"version": version,
 					"rate": rate,
-					"time_remaining": time_remaining.as_ref().map(|d| d.0.as_secs()),
-					"time_remaining_pretty": time_remaining.as_ref().map(|d| d.to_string()),
+					"time_remaining": time_remaining.as_ref().map(|(d, _)| d.as_secs()),
+					"time_remaining_pretty": time_remaining.as_ref().map(|(_, s)| s.clone()),
 				})
 			);
 		} else {
@@ -217,7 +226,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 		println!("Battery: {:.2}%", capacity);
 		if let Some((rate, ref time_remaining)) = estimates {
 			println!("Rate: {:.2}%/h ({status})", rate * 60.0 * 60.0,);
-			if let Some(time_remaining) = time_remaining {
+			if let Some((_, time_remaining)) = time_remaining {
 				println!("Time remaining: {time_remaining}");
 			}
 		}
@@ -250,7 +259,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 
 		let (bg_x, bg_w) = if let Some((rate, time_remaining)) = estimates
 			.as_ref()
-			.and_then(|(rate, time_remaining)| time_remaining.as_ref().map(|d| (rate, d)))
+			.and_then(|(rate, time_remaining)| time_remaining.as_ref().map(|(_, s)| (rate, s)))
 		{
 			items.push(Item {
 				x: 20,
@@ -264,7 +273,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 				..Default::default()
 			});
 			(18, 254)
-		} else if estimates.map_or(false, |(rate, _)| !(rate > 0.0) && !(rate < -0.0)) {
+		} else if estimates.is_some_and(|(rate, _)| !(rate > 0.0) && !(rate < -0.0)) {
 			if capacity == 100.0 {
 				items.push(Item {
 					x: 20,

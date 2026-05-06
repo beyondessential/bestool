@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::Serialize;
 use tokio::{
@@ -65,7 +65,7 @@ impl AuditLog {
 #[derive(Debug, Serialize)]
 struct Record<'a> {
 	#[serde(rename = "ts")]
-	time: DateTime<Utc>,
+	time: Timestamp,
 	event: &'a str,
 	session: u32,
 	user: &'a str,

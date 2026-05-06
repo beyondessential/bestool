@@ -24,8 +24,8 @@ pub struct SparksArgs {
 	pub h: u32,
 
 	/// Refresh interval.
-	#[arg(long, default_value = "10s")]
-	pub interval: humantime::Duration,
+	#[arg(long, default_value = "10s", value_parser = crate::actions::iti::parse_friendly_duration)]
+	pub interval: Duration,
 
 	/// ZMQ socket to use for screen updates.
 	#[arg(default_value = "tcp://[::1]:2009")]
@@ -50,7 +50,7 @@ pub async fn run(ctx: Context<ItiArgs, SparksArgs>) -> Result<()> {
 	let mut cpu = VecDeque::new();
 	let mut mem = VecDeque::new();
 
-	let mut interval: Duration = ctx.args_sub.interval.into();
+	let mut interval: Duration = ctx.args_sub.interval;
 	if interval < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL {
 		interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
 	}

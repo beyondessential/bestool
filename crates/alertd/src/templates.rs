@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, time::Duration};
 
 use miette::{Context as _, IntoDiagnostic, Result};
 use sysinfo::System;
@@ -6,6 +6,22 @@ use tera::{Context as TeraCtx, Tera};
 use tracing::instrument;
 
 use crate::alert::AlertDefinition;
+
+/// Format a duration as a single human-friendly unit, dropping any remainder.
+///
+/// E.g. 90 minutes prints as "1h"; 1 day as "1d"; 30 seconds as "30s".
+pub(crate) fn humanize_duration(dur: Duration) -> String {
+	let secs = dur.as_secs();
+	if secs >= 86400 {
+		format!("{}d", secs / 86400)
+	} else if secs >= 3600 {
+		format!("{}h", secs / 3600)
+	} else if secs >= 60 {
+		format!("{}m", secs / 60)
+	} else {
+		format!("{}s", secs)
+	}
+}
 
 const DEFAULT_SUBJECT_TEMPLATE: &str = "[Tamanu Alert] {{ filename }} ({{ hostname }})";
 
@@ -55,14 +71,11 @@ pub fn load_templates(subject: &Option<String>, template: &str) -> Result<Tera> 
 }
 
 #[instrument(skip(alert, now))]
-pub fn build_context(alert: &AlertDefinition, now: chrono::DateTime<chrono::Utc>) -> TeraCtx {
+pub fn build_context(alert: &AlertDefinition, now: jiff::Timestamp) -> TeraCtx {
 	let mut context = TeraCtx::new();
 	context.insert(
 		TemplateField::Interval.as_str(),
-		&jiff::Span::try_from(alert.interval_duration)
-			.ok()
-			.map(|s| format!("{s:#}"))
-			.unwrap_or_else(|| format!("{:?}", alert.interval_duration)),
+		&humanize_duration(alert.interval_duration),
 	);
 	context.insert(
 		TemplateField::Hostname.as_str(),

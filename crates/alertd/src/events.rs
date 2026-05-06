@@ -185,7 +185,7 @@ impl EventManager {
 		if let Some(alerts) = self.event_alerts.get(&event_type) {
 			info!(count = alerts.len(), "executing event alerts");
 			for (alert, targets) in alerts {
-				let mut tera_ctx = crate::templates::build_context(alert, chrono::Utc::now());
+				let mut tera_ctx = crate::templates::build_context(alert, jiff::Timestamp::now());
 				// Merge event context
 				tera_ctx.extend(event_context.to_tera_context());
 
@@ -250,7 +250,7 @@ impl EventManager {
 			};
 
 			let mut tera_ctx =
-				crate::templates::build_context(&synthetic_alert, chrono::Utc::now());
+				crate::templates::build_context(&synthetic_alert, jiff::Timestamp::now());
 			tera_ctx.extend(event_context.to_tera_context());
 
 			if let Err(err) = default_target_for_event

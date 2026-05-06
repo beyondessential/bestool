@@ -1,7 +1,5 @@
 use std::env;
 
-use chrono::{DateTime, TimeZone, Utc};
-
 pub use crate::actions::run_with_update_check as run;
 pub use crate::args::get_args as args;
 
@@ -68,14 +66,13 @@ pub mod __help {
 	pub use crate::args::Args;
 }
 
-/// A wrapper of [`chrono::Utc::now`].
+/// A wrapper of [`jiff::Timestamp::now`].
 ///
-/// On debug build, this returns a fixed time if `BESTOOL_MOCK_TIME` is set.
-fn now_time<T: TimeZone>(tz: &T) -> DateTime<T> {
+/// On debug build, this returns the unix epoch if `BESTOOL_MOCK_TIME` is set.
+fn now_time() -> jiff::Timestamp {
 	if cfg!(debug_assertions) && env::var("BESTOOL_MOCK_TIME").is_ok() {
-		DateTime::from_timestamp_nanos(0)
+		jiff::Timestamp::UNIX_EPOCH
 	} else {
-		Utc::now()
+		jiff::Timestamp::now()
 	}
-	.with_timezone(tz)
 }

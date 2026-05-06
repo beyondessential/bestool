@@ -57,7 +57,8 @@ fn test_database_down_default_template_renders() {
 		},
 	};
 
-	let mut ctx = bestool_alertd::templates::build_context(&synthetic_alert, chrono::Utc::now());
+	let mut ctx =
+		bestool_alertd::templates::build_context(&synthetic_alert, jiff::Timestamp::now());
 	ctx.insert("database_url", "postgresql://user:***@localhost/mydb");
 	ctx.insert("error_message", "connection refused");
 

@@ -295,7 +295,7 @@ mod imp {
 			.wrap_err("opening audit log")?;
 		let mut tracker = Tracker::new(Duration::from_secs(args.kick_window));
 		let mut since =
-			chrono::Utc::now() - chrono::Duration::seconds(args.poll_interval as i64);
+			jiff::Timestamp::now() - jiff::SignedDuration::from_secs(args.poll_interval as i64);
 		let mut last_record_id: u64 = 0;
 		let mut interval = tokio::time::interval(Duration::from_secs(args.poll_interval));
 		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -305,7 +305,7 @@ mod imp {
 		loop {
 			tokio::select! {
 				_ = interval.tick() => {
-					let now = chrono::Utc::now();
+					let now = jiff::Timestamp::now();
 					match poll_events(since).await {
 						Ok(events) => {
 							since = now;

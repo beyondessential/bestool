@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use clap::Parser;
 use miette::{Result, WrapErr};
 #[cfg(windows)]
@@ -67,8 +67,8 @@ pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 		.await
 		.wrap_err("opening audit log")?;
 	let mut tracker = Tracker::new(Duration::from_secs(args.kick_window));
-	let mut since: DateTime<Utc> =
-		Utc::now() - chrono::Duration::seconds(args.poll_interval as i64);
+	let mut since: Timestamp =
+		Timestamp::now() - SignedDuration::from_secs(args.poll_interval as i64);
 	let mut last_record_id: u64 = 0;
 	let mut interval = tokio::time::interval(Duration::from_secs(args.poll_interval));
 	interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -81,7 +81,7 @@ pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
 
 	loop {
 		interval.tick().await;
-		let now = Utc::now();
+		let now = Timestamp::now();
 		let events = match poll_events(since).await {
 			Ok(ev) => ev,
 			Err(err) => {
@@ -161,7 +161,7 @@ async fn resolve_tailscale(ev: &Event) -> (Option<String>, Option<&'static str>)
 	match active_peers().await {
 		Ok(peers) => {
 			if let Some(peer) = peers.into_iter().next() {
-				let age = (ev.time - peer.last_handshake).num_seconds().abs();
+				let age = ev.time.duration_since(peer.last_handshake).as_secs().abs();
 				if age <= HANDSHAKE_WINDOW_SECS {
 					debug!(
 						peer = %peer.login,

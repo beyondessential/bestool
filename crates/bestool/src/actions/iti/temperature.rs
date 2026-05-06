@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
 use tokio::time::sleep;
@@ -6,7 +8,7 @@ use crate::actions::{
 	iti::{ItiArgs, lcd::{
 		json::{Item, Screen},
 		send,
-	}},
+	}, parse_friendly_duration},
 	Context,
 };
 
@@ -32,15 +34,15 @@ pub struct TemperatureArgs {
 	/// Keep updating at an interval.
 	///
 	/// Syntax is a number followed by a unit, such as "5s" or "1m".
-	#[arg(long)]
-	pub watch: Option<humantime::Duration>,
+	#[arg(long, value_parser = parse_friendly_duration)]
+	pub watch: Option<Duration>,
 }
 
 pub async fn run(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
 	if let Some(n) = ctx.args_sub.watch {
 		loop {
 			once(ctx.clone()).await?;
-			sleep(*n).await;
+			sleep(n).await;
 		}
 	} else {
 		once(ctx).await

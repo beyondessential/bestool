@@ -65,13 +65,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// First run - not yet triggered, should trigger because value >= 90
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -86,7 +86,7 @@ send:
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			true,
 		)
@@ -109,7 +109,7 @@ send:
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			true,
 		)
@@ -156,13 +156,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// First run - not yet triggered, should trigger because value <= 10 (inverted)
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -177,7 +177,7 @@ send:
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			true,
 		)
@@ -200,7 +200,7 @@ send:
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			true,
 		)
@@ -252,11 +252,11 @@ send:
 	// Second execution with same data - would trigger but when-changed should prevent it
 	// We can't easily test this without the full scheduler state, but we can verify the serialization
 
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 	let _ = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -301,13 +301,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// Read initial data
 	let _ = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -363,13 +363,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// Read initial data
 	let _ = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -388,11 +388,11 @@ send:
 	);
 	client.execute(&update_sql2, &[]).await.unwrap();
 
-	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 	let _ = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx2,
 			false,
 		)
@@ -442,13 +442,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// First run - should trigger due to numerical threshold
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -503,13 +503,13 @@ send:
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
 	});
-	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
 	// Should trigger because both thresholds are exceeded
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx,
 			false,
 		)
@@ -525,11 +525,11 @@ send:
 	let update_sql1 = format!("UPDATE {} SET value = 40 WHERE name = 'multi'", table_name);
 	client.execute(&update_sql1, &[]).await.unwrap();
 
-	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx2 = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx2,
 			true,
 		)
@@ -547,11 +547,11 @@ send:
 	);
 	client.execute(&update_sql2, &[]).await.unwrap();
 
-	let mut tera_ctx3 = bestool_alertd::templates::build_context(&alert, chrono::Utc::now());
+	let mut tera_ctx3 = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 	let result = alert
 		.read_sources(
 			&ctx.pg_pool,
-			chrono::Utc::now() - alert.interval_duration,
+			jiff::Timestamp::now() - alert.interval_duration,
 			&mut tera_ctx3,
 			true,
 		)
