@@ -21,7 +21,9 @@ pub mod networkmanager;
 
 pub use backend::{DeviceInfo, Network, WifiConfigurator};
 pub use error::Error;
-pub use service::{AuthorizeMode, ImprovWifi, ImprovWifiConfig, find_adapter, power_on_adapter};
+pub use service::{
+	AuthHandle, AuthorizeMode, ImprovWifi, ImprovWifiConfig, find_adapter, power_on_adapter,
+};
 pub use state::{Capabilities, Status};
 pub use zbus::{Connection, zvariant::OwnedObjectPath};
 

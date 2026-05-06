@@ -3,7 +3,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::{
-	sync::{Mutex, broadcast, watch},
+	sync::{Mutex, broadcast, mpsc, watch},
 	task::JoinHandle,
 };
 use tracing::{debug, info, warn};
@@ -93,6 +93,8 @@ pub(crate) struct AppHandles<T: WifiConfigurator + 'static> {
 	pub(crate) local_name: Option<String>,
 	pub(crate) auth_timeout: Duration,
 	pub(crate) notify_tasks: Vec<JoinHandle<()>>,
+	pub(crate) auth_tx: mpsc::UnboundedSender<()>,
+	pub(crate) auth_rx: mpsc::UnboundedReceiver<()>,
 }
 
 /// Build the shared state, register all objects on the object server, and call
@@ -116,6 +118,7 @@ pub(crate) async fn install<T: WifiConfigurator + 'static>(
 	let (rpc_result_tx, _) = broadcast::channel(8);
 	let (auth_reset_tx, _) = watch::channel(());
 	let (provisioned_tx, provisioned_rx) = watch::channel(false);
+	let (auth_tx, auth_rx) = mpsc::unbounded_channel();
 	let status_change_for_adv = status_tx.subscribe();
 
 	let state = Arc::new(State {
@@ -297,6 +300,8 @@ pub(crate) async fn install<T: WifiConfigurator + 'static>(
 		local_name: config.local_name,
 		auth_timeout: config.auth_timeout,
 		notify_tasks,
+		auth_tx,
+		auth_rx,
 	})
 }
 
@@ -358,6 +363,10 @@ pub(crate) async fn run<T: WifiConfigurator + 'static>(
 					Err(broadcast::error::RecvError::Lagged(_)) => continue,
 					Err(broadcast::error::RecvError::Closed) => break,
 				}
+			}
+			Some(()) = handles.auth_rx.recv() => {
+				debug!("authorization signal received");
+				handles.state.set_status(Status::Authorized).await;
 			}
 			res = provisioned.changed() => {
 				if res.is_err() {

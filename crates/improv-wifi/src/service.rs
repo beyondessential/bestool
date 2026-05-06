@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use tokio::sync::{Mutex, broadcast, watch::Sender as WatchSender};
+use tokio::sync::{Mutex, broadcast, mpsc, watch::Sender as WatchSender};
 use tracing::{debug, instrument, warn};
 use zbus::{Connection, zvariant::OwnedObjectPath};
 
@@ -274,9 +274,35 @@ where
 		self.state.set_status(Status::Authorized).await;
 	}
 
+	/// Get a cloneable handle that can signal authorization from another task.
+	///
+	/// The handle stays valid for the lifetime of the channel: triggers fired after
+	/// [`Self::run`] returns (i.e. after the service has shut down) are silently dropped.
+	pub fn auth_handle(&self) -> AuthHandle {
+		AuthHandle {
+			tx: self.handles.auth_tx.clone(),
+		}
+	}
+
 	/// Drive the service until provisioning succeeds, then tear down BLE.
 	pub async fn run(self) -> Result<(), Error> {
 		bluez::run(self.handles).await
+	}
+}
+
+/// Cloneable handle for triggering authorization from another task.
+///
+/// Obtain via [`ImprovWifi::auth_handle`]. Each call to [`Self::authorize`] drives the
+/// service into [`Status::Authorized`] (subject to the existing auth-timeout behaviour).
+#[derive(Clone, Debug)]
+pub struct AuthHandle {
+	tx: mpsc::UnboundedSender<()>,
+}
+
+impl AuthHandle {
+	/// Signal authorization. No-op if the service has already shut down.
+	pub fn authorize(&self) {
+		let _ = self.tx.send(());
 	}
 }
 
