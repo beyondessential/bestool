@@ -1,0 +1,14 @@
+[Unit]
+Description=Iti Improv-Wi-Fi BLE provisioning
+After=bluetooth.service NetworkManager.service
+Requires=bluetooth.service NetworkManager.service
+
+[Service]
+# The BCM pin number must match the button wired on your device. The button must short
+# the pin to GND when pressed; the internal pull-up handles the rest.
+ExecStart=/usr/local/bin/bestool --log-timeless iti improv-wifi --auth-gpio 17
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
