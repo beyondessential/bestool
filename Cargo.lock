@@ -2309,9 +2309,9 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "folktime"
-version = "0.2.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f14fea54ab6277c8628ceca8effb100d22d101e7b0b4a39779ab861d71dbf9"
+checksum = "35fb6dc127521ee6ae5d2d66bb547e5a48dc15aafe58fc6caccb71882c76661d"
 
 [[package]]
 name = "foreign-types"
