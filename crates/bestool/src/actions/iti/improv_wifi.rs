@@ -54,6 +54,14 @@ pub struct ImprovWifiArgs {
 	/// shut down. Only meaningful with `--auth-stdin` / `--auth-gpio`.
 	#[arg(long)]
 	pub auth_timeout: Option<humantime::Duration>,
+
+	/// Run even if Wi-Fi is already connected.
+	///
+	/// By default, the command exits cleanly when NetworkManager reports the Wi-Fi device is
+	/// already in the `Activated` state — useful for a boot-time service that should be a
+	/// no-op on a provisioned device.
+	#[arg(long)]
+	pub always: bool,
 }
 
 pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
@@ -82,6 +90,17 @@ pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("improv-wifi: connect to NetworkManager")?;
+
+	if !args.always
+		&& backend
+			.is_connected()
+			.await
+			.into_diagnostic()
+			.wrap_err("improv-wifi: query NetworkManager state")?
+	{
+		info!("Wi-Fi already connected; skipping Improv-Wi-Fi provisioning. Pass --always to override.");
+		return Ok(());
+	}
 
 	let auth_required = args.auth_stdin || args.auth_gpio.is_some();
 

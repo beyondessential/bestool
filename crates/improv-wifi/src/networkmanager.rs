@@ -11,6 +11,9 @@ use crate::{Capabilities, DeviceInfo, Error, Network, WifiConfigurator};
 /// NM device type for Wi-Fi (`NM_DEVICE_TYPE_WIFI`).
 const NM_DEVICE_TYPE_WIFI: u32 = 2;
 
+/// NM device state (`NM_DEVICE_STATE_ACTIVATED`).
+const NM_DEVICE_STATE_ACTIVATED: u32 = 100;
+
 /// NM active-connection state (`NM_ACTIVE_CONNECTION_STATE_ACTIVATED`).
 const NM_ACTIVE_CONNECTION_STATE_ACTIVATED: u32 = 2;
 
@@ -60,6 +63,9 @@ trait NetworkManager {
 trait NmDevice {
 	#[zbus(property)]
 	fn device_type(&self) -> zbus::Result<u32>;
+
+	#[zbus(property)]
+	fn state(&self) -> zbus::Result<u32>;
 }
 
 #[proxy(
@@ -169,6 +175,26 @@ impl NetworkManagerBackend {
 		}
 		warn!("no Wi-Fi device found via NetworkManager");
 		Err(Error::Unknown)
+	}
+
+	/// Whether the Wi-Fi device is currently connected to a network.
+	///
+	/// Returns `true` if the first Wi-Fi device is in NM state `Activated`. If no Wi-Fi
+	/// device is found, returns `false` (treated as "not connected" so the caller can fall
+	/// through to its usual failure path on actual provisioning attempts).
+	pub async fn is_connected(&self) -> Result<bool, Error> {
+		let device_path = match self.first_wifi_device().await {
+			Ok(p) => p,
+			Err(_) => return Ok(false),
+		};
+		let dev = NmDeviceProxy::builder(&self.connection)
+			.path(device_path)
+			.map_err(map_zbus_err)?
+			.build()
+			.await
+			.map_err(map_zbus_err)?;
+		let state = dev.state().await.map_err(map_zbus_err)?;
+		Ok(state == NM_DEVICE_STATE_ACTIVATED)
 	}
 }
 
