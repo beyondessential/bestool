@@ -22,7 +22,6 @@ binstalk-downloader = { version = "0.13.38", optional = true, features = ["hicko
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
-chrono = { version = "0.4.41", features = ["serde"] }
 base64 = { version = "0.22.1", optional = true }
 clap = { workspace = true, features = ["env", "unicode", "string"] }
 clap_complete = { version = "4.6.3", optional = true }
@@ -35,12 +34,10 @@ dirs = { version = "6.0.0", optional = true }
 duct = { version = "1.1.0", optional = true }
 dunce = { version = "1.0.5", optional = true }
 embedded-graphics = { version = "0.8.1", optional = true }
-folktime = { version = "0.2.1", optional = true }
 fs4 = { version = "0.13.1", features = ["tokio"], optional = true }
 futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
 hickory-resolver = { version = "0.25.2", optional = true }
-humantime = { version = "2.2.0", optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = "0.2.24"
@@ -73,7 +70,7 @@ tempfile = "3.21.0"
 tera = { version = "1.19.1", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-postgres = { version = "0.7.17", features = ["with-chrono-0_4", "with-uuid-1"], optional = true }
+tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
@@ -124,8 +121,6 @@ tamanu = [ # enable all tamanu subcommands
 tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
-	"dep:folktime",
-	"dep:humantime",
 	"dep:mailgun-rs",
 	"dep:pulldown-cmark",
 	"dep:serde_path_to_error",
@@ -163,9 +158,9 @@ iti = [ # enable all iti subcommands
 	"iti-lcd",
 	"iti-temperature",
 ]
-iti-battery = ["__iti", "dep:folktime", "dep:humantime", "dep:rppal"]
+iti-battery = ["__iti", "dep:rppal"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
-iti-temperature = ["__iti", "dep:duct", "dep:humantime"]
+iti-temperature = ["__iti", "dep:duct"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 
 ## Legacy noop features to avoid breaking builds
