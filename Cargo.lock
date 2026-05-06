@@ -495,7 +495,7 @@ dependencies = [
  "fs4",
  "futures",
  "glob",
- "hickory-resolver 0.25.2",
+ "hickory-resolver 0.26.0",
  "humantime",
  "indicatif",
  "itertools 0.14.0",
@@ -731,9 +731,9 @@ dependencies = [
 
 [[package]]
 name = "binstalk-downloader"
-version = "0.13.39"
+version = "0.13.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96b1433e45dc900b57e3e8b4242e25d989690dcc008d05d599d366c9e34be62"
+checksum = "2ce41dd1861ad0ad8432c3826c5237b8fb7ce06ea063c42edf3b54e522de4651"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -747,7 +747,7 @@ dependencies = [
  "flate2",
  "futures-io",
  "futures-util",
- "hickory-resolver 0.26.1",
+ "hickory-resolver 0.25.2",
  "httpdate",
  "liblzma",
  "native-tls",
@@ -2657,9 +2657,9 @@ dependencies = [
 
 [[package]]
 name = "h3"
-version = "0.0.8"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+checksum = "7dfb059a4f28a66f186ed16ad912d142f490676acba59353831d7cb45a96b0d3"
 dependencies = [
  "bytes",
  "fastrand",
@@ -2671,9 +2671,9 @@ dependencies = [
 
 [[package]]
 name = "h3-quinn"
-version = "0.0.10"
+version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b2e732c8d91a74731663ac8479ab505042fbf547b9a207213ab7fbcbfc4f8b4"
+checksum = "6d482318ae94198fc8e3cbb0b7ba3099c865d744e6ec7c62039ca7b6b6c66fbf"
 dependencies = [
  "bytes",
  "futures",
@@ -2723,26 +2723,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2295ed2f9c31e471e1428a8f88a3f0e1f4b27c15049592138d1eebe9c35b183"
 dependencies = [
  "async-trait",
+ "cfg-if",
+ "data-encoding",
+ "futures-channel",
+ "futures-io",
+ "futures-util",
+ "hickory-proto 0.26.1",
+ "idna",
+ "ipnet",
+ "jni",
+ "rand 0.10.1",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "hickory-proto"
+version = "0.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8a6fe56c0038198998a6f217ca4e7ef3a5e51f46163bd6dd60b5c71ca6c6502"
+dependencies = [
+ "async-trait",
  "bitflags 2.11.1",
  "bytes",
  "cfg-if",
  "data-encoding",
+ "enum-as-inner",
  "futures-channel",
  "futures-io",
  "futures-util",
  "h2",
  "h3",
  "h3-quinn",
- "hickory-proto 0.26.1",
  "http",
  "idna",
  "ipnet",
- "jni",
- "lru-cache",
- "parking_lot",
+ "once_cell",
  "pin-project-lite",
  "quinn",
- "rand 0.10.1",
+ "rand 0.9.4",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -2757,36 +2779,10 @@ dependencies = [
 
 [[package]]
 name = "hickory-proto"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8a6fe56c0038198998a6f217ca4e7ef3a5e51f46163bd6dd60b5c71ca6c6502"
-dependencies = [
- "async-trait",
- "cfg-if",
- "data-encoding",
- "enum-as-inner",
- "futures-channel",
- "futures-io",
- "futures-util",
- "idna",
- "ipnet",
- "once_cell",
- "rand 0.9.4",
- "ring",
- "thiserror 2.0.18",
- "tinyvec",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "hickory-proto"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bab31817bfb44672a252e97fe81cd0c18d1b2cf892108922f6818820df8c643"
 dependencies = [
- "bitflags 2.11.1",
  "data-encoding",
  "idna",
  "ipnet",
@@ -2795,9 +2791,7 @@ dependencies = [
  "prefix-trie",
  "rand 0.10.1",
  "ring",
- "rustls-pki-types",
  "thiserror 2.0.18",
- "time",
  "tinyvec",
  "tracing",
  "url",
@@ -2816,19 +2810,22 @@ dependencies = [
  "moka",
  "once_cell",
  "parking_lot",
+ "quinn",
  "rand 0.9.4",
  "resolv-conf",
+ "rustls",
  "smallvec",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
 [[package]]
 name = "hickory-resolver"
-version = "0.26.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0d58d28879ceecde6607729660c2667a081ccdc082e082675042793960f178c"
+checksum = "a10bd64d950b4d38ca21e25c8ae230712e4955fb8290cfcb29a5e5dc6017e544"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -2841,15 +2838,12 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot",
- "quinn",
  "rand 0.10.1",
  "resolv-conf",
- "rustls",
  "smallvec",
  "system-configuration",
  "thiserror 2.0.18",
  "tokio",
- "tokio-rustls",
  "tracing",
 ]
 
@@ -3683,12 +3677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "linked-hash-map"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
-
-[[package]]
 name = "linkme"
 version = "0.3.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3772,15 +3760,6 @@ dependencies = [
  "scoped-tls",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "lru-cache"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31e24f1ad8321ca0e8a1e0ac13f23cb668e6f5466c2c57319f6a5cf1cc8e3b1c"
-dependencies = [
- "linked-hash-map",
 ]
 
 [[package]]
@@ -4055,9 +4034,9 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "netdev"
-version = "0.42.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e30af1a5073b82356d9317c18226826370b4288eba2f71c7e84e18bae51b3847"
+checksum = "395f1acaf7a073f756fc22068e0b526d2cf22d09f5e13802b516ef8eeaeee5eb"
 dependencies = [
  "block2",
  "dispatch2",
