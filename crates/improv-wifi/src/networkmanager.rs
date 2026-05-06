@@ -196,6 +196,42 @@ impl NetworkManagerBackend {
 		let state = dev.state().await.map_err(map_zbus_err)?;
 		Ok(state == NM_DEVICE_STATE_ACTIVATED)
 	}
+
+	/// Whether any saved Wi-Fi connection profile exists.
+	///
+	/// Returns `true` if NM has at least one connection profile of type `802-11-wireless`,
+	/// regardless of whether it is currently connected. Use this to gate boot-time
+	/// initialisation: a fresh device returns `false`, a previously provisioned one returns
+	/// `true` even if it's not currently connected to the network.
+	pub async fn is_configured(&self) -> Result<bool, Error> {
+		let settings = NmSettingsProxy::new(&self.connection)
+			.await
+			.map_err(map_zbus_err)?;
+		let conns = settings.list_connections().await.map_err(map_zbus_err)?;
+		for path in conns {
+			let conn = NmSettingsConnectionProxy::builder(&self.connection)
+				.path(path)
+				.map_err(map_zbus_err)?
+				.build()
+				.await
+				.map_err(map_zbus_err)?;
+			let Ok(settings_dict) = conn.get_settings().await else {
+				continue;
+			};
+			let Some(connection) = settings_dict.get("connection") else {
+				continue;
+			};
+			let Some(type_val) = connection.get("type") else {
+				continue;
+			};
+			if let Ok(type_str) = String::try_from(type_val.clone())
+				&& type_str == "802-11-wireless"
+			{
+				return Ok(true);
+			}
+		}
+		Ok(false)
+	}
 }
 
 impl WifiConfigurator for NetworkManagerBackend {
@@ -360,6 +396,19 @@ impl WifiConfigurator for NetworkManagerBackend {
 )]
 trait NmSettingsConnection {
 	fn delete(&self) -> zbus::Result<()>;
+
+	fn get_settings(
+		&self,
+	) -> zbus::Result<HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>>>;
+}
+
+#[proxy(
+	interface = "org.freedesktop.NetworkManager.Settings",
+	default_service = "org.freedesktop.NetworkManager",
+	default_path = "/org/freedesktop/NetworkManager/Settings"
+)]
+trait NmSettings {
+	fn list_connections(&self) -> zbus::Result<Vec<zbus::zvariant::OwnedObjectPath>>;
 }
 
 async fn delete_connection(

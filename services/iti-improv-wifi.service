@@ -1,13 +1,18 @@
 [Unit]
-Description=Iti Improv-Wi-Fi BLE provisioning
+Description=Iti Improv-Wi-Fi BLE provisioning watcher
 After=bluetooth.service NetworkManager.service
 Requires=bluetooth.service NetworkManager.service
 
 [Service]
 # The BCM pin number must match the button wired on your device. The button must short
 # the pin to GND when pressed; the internal pull-up handles the rest.
+#
+# The daemon stays alive: a fresh device (no Wi-Fi profile) advertises immediately for
+# first-boot provisioning; once provisioned, it stays idle until a long press (3s+) on
+# the button re-enters provisioning mode. Short presses during a session authorise the
+# in-progress credential write.
 ExecStart=/usr/local/bin/bestool --log-timeless iti improv-wifi --auth-gpio 17
-Restart=on-failure
+Restart=always
 RestartSec=10s
 
 [Install]
