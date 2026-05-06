@@ -41,7 +41,7 @@ miette = "7.6.0"
 percent-encoding = "2.3.2"
 pg_query = "6.1.1"
 rand.workspace = true
-redb = "3.1.0"
+redb = "4.1.0"
 reflink-copy = "0.1.20"
 rust_xlsxwriter = "0.94.0"
 rustyline = { version = "18.0.0", features = ["signal-hook"] }
