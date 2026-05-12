@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
@@ -6,9 +6,24 @@ use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::Redacted;
+
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
+
+/// How long renewed canopy certs are valid for.
+///
+/// Set well above [`CERT_RENEW_AFTER`] so a renewal failure doesn't immediately
+/// strand the client.
+const CERT_VALIDITY_DAYS: i64 = 6;
+
+/// How long to wait between scheduled cert renewals.
+///
+/// Renewal runs in a background task in the daemon; the legacy single-shot
+/// alerts command builds the client once and exits well within this window.
+pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -42,57 +57,47 @@ pub struct NewEvent<'a> {
 }
 
 /// HTTP client with mTLS configured for talking to a canopy server.
-#[derive(Debug, Clone)]
+///
+/// The TLS identity is a fresh self-signed cert generated from the device key
+/// at construction. The cert is short-lived ([`CERT_VALIDITY_DAYS`]); for long-
+/// running daemons, [`Self::renew`] should be called on a timer
+/// ([`CERT_RENEW_AFTER`]) to swap in a fresh cert+client before expiry.
 pub struct CanopyClient {
-	http: reqwest::Client,
+	device_key: Redacted<String>,
+	http: RwLock<reqwest::Client>,
+}
+
+impl fmt::Debug for CanopyClient {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("CanopyClient").finish_non_exhaustive()
+	}
 }
 
 impl CanopyClient {
 	/// Build a canopy client from a Tamanu device key (PKCS8 PEM).
 	///
-	/// Generates a fresh self-signed certificate from the key with ~30 days validity,
-	/// then constructs a reqwest client whose TLS identity is that certificate plus
-	/// the private key. The canopy edge expects this certificate via mTLS; it
-	/// authenticates the request by looking up the public key in its device registry.
+	/// Generates a fresh self-signed cert from the key (validity
+	/// [`CERT_VALIDITY_DAYS`]) and wraps it in a `reqwest::Client` whose TLS
+	/// identity is that cert plus the private key. The canopy edge expects
+	/// this cert via mTLS and authenticates the request by looking the public
+	/// key up in its device registry.
 	pub fn new(device_key_pem: &str) -> Result<Self> {
-		let key_pair = KeyPair::from_pem(device_key_pem)
-			.into_diagnostic()
-			.wrap_err("parsing device key PEM")?;
+		let http = build_http(device_key_pem)?;
+		Ok(Self {
+			device_key: Redacted(device_key_pem.to_owned()),
+			http: RwLock::new(http),
+		})
+	}
 
-		let mut params = CertificateParams::new(vec!["device.local".into()])
-			.into_diagnostic()
-			.wrap_err("building certificate params")?;
-		params.distinguished_name = DistinguishedName::new();
-		params
-			.distinguished_name
-			.push(DnType::CommonName, "device.local");
-
-		let now = OffsetDateTime::now_utc();
-		params.not_before = now - TimeDuration::minutes(1);
-		params.not_after = now + TimeDuration::days(30);
-
-		let cert = params
-			.self_signed(&key_pair)
-			.into_diagnostic()
-			.wrap_err("self-signing certificate")?;
-
-		let mut combined = cert.pem();
-		combined.push('\n');
-		combined.push_str(&key_pair.serialize_pem());
-
-		let identity = reqwest::Identity::from_pem(combined.as_bytes())
-			.into_diagnostic()
-			.wrap_err("building reqwest TLS identity")?;
-
-		let http = reqwest::Client::builder()
-			.identity(identity)
-			.use_rustls_tls()
-			.timeout(Duration::from_secs(30))
-			.build()
-			.into_diagnostic()
-			.wrap_err("building canopy HTTP client")?;
-
-		Ok(Self { http })
+	/// Rebuild the underlying HTTP client with a fresh certificate.
+	///
+	/// Atomically replaces the live client; in-flight requests continue with
+	/// the old client until they complete. Call this on a timer well inside
+	/// the cert validity window.
+	pub async fn renew(&self) -> Result<()> {
+		let http = build_http(&self.device_key.0)?;
+		*self.http.write().await = http;
+		Ok(())
 	}
 
 	/// POST an event to `{base_url}/events`.
@@ -110,8 +115,8 @@ impl CanopyClient {
 			"posting event to canopy"
 		);
 
-		let response = self
-			.http
+		let http = self.http.read().await.clone();
+		let response = http
 			.post(url)
 			.json(&event)
 			.send()
@@ -129,6 +134,45 @@ impl CanopyClient {
 	}
 }
 
+fn build_http(device_key_pem: &str) -> Result<reqwest::Client> {
+	let key_pair = KeyPair::from_pem(device_key_pem)
+		.into_diagnostic()
+		.wrap_err("parsing device key PEM")?;
+
+	let mut params = CertificateParams::new(vec!["device.local".into()])
+		.into_diagnostic()
+		.wrap_err("building certificate params")?;
+	params.distinguished_name = DistinguishedName::new();
+	params
+		.distinguished_name
+		.push(DnType::CommonName, "device.local");
+
+	let now = OffsetDateTime::now_utc();
+	params.not_before = now - TimeDuration::minutes(1);
+	params.not_after = now + TimeDuration::days(CERT_VALIDITY_DAYS);
+
+	let cert = params
+		.self_signed(&key_pair)
+		.into_diagnostic()
+		.wrap_err("self-signing certificate")?;
+
+	let mut combined = cert.pem();
+	combined.push('\n');
+	combined.push_str(&key_pair.serialize_pem());
+
+	let identity = reqwest::Identity::from_pem(combined.as_bytes())
+		.into_diagnostic()
+		.wrap_err("building reqwest TLS identity")?;
+
+	reqwest::Client::builder()
+		.identity(identity)
+		.use_rustls_tls()
+		.timeout(Duration::from_secs(30))
+		.build()
+		.into_diagnostic()
+		.wrap_err("building canopy HTTP client")
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -144,6 +188,12 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	fn build_client_from_p256_key() {
 		let client = CanopyClient::new(TEST_DEVICE_KEY);
 		assert!(client.is_ok(), "{:?}", client.err());
+	}
+
+	#[tokio::test]
+	async fn renew_swaps_in_fresh_client() {
+		let client = CanopyClient::new(TEST_DEVICE_KEY).unwrap();
+		client.renew().await.expect("renew should succeed");
 	}
 
 	#[test]

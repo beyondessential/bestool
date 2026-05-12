@@ -107,7 +107,20 @@ pub async fn run_with_shutdown_and_reload(
 		match CanopyClient::new(pem) {
 			Ok(client) => {
 				info!("canopy mTLS client ready");
-				Some(Arc::new(client))
+				let client = Arc::new(client);
+				let renew = client.clone();
+				tokio::spawn(async move {
+					let mut interval = tokio::time::interval(crate::canopy::CERT_RENEW_AFTER);
+					interval.tick().await; // skip the immediate first tick
+					loop {
+						interval.tick().await;
+						info!("renewing canopy mTLS certificate");
+						if let Err(err) = renew.renew().await {
+							error!("failed to renew canopy cert: {}", LogError(&err));
+						}
+					}
+				});
+				Some(client)
 			}
 			Err(err) => {
 				error!("failed to build canopy client: {}", LogError(&err));
