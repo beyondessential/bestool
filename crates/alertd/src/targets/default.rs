@@ -2,76 +2,50 @@ use std::collections::HashMap;
 
 use tracing::debug;
 
-use crate::{
-	ExternalTarget,
-	canopy::{DEFAULT_CANOPY_URL, Severity},
-	targets::{TargetCanopy, TargetConnection, canopy::CanopyConfig},
-};
+use crate::ExternalTarget;
 
 /// Pick the fallback target for system-level (synthetic) events.
 ///
-/// If `_targets.yml` defines targets, picks among them using the usual rules
-/// (single → use it, named `default` → use it, else first alphabetical).
+/// Rules:
+/// - Empty map → `None`.
+/// - Single target → use it.
+/// - Otherwise, a target named `default` → use it.
+/// - Otherwise, first alphabetical → use it.
 ///
-/// If `_targets.yml` is missing or empty AND canopy auth is available, returns
-/// a synthesised canopy target so internal events (database-down, alert load
-/// failures, etc.) still go somewhere visible.
+/// The loader injects a synthesised canopy target under `"default"` when no
+/// explicit `_targets.yml` configures one and canopy auth is available; this
+/// function makes no canopy-specific decisions itself.
 pub fn determine_default_target(
 	external_targets: &HashMap<String, Vec<ExternalTarget>>,
-	canopy_available: bool,
-) -> Option<ExternalTarget> {
+) -> Option<&ExternalTarget> {
 	if external_targets.is_empty() {
-		if canopy_available {
-			debug!("no _targets configured; using synthesised canopy default");
-			return Some(synthesise_canopy_default());
-		}
 		return None;
 	}
 
 	// If there's only one target, use it
 	if external_targets.len() == 1 {
 		let (id, targets) = external_targets.iter().next().unwrap();
-		if let Some(t) = targets.first() {
-			debug!(id, "using only available target as default");
-			return Some(t.clone());
-		}
+		debug!(id, "using only available target as default");
+		return targets.first();
 	}
 
 	// If there's a target named "default", use that
-	if let Some(targets) = external_targets.get("default")
-		&& let Some(t) = targets.first()
-	{
+	if let Some(targets) = external_targets.get("default") {
 		debug!("using 'default' target");
-		return Some(t.clone());
+		return targets.first();
 	}
 
 	// Otherwise, use the first target alphabetically
 	let mut sorted_ids: Vec<_> = external_targets.keys().collect();
 	sorted_ids.sort();
-	if let Some(id) = sorted_ids.first()
-		&& let Some(targets) = external_targets.get(*id)
-		&& let Some(t) = targets.first()
-	{
+	if let Some(id) = sorted_ids.first() {
 		debug!(id, "using first alphabetical target as default");
-		return Some(t.clone());
+		if let Some(targets) = external_targets.get(*id) {
+			return targets.first();
+		}
 	}
 
 	None
-}
-
-fn synthesise_canopy_default() -> ExternalTarget {
-	ExternalTarget {
-		id: "_canopy_default".to_string(),
-		conn: TargetConnection::Canopy(TargetCanopy {
-			canopy: CanopyConfig {
-				url: DEFAULT_CANOPY_URL
-					.parse()
-					.expect("default canopy URL is valid"),
-				source: "bestool-alertd".to_string(),
-				severity: Some(Severity::Error),
-			},
-		}),
-	}
 }
 
 #[cfg(test)]
@@ -92,7 +66,7 @@ mod tests {
 			}],
 		);
 
-		let default = determine_default_target(&targets, false);
+		let default = determine_default_target(&targets);
 		assert!(default.is_some());
 	}
 
@@ -118,7 +92,7 @@ mod tests {
 			}],
 		);
 
-		let default = determine_default_target(&targets, false);
+		let default = determine_default_target(&targets);
 		assert!(default.is_some());
 		let default = default.unwrap();
 		match &default.conn {
@@ -149,7 +123,7 @@ mod tests {
 			}],
 		);
 
-		let default = determine_default_target(&targets, false);
+		let default = determine_default_target(&targets);
 		assert!(default.is_some());
 		let default = default.unwrap();
 		match &default.conn {
@@ -159,37 +133,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_synthesised_canopy_default_when_no_targets() {
+	fn test_no_default_when_empty() {
 		let targets = HashMap::new();
-		let default = determine_default_target(&targets, true);
-		assert!(default.is_some());
-		let default = default.unwrap();
-		assert_eq!(default.id, "_canopy_default");
-		assert!(matches!(default.conn, TargetConnection::Canopy(_)));
-	}
-
-	#[test]
-	fn test_no_default_when_no_targets_and_no_canopy() {
-		let targets = HashMap::new();
-		let default = determine_default_target(&targets, false);
-		assert!(default.is_none());
-	}
-
-	#[test]
-	fn test_explicit_targets_take_precedence_over_canopy_default() {
-		let mut targets = HashMap::new();
-		targets.insert(
-			"team".to_string(),
-			vec![ExternalTarget {
-				id: "team".to_string(),
-				conn: TargetConnection::Email(TargetEmail {
-					addresses: vec!["team@example.com".to_string()],
-				}),
-			}],
-		);
-
-		let default = determine_default_target(&targets, true);
-		let default = default.unwrap();
-		assert!(matches!(default.conn, TargetConnection::Email(_)));
+		assert!(determine_default_target(&targets).is_none());
 	}
 }

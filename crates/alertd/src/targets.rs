@@ -13,7 +13,7 @@ mod default;
 mod email;
 mod slack;
 
-pub use canopy::TargetCanopy;
+pub use canopy::{CanopyConfig, TargetCanopy};
 pub use default::determine_default_target;
 pub use email::TargetEmail;
 pub use slack::TargetSlack;

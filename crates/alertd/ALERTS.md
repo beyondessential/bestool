@@ -102,11 +102,11 @@ Event-specific context variables vary by type:
 - `database-down`: `database_url` (password redacted), `error_message`
 
 All `event` sources are internally defaulted to send to the `default` target with a very basic
-template if none is defined through the alert files. The default target is the only one named
+template if none is defined through the alert files. The default target is the one named
 `default` in `_targets.yml`, or — if that doesn't exist — the first one alphabetically. If no
-`_targets.yml` is configured at all but the canopy auth path is available, a canopy default
-target with `source: bestool-alertd` is synthesised automatically; see
-[TARGETS.md](TARGETS.md#canopy) for details.
+`default` is configured but the canopy auth path is available, a canopy target with
+`source: bestool-alertd` is registered under `id: default` automatically; alerts that reference
+`id: default` will use it too. See [TARGETS.md](TARGETS.md#canopy) for details.
 
 ## Send Targets
 

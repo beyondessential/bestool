@@ -98,7 +98,7 @@ mod tests {
 
 		let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 
-		let event_manager = EventManager::new(vec![], &std::collections::HashMap::new(), false);
+		let event_manager = EventManager::new(vec![], &std::collections::HashMap::new());
 
 		let state = Arc::new(crate::http_server::state::ServerState {
 			reload_tx,

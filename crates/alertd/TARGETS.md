@@ -5,9 +5,9 @@ scans for alert definitions, and one of these files must contain at least one ta
 recommended to have a target with `id: default`. If an explicit default isn't defined, the first
 target in alphabetical ID order will be used as default.
 
-The one exception: if there are no `_targets.yml` files at all *and* the canopy auth path is
-available (either tailscale reachability or an mTLS device key), alertd synthesises a canopy
-target as the default automatically — see [Canopy](#canopy) below.
+The one exception: if no `default`-id target is configured *and* the canopy auth path is
+available (either tailscale reachability or an mTLS device key), alertd registers a synthesised
+canopy target under `id: default` automatically — see [Canopy](#canopy) below.
 
 ## Target Types
 
@@ -86,18 +86,21 @@ Canopy requires one of two auth paths; alertd probes them at startup and on ever
    Standalone `bestool-alertd run` takes the key path via `--device-key-file <PATH>` (env
    `DEVICE_KEY_FILE`).
 
-#### Synthesised default
+#### Synthesised `default` target
 
-If no `_targets.yml` file is present anywhere in the scanned directories *and* one of the
-canopy auth paths is available, alertd synthesises a canopy default target with:
+If no target named `default` is configured (typically: no `_targets.yml` exists at all) *and*
+one of the canopy auth paths is available, alertd registers a synthesised canopy target under
+`id: default` with:
 
 - `source: bestool-alertd`
 - `url`: the default canopy URL (ignored when tailscale is the active path)
 - `severity: error`
 
-This lets event sources like `database-down` go somewhere visible without any configuration on
-hosts that already have canopy auth set up. To get any other behaviour — different source,
-non-canopy fallback, etc. — add a real `_targets.yml`.
+Because it slots into the regular `default` id, this works two ways at once: alerts that
+explicitly reference `id: default` in their `send:` block resolve to it, and event sources like
+`database-down` that fall back to the default target also route to canopy. To get any other
+behaviour — different source, non-canopy default, etc. — add a `_targets.yml` with an explicit
+`default` entry.
 
 ## Structure
 

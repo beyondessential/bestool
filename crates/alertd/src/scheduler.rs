@@ -135,11 +135,12 @@ impl Scheduler {
 			"resolved paths from globs"
 		);
 
+		let canopy_available = self.ctx.canopy_client.is_some();
 		let LoadedAlerts {
 			alerts,
 			external_targets,
 			definition_errors,
-		} = load_alerts_from_paths(&resolved)?;
+		} = load_alerts_from_paths(&resolved, canopy_available)?;
 
 		// Update resolved paths
 		*self.resolved_paths.write().await = resolved;
@@ -153,8 +154,7 @@ impl Scheduler {
 		*self.external_targets.write().await = external_targets.clone();
 
 		// Create event manager with event alerts and external targets
-		let canopy_available = self.ctx.canopy_client.is_some();
-		let event_manager = EventManager::new(event_alerts, &external_targets, canopy_available);
+		let event_manager = EventManager::new(event_alerts, &external_targets);
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads
@@ -236,11 +236,12 @@ impl Scheduler {
 		info!("executing all alerts once");
 
 		let resolved = self.glob_resolver.resolve()?;
+		let canopy_available = self.ctx.canopy_client.is_some();
 		let LoadedAlerts {
 			alerts,
 			external_targets,
 			definition_errors,
-		} = load_alerts_from_paths(&resolved)?;
+		} = load_alerts_from_paths(&resolved, canopy_available)?;
 
 		// Separate event alerts from regular alerts
 		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts
@@ -251,8 +252,7 @@ impl Scheduler {
 		*self.external_targets.write().await = external_targets.clone();
 
 		// Update event manager
-		let canopy_available = self.ctx.canopy_client.is_some();
-		let event_manager = EventManager::new(event_alerts, &external_targets, canopy_available);
+		let event_manager = EventManager::new(event_alerts, &external_targets);
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads
