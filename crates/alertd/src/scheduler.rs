@@ -153,7 +153,8 @@ impl Scheduler {
 		*self.external_targets.write().await = external_targets.clone();
 
 		// Create event manager with event alerts and external targets
-		let event_manager = EventManager::new(event_alerts, &external_targets);
+		let canopy_available = self.ctx.canopy_client.is_some();
+		let event_manager = EventManager::new(event_alerts, &external_targets, canopy_available);
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads
@@ -250,7 +251,8 @@ impl Scheduler {
 		*self.external_targets.write().await = external_targets.clone();
 
 		// Update event manager
-		let event_manager = EventManager::new(event_alerts, &external_targets);
+		let canopy_available = self.ctx.canopy_client.is_some();
+		let event_manager = EventManager::new(event_alerts, &external_targets, canopy_available);
 		*self.event_manager.write().await = Some(event_manager.clone());
 
 		// Send definition error events for any failed alert loads

@@ -8,7 +8,7 @@ use crate::{
 	templates::{load_templates, render_alert},
 };
 
-mod canopy;
+pub mod canopy;
 mod default;
 mod email;
 mod slack;

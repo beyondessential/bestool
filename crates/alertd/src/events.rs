@@ -109,6 +109,7 @@ impl EventManager {
 	pub fn new(
 		alerts: Vec<(AlertDefinition, Vec<ResolvedTarget>)>,
 		external_targets: &HashMap<String, Vec<ExternalTarget>>,
+		canopy_available: bool,
 	) -> Self {
 		let mut event_alerts: HashMap<EventType, Vec<(AlertDefinition, Vec<ResolvedTarget>)>> =
 			HashMap::new();
@@ -137,12 +138,13 @@ impl EventManager {
 			"event manager initialized"
 		);
 
-		let default_target = determine_default_target(external_targets).map(|t| ResolvedTarget {
-			target_id: t.id.clone(),
-			subject: None,
-			template: String::new(),
-			conn: t.conn.clone(),
-		});
+		let default_target =
+			determine_default_target(external_targets, canopy_available).map(|t| ResolvedTarget {
+				target_id: t.id,
+				subject: None,
+				template: String::new(),
+				conn: t.conn,
+			});
 		if let Some(ref target) = default_target {
 			let target_desc = match &target.conn {
 				crate::targets::TargetConnection::Email(email) => email
