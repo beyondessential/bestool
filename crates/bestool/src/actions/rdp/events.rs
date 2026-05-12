@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
@@ -14,7 +14,7 @@ pub struct Event {
 	/// something else entirely). Kept verbatim so the audit log preserves what
 	/// Windows reported even when we can't parse it.
 	pub address: Option<String>,
-	pub time: DateTime<Utc>,
+	pub time: Timestamp,
 	pub record_id: u64,
 }
 
@@ -62,8 +62,8 @@ impl EventKind {
 ///
 /// Shells out to `wevtutil qe` — this is the only way to subscribe to the log
 /// without unsafe FFI, and is acceptable since we poll on a multi-second cadence.
-pub async fn poll_events(since: DateTime<Utc>) -> Result<Vec<Event>> {
-	let since_str = since.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+pub async fn poll_events(since: Timestamp) -> Result<Vec<Event>> {
+	let since_str = since.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 	let query = format!(
 		"*[System[(EventID=21 or EventID=22 or EventID=23 or EventID=24 or EventID=25) and TimeCreated[@SystemTime>='{since_str}']]]"
 	);
@@ -202,7 +202,7 @@ fn decode(raw: RawEvent) -> Result<Event> {
 		.system
 		.time_created
 		.system_time
-		.parse::<DateTime<Utc>>()
+		.parse::<Timestamp>()
 		.into_diagnostic()
 		.wrap_err("parsing event timestamp")?;
 	Ok(Event {

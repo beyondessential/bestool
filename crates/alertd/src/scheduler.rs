@@ -471,8 +471,8 @@ impl Scheduler {
 				};
 
 				// Check the triggering state
-				let mut tera_ctx = crate::templates::build_context(&alert, chrono::Utc::now());
-				let now = chrono::Utc::now();
+				let now = jiff::Timestamp::now();
+				let mut tera_ctx = crate::templates::build_context(&alert, now);
 				let not_before = now - alert.interval_duration;
 
 				let is_triggering = match alert

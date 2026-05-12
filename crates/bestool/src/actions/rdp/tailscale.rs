@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::Deserialize;
 use tracing::trace;
@@ -73,7 +73,7 @@ struct UserProfile {
 pub struct ActivePeer {
 	pub login: String,
 	pub host_name: String,
-	pub last_handshake: DateTime<Utc>,
+	pub last_handshake: Timestamp,
 }
 
 /// Return all currently-active Tailscale peers (excluding self), ordered from
@@ -142,9 +142,9 @@ fn parse_status(bytes: &[u8]) -> Result<Vec<ActivePeer>> {
 /// Tailscale emits a zero-time sentinel (`0001-01-01T00:00:00Z`) for peers that
 /// have never handshook. Filter those out so they don't show up as "most
 /// recent".
-fn parse_handshake(s: String) -> Option<DateTime<Utc>> {
-	let parsed: DateTime<Utc> = s.parse().ok()?;
-	if parsed.timestamp() <= 0 {
+fn parse_handshake(s: String) -> Option<Timestamp> {
+	let parsed: Timestamp = s.parse().ok()?;
+	if parsed.as_second() <= 0 {
 		None
 	} else {
 		Some(parsed)

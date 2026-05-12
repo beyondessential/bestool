@@ -1,9 +1,16 @@
+use std::time::Duration;
+
 use clap::{Parser, Subcommand};
 use miette::Result;
 
 use crate::args::Args;
 
 use super::Context;
+
+pub(crate) fn parse_friendly_duration(s: &str) -> Result<Duration, String> {
+	let signed: jiff::SignedDuration = s.parse().map_err(|e: jiff::Error| e.to_string())?;
+	signed.try_into().map_err(|e: jiff::Error| e.to_string())
+}
 
 /// Tamanu Iti subcommands.
 #[derive(Debug, Clone, Parser)]

@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, error::Error, ops::Deref};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use tokio_postgres::{
 	Row,
 	types::{FromSql, Type},
@@ -59,8 +59,8 @@ pub fn col_to_value(
 			Value::Number(serde_json::Number::from(row.try_get::<_, i64>(i).unwrap()))
 		}
 		// TODO: BYTEA
-		_ if row.try_get::<_, DateTime<Utc>>(i).is_ok() => {
-			Value::String(row.try_get::<_, DateTime<Utc>>(i).unwrap().to_rfc3339())
+		_ if row.try_get::<_, Timestamp>(i).is_ok() => {
+			Value::String(row.try_get::<_, Timestamp>(i).unwrap().to_string())
 		}
 		_ if row.try_get::<_, Uuid>(i).is_ok() => {
 			Value::String(row.try_get::<_, Uuid>(i).unwrap().to_string())

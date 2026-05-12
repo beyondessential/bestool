@@ -5,7 +5,6 @@ use std::{
 };
 
 use algae_cli::keys::KeyArgs;
-use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tracing::{debug, error, warn};
@@ -155,7 +154,7 @@ fn add_dir(
 }
 
 fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
-	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
+	let output_date = now_time().strftime("%Y-%m-%d_%H%M");
 	let output_name = config
 		.canonical_host_name
 		.as_ref()

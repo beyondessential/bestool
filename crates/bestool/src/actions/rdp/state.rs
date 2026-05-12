@@ -3,7 +3,7 @@ use std::{
 	time::Duration,
 };
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use super::events::Event;
 
@@ -20,12 +20,12 @@ pub struct Tracker {
 struct SessionState {
 	user: String,
 	tailscale: Option<String>,
-	connect_time: DateTime<Utc>,
+	connect_time: Timestamp,
 }
 
 #[derive(Debug, Clone)]
 struct RecentDisconnect {
-	when: DateTime<Utc>,
+	when: Timestamp,
 	user: String,
 	tailscale: Option<String>,
 	connected_for: Duration,
@@ -61,9 +61,7 @@ impl Tracker {
 		let prior = self.sessions.remove(&ev.session_id);
 		let (user, tailscale, connected_for) = match prior {
 			Some(s) => {
-				let dur = (ev.time - s.connect_time)
-					.to_std()
-					.unwrap_or(Duration::ZERO);
+				let dur = ev.time.duration_since(s.connect_time).unsigned_abs();
 				(s.user, s.tailscale, dur)
 			}
 			None => (ev.user.clone(), None, Duration::ZERO),
@@ -114,13 +112,10 @@ impl Tracker {
 		kick
 	}
 
-	fn prune(&mut self, now: DateTime<Utc>) {
+	fn prune(&mut self, now: Timestamp) {
 		while let Some(front) = self.recent_disconnects.front() {
-			if (now - front.when)
-				.to_std()
-				.map(|d| d > self.kick_window)
-				.unwrap_or(false)
-			{
+			let elapsed = now.duration_since(front.when);
+			if !elapsed.is_negative() && elapsed.unsigned_abs() > self.kick_window {
 				self.recent_disconnects.pop_front();
 			} else {
 				break;

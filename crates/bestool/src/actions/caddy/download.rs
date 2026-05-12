@@ -62,7 +62,7 @@ pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
 				} else {
 					""
 				},
-				date = chrono::Utc::now(),
+				date = jiff::Timestamp::now(),
 			))
 			.into_diagnostic()?;
 		debug!(url=%try_url, "trying URL");

@@ -3,7 +3,7 @@ use std::{
 	time::Duration,
 };
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use miette::{Context as _, IntoDiagnostic, Result, miette};
 use tera::Context as TeraCtx;
 use tokio::io::AsyncReadExt as _;
@@ -77,7 +77,7 @@ impl AlertDefinition {
 	pub async fn read_sources(
 		&self,
 		client: &tokio_postgres::Client,
-		not_before: DateTime<Utc>,
+		not_before: Timestamp,
 		context: &mut TeraCtx,
 	) -> Result<ControlFlow<(), ()>> {
 		match &self.source {
@@ -154,7 +154,7 @@ impl AlertDefinition {
 	) -> Result<()> {
 		info!(?self.file, "executing alert");
 
-		let now = crate::now_time(&chrono::Utc);
+		let now = crate::now_time();
 		let not_before = now - self.interval;
 		info!(?now, ?not_before, interval=?self.interval, "date range for alert");
 

@@ -9,7 +9,6 @@ use algae_cli::{
 	files::{encrypt_file, with_progress_bar},
 	keys::KeyArgs,
 };
-use chrono::Utc;
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::{
@@ -314,7 +313,7 @@ async fn copy_via_io(
 
 #[instrument(level = "debug")]
 pub fn make_backup_filename(config: &TamanuConfig, ext: &str) -> String {
-	let output_date = now_time(&Utc).format("%Y-%m-%d_%H%M");
+	let output_date = now_time().strftime("%Y-%m-%d_%H%M");
 	let output_name = config
 		.canonical_host_name
 		.as_ref()

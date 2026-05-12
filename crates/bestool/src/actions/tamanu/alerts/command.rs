@@ -20,6 +20,11 @@ use crate::actions::{
 	tamanu::{TamanuArgs, config::load_config, find_tamanu},
 };
 
+fn parse_friendly_duration(s: &str) -> Result<Duration, String> {
+	let signed: jiff::SignedDuration = s.parse().map_err(|e: jiff::Error| e.to_string())?;
+	signed.try_into().map_err(|e: jiff::Error| e.to_string())
+}
+
 /// Execute alert definitions against Tamanu
 ///
 /// DEPRECATED. Use `bestool tamanu alertd` for all new deployments.
@@ -49,8 +54,8 @@ pub struct AlertsArgs {
 	///
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc. It should match
 	/// the task scheduling / cron interval for this command.
-	#[arg(long, default_value = "15m")]
-	pub interval: humantime::Duration,
+	#[arg(long, default_value = "15m", value_parser = parse_friendly_duration)]
+	pub interval: Duration,
 
 	/// Timeout for each alert.
 	///
@@ -58,8 +63,8 @@ pub struct AlertsArgs {
 	/// skipped. Defaults to 30 seconds.
 	///
 	/// This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc.
-	#[arg(long, default_value = "30s")]
-	pub timeout: humantime::Duration,
+	#[arg(long, default_value = "30s", value_parser = parse_friendly_duration)]
+	pub timeout: Duration,
 
 	/// Don't actually send alerts, just print them to stdout.
 	#[arg(long)]
@@ -152,7 +157,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 						.wrap_err(format!("{file:?}"))?;
 
 					alert.file = file.to_path_buf();
-					alert.interval = ctx.args_sub.interval.into();
+					alert.interval = ctx.args_sub.interval;
 					debug!(?alert, "parsed alert file");
 					Ok(if alert.enabled { Some(alert) } else { None })
 				})
@@ -215,7 +220,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	for alert in alerts {
 		let internal_ctx = internal_ctx.clone();
 		let dry_run = ctx.args_sub.dry_run;
-		let timeout_d: Duration = ctx.args_sub.timeout.into();
+		let timeout_d = ctx.args_sub.timeout;
 		let name = alert.file.clone();
 		let config = config.clone();
 		set.spawn(

@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
-use chrono::{Duration, Utc};
+use jiff::Timestamp;
 
 use super::{
 	definition::{AlertDefinition, TicketSource},
@@ -12,11 +12,11 @@ fn interval_context(dur: Duration) -> Option<String> {
 	let alert = AlertDefinition {
 		file: PathBuf::from("test.yaml"),
 		enabled: true,
-		interval: dur.to_std().unwrap(),
+		interval: dur,
 		source: TicketSource::Sql { sql: "".into() },
 		send: vec![],
 	};
-	build_context(&alert, Utc::now())
+	build_context(&alert, Timestamp::now())
 		.get("interval")
 		.and_then(|v| v.as_str())
 		.map(|s| s.to_owned())
@@ -25,19 +25,25 @@ fn interval_context(dur: Duration) -> Option<String> {
 #[test]
 fn test_interval_format_minutes() {
 	assert_eq!(
-		interval_context(Duration::minutes(15)).as_deref(),
+		interval_context(Duration::from_secs(15 * 60)).as_deref(),
 		Some("15m"),
 	);
 }
 
 #[test]
 fn test_interval_format_hour() {
-	assert_eq!(interval_context(Duration::hours(1)).as_deref(), Some("1h"),);
+	assert_eq!(
+		interval_context(Duration::from_secs(60 * 60)).as_deref(),
+		Some("1h"),
+	);
 }
 
 #[test]
 fn test_interval_format_day() {
-	assert_eq!(interval_context(Duration::days(1)).as_deref(), Some("1d"),);
+	assert_eq!(
+		interval_context(Duration::from_secs(24 * 60 * 60)).as_deref(),
+		Some("1d"),
+	);
 }
 
 #[test]
