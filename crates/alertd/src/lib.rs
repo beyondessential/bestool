@@ -1,6 +1,7 @@
 use std::{fmt, time::Duration};
 
 mod alert;
+pub mod canopy;
 pub mod commands;
 mod daemon;
 mod events;
