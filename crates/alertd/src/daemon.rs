@@ -8,6 +8,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
 	DaemonConfig, LogError,
 	alert::InternalContext,
+	canopy::CanopyClient,
 	events::{EventContext, EventType},
 	http_server, metrics,
 	scheduler::Scheduler,
@@ -102,9 +103,50 @@ pub async fn run_with_shutdown_and_reload(
 	let pool =
 		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
 
+	let canopy_client = match CanopyClient::new(
+		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
+	)
+	.await
+	{
+		Ok(Some(client)) => {
+			if client.is_tailscale().await {
+				info!("canopy client ready via tailscale");
+			} else {
+				info!("canopy client ready via mTLS");
+			}
+			let client = Arc::new(client);
+			let renew = client.clone();
+			tokio::spawn(async move {
+				let mut interval = tokio::time::interval(crate::canopy::CERT_RENEW_AFTER);
+				interval.tick().await; // skip the immediate first tick
+				loop {
+					interval.tick().await;
+					if !renew.is_tailscale().await {
+						info!("renewing canopy mTLS certificate");
+						if let Err(err) = renew.renew().await {
+							error!("failed to renew canopy cert: {}", LogError(&err));
+						}
+					}
+				}
+			});
+			Some(client)
+		}
+		Ok(None) => {
+			info!(
+				"no canopy auth path available (no tailscale, no device key); canopy targets will be skipped"
+			);
+			None
+		}
+		Err(err) => {
+			error!("failed to build canopy client: {}", LogError(&err));
+			None
+		}
+	};
+
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client,
 	});
 
 	let scheduler = Arc::new(Scheduler::new(
@@ -204,12 +246,14 @@ pub async fn run_with_shutdown_and_reload(
 
 		let scheduler_hup = scheduler.clone();
 		let watch_manager_hup = watch_manager.clone();
+		let ctx_hup = ctx.clone();
 		tokio::spawn(async move {
 			let mut sighup = signal(SignalKind::hangup()).expect("failed to setup SIGHUP handler");
 			loop {
 				sighup.recv().await;
 				info!("received SIGHUP, reloading configuration");
 				metrics::inc_reloads();
+				refresh_canopy_client(&ctx_hup).await;
 				if let Err(err) = scheduler_hup.reload_alerts().await {
 					error!("failed to reload alerts: {}", LogError(&err));
 				} else {
@@ -385,6 +429,7 @@ pub async fn run_with_shutdown_and_reload(
 			Some(()) = reload_rx.recv() => {
 				info!("reloading alerts via HTTP");
 				metrics::inc_reloads();
+				refresh_canopy_client(&ctx).await;
 				if let Err(err) = scheduler.reload_alerts().await {
 					error!("failed to reload alerts: {}", LogError(&err));
 				} else {
@@ -400,6 +445,7 @@ pub async fn run_with_shutdown_and_reload(
 					needs_reload = false;
 					info!("reloading alerts due to file system changes");
 					metrics::inc_reloads();
+					refresh_canopy_client(&ctx).await;
 					if let Err(err) = scheduler.reload_alerts().await {
 						error!("failed to reload alerts: {}", LogError(&err));
 					} else {
@@ -415,4 +461,14 @@ pub async fn run_with_shutdown_and_reload(
 	}
 
 	Ok(())
+}
+
+/// Re-probe canopy auth on reload; logs failures but never blocks the reload.
+async fn refresh_canopy_client(ctx: &InternalContext) {
+	let Some(client) = ctx.canopy_client.as_ref() else {
+		return;
+	};
+	if let Err(err) = client.refresh().await {
+		error!("canopy client refresh failed: {}", LogError(&err));
+	}
 }

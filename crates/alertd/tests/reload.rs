@@ -34,6 +34,7 @@ async fn test_status_endpoint_response_format() {
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool.clone(),
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 
 	let scheduler = Arc::new(bestool_alertd::scheduler::Scheduler::new(

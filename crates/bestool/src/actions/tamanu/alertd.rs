@@ -332,6 +332,8 @@ async fn build_config(
 		Some(std::time::Duration::from_secs(watchdog_timeout))
 	};
 
+	let device_key_pem = fetch_device_key(&database_url).await;
+
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(dirs, database_url)
 		.with_dry_run(dry_run)
 		.with_no_server(no_server)
@@ -342,7 +344,61 @@ async fn build_config(
 		daemon_config = daemon_config.with_email(email);
 	}
 
+	if let Some(pem) = device_key_pem {
+		daemon_config = daemon_config.with_device_key_pem(pem);
+	}
+
 	Ok(daemon_config)
+}
+
+/// Fetch the Tamanu device key for canopy targets.
+///
+/// Best-effort: returns None if the DB connection fails or the row is missing.
+/// Alerts without canopy targets continue to work regardless.
+async fn fetch_device_key(database_url: &str) -> Option<String> {
+	use tracing::warn;
+
+	let (client, connection) = match tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+		.await
+	{
+		Ok(c) => c,
+		Err(err) => {
+			warn!("failed to connect for deviceKey fetch: {err}");
+			return None;
+		}
+	};
+	tokio::spawn(async move {
+		if let Err(err) = connection.await {
+			warn!("deviceKey-fetch connection error: {err}");
+		}
+	});
+
+	match client
+		.query_opt(
+			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
+			&[],
+		)
+		.await
+	{
+		Ok(Some(row)) => match row.try_get::<_, String>(0) {
+			Ok(pem) => {
+				info!("loaded deviceKey from Tamanu DB for canopy targets");
+				Some(pem)
+			}
+			Err(err) => {
+				warn!("deviceKey row not a string: {err}");
+				None
+			}
+		},
+		Ok(None) => {
+			info!("no deviceKey in local_system_facts; canopy targets unavailable");
+			None
+		}
+		Err(err) => {
+			warn!("failed to query deviceKey: {err}");
+			None
+		}
+	}
 }
 
 async fn default_dirs(root: &std::path::Path) -> Vec<String> {

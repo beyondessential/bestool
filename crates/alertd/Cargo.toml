@@ -31,6 +31,7 @@ notify = "8.2.0"
 prometheus = "0.14.0"
 pulldown-cmark = "0.13.3"
 rand.workspace = true
+rcgen = { workspace = true }
 reqwest = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -40,6 +41,7 @@ sysinfo.workspace = true
 tempfile = "3.21.0"
 tera = "1.20.0"
 thiserror = { workspace = true }
+time = "0.3"
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-util = { workspace = true }

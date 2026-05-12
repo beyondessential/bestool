@@ -10,6 +10,7 @@ use super::{
 	templates::{load_templates, render_alert},
 };
 
+pub(super) mod canopy;
 mod email;
 mod slack;
 pub(super) mod zendesk;
@@ -35,6 +36,12 @@ pub enum SendTarget {
 		#[serde(flatten)]
 		conn: slack::TargetSlack,
 	},
+	Canopy {
+		subject: Option<String>,
+		template: String,
+		#[serde(flatten)]
+		conn: canopy::TargetCanopy,
+	},
 	External {
 		subject: Option<String>,
 		template: String,
@@ -43,6 +50,15 @@ pub enum SendTarget {
 }
 
 impl SendTarget {
+	/// Returns the resolved target id used for canopy ref construction.
+	///
+	/// For external-id-referenced targets that have been resolved into a typed
+	/// variant we lose the original `_targets.yml` id; the legacy command's
+	/// inline targets just get the literal "send".
+	fn target_id(&self) -> &str {
+		"send"
+	}
+
 	pub fn resolve_external(
 		&self,
 		external_targets: &HashMap<String, Vec<ExternalTarget>>,
@@ -66,6 +82,11 @@ impl SendTarget {
 							conn: conn.clone(),
 						},
 						ExternalTarget::Slack { conn, .. } => SendTarget::Slack {
+							subject: subject.clone(),
+							template: template.clone(),
+							conn: conn.clone(),
+						},
+						ExternalTarget::Canopy { conn, .. } => SendTarget::Canopy {
 							subject: subject.clone(),
 							template: template.clone(),
 							conn: conn.clone(),
@@ -111,12 +132,34 @@ impl SendTarget {
 					.await?;
 			}
 
+			SendTarget::Canopy { conn, .. } => {
+				conn.send(&ctx, alert, self.target_id(), &subject, &body, dry_run)
+					.await?;
+			}
+
 			SendTarget::External { .. } => {
 				unreachable!("external targets should be resolved before here");
 			}
 		}
 
 		Ok(())
+	}
+
+	/// Send a "cleared" notification for stateful targets (canopy).
+	///
+	/// Non-stateful targets (email, slack, zendesk) return Ok immediately.
+	pub async fn send_clear(
+		&self,
+		alert: &AlertDefinition,
+		ctx: &InternalContext,
+		dry_run: bool,
+	) -> Result<()> {
+		match self {
+			SendTarget::Canopy { conn, .. } => {
+				conn.send_clear(ctx, alert, self.target_id(), dry_run).await
+			}
+			_ => Ok(()),
+		}
 	}
 }
 
@@ -143,6 +186,11 @@ pub enum ExternalTarget {
 		#[serde(flatten)]
 		conn: slack::TargetSlack,
 	},
+	Canopy {
+		id: String,
+		#[serde(flatten)]
+		conn: canopy::TargetCanopy,
+	},
 }
 
 impl ExternalTarget {
@@ -151,6 +199,7 @@ impl ExternalTarget {
 			Self::Email { id, .. } => id,
 			Self::Zendesk { id, .. } => id,
 			Self::Slack { id, .. } => id,
+			Self::Canopy { id, .. } => id,
 		}
 	}
 }

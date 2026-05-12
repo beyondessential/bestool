@@ -7,8 +7,9 @@ use walkdir::WalkDir;
 use crate::{
 	LogError,
 	alert::AlertDefinition,
+	canopy::{DEFAULT_CANOPY_URL, Severity},
 	glob_resolver::ResolvedPaths,
-	targets::{AlertTargets, ExternalTarget},
+	targets::{AlertTargets, CanopyConfig, ExternalTarget, TargetCanopy, TargetConnection},
 };
 
 pub struct LoadedAlerts {
@@ -23,7 +24,10 @@ pub struct DefinitionError {
 	pub error: String,
 }
 
-pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> {
+pub fn load_alerts_from_paths(
+	resolved: &ResolvedPaths,
+	canopy_available: bool,
+) -> Result<LoadedAlerts> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
 	let mut definition_errors = Vec::new();
@@ -113,6 +117,29 @@ pub fn load_alerts_from_paths(resolved: &ResolvedPaths) -> Result<LoadedAlerts> 
 		warn!("no external targets found");
 	}
 
+	// If no `default` target was explicitly configured and canopy auth is
+	// available, register a synthesised canopy target under "default" so
+	// alerts that reference `id: default` (and the event-manager fallback)
+	// route to canopy automatically.
+	if canopy_available && !external_targets.contains_key("default") {
+		debug!("no 'default' target configured, synthesising canopy default");
+		external_targets.insert(
+			"default".to_string(),
+			vec![ExternalTarget {
+				id: "default".to_string(),
+				conn: TargetConnection::Canopy(TargetCanopy {
+					canopy: CanopyConfig {
+						url: DEFAULT_CANOPY_URL
+							.parse()
+							.expect("default canopy URL is valid"),
+						source: "bestool-alertd".to_string(),
+						severity: Some(Severity::Error),
+					},
+				}),
+			}],
+		);
+	}
+
 	let alerts_with_targets: Vec<_> = alerts
 		.into_iter()
 		.filter_map(|alert| {
@@ -197,5 +224,86 @@ fn load_alert_from_file(file: &Path) -> LoadAlertResult {
 		LoadAlertResult::Success(alert)
 	} else {
 		LoadAlertResult::Disabled
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use tempfile::TempDir;
+
+	fn empty_resolved(dir: &Path) -> ResolvedPaths {
+		ResolvedPaths {
+			dirs: vec![dir.to_path_buf()],
+			files: vec![],
+		}
+	}
+
+	#[test]
+	fn canopy_default_injected_when_no_targets_and_canopy_available() {
+		let tmp = TempDir::new().unwrap();
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		assert!(loaded.external_targets.contains_key("default"));
+		let default = &loaded.external_targets["default"][0];
+		assert_eq!(default.id, "default");
+		assert!(matches!(default.conn, TargetConnection::Canopy(_)));
+	}
+
+	#[test]
+	fn no_canopy_default_when_canopy_unavailable() {
+		let tmp = TempDir::new().unwrap();
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, false).unwrap();
+		assert!(loaded.external_targets.is_empty());
+	}
+
+	#[test]
+	fn explicit_default_takes_precedence_over_canopy_synth() {
+		let tmp = TempDir::new().unwrap();
+		std::fs::write(
+			tmp.path().join("_targets.yml"),
+			r#"
+targets:
+  - id: default
+    addresses: [team@example.com]
+"#,
+		)
+		.unwrap();
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		let default = &loaded.external_targets["default"][0];
+		// User's explicit email default wins; no canopy injection.
+		assert!(matches!(default.conn, TargetConnection::Email(_)));
+		assert_eq!(loaded.external_targets["default"].len(), 1);
+	}
+
+	#[test]
+	fn alert_referencing_default_resolves_to_synth_canopy() {
+		let tmp = TempDir::new().unwrap();
+		std::fs::write(
+			tmp.path().join("disk.yml"),
+			r#"
+sql: "SELECT 1"
+send:
+  - id: default
+    subject: "Test"
+    template: "Body"
+"#,
+		)
+		.unwrap();
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		assert_eq!(loaded.alerts.len(), 1);
+		let (_, resolved_targets) = &loaded.alerts[0];
+		assert_eq!(resolved_targets.len(), 1);
+		assert!(matches!(
+			resolved_targets[0].conn,
+			TargetConnection::Canopy(_)
+		));
 	}
 }

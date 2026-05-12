@@ -59,6 +59,9 @@ pub fn load_templates(target: &SendTarget) -> Result<Tera> {
 		| SendTarget::Slack {
 			subject, template, ..
 		}
+		| SendTarget::Canopy {
+			subject, template, ..
+		}
 		| SendTarget::External {
 			subject, template, ..
 		} => {

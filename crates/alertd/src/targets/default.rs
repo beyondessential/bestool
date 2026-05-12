@@ -4,6 +4,17 @@ use tracing::debug;
 
 use crate::ExternalTarget;
 
+/// Pick the fallback target for system-level (synthetic) events.
+///
+/// Rules:
+/// - Empty map → `None`.
+/// - Single target → use it.
+/// - Otherwise, a target named `default` → use it.
+/// - Otherwise, first alphabetical → use it.
+///
+/// The loader injects a synthesised canopy target under `"default"` when no
+/// explicit `_targets.yml` configures one and canopy auth is available; this
+/// function makes no canopy-specific decisions itself.
 pub fn determine_default_target(
 	external_targets: &HashMap<String, Vec<ExternalTarget>>,
 ) -> Option<&ExternalTarget> {
@@ -119,5 +130,11 @@ mod tests {
 			TargetConnection::Email(email) => assert_eq!(email.addresses[0], "alpha@example.com"),
 			_ => panic!("expected email target"),
 		}
+	}
+
+	#[test]
+	fn test_no_default_when_empty() {
+		let targets = HashMap::new();
+		assert!(determine_default_target(&targets).is_none());
 	}
 }

@@ -121,7 +121,9 @@ tamanu = [ # enable all tamanu subcommands
 tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
+	"dep:bestool-alertd",
 	"dep:mailgun-rs",
+	"dep:p256",
 	"dep:pulldown-cmark",
 	"dep:serde_path_to_error",
 	"dep:serde_yaml",
@@ -130,7 +132,7 @@ tamanu-alerts = [
 	"dep:tokio-postgres",
 	"dep:walkdir",
 ]
-tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:serde_path_to_error", "dep:serde_yaml", "dep:walkdir"]
+tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:p256", "dep:serde_path_to_error", "dep:serde_yaml", "dep:walkdir"]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]

@@ -164,6 +164,13 @@ impl AlertDefinition {
 			.await?
 			.is_break()
 		{
+			// Alert didn't trigger this run — fire clear events for stateful
+			// targets (canopy). Non-stateful targets no-op.
+			for target in &self.send {
+				if let Err(err) = target.send_clear(&self, &ctx, dry_run).await {
+					error!("sending clear: {err:?}");
+				}
+			}
 			return Ok(());
 		}
 
