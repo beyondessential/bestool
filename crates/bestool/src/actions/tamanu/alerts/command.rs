@@ -211,32 +211,38 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let canopy_client = match client
+	let device_key_pem = match client
 		.query_opt(
 			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
 			&[],
 		)
 		.await
 	{
-		Ok(Some(row)) => {
-			let pem: String = row.try_get(0).into_diagnostic()?;
-			match bestool_alertd::canopy::CanopyClient::new(&pem) {
-				Ok(client) => {
-					info!("canopy mTLS client ready for legacy alerts");
-					Some(Arc::new(client))
-				}
-				Err(err) => {
-					error!("failed to build canopy client: {err:?}");
-					None
-				}
+		Ok(Some(row)) => row.try_get::<_, String>(0).ok(),
+		Ok(None) => None,
+		Err(err) => {
+			warn!("failed to query deviceKey: {err}");
+			None
+		}
+	};
+
+	let canopy_client = match bestool_alertd::canopy::CanopyClient::new(device_key_pem.as_deref())
+		.await
+	{
+		Ok(Some(client)) => {
+			if client.is_tailscale().await {
+				info!("canopy client ready via tailscale for legacy alerts");
+			} else {
+				info!("canopy client ready via mTLS for legacy alerts");
 			}
+			Some(Arc::new(client))
 		}
 		Ok(None) => {
-			info!("no deviceKey in local_system_facts; canopy targets will be skipped");
+			info!("no canopy auth path available; canopy targets will be skipped");
 			None
 		}
 		Err(err) => {
-			error!("failed to query deviceKey: {err}");
+			error!("failed to build canopy client: {err:?}");
 			None
 		}
 	};

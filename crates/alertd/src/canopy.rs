@@ -13,6 +13,12 @@ use crate::Redacted;
 
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 
+/// Base URL for the tailscale-internal canopy endpoint.
+///
+/// On hosts that share the canopy tailnet, posting to this URL works without
+/// mTLS — the tailscale identity is the auth.
+pub const TAILSCALE_URL: &str = "https://tamanu-meta-prod.tail53aef.ts.net";
+
 /// How long renewed canopy certs are valid for.
 ///
 /// Set well above [`CERT_RENEW_AFTER`] so a renewal failure doesn't immediately
@@ -24,6 +30,9 @@ const CERT_VALIDITY_DAYS: i64 = 6;
 /// Renewal runs in a background task in the daemon; the legacy single-shot
 /// alerts command builds the client once and exits well within this window.
 pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
+
+/// Timeout for the tailscale availability probe.
+const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -56,15 +65,36 @@ pub struct NewEvent<'a> {
 	pub active: Option<bool>,
 }
 
-/// HTTP client with mTLS configured for talking to a canopy server.
+/// HTTP client with auth configured for talking to a canopy server.
 ///
-/// The TLS identity is a fresh self-signed cert generated from the device key
-/// at construction. The cert is short-lived ([`CERT_VALIDITY_DAYS`]); for long-
-/// running daemons, [`Self::renew`] should be called on a timer
-/// ([`CERT_RENEW_AFTER`]) to swap in a fresh cert+client before expiry.
+/// Tries two auth paths in order of preference:
+/// 1. **Tailscale**: if the canopy tailnet endpoint is reachable, plain HTTPS
+///    works (auth is implicit via tailscale identity).
+/// 2. **mTLS**: a fresh self-signed cert from the device key, short-lived
+///    ([`CERT_VALIDITY_DAYS`]); for long-running daemons, [`Self::renew`]
+///    should tick on [`CERT_RENEW_AFTER`] to swap in a fresh cert before expiry.
+///
+/// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 pub struct CanopyClient {
-	device_key: Redacted<String>,
-	http: RwLock<reqwest::Client>,
+	device_key: Option<Redacted<String>>,
+	state: RwLock<State>,
+}
+
+enum State {
+	Tailscale(reqwest::Client),
+	Mtls(reqwest::Client),
+}
+
+impl State {
+	fn is_tailscale(&self) -> bool {
+		matches!(self, State::Tailscale(_))
+	}
+
+	fn http(&self) -> reqwest::Client {
+		match self {
+			State::Tailscale(http) | State::Mtls(http) => http.clone(),
+		}
+	}
 }
 
 impl fmt::Debug for CanopyClient {
@@ -74,38 +104,102 @@ impl fmt::Debug for CanopyClient {
 }
 
 impl CanopyClient {
-	/// Build a canopy client from a Tamanu device key (PKCS8 PEM).
+	/// Build a canopy client, preferring tailscale and falling back to mTLS.
 	///
-	/// Generates a fresh self-signed cert from the key (validity
-	/// [`CERT_VALIDITY_DAYS`]) and wraps it in a `reqwest::Client` whose TLS
-	/// identity is that cert plus the private key. The canopy edge expects
-	/// this cert via mTLS and authenticates the request by looking the public
-	/// key up in its device registry.
-	pub fn new(device_key_pem: &str) -> Result<Self> {
-		let http = build_http(device_key_pem)?;
-		Ok(Self {
-			device_key: Redacted(device_key_pem.to_owned()),
-			http: RwLock::new(http),
-		})
+	/// Probes the tailscale canopy endpoint first; if reachable, uses it.
+	/// Otherwise, if a device key PEM is provided, builds an mTLS client.
+	/// Returns `Ok(None)` if neither path is available.
+	pub async fn new(device_key_pem: Option<&str>) -> Result<Option<Self>> {
+		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
+
+		if let Some(http) = probe_tailscale().await {
+			debug!("canopy: tailscale endpoint reachable, preferring it");
+			return Ok(Some(Self {
+				device_key,
+				state: RwLock::new(State::Tailscale(http)),
+			}));
+		}
+
+		if let Some(pem) = device_key_pem {
+			debug!("canopy: tailscale unreachable, falling back to mTLS");
+			let http = build_mtls_http(pem)?;
+			return Ok(Some(Self {
+				device_key,
+				state: RwLock::new(State::Mtls(http)),
+			}));
+		}
+
+		Ok(None)
+	}
+
+	/// Returns true if the client is currently using the tailscale path.
+	pub async fn is_tailscale(&self) -> bool {
+		self.state.read().await.is_tailscale()
+	}
+
+	/// Re-probe tailscale and swap modes if the picture has changed.
+	///
+	/// Intended to be called when the daemon receives a reload signal.
+	pub async fn refresh(&self) -> Result<()> {
+		if let Some(http) = probe_tailscale().await {
+			let mut state = self.state.write().await;
+			if !state.is_tailscale() {
+				debug!("canopy refresh: switching to tailscale path");
+			}
+			*state = State::Tailscale(http);
+			return Ok(());
+		}
+
+		if let Some(pem) = &self.device_key {
+			let http = build_mtls_http(&pem.0)?;
+			let mut state = self.state.write().await;
+			if state.is_tailscale() {
+				debug!("canopy refresh: tailscale dropped, falling back to mTLS");
+			}
+			*state = State::Mtls(http);
+			return Ok(());
+		}
+
+		debug!("canopy refresh: no auth path available, keeping current state");
+		Ok(())
 	}
 
 	/// Rebuild the underlying HTTP client with a fresh certificate.
 	///
-	/// Atomically replaces the live client; in-flight requests continue with
-	/// the old client until they complete. Call this on a timer well inside
-	/// the cert validity window.
+	/// No-op in tailscale mode (no cert to rotate). In mTLS mode, atomically
+	/// replaces the live client; in-flight requests continue with the old
+	/// client until they complete.
 	pub async fn renew(&self) -> Result<()> {
-		let http = build_http(&self.device_key.0)?;
-		*self.http.write().await = http;
+		let Some(pem) = &self.device_key else {
+			return Ok(());
+		};
+		let mut state = self.state.write().await;
+		if state.is_tailscale() {
+			return Ok(());
+		}
+		*state = State::Mtls(build_mtls_http(&pem.0)?);
 		Ok(())
 	}
 
-	/// POST an event to `{base_url}/events`.
+	/// POST an event to the canopy server.
+	///
+	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
+	/// In mTLS mode, posts to `{base_url}/events`.
 	pub async fn post_event(&self, base_url: &Url, event: NewEvent<'_>) -> Result<()> {
-		let url = base_url
-			.join("/events")
-			.into_diagnostic()
-			.wrap_err("building /events URL")?;
+		let (http, url) = {
+			let state = self.state.read().await;
+			let url = match &*state {
+				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/events")
+					.parse::<Url>()
+					.into_diagnostic()
+					.wrap_err("building tailscale /public/events URL")?,
+				State::Mtls(_) => base_url
+					.join("/events")
+					.into_diagnostic()
+					.wrap_err("building /events URL")?,
+			};
+			(state.http(), url)
+		};
 
 		debug!(
 			%url,
@@ -115,7 +209,6 @@ impl CanopyClient {
 			"posting event to canopy"
 		);
 
-		let http = self.http.read().await.clone();
 		let response = http
 			.post(url)
 			.json(&event)
@@ -134,7 +227,33 @@ impl CanopyClient {
 	}
 }
 
-fn build_http(device_key_pem: &str) -> Result<reqwest::Client> {
+/// Probe the tailscale canopy endpoint.
+///
+/// Returns a configured `reqwest::Client` if the endpoint responds with `415`
+/// (the expected response to a body-less POST that needs `application/json`),
+/// otherwise `None` for any error / timeout / unexpected status.
+async fn probe_tailscale() -> Option<reqwest::Client> {
+	let url = format!("{TAILSCALE_URL}/public/events");
+
+	let client = reqwest::Client::builder()
+		.timeout(TAILSCALE_PROBE_TIMEOUT)
+		.build()
+		.ok()?;
+
+	match client.post(&url).send().await {
+		Ok(resp) if resp.status() == reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE => Some(client),
+		Ok(resp) => {
+			debug!(status = %resp.status(), "canopy tailscale probe: unexpected status");
+			None
+		}
+		Err(err) => {
+			debug!("canopy tailscale probe failed: {err}");
+			None
+		}
+	}
+}
+
+fn build_mtls_http(device_key_pem: &str) -> Result<reqwest::Client> {
 	let key_pair = KeyPair::from_pem(device_key_pem)
 		.into_diagnostic()
 		.wrap_err("parsing device key PEM")?;
@@ -185,20 +304,39 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 -----END PRIVATE KEY-----";
 
 	#[test]
-	fn build_client_from_p256_key() {
-		let client = CanopyClient::new(TEST_DEVICE_KEY);
-		assert!(client.is_ok(), "{:?}", client.err());
-	}
-
-	#[tokio::test]
-	async fn renew_swaps_in_fresh_client() {
-		let client = CanopyClient::new(TEST_DEVICE_KEY).unwrap();
-		client.renew().await.expect("renew should succeed");
+	fn build_mtls_http_from_p256_key() {
+		// Direct mTLS-path build, bypassing the async constructor / tailscale probe.
+		let result = build_mtls_http(TEST_DEVICE_KEY);
+		assert!(result.is_ok(), "{:?}", result.err());
 	}
 
 	#[test]
-	fn build_client_fails_on_garbage_key() {
-		assert!(CanopyClient::new("not a real PEM").is_err());
+	fn build_mtls_http_fails_on_garbage_key() {
+		assert!(build_mtls_http("not a real PEM").is_err());
+	}
+
+	#[tokio::test]
+	async fn renew_with_mtls_state_swaps_in_fresh_client() {
+		// Construct an mTLS-state client directly (no network probe) and renew it.
+		let http = build_mtls_http(TEST_DEVICE_KEY).unwrap();
+		let client = CanopyClient {
+			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
+			state: RwLock::new(State::Mtls(http)),
+		};
+		client.renew().await.expect("renew should succeed");
+		assert!(!client.is_tailscale().await);
+	}
+
+	#[tokio::test]
+	async fn renew_is_noop_in_tailscale_mode() {
+		// Tailscale-state client with no device key — renew is a no-op.
+		let http = reqwest::Client::new();
+		let client = CanopyClient {
+			device_key: None,
+			state: RwLock::new(State::Tailscale(http)),
+		};
+		client.renew().await.expect("renew should be a no-op");
+		assert!(client.is_tailscale().await);
 	}
 
 	#[test]
