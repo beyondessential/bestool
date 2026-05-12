@@ -5,7 +5,38 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.6.4](https://github.com/beyondessential/bestool/compare/v1.6.3..1.6.4) - 2026-04-23
+## [1.7.0](https://github.com/beyondessential/bestool/compare/v1.6.4..1.7.0) - 2026-05-12
+
+
+- **deps:** Bump the deps-patches group with 25 updates (#295) - ([85bc3e7](https://github.com/beyondessential/bestool/commit/85bc3e74e0f38daf7d0aac7db45ff62b4714b974))
+- **deps:** Bump rustyline from 17.0.2 to 18.0.0 (#298) - ([649c37e](https://github.com/beyondessential/bestool/commit/649c37e08fad805785ffa0dea2342b3d3d876455))
+- **deps:** Bump redb from 3.1.1 to 4.1.0 (#299) - ([e31daca](https://github.com/beyondessential/bestool/commit/e31daca35eee52b6f1d724ff9ab0d7ef9308ea37))
+- **deps:** Replace chrono/folktime/humantime with jiff - ([b17fc23](https://github.com/beyondessential/bestool/commit/b17fc23c327a0133c476b31d998e707fdabd421e))
+- **deps:** Replace chrono/folktime/humantime with jiff (#307) - ([5bf62a1](https://github.com/beyondessential/bestool/commit/5bf62a1405f12ff2a108eb29503a5ee23c36b5bf))
+- **deps:** Add rcgen for self-signed cert generation - ([8238c9f](https://github.com/beyondessential/bestool/commit/8238c9fd1c4f37b0c069e2782e28797a7c7baf99))
+- **refactor:** Replace chrono/folktime/humantime with jiff in sources - ([aed70cb](https://github.com/beyondessential/bestool/commit/aed70cbbba290ceba940f5504c0012dd842e37f3))
+
+
+- **feat(alertd):** Add canopy module with mTLS HTTP client - ([3e56da8](https://github.com/beyondessential/bestool/commit/3e56da87967727cd5a855ee3de8b7caca1791584))
+- **feat(alertd):** Add canopy target type and clear-side dispatch - ([cc2f589](https://github.com/beyondessential/bestool/commit/cc2f5895b4a43b2d6de90ff3482815b5df17adfa))
+- **feat(alertd):** Add --device-key-file flag for canopy auth - ([5c82b42](https://github.com/beyondessential/bestool/commit/5c82b427ec8be608c805b14b04ca80d96e9a1517))
+- **feat(alertd):** Periodically renew canopy mTLS cert (6d validity, 5d cadence) - ([4b6646c](https://github.com/beyondessential/bestool/commit/4b6646c049dddf89295b99166d4b9e02a8afbf8a))
+- **feat(alertd):** Probe tailscale canopy endpoint, prefer over mTLS when reachable - ([dcc9d21](https://github.com/beyondessential/bestool/commit/dcc9d212e1dc9ba7217c84639d9e445933a71c30))
+- **feat(alertd):** Synthesise canopy default target when no _targets configured - ([0a77859](https://github.com/beyondessential/bestool/commit/0a778591630d4c6741fcbe9ef7b55749b031cfd8))
+- **fix(alertd):** Register synth canopy default as id 'default', not '_canopy_default' - ([dfe3699](https://github.com/beyondessential/bestool/commit/dfe3699ddf3c3e1aa94ac82a863816fb7c7264e4))
+
+- **feat(alerts):** Send alerts to canopy (#308) - ([c50ad78](https://github.com/beyondessential/bestool/commit/c50ad7862ce34765365ae6e81bc23de4ae4e8946))
+
+- **feat(ci):** Add bestool-alertd release workflow (#286) - ([2ae5097](https://github.com/beyondessential/bestool/commit/2ae50970af3a1f75f33cc01886473fe8605223f8))
+- **feat(ci):** Add bestool-psql release workflow (#285) - ([592a8a0](https://github.com/beyondessential/bestool/commit/592a8a0c7df42f9f10ad912f2f50572e8be67460))
+- **fix(ci):** Drop install -D for BSD compat in release workflows (#288) - ([bec57cf](https://github.com/beyondessential/bestool/commit/bec57cf6300f9946482415b7d10d7eba67bd192d))
+- **fix(ci):** Drop unsupported semver-major-days for github-actions (#293) - ([991c1d5](https://github.com/beyondessential/bestool/commit/991c1d529d8a3c0647ffa52a048dcb4716e73717))
+
+- **feat(repo):** Add jj-aware cargo-release wrapper (#287) - ([56a3639](https://github.com/beyondessential/bestool/commit/56a36392b68a2aeca2a1d29d5d236166b7645fbf))
+
+- **feat(tamanu-alerts):** Add canopy target type and clear dispatch for legacy command - ([f9d0dd2](https://github.com/beyondessential/bestool/commit/f9d0dd286bb49f0fc44799b6ece7f311995e47c2))
+---
+## [1.6.4](https://github.com/beyondessential/bestool/compare/v1.6.3..v1.6.4) - 2026-04-23
 
 
 
