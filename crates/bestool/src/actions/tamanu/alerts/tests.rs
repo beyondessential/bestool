@@ -172,6 +172,42 @@ send:
 }
 
 #[test]
+fn test_alert_parse_canopy_inline() {
+	let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: canopy
+  source: my-tamanu
+  severity: warning
+  subject: "{{ hostname }}: low disk"
+  template: "There are {{ rows | length }} rows."
+"#;
+	let alert: AlertDefinition = serde_yaml::from_str(alert).unwrap();
+	assert!(matches!(alert.send[0], SendTarget::Canopy { .. }));
+}
+
+#[test]
+fn test_alert_parse_canopy_default_url() {
+	let alert = r#"
+sql: SELECT $1::timestamptz;
+send:
+- target: canopy
+  source: my-tamanu
+  subject: "{{ hostname }}: alert"
+  template: "Something happened"
+"#;
+	let alert: AlertDefinition = serde_yaml::from_str(alert).unwrap();
+	match &alert.send[0] {
+		SendTarget::Canopy { conn, .. } => {
+			assert_eq!(conn.url.as_str(), "https://meta.tamanu.app/");
+			assert_eq!(conn.source, "my-tamanu");
+			assert_eq!(conn.severity, None);
+		}
+		_ => panic!("expected canopy target"),
+	}
+}
+
+#[test]
 fn test_alert_parse_slack_fields() {
 	let alert = r#"
 sql: SELECT $1::timestamptz;

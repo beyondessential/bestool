@@ -74,6 +74,7 @@ pub struct AlertsArgs {
 pub struct InternalContext {
 	pub pg_client: tokio_postgres::Client,
 	pub http_client: reqwest::Client,
+	pub canopy_client: Option<Arc<bestool_alertd::canopy::CanopyClient>>,
 }
 
 async fn default_dirs(root: &Path) -> Vec<PathBuf> {
@@ -210,10 +211,41 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
+	let canopy_client = match client
+		.query_opt(
+			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
+			&[],
+		)
+		.await
+	{
+		Ok(Some(row)) => {
+			let pem: String = row.try_get(0).into_diagnostic()?;
+			match bestool_alertd::canopy::CanopyClient::new(&pem) {
+				Ok(client) => {
+					info!("canopy mTLS client ready for legacy alerts");
+					Some(Arc::new(client))
+				}
+				Err(err) => {
+					error!("failed to build canopy client: {err:?}");
+					None
+				}
+			}
+		}
+		Ok(None) => {
+			info!("no deviceKey in local_system_facts; canopy targets will be skipped");
+			None
+		}
+		Err(err) => {
+			error!("failed to query deviceKey: {err}");
+			None
+		}
+	};
+
 	let config = Arc::new(config);
 	let internal_ctx = Arc::new(InternalContext {
 		pg_client: client,
 		http_client: reqwest::Client::new(),
+		canopy_client,
 	});
 
 	let mut set = JoinSet::new();

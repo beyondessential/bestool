@@ -122,9 +122,7 @@ impl CanopyClient {
 		let status = response.status();
 		if !status.is_success() {
 			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /events returned {status}: {body}"
-			));
+			return Err(miette::miette!("canopy /events returned {status}: {body}"));
 		}
 
 		Ok(())

@@ -290,10 +290,7 @@ impl AlertDefinition {
 		}
 
 		for target in resolved_targets {
-			if let Err(err) = target
-				.send(self, &mut tera_ctx, email, &ctx, dry_run)
-				.await
-			{
+			if let Err(err) = target.send(self, &mut tera_ctx, email, &ctx, dry_run).await {
 				error!("sending: {}", LogError(&err));
 			}
 		}

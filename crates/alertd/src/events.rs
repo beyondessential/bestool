@@ -192,10 +192,7 @@ impl EventManager {
 				tera_ctx.extend(event_context.to_tera_context());
 
 				for target in targets {
-					if let Err(err) = target
-						.send(alert, &mut tera_ctx, email, ctx, dry_run)
-						.await
-					{
+					if let Err(err) = target.send(alert, &mut tera_ctx, email, ctx, dry_run).await {
 						error!(file = ?alert.file, "failed to send event alert: {}", LogError(&err));
 					}
 				}

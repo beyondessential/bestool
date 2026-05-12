@@ -10,7 +10,9 @@ use crate::{
 };
 
 fn default_canopy_url() -> Url {
-	DEFAULT_CANOPY_URL.parse().expect("default canopy URL is valid")
+	DEFAULT_CANOPY_URL
+		.parse()
+		.expect("default canopy URL is valid")
 }
 
 /// External-target connection for a canopy events endpoint.
@@ -62,7 +64,10 @@ impl TargetCanopy {
 			println!("Recipients: canopy:{}", self.canopy.url);
 			println!("Source: {}", self.canopy.source);
 			println!("Ref: {ref}", ref = r#ref);
-			println!("Severity: {:?}", self.canopy.severity.unwrap_or(Severity::Error));
+			println!(
+				"Severity: {:?}",
+				self.canopy.severity.unwrap_or(Severity::Error)
+			);
 			println!("Active: true");
 			println!("Subject: {subject}");
 			println!("Body: {body}");
