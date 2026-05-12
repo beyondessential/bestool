@@ -52,6 +52,15 @@ struct DaemonArgs {
 	#[arg(long, env = "MAILGUN_DOMAIN")]
 	mailgun_domain: Option<String>,
 
+	/// Path to a Tamanu device key PEM, used as client identity for canopy targets.
+	///
+	/// Required for any alert that targets a canopy `/events` endpoint. The key
+	/// is the same value Tamanu stores in `local_system_facts(key='deviceKey')`;
+	/// only the private key is read (a fresh self-signed cert is generated from
+	/// it at startup).
+	#[arg(long, env = "DEVICE_KEY_FILE")]
+	device_key_file: Option<std::path::PathBuf>,
+
 	/// Execute all alerts once and quit (ignoring intervals)
 	#[arg(long)]
 	dry_run: bool,
@@ -267,6 +276,15 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 		Some(std::time::Duration::from_secs(daemon.watchdog_timeout))
 	};
 
+	let device_key_pem = if let Some(path) = daemon.device_key_file {
+		Some(
+			std::fs::read_to_string(&path)
+				.map_err(|err| miette!("reading device key file {}: {err}", path.display()))?,
+		)
+	} else {
+		None
+	};
+
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(daemon.glob, database_url)
 		.with_dry_run(daemon.dry_run)
 		.with_no_server(daemon.no_server)
@@ -275,6 +293,10 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
+	}
+
+	if let Some(pem) = device_key_pem {
+		daemon_config = daemon_config.with_device_key_pem(pem);
 	}
 
 	Ok(daemon_config)
