@@ -64,6 +64,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
@@ -155,6 +156,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
@@ -243,6 +245,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 
 	// First execution - should trigger (first run always triggers)
@@ -300,6 +303,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
@@ -362,6 +366,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
@@ -441,6 +446,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 
@@ -502,6 +508,7 @@ send:
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client: None,
 	});
 	let mut tera_ctx = bestool_alertd::templates::build_context(&alert, jiff::Timestamp::now());
 

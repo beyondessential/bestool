@@ -563,13 +563,7 @@ impl Scheduler {
 						// Send to targets
 						for target in &resolved_targets {
 							if let Err(err) = target
-								.send(
-									&alert,
-									&mut tera_ctx,
-									email.as_ref(),
-									Some(&ctx.http_client),
-									dry_run,
-								)
+								.send(&alert, &mut tera_ctx, email.as_ref(), &ctx, dry_run)
 								.await
 							{
 								error!("sending: {}", LogError(&err));
@@ -592,6 +586,11 @@ impl Scheduler {
 					// Alert is not in triggering state
 					if was_triggered {
 						info!(?file, "alert cleared");
+						for target in &resolved_targets {
+							if let Err(err) = target.send_clear(&alert, &ctx, dry_run).await {
+								error!("sending clear: {}", LogError(&err));
+							}
+						}
 						let mut state = alert_state.write().await;
 						state.triggered_at = None;
 						state.last_sent_at = None;

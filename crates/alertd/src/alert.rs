@@ -291,7 +291,7 @@ impl AlertDefinition {
 
 		for target in resolved_targets {
 			if let Err(err) = target
-				.send(self, &mut tera_ctx, email, Some(&ctx.http_client), dry_run)
+				.send(self, &mut tera_ctx, email, &ctx, dry_run)
 				.await
 			{
 				error!("sending: {}", LogError(&err));
@@ -306,6 +306,7 @@ impl AlertDefinition {
 pub struct InternalContext {
 	pub pg_pool: bestool_postgres::pool::PgPool,
 	pub http_client: reqwest::Client,
+	pub canopy_client: Option<Arc<crate::canopy::CanopyClient>>,
 }
 
 fn rows_to_value_map(

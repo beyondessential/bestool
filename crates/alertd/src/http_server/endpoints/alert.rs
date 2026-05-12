@@ -92,6 +92,7 @@ mod tests {
 		let ctx = Arc::new(InternalContext {
 			pg_pool: pool,
 			http_client: reqwest::Client::new(),
+		canopy_client: None,
 		});
 		let scheduler = Arc::new(Scheduler::new(vec![], ctx.clone(), None, true));
 

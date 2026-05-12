@@ -36,7 +36,7 @@ pub struct EmailConfig {
 }
 
 /// Configuration for the alertd daemon
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DaemonConfig {
 	/// Glob patterns for directories/files containing alert definitions
 	///
@@ -49,6 +49,13 @@ pub struct DaemonConfig {
 
 	/// Email server configuration
 	pub email: Option<EmailConfig>,
+
+	/// Tamanu device key PEM, used as the client identity for canopy targets.
+	///
+	/// Held only long enough to build the canopy `reqwest::Client` at startup,
+	/// then dropped. Wrapped in `Redacted` so debug-logging the config can't
+	/// leak the key.
+	pub device_key_pem: Option<Redacted<String>>,
 
 	/// Whether to perform a dry run (execute all alerts once and quit)
 	pub dry_run: bool,
@@ -67,12 +74,45 @@ pub struct DaemonConfig {
 	pub watchdog_timeout: Option<Duration>,
 }
 
+impl fmt::Debug for DaemonConfig {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("DaemonConfig")
+			.field("alert_globs", &self.alert_globs)
+			.field("database_url", &self.database_url)
+			.field("email", &self.email)
+			.field("device_key_pem", &self.device_key_pem)
+			.field("dry_run", &self.dry_run)
+			.field("no_server", &self.no_server)
+			.field("server_addrs", &self.server_addrs)
+			.field("watchdog_timeout", &self.watchdog_timeout)
+			.finish()
+	}
+}
+
+/// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
+#[derive(Clone)]
+pub struct Redacted<T>(pub T);
+
+impl<T> fmt::Debug for Redacted<T> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str("<redacted>")
+	}
+}
+
+impl<T> std::ops::Deref for Redacted<T> {
+	type Target = T;
+	fn deref(&self) -> &T {
+		&self.0
+	}
+}
+
 impl DaemonConfig {
 	pub fn new(alert_globs: Vec<String>, database_url: String) -> Self {
 		Self {
 			alert_globs,
 			database_url,
 			email: None,
+			device_key_pem: None,
 			dry_run: false,
 			no_server: false,
 			server_addrs: Vec::new(),
@@ -82,6 +122,11 @@ impl DaemonConfig {
 
 	pub fn with_email(mut self, email: EmailConfig) -> Self {
 		self.email = Some(email);
+		self
+	}
+
+	pub fn with_device_key_pem(mut self, pem: String) -> Self {
+		self.device_key_pem = Some(Redacted(pem));
 		self
 	}
 

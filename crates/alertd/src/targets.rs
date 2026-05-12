@@ -4,14 +4,16 @@ use miette::Result;
 
 use crate::{
 	EmailConfig,
-	alert::AlertDefinition,
+	alert::{AlertDefinition, InternalContext},
 	templates::{load_templates, render_alert},
 };
 
+mod canopy;
 mod default;
 mod email;
 mod slack;
 
+pub use canopy::TargetCanopy;
 pub use default::determine_default_target;
 pub use email::TargetEmail;
 pub use slack::TargetSlack;
@@ -66,6 +68,7 @@ impl SendTarget {
 			.map(|exts| {
 				exts.iter()
 					.map(|ext| ResolvedTarget {
+						target_id: ext.id.clone(),
 						subject: self.subject().clone(),
 						template: self.template().to_string(),
 						conn: ext.conn.clone(),
@@ -81,10 +84,12 @@ impl SendTarget {
 pub enum TargetConnection {
 	Slack(TargetSlack),
 	Email(TargetEmail),
+	Canopy(TargetCanopy),
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTarget {
+	pub target_id: String,
 	pub subject: Option<String>,
 	pub template: String,
 	pub conn: TargetConnection,
@@ -96,7 +101,7 @@ impl ResolvedTarget {
 		alert: &AlertDefinition,
 		tera_ctx: &mut tera::Context,
 		email: Option<&EmailConfig>,
-		http_client: Option<&reqwest::Client>,
+		ctx: &InternalContext,
 		dry_run: bool,
 	) -> Result<()> {
 		let tera = load_templates(&self.subject, &self.template)?;
@@ -107,12 +112,9 @@ impl ResolvedTarget {
 				target.send(alert, email, &subject, &body, dry_run).await
 			}
 			TargetConnection::Slack(target) => {
-				let client = http_client.ok_or_else(|| {
-					miette::miette!("slack target requires an HTTP client (this is a bug)")
-				})?;
 				target
 					.send(
-						client,
+						&ctx.http_client,
 						slack::SlackSendParams {
 							alert,
 							subject: &subject,
@@ -124,6 +126,42 @@ impl ResolvedTarget {
 					)
 					.await
 			}
+			TargetConnection::Canopy(target) => {
+				target
+					.send(
+						ctx.canopy_client.as_deref(),
+						alert,
+						&self.target_id,
+						&subject,
+						&body,
+						dry_run,
+					)
+					.await
+			}
+		}
+	}
+
+	/// Send a "cleared" notification for stateful targets (canopy).
+	///
+	/// Non-stateful targets (email, slack) return Ok immediately.
+	pub async fn send_clear(
+		&self,
+		alert: &AlertDefinition,
+		ctx: &InternalContext,
+		dry_run: bool,
+	) -> Result<()> {
+		match &self.conn {
+			TargetConnection::Canopy(target) => {
+				target
+					.send_clear(
+						ctx.canopy_client.as_deref(),
+						alert,
+						&self.target_id,
+						dry_run,
+					)
+					.await
+			}
+			_ => Ok(()),
 		}
 	}
 }

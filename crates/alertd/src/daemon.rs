@@ -8,6 +8,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
 	DaemonConfig, LogError,
 	alert::InternalContext,
+	canopy::CanopyClient,
 	events::{EventContext, EventType},
 	http_server, metrics,
 	scheduler::Scheduler,
@@ -102,9 +103,25 @@ pub async fn run_with_shutdown_and_reload(
 	let pool =
 		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
 
+	let canopy_client = if let Some(ref pem) = daemon_config.device_key_pem {
+		match CanopyClient::new(pem) {
+			Ok(client) => {
+				info!("canopy mTLS client ready");
+				Some(Arc::new(client))
+			}
+			Err(err) => {
+				error!("failed to build canopy client: {}", LogError(&err));
+				None
+			}
+		}
+	} else {
+		None
+	};
+
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: reqwest::Client::new(),
+		canopy_client,
 	});
 
 	let scheduler = Arc::new(Scheduler::new(
