@@ -71,7 +71,9 @@ super::subcommands! {
 	meta_ticket => MetaTicket(MetaTicketArgs),
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
-	psql => Psql(PsqlArgs)
+	psql => Psql(PsqlArgs),
+	#[cfg(feature = "tamanu-reload")]
+	reload => Reload(ReloadArgs)
 }
 
 /// What kind of server to interact with.

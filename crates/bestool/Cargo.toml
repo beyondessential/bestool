@@ -117,6 +117,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-greenmask",
 	"tamanu-meta-ticket",
 	"tamanu-psql",
+	"tamanu-reload",
 ]
 tamanu-alerts = [
 	"__tamanu",
@@ -143,6 +144,7 @@ tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-meta-ticket = ["__tamanu", "tamanu-config", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:sysinfo"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
+tamanu-reload = ["__tamanu"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:dirs",
 	"dep:glob",

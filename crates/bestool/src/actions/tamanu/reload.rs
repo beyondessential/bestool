@@ -1,0 +1,391 @@
+use std::{
+	process::Command,
+	time::{Duration, Instant},
+};
+
+use clap::Parser;
+use miette::{IntoDiagnostic, Result, bail};
+use regex::Regex;
+use reqwest::{Client, Url};
+use serde::Deserialize;
+use tracing::{debug, info, warn};
+
+use crate::actions::Context;
+
+use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
+
+/// Restart Tamanu services one at a time.
+///
+/// On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus
+/// shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). Between each
+/// restart, waits for the unit to become active, reloads caddy and flushes
+/// systemd-resolved (so caddy picks up the new container IP), waits a
+/// configurable cooldown, and optionally probes an HTTP URL. On Windows,
+/// restarts every `online` pm2 process.
+///
+/// Examples:
+///   bestool tamanu reload
+///   bestool tamanu reload --filter '^tamanu-frontend@'
+///   bestool tamanu reload --check-url https://central.example.org --wait 15
+#[derive(Debug, Clone, Parser)]
+pub struct ReloadArgs {
+	/// Override the detected server kind.
+	#[arg(long, value_enum)]
+	pub kind: Option<ApiServerKind>,
+
+	/// Seconds to wait between restarts.
+	#[arg(long, default_value = "10")]
+	pub wait: u64,
+
+	/// HTTP URL to probe after each restart.
+	///
+	/// If set, after each service is restarted and reported ready, this URL is
+	/// requested. A connection failure or 5xx response aborts the rollout.
+	#[arg(long)]
+	pub check_url: Option<Url>,
+
+	/// Per-step timeout in seconds (readiness polling and HTTP probe).
+	#[arg(long, default_value = "30")]
+	pub timeout: u64,
+
+	/// Only restart services whose name matches this regex.
+	#[arg(long)]
+	pub filter: Option<Regex>,
+
+	/// Don't reload caddy / flush resolved between restarts.
+	#[arg(long)]
+	pub no_caddy_reload: bool,
+
+	/// Print the plan and exit without restarting anything.
+	#[arg(long)]
+	pub dry_run: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Backend {
+	Systemd,
+	Pm2,
+}
+
+pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
+	let backend = detect_backend()?;
+	let kind = resolve_kind(&ctx, backend)?;
+	info!(?backend, ?kind, "rolling tamanu services");
+
+	let services = match backend {
+		Backend::Systemd => list_services_systemd(kind, ctx.args_sub.filter.as_ref())?,
+		Backend::Pm2 => list_services_pm2(ctx.args_sub.filter.as_ref())?,
+	};
+
+	if services.is_empty() {
+		bail!("no running tamanu services match the selection");
+	}
+
+	info!("will restart {} service(s):", services.len());
+	for s in &services {
+		info!("  - {s}");
+	}
+
+	if ctx.args_sub.dry_run {
+		return Ok(());
+	}
+
+	let timeout = Duration::from_secs(ctx.args_sub.timeout);
+	let wait = Duration::from_secs(ctx.args_sub.wait);
+
+	let http = if ctx.args_sub.check_url.is_some() {
+		Some(
+			Client::builder()
+				.timeout(timeout)
+				.build()
+				.into_diagnostic()?,
+		)
+	} else {
+		None
+	};
+
+	let total = services.len();
+	for (idx, service) in services.iter().enumerate() {
+		let n = idx + 1;
+		info!("[{n}/{total}] restarting {service}");
+		match backend {
+			Backend::Systemd => {
+				restart_systemd(service)?;
+				wait_active_systemd(service, timeout).await?;
+				if !ctx.args_sub.no_caddy_reload {
+					reload_caddy();
+				}
+			}
+			Backend::Pm2 => {
+				restart_pm2(service)?;
+				wait_online_pm2(service, timeout).await?;
+			}
+		}
+
+		if let (Some(http), Some(url)) = (&http, &ctx.args_sub.check_url) {
+			probe_http(http, url, timeout).await?;
+		}
+
+		if n < total && !wait.is_zero() {
+			info!("waiting {}s before next restart", wait.as_secs());
+			tokio::time::sleep(wait).await;
+		}
+	}
+
+	info!("rolled {total} service(s)");
+	Ok(())
+}
+
+fn resolve_kind(ctx: &Context<TamanuArgs, ReloadArgs>, backend: Backend) -> Result<ApiServerKind> {
+	if let Some(kind) = ctx.args_sub.kind {
+		return Ok(kind);
+	}
+	if let Ok((_, root)) = find_tamanu(&ctx.args_top) {
+		return Ok(find_package(root));
+	}
+	if let Backend::Systemd = backend
+		&& let Some(kind) = detect_kind_systemd()?
+	{
+		return Ok(kind);
+	}
+	bail!("could not detect server kind: pass --kind central|facility")
+}
+
+fn detect_kind_systemd() -> Result<Option<ApiServerKind>> {
+	let units = list_systemd_units()?;
+	let has_central = units
+		.iter()
+		.any(|u| u.unit.starts_with("tamanu-central-") && u.active == "active");
+	let has_facility = units
+		.iter()
+		.any(|u| u.unit.starts_with("tamanu-facility-") && u.active == "active");
+	match (has_central, has_facility) {
+		(true, false) => Ok(Some(ApiServerKind::Central)),
+		(false, true) => Ok(Some(ApiServerKind::Facility)),
+		(true, true) => bail!("both central and facility services are running; pass --kind"),
+		(false, false) => Ok(None),
+	}
+}
+
+fn detect_backend() -> Result<Backend> {
+	if cfg!(windows) {
+		return Ok(Backend::Pm2);
+	}
+	if cmd_available("systemctl", "--version") {
+		Ok(Backend::Systemd)
+	} else if cmd_available(pm2_cmd(), "--version") {
+		Ok(Backend::Pm2)
+	} else {
+		bail!("neither systemctl nor pm2 is available on this host");
+	}
+}
+
+fn cmd_available(cmd: &str, arg: &str) -> bool {
+	Command::new(cmd)
+		.arg(arg)
+		.output()
+		.map(|o| o.status.success())
+		.unwrap_or(false)
+}
+
+fn pm2_cmd() -> &'static str {
+	if cfg!(windows) { "pm2.cmd" } else { "pm2" }
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemdUnit {
+	unit: String,
+	active: String,
+}
+
+fn list_systemd_units() -> Result<Vec<SystemdUnit>> {
+	let output = Command::new("systemctl")
+		.args([
+			"list-units",
+			"--type=service",
+			"--all",
+			"--no-legend",
+			"--plain",
+			"--no-pager",
+			"-o",
+			"json",
+		])
+		.output()
+		.into_diagnostic()?;
+	if !output.status.success() {
+		bail!(
+			"systemctl list-units failed: {}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+	}
+	serde_json::from_slice(&output.stdout).into_diagnostic()
+}
+
+fn list_services_systemd(kind: ApiServerKind, filter: Option<&Regex>) -> Result<Vec<String>> {
+	let units = list_systemd_units()?;
+	let kind_prefix = match kind {
+		ApiServerKind::Central => "tamanu-central-",
+		ApiServerKind::Facility => "tamanu-facility-",
+	};
+
+	let mut services: Vec<String> = units
+		.into_iter()
+		.filter(|u| u.active == "active")
+		.filter(|u| {
+			let name = u.unit.trim_end_matches(".service");
+			(name.starts_with(kind_prefix)
+				|| name.starts_with("tamanu-frontend@")
+				|| name == "tamanu-patientportal")
+				&& !u.unit.ends_with("@.service")
+		})
+		.map(|u| u.unit)
+		.filter(|n| filter.is_none_or(|r| r.is_match(n)))
+		.collect();
+
+	services.sort();
+	Ok(services)
+}
+
+fn restart_systemd(name: &str) -> Result<()> {
+	let status = Command::new("systemctl")
+		.args(["restart", name])
+		.status()
+		.into_diagnostic()?;
+	if !status.success() {
+		bail!("systemctl restart {name} exited with {status}");
+	}
+	Ok(())
+}
+
+async fn wait_active_systemd(name: &str, timeout: Duration) -> Result<()> {
+	let deadline = Instant::now() + timeout;
+	loop {
+		let output = Command::new("systemctl")
+			.args(["is-active", name])
+			.output()
+			.into_diagnostic()?;
+		let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+		debug!(service = %name, state = %state, "systemctl is-active");
+		if state == "active" {
+			return Ok(());
+		}
+		if Instant::now() >= deadline {
+			bail!(
+				"{name} did not become active within {}s (current state: {state})",
+				timeout.as_secs()
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
+
+/// Mirror the ansible "Reload caddy" handler: `systemctl reload caddy` plus
+/// `resolvectl flush-caches`. Without this, caddy keeps routing to the
+/// container IP of the process we just restarted. Best-effort: warn and
+/// continue on failure.
+fn reload_caddy() {
+	let status = Command::new("systemctl")
+		.args(["reload", "caddy"])
+		.status();
+	match status {
+		Ok(s) if s.success() => debug!("caddy reloaded"),
+		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
+		Err(e) => warn!("could not reload caddy: {e}"),
+	}
+	let status = Command::new("resolvectl").arg("flush-caches").status();
+	match status {
+		Ok(s) if s.success() => debug!("resolvectl flush-caches OK"),
+		Ok(s) => warn!("resolvectl flush-caches exited with {s}"),
+		Err(e) => debug!("resolvectl not available: {e}"),
+	}
+}
+
+#[derive(Debug, Deserialize)]
+struct Pm2Proc {
+	name: String,
+	pm2_env: Pm2Env,
+}
+
+#[derive(Debug, Deserialize)]
+struct Pm2Env {
+	status: String,
+}
+
+fn pm2_jlist() -> Result<Vec<Pm2Proc>> {
+	let output = Command::new(pm2_cmd())
+		.arg("jlist")
+		.output()
+		.into_diagnostic()?;
+	if !output.status.success() {
+		bail!(
+			"pm2 jlist failed: {}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+	}
+	serde_json::from_slice(&output.stdout).into_diagnostic()
+}
+
+fn list_services_pm2(filter: Option<&Regex>) -> Result<Vec<String>> {
+	let procs = pm2_jlist()?;
+	let mut names: Vec<String> = procs
+		.into_iter()
+		.filter(|p| p.pm2_env.status == "online")
+		.map(|p| p.name)
+		.filter(|n| filter.is_none_or(|r| r.is_match(n)))
+		.collect();
+	names.sort();
+	Ok(names)
+}
+
+fn restart_pm2(name: &str) -> Result<()> {
+	let status = Command::new(pm2_cmd())
+		.args(["restart", name])
+		.status()
+		.into_diagnostic()?;
+	if !status.success() {
+		bail!("pm2 restart {name} exited with {status}");
+	}
+	Ok(())
+}
+
+async fn wait_online_pm2(name: &str, timeout: Duration) -> Result<()> {
+	let deadline = Instant::now() + timeout;
+	loop {
+		let procs = pm2_jlist()?;
+		let status = procs
+			.iter()
+			.find(|p| p.name == name)
+			.map(|p| p.pm2_env.status.as_str())
+			.unwrap_or("missing");
+		debug!(service = %name, status, "pm2 status");
+		if status == "online" {
+			return Ok(());
+		}
+		if Instant::now() >= deadline {
+			bail!(
+				"{name} did not become online within {}s (current status: {status})",
+				timeout.as_secs()
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
+
+async fn probe_http(client: &Client, url: &Url, timeout: Duration) -> Result<()> {
+	let deadline = Instant::now() + timeout;
+	loop {
+		let last_err = match client.get(url.clone()).send().await {
+			Ok(resp) if !resp.status().is_server_error() => {
+				debug!(status = %resp.status(), url = %url, "probe OK");
+				return Ok(());
+			}
+			Ok(resp) => format!("HTTP {}", resp.status()),
+			Err(e) => e.to_string(),
+		};
+		if Instant::now() >= deadline {
+			bail!("HTTP probe of {url} failed: {last_err}");
+		}
+		warn!(url = %url, err = %last_err, "HTTP probe not ready, retrying");
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
