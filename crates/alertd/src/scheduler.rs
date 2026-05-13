@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use jiff::Timestamp;
 use miette::Result;
 use tokio::{
-	sync::RwLock,
+	sync::{Mutex, Notify, RwLock},
 	task::JoinHandle,
 	time::{interval, sleep},
 };
@@ -16,6 +16,7 @@ use crate::{
 	glob_resolver::{GlobResolver, ResolvedPaths},
 	loader::{LoadedAlerts, load_alerts_from_paths},
 	metrics,
+	state_file::{PersistedAlertState, PersistedState},
 	targets::ResolvedTarget,
 };
 
@@ -47,6 +48,22 @@ impl AlertState {
 		self.last_output = old_state.last_output.clone();
 		self.paused_until = old_state.paused_until;
 	}
+
+	pub fn hydrate_from_persisted(&mut self, entry: &PersistedAlertState) {
+		self.triggered_at = entry.triggered_at;
+		self.last_sent_at = entry.last_sent_at;
+		self.last_output = entry.last_output.clone();
+		self.paused_until = entry.paused_until;
+	}
+
+	pub fn to_persisted(&self) -> PersistedAlertState {
+		PersistedAlertState {
+			triggered_at: self.triggered_at,
+			last_sent_at: self.last_sent_at,
+			last_output: self.last_output.clone(),
+			paused_until: self.paused_until,
+		}
+	}
 }
 
 pub struct Scheduler {
@@ -60,6 +77,8 @@ pub struct Scheduler {
 	event_manager: Arc<RwLock<Option<EventManager>>>,
 	external_targets:
 		Arc<RwLock<std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>>>>,
+	state_dirty: Arc<Notify>,
+	pending_hydration: Arc<Mutex<Option<PersistedState>>>,
 }
 
 impl Scheduler {
@@ -83,7 +102,23 @@ impl Scheduler {
 			tasks: Arc::new(RwLock::new(HashMap::new())),
 			event_manager: Arc::new(RwLock::new(None)),
 			external_targets: Arc::new(RwLock::new(HashMap::new())),
+			state_dirty: Arc::new(Notify::new()),
+			pending_hydration: Arc::new(Mutex::new(None)),
 		}
+	}
+
+	/// Handle used by the persistence task to wake when alert state changes.
+	pub fn state_dirty(&self) -> Arc<Notify> {
+		self.state_dirty.clone()
+	}
+
+	/// Seed the next `load_and_schedule_alerts` call with persisted state.
+	///
+	/// Consumed on the next load (cold start). Reload calls leave previously
+	/// in-memory state in place via `preserve_state_from`, so hydration is a
+	/// cold-start-only concern.
+	pub async fn set_pending_hydration(&self, state: PersistedState) {
+		*self.pending_hydration.lock().await = Some(state);
 	}
 
 	pub fn get_event_manager(&self) -> Arc<RwLock<Option<EventManager>>> {
@@ -113,9 +148,25 @@ impl Scheduler {
 			let mut state = alert_state.write().await;
 			state.paused_until = Some(until);
 			info!(?path, until = %until, "paused alert");
+			drop(state);
+			self.state_dirty.notify_one();
 			Ok(true)
 		} else {
 			Ok(false)
+		}
+	}
+
+	/// Snapshot the in-memory state for serialisation by the persistence task.
+	pub async fn snapshot_for_persistence(&self) -> PersistedState {
+		let alerts = self.alerts.read().await;
+		let mut out = HashMap::with_capacity(alerts.len());
+		for (path, state_lock) in alerts.iter() {
+			let state = state_lock.read().await;
+			out.insert(path.clone(), state.to_persisted());
+		}
+		PersistedState {
+			saved_at: Some(Timestamp::now()),
+			alerts: out,
 		}
 	}
 
@@ -197,8 +248,14 @@ impl Scheduler {
 
 		info!(count = regular_alerts.len(), "scheduling regular alerts");
 
-		// Get old alerts to preserve state
+		// Get old alerts to preserve state across hot reload.
 		let old_alerts = self.alerts.read().await.clone();
+
+		// Consume any pending hydration (cold-start path). Once taken, future
+		// reloads won't re-apply the file's state — preserve_state_from
+		// carries in-memory state forward instead.
+		let hydration = self.pending_hydration.lock().await.take();
+		let mut hydrated_count = 0usize;
 
 		let mut new_alerts = HashMap::new();
 		let mut tasks = HashMap::new();
@@ -209,10 +266,12 @@ impl Scheduler {
 			// Create new alert state
 			let mut new_state = AlertState::new(definition.clone(), resolved_targets.clone());
 
-			// Preserve state from old alert if it exists
 			if let Some(old_alert_lock) = old_alerts.get(&file) {
 				let old_state = old_alert_lock.read().await;
 				new_state.preserve_state_from(&old_state);
+			} else if let Some(entry) = hydration.as_ref().and_then(|h| h.alerts.get(&file)) {
+				new_state.hydrate_from_persisted(entry);
+				hydrated_count += 1;
 			}
 
 			let state_lock = Arc::new(RwLock::new(new_state));
@@ -220,6 +279,10 @@ impl Scheduler {
 
 			new_alerts.insert(file.clone(), state_lock);
 			tasks.insert(file, task);
+		}
+
+		if hydrated_count > 0 {
+			info!(count = hydrated_count, "hydrated alert state from disk");
 		}
 
 		// Update alerts and tasks atomically
@@ -419,6 +482,7 @@ impl Scheduler {
 		let email = self.email.clone();
 		let dry_run = self.dry_run;
 		let event_manager = self.event_manager.clone();
+		let state_dirty = self.state_dirty.clone();
 
 		tokio::spawn(async move {
 			// Read initial values from state
@@ -512,6 +576,8 @@ impl Scheduler {
 					}
 				};
 
+				let mut state_changed = false;
+
 				if is_triggering {
 					// Alert is in triggering state
 					let mut state = alert_state.write().await;
@@ -553,6 +619,7 @@ impl Scheduler {
 						if output_changed {
 							debug!(?file, "output changed, will send");
 							state.last_output = Some(current_output);
+							state_changed = true;
 						} else {
 							debug!(?file, "output unchanged, skipping");
 							should_send = false;
@@ -576,6 +643,7 @@ impl Scheduler {
 
 						// Update last sent timestamp
 						state.last_sent_at = Some(Timestamp::now());
+						state_changed = true;
 					} else {
 						debug!(?file, "alert still triggered, not sending (already sent)");
 					}
@@ -583,6 +651,7 @@ impl Scheduler {
 					// Update the triggered timestamp even if we didn't send
 					if !was_triggered {
 						state.triggered_at = Some(Timestamp::now());
+						state_changed = true;
 					}
 				} else {
 					// Alert is not in triggering state
@@ -599,6 +668,7 @@ impl Scheduler {
 							if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {
 								state.last_output = None;
 							}
+							state_changed = true;
 						} else {
 							warn!(
 								?file,
@@ -606,6 +676,10 @@ impl Scheduler {
 							);
 						}
 					}
+				}
+
+				if state_changed {
+					state_dirty.notify_one();
 				}
 			}
 		})
