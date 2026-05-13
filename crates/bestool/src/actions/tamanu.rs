@@ -67,6 +67,9 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-url")]
 	#[clap(aliases = ["db", "u", "url"])]
 	db_url => DbUrl(DbUrlArgs),
+	#[cfg(feature = "tamanu-doctor")]
+	#[clap(alias = "doc")]
+	doctor => Doctor(DoctorArgs),
 	#[cfg(feature = "tamanu-download")]
 	#[clap(aliases = ["d", "down"])]
 	download => Download(DownloadArgs),
