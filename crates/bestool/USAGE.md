@@ -45,6 +45,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
 * [`bestool tamanu config`↴](#bestool-tamanu-config)
 * [`bestool tamanu db-url`↴](#bestool-tamanu-db-url)
+* [`bestool tamanu doctor`↴](#bestool-tamanu-doctor)
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
@@ -799,6 +800,7 @@ Alias: t
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
 * `config` — Find and print the current Tamanu config
 * `db-url` — Generate a DATABASE_URL connection string
+* `doctor` — Gather server info + healthchecks for a Tamanu install
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
 * `greenmask-config` — Generate a Greenmask config file
@@ -1292,6 +1294,30 @@ Aliases: db, u, url
 * `-U`, `--username <USERNAME>` — Database user to use in the connection string.
 
    If the value matches one of the report schema connection names (e.g., "raw", "reporting"), credentials will be taken from that connection.
+
+
+
+## `bestool tamanu doctor`
+
+Gather server info + healthchecks for a Tamanu install
+
+Runs a set of healthchecks against the local Tamanu install and renders a
+colour-coded summary. With `--send`, also POSTs the result to Canopy at
+`/status/{server_id}`.
+
+Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
+
+**Usage:** `bestool tamanu doctor [OPTIONS]`
+
+###### **Options:**
+
+* `--send` — POST the result to Canopy after rendering locally
+* `--canopy-url <CANOPY_URL>` — Canopy base URL (mTLS path)
+
+  Default value: `https://meta.tamanu.app/`
+* `--json` — Emit the JSON wire payload instead of the human-readable render
+* `--no-colour` — Force colour output off
+* `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 
 
 
