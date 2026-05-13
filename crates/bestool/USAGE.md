@@ -123,7 +123,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -1439,7 +1439,7 @@ Aliases: p, pg, sql
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
