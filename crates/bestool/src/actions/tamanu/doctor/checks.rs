@@ -44,6 +44,30 @@ pub struct CheckContext {
 	pub db: Option<Arc<PgClient>>,
 }
 
+/// `tokio_postgres::Error`'s top-level Display is the unhelpful `"db error"`.
+/// The actual SQL message lives in the optional `DbError` underneath; this
+/// helper surfaces it where present and falls back to the source chain.
+pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
+	use std::error::Error;
+
+	if let Some(db) = err.as_db_error() {
+		let mut s = format!("{}: {}", db.severity(), db.message());
+		if let Some(detail) = db.detail() {
+			s.push_str(" — ");
+			s.push_str(detail);
+		}
+		return s;
+	}
+
+	let mut parts = vec![err.to_string()];
+	let mut src: Option<&dyn Error> = err.source();
+	while let Some(s) = src {
+		parts.push(s.to_string());
+		src = s.source();
+	}
+	parts.join(": ")
+}
+
 /// One check's name + runner.
 pub struct CheckEntry {
 	pub name: &'static str,

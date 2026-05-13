@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 
-use super::CheckContext;
+use super::{CheckContext, fmt_db_error};
 use crate::actions::tamanu::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -10,14 +10,14 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let query = r#"
 		SELECT
-			count(*) FILTER (WHERE "completedAt" IS NULL) AS active_count,
+			count(*) FILTER (WHERE completed_at IS NULL) AS active_count,
 			count(*) FILTER (
-				WHERE "completedAt" IS NULL AND "startTime" < now() - interval '1 hour'
+				WHERE completed_at IS NULL AND start_time < now() - interval '1 hour'
 			) AS stuck_warn,
 			count(*) FILTER (
-				WHERE "completedAt" IS NULL AND "startTime" < now() - interval '6 hours'
+				WHERE completed_at IS NULL AND start_time < now() - interval '6 hours'
 			) AS stuck_fail,
-			min("startTime") FILTER (WHERE "completedAt" IS NULL) AS oldest_started_at
+			min(start_time) FILTER (WHERE completed_at IS NULL) AS oldest_started_at
 		FROM sync_sessions
 	"#;
 
@@ -28,17 +28,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 				.with_detail("active_count", 0);
 		}
 		Err(err) => {
-			let msg = err.to_string();
-			if msg.contains("sync_sessions")
-				&& (msg.contains("does not exist") || msg.contains("no such"))
+			if let Some(db) = err.as_db_error()
+				&& db.code() == &tokio_postgres::error::SqlState::UNDEFINED_TABLE
 			{
-				return Check::pass(
-					"sync_sessions",
-					"sync_sessions table not present",
-				)
-				.with_detail("skipped", true);
+				return Check::pass("sync_sessions", "sync_sessions table not present")
+					.with_detail("skipped", true);
 			}
-			return Check::fail("sync_sessions", "query failed", msg);
+			return Check::fail("sync_sessions", "query failed", fmt_db_error(&err));
 		}
 	};
 
