@@ -181,6 +181,53 @@ impl CanopyClient {
 		Ok(())
 	}
 
+	/// POST a status snapshot to the canopy server.
+	///
+	/// In tailscale mode, `base_url` is ignored and a `{TAILSCALE_URL}/public/status/{server_id}`
+	/// URL is used. In mTLS mode, posts to `{base_url}/status/{server_id}`.
+	///
+	/// The payload is free-form JSON; the canopy `/status` contract reserves the
+	/// top-level `healthy: bool` and `health: []` keys (see canopy PR #131).
+	pub async fn post_status(
+		&self,
+		base_url: &Url,
+		server_id: &str,
+		payload: &serde_json::Value,
+	) -> Result<()> {
+		let (http, url) = {
+			let state = self.state.read().await;
+			let url = match &*state {
+				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/status/{server_id}")
+					.parse::<Url>()
+					.into_diagnostic()
+					.wrap_err("building tailscale /public/status URL")?,
+				State::Mtls(_) => base_url
+					.join(&format!("/status/{server_id}"))
+					.into_diagnostic()
+					.wrap_err("building /status URL")?,
+			};
+			(state.http(), url)
+		};
+
+		debug!(%url, "posting status snapshot to canopy");
+
+		let response = http
+			.post(url)
+			.json(payload)
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("posting status to canopy")?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!("canopy /status returned {status}: {body}"));
+		}
+
+		Ok(())
+	}
+
 	/// POST an event to the canopy server.
 	///
 	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
