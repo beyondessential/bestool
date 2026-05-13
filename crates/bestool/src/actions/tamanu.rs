@@ -17,6 +17,13 @@ use super::Context;
 mod connection_url;
 mod roots;
 
+#[cfg(any(
+	feature = "tamanu-alertd",
+	feature = "tamanu-doctor",
+	feature = "tamanu-meta-ticket",
+))]
+pub mod server_info;
+
 /// Interact with Tamanu.
 ///
 /// Alias: t
