@@ -17,6 +17,7 @@ pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
 pub mod fhir_jobs;
+pub mod http_errors;
 pub mod load;
 pub mod memory;
 pub mod migrations;
@@ -86,6 +87,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("uptime", uptime),
 		entry!("time_sync", time_sync),
 		entry!("tamanu_http", tamanu_http),
+		entry!("http_errors", http_errors),
 		entry!("tailscale", tailscale, off_wire),
 		entry!("tamanu_service", tamanu_service),
 		entry!("sync_sessions", sync_sessions),
