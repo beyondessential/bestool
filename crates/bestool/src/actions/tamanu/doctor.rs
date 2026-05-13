@@ -21,6 +21,7 @@ pub mod server_info;
 
 use check::{Check, CheckStatus, OverallResult};
 use checks::CheckContext;
+use server_info::ServerFacts;
 
 fn default_canopy_url() -> Url {
 	DEFAULT_CANOPY_URL.parse().expect("default canopy URL is valid")
@@ -138,13 +139,9 @@ pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
 		None => None,
 	};
 
-	let info = server_info::gather(&version.to_string()).await;
-	let mut info_value = serde_json::to_value(&info).into_diagnostic()?;
-	if let Some(canon) = config.canonical_url()
-		&& let Value::Object(ref mut map) = info_value
-	{
-		map.insert("canonical_url".into(), Value::String(canon.to_string()));
-	}
+	let facts = collect_server_facts(&config, db.as_deref()).await;
+	let info = server_info::gather(&version.to_string(), facts).await;
+	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
 	let overall = OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 	let payload = build_payload(&info_value, &results, overall);
@@ -187,6 +184,46 @@ pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
 		std::process::exit(1);
 	}
 	Ok(())
+}
+
+async fn collect_server_facts(
+	config: &super::config::TamanuConfig,
+	db: Option<&tokio_postgres::Client>,
+) -> ServerFacts {
+	let mut facts = ServerFacts {
+		canonical_url: config.canonical_url().map(|u| u.to_string()),
+		timezone: config.primary_time_zone().map(|s| s.to_string()),
+		..Default::default()
+	};
+
+	let Some(client) = db else {
+		return facts;
+	};
+
+	match client.query_one("SELECT version()", &[]).await {
+		Ok(row) => match row.try_get::<_, String>(0) {
+			Ok(v) => facts.pg_version = Some(v),
+			Err(err) => warn!("decoding pg_version: {err}"),
+		},
+		Err(err) => warn!("SELECT version() failed: {err}"),
+	}
+
+	match client
+		.query_opt(
+			"SELECT value FROM local_system_facts WHERE key = 'currentSyncTick'",
+			&[],
+		)
+		.await
+	{
+		Ok(Some(row)) => match row.try_get::<_, String>(0) {
+			Ok(tick) => facts.current_sync_tick = Some(tick),
+			Err(err) => warn!("decoding currentSyncTick: {err}"),
+		},
+		Ok(None) => {}
+		Err(err) => warn!("querying currentSyncTick: {err}"),
+	}
+
+	facts
 }
 
 fn build_payload(
