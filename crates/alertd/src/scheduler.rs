@@ -587,19 +587,23 @@ impl Scheduler {
 				} else {
 					// Alert is not in triggering state
 					if was_triggered {
-						info!(?file, "alert cleared");
-						for target in &resolved_targets {
-							if let Err(err) = target.send_clear(&alert, &ctx, dry_run).await {
-								error!("sending clear: {}", LogError(&err));
-							}
-						}
-						let mut state = alert_state.write().await;
-						state.triggered_at = None;
-						state.last_sent_at = None;
+						info!(?file, "alert is no longer triggering, sending clear");
+						let all_cleared =
+							send_clear_to_targets(&resolved_targets, &alert, &ctx, dry_run).await;
+						if all_cleared {
+							let mut state = alert_state.write().await;
+							state.triggered_at = None;
+							state.last_sent_at = None;
 
-						// Clear last output when alert clears
-						if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {
-							state.last_output = None;
+							// Clear last output when alert clears
+							if !matches!(when_changed, crate::alert::WhenChanged::Boolean(false)) {
+								state.last_output = None;
+							}
+						} else {
+							warn!(
+								?file,
+								"send_clear failed for one or more targets; will retry on next tick"
+							);
 						}
 					}
 				}
@@ -614,5 +618,117 @@ impl Scheduler {
 			debug!(?path, "cancelling alert task");
 			handle.abort();
 		}
+	}
+}
+
+/// Send a clear notification to every resolved target.
+///
+/// Returns `true` if every target's `send_clear` succeeded; `false` if any
+/// failed. Caller should leave `triggered_at` set when this returns `false`
+/// so the next scheduler tick retries — otherwise a transient failure
+/// (network blip, canopy 5xx, TLS handshake during cert rollover) silently
+/// leaves stateful targets like canopy stuck on `active=true`.
+async fn send_clear_to_targets(
+	targets: &[ResolvedTarget],
+	alert: &AlertDefinition,
+	ctx: &InternalContext,
+	dry_run: bool,
+) -> bool {
+	let mut all_ok = true;
+	for target in targets {
+		if let Err(err) = target.send_clear(alert, ctx, dry_run).await {
+			error!("sending clear: {}", LogError(&err));
+			all_ok = false;
+		}
+	}
+	all_ok
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{
+		canopy::{DEFAULT_CANOPY_URL, Severity},
+		targets::{CanopyConfig, TargetCanopy, TargetConnection, TargetEmail},
+	};
+
+	async fn test_internal_context() -> InternalContext {
+		let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+		let pg_pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
+			.await
+			.unwrap();
+		InternalContext {
+			pg_pool,
+			http_client: reqwest::Client::new(),
+			canopy_client: None,
+		}
+	}
+
+	fn email_target() -> ResolvedTarget {
+		ResolvedTarget {
+			target_id: "ops".into(),
+			subject: None,
+			template: "body".into(),
+			conn: TargetConnection::Email(TargetEmail {
+				addresses: vec!["ops@example.com".into()],
+			}),
+		}
+	}
+
+	fn canopy_target() -> ResolvedTarget {
+		ResolvedTarget {
+			target_id: "default".into(),
+			subject: None,
+			template: "body".into(),
+			conn: TargetConnection::Canopy(TargetCanopy {
+				canopy: CanopyConfig {
+					url: DEFAULT_CANOPY_URL.parse().unwrap(),
+					source: "test".into(),
+					severity: Some(Severity::Error),
+				},
+			}),
+		}
+	}
+
+	fn test_alert() -> AlertDefinition {
+		AlertDefinition {
+			file: "test.yml".into(),
+			..Default::default()
+		}
+	}
+
+	#[tokio::test]
+	async fn send_clear_to_targets_returns_true_for_non_stateful_only() {
+		let ctx = test_internal_context().await;
+		let targets = vec![email_target()];
+		assert!(send_clear_to_targets(&targets, &test_alert(), &ctx, false).await);
+	}
+
+	#[tokio::test]
+	async fn send_clear_to_targets_returns_false_when_canopy_lacks_client() {
+		// Canopy target configured but ctx.canopy_client is None — send_clear
+		// returns Err and the helper should report failure so the caller
+		// leaves triggered_at set and retries on the next tick.
+		let ctx = test_internal_context().await;
+		let targets = vec![canopy_target()];
+		assert!(!send_clear_to_targets(&targets, &test_alert(), &ctx, false).await);
+	}
+
+	#[tokio::test]
+	async fn send_clear_to_targets_reports_failure_even_when_only_one_target_fails() {
+		// Mixed bag: email (succeeds) + canopy with no client (fails).
+		// Helper must return false so the scheduler keeps the alert in the
+		// triggered state and retries.
+		let ctx = test_internal_context().await;
+		let targets = vec![email_target(), canopy_target()];
+		assert!(!send_clear_to_targets(&targets, &test_alert(), &ctx, false).await);
+	}
+
+	#[tokio::test]
+	async fn send_clear_to_targets_in_dry_run_succeeds_regardless_of_canopy_client() {
+		// In dry-run mode, canopy never tries to use the missing client.
+		let ctx = test_internal_context().await;
+		let targets = vec![canopy_target()];
+		assert!(send_clear_to_targets(&targets, &test_alert(), &ctx, true).await);
 	}
 }
