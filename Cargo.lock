@@ -592,6 +592,7 @@ dependencies = [
  "clap",
  "clap-markdown",
  "dirs",
+ "flate2",
  "futures",
  "glob",
  "jiff",

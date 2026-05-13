@@ -1,5 +1,6 @@
-use std::{fmt, time::Duration};
+use std::{fmt, io::Write, time::Duration};
 
+use flate2::{Compression, write::GzEncoder};
 use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
@@ -187,7 +188,8 @@ impl CanopyClient {
 	/// URL is used. In mTLS mode, posts to `{base_url}/status/{server_id}`.
 	///
 	/// The payload is free-form JSON; the canopy `/status` contract reserves the
-	/// top-level `healthy: bool` and `health: []` keys (see canopy PR #131).
+	/// top-level `healthy: bool` and `health: []` keys. The body is gzip-encoded
+	/// with `Content-Encoding: gzip`.
 	pub async fn post_status(
 		&self,
 		base_url: &Url,
@@ -209,11 +211,25 @@ impl CanopyClient {
 			(state.http(), url)
 		};
 
-		debug!(%url, "posting status snapshot to canopy");
+		let raw = serde_json::to_vec(payload)
+			.into_diagnostic()
+			.wrap_err("serialising canopy /status payload")?;
+		let compressed = gzip_bytes(&raw)
+			.into_diagnostic()
+			.wrap_err("gzipping canopy /status payload")?;
+
+		debug!(
+			%url,
+			raw_bytes = raw.len(),
+			gzip_bytes = compressed.len(),
+			"posting status snapshot to canopy",
+		);
 
 		let response = http
 			.post(url)
-			.json(payload)
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.header(reqwest::header::CONTENT_ENCODING, "gzip")
+			.body(compressed)
 			.send()
 			.await
 			.into_diagnostic()
@@ -300,6 +316,12 @@ async fn probe_tailscale() -> Option<reqwest::Client> {
 	}
 }
 
+fn gzip_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+	let mut encoder = GzEncoder::new(Vec::with_capacity(bytes.len() / 2), Compression::default());
+	encoder.write_all(bytes)?;
+	encoder.finish()
+}
+
 fn build_mtls_http(device_key_pem: &str) -> Result<reqwest::Client> {
 	let key_pair = KeyPair::from_pem(device_key_pem)
 		.into_diagnostic()
@@ -384,6 +406,23 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		};
 		client.renew().await.expect("renew should be a no-op");
 		assert!(client.is_tailscale().await);
+	}
+
+	#[test]
+	fn gzip_bytes_roundtrips() {
+		use flate2::read::GzDecoder;
+		use std::io::Read;
+
+		let original = br#"{"healthy":true,"health":[{"check":"x","healthy":true}]}"#;
+		let compressed = gzip_bytes(original).expect("gzip should succeed");
+		assert!(
+			compressed.starts_with(&[0x1f, 0x8b]),
+			"expected gzip magic bytes"
+		);
+		let mut decoder = GzDecoder::new(&compressed[..]);
+		let mut decompressed = Vec::new();
+		decoder.read_to_end(&mut decompressed).unwrap();
+		assert_eq!(decompressed, original);
 	}
 
 	#[test]
