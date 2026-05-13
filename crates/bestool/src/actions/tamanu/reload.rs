@@ -1,4 +1,5 @@
 use std::{
+	net::IpAddr,
 	process::Command,
 	time::{Duration, Instant},
 };
@@ -17,11 +18,18 @@ use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
 /// Restart Tamanu services one at a time.
 ///
 /// On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus
-/// shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). Between each
-/// restart, waits for the unit to become active, reloads caddy and flushes
-/// systemd-resolved (so caddy picks up the new container IP), waits a
-/// configurable cooldown, and optionally probes an HTTP URL. On Windows,
-/// restarts every `online` pm2 process.
+/// shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each
+/// restart, the strict readiness signal is:
+///
+///   1. systemd reports the unit `active`
+///   2. the unit's podman container responds on port 3000 (HTTP services only;
+///      workers like `*-tasks` and `*-fhir-*` skip this step)
+///
+/// Then caddy is reloaded and systemd-resolved flushed (so caddy picks up the
+/// new container IP), a configurable cooldown is awaited, and optionally an
+/// external HTTP URL is probed.
+///
+/// On Windows, restarts every `online` pm2 process.
 ///
 /// Examples:
 ///   bestool tamanu reload
@@ -37,12 +45,20 @@ pub struct ReloadArgs {
 	#[arg(long, default_value = "10")]
 	pub wait: u64,
 
-	/// HTTP URL to probe after each restart.
+	/// External HTTP URL to probe after each restart.
 	///
 	/// If set, after each service is restarted and reported ready, this URL is
 	/// requested. A connection failure or 5xx response aborts the rollout.
+	/// This is independent of the strict per-container probe (see --no-strict).
 	#[arg(long)]
 	pub check_url: Option<Url>,
+
+	/// Skip the strict per-container HTTP probe (Linux/podman only).
+	///
+	/// With strict off, readiness only checks `systemctl is-active`, which only
+	/// proves the container started, not that the app inside is serving.
+	#[arg(long)]
+	pub no_strict: bool,
 
 	/// Per-step timeout in seconds (readiness polling and HTTP probe).
 	#[arg(long, default_value = "30")]
@@ -104,6 +120,17 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 		None
 	};
 
+	let strict_client = if matches!(backend, Backend::Systemd) && !ctx.args_sub.no_strict {
+		Some(
+			Client::builder()
+				.timeout(Duration::from_secs(2))
+				.build()
+				.into_diagnostic()?,
+		)
+	} else {
+		None
+	};
+
 	let total = services.len();
 	for (idx, service) in services.iter().enumerate() {
 		let n = idx + 1;
@@ -112,6 +139,9 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 			Backend::Systemd => {
 				restart_systemd(service)?;
 				wait_active_systemd(service, timeout).await?;
+				if let Some(client) = &strict_client {
+					wait_container_ready(service, client, timeout).await?;
+				}
 				if !ctx.args_sub.no_caddy_reload {
 					reload_caddy();
 				}
@@ -369,6 +399,95 @@ async fn wait_online_pm2(name: &str, timeout: Duration) -> Result<()> {
 		}
 		tokio::time::sleep(Duration::from_millis(500)).await;
 	}
+}
+
+/// Skip the per-container HTTP probe for known workers — they don't listen on
+/// a port. Matches the quadlets in ops repo (no NetworkAlias on these).
+fn is_worker_unit(unit: &str) -> bool {
+	let name = unit.trim_end_matches(".service");
+	name.ends_with("-tasks") || name.contains("-fhir-")
+}
+
+async fn wait_container_ready(unit: &str, client: &Client, timeout: Duration) -> Result<()> {
+	if is_worker_unit(unit) {
+		debug!(service = %unit, "worker service; skipping HTTP probe");
+		return Ok(());
+	}
+	let Some(ip) = container_ip_for_unit(unit)? else {
+		warn!(service = %unit, "container IP not found, falling back to is-active only");
+		return Ok(());
+	};
+	let url = format!("http://{ip}:3000/");
+	let deadline = Instant::now() + timeout;
+	loop {
+		let last_err = match client.get(&url).send().await {
+			Ok(resp) => {
+				debug!(service = %unit, status = %resp.status(), %url, "container responded");
+				return Ok(());
+			}
+			Err(e) => e.to_string(),
+		};
+		if Instant::now() >= deadline {
+			bail!(
+				"{unit} did not start responding on {url} within {}s: {last_err}",
+				timeout.as_secs()
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
+
+fn container_ip_for_unit(unit: &str) -> Result<Option<IpAddr>> {
+	let ps = Command::new("podman")
+		.args([
+			"ps",
+			"--filter",
+			&format!("label=PODMAN_SYSTEMD_UNIT={unit}"),
+			"--format",
+			"json",
+		])
+		.output();
+	let ps = match ps {
+		Ok(o) if o.status.success() => o,
+		Ok(o) => {
+			warn!(
+				"podman ps failed: {}",
+				String::from_utf8_lossy(&o.stderr).trim()
+			);
+			return Ok(None);
+		}
+		Err(e) => {
+			debug!("podman not available: {e}");
+			return Ok(None);
+		}
+	};
+
+	let entries: Vec<serde_json::Value> = serde_json::from_slice(&ps.stdout).into_diagnostic()?;
+	let Some(id) = entries.first().and_then(|c| c["Id"].as_str()) else {
+		return Ok(None);
+	};
+
+	let inspect = Command::new("podman")
+		.args(["inspect", id])
+		.output()
+		.into_diagnostic()?;
+	if !inspect.status.success() {
+		bail!(
+			"podman inspect failed: {}",
+			String::from_utf8_lossy(&inspect.stderr).trim()
+		);
+	}
+	let inspects: Vec<serde_json::Value> =
+		serde_json::from_slice(&inspect.stdout).into_diagnostic()?;
+	let ip = inspects
+		.first()
+		.and_then(|c| c["NetworkSettings"]["Networks"].as_object())
+		.and_then(|nets| nets.values().find_map(|n| n["IPAddress"].as_str()))
+		.filter(|s| !s.is_empty())
+		.map(|s| s.parse::<IpAddr>())
+		.transpose()
+		.into_diagnostic()?;
+	Ok(ip)
 }
 
 async fn probe_http(client: &Client, url: &Url, timeout: Duration) -> Result<()> {
