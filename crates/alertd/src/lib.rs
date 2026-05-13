@@ -11,6 +11,7 @@ mod loader;
 mod metrics;
 
 pub mod scheduler;
+pub mod state_file;
 mod targets;
 pub mod templates;
 

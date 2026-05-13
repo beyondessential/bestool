@@ -590,6 +590,7 @@ dependencies = [
  "bytes",
  "clap",
  "clap-markdown",
+ "dirs",
  "futures",
  "glob",
  "jiff",
