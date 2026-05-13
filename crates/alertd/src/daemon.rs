@@ -12,6 +12,7 @@ use crate::{
 	events::{EventContext, EventType},
 	http_server, metrics,
 	scheduler::Scheduler,
+	state_file,
 };
 
 enum DaemonEvent {
@@ -156,6 +157,19 @@ pub async fn run_with_shutdown_and_reload(
 		daemon_config.dry_run,
 	));
 
+	// Resolve the persistence file path and seed cold-start state from it.
+	// On dry-run we skip persistence entirely — the daemon doesn't tick.
+	let state_file_path = (!daemon_config.dry_run)
+		.then(state_file::default_state_file_path)
+		.flatten();
+	if let Some(path) = state_file_path.as_ref() {
+		info!(?path, "alertd state file");
+		let persisted = state_file::read(path);
+		scheduler.set_pending_hydration(persisted).await;
+	} else if !daemon_config.dry_run {
+		warn!("could not resolve a state directory; running without persistence");
+	}
+
 	scheduler.load_and_schedule_alerts().await?;
 
 	// If dry run, execute all alerts once and quit
@@ -278,6 +292,26 @@ pub async fn run_with_shutdown_and_reload(
 			let _ = glob_resolve_tx.send(DaemonEvent::ResolveGlobs).await;
 		}
 	});
+
+	// Persistence task: wake on state_dirty, debounce, write the file.
+	if let Some(path) = state_file_path.clone() {
+		let dirty = scheduler.state_dirty();
+		let snap_scheduler = scheduler.clone();
+		tokio::spawn(async move {
+			loop {
+				dirty.notified().await;
+				// Coalesce bursts: a single tick that touches several fields,
+				// or several alerts changing within a window, all collapse
+				// into one write.
+				tokio::time::sleep(Duration::from_millis(500)).await;
+				let snapshot = snap_scheduler.snapshot_for_persistence().await;
+				match state_file::write(&path, &snapshot) {
+					Ok(()) => debug!(?path, "wrote alertd state file"),
+					Err(err) => error!(?path, "failed to write state file: {}", LogError(&err)),
+				}
+			}
+		});
+	}
 
 	// Periodic database health check (every 30 seconds)
 	{
