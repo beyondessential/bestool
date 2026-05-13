@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.7.0](https://github.com/beyondessential/bestool/compare/v1.6.4..1.7.0) - 2026-05-12
+## [1.7.1](https://github.com/beyondessential/bestool/compare/v1.7.0..1.7.1) - 2026-05-13
+
+
+
+
+- **feat(alertd):** Add state_file module with atomic JSON persistence - ([bd32a63](https://github.com/beyondessential/bestool/commit/bd32a63eea3d181bec9e1392356e30ac5ce77f52))
+- **feat(alertd):** Plumb hydration + state_dirty notify through scheduler - ([267b8b0](https://github.com/beyondessential/bestool/commit/267b8b062f7aee64b4788066478fb6cef613cd86))
+- **feat(alertd):** Wire state-file load and persistence task into daemon - ([4928136](https://github.com/beyondessential/bestool/commit/4928136952d0f6621fa507e736a2c066aaa5e3cb))
+- **feat(alertd):** Persist alert state across daemon restarts (#310) - ([fe09e7b](https://github.com/beyondessential/bestool/commit/fe09e7bc80dc8b8ab79f9985fc937a606ad9ab6d))
+- **fix(alertd):** Retry canopy send_clear on failure instead of dropping state - ([49cb600](https://github.com/beyondessential/bestool/commit/49cb60028ac27408c6aa6dc1ec8ea207e083dc1a))
+- **fix(alertd):** Retry canopy send_clear on failure instead of dropping state (#309) - ([503305f](https://github.com/beyondessential/bestool/commit/503305f27fbf6bd252672676aba012c6db15c09e))
+---
+## [1.7.0](https://github.com/beyondessential/bestool/compare/v1.6.4..v1.7.0) - 2026-05-12
 
 
 - **deps:** Bump the deps-patches group with 25 updates (#295) - ([85bc3e7](https://github.com/beyondessential/bestool/commit/85bc3e74e0f38daf7d0aac7db45ff62b4714b974))
