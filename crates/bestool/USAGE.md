@@ -50,6 +50,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
+* [`bestool tamanu reload`↴](#bestool-tamanu-reload)
 
 ## `bestool`
 
@@ -122,7 +123,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -804,6 +805,7 @@ Alias: t
 * `greenmask-config` — Generate a Greenmask config file
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
+* `reload` — Restart Tamanu services one at a time
 
 ###### **Options:**
 
@@ -1437,10 +1439,54 @@ Aliases: p, pg, sql
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
+
+
+
+## `bestool tamanu reload`
+
+Restart Tamanu services one at a time.
+
+On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each restart, the strict readiness signal is:
+
+1. systemd reports the unit `active` 2. the unit's podman container responds on port 3000 (HTTP services only; workers like `*-tasks` and `*-fhir-*` skip this step)
+
+Then caddy is reloaded and systemd-resolved flushed (so caddy picks up the new container IP), a configurable cooldown is awaited, and optionally an external HTTP URL is probed.
+
+On Windows, restarts every `online` pm2 process.
+
+Examples: bestool tamanu reload bestool tamanu reload --filter '^tamanu-frontend@' bestool tamanu reload --check-url https://central.example.org --wait 15
+
+**Usage:** `bestool tamanu reload [OPTIONS]`
+
+###### **Options:**
+
+* `--kind <KIND>` — Override the detected server kind
+
+  Possible values:
+  - `central`:
+    Central server
+  - `facility`:
+    Facility server
+
+* `--wait <WAIT>` — Seconds to wait between restarts
+
+  Default value: `10`
+* `--check-url <CHECK_URL>` — External HTTP URL to probe after each restart.
+
+   If set, after each service is restarted and reported ready, this URL is requested. A connection failure or 5xx response aborts the rollout. This is independent of the strict per-container probe (see --no-strict).
+* `--no-strict` — Skip the strict per-container HTTP probe (Linux/podman only).
+
+   With strict off, readiness only checks `systemctl is-active`, which only proves the container started, not that the app inside is serving.
+* `--timeout <TIMEOUT>` — Per-step timeout in seconds (readiness polling and HTTP probe)
+
+  Default value: `30`
+* `--filter <FILTER>` — Only restart services whose name matches this regex
+* `--no-caddy-reload` — Don't reload caddy / flush resolved between restarts
+* `--dry-run` — Print the plan and exit without restarting anything
 
 
 
