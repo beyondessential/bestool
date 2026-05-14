@@ -17,7 +17,12 @@ use walkdir::WalkDir;
 use super::{definition::AlertDefinition, targets::AlertTargets};
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, config::load_config, find_tamanu},
+	tamanu::{
+		TamanuArgs,
+		config::load_config,
+		find_tamanu,
+		server_info::{fetch_device_key_with, query_device_key_row},
+	},
 };
 
 fn parse_friendly_duration(s: &str) -> Result<Duration, String> {
@@ -211,20 +216,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 		}
 	});
 
-	let device_key_pem = match client
-		.query_opt(
-			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
-			&[],
-		)
-		.await
-	{
-		Ok(Some(row)) => row.try_get::<_, String>(0).ok(),
-		Ok(None) => None,
-		Err(err) => {
-			warn!("failed to query deviceKey: {err}");
-			None
-		}
-	};
+	let device_key_pem = fetch_device_key_with(|| query_device_key_row(&client)).await;
 
 	let canopy_client = match bestool_alertd::canopy::CanopyClient::new(device_key_pem.as_deref())
 		.await
