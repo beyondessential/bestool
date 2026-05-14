@@ -35,6 +35,11 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Value sent in the `X-Version` request header. Canopy's request extractor
+/// rejects requests without it; this is also the version recorded against
+/// each event/status row for client-side debugging.
+const X_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -227,6 +232,7 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
+			.header("X-Version", X_VERSION)
 			.header(reqwest::header::CONTENT_TYPE, "application/json")
 			.header(reqwest::header::CONTENT_ENCODING, "gzip")
 			.body(compressed)
@@ -274,6 +280,7 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
+			.header("X-Version", X_VERSION)
 			.json(&event)
 			.send()
 			.await
@@ -292,19 +299,25 @@ impl CanopyClient {
 
 /// Probe the tailscale canopy endpoint.
 ///
-/// Returns a configured `reqwest::Client` if the endpoint responds with `415`
-/// (the expected response to a body-less POST that needs `application/json`),
-/// otherwise `None` for any error / timeout / unexpected status.
+/// Returns a configured `reqwest::Client` if `GET /public/servers` responds
+/// 2xx — anything else (timeout, non-2xx, transport error) returns `None` so
+/// the caller can fall back to mTLS.
+///
+/// `/public/servers` is used because:
+/// - it lives under `/public/...`, the only mount that accepts tagged-device
+///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
+/// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
+/// - it's read-only, so probing it has no side effects.
 async fn probe_tailscale() -> Option<reqwest::Client> {
-	let url = format!("{TAILSCALE_URL}/public/events");
+	let url = format!("{TAILSCALE_URL}/public/servers");
 
 	let client = reqwest::Client::builder()
 		.timeout(TAILSCALE_PROBE_TIMEOUT)
 		.build()
 		.ok()?;
 
-	match client.post(&url).send().await {
-		Ok(resp) if resp.status() == reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE => Some(client),
+	match client.get(&url).send().await {
+		Ok(resp) if resp.status().is_success() => Some(client),
 		Ok(resp) => {
 			debug!(status = %resp.status(), "canopy tailscale probe: unexpected status");
 			None
