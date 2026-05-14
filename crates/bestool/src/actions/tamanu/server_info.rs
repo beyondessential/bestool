@@ -266,7 +266,7 @@ pub async fn query_device_key_row(client: &tokio_postgres::Client) -> Option<Str
 fn read_device_key_file(path: &Path) -> Option<String> {
 	match std::fs::read_to_string(path) {
 		Ok(s) if !s.trim().is_empty() => {
-			info!(path = %path.display(), "loaded deviceKey from standard path");
+			debug!(path = %path.display(), "loaded deviceKey from standard path");
 			Some(s)
 		}
 		Ok(_) => {
