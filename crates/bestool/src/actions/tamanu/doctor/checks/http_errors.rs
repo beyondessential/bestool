@@ -102,19 +102,25 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		.with_detail("by_code", Value::Object(by_code))
 }
 
-/// Parse `caddy_http_requests_total{...,code="NNN",...} <count>` lines.
+/// Parse `caddy_http_request_duration_seconds_count{code="NNN",...} <count>` lines.
 ///
-/// Sums across all label combinations sharing the same `code`. Lines that
-/// don't match the prefix are ignored.
+/// Caddy emits this histogram-count series labelled by `code`, `handler`,
+/// `host`, `method`, `server`. The same request is observed by every handler
+/// in the chain (encode, headers, rate_limit, reverse_proxy, …), so a naive
+/// sum across labels would multiply the real request count by the depth of
+/// the handler chain. To dedupe, we group by `(host, method, server, code)`
+/// and take the **max** across handlers: the entry-point handler must have
+/// seen every request matching that label combination, so its count is the
+/// real one. Then we sum across hosts/methods/servers per code.
 fn parse_status_counts(body: &str) -> Vec<(String, u64)> {
 	use std::collections::HashMap;
 
-	let mut totals: HashMap<String, u64> = HashMap::new();
+	let mut per_tuple: HashMap<(String, String, String, String), u64> = HashMap::new();
 	for line in body.lines() {
 		if line.starts_with('#') {
 			continue;
 		}
-		let Some(rest) = line.strip_prefix("caddy_http_requests_total") else {
+		let Some(rest) = line.strip_prefix("caddy_http_request_duration_seconds_count") else {
 			continue;
 		};
 		let Some(labels_end) = rest.find('}') else {
@@ -132,7 +138,17 @@ fn parse_status_counts(body: &str) -> Vec<(String, u64)> {
 		let Some(code) = extract_label(labels, "code") else {
 			continue;
 		};
-		*totals.entry(code).or_insert(0) += value;
+		let host = extract_label(labels, "host").unwrap_or_default();
+		let method = extract_label(labels, "method").unwrap_or_default();
+		let server = extract_label(labels, "server").unwrap_or_default();
+		let key = (host, method, server, code);
+		let entry = per_tuple.entry(key).or_insert(0);
+		*entry = (*entry).max(value);
+	}
+
+	let mut totals: HashMap<String, u64> = HashMap::new();
+	for ((_, _, _, code), count) in per_tuple {
+		*totals.entry(code).or_insert(0) += count;
 	}
 
 	let mut entries: Vec<(String, u64)> = totals.into_iter().collect();
@@ -153,23 +169,27 @@ mod tests {
 	use super::*;
 
 	const SAMPLE: &str = "\
-# HELP caddy_http_requests_total Counter of HTTP(S) requests made.
-# TYPE caddy_http_requests_total counter
-caddy_http_requests_total{code=\"200\",handler=\"file_server\",method=\"GET\",server=\"srv0\"} 12345
-caddy_http_requests_total{code=\"200\",handler=\"reverse_proxy\",method=\"GET\",server=\"srv0\"} 6789
-caddy_http_requests_total{code=\"404\",handler=\"file_server\",method=\"GET\",server=\"srv0\"} 12
-caddy_http_requests_total{code=\"502\",handler=\"reverse_proxy\",method=\"POST\",server=\"srv0\"} 3
+# HELP caddy_http_request_duration_seconds Histogram of round-trip request durations.
+# TYPE caddy_http_request_duration_seconds histogram
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 9
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"rate_limit\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"reverse_proxy\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"404\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 12
+caddy_http_request_duration_seconds_count{code=\"502\",handler=\"reverse_proxy\",host=\"a\",method=\"POST\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_bucket{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\",le=\"0.005\"} 3
 other_metric{foo=\"bar\"} 7
 ";
 
 	#[test]
 	fn parses_caddy_metric_lines() {
 		let counts = parse_status_counts(SAMPLE);
-		// 200 entries sum across handlers; 404 and 502 stay distinct.
+		// 200 entries dedupe across handlers (max=9 for the (host,method,server,code)
+		// tuple); 404 and 502 each have a single handler entry.
 		assert_eq!(
 			counts,
 			vec![
-				("200".to_string(), 19134),
+				("200".to_string(), 9),
 				("404".to_string(), 12),
 				("502".to_string(), 3),
 			]

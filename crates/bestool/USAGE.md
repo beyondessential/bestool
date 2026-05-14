@@ -1316,7 +1316,6 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 
   Default value: `https://meta.tamanu.app/`
 * `--json` — Emit the JSON wire payload instead of the human-readable render
-* `--no-colour` — Force colour output off
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 
 
