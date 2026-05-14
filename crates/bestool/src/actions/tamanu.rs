@@ -17,6 +17,13 @@ use super::Context;
 mod connection_url;
 mod roots;
 
+#[cfg(any(
+	feature = "tamanu-alertd",
+	feature = "tamanu-doctor",
+	feature = "tamanu-meta-ticket",
+))]
+pub mod server_info;
+
 /// Interact with Tamanu.
 ///
 /// Alias: t
@@ -60,6 +67,9 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-url")]
 	#[clap(aliases = ["db", "u", "url"])]
 	db_url => DbUrl(DbUrlArgs),
+	#[cfg(feature = "tamanu-doctor")]
+	#[clap(alias = "doc")]
+	doctor => Doctor(DoctorArgs),
 	#[cfg(feature = "tamanu-download")]
 	#[clap(aliases = ["d", "down"])]
 	download => Download(DownloadArgs),

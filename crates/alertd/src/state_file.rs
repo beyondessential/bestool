@@ -84,7 +84,7 @@ fn state_base_dir() -> Option<PathBuf> {
 /// Read and parse the state file.
 ///
 /// If the file is missing, returns an empty state — that's the first-run path.
-/// If the file is unreadable or unparseable, logs a warning, deletes the
+/// If the file is unreadable or unparsable, logs a warning, deletes the
 /// file, and returns an empty state. Persistence is best-effort; a corrupted
 /// file should not block the daemon.
 pub fn read(path: &Path) -> PersistedState {

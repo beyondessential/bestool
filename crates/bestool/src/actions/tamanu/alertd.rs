@@ -12,6 +12,7 @@ use super::{
 	config::{TamanuConfig, load_config},
 	connection_url::ConnectionUrlBuilder,
 	find_tamanu,
+	server_info::fetch_device_key,
 };
 use crate::actions::Context;
 
@@ -224,11 +225,11 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			bestool_alertd::commands::pause_alert(&alert, until.as_deref(), &addrs).await
 		}
 		Command::Run { daemon } => {
-			let (_, root) = find_tamanu(&ctx.args_top)?;
+			let (version, root) = find_tamanu(&ctx.args_top)?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
-			let daemon_config = build_config(&root, config, daemon).await?;
+			let daemon_config = build_config(&root, &version.to_string(), config, daemon).await?;
 			bestool_alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
@@ -246,7 +247,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let (_, root) = find_tamanu(&ctx.args_top)?;
+			let (version, root) = find_tamanu(&ctx.args_top)?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
@@ -264,7 +265,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 				Ok(true) => {}
 			}
 
-			let daemon_config = build_config(&root, config, daemon).await?;
+			let daemon_config = build_config(&root, &version.to_string(), config, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
 	}
@@ -280,6 +281,7 @@ fn resolve_addrs(server_addr: Vec<SocketAddr>) -> Vec<SocketAddr> {
 
 async fn build_config(
 	root: &Path,
+	tamanu_version: &str,
 	config: TamanuConfig,
 	DaemonArgs {
 		glob,
@@ -334,11 +336,12 @@ async fn build_config(
 
 	let device_key_pem = fetch_device_key(&database_url).await;
 
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(dirs, database_url)
-		.with_dry_run(dry_run)
-		.with_no_server(no_server)
-		.with_server_addrs(server_addr)
-		.with_watchdog_timeout(watchdog);
+	let mut daemon_config =
+		bestool_alertd::DaemonConfig::new(dirs, database_url, tamanu_version.to_string())
+			.with_dry_run(dry_run)
+			.with_no_server(no_server)
+			.with_server_addrs(server_addr)
+			.with_watchdog_timeout(watchdog);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
@@ -349,56 +352,6 @@ async fn build_config(
 	}
 
 	Ok(daemon_config)
-}
-
-/// Fetch the Tamanu device key for canopy targets.
-///
-/// Best-effort: returns None if the DB connection fails or the row is missing.
-/// Alerts without canopy targets continue to work regardless.
-async fn fetch_device_key(database_url: &str) -> Option<String> {
-	use tracing::warn;
-
-	let (client, connection) = match tokio_postgres::connect(database_url, tokio_postgres::NoTls)
-		.await
-	{
-		Ok(c) => c,
-		Err(err) => {
-			warn!("failed to connect for deviceKey fetch: {err}");
-			return None;
-		}
-	};
-	tokio::spawn(async move {
-		if let Err(err) = connection.await {
-			warn!("deviceKey-fetch connection error: {err}");
-		}
-	});
-
-	match client
-		.query_opt(
-			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
-			&[],
-		)
-		.await
-	{
-		Ok(Some(row)) => match row.try_get::<_, String>(0) {
-			Ok(pem) => {
-				info!("loaded deviceKey from Tamanu DB for canopy targets");
-				Some(pem)
-			}
-			Err(err) => {
-				warn!("deviceKey row not a string: {err}");
-				None
-			}
-		},
-		Ok(None) => {
-			info!("no deviceKey in local_system_facts; canopy targets unavailable");
-			None
-		}
-		Err(err) => {
-			warn!("failed to query deviceKey: {err}");
-			None
-		}
-	}
 }
 
 async fn default_dirs(root: &std::path::Path) -> Vec<String> {

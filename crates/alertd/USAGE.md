@@ -95,6 +95,9 @@ Starts the daemon which monitors alert definition files and executes alerts base
 * `--email-from <EMAIL_FROM>` — Email sender address
 * `--mailgun-api-key <MAILGUN_API_KEY>` — Mailgun API key
 * `--mailgun-domain <MAILGUN_DOMAIN>` — Mailgun domain
+* `--tamanu-version <TAMANU_VERSION>` — Tamanu version of the install this daemon alerts for. Sent on every canopy request via the `X-Version` header
+
+  Default value: `0.0.0`
 * `--device-key-file <DEVICE_KEY_FILE>` — Path to a Tamanu device key PEM, used as client identity for canopy targets.
 
    Required for any alert that targets a canopy `/events` endpoint. The key is the same value Tamanu stores in `local_system_facts(key='deviceKey')`; only the private key is read (a fresh self-signed cert is generated from it at startup).

@@ -1,5 +1,6 @@
-use std::{fmt, time::Duration};
+use std::{fmt, io::Write, time::Duration};
 
+use flate2::{Compression, write::GzEncoder};
 use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
@@ -77,6 +78,11 @@ pub struct NewEvent<'a> {
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 pub struct CanopyClient {
 	device_key: Option<Redacted<String>>,
+	/// Tamanu version of the install this client speaks for. Sent verbatim in
+	/// the `X-Version` request header — canopy rejects events / status pushes
+	/// that don't carry one. Sourced from the running Tamanu install's
+	/// `package.json` (via `find_tamanu`); not the bestool / alertd version.
+	tamanu_version: String,
 	state: RwLock<State>,
 }
 
@@ -109,13 +115,21 @@ impl CanopyClient {
 	/// Probes the tailscale canopy endpoint first; if reachable, uses it.
 	/// Otherwise, if a device key PEM is provided, builds an mTLS client.
 	/// Returns `Ok(None)` if neither path is available.
-	pub async fn new(device_key_pem: Option<&str>) -> Result<Option<Self>> {
+	///
+	/// `tamanu_version` is the version of the Tamanu install this client
+	/// speaks for; sent on every request via the `X-Version` header.
+	pub async fn new(
+		tamanu_version: impl Into<String>,
+		device_key_pem: Option<&str>,
+	) -> Result<Option<Self>> {
+		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 
 		if let Some(http) = probe_tailscale().await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
 				device_key,
+				tamanu_version,
 				state: RwLock::new(State::Tailscale(http)),
 			}));
 		}
@@ -125,6 +139,7 @@ impl CanopyClient {
 			let http = build_mtls_http(pem)?;
 			return Ok(Some(Self {
 				device_key,
+				tamanu_version,
 				state: RwLock::new(State::Mtls(http)),
 			}));
 		}
@@ -181,6 +196,69 @@ impl CanopyClient {
 		Ok(())
 	}
 
+	/// POST a status snapshot to the canopy server.
+	///
+	/// In tailscale mode, `base_url` is ignored and a `{TAILSCALE_URL}/public/status/{server_id}`
+	/// URL is used. In mTLS mode, posts to `{base_url}/status/{server_id}`.
+	///
+	/// The payload is free-form JSON; the canopy `/status` contract reserves the
+	/// top-level `healthy: bool` and `health: []` keys. The body is gzip-encoded
+	/// with `Content-Encoding: gzip`.
+	pub async fn post_status(
+		&self,
+		base_url: &Url,
+		server_id: &str,
+		payload: &serde_json::Value,
+	) -> Result<()> {
+		let (http, url) = {
+			let state = self.state.read().await;
+			let url = match &*state {
+				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/status/{server_id}")
+					.parse::<Url>()
+					.into_diagnostic()
+					.wrap_err("building tailscale /public/status URL")?,
+				State::Mtls(_) => base_url
+					.join(&format!("/status/{server_id}"))
+					.into_diagnostic()
+					.wrap_err("building /status URL")?,
+			};
+			(state.http(), url)
+		};
+
+		let raw = serde_json::to_vec(payload)
+			.into_diagnostic()
+			.wrap_err("serialising canopy /status payload")?;
+		let compressed = gzip_bytes(&raw)
+			.into_diagnostic()
+			.wrap_err("gzipping canopy /status payload")?;
+
+		debug!(
+			%url,
+			raw_bytes = raw.len(),
+			gzip_bytes = compressed.len(),
+			"posting status snapshot to canopy",
+		);
+
+		let response = http
+			.post(url)
+			.header("X-Version", &self.tamanu_version)
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.header(reqwest::header::CONTENT_ENCODING, "gzip")
+			.body(compressed)
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("posting status to canopy")?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!("canopy /status returned {status}: {body}"));
+		}
+
+		Ok(())
+	}
+
 	/// POST an event to the canopy server.
 	///
 	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
@@ -211,6 +289,7 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
+			.header("X-Version", &self.tamanu_version)
 			.json(&event)
 			.send()
 			.await
@@ -229,19 +308,25 @@ impl CanopyClient {
 
 /// Probe the tailscale canopy endpoint.
 ///
-/// Returns a configured `reqwest::Client` if the endpoint responds with `415`
-/// (the expected response to a body-less POST that needs `application/json`),
-/// otherwise `None` for any error / timeout / unexpected status.
+/// Returns a configured `reqwest::Client` if `GET /public/servers` responds
+/// 2xx — anything else (timeout, non-2xx, transport error) returns `None` so
+/// the caller can fall back to mTLS.
+///
+/// `/public/servers` is used because:
+/// - it lives under `/public/...`, the only mount that accepts tagged-device
+///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
+/// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
+/// - it's read-only, so probing it has no side effects.
 async fn probe_tailscale() -> Option<reqwest::Client> {
-	let url = format!("{TAILSCALE_URL}/public/events");
+	let url = format!("{TAILSCALE_URL}/public/servers");
 
 	let client = reqwest::Client::builder()
 		.timeout(TAILSCALE_PROBE_TIMEOUT)
 		.build()
 		.ok()?;
 
-	match client.post(&url).send().await {
-		Ok(resp) if resp.status() == reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE => Some(client),
+	match client.get(&url).send().await {
+		Ok(resp) if resp.status().is_success() => Some(client),
 		Ok(resp) => {
 			debug!(status = %resp.status(), "canopy tailscale probe: unexpected status");
 			None
@@ -251,6 +336,12 @@ async fn probe_tailscale() -> Option<reqwest::Client> {
 			None
 		}
 	}
+}
+
+fn gzip_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+	let mut encoder = GzEncoder::new(Vec::with_capacity(bytes.len() / 2), Compression::default());
+	encoder.write_all(bytes)?;
+	encoder.finish()
 }
 
 fn build_mtls_http(device_key_pem: &str) -> Result<reqwest::Client> {
@@ -321,6 +412,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let http = build_mtls_http(TEST_DEVICE_KEY).unwrap();
 		let client = CanopyClient {
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
+			tamanu_version: "2.54.2".into(),
 			state: RwLock::new(State::Mtls(http)),
 		};
 		client.renew().await.expect("renew should succeed");
@@ -333,10 +425,28 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let http = reqwest::Client::new();
 		let client = CanopyClient {
 			device_key: None,
+			tamanu_version: "2.54.2".into(),
 			state: RwLock::new(State::Tailscale(http)),
 		};
 		client.renew().await.expect("renew should be a no-op");
 		assert!(client.is_tailscale().await);
+	}
+
+	#[test]
+	fn gzip_bytes_roundtrips() {
+		use flate2::read::GzDecoder;
+		use std::io::Read;
+
+		let original = br#"{"healthy":true,"health":[{"check":"x","healthy":true}]}"#;
+		let compressed = gzip_bytes(original).expect("gzip should succeed");
+		assert!(
+			compressed.starts_with(&[0x1f, 0x8b]),
+			"expected gzip magic bytes"
+		);
+		let mut decoder = GzDecoder::new(&compressed[..]);
+		let mut decompressed = Vec::new();
+		decoder.read_to_end(&mut decompressed).unwrap();
+		assert_eq!(decompressed, original);
 	}
 
 	#[test]

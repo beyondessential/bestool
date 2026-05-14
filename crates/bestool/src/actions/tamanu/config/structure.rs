@@ -10,6 +10,8 @@ pub struct TamanuConfig {
 	pub server_facility_ids: Option<Vec<String>>,
 	pub db: Database,
 	pub mailgun: Option<Mailgun>,
+	pub primary_time_zone: Option<String>,
+	pub country_time_zone: Option<String>,
 }
 
 impl TamanuConfig {
@@ -23,6 +25,14 @@ impl TamanuConfig {
 		self.server_facility_ids
 			.as_ref()
 			.is_some_and(|ids| !ids.is_empty())
+	}
+
+	/// Mirrors `getPrimaryTimeZone()` in Tamanu: prefers `primaryTimeZone`,
+	/// falls back to `countryTimeZone`.
+	pub fn primary_time_zone(&self) -> Option<&str> {
+		self.primary_time_zone
+			.as_deref()
+			.or(self.country_time_zone.as_deref())
 	}
 }
 

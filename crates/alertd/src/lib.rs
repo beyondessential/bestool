@@ -58,6 +58,11 @@ pub struct DaemonConfig {
 	/// leak the key.
 	pub device_key_pem: Option<Redacted<String>>,
 
+	/// Tamanu version of the install this daemon is alerting for. Sent in the
+	/// `X-Version` header on every canopy request — canopy rejects requests
+	/// without one.
+	pub tamanu_version: String,
+
 	/// Whether to perform a dry run (execute all alerts once and quit)
 	pub dry_run: bool,
 
@@ -82,6 +87,7 @@ impl fmt::Debug for DaemonConfig {
 			.field("database_url", &self.database_url)
 			.field("email", &self.email)
 			.field("device_key_pem", &self.device_key_pem)
+			.field("tamanu_version", &self.tamanu_version)
 			.field("dry_run", &self.dry_run)
 			.field("no_server", &self.no_server)
 			.field("server_addrs", &self.server_addrs)
@@ -108,12 +114,13 @@ impl<T> std::ops::Deref for Redacted<T> {
 }
 
 impl DaemonConfig {
-	pub fn new(alert_globs: Vec<String>, database_url: String) -> Self {
+	pub fn new(alert_globs: Vec<String>, database_url: String, tamanu_version: String) -> Self {
 		Self {
 			alert_globs,
 			database_url,
 			email: None,
 			device_key_pem: None,
+			tamanu_version,
 			dry_run: false,
 			no_server: false,
 			server_addrs: Vec::new(),

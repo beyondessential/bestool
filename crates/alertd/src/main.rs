@@ -52,6 +52,11 @@ struct DaemonArgs {
 	#[arg(long, env = "MAILGUN_DOMAIN")]
 	mailgun_domain: Option<String>,
 
+	/// Tamanu version of the install this daemon alerts for. Sent on every
+	/// canopy request via the `X-Version` header.
+	#[arg(long, env = "TAMANU_VERSION", default_value = "0.0.0")]
+	tamanu_version: String,
+
 	/// Path to a Tamanu device key PEM, used as client identity for canopy targets.
 	///
 	/// Required for any alert that targets a canopy `/events` endpoint. The key
@@ -285,11 +290,12 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 		None
 	};
 
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(daemon.glob, database_url)
-		.with_dry_run(daemon.dry_run)
-		.with_no_server(daemon.no_server)
-		.with_server_addrs(daemon.server_addr)
-		.with_watchdog_timeout(watchdog_timeout);
+	let mut daemon_config =
+		bestool_alertd::DaemonConfig::new(daemon.glob, database_url, daemon.tamanu_version)
+			.with_dry_run(daemon.dry_run)
+			.with_no_server(daemon.no_server)
+			.with_server_addrs(daemon.server_addr)
+			.with_watchdog_timeout(watchdog_timeout);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
