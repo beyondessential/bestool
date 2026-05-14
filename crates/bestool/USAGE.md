@@ -1456,7 +1456,7 @@ On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus shared ones
 
 Then caddy is reloaded and systemd-resolved flushed (so caddy picks up the new container IP), a configurable cooldown is awaited, and optionally an external HTTP URL is probed.
 
-On Windows, restarts every `online` pm2 process.
+On Windows, restarts every `online` pm2 process one pm_id at a time (so scaled apps like `tamanu-api` roll instance-by-instance, not all at once). Strict readiness is `pm2` reporting `online` plus an HTTP probe of `http://127.0.0.1:<PORT>/` where `<PORT>` is the process's resolved `PORT` env var. Processes without a `PORT` (workers like `tamanu-tasks`, `tamanu-sync`, `tamanu-fhir-*`) skip the HTTP probe.
 
 Examples: bestool tamanu reload bestool tamanu reload --filter '^tamanu-frontend@' bestool tamanu reload --check-url https://central.example.org --wait 15
 
@@ -1478,9 +1478,9 @@ Examples: bestool tamanu reload bestool tamanu reload --filter '^tamanu-frontend
 * `--check-url <CHECK_URL>` — External HTTP URL to probe after each restart.
 
    If set, after each service is restarted and reported ready, this URL is requested. A connection failure or 5xx response aborts the rollout. This is independent of the strict per-container probe (see --no-strict).
-* `--no-strict` — Skip the strict per-container HTTP probe (Linux/podman only).
+* `--no-strict` — Skip the strict HTTP probe after each restart.
 
-   With strict off, readiness only checks `systemctl is-active`, which only proves the container started, not that the app inside is serving.
+   On Linux the strict probe hits the unit's podman container directly on port 3000. On Windows it hits `http://127.0.0.1:<PORT>/` where `<PORT>` is the pm2 process's resolved `PORT` env var (workers without a PORT are skipped). With strict off, readiness only checks that the process manager reports the service running.
 * `--timeout <TIMEOUT>` — Per-step timeout in seconds (readiness polling and HTTP probe)
 
   Default value: `30`

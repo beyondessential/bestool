@@ -29,7 +29,12 @@ use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
 /// new container IP), a configurable cooldown is awaited, and optionally an
 /// external HTTP URL is probed.
 ///
-/// On Windows, restarts every `online` pm2 process.
+/// On Windows, restarts every `online` pm2 process one pm_id at a time (so
+/// scaled apps like `tamanu-api` roll instance-by-instance, not all at once).
+/// Strict readiness is `pm2` reporting `online` plus an HTTP probe of
+/// `http://127.0.0.1:<PORT>/` where `<PORT>` is the process's resolved `PORT`
+/// env var. Processes without a `PORT` (workers like `tamanu-tasks`,
+/// `tamanu-sync`, `tamanu-fhir-*`) skip the HTTP probe.
 ///
 /// Examples:
 ///   bestool tamanu reload
@@ -53,10 +58,13 @@ pub struct ReloadArgs {
 	#[arg(long)]
 	pub check_url: Option<Url>,
 
-	/// Skip the strict per-container HTTP probe (Linux/podman only).
+	/// Skip the strict HTTP probe after each restart.
 	///
-	/// With strict off, readiness only checks `systemctl is-active`, which only
-	/// proves the container started, not that the app inside is serving.
+	/// On Linux the strict probe hits the unit's podman container directly on
+	/// port 3000. On Windows it hits `http://127.0.0.1:<PORT>/` where `<PORT>`
+	/// is the pm2 process's resolved `PORT` env var (workers without a PORT
+	/// are skipped). With strict off, readiness only checks that the process
+	/// manager reports the service running.
 	#[arg(long)]
 	pub no_strict: bool,
 
@@ -83,14 +91,35 @@ enum Backend {
 	Pm2,
 }
 
+#[derive(Debug, Clone)]
+enum Service {
+	Systemd(String),
+	Pm2(Pm2Proc),
+}
+
+impl Service {
+	fn label(&self) -> String {
+		match self {
+			Self::Systemd(name) => name.clone(),
+			Self::Pm2(p) => format!("{} #{}", p.name, p.pm_id),
+		}
+	}
+}
+
 pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 	let backend = detect_backend()?;
 	let kind = resolve_kind(&ctx, backend)?;
 	info!(?backend, ?kind, "rolling tamanu services");
 
-	let services = match backend {
-		Backend::Systemd => list_services_systemd(kind, ctx.args_sub.filter.as_ref())?,
-		Backend::Pm2 => list_services_pm2(ctx.args_sub.filter.as_ref())?,
+	let services: Vec<Service> = match backend {
+		Backend::Systemd => list_services_systemd(kind, ctx.args_sub.filter.as_ref())?
+			.into_iter()
+			.map(Service::Systemd)
+			.collect(),
+		Backend::Pm2 => list_services_pm2(ctx.args_sub.filter.as_ref())?
+			.into_iter()
+			.map(Service::Pm2)
+			.collect(),
 	};
 
 	if services.is_empty() {
@@ -99,7 +128,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 
 	info!("will restart {} service(s):", services.len());
 	for s in &services {
-		info!("  - {s}");
+		info!("  - {}", s.label());
 	}
 
 	if ctx.args_sub.dry_run {
@@ -120,7 +149,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 		None
 	};
 
-	let strict_client = if matches!(backend, Backend::Systemd) && !ctx.args_sub.no_strict {
+	let strict_client = if !ctx.args_sub.no_strict {
 		Some(
 			Client::builder()
 				.timeout(Duration::from_secs(2))
@@ -134,21 +163,25 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 	let total = services.len();
 	for (idx, service) in services.iter().enumerate() {
 		let n = idx + 1;
-		info!("[{n}/{total}] restarting {service}");
-		match backend {
-			Backend::Systemd => {
-				restart_systemd(service)?;
-				wait_active_systemd(service, timeout).await?;
+		let label = service.label();
+		info!("[{n}/{total}] restarting {label}");
+		match service {
+			Service::Systemd(name) => {
+				restart_systemd(name)?;
+				wait_active_systemd(name, timeout).await?;
 				if let Some(client) = &strict_client {
-					wait_container_ready(service, client, timeout).await?;
+					wait_container_ready(name, client, timeout).await?;
 				}
 				if !ctx.args_sub.no_caddy_reload {
 					reload_caddy();
 				}
 			}
-			Backend::Pm2 => {
-				restart_pm2(service)?;
-				wait_online_pm2(service, timeout).await?;
+			Service::Pm2(proc) => {
+				restart_pm2(proc.pm_id)?;
+				wait_online_pm2(proc.pm_id, timeout).await?;
+				if let Some(client) = &strict_client {
+					wait_pm2_port_ready(proc, client, timeout).await?;
+				}
 			}
 		}
 
@@ -173,9 +206,11 @@ fn resolve_kind(ctx: &Context<TamanuArgs, ReloadArgs>, backend: Backend) -> Resu
 	if let Ok((_, root)) = find_tamanu(&ctx.args_top) {
 		return Ok(find_package(root));
 	}
-	if let Backend::Systemd = backend
-		&& let Some(kind) = detect_kind_systemd()?
-	{
+	let detected = match backend {
+		Backend::Systemd => detect_kind_systemd()?,
+		Backend::Pm2 => detect_kind_pm2()?,
+	};
+	if let Some(kind) = detected {
 		return Ok(kind);
 	}
 	bail!("could not detect server kind: pass --kind central|facility")
@@ -194,6 +229,20 @@ fn detect_kind_systemd() -> Result<Option<ApiServerKind>> {
 		(false, true) => Ok(Some(ApiServerKind::Facility)),
 		(true, true) => bail!("both central and facility services are running; pass --kind"),
 		(false, false) => Ok(None),
+	}
+}
+
+/// `tamanu-sync` only runs on facilities, so its presence in pm2 implies a
+/// facility install. This is a last-resort fallback after the config-based
+/// detection in [`find_tamanu`].
+fn detect_kind_pm2() -> Result<Option<ApiServerKind>> {
+	let procs = pm2_jlist()?;
+	if procs.iter().any(|p| p.name == "tamanu-sync") {
+		Ok(Some(ApiServerKind::Facility))
+	} else if procs.iter().any(|p| p.name.starts_with("tamanu-")) {
+		Ok(Some(ApiServerKind::Central))
+	} else {
+		Ok(None)
 	}
 }
 
@@ -330,15 +379,27 @@ fn reload_caddy() {
 	}
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Pm2Proc {
+	pm_id: u32,
 	name: String,
 	pm2_env: Pm2Env,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Pm2Env {
 	status: String,
+	#[serde(default)]
+	env: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Pm2Proc {
+	fn port(&self) -> Option<u16> {
+		let v = self.pm2_env.env.get("PORT")?;
+		v.as_str()
+			.and_then(|s| s.parse().ok())
+			.or_else(|| v.as_u64().and_then(|n| u16::try_from(n).ok()))
+	}
 }
 
 fn pm2_jlist() -> Result<Vec<Pm2Proc>> {
@@ -355,45 +416,70 @@ fn pm2_jlist() -> Result<Vec<Pm2Proc>> {
 	serde_json::from_slice(&output.stdout).into_diagnostic()
 }
 
-fn list_services_pm2(filter: Option<&Regex>) -> Result<Vec<String>> {
-	let procs = pm2_jlist()?;
-	let mut names: Vec<String> = procs
+fn list_services_pm2(filter: Option<&Regex>) -> Result<Vec<Pm2Proc>> {
+	let mut procs: Vec<Pm2Proc> = pm2_jlist()?
 		.into_iter()
 		.filter(|p| p.pm2_env.status == "online")
-		.map(|p| p.name)
-		.filter(|n| filter.is_none_or(|r| r.is_match(n)))
+		.filter(|p| filter.is_none_or(|r| r.is_match(&p.name)))
 		.collect();
-	names.sort();
-	Ok(names)
+	procs.sort_by(|a, b| a.name.cmp(&b.name).then(a.pm_id.cmp(&b.pm_id)));
+	Ok(procs)
 }
 
-fn restart_pm2(name: &str) -> Result<()> {
+fn restart_pm2(pm_id: u32) -> Result<()> {
 	let status = Command::new(pm2_cmd())
-		.args(["restart", name])
+		.args(["restart", &pm_id.to_string()])
 		.status()
 		.into_diagnostic()?;
 	if !status.success() {
-		bail!("pm2 restart {name} exited with {status}");
+		bail!("pm2 restart {pm_id} exited with {status}");
 	}
 	Ok(())
 }
 
-async fn wait_online_pm2(name: &str, timeout: Duration) -> Result<()> {
+async fn wait_online_pm2(pm_id: u32, timeout: Duration) -> Result<()> {
 	let deadline = Instant::now() + timeout;
 	loop {
 		let procs = pm2_jlist()?;
 		let status = procs
 			.iter()
-			.find(|p| p.name == name)
+			.find(|p| p.pm_id == pm_id)
 			.map(|p| p.pm2_env.status.as_str())
 			.unwrap_or("missing");
-		debug!(service = %name, status, "pm2 status");
+		debug!(pm_id, status, "pm2 status");
 		if status == "online" {
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
 			bail!(
-				"{name} did not become online within {}s (current status: {status})",
+				"pm2 process #{pm_id} did not become online within {}s (current status: {status})",
+				timeout.as_secs()
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
+
+async fn wait_pm2_port_ready(proc: &Pm2Proc, client: &Client, timeout: Duration) -> Result<()> {
+	let Some(port) = proc.port() else {
+		debug!(name = %proc.name, pm_id = proc.pm_id, "no PORT env; skipping HTTP probe");
+		return Ok(());
+	};
+	let url = format!("http://127.0.0.1:{port}/");
+	let deadline = Instant::now() + timeout;
+	loop {
+		let last_err = match client.get(&url).send().await {
+			Ok(resp) => {
+				debug!(name = %proc.name, pm_id = proc.pm_id, status = %resp.status(), %url, "pm2 process responded");
+				return Ok(());
+			}
+			Err(e) => e.to_string(),
+		};
+		if Instant::now() >= deadline {
+			bail!(
+				"{} #{} did not start responding on {url} within {}s: {last_err}",
+				proc.name,
+				proc.pm_id,
 				timeout.as_secs()
 			);
 		}
