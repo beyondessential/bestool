@@ -88,8 +88,8 @@ impl TargetCanopy {
 				NewEvent {
 					source: &self.canopy.source,
 					r#ref: &r#ref,
-					message: subject,
-					description: Some(body),
+					message: body,
+					description: Some(subject),
 					severity: Some(self.canopy.severity.unwrap_or(Severity::Error)),
 					occurred_at: Some(Timestamp::now()),
 					active: Some(true),
