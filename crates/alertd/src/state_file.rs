@@ -24,6 +24,13 @@ pub struct PersistedAlertState {
 	pub last_output: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub paused_until: Option<Timestamp>,
+	/// Mirrors `AlertState::source_was_erroring`.
+	#[serde(skip_serializing_if = "is_false", default)]
+	pub source_was_erroring: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+	!*b
 }
 
 /// On-disk shape of the state file.
@@ -194,6 +201,7 @@ mod tests {
 				last_sent_at: Some("2026-05-13T15:00:00Z".parse().unwrap()),
 				last_output: Some("rows=[{...}]".into()),
 				paused_until: None,
+				source_was_erroring: false,
 			},
 		);
 		let state = PersistedState {

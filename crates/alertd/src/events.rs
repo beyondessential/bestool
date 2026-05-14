@@ -10,6 +10,33 @@ use crate::{
 	targets::{ExternalTarget, ResolvedTarget, determine_default_target},
 };
 
+/// Build the synthetic alert file used by event triggers and clears.
+///
+/// Embedding the entity key in the file stem keeps the canopy ref stable
+/// across trigger and clear for the same logical entity (e.g. the same
+/// failing alert), and distinct across different entities.
+fn synthetic_alert_file(event_type: &EventType, entity_key: Option<&str>) -> std::path::PathBuf {
+	match entity_key {
+		Some(key) => format!("[internal:{}:{}]", event_type.as_str(), key).into(),
+		None => format!("[internal:{}]", event_type.as_str()).into(),
+	}
+}
+
+fn synthetic_alert(event_type: &EventType, entity_key: Option<&str>) -> AlertDefinition {
+	AlertDefinition {
+		file: synthetic_alert_file(event_type, entity_key),
+		enabled: true,
+		interval: "0 seconds".to_string(),
+		interval_duration: std::time::Duration::from_secs(0),
+		always_send: crate::alert::AlwaysSend::Boolean(false),
+		when_changed: crate::alert::WhenChanged::default(),
+		send: Vec::new(),
+		source: crate::alert::TicketSource::Event {
+			event: event_type.clone(),
+		},
+	}
+}
+
 /// Internal event types that can trigger alerts
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -167,7 +194,13 @@ impl EventManager {
 		}
 	}
 
-	/// Trigger an event with the given context
+	/// Trigger an event with the given context.
+	///
+	/// `entity_key` identifies the specific subject of the event (e.g. the
+	/// erroring alert's file path). It's embedded in the synthetic alert file
+	/// so canopy refs are stable across trigger and clear for the same
+	/// subject, and distinct across different subjects. Pass `None` for
+	/// events that have only one possible subject per host (e.g. the database).
 	pub async fn trigger_event(
 		&self,
 		event_type: EventType,
@@ -175,9 +208,11 @@ impl EventManager {
 		email: Option<&crate::EmailConfig>,
 		dry_run: bool,
 		event_context: EventContext,
+		entity_key: Option<&str>,
 	) -> Result<()> {
 		info!(
 			event = event_type.as_str(),
+			entity_key,
 			has_alerts = self.event_alerts.contains_key(&event_type),
 			has_default_target = self.default_target.is_some(),
 			"triggering event"
@@ -204,29 +239,7 @@ impl EventManager {
 				"using default target for event (no explicit alert configured)"
 			);
 
-			let (subject_template, body_template) = match event_type {
-				EventType::SourceError => (
-					"[bestool-alertd] {{ hostname }}: Failed alert: {{ alert_file }}".to_string(),
-					"<pre>{{ error_message }}</pre>".to_string(),
-				),
-				EventType::DefinitionError => (
-					"[bestool-alertd] {{ hostname }}: Invalid alert definition: {{ alert_file }}"
-						.to_string(),
-					"<pre>{{ error_message }}</pre>".to_string(),
-				),
-				EventType::Http => (
-					"[bestool-alertd] {{ hostname }}: {{ subject }}".to_string(),
-					"{{ message }}".to_string(),
-				),
-				EventType::DatabaseDown => (
-					"[bestool-alertd] {{ hostname }}: Database unreachable".to_string(),
-					"The PostgreSQL database is unreachable.\n\n\
-					 Database URL: {{ database_url }}\n\
-					 Error: <pre>{{ error_message }}</pre>\n\n\
-					 All SQL-based alerts are non-functional until the database is restored."
-						.to_string(),
-				),
-			};
+			let (subject_template, body_template) = default_event_template(&event_type);
 
 			let default_target_for_event = ResolvedTarget {
 				target_id: default_target.target_id.clone(),
@@ -235,26 +248,13 @@ impl EventManager {
 				conn: default_target.conn.clone(),
 			};
 
-			// Create a synthetic alert for the default notification
-			let synthetic_alert = AlertDefinition {
-				file: format!("[internal:{}]", event_type.as_str()).into(),
-				enabled: true,
-				interval: "0 seconds".to_string(),
-				interval_duration: std::time::Duration::from_secs(0),
-				always_send: crate::alert::AlwaysSend::Boolean(false),
-				when_changed: crate::alert::WhenChanged::default(),
-				send: Vec::new(),
-				source: crate::alert::TicketSource::Event {
-					event: event_type.clone(),
-				},
-			};
+			let alert = synthetic_alert(&event_type, entity_key);
 
-			let mut tera_ctx =
-				crate::templates::build_context(&synthetic_alert, jiff::Timestamp::now());
+			let mut tera_ctx = crate::templates::build_context(&alert, jiff::Timestamp::now());
 			tera_ctx.extend(event_context.to_tera_context());
 
 			if let Err(err) = default_target_for_event
-				.send(&synthetic_alert, &mut tera_ctx, email, ctx, dry_run)
+				.send(&alert, &mut tera_ctx, email, ctx, dry_run)
 				.await
 			{
 				error!("failed to send default event alert: {}", LogError(&err));
@@ -267,6 +267,95 @@ impl EventManager {
 		}
 
 		Ok(())
+	}
+
+	/// Send a clearing notification for an event.
+	///
+	/// Mirrors `trigger_event`, but calls `send_clear` on each target so
+	/// stateful sinks (canopy) flip the corresponding issue to `active=false`.
+	/// Non-stateful sinks (email, slack) return immediately — that's the same
+	/// behaviour as SQL-alert clears.
+	///
+	/// `entity_key` must match the value passed to the original
+	/// `trigger_event` so the canopy ref lines up.
+	pub async fn trigger_clear(
+		&self,
+		event_type: EventType,
+		ctx: &InternalContext,
+		dry_run: bool,
+		entity_key: Option<&str>,
+	) -> Result<()> {
+		info!(
+			event = event_type.as_str(),
+			entity_key,
+			has_alerts = self.event_alerts.contains_key(&event_type),
+			has_default_target = self.default_target.is_some(),
+			"clearing event"
+		);
+
+		if let Some(alerts) = self.event_alerts.get(&event_type) {
+			info!(count = alerts.len(), "clearing event alerts");
+			for (alert, targets) in alerts {
+				for target in targets {
+					if let Err(err) = target.send_clear(alert, ctx, dry_run).await {
+						error!(file = ?alert.file, "failed to clear event alert: {}", LogError(&err));
+					}
+				}
+			}
+		} else if let Some(ref default_target) = self.default_target {
+			info!(
+				event = event_type.as_str(),
+				"clearing default target for event"
+			);
+
+			let default_target_for_event = ResolvedTarget {
+				target_id: default_target.target_id.clone(),
+				subject: None,
+				template: String::new(),
+				conn: default_target.conn.clone(),
+			};
+
+			let alert = synthetic_alert(&event_type, entity_key);
+
+			if let Err(err) = default_target_for_event
+				.send_clear(&alert, ctx, dry_run)
+				.await
+			{
+				error!("failed to clear default event alert: {}", LogError(&err));
+			}
+		} else {
+			debug!(
+				event = event_type.as_str(),
+				"no alerts or default target for event, skipping clear"
+			);
+		}
+
+		Ok(())
+	}
+}
+
+fn default_event_template(event_type: &EventType) -> (String, String) {
+	match event_type {
+		EventType::SourceError => (
+			"[bestool-alertd] {{ hostname }}: Failed alert: {{ alert_file }}".to_string(),
+			"<pre>{{ error_message }}</pre>".to_string(),
+		),
+		EventType::DefinitionError => (
+			"[bestool-alertd] {{ hostname }}: Invalid alert definition: {{ alert_file }}".to_string(),
+			"<pre>{{ error_message }}</pre>".to_string(),
+		),
+		EventType::Http => (
+			"[bestool-alertd] {{ hostname }}: {{ subject }}".to_string(),
+			"{{ message }}".to_string(),
+		),
+		EventType::DatabaseDown => (
+			"[bestool-alertd] {{ hostname }}: Database unreachable".to_string(),
+			"The PostgreSQL database is unreachable.\n\n\
+			 Database URL: {{ database_url }}\n\
+			 Error: <pre>{{ error_message }}</pre>\n\n\
+			 All SQL-based alerts are non-functional until the database is restored."
+				.to_string(),
+		),
 	}
 }
 

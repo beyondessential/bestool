@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+	collections::{HashMap, HashSet},
+	path::PathBuf,
+	sync::Arc,
+	time::Duration,
+};
 
 use jiff::Timestamp;
 use miette::Result;
@@ -28,6 +33,11 @@ pub struct AlertState {
 	pub last_sent_at: Option<Timestamp>,
 	pub last_output: Option<String>,
 	pub paused_until: Option<Timestamp>,
+	/// Was the last source read for this alert an error?
+	///
+	/// Used to detect the transition error → OK so a clearing canopy event
+	/// can be sent for the source-error issue.
+	pub source_was_erroring: bool,
 }
 
 impl AlertState {
@@ -39,6 +49,7 @@ impl AlertState {
 			last_sent_at: None,
 			last_output: None,
 			paused_until: None,
+			source_was_erroring: false,
 		}
 	}
 
@@ -47,6 +58,7 @@ impl AlertState {
 		self.last_sent_at = old_state.last_sent_at;
 		self.last_output = old_state.last_output.clone();
 		self.paused_until = old_state.paused_until;
+		self.source_was_erroring = old_state.source_was_erroring;
 	}
 
 	pub fn hydrate_from_persisted(&mut self, entry: &PersistedAlertState) {
@@ -54,6 +66,7 @@ impl AlertState {
 		self.last_sent_at = entry.last_sent_at;
 		self.last_output = entry.last_output.clone();
 		self.paused_until = entry.paused_until;
+		self.source_was_erroring = entry.source_was_erroring;
 	}
 
 	pub fn to_persisted(&self) -> PersistedAlertState {
@@ -62,6 +75,7 @@ impl AlertState {
 			last_sent_at: self.last_sent_at,
 			last_output: self.last_output.clone(),
 			paused_until: self.paused_until,
+			source_was_erroring: self.source_was_erroring,
 		}
 	}
 }
@@ -79,6 +93,10 @@ pub struct Scheduler {
 		Arc<RwLock<std::collections::HashMap<String, Vec<crate::targets::ExternalTarget>>>>,
 	state_dirty: Arc<Notify>,
 	pending_hydration: Arc<Mutex<Option<PersistedState>>>,
+	/// Files that errored during definition loading on the previous
+	/// scheduling pass. Used to detect recovery so we can clear the
+	/// corresponding canopy issue.
+	last_definition_error_files: Arc<RwLock<HashSet<PathBuf>>>,
 }
 
 impl Scheduler {
@@ -104,6 +122,7 @@ impl Scheduler {
 			external_targets: Arc::new(RwLock::new(HashMap::new())),
 			state_dirty: Arc::new(Notify::new()),
 			pending_hydration: Arc::new(Mutex::new(None)),
+			last_definition_error_files: Arc::new(RwLock::new(HashSet::new())),
 		}
 	}
 
@@ -215,13 +234,16 @@ impl Scheduler {
 				"triggering definition-error events for failed alerts"
 			);
 		}
+		let new_error_files: HashSet<PathBuf> =
+			definition_errors.iter().map(|e| e.file.clone()).collect();
 		for def_err in definition_errors {
 			info!(
 				file = %def_err.file.display(),
 				"triggering definition-error event"
 			);
+			let entity_key = def_err.file.display().to_string();
 			let event_context = EventContext::DefinitionError {
-				alert_file: def_err.file.display().to_string(),
+				alert_file: entity_key.clone(),
 				error_message: def_err.error.clone(),
 			};
 			if let Err(err) = event_manager
@@ -231,6 +253,7 @@ impl Scheduler {
 					self.email.as_ref(),
 					self.dry_run,
 					event_context,
+					Some(&entity_key),
 				)
 				.await
 			{
@@ -240,6 +263,33 @@ impl Scheduler {
 				);
 			}
 		}
+
+		// Clear definition-error events for files that errored last time but
+		// loaded cleanly this time.
+		let mut last_def_errors = self.last_definition_error_files.write().await;
+		for recovered in last_def_errors.difference(&new_error_files) {
+			info!(
+				file = %recovered.display(),
+				"clearing definition-error event (file now loads cleanly)"
+			);
+			let entity_key = recovered.display().to_string();
+			if let Err(err) = event_manager
+				.trigger_clear(
+					EventType::DefinitionError,
+					&self.ctx,
+					self.dry_run,
+					Some(&entity_key),
+				)
+				.await
+			{
+				error!(
+					"failed to clear definition-error event: {}",
+					LogError(&err)
+				);
+			}
+		}
+		*last_def_errors = new_error_files;
+		drop(last_def_errors);
 
 		if regular_alerts.is_empty() {
 			warn!("no regular alerts found");
@@ -330,8 +380,9 @@ impl Scheduler {
 				file = %def_err.file.display(),
 				"triggering definition-error event"
 			);
+			let entity_key = def_err.file.display().to_string();
 			let event_context = EventContext::DefinitionError {
-				alert_file: def_err.file.display().to_string(),
+				alert_file: entity_key.clone(),
 				error_message: def_err.error.clone(),
 			};
 			if let Err(err) = event_manager
@@ -341,6 +392,7 @@ impl Scheduler {
 					self.email.as_ref(),
 					self.dry_run,
 					event_context,
+					Some(&entity_key),
 				)
 				.await
 			{
@@ -525,12 +577,20 @@ impl Scheduler {
 				debug!(?file, "executing alert");
 
 				// Get alert definition and state
-				let (alert, resolved_targets, was_triggered, always_send, when_changed) = {
+				let (
+					alert,
+					resolved_targets,
+					was_triggered,
+					was_source_erroring,
+					always_send,
+					when_changed,
+				) = {
 					let state = alert_state.read().await;
 					(
 						state.definition.clone(),
 						state.resolved_targets.clone(),
 						state.triggered_at.is_some(),
+						state.source_was_erroring,
 						state.definition.always_send.clone(),
 						state.definition.when_changed.clone(),
 					)
@@ -541,19 +601,48 @@ impl Scheduler {
 				let mut tera_ctx = crate::templates::build_context(&alert, now);
 				let not_before = now - alert.interval_duration;
 
+				let mut state_changed = false;
+
 				let is_triggering = match alert
 					.read_sources(&ctx.pg_pool, not_before, &mut tera_ctx, was_triggered)
 					.await
 				{
-					Ok(flow) => flow.is_continue(),
+					Ok(flow) => {
+						// Source recovered: clear the source-error canopy issue.
+						if was_source_erroring {
+							info!(?file, "source recovered, clearing source-error event");
+							if let Some(ref event_mgr) = *event_manager.read().await {
+								let entity_key = file.display().to_string();
+								if let Err(event_err) = event_mgr
+									.trigger_clear(
+										EventType::SourceError,
+										&ctx,
+										dry_run,
+										Some(&entity_key),
+									)
+									.await
+								{
+									error!(
+										"failed to clear source_error event: {}",
+										LogError(&event_err)
+									);
+								}
+							}
+							let mut state = alert_state.write().await;
+							state.source_was_erroring = false;
+							state_changed = true;
+						}
+						flow.is_continue()
+					}
 					Err(err) => {
 						error!(?file, "error reading sources: {}", LogError(&err));
 						metrics::inc_alerts_failed();
 
 						// Trigger source_error event
 						if let Some(ref event_mgr) = *event_manager.read().await {
+							let entity_key = file.display().to_string();
 							let event_context = EventContext::SourceError {
-								alert_file: file.display().to_string(),
+								alert_file: entity_key.clone(),
 								error_message: format!("{err:?}"),
 							};
 							if let Err(event_err) = event_mgr
@@ -563,6 +652,7 @@ impl Scheduler {
 									email.as_ref(),
 									dry_run,
 									event_context,
+									Some(&entity_key),
 								)
 								.await
 							{
@@ -572,11 +662,14 @@ impl Scheduler {
 								);
 							}
 						}
+						if !was_source_erroring {
+							let mut state = alert_state.write().await;
+							state.source_was_erroring = true;
+							state_dirty.notify_one();
+						}
 						continue;
 					}
 				};
-
-				let mut state_changed = false;
 
 				if is_triggering {
 					// Alert is in triggering state

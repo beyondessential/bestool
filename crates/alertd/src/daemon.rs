@@ -335,8 +335,26 @@ pub async fn run_with_shutdown_and_reload(
 
 				if healthy {
 					if was_down {
-						info!("database connection restored");
+						info!("database connection restored, clearing database-down event");
 						was_down = false;
+						if let Some(ref event_mgr) =
+							*health_scheduler.get_event_manager().read().await
+						{
+							if let Err(err) = event_mgr
+								.trigger_clear(
+									EventType::DatabaseDown,
+									&health_ctx,
+									health_dry_run,
+									None,
+								)
+								.await
+							{
+								error!(
+									"failed to clear database-down event: {}",
+									LogError(&err)
+								);
+							}
+						}
 					}
 				} else if !was_down {
 					was_down = true;
@@ -367,6 +385,7 @@ pub async fn run_with_shutdown_and_reload(
 								health_email.as_ref(),
 								health_dry_run,
 								event_context,
+								None,
 							)
 							.await
 						{
