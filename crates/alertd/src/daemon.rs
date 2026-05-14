@@ -342,8 +342,7 @@ pub async fn run_with_shutdown_and_reload(
 						health_scheduler.set_database_was_down(false).await;
 						if let Some(ref event_mgr) =
 							*health_scheduler.get_event_manager().read().await
-						{
-							if let Err(err) = event_mgr
+							&& let Err(err) = event_mgr
 								.trigger_clear(
 									EventType::DatabaseDown,
 									&health_ctx,
@@ -351,12 +350,8 @@ pub async fn run_with_shutdown_and_reload(
 									None,
 								)
 								.await
-							{
-								error!(
-									"failed to clear database-down event: {}",
-									LogError(&err)
-								);
-							}
+						{
+							error!("failed to clear database-down event: {}", LogError(&err));
 						}
 					}
 				} else if !was_down {

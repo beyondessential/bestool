@@ -341,7 +341,8 @@ fn default_event_template(event_type: &EventType) -> (String, String) {
 			"<pre>{{ error_message }}</pre>".to_string(),
 		),
 		EventType::DefinitionError => (
-			"[bestool-alertd] {{ hostname }}: Invalid alert definition: {{ alert_file }}".to_string(),
+			"[bestool-alertd] {{ hostname }}: Invalid alert definition: {{ alert_file }}"
+				.to_string(),
 			"<pre>{{ error_message }}</pre>".to_string(),
 		),
 		EventType::Http => (
@@ -486,5 +487,41 @@ mod tests {
 			tera_ctx.get("error_message").unwrap().as_str().unwrap(),
 			"Invalid YAML syntax"
 		);
+	}
+
+	#[test]
+	fn synthetic_alert_file_without_entity_key() {
+		let path = synthetic_alert_file(&EventType::DatabaseDown, None);
+		assert_eq!(path.to_string_lossy(), "[internal:database-down]");
+	}
+
+	#[test]
+	fn synthetic_alert_file_with_entity_key() {
+		let path = synthetic_alert_file(&EventType::SourceError, Some("disk-full.yml"));
+		assert_eq!(
+			path.to_string_lossy(),
+			"[internal:source-error:disk-full.yml]"
+		);
+	}
+
+	#[test]
+	fn synthetic_alert_file_distinguishes_entities() {
+		let a = synthetic_alert_file(&EventType::DefinitionError, Some("a.yml"));
+		let b = synthetic_alert_file(&EventType::DefinitionError, Some("b.yml"));
+		assert_ne!(a, b);
+	}
+
+	#[test]
+	fn synthetic_alert_file_stem_includes_entity_for_canopy_ref() {
+		// build_ref uses file_stem() to form the canopy ref. Verify that
+		// trigger and clear with the same entity key produce identical stems.
+		let trigger = synthetic_alert_file(&EventType::SourceError, Some("my-alert"));
+		let clear = synthetic_alert_file(&EventType::SourceError, Some("my-alert"));
+		assert_eq!(trigger.file_stem(), clear.file_stem());
+
+		// And distinct entities produce distinct stems so canopy treats them
+		// as separate issues.
+		let other = synthetic_alert_file(&EventType::SourceError, Some("other-alert"));
+		assert_ne!(trigger.file_stem(), other.file_stem());
 	}
 }

@@ -235,6 +235,64 @@ mod tests {
 	}
 
 	#[test]
+	fn daemon_level_fields_round_trip() {
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+
+		let mut definition_error_files = HashSet::new();
+		definition_error_files.insert(PathBuf::from("/etc/alerts/broken.yml"));
+		definition_error_files.insert(PathBuf::from("/etc/alerts/also-broken.yml"));
+
+		let state = PersistedState {
+			saved_at: Some("2026-05-13T15:00:01Z".parse().unwrap()),
+			alerts: HashMap::new(),
+			database_was_down: true,
+			definition_error_files: definition_error_files.clone(),
+		};
+		write(&path, &state).unwrap();
+
+		let loaded = read(&path);
+		assert!(loaded.database_was_down);
+		assert_eq!(loaded.definition_error_files, definition_error_files);
+	}
+
+	#[test]
+	fn daemon_level_fields_default_when_missing() {
+		// Older state files won't have the new fields; defaults must apply
+		// so the daemon doesn't panic on hydration.
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+		std::fs::write(&path, r#"{"saved_at":null,"alerts":{}}"#).unwrap();
+		let loaded = read(&path);
+		assert!(!loaded.database_was_down);
+		assert!(loaded.definition_error_files.is_empty());
+	}
+
+	#[test]
+	fn source_was_erroring_round_trips() {
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+
+		let mut alerts = HashMap::new();
+		alerts.insert(
+			PathBuf::from("/etc/alerts/flaky.yml"),
+			PersistedAlertState {
+				source_was_erroring: true,
+				..Default::default()
+			},
+		);
+		let state = PersistedState {
+			alerts,
+			..Default::default()
+		};
+		write(&path, &state).unwrap();
+
+		let loaded = read(&path);
+		let entry = &loaded.alerts[&PathBuf::from("/etc/alerts/flaky.yml")];
+		assert!(entry.source_was_erroring);
+	}
+
+	#[test]
 	fn write_overwrites_existing_atomically() {
 		let tmp = TempDir::new().unwrap();
 		let path = tmp.path().join("state.json");

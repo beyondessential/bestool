@@ -311,10 +311,7 @@ impl Scheduler {
 				)
 				.await
 			{
-				error!(
-					"failed to clear definition-error event: {}",
-					LogError(&err)
-				);
+				error!("failed to clear definition-error event: {}", LogError(&err));
 			}
 		}
 		*last_def_errors = new_error_files;

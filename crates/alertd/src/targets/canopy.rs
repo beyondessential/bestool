@@ -185,4 +185,33 @@ canopy:
 			_ => panic!("expected canopy target"),
 		}
 	}
+
+	#[test]
+	fn build_ref_is_stable_across_trigger_and_clear_for_same_entity() {
+		// trigger and clear paths build refs from the same synthetic alert
+		// file; the ref must match so canopy clears the issue that was opened.
+		let alert = AlertDefinition {
+			file: "[internal:source-error:my-alert]".into(),
+			..Default::default()
+		};
+		let trigger_ref = build_ref(&alert, "default");
+		let clear_ref = build_ref(&alert, "default");
+		assert_eq!(trigger_ref, clear_ref);
+	}
+
+	#[test]
+	fn build_ref_distinguishes_entities() {
+		let alert_a = AlertDefinition {
+			file: "[internal:source-error:alert-a]".into(),
+			..Default::default()
+		};
+		let alert_b = AlertDefinition {
+			file: "[internal:source-error:alert-b]".into(),
+			..Default::default()
+		};
+		assert_ne!(
+			build_ref(&alert_a, "default"),
+			build_ref(&alert_b, "default")
+		);
+	}
 }
