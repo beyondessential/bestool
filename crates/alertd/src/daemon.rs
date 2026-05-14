@@ -322,7 +322,9 @@ pub async fn run_with_shutdown_and_reload(
 		let health_dry_run = daemon_config.dry_run;
 		let health_db_url = daemon_config.database_url.clone();
 		tokio::spawn(async move {
-			let mut was_down = false;
+			// Seed from persisted state so a recovery that happens while the
+			// daemon was down still produces a canopy clear on the next tick.
+			let mut was_down = health_scheduler.database_was_down().await;
 			let mut check_interval = tokio::time::interval(Duration::from_secs(30));
 			check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 			loop {
@@ -335,11 +337,26 @@ pub async fn run_with_shutdown_and_reload(
 
 				if healthy {
 					if was_down {
-						info!("database connection restored");
+						info!("database connection restored, clearing database-down event");
 						was_down = false;
+						health_scheduler.set_database_was_down(false).await;
+						if let Some(ref event_mgr) =
+							*health_scheduler.get_event_manager().read().await
+							&& let Err(err) = event_mgr
+								.trigger_clear(
+									EventType::DatabaseDown,
+									&health_ctx,
+									health_dry_run,
+									None,
+								)
+								.await
+						{
+							error!("failed to clear database-down event: {}", LogError(&err));
+						}
 					}
 				} else if !was_down {
 					was_down = true;
+					health_scheduler.set_database_was_down(true).await;
 					error!("database health check failed, triggering database-down event");
 
 					// Redact password from URL for the alert context
@@ -367,6 +384,7 @@ pub async fn run_with_shutdown_and_reload(
 								health_email.as_ref(),
 								health_dry_run,
 								event_context,
+								None,
 							)
 							.await
 						{

@@ -1,5 +1,5 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	io::Write,
 	path::{Path, PathBuf},
 };
@@ -24,6 +24,13 @@ pub struct PersistedAlertState {
 	pub last_output: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub paused_until: Option<Timestamp>,
+	/// Mirrors `AlertState::source_was_erroring`.
+	#[serde(skip_serializing_if = "is_false", default)]
+	pub source_was_erroring: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+	!*b
 }
 
 /// On-disk shape of the state file.
@@ -31,6 +38,19 @@ pub struct PersistedAlertState {
 pub struct PersistedState {
 	pub saved_at: Option<Timestamp>,
 	pub alerts: HashMap<PathBuf, PersistedAlertState>,
+	/// Mirrors the daemon's database-down tracking.
+	///
+	/// Carried across restarts so that if the daemon goes down with the
+	/// database unreachable and the database recovers before the daemon is
+	/// back, the next healthy tick still fires a canopy clear.
+	#[serde(skip_serializing_if = "is_false", default)]
+	pub database_was_down: bool,
+	/// Files that errored during definition loading on the previous run.
+	///
+	/// Carried across restarts so a file that errored on shutdown but loads
+	/// cleanly on startup still produces a canopy clear.
+	#[serde(skip_serializing_if = "HashSet::is_empty", default)]
+	pub definition_error_files: HashSet<PathBuf>,
 }
 
 /// Resolve the default state-file path for this platform.
@@ -194,11 +214,13 @@ mod tests {
 				last_sent_at: Some("2026-05-13T15:00:00Z".parse().unwrap()),
 				last_output: Some("rows=[{...}]".into()),
 				paused_until: None,
+				source_was_erroring: false,
 			},
 		);
 		let state = PersistedState {
 			saved_at: Some("2026-05-13T15:00:01Z".parse().unwrap()),
 			alerts,
+			..Default::default()
 		};
 
 		write(&path, &state).expect("write should succeed");
@@ -210,6 +232,64 @@ mod tests {
 		assert!(entry.triggered_at.is_some());
 		assert_eq!(entry.last_output.as_deref(), Some("rows=[{...}]"));
 		assert!(entry.paused_until.is_none());
+	}
+
+	#[test]
+	fn daemon_level_fields_round_trip() {
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+
+		let mut definition_error_files = HashSet::new();
+		definition_error_files.insert(PathBuf::from("/etc/alerts/broken.yml"));
+		definition_error_files.insert(PathBuf::from("/etc/alerts/also-broken.yml"));
+
+		let state = PersistedState {
+			saved_at: Some("2026-05-13T15:00:01Z".parse().unwrap()),
+			alerts: HashMap::new(),
+			database_was_down: true,
+			definition_error_files: definition_error_files.clone(),
+		};
+		write(&path, &state).unwrap();
+
+		let loaded = read(&path);
+		assert!(loaded.database_was_down);
+		assert_eq!(loaded.definition_error_files, definition_error_files);
+	}
+
+	#[test]
+	fn daemon_level_fields_default_when_missing() {
+		// Older state files won't have the new fields; defaults must apply
+		// so the daemon doesn't panic on hydration.
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+		std::fs::write(&path, r#"{"saved_at":null,"alerts":{}}"#).unwrap();
+		let loaded = read(&path);
+		assert!(!loaded.database_was_down);
+		assert!(loaded.definition_error_files.is_empty());
+	}
+
+	#[test]
+	fn source_was_erroring_round_trips() {
+		let tmp = TempDir::new().unwrap();
+		let path = tmp.path().join("state.json");
+
+		let mut alerts = HashMap::new();
+		alerts.insert(
+			PathBuf::from("/etc/alerts/flaky.yml"),
+			PersistedAlertState {
+				source_was_erroring: true,
+				..Default::default()
+			},
+		);
+		let state = PersistedState {
+			alerts,
+			..Default::default()
+		};
+		write(&path, &state).unwrap();
+
+		let loaded = read(&path);
+		let entry = &loaded.alerts[&PathBuf::from("/etc/alerts/flaky.yml")];
+		assert!(entry.source_was_erroring);
 	}
 
 	#[test]
@@ -231,6 +311,7 @@ mod tests {
 		let second = PersistedState {
 			saved_at: None,
 			alerts,
+			..Default::default()
 		};
 		write(&path, &second).unwrap();
 

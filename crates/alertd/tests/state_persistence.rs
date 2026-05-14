@@ -46,6 +46,7 @@ async fn hydration_seeds_triggered_at_for_matched_alert() {
 	let persisted = PersistedState {
 		saved_at: None,
 		alerts,
+		..Default::default()
 	};
 
 	let ctx = make_ctx().await;
@@ -91,6 +92,7 @@ async fn hydration_ignores_entries_for_unknown_alerts() {
 	let persisted = PersistedState {
 		saved_at: None,
 		alerts,
+		..Default::default()
 	};
 
 	let ctx = make_ctx().await;
@@ -134,6 +136,7 @@ async fn snapshot_round_trips_through_persistence() {
 	let persisted = PersistedState {
 		saved_at: None,
 		alerts,
+		..Default::default()
 	};
 
 	let ctx = make_ctx().await;
