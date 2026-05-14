@@ -153,7 +153,7 @@ send:
 	#[tokio::test]
 	async fn test_validate_event_alert() {
 		let yaml = r#"
-event: http
+event: source-error
 send:
   - id: test
     subject: Test

@@ -9,15 +9,6 @@ pub struct StatusResponse {
 }
 
 #[derive(Deserialize)]
-pub struct AlertRequest {
-	pub message: String,
-	#[serde(default)]
-	pub subject: Option<String>,
-	#[serde(flatten)]
-	pub custom: serde_json::Value,
-}
-
-#[derive(Deserialize)]
 pub struct PauseAlertRequest {
 	pub alert: String,
 	pub until: String,

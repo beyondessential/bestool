@@ -90,13 +90,11 @@ event: <event-type>
 ```
 
 Event types:
-- `http`: HTTP POST to `/alert` endpoint
 - `definition-error`: Alert definition file has errors
 - `source-error`: Alert source execution failed
 - `database-down`: The PostgreSQL database is unreachable
 
 Event-specific context variables vary by type:
-- `http`: `message`, `subject`, any other variables sent to the endpoint
 - `definition-error`: `alert_file`, `error_message`
 - `source-error`: `alert_file`, `error_message`
 - `database-down`: `database_url` (password redacted), `error_message`

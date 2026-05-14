@@ -55,7 +55,6 @@ pub async fn start_server(
 	let app = Router::new()
 		.route("/", get(handle_index))
 		.route("/reload", post(handle_reload))
-		.route("/alert", post(handle_alert))
 		.route("/alerts", get(handle_alerts).delete(handle_pause_alert))
 		.route("/targets", get(handle_targets))
 		.route("/validate", post(handle_validate))
