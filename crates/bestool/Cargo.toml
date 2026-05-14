@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.7.1"
+version = "1.8.0"
 edition = "2024"
 default-run = "bestool"
 
@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 algae-cli = { version = "1.0.17", path = "../algae-cli", optional = true }
-bestool-alertd = { version = "1.2.1", path = "../alertd", default-features = false, optional = true }
+bestool-alertd = { version = "1.3.0", path = "../alertd", default-features = false, optional = true }
 bestool-psql = { version = "1.4.3", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }

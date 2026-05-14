@@ -5,7 +5,42 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.7.1](https://github.com/beyondessential/bestool/compare/v1.7.0..1.7.1) - 2026-05-13
+## [1.8.0](https://github.com/beyondessential/bestool/compare/v1.7.1..1.8.0) - 2026-05-14
+
+
+- **fix:** Send clears for alertd internal triggers (#315) - ([fd41cdb](https://github.com/beyondessential/bestool/commit/fd41cdb2c0bf9cd2db0b800aa3ab394822c80918))
+
+
+- **feat(alertd):** Add CanopyClient::post_status for /status snapshot push - ([8b12d6c](https://github.com/beyondessential/bestool/commit/8b12d6c808e2f7c04a087c02ead668c0c338ac80))
+- **feat(alertd):** Gzip-encode canopy /status request body - ([20a4ab0](https://github.com/beyondessential/bestool/commit/20a4ab0b103531cf21949036449e9ae2699c7a77))
+- **feat(alertd):** Add trigger_clear and entity-key threading on internal events - ([58d31c8](https://github.com/beyondessential/bestool/commit/58d31c87ba243d38fec97e059318c6df4f2d9344))
+- **feat(alertd):** Persist database-down and definition-error state across restarts - ([2ad8bc7](https://github.com/beyondessential/bestool/commit/2ad8bc710297157ad9ca55d7765bbd8facaddf84))
+- **fix(alertd):** Unparseable → unparsable - ([1ef045c](https://github.com/beyondessential/bestool/commit/1ef045c88550385867204966dd3f1d3d52b9b1f6))
+- **fix(alertd):** Send X-Version header; probe /public/servers for tailscale path - ([32531e1](https://github.com/beyondessential/bestool/commit/32531e1a676f5dafd4cf163e2c882115f4f5d719))
+- **fix(alertd):** X-Version is the Tamanu version; plumb through callers - ([b877fc6](https://github.com/beyondessential/bestool/commit/b877fc6898487a10c73ff27a76b52a80636df93f))
+- **test(alertd):** Cover trigger_clear entity-key threading and persistence - ([336ddad](https://github.com/beyondessential/bestool/commit/336ddad65b659ba54235aae5d275861bd64108eb))
+
+- **fix(alerts):** Swap canopy event message/description to match contract - ([7eb9919](https://github.com/beyondessential/bestool/commit/7eb99197f374f7b49d54a10de1d7542be7e0dea6))
+- **fix(alerts):** Swap canopy event message/description to match contract (#314) - ([e2b2fe2](https://github.com/beyondessential/bestool/commit/e2b2fe200b6da2458ded510d5cf03a221137ff5d))
+
+- **feat(tamanu):** Prefer deviceKey and metaServerId from standard paths; copy on first run - ([bd0fabe](https://github.com/beyondessential/bestool/commit/bd0fabe8c6cedfa066480d3c7402db8d84473b6f))
+- **feat(tamanu):** Mark device-key.pem hidden on Windows - ([d0c03b3](https://github.com/beyondessential/bestool/commit/d0c03b39aeeb7e3514ddac816509aeca1f460478))
+- **feat(tamanu):** Bestool tamanu doctor — server-info + healthchecks + canopy push (#312) - ([5cf277d](https://github.com/beyondessential/bestool/commit/5cf277dde5cff30b9360167cf1f8a87043f52764))
+- **fix(tamanu):** Demote 'loaded deviceKey from standard path' to debug - ([8ac9b1c](https://github.com/beyondessential/bestool/commit/8ac9b1ca29ad505f7fc335d83311b055370b7cd4))
+- **refactor(tamanu):** Hoist shared helpers into server_info module - ([b35cbf5](https://github.com/beyondessential/bestool/commit/b35cbf5dc3bb1c20f03791357c4f681baeca1128))
+
+- **feat(tamanu-doctor):** Add cargo feature and dep wiring - ([fca093f](https://github.com/beyondessential/bestool/commit/fca093f022653e810ebea0faad57145ce2756439))
+- **feat(tamanu-doctor):** Scaffold doctor subcommand with check registry and renderer - ([2ea39bf](https://github.com/beyondessential/bestool/commit/2ea39bf353d02579e4b4ad8235d7f7a6872dee50))
+- **feat(tamanu-doctor):** Match metaserver payload shape + add osTimezone - ([cd43634](https://github.com/beyondessential/bestool/commit/cd436345ca512b841fbb20ee2304edc54222af0a))
+- **feat(tamanu-doctor):** Http_errors check via Caddy /metrics - ([58a9fb6](https://github.com/beyondessential/bestool/commit/58a9fb6749e3b0d5f436b0a199a256fcb008af65))
+- **feat(tamanu-doctor):** Suppress stdout when --send (cron-friendly) - ([a0343b3](https://github.com/beyondessential/bestool/commit/a0343b3c57f409ce7c97a98b9b5d657792e396b3))
+- **fix(tamanu-doctor):** Use real systemd units and pm2 process names - ([50227f9](https://github.com/beyondessential/bestool/commit/50227f9f34c1887fc5f9df82cf879d3d523ebd33))
+- **fix(tamanu-doctor):** Real sync_sessions columns; queue-depth fhir_jobs; verbose db errors - ([11cf153](https://github.com/beyondessential/bestool/commit/11cf1530768a71ec2438244ae06cd5cd8db730cb))
+- **fix(tamanu-doctor):** Drop --no-colour; use top-level lloggs colour preference - ([43771a6](https://github.com/beyondessential/bestool/commit/43771a61e0641f2633b7eba4aa3bc3cb11af17af))
+- **fix(tamanu-doctor):** --send exit code reflects send success, not healthcheck result - ([2727825](https://github.com/beyondessential/bestool/commit/27278253680ed46c63bc291043826ae845627941))
+- **fix(tamanu-doctor):** Parse caddy http counts from duration_seconds_count - ([94b4843](https://github.com/beyondessential/bestool/commit/94b4843ad39e1c860501bdb7e1115d452f7a64e8))
+---
+## [1.7.1](https://github.com/beyondessential/bestool/compare/v1.7.0..v1.7.1) - 2026-05-13
 
 
 
