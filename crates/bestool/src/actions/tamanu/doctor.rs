@@ -49,17 +49,13 @@ pub struct DoctorArgs {
 	#[arg(long)]
 	pub json: bool,
 
-	/// Force colour output off
-	#[arg(long)]
-	pub no_colour: bool,
-
 	/// Run only the named check(s). Repeatable. Defaults to all.
 	#[arg(long = "check", value_name = "NAME")]
 	pub only: Vec<String>,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
-	let use_colours = ctx.args_top.use_colours && !ctx.args_sub.no_colour;
+	let use_colours = ctx.args_top.use_colours;
 	let args = ctx.args_sub.clone();
 
 	let (version, root) = find_tamanu(&ctx.args_top)?;
