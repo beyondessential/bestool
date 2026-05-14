@@ -166,21 +166,24 @@ pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
 		}
 	}
 
+	// Exit-code policy:
+	// - `--send` is the cron/systemd-timer path. The job's purpose is to push
+	//   the report to canopy; what the report contains is canopy's problem.
+	//   Non-zero only if we couldn't actually send. (Failures earlier in this
+	//   function — discovering Tamanu, loading config — already propagate as
+	//   `Err` and get a non-zero exit from miette.)
+	// - Without `--send` it's an operator running the check interactively;
+	//   they want shell-script-style "did everything pass?" semantics, so we
+	//   return non-zero when the overall result is FAILING.
 	if args.send {
-		match send_to_canopy(
+		return send_to_canopy(
 			&args.canopy_url,
 			server_id.as_deref(),
 			&payload,
 			&database_url,
 			&version.to_string(),
 		)
-		.await
-		{
-			Ok(()) => {}
-			Err(err) => {
-				eprintln!("canopy send failed: {err}");
-			}
-		}
+		.await;
 	}
 
 	if overall == OverallResult::Failing {
