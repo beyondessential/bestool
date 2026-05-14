@@ -142,22 +142,28 @@ pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
 	let overall = OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 	let payload = build_payload(&info_value, &results, overall);
 
-	if args.json {
-		let stdout = std::io::stdout();
-		let mut out = stdout.lock();
-		serde_json::to_writer_pretty(&mut out, &payload).into_diagnostic()?;
-		writeln!(out).into_diagnostic()?;
-	} else {
-		let stdout = std::io::stdout();
-		let mut out = stdout.lock();
-		render(
-			&mut out,
-			server_id.as_deref(),
-			&results,
-			overall,
-			use_colours,
-		)
-		.into_diagnostic()?;
+	// When --send is set, suppress stdout entirely. The expected deployment is
+	// from cron / systemd-timer; the operator doesn't want their syslog filled
+	// with check-by-check output that nobody reads. Errors talking to canopy
+	// still go to stderr; the process exit code still reflects FAILING.
+	if !args.send {
+		if args.json {
+			let stdout = std::io::stdout();
+			let mut out = stdout.lock();
+			serde_json::to_writer_pretty(&mut out, &payload).into_diagnostic()?;
+			writeln!(out).into_diagnostic()?;
+		} else {
+			let stdout = std::io::stdout();
+			let mut out = stdout.lock();
+			render(
+				&mut out,
+				server_id.as_deref(),
+				&results,
+				overall,
+				use_colours,
+			)
+			.into_diagnostic()?;
+		}
 	}
 
 	if args.send {
