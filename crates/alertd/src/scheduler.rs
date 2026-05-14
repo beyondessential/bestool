@@ -97,6 +97,12 @@ pub struct Scheduler {
 	/// scheduling pass. Used to detect recovery so we can clear the
 	/// corresponding canopy issue.
 	last_definition_error_files: Arc<RwLock<HashSet<PathBuf>>>,
+	/// Mirrors the daemon's database-down tracking.
+	///
+	/// Kept on the scheduler so it can be persisted in the state snapshot
+	/// and restored on the next start — that way a recovery that happens
+	/// while the daemon was down still produces a canopy clear.
+	database_was_down: Arc<RwLock<bool>>,
 }
 
 impl Scheduler {
@@ -123,7 +129,19 @@ impl Scheduler {
 			state_dirty: Arc::new(Notify::new()),
 			pending_hydration: Arc::new(Mutex::new(None)),
 			last_definition_error_files: Arc::new(RwLock::new(HashSet::new())),
+			database_was_down: Arc::new(RwLock::new(false)),
 		}
+	}
+
+	/// Read the persisted database-down flag.
+	pub async fn database_was_down(&self) -> bool {
+		*self.database_was_down.read().await
+	}
+
+	/// Update the persisted database-down flag.
+	pub async fn set_database_was_down(&self, value: bool) {
+		*self.database_was_down.write().await = value;
+		self.state_dirty.notify_one();
 	}
 
 	/// Handle used by the persistence task to wake when alert state changes.
@@ -186,6 +204,8 @@ impl Scheduler {
 		PersistedState {
 			saved_at: Some(Timestamp::now()),
 			alerts: out,
+			database_was_down: *self.database_was_down.read().await,
+			definition_error_files: self.last_definition_error_files.read().await.clone(),
 		}
 	}
 
@@ -197,6 +217,15 @@ impl Scheduler {
 
 	pub async fn load_and_schedule_alerts(&self) -> Result<()> {
 		info!("resolving glob patterns and loading alerts");
+
+		// Consume any pending hydration first so subsequent code can rely on
+		// hydrated daemon-level state (database_was_down, last definition
+		// errors). Per-alert hydration happens later from the same value.
+		let hydration = self.pending_hydration.lock().await.take();
+		if let Some(ref h) = hydration {
+			*self.database_was_down.write().await = h.database_was_down;
+			*self.last_definition_error_files.write().await = h.definition_error_files.clone();
+		}
 
 		let resolved = self.glob_resolver.resolve()?;
 		debug!(
@@ -301,10 +330,9 @@ impl Scheduler {
 		// Get old alerts to preserve state across hot reload.
 		let old_alerts = self.alerts.read().await.clone();
 
-		// Consume any pending hydration (cold-start path). Once taken, future
-		// reloads won't re-apply the file's state — preserve_state_from
-		// carries in-memory state forward instead.
-		let hydration = self.pending_hydration.lock().await.take();
+		// Hydration was taken at the top of this method; reuse it here for
+		// per-alert state. On subsequent reloads it'll be None and
+		// preserve_state_from carries in-memory state forward instead.
 		let mut hydrated_count = 0usize;
 
 		let mut new_alerts = HashMap::new();

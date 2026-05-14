@@ -1,5 +1,5 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	io::Write,
 	path::{Path, PathBuf},
 };
@@ -38,6 +38,19 @@ fn is_false(b: &bool) -> bool {
 pub struct PersistedState {
 	pub saved_at: Option<Timestamp>,
 	pub alerts: HashMap<PathBuf, PersistedAlertState>,
+	/// Mirrors the daemon's database-down tracking.
+	///
+	/// Carried across restarts so that if the daemon goes down with the
+	/// database unreachable and the database recovers before the daemon is
+	/// back, the next healthy tick still fires a canopy clear.
+	#[serde(skip_serializing_if = "is_false", default)]
+	pub database_was_down: bool,
+	/// Files that errored during definition loading on the previous run.
+	///
+	/// Carried across restarts so a file that errored on shutdown but loads
+	/// cleanly on startup still produces a canopy clear.
+	#[serde(skip_serializing_if = "HashSet::is_empty", default)]
+	pub definition_error_files: HashSet<PathBuf>,
 }
 
 /// Resolve the default state-file path for this platform.
@@ -207,6 +220,7 @@ mod tests {
 		let state = PersistedState {
 			saved_at: Some("2026-05-13T15:00:01Z".parse().unwrap()),
 			alerts,
+			..Default::default()
 		};
 
 		write(&path, &state).expect("write should succeed");
@@ -239,6 +253,7 @@ mod tests {
 		let second = PersistedState {
 			saved_at: None,
 			alerts,
+			..Default::default()
 		};
 		write(&path, &second).unwrap();
 
