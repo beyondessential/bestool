@@ -35,11 +35,6 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Value sent in the `X-Version` request header. Canopy's request extractor
-/// rejects requests without it; this is also the version recorded against
-/// each event/status row for client-side debugging.
-const X_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,6 +78,11 @@ pub struct NewEvent<'a> {
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 pub struct CanopyClient {
 	device_key: Option<Redacted<String>>,
+	/// Tamanu version of the install this client speaks for. Sent verbatim in
+	/// the `X-Version` request header — canopy rejects events / status pushes
+	/// that don't carry one. Sourced from the running Tamanu install's
+	/// `package.json` (via `find_tamanu`); not the bestool / alertd version.
+	tamanu_version: String,
 	state: RwLock<State>,
 }
 
@@ -115,13 +115,21 @@ impl CanopyClient {
 	/// Probes the tailscale canopy endpoint first; if reachable, uses it.
 	/// Otherwise, if a device key PEM is provided, builds an mTLS client.
 	/// Returns `Ok(None)` if neither path is available.
-	pub async fn new(device_key_pem: Option<&str>) -> Result<Option<Self>> {
+	///
+	/// `tamanu_version` is the version of the Tamanu install this client
+	/// speaks for; sent on every request via the `X-Version` header.
+	pub async fn new(
+		tamanu_version: impl Into<String>,
+		device_key_pem: Option<&str>,
+	) -> Result<Option<Self>> {
+		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 
 		if let Some(http) = probe_tailscale().await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
 				device_key,
+				tamanu_version,
 				state: RwLock::new(State::Tailscale(http)),
 			}));
 		}
@@ -131,6 +139,7 @@ impl CanopyClient {
 			let http = build_mtls_http(pem)?;
 			return Ok(Some(Self {
 				device_key,
+				tamanu_version,
 				state: RwLock::new(State::Mtls(http)),
 			}));
 		}
@@ -232,7 +241,7 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
-			.header("X-Version", X_VERSION)
+			.header("X-Version", &self.tamanu_version)
 			.header(reqwest::header::CONTENT_TYPE, "application/json")
 			.header(reqwest::header::CONTENT_ENCODING, "gzip")
 			.body(compressed)
@@ -280,7 +289,7 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
-			.header("X-Version", X_VERSION)
+			.header("X-Version", &self.tamanu_version)
 			.json(&event)
 			.send()
 			.await
@@ -403,6 +412,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let http = build_mtls_http(TEST_DEVICE_KEY).unwrap();
 		let client = CanopyClient {
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
+			tamanu_version: "2.54.2".into(),
 			state: RwLock::new(State::Mtls(http)),
 		};
 		client.renew().await.expect("renew should succeed");
@@ -415,6 +425,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let http = reqwest::Client::new();
 		let client = CanopyClient {
 			device_key: None,
+			tamanu_version: "2.54.2".into(),
 			state: RwLock::new(State::Tailscale(http)),
 		};
 		client.renew().await.expect("renew should be a no-op");

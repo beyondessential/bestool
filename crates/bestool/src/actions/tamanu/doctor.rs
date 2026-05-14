@@ -166,6 +166,7 @@ pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
 			server_id.as_deref(),
 			&payload,
 			&database_url,
+			&version.to_string(),
 		)
 		.await
 		{
@@ -341,12 +342,13 @@ async fn send_to_canopy(
 	server_id: Option<&str>,
 	payload: &Value,
 	database_url: &str,
+	tamanu_version: &str,
 ) -> Result<()> {
 	let server_id = server_id
 		.ok_or_else(|| miette!("no metaServerId available; cannot push status to canopy"))?;
 
 	let device_key = fetch_device_key(database_url).await;
-	let client = CanopyClient::new(device_key.as_deref())
+	let client = CanopyClient::new(tamanu_version, device_key.as_deref())
 		.await?
 		.ok_or_else(|| {
 			miette!(
