@@ -297,10 +297,18 @@ fn write_device_key_file(path: &Path, pem: &str) -> std::io::Result<()> {
 	// leaves a half-readable PEM at the target path.
 	let tmp = path.with_extension("pem.tmp");
 	{
-		let mut f = std::fs::OpenOptions::new()
-			.write(true)
-			.create_new(true)
-			.open(&tmp)?;
+		let mut opts = std::fs::OpenOptions::new();
+		opts.write(true).create_new(true);
+		#[cfg(windows)]
+		{
+			use std::os::windows::fs::OpenOptionsExt as _;
+			// FILE_ATTRIBUTE_HIDDEN — tucks the key out of casual Explorer view.
+			// The attribute is set on creation so it applies before any bytes
+			// land, and survives the rename below.
+			const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+			opts.attributes(FILE_ATTRIBUTE_HIDDEN);
+		}
+		let mut f = opts.open(&tmp)?;
 		#[cfg(unix)]
 		{
 			use std::os::unix::fs::PermissionsExt as _;
