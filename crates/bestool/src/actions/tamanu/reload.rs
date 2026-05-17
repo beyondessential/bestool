@@ -8,7 +8,7 @@ use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 use regex::Regex;
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use tracing::{debug, info, warn};
 
 use crate::actions::Context;
@@ -19,7 +19,7 @@ use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
 ///
 /// On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus
 /// shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each
-/// restart, the strict readiness signal is:
+/// restart, the readiness signal is:
 ///
 ///   1. systemd reports the unit `active`
 ///   2. the unit's podman container responds on port 3000 (HTTP services only;
@@ -31,7 +31,7 @@ use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
 ///
 /// On Windows, restarts every `online` pm2 process one pm_id at a time (so
 /// scaled apps like `tamanu-api` roll instance-by-instance, not all at once).
-/// Strict readiness is `pm2` reporting `online` plus an HTTP probe of
+/// Readiness is `pm2` reporting `online` plus an HTTP probe of
 /// `http://127.0.0.1:<PORT>/` where `<PORT>` is the process's resolved `PORT`
 /// env var. Processes without a `PORT` (workers like `tamanu-tasks`,
 /// `tamanu-sync`, `tamanu-fhir-*`) skip the HTTP probe.
@@ -54,19 +54,19 @@ pub struct ReloadArgs {
 	///
 	/// If set, after each service is restarted and reported ready, this URL is
 	/// requested. A connection failure or 5xx response aborts the rollout.
-	/// This is independent of the strict per-container probe (see --no-strict).
+	/// This is independent of the per-container probe (see --no-probe-http).
 	#[arg(long)]
 	pub check_url: Option<Url>,
 
-	/// Skip the strict HTTP probe after each restart.
+	/// Skip the per-service HTTP probe after each restart.
 	///
-	/// On Linux the strict probe hits the unit's podman container directly on
+	/// On Linux the probe hits the unit's podman container directly on
 	/// port 3000. On Windows it hits `http://127.0.0.1:<PORT>/` where `<PORT>`
 	/// is the pm2 process's resolved `PORT` env var (workers without a PORT
-	/// are skipped). With strict off, readiness only checks that the process
+	/// are skipped). When set, readiness only checks that the process
 	/// manager reports the service running.
 	#[arg(long)]
-	pub no_strict: bool,
+	pub no_probe_http: bool,
 
 	/// Per-step timeout in seconds (readiness polling and HTTP probe).
 	#[arg(long, default_value = "30")]
@@ -149,7 +149,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 		None
 	};
 
-	let strict_client = if !ctx.args_sub.no_strict {
+	let probe_client = if !ctx.args_sub.no_probe_http {
 		Some(
 			Client::builder()
 				.timeout(Duration::from_secs(2))
@@ -169,7 +169,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 			Service::Systemd(name) => {
 				restart_systemd(name)?;
 				wait_active_systemd(name, timeout).await?;
-				if let Some(client) = &strict_client {
+				if let Some(client) = &probe_client {
 					wait_container_ready(name, client, timeout).await?;
 				}
 				if !ctx.args_sub.no_caddy_reload {
@@ -179,7 +179,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 			Service::Pm2(proc) => {
 				restart_pm2(proc.pm_id)?;
 				wait_online_pm2(proc.pm_id, timeout).await?;
-				if let Some(client) = &strict_client {
+				if let Some(client) = &probe_client {
 					wait_pm2_port_ready(proc, client, timeout).await?;
 				}
 			}
@@ -220,10 +220,10 @@ fn detect_kind_systemd() -> Result<Option<ApiServerKind>> {
 	let units = list_systemd_units()?;
 	let has_central = units
 		.iter()
-		.any(|u| u.unit.starts_with("tamanu-central-") && u.active == "active");
+		.any(|u| u.unit.starts_with("tamanu-central-") && u.active);
 	let has_facility = units
 		.iter()
-		.any(|u| u.unit.starts_with("tamanu-facility-") && u.active == "active");
+		.any(|u| u.unit.starts_with("tamanu-facility-") && u.active);
 	match (has_central, has_facility) {
 		(true, false) => Ok(Some(ApiServerKind::Central)),
 		(false, true) => Ok(Some(ApiServerKind::Facility)),
@@ -248,9 +248,8 @@ fn detect_kind_pm2() -> Result<Option<ApiServerKind>> {
 
 fn detect_backend() -> Result<Backend> {
 	if cfg!(windows) {
-		return Ok(Backend::Pm2);
-	}
-	if cmd_available("systemctl", "--version") {
+		Ok(Backend::Pm2)
+	} else if cmd_available("systemctl", "--version") {
 		Ok(Backend::Systemd)
 	} else if cmd_available(pm2_cmd(), "--version") {
 		Ok(Backend::Pm2)
@@ -274,7 +273,13 @@ fn pm2_cmd() -> &'static str {
 #[derive(Debug, Deserialize)]
 struct SystemdUnit {
 	unit: String,
-	active: String,
+	#[serde(deserialize_with = "deserialize_is_active")]
+	active: bool,
+}
+
+fn deserialize_is_active<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+	let s = String::deserialize(d)?;
+	Ok(s == "active")
 }
 
 fn list_systemd_units() -> Result<Vec<SystemdUnit>> {
@@ -309,7 +314,7 @@ fn list_services_systemd(kind: ApiServerKind, filter: Option<&Regex>) -> Result<
 
 	let mut services: Vec<String> = units
 		.into_iter()
-		.filter(|u| u.active == "active")
+		.filter(|u| u.active)
 		.filter(|u| {
 			let name = u.unit.trim_end_matches(".service");
 			(name.starts_with(kind_prefix)

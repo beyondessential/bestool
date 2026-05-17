@@ -1,3 +1,4 @@
+2026-05-17T23:32:01.016425Z  INFO bestool::download: A new version of bestool is available. Run 'bestool self-update' to update. current="1.7.1" latest="1.8.0"
 # Command-Line Help for `bestool`
 
 This document contains the help content for the `bestool` command-line program.
@@ -123,7 +124,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -1439,7 +1440,7 @@ Aliases: p, pg, sql
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
@@ -1450,13 +1451,13 @@ Aliases: p, pg, sql
 
 Restart Tamanu services one at a time.
 
-On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each restart, the strict readiness signal is:
+On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each restart, the readiness signal is:
 
 1. systemd reports the unit `active` 2. the unit's podman container responds on port 3000 (HTTP services only; workers like `*-tasks` and `*-fhir-*` skip this step)
 
 Then caddy is reloaded and systemd-resolved flushed (so caddy picks up the new container IP), a configurable cooldown is awaited, and optionally an external HTTP URL is probed.
 
-On Windows, restarts every `online` pm2 process one pm_id at a time (so scaled apps like `tamanu-api` roll instance-by-instance, not all at once). Strict readiness is `pm2` reporting `online` plus an HTTP probe of `http://127.0.0.1:<PORT>/` where `<PORT>` is the process's resolved `PORT` env var. Processes without a `PORT` (workers like `tamanu-tasks`, `tamanu-sync`, `tamanu-fhir-*`) skip the HTTP probe.
+On Windows, restarts every `online` pm2 process one pm_id at a time (so scaled apps like `tamanu-api` roll instance-by-instance, not all at once). Readiness is `pm2` reporting `online` plus an HTTP probe of `http://127.0.0.1:<PORT>/` where `<PORT>` is the process's resolved `PORT` env var. Processes without a `PORT` (workers like `tamanu-tasks`, `tamanu-sync`, `tamanu-fhir-*`) skip the HTTP probe.
 
 Examples: bestool tamanu reload bestool tamanu reload --filter '^tamanu-frontend@' bestool tamanu reload --check-url https://central.example.org --wait 15
 
@@ -1477,10 +1478,10 @@ Examples: bestool tamanu reload bestool tamanu reload --filter '^tamanu-frontend
   Default value: `10`
 * `--check-url <CHECK_URL>` — External HTTP URL to probe after each restart.
 
-   If set, after each service is restarted and reported ready, this URL is requested. A connection failure or 5xx response aborts the rollout. This is independent of the strict per-container probe (see --no-strict).
-* `--no-strict` — Skip the strict HTTP probe after each restart.
+   If set, after each service is restarted and reported ready, this URL is requested. A connection failure or 5xx response aborts the rollout. This is independent of the per-container probe (see --no-probe-http).
+* `--no-probe-http` — Skip the per-service HTTP probe after each restart.
 
-   On Linux the strict probe hits the unit's podman container directly on port 3000. On Windows it hits `http://127.0.0.1:<PORT>/` where `<PORT>` is the pm2 process's resolved `PORT` env var (workers without a PORT are skipped). With strict off, readiness only checks that the process manager reports the service running.
+   On Linux the probe hits the unit's podman container directly on port 3000. On Windows it hits `http://127.0.0.1:<PORT>/` where `<PORT>` is the pm2 process's resolved `PORT` env var (workers without a PORT are skipped). When set, readiness only checks that the process manager reports the service running.
 * `--timeout <TIMEOUT>` — Per-step timeout in seconds (readiness polling and HTTP probe)
 
   Default value: `30`
