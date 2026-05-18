@@ -1,4 +1,3 @@
-2026-05-17T23:32:01.016425Z  INFO bestool::download: A new version of bestool is available. Run 'bestool self-update' to update. current="1.7.1" latest="1.8.0"
 # Command-Line Help for `bestool`
 
 This document contains the help content for the `bestool` command-line program.
@@ -124,7 +123,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -1440,7 +1439,7 @@ Aliases: p, pg, sql
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/Library/Application Support/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
