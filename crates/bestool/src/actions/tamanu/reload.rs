@@ -108,6 +108,9 @@ impl Service {
 
 pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 	let backend = detect_backend()?;
+	if matches!(backend, Backend::Systemd) {
+		ensure_root_or_reexec()?;
+	}
 	let kind = resolve_kind(&ctx, backend)?;
 	info!(?backend, ?kind, "rolling tamanu services");
 
@@ -246,6 +249,27 @@ fn detect_kind_pm2() -> Result<Option<ApiServerKind>> {
 	}
 }
 
+/// Re-exec the current process under `sudo` if we're not root.
+///
+/// `systemctl restart`, `systemctl reload caddy` and `resolvectl flush-caches`
+/// all need root, so we re-launch the same arguments via sudo and exit with
+/// its status. Users who already invoked `sudo bestool tamanu reload` hit the
+/// fast-path and keep running.
+fn ensure_root_or_reexec() -> Result<()> {
+	if privilege::user::privileged() {
+		return Ok(());
+	}
+	info!("not running as root, re-executing under sudo");
+	let exe = std::env::current_exe().into_diagnostic()?;
+	let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+	let status = privilege::runas::Command::new(exe)
+		.args(&args)
+		.force_prompt(false)
+		.run()
+		.into_diagnostic()?;
+	std::process::exit(status.code().unwrap_or(1));
+}
+
 fn detect_backend() -> Result<Backend> {
 	if cfg!(windows) {
 		Ok(Backend::Pm2)
@@ -343,6 +367,7 @@ fn restart_systemd(name: &str) -> Result<()> {
 
 async fn wait_active_systemd(name: &str, timeout: Duration) -> Result<()> {
 	let deadline = Instant::now() + timeout;
+	info!("  waiting for {name} to become active");
 	loop {
 		let output = Command::new("systemctl")
 			.args(["is-active", name])
@@ -351,6 +376,7 @@ async fn wait_active_systemd(name: &str, timeout: Duration) -> Result<()> {
 		let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
 		debug!(service = %name, state = %state, "systemctl is-active");
 		if state == "active" {
+			info!("  {name} is active");
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
@@ -372,13 +398,13 @@ fn reload_caddy() {
 		.args(["reload", "caddy"])
 		.status();
 	match status {
-		Ok(s) if s.success() => debug!("caddy reloaded"),
+		Ok(s) if s.success() => info!("  caddy reloaded"),
 		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
 		Err(e) => warn!("could not reload caddy: {e}"),
 	}
 	let status = Command::new("resolvectl").arg("flush-caches").status();
 	match status {
-		Ok(s) if s.success() => debug!("resolvectl flush-caches OK"),
+		Ok(s) if s.success() => info!("  resolvectl flush-caches OK"),
 		Ok(s) => warn!("resolvectl flush-caches exited with {s}"),
 		Err(e) => debug!("resolvectl not available: {e}"),
 	}
@@ -444,6 +470,7 @@ fn restart_pm2(pm_id: u32) -> Result<()> {
 
 async fn wait_online_pm2(pm_id: u32, timeout: Duration) -> Result<()> {
 	let deadline = Instant::now() + timeout;
+	info!("  waiting for pm2 #{pm_id} to come online");
 	loop {
 		let procs = pm2_jlist()?;
 		let status = procs
@@ -453,6 +480,7 @@ async fn wait_online_pm2(pm_id: u32, timeout: Duration) -> Result<()> {
 			.unwrap_or("missing");
 		debug!(pm_id, status, "pm2 status");
 		if status == "online" {
+			info!("  pm2 #{pm_id} is online");
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
@@ -467,15 +495,24 @@ async fn wait_online_pm2(pm_id: u32, timeout: Duration) -> Result<()> {
 
 async fn wait_pm2_port_ready(proc: &Pm2Proc, client: &Client, timeout: Duration) -> Result<()> {
 	let Some(port) = proc.port() else {
-		debug!(name = %proc.name, pm_id = proc.pm_id, "no PORT env; skipping HTTP probe");
+		info!(
+			"  {} #{} has no PORT env, skipping HTTP probe",
+			proc.name, proc.pm_id
+		);
 		return Ok(());
 	};
 	let url = format!("http://127.0.0.1:{port}/");
+	info!("  waiting for {} #{} on {url}", proc.name, proc.pm_id);
 	let deadline = Instant::now() + timeout;
 	loop {
 		let last_err = match client.get(&url).send().await {
 			Ok(resp) => {
-				debug!(name = %proc.name, pm_id = proc.pm_id, status = %resp.status(), %url, "pm2 process responded");
+				info!(
+					"  {} #{} responded on {url} ({})",
+					proc.name,
+					proc.pm_id,
+					resp.status()
+				);
 				return Ok(());
 			}
 			Err(e) => e.to_string(),
@@ -501,19 +538,20 @@ fn is_worker_unit(unit: &str) -> bool {
 
 async fn wait_container_ready(unit: &str, client: &Client, timeout: Duration) -> Result<()> {
 	if is_worker_unit(unit) {
-		debug!(service = %unit, "worker service; skipping HTTP probe");
+		info!("  {unit} is a worker, skipping HTTP probe");
 		return Ok(());
 	}
 	let Some(ip) = container_ip_for_unit(unit)? else {
-		warn!(service = %unit, "container IP not found, falling back to is-active only");
+		warn!("  container IP for {unit} not found, skipping HTTP probe");
 		return Ok(());
 	};
 	let url = format!("http://{ip}:3000/");
+	info!("  waiting for {unit} to respond on {url}");
 	let deadline = Instant::now() + timeout;
 	loop {
 		let last_err = match client.get(&url).send().await {
 			Ok(resp) => {
-				debug!(service = %unit, status = %resp.status(), %url, "container responded");
+				info!("  {unit} responded on {url} ({})", resp.status());
 				return Ok(());
 			}
 			Err(e) => e.to_string(),
