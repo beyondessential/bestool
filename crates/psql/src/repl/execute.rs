@@ -4,7 +4,9 @@ use bestool_postgres::error::format_miette_error;
 use tokio::{fs::File, io};
 use tracing::{error, warn};
 
-use super::{state::ReplContext, transaction::TransactionState};
+use super::{
+	state::ReplContext, transaction::TransactionState, write_mode::mark_write_mode_active,
+};
 use crate::{parser::QueryModifier, query::execute_query};
 
 pub async fn handle_execute(
@@ -113,6 +115,7 @@ pub async fn handle_execute(
 
 	match result {
 		Ok(()) => {
+			mark_write_mode_active(ctx.repl_state);
 			let tx_state = TransactionState::check(ctx.monitor_client, ctx.backend_pid).await;
 			if ctx.repl_state.lock().unwrap().write_mode
 				&& matches!(tx_state, TransactionState::None)

@@ -1473,6 +1473,7 @@ async fn test_exit_blocked_with_active_transaction() {
 		transaction_state: TransactionState::Active,
 		result_store: crate::result_store::ResultStore::new(),
 		initial_content: None,
+		write_mode_active_at: None,
 	}));
 
 	// Create a dummy audit and readline editor
@@ -1563,6 +1564,7 @@ async fn test_exit_allowed_after_commit() {
 		result_store: crate::result_store::ResultStore::new(),
 		from_snippet_or_include: false,
 		initial_content: None,
+		write_mode_active_at: None,
 	}));
 
 	// Create a dummy audit and readline editor
@@ -1634,6 +1636,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 		result_store: crate::result_store::ResultStore::new(),
 		from_snippet_or_include: false,
 		initial_content: None,
+		write_mode_active_at: None,
 	}));
 
 	// Create a dummy audit and readline editor

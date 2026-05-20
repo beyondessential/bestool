@@ -108,7 +108,7 @@ impl ReplAction {
 
 pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 	debug!("getting connection from pool");
-	let client = pool.get().await.into_diagnostic()?;
+	let client = Arc::new(pool.get().await.into_diagnostic()?);
 
 	if config.write {
 		debug!("setting session to read-write mode");
@@ -160,7 +160,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 	debug!(pid=%backend_pid, "main connection backend PID");
 
 	debug!("getting monitor connection from pool");
-	let monitor_client = pool.get().await.into_diagnostic()?;
+	let monitor_client = Arc::new(pool.get().await.into_diagnostic()?);
 	debug!("monitor connection established");
 
 	let sys_user = std::env::var("USER")
@@ -182,6 +182,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		transaction_state: TransactionState::None,
 		result_store: ResultStore::new(),
 		initial_content: None,
+		write_mode_active_at: None,
 	};
 
 	let repl_state = Arc::new(Mutex::new(repl_state));
@@ -216,6 +217,20 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 
 	// Bind Alt+Enter to insert a literal newline
 	rl.bind_sequence(KeyEvent::alt('\r'), EventHandler::Simple(Cmd::Newline));
+
+	let timeout_watcher = match rl.create_external_printer() {
+		Ok(printer) => Some(tokio::spawn(write_mode::watch_write_mode_idle_timeout(
+			Arc::clone(&client),
+			Arc::clone(&monitor_client),
+			backend_pid,
+			Arc::clone(&repl_state),
+			printer,
+		))),
+		Err(e) => {
+			warn!("could not create external printer for write-mode timeout watcher: {e}");
+			None
+		}
+	};
 
 	if config.write {
 		let mut ctx = ReplContext {
@@ -335,6 +350,10 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 				break;
 			}
 		}
+	}
+
+	if let Some(handle) = timeout_watcher {
+		handle.abort();
 	}
 
 	rl.history_mut().compact()?;
