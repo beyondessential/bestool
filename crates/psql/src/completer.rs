@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::{
+	sync::{Arc, Mutex, RwLock},
+	time::Instant,
+};
 
 use rustyline::completion::Pair;
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
@@ -44,6 +47,7 @@ pub struct SqlCompleter {
 	syntax_set: SyntaxSet,
 	theme_set: ThemeSet,
 	theme: Theme,
+	pub(crate) last_highlight: Mutex<Option<Instant>>,
 }
 
 impl SqlCompleter {
@@ -54,6 +58,7 @@ impl SqlCompleter {
 			theme_set: ThemeSet::load_defaults(),
 			theme,
 			repl_state: None,
+			last_highlight: Mutex::new(None),
 		}
 	}
 

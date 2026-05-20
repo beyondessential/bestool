@@ -1,4 +1,7 @@
-use std::borrow::Cow;
+use std::{
+	borrow::Cow,
+	time::{Duration, Instant},
+};
 
 use rustyline::{
 	Context, Helper,
@@ -10,6 +13,15 @@ use rustyline::{
 use syntect::{easy::HighlightLines, util::as_24_bit_terminal_escaped};
 
 use crate::{colors, repl::TransactionState, theme::Theme};
+
+/// Minimum gap between two consecutive non-forced highlight refreshes.
+///
+/// Syntect re-highlights the entire line, which is O(line length); without
+/// debouncing, a paste streamed character-by-character (e.g. on terminals
+/// without bracketed paste) drives O(n²) work and visibly slows the typing.
+/// Human keystrokes are much further apart than this, so single-character
+/// edits still always redraw.
+const HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// Apply ANSI color codes to the prompt based on write mode and transaction state
 fn style_prompt(prompt: &str, write_mode: bool, transaction_state: TransactionState) -> String {
@@ -82,8 +94,17 @@ impl Highlighter for super::SqlCompleter {
 		}
 	}
 
-	fn highlight_char(&self, _line: &str, _pos: usize, _forced: CmdKind) -> bool {
-		true
+	fn highlight_char(&self, _line: &str, _pos: usize, kind: CmdKind) -> bool {
+		if matches!(kind, CmdKind::ForcedRefresh) {
+			*self.last_highlight.lock().unwrap() = Some(Instant::now());
+			return true;
+		}
+
+		let mut last = self.last_highlight.lock().unwrap();
+		let now = Instant::now();
+		let should = last.is_none_or(|t| now.duration_since(t) >= HIGHLIGHT_DEBOUNCE);
+		*last = Some(now);
+		should
 	}
 
 	fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
@@ -109,3 +130,33 @@ impl Validator for super::SqlCompleter {
 }
 
 impl Helper for super::SqlCompleter {}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::completer::SqlCompleter;
+
+	#[test]
+	fn debounces_bursty_highlight_char() {
+		let c = SqlCompleter::new(Theme::Dark);
+
+		// First call after construction always refreshes.
+		assert!(c.highlight_char("a", 1, CmdKind::Other));
+		// A second call immediately after is suppressed.
+		assert!(!c.highlight_char("ab", 2, CmdKind::Other));
+		assert!(!c.highlight_char("abc", 3, CmdKind::Other));
+
+		// After the debounce window elapses, the next call refreshes again.
+		std::thread::sleep(HIGHLIGHT_DEBOUNCE * 2);
+		assert!(c.highlight_char("abcd", 4, CmdKind::Other));
+	}
+
+	#[test]
+	fn forced_refresh_bypasses_debounce() {
+		let c = SqlCompleter::new(Theme::Dark);
+
+		assert!(c.highlight_char("a", 1, CmdKind::Other));
+		// Even mid-burst, a forced refresh must always redraw.
+		assert!(c.highlight_char("ab", 2, CmdKind::ForcedRefresh));
+	}
+}
