@@ -5,7 +5,24 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.8.0](https://github.com/beyondessential/bestool/compare/v1.7.1..1.8.0) - 2026-05-14
+## [1.8.1](https://github.com/beyondessential/bestool/compare/v1.8.0..1.8.1) - 2026-05-20
+
+
+- **deps:** Bump rust_xlsxwriter from 0.94.1 to 0.95.0 - ([1ca74b7](https://github.com/beyondessential/bestool/commit/1ca74b77874c2e5424e51d67d7e0ad8e2d415e83))
+- **deps:** Bump rust_xlsxwriter from 0.94.1 to 0.95.0 (#317) - ([b429dc9](https://github.com/beyondessential/bestool/commit/b429dc93fe77bc7a3aa37c2fc4ec574a0ea16fd5))
+- **deps:** Bump sysinfo from 0.38.4 to 0.39.1 - ([6e5a730](https://github.com/beyondessential/bestool/commit/6e5a73059eea34e26d4363b3f6c660151e918785))
+- **deps:** Bump sysinfo from 0.38.4 to 0.39.1 (#319) - ([7d48556](https://github.com/beyondessential/bestool/commit/7d485565a5734b20bf5b9ee98c063d54ecfeb6b5))
+
+
+- **feat(psql):** Time out write mode after 10 minutes idle - ([0f6d12b](https://github.com/beyondessential/bestool/commit/0f6d12b526fdf6e9cd3aeda5706f614f5629ee6b))
+- **feat(psql):** Time out write mode after 10 minutes idle (#321) - ([867f2dd](https://github.com/beyondessential/bestool/commit/867f2dd5f4203d3e6b99ec9db15eb436088a2d6d))
+- **perf(psql):** Debounce syntax highlighting during paste bursts - ([f95de58](https://github.com/beyondessential/bestool/commit/f95de58375f06a63aaa014f716bdf1ac6db2baa9))
+- **perf(psql):** Debounce syntax highlighting during paste bursts (#320) - ([36f058a](https://github.com/beyondessential/bestool/commit/36f058aca149d5b9dab322a6f98158cfcdbb3014))
+
+- **feat(tamanu-doctor):** Add external_users check - ([31a4931](https://github.com/beyondessential/bestool/commit/31a4931ec501ecab14f0d753e45a258e550b7ef4))
+- **feat(tamanu-doctor):** Add external_users check (#322) - ([55c6a4d](https://github.com/beyondessential/bestool/commit/55c6a4daed0cb2a7eb8f77b8cba6a72bbfc2daee))
+---
+## [1.8.0](https://github.com/beyondessential/bestool/compare/v1.7.1..v1.8.0) - 2026-05-14
 
 
 - **fix:** Send clears for alertd internal triggers (#315) - ([fd41cdb](https://github.com/beyondessential/bestool/commit/fd41cdb2c0bf9cd2db0b800aa3ab394822c80918))
