@@ -1,6 +1,7 @@
 use std::{
 	collections::BTreeMap,
 	sync::{Arc, Mutex},
+	time::Instant,
 };
 
 use bestool_postgres::pool::PgPool;
@@ -30,6 +31,11 @@ pub struct ReplState {
 	pub result_store: ResultStore,
 	pub from_snippet_or_include: bool,
 	pub initial_content: Option<String>,
+	/// When write mode was last considered "active" — either toggled on, or
+	/// just after a successful query while in write mode. Used by the idle
+	/// timeout watcher to decide when to revert write mode to read-only.
+	/// `None` whenever write mode is off.
+	pub write_mode_active_at: Option<Instant>,
 }
 
 impl Default for ReplState {
@@ -55,6 +61,7 @@ impl ReplState {
 			result_store: ResultStore::new(),
 			from_snippet_or_include: false,
 			initial_content: None,
+			write_mode_active_at: None,
 		}
 	}
 }
