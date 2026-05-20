@@ -17,9 +17,10 @@ use super::{ApiServerKind, TamanuArgs, find_package, find_tamanu};
 
 /// Restart Tamanu services one at a time.
 ///
-/// On Linux, restarts the running `tamanu-{kind}-*` systemd units, plus
-/// shared ones (`tamanu-frontend@*`, `tamanu-patientportal`). After each
-/// restart, the readiness signal is:
+/// On Linux, restarts every active `tamanu-*` systemd unit (apis, workers,
+/// `tamanu-frontend@*`, `tamanu-patientportal`, etc), skipping templates and
+/// non-app units (`tamanu-meta*`, `tamanu-alertd`). After each restart, the
+/// readiness signal is:
 ///
 ///   1. systemd reports the unit `active`
 ///   2. the unit's podman container responds on port 3000 (HTTP services only;
@@ -115,7 +116,7 @@ pub async fn run(ctx: Context<TamanuArgs, ReloadArgs>) -> Result<()> {
 	info!(?backend, ?kind, "rolling tamanu services");
 
 	let services: Vec<Service> = match backend {
-		Backend::Systemd => list_services_systemd(kind, ctx.args_sub.filter.as_ref())?
+		Backend::Systemd => list_services_systemd(ctx.args_sub.filter.as_ref())?
 			.into_iter()
 			.map(Service::Systemd)
 			.collect(),
@@ -219,19 +220,23 @@ fn resolve_kind(ctx: &Context<TamanuArgs, ReloadArgs>, backend: Backend) -> Resu
 	bail!("could not detect server kind: pass --kind central|facility")
 }
 
+/// `tamanu-sync` only runs on facilities, so its presence implies a facility
+/// install. Last-resort fallback after the config-based detection in
+/// [`find_tamanu`].
 fn detect_kind_systemd() -> Result<Option<ApiServerKind>> {
 	let units = list_systemd_units()?;
-	let has_central = units
+	if units
 		.iter()
-		.any(|u| u.unit.starts_with("tamanu-central-") && u.active);
-	let has_facility = units
+		.any(|u| u.unit == "tamanu-sync.service" && u.active)
+	{
+		Ok(Some(ApiServerKind::Facility))
+	} else if units
 		.iter()
-		.any(|u| u.unit.starts_with("tamanu-facility-") && u.active);
-	match (has_central, has_facility) {
-		(true, false) => Ok(Some(ApiServerKind::Central)),
-		(false, true) => Ok(Some(ApiServerKind::Facility)),
-		(true, true) => bail!("both central and facility services are running; pass --kind"),
-		(false, false) => Ok(None),
+		.any(|u| u.unit.starts_with("tamanu-") && u.active)
+	{
+		Ok(Some(ApiServerKind::Central))
+	} else {
+		Ok(None)
 	}
 }
 
@@ -329,22 +334,16 @@ fn list_systemd_units() -> Result<Vec<SystemdUnit>> {
 	serde_json::from_slice(&output.stdout).into_diagnostic()
 }
 
-fn list_services_systemd(kind: ApiServerKind, filter: Option<&Regex>) -> Result<Vec<String>> {
+fn list_services_systemd(filter: Option<&Regex>) -> Result<Vec<String>> {
 	let units = list_systemd_units()?;
-	let kind_prefix = match kind {
-		ApiServerKind::Central => "tamanu-central-",
-		ApiServerKind::Facility => "tamanu-facility-",
-	};
-
 	let mut services: Vec<String> = units
 		.into_iter()
 		.filter(|u| u.active)
 		.filter(|u| {
 			let name = u.unit.trim_end_matches(".service");
-			(name.starts_with(kind_prefix)
-				|| name.starts_with("tamanu-frontend@")
-				|| name == "tamanu-patientportal")
+			name.starts_with("tamanu-")
 				&& !u.unit.ends_with("@.service")
+				&& !is_excluded_unit(name)
 		})
 		.map(|u| u.unit)
 		.filter(|n| filter.is_none_or(|r| r.is_match(n)))
@@ -352,6 +351,15 @@ fn list_services_systemd(kind: ApiServerKind, filter: Option<&Regex>) -> Result<
 
 	services.sort();
 	Ok(services)
+}
+
+/// Tamanu-prefixed services that aren't part of the app rollout.
+///
+/// `tamanu-meta` runs on dedicated meta hosts; `tamanu-alertd` is bestool's
+/// own alerting daemon. Excluding them keeps the rollout focused on the API
+/// / worker / frontend stack.
+fn is_excluded_unit(name: &str) -> bool {
+	name.starts_with("tamanu-meta") || name == "tamanu-alertd"
 }
 
 fn restart_systemd(name: &str) -> Result<()> {
