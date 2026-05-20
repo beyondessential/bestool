@@ -16,6 +16,7 @@ use super::check::Check;
 pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
+pub mod external_users;
 pub mod fhir_jobs;
 pub mod http_errors;
 pub mod load;
@@ -114,6 +115,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("http_errors", http_errors),
 		entry!("tailscale", tailscale, off_wire),
 		entry!("tamanu_service", tamanu_service),
+		entry!("external_users", external_users),
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),
 	]
