@@ -71,8 +71,8 @@ pub async fn run(_ctx: CheckContext) -> Check {
 			.with_detail("total", 0u64);
 	}
 
-	let pct = (errored as f64 / total as f64) * 100.0;
-	let summary = format!("{errored}/{total} server errors ({pct:.1}% cumulative)");
+	let pct = ((errored as f64 / total as f64) * 100.0).round();
+	let summary = format!("{errored}/{total} server errors ({pct:.0}% cumulative)");
 
 	let check = if pct >= FAIL_ERROR_PCT {
 		Check::fail(

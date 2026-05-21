@@ -13,7 +13,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	let total = sys.total_memory();
 	let used = sys.used_memory();
 	let pct = if total > 0 {
-		(used as f64 / total as f64) * 100.0
+		((used as f64 / total as f64) * 100.0).round()
 	} else {
 		0.0
 	};
