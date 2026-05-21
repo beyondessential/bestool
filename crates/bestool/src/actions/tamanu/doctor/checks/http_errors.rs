@@ -3,7 +3,9 @@
 //! Caddy's admin API at `localhost:2019` exposes `/metrics` in Prometheus text
 //! format. The relevant series is `caddy_http_requests_total{code="…",…}`,
 //! a cumulative counter labelled with the HTTP status code. We aggregate by
-//! status class and report the cumulative error rate.
+//! status class and report the cumulative server-error rate. Only 5xx responses
+//! count as errors; 4xx responses are client mistakes (bad URLs, auth, etc.)
+//! and aren't worth alerting on.
 
 use std::time::Duration;
 
@@ -60,10 +62,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	let total: u64 = counts.iter().map(|(_, n)| n).sum();
 	let errored: u64 = counts
 		.iter()
-		.filter(|(code, _)| {
-			let first = code.chars().next();
-			matches!(first, Some('4') | Some('5'))
-		})
+		.filter(|(code, _)| code.starts_with('5'))
 		.map(|(_, n)| n)
 		.sum();
 
@@ -73,7 +72,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	}
 
 	let pct = (errored as f64 / total as f64) * 100.0;
-	let summary = format!("{errored}/{total} errored ({pct:.1}% cumulative)");
+	let summary = format!("{errored}/{total} server errors ({pct:.1}% cumulative)");
 
 	let check = if pct >= FAIL_ERROR_PCT {
 		Check::fail(
@@ -97,8 +96,8 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	}
 
 	check.with_detail("total_requests", total)
-		.with_detail("error_requests", errored)
-		.with_detail("error_rate_pct", pct)
+		.with_detail("server_error_requests", errored)
+		.with_detail("server_error_rate_pct", pct)
 		.with_detail("by_code", Value::Object(by_code))
 }
 
