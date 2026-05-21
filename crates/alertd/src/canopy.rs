@@ -18,7 +18,7 @@ pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 ///
 /// On hosts that share the canopy tailnet, posting to this URL works without
 /// mTLS — the tailscale identity is the auth.
-pub const TAILSCALE_URL: &str = "https://tamanu-meta-prod.tail53aef.ts.net";
+pub const TAILSCALE_URL: &str = "https://canopy.tail53aef.ts.net";
 
 /// How long renewed canopy certs are valid for.
 ///

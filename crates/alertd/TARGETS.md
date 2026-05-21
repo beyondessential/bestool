@@ -73,8 +73,7 @@ targets:
 
 Canopy requires one of two auth paths; alertd probes them at startup and on every reload:
 
-1. **Tailscale** — if `https://tamanu-meta-prod.tail53aef.ts.net/public/events` is reachable
-   from this host (i.e. the host is on the canopy tailnet), events are pushed there without any
+1. **Tailscale** — if the host is on the canopy tailnet, events are pushed there without any
    client cert. This path is preferred when available.
 
 2. **mTLS via Tamanu device key** — falls back to the public endpoint (`url:` above) using a
