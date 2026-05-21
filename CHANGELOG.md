@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
-## [1.8.1](https://github.com/beyondessential/bestool/compare/v1.8.0..1.8.1) - 2026-05-20
+## [1.8.2](https://github.com/beyondessential/bestool/compare/v1.8.1..1.8.2) - 2026-05-21
+
+
+
+
+- **fix(tamanu/doctor):** Only treat 5xx as HTTP errors - ([e9eec1e](https://github.com/beyondessential/bestool/commit/e9eec1e3379c2e31ceb84aca2cec80e16e1c1699))
+- **fix(tamanu/doctor):** Only treat 5xx as HTTP errors (#323) - ([b25df34](https://github.com/beyondessential/bestool/commit/b25df34b70da92256db825729f5e8c5b5d94e1c4))
+- **refactor(tamanu/doctor):** Round detail percentages to whole numbers - ([16e39a1](https://github.com/beyondessential/bestool/commit/16e39a1bddf03ef0988c4ff3624dd4da8cc3deab))
+---
+## [1.8.1](https://github.com/beyondessential/bestool/compare/v1.8.0..v1.8.1) - 2026-05-20
 
 
 - **deps:** Bump rust_xlsxwriter from 0.94.1 to 0.95.0 - ([1ca74b7](https://github.com/beyondessential/bestool/commit/1ca74b77874c2e5424e51d67d7e0ad8e2d415e83))
