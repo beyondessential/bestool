@@ -3,27 +3,108 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::actions::tamanu::{
+	ApiServerKind,
+	doctor::check::Check,
+	pm2,
+	services::{ExpectedState, Expectation, Instances, Supervisor, expected, parse_systemd_unit},
+};
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if cfg!(target_os = "linux") {
-		check_systemd(ctx.config.is_facility())
+	let supervisor = if cfg!(target_os = "linux") {
+		Supervisor::Systemd
 	} else if cfg!(target_os = "windows") {
-		check_pm2(ctx.config.is_facility())
+		Supervisor::Pm2
 	} else {
-		Check::pass(
-			"tamanu_service",
-			"service check skipped on this platform",
-		)
-		.with_detail("skipped", true)
+		return Check::pass("tamanu_service", "service check skipped on this platform")
+			.with_detail("skipped", true);
+	};
+
+	let kind = if ctx.config.is_facility() {
+		ApiServerKind::Facility
+	} else {
+		ApiServerKind::Central
+	};
+	let expectations = expected(supervisor, kind, &ctx.config);
+
+	let mut pm2_source: Option<pm2::Source> = None;
+	let mut discovered = match supervisor {
+		Supervisor::Systemd => match discover_systemd() {
+			Ok(d) => d,
+			Err(err) => {
+				return Check::fail("tamanu_service", "systemctl unavailable", err)
+					.with_detail("supervisor", "systemd");
+			}
+		},
+		Supervisor::Pm2 => match discover_pm2() {
+			Ok((d, source)) => {
+				pm2_source = Some(source);
+				d
+			}
+			Err(err) => {
+				return Check::fail("tamanu_service", "pm2 unavailable", err)
+					.with_detail("supervisor", "pm2");
+			}
+		},
+	};
+
+	// Probe `is-enabled` for any Down expectation whose unit didn't show up in
+	// `list-units` — catches `enabled-but-not-loaded` cases (rare but possible).
+	if matches!(supervisor, Supervisor::Systemd) {
+		for exp in &expectations {
+			if !matches!(exp.state, ExpectedState::Down) {
+				continue;
+			}
+			let already = discovered.iter().any(|d| d.name == exp.name);
+			if already {
+				continue;
+			}
+			if systemd_is_enabled(exp.name) {
+				discovered.push(Discovered {
+					name: exp.name.to_string(),
+					instance: None,
+					running: false,
+					present: true,
+					raw: format!("{}.service (enabled)", exp.name),
+				});
+			}
+		}
 	}
+
+	evaluate_with_source(supervisor, &expectations, &discovered, pm2_source)
 }
 
-fn check_systemd(is_facility: bool) -> Check {
-	// Enumerate all loaded tamanu-* units. Tamanu uses systemd template units
-	// (`tamanu-facility-api@0.service`) for multi-instance services, so we ask
-	// for the wildcard and let systemd expand it.
-	let output = match Command::new("systemctl")
+fn systemd_is_enabled(name: &str) -> bool {
+	let output = Command::new("systemctl")
+		.args(["is-enabled", &format!("{name}.service")])
+		.output();
+	// Catch "enabled" and "enabled-runtime"; ignore "static" (can't be
+	// enabled/disabled), "alias" (just a symlink), "disabled", "masked",
+	// "linked", and "not-found".
+	let Ok(o) = output else { return false };
+	let state = String::from_utf8_lossy(&o.stdout);
+	let state = state.trim();
+	state == "enabled" || state == "enabled-runtime"
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Discovered {
+	/// Base name without `@instance` or `.service`.
+	name: String,
+	/// Whatever follows `@`, if anything.
+	instance: Option<String>,
+	/// Is the unit/process currently up?
+	running: bool,
+	/// Is the unit "present" beyond just running? For systemd this means
+	/// loaded (which includes inactive-but-loaded — typically enabled). For
+	/// pm2 we equate it with "is in the jlist".
+	present: bool,
+	/// Identifier to show in diagnostics (e.g. `tamanu-foo@1.service`).
+	raw: String,
+}
+
+fn discover_systemd() -> Result<Vec<Discovered>, String> {
+	let output = Command::new("systemctl")
 		.args([
 			"list-units",
 			"--type=service",
@@ -34,271 +115,557 @@ fn check_systemd(is_facility: bool) -> Check {
 			"tamanu-*.service",
 		])
 		.output()
-	{
-		Ok(o) => o,
-		Err(err) => {
-			return Check::fail(
-				"tamanu_service",
-				"systemctl unavailable",
-				err.to_string(),
-			)
-			.with_detail("supervisor", "systemd");
-		}
-	};
+		.map_err(|e| e.to_string())?;
 
 	let stdout = String::from_utf8_lossy(&output.stdout);
-	let mut services: Vec<Value> = Vec::new();
-	let mut active_count = 0;
-	let mut total_count = 0;
-
+	let mut out = Vec::new();
 	for line in stdout.lines() {
-		// `list-units --plain --no-legend` columns: UNIT LOAD ACTIVE SUB DESCRIPTION...
 		let mut parts = line.split_whitespace();
-		let (Some(unit), Some(load), Some(active), Some(sub)) = (
-			parts.next(),
-			parts.next(),
-			parts.next(),
-			parts.next(),
-		) else {
+		let (Some(unit), Some(load), Some(active), Some(sub)) =
+			(parts.next(), parts.next(), parts.next(), parts.next())
+		else {
 			continue;
 		};
-		// Skip "not-found" rows that systemctl emits for wildcards with no match.
 		if load == "not-found" {
 			continue;
 		}
-		total_count += 1;
-		let healthy = active == "active" && (sub == "running" || sub == "exited");
-		if healthy {
-			active_count += 1;
-		}
-		services.push(json!({
-			"name": unit,
-			"load": load,
-			"active": active,
-			"sub": sub,
-		}));
-	}
-
-	let expected = expected_systemd_units(is_facility);
-
-	if total_count == 0 {
-		return Check::fail(
-			"tamanu_service",
-			"no tamanu-* units found",
-			format!(
-				"expected at least one of: {}",
-				expected.join(", ")
-			),
-		)
-		.with_detail("supervisor", "systemd")
-		.with_detail("expected", Value::Array(
-			expected.iter().map(|s| Value::String((*s).into())).collect(),
-		));
-	}
-
-	// Identify missing expected units. For template-style entries ending in
-	// `@`, count any instance as fulfilling the expectation.
-	let mut missing: Vec<&str> = Vec::new();
-	for exp in &expected {
-		let matched = if exp.ends_with('@') {
-			services.iter().any(|s| {
-				s["name"]
-					.as_str()
-					.map(|n| n.starts_with(exp))
-					.unwrap_or(false)
-			})
-		} else {
-			let full = format!("{exp}.service");
-			services
-				.iter()
-				.any(|s| s["name"].as_str() == Some(full.as_str()))
+		let Some((base, instance)) = parse_systemd_unit(unit) else {
+			continue;
 		};
-		if !matched {
-			missing.push(exp);
-		}
+		let running = active == "active" && (sub == "running" || sub == "exited");
+		out.push(Discovered {
+			name: base.to_string(),
+			instance: instance.map(str::to_string),
+			running,
+			present: true,
+			raw: unit.to_string(),
+		});
 	}
+	Ok(out)
+}
 
-	let summary = format!("{active_count}/{total_count} units active");
-	let check = if !missing.is_empty() {
-		Check::fail(
-			"tamanu_service",
-			summary,
-			format!("missing expected unit(s): {}", missing.join(", ")),
-		)
-	} else if active_count < total_count {
-		let unhealthy: Vec<String> = services
-			.iter()
-			.filter(|s| s["active"].as_str() != Some("active"))
-			.filter_map(|s| s["name"].as_str().map(String::from))
-			.collect();
-		Check::fail(
-			"tamanu_service",
-			format!("{active_count}/{total_count} units active"),
-			format!("not active: {}", unhealthy.join(", ")),
-		)
-	} else {
-		Check::pass("tamanu_service", format!("{total_count} units active"))
-	};
+fn discover_pm2() -> Result<(Vec<Discovered>, pm2::Source), String> {
+	let (procs, source) = pm2::list()?;
+	let mut out = Vec::new();
+	for p in procs {
+		if !p.name.starts_with("tamanu-") {
+			continue;
+		}
+		let raw = match p.pm_id {
+			Some(id) => format!("{}#{id}", p.name),
+			None => p.name.clone(),
+		};
+		out.push(Discovered {
+			name: p.name,
+			instance: None,
+			running: p.running,
+			present: true,
+			raw,
+		});
+	}
+	Ok((out, source))
+}
 
-	check.with_detail("supervisor", "systemd")
-		.with_detail("services", Value::Array(services))
-		.with_detail(
-			"expected",
-			Value::Array(
-				expected
+/// Per-expectation outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Outcome {
+	Ok,
+	/// Required but no matching unit/process at all.
+	Missing,
+	/// Found but with fewer running instances than required.
+	Shortfall {
+		running: usize,
+		needed: usize,
+		not_running: Vec<String>,
+		missing_named: Vec<String>,
+	},
+	/// `Down` expectation but something is present (active or loaded).
+	Forbidden { units: Vec<String> },
+}
+
+fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, Vec<usize>) {
+	let matched_idx: Vec<usize> = discovered
+		.iter()
+		.enumerate()
+		.filter(|(_, d)| d.name == exp.name && exp.instances.admits_instance(d.instance.as_deref()))
+		.map(|(i, _)| i)
+		.collect();
+
+	match exp.state {
+		ExpectedState::Down => {
+			if matched_idx.is_empty() {
+				(Outcome::Ok, matched_idx)
+			} else {
+				let units: Vec<String> =
+					matched_idx.iter().map(|i| discovered[*i].raw.clone()).collect();
+				(Outcome::Forbidden { units }, matched_idx)
+			}
+		}
+		ExpectedState::Up => {
+			if matched_idx.is_empty() {
+				return (Outcome::Missing, matched_idx);
+			}
+			let running: Vec<&Discovered> =
+				matched_idx.iter().map(|i| &discovered[*i]).filter(|d| d.running).collect();
+			let not_running: Vec<String> = matched_idx
+				.iter()
+				.map(|i| &discovered[*i])
+				.filter(|d| !d.running)
+				.map(|d| d.raw.clone())
+				.collect();
+
+			let needed = exp.instances.min_count();
+			let missing_named = match &exp.instances {
+				Instances::Named(names) => names
 					.iter()
-					.map(|s| Value::String((*s).into()))
+					.filter(|n| {
+						!matched_idx.iter().any(|i| {
+							discovered[*i].running
+								&& discovered[*i].instance.as_deref() == Some(**n)
+						})
+					})
+					.map(|n| format!("{}@{}", exp.name, n))
 					.collect(),
-			),
-		)
-}
-
-fn expected_systemd_units(is_facility: bool) -> Vec<&'static str> {
-	if is_facility {
-		vec![
-			"tamanu-facility-api@",
-			"tamanu-facility-sync",
-			"tamanu-facility-tasks",
-			"tamanu-frontend@",
-		]
-	} else {
-		// Central Linux deployments aren't standardised in the same way; check
-		// what's loaded but don't fail purely on unit absence.
-		Vec::new()
-	}
-}
-
-fn check_pm2(is_facility: bool) -> Check {
-	let output = match Command::new("pm2").arg("jlist").output() {
-		Ok(o) if o.status.success() => o,
-		Ok(o) => {
-			return Check::fail(
-				"tamanu_service",
-				"pm2 jlist failed",
-				String::from_utf8_lossy(&o.stderr).trim().to_string(),
-			)
-			.with_detail("supervisor", "pm2");
-		}
-		Err(err) => {
-			return Check::fail("tamanu_service", "pm2 unavailable", err.to_string())
-				.with_detail("supervisor", "pm2");
-		}
-	};
-
-	let parsed: Value = match serde_json::from_slice(&output.stdout) {
-		Ok(v) => v,
-		Err(err) => {
-			return Check::fail(
-				"tamanu_service",
-				"pm2 jlist returned invalid JSON",
-				err.to_string(),
-			)
-			.with_detail("supervisor", "pm2");
-		}
-	};
-
-	let mut services: Vec<Value> = Vec::new();
-	let mut online_count = 0;
-	let mut total_count = 0;
-
-	if let Some(procs) = parsed.as_array() {
-		for p in procs {
-			let Some(name) = p["name"].as_str() else {
-				continue;
+				_ => Vec::new(),
 			};
-			if !name.starts_with("tamanu-") {
-				continue;
+
+			if running.len() >= needed && missing_named.is_empty() {
+				(Outcome::Ok, matched_idx)
+			} else {
+				(
+					Outcome::Shortfall {
+						running: running.len(),
+						needed,
+						not_running,
+						missing_named,
+					},
+					matched_idx,
+				)
 			}
-			total_count += 1;
-			let state = p["pm2_env"]["status"].as_str().unwrap_or("unknown");
-			let pm_id = p["pm_id"].as_i64();
-			if state == "online" {
-				online_count += 1;
+		}
+	}
+}
+
+fn evaluate(
+	supervisor: Supervisor,
+	expectations: &[Expectation],
+	discovered: &[Discovered],
+) -> Check {
+	let mut matched_any: Vec<bool> = vec![false; discovered.len()];
+	let mut per_expectation: Vec<Value> = Vec::new();
+	let mut failures: Vec<String> = Vec::new();
+
+	for exp in expectations {
+		let (outcome, idxs) = match_expectation(exp, discovered);
+		for i in idxs {
+			matched_any[i] = true;
+		}
+		per_expectation.push(json!({
+			"name": exp.name,
+			"state": match exp.state {
+				ExpectedState::Up => "up",
+				ExpectedState::Down => "down",
+			},
+			"instances": instances_to_json(&exp.instances),
+			"outcome": outcome_to_json(&outcome),
+		}));
+		match &outcome {
+			Outcome::Ok => {}
+			Outcome::Missing => failures.push(format!("missing {}", exp.name)),
+			Outcome::Shortfall {
+				running,
+				needed,
+				not_running,
+				missing_named,
+			} => {
+				if !missing_named.is_empty() {
+					failures.push(format!(
+						"{}: missing instance(s) {}",
+						exp.name,
+						missing_named.join(", ")
+					));
+				} else if !not_running.is_empty() {
+					failures.push(format!(
+						"{}: not running ({})",
+						exp.name,
+						not_running.join(", ")
+					));
+				} else {
+					failures.push(format!(
+						"{}: only {running}/{needed} instance(s) running",
+						exp.name
+					));
+				}
 			}
-			let mut entry = json!({
-				"name": name,
-				"state": state,
-			});
-			if let Some(id) = pm_id
-				&& let Some(o) = entry.as_object_mut()
-			{
-				o.insert("pm_id".into(), id.into());
+			Outcome::Forbidden { units } => {
+				failures.push(format!("forbidden present: {}", units.join(", ")));
 			}
-			services.push(entry);
 		}
 	}
 
-	let expected = expected_pm2_processes(is_facility);
+	let extras: Vec<String> = discovered
+		.iter()
+		.zip(matched_any.iter())
+		.filter(|(_, m)| !**m)
+		.map(|(d, _)| d.raw.clone())
+		.collect();
 
-	if total_count == 0 {
-		return Check::fail(
-			"tamanu_service",
-			"no tamanu-* pm2 processes found",
-			format!("expected: {}", expected.join(", ")),
-		)
-		.with_detail("supervisor", "pm2")
+	let supervisor_label = match supervisor {
+		Supervisor::Systemd => "systemd",
+		Supervisor::Pm2 => "pm2",
+	};
+
+	let services_json: Value = Value::Array(
+		discovered
+			.iter()
+			.map(|d| {
+				json!({
+					"name": d.name,
+					"instance": d.instance,
+					"running": d.running,
+					"present": d.present,
+					"raw": d.raw,
+				})
+			})
+			.collect(),
+	);
+
+	let summary = if failures.is_empty() {
+		format!("{} expectation(s) met", expectations.len())
+	} else {
+		format!("{} expectation(s) unmet", failures.len())
+	};
+
+	let check = if failures.is_empty() {
+		Check::pass("tamanu_service", summary)
+	} else {
+		Check::fail("tamanu_service", summary, failures.join("; "))
+	};
+
+	check.with_detail("supervisor", supervisor_label)
+		.with_detail("expectations", Value::Array(per_expectation))
+		.with_detail("services", services_json)
 		.with_detail(
-			"expected",
-			Value::Array(expected.iter().map(|s| Value::String((*s).into())).collect()),
+			"extras",
+			Value::Array(extras.into_iter().map(Value::String).collect()),
+		)
+}
+
+fn evaluate_with_source(
+	supervisor: Supervisor,
+	expectations: &[Expectation],
+	discovered: &[Discovered],
+	pm2_source: Option<pm2::Source>,
+) -> Check {
+	let check = evaluate(supervisor, expectations, discovered);
+	match pm2_source {
+		Some(s) => check.with_detail("pm2_source", s.as_str()),
+		None => check,
+	}
+}
+
+fn instances_to_json(i: &Instances) -> Value {
+	match i {
+		Instances::Single => json!({"kind": "single"}),
+		Instances::NumericAtLeast(n) => json!({"kind": "numeric_at_least", "min": n}),
+		Instances::Named(xs) => json!({"kind": "named", "names": xs}),
+	}
+}
+
+fn outcome_to_json(o: &Outcome) -> Value {
+	match o {
+		Outcome::Ok => json!({"kind": "ok"}),
+		Outcome::Missing => json!({"kind": "missing"}),
+		Outcome::Shortfall {
+			running,
+			needed,
+			not_running,
+			missing_named,
+		} => json!({
+			"kind": "shortfall",
+			"running": running,
+			"needed": needed,
+			"not_running": not_running,
+			"missing_named": missing_named,
+		}),
+		Outcome::Forbidden { units } => json!({"kind": "forbidden", "units": units}),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::actions::tamanu::config::TamanuConfig;
+	use crate::actions::tamanu::doctor::check::CheckStatus;
+
+	fn cfg(fhir_worker: bool) -> TamanuConfig {
+		let json = serde_json::json!({
+			"db": { "name": "x", "username": "u", "password": "p" },
+			"serverFacilityIds": ["facility-x"],
+			"fhir": { "worker": { "enabled": fhir_worker } },
+		});
+		serde_json::from_value(json).unwrap()
+	}
+
+	fn central_cfg(fhir_worker: bool) -> TamanuConfig {
+		let json = serde_json::json!({
+			"db": { "name": "x", "username": "u", "password": "p" },
+			"fhir": { "worker": { "enabled": fhir_worker } },
+		});
+		serde_json::from_value(json).unwrap()
+	}
+
+	fn d(name: &str, instance: Option<&str>, running: bool) -> Discovered {
+		let raw = match instance {
+			Some(i) => format!("{name}@{i}.service"),
+			None => format!("{name}.service"),
+		};
+		Discovered {
+			name: name.to_string(),
+			instance: instance.map(str::to_string),
+			running,
+			present: true,
+			raw,
+		}
+	}
+
+	#[test]
+	fn happy_facility_systemd() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn fails_when_tasks_missing() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => assert!(
+				reason.contains("tamanu-facility-tasks"),
+				"reason was {reason:?}"
+			),
+			other => panic!("expected fail, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn fails_on_api_shortfall() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("1/2"), "reason was {reason:?}");
+			}
+			other => panic!("{other:?}"),
+		}
+	}
+
+	#[test]
+	fn fails_on_frontend_named_missing() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			// no @b
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("tamanu-frontend@b"),
+					"reason was {reason:?}"
+				);
+			}
+			other => panic!("{other:?}"),
+		}
+	}
+
+	#[test]
+	fn fails_when_forbidden_facility_singleton_present() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+			// legacy singleton that must not be present:
+			d("tamanu-facility", None, false),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("forbidden"), "reason was {reason:?}");
+				assert!(
+					reason.contains("tamanu-facility"),
+					"reason was {reason:?}"
+				);
+			}
+			other => panic!("{other:?}"),
+		}
+	}
+
+	#[test]
+	fn extras_recorded_but_dont_fail() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let mut discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		discovered.push(d("tamanu-patientportal", None, true));
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+		let extras = check.details.get("extras").unwrap().as_array().unwrap();
+		assert_eq!(extras.len(), 1);
+		assert_eq!(
+			extras[0].as_str().unwrap(),
+			"tamanu-patientportal.service"
 		);
 	}
 
-	let mut missing: Vec<&str> = Vec::new();
-	for exp in &expected {
-		if !services
-			.iter()
-			.any(|s| s["name"].as_str() == Some(*exp))
-		{
-			missing.push(exp);
+	#[test]
+	fn central_with_fhir_requires_workers() {
+		let cfg = central_cfg(true);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg);
+		let discovered = vec![
+			d("tamanu-central-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-central-api", Some("1"), true),
+			d("tamanu-central-api", Some("2"), true),
+			// fhir workers missing
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("tamanu-central-fhir-resolve"),
+					"reason was {reason:?}"
+				);
+				assert!(
+					reason.contains("tamanu-central-fhir-refresh"),
+					"reason was {reason:?}"
+				);
+			}
+			other => panic!("{other:?}"),
 		}
 	}
 
-	let summary = format!("{online_count}/{total_count} processes online");
-	let check = if !missing.is_empty() {
-		Check::fail(
-			"tamanu_service",
-			summary,
-			format!("missing expected process(es): {}", missing.join(", ")),
-		)
-	} else if online_count < total_count {
-		let offline: Vec<String> = services
-			.iter()
-			.filter(|s| s["state"].as_str() != Some("online"))
-			.filter_map(|s| {
-				let name = s["name"].as_str()?;
-				let pm_id = s["pm_id"].as_i64();
-				Some(match pm_id {
-					Some(id) => format!("{name}#{id}"),
-					None => name.to_string(),
-				})
-			})
-			.collect();
-		Check::fail(
-			"tamanu_service",
-			summary,
-			format!("not online: {}", offline.join(", ")),
-		)
-	} else {
-		Check::pass("tamanu_service", format!("{total_count} processes online"))
-	};
+	#[test]
+	fn central_without_fhir_doesnt_require_workers() {
+		let cfg = central_cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg);
+		let discovered = vec![
+			d("tamanu-central-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-central-api", Some("1"), true),
+			d("tamanu-central-api", Some("2"), true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
 
-	check.with_detail("supervisor", "pm2")
-		.with_detail("services", Value::Array(services))
-		.with_detail(
-			"expected",
-			Value::Array(
-				expected
-					.iter()
-					.map(|s| Value::String((*s).into()))
-					.collect(),
-			),
-		)
-}
+	#[test]
+	fn pm2_facility_happy() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			Discovered {
+				name: "tamanu-tasks".into(),
+				instance: None,
+				running: true,
+				present: true,
+				raw: "tamanu-tasks#0".into(),
+			},
+			Discovered {
+				name: "tamanu-api".into(),
+				instance: None,
+				running: true,
+				present: true,
+				raw: "tamanu-api#1".into(),
+			},
+			Discovered {
+				name: "tamanu-api".into(),
+				instance: None,
+				running: true,
+				present: true,
+				raw: "tamanu-api#2".into(),
+			},
+			Discovered {
+				name: "tamanu-sync".into(),
+				instance: None,
+				running: true,
+				present: true,
+				raw: "tamanu-sync#3".into(),
+			},
+		];
+		let check = evaluate(Supervisor::Pm2, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
 
-fn expected_pm2_processes(is_facility: bool) -> Vec<&'static str> {
-	if is_facility {
-		vec!["tamanu-api", "tamanu-sync", "tamanu-tasks"]
-	} else {
-		vec!["tamanu-api", "tamanu-tasks"]
+	#[test]
+	fn not_running_listed_as_diagnosis() {
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, false), // not running
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("not running"),
+					"reason was {reason:?}"
+				);
+				assert!(
+					reason.contains("tamanu-facility-tasks"),
+					"reason was {reason:?}"
+				);
+			}
+			other => panic!("{other:?}"),
+		}
 	}
 }

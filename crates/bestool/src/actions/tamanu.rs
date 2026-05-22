@@ -24,6 +24,12 @@ mod roots;
 ))]
 pub mod server_info;
 
+#[cfg(feature = "tamanu-doctor")]
+pub mod pm2;
+
+#[cfg(feature = "tamanu-doctor")]
+pub mod services;
+
 /// Interact with Tamanu.
 ///
 /// Alias: t
