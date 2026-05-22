@@ -12,6 +12,8 @@ pub struct TamanuConfig {
 	pub mailgun: Option<Mailgun>,
 	pub primary_time_zone: Option<String>,
 	pub country_time_zone: Option<String>,
+	#[serde(default)]
+	pub fhir: Fhir,
 }
 
 impl TamanuConfig {
@@ -34,6 +36,22 @@ impl TamanuConfig {
 			.as_deref()
 			.or(self.country_time_zone.as_deref())
 	}
+
+	pub fn fhir_worker_enabled(&self) -> bool {
+		self.fhir.worker.enabled
+	}
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Fhir {
+	pub worker: FhirWorker,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FhirWorker {
+	pub enabled: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
