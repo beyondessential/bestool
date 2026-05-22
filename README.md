@@ -8,16 +8,16 @@ See `bestool <subcommand> --help` for extensive help.
 
 ## Download
 
-Current release: 1.8.2
-
 | Platform | Variant | Download |
 | -------- | ------- | -------- |
-| Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/1.8.2/x86_64-pc-windows-msvc/bestool.exe) |
-| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/1.8.2/x86_64-unknown-linux-gnu/bestool) |
-| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/1.8.2/x86_64-unknown-linux-musl/bestool) |
-| Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/1.8.2/aarch64-unknown-linux-musl/bestool) |
-| Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/1.8.2/x86_64-apple-darwin/bestool) |
-| Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/1.8.2/aarch64-apple-darwin/bestool) |
+| Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/latest/x86_64-pc-windows-msvc/bestool.exe) |
+| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-gnu/bestool) |
+| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-musl/bestool) |
+| Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-unknown-linux-musl/bestool) |
+| Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-apple-darwin/bestool) |
+| Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-apple-darwin/bestool) |
+
+These URLs always point to the latest release. Pin to a specific version with `https://tools.ops.tamanu.io/bestool/<version>/<target>/bestool`.
 
 ### Self-update
 
@@ -37,19 +37,6 @@ echo "deb [signed-by=/etc/apt/keyrings/bes-tools.gpg] https://tools.ops.tamanu.i
 sudo apt-get update
 sudo apt-get install bestool
 ```
-
-### Always-latest URLs
-
-The above URLs are for the current release. If you want to always get the latest version, you can use the following URLs:
-
-| Platform | Variant | Download |
-| -------- | ------- | -------- |
-| Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/latest/x86_64-pc-windows-msvc/bestool.exe) |
-| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-gnu/bestool) |
-| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-musl/bestool) |
-| Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-unknown-linux-musl/bestool) |
-| Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-apple-darwin/bestool) |
-| Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-apple-darwin/bestool) |
 
 ### In GitHub Actions
 
@@ -114,16 +101,7 @@ $ cargo build --release
 ```
 
 Commits should follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format.
-Types are listed in the [cliff.toml](./cliff.toml#L62-L78) file.
 
 ### Releasing
 
-To make a release, install [cargo-release](https://github.com/crate-ci/cargo-release) and [git-cliff](https://git-cliff.org/), then:
-
-```console
-$ git switch main
-$ git pull
-$ cargo release minor --execute
-```
-
-(or `patch` or `major` instead of `minor`)
+Releases are automated by [release-plz](https://release-plz.dev). Pushing to `main` opens a `repo: release` PR with per-crate version bumps determined from conventional commits and `cargo-semver-checks`; merging that PR (auto-merge is enabled once CI is green) publishes the affected crates to crates.io, pushes per-crate tags, and triggers the binary-build workflows.

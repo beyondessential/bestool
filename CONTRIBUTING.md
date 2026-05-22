@@ -66,7 +66,7 @@ The following types are conventional:
 - `tweak` for minor changes that do not fit into any other category
 - `wip` or `draft` for features committed in a half-working state (must be feature-gated)
 
-This list is informational, the authoritative list is in the [git-cliff config](./cliff.toml).
+This list is informational.
 
 Additional change lines can be added to the body of a commit message.
 
