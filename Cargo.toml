@@ -9,6 +9,9 @@ members = [
 	"crates/rpi-st7789v2-driver",
 ]
 
+[workspace.package]
+exclude = ["release.toml", "update-usage.sh"]
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 rust_2018_idioms = { level = "deny", priority = -1 }

@@ -6,6 +6,7 @@ authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes
 license = "GPL-3.0-or-later"
 description = "psql-inspired client for PostgreSQL"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/psql"
+exclude.workspace = true
 
 [lints]
 workspace = true

@@ -6,6 +6,7 @@ authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes
 license = "GPL-3.0-or-later"
 description = "PostgreSQL connection pool utilities for BES tooling"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/postgres"
+exclude.workspace = true
 
 [lints]
 workspace = true
