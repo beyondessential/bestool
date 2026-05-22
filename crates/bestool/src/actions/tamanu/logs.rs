@@ -1,8 +1,9 @@
 use std::{
+	fmt::Write as _,
 	fs::File,
-	io::{Read, Seek, SeekFrom, Write},
+	io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
 	path::Path,
-	process::Command,
+	process::{Command, Stdio},
 	sync::mpsc::{Sender, channel},
 	thread,
 	time::Duration,
@@ -10,7 +11,9 @@ use std::{
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail, miette};
+use owo_colors::OwoColorize;
 use regex::Regex;
+use serde_json::Value;
 use tracing::debug;
 
 use crate::actions::{
@@ -24,10 +27,14 @@ use crate::actions::{
 
 /// Tail logs for a Tamanu service, in a supervisor-agnostic way.
 ///
-/// On Linux this drives `journalctl -u`; on Windows it drives `pm2 logs`. The
-/// service name is matched as a substring against the expected service list,
-/// so `tamanu logs api` picks up `tamanu-{central,facility}-api@*` on systemd
-/// and `tamanu-api` on pm2.
+/// On Linux this drives `journalctl -u`; on Windows it reads pm2's log files
+/// directly. The service name is matched as a substring against the expected
+/// service list, so `tamanu logs api` picks up
+/// `tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
+///
+/// The special name `caddy` tails the caddy service (Linux only). Caddy
+/// emits JSON-per-line logs; bestool detects these and applies opportunistic
+/// syntax highlighting on a TTY.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct LogsArgs {
@@ -50,6 +57,15 @@ pub struct LogsArgs {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
+	if ctx.args_sub.name == "caddy" {
+		return run_caddy_logs(
+			ctx.args_sub.lines,
+			ctx.args_sub.follow,
+			ctx.args_sub.grep.as_ref(),
+			ctx.args_top.use_colours,
+		);
+	}
+
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
@@ -115,6 +131,112 @@ fn match_name<'a>(
 		.iter()
 		.filter(|e| e.state == ExpectedState::Up)
 		.filter(move |e| e.name.contains(needle))
+}
+
+fn run_caddy_logs(
+	lines: usize,
+	follow: bool,
+	grep: Option<&Regex>,
+	use_colours: bool,
+) -> Result<()> {
+	if !cfg!(target_os = "linux") {
+		bail!("caddy logs are only available on Linux deployments");
+	}
+
+	// --output=cat strips journalctl's prefix (timestamp, host, unit) so we
+	// see the raw log lines caddy emits. Caddy puts its own ts into each line.
+	let mut cmd = Command::new("journalctl");
+	cmd.arg("-u").arg("caddy.service");
+	cmd.arg("-n").arg(lines.to_string());
+	if follow {
+		cmd.arg("-f");
+	}
+	if let Some(re) = grep {
+		cmd.arg("-g").arg(re.as_str());
+	}
+	cmd.arg("--output=cat");
+	cmd.stdout(Stdio::piped());
+
+	let mut child = cmd.spawn().into_diagnostic()?;
+	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
+	let reader = BufReader::new(stdout);
+
+	let out_handle = std::io::stdout();
+	let mut out = out_handle.lock();
+	for line in reader.lines() {
+		let line = match line {
+			Ok(l) => l,
+			Err(_) => break,
+		};
+		let formatted = format_log_line(&line, use_colours);
+		if writeln!(out, "{formatted}").is_err() {
+			break;
+		}
+	}
+	let status = child.wait().into_diagnostic()?;
+	if !status.success() {
+		bail!("journalctl exited with {status}");
+	}
+	Ok(())
+}
+
+/// If `line` looks like a JSON object, format it with colored tokens; else
+/// return it as-is. `color = false` always returns the line unchanged.
+fn format_log_line(line: &str, color: bool) -> String {
+	if !color {
+		return line.to_string();
+	}
+	let trimmed = line.trim_start();
+	if !trimmed.starts_with('{') {
+		return line.to_string();
+	}
+	let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+		return line.to_string();
+	};
+	let mut out = String::new();
+	write_colored_json(&value, &mut out);
+	out
+}
+
+fn write_colored_json(v: &Value, out: &mut String) {
+	match v {
+		Value::Null => {
+			let _ = write!(out, "{}", "null".dimmed());
+		}
+		Value::Bool(b) => {
+			let _ = write!(out, "{}", b.bright_magenta());
+		}
+		Value::Number(n) => {
+			let _ = write!(out, "{}", n.to_string().yellow());
+		}
+		Value::String(s) => {
+			let quoted = serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""));
+			let _ = write!(out, "{}", quoted.green());
+		}
+		Value::Array(a) => {
+			let _ = write!(out, "{}", "[".dimmed());
+			for (i, x) in a.iter().enumerate() {
+				if i > 0 {
+					let _ = write!(out, "{}", ",".dimmed());
+				}
+				write_colored_json(x, out);
+			}
+			let _ = write!(out, "{}", "]".dimmed());
+		}
+		Value::Object(o) => {
+			let _ = write!(out, "{}", "{".dimmed());
+			for (i, (k, vv)) in o.iter().enumerate() {
+				if i > 0 {
+					let _ = write!(out, "{}", ",".dimmed());
+				}
+				let key = format!("\"{k}\"");
+				let _ = write!(out, "{}", key.cyan());
+				let _ = write!(out, "{}", ":".dimmed());
+				write_colored_json(vv, out);
+			}
+			let _ = write!(out, "{}", "}".dimmed());
+		}
+	}
 }
 
 fn run_journalctl(
@@ -429,6 +551,39 @@ mod tests {
 			received.push(msg);
 		}
 		assert_eq!(received.len(), 3);
+	}
+
+	#[test]
+	fn format_log_line_passes_non_json_through() {
+		assert_eq!(
+			format_log_line("plain text line", true),
+			"plain text line"
+		);
+	}
+
+	#[test]
+	fn format_log_line_no_color_passes_json_through() {
+		let line = r#"{"level":"info","msg":"hello"}"#;
+		assert_eq!(format_log_line(line, false), line);
+	}
+
+	#[test]
+	fn format_log_line_colors_json() {
+		// We don't lock in the exact ANSI codes — just check that the colored
+		// output contains the expected literal pieces and is decorated with
+		// escape codes.
+		let line = r#"{"level":"info","msg":"hi","status":200}"#;
+		let out = format_log_line(line, true);
+		assert!(out.contains("\u{1b}["), "expected ANSI escapes in: {out:?}");
+		assert!(out.contains("level"));
+		assert!(out.contains("info"));
+		assert!(out.contains("200"));
+	}
+
+	#[test]
+	fn format_log_line_handles_malformed_json() {
+		let line = "{not really json";
+		assert_eq!(format_log_line(line, true), line);
 	}
 
 	#[test]
