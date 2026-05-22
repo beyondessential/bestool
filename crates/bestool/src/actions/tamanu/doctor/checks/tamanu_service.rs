@@ -6,6 +6,7 @@ use super::CheckContext;
 use crate::actions::tamanu::{
 	ApiServerKind,
 	doctor::check::Check,
+	pm2,
 	services::{ExpectedState, Expectation, Instances, Supervisor, expected, parse_systemd_unit},
 };
 
@@ -26,6 +27,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 	let expectations = expected(supervisor, kind, &ctx.config);
 
+	let mut pm2_source: Option<pm2::Source> = None;
 	let mut discovered = match supervisor {
 		Supervisor::Systemd => match discover_systemd() {
 			Ok(d) => d,
@@ -35,7 +37,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 			}
 		},
 		Supervisor::Pm2 => match discover_pm2() {
-			Ok(d) => d,
+			Ok((d, source)) => {
+				pm2_source = Some(source);
+				d
+			}
 			Err(err) => {
 				return Check::fail("tamanu_service", "pm2 unavailable", err)
 					.with_detail("supervisor", "pm2");
@@ -66,7 +71,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		}
 	}
 
-	evaluate(supervisor, &expectations, &discovered)
+	evaluate_with_source(supervisor, &expectations, &discovered, pm2_source)
 }
 
 fn systemd_is_enabled(name: &str) -> bool {
@@ -139,40 +144,26 @@ fn discover_systemd() -> Result<Vec<Discovered>, String> {
 	Ok(out)
 }
 
-fn discover_pm2() -> Result<Vec<Discovered>, String> {
-	let output = Command::new("pm2")
-		.arg("jlist")
-		.output()
-		.map_err(|e| e.to_string())?;
-	if !output.status.success() {
-		return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-	}
-	let parsed: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+fn discover_pm2() -> Result<(Vec<Discovered>, pm2::Source), String> {
+	let (procs, source) = pm2::list()?;
 	let mut out = Vec::new();
-	if let Some(procs) = parsed.as_array() {
-		for p in procs {
-			let Some(name) = p["name"].as_str() else {
-				continue;
-			};
-			if !name.starts_with("tamanu-") {
-				continue;
-			}
-			let state = p["pm2_env"]["status"].as_str().unwrap_or("unknown");
-			let pm_id = p["pm_id"].as_i64();
-			let raw = match pm_id {
-				Some(id) => format!("{name}#{id}"),
-				None => name.to_string(),
-			};
-			out.push(Discovered {
-				name: name.to_string(),
-				instance: None,
-				running: state == "online",
-				present: true,
-				raw,
-			});
+	for p in procs {
+		if !p.name.starts_with("tamanu-") {
+			continue;
 		}
+		let raw = match p.pm_id {
+			Some(id) => format!("{}#{id}", p.name),
+			None => p.name.clone(),
+		};
+		out.push(Discovered {
+			name: p.name,
+			instance: None,
+			running: p.running,
+			present: true,
+			raw,
+		});
 	}
-	Ok(out)
+	Ok((out, source))
 }
 
 /// Per-expectation outcome.
@@ -358,6 +349,19 @@ fn evaluate(
 			"extras",
 			Value::Array(extras.into_iter().map(Value::String).collect()),
 		)
+}
+
+fn evaluate_with_source(
+	supervisor: Supervisor,
+	expectations: &[Expectation],
+	discovered: &[Discovered],
+	pm2_source: Option<pm2::Source>,
+) -> Check {
+	let check = evaluate(supervisor, expectations, discovered);
+	match pm2_source {
+		Some(s) => check.with_detail("pm2_source", s.as_str()),
+		None => check,
+	}
 }
 
 fn instances_to_json(i: &Instances) -> Value {

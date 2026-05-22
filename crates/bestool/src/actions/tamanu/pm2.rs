@@ -36,7 +36,6 @@ pub struct PmProc {
 	pub name: String,
 	pub pm_id: Option<i64>,
 	pub running: bool,
-	pub source: Source,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -45,15 +44,26 @@ pub enum Source {
 	Dump,
 }
 
+impl Source {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Source::Cli => "cli",
+			Source::Dump => "dump",
+		}
+	}
+}
+
 /// Discover pm2-managed processes. Tries the CLI first; if that fails for any
-/// reason, falls back to reading `PM2_HOME/dump.pm2` plus pid files.
-pub fn list() -> Result<Vec<PmProc>, String> {
+/// reason, falls back to reading `PM2_HOME/dump.pm2` plus pid files. The
+/// returned `Source` records which path was taken — useful in diagnostics
+/// since the dump-based fallback is stale-tolerant.
+pub fn list() -> Result<(Vec<PmProc>, Source), String> {
 	match list_via_cli() {
-		Ok(procs) => Ok(procs),
+		Ok(procs) => Ok((procs, Source::Cli)),
 		Err(cli_err) => {
 			debug!(%cli_err, "pm2 CLI unreachable, falling back to dump.pm2");
 			match list_via_dump() {
-				Ok(procs) => Ok(procs),
+				Ok(procs) => Ok((procs, Source::Dump)),
 				Err(dump_err) => Err(format!(
 					"could not list pm2 processes: cli: {cli_err}; dump: {dump_err}"
 				)),
@@ -150,7 +160,6 @@ fn list_via_cli() -> Result<Vec<PmProc>, String> {
 			name: name.to_string(),
 			pm_id,
 			running: state == "online",
-			source: Source::Cli,
 		});
 	}
 	Ok(out)
@@ -223,7 +232,6 @@ fn list_via_dump_at(home: &Path) -> Result<Vec<PmProc>, String> {
 			name: entry.name,
 			pm_id: entry.pm_id,
 			running,
-			source: Source::Dump,
 		});
 	}
 	Ok(out)
@@ -460,7 +468,6 @@ mod tests {
 		assert_eq!(procs.len(), 1);
 		assert_eq!(procs[0].name, "tamanu-api");
 		assert!(procs[0].running, "process should be reported running");
-		assert_eq!(procs[0].source, Source::Dump);
 	}
 
 	#[test]
