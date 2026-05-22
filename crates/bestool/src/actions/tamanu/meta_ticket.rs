@@ -14,8 +14,8 @@ use crate::actions::{
 		connection_url::ConnectionUrlBuilder,
 		find_tamanu,
 		server_info::{
-			detect_virtualisation, fetch_device_key_with, get_or_create_server_id,
-			get_tailscale_info, query_device_key_row,
+			detect_virtualisation, get_or_create_device_key, get_or_create_server_id,
+			get_tailscale_info,
 		},
 	},
 };
@@ -67,11 +67,7 @@ pub async fn run(ctx: Context<TamanuArgs, MetaTicketArgs>) -> Result<()> {
 	let pool = bestool_psql::create_pool(&url).await?;
 	let client = pool.get().await.into_diagnostic()?;
 
-	let device_key_pem = fetch_device_key_with(|| query_device_key_row(&client))
-		.await
-		.ok_or_else(|| {
-			miette!("no deviceKey available; expected at standard path or local_system_facts")
-		})?;
+	let device_key_pem = get_or_create_device_key(&client).await?;
 
 	let public_key_pem = derive_public_key_pem(&device_key_pem)?;
 
