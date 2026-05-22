@@ -60,18 +60,18 @@ pub struct ImprovWifiArgs {
 	pub auth_gpio: Option<u8>,
 
 	/// Debounce window for `--auth-gpio`.
-	#[arg(long, default_value = "50ms")]
-	pub auth_gpio_debounce: humantime::Duration,
+	#[arg(long, default_value = "50ms", value_parser = crate::actions::iti::parse_friendly_duration)]
+	pub auth_gpio_debounce: Duration,
 
 	/// Hold time on `--auth-gpio` that counts as a long press (daemon mode only).
-	#[arg(long, default_value = "3s")]
-	pub auth_gpio_long_press: humantime::Duration,
+	#[arg(long, default_value = "3s", value_parser = crate::actions::iti::parse_friendly_duration)]
+	pub auth_gpio_long_press: Duration,
 
 	/// How long an authorisation stays valid before the device reverts to
 	/// `AuthorizationRequired`. If unset, the device stays authorised until provisioned or
 	/// shut down.
-	#[arg(long)]
-	pub auth_timeout: Option<humantime::Duration>,
+	#[arg(long, value_parser = crate::actions::iti::parse_friendly_duration)]
+	pub auth_timeout: Option<Duration>,
 
 	/// Skip authorisation gating: start the advertising session in `Authorized` and accept
 	/// credentials from any device in BLE range without requiring a button press or stdin
@@ -132,7 +132,7 @@ pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
 		} else {
 			AuthorizeMode::Required
 		},
-		auth_timeout: args.auth_timeout.map(Duration::from),
+		auth_timeout: args.auth_timeout,
 		local_name,
 	};
 
@@ -173,11 +173,7 @@ async fn run_one_shot(
 
 	let _gpio_pin = if let Some(pin) = args.auth_gpio {
 		Some(
-			install_short_press_authoriser(
-				pin,
-				args.auth_gpio_debounce.into(),
-				auth_handle,
-			)
+			install_short_press_authoriser(pin, args.auth_gpio_debounce, auth_handle)
 			.wrap_err_with(|| format!("auth-gpio: configure BCM pin {pin}"))?,
 		)
 	} else {
@@ -213,8 +209,8 @@ async fn run_watch(
 
 	let mut classifier = install_press_classifier(
 		pin_num,
-		args.auth_gpio_debounce.into(),
-		args.auth_gpio_long_press.into(),
+		args.auth_gpio_debounce,
+		args.auth_gpio_long_press,
 	)
 	.wrap_err_with(|| format!("auth-gpio: configure BCM pin {pin_num}"))?;
 

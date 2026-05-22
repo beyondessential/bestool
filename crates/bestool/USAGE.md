@@ -20,6 +20,17 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool file`↴](#bestool-file)
 * [`bestool file join`↴](#bestool-file-join)
 * [`bestool file split`↴](#bestool-file-split)
+* [`bestool iti`↴](#bestool-iti)
+* [`bestool iti battery`↴](#bestool-iti-battery)
+* [`bestool iti improv-wifi`↴](#bestool-iti-improv-wifi)
+* [`bestool iti lcd`↴](#bestool-iti-lcd)
+* [`bestool iti lcd serve`↴](#bestool-iti-lcd-serve)
+* [`bestool iti lcd send`↴](#bestool-iti-lcd-send)
+* [`bestool iti lcd clear`↴](#bestool-iti-lcd-clear)
+* [`bestool iti lcd on`↴](#bestool-iti-lcd-on)
+* [`bestool iti lcd off`↴](#bestool-iti-lcd-off)
+* [`bestool iti sparks`↴](#bestool-iti-sparks)
+* [`bestool iti temperature`↴](#bestool-iti-temperature)
 * [`bestool rdp`↴](#bestool-rdp)
 * [`bestool rdp monitor`↴](#bestool-rdp-monitor)
 * [`bestool rdp service`↴](#bestool-rdp-service)
@@ -67,6 +78,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `completions` — Generate a shell completions script
 * `crypto` — Cryptographic operations
 * `file` — File utilities
+* `iti` — Tamanu Iti subcommands
 * `rdp` — Windows RDP session tooling
 * `self-update` — Update this bestool
 * `ssh` — SSH helpers
@@ -123,7 +135,7 @@ Export audit database entries as JSON
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: /home/felix/.local/state/bestool-psql)
 * `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
 
   Default value: `100`
@@ -624,6 +636,272 @@ The checksums are compatible with the ones written and verified by the `crypto h
    Takes a non-zero integer size in mibibytes.
 
    If not present, the default is to pick a chunk size between 8 MiB and 64 MiB inclusive, such that the input file is divided in 1000 chunks. The resulting size is rounded to the nearest 8 KiB, to make copying and disk usage more efficient.
+
+
+
+## `bestool iti`
+
+Tamanu Iti subcommands
+
+**Usage:** `bestool iti <COMMAND>`
+
+###### **Subcommands:**
+
+* `battery` — Get battery information from the X1201 board
+* `improv-wifi` — Run the Improv-Wi-Fi BLE peripheral so a phone or browser can provision the device's Wi-Fi
+* `lcd` — Control an LCD screen
+* `sparks` — Display CPU and memory usage as spark lines on the LCD
+* `temperature` — Get core temperature from the Raspberry Pi
+
+
+
+## `bestool iti battery`
+
+Get battery information from the X1201 board
+
+**Usage:** `bestool iti battery [OPTIONS] [ZMQ_SOCKET]`
+
+###### **Arguments:**
+
+* `<ZMQ_SOCKET>` — ZMQ socket to use for screen updates
+
+  Default value: `tcp://[::1]:2009`
+
+###### **Options:**
+
+* `--json` — Output in JSON format
+* `--update-screen <UPDATE_SCREEN>` — Update screen with battery status.
+
+   Argument is the Y position of the battery status. The X position is always 240 (right edge).
+
+   With --estimate, this will also print the time remaining on the left edge (X=20).
+* `--watch <WATCH>` — Keep updating at an interval.
+
+   Syntax is a number followed by a unit, such as "5s" or "1m".
+* `--estimate` — With --watch, also estimate charging rate and time remaining.
+
+   The first round will be estimate-less, as it is used to gather data. After that, the rate and time remaining (in seconds in the JSON output) are calculated on a rolling basis.
+
+
+
+## `bestool iti improv-wifi`
+
+Run the Improv-Wi-Fi BLE peripheral so a phone or browser can provision the device's Wi-Fi.
+
+Uses BlueZ for BLE and NetworkManager for Wi-Fi configuration.
+
+Default mode is a long-running daemon that advertises only on demand (a fresh device with no Wi-Fi config advertises immediately for first-boot provisioning; once provisioned, the device stays idle until a long-press on `--auth-gpio` re-enters provisioning mode). Use `--one-shot` for the legacy single-provisioning behaviour.
+
+**Usage:** `bestool iti improv-wifi [OPTIONS]`
+
+###### **Options:**
+
+* `--adapter <ADAPTER>` — Bluetooth adapter to use (e.g. `hci0`). Defaults to the system's first powered adapter
+* `--local-name <LOCAL_NAME>` — Local name advertised over BLE. Defaults to the system hostname
+* `--device-name <DEVICE_NAME>` — Device name reported in Device Info / Device Name commands. Defaults to the system hostname
+* `--auth-stdin` — Authorise when a line is received on stdin (the line content is ignored).
+
+   When set, the device starts in `AuthorizationRequired` and only accepts credentials after the first line on stdin. Only valid with `--one-shot`.
+* `--auth-gpio <AUTH_GPIO>` — Authorise on a button press on this BCM GPIO pin.
+
+   The pin is configured as input with the internal pull-up resistor; wire a momentary switch from the pin to GND.
+
+   In default (daemon) mode this is the long-press trigger to enter provisioning mode and the short-press trigger to authorise an in-progress session. In `--one-shot` mode any press authorises the single session.
+* `--auth-gpio-debounce <AUTH_GPIO_DEBOUNCE>` — Debounce window for `--auth-gpio`
+
+  Default value: `50ms`
+* `--auth-gpio-long-press <AUTH_GPIO_LONG_PRESS>` — Hold time on `--auth-gpio` that counts as a long press (daemon mode only)
+
+  Default value: `3s`
+* `--auth-timeout <AUTH_TIMEOUT>` — How long an authorisation stays valid before the device reverts to `AuthorizationRequired`. If unset, the device stays authorised until provisioned or shut down
+* `--no-auth` — Skip authorisation gating: start the advertising session in `Authorized` and accept credentials from any device in BLE range without requiring a button press or stdin input.
+
+   SECURITY WARNING: this removes the physical-presence guarantee. Any device in BLE range during an advertising session can overwrite the device's Wi-Fi configuration. Requires `--one-shot`.
+* `--always` — Run even if Wi-Fi is already connected.
+
+   In `--one-shot` mode, the command exits cleanly when NetworkManager reports the Wi-Fi device is in the `Activated` state. Pass this flag to override that check.
+* `--one-shot` — Run a single provisioning session and exit, instead of staying alive as a daemon.
+
+   SECURITY WARNING: while running, the device advertises over BLE until it is provisioned, expanding the BLE attack surface. The default daemon mode is invisible after provisioning and only re-enters advertising on a long-press of `--auth-gpio`.
+
+
+
+## `bestool iti lcd`
+
+Control an LCD screen.
+
+This is made for Waveshare's 1.69 inch LCD display, connected over SPI to a Raspberry Pi.
+
+See more info about it here: https://www.waveshare.com/wiki/1.69inch_LCD_Module
+
+You'll want to set up SPI's buffer size by adding `spidev.bufsiz=131072` to `/boot/firmware/cmdline.txt`, otherwise you'll get "Message too long" errors.
+
+**Usage:** `bestool iti lcd [OPTIONS] [ZMQ_SOCKET] <COMMAND>`
+
+###### **Subcommands:**
+
+* `serve` — Start the LCD display server
+* `send` — Send an arbitrary JSON message to the display server
+* `clear` — Set all pixels to a single color
+* `on` — Turn the display on
+* `off` — Turn the display off
+
+###### **Arguments:**
+
+* `<ZMQ_SOCKET>` — ZMQ socket to use for JSON screen updates
+
+  Default value: `tcp://[::1]:2009`
+
+###### **Options:**
+
+* `--spi <SPI>` — SPI port to use
+
+  Default value: `0`
+* `--backlight <BACKLIGHT>` — GPIO pin number for the display's backlight control pin
+
+  Default value: `18`
+* `--reset <RESET>` — GPIO pin number for the display's reset pin
+
+  Default value: `27`
+* `--dc <DC>` — GPIO pin number for the display's data/command pin
+
+  Default value: `25`
+* `--ce <CE>` — SPI CE number for the display's chip select pin
+
+  Default value: `0`
+* `--frequency <FREQUENCY>` — SPI frequency in Hz
+
+  Default value: `20000000`
+
+
+
+## `bestool iti lcd serve`
+
+Start the LCD display server.
+
+This will initiatialize the LCD display, listen for JSON messages on a ZMQ REP socket, and update the display based on the contents of the messages.
+
+Note that enabling trace-level (`-vvv`) logging will considerably slow down screen updates, as it will log every command sent to the screen, which can be considerable for complex layouts and text.
+
+**Usage:** `bestool iti lcd serve`
+
+
+
+## `bestool iti lcd send`
+
+Send an arbitrary JSON message to the display server.
+
+This is useful for debugging or testing the display server, or for interacting with the screen without a ZMQ client.
+
+The message can be provided either as the first argument, or over stdin.
+
+The message will be validated by the client to avoid sending malformed messages to the server. The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+
+**Usage:** `bestool iti lcd send [MESSAGE]`
+
+###### **Arguments:**
+
+* `<MESSAGE>` — JSON message to send
+
+
+
+## `bestool iti lcd clear`
+
+Set all pixels to a single color.
+
+The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+
+**Usage:** `bestool iti lcd clear [RED] [GREEN] [BLUE]`
+
+###### **Arguments:**
+
+* `<RED>` — Red value for the background color
+
+  Default value: `0`
+* `<GREEN>` — Green value for the background color
+
+  Default value: `0`
+* `<BLUE>` — Blue value for the background color
+
+  Default value: `0`
+
+
+
+## `bestool iti lcd on`
+
+Turn the display on.
+
+This wakes the display, turns on the backlight, and shows the current screen contents.
+
+The LCD must then rest for 120ms before any further commands can be sent.
+
+The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+
+**Usage:** `bestool iti lcd on`
+
+
+
+## `bestool iti lcd off`
+
+Turn the display off.
+
+This turns off the backlight and puts the display to sleep, which uses less power.
+
+The LCD must then rest for 5ms before any further commands can be sent.
+
+The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+
+**Usage:** `bestool iti lcd off`
+
+
+
+## `bestool iti sparks`
+
+Display CPU and memory usage as spark lines on the LCD
+
+**Usage:** `bestool iti sparks [OPTIONS] [ZMQ_SOCKET]`
+
+###### **Arguments:**
+
+* `<ZMQ_SOCKET>` — ZMQ socket to use for screen updates
+
+  Default value: `tcp://[::1]:2009`
+
+###### **Options:**
+
+* `--y <Y>` — Y position of the gauges
+
+  Default value: `30`
+* `--h <H>` — Height of the gauges
+
+  Default value: `27`
+* `--interval <INTERVAL>` — Refresh interval
+
+  Default value: `10s`
+
+
+
+## `bestool iti temperature`
+
+Get core temperature from the Raspberry Pi
+
+**Usage:** `bestool iti temperature [OPTIONS] [ZMQ_SOCKET]`
+
+###### **Arguments:**
+
+* `<ZMQ_SOCKET>` — ZMQ socket to use for screen updates
+
+  Default value: `tcp://[::1]:2009`
+
+###### **Options:**
+
+* `--json` — Output in JSON format
+* `--update-screen <UPDATE_SCREEN>` — Update screen with temperature.
+
+   Argument is the Y position of the temperature display. The X position is always 240 (right edge).
+* `--watch <WATCH>` — Keep updating at an interval.
+
+   Syntax is a number followed by a unit, such as "5s" or "1m".
 
 
 
@@ -1455,14 +1733,7 @@ Aliases: p, pg, sql
    Controls the color scheme for SQL syntax highlighting in the input line. 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails.
 
   Default value: `auto`
-
-  Possible values:
-  - `light`
-  - `dark`
-  - `auto`:
-    Auto-detect terminal theme
-
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to audit database directory (default: /home/felix/.local/state/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.

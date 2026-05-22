@@ -179,7 +179,7 @@ iti = [ # enable all iti subcommands
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:rppal"]
-iti-improv-wifi = ["__iti", "dep:humantime", "dep:improv-wifi", "dep:rppal"]
+iti-improv-wifi = ["__iti", "dep:improv-wifi", "dep:rppal"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
