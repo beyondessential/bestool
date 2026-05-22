@@ -182,11 +182,12 @@ async fn resolve_aaaa(host: &str) -> io::Result<bool> {
 
 	let resolver = TokioResolver::builder_tokio()
 		.map_err(io::Error::other)?
-		.build();
+		.build()
+		.map_err(io::Error::other)?;
 	let response = resolver
 		.ipv6_lookup(host)
 		.await
 		.map_err(io::Error::other)?;
-	Ok(response.iter().next().is_some())
+	Ok(!response.answers().is_empty())
 }
 
