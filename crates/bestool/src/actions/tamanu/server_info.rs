@@ -512,7 +512,7 @@ mod tests {
 			.unwrap();
 		client
 			.execute(
-				"DELETE FROM local_system_facts WHERE key = 'metaServerId'",
+				"DELETE FROM local_system_facts WHERE key IN ('metaServerId', 'deviceKey')",
 				&[],
 			)
 			.await
@@ -664,5 +664,66 @@ mod tests {
 			let mode = std::fs::metadata(&path).unwrap().permissions().mode();
 			assert_eq!(mode & 0o777, 0o644);
 		}
+	}
+
+	#[cfg(feature = "tamanu-meta-ticket")]
+	#[test]
+	fn generate_device_key_pem_produces_valid_pkcs8() {
+		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
+
+		let pem = generate_device_key_pem().unwrap();
+		assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+		assert!(pem.trim_end().ends_with("-----END PRIVATE KEY-----"));
+		SecretKey::from_pkcs8_pem(&pem).expect("generated PEM must parse as P-256 PKCS8");
+	}
+
+	#[cfg(feature = "tamanu-meta-ticket")]
+	#[test]
+	fn generate_device_key_pem_is_non_deterministic() {
+		let a = generate_device_key_pem().unwrap();
+		let b = generate_device_key_pem().unwrap();
+		assert_ne!(a, b);
+	}
+
+	#[cfg(feature = "tamanu-meta-ticket")]
+	#[tokio::test]
+	async fn test_get_or_create_device_key_generates_new() {
+		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
+
+		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let client = test_db_client().await;
+
+		let pem = get_or_create_device_key(&client).await.unwrap();
+		SecretKey::from_pkcs8_pem(&pem).expect("returned PEM must parse as P-256 PKCS8");
+	}
+
+	#[cfg(feature = "tamanu-meta-ticket")]
+	#[tokio::test]
+	async fn test_get_or_create_device_key_returns_existing_from_db() {
+		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let client = test_db_client().await;
+
+		let canned = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVvhzsYiidp38GYn1\nKxD5Wipc/h8lglVsy1UFZq/SZbGhRANCAAT2EsEq7xjeWVnim9XwdYXga/LBbppm\nfXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN\n-----END PRIVATE KEY-----\n";
+		client
+			.execute(
+				"INSERT INTO local_system_facts (key, value) VALUES ('deviceKey', $1)",
+				&[&canned],
+			)
+			.await
+			.unwrap();
+
+		let pem = get_or_create_device_key(&client).await.unwrap();
+		assert_eq!(pem, canned);
+	}
+
+	#[cfg(feature = "tamanu-meta-ticket")]
+	#[tokio::test]
+	async fn test_get_or_create_device_key_is_stable() {
+		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let client = test_db_client().await;
+
+		let a = get_or_create_device_key(&client).await.unwrap();
+		let b = get_or_create_device_key(&client).await.unwrap();
+		assert_eq!(a, b);
 	}
 }
