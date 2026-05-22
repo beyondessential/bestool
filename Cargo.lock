@@ -551,6 +551,7 @@ dependencies = [
  "privilege",
  "pulldown-cmark",
  "quick-xml 0.39.4",
+ "rand_core 0.6.4",
  "regex",
  "reqwest",
  "rpi-st7789v2-driver",
