@@ -38,7 +38,7 @@ embedded-graphics = { version = "0.8.1", optional = true }
 fs4 = { version = "1.1.0", features = ["tokio"], optional = true }
 futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
-hickory-resolver = { version = "0.25.2", optional = true }
+hickory-resolver = { version = "0.26.1", optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = { version = "0.2.24", features = ["serde"] }
