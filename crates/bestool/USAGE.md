@@ -49,6 +49,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
+* [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 
@@ -804,6 +805,7 @@ Alias: t
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
 * `greenmask-config` — Generate a Greenmask config file
+* `logs` — Tail logs for a Tamanu service, in a supervisor-agnostic way.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
 
@@ -1395,6 +1397,30 @@ Generate a Greenmask config file
    By default, this is the `greenmask/dumps` folder in the Tamanu root.
 
    If the folder does not exist, it will be created.
+
+
+
+## `bestool tamanu logs`
+
+Tail logs for a Tamanu service, in a supervisor-agnostic way.
+
+On Linux this drives `journalctl -u`; on Windows it drives `pm2 logs`. The
+service name is matched as a substring against the expected service list,
+so `tamanu logs api` picks up `tamanu-{central,facility}-api@*` on systemd
+and `tamanu-api` on pm2.
+
+**Usage:** `bestool tamanu logs [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Service name. Matched as a substring against the expected service list
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — Number of trailing lines to print before tailing
+
+  Default value: `10`
+* `-f`, `--follow` — Follow: keep printing new lines as they arrive. Equivalent to `tail -f`
 
 
 

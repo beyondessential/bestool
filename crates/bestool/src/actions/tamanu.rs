@@ -24,10 +24,10 @@ mod roots;
 ))]
 pub mod server_info;
 
-#[cfg(feature = "tamanu-doctor")]
+#[cfg(any(feature = "tamanu-doctor", feature = "tamanu-logs"))]
 pub mod pm2;
 
-#[cfg(feature = "tamanu-doctor")]
+#[cfg(any(feature = "tamanu-doctor", feature = "tamanu-logs"))]
 pub mod services;
 
 /// Interact with Tamanu.
@@ -83,6 +83,9 @@ super::subcommands! {
 	find => Find(FindArgs),
 	#[cfg(feature = "tamanu-greenmask")]
 	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
+	#[cfg(feature = "tamanu-logs")]
+	#[clap(alias = "l")]
+	logs => Logs(LogsArgs),
 	#[cfg(feature = "tamanu-meta-ticket")]
 	meta_ticket => MetaTicket(MetaTicketArgs),
 	#[cfg(feature = "tamanu-psql")]
