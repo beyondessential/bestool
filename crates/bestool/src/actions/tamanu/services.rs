@@ -76,7 +76,7 @@ impl Instances {
 			(Instances::NumericAtLeast(_), None) => true, // pm2 case
 			(Instances::NumericAtLeast(_), Some(s)) => s.chars().all(|c| c.is_ascii_digit()),
 			(Instances::Named(_), None) => true, // pm2 case
-			(Instances::Named(xs), Some(s)) => xs.iter().any(|x| *x == s),
+			(Instances::Named(xs), Some(s)) => xs.contains(&s),
 		}
 	}
 }

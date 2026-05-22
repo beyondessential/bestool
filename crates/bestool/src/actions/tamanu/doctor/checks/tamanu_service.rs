@@ -26,7 +26,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 	let expectations = expected(supervisor, kind, &ctx.config);
 
-	let discovered = match supervisor {
+	let mut discovered = match supervisor {
 		Supervisor::Systemd => match discover_systemd() {
 			Ok(d) => d,
 			Err(err) => {
@@ -43,7 +43,43 @@ pub async fn run(ctx: CheckContext) -> Check {
 		},
 	};
 
+	// Probe `is-enabled` for any Down expectation whose unit didn't show up in
+	// `list-units` — catches `enabled-but-not-loaded` cases (rare but possible).
+	if matches!(supervisor, Supervisor::Systemd) {
+		for exp in &expectations {
+			if !matches!(exp.state, ExpectedState::Down) {
+				continue;
+			}
+			let already = discovered.iter().any(|d| d.name == exp.name);
+			if already {
+				continue;
+			}
+			if systemd_is_enabled(exp.name) {
+				discovered.push(Discovered {
+					name: exp.name.to_string(),
+					instance: None,
+					running: false,
+					present: true,
+					raw: format!("{}.service (enabled)", exp.name),
+				});
+			}
+		}
+	}
+
 	evaluate(supervisor, &expectations, &discovered)
+}
+
+fn systemd_is_enabled(name: &str) -> bool {
+	let output = Command::new("systemctl")
+		.args(["is-enabled", &format!("{name}.service")])
+		.output();
+	// Catch "enabled" and "enabled-runtime"; ignore "static" (can't be
+	// enabled/disabled), "alias" (just a symlink), "disabled", "masked",
+	// "linked", and "not-found".
+	let Ok(o) = output else { return false };
+	let state = String::from_utf8_lossy(&o.stdout);
+	let state = state.trim();
+	state == "enabled" || state == "enabled-runtime"
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
