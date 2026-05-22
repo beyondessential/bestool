@@ -126,12 +126,91 @@ jobs:
         with:
           subject-path: ${{ steps.package.outputs.asset }}
 
+      - name: Package DEB
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          arch=""
+          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+            arch="amd64"
+          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+            arch="arm64"
+          fi
+
+          deb_dir="target/deb-psql"
+          mkdir -p "$deb_dir/DEBIAN"
+          install -Dm755 "target/$target/dist/bestool-psql" "$deb_dir/usr/bin/bestool-psql"
+          install -Dm755 "target/$target/dist/bestool-psql-audit" "$deb_dir/usr/bin/bestool-psql-audit"
+
+          install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool-psql/copyright"
+          install -Dm644 crates/psql/USAGE.md "$deb_dir/usr/share/doc/bestool-psql/USAGE.md"
+          install -Dm644 crates/psql/README.md "$deb_dir/usr/share/doc/bestool-psql/README.md"
+          install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool-psql/EXAMPLES.md"
+
+          cat > "$deb_dir/DEBIAN/control" << EOF
+          Package: bestool-psql
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $arch
+          Maintainer: BES Developers <support@bes.au>
+          Description: psql-inspired client for PostgreSQL (BES Tooling)
+          Homepage: https://github.com/beyondessential/bestool
+          License: GPL-3.0-or-later
+          EOF
+
+          dpkg-deb --build --root-owner-group "$deb_dir" "bestool-psql-${target}-${version}.deb"
+
+      - uses: actions/attest-build-provenance@v4
+        if: contains(matrix.target, 'linux-gnu')
+        with:
+          subject-path: "bestool-psql-${{ matrix.target }}-${{ steps.version.outputs.version }}.deb"
+
       - uses: actions/upload-artifact@v7
         with:
           name: psql-${{ matrix.target }}
-          path: ${{ steps.package.outputs.asset }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            *.deb
           if-no-files-found: error
           retention-days: 7
+
+      - name: Configure AWS Credentials
+        if: contains(matrix.target, 'linux-gnu')
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          aws-region: ap-southeast-2
+          role-to-assume: arn:aws:iam::143295493206:role/gha-tamanu-tools-upload
+          role-session-name: GHA@BEStool-psql=Build
+
+      - name: Upload DEB to S3
+        if: contains(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          deb="bestool-psql-${target}-${version}.deb"
+          aws s3 cp "$deb" "s3://bes-ops-tools/bestool-psql/${version}/" --no-progress
+          aws s3 cp "$deb" "s3://bes-ops-tools/bestool-psql/latest/bestool-psql-${target}.deb" --no-progress
+
+      - name: Upload version file
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          echo -n "$version" > latest-version.txt
+          aws s3 cp latest-version.txt s3://bes-ops-tools/bestool-psql/latest-version.txt --no-progress
+
+      - name: Invalidate CloudFront
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          aws cloudfront create-invalidation \
+            --distribution-id=EDAG0UBS1MN74 \
+            --paths "/bestool-psql/${version}/*" "/bestool-psql/latest/*" "/bestool-psql/latest-version.txt"
 
   release:
     name: Publish GitHub Release
