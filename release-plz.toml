@@ -1,6 +1,4 @@
 [workspace]
-release_always = false
-release_commits = "^repo: release"
 pr_name = "repo: release"
 pr_branch_prefix = "release-plz/"
 pr_labels = ["autorelease"]
