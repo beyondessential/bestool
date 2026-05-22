@@ -8,3 +8,4 @@ git_tag_name = "{{ package }}-v{{ version }}"
 [[package]]
 name = "bestool"
 git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
