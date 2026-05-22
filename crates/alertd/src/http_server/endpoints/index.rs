@@ -13,11 +13,6 @@ pub async fn handle_index() -> impl IntoResponse {
 			"description": "Trigger a configuration reload (equivalent to SIGHUP)"
 		},
 		{
-			"method": "POST",
-			"path": "/alert",
-			"description": "Trigger a custom HTTP alert with JSON payload"
-		},
-		{
 			"method": "GET",
 			"path": "/alerts",
 			"description": "List currently loaded alert files"

@@ -43,7 +43,6 @@ fn synthetic_alert(event_type: &EventType, entity_key: Option<&str>) -> AlertDef
 pub enum EventType {
 	SourceError,
 	DefinitionError,
-	Http,
 	DatabaseDown,
 }
 
@@ -52,7 +51,6 @@ impl EventType {
 		match self {
 			Self::SourceError => "source-error",
 			Self::DefinitionError => "definition-error",
-			Self::Http => "http",
 			Self::DatabaseDown => "database-down",
 		}
 	}
@@ -68,11 +66,6 @@ pub enum EventContext {
 	DefinitionError {
 		alert_file: String,
 		error_message: String,
-	},
-	Http {
-		message: String,
-		subject: Option<String>,
-		custom: serde_json::Value,
 	},
 	DatabaseDown {
 		database_url: String,
@@ -97,19 +90,6 @@ impl EventContext {
 			} => {
 				ctx.insert("alert_file", alert_file);
 				ctx.insert("error_message", error_message);
-			}
-			Self::Http {
-				message,
-				subject,
-				custom,
-			} => {
-				ctx.insert("message", message);
-				ctx.insert("subject", subject.as_deref().unwrap_or("Custom alert"));
-				if let serde_json::Value::Object(map) = custom {
-					for (key, value) in map {
-						ctx.insert(key, value);
-					}
-				}
 			}
 			Self::DatabaseDown {
 				database_url,
@@ -345,10 +325,6 @@ fn default_event_template(event_type: &EventType) -> (String, String) {
 				.to_string(),
 			"<pre>{{ error_message }}</pre>".to_string(),
 		),
-		EventType::Http => (
-			"[bestool-alertd] {{ hostname }}: {{ subject }}".to_string(),
-			"{{ message }}".to_string(),
-		),
 		EventType::DatabaseDown => (
 			"[bestool-alertd] {{ hostname }}: Database unreachable".to_string(),
 			"The PostgreSQL database is unreachable.\n\n\
@@ -375,7 +351,6 @@ mod tests {
 	fn test_event_type_as_str() {
 		assert_eq!(EventType::SourceError.as_str(), "source-error");
 		assert_eq!(EventType::DefinitionError.as_str(), "definition-error");
-		assert_eq!(EventType::Http.as_str(), "http");
 		assert_eq!(EventType::DatabaseDown.as_str(), "database-down");
 	}
 
@@ -405,26 +380,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_event_context_to_tera_http() {
-		let ctx = EventContext::Http {
-			message: "Test message".to_string(),
-			subject: Some("Test subject".to_string()),
-			custom: serde_json::json!({"extra": "data"}),
-		};
-
-		let tera_ctx = ctx.to_tera_context();
-		assert_eq!(
-			tera_ctx.get("message").unwrap().as_str().unwrap(),
-			"Test message"
-		);
-		assert_eq!(
-			tera_ctx.get("subject").unwrap().as_str().unwrap(),
-			"Test subject"
-		);
-		assert_eq!(tera_ctx.get("extra").unwrap().as_str().unwrap(), "data");
-	}
-
-	#[test]
 	fn test_event_type_database_down() {
 		let yaml = "database-down";
 		let event: EventType = serde_yaml::from_str(yaml).unwrap();
@@ -446,21 +401,6 @@ mod tests {
 		assert_eq!(
 			tera_ctx.get("error_message").unwrap().as_str().unwrap(),
 			"connection refused"
-		);
-	}
-
-	#[test]
-	fn test_event_context_http_default_subject() {
-		let ctx = EventContext::Http {
-			message: "Test message".to_string(),
-			subject: None,
-			custom: serde_json::json!({}),
-		};
-
-		let tera_ctx = ctx.to_tera_context();
-		assert_eq!(
-			tera_ctx.get("subject").unwrap().as_str().unwrap(),
-			"Custom alert"
 		);
 	}
 

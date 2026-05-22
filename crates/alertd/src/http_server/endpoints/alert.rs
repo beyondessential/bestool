@@ -28,7 +28,6 @@ pub async fn handle_alert(
 				state.email_config.as_ref(),
 				state.dry_run,
 				event_context,
-				None,
 			)
 			.await
 		{
