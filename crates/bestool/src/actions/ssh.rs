@@ -110,7 +110,7 @@ pub async fn add_key(ctx: Context<SshArgs, AddKeyArgs>) -> Result<()> {
 		.open(&filepath)
 		.await
 		.into_diagnostic()?;
-	file.lock_exclusive()
+	file.lock()
 		.into_diagnostic()
 		.wrap_err("failed to obtain exclusive lock")?;
 
