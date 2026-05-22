@@ -6,9 +6,9 @@ use std::{
 
 use binstalk_downloader::remote::{Client, Url};
 use hickory_resolver::{
-	Resolver,
-	config::{NameServerConfig, ResolverConfig},
-	name_server::{ConnectionProvider, TokioConnectionProvider},
+	ConnectionProvider, Resolver,
+	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
+	net::runtime::TokioRuntimeProvider,
 };
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, info, instrument};
@@ -107,13 +107,15 @@ fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
 			None,
 			vec!["tail53aef.ts.net.".parse().unwrap()],
 			vec![NameServerConfig::new(
-				"100.100.100.100:53".parse().unwrap(),
-				hickory_resolver::proto::xfer::Protocol::Udp,
+				"100.100.100.100".parse().unwrap(),
+				true,
+				vec![ConnectionConfig::udp()],
 			)],
 		),
-		TokioConnectionProvider::default(),
+		TokioRuntimeProvider::default(),
 	)
 	.build()
+	.expect("tailscale resolver config is hardcoded and cannot fail to build")
 }
 
 pub async fn check_for_update() -> Result<()> {
