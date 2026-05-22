@@ -18,6 +18,11 @@ const WARN_OLDEST_SECS: i64 = 10 * 60; // 10m
 const FAIL_OLDEST_SECS: i64 = 60 * 60; // 1h
 
 pub async fn run(ctx: CheckContext) -> Check {
+	if ctx.config.is_facility() {
+		return Check::pass("fhir_jobs", "not applicable on facility server")
+			.with_detail("skipped", true);
+	}
+
 	let Some(client) = ctx.db.as_deref() else {
 		return Check::fail("fhir_jobs", "no DB connection", "db_connect failed");
 	};
