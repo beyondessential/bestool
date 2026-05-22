@@ -10,6 +10,7 @@ description = "Lightweight age profile for user-friendly encryption (CLI tool an
 keywords = ["age", "cryptography", "encryption"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/algae-cli"
+exclude.workspace = true
 
 [lints]
 workspace = true

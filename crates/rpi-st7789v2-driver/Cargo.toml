@@ -11,6 +11,7 @@ description = "Raspberry-Pi driver for the ST7789V2 TFT display controller (Wave
 keywords = ["embedded-graphics", "waveshare", "st7789v2", "lcd", "raspberry-pi"]
 categories = ["embedded", "hardware-support"]
 repository = "https://github.com/beyondessential/bestool"
+exclude.workspace = true
 
 [lints]
 workspace = true
