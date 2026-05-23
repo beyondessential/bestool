@@ -555,10 +555,8 @@ fn parse_source_name(source_name: &str) -> Option<(&str, &str)> {
 
 	let schema = if schema_part == "tamanu" {
 		"public"
-	} else if let Some(stripped) = schema_part.strip_suffix("__tamanu") {
-		stripped
 	} else {
-		return None;
+		schema_part.strip_suffix("__tamanu")?
 	};
 
 	Some((schema, table))
