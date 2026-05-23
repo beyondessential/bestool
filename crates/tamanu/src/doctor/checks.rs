@@ -35,7 +35,10 @@ pub mod uptime;
 ///
 /// Each check picks the fields it needs and ignores the rest. The DB client is
 /// `Option` because not every check needs the DB, and `db_connect` itself runs
-/// before the client is available.
+/// before the client is available. The `http_client` is shared across checks
+/// and across the daemon's other consumers so TCP/TLS connections stay warm
+/// between ticks; HTTP checks apply per-request timeouts via
+/// `RequestBuilder::timeout`.
 #[derive(Clone)]
 pub struct CheckContext {
 	pub tamanu_version: Version,
@@ -43,6 +46,7 @@ pub struct CheckContext {
 	pub config: Arc<TamanuConfig>,
 	pub database_url: String,
 	pub db: Option<Arc<PgClient>>,
+	pub http_client: reqwest::Client,
 }
 
 /// `tokio_postgres::Error`'s top-level Display is the unhelpful `"db error"`.

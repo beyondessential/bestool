@@ -6,17 +6,9 @@ use crate::doctor::check::Check;
 const PING_URL: &str = "http://localhost/api/public/ping";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-pub async fn run(_ctx: CheckContext) -> Check {
-	let client = match reqwest::Client::builder().timeout(TIMEOUT).build() {
-		Ok(c) => c,
-		Err(err) => {
-			return Check::fail("tamanu_http", "client build failed", err.to_string())
-				.with_detail("url", PING_URL);
-		}
-	};
-
+pub async fn run(ctx: CheckContext) -> Check {
 	let start = Instant::now();
-	let response = client.get(PING_URL).send().await;
+	let response = ctx.http_client.get(PING_URL).timeout(TIMEOUT).send().await;
 	let latency_ms = start.elapsed().as_millis() as u64;
 
 	let check = match response {

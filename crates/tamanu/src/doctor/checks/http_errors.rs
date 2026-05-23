@@ -56,19 +56,8 @@ struct Snapshot {
 	counts: BTreeMap<String, u64>,
 }
 
-pub async fn run(_ctx: CheckContext) -> Check {
-	let client = match reqwest::Client::builder().timeout(TIMEOUT).build() {
-		Ok(c) => c,
-		Err(err) => {
-			return Check::warning(
-				"http_errors",
-				"could not build HTTP client",
-				err.to_string(),
-			)
-			.with_detail("skipped", true);
-		}
-	};
-
+pub async fn run(ctx: CheckContext) -> Check {
+	let client = ctx.http_client.clone();
 	let current_counts = match fetch_counts(&client).await {
 		FetchResult::Counts(c) => c,
 		FetchResult::Skip(check) => return check,
@@ -112,7 +101,7 @@ enum FetchResult {
 }
 
 async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
-	let body = match client.get(CADDY_METRICS_URL).send().await {
+	let body = match client.get(CADDY_METRICS_URL).timeout(TIMEOUT).send().await {
 		Ok(resp) if resp.status().is_success() => match resp.text().await {
 			Ok(t) => t,
 			Err(err) => {

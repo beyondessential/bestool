@@ -48,8 +48,17 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let config = Arc::new(load_config(&root, None)?);
 
 	let database_url = build_database_url(&config);
+	let http_client = reqwest::Client::new();
 
-	let sweep = perform_sweep(&version, &root, config, &database_url, &args.only).await?;
+	let sweep = perform_sweep(
+		&version,
+		&root,
+		config,
+		&database_url,
+		http_client,
+		&args.only,
+	)
+	.await?;
 
 	if args.json {
 		let stdout = std::io::stdout();
@@ -103,6 +112,7 @@ pub(super) async fn perform_sweep(
 	root: &Path,
 	config: Arc<TamanuConfig>,
 	database_url: &str,
+	http_client: reqwest::Client,
 	selected_names: &[String],
 ) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
@@ -125,6 +135,7 @@ pub(super) async fn perform_sweep(
 		config: config.clone(),
 		database_url: database_url.to_owned(),
 		db: db.clone(),
+		http_client,
 	};
 
 	let registry = checks::all();

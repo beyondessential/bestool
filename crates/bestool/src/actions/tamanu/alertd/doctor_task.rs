@@ -48,6 +48,7 @@ impl DoctorTask {
 			&self.tamanu_root,
 			self.config.clone(),
 			&self.database_url,
+			ctx.http_client.clone(),
 			&[],
 		)
 		.await?;
