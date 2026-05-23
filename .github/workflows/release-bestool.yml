@@ -148,6 +148,29 @@ jobs:
 
           dpkg-deb --build --root-owner-group "$deb_dir" "bestool-${target}-${version}.deb"
 
+      - name: Ensure zstd is available
+        shell: bash
+        run: |
+          if command -v zstd >/dev/null 2>&1; then
+            zstd --version
+            exit 0
+          fi
+          case "${{ runner.os }}" in
+            Linux)   sudo apt-get update && sudo apt-get install -y zstd ;;
+            macOS)   brew install zstd ;;
+            Windows) choco install zstandard -y --no-progress ;;
+          esac
+
+      - name: Compress binary with zstd
+        shell: bash
+        run: |
+          src_dir="target/${{ matrix.target }}/dist"
+          name="bestool"
+          if [[ ${{ runner.os }} == "Windows" ]]; then
+            name="bestool.exe"
+          fi
+          tar -C "$src_dir" -cf - "$name" | zstd -19 -f -o "$src_dir/$name.tar.zst"
+
       - uses: actions/upload-artifact@v7
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}
@@ -156,6 +179,8 @@ jobs:
           path: |
             target/*/dist/bestool
             target/*/dist/bestool.exe
+            target/*/dist/bestool.tar.zst
+            target/*/dist/bestool.exe.tar.zst
             *.deb
 
       - name: Configure AWS Credentials
@@ -172,10 +197,10 @@ jobs:
           src="target/${{ matrix.target }}/dist/bestool"
           dest="s3://bes-ops-tools/bestool/${version}/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
-            aws s3 cp "$src".exe "$dest" --no-progress
-          else
-            aws s3 cp "$src" "$dest" --no-progress
+            src="$src.exe"
           fi
+          aws s3 cp "$src" "$dest" --no-progress
+          aws s3 cp "$src.tar.zst" "$dest" --no-progress
 
           for deb in bestool-*.deb; do
             [[ -f "$deb" ]] || continue
@@ -190,10 +215,10 @@ jobs:
           src="target/${{ matrix.target }}/dist/bestool"
           dest="s3://bes-ops-tools/bestool/latest/${{ matrix.target }}/"
           if [[ ${{ runner.os }} == "Windows" ]]; then
-            aws s3 cp "$src".exe "$dest" --no-progress
-          else
-            aws s3 cp "$src" "$dest" --no-progress
+            src="$src.exe"
           fi
+          aws s3 cp "$src" "$dest" --no-progress
+          aws s3 cp "$src.tar.zst" "$dest" --no-progress
 
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest/*'
 
