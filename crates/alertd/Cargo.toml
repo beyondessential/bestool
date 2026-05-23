@@ -26,6 +26,7 @@ dirs = "6.0.0"
 flate2 = "1.0.34"
 futures = { workspace = true }
 glob = "0.3.3"
+hickory-resolver = "0.26.1"
 jiff = { version = "0.2.24", features = ["serde"] }
 lloggs = { workspace = true, optional = true }
 mailgun-rs = "2.0.2"
