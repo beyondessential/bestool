@@ -102,10 +102,3 @@ $ cargo build --release
 
 Commits should follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format.
 
-### Releasing
-
-Releases are automated by [release-plz](https://release-plz.dev). Pushing to `main` opens a `repo: release` PR with per-crate version bumps determined from conventional commits and `cargo-semver-checks`; merging that PR (auto-merge is enabled once CI is green) publishes the affected crates to crates.io, pushes per-crate tags, and triggers the binary-build workflows.
-
-#### Holding a release
-
-To bundle several features or fixes into one release, add the `release-hold` label to the open `repo: release` PR. The CI turns auto-merge off when the label is added and won't turn it back on while the label is present, so subsequent merges to `main` keep updating the PR without shipping it. When you're ready to ship, remove the label and either queue the PR manually or push another commit to `main` to let the workflow re-enable auto-merge. (Don't rely on removing the `autorelease` label; release-plz re-adds it whenever it updates the PR.)
