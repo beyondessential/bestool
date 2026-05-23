@@ -25,11 +25,22 @@ mod roots;
 ))]
 pub mod server_info;
 
-#[cfg(any(feature = "tamanu-doctor", feature = "tamanu-logs"))]
+#[cfg(any(
+	feature = "tamanu-doctor",
+	feature = "tamanu-lifecycle",
+	feature = "tamanu-logs",
+))]
 pub mod pm2;
 
-#[cfg(any(feature = "tamanu-doctor", feature = "tamanu-logs"))]
+#[cfg(any(
+	feature = "tamanu-doctor",
+	feature = "tamanu-lifecycle",
+	feature = "tamanu-logs",
+))]
 pub mod services;
+
+#[cfg(feature = "tamanu-lifecycle")]
+pub mod lifecycle;
 
 /// Interact with Tamanu.
 ///
