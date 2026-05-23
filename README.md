@@ -108,4 +108,4 @@ Releases are automated by [release-plz](https://release-plz.dev). Pushing to `ma
 
 #### Holding a release
 
-To bundle several features or fixes into one release, remove the `autorelease` label from the open `repo: release` PR. The CI then turns auto-merge off and won't turn it back on while the label is absent, so subsequent merges to `main` keep updating the PR without shipping it. Re-add the label (and re-enable auto-merge manually, or push another commit to `main` to let the workflow do it) when you're ready to ship.
+To bundle several features or fixes into one release, add the `release-hold` label to the open `repo: release` PR. The CI turns auto-merge off when the label is added and won't turn it back on while the label is present, so subsequent merges to `main` keep updating the PR without shipping it. When you're ready to ship, remove the label and either queue the PR manually or push another commit to `main` to let the workflow re-enable auto-merge. (Don't rely on removing the `autorelease` label; release-plz re-adds it whenever it updates the PR.)
