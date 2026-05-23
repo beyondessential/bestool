@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    types: [unlabeled]
 
 concurrency:
   group: release-plz-${{ github.ref }}
@@ -11,6 +13,7 @@ concurrency:
 
 jobs:
   release-plz-release:
+    if: github.event_name == 'push'
     name: Publish to crates.io
     runs-on: ubuntu-24.04
     permissions:
@@ -35,6 +38,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   release-plz-pr:
+    if: github.event_name == 'push'
     name: Open or update release PR
     needs: [release-plz-release]
     runs-on: ubuntu-24.04
@@ -68,3 +72,19 @@ jobs:
           if [ -n "$pr_number" ]; then
             gh pr merge --auto --squash "$pr_number"
           fi
+
+  release-plz-hold:
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action == 'unlabeled'
+      && github.event.label.name == 'autorelease'
+    name: Disable auto-merge when held
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Disable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --disable-auto "$PR_URL" || true
