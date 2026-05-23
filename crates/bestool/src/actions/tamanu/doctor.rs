@@ -1,13 +1,12 @@
-use std::{io::Write, sync::Arc};
+use std::{io::Write, path::Path, sync::Arc};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, miette};
+use node_semver::Version;
 use owo_colors::OwoColorize;
-use reqwest::Url;
 use serde_json::{Map, Value};
 use tracing::warn;
 
-use bestool_canopy::{CanopyClient, DEFAULT_CANOPY_URL};
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
 	connection_url::ConnectionUrlBuilder,
@@ -16,34 +15,22 @@ use bestool_tamanu::{
 		checks::{self, CheckContext},
 		server_info::{self, ServerFacts},
 	},
-	server_info::{fetch_device_key, get_or_create_server_id},
+	server_info::get_or_create_server_id,
 };
 
 use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
 
-fn default_canopy_url() -> Url {
-	DEFAULT_CANOPY_URL.parse().expect("default canopy URL is valid")
-}
-
 /// Gather server info + healthchecks for a Tamanu install
 ///
 /// Runs a set of healthchecks against the local Tamanu install and renders a
-/// colour-coded summary. With `--send`, also POSTs the result to Canopy at
-/// `/status/{server_id}`.
+/// colour-coded summary. The alertd daemon runs the same checks every minute
+/// and pushes results to Canopy; this command is for interactive operator use.
 ///
 /// Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct DoctorArgs {
-	/// POST the result to Canopy after rendering locally
-	#[arg(long)]
-	pub send: bool,
-
-	/// Canopy base URL (mTLS path)
-	#[arg(long, default_value_t = default_canopy_url())]
-	pub canopy_url: Url,
-
 	/// Emit the JSON wire payload instead of the human-readable render
 	#[arg(long)]
 	pub json: bool,
@@ -58,9 +45,45 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let use_colours = tamanu.use_colours;
 
 	let (version, root) = find_tamanu(tamanu)?;
-	let config = load_config(&root, None)?;
+	let config = Arc::new(load_config(&root, None)?);
 
-	let builder = ConnectionUrlBuilder {
+	let database_url = build_database_url(&config);
+
+	let sweep = perform_sweep(&version, &root, config, &database_url, &args.only).await?;
+
+	if args.json {
+		let stdout = std::io::stdout();
+		let mut out = stdout.lock();
+		serde_json::to_writer_pretty(&mut out, &sweep.payload).into_diagnostic()?;
+		writeln!(out).into_diagnostic()?;
+	} else {
+		let stdout = std::io::stdout();
+		let mut out = stdout.lock();
+		render(
+			&mut out,
+			sweep.server_id.as_deref(),
+			&sweep.results,
+			sweep.overall,
+			use_colours,
+		)
+		.into_diagnostic()?;
+	}
+
+	if sweep.overall == OverallResult::Failing {
+		std::process::exit(1);
+	}
+	Ok(())
+}
+
+pub(super) struct SweepResult {
+	pub server_id: Option<String>,
+	pub results: Vec<(Check, bool)>,
+	pub overall: OverallResult,
+	pub payload: Value,
+}
+
+pub(super) fn build_database_url(config: &TamanuConfig) -> String {
+	ConnectionUrlBuilder {
 		username: config.db.username.clone(),
 		password: Some(config.db.password.clone()),
 		host: config
@@ -71,12 +94,20 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		port: config.db.port,
 		database: config.db.name.clone(),
 		ssl_mode: None,
-	};
-	let database_url = builder.build();
+	}
+	.build()
+}
 
+pub(super) async fn perform_sweep(
+	version: &Version,
+	root: &Path,
+	config: Arc<TamanuConfig>,
+	database_url: &str,
+	selected_names: &[String],
+) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
 	// `db_connect` check separately measures the open latency for reporting.
-	let db = match tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await {
+	let db = match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
 		Ok((client, conn)) => {
 			tokio::spawn(async move {
 				if let Err(err) = conn.await {
@@ -88,26 +119,25 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		Err(_) => None,
 	};
 
-	let config = Arc::new(config);
 	let check_ctx = CheckContext {
 		tamanu_version: version.clone(),
-		tamanu_root: root.clone(),
+		tamanu_root: root.to_path_buf(),
 		config: config.clone(),
-		database_url: database_url.clone(),
+		database_url: database_url.to_owned(),
 		db: db.clone(),
 	};
 
 	let registry = checks::all();
-	let selected: Vec<&checks::CheckEntry> = if args.only.is_empty() {
+	let selected: Vec<&checks::CheckEntry> = if selected_names.is_empty() {
 		registry.iter().collect()
 	} else {
 		registry
 			.iter()
-			.filter(|e| args.only.iter().any(|n| n == e.name))
+			.filter(|e| selected_names.iter().any(|n| n == e.name))
 			.collect()
 	};
 
-	if !args.only.is_empty() && selected.len() != args.only.len() {
+	if !selected_names.is_empty() && selected.len() != selected_names.len() {
 		let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
 		return Err(miette!(
 			"unknown check name; known checks: {}",
@@ -138,57 +168,16 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let info = server_info::gather(&version.to_string(), facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
-	let overall = OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+	let overall =
+		OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 	let payload = build_payload(&info_value, &results, overall);
 
-	// When --send is set, suppress stdout entirely. The expected deployment is
-	// from cron / systemd-timer; the operator doesn't want their syslog filled
-	// with check-by-check output that nobody reads. Errors talking to canopy
-	// still go to stderr; the process exit code still reflects FAILING.
-	if !args.send {
-		if args.json {
-			let stdout = std::io::stdout();
-			let mut out = stdout.lock();
-			serde_json::to_writer_pretty(&mut out, &payload).into_diagnostic()?;
-			writeln!(out).into_diagnostic()?;
-		} else {
-			let stdout = std::io::stdout();
-			let mut out = stdout.lock();
-			render(
-				&mut out,
-				server_id.as_deref(),
-				&results,
-				overall,
-				use_colours,
-			)
-			.into_diagnostic()?;
-		}
-	}
-
-	// Exit-code policy:
-	// - `--send` is the cron/systemd-timer path. The job's purpose is to push
-	//   the report to canopy; what the report contains is canopy's problem.
-	//   Non-zero only if we couldn't actually send. (Failures earlier in this
-	//   function — discovering Tamanu, loading config — already propagate as
-	//   `Err` and get a non-zero exit from miette.)
-	// - Without `--send` it's an operator running the check interactively;
-	//   they want shell-script-style "did everything pass?" semantics, so we
-	//   return non-zero when the overall result is FAILING.
-	if args.send {
-		return send_to_canopy(
-			&args.canopy_url,
-			server_id.as_deref(),
-			&payload,
-			&database_url,
-			&version.to_string(),
-		)
-		.await;
-	}
-
-	if overall == OverallResult::Failing {
-		std::process::exit(1);
-	}
-	Ok(())
+	Ok(SweepResult {
+		server_id,
+		results,
+		overall,
+		payload,
+	})
 }
 
 async fn collect_server_facts(
@@ -231,11 +220,7 @@ async fn collect_server_facts(
 	facts
 }
 
-fn build_payload(
-	info: &Value,
-	results: &[(Check, bool)],
-	overall: OverallResult,
-) -> Value {
+fn build_payload(info: &Value, results: &[(Check, bool)], overall: OverallResult) -> Value {
 	let mut payload: Map<String, Value> = match info {
 		Value::Object(o) => o.clone(),
 		_ => Map::new(),
@@ -272,18 +257,17 @@ fn render<W: Write>(
 
 	let (mut warnings, mut fails) = (0usize, 0usize);
 	for (check, _) in results {
-		let (tag, tag_coloured) = match &check.status {
-			CheckStatus::Pass => ("PASS", colour_pass(use_colours, "PASS")),
+		let tag_coloured = match &check.status {
+			CheckStatus::Pass => colour_pass(use_colours, "PASS"),
 			CheckStatus::Warning(_) => {
 				warnings += 1;
-				("WARN", colour_warn(use_colours, "WARN"))
+				colour_warn(use_colours, "WARN")
 			}
 			CheckStatus::Fail(_) => {
 				fails += 1;
-				("FAIL", colour_fail(use_colours, "FAIL"))
+				colour_fail(use_colours, "FAIL")
 			}
 		};
-		let _ = tag;
 		writeln!(
 			out,
 			"  {tag_coloured}    {name:<width$}   {summary}",
@@ -345,28 +329,6 @@ fn colour_fail(use_colours: bool, s: &str) -> String {
 	}
 }
 
-async fn send_to_canopy(
-	base_url: &Url,
-	server_id: Option<&str>,
-	payload: &Value,
-	database_url: &str,
-	tamanu_version: &str,
-) -> Result<()> {
-	let server_id = server_id
-		.ok_or_else(|| miette!("no metaServerId available; cannot push status to canopy"))?;
-
-	let device_key = fetch_device_key(database_url).await;
-	let client = CanopyClient::new(tamanu_version, device_key.as_deref())
-		.await?
-		.ok_or_else(|| {
-			miette!(
-				"no canopy auth available — tailscale unreachable and no deviceKey in local_system_facts"
-			)
-		})?;
-
-	client.post_status(base_url, server_id, payload).await
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -384,9 +346,8 @@ mod tests {
 	#[test]
 	fn payload_all_pass_is_healthy() {
 		let results = vec![pass("a"), pass("b")];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
 		assert_eq!(payload["healthy"], true);
 		assert_eq!(payload["health"].as_array().unwrap().len(), 2);
@@ -396,9 +357,8 @@ mod tests {
 	#[test]
 	fn payload_warning_keeps_top_healthy_but_check_unhealthy() {
 		let results = vec![pass("a"), warn("b")];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
 		assert_eq!(payload["healthy"], true);
 		assert_eq!(payload["health"][1]["healthy"], false);
@@ -407,9 +367,8 @@ mod tests {
 	#[test]
 	fn payload_fail_flips_top_level() {
 		let results = vec![pass("a"), warn("b"), fail("c")];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
 		assert_eq!(payload["healthy"], false);
 	}
@@ -420,9 +379,8 @@ mod tests {
 			(Check::pass("on", "ok"), true),
 			(Check::pass("off", "ok"), false),
 		];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
 		let names: Vec<&str> = payload["health"]
 			.as_array()
@@ -436,9 +394,8 @@ mod tests {
 	#[test]
 	fn render_plain_contains_summary_line() {
 		let results = vec![pass("a"), warn("b")];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render(&mut buf, Some("sid-1"), &results, overall, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -452,9 +409,8 @@ mod tests {
 	#[test]
 	fn render_failing_summary() {
 		let results = vec![fail("a")];
-		let overall = OverallResult::from_checks(
-			&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
-		);
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render(&mut buf, None, &results, overall, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();

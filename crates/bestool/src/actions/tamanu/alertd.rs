@@ -1,6 +1,7 @@
 use std::{
 	net::SocketAddr,
 	path::{Path, PathBuf},
+	sync::Arc,
 };
 
 use clap::{Parser, Subcommand};
@@ -15,6 +16,10 @@ use bestool_tamanu::{
 
 use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
+
+mod doctor_task;
+
+use doctor_task::DoctorTask;
 
 /// Run the alert daemon
 ///
@@ -229,7 +234,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
-			let daemon_config = build_config(&root, &version.to_string(), config, daemon).await?;
+			let daemon_config = build_config(&root, &version, config, daemon).await?;
 			bestool_alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
@@ -265,7 +270,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 				Ok(true) => {}
 			}
 
-			let daemon_config = build_config(&root, &version.to_string(), config, daemon).await?;
+			let daemon_config = build_config(&root, &version, config, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
 	}
@@ -281,7 +286,7 @@ fn resolve_addrs(server_addr: Vec<SocketAddr>) -> Vec<SocketAddr> {
 
 async fn build_config(
 	root: &Path,
-	tamanu_version: &str,
+	tamanu_version: &node_semver::Version,
 	config: TamanuConfig,
 	DaemonArgs {
 		glob,
@@ -336,12 +341,21 @@ async fn build_config(
 
 	let device_key_pem = fetch_device_key(&database_url).await;
 
+	let config = Arc::new(config);
+	let doctor_task = Arc::new(DoctorTask::new(
+		tamanu_version.clone(),
+		root.to_path_buf(),
+		config.clone(),
+		database_url.clone(),
+	));
+
 	let mut daemon_config =
 		bestool_alertd::DaemonConfig::new(dirs, database_url, tamanu_version.to_string())
 			.with_dry_run(dry_run)
 			.with_no_server(no_server)
 			.with_server_addrs(server_addr)
-			.with_watchdog_timeout(watchdog);
+			.with_watchdog_timeout(watchdog)
+			.with_task(doctor_task);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
