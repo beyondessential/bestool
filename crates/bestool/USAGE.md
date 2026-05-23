@@ -63,6 +63,10 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
+* [`bestool tamanu restart`↴](#bestool-tamanu-restart)
+* [`bestool tamanu start`↴](#bestool-tamanu-start)
+* [`bestool tamanu status`↴](#bestool-tamanu-status)
+* [`bestool tamanu stop`↴](#bestool-tamanu-stop)
 
 ## `bestool`
 
@@ -1086,6 +1090,10 @@ Alias: t
 * `logs` — Tail logs for a Tamanu service, in a supervisor-agnostic way.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
+* `restart` — Rolling-restart all running tamanu services.
+* `start` — Bring up any expected tamanu services that aren't running.
+* `status` — Report on tamanu services: what's expected vs what's actually running.
+* `stop` — Stop running tamanu services.
 
 ###### **Options:**
 
@@ -1776,6 +1784,83 @@ Aliases: p, pg, sql
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
+
+
+
+## `bestool tamanu restart`
+
+Rolling-restart all running tamanu services.
+
+Background services (tasks, sync, fhir-*) restart in a single bulk
+supervisor call. Critical services (api, frontend) restart one
+instance at a time, each followed by a readiness probe, caddy
+reload, and a cooldown — so there's always at least one critical
+instance up to take traffic.
+
+**Usage:** `bestool tamanu restart [OPTIONS] [NAMES]...`
+
+###### **Arguments:**
+
+* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = restart every running instance of every Up expectation
+
+###### **Options:**
+
+* `--cooldown <COOLDOWN>` — Sleep between each critical-instance roll. Lets the fresh container settle and downstream caches warm up before we move on to the next one
+
+  Default value: `30s`
+* `--no-probe-http` — Skip the per-instance HTTP probe. Useful if the deployment isn't behind caddy (so the netavark IP doesn't matter) or you just want a fast best-effort restart without waiting on container readiness
+* `--check-url <URL>` — After the rolling restart, hit this URL once to confirm end-to-end reachability. Bails non-zero if the probe fails
+
+
+
+## `bestool tamanu start`
+
+Bring up any expected tamanu services that aren't running.
+
+Idempotent: services already up are left alone. Use `tamanu status`
+first if you want to see what's missing.
+
+**Usage:** `bestool tamanu start [NAMES]...`
+
+###### **Arguments:**
+
+* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = start every Up expectation that's currently short
+
+
+
+## `bestool tamanu status`
+
+Report on tamanu services: what's expected vs what's actually running.
+
+A lighter cousin of `tamanu doctor`: discovery only, no HTTP probes or
+database queries. Useful as a quick "is anything down right now?"
+check, or before/after a `tamanu start` / `restart` to see the impact.
+
+**Usage:** `bestool tamanu status [OPTIONS] [NAMES]...`
+
+###### **Arguments:**
+
+* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = report on every expectation
+
+###### **Options:**
+
+* `--json` — Emit the wire-shape JSON instead of the human-readable render
+
+
+
+## `bestool tamanu stop`
+
+Stop running tamanu services.
+
+All matched services are stopped in a single supervisor call. Caddy
+is not touched: its upstreams just become unreachable, which is
+usually what's intended for a maintenance window.
+
+**Usage:** `bestool tamanu stop [NAMES]...`
+
+###### **Arguments:**
+
+* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = stop every running instance of every Up expectation
 
 
 
