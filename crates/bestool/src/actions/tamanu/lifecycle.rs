@@ -208,22 +208,38 @@ pub fn ensure_root_or_reexec(supervisor: Supervisor) -> Result<()> {
 /// elapses. Targets are unit names (systemd) or process names (pm2),
 /// matching the input given to `systemctl start` / `pm2 start`.
 pub fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, true, "active")
+}
+
+/// Mirror of `wait_running`: poll until every target is stopped.
+pub fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, false, "inactive")
+}
+
+fn wait_for(
+	supervisor: Supervisor,
+	targets: &[String],
+	want_running: bool,
+	state_label: &str,
+) -> Result<()> {
 	let deadline = Instant::now() + Duration::from_secs(60);
 	let interval = Duration::from_millis(500);
 	loop {
-		let all_up = targets.iter().all(|t| is_running(supervisor, t));
-		if all_up {
+		let all_match = targets
+			.iter()
+			.all(|t| is_running(supervisor, t) == want_running);
+		if all_match {
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
-			let still_down: Vec<&str> = targets
+			let still_wrong: Vec<&str> = targets
 				.iter()
-				.filter(|t| !is_running(supervisor, t))
+				.filter(|t| is_running(supervisor, t) != want_running)
 				.map(String::as_str)
 				.collect();
 			bail!(
-				"timed out after 60s waiting for {} to become active",
-				still_down.join(", ")
+				"timed out after 60s waiting for {} to become {state_label}",
+				still_wrong.join(", ")
 			);
 		}
 		sleep(interval);

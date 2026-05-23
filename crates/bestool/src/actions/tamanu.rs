@@ -108,7 +108,9 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-lifecycle")]
 	start => Start(StartArgs),
 	#[cfg(feature = "tamanu-lifecycle")]
-	status => Status(StatusArgs)
+	status => Status(StatusArgs),
+	#[cfg(feature = "tamanu-lifecycle")]
+	stop => Stop(StopArgs)
 }
 
 /// What kind of server to interact with.
