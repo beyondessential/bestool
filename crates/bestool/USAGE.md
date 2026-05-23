@@ -1687,9 +1687,10 @@ directly. The service name is matched as a substring against the expected
 service list, so `tamanu logs api` picks up
 `tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
 
-The special name `caddy` tails the caddy service (Linux only). Caddy
-emits JSON-per-line logs; bestool detects these and applies opportunistic
-syntax highlighting on a TTY.
+The special name `caddy` tails the caddy service: from `journalctl -u
+caddy.service` on Linux, and from `.log` files under `C:\Caddy\logs` (or
+`C:\Caddy`) on Windows. Caddy emits JSON-per-line logs; bestool detects
+these and applies opportunistic syntax highlighting.
 
 **Usage:** `bestool tamanu logs [OPTIONS] <NAME>`
 
