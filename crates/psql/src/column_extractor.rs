@@ -390,12 +390,12 @@ mod tests {
 
 		// Print the structure to understand it
 		for stmt in &result.protobuf.stmts {
-			if let Some(s) = &stmt.stmt {
-				if let Some(pg_query::NodeEnum::SelectStmt(select)) = &s.node {
-					eprintln!("Target list length: {}", select.target_list.len());
-					for (i, target) in select.target_list.iter().enumerate() {
-						eprintln!("Target {}: {:?}", i, target.node);
-					}
+			if let Some(s) = &stmt.stmt
+				&& let Some(pg_query::NodeEnum::SelectStmt(select)) = &s.node
+			{
+				eprintln!("Target list length: {}", select.target_list.len());
+				for (i, target) in select.target_list.iter().enumerate() {
+					eprintln!("Target {}: {:?}", i, target.node);
 				}
 			}
 		}
