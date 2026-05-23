@@ -596,6 +596,7 @@ dependencies = [
  "flate2",
  "futures",
  "glob",
+ "hickory-resolver",
  "jiff",
  "lloggs",
  "mailgun-rs",

@@ -1,6 +1,16 @@
-use std::{fmt, io::Write, time::Duration};
+use std::{
+	fmt,
+	io::Write,
+	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+	time::Duration,
+};
 
 use flate2::{Compression, write::GzEncoder};
+use hickory_resolver::{
+	ConnectionProvider, Resolver,
+	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
+	net::runtime::TokioRuntimeProvider,
+};
 use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
@@ -19,6 +29,15 @@ pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 /// On hosts that share the canopy tailnet, posting to this URL works without
 /// mTLS — the tailscale identity is the auth.
 pub const TAILSCALE_URL: &str = "https://canopy.tail53aef.ts.net";
+
+/// Bare hostname used for `resolve_to_addrs` overrides.
+const TAILSCALE_HOST: &str = "canopy.tail53aef.ts.net";
+
+/// Hardcoded tailscale IPs for canopy, used when tailscale DNS
+/// (100.100.100.100) is unreachable but the tailnet otherwise is.
+const CANOPY_HARDCODED_V4: Ipv4Addr = Ipv4Addr::new(100, 99, 98, 97);
+const CANOPY_HARDCODED_V6: Ipv6Addr =
+	Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0x9337, 0xfb52);
 
 /// How long renewed canopy certs are valid for.
 ///
@@ -312,30 +331,76 @@ impl CanopyClient {
 /// 2xx — anything else (timeout, non-2xx, transport error) returns `None` so
 /// the caller can fall back to mTLS.
 ///
+/// Tries two paths in order:
+/// 1. Resolve `canopy` via the tailscale DNS server (100.100.100.100) and
+///    probe with those addresses.
+/// 2. Use hardcoded tailscale IPs for canopy and probe with those.
+///
 /// `/public/servers` is used because:
 /// - it lives under `/public/...`, the only mount that accepts tagged-device
 ///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
 /// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
 /// - it's read-only, so probing it has no side effects.
 async fn probe_tailscale() -> Option<reqwest::Client> {
-	let url = format!("{TAILSCALE_URL}/public/servers");
+	let dns_addrs: Vec<SocketAddr> = tailscale_resolver()
+		.lookup_ip("canopy")
+		.await
+		.ok()
+		.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+		.unwrap_or_default();
+	if !dns_addrs.is_empty()
+		&& let Some(client) = try_probe(&dns_addrs).await
+	{
+		return Some(client);
+	}
 
+	let hardcoded = [
+		SocketAddr::new(IpAddr::V4(CANOPY_HARDCODED_V4), 443),
+		SocketAddr::new(IpAddr::V6(CANOPY_HARDCODED_V6), 443),
+	];
+	debug!(
+		?hardcoded,
+		"canopy tailscale DNS lookup empty or probe failed, trying hardcoded IPs"
+	);
+	try_probe(&hardcoded).await
+}
+
+async fn try_probe(addrs: &[SocketAddr]) -> Option<reqwest::Client> {
 	let client = reqwest::Client::builder()
 		.timeout(TAILSCALE_PROBE_TIMEOUT)
+		.resolve_to_addrs(TAILSCALE_HOST, addrs)
 		.build()
 		.ok()?;
 
+	let url = format!("{TAILSCALE_URL}/public/servers");
 	match client.get(&url).send().await {
 		Ok(resp) if resp.status().is_success() => Some(client),
 		Ok(resp) => {
-			debug!(status = %resp.status(), "canopy tailscale probe: unexpected status");
+			debug!(status = %resp.status(), ?addrs, "canopy tailscale probe: unexpected status");
 			None
 		}
 		Err(err) => {
-			debug!("canopy tailscale probe failed: {err}");
+			debug!(?addrs, "canopy tailscale probe failed: {err}");
 			None
 		}
 	}
+}
+
+fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
+	Resolver::builder_with_config(
+		ResolverConfig::from_parts(
+			None,
+			vec!["tail53aef.ts.net.".parse().unwrap()],
+			vec![NameServerConfig::new(
+				"100.100.100.100".parse().unwrap(),
+				true,
+				vec![ConnectionConfig::udp()],
+			)],
+		),
+		TokioRuntimeProvider::default(),
+	)
+	.build()
+	.expect("tailscale resolver config is hardcoded and cannot fail to build")
 }
 
 fn gzip_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
