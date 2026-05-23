@@ -118,14 +118,12 @@ fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
 	.expect("tailscale resolver config is hardcoded and cannot fail to build")
 }
 
-pub async fn check_for_update() -> Result<()> {
-	let current_version = env!("CARGO_PKG_VERSION");
-
+pub async fn fetch_latest_version() -> Result<String> {
 	let url = DownloadSource::Tools
 		.host()
 		.join("/bestool/latest-version.txt")
 		.into_diagnostic()?;
-	debug!(?url, "Checking for updates");
+	debug!(?url, "Fetching latest bestool version");
 
 	let response = client()
 		.await?
@@ -134,19 +132,27 @@ pub async fn check_for_update() -> Result<()> {
 		.await
 		.into_diagnostic()?;
 
-	let latest_version = response.bytes().await.into_diagnostic()?;
-	let latest_version = std::str::from_utf8(&latest_version).into_diagnostic()?;
-	let latest_version = latest_version.trim();
+	let body = response.bytes().await.into_diagnostic()?;
+	let latest = std::str::from_utf8(&body)
+		.into_diagnostic()?
+		.trim()
+		.to_owned();
+	Ok(latest)
+}
+
+pub async fn check_for_update() -> Result<()> {
+	let current_version = env!("CARGO_PKG_VERSION");
+	let latest_version = fetch_latest_version().await?;
 	debug!(
 		current = current_version,
-		latest = latest_version,
+		latest = %latest_version,
 		"Version check result"
 	);
 
 	if latest_version != current_version {
 		info!(
 			current = current_version,
-			latest = latest_version,
+			latest = %latest_version,
 			"A new version of bestool is available. Run 'bestool self-update' to update."
 		);
 	} else {
