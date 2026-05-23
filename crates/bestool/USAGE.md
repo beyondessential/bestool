@@ -1682,10 +1682,15 @@ Generate a Greenmask config file
 
 Tail logs for a Tamanu service, in a supervisor-agnostic way.
 
-On Linux this drives `journalctl -u`; on Windows it drives `pm2 logs`. The
-service name is matched as a substring against the expected service list,
-so `tamanu logs api` picks up `tamanu-{central,facility}-api@*` on systemd
-and `tamanu-api` on pm2.
+On Linux this drives `journalctl -u`; on Windows it reads pm2's log files
+directly. The service name is matched as a substring against the expected
+service list, so `tamanu logs api` picks up
+`tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
+
+The special name `caddy` tails the caddy service: from `journalctl -u
+caddy.service` on Linux, and from `.log` files under `C:\Caddy\logs` (or
+`C:\Caddy`) on Windows. Caddy emits JSON-per-line logs; bestool detects
+these and applies opportunistic syntax highlighting.
 
 **Usage:** `bestool tamanu logs [OPTIONS] <NAME>`
 

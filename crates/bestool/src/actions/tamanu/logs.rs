@@ -1,8 +1,9 @@
 use std::{
+	fmt::Write as _,
 	fs::File,
-	io::{Read, Seek, SeekFrom, Write},
-	path::Path,
-	process::Command,
+	io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+	path::{Path, PathBuf},
+	process::{Command, Stdio},
 	sync::mpsc::{Sender, channel},
 	thread,
 	time::Duration,
@@ -10,7 +11,9 @@ use std::{
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail, miette};
+use owo_colors::OwoColorize;
 use regex::Regex;
+use serde_json::Value;
 use tracing::debug;
 
 use crate::actions::{
@@ -22,12 +25,32 @@ use crate::actions::{
 	},
 };
 
+/// Per-source line formatter used by `tail_one`. Takes the raw line and the
+/// caller's "use colours" setting, returns the (possibly transformed) line.
+type LineFormatter = fn(&str, bool) -> String;
+
+fn plain_line(line: &str, _use_colours: bool) -> String {
+	line.to_string()
+}
+
+#[derive(Clone)]
+struct TailSource {
+	prefix: String,
+	path: PathBuf,
+	formatter: LineFormatter,
+}
+
 /// Tail logs for a Tamanu service, in a supervisor-agnostic way.
 ///
-/// On Linux this drives `journalctl -u`; on Windows it drives `pm2 logs`. The
-/// service name is matched as a substring against the expected service list,
-/// so `tamanu logs api` picks up `tamanu-{central,facility}-api@*` on systemd
-/// and `tamanu-api` on pm2.
+/// On Linux this drives `journalctl -u`; on Windows it reads pm2's log files
+/// directly. The service name is matched as a substring against the expected
+/// service list, so `tamanu logs api` picks up
+/// `tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
+///
+/// The special name `caddy` tails the caddy service: from `journalctl -u
+/// caddy.service` on Linux, and from `.log` files under `C:\Caddy\logs` (or
+/// `C:\Caddy`) on Windows. Caddy emits JSON-per-line logs; bestool detects
+/// these and applies opportunistic syntax highlighting.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct LogsArgs {
@@ -50,6 +73,15 @@ pub struct LogsArgs {
 }
 
 pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
+	if ctx.args_sub.name == "caddy" {
+		return run_caddy_logs(
+			ctx.args_sub.lines,
+			ctx.args_sub.follow,
+			ctx.args_sub.grep.as_ref(),
+			ctx.args_top.use_colours,
+		);
+	}
+
 	let (_, root) = find_tamanu(&ctx.args_top)?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
@@ -117,6 +149,178 @@ fn match_name<'a>(
 		.filter(move |e| e.name.contains(needle))
 }
 
+fn run_caddy_logs(
+	lines: usize,
+	follow: bool,
+	grep: Option<&Regex>,
+	use_colours: bool,
+) -> Result<()> {
+	if cfg!(target_os = "linux") {
+		run_caddy_logs_journalctl(lines, follow, grep, use_colours)
+	} else if cfg!(target_os = "windows") {
+		run_caddy_logs_files(lines, follow, grep.cloned(), use_colours)
+	} else {
+		bail!("caddy logs are only supported on Linux (systemd) and Windows (C:\\Caddy)");
+	}
+}
+
+fn run_caddy_logs_journalctl(
+	lines: usize,
+	follow: bool,
+	grep: Option<&Regex>,
+	use_colours: bool,
+) -> Result<()> {
+	// --output=cat strips journalctl's prefix (timestamp, host, unit) so we
+	// see the raw log lines caddy emits. Caddy puts its own ts into each line.
+	let mut cmd = Command::new("journalctl");
+	cmd.arg("-u").arg("caddy.service");
+	cmd.arg("-n").arg(lines.to_string());
+	if follow {
+		cmd.arg("-f");
+	}
+	if let Some(re) = grep {
+		cmd.arg("-g").arg(re.as_str());
+	}
+	cmd.arg("--output=cat");
+	cmd.stdout(Stdio::piped());
+
+	let mut child = cmd.spawn().into_diagnostic()?;
+	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
+	let reader = BufReader::new(stdout);
+
+	let out_handle = std::io::stdout();
+	let mut out = out_handle.lock();
+	for line in reader.lines() {
+		let line = match line {
+			Ok(l) => l,
+			Err(_) => break,
+		};
+		let formatted = format_log_line(&line, use_colours);
+		if writeln!(out, "{formatted}").is_err() {
+			break;
+		}
+	}
+	let status = child.wait().into_diagnostic()?;
+	if !status.success() {
+		bail!("journalctl exited with {status}");
+	}
+	Ok(())
+}
+
+/// Windows: caddy runs out of `C:\Caddy`, with log files typically in
+/// `C:\Caddy\logs\*.log`. We probe that directory first, then the install
+/// root, and tail every `.log` we find.
+fn run_caddy_logs_files(
+	lines: usize,
+	follow: bool,
+	grep: Option<Regex>,
+	use_colours: bool,
+) -> Result<()> {
+	let files = caddy_log_files_windows()?;
+	debug!(count = files.len(), "tailing caddy log files");
+	let sources: Vec<TailSource> = files
+		.into_iter()
+		.map(|path| TailSource {
+			prefix: caddy_prefix(&path),
+			path,
+			formatter: format_log_line,
+		})
+		.collect();
+	tail_files(sources, lines, follow, grep, use_colours)
+}
+
+fn caddy_log_files_windows() -> Result<Vec<PathBuf>> {
+	const ROOTS: &[&str] = &[r"C:\Caddy\logs", r"C:\Caddy"];
+	for root in ROOTS {
+		let entries = match std::fs::read_dir(root) {
+			Ok(e) => e,
+			Err(_) => continue,
+		};
+		let mut files: Vec<PathBuf> = entries
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| p.is_file())
+			.filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("log")))
+			.collect();
+		if !files.is_empty() {
+			files.sort();
+			return Ok(files);
+		}
+	}
+	bail!(
+		"no caddy log files found under {} or {}",
+		ROOTS[0],
+		ROOTS[1]
+	)
+}
+
+fn caddy_prefix(path: &Path) -> String {
+	let name = path
+		.file_name()
+		.and_then(|s| s.to_str())
+		.unwrap_or("caddy");
+	format!("[{name}]")
+}
+
+/// If `line` looks like a JSON object, format it with colored tokens; else
+/// return it as-is. `color = false` always returns the line unchanged.
+fn format_log_line(line: &str, color: bool) -> String {
+	if !color {
+		return line.to_string();
+	}
+	let trimmed = line.trim_start();
+	if !trimmed.starts_with('{') {
+		return line.to_string();
+	}
+	let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+		return line.to_string();
+	};
+	let mut out = String::new();
+	write_colored_json(&value, &mut out);
+	out
+}
+
+fn write_colored_json(v: &Value, out: &mut String) {
+	match v {
+		Value::Null => {
+			let _ = write!(out, "{}", "null".dimmed());
+		}
+		Value::Bool(b) => {
+			let _ = write!(out, "{}", b.bright_magenta());
+		}
+		Value::Number(n) => {
+			let _ = write!(out, "{}", n.to_string().yellow());
+		}
+		Value::String(s) => {
+			let quoted = serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""));
+			let _ = write!(out, "{}", quoted.green());
+		}
+		Value::Array(a) => {
+			let _ = write!(out, "{}", "[".dimmed());
+			for (i, x) in a.iter().enumerate() {
+				if i > 0 {
+					let _ = write!(out, "{}", ",".dimmed());
+				}
+				write_colored_json(x, out);
+			}
+			let _ = write!(out, "{}", "]".dimmed());
+		}
+		Value::Object(o) => {
+			let _ = write!(out, "{}", "{".dimmed());
+			for (i, (k, vv)) in o.iter().enumerate() {
+				if i > 0 {
+					let _ = write!(out, "{}", ",".dimmed());
+				}
+				let key = format!("\"{k}\"");
+				let _ = write!(out, "{}", key.cyan());
+				let _ = write!(out, "{}", ":".dimmed());
+				write_colored_json(vv, out);
+			}
+			let _ = write!(out, "{}", "}".dimmed());
+		}
+	}
+}
+
 fn run_journalctl(
 	matches: &[&Expectation],
 	lines: usize,
@@ -165,20 +369,39 @@ fn run_pm2_logs(
 			names.join(", ")
 		);
 	}
-	tail_files(sources, lines, follow, grep)
+	let tail_sources: Vec<TailSource> = sources.into_iter().map(pm2_log_to_tail).collect();
+	tail_files(tail_sources, lines, follow, grep, false)
+}
+
+fn pm2_log_to_tail(source: LogSource) -> TailSource {
+	let prefix = format!(
+		"[{}#{} {}]",
+		source.name,
+		source
+			.pm_id
+			.map(|id| id.to_string())
+			.unwrap_or_else(|| "?".into()),
+		source.stream.as_str()
+	);
+	TailSource {
+		prefix,
+		path: source.path,
+		formatter: plain_line,
+	}
 }
 
 fn tail_files(
-	sources: Vec<LogSource>,
+	sources: Vec<TailSource>,
 	lines: usize,
 	follow: bool,
 	grep: Option<Regex>,
+	use_colours: bool,
 ) -> Result<()> {
 	let (tx, rx) = channel::<String>();
 	for source in sources {
 		let tx = tx.clone();
 		let grep = grep.clone();
-		thread::spawn(move || tail_one(source, lines, follow, grep.as_ref(), tx));
+		thread::spawn(move || tail_one(source, lines, follow, grep.as_ref(), use_colours, tx));
 	}
 	drop(tx);
 
@@ -193,28 +416,26 @@ fn tail_files(
 }
 
 fn tail_one(
-	source: LogSource,
+	source: TailSource,
 	lines: usize,
 	follow: bool,
 	grep: Option<&Regex>,
+	use_colours: bool,
 	tx: Sender<String>,
 ) {
-	let prefix = format!(
-		"[{}#{} {}]",
-		source.name,
-		source
-			.pm_id
-			.map(|id| id.to_string())
-			.unwrap_or_else(|| "?".into()),
-		source.stream.as_str()
-	);
+	let TailSource {
+		prefix,
+		path,
+		formatter,
+	} = source;
 
-	if let Ok(initial) = read_last_n_lines(&source.path, lines) {
+	if let Ok(initial) = read_last_n_lines(&path, lines) {
 		for line in initial {
 			if grep.is_some_and(|re| !re.is_match(&line)) {
 				continue;
 			}
-			if tx.send(format!("{prefix} {line}\n")).is_err() {
+			let formatted = formatter(&line, use_colours);
+			if tx.send(format!("{prefix} {formatted}\n")).is_err() {
 				return;
 			}
 		}
@@ -224,7 +445,7 @@ fn tail_one(
 		return;
 	}
 
-	follow_file(&source.path, &prefix, grep, &tx);
+	follow_file(&path, &prefix, grep, formatter, use_colours, &tx);
 }
 
 fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
@@ -234,7 +455,14 @@ fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
 	Ok(lines[start..].iter().map(|s| s.to_string()).collect())
 }
 
-fn follow_file(path: &Path, prefix: &str, grep: Option<&Regex>, tx: &Sender<String>) {
+fn follow_file(
+	path: &Path,
+	prefix: &str,
+	grep: Option<&Regex>,
+	formatter: LineFormatter,
+	use_colours: bool,
+	tx: &Sender<String>,
+) {
 	let mut file = match File::open(path) {
 		Ok(f) => f,
 		Err(_) => return,
@@ -272,7 +500,8 @@ fn follow_file(path: &Path, prefix: &str, grep: Option<&Regex>, tx: &Sender<Stri
 			if grep.is_some_and(|re| !re.is_match(line)) {
 				continue;
 			}
-			if tx.send(format!("{prefix} {line}\n")).is_err() {
+			let formatted = formatter(line, use_colours);
+			if tx.send(format!("{prefix} {formatted}\n")).is_err() {
 				return;
 			}
 		}
@@ -393,15 +622,15 @@ mod tests {
 			"alpha\nbeta error: boom\ngamma\ndelta error: kaboom\n",
 		)
 		.unwrap();
-		let source = LogSource {
+		let source = pm2_log_to_tail(LogSource {
 			name: "tamanu-api".into(),
 			pm_id: Some(1),
 			stream: crate::actions::tamanu::pm2::LogStream::Out,
 			path,
-		};
+		});
 		let re = Regex::new(r"error").unwrap();
 		let (tx, rx) = std::sync::mpsc::channel::<String>();
-		std::thread::spawn(move || tail_one(source, 10, false, Some(&re), tx));
+		std::thread::spawn(move || tail_one(source, 10, false, Some(&re), false, tx));
 		let mut received = Vec::new();
 		while let Ok(msg) = rx.recv() {
 			received.push(msg.trim_end_matches('\n').to_string());
@@ -416,19 +645,59 @@ mod tests {
 		let tmp = tempfile::tempdir().unwrap();
 		let path = tmp.path().join("x.log");
 		std::fs::write(&path, "a\nb\nc\n").unwrap();
-		let source = LogSource {
+		let source = pm2_log_to_tail(LogSource {
 			name: "x".into(),
 			pm_id: Some(0),
 			stream: crate::actions::tamanu::pm2::LogStream::Out,
 			path,
-		};
+		});
 		let (tx, rx) = std::sync::mpsc::channel::<String>();
-		std::thread::spawn(move || tail_one(source, 10, false, None, tx));
+		std::thread::spawn(move || tail_one(source, 10, false, None, false, tx));
 		let mut received = Vec::new();
 		while let Ok(msg) = rx.recv() {
 			received.push(msg);
 		}
 		assert_eq!(received.len(), 3);
+	}
+
+	#[test]
+	fn format_log_line_passes_non_json_through() {
+		assert_eq!(
+			format_log_line("plain text line", true),
+			"plain text line"
+		);
+	}
+
+	#[test]
+	fn format_log_line_no_color_passes_json_through() {
+		let line = r#"{"level":"info","msg":"hello"}"#;
+		assert_eq!(format_log_line(line, false), line);
+	}
+
+	#[test]
+	fn format_log_line_colors_json() {
+		// We don't lock in the exact ANSI codes — just check that the colored
+		// output contains the expected literal pieces and is decorated with
+		// escape codes.
+		let line = r#"{"level":"info","msg":"hi","status":200}"#;
+		let out = format_log_line(line, true);
+		assert!(out.contains("\u{1b}["), "expected ANSI escapes in: {out:?}");
+		assert!(out.contains("level"));
+		assert!(out.contains("info"));
+		assert!(out.contains("200"));
+	}
+
+	#[test]
+	fn format_log_line_handles_malformed_json() {
+		let line = "{not really json";
+		assert_eq!(format_log_line(line, true), line);
+	}
+
+	#[test]
+	fn caddy_prefix_uses_filename() {
+		let mut p = PathBuf::from("logs");
+		p.push("access.log");
+		assert_eq!(caddy_prefix(&p), "[access.log]");
 	}
 
 	#[test]
