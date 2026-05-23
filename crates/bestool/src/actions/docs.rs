@@ -9,7 +9,7 @@ use super::Context;
 #[derive(Debug, Clone, Parser)]
 pub struct DocsArgs {}
 
-pub async fn run(_ctx: Context<Args, DocsArgs>) -> Result<()> {
+pub async fn run(_args: DocsArgs, _ctx: Context) -> Result<()> {
 	let markdown = clap_markdown::help_markdown::<Args>();
 	println!("{}", markdown);
 	Ok(())

@@ -34,17 +34,17 @@ pub struct ConfigArgs {
 	pub raw: bool,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+pub async fn run(args: ConfigArgs, ctx: Context) -> Result<()> {
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 
-	let config = super::loader::load_config_as_object(&root, ctx.args_sub.package.as_deref())?;
+	let config = super::loader::load_config_as_object(&root, args.package.as_deref())?;
 
-	let value = if let Some(key) = &ctx.args_sub.key {
+	let value = if let Some(key) = &args.key {
 		let mut value = &config;
 		for part in key.split('.') {
 			value = match value.get(part) {
 				Some(value) => value,
-				None if ctx.args_sub.or_null => &serde_json::Value::Null,
+				None if args.or_null => &serde_json::Value::Null,
 				None => bail!("key not found: {:?}", key),
 			};
 		}
@@ -55,7 +55,7 @@ pub async fn run(ctx: Context<TamanuArgs, ConfigArgs>) -> Result<()> {
 
 	println!(
 		"{}",
-		match (ctx.args_sub, value.as_str()) {
+		match (args, value.as_str()) {
 			(ConfigArgs { raw: true, .. }, Some(string)) => {
 				string.into()
 			}

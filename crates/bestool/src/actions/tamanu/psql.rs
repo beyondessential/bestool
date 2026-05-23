@@ -275,7 +275,7 @@ fn help_audit_path() -> String {
 	)
 }
 
-pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
+pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 	let PsqlArgs {
 		username,
 		ssl,
@@ -284,7 +284,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		theme,
 		audit_path,
 		no_redact,
-	} = ctx.args_sub;
+	} = args;
 
 	let url = if let Some(url) = url {
 		let mut url = reqwest::Url::parse(&url).into_diagnostic()?;
@@ -293,7 +293,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 		}
 		url.to_string()
 	} else {
-		let (_, root) = find_tamanu(&ctx.args_top)?;
+		let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 		let config = load_config(&root, None)?;
 
 		let (username, password) = if let Some(ref user) = username {
@@ -385,7 +385,7 @@ pub async fn run(ctx: Context<TamanuArgs, PsqlArgs>) -> Result<()> {
 			theme: theme.resolve(),
 			audit_path,
 			write,
-			use_colours: ctx.args_top.use_colours,
+			use_colours: ctx.require::<TamanuArgs>().use_colours,
 			redact_mode,
 			redactions,
 			snippet_lookup: Some(snippet_provider),

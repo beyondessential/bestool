@@ -10,7 +10,7 @@ use merkle_hash::{bytes_to_hex, Algorithm, MerkleTree};
 use miette::{bail, miette, Context as _, IntoDiagnostic, Result};
 use tracing::{debug, instrument};
 
-use super::{Context, CryptoArgs};
+use super::Context;
 
 /// Checksum files and folders.
 ///
@@ -34,12 +34,12 @@ pub struct HashArgs {
 	pub no_filenames: bool,
 }
 
-pub async fn run(ctx: Context<CryptoArgs, HashArgs>) -> Result<()> {
+pub async fn run(args: HashArgs, _ctx: Context) -> Result<()> {
 	let HashArgs {
 		paths,
 		checks,
 		no_filenames,
-	} = ctx.args_sub;
+	} = args;
 
 	let mut mismatches = 0;
 

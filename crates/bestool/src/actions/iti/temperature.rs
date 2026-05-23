@@ -5,7 +5,7 @@ use miette::{IntoDiagnostic, Result};
 use tokio::time::sleep;
 
 use crate::actions::{
-	iti::{ItiArgs, lcd::{
+	iti::{lcd::{
 		json::{Item, Screen},
 		send,
 	}, parse_friendly_duration},
@@ -38,18 +38,18 @@ pub struct TemperatureArgs {
 	pub watch: Option<Duration>,
 }
 
-pub async fn run(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
-	if let Some(n) = ctx.args_sub.watch {
+pub async fn run(args: TemperatureArgs, _ctx: Context) -> Result<()> {
+	if let Some(n) = args.watch {
 		loop {
-			once(ctx.clone()).await?;
+			once(&args).await?;
 			sleep(n).await;
 		}
 	} else {
-		once(ctx).await
+		once(&args).await
 	}
 }
 
-pub async fn once(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
+pub async fn once(args: &TemperatureArgs) -> Result<()> {
 	let temperature = duct::cmd!("vcgencmd", "measure_temp")
 		.read()
 		.into_diagnostic()?
@@ -58,7 +58,7 @@ pub async fn once(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
 		.parse::<f32>()
 		.into_diagnostic()?;
 
-	if ctx.args_sub.json {
+	if args.json {
 		println!(
 			"{}",
 			serde_json::json!({
@@ -70,14 +70,14 @@ pub async fn once(ctx: Context<ItiArgs, TemperatureArgs>) -> Result<()> {
 	}
 
 	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = ctx.args_sub.update_screen {
+	if let Some(y) = args.update_screen {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
 		const YELLOW: [u8; 3] = [255, 255, 0];
 
 		send(
-			&ctx.args_sub.zmq_socket,
+			&args.zmq_socket,
 			Screen::Layout(vec![
 				Item {
 					x: 218,

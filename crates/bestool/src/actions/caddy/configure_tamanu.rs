@@ -8,8 +8,6 @@ use tracing::info;
 
 use crate::actions::Context;
 
-use super::CaddyArgs;
-
 const CADDYFILE_TEMPLATE: &str = include_str!("tamanu.Caddyfile.tera");
 #[test]
 fn test_caddyfile_template() {
@@ -63,7 +61,7 @@ pub struct ConfigureTamanuArgs {
 	pub zerossl_api_key: Option<String>,
 }
 
-pub async fn run(ctx: Context<CaddyArgs, ConfigureTamanuArgs>) -> Result<()> {
+pub async fn run(args: ConfigureTamanuArgs, _ctx: Context) -> Result<()> {
 	let ConfigureTamanuArgs {
 		path,
 		print,
@@ -73,7 +71,7 @@ pub async fn run(ctx: Context<CaddyArgs, ConfigureTamanuArgs>) -> Result<()> {
 		web_version,
 		email,
 		zerossl_api_key,
-	} = ctx.args_sub;
+	} = args;
 
 	let mut tera = Tera::default();
 	tera.add_raw_template("Caddyfile", CADDYFILE_TEMPLATE)

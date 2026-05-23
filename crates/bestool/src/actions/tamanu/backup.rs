@@ -110,29 +110,28 @@ pub struct BackupArgs {
 	pub key: KeyArgs,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
-	create_dir_all(&ctx.args_sub.write_to)
+pub async fn run(args: BackupArgs, ctx: Context) -> Result<()> {
+	create_dir_all(&args.write_to)
 		.await
 		.into_diagnostic()
 		.wrap_err("creating dest dir")?;
 
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 
 	let pg_dump = crate::find_postgres::find_postgres_bin("pg_dump")?;
 
 	// check key
-	ctx.args_sub.key.get_public_key().await?;
+	args.key.get_public_key().await?;
 
-	let output = ctx
-		.args_sub
+	let output = args
 		.write_to
 		.join(make_backup_filename(&config, "dump"));
 
 	// Use the default host, which is the localhost via Unix-domain socket on Unix or TCP/IP on Windows
 	#[rustfmt::skip]
-	let (backup_type, excluded_tables) = if ctx.args_sub.lean {
+	let (backup_type, excluded_tables) = if args.lean {
 		(
 			"lean",
 			vec![
@@ -159,7 +158,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 	};
 	info!(?output, "writing {backup_type} backup");
 
-	if !ctx.args_sub.debug_skip_pgdump {
+	if !args.debug_skip_pgdump {
 		#[rustfmt::skip]
 	duct::cmd(
 		pg_dump,
@@ -167,13 +166,13 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 			"--username".into(), config.db.username.into(),
 			"--verbose".into(),
 			"--format".into(), "c".into(),
-			"--compress".into(), ctx.args_sub.compression_level.to_string().into(),
+			"--compress".into(), args.compression_level.to_string().into(),
 			"--file".into(), output.clone().into(),
 			"--dbname".into(), config.db.name.into(),
 		]
 		.into_iter()
 		.chain(excluded_tables)
-		.chain(ctx.args_sub.args),
+		.chain(args.args),
 	)
 	.env("PGPASSWORD", config.db.password)
 	.run()
@@ -185,17 +184,16 @@ pub async fn run(ctx: Context<TamanuArgs, BackupArgs>) -> Result<()> {
 
 	process_backup(
 		output,
-		&ctx.args_sub.write_to,
-		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
+		&args.write_to,
+		args.then_copy_to.as_deref().map(|path| Then {
 			copy_to: path,
-			split: ctx
-				.args_sub
+			split: args
 				.then_split
 				.map(|n| NonZero::new(n).map(ChunkSize::Mib).unwrap_or_default()),
 		}),
-		ctx.args_sub.keep_days,
+		args.keep_days,
 		".dump",
-		ctx.args_sub.key,
+		args.key,
 	)
 	.await?;
 

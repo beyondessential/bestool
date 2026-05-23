@@ -7,10 +7,7 @@ use detect_targets::{TARGET, get_desired_targets};
 use miette::{IntoDiagnostic, Result, miette};
 use tracing::{debug, info};
 
-use crate::{
-	args::Args,
-	download::{DownloadSource, client, fetch_latest_version},
-};
+use crate::download::{DownloadSource, client, fetch_latest_version};
 
 use super::Context;
 
@@ -89,11 +86,11 @@ pub struct SelfUpdateArgs {
 	pub force: bool,
 }
 
-pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
+pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 	#[cfg(unix)]
 	{
 		check_exe_writable()?;
-		check_package_manager_install(ctx.args_sub.force)?;
+		check_package_manager_install(args.force)?;
 	}
 
 	let SelfUpdateArgs {
@@ -103,7 +100,7 @@ pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 		force,
 		#[cfg(windows)]
 		add_to_path,
-	} = ctx.args_sub;
+	} = args;
 
 	if version == "latest" && !force {
 		match fetch_latest_version().await {

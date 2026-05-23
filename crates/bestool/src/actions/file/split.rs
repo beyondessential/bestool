@@ -24,7 +24,7 @@ use tokio::{
 use tokio_util::io::InspectReader;
 use tracing::{debug, instrument};
 
-use super::{Context, FileArgs};
+use super::Context;
 
 /// Split a file into fixed-size chunks.
 ///
@@ -65,12 +65,12 @@ pub struct SplitArgs {
 	pub size: Option<NonZero<u16>>,
 }
 
-pub async fn run(ctx: Context<FileArgs, SplitArgs>) -> Result<()> {
+pub async fn run(args: SplitArgs, _ctx: Context) -> Result<()> {
 	let SplitArgs {
 		input,
 		output,
 		size,
-	} = ctx.args_sub;
+	} = args;
 
 	let chunk_size = size.map(ChunkSize::Mib).unwrap_or_default();
 	copy_into_chunks(&input, &output, chunk_size).await

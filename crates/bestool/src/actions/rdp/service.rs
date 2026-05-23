@@ -5,8 +5,6 @@ use miette::miette;
 
 use crate::actions::Context;
 
-use super::RdpArgs;
-
 #[cfg(windows)]
 pub(crate) const SERVICE_NAME: &str = "bestool-rdp-monitor";
 #[cfg(windows)]
@@ -53,10 +51,10 @@ pub struct InstallArgs {
 	pub kick_window: Option<u64>,
 }
 
-pub async fn run(ctx: Context<RdpArgs, ServiceArgs>) -> Result<()> {
+pub async fn run(args: ServiceArgs, _ctx: Context) -> Result<()> {
 	#[cfg(windows)]
 	{
-		match ctx.args_sub.action {
+		match args.action {
 			Action::Install(args) => imp::install(args),
 			Action::Uninstall => imp::uninstall(),
 			Action::Start => imp::start(),
@@ -67,7 +65,7 @@ pub async fn run(ctx: Context<RdpArgs, ServiceArgs>) -> Result<()> {
 
 	#[cfg(not(windows))]
 	{
-		let _ = ctx;
+		let _ = args;
 		Err(miette!(
 			"rdp service management is only available on Windows"
 		))

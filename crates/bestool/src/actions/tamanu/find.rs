@@ -5,6 +5,7 @@ use crate::actions::Context;
 
 use super::TamanuArgs;
 
+
 /// Find Tamanu installations.
 #[derive(Debug, Clone, Parser)]
 pub struct FindArgs {
@@ -23,9 +24,10 @@ pub struct FindArgs {
 	pub with_version: bool,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, FindArgs>) -> Result<()> {
-	let mut versions = if let Some(root) = ctx.args_top.root {
-		if let Some(version) = super::roots::version_of_root(&root)? {
+pub async fn run(args: FindArgs, ctx: Context) -> Result<()> {
+	let tamanu = ctx.require::<TamanuArgs>();
+	let mut versions = if let Some(root) = tamanu.root.as_ref() {
+		if let Some(version) = super::roots::version_of_root(root)? {
 			vec![(version, root.canonicalize().into_diagnostic()?)]
 		} else {
 			bail!("no version found in explicit root {root:?}");
@@ -34,16 +36,16 @@ pub async fn run(ctx: Context<TamanuArgs, FindArgs>) -> Result<()> {
 		super::roots::find_versions()?
 	};
 
-	if ctx.args_sub.asc {
+	if args.asc {
 		versions.reverse();
 	}
 
-	if let Some(count) = ctx.args_sub.count {
+	if let Some(count) = args.count {
 		versions.truncate(count);
 	}
 
 	for (version, root) in versions {
-		if ctx.args_sub.with_version {
+		if args.with_version {
 			println!("[{version}] {}", root.display());
 		} else {
 			println!("{}", root.display());

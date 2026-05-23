@@ -1,8 +1,6 @@
 use clap::{Parser, Subcommand};
 use miette::Result;
 
-use crate::args::Args;
-
 use super::Context;
 
 /// File utilities.
@@ -14,9 +12,11 @@ pub struct FileArgs {
 }
 
 super::subcommands! {
-	[Context<Args, FileArgs> => {|ctx: Context<Args, FileArgs>| -> Result<(Action, Context<FileArgs>)> {
-		Ok((ctx.args_sub.action.clone(), ctx.push(())))
-	}}](with_sub)
+	[FileArgs => |args: FileArgs, mut ctx: Context| -> Result<(Action, Context)> {
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	join => Join(JoinArgs),
 	split => Split(SplitArgs)

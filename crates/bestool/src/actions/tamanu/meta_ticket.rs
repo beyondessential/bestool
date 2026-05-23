@@ -45,8 +45,8 @@ struct Ticket {
 	hosting: Option<String>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, MetaTicketArgs>) -> Result<()> {
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+pub async fn run(_args: MetaTicketArgs, ctx: Context) -> Result<()> {
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let config = load_config(&root, None)?;
 
 	let builder = ConnectionUrlBuilder {

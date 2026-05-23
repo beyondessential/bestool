@@ -5,7 +5,6 @@ use clap::Parser;
 use miette::Result;
 
 use crate::actions::Context;
-use crate::args::Args;
 
 /// Export audit database entries as JSON.
 #[derive(Debug, Clone, Parser)]
@@ -42,9 +41,7 @@ fn help_audit_path() -> String {
 	)
 }
 
-pub async fn run(ctx: Context<Args, AuditPsqlArgs>) -> Result<()> {
-	let args = ctx.args_sub;
-
+pub async fn run(args: AuditPsqlArgs, _ctx: Context) -> Result<()> {
 	let options = ExportOptions {
 		audit_path: args.audit_path,
 		query_options: QueryOptions {

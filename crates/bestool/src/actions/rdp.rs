@@ -1,8 +1,6 @@
 use clap::{Parser, Subcommand};
 use miette::Result;
 
-use crate::args::Args;
-
 use super::Context;
 
 pub mod audit;
@@ -22,9 +20,11 @@ pub struct RdpArgs {
 }
 
 super::subcommands! {
-	[Context<Args, RdpArgs> => {|ctx: Context<Args, RdpArgs>| -> Result<(Action, Context<RdpArgs>)> {
-		Ok((ctx.args_sub.action.clone(), ctx.push(())))
-	}}](with_sub)
+	[RdpArgs => |args: RdpArgs, mut ctx: Context| -> Result<(Action, Context)> {
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	monitor => Monitor(MonitorArgs),
 	service => Service(ServiceArgs)

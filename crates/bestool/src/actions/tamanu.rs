@@ -14,6 +14,7 @@ use crate::args::Args;
 
 use super::Context;
 
+
 mod connection_url;
 mod roots;
 
@@ -49,11 +50,13 @@ pub struct TamanuArgs {
 }
 
 super::subcommands! {
-	[Context<Args, TamanuArgs> => {|ctx: Context<Args, TamanuArgs>| -> Result<(Action, Context<TamanuArgs>)> {
-		let (top, mut ctx) = ctx.take_top();
-		ctx.args_sub.use_colours = top.logging.color.enabled();
-		Ok((ctx.args_sub.action.clone(), ctx.push(())))
-	}}](with_sub)
+	[TamanuArgs => |mut args: TamanuArgs, mut ctx: Context| -> Result<(Action, Context)> {
+		let top: &Args = ctx.require();
+		args.use_colours = top.logging.color.enabled();
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	#[cfg(feature = "tamanu-alerts")]
 	alerts => Alerts(AlertsArgs),

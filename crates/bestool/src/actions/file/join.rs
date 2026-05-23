@@ -18,7 +18,7 @@ use tokio::{
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::{error, info, instrument};
 
-use super::{split::ChunkedMetadata, Context, FileArgs};
+use super::{split::ChunkedMetadata, Context};
 
 /// Join a split file.
 ///
@@ -46,8 +46,8 @@ pub struct JoinArgs {
 	pub output: Option<PathBuf>,
 }
 
-pub async fn run(ctx: Context<FileArgs, JoinArgs>) -> Result<()> {
-	let JoinArgs { input, output } = ctx.args_sub;
+pub async fn run(args: JoinArgs, _ctx: Context) -> Result<()> {
+	let JoinArgs { input, output } = args;
 
 	let meta = parse_metadata(&input).await?;
 

@@ -10,8 +10,6 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::args::Args;
-
 use super::Context;
 
 /// SSH helpers.
@@ -27,9 +25,11 @@ pub enum SshAction {
 	AddKey(AddKeyArgs),
 }
 
-pub async fn run(ctx: Context<Args, SshArgs>) -> Result<()> {
-	match ctx.args_sub.action.clone() {
-		SshAction::AddKey(subargs) => add_key(ctx.push(subargs)).await,
+pub async fn run(args: SshArgs, mut ctx: Context) -> Result<()> {
+	let action = args.action.clone();
+	ctx.provide(args);
+	match action {
+		SshAction::AddKey(subargs) => add_key(subargs, ctx).await,
 	}
 }
 
@@ -56,8 +56,8 @@ pub struct AddKeyArgs {
 	pub keys: Vec<String>,
 }
 
-pub async fn add_key(ctx: Context<SshArgs, AddKeyArgs>) -> Result<()> {
-	let AddKeyArgs { keys } = ctx.args_sub;
+pub async fn add_key(args: AddKeyArgs, _ctx: Context) -> Result<()> {
+	let AddKeyArgs { keys } = args;
 
 	info!("checking public keys are well-formed");
 	let mut valid_keys = keys

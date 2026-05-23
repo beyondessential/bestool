@@ -7,7 +7,7 @@ use tokio::time::sleep;
 use tracing::instrument;
 
 use crate::actions::{
-	iti::{ItiArgs, lcd::{
+	iti::{lcd::{
 		json::{Item, Screen},
 		send,
 	}, parse_friendly_duration},
@@ -70,11 +70,11 @@ pub struct BatteryArgs {
 	pub estimate: bool,
 }
 
-pub async fn run(ctx: Context<ItiArgs, BatteryArgs>) -> Result<()> {
-	if let Some(n) = ctx.args_sub.watch {
+pub async fn run(args: BatteryArgs, _ctx: Context) -> Result<()> {
+	if let Some(n) = args.watch {
 		// gather info only for initial round
-		let mut rolling = if ctx.args_sub.estimate {
-			let first = once(ctx.clone(), None).await?;
+		let mut rolling = if args.estimate {
+			let first = once(&args, None).await?;
 			sleep(n).await;
 			Some(VecDeque::from([first]))
 		} else {
@@ -82,17 +82,17 @@ pub async fn run(ctx: Context<ItiArgs, BatteryArgs>) -> Result<()> {
 		};
 
 		loop {
-			once(ctx.clone(), rolling.as_mut()).await?;
+			once(&args, rolling.as_mut()).await?;
 			sleep(n).await;
 		}
 	} else {
-		once(ctx, None).await?;
+		once(&args, None).await?;
 	}
 
 	Ok(())
 }
 
-pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDeque<f64>>) -> Result<f64> {
+pub async fn once(args: &BatteryArgs, rolling: Option<&mut VecDeque<f64>>) -> Result<f64> {
 	let gpio = Gpio::new().into_diagnostic().wrap_err("gpio: init")?;
 	let powered = gpio
 		.get(6)
@@ -132,7 +132,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 			.unwrap_or(rolling.len() - 1);
 
 		let mut rate = (capacity - rolling.get(index_to_first_difference).unwrap_or(&capacity))
-			/ ((rolling.len() as u64 * ctx.args_sub.watch.unwrap().as_secs()) as f64);
+			/ ((rolling.len() as u64 * args.watch.unwrap().as_secs()) as f64);
 		let capacity_left = if rate > 0.0 {
 			(100.0 - capacity).abs()
 		} else {
@@ -200,7 +200,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 		}
 	};
 
-	if ctx.args_sub.json {
+	if args.json {
 		if let Some((rate, ref time_remaining)) = estimates {
 			println!(
 				"{}",
@@ -233,7 +233,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 	}
 
 	#[cfg(feature = "iti-lcd")]
-	if let Some(y) = ctx.args_sub.update_screen {
+	if let Some(y) = args.update_screen {
 		const GREEN: [u8; 3] = [0, 255, 0];
 		const RED: [u8; 3] = [255, 0, 0];
 		const BLACK: [u8; 3] = [0, 0, 0];
@@ -300,7 +300,7 @@ pub async fn once(ctx: Context<ItiArgs, BatteryArgs>, rolling: Option<&mut VecDe
 			},
 		);
 
-		send(&ctx.args_sub.zmq_socket, Screen::Layout(items))?;
+		send(&args.zmq_socket, Screen::Layout(items))?;
 	}
 
 	Ok(capacity)

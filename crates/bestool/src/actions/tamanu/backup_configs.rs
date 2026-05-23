@@ -164,16 +164,16 @@ fn make_backup_filename(config: &TamanuConfig) -> PathBuf {
 	format!("{output_date}-{output_name}.config.zip").into()
 }
 
-pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
-	create_dir_all(&ctx.args_sub.write_to)
+pub async fn run(args: BackupConfigsArgs, ctx: Context) -> Result<()> {
+	create_dir_all(&args.write_to)
 		.into_diagnostic()
 		.wrap_err("creating dest dir")?;
 
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let kind = find_package(&root);
 	let config = load_config(&root, Some(kind.package_name()))?;
 
-	let output = Path::new(&ctx.args_sub.write_to).join(make_backup_filename(&config));
+	let output = Path::new(&args.write_to).join(make_backup_filename(&config));
 
 	let mut file = std::fs::File::create_new(&output)
 		.into_diagnostic()
@@ -181,7 +181,7 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	let mut zip = ZipWriter::new(&mut file);
 
-	if !ctx.args_sub.test_skip_caddy {
+	if !args.test_skip_caddy {
 		let mut got_caddy = add_dir(&mut zip, "/etc/caddy", "caddy")?;
 		if !got_caddy {
 			got_caddy = add_file(&mut zip, r"C:\Caddy\Caddyfile", "caddy/Caddyfile");
@@ -213,14 +213,14 @@ pub async fn run(ctx: Context<TamanuArgs, BackupConfigsArgs>) -> Result<()> {
 
 	process_backup(
 		output,
-		&ctx.args_sub.write_to,
-		ctx.args_sub.then_copy_to.as_deref().map(|path| Then {
+		&args.write_to,
+		args.then_copy_to.as_deref().map(|path| Then {
 			copy_to: path,
 			split: None,
 		}),
-		ctx.args_sub.keep_days,
+		args.keep_days,
 		".config.zip",
-		ctx.args_sub.key,
+		args.key,
 	)
 	.await?;
 

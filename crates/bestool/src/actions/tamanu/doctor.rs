@@ -54,11 +54,11 @@ pub struct DoctorArgs {
 	pub only: Vec<String>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, DoctorArgs>) -> Result<()> {
-	let use_colours = ctx.args_top.use_colours;
-	let args = ctx.args_sub.clone();
+pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
+	let tamanu = ctx.require::<TamanuArgs>();
+	let use_colours = tamanu.use_colours;
 
-	let (version, root) = find_tamanu(&ctx.args_top)?;
+	let (version, root) = find_tamanu(tamanu)?;
 	let config = load_config(&root, None)?;
 
 	let builder = ConnectionUrlBuilder {

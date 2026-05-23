@@ -104,15 +104,15 @@ async fn default_dirs(root: &Path) -> Vec<PathBuf> {
 	.collect()
 }
 
-pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
-	let (version, root) = find_tamanu(&ctx.args_top)?;
+pub async fn run(args: AlertsArgs, ctx: Context) -> Result<()> {
+	let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 
-	let dirs = if ctx.args_sub.dir.is_empty() {
+	let dirs = if args.dir.is_empty() {
 		default_dirs(&root).await
 	} else {
-		ctx.args_sub.dir
+		args.dir
 	};
 	debug!(?dirs, "searching for alerts");
 
@@ -163,7 +163,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 						.wrap_err(format!("{file:?}"))?;
 
 					alert.file = file.to_path_buf();
-					alert.interval = ctx.args_sub.interval;
+					alert.interval = args.interval;
 					debug!(?alert, "parsed alert file");
 					Ok(if alert.enabled { Some(alert) } else { None })
 				})
@@ -252,8 +252,8 @@ pub async fn run(ctx: Context<TamanuArgs, AlertsArgs>) -> Result<()> {
 	let mut set = JoinSet::new();
 	for alert in alerts {
 		let internal_ctx = internal_ctx.clone();
-		let dry_run = ctx.args_sub.dry_run;
-		let timeout_d = ctx.args_sub.timeout;
+		let dry_run = args.dry_run;
+		let timeout_d = args.timeout;
 		let name = alert.file.clone();
 		let config = config.clone();
 		set.spawn(
