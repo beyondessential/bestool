@@ -1189,6 +1189,9 @@ Starts the daemon which monitors alert definition files and executes alerts base
 * `--no-watchdog` — Disable the watchdog
 
    By default, the daemon will exit if no alert activity is detected within the watchdog timeout. This flag disables that behavior.
+* `--no-healthchecks` — Disable the periodic doctor healthcheck sweep
+
+   By default, the daemon runs the full doctor check registry every minute and posts the result to canopy. This flag turns that off.
 
 
 
@@ -1590,8 +1593,8 @@ Aliases: db, u, url
 Gather server info + healthchecks for a Tamanu install
 
 Runs a set of healthchecks against the local Tamanu install and renders a
-colour-coded summary. With `--send`, also POSTs the result to Canopy at
-`/status/{server_id}`.
+colour-coded summary. The alertd daemon runs the same checks every minute
+and pushes results to Canopy; this command is for interactive operator use.
 
 Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 
@@ -1599,10 +1602,6 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 
 ###### **Options:**
 
-* `--send` — POST the result to Canopy after rendering locally
-* `--canopy-url <CANOPY_URL>` — Canopy base URL (mTLS path)
-
-  Default value: `https://meta.tamanu.app/`
 * `--json` — Emit the JSON wire payload instead of the human-readable render
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 
