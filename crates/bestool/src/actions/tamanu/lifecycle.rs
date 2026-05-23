@@ -8,8 +8,38 @@ use std::process::Command;
 
 use miette::{IntoDiagnostic, Result, bail};
 
-use super::pm2;
-use super::services::{Expectation, Supervisor, parse_systemd_unit};
+use super::{
+	ApiServerKind, TamanuArgs,
+	config::load_config,
+	find_tamanu, pm2,
+	services::{self, Expectation, Supervisor, parse_systemd_unit},
+};
+
+/// Resolve the supervisor + expectation set for the current host.
+///
+/// Picks systemd on Linux, pm2 on Windows; bails on other platforms.
+/// Loads the tamanu config from the discovered root and asks
+/// `services::expected` for the canonical expectation list.
+pub fn config_and_expectations(tamanu: &TamanuArgs) -> Result<(Supervisor, Vec<Expectation>)> {
+	let supervisor = if cfg!(target_os = "linux") {
+		Supervisor::Systemd
+	} else if cfg!(target_os = "windows") {
+		Supervisor::Pm2
+	} else {
+		bail!("tamanu lifecycle commands are only supported on Linux (systemd) and Windows (pm2)");
+	};
+
+	let (_, root) = find_tamanu(tamanu)?;
+	let config = load_config(&root, None)?;
+	let kind = if config.is_facility() {
+		ApiServerKind::Facility
+	} else {
+		ApiServerKind::Central
+	};
+
+	let expectations = services::expected(supervisor, kind, &config);
+	Ok((supervisor, expectations))
+}
 
 /// A live service instance discovered from the supervisor.
 ///
