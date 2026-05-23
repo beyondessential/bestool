@@ -345,15 +345,21 @@ fn parse_quser(text: &str) -> Vec<ExternalUser> {
 		// without one (disconnected sessions). Detect by whether the second
 		// column parses as a session id (integer): if so, SESSIONNAME is
 		// absent; otherwise SESSIONNAME is in the second column and ID is
-		// in the third.
-		let (name, sessionname) = if tokens[1].parse::<u32>().is_ok() {
-			(tokens[0], None)
+		// in the third. STATE follows ID.
+		let (name, sessionname, state) = if tokens[1].parse::<u32>().is_ok() {
+			(tokens[0], None, tokens[2])
 		} else if tokens.len() >= 7 && tokens[2].parse::<u32>().is_ok() {
-			(tokens[0], Some(tokens[1]))
+			(tokens[0], Some(tokens[1]), tokens[3])
 		} else {
 			trace!(?line, "could not locate session id column in quser line");
 			continue;
 		};
+		// Skip non-active sessions: disconnected ones are stale login state
+		// the OS hasn't cleaned up yet, not a real connected user.
+		if !state.eq_ignore_ascii_case("Active") {
+			trace!(?line, ?state, "skipping non-active quser session");
+			continue;
+		}
 		let logon_tokens = &tokens[tokens.len().saturating_sub(3)..];
 		if logon_tokens.len() != 3 {
 			continue;
@@ -516,15 +522,25 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_quser_disconnected_session_without_sessionname() {
+	fn skips_quser_disconnected_session() {
 		// `quser` omits SESSIONNAME for disconnected sessions: the ID column
-		// then sits where SESSIONNAME used to.
+		// then sits where SESSIONNAME used to. These aren't active users —
+		// the OS just hasn't cleaned the session up yet.
 		let text = " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n\
 		             dave                                      3  Disc    .          5/21/2026 2:00 AM\n";
 		let out = parse_quser(text);
-		assert_eq!(out.len(), 1);
-		assert_eq!(out[0].name, "dave");
-		assert_eq!(out[0].line, "(disconnected)");
+		assert!(out.is_empty());
+	}
+
+	#[test]
+	fn keeps_only_active_quser_sessions() {
+		let text = " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n\
+		            >administrator         console             1  Active  none       5/21/2026 4:00 AM\n\
+		             bob                   rdp-tcp#0           2  Active  10:30      5/21/2026 3:55 AM\n\
+		             besd                                      3  Disc    .          5/22/2026 4:17 PM\n";
+		let out = parse_quser(text);
+		assert_eq!(out.len(), 2);
+		assert!(out.iter().all(|u| u.name != "besd"));
 	}
 
 	#[test]
