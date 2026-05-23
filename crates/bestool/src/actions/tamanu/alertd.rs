@@ -74,6 +74,13 @@ struct DaemonArgs {
 	/// the watchdog timeout. This flag disables that behavior.
 	#[arg(long)]
 	no_watchdog: bool,
+
+	/// Disable the periodic doctor healthcheck sweep
+	///
+	/// By default, the daemon runs the full doctor check registry every minute
+	/// and posts the result to canopy. This flag turns that off.
+	#[arg(long)]
+	no_healthchecks: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -295,6 +302,7 @@ async fn build_config(
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
+		no_healthchecks,
 	}: DaemonArgs,
 ) -> Result<bestool_alertd::DaemonConfig> {
 	let dirs = if glob.is_empty() {
@@ -342,20 +350,22 @@ async fn build_config(
 	let device_key_pem = fetch_device_key(&database_url).await;
 
 	let config = Arc::new(config);
-	let doctor_task = Arc::new(DoctorTask::new(
-		tamanu_version.clone(),
-		root.to_path_buf(),
-		config.clone(),
-		database_url.clone(),
-	));
 
 	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(dirs, database_url, tamanu_version.to_string())
+		bestool_alertd::DaemonConfig::new(dirs, database_url.clone(), tamanu_version.to_string())
 			.with_dry_run(dry_run)
 			.with_no_server(no_server)
 			.with_server_addrs(server_addr)
-			.with_watchdog_timeout(watchdog)
-			.with_task(doctor_task);
+			.with_watchdog_timeout(watchdog);
+
+	if !no_healthchecks {
+		daemon_config = daemon_config.with_task(Arc::new(DoctorTask::new(
+			tamanu_version.clone(),
+			root.to_path_buf(),
+			config.clone(),
+			database_url,
+		)));
+	}
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);

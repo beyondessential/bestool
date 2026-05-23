@@ -98,8 +98,9 @@ Daemon behaviour per task:
 ## Open questions / follow-ups
 
 - Should the doctor task be opt-out (`--no-doctor`)? Default yes, with a flag.
+  Not needed yet — no caller currently has reason to disable.
 - Should `DoctorTask` cache the `ServerFacts` that don't change tick-to-tick
   (timezone, pg version)? Probably yes — re-querying `SELECT version()` every
   minute is wasteful. Out of scope for v1.
 - The current `--check NAME` filter on `tamanu doctor` doesn't apply in the
-  daemon (the daemon always runs the full registry).
+  daemon (the daemon always runs the full registry). Intentional.

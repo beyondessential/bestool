@@ -57,6 +57,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		&database_url,
 		http_client,
 		&args.only,
+		None,
 	)
 	.await?;
 
@@ -89,6 +90,10 @@ pub(super) struct SweepResult {
 	pub results: Vec<(Check, bool)>,
 	pub overall: OverallResult,
 	pub payload: Value,
+	/// `SELECT version()` result observed during this sweep, available so
+	/// callers (e.g. the daemon plugin) can cache it across ticks instead of
+	/// re-querying every minute.
+	pub pg_version: Option<String>,
 }
 
 pub(super) fn build_database_url(config: &TamanuConfig) -> String {
@@ -114,6 +119,7 @@ pub(super) async fn perform_sweep(
 	database_url: &str,
 	http_client: reqwest::Client,
 	selected_names: &[String],
+	cached_pg_version: Option<String>,
 ) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
 	// `db_connect` check separately measures the open latency for reporting.
@@ -175,7 +181,8 @@ pub(super) async fn perform_sweep(
 		None => None,
 	};
 
-	let facts = collect_server_facts(&config, db.as_deref()).await;
+	let facts = collect_server_facts(&config, db.as_deref(), cached_pg_version).await;
+	let pg_version = facts.pg_version.clone();
 	let info = server_info::gather(&version.to_string(), facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
@@ -188,16 +195,19 @@ pub(super) async fn perform_sweep(
 		results,
 		overall,
 		payload,
+		pg_version,
 	})
 }
 
 async fn collect_server_facts(
 	config: &TamanuConfig,
 	db: Option<&tokio_postgres::Client>,
+	cached_pg_version: Option<String>,
 ) -> ServerFacts {
 	let mut facts = ServerFacts {
 		canonical_url: config.canonical_url().map(|u| u.to_string()),
 		timezone: config.primary_time_zone().map(|s| s.to_string()),
+		pg_version: cached_pg_version,
 		..Default::default()
 	};
 
@@ -205,12 +215,14 @@ async fn collect_server_facts(
 		return facts;
 	};
 
-	match client.query_one("SELECT version()", &[]).await {
-		Ok(row) => match row.try_get::<_, String>(0) {
-			Ok(v) => facts.pg_version = Some(v),
-			Err(err) => warn!("decoding pg_version: {err}"),
-		},
-		Err(err) => warn!("SELECT version() failed: {err}"),
+	if facts.pg_version.is_none() {
+		match client.query_one("SELECT version()", &[]).await {
+			Ok(row) => match row.try_get::<_, String>(0) {
+				Ok(v) => facts.pg_version = Some(v),
+				Err(err) => warn!("decoding pg_version: {err}"),
+			},
+			Err(err) => warn!("SELECT version() failed: {err}"),
+		}
 	}
 
 	match client
