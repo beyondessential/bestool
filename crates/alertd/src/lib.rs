@@ -1,7 +1,9 @@
 use std::{fmt, time::Duration};
 
+pub use bestool_canopy as canopy;
+pub use bestool_canopy::Redacted;
+
 mod alert;
-pub mod canopy;
 pub mod commands;
 mod daemon;
 mod events;
@@ -93,23 +95,6 @@ impl fmt::Debug for DaemonConfig {
 			.field("server_addrs", &self.server_addrs)
 			.field("watchdog_timeout", &self.watchdog_timeout)
 			.finish()
-	}
-}
-
-/// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
-#[derive(Clone)]
-pub struct Redacted<T>(pub T);
-
-impl<T> fmt::Debug for Redacted<T> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str("<redacted>")
-	}
-}
-
-impl<T> std::ops::Deref for Redacted<T> {
-	type Target = T;
-	fn deref(&self) -> &T {
-		&self.0
 	}
 }
 

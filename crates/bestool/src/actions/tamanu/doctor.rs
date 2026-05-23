@@ -7,7 +7,7 @@ use reqwest::Url;
 use serde_json::{Map, Value};
 use tracing::warn;
 
-use bestool_alertd::canopy::{CanopyClient, DEFAULT_CANOPY_URL};
+use bestool_canopy::{CanopyClient, DEFAULT_CANOPY_URL};
 
 use super::{
 	TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu,

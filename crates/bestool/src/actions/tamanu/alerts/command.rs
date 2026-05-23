@@ -79,7 +79,7 @@ pub struct AlertsArgs {
 pub struct InternalContext {
 	pub pg_client: tokio_postgres::Client,
 	pub http_client: reqwest::Client,
-	pub canopy_client: Option<Arc<bestool_alertd::canopy::CanopyClient>>,
+	pub canopy_client: Option<Arc<bestool_canopy::CanopyClient>>,
 }
 
 async fn default_dirs(root: &Path) -> Vec<PathBuf> {
@@ -218,7 +218,7 @@ pub async fn run(args: AlertsArgs, ctx: Context) -> Result<()> {
 
 	let device_key_pem = fetch_device_key_with(|| query_device_key_row(&client)).await;
 
-	let canopy_client = match bestool_alertd::canopy::CanopyClient::new(
+	let canopy_client = match bestool_canopy::CanopyClient::new(
 		version.to_string(),
 		device_key_pem.as_deref(),
 	)

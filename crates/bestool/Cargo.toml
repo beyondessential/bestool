@@ -19,6 +19,7 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.0.20", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "2.0.2", path = "../alertd", default-features = false, optional = true }
+bestool-canopy = { version = "0.1.0", path = "../canopy", optional = true }
 bestool-psql = { version = "1.5.2", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
@@ -130,6 +131,7 @@ tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
 	"dep:bestool-alertd",
+	"dep:bestool-canopy",
 	"dep:mailgun-rs",
 	"dep:p256",
 	"dep:pulldown-cmark",
@@ -148,7 +150,7 @@ tamanu-config = ["__tamanu"]
 tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",
-	"dep:bestool-alertd",
+	"dep:bestool-canopy",
 	"dep:bestool-psql",
 	"dep:duct",
 	"dep:hickory-resolver",

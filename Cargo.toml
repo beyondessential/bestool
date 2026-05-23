@@ -4,6 +4,7 @@ members = [
 	"crates/alertd",
 	"crates/algae-cli",
 	"crates/bestool",
+	"crates/canopy",
 	"crates/improv-wifi",
 	"crates/postgres",
 	"crates/psql",
