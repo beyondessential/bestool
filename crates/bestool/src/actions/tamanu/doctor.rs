@@ -8,20 +8,19 @@ use serde_json::{Map, Value};
 use tracing::warn;
 
 use bestool_canopy::{CanopyClient, DEFAULT_CANOPY_URL};
-
-use super::{
-	TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu,
+use bestool_tamanu::{
+	config::{TamanuConfig, load_config},
+	connection_url::ConnectionUrlBuilder,
+	doctor::{
+		check::{Check, CheckStatus, OverallResult},
+		checks::{self, CheckContext},
+		server_info::{self, ServerFacts},
+	},
 	server_info::{fetch_device_key, get_or_create_server_id},
 };
+
+use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
-
-pub mod check;
-pub mod checks;
-pub mod server_info;
-
-use check::{Check, CheckStatus, OverallResult};
-use checks::CheckContext;
-use server_info::ServerFacts;
 
 fn default_canopy_url() -> Url {
 	DEFAULT_CANOPY_URL.parse().expect("default canopy URL is valid")
@@ -193,7 +192,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 }
 
 async fn collect_server_facts(
-	config: &super::config::TamanuConfig,
+	config: &TamanuConfig,
 	db: Option<&tokio_postgres::Client>,
 ) -> ServerFacts {
 	let mut facts = ServerFacts {

@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 use sysinfo::Disks;
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 const WARN_PCT_USED: f64 = 80.0;
 const FAIL_PCT_USED: f64 = 95.0;

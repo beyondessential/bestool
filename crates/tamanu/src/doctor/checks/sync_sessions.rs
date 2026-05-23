@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 
 use super::{CheckContext, fmt_db_error};
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let Some(client) = ctx.db.as_deref() else {
@@ -24,8 +24,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let row = match client.query_opt(query, &[]).await {
 		Ok(Some(r)) => r,
 		Ok(None) => {
-			return Check::pass("sync_sessions", "no sync sessions")
-				.with_detail("active_count", 0);
+			return Check::pass("sync_sessions", "no sync sessions").with_detail("active_count", 0);
 		}
 		Err(err) => {
 			if let Some(db) = err.as_db_error()

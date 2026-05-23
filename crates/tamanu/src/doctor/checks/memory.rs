@@ -1,7 +1,7 @@
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 const WARN_PCT_USED: f64 = 90.0;
 const FAIL_PCT_USED: f64 = 98.0;
@@ -27,7 +27,8 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		Check::pass("memory", summary)
 	};
 
-	check.with_detail("used_bytes", used)
+	check
+		.with_detail("used_bytes", used)
 		.with_detail("total_bytes", total)
 		.with_detail("percent_used", pct)
 }

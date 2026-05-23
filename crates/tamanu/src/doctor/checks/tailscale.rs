@@ -1,5 +1,5 @@
 use super::CheckContext;
-use crate::actions::tamanu::{doctor::check::Check, server_info::get_tailscale_info};
+use crate::{doctor::check::Check, server_info::get_tailscale_info};
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	let (ip, name) = get_tailscale_info();

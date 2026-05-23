@@ -101,9 +101,7 @@ pub async fn get_or_create_server_id(client: &tokio_postgres::Client) -> Result<
 }
 
 /// Read just the `metaServerId` row from the Tamanu DB, without creating one.
-async fn query_server_id_row(
-	client: &tokio_postgres::Client,
-) -> Result<Option<String>> {
+async fn query_server_id_row(client: &tokio_postgres::Client) -> Result<Option<String>> {
 	let row = client
 		.query_opt(
 			"SELECT value FROM local_system_facts WHERE key = 'metaServerId'",
@@ -192,7 +190,7 @@ fn write_server_id_file(path: &Path, id: &str) -> std::io::Result<()> {
 /// would leave canopy targets unreachable. Other callers should use
 /// [`fetch_device_key`] / [`fetch_device_key_with`] and treat absence as
 /// "no canopy".
-#[cfg(feature = "tamanu-meta-ticket")]
+#[cfg(feature = "meta-ticket")]
 pub async fn get_or_create_device_key(client: &tokio_postgres::Client) -> Result<String> {
 	let path = standard_device_key_path();
 
@@ -246,7 +244,7 @@ pub async fn get_or_create_device_key(client: &tokio_postgres::Client) -> Result
 	}
 }
 
-#[cfg(feature = "tamanu-meta-ticket")]
+#[cfg(feature = "meta-ticket")]
 fn generate_device_key_pem() -> Result<String> {
 	use miette::miette;
 	use p256::{
@@ -407,15 +405,14 @@ fn write_device_key_file(path: &Path, pem: &str) -> std::io::Result<()> {
 }
 
 async fn fetch_device_key_from_db(database_url: &str) -> Option<String> {
-	let (client, connection) = match tokio_postgres::connect(database_url, tokio_postgres::NoTls)
-		.await
-	{
-		Ok(c) => c,
-		Err(err) => {
-			warn!("failed to connect for deviceKey fetch: {err}");
-			return None;
-		}
-	};
+	let (client, connection) =
+		match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
+			Ok(c) => c,
+			Err(err) => {
+				warn!("failed to connect for deviceKey fetch: {err}");
+				return None;
+			}
+		};
 	tokio::spawn(async move {
 		if let Err(err) = connection.await {
 			warn!("deviceKey-fetch connection error: {err}");
@@ -666,7 +663,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(feature = "tamanu-meta-ticket")]
+	#[cfg(feature = "meta-ticket")]
 	#[test]
 	fn generate_device_key_pem_produces_valid_pkcs8() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
@@ -677,7 +674,7 @@ mod tests {
 		SecretKey::from_pkcs8_pem(&pem).expect("generated PEM must parse as P-256 PKCS8");
 	}
 
-	#[cfg(feature = "tamanu-meta-ticket")]
+	#[cfg(feature = "meta-ticket")]
 	#[test]
 	fn generate_device_key_pem_is_non_deterministic() {
 		let a = generate_device_key_pem().unwrap();
@@ -685,7 +682,7 @@ mod tests {
 		assert_ne!(a, b);
 	}
 
-	#[cfg(feature = "tamanu-meta-ticket")]
+	#[cfg(feature = "meta-ticket")]
 	#[tokio::test]
 	async fn test_get_or_create_device_key_generates_new() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
@@ -697,7 +694,7 @@ mod tests {
 		SecretKey::from_pkcs8_pem(&pem).expect("returned PEM must parse as P-256 PKCS8");
 	}
 
-	#[cfg(feature = "tamanu-meta-ticket")]
+	#[cfg(feature = "meta-ticket")]
 	#[tokio::test]
 	async fn test_get_or_create_device_key_returns_existing_from_db() {
 		let _lock = DB_TEST_MUTEX.lock().unwrap();
@@ -716,7 +713,7 @@ mod tests {
 		assert_eq!(pem, canned);
 	}
 
-	#[cfg(feature = "tamanu-meta-ticket")]
+	#[cfg(feature = "meta-ticket")]
 	#[tokio::test]
 	async fn test_get_or_create_device_key_is_stable() {
 		let _lock = DB_TEST_MUTEX.lock().unwrap();

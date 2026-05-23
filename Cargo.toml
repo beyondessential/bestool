@@ -9,6 +9,7 @@ members = [
 	"crates/postgres",
 	"crates/psql",
 	"crates/rpi-st7789v2-driver",
+	"crates/tamanu",
 ]
 
 [workspace.package]

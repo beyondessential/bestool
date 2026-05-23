@@ -1,5 +1,5 @@
 use super::CheckContext;
-use crate::actions::tamanu::{doctor::check::Check, server_info::get_or_create_server_id};
+use crate::{doctor::check::Check, server_info::get_or_create_server_id};
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let Some(client) = ctx.db.as_deref() else {
@@ -7,8 +7,9 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	match get_or_create_server_id(client).await {
-		Ok(id) => Check::pass("server_id", format!("metaServerId: {id}"))
-			.with_detail("server_id", id),
+		Ok(id) => {
+			Check::pass("server_id", format!("metaServerId: {id}")).with_detail("server_id", id)
+		}
 		Err(err) => Check::fail("server_id", "lookup failed", err.to_string()),
 	}
 }

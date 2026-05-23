@@ -10,7 +10,9 @@ use tokio::io::AsyncReadExt as _;
 use tokio_postgres::types::ToSql;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{actions::tamanu::config::TamanuConfig, postgres_to_value::rows_to_value_map};
+use bestool_tamanu::config::TamanuConfig;
+
+use crate::postgres_to_value::rows_to_value_map;
 
 use super::{
 	InternalContext,

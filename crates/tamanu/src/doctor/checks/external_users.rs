@@ -23,7 +23,7 @@ use tokio::task::spawn_blocking;
 use tracing::{debug, trace, warn};
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 /// Sessions older than this trigger a check warning (degrades doctor's
 /// `external_users` line but does not flip the top-level result).
@@ -226,7 +226,10 @@ fn parse_who(text: &str) -> Vec<ExternalUser> {
 		let (head, comment) = if let Some(open) = line.find('(')
 			&& line.ends_with(')')
 		{
-			(line[..open].trim_end(), Some(&line[open + 1..line.len() - 1]))
+			(
+				line[..open].trim_end(),
+				Some(&line[open + 1..line.len() - 1]),
+			)
 		} else {
 			(line, None)
 		};
@@ -355,7 +358,10 @@ fn parse_quser(text: &str) -> Vec<ExternalUser> {
 		if logon_tokens.len() != 3 {
 			continue;
 		}
-		let logon_str = format!("{} {} {}", logon_tokens[0], logon_tokens[1], logon_tokens[2]);
+		let logon_str = format!(
+			"{} {} {}",
+			logon_tokens[0], logon_tokens[1], logon_tokens[2]
+		);
 		let Some(login) = parse_quser_logon(&logon_str) else {
 			trace!(logon_str, "could not parse quser logon time");
 			continue;
@@ -475,9 +481,8 @@ mod tests {
 
 	#[test]
 	fn parses_who_dash_u_line() {
-		let out = parse_who(
-			"felix    pts/4        2026-05-20 17:24 10:05       15891 (tmux(6522).%1)\n",
-		);
+		let out =
+			parse_who("felix    pts/4        2026-05-20 17:24 10:05       15891 (tmux(6522).%1)\n");
 		assert_eq!(out.len(), 1);
 		assert_eq!(out[0].name, "felix");
 		assert_eq!(out[0].line, "pts/4");
@@ -570,9 +575,6 @@ mod tests {
 		assert_eq!(humanise_age(Duration::from_secs(59)), "0m");
 		assert_eq!(humanise_age(Duration::from_secs(60)), "1m");
 		assert_eq!(humanise_age(Duration::from_secs(3600)), "1h 0m");
-		assert_eq!(
-			humanise_age(Duration::from_secs(3600 * 25 + 60)),
-			"25h 1m"
-		);
+		assert_eq!(humanise_age(Duration::from_secs(3600 * 25 + 60)), "25h 1m");
 	}
 }

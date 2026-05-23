@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let host = ctx
@@ -13,8 +13,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let name = ctx.config.db.name.clone();
 
 	let start = Instant::now();
-	let connect_result =
-		tokio_postgres::connect(&ctx.database_url, tokio_postgres::NoTls).await;
+	let connect_result = tokio_postgres::connect(&ctx.database_url, tokio_postgres::NoTls).await;
 	let latency_ms = start.elapsed().as_millis() as u64;
 
 	let check = match connect_result {
@@ -34,7 +33,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 		),
 	};
 
-	check.with_detail("db_host", host)
+	check
+		.with_detail("db_host", host)
 		.with_detail("db_name", name)
 		.with_detail("latency_ms", latency_ms)
 }

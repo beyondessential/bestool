@@ -12,7 +12,9 @@ use tracing::{debug, info, instrument, warn};
 use crate::actions::Context;
 use crate::download::{DownloadSource, reqwest_client};
 
-use super::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu};
+use bestool_tamanu::{config::load_config, connection_url::ConnectionUrlBuilder};
+
+use super::{TamanuArgs, find_tamanu};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snippet {

@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -79,10 +79,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	};
 
 	let state = state_path();
-	let mut history = state
-		.as_deref()
-		.map(load_history)
-		.unwrap_or_default();
+	let mut history = state.as_deref().map(load_history).unwrap_or_default();
 	prune_history(&mut history, current.taken_at);
 
 	let (baseline, source) = match pick_baseline(&history, &current) {
@@ -137,8 +134,7 @@ async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
 		}
 		Err(_) => {
 			return FetchResult::Skip(
-				Check::pass("http_errors", "caddy admin unreachable")
-					.with_detail("skipped", true),
+				Check::pass("http_errors", "caddy admin unreachable").with_detail("skipped", true),
 			);
 		}
 	};
@@ -238,7 +234,8 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		by_code.insert(code.clone(), Value::from(*n));
 	}
 
-	check.with_detail("total_requests", total)
+	check
+		.with_detail("total_requests", total)
 		.with_detail("server_error_requests", errored)
 		.with_detail("server_error_rate_pct", pct)
 		.with_detail("window_seconds", window.as_secs())
@@ -435,8 +432,12 @@ other_metric{foo=\"bar\"} 7
 	fn delta_only_counts_growth() {
 		let before: BTreeMap<String, u64> =
 			[("200".to_string(), 10), ("500".to_string(), 2)].into();
-		let after: BTreeMap<String, u64> =
-			[("200".to_string(), 15), ("500".to_string(), 4), ("404".to_string(), 1)].into();
+		let after: BTreeMap<String, u64> = [
+			("200".to_string(), 15),
+			("500".to_string(), 4),
+			("404".to_string(), 1),
+		]
+		.into();
 		let d = delta_counts(&before, &after);
 		assert_eq!(d.get("200").copied(), Some(5));
 		assert_eq!(d.get("500").copied(), Some(2));
@@ -460,10 +461,10 @@ other_metric{foo=\"bar\"} 7
 			counts: [("200".to_string(), 100)].into(),
 		};
 		let history = vec![
-			snap(10_000 - 700, &[("200", 10)]),  // 11m40s old — too old
-			snap(10_000 - 540, &[("200", 30)]),  // 9m old — usable
-			snap(10_000 - 300, &[("200", 60)]),  // 5m old — usable
-			snap(10_000 - 10, &[("200", 90)]),   // 10s old — too fresh
+			snap(10_000 - 700, &[("200", 10)]), // 11m40s old — too old
+			snap(10_000 - 540, &[("200", 30)]), // 9m old — usable
+			snap(10_000 - 300, &[("200", 60)]), // 5m old — usable
+			snap(10_000 - 10, &[("200", 90)]),  // 10s old — too fresh
 		];
 		let baseline = pick_baseline(&history, &current).expect("should pick one");
 		assert_eq!(baseline.taken_at.as_second(), 10_000 - 540);
@@ -495,7 +496,10 @@ other_metric{foo=\"bar\"} 7
 	fn prune_drops_snapshots_outside_window_plus_grace() {
 		let now = Timestamp::from_second(10_000).unwrap();
 		let mut history = vec![
-			snap(10_000 - (WINDOW + PRUNE_GRACE).as_secs() as i64 - 1, &[("200", 1)]),
+			snap(
+				10_000 - (WINDOW + PRUNE_GRACE).as_secs() as i64 - 1,
+				&[("200", 1)],
+			),
 			snap(10_000 - WINDOW.as_secs() as i64, &[("200", 2)]),
 			snap(10_000 - 60, &[("200", 3)]),
 		];

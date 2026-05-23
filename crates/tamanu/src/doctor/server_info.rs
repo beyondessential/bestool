@@ -12,11 +12,10 @@ use sysinfo::{Disks, System};
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::actions::tamanu::server_info::detect_virtualisation;
+use crate::server_info::detect_virtualisation;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const IPV4_PROBE_ADDR: SocketAddr =
-	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
+const IPV4_PROBE_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
 const IPV6_PROBE_ADDR: SocketAddr = SocketAddr::new(
 	IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
 	443,
@@ -184,10 +183,6 @@ async fn resolve_aaaa(host: &str) -> io::Result<bool> {
 		.map_err(io::Error::other)?
 		.build()
 		.map_err(io::Error::other)?;
-	let response = resolver
-		.ipv6_lookup(host)
-		.await
-		.map_err(io::Error::other)?;
+	let response = resolver.ipv6_lookup(host).await.map_err(io::Error::other)?;
 	Ok(!response.answers().is_empty())
 }
-

@@ -1,12 +1,13 @@
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
+use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
+
 use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance},
-		services::{self, ExpectedState, Expectation, Supervisor},
 	},
 };
 

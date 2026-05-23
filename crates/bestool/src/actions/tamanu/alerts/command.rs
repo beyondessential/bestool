@@ -14,15 +14,15 @@ use tokio::{task::JoinSet, time::timeout};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
+use bestool_tamanu::{
+	config::load_config,
+	server_info::{fetch_device_key_with, query_device_key_row},
+};
+
 use super::{definition::AlertDefinition, targets::AlertTargets};
 use crate::actions::{
 	Context,
-	tamanu::{
-		TamanuArgs,
-		config::load_config,
-		find_tamanu,
-		server_info::{fetch_device_key_with, query_device_key_row},
-	},
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 fn parse_friendly_duration(s: &str) -> Result<Duration, String> {

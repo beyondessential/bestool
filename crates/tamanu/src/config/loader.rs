@@ -24,9 +24,11 @@ pub fn load_config_as_object(root: &Path, package: Option<&str>) -> Result<serde
 		{
 			config = merge_json(config, env_config);
 		}
-	} else if let Some(env_config) = package_config(root, package, "production.json5").transpose()? {
- 			config = merge_json(config, env_config);
- 		}
+	} else if let Some(env_config) =
+		package_config(root, package, "production.json5").transpose()?
+	{
+		config = merge_json(config, env_config);
+	}
 
 	if let Some(local_config) = package_config(root, package, "local.json5").transpose()? {
 		config = merge_json(config, local_config);

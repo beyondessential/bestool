@@ -6,18 +6,18 @@ use serde::Serialize;
 use sysinfo::System;
 use tracing::debug;
 
+use bestool_tamanu::{
+	config::load_config,
+	connection_url::ConnectionUrlBuilder,
+	server_info::{
+		detect_virtualisation, get_or_create_device_key, get_or_create_server_id,
+		get_tailscale_info,
+	},
+};
+
 use crate::actions::{
 	Context,
-	tamanu::{
-		TamanuArgs,
-		config::load_config,
-		connection_url::ConnectionUrlBuilder,
-		find_tamanu,
-		server_info::{
-			detect_virtualisation, get_or_create_device_key, get_or_create_server_id,
-			get_tailscale_info,
-		},
-	},
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 /// Generate a meta-ticket for this Tamanu server

@@ -17,16 +17,16 @@ use tokio::{
 };
 use tracing::{debug, info, instrument, warn};
 
+use bestool_tamanu::config::{TamanuConfig, load_config};
+
 use crate::{
 	actions::{
 		Context,
 		file::split::{ChunkSize, copy_into_chunks},
-		tamanu::{TamanuArgs, config::load_config, find_tamanu},
+		tamanu::{TamanuArgs, find_tamanu},
 	},
 	now_time,
 };
-
-use super::config::TamanuConfig;
 
 /// Backup a local Tamanu database to a single file.
 ///

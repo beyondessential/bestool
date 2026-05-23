@@ -216,11 +216,7 @@ fn list_via_dump_at(home: &Path) -> Result<Vec<PmProc>, String> {
 	}
 
 	let mut sys = System::new();
-	sys.refresh_processes_specifics(
-		ProcessesToUpdate::All,
-		false,
-		ProcessRefreshKind::nothing(),
-	);
+	sys.refresh_processes_specifics(ProcessesToUpdate::All, false, ProcessRefreshKind::nothing());
 
 	let mut out = Vec::new();
 	for entry in entries {
@@ -262,14 +258,18 @@ struct DumpEntryEnv {
 
 impl DumpEntry {
 	fn out_log(&self) -> Option<&str> {
-		self.pm_out_log_path
-			.as_deref()
-			.or_else(|| self.pm2_env.as_ref().and_then(|e| e.pm_out_log_path.as_deref()))
+		self.pm_out_log_path.as_deref().or_else(|| {
+			self.pm2_env
+				.as_ref()
+				.and_then(|e| e.pm_out_log_path.as_deref())
+		})
 	}
 	fn err_log(&self) -> Option<&str> {
-		self.pm_err_log_path
-			.as_deref()
-			.or_else(|| self.pm2_env.as_ref().and_then(|e| e.pm_err_log_path.as_deref()))
+		self.pm_err_log_path.as_deref().or_else(|| {
+			self.pm2_env
+				.as_ref()
+				.and_then(|e| e.pm_err_log_path.as_deref())
+		})
 	}
 }
 
@@ -444,10 +444,7 @@ mod tests {
 	fn read_pid_file_without_id_tries_zero() {
 		let tmp = tempdir().unwrap();
 		write_pid(tmp.path(), "tamanu-tasks", Some(0), 1234);
-		assert_eq!(
-			read_pid_file(tmp.path(), "tamanu-tasks", None),
-			Some(1234)
-		);
+		assert_eq!(read_pid_file(tmp.path(), "tamanu-tasks", None), Some(1234));
 	}
 
 	#[test]

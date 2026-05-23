@@ -1,3 +1,4 @@
+use bestool_tamanu::roots;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
@@ -27,13 +28,13 @@ pub struct FindArgs {
 pub async fn run(args: FindArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let mut versions = if let Some(root) = tamanu.root.as_ref() {
-		if let Some(version) = super::roots::version_of_root(root)? {
+		if let Some(version) = roots::version_of_root(root)? {
 			vec![(version, root.canonicalize().into_diagnostic()?)]
 		} else {
 			bail!("no version found in explicit root {root:?}");
 		}
 	} else {
-		super::roots::find_versions()?
+		roots::find_versions()?
 	};
 
 	if args.asc {

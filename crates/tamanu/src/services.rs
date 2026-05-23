@@ -17,8 +17,8 @@
 //!     `${thing}` segment) that's a leftover from older deployments and must
 //!     not be active or enabled on current ones.
 
-use super::ApiServerKind;
-use super::config::TamanuConfig;
+use crate::ApiServerKind;
+use crate::config::TamanuConfig;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Supervisor {

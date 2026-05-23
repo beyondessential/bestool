@@ -2,7 +2,9 @@ use mailgun_rs::{EmailAddress, Mailgun, Message};
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use tracing::debug;
 
-use crate::actions::tamanu::{alerts::definition::AlertDefinition, config::TamanuConfig};
+use bestool_tamanu::config::TamanuConfig;
+
+use crate::actions::tamanu::alerts::definition::AlertDefinition;
 
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]

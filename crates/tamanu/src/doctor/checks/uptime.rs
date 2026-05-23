@@ -1,7 +1,7 @@
 use sysinfo::System;
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	let secs = System::uptime();

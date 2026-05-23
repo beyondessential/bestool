@@ -538,6 +538,7 @@ dependencies = [
  "bestool-alertd",
  "bestool-canopy",
  "bestool-psql",
+ "bestool-tamanu",
  "binstalk-downloader",
  "blake3",
  "boxcar",
@@ -741,6 +742,38 @@ dependencies = [
  "url",
  "uuid",
  "winnow 1.0.3",
+]
+
+[[package]]
+name = "bestool-tamanu"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "duct",
+ "futures",
+ "glob",
+ "hickory-resolver",
+ "itertools 0.14.0",
+ "jiff",
+ "json5",
+ "leon",
+ "leon-macros",
+ "miette",
+ "node-semver",
+ "owo-colors 4.3.0",
+ "p256",
+ "percent-encoding",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

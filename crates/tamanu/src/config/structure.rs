@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use reqwest::Url;
+use url::Url;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

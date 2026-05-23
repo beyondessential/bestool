@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 const PING_URL: &str = "http://localhost/api/public/ping";
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,6 +45,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		),
 	};
 
-	check.with_detail("url", PING_URL)
+	check
+		.with_detail("url", PING_URL)
 		.with_detail("latency_ms", latency_ms)
 }

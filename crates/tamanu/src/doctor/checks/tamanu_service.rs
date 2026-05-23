@@ -3,11 +3,11 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::CheckContext;
-use crate::actions::tamanu::{
+use crate::{
 	ApiServerKind,
 	doctor::check::Check,
 	pm2,
-	services::{ExpectedState, Expectation, Instances, Supervisor, expected, parse_systemd_unit},
+	services::{Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit},
 };
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -180,7 +180,9 @@ enum Outcome {
 		missing_named: Vec<String>,
 	},
 	/// `Down` expectation but something is present (active or loaded).
-	Forbidden { units: Vec<String> },
+	Forbidden {
+		units: Vec<String>,
+	},
 }
 
 fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, Vec<usize>) {
@@ -196,8 +198,10 @@ fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, 
 			if matched_idx.is_empty() {
 				(Outcome::Ok, matched_idx)
 			} else {
-				let units: Vec<String> =
-					matched_idx.iter().map(|i| discovered[*i].raw.clone()).collect();
+				let units: Vec<String> = matched_idx
+					.iter()
+					.map(|i| discovered[*i].raw.clone())
+					.collect();
 				(Outcome::Forbidden { units }, matched_idx)
 			}
 		}
@@ -205,8 +209,11 @@ fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, 
 			if matched_idx.is_empty() {
 				return (Outcome::Missing, matched_idx);
 			}
-			let running: Vec<&Discovered> =
-				matched_idx.iter().map(|i| &discovered[*i]).filter(|d| d.running).collect();
+			let running: Vec<&Discovered> = matched_idx
+				.iter()
+				.map(|i| &discovered[*i])
+				.filter(|d| d.running)
+				.collect();
 			let not_running: Vec<String> = matched_idx
 				.iter()
 				.map(|i| &discovered[*i])
@@ -342,7 +349,8 @@ fn evaluate(
 		Check::fail("tamanu_service", summary, failures.join("; "))
 	};
 
-	check.with_detail("supervisor", supervisor_label)
+	check
+		.with_detail("supervisor", supervisor_label)
 		.with_detail("expectations", Value::Array(per_expectation))
 		.with_detail("services", services_json)
 		.with_detail(
@@ -395,8 +403,8 @@ fn outcome_to_json(o: &Outcome) -> Value {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::actions::tamanu::config::TamanuConfig;
-	use crate::actions::tamanu::doctor::check::CheckStatus;
+	use crate::config::TamanuConfig;
+	use crate::doctor::check::CheckStatus;
 
 	fn cfg(fhir_worker: bool) -> TamanuConfig {
 		let json = serde_json::json!({
@@ -528,10 +536,7 @@ mod tests {
 		match &check.status {
 			CheckStatus::Fail(reason) => {
 				assert!(reason.contains("forbidden"), "reason was {reason:?}");
-				assert!(
-					reason.contains("tamanu-facility"),
-					"reason was {reason:?}"
-				);
+				assert!(reason.contains("tamanu-facility"), "reason was {reason:?}");
 			}
 			other => panic!("{other:?}"),
 		}
@@ -554,10 +559,7 @@ mod tests {
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 		let extras = check.details.get("extras").unwrap().as_array().unwrap();
 		assert_eq!(extras.len(), 1);
-		assert_eq!(
-			extras[0].as_str().unwrap(),
-			"tamanu-patientportal.service"
-		);
+		assert_eq!(extras[0].as_str().unwrap(), "tamanu-patientportal.service");
 	}
 
 	#[test]
@@ -656,10 +658,7 @@ mod tests {
 		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
 		match &check.status {
 			CheckStatus::Fail(reason) => {
-				assert!(
-					reason.contains("not running"),
-					"reason was {reason:?}"
-				);
+				assert!(reason.contains("not running"), "reason was {reason:?}");
 				assert!(
 					reason.contains("tamanu-facility-tasks"),
 					"reason was {reason:?}"

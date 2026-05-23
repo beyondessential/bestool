@@ -1,3 +1,4 @@
+use bestool_tamanu::config::load_config_as_object;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
@@ -37,7 +38,7 @@ pub struct ConfigArgs {
 pub async fn run(args: ConfigArgs, ctx: Context) -> Result<()> {
 	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 
-	let config = super::loader::load_config_as_object(&root, args.package.as_deref())?;
+	let config = load_config_as_object(&root, args.package.as_deref())?;
 
 	let value = if let Some(key) = &args.key {
 		let mut value = &config;

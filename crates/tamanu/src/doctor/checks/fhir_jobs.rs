@@ -10,7 +10,7 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 
 use super::{CheckContext, fmt_db_error};
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 const WARN_DEPTH: i64 = 200;
 const FAIL_DEPTH: i64 = 2_000;

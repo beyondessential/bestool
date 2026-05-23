@@ -1,15 +1,12 @@
 use std::process::Command;
 
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	if !cfg!(target_os = "linux") {
-		return Check::pass(
-			"time_sync",
-			"time sync check skipped (non-Linux)",
-		)
-		.with_detail("skipped", true);
+		return Check::pass("time_sync", "time sync check skipped (non-Linux)")
+			.with_detail("skipped", true);
 	}
 
 	let output = match Command::new("timedatectl")
@@ -32,8 +29,13 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	let check = if synced {
 		Check::pass("time_sync", "NTP synchronised")
 	} else {
-		Check::warning("time_sync", "NTP not synchronised", "timedatectl reports no")
+		Check::warning(
+			"time_sync",
+			"NTP not synchronised",
+			"timedatectl reports no",
+		)
 	};
-	check.with_detail("synchronized", synced)
+	check
+		.with_detail("synchronized", synced)
 		.with_detail("service", "timedatectl")
 }

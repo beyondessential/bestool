@@ -1,5 +1,5 @@
 use super::CheckContext;
-use crate::actions::tamanu::doctor::check::Check;
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let Some(client) = ctx.db.as_deref() else {

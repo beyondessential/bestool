@@ -6,12 +6,13 @@ use miette::{IntoDiagnostic, Result, bail};
 use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
+use bestool_tamanu::services::{self, Criticality, ExpectedState, Expectation, Supervisor};
+
 use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance},
-		services::{self, Criticality, ExpectedState, Expectation, Supervisor},
 	},
 };
 

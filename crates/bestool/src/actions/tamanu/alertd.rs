@@ -7,13 +7,13 @@ use clap::{Parser, Subcommand};
 use miette::Result;
 use tracing::{debug, info};
 
-use super::{
-	TamanuArgs,
+use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
 	connection_url::ConnectionUrlBuilder,
-	find_tamanu,
 	server_info::fetch_device_key,
 };
+
+use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
 
 /// Run the alert daemon

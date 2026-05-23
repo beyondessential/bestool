@@ -3,12 +3,13 @@ use miette::{IntoDiagnostic, Result, bail};
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
+use bestool_tamanu::services::{self, Criticality, ExpectedState, Expectation};
+
 use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance},
-		services::{self, Criticality, ExpectedState, Expectation},
 	},
 };
 
