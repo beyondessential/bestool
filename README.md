@@ -105,3 +105,7 @@ Commits should follow the [Conventional Commits](https://www.conventionalcommits
 ### Releasing
 
 Releases are automated by [release-plz](https://release-plz.dev). Pushing to `main` opens a `repo: release` PR with per-crate version bumps determined from conventional commits and `cargo-semver-checks`; merging that PR (auto-merge is enabled once CI is green) publishes the affected crates to crates.io, pushes per-crate tags, and triggers the binary-build workflows.
+
+#### Holding a release
+
+To bundle several features or fixes into one release, remove the `autorelease` label from the open `repo: release` PR. The CI then turns auto-merge off and won't turn it back on while the label is absent, so subsequent merges to `main` keep updating the PR without shipping it. Re-add the label (and re-enable auto-merge manually, or push another commit to `main` to let the workflow do it) when you're ready to ship.
