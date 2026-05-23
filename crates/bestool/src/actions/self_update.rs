@@ -135,21 +135,34 @@ pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 	let _ = tokio::fs::remove_file(&dest).await;
 
 	let host = DownloadSource::Tools.host();
-	let url = host
-		.join(&format!(
-			"/bestool/{version}/{target}/{filename}",
-			target = detected_targets
-				.first()
-				.cloned()
-				.unwrap_or_else(|| TARGET.into()),
-		))
+	let target = detected_targets
+		.first()
+		.cloned()
+		.unwrap_or_else(|| TARGET.into());
+	let bin_path = format!("/bestool/{version}/{target}/{filename}");
+	let bin_url = host.join(&bin_path).into_diagnostic()?;
+	let tzst_url = host
+		.join(&format!("{bin_path}.tar.zst"))
 		.into_diagnostic()?;
-	info!(url = %url, "downloading");
 
-	Download::new(client, url)
-		.and_extract(PkgFmt::Bin, &dest)
+	let tzst_available = client
+		.remote_gettable(tzst_url.clone())
 		.await
-		.into_diagnostic()?;
+		.unwrap_or(false);
+
+	if tzst_available {
+		info!(url = %tzst_url, "downloading compressed");
+		Download::new(client, tzst_url)
+			.and_extract(PkgFmt::Tzstd, &dir)
+			.await
+			.into_diagnostic()?;
+	} else {
+		info!(url = %bin_url, "downloading");
+		Download::new(client, bin_url)
+			.and_extract(PkgFmt::Bin, &dest)
+			.await
+			.into_diagnostic()?;
+	}
 
 	#[cfg(windows)]
 	if add_to_path && let Err(err) = add_self_to_path() {
