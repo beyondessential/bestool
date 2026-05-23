@@ -72,17 +72,19 @@ pub struct LogsArgs {
 	pub grep: Option<Regex>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
-	if ctx.args_sub.name == "caddy" {
+pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
+	let tamanu = ctx.require::<TamanuArgs>();
+
+	if args.name == "caddy" {
 		return run_caddy_logs(
-			ctx.args_sub.lines,
-			ctx.args_sub.follow,
-			ctx.args_sub.grep.as_ref(),
-			ctx.args_top.use_colours,
+			args.lines,
+			args.follow,
+			args.grep.as_ref(),
+			tamanu.use_colours,
 		);
 	}
 
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+	let (_, root) = find_tamanu(tamanu)?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
 		ApiServerKind::Facility
@@ -99,13 +101,13 @@ pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
 	};
 
 	let expectations = services::expected(supervisor, kind, &config);
-	let matches: Vec<&Expectation> = match_name(&expectations, &ctx.args_sub.name).collect();
+	let matches: Vec<&Expectation> = match_name(&expectations, &args.name).collect();
 
 	if matches.is_empty() {
 		let candidates: Vec<&str> = up_names(&expectations).collect();
 		bail!(
 			"no service matches {:?}; expected services are: {}",
-			ctx.args_sub.name,
+			args.name,
 			candidates.join(", ")
 		);
 	}
@@ -113,22 +115,12 @@ pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
 	debug!(
 		?matches,
 		"matched expectations for `tamanu logs {}`",
-		ctx.args_sub.name
+		args.name
 	);
 
 	match supervisor {
-		Supervisor::Systemd => run_journalctl(
-			&matches,
-			ctx.args_sub.lines,
-			ctx.args_sub.follow,
-			ctx.args_sub.grep.as_ref(),
-		),
-		Supervisor::Pm2 => run_pm2_logs(
-			&matches,
-			ctx.args_sub.lines,
-			ctx.args_sub.follow,
-			ctx.args_sub.grep,
-		),
+		Supervisor::Systemd => run_journalctl(&matches, args.lines, args.follow, args.grep.as_ref()),
+		Supervisor::Pm2 => run_pm2_logs(&matches, args.lines, args.follow, args.grep),
 	}
 }
 

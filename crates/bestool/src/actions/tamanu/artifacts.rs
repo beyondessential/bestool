@@ -12,8 +12,6 @@ use target_tuples::{
 
 use crate::actions::Context;
 
-use super::TamanuArgs;
-
 /// List available artifacts for a Tamanu version.
 ///
 /// Fetches and displays the available artifacts (downloads) for a specific Tamanu version.
@@ -129,8 +127,8 @@ pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec
 	Ok(artifacts)
 }
 
-pub async fn run(ctx: Context<TamanuArgs, ArtifactsArgs>) -> Result<()> {
-	let ArtifactsArgs { version, platform } = ctx.args_sub;
+pub async fn run(args: ArtifactsArgs, _ctx: Context) -> Result<()> {
+	let ArtifactsArgs { version, platform } = args;
 	let artifacts = get_artifacts(&version, &platform).await?;
 
 	if artifacts.is_empty() {

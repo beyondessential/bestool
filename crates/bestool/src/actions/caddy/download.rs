@@ -11,8 +11,6 @@ use crate::{
 	download::{DownloadSource, client},
 };
 
-use super::CaddyArgs;
-
 /// Download caddy.
 #[derive(Debug, Clone, Parser)]
 pub struct DownloadArgs {
@@ -37,13 +35,13 @@ pub struct DownloadArgs {
 	pub target: Option<String>,
 }
 
-pub async fn run(ctx: Context<CaddyArgs, DownloadArgs>) -> Result<()> {
+pub async fn run(args: DownloadArgs, _ctx: Context) -> Result<()> {
 	let DownloadArgs {
 		version,
 		path,
 		url_only,
 		target,
-	} = ctx.args_sub;
+	} = args;
 
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
 	let detected_targets = detected_targets.get().await;

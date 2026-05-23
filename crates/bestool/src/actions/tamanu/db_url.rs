@@ -22,11 +22,11 @@ pub struct DbUrlArgs {
 	pub username: Option<String>,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, DbUrlArgs>) -> Result<()> {
-	let (_, root) = find_tamanu(&ctx.args_top)?;
+pub async fn run(args: DbUrlArgs, ctx: Context) -> Result<()> {
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let config = load_config(&root, None)?;
 
-	let (username, password) = if let Some(ref user) = ctx.args_sub.username {
+	let (username, password) = if let Some(ref user) = args.username {
 		if let Some(ref report_schemas) = config.db.report_schemas {
 			if let Some(connection) = report_schemas.connections.get(user)
 				&& !connection.username.is_empty()

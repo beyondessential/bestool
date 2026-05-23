@@ -103,8 +103,8 @@ struct GreenmaskTransformation {
 	rest: Value,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
-	let (_, tamanu_folder) = find_tamanu(&ctx.args_top)?;
+pub async fn run(args: GreenmaskConfigArgs, ctx: Context) -> Result<()> {
+	let (_, tamanu_folder) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let root = tamanu_folder.parent().unwrap();
 
 	let config = load_config(&tamanu_folder, None)?;
@@ -113,7 +113,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 		.wrap_err("failed to find psql executable")?;
 	let tmp_dir = temp_dir();
 
-	let mut transforms_dirs = ctx.args_sub.folders;
+	let mut transforms_dirs = args.folders;
 	if transforms_dirs.is_empty() {
 		transforms_dirs.push(root.join("greenmask").join("config"));
 		transforms_dirs.push(tamanu_folder.join("greenmask"));
@@ -163,8 +163,7 @@ pub async fn run(ctx: Context<TamanuArgs, GreenmaskConfigArgs>) -> Result<()> {
 	}
 
 	let storage_dir = {
-		let dir = ctx
-			.args_sub
+		let dir = args
 			.storage_dir
 			.unwrap_or_else(|| root.join("greenmask").join("dumps"));
 		fs::create_dir_all(&dir).into_diagnostic()?;

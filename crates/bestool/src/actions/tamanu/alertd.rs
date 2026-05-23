@@ -195,8 +195,8 @@ enum Command {
 	},
 }
 
-pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
-	match ctx.args_sub.command {
+pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
+	match args.command {
 		Command::Status { server_addr } => {
 			let addrs = resolve_addrs(server_addr);
 			bestool_alertd::commands::get_status(&addrs).await
@@ -225,7 +225,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 			bestool_alertd::commands::pause_alert(&alert, until.as_deref(), &addrs).await
 		}
 		Command::Run { daemon } => {
-			let (version, root) = find_tamanu(&ctx.args_top)?;
+			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
@@ -247,7 +247,7 @@ pub async fn run(ctx: Context<TamanuArgs, AlertdArgs>) -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let (version, root) = find_tamanu(&ctx.args_top)?;
+			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 

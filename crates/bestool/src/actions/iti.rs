@@ -3,8 +3,6 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use miette::Result;
 
-use crate::args::Args;
-
 use super::Context;
 
 pub(crate) fn parse_friendly_duration(s: &str) -> Result<Duration, String> {
@@ -21,9 +19,11 @@ pub struct ItiArgs {
 }
 
 super::subcommands! {
-	[Context<Args, ItiArgs> => {|ctx: Context<Args, ItiArgs>| -> Result<(Action, Context<ItiArgs>)> {
-		Ok((ctx.args_sub.action.clone(), ctx.push(())))
-	}}](with_sub)
+	[ItiArgs => |args: ItiArgs, mut ctx: Context| -> Result<(Action, Context)> {
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	#[cfg(feature = "iti-battery")]
 	battery => Battery(BatteryArgs),

@@ -8,7 +8,6 @@ use miette::IntoDiagnostic;
 use tracing::{debug, info, warn};
 
 use super::{
-	RdpArgs,
 	audit::AuditLog,
 	events::{Event, EventKind, poll_events},
 	state::{KickDetection, Tracker},
@@ -48,9 +47,7 @@ pub struct MonitorArgs {
 	pub service: bool,
 }
 
-pub async fn run(ctx: Context<RdpArgs, MonitorArgs>) -> Result<()> {
-	let args = ctx.args_sub;
-
+pub async fn run(args: MonitorArgs, _ctx: Context) -> Result<()> {
 	if args.service {
 		#[cfg(windows)]
 		return tokio::task::spawn_blocking(move || super::service::dispatch_service_mode(args))

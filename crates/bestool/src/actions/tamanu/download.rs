@@ -12,8 +12,6 @@ use crate::{
 	download::client,
 };
 
-use super::TamanuArgs;
-
 /// Download Tamanu artifacts.
 ///
 /// Use the `tamanu artifacts` subcommand to list of the artifacts available for a version.
@@ -60,7 +58,7 @@ pub struct DownloadArgs {
 	pub platform: Platform,
 }
 
-pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
+pub async fn run(args: DownloadArgs, _ctx: Context) -> Result<()> {
 	let DownloadArgs {
 		kind,
 		version,
@@ -68,7 +66,7 @@ pub async fn run(ctx: Context<TamanuArgs, DownloadArgs>) -> Result<()> {
 		url_only,
 		no_extract,
 		platform,
-	} = ctx.args_sub;
+	} = args;
 
 	if platform == Platform::Match("container".into()) {
 		bail!("Cannot download container artifacts");

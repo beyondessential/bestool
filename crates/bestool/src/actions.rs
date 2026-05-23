@@ -5,10 +5,21 @@ use tracing::{debug, trace};
 pub use context::Context;
 pub mod context;
 
+/// Wire up a subcommand level.
+///
+/// Generates an `Action` enum (one variant per subcommand), and a `run(args,
+/// ctx)` dispatcher. The `prep` closure runs before dispatch: it returns the
+/// chosen `Action` along with a `Context` that has been populated with this
+/// level's args (and anything else the level wants to provide). Each variant
+/// then dispatches to `<modname>::run(sub_args, ctx)`.
+///
+/// Every level uses the same `(args, ctx)` signature, so contexts compose
+/// across arbitrary nesting depth and downstream handlers can extract any
+/// ancestor's args by type via `ctx.require::<T>()`.
 #[macro_export]
 macro_rules! subcommands {
 	(
-		[$argtype:ty => $ctxcode:block]($ctxmethod:ident)
+		[$argtype:ty => $prep:expr]
 		$(
 			$(#[cfg($cfg:meta)])*
 			$(#[clap($clap:meta)])*
@@ -29,12 +40,13 @@ macro_rules! subcommands {
 			)*
 		}
 
-		pub async fn run(ctx: $argtype) -> Result<()> {
-			let ctxfn = $ctxcode;
-			match ctxfn(ctx)? {
+		pub async fn run(args: $argtype, ctx: Context) -> Result<()> {
+			let prep = $prep;
+			let (action, ctx) = prep(args, ctx)?;
+			match action {
 				$(
 					$(#[cfg($cfg)])*
-					(Action::$enumname(args), ctx) => $modname::run(ctx.$ctxmethod(args)).await,
+					Action::$enumname(args) => $modname::run(args, ctx).await,
 				)*
 			}
 		}
@@ -46,11 +58,13 @@ pub use subcommands;
 use crate::args::Args;
 
 subcommands! {
-	[Args => {|args: Args| -> Result<(Action, Context<Args>)> {
+	[Args => |args: Args, mut ctx: Context| -> Result<(Action, Context)> {
 		debug!(version=%env!("CARGO_PKG_VERSION"), "starting up");
 		trace!(action=?args.action, "action");
-		Ok((args.action.clone(), Context::new().with_top(args)))
-	}}](with_sub)
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	#[cfg(feature = "tamanu-psql")]
 	audit_psql => AuditPsql(AuditPsqlArgs),
@@ -90,5 +104,5 @@ pub async fn run_with_update_check(args: Args) -> Result<()> {
 		debug!("Failed to check for updates: {}", err);
 	}
 
-	run(args).await
+	run(args, Context::new()).await
 }

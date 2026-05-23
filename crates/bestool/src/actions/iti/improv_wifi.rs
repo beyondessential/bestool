@@ -13,7 +13,7 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::actions::{Context, iti::ItiArgs};
+use crate::actions::Context;
 
 /// Run the Improv-Wi-Fi BLE peripheral so a phone or browser can provision the device's Wi-Fi.
 ///
@@ -99,8 +99,7 @@ pub struct ImprovWifiArgs {
 	pub one_shot: bool,
 }
 
-pub async fn run(ctx: Context<ItiArgs, ImprovWifiArgs>) -> Result<()> {
-	let args = ctx.args_sub;
+pub async fn run(args: ImprovWifiArgs, _ctx: Context) -> Result<()> {
 
 	let connection = Connection::system()
 		.await

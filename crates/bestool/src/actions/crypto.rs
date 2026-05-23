@@ -1,8 +1,6 @@
 use clap::{Parser, Subcommand};
 use miette::Result;
 
-use crate::args::Args;
-
 use super::Context;
 
 /// Cryptographic operations.
@@ -14,9 +12,11 @@ pub struct CryptoArgs {
 }
 
 super::subcommands! {
-	[Context<Args, CryptoArgs> => {|ctx: Context<Args, CryptoArgs>| -> Result<(Action, Context<CryptoArgs>)> {
-		Ok((ctx.args_sub.action.clone(), ctx.push(())))
-	}}](with_sub)
+	[CryptoArgs => |args: CryptoArgs, mut ctx: Context| -> Result<(Action, Context)> {
+		let action = args.action.clone();
+		ctx.provide(args);
+		Ok((action, ctx))
+	}]
 
 	decrypt => Decrypt(DecryptArgs),
 	encrypt => Encrypt(EncryptArgs),
