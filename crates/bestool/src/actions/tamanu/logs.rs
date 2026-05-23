@@ -25,6 +25,10 @@ use crate::actions::{
 	},
 };
 
+/// The literal pseudo-service name that triggers caddy log tailing
+/// alongside whatever tamanu services are matched.
+const CADDY: &str = "caddy";
+
 /// Per-source line formatter used by `tail_one`. Takes the raw line and the
 /// caller's "use colours" setting, returns the (possibly transformed) line.
 type LineFormatter = fn(&str, bool) -> String;
@@ -40,22 +44,27 @@ struct TailSource {
 	formatter: LineFormatter,
 }
 
-/// Tail logs for a Tamanu service, in a supervisor-agnostic way.
+/// Tail logs for tamanu services and (optionally) caddy.
 ///
-/// On Linux this drives `journalctl -u`; on Windows it reads pm2's log files
-/// directly. The service name is matched as a substring against the expected
-/// service list, so `tamanu logs api` picks up
-/// `tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
+/// Each NAME is matched as a substring against the expected-Up service
+/// list, so `tamanu logs api` picks up `tamanu-{central,facility}-api@*`
+/// on systemd and `tamanu-api` on pm2. Multiple names combine: `tamanu
+/// logs api fhir` tails both. With no names at all, every expected-Up
+/// tamanu service is tailed alongside caddy.
 ///
-/// The special name `caddy` tails the caddy service: from `journalctl -u
-/// caddy.service` on Linux, and from `.log` files under `C:\Caddy\logs` (or
-/// `C:\Caddy`) on Windows. Caddy emits JSON-per-line logs; bestool detects
-/// these and applies opportunistic syntax highlighting.
+/// The literal name `caddy` is recognised as a pseudo-service that
+/// tails caddy: from `journalctl -u caddy.service` on Linux, and from
+/// `.log` files under `C:\Caddy\logs` (or `C:\Caddy`) on Windows. Caddy
+/// emits JSON-per-line logs; bestool detects these and applies
+/// opportunistic syntax highlighting per line.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct LogsArgs {
-	/// Service name. Matched as a substring against the expected service list.
-	pub name: String,
+	/// Service names. Each is matched as a substring against the
+	/// expected service list. `caddy` is a recognised pseudo-service.
+	/// With no names, tails everything (every expected-Up tamanu
+	/// service plus caddy).
+	pub names: Vec<String>,
 
 	/// Number of trailing lines to print before tailing.
 	#[arg(short = 'n', long = "lines", default_value = "10")]
@@ -66,23 +75,44 @@ pub struct LogsArgs {
 	pub follow: bool,
 
 	/// Only print lines matching this regex. On Linux this is passed to
-	/// `journalctl -g`; on Windows it's applied client-side after reading from
-	/// the pm2 log files.
+	/// `journalctl -g`; on Windows it's applied client-side after reading
+	/// from the log files.
 	#[arg(short = 'g', long = "grep", value_name = "REGEX")]
 	pub grep: Option<Regex>,
 }
 
+/// Result of partitioning the NAMES argument into tamanu service patterns
+/// and the caddy pseudo-service flag.
+struct Selection {
+	tamanu_names: Vec<String>,
+	include_caddy: bool,
+}
+
+fn select(names: &[String]) -> Selection {
+	if names.is_empty() {
+		return Selection {
+			tamanu_names: Vec::new(),
+			include_caddy: true,
+		};
+	}
+	let mut tamanu_names = Vec::new();
+	let mut include_caddy = false;
+	for n in names {
+		if n == CADDY {
+			include_caddy = true;
+		} else {
+			tamanu_names.push(n.clone());
+		}
+	}
+	Selection {
+		tamanu_names,
+		include_caddy,
+	}
+}
+
 pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
-
-	if args.name == "caddy" {
-		return run_caddy_logs(
-			args.lines,
-			args.follow,
-			args.grep.as_ref(),
-			tamanu.use_colours,
-		);
-	}
+	let selection = select(&args.names);
 
 	let (_, root) = find_tamanu(tamanu)?;
 	let config = load_config(&root, None)?;
@@ -100,125 +130,71 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		bail!("tamanu logs is only supported on Linux (systemd) and Windows (pm2)");
 	};
 
-	let expectations = services::expected(supervisor, kind, &config);
-	let matches: Vec<&Expectation> = match_name(&expectations, &args.name).collect();
+	let all_expectations = services::expected(supervisor, kind, &config);
+	let up_expectations: Vec<&Expectation> = all_expectations
+		.iter()
+		.filter(|e| e.state == ExpectedState::Up)
+		.collect();
 
-	if matches.is_empty() {
-		let candidates: Vec<&str> = up_names(&expectations).collect();
-		bail!(
-			"no service matches {:?}; expected services are: {}",
-			args.name,
-			candidates.join(", ")
-		);
-	}
+	// We use the same matcher as the lifecycle commands but only consider
+	// expected-Up services as candidates for the NAMES filter.
+	let tamanu_name_refs: Vec<&str> = selection
+		.tamanu_names
+		.iter()
+		.map(String::as_str)
+		.collect();
+	let matches: Vec<&Expectation> = {
+		let up_owned: Vec<Expectation> = up_expectations.iter().map(|e| (*e).clone()).collect();
+		let m = services::match_names(&up_owned, &tamanu_name_refs)?;
+		m.iter().map(|e| {
+			up_expectations
+				.iter()
+				.copied()
+				.find(|x| x.name == e.name)
+				.expect("match came from up_expectations")
+		}).collect()
+	};
 
 	debug!(
-		?matches,
-		"matched expectations for `tamanu logs {}`",
-		args.name
+		matched = ?matches.iter().map(|m| m.name).collect::<Vec<_>>(),
+		caddy = selection.include_caddy,
+		"logs selection"
 	);
 
 	match supervisor {
-		Supervisor::Systemd => run_journalctl(&matches, args.lines, args.follow, args.grep.as_ref()),
-		Supervisor::Pm2 => run_pm2_logs(&matches, args.lines, args.follow, args.grep),
+		Supervisor::Systemd => run_journalctl(
+			&matches,
+			selection.include_caddy,
+			args.lines,
+			args.follow,
+			args.grep.as_ref(),
+			tamanu.use_colours,
+		),
+		Supervisor::Pm2 => run_pm2_logs(
+			&matches,
+			selection.include_caddy,
+			args.lines,
+			args.follow,
+			args.grep,
+			tamanu.use_colours,
+		),
 	}
-}
-
-fn up_names(expectations: &[Expectation]) -> impl Iterator<Item = &str> {
-	expectations
-		.iter()
-		.filter(|e| e.state == ExpectedState::Up)
-		.map(|e| e.name)
-}
-
-fn match_name<'a>(
-	expectations: &'a [Expectation],
-	needle: &'a str,
-) -> impl Iterator<Item = &'a Expectation> {
-	expectations
-		.iter()
-		.filter(|e| e.state == ExpectedState::Up)
-		.filter(move |e| e.name.contains(needle))
-}
-
-fn run_caddy_logs(
-	lines: usize,
-	follow: bool,
-	grep: Option<&Regex>,
-	use_colours: bool,
-) -> Result<()> {
-	if cfg!(target_os = "linux") {
-		run_caddy_logs_journalctl(lines, follow, grep, use_colours)
-	} else if cfg!(target_os = "windows") {
-		run_caddy_logs_files(lines, follow, grep.cloned(), use_colours)
-	} else {
-		bail!("caddy logs are only supported on Linux (systemd) and Windows (C:\\Caddy)");
-	}
-}
-
-fn run_caddy_logs_journalctl(
-	lines: usize,
-	follow: bool,
-	grep: Option<&Regex>,
-	use_colours: bool,
-) -> Result<()> {
-	// --output=cat strips journalctl's prefix (timestamp, host, unit) so we
-	// see the raw log lines caddy emits. Caddy puts its own ts into each line.
-	let mut cmd = Command::new("journalctl");
-	cmd.arg("-u").arg("caddy.service");
-	cmd.arg("-n").arg(lines.to_string());
-	if follow {
-		cmd.arg("-f");
-	}
-	if let Some(re) = grep {
-		cmd.arg("-g").arg(re.as_str());
-	}
-	cmd.arg("--output=cat");
-	cmd.stdout(Stdio::piped());
-
-	let mut child = cmd.spawn().into_diagnostic()?;
-	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
-	let reader = BufReader::new(stdout);
-
-	let out_handle = std::io::stdout();
-	let mut out = out_handle.lock();
-	for line in reader.lines() {
-		let line = match line {
-			Ok(l) => l,
-			Err(_) => break,
-		};
-		let formatted = format_log_line(&line, use_colours);
-		if writeln!(out, "{formatted}").is_err() {
-			break;
-		}
-	}
-	let status = child.wait().into_diagnostic()?;
-	if !status.success() {
-		bail!("journalctl exited with {status}");
-	}
-	Ok(())
 }
 
 /// Windows: caddy runs out of `C:\Caddy`, with log files typically in
 /// `C:\Caddy\logs\*.log`. We probe that directory first, then the install
 /// root, and tail every `.log` we find.
-fn run_caddy_logs_files(
-	lines: usize,
-	follow: bool,
-	grep: Option<Regex>,
-	use_colours: bool,
-) -> Result<()> {
+fn caddy_tail_sources_windows() -> Result<Vec<TailSource>> {
 	let files = caddy_log_files_windows()?;
-	debug!(count = files.len(), "tailing caddy log files");
-	let sources: Vec<TailSource> = files
+	debug!(count = files.len(), "found caddy log files");
+	Ok(files
 		.into_iter()
 		.map(|path| TailSource {
 			prefix: caddy_prefix(&path),
 			path,
 			formatter: format_log_line,
 		})
-		.collect();
-	tail_files(sources, lines, follow, grep, use_colours)
+		.collect())
 }
 
 fn caddy_log_files_windows() -> Result<Vec<PathBuf>> {
@@ -313,15 +289,30 @@ fn write_colored_json(v: &Value, out: &mut String) {
 	}
 }
 
+/// Single journalctl call covering every matched tamanu unit plus,
+/// optionally, caddy. Caddy emits JSON-per-line logs; on systemd we run
+/// with `--output=cat` so journalctl's own prefix doesn't double up
+/// with caddy's timestamps, and pipe stdout through the JSON
+/// highlighter (which is opportunistic — non-JSON lines pass through
+/// unchanged).
 fn run_journalctl(
 	matches: &[&Expectation],
+	include_caddy: bool,
 	lines: usize,
 	follow: bool,
 	grep: Option<&Regex>,
+	use_colours: bool,
 ) -> Result<()> {
+	if matches.is_empty() && !include_caddy {
+		bail!("nothing to tail: no matched services and caddy not included");
+	}
+
 	let mut cmd = Command::new("journalctl");
 	for m in matches {
 		cmd.arg("-u").arg(journalctl_pattern(m));
+	}
+	if include_caddy {
+		cmd.arg("-u").arg("caddy.service");
 	}
 	cmd.arg("-n").arg(lines.to_string());
 	if follow {
@@ -330,7 +321,26 @@ fn run_journalctl(
 	if let Some(re) = grep {
 		cmd.arg("-g").arg(re.as_str());
 	}
-	let status = cmd.status().into_diagnostic()?;
+	cmd.arg("--output=cat");
+	cmd.stdout(Stdio::piped());
+
+	let mut child = cmd.spawn().into_diagnostic()?;
+	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
+	let reader = BufReader::new(stdout);
+
+	let out_handle = std::io::stdout();
+	let mut out = out_handle.lock();
+	for line in reader.lines() {
+		let line = match line {
+			Ok(l) => l,
+			Err(_) => break,
+		};
+		let formatted = format_log_line(&line, use_colours);
+		if writeln!(out, "{formatted}").is_err() {
+			break;
+		}
+	}
+	let status = child.wait().into_diagnostic()?;
 	if !status.success() {
 		bail!("journalctl exited with {status}");
 	}
@@ -348,21 +358,36 @@ fn journalctl_pattern(expectation: &Expectation) -> String {
 
 fn run_pm2_logs(
 	matches: &[&Expectation],
+	include_caddy: bool,
 	lines: usize,
 	follow: bool,
 	grep: Option<Regex>,
+	use_colours: bool,
 ) -> Result<()> {
-	let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
-	let sources = pm2::log_sources(&names)
-		.map_err(|e| miette!("could not locate pm2 log files: {e}"))?;
-	if sources.is_empty() {
-		bail!(
-			"no pm2 log files found for {}; was the deployment saved with `pm2 save`?",
-			names.join(", ")
-		);
+	let mut tail_sources: Vec<TailSource> = Vec::new();
+
+	if !matches.is_empty() {
+		let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
+		let sources = pm2::log_sources(&names)
+			.map_err(|e| miette!("could not locate pm2 log files: {e}"))?;
+		if sources.is_empty() {
+			bail!(
+				"no pm2 log files found for {}; was the deployment saved with `pm2 save`?",
+				names.join(", ")
+			);
+		}
+		tail_sources.extend(sources.into_iter().map(pm2_log_to_tail));
 	}
-	let tail_sources: Vec<TailSource> = sources.into_iter().map(pm2_log_to_tail).collect();
-	tail_files(tail_sources, lines, follow, grep, false)
+
+	if include_caddy {
+		tail_sources.extend(caddy_tail_sources_windows()?);
+	}
+
+	if tail_sources.is_empty() {
+		bail!("nothing to tail: no matched services and caddy not included");
+	}
+
+	tail_files(tail_sources, lines, follow, grep, use_colours)
 }
 
 fn pm2_log_to_tail(source: LogSource) -> TailSource {
@@ -517,63 +542,32 @@ mod tests {
 		serde_json::from_value(json).unwrap()
 	}
 
-	fn names(matched: Vec<&Expectation>) -> Vec<&str> {
-		matched.iter().map(|e| e.name).collect()
+	#[test]
+	fn select_empty_includes_caddy_and_no_tamanu_filter() {
+		let s = select(&[]);
+		assert!(s.include_caddy);
+		assert!(s.tamanu_names.is_empty());
 	}
 
 	#[test]
-	fn substring_matches_facility_api_on_systemd() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false));
-		let m: Vec<&Expectation> = match_name(&exps, "api").collect();
-		assert_eq!(names(m), vec!["tamanu-facility-api"]);
+	fn select_caddy_alone() {
+		let s = select(&["caddy".to_string()]);
+		assert!(s.include_caddy);
+		assert!(s.tamanu_names.is_empty());
 	}
 
 	#[test]
-	fn substring_matches_central_api_on_systemd() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(false, false));
-		let m: Vec<&Expectation> = match_name(&exps, "api").collect();
-		assert_eq!(names(m), vec!["tamanu-central-api"]);
+	fn select_caddy_with_others() {
+		let s = select(&["caddy".to_string(), "api".to_string()]);
+		assert!(s.include_caddy);
+		assert_eq!(s.tamanu_names, vec!["api".to_string()]);
 	}
 
 	#[test]
-	fn substring_matches_pm2_api() {
-		let exps = services::expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(true, false));
-		let m: Vec<&Expectation> = match_name(&exps, "api").collect();
-		assert_eq!(names(m), vec!["tamanu-api"]);
-	}
-
-	#[test]
-	fn fhir_matches_both_workers_on_central() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(false, true));
-		let m: Vec<&Expectation> = match_name(&exps, "fhir").collect();
-		assert_eq!(
-			names(m),
-			vec!["tamanu-central-fhir-resolve", "tamanu-central-fhir-refresh"]
-		);
-	}
-
-	#[test]
-	fn does_not_match_forbidden_facility_singleton() {
-		// On systemd, expectations include the forbidden `tamanu-facility` (Down).
-		// Logs should skip forbidden services entirely.
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false));
-		let m: Vec<&Expectation> = match_name(&exps, "tamanu-facility").collect();
-		// The literal `tamanu-facility` (Down) is excluded; matches are
-		// substring hits on the kind-prefixed names.
-		assert!(
-			m.iter().all(|e| e.state == ExpectedState::Up),
-			"matched a Down expectation: {m:?}"
-		);
-		// Ensure at least `tamanu-facility-api` is in there to prove the
-		// substring matcher does include legitimate `tamanu-facility-*` units.
-		assert!(m.iter().any(|e| e.name == "tamanu-facility-api"));
-	}
-
-	#[test]
-	fn no_match_returns_empty() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false));
-		let m: Vec<&Expectation> = match_name(&exps, "nope-no-such-thing").collect();
-		assert!(m.is_empty());
+	fn select_without_caddy_excludes_it() {
+		let s = select(&["api".to_string(), "tasks".to_string()]);
+		assert!(!s.include_caddy);
+		assert_eq!(s.tamanu_names, vec!["api".to_string(), "tasks".to_string()]);
 	}
 
 	#[test]

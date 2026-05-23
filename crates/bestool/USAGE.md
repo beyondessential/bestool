@@ -1087,7 +1087,7 @@ Alias: t
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
 * `greenmask-config` — Generate a Greenmask config file
-* `logs` — Tail logs for a Tamanu service, in a supervisor-agnostic way.
+* `logs` — Tail logs for tamanu services and (optionally) caddy.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
 * `restart` — Rolling-restart all running tamanu services.
@@ -1688,23 +1688,25 @@ Generate a Greenmask config file
 
 ## `bestool tamanu logs`
 
-Tail logs for a Tamanu service, in a supervisor-agnostic way.
+Tail logs for tamanu services and (optionally) caddy.
 
-On Linux this drives `journalctl -u`; on Windows it reads pm2's log files
-directly. The service name is matched as a substring against the expected
-service list, so `tamanu logs api` picks up
-`tamanu-{central,facility}-api@*` on systemd and `tamanu-api` on pm2.
+Each NAME is matched as a substring against the expected-Up service
+list, so `tamanu logs api` picks up `tamanu-{central,facility}-api@*`
+on systemd and `tamanu-api` on pm2. Multiple names combine: `tamanu
+logs api fhir` tails both. With no names at all, every expected-Up
+tamanu service is tailed alongside caddy.
 
-The special name `caddy` tails the caddy service: from `journalctl -u
-caddy.service` on Linux, and from `.log` files under `C:\Caddy\logs` (or
-`C:\Caddy`) on Windows. Caddy emits JSON-per-line logs; bestool detects
-these and applies opportunistic syntax highlighting.
+The literal name `caddy` is recognised as a pseudo-service that
+tails caddy: from `journalctl -u caddy.service` on Linux, and from
+`.log` files under `C:\Caddy\logs` (or `C:\Caddy`) on Windows. Caddy
+emits JSON-per-line logs; bestool detects these and applies
+opportunistic syntax highlighting per line.
 
-**Usage:** `bestool tamanu logs [OPTIONS] <NAME>`
+**Usage:** `bestool tamanu logs [OPTIONS] [NAMES]...`
 
 ###### **Arguments:**
 
-* `<NAME>` — Service name. Matched as a substring against the expected service list
+* `<NAMES>` — Service names. Each is matched as a substring against the expected service list. `caddy` is a recognised pseudo-service. With no names, tails everything (every expected-Up tamanu service plus caddy)
 
 ###### **Options:**
 
@@ -1712,7 +1714,7 @@ these and applies opportunistic syntax highlighting.
 
   Default value: `10`
 * `-f`, `--follow` — Follow: keep printing new lines as they arrive. Equivalent to `tail -f`
-* `-g`, `--grep <REGEX>` — Only print lines matching this regex. On Linux this is passed to `journalctl -g`; on Windows it's applied client-side after reading from the pm2 log files
+* `-g`, `--grep <REGEX>` — Only print lines matching this regex. On Linux this is passed to `journalctl -g`; on Windows it's applied client-side after reading from the log files
 
 
 
