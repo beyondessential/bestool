@@ -1,7 +1,8 @@
 use std::{
 	iter,
-	net::SocketAddr,
+	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	num::{NonZeroU16, NonZeroU64},
+	time::Duration,
 };
 
 use binstalk_downloader::remote::{Client, Url};
@@ -11,7 +12,10 @@ use hickory_resolver::{
 	net::runtime::TokioRuntimeProvider,
 };
 use miette::{IntoDiagnostic, Result};
+use tokio::{net::TcpStream, time::timeout};
 use tracing::{debug, info, instrument};
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn reqwest_client() -> Result<reqwest::Client> {
 	let mut builder = reqwest::Client::builder();
@@ -88,17 +92,73 @@ impl DownloadSource {
 		// - we're querying tailscale DNS server directly
 		// - we don't really want to have this be easily hijacked by another tailnet
 		// this does have the effect of exposing our tailnet suffix here, but that should be safe
-		tailscale_resolver()
-			.lookup_ip(match self {
-				Self::Tools => "bestool-proxy-tools",
-				Self::Servers => "bestool-proxy-servers",
-				Self::Meta => return Vec::new(),
-			})
+		let hostname = match self {
+			Self::Tools => "bestool-proxy-tools",
+			Self::Servers => "bestool-proxy-servers",
+			Self::Meta => return Vec::new(),
+		};
+
+		let dns_addrs: Vec<SocketAddr> = tailscale_resolver()
+			.lookup_ip(hostname)
 			.await
 			.ok()
 			.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
-			.unwrap_or_default()
+			.unwrap_or_default();
+		if !dns_addrs.is_empty() {
+			return dns_addrs;
+		}
+
+		let hardcoded = self.hardcoded_proxy_addrs();
+		debug!(
+			?self,
+			?hardcoded,
+			"tailscale DNS lookup empty, probing hardcoded proxy IPs"
+		);
+		if probe_tcp_reachable(&hardcoded).await {
+			return hardcoded;
+		}
+
+		Vec::new()
 	}
+
+	/// Hardcoded tailscale IPs for the proxy hosts, used when tailscale DNS
+	/// (100.100.100.100) is unreachable but the tailnet otherwise is.
+	fn hardcoded_proxy_addrs(self) -> Vec<SocketAddr> {
+		match self {
+			// bestool-proxy-tools
+			Self::Tools => vec![
+				SocketAddr::new(IpAddr::V4(Ipv4Addr::new(100, 101, 191, 59)), 443),
+				SocketAddr::new(
+					IpAddr::V6(Ipv6Addr::new(
+						0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0x7d01, 0xbf3c,
+					)),
+					443,
+				),
+			],
+			// bestool-proxy-servers
+			Self::Servers => vec![
+				SocketAddr::new(IpAddr::V4(Ipv4Addr::new(100, 80, 8, 4)), 443),
+				SocketAddr::new(
+					IpAddr::V6(Ipv6Addr::new(
+						0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0x5f01, 0x0808,
+					)),
+					443,
+				),
+			],
+			Self::Meta => Vec::new(),
+		}
+	}
+}
+
+async fn probe_tcp_reachable(addrs: &[SocketAddr]) -> bool {
+	for &addr in addrs {
+		match timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await {
+			Ok(Ok(_)) => return true,
+			Ok(Err(err)) => debug!(?addr, %err, "tcp probe failed"),
+			Err(_) => debug!(?addr, "tcp probe timed out"),
+		}
+	}
+	false
 }
 
 fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
