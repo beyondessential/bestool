@@ -69,8 +69,13 @@ jobs:
           PR_JSON: ${{ steps.release-plz-pr.outputs.pr }}
         run: |
           pr_number=$(printf '%s' "$PR_JSON" | jq -r '.number // empty')
-          if [ -n "$pr_number" ]; then
+          if [ -z "$pr_number" ]; then
+            exit 0
+          fi
+          if gh pr view "$pr_number" --json labels --jq '.labels[].name' | grep -qx autorelease; then
             gh pr merge --auto --squash "$pr_number"
+          else
+            echo "autorelease label absent on PR #$pr_number; release is held, skipping auto-merge"
           fi
 
   release-plz-hold:
