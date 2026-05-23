@@ -13,12 +13,14 @@ use std::{
 use miette::{IntoDiagnostic, Result, bail};
 use tracing::{debug, info, warn};
 
-use super::{
-	ApiServerKind, TamanuArgs,
+use bestool_tamanu::{
+	ApiServerKind,
 	config::load_config,
-	find_tamanu, pm2,
+	pm2,
 	services::{self, Expectation, Supervisor, parse_systemd_unit},
 };
+
+use super::{TamanuArgs, find_tamanu};
 
 /// Resolve the supervisor + expectation set for the current host.
 ///
@@ -431,7 +433,7 @@ fn is_running(supervisor: Supervisor, target: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::actions::tamanu::services::{Criticality, ExpectedState, Instances};
+	use bestool_tamanu::services::{Criticality, ExpectedState, Instances};
 
 	fn exp(name: &'static str) -> Expectation {
 		Expectation {

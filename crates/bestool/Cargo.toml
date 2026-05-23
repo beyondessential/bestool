@@ -19,7 +19,9 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.0.20", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "2.0.2", path = "../alertd", default-features = false, optional = true }
+bestool-canopy = { version = "0.1.0", path = "../canopy", optional = true }
 bestool-psql = { version = "1.5.2", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.1.0", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
@@ -130,6 +132,7 @@ tamanu-alerts = [
 	"__tamanu",
 	"tamanu-config",
 	"dep:bestool-alertd",
+	"dep:bestool-canopy",
 	"dep:mailgun-rs",
 	"dep:p256",
 	"dep:pulldown-cmark",
@@ -148,13 +151,11 @@ tamanu-config = ["__tamanu"]
 tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",
-	"dep:bestool-alertd",
+	"bestool-tamanu/doctor",
+	"dep:bestool-canopy",
 	"dep:bestool-psql",
-	"dep:duct",
-	"dep:hickory-resolver",
 	"dep:owo-colors",
 	"dep:p256",
-	"dep:sysinfo",
 	"dep:tokio-postgres",
 ]
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
@@ -163,15 +164,12 @@ tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:sysinfo"]
-tamanu-meta-ticket = ["__tamanu", "tamanu-config", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
+tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
+	"dep:bestool-tamanu",
 	"dep:dirs",
-	"dep:glob",
 	"dep:itertools",
-	"dep:json5",
-	"dep:leon-macros",
-	"dep:leon",
 	"dep:node-semver",
 	"dep:regex",
 ]

@@ -14,15 +14,15 @@ use tokio::{task::JoinSet, time::timeout};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
+use bestool_tamanu::{
+	config::load_config,
+	server_info::{fetch_device_key_with, query_device_key_row},
+};
+
 use super::{definition::AlertDefinition, targets::AlertTargets};
 use crate::actions::{
 	Context,
-	tamanu::{
-		TamanuArgs,
-		config::load_config,
-		find_tamanu,
-		server_info::{fetch_device_key_with, query_device_key_row},
-	},
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 fn parse_friendly_duration(s: &str) -> Result<Duration, String> {
@@ -79,7 +79,7 @@ pub struct AlertsArgs {
 pub struct InternalContext {
 	pub pg_client: tokio_postgres::Client,
 	pub http_client: reqwest::Client,
-	pub canopy_client: Option<Arc<bestool_alertd::canopy::CanopyClient>>,
+	pub canopy_client: Option<Arc<bestool_canopy::CanopyClient>>,
 }
 
 async fn default_dirs(root: &Path) -> Vec<PathBuf> {
@@ -218,7 +218,7 @@ pub async fn run(args: AlertsArgs, ctx: Context) -> Result<()> {
 
 	let device_key_pem = fetch_device_key_with(|| query_device_key_row(&client)).await;
 
-	let canopy_client = match bestool_alertd::canopy::CanopyClient::new(
+	let canopy_client = match bestool_canopy::CanopyClient::new(
 		version.to_string(),
 		device_key_pem.as_deref(),
 	)

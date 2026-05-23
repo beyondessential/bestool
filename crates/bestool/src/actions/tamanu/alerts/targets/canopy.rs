@@ -1,4 +1,4 @@
-use bestool_alertd::canopy::{DEFAULT_CANOPY_URL, NewEvent, Severity};
+use bestool_canopy::{DEFAULT_CANOPY_URL, NewEvent, Severity};
 use jiff::Timestamp;
 use miette::{Result, miette};
 use reqwest::Url;

@@ -1,7 +1,9 @@
-use std::{fmt, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
+
+pub use bestool_canopy as canopy;
+pub use bestool_canopy::Redacted;
 
 mod alert;
-pub mod canopy;
 pub mod commands;
 mod daemon;
 mod events;
@@ -13,6 +15,7 @@ mod metrics;
 pub mod scheduler;
 pub mod state_file;
 mod targets;
+mod tasks;
 pub mod templates;
 
 #[cfg(windows)]
@@ -24,6 +27,7 @@ pub use events::EventType;
 pub use targets::{
 	AlertTargets, ExternalTarget, ResolvedTarget, SendTarget, TargetConnection, TargetEmail,
 };
+pub use tasks::{BackgroundTask, TaskContext};
 
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -78,6 +82,12 @@ pub struct DaemonConfig {
 	/// will exit with an error so it can be restarted by the service manager.
 	/// Set to `None` to disable the watchdog.
 	pub watchdog_timeout: Option<Duration>,
+
+	/// Background tasks to run on a schedule alongside the alert scheduler.
+	///
+	/// Each task ticks at its own `interval()`. Errors are logged but do not
+	/// kill the daemon. Activity from each tick counts towards the watchdog.
+	pub background_tasks: Vec<Arc<dyn BackgroundTask>>,
 }
 
 impl fmt::Debug for DaemonConfig {
@@ -92,24 +102,15 @@ impl fmt::Debug for DaemonConfig {
 			.field("no_server", &self.no_server)
 			.field("server_addrs", &self.server_addrs)
 			.field("watchdog_timeout", &self.watchdog_timeout)
+			.field(
+				"background_tasks",
+				&self
+					.background_tasks
+					.iter()
+					.map(|t| t.name())
+					.collect::<Vec<_>>(),
+			)
 			.finish()
-	}
-}
-
-/// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
-#[derive(Clone)]
-pub struct Redacted<T>(pub T);
-
-impl<T> fmt::Debug for Redacted<T> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str("<redacted>")
-	}
-}
-
-impl<T> std::ops::Deref for Redacted<T> {
-	type Target = T;
-	fn deref(&self) -> &T {
-		&self.0
 	}
 }
 
@@ -125,7 +126,13 @@ impl DaemonConfig {
 			no_server: false,
 			server_addrs: Vec::new(),
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
+			background_tasks: Vec::new(),
 		}
+	}
+
+	pub fn with_task(mut self, task: Arc<dyn BackgroundTask>) -> Self {
+		self.background_tasks.push(task);
+		self
 	}
 
 	pub fn with_email(mut self, email: EmailConfig) -> Self {

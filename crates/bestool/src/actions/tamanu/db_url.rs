@@ -1,9 +1,11 @@
 use clap::Parser;
 use miette::Result;
 
+use bestool_tamanu::{config::load_config, connection_url::ConnectionUrlBuilder};
+
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, config::load_config, connection_url::ConnectionUrlBuilder, find_tamanu},
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 /// Generate a DATABASE_URL connection string

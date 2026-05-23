@@ -9,7 +9,9 @@ use walkdir::WalkDir;
 
 use crate::actions::Context;
 
-use super::{TamanuArgs, config::load_config, find_tamanu};
+use bestool_tamanu::config::load_config;
+
+use super::{TamanuArgs, find_tamanu};
 
 /// Generate a Greenmask config file.
 #[derive(Debug, Clone, Parser)]

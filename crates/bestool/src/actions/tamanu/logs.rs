@@ -16,13 +16,16 @@ use regex::Regex;
 use serde_json::Value;
 use tracing::debug;
 
+use bestool_tamanu::{
+	ApiServerKind,
+	config::load_config,
+	pm2::{self, LogSource},
+	services::{self, ExpectedState, Expectation, Instances, Supervisor},
+};
+
 use crate::actions::{
 	Context,
-	tamanu::{
-		ApiServerKind, TamanuArgs, config::load_config, find_tamanu,
-		pm2::{self, LogSource},
-		services::{self, ExpectedState, Expectation, Instances, Supervisor},
-	},
+	tamanu::{TamanuArgs, find_tamanu},
 };
 
 /// The literal pseudo-service name that triggers caddy log tailing
@@ -527,7 +530,7 @@ fn follow_file(
 
 #[cfg(test)]
 mod tests {
-	use crate::actions::tamanu::config::TamanuConfig;
+	use bestool_tamanu::config::TamanuConfig;
 
 	use super::*;
 
@@ -611,7 +614,7 @@ mod tests {
 		let source = pm2_log_to_tail(LogSource {
 			name: "tamanu-api".into(),
 			pm_id: Some(1),
-			stream: crate::actions::tamanu::pm2::LogStream::Out,
+			stream: pm2::LogStream::Out,
 			path,
 		});
 		let re = Regex::new(r"error").unwrap();
@@ -634,7 +637,7 @@ mod tests {
 		let source = pm2_log_to_tail(LogSource {
 			name: "x".into(),
 			pm_id: Some(0),
-			stream: crate::actions::tamanu::pm2::LogStream::Out,
+			stream: pm2::LogStream::Out,
 			path,
 		});
 		let (tx, rx) = std::sync::mpsc::channel::<String>();

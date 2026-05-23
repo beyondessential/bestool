@@ -11,11 +11,12 @@ use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
+use bestool_tamanu::config::{TamanuConfig, find_config_dir, load_config};
+
 use crate::{
 	actions::{
 		tamanu::{
 			backup::{process_backup, Then},
-			config::{find_config_dir, load_config, TamanuConfig},
 			find_package, find_tamanu, TamanuArgs,
 		},
 		Context,

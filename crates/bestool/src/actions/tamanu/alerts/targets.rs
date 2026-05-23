@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use miette::Result;
 
-use crate::actions::tamanu::config::TamanuConfig;
+use bestool_tamanu::config::TamanuConfig;
 
 use super::{
 	InternalContext,

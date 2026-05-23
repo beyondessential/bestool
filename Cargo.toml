@@ -4,10 +4,12 @@ members = [
 	"crates/alertd",
 	"crates/algae-cli",
 	"crates/bestool",
+	"crates/canopy",
 	"crates/improv-wifi",
 	"crates/postgres",
 	"crates/psql",
 	"crates/rpi-st7789v2-driver",
+	"crates/tamanu",
 ]
 
 [workspace.package]

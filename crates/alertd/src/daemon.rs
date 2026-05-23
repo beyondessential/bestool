@@ -13,6 +13,7 @@ use crate::{
 	http_server, metrics,
 	scheduler::Scheduler,
 	state_file,
+	tasks::TaskContext,
 };
 
 enum DaemonEvent {
@@ -397,6 +398,29 @@ pub async fn run_with_shutdown_and_reload(
 					}
 				} else {
 					debug!("database still unreachable");
+				}
+			}
+		});
+	}
+
+	// Registered background tasks (e.g. the doctor sweep). Each ticks at its
+	// own interval; errors are logged but don't tear down the daemon.
+	for task in &daemon_config.background_tasks {
+		let task = task.clone();
+		let task_ctx = TaskContext::from_internal(&ctx);
+		info!(name = task.name(), interval = ?task.interval(), "registering background task");
+		tokio::spawn(async move {
+			let mut tick = tokio::time::interval(task.interval());
+			tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+			loop {
+				tick.tick().await;
+				metrics::record_activity();
+				if let Err(err) = task.run(&task_ctx).await {
+					error!(
+						name = task.name(),
+						"background task failed: {}",
+						LogError(&err)
+					);
 				}
 			}
 		});

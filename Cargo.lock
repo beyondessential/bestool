@@ -536,7 +536,9 @@ dependencies = [
  "algae-cli",
  "base64 0.22.1",
  "bestool-alertd",
+ "bestool-canopy",
  "bestool-psql",
+ "bestool-tamanu",
  "binstalk-downloader",
  "blake3",
  "boxcar",
@@ -612,15 +614,14 @@ name = "bestool-alertd"
 version = "2.0.2"
 dependencies = [
  "axum",
+ "bestool-canopy",
  "bestool-postgres",
  "bytes",
  "clap",
  "clap-markdown",
  "dirs",
- "flate2",
  "futures",
  "glob",
- "hickory-resolver",
  "jiff",
  "lloggs",
  "mailgun-rs",
@@ -629,7 +630,6 @@ dependencies = [
  "prometheus",
  "pulldown-cmark",
  "rand 0.10.1",
- "rcgen",
  "reqwest",
  "serde",
  "serde_json",
@@ -640,7 +640,6 @@ dependencies = [
  "tempfile",
  "tera",
  "thiserror 2.0.18",
- "time",
  "tokio",
  "tokio-postgres",
  "tokio-util",
@@ -650,6 +649,24 @@ dependencies = [
  "url",
  "walkdir",
  "windows-service",
+]
+
+[[package]]
+name = "bestool-canopy"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "futures",
+ "hickory-resolver",
+ "jiff",
+ "miette",
+ "rcgen",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -725,6 +742,38 @@ dependencies = [
  "url",
  "uuid",
  "winnow 1.0.3",
+]
+
+[[package]]
+name = "bestool-tamanu"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "duct",
+ "futures",
+ "glob",
+ "hickory-resolver",
+ "itertools 0.14.0",
+ "jiff",
+ "json5",
+ "leon",
+ "leon-macros",
+ "miette",
+ "node-semver",
+ "owo-colors 4.3.0",
+ "p256",
+ "percent-encoding",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
