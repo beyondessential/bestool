@@ -39,6 +39,7 @@ fs4 = { version = "1.1.0", features = ["tokio"], optional = true }
 futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
 hickory-resolver = { version = "0.26.1", optional = true }
+improv-wifi = { version = "0.1.0", path = "../improv-wifi", features = ["networkmanager"], optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = { version = "0.2.24", features = ["serde"] }
@@ -175,10 +176,12 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 ## Iti subcommands
 iti = [ # enable all iti subcommands
 	"iti-battery",
+	"iti-improv-wifi",
 	"iti-lcd",
 	"iti-temperature",
 ]
 iti-battery = ["__iti", "dep:rppal"]
+iti-improv-wifi = ["__iti", "dep:improv-wifi", "dep:rppal"]
 iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
 iti-temperature = ["__iti", "dep:duct"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code

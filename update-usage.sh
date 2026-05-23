@@ -9,14 +9,14 @@ genusage() {
 	file="crates/$folder/USAGE.md"
 
 	echo "  - $bin..."
-	cargo run --bin "$bin" --quiet -- _docs > "$file"
+	cargo run --bin $bin --quiet -- _docs > "$file"
 	sed -i "s|$HOME|~|g" "$file"
 }
 
 echo "Updating USAGE.md files..."
 
 genusage algae algae-cli
-genusage bestool bestool
+genusage "bestool --features iti,iti-improv-wifi" bestool
 genusage bestool-alertd alertd
 genusage bestool-psql psql
 
