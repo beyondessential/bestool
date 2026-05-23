@@ -106,6 +106,8 @@ super::subcommands! {
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs),
 	#[cfg(feature = "tamanu-lifecycle")]
+	start => Start(StartArgs),
+	#[cfg(feature = "tamanu-lifecycle")]
 	status => Status(StatusArgs)
 }
 

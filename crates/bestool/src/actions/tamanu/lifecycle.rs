@@ -4,9 +4,14 @@
 //! Discovery, matching, and supervisor (systemd/pm2) dispatch all live
 //! here so the four subcommand entry points stay thin.
 
-use std::process::Command;
+use std::{
+	process::Command,
+	thread::sleep,
+	time::{Duration, Instant},
+};
 
 use miette::{IntoDiagnostic, Result, bail};
+use tracing::info;
 
 use super::{
 	ApiServerKind, TamanuArgs,
@@ -175,6 +180,68 @@ pub fn group_by_expectation<'a>(
 			(*exp, matches)
 		})
 		.collect()
+}
+
+/// On Linux/systemd, re-exec the current process under sudo if not
+/// already running as root. On pm2 / Windows this is a no-op — pm2
+/// manages permissions itself.
+///
+/// Re-exec is via `Command::status`: the parent waits for sudo to
+/// finish, then exits with sudo's status. We don't use `exec` because
+/// it requires unsafe and the indirection cost is negligible for a
+/// one-shot lifecycle command.
+pub fn ensure_root_or_reexec(supervisor: Supervisor) -> Result<()> {
+	if !matches!(supervisor, Supervisor::Systemd) {
+		return Ok(());
+	}
+	if privilege::user::privileged() {
+		return Ok(());
+	}
+
+	info!("not running as root; re-execing under sudo");
+	let args: Vec<String> = std::env::args().collect();
+	let status = Command::new("sudo").args(args).status().into_diagnostic()?;
+	std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Poll the supervisor until every target is running, or the timeout
+/// elapses. Targets are unit names (systemd) or process names (pm2),
+/// matching the input given to `systemctl start` / `pm2 start`.
+pub fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	let deadline = Instant::now() + Duration::from_secs(60);
+	let interval = Duration::from_millis(500);
+	loop {
+		let all_up = targets.iter().all(|t| is_running(supervisor, t));
+		if all_up {
+			return Ok(());
+		}
+		if Instant::now() >= deadline {
+			let still_down: Vec<&str> = targets
+				.iter()
+				.filter(|t| !is_running(supervisor, t))
+				.map(String::as_str)
+				.collect();
+			bail!(
+				"timed out after 60s waiting for {} to become active",
+				still_down.join(", ")
+			);
+		}
+		sleep(interval);
+	}
+}
+
+fn is_running(supervisor: Supervisor, target: &str) -> bool {
+	match supervisor {
+		Supervisor::Systemd => Command::new("systemctl")
+			.args(["is-active", "--quiet", target])
+			.status()
+			.map(|s| s.success())
+			.unwrap_or(false),
+		Supervisor::Pm2 => match pm2::list() {
+			Ok((procs, _)) => procs.iter().any(|p| p.name == target && p.running),
+			Err(_) => false,
+		},
+	}
 }
 
 /// Filter an expectation set by zero or more substring patterns.

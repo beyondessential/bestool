@@ -82,6 +82,22 @@ impl Instances {
 		}
 	}
 
+	/// The minimum set of systemd units that must be running to satisfy this
+	/// expectation. `NumericAtLeast(n)` enumerates `@1..@n`; `Named(xs)`
+	/// enumerates each suffix; `Single` is just the bare unit.
+	///
+	/// Used by `tamanu start` to compute which units to bring up. Not
+	/// meaningful for pm2.
+	pub fn required_systemd_units(&self, base: &str) -> Vec<String> {
+		match self {
+			Instances::Single => vec![format!("{base}.service")],
+			Instances::NumericAtLeast(n) => (1..=*n)
+				.map(|i| format!("{base}@{i}.service"))
+				.collect(),
+			Instances::Named(xs) => xs.iter().map(|s| format!("{base}@{s}.service")).collect(),
+		}
+	}
+
 	/// Whether a discovered `instance` (the bit after `@`, or `None` if there
 	/// was no `@` suffix) is one this pattern admits.
 	pub fn admits_instance(&self, instance: Option<&str>) -> bool {
