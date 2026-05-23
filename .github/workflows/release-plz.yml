@@ -5,7 +5,7 @@ on:
     branches:
       - main
   pull_request:
-    types: [unlabeled]
+    types: [labeled]
 
 concurrency:
   group: release-plz-${{ github.ref }}
@@ -72,18 +72,19 @@ jobs:
           if [ -z "$pr_number" ]; then
             exit 0
           fi
-          if gh pr view "$pr_number" --json labels --jq '.labels[].name' | grep -qx autorelease; then
-            gh pr merge --auto --squash "$pr_number"
+          if gh pr view "$pr_number" --json labels --jq '.labels[].name' | grep -qx release-hold; then
+            echo "release-hold label present on PR #$pr_number; skipping auto-merge"
           else
-            echo "autorelease label absent on PR #$pr_number; release is held, skipping auto-merge"
+            gh pr merge --auto --squash "$pr_number"
           fi
 
   release-plz-hold:
     if: >-
       github.event_name == 'pull_request'
-      && github.event.action == 'unlabeled'
-      && github.event.label.name == 'autorelease'
-    name: Disable auto-merge when held
+      && github.event.action == 'labeled'
+      && github.event.label.name == 'release-hold'
+      && startsWith(github.event.pull_request.head.ref, 'release-plz/')
+    name: Disable auto-merge when release-hold is applied
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
