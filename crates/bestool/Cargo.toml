@@ -121,6 +121,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-download",
 	"tamanu-find",
 	"tamanu-greenmask",
+	"tamanu-lifecycle",
 	"tamanu-logs",
 	"tamanu-meta-ticket",
 	"tamanu-psql",
@@ -160,6 +161,7 @@ tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
+tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:sysinfo"]
 tamanu-meta-ticket = ["__tamanu", "tamanu-config", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]

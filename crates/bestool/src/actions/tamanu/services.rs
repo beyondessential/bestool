@@ -32,6 +32,21 @@ pub struct Expectation {
 	pub name: &'static str,
 	pub instances: Instances,
 	pub state: ExpectedState,
+	/// Availability constraint when restarting. Only meaningful for
+	/// `ExpectedState::Up` services.
+	pub criticality: Criticality,
+}
+
+/// Whether a service must keep at least one instance up at all times.
+///
+/// Drives the restart strategy: `Critical` rolls one instance at a time
+/// with a readiness probe between each; `Background` restarts in bulk.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Criticality {
+	/// Must always have at least one instance up. API and frontend.
+	Critical,
+	/// No availability constraint. Tasks, sync, fhir-*.
+	Background,
 }
 
 /// How the instances of a logical service are arranged.
@@ -64,6 +79,22 @@ impl Instances {
 			Instances::Single => 1,
 			Instances::NumericAtLeast(n) => *n,
 			Instances::Named(xs) => xs.len(),
+		}
+	}
+
+	/// The minimum set of systemd units that must be running to satisfy this
+	/// expectation. `NumericAtLeast(n)` enumerates `@1..@n`; `Named(xs)`
+	/// enumerates each suffix; `Single` is just the bare unit.
+	///
+	/// Used by `tamanu start` to compute which units to bring up. Not
+	/// meaningful for pm2.
+	pub fn required_systemd_units(&self, base: &str) -> Vec<String> {
+		match self {
+			Instances::Single => vec![format!("{base}.service")],
+			Instances::NumericAtLeast(n) => (1..=*n)
+				.map(|i| format!("{base}@{i}.service"))
+				.collect(),
+			Instances::Named(xs) => xs.iter().map(|s| format!("{base}@{s}.service")).collect(),
 		}
 	}
 
@@ -100,6 +131,7 @@ pub fn expected(
 		name: tasks_name,
 		instances: Instances::Single,
 		state: ExpectedState::Up,
+		criticality: Criticality::Background,
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -107,11 +139,14 @@ pub fn expected(
 			name: "tamanu-frontend",
 			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Up,
+			criticality: Criticality::Critical,
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
+			// criticality is unused for Down; Background is the harmless default.
+			criticality: Criticality::Background,
 		});
 	}
 
@@ -126,6 +161,7 @@ pub fn expected(
 		name: api_name,
 		instances: Instances::NumericAtLeast(2),
 		state: ExpectedState::Up,
+		criticality: Criticality::Critical,
 	});
 
 	match kind {
@@ -141,11 +177,13 @@ pub fn expected(
 					name: resolve,
 					instances: Instances::Single,
 					state: ExpectedState::Up,
+					criticality: Criticality::Background,
 				});
 				out.push(Expectation {
 					name: refresh,
 					instances: Instances::Single,
 					state: ExpectedState::Up,
+					criticality: Criticality::Background,
 				});
 			}
 		}
@@ -158,6 +196,7 @@ pub fn expected(
 				name: sync_name,
 				instances: Instances::Single,
 				state: ExpectedState::Up,
+				criticality: Criticality::Background,
 			});
 		}
 	}
@@ -301,6 +340,55 @@ mod tests {
 	fn admits_instance_single_rejects_atsuffix() {
 		assert!(Instances::Single.admits_instance(None));
 		assert!(!Instances::Single.admits_instance(Some("1")));
+	}
+
+	fn criticality_for(es: &[Expectation], name: &str) -> Criticality {
+		es.iter()
+			.find(|e| e.name == name)
+			.unwrap_or_else(|| panic!("no expectation named {name}"))
+			.criticality
+	}
+
+	#[test]
+	fn api_and_frontend_are_critical() {
+		let central = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(false));
+		assert_eq!(
+			criticality_for(&central, "tamanu-central-api"),
+			Criticality::Critical
+		);
+		assert_eq!(
+			criticality_for(&central, "tamanu-frontend"),
+			Criticality::Critical
+		);
+
+		let facility_pm2 = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false));
+		assert_eq!(
+			criticality_for(&facility_pm2, "tamanu-api"),
+			Criticality::Critical
+		);
+	}
+
+	#[test]
+	fn tasks_sync_fhir_are_background() {
+		let central = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(true));
+		assert_eq!(
+			criticality_for(&central, "tamanu-central-tasks"),
+			Criticality::Background
+		);
+		assert_eq!(
+			criticality_for(&central, "tamanu-central-fhir-resolve"),
+			Criticality::Background
+		);
+		assert_eq!(
+			criticality_for(&central, "tamanu-central-fhir-refresh"),
+			Criticality::Background
+		);
+
+		let facility = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(false));
+		assert_eq!(
+			criticality_for(&facility, "tamanu-facility-sync"),
+			Criticality::Background
+		);
 	}
 
 	#[test]
