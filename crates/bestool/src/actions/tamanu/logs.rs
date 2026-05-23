@@ -10,6 +10,7 @@ use std::{
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail, miette};
+use regex::Regex;
 use tracing::debug;
 
 use crate::actions::{
@@ -40,6 +41,12 @@ pub struct LogsArgs {
 	/// Follow: keep printing new lines as they arrive. Equivalent to `tail -f`.
 	#[arg(short = 'f', long = "follow")]
 	pub follow: bool,
+
+	/// Only print lines matching this regex. On Linux this is passed to
+	/// `journalctl -g`; on Windows it's applied client-side after reading from
+	/// the pm2 log files.
+	#[arg(short = 'g', long = "grep", value_name = "REGEX")]
+	pub grep: Option<Regex>,
 }
 
 pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
@@ -78,10 +85,18 @@ pub async fn run(ctx: Context<TamanuArgs, LogsArgs>) -> Result<()> {
 	);
 
 	match supervisor {
-		Supervisor::Systemd => {
-			run_journalctl(&matches, ctx.args_sub.lines, ctx.args_sub.follow)
-		}
-		Supervisor::Pm2 => run_pm2_logs(&matches, ctx.args_sub.lines, ctx.args_sub.follow),
+		Supervisor::Systemd => run_journalctl(
+			&matches,
+			ctx.args_sub.lines,
+			ctx.args_sub.follow,
+			ctx.args_sub.grep.as_ref(),
+		),
+		Supervisor::Pm2 => run_pm2_logs(
+			&matches,
+			ctx.args_sub.lines,
+			ctx.args_sub.follow,
+			ctx.args_sub.grep,
+		),
 	}
 }
 
@@ -102,7 +117,12 @@ fn match_name<'a>(
 		.filter(move |e| e.name.contains(needle))
 }
 
-fn run_journalctl(matches: &[&Expectation], lines: usize, follow: bool) -> Result<()> {
+fn run_journalctl(
+	matches: &[&Expectation],
+	lines: usize,
+	follow: bool,
+	grep: Option<&Regex>,
+) -> Result<()> {
 	let mut cmd = Command::new("journalctl");
 	for m in matches {
 		cmd.arg("-u").arg(journalctl_pattern(m));
@@ -110,6 +130,9 @@ fn run_journalctl(matches: &[&Expectation], lines: usize, follow: bool) -> Resul
 	cmd.arg("-n").arg(lines.to_string());
 	if follow {
 		cmd.arg("-f");
+	}
+	if let Some(re) = grep {
+		cmd.arg("-g").arg(re.as_str());
 	}
 	let status = cmd.status().into_diagnostic()?;
 	if !status.success() {
@@ -127,7 +150,12 @@ fn journalctl_pattern(expectation: &Expectation) -> String {
 	}
 }
 
-fn run_pm2_logs(matches: &[&Expectation], lines: usize, follow: bool) -> Result<()> {
+fn run_pm2_logs(
+	matches: &[&Expectation],
+	lines: usize,
+	follow: bool,
+	grep: Option<Regex>,
+) -> Result<()> {
 	let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
 	let sources = pm2::log_sources(&names)
 		.map_err(|e| miette!("could not locate pm2 log files: {e}"))?;
@@ -137,14 +165,20 @@ fn run_pm2_logs(matches: &[&Expectation], lines: usize, follow: bool) -> Result<
 			names.join(", ")
 		);
 	}
-	tail_files(sources, lines, follow)
+	tail_files(sources, lines, follow, grep)
 }
 
-fn tail_files(sources: Vec<LogSource>, lines: usize, follow: bool) -> Result<()> {
+fn tail_files(
+	sources: Vec<LogSource>,
+	lines: usize,
+	follow: bool,
+	grep: Option<Regex>,
+) -> Result<()> {
 	let (tx, rx) = channel::<String>();
 	for source in sources {
 		let tx = tx.clone();
-		thread::spawn(move || tail_one(source, lines, follow, tx));
+		let grep = grep.clone();
+		thread::spawn(move || tail_one(source, lines, follow, grep.as_ref(), tx));
 	}
 	drop(tx);
 
@@ -158,7 +192,13 @@ fn tail_files(sources: Vec<LogSource>, lines: usize, follow: bool) -> Result<()>
 	Ok(())
 }
 
-fn tail_one(source: LogSource, lines: usize, follow: bool, tx: Sender<String>) {
+fn tail_one(
+	source: LogSource,
+	lines: usize,
+	follow: bool,
+	grep: Option<&Regex>,
+	tx: Sender<String>,
+) {
 	let prefix = format!(
 		"[{}#{} {}]",
 		source.name,
@@ -171,6 +211,9 @@ fn tail_one(source: LogSource, lines: usize, follow: bool, tx: Sender<String>) {
 
 	if let Ok(initial) = read_last_n_lines(&source.path, lines) {
 		for line in initial {
+			if grep.is_some_and(|re| !re.is_match(&line)) {
+				continue;
+			}
 			if tx.send(format!("{prefix} {line}\n")).is_err() {
 				return;
 			}
@@ -181,7 +224,7 @@ fn tail_one(source: LogSource, lines: usize, follow: bool, tx: Sender<String>) {
 		return;
 	}
 
-	follow_file(&source.path, &prefix, &tx);
+	follow_file(&source.path, &prefix, grep, &tx);
 }
 
 fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
@@ -191,7 +234,7 @@ fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
 	Ok(lines[start..].iter().map(|s| s.to_string()).collect())
 }
 
-fn follow_file(path: &Path, prefix: &str, tx: &Sender<String>) {
+fn follow_file(path: &Path, prefix: &str, grep: Option<&Regex>, tx: &Sender<String>) {
 	let mut file = match File::open(path) {
 		Ok(f) => f,
 		Err(_) => return,
@@ -226,6 +269,9 @@ fn follow_file(path: &Path, prefix: &str, tx: &Sender<String>) {
 		while let Some(idx) = leftover.find('\n') {
 			let line: String = leftover.drain(..=idx).collect();
 			let line = line.trim_end_matches('\n').trim_end_matches('\r');
+			if grep.is_some_and(|re| !re.is_match(line)) {
+				continue;
+			}
 			if tx.send(format!("{prefix} {line}\n")).is_err() {
 				return;
 			}
@@ -334,6 +380,55 @@ mod tests {
 		std::fs::write(&path, "").unwrap();
 		let last = read_last_n_lines(&path, 10).unwrap();
 		assert!(last.is_empty());
+	}
+
+	#[test]
+	fn pm2_tail_initial_filters_with_grep() {
+		// Drive `tail_one` over a fake log file, with grep set, and confirm
+		// only matching lines are sent through the channel.
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("tamanu-api-out-1.log");
+		std::fs::write(
+			&path,
+			"alpha\nbeta error: boom\ngamma\ndelta error: kaboom\n",
+		)
+		.unwrap();
+		let source = LogSource {
+			name: "tamanu-api".into(),
+			pm_id: Some(1),
+			stream: crate::actions::tamanu::pm2::LogStream::Out,
+			path,
+		};
+		let re = Regex::new(r"error").unwrap();
+		let (tx, rx) = std::sync::mpsc::channel::<String>();
+		std::thread::spawn(move || tail_one(source, 10, false, Some(&re), tx));
+		let mut received = Vec::new();
+		while let Ok(msg) = rx.recv() {
+			received.push(msg.trim_end_matches('\n').to_string());
+		}
+		assert_eq!(received.len(), 2);
+		assert!(received[0].contains("beta error: boom"));
+		assert!(received[1].contains("delta error: kaboom"));
+	}
+
+	#[test]
+	fn pm2_tail_initial_no_grep_emits_all() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("x.log");
+		std::fs::write(&path, "a\nb\nc\n").unwrap();
+		let source = LogSource {
+			name: "x".into(),
+			pm_id: Some(0),
+			stream: crate::actions::tamanu::pm2::LogStream::Out,
+			path,
+		};
+		let (tx, rx) = std::sync::mpsc::channel::<String>();
+		std::thread::spawn(move || tail_one(source, 10, false, None, tx));
+		let mut received = Vec::new();
+		while let Ok(msg) = rx.recv() {
+			received.push(msg);
+		}
+		assert_eq!(received.len(), 3);
 	}
 
 	#[test]

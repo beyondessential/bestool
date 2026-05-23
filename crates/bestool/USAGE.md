@@ -1421,6 +1421,7 @@ and `tamanu-api` on pm2.
 
   Default value: `10`
 * `-f`, `--follow` — Follow: keep printing new lines as they arrive. Equivalent to `tail -f`
+* `-g`, `--grep <REGEX>` — Only print lines matching this regex. On Linux this is passed to `journalctl -g`; on Windows it's applied client-side after reading from the pm2 log files
 
 
 
