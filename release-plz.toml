@@ -9,3 +9,4 @@ git_tag_name = "{{ package }}-v{{ version }}"
 name = "bestool"
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
+semver_check = false
