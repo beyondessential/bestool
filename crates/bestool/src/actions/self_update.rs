@@ -5,11 +5,11 @@ use clap::Parser;
 use binstalk_downloader::download::{Download, PkgFmt};
 use detect_targets::{TARGET, get_desired_targets};
 use miette::{IntoDiagnostic, Result, miette};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
 	args::Args,
-	download::{DownloadSource, client},
+	download::{DownloadSource, client, fetch_latest_version},
 };
 
 use super::Context;
@@ -84,7 +84,7 @@ pub struct SelfUpdateArgs {
 	#[arg(short = 'P', long)]
 	pub add_to_path: bool,
 
-	/// Force self-update even if installed via package manager.
+	/// Force reinstall, even if already on the latest version or installed via package manager.
 	#[arg(long)]
 	pub force: bool,
 }
@@ -100,10 +100,29 @@ pub async fn run(ctx: Context<Args, SelfUpdateArgs>) -> Result<()> {
 		version,
 		target,
 		temp_dir,
+		force,
 		#[cfg(windows)]
 		add_to_path,
-		..
 	} = ctx.args_sub;
+
+	if version == "latest" && !force {
+		match fetch_latest_version().await {
+			Ok(latest) => {
+				let current = env!("CARGO_PKG_VERSION");
+				if latest == current {
+					info!(
+						version = current,
+						"Already on the latest version. Use --force to reinstall."
+					);
+					return Ok(());
+				}
+				info!(current = current, latest = %latest, "Update available, proceeding");
+			}
+			Err(err) => {
+				debug!("Failed to check latest version, continuing with download: {err}");
+			}
+		}
+	}
 
 	let client = client().await?;
 

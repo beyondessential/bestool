@@ -1024,7 +1024,7 @@ Alias: self
 * `--temp-dir <TEMP_DIR>` — Temporary directory to download to.
 
    Defaults to the system temp directory.
-* `--force` — Force self-update even if installed via package manager
+* `--force` — Force reinstall, even if already on the latest version or installed via package manager
 
 
 
