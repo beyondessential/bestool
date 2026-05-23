@@ -204,6 +204,45 @@ pub fn expected(
 	out
 }
 
+/// Filter an expectation set by zero or more substring patterns.
+///
+/// - Empty `names`: returns every expectation unchanged.
+/// - Otherwise: an expectation matches if **any** name in `names` is a
+///   substring of the expectation's name.
+///
+/// Returns an error if any name in `names` matched zero expectations
+/// (typo safety in multi-name invocations).
+pub fn match_names<'a>(
+	expectations: &'a [Expectation],
+	names: &[&str],
+) -> miette::Result<Vec<&'a Expectation>> {
+	use miette::bail;
+
+	if names.is_empty() {
+		return Ok(expectations.iter().collect());
+	}
+
+	let unmatched: Vec<&str> = names
+		.iter()
+		.copied()
+		.filter(|name| !expectations.iter().any(|e| e.name.contains(name)))
+		.collect();
+	if !unmatched.is_empty() {
+		let available: Vec<&str> = expectations.iter().map(|e| e.name).collect();
+		bail!(
+			"no service matches: {}; available names are: {}",
+			unmatched.join(", "),
+			available.join(", "),
+		);
+	}
+
+	let matched: Vec<&Expectation> = expectations
+		.iter()
+		.filter(|e| names.iter().any(|name| e.name.contains(name)))
+		.collect();
+	Ok(matched)
+}
+
 /// Parse a systemd unit name (`tamanu-foo@1.service`, `tamanu-foo.service`,
 /// `tamanu-foo`) into its base name and optional instance.
 ///
@@ -389,6 +428,57 @@ mod tests {
 			criticality_for(&facility, "tamanu-facility-sync"),
 			Criticality::Background
 		);
+	}
+
+	fn exp(name: &'static str) -> Expectation {
+		Expectation {
+			name,
+			instances: Instances::Single,
+			state: ExpectedState::Up,
+			criticality: Criticality::Background,
+		}
+	}
+
+	#[test]
+	fn match_names_empty_returns_everything() {
+		let es = [exp("tamanu-api"), exp("tamanu-tasks"), exp("tamanu-sync")];
+		let m = match_names(&es, &[]).unwrap();
+		assert_eq!(m.len(), 3);
+	}
+
+	#[test]
+	fn match_names_substring() {
+		let es = [exp("tamanu-central-api"), exp("tamanu-central-tasks")];
+		let m = match_names(&es, &["api"]).unwrap();
+		assert_eq!(m.len(), 1);
+		assert_eq!(m[0].name, "tamanu-central-api");
+	}
+
+	#[test]
+	fn match_names_union() {
+		let es = [
+			exp("tamanu-central-api"),
+			exp("tamanu-central-tasks"),
+			exp("tamanu-central-fhir-resolve"),
+		];
+		let m = match_names(&es, &["api", "fhir"]).unwrap();
+		assert_eq!(m.len(), 2);
+	}
+
+	#[test]
+	fn match_names_zero_match_bails() {
+		let es = [exp("tamanu-api"), exp("tamanu-tasks")];
+		let err = match_names(&es, &["nope"]).unwrap_err();
+		let msg = format!("{err}");
+		assert!(msg.contains("nope"));
+		assert!(msg.contains("tamanu-api"));
+	}
+
+	#[test]
+	fn match_names_partial_typo_still_bails() {
+		let es = [exp("tamanu-api"), exp("tamanu-tasks")];
+		let err = match_names(&es, &["api", "nope"]).unwrap_err();
+		assert!(format!("{err}").contains("nope"));
 	}
 
 	#[test]

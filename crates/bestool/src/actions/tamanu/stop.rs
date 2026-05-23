@@ -6,7 +6,7 @@ use crate::actions::{
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance},
-		services::{ExpectedState, Expectation, Supervisor},
+		services::{self, ExpectedState, Expectation, Supervisor},
 	},
 };
 
@@ -28,7 +28,7 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 
 	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu)?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
-	let matched = lifecycle::match_names(&expectations, &names)?;
+	let matched = services::match_names(&expectations, &names)?;
 	let discovered = lifecycle::discover(supervisor)?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
