@@ -10,6 +10,7 @@ description = "BES Deployment tooling"
 keywords = ["bes", "tamanu", "tupaia"]
 categories = ["command-line-utilities"]
 repository = "https://github.com/beyondessential/bestool"
+readme = "../../README.md"
 exclude.workspace = true
 
 [lints]
