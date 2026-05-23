@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.9.2"
+version = "1.10.0"
 edition = "2024"
 default-run = "bestool"
 
@@ -17,9 +17,9 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.0.19", path = "../algae-cli", optional = true }
-bestool-alertd = { version = "2.0.1", path = "../alertd", default-features = false, optional = true }
-bestool-psql = { version = "1.5.1", path = "../psql", default-features = false, optional = true }
+algae-cli = { version = "1.0.20", path = "../algae-cli", optional = true }
+bestool-alertd = { version = "2.0.2", path = "../alertd", default-features = false, optional = true }
+bestool-psql = { version = "1.5.2", path = "../psql", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
@@ -40,7 +40,7 @@ fs4 = { version = "1.1.0", features = ["tokio"], optional = true }
 futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
 hickory-resolver = { version = "0.26.1", optional = true }
-improv-wifi = { version = "0.1.0", path = "../improv-wifi", features = ["networkmanager"], optional = true }
+improv-wifi = { version = "0.1.1", path = "../improv-wifi", features = ["networkmanager"], optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = { version = "0.2.24", features = ["serde"] }
@@ -62,7 +62,7 @@ quick-xml = { version = "0.39.2", features = ["serialize"], optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 regex = { version = "1.11.2", optional = true }
 reqwest = { workspace = true }
-rpi-st7789v2-driver = { version = "0.3.12", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
+rpi-st7789v2-driver = { version = "0.3.13", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.22.1", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
