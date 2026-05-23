@@ -56,7 +56,7 @@ pub async fn display(
 	// Build index for looking up cast results
 	let mut cast_map = std::collections::HashMap::new();
 	if let Some(results) = cast_results {
-		for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+		for (cell, result) in unprintable_cells.iter().zip(results) {
 			cast_map.insert(*cell, result);
 		}
 	}

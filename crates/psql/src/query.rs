@@ -475,7 +475,7 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 			// Build a map of column index to cast result
 			let mut cast_map = std::collections::HashMap::new();
 			if let Some(results) = cast_results {
-				for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+				for (cell, result) in unprintable_cells.iter().zip(results) {
 					cast_map.insert(cell.col_idx, result);
 				}
 			}

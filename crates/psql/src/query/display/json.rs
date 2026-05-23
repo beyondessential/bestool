@@ -45,7 +45,7 @@ pub async fn display<W: AsyncWrite + Unpin>(
 	// Build index for looking up cast results
 	let mut cast_map = std::collections::HashMap::new();
 	if let Some(results) = cast_results {
-		for (cell, result) in unprintable_cells.iter().zip(results.into_iter()) {
+		for (cell, result) in unprintable_cells.iter().zip(results) {
 			cast_map.insert(*cell, result);
 		}
 	}
@@ -277,7 +277,7 @@ mod tests {
 
 		let output2 = String::from_utf8(buffer2).expect("Invalid UTF-8");
 		let parsed2: serde_json::Value =
-			serde_json::from_str(&output2.trim()).expect("Should be valid JSON array");
+			serde_json::from_str(output2.trim()).expect("Should be valid JSON array");
 		assert!(parsed2.is_array());
 		let array = parsed2.as_array().unwrap();
 		assert_eq!(array.len(), 1);

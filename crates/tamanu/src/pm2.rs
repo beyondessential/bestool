@@ -92,13 +92,7 @@ pub fn find_command() -> Option<PathBuf> {
 		}
 	}
 
-	for candidate in candidate_install_paths() {
-		if probe(&candidate) {
-			return Some(candidate);
-		}
-	}
-
-	None
+	candidate_install_paths().into_iter().find(|c| probe(c))
 }
 
 fn probe(path: &Path) -> bool {
@@ -369,10 +363,10 @@ fn read_pid_file(home: &Path, name: &str, pm_id: Option<i64>) -> Option<u32> {
 		],
 	};
 	for path in candidates {
-		if let Ok(contents) = std::fs::read_to_string(&path) {
-			if let Ok(pid) = contents.trim().parse::<u32>() {
-				return Some(pid);
-			}
+		if let Ok(contents) = std::fs::read_to_string(&path)
+			&& let Ok(pid) = contents.trim().parse::<u32>()
+		{
+			return Some(pid);
 		}
 	}
 	None

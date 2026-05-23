@@ -481,13 +481,12 @@ pub fn detect_virtualisation() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Mutex;
-
+	use tokio::sync::Mutex;
 	use tokio_postgres::NoTls;
 
 	use super::*;
 
-	static DB_TEST_MUTEX: Mutex<()> = Mutex::new(());
+	static DB_TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 	async fn test_db_client() -> tokio_postgres::Client {
 		let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
@@ -520,7 +519,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_get_or_create_server_id_generates_new() {
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		let id = get_or_create_server_id(&client).await.unwrap();
@@ -540,7 +539,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_get_or_create_server_id_returns_existing() {
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		client
@@ -557,7 +556,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_get_or_create_server_id_is_stable() {
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		let id1 = get_or_create_server_id(&client).await.unwrap();
@@ -687,7 +686,7 @@ mod tests {
 	async fn test_get_or_create_device_key_generates_new() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
 
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		let pem = get_or_create_device_key(&client).await.unwrap();
@@ -697,7 +696,7 @@ mod tests {
 	#[cfg(feature = "meta-ticket")]
 	#[tokio::test]
 	async fn test_get_or_create_device_key_returns_existing_from_db() {
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		let canned = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVvhzsYiidp38GYn1\nKxD5Wipc/h8lglVsy1UFZq/SZbGhRANCAAT2EsEq7xjeWVnim9XwdYXga/LBbppm\nfXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN\n-----END PRIVATE KEY-----\n";
@@ -716,7 +715,7 @@ mod tests {
 	#[cfg(feature = "meta-ticket")]
 	#[tokio::test]
 	async fn test_get_or_create_device_key_is_stable() {
-		let _lock = DB_TEST_MUTEX.lock().unwrap();
+		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
 		let a = get_or_create_device_key(&client).await.unwrap();
