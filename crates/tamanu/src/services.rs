@@ -91,9 +91,9 @@ impl Instances {
 	pub fn required_systemd_units(&self, base: &str) -> Vec<String> {
 		match self {
 			Instances::Single => vec![format!("{base}.service")],
-			Instances::NumericAtLeast(n) => (1..=*n)
-				.map(|i| format!("{base}@{i}.service"))
-				.collect(),
+			Instances::NumericAtLeast(n) => {
+				(1..=*n).map(|i| format!("{base}@{i}.service")).collect()
+			}
 			Instances::Named(xs) => xs.iter().map(|s| format!("{base}@{s}.service")).collect(),
 		}
 	}
