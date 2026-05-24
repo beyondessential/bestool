@@ -1594,9 +1594,11 @@ Aliases: db, u, url
 
 Gather server info + healthchecks for a Tamanu install
 
-Runs a set of healthchecks against the local Tamanu install and renders a
-colour-coded summary. The alertd daemon runs the same checks every minute
-and pushes results to Canopy; this command is for interactive operator use.
+If the alertd daemon is running on this host (with its HTTP server bound to
+the default localhost port), the most recently computed sweep is fetched
+from it and rendered, with a note saying when those checks were actually
+computed. Otherwise — or with `--fresh` / `--no-daemon` — the checks are
+run locally.
 
 Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 
@@ -1607,6 +1609,10 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 * `--json` — Emit the JSON wire payload instead of the human-readable render
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 * `--skip <NAME>` — Skip the named check(s). Repeatable. Applied after `--check`
+* `--fresh` — Force a fresh sweep. With alertd running, asks the daemon to recompute and streams the results back as they come in; without alertd, runs the checks locally exactly like before
+* `--no-daemon` — Skip the alertd integration entirely and always compute locally.
+
+   Combined with `--fresh` this is a no-op (a local sweep is always fresh).
 
 
 

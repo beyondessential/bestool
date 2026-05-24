@@ -193,6 +193,7 @@ pub async fn run_with_shutdown_and_reload(
 		let dry_run_for_server = daemon_config.dry_run;
 		let scheduler_for_server = scheduler.clone();
 		let reload_tx_for_server = reload_tx.clone();
+		let background_tasks_for_server = daemon_config.background_tasks.clone();
 		tokio::spawn(async move {
 			// Wait for event manager to be initialised
 			let event_mgr = loop {
@@ -213,6 +214,7 @@ pub async fn run_with_shutdown_and_reload(
 				daemon_config.server_addrs.clone(),
 				scheduler_for_server,
 				watchdog_timeout_for_server,
+				&background_tasks_for_server,
 			)
 			.await;
 		});

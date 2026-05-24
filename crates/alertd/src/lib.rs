@@ -15,7 +15,7 @@ mod metrics;
 pub mod scheduler;
 pub mod state_file;
 mod targets;
-mod tasks;
+pub mod tasks;
 pub mod templates;
 
 #[cfg(windows)]
@@ -27,7 +27,7 @@ pub use events::EventType;
 pub use targets::{
 	AlertTargets, ExternalTarget, ResolvedTarget, SendTarget, TargetConnection, TargetEmail,
 };
-pub use tasks::{BackgroundTask, TaskContext};
+pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
