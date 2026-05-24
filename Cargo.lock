@@ -582,6 +582,7 @@ dependencies = [
  "reqwest",
  "rpi-st7789v2-driver",
  "rppal",
+ "semver",
  "serde",
  "serde_json",
  "serde_path_to_error",

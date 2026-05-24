@@ -66,6 +66,7 @@ regex = { version = "1.11.2", optional = true }
 reqwest = { workspace = true }
 rpi-st7789v2-driver = { version = "0.3.13", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
 rppal = { version = "0.22.1", optional = true }
+semver = { version = "1.0.28", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 serde_path_to_error = { version = "0.1.17", optional = true }
@@ -107,7 +108,7 @@ completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
 file = ["dep:blake3", "dep:indicatif", "dep:tokio-util"]
 rdp = ["dep:duct", "dep:privilege", "dep:quick-xml", "dep:tauri-winrt-notification", "dep:windows-service"]
-self-update = ["download", "dep:upgrade", "dep:windows-env"]
+self-update = ["download", "dep:semver", "dep:upgrade", "dep:windows-env"]
 ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:ssh-key", "dep:privilege", "dep:windows-acl"]
 
 ## Tamanu subcommands

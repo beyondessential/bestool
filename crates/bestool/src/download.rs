@@ -209,7 +209,7 @@ pub async fn check_for_update() -> Result<()> {
 		"Version check result"
 	);
 
-	if latest_version != current_version {
+	if remote_is_newer(current_version, &latest_version) {
 		info!(
 			current = current_version,
 			latest = %latest_version,
@@ -220,4 +220,60 @@ pub async fn check_for_update() -> Result<()> {
 	}
 
 	Ok(())
+}
+
+/// Whether the remote version is strictly higher than the current version.
+///
+/// Avoids notifying when a dev or pre-release build (e.g. installed from a
+/// branch) happens to be ahead of the published release. If either side can't
+/// be parsed as semver, falls back to string inequality so we still surface
+/// *something* — a parse failure shouldn't mask a real available update.
+pub(crate) fn remote_is_newer(current: &str, latest: &str) -> bool {
+	match (
+		semver::Version::parse(current),
+		semver::Version::parse(latest),
+	) {
+		(Ok(c), Ok(l)) => l > c,
+		_ => current != latest,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::remote_is_newer;
+
+	#[test]
+	fn remote_newer_when_remote_is_higher_patch() {
+		assert!(remote_is_newer("1.10.0", "1.10.1"));
+	}
+
+	#[test]
+	fn remote_newer_when_remote_is_higher_minor() {
+		assert!(remote_is_newer("1.10.5", "1.11.0"));
+	}
+
+	#[test]
+	fn not_newer_when_equal() {
+		assert!(!remote_is_newer("1.10.0", "1.10.0"));
+	}
+
+	#[test]
+	fn not_newer_when_local_is_ahead() {
+		// The case the TODO calls out: a dev build that's ahead of the
+		// published release shouldn't trigger an "update available" notice.
+		assert!(!remote_is_newer("1.12.0", "1.11.0"));
+	}
+
+	#[test]
+	fn double_digit_components_compared_numerically_not_lexically() {
+		// String comparison would say "1.9.0" > "1.10.0" — semver knows better.
+		assert!(remote_is_newer("1.9.0", "1.10.0"));
+		assert!(!remote_is_newer("1.10.0", "1.9.0"));
+	}
+
+	#[test]
+	fn unparseable_falls_back_to_inequality() {
+		assert!(remote_is_newer("not-semver", "1.0.0"));
+		assert!(!remote_is_newer("not-semver", "not-semver"));
+	}
 }
