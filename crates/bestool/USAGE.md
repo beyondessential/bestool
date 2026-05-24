@@ -63,6 +63,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
+* [`bestool tamanu tags`↴](#bestool-tamanu-tags)
 * [`bestool tamanu restart`↴](#bestool-tamanu-restart)
 * [`bestool tamanu start`↴](#bestool-tamanu-start)
 * [`bestool tamanu status`↴](#bestool-tamanu-status)
@@ -1090,6 +1091,7 @@ Alias: t
 * `logs` — Tail logs for tamanu services and (optionally) caddy.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
+* `tags` — Fetch this device's tags from canopy.
 * `restart` — Rolling-restart all running tamanu services.
 * `start` — Bring up any expected tamanu services that aren't running.
 * `status` — Report on tamanu services: what's expected vs what's actually running.
@@ -1785,6 +1787,29 @@ Aliases: p, pg, sql
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
+
+
+
+## `bestool tamanu tags`
+
+Fetch this device's tags from canopy.
+
+Tags are stored server-side in canopy and identify what role / fleet /
+labels this device carries. The fetch is authenticated by the canopy
+client (tailscale identity, or mTLS with the device key).
+
+On a successful fetch the result is cached to disk alongside the
+`server-id` file; on a failed fetch (canopy unreachable, no auth path,
+HTTP error) the cached copy — if any — is read and printed instead, with
+a `cached` flag set in the JSON output and a one-line note in the
+human-readable output.
+
+**Usage:** `bestool tamanu tags [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Emit the tags as JSON rather than a human-readable list
+* `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
 
 
 
