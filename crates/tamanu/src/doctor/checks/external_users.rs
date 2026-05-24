@@ -43,9 +43,12 @@ struct ExternalUser {
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	let mut users = match collect_users().await {
-		Ok(u) => u,
+		Ok(CollectOutcome::Users(u)) => u,
+		Ok(CollectOutcome::Unavailable(reason)) => {
+			return Check::skip("external_users", "could not enumerate logins", reason);
+		}
 		Err(err) => {
-			return Check::warning(
+			return Check::skip(
 				"external_users",
 				"could not enumerate logins",
 				err.to_string(),
@@ -143,8 +146,20 @@ fn humanise_age(d: Duration) -> String {
 	}
 }
 
+/// Outcome of trying to enumerate sessions.
+///
+/// `Unavailable` is distinct from `Users(empty)`: on Windows, `quser` exits
+/// non-zero (typically with "No User exists for *") both when there genuinely
+/// are no sessions *and* when the caller doesn't have the privilege to list
+/// them. Treating both the same way silently turned a permission failure into
+/// a falsely cheerful PASS, which is the opposite of what the operator needs.
+enum CollectOutcome {
+	Users(Vec<ExternalUser>),
+	Unavailable(String),
+}
+
 #[cfg(unix)]
-async fn collect_users() -> miette::Result<Vec<ExternalUser>> {
+async fn collect_users() -> miette::Result<CollectOutcome> {
 	let output = spawn_blocking(|| {
 		duct::cmd!("who")
 			.stdout_capture()
@@ -157,20 +172,24 @@ async fn collect_users() -> miette::Result<Vec<ExternalUser>> {
 	.map_err(|e| miette::miette!("running who: {e}"))?;
 
 	if !output.status.success() {
-		debug!(
-			status = ?output.status,
-			stderr = %String::from_utf8_lossy(&output.stderr),
-			"who returned non-zero"
-		);
-		return Ok(Vec::new());
+		let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+		debug!(status = ?output.status, %stderr, "who returned non-zero");
+		return Ok(CollectOutcome::Unavailable(format!(
+			"who returned non-zero{}",
+			if stderr.is_empty() {
+				String::new()
+			} else {
+				format!(": {stderr}")
+			}
+		)));
 	}
 
 	let text = String::from_utf8_lossy(&output.stdout);
-	Ok(parse_who(&text))
+	Ok(CollectOutcome::Users(parse_who(&text)))
 }
 
 #[cfg(windows)]
-async fn collect_users() -> miette::Result<Vec<ExternalUser>> {
+async fn collect_users() -> miette::Result<CollectOutcome> {
 	let output = spawn_blocking(|| {
 		duct::cmd!("quser")
 			.stdout_capture()
@@ -182,22 +201,39 @@ async fn collect_users() -> miette::Result<Vec<ExternalUser>> {
 	.map_err(|e| miette::miette!("running quser: {e}"))?
 	.map_err(|e| miette::miette!("running quser: {e}"))?;
 
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	// `quser` returns exit code 1 + "No User exists for *" when the session
+	// list is empty, but it *also* returns non-zero when access is denied.
+	// We treat the "empty list" message as a real empty, and anything else
+	// non-zero as a skip-worthy "we couldn't determine the list".
 	if !output.status.success() {
 		debug!(
 			status = ?output.status,
-			stderr = %String::from_utf8_lossy(&output.stderr),
+			%stderr,
 			"quser returned non-zero"
 		);
-		return Ok(Vec::new());
+		if stderr.to_lowercase().contains("no user exists for *") {
+			return Ok(CollectOutcome::Users(Vec::new()));
+		}
+		return Ok(CollectOutcome::Unavailable(format!(
+			"quser returned non-zero{}",
+			if stderr.trim().is_empty() {
+				String::new()
+			} else {
+				format!(": {}", stderr.trim())
+			}
+		)));
 	}
 
 	let text = String::from_utf8_lossy(&output.stdout);
-	Ok(parse_quser(&text))
+	Ok(CollectOutcome::Users(parse_quser(&text)))
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn collect_users() -> miette::Result<Vec<ExternalUser>> {
-	Ok(Vec::new())
+async fn collect_users() -> miette::Result<CollectOutcome> {
+	Ok(CollectOutcome::Unavailable(
+		"session enumeration not implemented for this platform".into(),
+	))
 }
 
 /// Parse `who` output into structured sessions.

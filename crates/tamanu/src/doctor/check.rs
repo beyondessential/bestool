@@ -5,6 +5,12 @@ use serde_json::{Map, Value};
 pub enum CheckStatus {
 	/// All good.
 	Pass,
+	/// The check couldn't be run — either the platform doesn't support it, the
+	/// caller lacked the privilege to query the underlying source, or the
+	/// upstream (e.g. caddy `/metrics`) wasn't reachable. Reported as
+	/// `healthy: true` on the wire (we have no evidence of unhealth) but does
+	/// NOT count as "passing" in human-readable output.
+	Skip(String),
 	/// Non-fatal degradation. Reported as `healthy: false` per-check on the
 	/// canopy wire format, but does NOT flip the top-level `healthy` flag.
 	Warning(String),
@@ -16,12 +22,17 @@ pub enum CheckStatus {
 impl CheckStatus {
 	/// Whether this status maps to `healthy: true` in the per-check wire format.
 	pub fn is_healthy_on_wire(&self) -> bool {
-		matches!(self, CheckStatus::Pass)
+		matches!(self, CheckStatus::Pass | CheckStatus::Skip(_))
 	}
 
 	/// Whether this status is fatal (flips top-level `healthy` to false).
 	pub fn is_fatal(&self) -> bool {
 		matches!(self, CheckStatus::Fail(_))
+	}
+
+	/// Whether this status is a skip — useful for rendering and accounting.
+	pub fn is_skip(&self) -> bool {
+		matches!(self, CheckStatus::Skip(_))
 	}
 }
 
@@ -44,6 +55,20 @@ impl Check {
 			status: CheckStatus::Pass,
 			summary: summary.into(),
 			details: Map::new(),
+		}
+	}
+
+	/// Build a Skip result. The `reason` is recorded in `details.reason` (or
+	/// kept on the status) so the operator sees *why* the check couldn't be
+	/// run; the summary is the short headline shown alongside `SKIP`.
+	pub fn skip(name: &'static str, summary: impl Into<String>, reason: impl Into<String>) -> Self {
+		let mut details = Map::new();
+		details.insert("skipped".into(), Value::Bool(true));
+		Self {
+			name,
+			status: CheckStatus::Skip(reason.into()),
+			summary: summary.into(),
+			details,
 		}
 	}
 
@@ -148,6 +173,36 @@ mod tests {
 		let s = CheckStatus::Fail("f".into());
 		assert!(!s.is_healthy_on_wire());
 		assert!(s.is_fatal());
+	}
+
+	#[test]
+	fn skip_is_healthy_on_wire_and_not_fatal() {
+		// Skip means "we didn't run this check" — it must not fire alerts
+		// or flip the top-level healthy flag, since we have no evidence of
+		// unhealth either way.
+		let s = CheckStatus::Skip("reason".into());
+		assert!(s.is_healthy_on_wire());
+		assert!(!s.is_fatal());
+		assert!(s.is_skip());
+	}
+
+	#[test]
+	fn skip_does_not_change_overall_result() {
+		let with_skip = vec![Check::pass("a", ""), Check::skip("b", "", "r")];
+		assert_eq!(
+			OverallResult::from_checks(&with_skip),
+			OverallResult::Healthy
+		);
+	}
+
+	#[test]
+	fn skip_constructor_marks_skipped_detail() {
+		let c = Check::skip("memory", "not available", "platform mismatch");
+		assert_eq!(
+			c.details.get("skipped").and_then(Value::as_bool),
+			Some(true)
+		);
+		assert!(matches!(c.status, CheckStatus::Skip(_)));
 	}
 
 	#[test]

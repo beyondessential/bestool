@@ -394,6 +394,7 @@ fn write_check_line<W: Write>(
 ) -> std::io::Result<()> {
 	let tag_coloured = match &check.status {
 		CheckStatus::Pass => colour_pass(use_colours, "PASS"),
+		CheckStatus::Skip(_) => colour_skip(use_colours, "SKIP"),
 		CheckStatus::Warning(_) => colour_warn(use_colours, "WARN"),
 		CheckStatus::Fail(_) => colour_fail(use_colours, "FAIL"),
 	};
@@ -404,7 +405,7 @@ fn write_check_line<W: Write>(
 		width = name_width,
 		summary = check.summary,
 	)?;
-	if let CheckStatus::Warning(r) | CheckStatus::Fail(r) = &check.status {
+	if let CheckStatus::Skip(r) | CheckStatus::Warning(r) | CheckStatus::Fail(r) = &check.status {
 		let dim = if use_colours {
 			format!("{}", r.dimmed())
 		} else {
@@ -426,10 +427,11 @@ fn write_result_line<W: Write>(
 	overall: OverallResult,
 	use_colours: bool,
 ) -> std::io::Result<()> {
-	let (mut warnings, mut fails) = (0usize, 0usize);
+	let (mut warnings, mut fails, mut skips) = (0usize, 0usize, 0usize);
 	for (check, _) in results {
 		match &check.status {
 			CheckStatus::Pass => {}
+			CheckStatus::Skip(_) => skips += 1,
 			CheckStatus::Warning(_) => warnings += 1,
 			CheckStatus::Fail(_) => fails += 1,
 		}
@@ -440,9 +442,14 @@ fn write_result_line<W: Write>(
 		OverallResult::Degraded => colour_warn(use_colours, label),
 		OverallResult::Failing => colour_fail(use_colours, label),
 	};
+	let skip_suffix = if skips > 0 {
+		format!(", {skips} skipped")
+	} else {
+		String::new()
+	};
 	writeln!(
 		out,
-		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural})",
+		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural}{skip_suffix})",
 		plural = if warnings == 1 { "" } else { "s" },
 	)
 }
@@ -521,6 +528,14 @@ fn colour_pass(use_colours: bool, s: &str) -> String {
 	}
 }
 
+fn colour_skip(use_colours: bool, s: &str) -> String {
+	if use_colours {
+		format!("{}", s.dimmed().bold())
+	} else {
+		s.to_string()
+	}
+}
+
 fn colour_warn(use_colours: bool, s: &str) -> String {
 	if use_colours {
 		format!("{}", s.yellow().bold())
@@ -549,6 +564,9 @@ mod tests {
 	}
 	fn fail(name: &'static str) -> (Check, bool) {
 		(Check::fail(name, "bad", "reason"), true)
+	}
+	fn skip(name: &'static str) -> (Check, bool) {
+		(Check::skip(name, "not run", "reason"), true)
 	}
 
 	#[test]
@@ -612,6 +630,38 @@ mod tests {
 		assert!(out.contains("WARN"));
 		assert!(out.contains("DEGRADED"));
 		assert!(out.contains("1 warning"));
+	}
+
+	#[test]
+	fn skip_renders_as_skip_and_doesnt_degrade_overall() {
+		// A skipped check should appear with the SKIP tag, not be counted as
+		// a warning or failure, and keep the overall result HEALTHY.
+		let results = vec![pass("a"), skip("b")];
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		assert_eq!(overall, OverallResult::Healthy);
+
+		let mut buf = Vec::new();
+		render(&mut buf, Some("sid"), &results, overall, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		assert!(out.contains("SKIP"));
+		assert!(out.contains("HEALTHY"));
+		assert!(out.contains("1 skipped"));
+		// Skip should NOT bump the warning count
+		assert!(!out.contains("1 warning"));
+	}
+
+	#[test]
+	fn skip_is_healthy_on_wire() {
+		// The whole point of distinguishing Skip from Fail/Warning is that
+		// "we don't know" shouldn't fire alerts downstream of the wire format.
+		let results = vec![pass("a"), skip("b")];
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
+		assert_eq!(payload["healthy"], true);
+		assert_eq!(payload["health"][1]["healthy"], true);
+		assert_eq!(payload["health"][1]["skipped"], true);
 	}
 
 	#[test]

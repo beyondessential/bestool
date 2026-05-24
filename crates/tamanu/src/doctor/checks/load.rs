@@ -4,12 +4,15 @@ use super::CheckContext;
 use crate::doctor::check::Check;
 
 pub async fn run(_ctx: CheckContext) -> Check {
-	let load = System::load_average();
 	if cfg!(target_os = "windows") {
-		return Check::pass("load", "load average not available on Windows")
-			.with_detail("skipped", true);
+		return Check::skip(
+			"load",
+			"not available on Windows",
+			"sysinfo does not report load average on Windows",
+		);
 	}
 
+	let load = System::load_average();
 	let summary = format!(
 		"load average: {:.2}, {:.2}, {:.2}",
 		load.one, load.five, load.fifteen
