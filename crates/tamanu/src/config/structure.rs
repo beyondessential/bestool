@@ -13,7 +13,7 @@ pub struct TamanuConfig {
 	pub primary_time_zone: Option<String>,
 	pub country_time_zone: Option<String>,
 	#[serde(default)]
-	pub fhir: Fhir,
+	pub integrations: Integrations,
 }
 
 impl TamanuConfig {
@@ -38,8 +38,20 @@ impl TamanuConfig {
 	}
 
 	pub fn fhir_worker_enabled(&self) -> bool {
-		self.fhir.worker.enabled
+		self.integrations.fhir.worker.enabled
 	}
+}
+
+/// The `integrations` block of the Tamanu config.
+///
+/// Tamanu groups all third-party / optional subsystem toggles here. The only
+/// field we currently care about is `fhir` (so we know whether the FHIR worker
+/// services should be Up or Down), but the struct exists as its own type so
+/// future integration probes have an obvious home.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Integrations {
+	pub fhir: Fhir,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -84,4 +96,48 @@ pub struct Mailgun {
 
 	#[serde(rename = "from")]
 	pub sender: String,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn parse(json: serde_json::Value) -> TamanuConfig {
+		serde_json::from_value(json).expect("test config should parse")
+	}
+
+	fn base() -> serde_json::Value {
+		serde_json::json!({
+			"db": { "name": "x", "username": "u", "password": "p" },
+		})
+	}
+
+	#[test]
+	fn fhir_worker_enabled_reads_integrations_path() {
+		let mut json = base();
+		json["integrations"] = serde_json::json!({ "fhir": { "worker": { "enabled": true } } });
+		assert!(parse(json).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn fhir_worker_disabled_when_integrations_says_false() {
+		let mut json = base();
+		json["integrations"] = serde_json::json!({ "fhir": { "worker": { "enabled": false } } });
+		assert!(!parse(json).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn fhir_worker_disabled_when_integrations_missing() {
+		assert!(!parse(base()).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn legacy_top_level_fhir_field_is_ignored() {
+		// The old (wrong) location. We don't honour it — the actual schema
+		// puts this under `integrations.fhir.worker.enabled`, and pretending
+		// the top-level key still works would hide real misconfigurations.
+		let mut json = base();
+		json["fhir"] = serde_json::json!({ "worker": { "enabled": true } });
+		assert!(!parse(json).fhir_worker_enabled());
+	}
 }

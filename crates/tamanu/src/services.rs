@@ -166,26 +166,33 @@ pub fn expected(
 
 	match kind {
 		ApiServerKind::Central => {
-			if config.fhir_worker_enabled() {
-				let (resolve, refresh) = match supervisor {
-					Supervisor::Pm2 => ("tamanu-fhir-resolve", "tamanu-fhir-refresh"),
-					Supervisor::Systemd => {
-						("tamanu-central-fhir-resolve", "tamanu-central-fhir-refresh")
-					}
-				};
-				out.push(Expectation {
-					name: resolve,
-					instances: Instances::Single,
-					state: ExpectedState::Up,
-					criticality: Criticality::Background,
-				});
-				out.push(Expectation {
-					name: refresh,
-					instances: Instances::Single,
-					state: ExpectedState::Up,
-					criticality: Criticality::Background,
-				});
-			}
+			let (resolve, refresh) = match supervisor {
+				Supervisor::Pm2 => ("tamanu-fhir-resolve", "tamanu-fhir-refresh"),
+				Supervisor::Systemd => {
+					("tamanu-central-fhir-resolve", "tamanu-central-fhir-refresh")
+				}
+			};
+			// FHIR services are expected Up when the worker is enabled in
+			// config, and explicitly Down when it isn't — that way the doctor
+			// catches the case where a deployment leaves the worker units
+			// running after `integrations.fhir.worker.enabled` is flipped off.
+			let fhir_state = if config.fhir_worker_enabled() {
+				ExpectedState::Up
+			} else {
+				ExpectedState::Down
+			};
+			out.push(Expectation {
+				name: resolve,
+				instances: Instances::Single,
+				state: fhir_state,
+				criticality: Criticality::Background,
+			});
+			out.push(Expectation {
+				name: refresh,
+				instances: Instances::Single,
+				state: fhir_state,
+				criticality: Criticality::Background,
+			});
 		}
 		ApiServerKind::Facility => {
 			let sync_name = match supervisor {
@@ -266,7 +273,7 @@ mod tests {
 	fn cfg(fhir_worker: bool) -> TamanuConfig {
 		let json = serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
-			"fhir": { "worker": { "enabled": fhir_worker } },
+			"integrations": { "fhir": { "worker": { "enabled": fhir_worker } } },
 		});
 		serde_json::from_value(json).unwrap()
 	}
@@ -287,9 +294,29 @@ mod tests {
 	}
 
 	#[test]
-	fn central_pm2_no_fhir_skips_fhir_units() {
+	fn central_pm2_with_fhir_disabled_expects_fhir_units_down() {
+		// With the FHIR worker disabled in config, we want the doctor to
+		// alert if the corresponding services are still running — that's
+		// usually a deploy that's flipped the toggle without taking the
+		// units down. So the expectations exist, but with state Down.
 		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(false));
-		assert_eq!(names(&es), vec!["tamanu-tasks", "tamanu-api"]);
+		assert_eq!(
+			names(&es),
+			vec![
+				"tamanu-tasks",
+				"tamanu-api",
+				"tamanu-fhir-resolve",
+				"tamanu-fhir-refresh",
+			]
+		);
+		for n in ["tamanu-fhir-resolve", "tamanu-fhir-refresh"] {
+			let e = es.iter().find(|e| e.name == n).unwrap();
+			assert_eq!(
+				e.state,
+				ExpectedState::Down,
+				"{n} should be expected Down when fhir.worker.enabled = false"
+			);
+		}
 	}
 
 	#[test]
