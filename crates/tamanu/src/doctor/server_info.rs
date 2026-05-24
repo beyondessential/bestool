@@ -86,7 +86,19 @@ pub struct ServerFacts {
 	pub pg_version: Option<String>,
 }
 
-pub async fn gather(tamanu_version: &str, facts: ServerFacts) -> ServerInfo {
+/// Build the status-payload `ServerInfo` block.
+///
+/// `bestool_version` is the version of the *calling* bestool binary — it must
+/// be provided by the caller (typically `env!("CARGO_PKG_VERSION")` resolved
+/// in the bestool crate) rather than evaluated here, because this code lives
+/// in the `bestool-tamanu` library crate, where `env!("CARGO_PKG_VERSION")`
+/// would resolve to that crate's own version (`bestool-tamanu`, currently 0.1.x)
+/// — the bug this signature change fixes.
+pub async fn gather(
+	bestool_version: &'static str,
+	tamanu_version: &str,
+	facts: ServerFacts,
+) -> ServerInfo {
 	let disks = Disks::new_with_refreshed_list();
 	let filesystems = disks
 		.iter()
@@ -106,7 +118,7 @@ pub async fn gather(tamanu_version: &str, facts: ServerFacts) -> ServerInfo {
 		.map(|s| s.to_string());
 
 	ServerInfo {
-		bestool_version: env!("CARGO_PKG_VERSION"),
+		bestool_version,
 		tamanu_version: tamanu_version.to_string(),
 		hostname: System::host_name(),
 		canonical_url: facts.canonical_url,
