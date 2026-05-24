@@ -53,7 +53,9 @@ impl DoctorTask {
 			&self.database_url,
 			ctx.http_client.clone(),
 			&[],
+			&[],
 			cached,
+			None,
 		)
 		.await?;
 

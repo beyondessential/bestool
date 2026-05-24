@@ -1,10 +1,16 @@
-use std::{io::Write, path::Path, sync::Arc};
+use std::{
+	io::{IsTerminal as _, Write},
+	path::Path,
+	sync::Arc,
+};
 
 use clap::Parser;
+use futures::stream::{FuturesUnordered, StreamExt};
 use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use owo_colors::OwoColorize;
 use serde_json::{Map, Value};
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use bestool_tamanu::{
@@ -13,6 +19,7 @@ use bestool_tamanu::{
 	doctor::{
 		check::{Check, CheckStatus, OverallResult},
 		checks::{self, CheckContext},
+		progress::{DoctorEvent, ProgressSender},
 		server_info::{self, ServerFacts},
 	},
 	server_info::get_or_create_server_id,
@@ -38,6 +45,10 @@ pub struct DoctorArgs {
 	/// Run only the named check(s). Repeatable. Defaults to all.
 	#[arg(long = "check", value_name = "NAME")]
 	pub only: Vec<String>,
+
+	/// Skip the named check(s). Repeatable. Applied after `--check`.
+	#[arg(long = "skip", value_name = "NAME")]
+	pub skip: Vec<String>,
 }
 
 pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
@@ -50,6 +61,22 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let database_url = build_database_url(&config);
 	let http_client = reqwest::Client::new();
 
+	let live = !args.json && std::io::stdout().is_terminal();
+	let selected_names = selected_names_for_render(&args.only, &args.skip)?;
+	let renderer = if live {
+		let (tx, rx) = mpsc::unbounded_channel();
+		let names = selected_names.clone();
+		let handle = tokio::task::spawn_blocking(move || {
+			let stdout = std::io::stdout();
+			let mut out = stdout.lock();
+			let _ = render_live(&mut out, &names, rx, use_colours);
+		});
+		Some((tx, handle))
+	} else {
+		None
+	};
+
+	let progress = renderer.as_ref().map(|(tx, _)| tx.clone());
 	let sweep = perform_sweep(
 		&version,
 		&root,
@@ -57,9 +84,16 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		&database_url,
 		http_client,
 		&args.only,
+		&args.skip,
 		None,
+		progress,
 	)
 	.await?;
+
+	if let Some((tx, handle)) = renderer {
+		drop(tx);
+		let _ = handle.await;
+	}
 
 	if args.json {
 		let stdout = std::io::stdout();
@@ -69,14 +103,25 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	} else {
 		let stdout = std::io::stdout();
 		let mut out = stdout.lock();
-		render(
-			&mut out,
-			sweep.server_id.as_deref(),
-			&sweep.results,
-			sweep.overall,
-			use_colours,
-		)
-		.into_diagnostic()?;
+		if live {
+			render_summary(
+				&mut out,
+				sweep.server_id.as_deref(),
+				&sweep.results,
+				sweep.overall,
+				use_colours,
+			)
+			.into_diagnostic()?;
+		} else {
+			render(
+				&mut out,
+				sweep.server_id.as_deref(),
+				&sweep.results,
+				sweep.overall,
+				use_colours,
+			)
+			.into_diagnostic()?;
+		}
 	}
 
 	if sweep.overall == OverallResult::Failing {
@@ -112,6 +157,10 @@ pub(super) fn build_database_url(config: &TamanuConfig) -> String {
 	.build()
 }
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "each argument is a distinct knob the CLI and daemon callers need to thread through"
+)]
 pub(super) async fn perform_sweep(
 	version: &Version,
 	root: &Path,
@@ -119,7 +168,9 @@ pub(super) async fn perform_sweep(
 	database_url: &str,
 	http_client: reqwest::Client,
 	selected_names: &[String],
+	skip_names: &[String],
 	cached_pg_version: Option<String>,
+	progress: Option<ProgressSender>,
 ) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
 	// `db_connect` check separately measures the open latency for reporting.
@@ -145,30 +196,51 @@ pub(super) async fn perform_sweep(
 	};
 
 	let registry = checks::all();
-	let selected: Vec<&checks::CheckEntry> = if selected_names.is_empty() {
-		registry.iter().collect()
-	} else {
-		registry
-			.iter()
-			.filter(|e| selected_names.iter().any(|n| n == e.name))
-			.collect()
-	};
-
-	if !selected_names.is_empty() && selected.len() != selected_names.len() {
-		let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
+	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
+	if let Some(unknown) = selected_names.iter().find(|n| !known.contains(&n.as_str())) {
 		return Err(miette!(
-			"unknown check name; known checks: {}",
+			"unknown check name `{unknown}`; known checks: {}",
+			known.join(", ")
+		));
+	}
+	if let Some(unknown) = skip_names.iter().find(|n| !known.contains(&n.as_str())) {
+		return Err(miette!(
+			"unknown check name `{unknown}` in --skip; known checks: {}",
 			known.join(", ")
 		));
 	}
 
-	// Run all selected checks. We could parallelise, but DB checks share a
-	// single client and sequential order makes the rendered output predictable.
-	let mut results: Vec<(Check, bool)> = Vec::with_capacity(selected.len());
-	for entry in &selected {
-		let result = (entry.run)(check_ctx.clone()).await;
-		results.push((result, entry.on_wire));
+	let selected: Vec<(usize, &checks::CheckEntry)> = registry
+		.iter()
+		.enumerate()
+		.filter(|(_, e)| selected_names.is_empty() || selected_names.iter().any(|n| n == e.name))
+		.filter(|(_, e)| !skip_names.iter().any(|n| n == e.name))
+		.collect();
+
+	// Run all selected checks concurrently. Results are collated by registry
+	// index before returning, so callers see a stable order regardless of
+	// completion order. A progress channel can observe results as they land.
+	let mut pending = FuturesUnordered::new();
+	for (idx, entry) in &selected {
+		let ctx = check_ctx.clone();
+		let on_wire = entry.on_wire;
+		let idx = *idx;
+		let fut = (entry.run)(ctx);
+		pending.push(async move {
+			let result = fut.await;
+			(idx, on_wire, result)
+		});
 	}
+
+	let mut completed: Vec<(usize, Check, bool)> = Vec::with_capacity(selected.len());
+	while let Some((idx, on_wire, check)) = pending.next().await {
+		if let Some(tx) = progress.as_ref() {
+			let _ = tx.send(DoctorEvent::Completed(check.clone()));
+		}
+		completed.push((idx, check, on_wire));
+	}
+	completed.sort_by_key(|(idx, _, _)| *idx);
+	let results: Vec<(Check, bool)> = completed.into_iter().map(|(_, c, w)| (c, w)).collect();
 
 	let server_id = match db.as_deref() {
 		Some(client) => match get_or_create_server_id(client).await {
@@ -261,6 +333,29 @@ fn build_payload(info: &Value, results: &[(Check, bool)], overall: OverallResult
 	Value::Object(payload)
 }
 
+fn selected_names_for_render(only: &[String], skip: &[String]) -> Result<Vec<&'static str>> {
+	let registry = checks::all();
+	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
+	if let Some(unknown) = only.iter().find(|n| !known.contains(&n.as_str())) {
+		return Err(miette!(
+			"unknown check name `{unknown}`; known checks: {}",
+			known.join(", ")
+		));
+	}
+	if let Some(unknown) = skip.iter().find(|n| !known.contains(&n.as_str())) {
+		return Err(miette!(
+			"unknown check name `{unknown}` in --skip; known checks: {}",
+			known.join(", ")
+		));
+	}
+	Ok(registry
+		.iter()
+		.filter(|e| only.is_empty() || only.iter().any(|n| n == e.name))
+		.filter(|e| !skip.iter().any(|n| n == e.name))
+		.map(|e| e.name)
+		.collect())
+}
+
 fn render<W: Write>(
 	out: &mut W,
 	server_id: Option<&str>,
@@ -268,9 +363,7 @@ fn render<W: Write>(
 	overall: OverallResult,
 	use_colours: bool,
 ) -> std::io::Result<()> {
-	let server_id = server_id.unwrap_or("unknown");
-	writeln!(out, "Tamanu doctor (server-id: {server_id})")?;
-	writeln!(out)?;
+	write_header(out, server_id)?;
 
 	let name_width = results
 		.iter()
@@ -278,42 +371,69 @@ fn render<W: Write>(
 		.max()
 		.unwrap_or(0);
 
-	let (mut warnings, mut fails) = (0usize, 0usize);
 	for (check, _) in results {
-		let tag_coloured = match &check.status {
-			CheckStatus::Pass => colour_pass(use_colours, "PASS"),
-			CheckStatus::Warning(_) => {
-				warnings += 1;
-				colour_warn(use_colours, "WARN")
-			}
-			CheckStatus::Fail(_) => {
-				fails += 1;
-				colour_fail(use_colours, "FAIL")
-			}
-		};
-		writeln!(
-			out,
-			"  {tag_coloured}    {name:<width$}   {summary}",
-			name = check.name,
-			width = name_width,
-			summary = check.summary,
-		)?;
-		if let CheckStatus::Warning(r) | CheckStatus::Fail(r) = &check.status {
-			let dim = if use_colours {
-				format!("{}", r.dimmed())
-			} else {
-				r.clone()
-			};
-			writeln!(
-				out,
-				"          {empty:<width$}     {dim}",
-				empty = "",
-				width = name_width
-			)?;
-		}
+		write_check_line(out, check, name_width, use_colours)?;
 	}
 
 	writeln!(out)?;
+	write_result_line(out, results, overall, use_colours)?;
+	Ok(())
+}
+
+fn write_header<W: Write>(out: &mut W, server_id: Option<&str>) -> std::io::Result<()> {
+	let server_id = server_id.unwrap_or("unknown");
+	writeln!(out, "Tamanu doctor (server-id: {server_id})")?;
+	writeln!(out)
+}
+
+fn write_check_line<W: Write>(
+	out: &mut W,
+	check: &Check,
+	name_width: usize,
+	use_colours: bool,
+) -> std::io::Result<()> {
+	let tag_coloured = match &check.status {
+		CheckStatus::Pass => colour_pass(use_colours, "PASS"),
+		CheckStatus::Warning(_) => colour_warn(use_colours, "WARN"),
+		CheckStatus::Fail(_) => colour_fail(use_colours, "FAIL"),
+	};
+	writeln!(
+		out,
+		"  {tag_coloured}    {name:<width$}   {summary}",
+		name = check.name,
+		width = name_width,
+		summary = check.summary,
+	)?;
+	if let CheckStatus::Warning(r) | CheckStatus::Fail(r) = &check.status {
+		let dim = if use_colours {
+			format!("{}", r.dimmed())
+		} else {
+			r.clone()
+		};
+		writeln!(
+			out,
+			"          {empty:<width$}     {dim}",
+			empty = "",
+			width = name_width
+		)?;
+	}
+	Ok(())
+}
+
+fn write_result_line<W: Write>(
+	out: &mut W,
+	results: &[(Check, bool)],
+	overall: OverallResult,
+	use_colours: bool,
+) -> std::io::Result<()> {
+	let (mut warnings, mut fails) = (0usize, 0usize);
+	for (check, _) in results {
+		match &check.status {
+			CheckStatus::Pass => {}
+			CheckStatus::Warning(_) => warnings += 1,
+			CheckStatus::Fail(_) => fails += 1,
+		}
+	}
 	let label = overall.label();
 	let label_coloured = match overall {
 		OverallResult::Healthy => colour_pass(use_colours, label),
@@ -324,8 +444,73 @@ fn render<W: Write>(
 		out,
 		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural})",
 		plural = if warnings == 1 { "" } else { "s" },
-	)?;
-	Ok(())
+	)
+}
+
+/// Streams check results to `out` as they come in over `rx`, with a rewriting
+/// "Outstanding: ..." line below the printed results. Falls back gracefully if
+/// `out` doesn't accept the ANSI line-erase escape (the trailing newline ensures
+/// no half-erased line is left over).
+fn render_live<W: Write>(
+	out: &mut W,
+	selected_names: &[&'static str],
+	mut rx: mpsc::UnboundedReceiver<DoctorEvent>,
+	use_colours: bool,
+) -> std::io::Result<()> {
+	let name_width = selected_names.iter().map(|n| n.len()).max().unwrap_or(0);
+	let mut outstanding: Vec<&'static str> = selected_names.to_vec();
+
+	write_outstanding(out, &outstanding, use_colours)?;
+	out.flush()?;
+
+	while let Some(event) = rx.blocking_recv() {
+		match event {
+			DoctorEvent::Completed(check) => {
+				clear_current_line(out)?;
+				write_check_line(out, &check, name_width, use_colours)?;
+				outstanding.retain(|n| *n != check.name);
+				write_outstanding(out, &outstanding, use_colours)?;
+				out.flush()?;
+			}
+		}
+	}
+
+	clear_current_line(out)?;
+	out.flush()
+}
+
+fn render_summary<W: Write>(
+	out: &mut W,
+	server_id: Option<&str>,
+	results: &[(Check, bool)],
+	overall: OverallResult,
+	use_colours: bool,
+) -> std::io::Result<()> {
+	writeln!(out)?;
+	let server_id = server_id.unwrap_or("unknown");
+	writeln!(out, "Server: {server_id}")?;
+	write_result_line(out, results, overall, use_colours)
+}
+
+fn write_outstanding<W: Write>(
+	out: &mut W,
+	outstanding: &[&'static str],
+	use_colours: bool,
+) -> std::io::Result<()> {
+	if outstanding.is_empty() {
+		return Ok(());
+	}
+	let label = if use_colours {
+		format!("{}", "Outstanding:".dimmed())
+	} else {
+		"Outstanding:".to_string()
+	};
+	write!(out, "{label} {}", outstanding.join(", "))
+}
+
+fn clear_current_line<W: Write>(out: &mut W) -> std::io::Result<()> {
+	// CR brings cursor to col 0; \x1b[2K erases the whole line.
+	write!(out, "\r\x1b[2K")
 }
 
 fn colour_pass(use_colours: bool, s: &str) -> String {
@@ -439,5 +624,80 @@ mod tests {
 		let out = String::from_utf8(buf).unwrap();
 		assert!(out.contains("FAILING"));
 		assert!(out.contains("1 failed"));
+	}
+
+	#[test]
+	fn selected_names_default_returns_full_registry() {
+		let names = selected_names_for_render(&[], &[]).unwrap();
+		let registry: Vec<&str> = checks::all().iter().map(|e| e.name).collect();
+		assert_eq!(names, registry);
+	}
+
+	#[test]
+	fn selected_names_only_filters_to_listed() {
+		let names =
+			selected_names_for_render(&["db_connect".into(), "memory".into()], &[]).unwrap();
+		assert_eq!(names, vec!["db_connect", "memory"]);
+	}
+
+	#[test]
+	fn selected_names_skip_excludes_listed() {
+		let names = selected_names_for_render(&[], &["tailscale".into()]).unwrap();
+		assert!(!names.contains(&"tailscale"));
+		assert!(names.contains(&"db_connect"));
+	}
+
+	#[test]
+	fn selected_names_only_and_skip_compose() {
+		let names = selected_names_for_render(
+			&["db_connect".into(), "memory".into(), "tailscale".into()],
+			&["tailscale".into()],
+		)
+		.unwrap();
+		assert_eq!(names, vec!["db_connect", "memory"]);
+	}
+
+	#[test]
+	fn selected_names_unknown_skip_is_error() {
+		let err = selected_names_for_render(&[], &["does_not_exist".into()]).unwrap_err();
+		assert!(format!("{err}").contains("does_not_exist"));
+	}
+
+	#[test]
+	fn render_live_streams_results_and_clears_outstanding() {
+		let (tx, rx) = mpsc::unbounded_channel();
+		let names = vec!["alpha", "beta"];
+		let handle = std::thread::spawn(move || {
+			let mut buf = Vec::new();
+			render_live(&mut buf, &names, rx, false).unwrap();
+			String::from_utf8(buf).unwrap()
+		});
+		tx.send(DoctorEvent::Completed(Check::pass("alpha", "ok-a")))
+			.unwrap();
+		tx.send(DoctorEvent::Completed(Check::warning(
+			"beta", "deg", "reason",
+		)))
+		.unwrap();
+		drop(tx);
+		let out = handle.join().unwrap();
+		assert!(out.contains("PASS"));
+		assert!(out.contains("alpha"));
+		assert!(out.contains("ok-a"));
+		assert!(out.contains("WARN"));
+		assert!(out.contains("beta"));
+		assert!(out.contains("Outstanding:"));
+	}
+
+	#[test]
+	fn render_summary_includes_server_and_result() {
+		let results = vec![pass("a"), warn("b")];
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let mut buf = Vec::new();
+		render_summary(&mut buf, Some("sid-9"), &results, overall, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		assert!(out.contains("Server: sid-9"));
+		assert!(out.contains("DEGRADED"));
+		assert!(out.contains("1 warning"));
 	}
 }

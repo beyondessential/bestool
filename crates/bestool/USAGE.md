@@ -1604,6 +1604,7 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 
 * `--json` — Emit the JSON wire payload instead of the human-readable render
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
+* `--skip <NAME>` — Skip the named check(s). Repeatable. Applied after `--check`
 
 
 
