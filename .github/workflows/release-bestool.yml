@@ -223,7 +223,9 @@ jobs:
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest/*'
 
       - name: Upload version file
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        # Windows is the main user of the latest-version.txt,
+        # Linux generally just uses the APT repo.
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
