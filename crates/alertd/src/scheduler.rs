@@ -494,67 +494,6 @@ impl Scheduler {
 	}
 
 	fn spawn_alert_task(&self, alert_state: Arc<RwLock<AlertState>>) -> JoinHandle<()> {
-		fn serialize_context_for_comparison(
-			context: &tera::Context,
-			when_changed: &crate::alert::WhenChanged,
-		) -> String {
-			use crate::alert::WhenChanged;
-
-			// Get the rows from the context
-			let rows = match context.get("rows") {
-				Some(value) => value,
-				None => return String::new(),
-			};
-
-			// Parse rows as array of objects
-			let rows_array = match rows.as_array() {
-				Some(arr) => arr,
-				None => return serde_json::to_string(rows).unwrap_or_default(),
-			};
-
-			match when_changed {
-				WhenChanged::Boolean(true) => {
-					// Simple mode: serialize everything
-					serde_json::to_string(rows).unwrap_or_default()
-				}
-				WhenChanged::Boolean(false) => {
-					// Not enabled
-					String::new()
-				}
-				WhenChanged::Detailed(config) => {
-					// Filter columns based on config
-					let filtered_rows: Vec<serde_json::Map<String, serde_json::Value>> = rows_array
-						.iter()
-						.filter_map(|row| {
-							let obj = row.as_object()?;
-							let mut filtered = serde_json::Map::new();
-
-							for (key, value) in obj {
-								let include = if !config.only.is_empty() {
-									// Only mode: include only specified columns
-									config.only.contains(key)
-								} else if !config.except.is_empty() {
-									// Except mode: include all except specified columns
-									!config.except.contains(key)
-								} else {
-									// No filters specified, include all
-									true
-								};
-
-								if include {
-									filtered.insert(key.clone(), value.clone());
-								}
-							}
-
-							Some(filtered)
-						})
-						.collect();
-
-					serde_json::to_string(&filtered_rows).unwrap_or_default()
-				}
-			}
-		}
-
 		let ctx = self.ctx.clone();
 		let email = self.email.clone();
 		let dry_run = self.dry_run;
@@ -726,17 +665,17 @@ impl Scheduler {
 					if should_send
 						&& !matches!(when_changed, crate::alert::WhenChanged::Boolean(false))
 					{
-						let current_output =
-							serialize_context_for_comparison(&tera_ctx, &when_changed);
+						let current_digest =
+							digest_context_for_comparison(&tera_ctx, &when_changed);
 
 						let output_changed = match &state.last_output {
-							Some(prev_output) => prev_output != &current_output,
+							Some(prev_digest) => prev_digest != &current_digest,
 							None => true, // First run, consider it changed
 						};
 
 						if output_changed {
 							debug!(?file, "output changed, will send");
-							state.last_output = Some(current_output);
+							state.last_output = Some(current_digest);
 							state_changed = true;
 						} else {
 							debug!(?file, "output unchanged, skipping");
@@ -811,6 +750,64 @@ impl Scheduler {
 			handle.abort();
 		}
 	}
+}
+
+/// Compute a stable digest of the alert's row output for `when-changed`
+/// comparison. Hashing rather than storing the serialised rows keeps state.json
+/// from growing without bound when a high-cardinality SQL alert holds many rows.
+fn digest_context_for_comparison(
+	context: &tera::Context,
+	when_changed: &crate::alert::WhenChanged,
+) -> String {
+	use crate::alert::WhenChanged;
+
+	let rows = match context.get("rows") {
+		Some(value) => value,
+		None => return blake3_hex(b""),
+	};
+
+	let rows_array = match rows.as_array() {
+		Some(arr) => arr,
+		None => return blake3_hex(serde_json::to_string(rows).unwrap_or_default().as_bytes()),
+	};
+
+	match when_changed {
+		WhenChanged::Boolean(true) => {
+			blake3_hex(serde_json::to_string(rows).unwrap_or_default().as_bytes())
+		}
+		WhenChanged::Boolean(false) => blake3_hex(b""),
+		WhenChanged::Detailed(config) => {
+			let filtered_rows: Vec<serde_json::Map<String, serde_json::Value>> = rows_array
+				.iter()
+				.filter_map(|row| {
+					let obj = row.as_object()?;
+					let mut filtered = serde_json::Map::new();
+					for (key, value) in obj {
+						let include = if !config.only.is_empty() {
+							config.only.contains(key)
+						} else if !config.except.is_empty() {
+							!config.except.contains(key)
+						} else {
+							true
+						};
+						if include {
+							filtered.insert(key.clone(), value.clone());
+						}
+					}
+					Some(filtered)
+				})
+				.collect();
+			blake3_hex(
+				serde_json::to_string(&filtered_rows)
+					.unwrap_or_default()
+					.as_bytes(),
+			)
+		}
+	}
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+	blake3::hash(bytes).to_hex().to_string()
 }
 
 /// Send a clear notification to every resolved target.
@@ -922,5 +919,86 @@ mod tests {
 		let ctx = test_internal_context().await;
 		let targets = vec![canopy_target()];
 		assert!(send_clear_to_targets(&targets, &test_alert(), &ctx, true).await);
+	}
+
+	#[test]
+	fn digest_is_stable_hex_length() {
+		let mut ctx = tera::Context::new();
+		ctx.insert("rows", &serde_json::json!([{"a": 1}]));
+		let d = digest_context_for_comparison(&ctx, &crate::alert::WhenChanged::Boolean(true));
+		assert_eq!(d.len(), 64, "blake3 hex digest should be 64 chars");
+		assert!(d.chars().all(|c| c.is_ascii_hexdigit()));
+	}
+
+	#[test]
+	fn digest_does_not_grow_with_row_count() {
+		// A digest of one row and a digest of ten thousand rows should both
+		// be the same fixed size — this is the whole point of hashing.
+		let mut small = tera::Context::new();
+		small.insert("rows", &serde_json::json!([{"a": 1}]));
+
+		let big_rows: Vec<serde_json::Value> = (0..10_000)
+			.map(|i| serde_json::json!({"a": i, "b": "padding-".repeat(8)}))
+			.collect();
+		let mut big = tera::Context::new();
+		big.insert("rows", &serde_json::Value::Array(big_rows));
+
+		let d_small =
+			digest_context_for_comparison(&small, &crate::alert::WhenChanged::Boolean(true));
+		let d_big = digest_context_for_comparison(&big, &crate::alert::WhenChanged::Boolean(true));
+		assert_eq!(d_small.len(), d_big.len());
+		assert_ne!(d_small, d_big);
+	}
+
+	#[test]
+	fn digest_changes_when_rows_change() {
+		let mut a = tera::Context::new();
+		a.insert("rows", &serde_json::json!([{"x": 1}]));
+		let mut b = tera::Context::new();
+		b.insert("rows", &serde_json::json!([{"x": 2}]));
+		assert_ne!(
+			digest_context_for_comparison(&a, &crate::alert::WhenChanged::Boolean(true)),
+			digest_context_for_comparison(&b, &crate::alert::WhenChanged::Boolean(true)),
+		);
+	}
+
+	#[test]
+	fn digest_only_filter_ignores_other_columns() {
+		use crate::alert::{WhenChanged, WhenChangedConfig};
+		let cfg = WhenChanged::Detailed(WhenChangedConfig {
+			only: vec!["id".into()],
+			except: Vec::new(),
+		});
+
+		let mut a = tera::Context::new();
+		a.insert("rows", &serde_json::json!([{"id": 1, "noise": "x"}]));
+		let mut b = tera::Context::new();
+		b.insert("rows", &serde_json::json!([{"id": 1, "noise": "y"}]));
+
+		assert_eq!(
+			digest_context_for_comparison(&a, &cfg),
+			digest_context_for_comparison(&b, &cfg),
+			"changes to non-`only` columns should not change the digest"
+		);
+	}
+
+	#[test]
+	fn digest_except_filter_ignores_named_columns() {
+		use crate::alert::{WhenChanged, WhenChangedConfig};
+		let cfg = WhenChanged::Detailed(WhenChangedConfig {
+			except: vec!["ts".into()],
+			only: Vec::new(),
+		});
+
+		let mut a = tera::Context::new();
+		a.insert("rows", &serde_json::json!([{"id": 1, "ts": "2026-01-01"}]));
+		let mut b = tera::Context::new();
+		b.insert("rows", &serde_json::json!([{"id": 1, "ts": "2026-02-01"}]));
+
+		assert_eq!(
+			digest_context_for_comparison(&a, &cfg),
+			digest_context_for_comparison(&b, &cfg),
+			"changes to excluded columns should not change the digest"
+		);
 	}
 }

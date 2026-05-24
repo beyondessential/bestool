@@ -20,6 +20,9 @@ pub struct PersistedAlertState {
 	pub triggered_at: Option<Timestamp>,
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub last_sent_at: Option<Timestamp>,
+	/// BLAKE3 hex digest of the previous output used for `when-changed`
+	/// comparison. Storing the digest rather than the full serialised rows
+	/// keeps state.json small for high-cardinality alerts.
 	#[serde(skip_serializing_if = "Option::is_none", default)]
 	pub last_output: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", default)]
