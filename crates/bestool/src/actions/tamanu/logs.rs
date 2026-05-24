@@ -338,6 +338,13 @@ fn run_journalctl(
 			Ok(l) => l,
 			Err(_) => break,
 		};
+		// `journalctl --output=cat` emits the raw MESSAGE field, which is empty
+		// for some service log records (e.g. heartbeat / no-op messages) and
+		// also gets emitted as a blank line when journald separators slip
+		// through. Either way they're noise — skip them.
+		if line.trim().is_empty() {
+			continue;
+		}
 		let formatted = format_log_line(&line, use_colours);
 		if writeln!(out, "{formatted}").is_err() {
 			break;
