@@ -166,7 +166,7 @@ tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce"
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:sysinfo"]
 tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-psql"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:bestool-psql"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:bestool-tamanu",
 	"dep:dirs",

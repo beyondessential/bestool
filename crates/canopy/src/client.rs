@@ -278,6 +278,45 @@ impl CanopyClient {
 		Ok(())
 	}
 
+	/// GET a path on the canopy server, routed via tailscale when available.
+	///
+	/// In tailscale mode, the request goes to `{TAILSCALE_URL}{tailscale_path}`
+	/// (typically `/public/...`, the only mount that accepts tagged-device
+	/// tailscale callers). In mTLS mode, the request goes to `{base_url}{mtls_path}`.
+	///
+	/// Returns the raw response — the caller is responsible for status checks
+	/// and body parsing so they can choose how to fall back if the response
+	/// isn't usable.
+	pub async fn get(
+		&self,
+		base_url: &Url,
+		tailscale_path: &str,
+		mtls_path: &str,
+	) -> Result<reqwest::Response> {
+		let (http, url) = {
+			let state = self.state.read().await;
+			let url = match &*state {
+				State::Tailscale(_) => format!("{TAILSCALE_URL}{tailscale_path}")
+					.parse::<Url>()
+					.into_diagnostic()
+					.wrap_err("building tailscale GET URL")?,
+				State::Mtls(_) => base_url
+					.join(mtls_path)
+					.into_diagnostic()
+					.wrap_err("building mTLS GET URL")?,
+			};
+			(state.http(), url)
+		};
+
+		debug!(%url, "GET via canopy");
+		http.get(url)
+			.header("X-Version", &self.tamanu_version)
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("GET via canopy")
+	}
+
 	/// POST an event to the canopy server.
 	///
 	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.

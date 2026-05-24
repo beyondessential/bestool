@@ -1,5 +1,6 @@
 use std::{collections::{BTreeMap, HashSet}, path::PathBuf, sync::Arc, time::Duration};
 
+use bestool_canopy::CanopyClient;
 use bestool_psql::column_extractor::ColumnRef;
 use bestool_psql::SnippetLookupProvider;
 use clap::{Parser, ValueEnum};
@@ -27,15 +28,20 @@ struct Snippet {
 ///
 /// Snippets are cached to disk. On startup, cached snippets are loaded immediately,
 /// then the remote API is fetched in the background to update the cache.
+///
+/// If a canopy client is available, snippets are fetched via the canopy connection
+/// (tailscale-preferred). Otherwise a direct fetch over the public internet is used.
 #[derive(Clone)]
 struct AsyncSnippetProvider {
 	snippets: Arc<RwLock<Option<BTreeMap<String, Snippet>>>>,
+	canopy: Option<Arc<CanopyClient>>,
 }
 
 impl AsyncSnippetProvider {
-	fn new() -> Self {
+	fn new(canopy: Option<Arc<CanopyClient>>) -> Self {
 		Self {
 			snippets: Arc::new(RwLock::new(None)),
+			canopy,
 		}
 	}
 
@@ -93,23 +99,10 @@ impl AsyncSnippetProvider {
 	}
 
 	async fn fetch_and_update_snippets(&self) -> Result<usize> {
-		let url = DownloadSource::Meta
-			.host()
-			.join("bestool/snippets")
-			.into_diagnostic()?;
-
-		let response = tokio::time::timeout(
-			Duration::from_secs(10),
-			reqwest_client()
-				.await?
-				.get(url.to_string())
-				.send(),
-		)
-		.await
-		.into_diagnostic()?
-		.into_diagnostic()?;
-
-		let snippets: BTreeMap<String, Snippet> = response.json().await.into_diagnostic()?;
+		let snippets = tokio::time::timeout(Duration::from_secs(10), self.fetch_snippets_body())
+			.await
+			.into_diagnostic()
+			.wrap_err("snippet fetch timed out")??;
 
 		let count = snippets.len();
 		let mut cached = self.snippets.write().await;
@@ -125,6 +118,45 @@ impl AsyncSnippetProvider {
 		});
 
 		Ok(count)
+	}
+
+	/// Fetch the snippets payload, preferring the canopy connection if available
+	/// so the request can ride tailscale. Falls back to direct meta.tamanu.app
+	/// fetch on canopy failure or absence.
+	async fn fetch_snippets_body(&self) -> Result<BTreeMap<String, Snippet>> {
+		let meta_url = DownloadSource::Meta.host();
+
+		if let Some(canopy) = &self.canopy {
+			match canopy
+				.get(&meta_url, "/public/bestool/snippets", "/bestool/snippets")
+				.await
+			{
+				Ok(response) if response.status().is_success() => {
+					return response.json().await.into_diagnostic();
+				}
+				Ok(response) => {
+					debug!(
+						status = %response.status(),
+						"canopy snippets fetch returned non-success; falling back to direct"
+					);
+				}
+				Err(err) => {
+					debug!("canopy snippets fetch failed ({err:#}); falling back to direct");
+				}
+			}
+		}
+
+		let url = meta_url
+			.join("/bestool/snippets")
+			.into_diagnostic()
+			.wrap_err("building direct snippets URL")?;
+		let response = reqwest_client()
+			.await?
+			.get(url.to_string())
+			.send()
+			.await
+			.into_diagnostic()?;
+		response.json().await.into_diagnostic()
 	}
 
 	async fn save_to_cache_impl(path: std::path::PathBuf, snippets: &BTreeMap<String, Snippet>) -> Result<()> {
@@ -143,7 +175,7 @@ impl AsyncSnippetProvider {
 
 impl Default for AsyncSnippetProvider {
 	fn default() -> Self {
-		Self::new()
+		Self::new(None)
 	}
 }
 
@@ -374,7 +406,31 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		(false, HashSet::new())
 	};
 
-	let snippet_provider = Arc::new(AsyncSnippetProvider::new());
+	let canopy = if let Some(ref tamanu_version) = version {
+		let device_key = read_device_key();
+		match CanopyClient::new(tamanu_version.clone(), device_key.as_deref()).await {
+			Ok(Some(client)) => {
+				if client.is_tailscale().await {
+					debug!("canopy ready via tailscale for snippet fetch");
+				} else {
+					debug!("canopy ready via mTLS for snippet fetch");
+				}
+				Some(Arc::new(client))
+			}
+			Ok(None) => {
+				debug!("no canopy auth path; snippet fetch will go direct");
+				None
+			}
+			Err(err) => {
+				warn!("failed to build canopy client for snippets: {err:#}");
+				None
+			}
+		}
+	} else {
+		None
+	};
+
+	let snippet_provider = Arc::new(AsyncSnippetProvider::new(canopy));
 	snippet_provider.clone().load_snippets_background();
 
 	bestool_psql::run(
@@ -395,6 +451,21 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		},
 	)
 	.await
+}
+
+/// Read the Tamanu device key from the standard on-disk path.
+///
+/// Tries the file-based source only. `bestool-tamanu`'s full `fetch_device_key`
+/// also falls back to the Tamanu DB, but pulling in that path here would drag
+/// the doctor-only tokio runtime into the psql feature for what's a small
+/// best-effort lookup — psql's canopy use degrades cleanly to direct fetches
+/// when the device key isn't readable.
+fn read_device_key() -> Option<String> {
+	let path = bestool_tamanu::server_info::standard_device_key_path();
+	match std::fs::read_to_string(&path) {
+		Ok(s) if !s.trim().is_empty() => Some(s),
+		_ => None,
+	}
 }
 
 async fn get_tamanu_version(pool: &bestool_psql::PgPool) -> Option<String> {
