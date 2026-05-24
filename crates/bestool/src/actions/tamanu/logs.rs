@@ -82,6 +82,15 @@ pub struct LogsArgs {
 	/// from the log files.
 	#[arg(short = 'g', long = "grep", value_name = "REGEX")]
 	pub grep: Option<Regex>,
+
+	/// Invert the grep match — print lines that do NOT match. Only has an
+	/// effect when combined with `--grep`. Mirrors `grep -v`.
+	///
+	/// `journalctl` has no native inverse-match, so on Linux the filter is
+	/// applied client-side when `-v` is in use; without `-v` the regex is
+	/// still pushed down into `journalctl -g` for the kernel-side speedup.
+	#[arg(short = 'v', long = "invert-match")]
+	pub invert: bool,
 }
 
 /// Result of partitioning the NAMES argument into tamanu service patterns
@@ -164,13 +173,18 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		"logs selection"
 	);
 
+	let grep = args.grep.map(|re| GrepFilter {
+		regex: re,
+		invert: args.invert,
+	});
+
 	match supervisor {
 		Supervisor::Systemd => run_journalctl(
 			&matches,
 			selection.include_caddy,
 			args.lines,
 			args.follow,
-			args.grep.as_ref(),
+			grep.as_ref(),
 			tamanu.use_colours,
 		),
 		Supervisor::Pm2 => run_pm2_logs(
@@ -178,9 +192,23 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			selection.include_caddy,
 			args.lines,
 			args.follow,
-			args.grep,
+			grep,
 			tamanu.use_colours,
 		),
+	}
+}
+
+/// A compiled regex paired with an inversion flag, so the rest of the code
+/// has one place to ask "does this line pass the filter?".
+#[derive(Clone)]
+struct GrepFilter {
+	regex: Regex,
+	invert: bool,
+}
+
+impl GrepFilter {
+	fn matches(&self, line: &str) -> bool {
+		self.regex.is_match(line) ^ self.invert
 	}
 }
 
@@ -303,7 +331,7 @@ fn run_journalctl(
 	include_caddy: bool,
 	lines: usize,
 	follow: bool,
-	grep: Option<&Regex>,
+	grep: Option<&GrepFilter>,
 	use_colours: bool,
 ) -> Result<()> {
 	if matches.is_empty() && !include_caddy {
@@ -321,8 +349,13 @@ fn run_journalctl(
 	if follow {
 		cmd.arg("-f");
 	}
-	if let Some(re) = grep {
-		cmd.arg("-g").arg(re.as_str());
+	// journalctl has no inverse-match flag, so when `-v` is in play we have to
+	// pull the unfiltered stream and apply the inverted regex client-side.
+	// Without `-v` we still let journalctl do the work (kernel-side scan).
+	if let Some(g) = grep
+		&& !g.invert
+	{
+		cmd.arg("-g").arg(g.regex.as_str());
 	}
 	cmd.arg("--output=cat");
 	cmd.stdout(Stdio::piped());
@@ -338,6 +371,14 @@ fn run_journalctl(
 			Ok(l) => l,
 			Err(_) => break,
 		};
+		// In `-v` mode, journalctl was given no `-g`, so apply the inverted
+		// match here. Non-inverted matches were already filtered by journalctl.
+		if let Some(g) = grep
+			&& g.invert
+			&& !g.matches(&line)
+		{
+			continue;
+		}
 		let formatted = format_log_line(&line, use_colours);
 		if writeln!(out, "{formatted}").is_err() {
 			break;
@@ -364,7 +405,7 @@ fn run_pm2_logs(
 	include_caddy: bool,
 	lines: usize,
 	follow: bool,
-	grep: Option<Regex>,
+	grep: Option<GrepFilter>,
 	use_colours: bool,
 ) -> Result<()> {
 	let mut tail_sources: Vec<TailSource> = Vec::new();
@@ -414,7 +455,7 @@ fn tail_files(
 	sources: Vec<TailSource>,
 	lines: usize,
 	follow: bool,
-	grep: Option<Regex>,
+	grep: Option<GrepFilter>,
 	use_colours: bool,
 ) -> Result<()> {
 	let (tx, rx) = channel::<String>();
@@ -439,7 +480,7 @@ fn tail_one(
 	source: TailSource,
 	lines: usize,
 	follow: bool,
-	grep: Option<&Regex>,
+	grep: Option<&GrepFilter>,
 	use_colours: bool,
 	tx: Sender<String>,
 ) {
@@ -451,7 +492,7 @@ fn tail_one(
 
 	if let Ok(initial) = read_last_n_lines(&path, lines) {
 		for line in initial {
-			if grep.is_some_and(|re| !re.is_match(&line)) {
+			if grep.is_some_and(|g| !g.matches(&line)) {
 				continue;
 			}
 			let formatted = formatter(&line, use_colours);
@@ -478,7 +519,7 @@ fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
 fn follow_file(
 	path: &Path,
 	prefix: &str,
-	grep: Option<&Regex>,
+	grep: Option<&GrepFilter>,
 	formatter: LineFormatter,
 	use_colours: bool,
 	tx: &Sender<String>,
@@ -517,7 +558,7 @@ fn follow_file(
 		while let Some(idx) = leftover.find('\n') {
 			let line: String = leftover.drain(..=idx).collect();
 			let line = line.trim_end_matches('\n').trim_end_matches('\r');
-			if grep.is_some_and(|re| !re.is_match(line)) {
+			if grep.is_some_and(|g| !g.matches(line)) {
 				continue;
 			}
 			let formatted = formatter(line, use_colours);
@@ -592,6 +633,56 @@ mod tests {
 	}
 
 	#[test]
+	fn grep_filter_inverts_when_invert_set() {
+		let g = GrepFilter {
+			regex: Regex::new(r"error").unwrap(),
+			invert: true,
+		};
+		assert!(!g.matches("an error happened"));
+		assert!(g.matches("an info line"));
+	}
+
+	#[test]
+	fn grep_filter_matches_normally_when_not_inverted() {
+		let g = GrepFilter {
+			regex: Regex::new(r"error").unwrap(),
+			invert: false,
+		};
+		assert!(g.matches("an error happened"));
+		assert!(!g.matches("an info line"));
+	}
+
+	#[test]
+	fn pm2_tail_invert_grep_emits_non_matches() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("invert.log");
+		std::fs::write(
+			&path,
+			"alpha info: ok\nbeta error: boom\ngamma info: ok\ndelta error: kaboom\n",
+		)
+		.unwrap();
+		let source = pm2_log_to_tail(LogSource {
+			name: "tamanu-api".into(),
+			pm_id: Some(1),
+			stream: pm2::LogStream::Out,
+			path,
+		});
+		let g = GrepFilter {
+			regex: Regex::new(r"error").unwrap(),
+			invert: true,
+		};
+		let (tx, rx) = std::sync::mpsc::channel::<String>();
+		std::thread::spawn(move || tail_one(source, 10, false, Some(&g), false, tx));
+		let mut received = Vec::new();
+		while let Ok(msg) = rx.recv() {
+			received.push(msg.trim_end_matches('\n').to_string());
+		}
+		assert_eq!(received.len(), 2);
+		assert!(received[0].contains("alpha info"));
+		assert!(received[1].contains("gamma info"));
+	}
+
+	#[test]
 	fn read_last_n_lines_empty_file() {
 		let tmp = tempfile::tempdir().unwrap();
 		let path = tmp.path().join("log.txt");
@@ -617,9 +708,12 @@ mod tests {
 			stream: pm2::LogStream::Out,
 			path,
 		});
-		let re = Regex::new(r"error").unwrap();
+		let g = GrepFilter {
+			regex: Regex::new(r"error").unwrap(),
+			invert: false,
+		};
 		let (tx, rx) = std::sync::mpsc::channel::<String>();
-		std::thread::spawn(move || tail_one(source, 10, false, Some(&re), false, tx));
+		std::thread::spawn(move || tail_one(source, 10, false, Some(&g), false, tx));
 		let mut received = Vec::new();
 		while let Ok(msg) = rx.recv() {
 			received.push(msg.trim_end_matches('\n').to_string());

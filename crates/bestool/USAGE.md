@@ -1714,6 +1714,9 @@ opportunistic syntax highlighting per line.
   Default value: `10`
 * `-f`, `--follow` — Follow: keep printing new lines as they arrive. Equivalent to `tail -f`
 * `-g`, `--grep <REGEX>` — Only print lines matching this regex. On Linux this is passed to `journalctl -g`; on Windows it's applied client-side after reading from the log files
+* `-v`, `--invert-match` — Invert the grep match — print lines that do NOT match. Only has an effect when combined with `--grep`. Mirrors `grep -v`.
+
+   `journalctl` has no native inverse-match, so on Linux the filter is applied client-side when `-v` is in use; without `-v` the regex is still pushed down into `journalctl -g` for the kernel-side speedup.
 
 
 
