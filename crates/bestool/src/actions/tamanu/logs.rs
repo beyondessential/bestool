@@ -468,9 +468,53 @@ fn tail_one(
 	follow_file(&path, &prefix, grep, formatter, use_colours, &tx);
 }
 
+/// Read the last `n` lines of `path` without loading the whole file.
+///
+/// pm2 log files on Windows can grow to many gigabytes (Tamanu services log
+/// heavily and rotation is operator-managed). The previous implementation
+/// `std::fs::read_to_string`-d the entire file before slicing the tail,
+/// which lets a multi-GB log file pin all of bestool's memory and freeze the
+/// host — exactly the pathological state operators were hitting.
+///
+/// This version seeks to the end and reads backward in fixed-size chunks
+/// until it's accumulated more than `n` newlines (or hit the start of the
+/// file). The kept buffer is therefore bounded by roughly `n × avg-line-len +
+/// CHUNK`, independent of total file size.
 fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
-	let contents = std::fs::read_to_string(path)?;
-	let lines: Vec<&str> = contents.lines().collect();
+	if n == 0 {
+		return Ok(Vec::new());
+	}
+
+	let mut file = File::open(path)?;
+	let mut pos = file.seek(SeekFrom::End(0))?;
+	if pos == 0 {
+		return Ok(Vec::new());
+	}
+
+	const CHUNK: u64 = 8 * 1024;
+	let mut buf: Vec<u8> = Vec::new();
+
+	while pos > 0 {
+		let to_read = CHUNK.min(pos);
+		pos -= to_read;
+		file.seek(SeekFrom::Start(pos))?;
+		let mut chunk = vec![0u8; to_read as usize];
+		file.read_exact(&mut chunk)?;
+		chunk.extend_from_slice(&buf);
+		buf = chunk;
+		// Stop once we've crossed the n-th line boundary from the end. We need
+		// *more than* `n` newlines so the first kept line is bounded on the
+		// left by a real newline (rather than possibly being mid-line).
+		if buf.iter().filter(|&&b| b == b'\n').count() > n {
+			break;
+		}
+	}
+
+	// `from_utf8_lossy` keeps us safe if a backward chunk boundary split a
+	// multi-byte UTF-8 codepoint — corrupted byte sequences become `U+FFFD`
+	// rather than panicking. Log files we tail are normally ASCII anyway.
+	let text = String::from_utf8_lossy(&buf);
+	let lines: Vec<&str> = text.lines().collect();
 	let start = lines.len().saturating_sub(n);
 	Ok(lines[start..].iter().map(|s| s.to_string()).collect())
 }
@@ -506,12 +550,17 @@ fn follow_file(
 		if size == pos {
 			continue;
 		}
-		let to_read = (size - pos) as usize;
+		// Cap how much we pull in one iteration. After a rotation reset
+		// (`size < pos` above) the next tick can otherwise allocate hundreds
+		// of MB at once trying to consume the whole new file in a single
+		// read — same class of OOM as `read_last_n_lines` used to hit.
+		const MAX_PER_ITER: u64 = 4 * 1024 * 1024;
+		let to_read = (size - pos).min(MAX_PER_ITER) as usize;
 		let mut buf = vec![0u8; to_read];
 		if file.seek(SeekFrom::Start(pos)).is_err() || file.read_exact(&mut buf).is_err() {
 			continue;
 		}
-		pos = size;
+		pos += to_read as u64;
 		let chunk = String::from_utf8_lossy(&buf);
 		leftover.push_str(&chunk);
 		while let Some(idx) = leftover.find('\n') {
@@ -598,6 +647,60 @@ mod tests {
 		std::fs::write(&path, "").unwrap();
 		let last = read_last_n_lines(&path, 10).unwrap();
 		assert!(last.is_empty());
+	}
+
+	#[test]
+	fn read_last_n_lines_zero_returns_empty_without_reading() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("log.txt");
+		std::fs::write(&path, "a\nb\nc\n").unwrap();
+		assert!(read_last_n_lines(&path, 0).unwrap().is_empty());
+	}
+
+	#[test]
+	fn read_last_n_lines_no_trailing_newline() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("log.txt");
+		std::fs::write(&path, "a\nb\nc").unwrap();
+		assert_eq!(read_last_n_lines(&path, 2).unwrap(), vec!["b", "c"]);
+	}
+
+	#[test]
+	fn read_last_n_lines_handles_file_much_larger_than_request() {
+		// The whole point of the rewrite: we must not load the entire file
+		// to return the trailing handful of lines. Build a file that's well
+		// over the backward-read chunk size (8 KiB) and check we still get a
+		// tight, correct tail.
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("big.log");
+		let mut contents = String::with_capacity(64 * 1024);
+		for i in 0..4096 {
+			contents.push_str(&format!("line-{i}\n"));
+		}
+		std::fs::write(&path, &contents).unwrap();
+		let last = read_last_n_lines(&path, 5).unwrap();
+		assert_eq!(
+			last,
+			vec!["line-4091", "line-4092", "line-4093", "line-4094", "line-4095"]
+		);
+	}
+
+	#[test]
+	fn read_last_n_lines_handles_n_spanning_multiple_backward_chunks() {
+		// Force the backward-read loop to iterate more than once.
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("big.log");
+		// Each line is 50 bytes; 1000 lines = ~50 KiB, asking for 800 lines
+		// requires reading back more than one 8 KiB chunk.
+		let mut contents = String::new();
+		for i in 0..1000 {
+			contents.push_str(&format!("{:>48}\n", i));
+		}
+		std::fs::write(&path, &contents).unwrap();
+		let last = read_last_n_lines(&path, 800).unwrap();
+		assert_eq!(last.len(), 800);
+		assert_eq!(last.first().unwrap().trim(), "200");
+		assert_eq!(last.last().unwrap().trim(), "999");
 	}
 
 	#[test]
