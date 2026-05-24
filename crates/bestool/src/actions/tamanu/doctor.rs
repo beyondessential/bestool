@@ -183,7 +183,12 @@ pub(super) async fn perform_sweep(
 
 	let facts = collect_server_facts(&config, db.as_deref(), cached_pg_version).await;
 	let pg_version = facts.pg_version.clone();
-	let info = server_info::gather(&version.to_string(), facts).await;
+	// `env!("CARGO_PKG_VERSION")` here resolves at *this* crate's compile time
+	// — the bestool crate — which is what we want in the wire payload. The
+	// same expression inside `bestool-tamanu` resolves to that library's
+	// version (0.1.x) and gave the wrong answer before this argument existed.
+	let info =
+		server_info::gather(env!("CARGO_PKG_VERSION"), &version.to_string(), facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
 	let overall =
