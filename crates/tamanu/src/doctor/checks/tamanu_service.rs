@@ -410,7 +410,7 @@ mod tests {
 		let json = serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
 			"serverFacilityIds": ["facility-x"],
-			"fhir": { "worker": { "enabled": fhir_worker } },
+			"integrations": { "fhir": { "worker": { "enabled": fhir_worker } } },
 		});
 		serde_json::from_value(json).unwrap()
 	}
@@ -418,7 +418,7 @@ mod tests {
 	fn central_cfg(fhir_worker: bool) -> TamanuConfig {
 		let json = serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
-			"fhir": { "worker": { "enabled": fhir_worker } },
+			"integrations": { "fhir": { "worker": { "enabled": fhir_worker } } },
 		});
 		serde_json::from_value(json).unwrap()
 	}

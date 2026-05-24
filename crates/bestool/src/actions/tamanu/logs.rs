@@ -537,7 +537,7 @@ mod tests {
 	fn cfg(facility: bool, fhir_worker: bool) -> TamanuConfig {
 		let mut json = serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
-			"fhir": { "worker": { "enabled": fhir_worker } },
+			"integrations": { "fhir": { "worker": { "enabled": fhir_worker } } },
 		});
 		if facility {
 			json["serverFacilityIds"] = serde_json::json!(["facility-x"]);
