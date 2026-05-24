@@ -8,7 +8,6 @@ use crate::args::Args;
 
 use super::Context;
 
-pub use bestool_tamanu::find_package;
 use bestool_tamanu::find_tamanu as _find_tamanu;
 
 #[cfg(feature = "tamanu-lifecycle")]

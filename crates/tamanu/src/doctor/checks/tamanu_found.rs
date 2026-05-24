@@ -1,11 +1,10 @@
 use super::CheckContext;
-use crate::doctor::check::Check;
+use crate::{ApiServerKind, doctor::check::Check};
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let kind = if ctx.config.is_facility() {
-		"facility"
-	} else {
-		"central"
+	let kind = match ctx.kind {
+		ApiServerKind::Facility => "facility",
+		ApiServerKind::Central => "central",
 	};
 	let summary = format!(
 		"Tamanu {} at {} ({kind})",

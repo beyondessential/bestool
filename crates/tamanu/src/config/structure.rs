@@ -7,13 +7,19 @@ use url::Url;
 pub struct TamanuConfig {
 	pub canonical_host_name: Option<Url>,
 	pub canonical_url: Option<Url>,
+	/// Current (multi-facility) form. Newer installs only.
 	pub server_facility_ids: Option<Vec<String>>,
+	/// Legacy single-facility form. Still in use on older facility installs.
+	pub server_facility_id: Option<String>,
 	pub db: Database,
 	pub mailgun: Option<Mailgun>,
 	pub primary_time_zone: Option<String>,
 	pub country_time_zone: Option<String>,
 	#[serde(default)]
 	pub integrations: Integrations,
+	/// `sync` block. Only configured on facility servers — central servers have
+	/// no sync target, so its presence is a reliable "is this a facility" signal.
+	pub sync: Option<Sync>,
 }
 
 impl TamanuConfig {
@@ -23,10 +29,27 @@ impl TamanuConfig {
 			.or(self.canonical_url.as_ref())
 	}
 
+	/// Identify the server as a facility from any one of three independent
+	/// config signals.
+	///
+	/// Central servers have *none* of these populated; any one being present is
+	/// taken as facility. We check all three because real-world facility
+	/// installs vary by Tamanu vintage:
+	///
+	///   * `serverFacilityIds` (plural) — current multi-facility form
+	///   * `serverFacilityId` (singular) — legacy single-facility form, still
+	///     in active use on older facility installs
+	///   * `sync.host` — only configured on facilities (centrals have no
+	///     upstream to sync to)
 	pub fn is_facility(&self) -> bool {
 		self.server_facility_ids
 			.as_ref()
 			.is_some_and(|ids| !ids.is_empty())
+			|| self
+				.server_facility_id
+				.as_ref()
+				.is_some_and(|id| !id.is_empty())
+			|| self.sync.as_ref().is_some_and(|s| s.host.is_some())
 	}
 
 	/// Mirrors `getPrimaryTimeZone()` in Tamanu: prefers `primaryTimeZone`,
@@ -52,6 +75,14 @@ impl TamanuConfig {
 #[serde(default, rename_all = "camelCase")]
 pub struct Integrations {
 	pub fhir: Fhir,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sync {
+	/// URL of the central server this facility syncs against. Only set on
+	/// facility servers.
+	pub host: Option<Url>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -110,6 +141,58 @@ mod tests {
 		serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
 		})
+	}
+
+	#[test]
+	fn central_has_no_facility_signals() {
+		assert!(!parse(base()).is_facility());
+	}
+
+	#[test]
+	fn server_facility_ids_plural_marks_facility() {
+		let mut json = base();
+		json["serverFacilityIds"] = serde_json::json!(["facility-x"]);
+		assert!(parse(json).is_facility());
+	}
+
+	#[test]
+	fn empty_server_facility_ids_does_not_mark_facility() {
+		let mut json = base();
+		json["serverFacilityIds"] = serde_json::json!([]);
+		assert!(!parse(json).is_facility());
+	}
+
+	#[test]
+	fn legacy_singular_server_facility_id_marks_facility() {
+		// Older facility installs use the singular form. This was the case
+		// that misclassified a real facility as central in production.
+		let mut json = base();
+		json["serverFacilityId"] = serde_json::json!("facility-x");
+		assert!(parse(json).is_facility());
+	}
+
+	#[test]
+	fn empty_singular_server_facility_id_does_not_mark_facility() {
+		let mut json = base();
+		json["serverFacilityId"] = serde_json::json!("");
+		assert!(!parse(json).is_facility());
+	}
+
+	#[test]
+	fn sync_host_marks_facility() {
+		// Central servers have no upstream to sync to; presence of `sync.host`
+		// is a positive facility signal independent of the serverFacilityId(s)
+		// fields.
+		let mut json = base();
+		json["sync"] = serde_json::json!({ "host": "https://central.example.org" });
+		assert!(parse(json).is_facility());
+	}
+
+	#[test]
+	fn empty_sync_block_does_not_mark_facility() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({});
+		assert!(!parse(json).is_facility());
 	}
 
 	#[test]

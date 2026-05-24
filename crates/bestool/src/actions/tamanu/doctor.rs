@@ -11,7 +11,7 @@ use node_semver::Version;
 use owo_colors::OwoColorize;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
@@ -186,10 +186,14 @@ pub(super) async fn perform_sweep(
 		Err(_) => None,
 	};
 
+	let kind = bestool_tamanu::detect_kind(&config, db.as_deref()).await;
+	debug!(?kind, "detected Tamanu server kind for doctor sweep");
+
 	let check_ctx = CheckContext {
 		tamanu_version: version.clone(),
 		tamanu_root: root.to_path_buf(),
 		config: config.clone(),
+		kind,
 		database_url: database_url.to_owned(),
 		db: db.clone(),
 		http_client,
