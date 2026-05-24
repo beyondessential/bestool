@@ -105,26 +105,29 @@ async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
 		Ok(resp) if resp.status().is_success() => match resp.text().await {
 			Ok(t) => t,
 			Err(err) => {
-				return FetchResult::Skip(
-					Check::pass("http_errors", "caddy /metrics body read failed")
-						.with_detail("skipped", true)
-						.with_detail("reason", err.to_string()),
-				);
+				return FetchResult::Skip(Check::skip(
+					"http_errors",
+					"caddy /metrics body read failed",
+					err.to_string(),
+				));
 			}
 		},
 		Ok(resp) => {
-			return FetchResult::Skip(
-				Check::pass(
-					"http_errors",
-					format!("caddy /metrics returned HTTP {}", resp.status().as_u16()),
-				)
-				.with_detail("skipped", true),
-			);
+			let status = resp.status().as_u16();
+			return FetchResult::Skip(Check::skip(
+				"http_errors",
+				format!("caddy /metrics returned HTTP {status}"),
+				format!(
+					"caddy is reachable but its admin /metrics endpoint isn't usable (HTTP {status}) — error rate cannot be measured"
+				),
+			));
 		}
-		Err(_) => {
-			return FetchResult::Skip(
-				Check::pass("http_errors", "caddy admin unreachable").with_detail("skipped", true),
-			);
+		Err(err) => {
+			return FetchResult::Skip(Check::skip(
+				"http_errors",
+				"caddy admin unreachable",
+				format!("could not reach caddy admin at {CADDY_METRICS_URL}: {err}"),
+			));
 		}
 	};
 

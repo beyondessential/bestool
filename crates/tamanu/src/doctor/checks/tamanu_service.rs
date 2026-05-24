@@ -32,7 +32,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Supervisor::Systemd => match discover_systemd() {
 			Ok(d) => d,
 			Err(err) => {
-				return Check::fail("tamanu_service", "systemctl unavailable", err)
+				return Check::skip("tamanu_service", "systemctl unavailable", err)
 					.with_detail("supervisor", "systemd");
 			}
 		},
@@ -42,11 +42,21 @@ pub async fn run(ctx: CheckContext) -> Check {
 				d
 			}
 			Err(err) => {
-				return Check::fail("tamanu_service", "pm2 unavailable", err)
-					.with_detail("supervisor", "pm2");
+				return Check::warning(
+					"tamanu_service",
+					"pm2 status could not be queried",
+					format!(
+						"pm2 unavailable ({err}); services may be running but we can't tell from this user. Run elevated to confirm."
+					),
+				)
+				.with_detail("supervisor", "pm2");
 			}
 		},
 	};
+
+	if let Some(check) = pm2_dump_fallback_indeterminate(pm2_source, &discovered) {
+		return check;
+	}
 
 	// Probe `is-enabled` for any Down expectation whose unit didn't show up in
 	// `list-units` — catches `enabled-but-not-loaded` cases (rare but possible).
@@ -72,6 +82,38 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	evaluate_with_source(supervisor, &expectations, &discovered, pm2_source)
+}
+
+/// Decide whether we should bail out as "indeterminate" before evaluating
+/// expectations.
+///
+/// When the pm2 CLI is unreachable and we fall back to reading `dump.pm2`,
+/// we lose the only source of truth for *which* processes are actually
+/// running — running=false then just means "we couldn't read that pid file"
+/// or "we couldn't see those processes in the OS table", both of which are
+/// classic permission symptoms on Windows. Reporting FAIL here would lie:
+/// the services are probably fine, we just can't tell. Warn instead so the
+/// operator knows to re-run elevated.
+fn pm2_dump_fallback_indeterminate(
+	pm2_source: Option<pm2::Source>,
+	discovered: &[Discovered],
+) -> Option<Check> {
+	if matches!(pm2_source, Some(pm2::Source::Dump))
+		&& !discovered.is_empty()
+		&& discovered.iter().all(|d| !d.running)
+	{
+		Some(
+			Check::warning(
+				"tamanu_service",
+				"pm2 process state indeterminate",
+				"read pm2's dump file but couldn't verify any process is alive — likely a permissions issue (try running elevated)",
+			)
+			.with_detail("supervisor", "pm2")
+			.with_detail("pm2_source", pm2::Source::Dump.as_str()),
+		)
+	} else {
+		None
+	}
 }
 
 fn systemd_is_enabled(name: &str) -> bool {
@@ -641,6 +683,63 @@ mod tests {
 		];
 		let check = evaluate(Supervisor::Pm2, &exps, &discovered);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn pm2_dump_fallback_with_all_not_running_yields_warning() {
+		let discovered = vec![
+			Discovered {
+				name: "tamanu-api".into(),
+				instance: None,
+				running: false,
+				present: true,
+				raw: "tamanu-api".into(),
+			},
+			Discovered {
+				name: "tamanu-tasks".into(),
+				instance: None,
+				running: false,
+				present: true,
+				raw: "tamanu-tasks".into(),
+			},
+		];
+		let check =
+			pm2_dump_fallback_indeterminate(Some(pm2::Source::Dump), &discovered).expect("warn");
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
+	}
+
+	#[test]
+	fn pm2_dump_fallback_with_any_running_does_not_skip() {
+		let discovered = vec![
+			Discovered {
+				name: "tamanu-api".into(),
+				instance: None,
+				running: true,
+				present: true,
+				raw: "tamanu-api".into(),
+			},
+			Discovered {
+				name: "tamanu-tasks".into(),
+				instance: None,
+				running: false,
+				present: true,
+				raw: "tamanu-tasks".into(),
+			},
+		];
+		assert!(pm2_dump_fallback_indeterminate(Some(pm2::Source::Dump), &discovered).is_none());
+	}
+
+	#[test]
+	fn pm2_cli_source_skips_dump_fallback_heuristic() {
+		// CLI is authoritative — even if everything shows down, that's the truth.
+		let discovered = vec![Discovered {
+			name: "tamanu-api".into(),
+			instance: None,
+			running: false,
+			present: true,
+			raw: "tamanu-api".into(),
+		}];
+		assert!(pm2_dump_fallback_indeterminate(Some(pm2::Source::Cli), &discovered).is_none());
 	}
 
 	#[test]
