@@ -1835,7 +1835,7 @@ instance up to take traffic.
 
 ###### **Options:**
 
-* `--cooldown <COOLDOWN>` — Sleep between each critical-instance roll. Lets the fresh container settle and downstream caches warm up before we move on to the next one
+* `--cooldown <COOLDOWN>` — Sleep between each critical-instance roll when the HTTP probe is disabled (`--no-probe-http`). With probes enabled, the readiness probe is the signal — once a fresh instance responds, we move on to the next without waiting out the cooldown
 
   Default value: `30s`
 * `--no-probe-http` — Skip the per-instance HTTP probe. Useful if the deployment isn't behind caddy (so the netavark IP doesn't matter) or you just want a fast best-effort restart without waiting on container readiness
