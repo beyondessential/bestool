@@ -531,7 +531,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "algae-cli",
  "base64 0.22.1",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-canopy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "futures",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "duct",
