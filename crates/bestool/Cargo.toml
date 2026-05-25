@@ -79,6 +79,7 @@ tera = { version = "1.19.1", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
+tokio-stream = { version = "0.1.17", optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
@@ -145,7 +146,7 @@ tamanu-alerts = [
 	"dep:tokio-postgres",
 	"dep:walkdir",
 ]
-tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:p256", "dep:serde_path_to_error", "dep:serde_yaml", "dep:tokio-postgres", "dep:walkdir"]
+tamanu-alertd = ["__tamanu", "tamanu-config", "bestool-tamanu/doctor", "dep:bestool-alertd", "dep:p256", "dep:serde_path_to_error", "dep:serde_yaml", "dep:tokio-postgres", "dep:tokio-stream", "dep:walkdir"]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]

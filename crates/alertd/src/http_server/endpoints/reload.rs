@@ -57,6 +57,7 @@ mod tests {
 			dry_run: true,
 			scheduler,
 			watchdog_timeout: None,
+			task_endpoints: Arc::new(std::collections::HashMap::new()),
 		});
 
 		let response = handle_reload(State(state)).await.into_response();

@@ -6,7 +6,7 @@ use std::{
 
 use clap::Parser;
 use futures::stream::{FuturesUnordered, StreamExt};
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use node_semver::Version;
 use owo_colors::OwoColorize;
 use serde_json::{Map, Value};
@@ -30,9 +30,11 @@ use crate::actions::Context;
 
 /// Gather server info + healthchecks for a Tamanu install
 ///
-/// Runs a set of healthchecks against the local Tamanu install and renders a
-/// colour-coded summary. The alertd daemon runs the same checks every minute
-/// and pushes results to Canopy; this command is for interactive operator use.
+/// If the alertd daemon is running on this host (with its HTTP server bound to
+/// the default localhost port), the most recently computed sweep is fetched
+/// from it and rendered, with a note saying when those checks were actually
+/// computed. Otherwise — or with `--fresh` / `--no-daemon` — the checks are
+/// run locally.
 ///
 /// Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 #[derive(Debug, Clone, Parser)]
@@ -49,7 +51,32 @@ pub struct DoctorArgs {
 	/// Skip the named check(s). Repeatable. Applied after `--check`.
 	#[arg(long = "skip", value_name = "NAME")]
 	pub skip: Vec<String>,
+
+	/// Force a fresh sweep. With alertd running, asks the daemon to recompute
+	/// and streams the results back as they come in; without alertd, runs the
+	/// checks locally exactly like before.
+	#[arg(long)]
+	pub fresh: bool,
+
+	/// Skip the alertd integration entirely and always compute locally.
+	///
+	/// Combined with `--fresh` this is a no-op (a local sweep is always fresh).
+	#[arg(long)]
+	pub no_daemon: bool,
 }
+
+/// Where the displayed sweep came from.
+enum SweepSource {
+	/// Daemon's last periodic sweep — include `computed_at` so we can warn how
+	/// old it is in the rendered output.
+	DaemonCached { computed_at: jiff::Timestamp },
+	/// Daemon-driven fresh recompute, streamed back over the task endpoint.
+	DaemonStreamed,
+	/// Sweep we ran ourselves.
+	Local,
+}
+
+const DAEMON_BASE: &str = "http://127.0.0.1:8271";
 
 pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
@@ -61,6 +88,79 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let database_url = build_database_url(&config);
 	let http_client = reqwest::Client::new();
 
+	let (sweep, source) = if args.no_daemon {
+		(
+			run_local_sweep(
+				&version,
+				&root,
+				config.clone(),
+				&database_url,
+				http_client.clone(),
+				&args,
+				use_colours,
+			)
+			.await?,
+			SweepSource::Local,
+		)
+	} else if args.fresh {
+		match run_daemon_recompute(&http_client, &args, use_colours).await {
+			Ok(sweep) => (sweep, SweepSource::DaemonStreamed),
+			Err(err) => {
+				debug!(%err, "daemon recompute unavailable, falling back to local");
+				(
+					run_local_sweep(
+						&version,
+						&root,
+						config.clone(),
+						&database_url,
+						http_client.clone(),
+						&args,
+						use_colours,
+					)
+					.await?,
+					SweepSource::Local,
+				)
+			}
+		}
+	} else {
+		match fetch_daemon_latest(&http_client).await {
+			Ok((sweep, computed_at)) => (sweep, SweepSource::DaemonCached { computed_at }),
+			Err(err) => {
+				debug!(%err, "daemon latest unavailable, falling back to local");
+				(
+					run_local_sweep(
+						&version,
+						&root,
+						config.clone(),
+						&database_url,
+						http_client.clone(),
+						&args,
+						use_colours,
+					)
+					.await?,
+					SweepSource::Local,
+				)
+			}
+		}
+	};
+
+	render_final(&args, &sweep, &source, use_colours)?;
+
+	if sweep.overall == OverallResult::Failing {
+		std::process::exit(1);
+	}
+	Ok(())
+}
+
+async fn run_local_sweep(
+	version: &Version,
+	root: &Path,
+	config: Arc<TamanuConfig>,
+	database_url: &str,
+	http_client: reqwest::Client,
+	args: &DoctorArgs,
+	use_colours: bool,
+) -> Result<SweepResult> {
 	let live = !args.json && std::io::stdout().is_terminal();
 	let selected_names = selected_names_for_render(&args.only, &args.skip)?;
 	let renderer = if live {
@@ -78,10 +178,10 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 
 	let progress = renderer.as_ref().map(|(tx, _)| tx.clone());
 	let sweep = perform_sweep(
-		&version,
-		&root,
+		version,
+		root,
 		config,
-		&database_url,
+		database_url,
 		http_client,
 		&args.only,
 		&args.skip,
@@ -95,39 +195,303 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		let _ = handle.await;
 	}
 
+	Ok(sweep)
+}
+
+fn render_final(
+	args: &DoctorArgs,
+	sweep: &SweepResult,
+	source: &SweepSource,
+	use_colours: bool,
+) -> Result<()> {
+	let stdout = std::io::stdout();
+	let mut out = stdout.lock();
+	let live = !args.json && std::io::stdout().is_terminal();
+
 	if args.json {
-		let stdout = std::io::stdout();
-		let mut out = stdout.lock();
-		serde_json::to_writer_pretty(&mut out, &sweep.payload).into_diagnostic()?;
+		// Embed source info alongside the payload so JSON consumers can tell
+		// where the data came from. The original payload becomes the inner
+		// `wire` field; cached daemon reads also carry `computedAt`.
+		let mut wrapped = serde_json::Map::new();
+		wrapped.insert("wire".into(), sweep.payload.clone());
+		match source {
+			SweepSource::Local => {
+				wrapped.insert("source".into(), Value::String("local".into()));
+			}
+			SweepSource::DaemonStreamed => {
+				wrapped.insert("source".into(), Value::String("daemon-streamed".into()));
+			}
+			SweepSource::DaemonCached { computed_at } => {
+				wrapped.insert("source".into(), Value::String("daemon-cached".into()));
+				wrapped.insert("computedAt".into(), Value::String(computed_at.to_string()));
+			}
+		}
+		serde_json::to_writer_pretty(&mut out, &Value::Object(wrapped)).into_diagnostic()?;
 		writeln!(out).into_diagnostic()?;
+		return Ok(());
+	}
+
+	if live {
+		// In live mode the per-check render already happened. Just append the
+		// summary + source note.
+		write_source_note(&mut out, source, use_colours).into_diagnostic()?;
+		render_summary(
+			&mut out,
+			sweep.server_id.as_deref(),
+			&sweep.results,
+			sweep.overall,
+			use_colours,
+		)
+		.into_diagnostic()?;
 	} else {
-		let stdout = std::io::stdout();
-		let mut out = stdout.lock();
-		if live {
-			render_summary(
-				&mut out,
-				sweep.server_id.as_deref(),
-				&sweep.results,
-				sweep.overall,
-				use_colours,
-			)
-			.into_diagnostic()?;
-		} else {
-			render(
-				&mut out,
-				sweep.server_id.as_deref(),
-				&sweep.results,
-				sweep.overall,
-				use_colours,
-			)
-			.into_diagnostic()?;
+		render(
+			&mut out,
+			sweep.server_id.as_deref(),
+			&sweep.results,
+			sweep.overall,
+			use_colours,
+		)
+		.into_diagnostic()?;
+		write_source_note(&mut out, source, use_colours).into_diagnostic()?;
+	}
+	Ok(())
+}
+
+fn write_source_note<W: Write>(
+	out: &mut W,
+	source: &SweepSource,
+	use_colours: bool,
+) -> std::io::Result<()> {
+	let line = match source {
+		SweepSource::Local => return Ok(()),
+		SweepSource::DaemonStreamed => "Source: alertd daemon (just now, on demand)".to_string(),
+		SweepSource::DaemonCached { computed_at } => {
+			let age = humanise_age_since(*computed_at);
+			format!("Source: alertd daemon (computed {age} ago, at {computed_at})")
+		}
+	};
+	if use_colours {
+		writeln!(out, "{}", line.dimmed())
+	} else {
+		writeln!(out, "{line}")
+	}
+}
+
+fn humanise_age_since(then: jiff::Timestamp) -> String {
+	let now = jiff::Timestamp::now();
+	let secs = now.as_second().saturating_sub(then.as_second()).max(0) as u64;
+	if secs < 60 {
+		format!("{secs}s")
+	} else if secs < 3600 {
+		format!("{}m {}s", secs / 60, secs % 60)
+	} else {
+		format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+	}
+}
+
+/// Read the alertd daemon's most recent sweep over `/tasks/doctor/latest`.
+///
+/// The short timeout is intentional: this is run on every `tamanu doctor`
+/// invocation, and if alertd isn't on this host (or its HTTP server is
+/// missing) we want to bail out fast and fall back to a local sweep.
+async fn fetch_daemon_latest(
+	http: &reqwest::Client,
+) -> Result<(SweepResult, jiff::Timestamp)> {
+	let url = format!("{DAEMON_BASE}/tasks/doctor/latest");
+	let response = http
+		.get(&url)
+		.timeout(std::time::Duration::from_secs(3))
+		.send()
+		.await
+		.into_diagnostic()
+		.wrap_err("contacting local alertd")?;
+
+	if !response.status().is_success() {
+		return Err(miette!(
+			"alertd /tasks/doctor/latest returned {}",
+			response.status()
+		));
+	}
+
+	let payload: Value = response
+		.json()
+		.await
+		.into_diagnostic()
+		.wrap_err("decoding alertd latest payload")?;
+	let computed_at: jiff::Timestamp = payload
+		.get("computedAt")
+		.and_then(Value::as_str)
+		.ok_or_else(|| miette!("alertd latest payload missing computedAt"))?
+		.parse()
+		.into_diagnostic()
+		.wrap_err("parsing computedAt timestamp")?;
+
+	let inner = payload
+		.get("payload")
+		.cloned()
+		.ok_or_else(|| miette!("alertd latest payload missing payload"))?;
+	let server_id = payload
+		.get("serverId")
+		.and_then(Value::as_str)
+		.map(str::to_string);
+
+	let overall = overall_from_payload(&inner);
+	Ok((
+		SweepResult {
+			server_id,
+			results: Vec::new(),
+			overall,
+			payload: inner,
+			pg_version: None,
+		},
+		computed_at,
+	))
+}
+
+/// Drive a fresh sweep on the daemon and stream the per-check results back.
+///
+/// Each NDJSON line is a `{"event": ...}` object; check events feed the same
+/// live renderer that local sweeps use, the final `done` event carries the
+/// full payload to render the summary off.
+async fn run_daemon_recompute(
+	http: &reqwest::Client,
+	args: &DoctorArgs,
+	use_colours: bool,
+) -> Result<SweepResult> {
+	let url = format!("{DAEMON_BASE}/tasks/doctor/recompute");
+	let response = http
+		.get(&url)
+		.timeout(std::time::Duration::from_secs(5))
+		.send()
+		.await
+		.into_diagnostic()
+		.wrap_err("contacting local alertd")?;
+
+	if !response.status().is_success() {
+		return Err(miette!(
+			"alertd /tasks/doctor/recompute returned {}",
+			response.status()
+		));
+	}
+
+	let live = !args.json && std::io::stdout().is_terminal();
+	let selected_names = selected_names_for_render(&args.only, &args.skip)?;
+	let renderer = if live {
+		let (tx, rx) = mpsc::unbounded_channel();
+		let names = selected_names.clone();
+		let handle = tokio::task::spawn_blocking(move || {
+			let stdout = std::io::stdout();
+			let mut out = stdout.lock();
+			let _ = render_live(&mut out, &names, rx, use_colours);
+		});
+		Some((tx, handle))
+	} else {
+		None
+	};
+
+	let registry = checks::all();
+	let resolve_name = |s: &str| {
+		registry
+			.iter()
+			.find(|e| e.name == s)
+			.map(|e| e.name)
+	};
+
+	let mut stream = response.bytes_stream();
+	let mut buffer = Vec::<u8>::new();
+	let mut final_payload: Option<Value> = None;
+	let mut server_id: Option<String> = None;
+
+	use futures::StreamExt as _;
+	while let Some(chunk) = stream.next().await {
+		let chunk = chunk
+			.into_diagnostic()
+			.wrap_err("reading alertd recompute stream")?;
+		buffer.extend_from_slice(&chunk);
+		while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = buffer.drain(..=nl).collect();
+			let line = &line[..line.len() - 1];
+			if line.is_empty() {
+				continue;
+			}
+			let value: Value = match serde_json::from_slice(line) {
+				Ok(v) => v,
+				Err(err) => {
+					warn!(%err, "could not parse alertd recompute line");
+					continue;
+				}
+			};
+			match value.get("event").and_then(Value::as_str) {
+				Some("check") => {
+					if let Some(check_json) = value.get("check")
+						&& let Some(check) = Check::from_streaming_json(check_json, resolve_name)
+						&& let Some((tx, _)) = &renderer
+					{
+						let _ = tx.send(DoctorEvent::Completed(check));
+					}
+				}
+				Some("done") => {
+					final_payload = value.get("payload").cloned();
+					server_id = value
+						.get("serverId")
+						.and_then(Value::as_str)
+						.map(str::to_string);
+				}
+				Some("error") => {
+					let msg = value
+						.get("message")
+						.and_then(Value::as_str)
+						.unwrap_or("unknown");
+					return Err(miette!("alertd recompute reported error: {msg}"));
+				}
+				_ => {}
+			}
 		}
 	}
 
-	if sweep.overall == OverallResult::Failing {
-		std::process::exit(1);
+	if let Some((tx, handle)) = renderer {
+		drop(tx);
+		let _ = handle.await;
 	}
-	Ok(())
+
+	let payload = final_payload
+		.ok_or_else(|| miette!("alertd recompute stream ended without a done event"))?;
+	let overall = overall_from_payload(&payload);
+	Ok(SweepResult {
+		server_id,
+		results: Vec::new(),
+		overall,
+		payload,
+		pg_version: None,
+	})
+}
+
+fn overall_from_payload(payload: &Value) -> OverallResult {
+	let healthy = payload
+		.get("healthy")
+		.and_then(Value::as_bool)
+		.unwrap_or(true);
+	if !healthy {
+		return OverallResult::Failing;
+	}
+	// `healthy: true` covers both Healthy and Degraded — peek at the
+	// per-check entries to disambiguate. A `healthy: false` entry in a
+	// top-level-healthy payload means a warning was logged.
+	let degraded = payload
+		.get("health")
+		.and_then(Value::as_array)
+		.map(|arr| {
+			arr.iter().any(|c| {
+				c.get("healthy") == Some(&Value::Bool(false))
+					&& c.get("skipped") != Some(&Value::Bool(true))
+			})
+		})
+		.unwrap_or(false);
+	if degraded {
+		OverallResult::Degraded
+	} else {
+		OverallResult::Healthy
+	}
 }
 
 pub(super) struct SweepResult {

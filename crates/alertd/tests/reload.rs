@@ -54,6 +54,7 @@ async fn test_status_endpoint_response_format() {
 		dry_run: true,
 		scheduler,
 		watchdog_timeout: None,
+		task_endpoints: Arc::new(std::collections::HashMap::new()),
 	});
 
 	// This verifies the response structure without needing a full daemon

@@ -1,6 +1,6 @@
 //! HTTP server for alertd daemon control and metrics.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
 	Router,
@@ -11,7 +11,13 @@ use tokio::sync::mpsc;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, error, info, warn};
 
-use crate::{EmailConfig, alert::InternalContext, events::EventManager, scheduler::Scheduler};
+use crate::{
+	EmailConfig,
+	alert::InternalContext,
+	events::EventManager,
+	scheduler::Scheduler,
+	tasks::{BackgroundTask, TaskEndpointHandler},
+};
 
 mod endpoints;
 mod state;
@@ -36,9 +42,12 @@ pub async fn start_server(
 	addrs: Vec<std::net::SocketAddr>,
 	scheduler: Arc<Scheduler>,
 	watchdog_timeout: Option<Duration>,
+	background_tasks: &[Arc<dyn BackgroundTask>],
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
+
+	let task_endpoints = collect_task_endpoints(background_tasks);
 
 	let state = ServerState {
 		reload_tx,
@@ -50,6 +59,7 @@ pub async fn start_server(
 		dry_run,
 		scheduler,
 		watchdog_timeout,
+		task_endpoints: Arc::new(task_endpoints),
 	};
 
 	let app = Router::new()
@@ -61,6 +71,7 @@ pub async fn start_server(
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.route("/health", get(handle_health))
+		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))
 		.layer(
 			TraceLayer::new_for_http()
 				.make_span_with(
@@ -132,4 +143,31 @@ pub async fn start_server(
 	if let Err(e) = axum::serve(listener, app).await {
 		error!("HTTP server error: {}", e);
 	}
+}
+
+fn collect_task_endpoints(
+	tasks: &[Arc<dyn BackgroundTask>],
+) -> HashMap<(String, String), TaskEndpointHandler> {
+	let mut map = HashMap::new();
+	for task in tasks {
+		let task_name = task.name();
+		for endpoint in task.http_endpoints() {
+			let key = (task_name.to_string(), endpoint.name.to_string());
+			if map.contains_key(&key) {
+				warn!(
+					task = task_name,
+					endpoint = endpoint.name,
+					"duplicate task endpoint name; later registration wins"
+				);
+			}
+			info!(
+				task = task_name,
+				endpoint = endpoint.name,
+				path = %format!("/tasks/{task_name}/{}", endpoint.name),
+				"mounting task endpoint"
+			);
+			map.insert(key, endpoint.handler);
+		}
+	}
+	map
 }

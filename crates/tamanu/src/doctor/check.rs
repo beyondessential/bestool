@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Outcome of a single healthcheck.
 #[derive(Debug, Clone)]
@@ -113,6 +113,69 @@ impl Check {
 			obj.insert(k.clone(), v.clone());
 		}
 		Value::Object(obj)
+	}
+
+	/// Encode this Check for streaming over the daemon's task endpoint.
+	///
+	/// Distinct from [`Self::to_wire`]: that one is the canopy-bound payload
+	/// (which collapses Warning/Fail status to a bare `healthy: false`); this
+	/// one preserves the full `CheckStatus` enum so consumers can render the
+	/// same colours and reason lines as a local sweep.
+	pub fn to_streaming_json(&self) -> Value {
+		let (status, reason) = match &self.status {
+			CheckStatus::Pass => ("pass", None),
+			CheckStatus::Skip(r) => ("skip", Some(r.as_str())),
+			CheckStatus::Warning(r) => ("warning", Some(r.as_str())),
+			CheckStatus::Fail(r) => ("fail", Some(r.as_str())),
+		};
+		let mut obj = json!({
+			"name": self.name,
+			"status": status,
+			"summary": self.summary,
+			"details": Value::Object(self.details.clone()),
+		});
+		if let Some(r) = reason {
+			obj["reason"] = Value::String(r.to_string());
+		}
+		obj
+	}
+
+	/// Decode a [`Self::to_streaming_json`] payload back into a `Check`.
+	///
+	/// `name_resolver` is called to look the incoming name string back up to
+	/// the `&'static str` slot the registry uses, so the rendering code (which
+	/// expects `Check.name: &'static str`) keeps working. Returns `None` for
+	/// unknown names or malformed payloads — callers should drop those events.
+	pub fn from_streaming_json(
+		value: &Value,
+		name_resolver: impl FnOnce(&str) -> Option<&'static str>,
+	) -> Option<Self> {
+		let name_str = value.get("name")?.as_str()?;
+		let name = name_resolver(name_str)?;
+		let status_str = value.get("status")?.as_str()?;
+		let reason = value
+			.get("reason")
+			.and_then(Value::as_str)
+			.map(str::to_string);
+		let status = match (status_str, reason) {
+			("pass", _) => CheckStatus::Pass,
+			("skip", Some(r)) => CheckStatus::Skip(r),
+			("warning", Some(r)) => CheckStatus::Warning(r),
+			("fail", Some(r)) => CheckStatus::Fail(r),
+			_ => return None,
+		};
+		let summary = value.get("summary")?.as_str()?.to_string();
+		let details = value
+			.get("details")
+			.and_then(Value::as_object)
+			.cloned()
+			.unwrap_or_default();
+		Some(Self {
+			name,
+			status,
+			summary,
+			details,
+		})
 	}
 }
 
