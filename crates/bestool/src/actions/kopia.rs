@@ -45,5 +45,7 @@ super::subcommands! {
 		Ok((action, ctx))
 	}]
 
-	info => Info(InfoArgs)
+	info => Info(InfoArgs),
+	#[clap(alias = "ls")]
+	list => List(ListArgs)
 }
