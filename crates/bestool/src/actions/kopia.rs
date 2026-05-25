@@ -47,5 +47,6 @@ super::subcommands! {
 
 	info => Info(InfoArgs),
 	#[clap(alias = "ls")]
-	list => List(ListArgs)
+	list => List(ListArgs),
+	restore => Restore(RestoreArgs)
 }
