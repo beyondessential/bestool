@@ -741,7 +741,7 @@ dependencies = [
  "tokio-postgres-rustls",
  "tracing",
  "turso",
- "turso_core",
+ "turso_core 0.6.0",
  "url",
  "uuid",
  "winnow 1.0.3",
@@ -4795,6 +4795,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "pbkdf2"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7566,12 +7572,75 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
- "turso_ext",
- "turso_macros",
- "turso_parser",
+ "turso_ext 0.5.3",
+ "turso_macros 0.5.3",
+ "turso_parser 0.5.3",
  "twox-hash",
  "uncased",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "turso_core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "584dcc247f472c45d4f369daf590487a609c16a7f8848f2fb2902d3d3f055d31"
+dependencies = [
+ "aegis",
+ "aes",
+ "aes-gcm",
+ "antithesis_sdk",
+ "arc-swap",
+ "bigdecimal",
+ "bitflags 2.11.1",
+ "branches",
+ "bumpalo",
+ "bytemuck",
+ "cfg_aliases",
+ "cfg_block",
+ "chrono",
+ "crc32c",
+ "crossbeam-skiplist",
+ "either",
+ "fallible-iterator 0.3.0",
+ "fastbloom",
+ "hex",
+ "intrusive-collections",
+ "libc",
+ "libloading",
+ "libm",
+ "loom",
+ "miette",
+ "num-bigint",
+ "num-traits",
+ "pack1",
+ "parking_lot",
+ "pastey",
+ "polling",
+ "rand 0.9.4",
+ "rapidhash",
+ "regex",
+ "regex-syntax",
+ "roaring",
+ "rustc-hash 2.1.2",
+ "rustix 1.1.4",
+ "ryu",
+ "serde_json",
+ "shuttle",
+ "simsimd",
+ "smallvec",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
+ "turso_ext 0.6.1",
+ "turso_macros 0.6.1",
+ "turso_parser 0.6.1",
+ "twox-hash",
+ "uncased",
  "windows-sys 0.61.2",
 ]
 
@@ -7583,7 +7652,18 @@ checksum = "bdd7410a02a3a4cebd48a5bc0db74940d1157dc9c05ad42d48ee5156dd31edd1"
 dependencies = [
  "chrono",
  "getrandom 0.3.4",
- "turso_macros",
+ "turso_macros 0.5.3",
+]
+
+[[package]]
+name = "turso_ext"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9a47927d766b9ae7e3adf092d5e150dce80533615edc502641797878f190080"
+dependencies = [
+ "chrono",
+ "getrandom 0.4.2",
+ "turso_macros 0.6.1",
 ]
 
 [[package]]
@@ -7591,6 +7671,17 @@ name = "turso_macros"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c846c30c3cb085884a8bbaba7760bdcc406ff2176cbde1e51d41b6057171fd4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "turso_macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0cdc6ae079c61aa21a89b595a4d0e19d9d848a2658542252e82f930c57c3d87"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7609,7 +7700,22 @@ dependencies = [
  "strum 0.26.3",
  "strum_macros 0.26.4",
  "thiserror 2.0.18",
- "turso_macros",
+ "turso_macros 0.5.3",
+]
+
+[[package]]
+name = "turso_parser"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b94707e5605411cddbd5a1bd6cc2d6b72181b02223b36b37ba350ed6b71877"
+dependencies = [
+ "bitflags 2.11.1",
+ "memchr",
+ "miette",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "thiserror 2.0.18",
+ "turso_macros 0.6.1",
 ]
 
 [[package]]
@@ -7624,7 +7730,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "turso_core",
+ "turso_core 0.5.3",
  "turso_sdk_kit_macros",
 ]
 
@@ -7656,8 +7762,8 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
- "turso_core",
- "turso_parser",
+ "turso_core 0.5.3",
+ "turso_parser 0.5.3",
  "uuid",
 ]
 
@@ -7674,7 +7780,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "turso_core",
+ "turso_core 0.5.3",
  "turso_sdk_kit",
  "turso_sdk_kit_macros",
  "turso_sync_engine",

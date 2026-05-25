@@ -59,7 +59,7 @@ tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_
 tokio-postgres-rustls = "0.13.0"
 tracing = "0.1.43"
 turso = { version = "0.5.3", default-features = false }
-turso_core = { version = "0.5.1", default-features = false }
+turso_core = { version = "0.6.0", default-features = false }
 url = "2.5.7"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 winnow = "1.0.3"
