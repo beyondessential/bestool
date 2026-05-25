@@ -19,6 +19,7 @@ pub mod disk_free;
 pub mod external_users;
 pub mod fhir_jobs;
 pub mod http_errors;
+pub mod kopia_backup;
 pub mod load;
 pub mod memory;
 pub mod migrations;
@@ -127,5 +128,6 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("external_users", external_users),
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),
+		entry!("kopia_backup", kopia_backup),
 	]
 }
