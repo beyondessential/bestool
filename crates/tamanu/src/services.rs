@@ -113,10 +113,20 @@ impl Instances {
 }
 
 /// All services expected to exist (or be absent) for this deployment.
+///
+/// `patient_portal_enabled` is the `features.patientPortal` setting read from
+/// the central server's DB. Callers without a DB connection should pass
+/// `false`; we'll then emit a Down expectation, which is the same thing the
+/// doctor would have asserted on a deployment that hasn't opted into the
+/// portal. The signal is sourced from the DB rather than `local.json5`
+/// because Tamanu's central-server code reads the setting (not the unused
+/// `patientPortal.portalUrl` config field) to decide whether to mount the
+/// portal API.
 pub fn expected(
 	supervisor: Supervisor,
 	kind: ApiServerKind,
 	config: &TamanuConfig,
+	patient_portal_enabled: bool,
 ) -> Vec<Expectation> {
 	let mut out = Vec::new();
 
@@ -193,6 +203,25 @@ pub fn expected(
 				state: fhir_state,
 				criticality: Criticality::Background,
 			});
+
+			// The patient portal quadlet (`tamanu-patientportal.service`) is
+			// expected Up iff the Tamanu DB setting `features.patientPortal`
+			// is true. If the flag is on but the container isn't running,
+			// that's an ops misalignment worth flagging — exactly the case
+			// the doctor exists to catch.
+			if matches!(supervisor, Supervisor::Systemd) {
+				let portal_state = if patient_portal_enabled {
+					ExpectedState::Up
+				} else {
+					ExpectedState::Down
+				};
+				out.push(Expectation {
+					name: "tamanu-patientportal",
+					instances: Instances::Single,
+					state: portal_state,
+					criticality: Criticality::Background,
+				});
+			}
 		}
 		ApiServerKind::Facility => {
 			let sync_name = match supervisor {
@@ -284,7 +313,7 @@ mod tests {
 
 	#[test]
 	fn facility_pm2_no_fhir() {
-		let es = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false));
+		let es = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false), false);
 		assert_eq!(
 			names(&es),
 			vec!["tamanu-tasks", "tamanu-api", "tamanu-sync"]
@@ -299,7 +328,7 @@ mod tests {
 		// alert if the corresponding services are still running — that's
 		// usually a deploy that's flipped the toggle without taking the
 		// units down. So the expectations exist, but with state Down.
-		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(false));
+		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(false), false);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -321,7 +350,7 @@ mod tests {
 
 	#[test]
 	fn central_pm2_with_fhir_adds_resolve_and_refresh() {
-		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(true));
+		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(true), false);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -335,7 +364,12 @@ mod tests {
 
 	#[test]
 	fn facility_systemd_includes_frontend_and_forbids_legacy_facility() {
-		let es = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(false));
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(false),
+			false,
+		);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -355,7 +389,12 @@ mod tests {
 
 	#[test]
 	fn central_systemd_with_fhir_uses_central_prefixed_units() {
-		let es = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(true));
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(true),
+			true,
+		);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -365,13 +404,75 @@ mod tests {
 				"tamanu-central-api",
 				"tamanu-central-fhir-resolve",
 				"tamanu-central-fhir-refresh",
+				"tamanu-patientportal",
 			]
 		);
 	}
 
 	#[test]
+	fn central_systemd_expects_patient_portal_up_when_db_flag_on() {
+		// `features.patientPortal = true` in the central DB means Tamanu has
+		// mounted the portal API; the doctor expects the matching unit running.
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			true,
+		);
+		let pp = es
+			.iter()
+			.find(|e| e.name == "tamanu-patientportal")
+			.expect("patient portal expectation should be present");
+		assert_eq!(pp.state, ExpectedState::Up);
+		assert_eq!(pp.instances, Instances::Single);
+	}
+
+	#[test]
+	fn central_systemd_expects_patient_portal_down_when_db_flag_off() {
+		// `features.patientPortal = false` → Tamanu's portal API is unmounted.
+		// If the container's still running we want to know (stale install),
+		// so the expectation stays in the list but with state Down.
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			false,
+		);
+		let pp = es
+			.iter()
+			.find(|e| e.name == "tamanu-patientportal")
+			.expect("patient portal expectation should still be listed (as Down)");
+		assert_eq!(pp.state, ExpectedState::Down);
+	}
+
+	#[test]
+	fn facility_systemd_does_not_include_patient_portal() {
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(false),
+			true,
+		);
+		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
+	}
+
+	#[test]
+	fn central_pm2_does_not_include_patient_portal() {
+		// pm2 is Windows-only; tamanu-patientportal is a systemd-managed unit
+		// in our Linux deployments, so the pm2 expectation list shouldn't
+		// include it regardless of the DB flag.
+		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(true), true);
+		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
+	}
+
+	#[test]
 	fn frontend_named_instances() {
-		let es = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(false));
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(false),
+			false,
+		);
 		let fe = es.iter().find(|e| e.name == "tamanu-frontend").unwrap();
 		assert_eq!(fe.instances, Instances::Named(&["a", "b"]));
 		assert_eq!(fe.instances.min_count(), 2);
@@ -379,7 +480,12 @@ mod tests {
 
 	#[test]
 	fn api_min_count_two() {
-		let es = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(false));
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(false),
+			false,
+		);
 		let api = es.iter().find(|e| e.name == "tamanu-facility-api").unwrap();
 		assert_eq!(api.instances, Instances::NumericAtLeast(2));
 		assert_eq!(api.instances.min_count(), 2);
@@ -417,7 +523,12 @@ mod tests {
 
 	#[test]
 	fn api_and_frontend_are_critical() {
-		let central = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(false));
+		let central = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			false,
+		);
 		assert_eq!(
 			criticality_for(&central, "tamanu-central-api"),
 			Criticality::Critical
@@ -427,7 +538,7 @@ mod tests {
 			Criticality::Critical
 		);
 
-		let facility_pm2 = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false));
+		let facility_pm2 = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false), false);
 		assert_eq!(
 			criticality_for(&facility_pm2, "tamanu-api"),
 			Criticality::Critical
@@ -436,7 +547,12 @@ mod tests {
 
 	#[test]
 	fn tasks_sync_fhir_are_background() {
-		let central = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg(true));
+		let central = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(true),
+			false,
+		);
 		assert_eq!(
 			criticality_for(&central, "tamanu-central-tasks"),
 			Criticality::Background
@@ -450,7 +566,12 @@ mod tests {
 			Criticality::Background
 		);
 
-		let facility = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(false));
+		let facility = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(false),
+			false,
+		);
 		assert_eq!(
 			criticality_for(&facility, "tamanu-facility-sync"),
 			Criticality::Background
