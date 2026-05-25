@@ -441,6 +441,7 @@ mod tests {
 			instances: Instances::Single,
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
+			reason: "test".into(),
 		}
 	}
 
@@ -450,6 +451,7 @@ mod tests {
 			instances: Instances::NumericAtLeast(2),
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
+			reason: "test".into(),
 		}
 	}
 

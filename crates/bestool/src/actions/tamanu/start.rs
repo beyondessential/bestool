@@ -165,6 +165,7 @@ mod tests {
 			instances: Instances::Single,
 			state: ExpectedState::Up,
 			criticality: crit,
+			reason: "test".into(),
 		}
 	}
 
