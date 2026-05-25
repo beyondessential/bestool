@@ -1,23 +1,34 @@
 //! Doctor check: report interactive (non-system) login sessions and warn when
-//! one's been connected a long time.
+//! someone's been connected a long time.
 //!
 //! "External" here means SSH, RDP, or local console logins — real humans, as
 //! opposed to systemd services, cron jobs, or sshd worker processes.
+//!
+//! What we actually care about is *how long a person has been continuously
+//! connected*, not how long the OS-level session has existed. On Windows in
+//! particular, `quser` reports the *original* logon time of a session, even
+//! if it was disconnected for hours then reconnected — leading to spurious
+//! "session over 12h" warnings the moment someone reopens an old RDP client.
+//!
+//! To track presence rather than session age, we observe the currently-active
+//! sessions on each doctor run and persist a `first_seen` timestamp per
+//! presence key in a small state file. Keys prefer the Tailscale identity (so
+//! "is this *person* connected" is what's measured, even if their Windows
+//! session ID changes across reconnects); fall back to user@line otherwise.
 //!
 //! Two thresholds:
 //!   * 12h+ → warning ("healthy: false" on the wire for this check, but does
 //!     not flip the overall result to FAILING)
 //!   * 24h+ → fail (does flip the overall result)
 //!
-//! On Linux/macOS we shell out to `who` because it's universally available and
-//! its output is easy to parse. On Windows we shell out to `quser` for the
-//! same reasons. The Tailscale login for each session's source address is
-//! looked up via `tailscale whois` so the operator can see which person is
-//! behind the IP.
+//! On Linux/macOS we shell out to `who`; on Windows to `quser`. The Tailscale
+//! login for each session's source address is looked up via `tailscale whois`
+//! so the operator can see which person is behind the IP.
 
-use std::time::Duration;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::spawn_blocking;
 use tracing::{debug, trace, warn};
@@ -36,9 +47,20 @@ const FAIL_AGE: Duration = Duration::from_secs(24 * 3600);
 struct ExternalUser {
 	name: String,
 	line: String,
+	/// Logon time as reported by `who` / `quser`. On Windows this may be the
+	/// *original* logon for a session that's since been disconnected and
+	/// reconnected, so it isn't a reliable measure of how long the human has
+	/// been connected — see the `connected_since` field for that.
 	login: Timestamp,
 	source: Option<String>,
 	tailscale_login: Option<String>,
+	/// Windows session ID (the `ID` column from `quser`). `None` outside Windows.
+	/// Kept for diagnostics and as a fallback presence-key component.
+	session_id: Option<u32>,
+	/// When this presence was first observed by us — i.e. the earliest doctor
+	/// run that saw this person/session continuously up to and including this
+	/// one. Populated after consulting the state file.
+	connected_since: Timestamp,
 }
 
 pub async fn run(_ctx: CheckContext) -> Check {
@@ -67,16 +89,23 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		}
 	}
 
+	let now = Timestamp::now();
+	let state_path = state_file_path();
+	let prior = state_path.as_deref().map(load_state).unwrap_or_default();
+	apply_presence_state(&mut users, &prior, now);
+	if let Some(path) = &state_path {
+		save_state(path, &snapshot_state(&users));
+	}
+
 	if users.is_empty() {
 		return Check::pass("external_users", "no interactive users connected")
 			.with_detail("count", 0)
 			.with_detail("users", Value::Array(Vec::new()));
 	}
 
-	let now = Timestamp::now();
 	let oldest_age = users
 		.iter()
-		.map(|u| session_age(now, u.login))
+		.map(|u| session_age(now, u.connected_since))
 		.max()
 		.unwrap_or(Duration::ZERO);
 
@@ -120,6 +149,7 @@ fn user_to_json(u: &ExternalUser) -> Value {
 		"name": u.name,
 		"line": u.line,
 		"login": u.login.to_string(),
+		"connected_since": u.connected_since.to_string(),
 	});
 	if let Some(src) = &u.source {
 		obj["source"] = Value::String(src.clone());
@@ -127,7 +157,111 @@ fn user_to_json(u: &ExternalUser) -> Value {
 	if let Some(login) = &u.tailscale_login {
 		obj["tailscale"] = Value::String(login.clone());
 	}
+	if let Some(sid) = u.session_id {
+		obj["session_id"] = Value::from(sid);
+	}
 	obj
+}
+
+/// State file format: a map from presence key to first-observed timestamp.
+///
+/// Saved to disk after each check run so subsequent runs can compute "how long
+/// has this person been continuously connected" without trusting the
+/// upstream-reported logon time.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PresenceState {
+	#[serde(default)]
+	entries: HashMap<String, Timestamp>,
+}
+
+fn presence_key(u: &ExternalUser) -> String {
+	if let Some(login) = &u.tailscale_login {
+		// Preferred: a person's tailscale identity. This is stable across
+		// session reconnects, RDP↔SSH switches, source-IP changes, etc., so
+		// the duration we report tracks "how long has this human been
+		// connected" rather than "how long has this Windows session existed".
+		format!("ts:{login}")
+	} else if let Some(sid) = u.session_id {
+		// Windows fallback: by session ID. Disc sessions are filtered out
+		// upstream, so a disc-then-reconnect produces a *different* session
+		// (often) or the same one — we accept the rare false-continuity in
+		// that case; better than the always-stale quser LOGON TIME.
+		format!("winsid:{}:{}", u.name, sid)
+	} else {
+		// Unix fallback: by login + tty. Source IP would be more precise but
+		// can rotate (e.g. mobile carriers); user+tty pair is what who(1)
+		// gives us reliably.
+		format!("tty:{}:{}", u.name, u.line)
+	}
+}
+
+fn apply_presence_state(users: &mut [ExternalUser], prior: &PresenceState, now: Timestamp) {
+	for user in users {
+		let key = presence_key(user);
+		user.connected_since = match prior.entries.get(&key) {
+			Some(&earlier) if earlier <= now => earlier,
+			// State has a future timestamp (clock skew, manual edit) — fall
+			// back to now rather than reporting a negative age.
+			Some(_) => now,
+			// Either first ever observation of this key, or it dropped out
+			// previously and just reappeared (disconnect → reconnect from
+			// our point of view). Treat as a fresh connection.
+			None => now,
+		};
+	}
+}
+
+fn snapshot_state(users: &[ExternalUser]) -> PresenceState {
+	let mut entries = HashMap::with_capacity(users.len());
+	for user in users {
+		entries.insert(presence_key(user), user.connected_since);
+	}
+	PresenceState { entries }
+}
+
+fn state_file_path() -> Option<PathBuf> {
+	dirs::cache_dir().map(|d| d.join("bestool").join("doctor-external-users.json"))
+}
+
+fn load_state(path: &std::path::Path) -> PresenceState {
+	match std::fs::read(path) {
+		Ok(bytes) => match serde_json::from_slice::<PresenceState>(&bytes) {
+			Ok(v) => v,
+			Err(err) => {
+				debug!(%err, ?path, "ignoring unparseable external_users state");
+				PresenceState::default()
+			}
+		},
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => PresenceState::default(),
+		Err(err) => {
+			debug!(%err, ?path, "could not read external_users state");
+			PresenceState::default()
+		}
+	}
+}
+
+fn save_state(path: &std::path::Path, state: &PresenceState) {
+	if let Some(parent) = path.parent()
+		&& let Err(err) = std::fs::create_dir_all(parent)
+	{
+		warn!(%err, ?parent, "could not create external_users state dir");
+		return;
+	}
+	let json = match serde_json::to_vec(state) {
+		Ok(b) => b,
+		Err(err) => {
+			warn!(%err, "could not serialise external_users state");
+			return;
+		}
+	};
+	let tmp = path.with_extension("json.tmp");
+	if let Err(err) = std::fs::write(&tmp, &json) {
+		warn!(%err, ?tmp, "could not write external_users state");
+		return;
+	}
+	if let Err(err) = std::fs::rename(&tmp, path) {
+		warn!(%err, ?path, "could not rename external_users state");
+	}
 }
 
 fn session_age(now: Timestamp, login: Timestamp) -> Duration {
@@ -314,6 +448,9 @@ fn parse_who(text: &str) -> Vec<ExternalUser> {
 			login,
 			source,
 			tailscale_login: None,
+			session_id: None,
+			// Placeholder; populated later by `apply_presence_state`.
+			connected_since: login,
 		});
 	}
 	out
@@ -382,10 +519,12 @@ fn parse_quser(text: &str) -> Vec<ExternalUser> {
 		// column parses as a session id (integer): if so, SESSIONNAME is
 		// absent; otherwise SESSIONNAME is in the second column and ID is
 		// in the third. STATE follows ID.
-		let (name, sessionname, state) = if tokens[1].parse::<u32>().is_ok() {
-			(tokens[0], None, tokens[2])
-		} else if tokens.len() >= 7 && tokens[2].parse::<u32>().is_ok() {
-			(tokens[0], Some(tokens[1]), tokens[3])
+		let (name, sessionname, sid, state) = if let Ok(sid) = tokens[1].parse::<u32>() {
+			(tokens[0], None, sid, tokens[2])
+		} else if tokens.len() >= 7
+			&& let Ok(sid) = tokens[2].parse::<u32>()
+		{
+			(tokens[0], Some(tokens[1]), sid, tokens[3])
 		} else {
 			trace!(?line, "could not locate session id column in quser line");
 			continue;
@@ -415,6 +554,9 @@ fn parse_quser(text: &str) -> Vec<ExternalUser> {
 			login,
 			source: None,
 			tailscale_login: None,
+			session_id: Some(sid),
+			// Placeholder; populated later by `apply_presence_state`.
+			connected_since: login,
 		});
 	}
 	out
@@ -619,6 +761,123 @@ mod tests {
 		let earlier = Timestamp::from_second(1000).unwrap();
 		let now = Timestamp::from_second(1000 + 3600).unwrap();
 		assert_eq!(session_age(now, earlier), Duration::from_secs(3600));
+	}
+
+	#[test]
+	fn parses_quser_captures_session_id() {
+		let text = " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n\
+		            >administrator         console             1  Active  none       5/21/2026 4:00 AM\n\
+		             bob                   rdp-tcp#2           2  Active  10:30      5/21/2026 3:55 AM\n";
+		let out = parse_quser(text);
+		assert_eq!(out.len(), 2);
+		assert_eq!(out[0].session_id, Some(1));
+		assert_eq!(out[1].session_id, Some(2));
+	}
+
+	fn mk_user(name: &str, line: &str, ts: i64) -> ExternalUser {
+		let login = Timestamp::from_second(ts).unwrap();
+		ExternalUser {
+			name: name.into(),
+			line: line.into(),
+			login,
+			source: None,
+			tailscale_login: None,
+			session_id: None,
+			connected_since: login,
+		}
+	}
+
+	fn mk_user_ts(name: &str, login_ts: &str, ts_login: Option<&str>) -> ExternalUser {
+		ExternalUser {
+			name: name.into(),
+			line: "rdp-tcp#1".into(),
+			login: login_ts.parse().unwrap(),
+			source: None,
+			tailscale_login: ts_login.map(str::to_owned),
+			session_id: Some(1),
+			connected_since: login_ts.parse().unwrap(),
+		}
+	}
+
+	#[test]
+	fn presence_key_prefers_tailscale_identity() {
+		let u = mk_user_ts("besd", "2026-05-22T16:17:00Z", Some("alice@example.com"));
+		assert_eq!(presence_key(&u), "ts:alice@example.com");
+	}
+
+	#[test]
+	fn presence_key_falls_back_to_session_id_on_windows() {
+		let u = mk_user_ts("besd", "2026-05-22T16:17:00Z", None);
+		assert_eq!(presence_key(&u), "winsid:besd:1");
+	}
+
+	#[test]
+	fn presence_key_falls_back_to_user_at_line_otherwise() {
+		let u = mk_user("alice", "pts/0", 1000);
+		assert_eq!(presence_key(&u), "tty:alice:pts/0");
+	}
+
+	#[test]
+	fn apply_presence_state_preserves_earlier_first_seen() {
+		// A user that's been seen before should keep their earlier
+		// connected_since — that's the whole point.
+		let mut users = vec![mk_user_ts(
+			"besd",
+			"2026-05-22T16:17:00Z",
+			Some("alice@example.com"),
+		)];
+		let now: Timestamp = "2026-05-23T04:47:00Z".parse().unwrap();
+		let earlier: Timestamp = "2026-05-23T04:30:00Z".parse().unwrap();
+		let mut state = PresenceState::default();
+		state.entries.insert("ts:alice@example.com".into(), earlier);
+
+		apply_presence_state(&mut users, &state, now);
+		assert_eq!(users[0].connected_since, earlier);
+	}
+
+	#[test]
+	fn apply_presence_state_uses_now_for_unseen_keys() {
+		// A user not in prior state is brand new; connected_since should be
+		// "now", not whatever the upstream-reported logon was.
+		let mut users = vec![mk_user_ts(
+			"besd",
+			"2026-05-22T16:17:00Z",
+			Some("alice@example.com"),
+		)];
+		let now: Timestamp = "2026-05-23T04:47:00Z".parse().unwrap();
+		apply_presence_state(&mut users, &PresenceState::default(), now);
+		assert_eq!(users[0].connected_since, now);
+	}
+
+	#[test]
+	fn snapshot_state_only_captures_currently_present_users() {
+		let users = vec![mk_user_ts(
+			"besd",
+			"2026-05-22T16:17:00Z",
+			Some("alice@example.com"),
+		)];
+		// A second, no-longer-present user in the prior state shouldn't be
+		// carried forward in the snapshot.
+		let snap = snapshot_state(&users);
+		assert_eq!(snap.entries.len(), 1);
+		assert!(snap.entries.contains_key("ts:alice@example.com"));
+	}
+
+	#[test]
+	fn apply_presence_state_clamps_future_first_seen_to_now() {
+		// Defensive: if the state somehow has a timestamp ahead of now (clock
+		// skew, manual edit), don't report a negative age.
+		let mut users = vec![mk_user_ts(
+			"besd",
+			"2026-05-22T16:17:00Z",
+			Some("alice@example.com"),
+		)];
+		let now: Timestamp = "2026-05-23T04:47:00Z".parse().unwrap();
+		let future: Timestamp = "2030-01-01T00:00:00Z".parse().unwrap();
+		let mut state = PresenceState::default();
+		state.entries.insert("ts:alice@example.com".into(), future);
+		apply_presence_state(&mut users, &state, now);
+		assert_eq!(users[0].connected_since, now);
 	}
 
 	#[test]
