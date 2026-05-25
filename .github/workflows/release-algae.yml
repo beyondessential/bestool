@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: algae-${{ matrix.target }}
-      - uses: taiki-e/install-action@v2.76.0
+      - uses: taiki-e/install-action@v2.77.6
         with:
           tool: cargo-zigbuild,cargo-auditable
 
@@ -144,7 +144,7 @@ jobs:
             *.deb
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6.1.0
+        uses: aws-actions/configure-aws-credentials@v6.1.1
         with:
           aws-region: ap-southeast-2
           role-to-assume: arn:aws:iam::143295493206:role/gha-tamanu-tools-upload
