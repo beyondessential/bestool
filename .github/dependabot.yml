@@ -31,3 +31,11 @@ updates:
         update-types:
           - patch
           - minor
+      turso:
+        patterns:
+          - "turso"
+          - "turso_*"
+        update-types:
+          - patch
+          - minor
+          - major
