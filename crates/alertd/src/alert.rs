@@ -99,8 +99,38 @@ pub struct AlertDefinition {
 	#[serde(default)]
 	pub send: Vec<crate::targets::SendTarget>,
 
+	/// Restrict this alert to a daemon with a particular `server_kind`. The
+	/// value is an opaque string; alertd treats `central`, `facility`, or
+	/// anything else identically — equality with the daemon's configured
+	/// `server_kind` is the only criterion. Absence means "run anywhere",
+	/// which is the implicit "all" — there's no explicit `both`/`all` value.
+	///
+	/// Named `server_kind` (serialised as `server-kind` in YAML) rather than
+	/// `target` because alertd already uses `target` for delivery targets
+	/// inside the `send:` list (e.g. `send: [{ target: external, ... }]`),
+	/// and reusing the word at the top level would be confusing.
+	#[serde(default)]
+	pub server_kind: Option<String>,
+
 	#[serde(flatten)]
 	pub source: TicketSource,
+}
+
+/// Whether an alert with this `server_kind` filter should run on a daemon
+/// configured with the given `server_kind`.
+///
+/// - alert `None` ("any") → always runs.
+/// - alert `Some(k)`, daemon `None` → permissive: the daemon isn't
+///   configured to filter, so we don't drop anything. Better to run too
+///   many alerts than to silently swallow targeted ones because someone
+///   forgot to set the daemon kind.
+/// - alert `Some(k)`, daemon `Some(d)` → runs iff `k == d` (case-sensitive
+///   string equality).
+pub fn server_kind_matches(alert: Option<&str>, daemon: Option<&str>) -> bool {
+	match (alert, daemon) {
+		(None, _) | (_, None) => true,
+		(Some(a), Some(d)) => a == d,
+	}
 }
 
 #[derive(serde::Deserialize, Debug, Default, Clone)]
@@ -812,5 +842,47 @@ send:
 			}
 			_ => panic!("Expected Detailed variant"),
 		}
+	}
+
+	#[test]
+	fn server_kind_defaults_to_none_when_absent() {
+		let yaml = "sql: \"SELECT 1\"\nsend:\n  - id: x\n    subject: s\n    template: t\n";
+		let alert: AlertDefinition = serde_yaml::from_str(yaml).unwrap();
+		assert_eq!(alert.server_kind, None);
+	}
+
+	#[test]
+	fn server_kind_parses_as_arbitrary_string() {
+		// alertd doesn't enforce a vocabulary — `central` / `facility` are
+		// just what bestool-tamanu happens to pass through. Whatever string
+		// the daemon's `server_kind` is configured with is what alerts match
+		// against.
+		for text in ["central", "facility", "kiosk", "edge"] {
+			let yaml = format!(
+				"sql: \"SELECT 1\"\nserver-kind: {text}\nsend:\n  - id: x\n    subject: s\n    template: t\n"
+			);
+			let alert: AlertDefinition = serde_yaml::from_str(&yaml).unwrap();
+			assert_eq!(alert.server_kind.as_deref(), Some(text));
+		}
+	}
+
+	#[test]
+	fn server_kind_matches_truth_table() {
+		// Absent on the alert → always runs.
+		assert!(server_kind_matches(None, Some("central")));
+		assert!(server_kind_matches(None, Some("facility")));
+		assert!(server_kind_matches(None, None));
+
+		// Absent on the daemon → permissive: every alert applies.
+		assert!(server_kind_matches(Some("central"), None));
+		assert!(server_kind_matches(Some("facility"), None));
+
+		// Both present → equality.
+		assert!(server_kind_matches(Some("central"), Some("central")));
+		assert!(!server_kind_matches(Some("central"), Some("facility")));
+		assert!(!server_kind_matches(Some("facility"), Some("central")));
+
+		// Match is case-sensitive.
+		assert!(!server_kind_matches(Some("Central"), Some("central")));
 	}
 }

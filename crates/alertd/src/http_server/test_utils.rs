@@ -22,6 +22,7 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		ctx.clone(),
 		None,
 		true, // dry_run
+		None, // server_kind
 	));
 
 	let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);

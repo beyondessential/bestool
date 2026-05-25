@@ -43,7 +43,7 @@ mod tests {
 			http_client: reqwest::Client::new(),
 			canopy_client: None,
 		});
-		let scheduler = Arc::new(Scheduler::new(vec![], ctx.clone(), None, true));
+		let scheduler = Arc::new(Scheduler::new(vec![], ctx.clone(), None, true, None));
 
 		let (reload_tx, mut reload_rx) = mpsc::channel::<()>(10);
 

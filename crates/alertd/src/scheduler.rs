@@ -103,6 +103,9 @@ pub struct Scheduler {
 	/// and restored on the next start — that way a recovery that happens
 	/// while the daemon was down still produces a canopy clear.
 	database_was_down: Arc<RwLock<bool>>,
+	/// Configured Tamanu server kind, threaded into the loader so alerts
+	/// whose `target:` doesn't match get dropped at load time.
+	server_kind: Option<String>,
 }
 
 impl Scheduler {
@@ -111,6 +114,7 @@ impl Scheduler {
 		ctx: Arc<InternalContext>,
 		email: Option<EmailConfig>,
 		dry_run: bool,
+		server_kind: Option<String>,
 	) -> Self {
 		let glob_resolver = GlobResolver::new(alert_globs);
 		Self {
@@ -130,6 +134,7 @@ impl Scheduler {
 			pending_hydration: Arc::new(Mutex::new(None)),
 			last_definition_error_files: Arc::new(RwLock::new(HashSet::new())),
 			database_was_down: Arc::new(RwLock::new(false)),
+			server_kind,
 		}
 	}
 
@@ -239,7 +244,7 @@ impl Scheduler {
 			alerts,
 			external_targets,
 			definition_errors,
-		} = load_alerts_from_paths(&resolved, canopy_available)?;
+		} = load_alerts_from_paths(&resolved, canopy_available, self.server_kind.as_deref())?;
 
 		// Update resolved paths
 		*self.resolved_paths.write().await = resolved;
@@ -379,7 +384,7 @@ impl Scheduler {
 			alerts,
 			external_targets,
 			definition_errors,
-		} = load_alerts_from_paths(&resolved, canopy_available)?;
+		} = load_alerts_from_paths(&resolved, canopy_available, self.server_kind.as_deref())?;
 
 		// Separate event alerts from regular alerts
 		let (event_alerts, regular_alerts): (Vec<_>, Vec<_>) = alerts

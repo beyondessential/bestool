@@ -31,6 +31,10 @@ fn synthetic_alert(event_type: &EventType, entity_key: Option<&str>) -> AlertDef
 		always_send: crate::alert::AlwaysSend::Boolean(false),
 		when_changed: crate::alert::WhenChanged::default(),
 		send: Vec::new(),
+		// Synthesised internal-event alerts (e.g. source-error, definition-error)
+		// aren't tied to a specific server kind — they run wherever the daemon
+		// does. `None` means "any" (no filter).
+		server_kind: None,
 		source: crate::alert::TicketSource::Event {
 			event: event_type.clone(),
 		},
