@@ -42,6 +42,7 @@ async fn test_status_endpoint_response_format() {
 		ctx.clone(),
 		None,
 		true,
+		None,
 	));
 
 	let state = Arc::new(bestool_alertd::http_server::ServerState {

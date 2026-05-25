@@ -21,7 +21,9 @@ pub mod templates;
 #[cfg(windows)]
 pub mod windows_service;
 
-pub use alert::{AlertDefinition, AlwaysSend, InternalContext, TicketSource, WhenChanged};
+pub use alert::{
+	AlertDefinition, AlwaysSend, InternalContext, TicketSource, WhenChanged, server_kind_matches,
+};
 pub use daemon::{run, run_with_shutdown, run_with_shutdown_and_reload};
 pub use events::EventType;
 pub use targets::{
@@ -88,6 +90,14 @@ pub struct DaemonConfig {
 	/// Each task ticks at its own `interval()`. Errors are logged but do not
 	/// kill the daemon. Activity from each tick counts towards the watchdog.
 	pub background_tasks: Vec<Arc<dyn BackgroundTask>>,
+
+	/// Opaque label identifying this daemon's deployment role, used to
+	/// filter alert definitions by their `server-kind:` field. Alertd is
+	/// agnostic about what the string means — it's whatever the configurer
+	/// (e.g. `bestool tamanu alertd`) decides to pass through. `None` means
+	/// "no filtering": every alert applies regardless of its declared
+	/// `server-kind`.
+	pub server_kind: Option<String>,
 }
 
 impl fmt::Debug for DaemonConfig {
@@ -110,6 +120,7 @@ impl fmt::Debug for DaemonConfig {
 					.map(|t| t.name())
 					.collect::<Vec<_>>(),
 			)
+			.field("server_kind", &self.server_kind)
 			.finish()
 	}
 }
@@ -127,7 +138,13 @@ impl DaemonConfig {
 			server_addrs: Vec::new(),
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
 			background_tasks: Vec::new(),
+			server_kind: None,
 		}
+	}
+
+	pub fn with_server_kind(mut self, kind: impl Into<String>) -> Self {
+		self.server_kind = Some(kind.into());
+		self
 	}
 
 	pub fn with_task(mut self, task: Arc<dyn BackgroundTask>) -> Self {

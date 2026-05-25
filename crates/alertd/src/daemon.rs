@@ -157,6 +157,7 @@ pub async fn run_with_shutdown_and_reload(
 		ctx.clone(),
 		daemon_config.email.clone(),
 		daemon_config.dry_run,
+		daemon_config.server_kind,
 	));
 
 	// Resolve the persistence file path and seed cold-start state from it.

@@ -52,6 +52,7 @@ fn test_database_down_default_template_renders() {
 		always_send: AlwaysSend::Boolean(false),
 		when_changed: WhenChanged::default(),
 		send: Vec::new(),
+		server_kind: None,
 		source: TicketSource::Event {
 			event: EventType::DatabaseDown,
 		},

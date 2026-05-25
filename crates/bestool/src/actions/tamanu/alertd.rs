@@ -356,7 +356,8 @@ async fn build_config(
 			.with_dry_run(dry_run)
 			.with_no_server(no_server)
 			.with_server_addrs(server_addr)
-			.with_watchdog_timeout(watchdog);
+			.with_watchdog_timeout(watchdog)
+			.with_server_kind(detect_server_kind(&config, &database_url).await);
 
 	if !no_healthchecks {
 		daemon_config = daemon_config.with_task(Arc::new(DoctorTask::new(
@@ -376,6 +377,38 @@ async fn build_config(
 	}
 
 	Ok(daemon_config)
+}
+
+/// Resolve the Tamanu server kind for alertd's alert-definition filter.
+///
+/// Opens a short-lived DB connection so [`bestool_tamanu::detect_kind`] can
+/// check `local_system_facts`; the daemon itself uses a fresh pool later.
+/// Alertd is plugin-agnostic — it takes the kind as an opaque string and
+/// compares against alert YAML `server-kind:` values by equality. The Tamanu
+/// vocabulary (`central` / `facility`) is decided here, at the integration
+/// boundary, not by alertd.
+async fn detect_server_kind(
+	config: &bestool_tamanu::config::TamanuConfig,
+	database_url: &str,
+) -> &'static str {
+	let db = match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
+		Ok((client, conn)) => {
+			tokio::spawn(async move {
+				if let Err(err) = conn.await {
+					tracing::warn!("kind-detection connection error: {err}");
+				}
+			});
+			Some(client)
+		}
+		Err(err) => {
+			tracing::debug!(%err, "no DB for kind detection; falling back to config-only");
+			None
+		}
+	};
+	match bestool_tamanu::detect_kind(config, db.as_ref()).await {
+		bestool_tamanu::ApiServerKind::Central => "central",
+		bestool_tamanu::ApiServerKind::Facility => "facility",
+	}
 }
 
 async fn default_dirs(root: &std::path::Path) -> Vec<String> {

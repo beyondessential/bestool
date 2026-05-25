@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 
 use crate::{
 	LogError,
-	alert::AlertDefinition,
+	alert::{AlertDefinition, server_kind_matches},
 	canopy::{DEFAULT_CANOPY_URL, Severity},
 	glob_resolver::ResolvedPaths,
 	targets::{AlertTargets, CanopyConfig, ExternalTarget, TargetCanopy, TargetConnection},
@@ -27,6 +27,7 @@ pub struct DefinitionError {
 pub fn load_alerts_from_paths(
 	resolved: &ResolvedPaths,
 	canopy_available: bool,
+	server_kind: Option<&str>,
 ) -> Result<LoadedAlerts> {
 	let mut alerts = Vec::<AlertDefinition>::new();
 	let mut external_targets = HashMap::new();
@@ -91,7 +92,9 @@ pub fn load_alerts_from_paths(
 			.filter(|e| e.file_type().is_file())
 		{
 			match load_alert_from_file(entry.path()) {
-				LoadAlertResult::Success(alert) => alerts.push(alert),
+				LoadAlertResult::Success(alert) => {
+					push_if_targeted(&mut alerts, alert, server_kind)
+				}
 				LoadAlertResult::Error(err) => definition_errors.push(err),
 				LoadAlertResult::Disabled | LoadAlertResult::Skip => {}
 			}
@@ -101,7 +104,7 @@ pub fn load_alerts_from_paths(
 	// Load alerts from individual files
 	for file in &resolved.files {
 		match load_alert_from_file(file) {
-			LoadAlertResult::Success(alert) => alerts.push(alert),
+			LoadAlertResult::Success(alert) => push_if_targeted(&mut alerts, alert, server_kind),
 			LoadAlertResult::Error(err) => definition_errors.push(err),
 			LoadAlertResult::Disabled | LoadAlertResult::Skip => {}
 		}
@@ -178,6 +181,26 @@ pub fn load_alerts_from_paths(
 	})
 }
 
+/// Push an alert onto the accumulator iff its `server-kind:` matches the
+/// daemon's configured server kind. Logs the drop at debug so an operator
+/// wondering where a facility-only alert went can spot it in trace output.
+fn push_if_targeted(
+	alerts: &mut Vec<AlertDefinition>,
+	alert: AlertDefinition,
+	server_kind: Option<&str>,
+) {
+	if server_kind_matches(alert.server_kind.as_deref(), server_kind) {
+		alerts.push(alert);
+	} else {
+		debug!(
+			file = %alert.file.display(),
+			alert_kind = ?alert.server_kind,
+			daemon_kind = ?server_kind,
+			"skipping alert: server-kind does not match daemon"
+		);
+	}
+}
+
 enum LoadAlertResult {
 	Success(AlertDefinition),
 	Disabled,
@@ -244,7 +267,7 @@ mod tests {
 		let tmp = TempDir::new().unwrap();
 		let resolved = empty_resolved(tmp.path());
 
-		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		let loaded = load_alerts_from_paths(&resolved, true, None).unwrap();
 		assert!(loaded.external_targets.contains_key("default"));
 		let default = &loaded.external_targets["default"][0];
 		assert_eq!(default.id, "default");
@@ -256,7 +279,7 @@ mod tests {
 		let tmp = TempDir::new().unwrap();
 		let resolved = empty_resolved(tmp.path());
 
-		let loaded = load_alerts_from_paths(&resolved, false).unwrap();
+		let loaded = load_alerts_from_paths(&resolved, false, None).unwrap();
 		assert!(loaded.external_targets.is_empty());
 	}
 
@@ -274,7 +297,7 @@ targets:
 		.unwrap();
 		let resolved = empty_resolved(tmp.path());
 
-		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		let loaded = load_alerts_from_paths(&resolved, true, None).unwrap();
 		let default = &loaded.external_targets["default"][0];
 		// User's explicit email default wins; no canopy injection.
 		assert!(matches!(default.conn, TargetConnection::Email(_)));
@@ -297,7 +320,7 @@ send:
 		.unwrap();
 		let resolved = empty_resolved(tmp.path());
 
-		let loaded = load_alerts_from_paths(&resolved, true).unwrap();
+		let loaded = load_alerts_from_paths(&resolved, true, None).unwrap();
 		assert_eq!(loaded.alerts.len(), 1);
 		let (_, resolved_targets) = &loaded.alerts[0];
 		assert_eq!(resolved_targets.len(), 1);
@@ -305,5 +328,57 @@ send:
 			resolved_targets[0].conn,
 			TargetConnection::Canopy(_)
 		));
+	}
+
+	fn write_alert(dir: &Path, name: &str, server_kind: Option<&str>) {
+		let server_kind_line = server_kind
+			.map(|t| format!("server-kind: {t}\n"))
+			.unwrap_or_default();
+		std::fs::write(
+			dir.join(name),
+			format!(
+				"sql: \"SELECT 1\"\n\
+				send:\n  - id: default\n    subject: \"x\"\n    template: \"y\"\n\
+				{server_kind_line}"
+			),
+		)
+		.unwrap();
+	}
+
+	#[test]
+	fn target_filter_keeps_matching_alerts_only() {
+		let tmp = TempDir::new().unwrap();
+		write_alert(tmp.path(), "central-only.yml", Some("central"));
+		write_alert(tmp.path(), "facility-only.yml", Some("facility"));
+		write_alert(tmp.path(), "kiosk-only.yml", Some("kiosk"));
+		write_alert(tmp.path(), "no-target.yml", None);
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, true, Some("central")).unwrap();
+		let kept: Vec<String> = loaded
+			.alerts
+			.iter()
+			.map(|(a, _)| a.file.file_name().unwrap().to_string_lossy().into_owned())
+			.collect();
+		assert!(kept.contains(&"central-only.yml".into()));
+		assert!(kept.contains(&"no-target.yml".into()));
+		assert!(!kept.contains(&"facility-only.yml".into()));
+		assert!(
+			!kept.contains(&"kiosk-only.yml".into()),
+			"alertd matches the daemon's server_kind by string equality; unrelated kinds are dropped"
+		);
+	}
+
+	#[test]
+	fn target_filter_absent_kind_admits_everything() {
+		// alertd running with no `server_kind` configured (e.g. outside a
+		// Tamanu install) shouldn't silently swallow targeted alerts.
+		let tmp = TempDir::new().unwrap();
+		write_alert(tmp.path(), "central-only.yml", Some("central"));
+		write_alert(tmp.path(), "facility-only.yml", Some("facility"));
+		let resolved = empty_resolved(tmp.path());
+
+		let loaded = load_alerts_from_paths(&resolved, true, None).unwrap();
+		assert_eq!(loaded.alerts.len(), 2);
 	}
 }

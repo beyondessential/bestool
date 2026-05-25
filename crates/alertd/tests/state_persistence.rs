@@ -55,6 +55,7 @@ async fn hydration_seeds_triggered_at_for_matched_alert() {
 		ctx,
 		None,
 		true, // dry_run keeps task wakeups inert for the test
+		None,
 	);
 
 	scheduler.set_pending_hydration(persisted).await;
@@ -101,6 +102,7 @@ async fn hydration_ignores_entries_for_unknown_alerts() {
 		ctx,
 		None,
 		true,
+		None,
 	);
 
 	scheduler.set_pending_hydration(persisted).await;
@@ -145,6 +147,7 @@ async fn snapshot_round_trips_through_persistence() {
 		ctx,
 		None,
 		true,
+		None,
 	);
 	scheduler.set_pending_hydration(persisted).await;
 	scheduler.load_and_schedule_alerts().await.unwrap();
