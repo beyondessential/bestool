@@ -142,7 +142,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		bail!("tamanu logs is only supported on Linux (systemd) and Windows (pm2)");
 	};
 
-	let all_expectations = services::expected(supervisor, kind, &config);
+	let all_expectations = services::expected(supervisor, kind, &config, false);
 	let up_expectations: Vec<&Expectation> = all_expectations
 		.iter()
 		.filter(|e| e.state == ExpectedState::Up)
@@ -896,7 +896,7 @@ mod tests {
 
 	#[test]
 	fn journalctl_pattern_handles_each_instance_kind() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false));
+		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false), false);
 		let tasks = exps.iter().find(|e| e.name == "tamanu-facility-tasks").unwrap();
 		assert_eq!(journalctl_pattern(tasks), "tamanu-facility-tasks.service");
 

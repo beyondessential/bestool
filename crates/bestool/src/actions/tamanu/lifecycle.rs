@@ -44,7 +44,7 @@ pub fn config_and_expectations(tamanu: &TamanuArgs) -> Result<(Supervisor, Vec<E
 		ApiServerKind::Central
 	};
 
-	let expectations = services::expected(supervisor, kind, &config);
+	let expectations = services::expected(supervisor, kind, &config, false);
 	Ok((supervisor, expectations))
 }
 

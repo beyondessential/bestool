@@ -327,6 +327,39 @@ where
 	Some(pem)
 }
 
+/// Query the central server's `settings` table for `features.patientPortal`.
+///
+/// Tamanu mounts the patient portal API conditionally on this flag (see
+/// `packages/central-server/app/createApi.js`), so a `true` value here is the
+/// authoritative "this deployment runs the portal" signal — independent of
+/// the ansible-side `PatientPortalFQDN` tag or the unused `patientPortal.portalUrl`
+/// config field.
+///
+/// Settings are stored as one row per dotted leaf path, with the value column
+/// as `JSONB`. The default if the row is absent is `false` (per the global
+/// schema in `packages/settings/src/schema/global.ts`), so we treat missing
+/// rows and decode failures as `false`.
+pub async fn query_patient_portal_enabled(client: &tokio_postgres::Client) -> bool {
+	match client
+		.query_opt(
+			"SELECT value FROM settings WHERE key = 'features.patientPortal' LIMIT 1",
+			&[],
+		)
+		.await
+	{
+		Ok(Some(row)) => row
+			.try_get::<_, serde_json::Value>(0)
+			.ok()
+			.and_then(|v| v.as_bool())
+			.unwrap_or(false),
+		Ok(None) => false,
+		Err(err) => {
+			debug!(%err, "could not query features.patientPortal setting");
+			false
+		}
+	}
+}
+
 /// Query `local_system_facts.deviceKey` on an existing Tamanu DB client.
 ///
 /// Logs at warn/info on errors and missing rows, returning `None`. Suitable
