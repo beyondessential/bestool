@@ -46,6 +46,20 @@ pub fn standard_server_id_path() -> PathBuf {
 	}
 }
 
+/// Standard on-disk location for cached canopy tags.
+///
+/// Sits alongside `server-id` and `device-key.pem` so all per-host canopy
+/// identity / metadata files share one directory. Refreshed every time
+/// `bestool tamanu tags` runs successfully online; consulted (and trusted as
+/// the source of truth) when canopy is unreachable.
+pub fn standard_tags_path() -> PathBuf {
+	if cfg!(windows) {
+		PathBuf::from(r"C:\Tamanu\tags.json")
+	} else {
+		PathBuf::from("/etc/tamanu/tags.json")
+	}
+}
+
 /// Resolve the `metaServerId` for this Tamanu server.
 ///
 /// Resolution order:

@@ -128,6 +128,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-logs",
 	"tamanu-meta-ticket",
 	"tamanu-psql",
+	"tamanu-tags",
 ]
 tamanu-alerts = [
 	"__tamanu",
@@ -167,6 +168,7 @@ tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:privileg
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:owo-colors", "dep:sysinfo"]
 tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:bestool-psql"]
+tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:comfy-table"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:bestool-tamanu",
 	"dep:dirs",
