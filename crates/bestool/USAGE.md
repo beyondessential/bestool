@@ -31,6 +31,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool iti lcd off`↴](#bestool-iti-lcd-off)
 * [`bestool iti sparks`↴](#bestool-iti-sparks)
 * [`bestool iti temperature`↴](#bestool-iti-temperature)
+* [`bestool kopia`↴](#bestool-kopia)
+* [`bestool kopia info`↴](#bestool-kopia-info)
 * [`bestool rdp`↴](#bestool-rdp)
 * [`bestool rdp monitor`↴](#bestool-rdp-monitor)
 * [`bestool rdp service`↴](#bestool-rdp-service)
@@ -85,6 +87,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `crypto` — Cryptographic operations
 * `file` — File utilities
 * `iti` — Tamanu Iti subcommands
+* `kopia` — Operate on a kopia repository
 * `rdp` — Windows RDP session tooling
 * `self-update` — Update this bestool
 * `ssh` — SSH helpers
@@ -908,6 +911,39 @@ Get core temperature from the Raspberry Pi
 * `--watch <WATCH>` — Keep updating at an interval.
 
    Syntax is a number followed by a unit, such as "5s" or "1m".
+
+
+
+## `bestool kopia`
+
+Operate on a kopia repository.
+
+Wraps the `kopia` CLI to add ergonomics for our deployments: defaults scoped to the current host, snapshot pickers, and on Linux a transparent re-exec under the system `kopia` user so the operator doesn't need to remember `sudo -u kopia`.
+
+**Usage:** `bestool kopia [OPTIONS] <COMMAND>`
+
+###### **Subcommands:**
+
+* `info` — Show kopia repository connection status
+
+###### **Options:**
+
+* `--no-sudo` — Don't auto re-exec under the `kopia` user on Linux.
+
+   By default, when running as a non-`kopia` user on Linux and the system kopia install is present, the command re-execs itself via `sudo -u kopia --` so it can read the system kopia config (which is owned by the `kopia` user). This flag opts out — useful when you've set up your own kopia config under your own user account.
+* `--kopia-bin <PATH>` — Override the kopia binary location.
+
+   By default the command searches for `kopia` in `PATH`, then falls back to known KopiaUI install locations on Windows.
+
+
+
+## `bestool kopia info`
+
+Show kopia repository connection status.
+
+Wraps `kopia repository status`. Useful as a quick check that the configured repository is reachable and we're connected.
+
+**Usage:** `bestool kopia info`
 
 
 
