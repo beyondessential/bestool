@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
-use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
+use bestool_tamanu::services::{self, Criticality, ExpectedState, Expectation, Supervisor};
 
 use crate::actions::{
 	Context,
@@ -34,7 +34,10 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let discovered = lifecycle::discover(supervisor)?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
-	let targets = plan_start(supervisor, &groups)?;
+	let Plan {
+		targets,
+		started_critical,
+	} = plan_start(supervisor, &groups)?;
 	if targets.is_empty() {
 		tracing::info!("nothing to start; everything expected is already up");
 		return Ok(());
@@ -49,7 +52,26 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	}
 
 	lifecycle::wait_running(supervisor, &targets)?;
+
+	// Critical services are the API and frontend, whose containers Caddy
+	// reaches by hostname. When one of those comes up fresh, Caddy's
+	// upstream DNS cache may still hold a stale (NXDOMAIN) entry from
+	// before the container existed — `restart` handles this per-instance,
+	// but `start` brings up a batch in one go, so a single reload at the
+	// end covers all of them.
+	if started_critical && matches!(supervisor, Supervisor::Systemd) {
+		lifecycle::reload_caddy();
+	}
+
 	Ok(())
+}
+
+/// What `plan_start` decided to do.
+struct Plan {
+	targets: Vec<String>,
+	/// Whether any of the planned starts was for a `Criticality::Critical`
+	/// expectation — drives the post-start caddy reload.
+	started_critical: bool,
 }
 
 /// Compute the list of supervisor identifiers to start.
@@ -61,12 +83,14 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 fn plan_start(
 	supervisor: Supervisor,
 	groups: &[(&Expectation, Vec<Instance>)],
-) -> Result<Vec<String>> {
+) -> Result<Plan> {
 	let mut targets = Vec::new();
+	let mut started_critical = false;
 	for (exp, instances) in groups {
 		if exp.state != ExpectedState::Up {
 			continue;
 		}
+		let before = targets.len();
 		match supervisor {
 			Supervisor::Systemd => {
 				let required = exp.instances.required_systemd_units(exp.name);
@@ -96,8 +120,14 @@ fn plan_start(
 				}
 			}
 		}
+		if targets.len() > before && exp.criticality == Criticality::Critical {
+			started_critical = true;
+		}
 	}
-	Ok(targets)
+	Ok(Plan {
+		targets,
+		started_critical,
+	})
 }
 
 fn systemctl_start(units: &[String]) -> Result<()> {
@@ -122,4 +152,65 @@ fn pm2_start(names: &[String]) -> Result<()> {
 		bail!("pm2 start failed: exit {status}");
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use bestool_tamanu::services::Instances;
+
+	fn exp(name: &'static str, crit: Criticality) -> Expectation {
+		Expectation {
+			name,
+			instances: Instances::Single,
+			state: ExpectedState::Up,
+			criticality: crit,
+		}
+	}
+
+	#[test]
+	fn started_critical_set_when_a_critical_unit_is_planned() {
+		let api = exp("tamanu-central-api", Criticality::Critical);
+		let groups = vec![(&api, Vec::<Instance>::new())];
+		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
+		assert!(!plan.targets.is_empty());
+		assert!(plan.started_critical);
+	}
+
+	#[test]
+	fn started_critical_unset_when_only_background_planned() {
+		let tasks = exp("tamanu-central-tasks", Criticality::Background);
+		let groups = vec![(&tasks, Vec::<Instance>::new())];
+		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
+		assert!(!plan.targets.is_empty());
+		assert!(!plan.started_critical);
+	}
+
+	#[test]
+	fn started_critical_unset_when_critical_already_running() {
+		// Critical expectation is fully satisfied — no targets, no caddy reload.
+		let api = exp("tamanu-central-api", Criticality::Critical);
+		let already_running = vec![Instance {
+			name: "tamanu-central-api".into(),
+			instance: None,
+			pm_id: None,
+			running: true,
+		}];
+		let groups = vec![(&api, already_running)];
+		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
+		assert!(plan.targets.is_empty());
+		assert!(!plan.started_critical);
+	}
+
+	#[test]
+	fn started_critical_tracks_any_critical_in_a_mixed_batch() {
+		let tasks = exp("tamanu-central-tasks", Criticality::Background);
+		let api = exp("tamanu-central-api", Criticality::Critical);
+		let groups = vec![
+			(&tasks, Vec::<Instance>::new()),
+			(&api, Vec::<Instance>::new()),
+		];
+		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
+		assert!(plan.started_critical);
+	}
 }
