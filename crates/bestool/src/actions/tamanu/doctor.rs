@@ -838,9 +838,10 @@ fn write_result_line<W: Write>(
 }
 
 /// Streams check results to `out` as they come in over `rx`, with a rewriting
-/// "Outstanding: ..." line below the printed results. Falls back gracefully if
-/// `out` doesn't accept the ANSI line-erase escape (the trailing newline ensures
-/// no half-erased line is left over).
+/// "Outstanding: ..." line below the printed results. The outstanding line is
+/// truncated to the terminal width so `\r\x1b[2K` reliably erases it on the
+/// next update; without that, terminal wrapping leaves orphaned rows behind
+/// as the cursor only sits on the last wrapped row.
 fn render_live<W: Write>(
 	out: &mut W,
 	selected_names: &[&'static str],
@@ -848,9 +849,12 @@ fn render_live<W: Write>(
 	use_colours: bool,
 ) -> std::io::Result<()> {
 	let name_width = selected_names.iter().map(|n| n.len()).max().unwrap_or(0);
+	let term_width = terminal_size::terminal_size()
+		.map(|(terminal_size::Width(w), _)| w)
+		.unwrap_or(80);
 	let mut outstanding: Vec<&'static str> = selected_names.to_vec();
 
-	write_outstanding(out, &outstanding, use_colours)?;
+	write_outstanding(out, &outstanding, term_width, use_colours)?;
 	out.flush()?;
 
 	while let Some(event) = rx.blocking_recv() {
@@ -859,7 +863,7 @@ fn render_live<W: Write>(
 				clear_current_line(out)?;
 				write_check_line(out, &check, name_width, use_colours)?;
 				outstanding.retain(|n| *n != check.name);
-				write_outstanding(out, &outstanding, use_colours)?;
+				write_outstanding(out, &outstanding, term_width, use_colours)?;
 				out.flush()?;
 			}
 		}
@@ -885,17 +889,39 @@ fn render_summary<W: Write>(
 fn write_outstanding<W: Write>(
 	out: &mut W,
 	outstanding: &[&'static str],
+	term_width: u16,
 	use_colours: bool,
 ) -> std::io::Result<()> {
 	if outstanding.is_empty() {
 		return Ok(());
 	}
-	let label = if use_colours {
-		format!("{}", "Outstanding:".dimmed())
+	let plain = format!("Outstanding: {}", outstanding.join(", "));
+	let truncated = truncate_to_width(&plain, term_width);
+	if use_colours {
+		write!(out, "{}", truncated.dimmed())
 	} else {
-		"Outstanding:".to_string()
-	};
-	write!(out, "{label} {}", outstanding.join(", "))
+		write!(out, "{truncated}")
+	}
+}
+
+/// Truncate `s` to fit within `width` display columns, appending `…` when the
+/// string is cut. Treats each char as one column — fine for the ASCII-only
+/// check names this is used with.
+fn truncate_to_width(s: &str, width: u16) -> String {
+	let width = width as usize;
+	if width == 0 {
+		return String::new();
+	}
+	if s.chars().count() <= width {
+		return s.to_string();
+	}
+	if width == 1 {
+		return "…".to_string();
+	}
+	let take = width - 1;
+	let mut out: String = s.chars().take(take).collect();
+	out.push('…');
+	out
 }
 
 fn clear_current_line<W: Write>(out: &mut W) -> std::io::Result<()> {
@@ -1124,6 +1150,32 @@ mod tests {
 	fn selected_names_unknown_skip_is_error() {
 		let err = selected_names_for_render(&[], &["does_not_exist".into()]).unwrap_err();
 		assert!(format!("{err}").contains("does_not_exist"));
+	}
+
+	#[test]
+	fn truncate_to_width_pads_short_strings_unchanged() {
+		assert_eq!(truncate_to_width("abc", 10), "abc");
+	}
+
+	#[test]
+	fn truncate_to_width_chops_with_ellipsis() {
+		assert_eq!(truncate_to_width("abcdefghij", 5), "abcd…");
+	}
+
+	#[test]
+	fn truncate_to_width_handles_exact_fit() {
+		assert_eq!(truncate_to_width("abcde", 5), "abcde");
+	}
+
+	#[test]
+	fn write_outstanding_truncates_to_one_terminal_row() {
+		let mut buf = Vec::new();
+		let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+		write_outstanding(&mut buf, &names, 30, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		assert_eq!(out.chars().count(), 30);
+		assert!(out.ends_with('…'));
+		assert!(out.starts_with("Outstanding: "));
 	}
 
 	#[test]

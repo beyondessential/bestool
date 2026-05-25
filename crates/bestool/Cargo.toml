@@ -76,6 +76,7 @@ sysinfo = { workspace = true, optional = true }
 target-tuples = { version = "0.16.1", optional = true }
 tempfile = "3.21.0"
 tera = { version = "1.19.1", optional = true }
+terminal_size = { version = "0.4.4", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
@@ -159,6 +160,7 @@ tamanu-doctor = [
 	"dep:bestool-psql",
 	"dep:owo-colors",
 	"dep:p256",
+	"dep:terminal_size",
 	"dep:tokio-postgres",
 ]
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
