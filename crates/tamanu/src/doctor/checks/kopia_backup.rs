@@ -10,31 +10,26 @@
 //!
 //! On Linux the kopia repository config lives in the `kopia` system user's
 //! home directory and isn't readable by other users (not even to check for
-//! existence), so we don't pre-flight that; instead we either run kopia as
-//! that user directly (when the doctor is invoked as `kopia`) or via
-//! `runuser -u kopia --` (when invoked as root). Other contexts (e.g. the
-//! alertd daemon running as `tamanu`) Skip with a reason — there's no safe
-//! way to query an arbitrary user's kopia repo. If kopia is installed but
-//! not connected to a repo, the snapshot-list invocation reports that and
-//! we Skip with the error.
+//! existence), so we don't pre-flight that; we ask
+//! `bestool_kopia::build_kopia_command` to elevate via `runuser -u kopia --`
+//! when we're root, or run directly when we *are* the kopia user. Other
+//! contexts (e.g. the alertd daemon running as `tamanu`) Skip with a reason
+//! — there's no safe way to query an arbitrary user's kopia repo. If kopia
+//! is installed but not connected to a repo, the snapshot-list invocation
+//! reports that and we Skip with the error.
 //!
-//! On Windows the backup is set up via KopiaUI under a desktop user (typically
-//! Administrator); we locate the bundled `kopia.exe` plus the user's
-//! `%APPDATA%\kopia\repository.config` and run it as the current user.
+//! On Windows the backup is set up via KopiaUI under a desktop user
+//! (typically Administrator); we locate the bundled `kopia.exe` plus the
+//! user's `%APPDATA%\kopia\repository.config` and run it as the current
+//! user.
 
-use std::{
-	path::{Path, PathBuf},
-	process::Command,
-};
-
+use bestool_kopia::{Elevation, Snapshot};
 use jiff::Timestamp;
-use serde::Deserialize;
 
 use super::CheckContext;
 use crate::doctor::check::Check;
 
 const CHECK_NAME: &str = "kopia_backup";
-const LINUX_KOPIA_USER: &str = "kopia";
 const FAIL_AGE_SECS: i64 = 24 * 60 * 60;
 
 pub async fn run(_ctx: CheckContext) -> Check {
@@ -52,24 +47,24 @@ pub async fn run(_ctx: CheckContext) -> Check {
 }
 
 fn run_linux() -> Check {
-	// The kopia repository config at /var/lib/kopia/.config/kopia/repository.config
-	// is only readable by the kopia user, so we can't pre-check for "kopia
-	// configured"; we discover that by trying. If kopia isn't connected to a
-	// repo, `kopia snapshot list` errors out and we Skip with the message.
-	let kopia_binary = match find_unix_kopia_binary() {
-		Some(b) => b,
-		None => {
-			return Check::skip(
-				CHECK_NAME,
-				"kopia binary not found",
-				"could not find `kopia` in PATH",
-			);
-		}
+	let Some(kopia_binary) = bestool_kopia::find_kopia_binary(None) else {
+		return Check::skip(
+			CHECK_NAME,
+			"kopia binary not found",
+			"could not find `kopia` in PATH",
+		);
 	};
 
-	let mut cmd = match build_linux_command(&kopia_binary) {
+	let elevation = bestool_kopia::linux_elevation();
+	if let Elevation::Skip(reason) = &elevation {
+		return Check::skip(CHECK_NAME, "need elevation to query kopia", reason.clone());
+	}
+
+	let mut cmd = match bestool_kopia::build_kopia_command(&kopia_binary) {
 		Ok(c) => c,
-		Err(skip) => return skip,
+		Err(reason) => {
+			return Check::skip(CHECK_NAME, "need elevation to query kopia", reason);
+		}
 	};
 
 	let output = match cmd
@@ -109,82 +104,34 @@ fn run_linux() -> Check {
 	evaluate(&snapshots, Timestamp::now())
 		.with_detail("platform", "linux")
 		.with_detail("kopia_binary", kopia_binary.display().to_string())
+		.with_detail("elevation", elevation_label(&elevation))
 }
 
-/// Build the kopia command, elevating to the kopia user if needed.
-///
-/// `Err(check)` carries a Skip result if we can't safely elevate (e.g. the
-/// doctor is running as `tamanu` and can't `runuser`).
-fn build_linux_command(kopia_binary: &Path) -> Result<Command, Check> {
-	let current = current_unix_username();
-	match current.as_deref() {
-		Some(u) if u == LINUX_KOPIA_USER => Ok(Command::new(kopia_binary)),
-		Some("root") => {
-			// `runuser -u kopia --` switches to the kopia user (only works when
-			// we're already root, since runuser usually isn't setuid). Falls
-			// back to the kopia binary as the executed program.
-			let mut c = Command::new("runuser");
-			c.arg("-u")
-				.arg(LINUX_KOPIA_USER)
-				.arg("--")
-				.arg(kopia_binary);
-			Ok(c)
-		}
-		Some(other) => Err(Check::skip(
-			CHECK_NAME,
-			"need elevation to query kopia",
-			format!(
-				"running as `{other}`, but the kopia config is owned by `{LINUX_KOPIA_USER}`; re-run as root or as the kopia user",
-			),
-		)),
-		None => Err(Check::skip(
-			CHECK_NAME,
-			"current user unknown",
-			"could not determine current Unix username via `id -un`",
-		)),
+fn elevation_label(e: &Elevation) -> &'static str {
+	match e {
+		Elevation::Direct => "direct",
+		Elevation::Runuser => "runuser",
+		Elevation::Skip(_) => "skip",
 	}
-}
-
-/// Returns the current process's username via `id -un`. Returns `None` on
-/// non-Unix platforms or if `id` is unavailable.
-#[cfg(unix)]
-fn current_unix_username() -> Option<String> {
-	let output = Command::new("id").arg("-un").output().ok()?;
-	if !output.status.success() {
-		return None;
-	}
-	let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-	if name.is_empty() { None } else { Some(name) }
-}
-
-#[cfg(not(unix))]
-fn current_unix_username() -> Option<String> {
-	None
-}
-
-/// Locate the kopia binary on Linux. Prefers PATH (kopia is installed at
-/// `/usr/bin/kopia` on our servers via the kopia apt repo).
-fn find_unix_kopia_binary() -> Option<PathBuf> {
-	let path = std::env::var_os("PATH")?;
-	for dir in std::env::split_paths(&path) {
-		let candidate = dir.join("kopia");
-		if candidate.is_file() {
-			return Some(candidate);
-		}
-	}
-	None
 }
 
 fn run_windows() -> Check {
-	let Some(KopiaWindows { binary, config }) = locate_windows_kopia() else {
+	let Some(binary) = bestool_kopia::find_kopia_binary(None) else {
 		return Check::skip(
 			CHECK_NAME,
 			"kopia not configured",
-			"no KopiaUI install or repository config found for the current user",
+			"no KopiaUI install found",
+		);
+	};
+	let Some(config) = bestool_kopia::find_windows_kopia_config() else {
+		return Check::skip(
+			CHECK_NAME,
+			"kopia not configured",
+			"no kopia repository config found for the current user",
 		);
 	};
 
-	let output = match Command::new(&binary)
+	let output = match std::process::Command::new(&binary)
 		.args(["snapshot", "list", "--json", "--no-all"])
 		.env("KOPIA_CONFIG_PATH", &config)
 		.env("KOPIA_CHECK_FOR_UPDATES", "false")
@@ -225,32 +172,7 @@ fn run_windows() -> Check {
 		.with_detail("kopia_config", config.display().to_string())
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Snapshot {
-	source: SnapshotSource,
-	#[serde(default)]
-	end_time: Option<Timestamp>,
-	#[serde(default)]
-	start_time: Option<Timestamp>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SnapshotSource {
-	#[serde(default)]
-	path: String,
-}
-
-impl Snapshot {
-	fn taken_at(&self) -> Option<Timestamp> {
-		self.end_time.or(self.start_time)
-	}
-}
-
 fn evaluate(snapshots: &[Snapshot], now: Timestamp) -> Check {
-	// Host filtering is delegated to kopia via `--no-all`; everything in
-	// `snapshots` is already scoped to this host's source identity. We only
-	// need to pick the postgres-shaped one.
 	let candidates: Vec<&Snapshot> = snapshots
 		.iter()
 		.filter(|s| is_postgres_path(&s.source.path))
@@ -298,61 +220,11 @@ fn evaluate(snapshots: &[Snapshot], now: Timestamp) -> Check {
 
 /// Heuristic match for "this snapshot is of PostgreSQL data". Standard
 /// installs put data under `/var/lib/postgresql/...` on Linux and
-/// `C:\Program Files\PostgreSQL` on Windows; we tolerate variations
-/// (different drive, custom install dir) by just looking for the directory
-/// name anywhere in the path.
+/// `C:\Program Files\PostgreSQL` on Windows; tolerate variations (different
+/// drive, custom install dir) by looking for the directory name anywhere in
+/// the path.
 fn is_postgres_path(path: &str) -> bool {
 	path.to_lowercase().contains("postgresql")
-}
-
-struct KopiaWindows {
-	binary: PathBuf,
-	config: PathBuf,
-}
-
-fn locate_windows_kopia() -> Option<KopiaWindows> {
-	let binary = locate_windows_kopia_binary()?;
-	let config = locate_windows_kopia_config()?;
-	Some(KopiaWindows { binary, config })
-}
-
-fn locate_windows_kopia_binary() -> Option<PathBuf> {
-	let mut candidates: Vec<PathBuf> = Vec::new();
-	if let Ok(local) = std::env::var("LOCALAPPDATA") {
-		candidates.push(
-			Path::new(&local)
-				.join("Programs")
-				.join("KopiaUI")
-				.join("resources")
-				.join("server")
-				.join("kopia.exe"),
-		);
-	}
-	if let Ok(pf) = std::env::var("ProgramFiles") {
-		candidates.push(
-			Path::new(&pf)
-				.join("KopiaUI")
-				.join("resources")
-				.join("server")
-				.join("kopia.exe"),
-		);
-	}
-	if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
-		candidates.push(
-			Path::new(&pf86)
-				.join("KopiaUI")
-				.join("resources")
-				.join("server")
-				.join("kopia.exe"),
-		);
-	}
-	candidates.into_iter().find(|p| p.exists())
-}
-
-fn locate_windows_kopia_config() -> Option<PathBuf> {
-	let appdata = std::env::var("APPDATA").ok()?;
-	let config = Path::new(&appdata).join("kopia").join("repository.config");
-	config.exists().then_some(config)
 }
 
 fn humanise_age(secs: i64) -> String {
@@ -370,10 +242,29 @@ fn humanise_age(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+	use std::collections::BTreeMap;
+
+	use bestool_kopia::SnapshotSource;
 	use jiff::ToSpan;
 
 	use super::*;
 	use crate::doctor::check::CheckStatus;
+
+	fn snapshot(path: &str, end: Option<Timestamp>, start: Option<Timestamp>) -> Snapshot {
+		Snapshot {
+			id: "kabc".into(),
+			source: SnapshotSource {
+				host: "host-1".into(),
+				user_name: "kopia".into(),
+				path: path.into(),
+			},
+			description: String::new(),
+			end_time: end,
+			start_time: start,
+			tags: BTreeMap::new(),
+			root_entry: None,
+		}
+	}
 
 	#[test]
 	fn is_postgres_path_matches_program_files() {
@@ -386,14 +277,6 @@ mod tests {
 	fn is_postgres_path_rejects_unrelated() {
 		assert!(!is_postgres_path(r"C:\Users\admin\Documents"));
 		assert!(!is_postgres_path(r"C:\Program Files\KopiaUI"));
-	}
-
-	fn snapshot(path: &str, end: Option<Timestamp>, start: Option<Timestamp>) -> Snapshot {
-		Snapshot {
-			source: SnapshotSource { path: path.into() },
-			end_time: end,
-			start_time: start,
-		}
 	}
 
 	#[test]
