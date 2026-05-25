@@ -35,6 +35,12 @@ pub struct Expectation {
 	/// Availability constraint when restarting. Only meaningful for
 	/// `ExpectedState::Up` services.
 	pub criticality: Criticality,
+	/// Why this expectation has its current shape — surfaced in doctor
+	/// diagnostics so operators can see *why* a given service is expected up
+	/// or down. Examples: `"always required"`, `"kind is facility"`,
+	/// `"config integrations.fhir.worker.enabled is false"`,
+	/// `"DB setting features.patientPortal is true"`.
+	pub reason: String,
 }
 
 /// Whether a service must keep at least one instance up at all times.
@@ -142,6 +148,7 @@ pub fn expected(
 		instances: Instances::Single,
 		state: ExpectedState::Up,
 		criticality: Criticality::Background,
+		reason: "always required".into(),
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -150,6 +157,7 @@ pub fn expected(
 			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
+			reason: "always required on systemd".into(),
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
@@ -157,6 +165,7 @@ pub fn expected(
 			state: ExpectedState::Down,
 			// criticality is unused for Down; Background is the harmless default.
 			criticality: Criticality::Background,
+			reason: "legacy singleton unit must not be present".into(),
 		});
 	}
 
@@ -172,6 +181,7 @@ pub fn expected(
 		instances: Instances::NumericAtLeast(2),
 		state: ExpectedState::Up,
 		criticality: Criticality::Critical,
+		reason: "always required".into(),
 	});
 
 	match kind {
@@ -186,22 +196,26 @@ pub fn expected(
 			// config, and explicitly Down when it isn't — that way the doctor
 			// catches the case where a deployment leaves the worker units
 			// running after `integrations.fhir.worker.enabled` is flipped off.
-			let fhir_state = if config.fhir_worker_enabled() {
+			let fhir_enabled = config.fhir_worker_enabled();
+			let fhir_state = if fhir_enabled {
 				ExpectedState::Up
 			} else {
 				ExpectedState::Down
 			};
+			let fhir_reason = format!("config integrations.fhir.worker.enabled is {fhir_enabled}");
 			out.push(Expectation {
 				name: resolve,
 				instances: Instances::Single,
 				state: fhir_state,
 				criticality: Criticality::Background,
+				reason: fhir_reason.clone(),
 			});
 			out.push(Expectation {
 				name: refresh,
 				instances: Instances::Single,
 				state: fhir_state,
 				criticality: Criticality::Background,
+				reason: fhir_reason,
 			});
 
 			// The patient portal quadlet (`tamanu-patientportal.service`) is
@@ -220,6 +234,9 @@ pub fn expected(
 					instances: Instances::Single,
 					state: portal_state,
 					criticality: Criticality::Background,
+					reason: format!(
+						"DB setting features.patientPortal is {patient_portal_enabled}"
+					),
 				});
 			}
 		}
@@ -233,6 +250,7 @@ pub fn expected(
 				instances: Instances::Single,
 				state: ExpectedState::Up,
 				criticality: Criticality::Background,
+				reason: "kind is facility".into(),
 			});
 		}
 	}
@@ -584,6 +602,7 @@ mod tests {
 			instances: Instances::Single,
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
+			reason: "test".into(),
 		}
 	}
 

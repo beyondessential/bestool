@@ -694,6 +694,16 @@ fn build_payload(info: &Value, results: &[(Check, bool)], overall: OverallResult
 		_ => Map::new(),
 	};
 
+	// Lift any `payload_extras` from individual checks into the top-level
+	// payload (alongside server facts like `osTimezone`). Lets a check carry
+	// bulky context-data that belongs with server facts rather than crowding
+	// its diagnostic entry in `health[]`.
+	for (check, _) in results {
+		for (k, v) in &check.payload_extras {
+			payload.insert(k.clone(), v.clone());
+		}
+	}
+
 	let health: Vec<Value> = results
 		.iter()
 		.filter(|(_, on_wire)| *on_wire)
@@ -970,6 +980,36 @@ mod tests {
 			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
 		assert_eq!(payload["healthy"], false);
+	}
+
+	#[test]
+	fn payload_lifts_payload_extras_into_top_level() {
+		// `payload_extras` is for data a check wants alongside server facts
+		// (osTimezone etc), not in its per-check entry. The tamanu_service
+		// check uses it for raw service inventory.
+		let mut info = serde_json::Map::new();
+		info.insert("osTimezone".into(), "Pacific/Auckland".into());
+		let info_value = Value::Object(info);
+
+		let check = Check::pass("svc", "ok")
+			.with_detail("supervisor", "systemd")
+			.with_payload_extra(
+				"services",
+				serde_json::json!({"supervisor": "systemd", "expectations": []}),
+			);
+		let results = vec![(check, true)];
+		let overall =
+			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let payload = build_payload(&info_value, &results, overall);
+
+		assert_eq!(payload["osTimezone"], "Pacific/Auckland");
+		// Lifted into the top level, alongside osTimezone.
+		assert_eq!(payload["services"]["supervisor"], "systemd");
+		// And NOT duplicated into the per-check entry.
+		assert!(payload["health"][0].get("services").is_none());
+		// But the lean per-check detail (supervisor label) is still on the
+		// `health[]` entry.
+		assert_eq!(payload["health"][0]["supervisor"], "systemd");
 	}
 
 	#[test]
