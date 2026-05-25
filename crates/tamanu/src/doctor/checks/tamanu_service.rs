@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 
 use super::CheckContext;
 use crate::{
-	ApiServerKind,
 	doctor::check::Check,
 	pm2,
 	services::{Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit},
@@ -20,12 +19,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			.with_detail("skipped", true);
 	};
 
-	let kind = if ctx.config.is_facility() {
-		ApiServerKind::Facility
-	} else {
-		ApiServerKind::Central
-	};
-	let expectations = expected(supervisor, kind, &ctx.config);
+	let expectations = expected(supervisor, ctx.kind, &ctx.config);
 
 	let mut pm2_source: Option<pm2::Source> = None;
 	let mut discovered = match supervisor {
@@ -445,8 +439,7 @@ fn outcome_to_json(o: &Outcome) -> Value {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::config::TamanuConfig;
-	use crate::doctor::check::CheckStatus;
+	use crate::{ApiServerKind, config::TamanuConfig, doctor::check::CheckStatus};
 
 	fn cfg(fhir_worker: bool) -> TamanuConfig {
 		let json = serde_json::json!({

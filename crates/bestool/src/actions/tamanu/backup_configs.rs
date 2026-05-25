@@ -17,12 +17,17 @@ use crate::{
 	actions::{
 		tamanu::{
 			backup::{process_backup, Then},
-			find_package, find_tamanu, TamanuArgs,
+			find_tamanu, TamanuArgs,
 		},
 		Context,
 	},
 	now_time,
 };
+
+/// Packages that may carry config under `root/packages/<name>/config/`.
+/// Both are tried so the backup picks up whichever is actually installed
+/// without needing to commit to a "this is a central / facility" detection.
+const TAMANU_PACKAGES: &[&str] = &["central-server", "facility-server"];
 
 /// Backup local Tamanu-related config files to a zip archive.
 ///
@@ -171,8 +176,12 @@ pub async fn run(args: BackupConfigsArgs, ctx: Context) -> Result<()> {
 		.wrap_err("creating dest dir")?;
 
 	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
-	let kind = find_package(&root);
-	let config = load_config(&root, Some(kind.package_name()))?;
+	// Load config without forcing a specific package: load_config tries each
+	// package directory in order and picks the first that exists. Combined
+	// with the now-broader `is_facility()` detection, this avoids the old
+	// `find_package` filesystem walk (which doesn't work for container-based
+	// Linux deployments where there's no `packages/` dir at all).
+	let config = load_config(&root, None)?;
 
 	let output = Path::new(&args.write_to).join(make_backup_filename(&config));
 
@@ -200,8 +209,14 @@ pub async fn run(args: BackupConfigsArgs, ctx: Context) -> Result<()> {
 	add_file(&mut zip, root.join("pm2.config.cjs"), "pm2.config.cjs");
 	add_dir(&mut zip, root.join("alerts"), "alerts/version")?;
 	add_dir(&mut zip, r"C:\Tamanu\alerts", "alerts/global")?;
-	if let Some(path) = find_config_dir(&root, Some(kind.package_name()), ".") {
-		add_dir(&mut zip, path, kind.package_name())?;
+	// Back up whichever package config dirs exist on this host. We don't try
+	// to commit to "this is a facility / central" here — both could in
+	// principle be present on a host that's been re-roled, and there's no
+	// cost to archiving both if both directories are populated.
+	for package in TAMANU_PACKAGES {
+		if let Some(path) = find_config_dir(&root, Some(package), ".") {
+			add_dir(&mut zip, path, package)?;
+		}
 	}
 
 	zip.finish()

@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 use node_semver::Version;
 use tokio_postgres::Client as PgClient;
 
-use crate::config::TamanuConfig;
+use crate::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 
@@ -44,6 +44,11 @@ pub struct CheckContext {
 	pub tamanu_version: Version,
 	pub tamanu_root: PathBuf,
 	pub config: Arc<TamanuConfig>,
+	/// Whether this install is a central or facility server. Determined once
+	/// at doctor startup from the most authoritative available signals (DB
+	/// `local_system_facts` first, then config), then shared so checks don't
+	/// each have to re-decide.
+	pub kind: ApiServerKind,
 	pub database_url: String,
 	pub db: Option<Arc<PgClient>>,
 	pub http_client: reqwest::Client,
