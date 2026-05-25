@@ -304,6 +304,7 @@ fn evaluate(
 ) -> Check {
 	let mut matched_any: Vec<bool> = vec![false; discovered.len()];
 	let mut per_expectation: Vec<Value> = Vec::new();
+	let mut diagnostics: Vec<Value> = Vec::new();
 	let mut failures: Vec<String> = Vec::new();
 
 	for exp in expectations {
@@ -313,44 +314,35 @@ fn evaluate(
 		}
 		per_expectation.push(json!({
 			"name": exp.name,
-			"state": match exp.state {
-				ExpectedState::Up => "up",
-				ExpectedState::Down => "down",
-			},
+			"state": expected_state_label(exp.state),
 			"instances": instances_to_json(&exp.instances),
 			"outcome": outcome_to_json(&outcome),
+			"reason": exp.reason,
 		}));
-		match &outcome {
-			Outcome::Ok => {}
-			Outcome::Missing => failures.push(format!("missing {}", exp.name)),
-			Outcome::Shortfall {
-				running,
-				needed,
-				not_running,
-				missing_named,
-			} => {
-				if !missing_named.is_empty() {
-					failures.push(format!(
-						"{}: missing instance(s) {}",
-						exp.name,
-						missing_named.join(", ")
-					));
-				} else if !not_running.is_empty() {
-					failures.push(format!(
-						"{}: not running ({})",
-						exp.name,
-						not_running.join(", ")
-					));
-				} else {
-					failures.push(format!(
-						"{}: only {running}/{needed} instance(s) running",
-						exp.name
-					));
-				}
+
+		if !matches!(outcome, Outcome::Ok) {
+			let (actual, detail) = actual_for_outcome(exp, &outcome);
+			let expected_label = expected_state_label(exp.state);
+			let mut diag = json!({
+				"name": exp.name,
+				"expected": expected_label,
+				"reason": exp.reason,
+				"actual": actual,
+			});
+			if let Some(ref d) = detail {
+				diag["detail"] = Value::String(d.clone());
 			}
-			Outcome::Forbidden { units } => {
-				failures.push(format!("forbidden present: {}", units.join(", ")));
+			diagnostics.push(diag);
+
+			let mut line = format!(
+				"{}: expected {expected_label} ({reason}), got {actual}",
+				exp.name,
+				reason = exp.reason,
+			);
+			if let Some(d) = detail {
+				line.push_str(&format!(" ({d})"));
 			}
+			failures.push(line);
 		}
 	}
 
@@ -393,14 +385,52 @@ fn evaluate(
 		Check::fail("tamanu_service", summary, failures.join("; "))
 	};
 
+	// Per-check (`health[]`) details are kept lean: a per-service diagnostic
+	// list aimed at humans, plus the supervisor label. The bulky raw data
+	// (full expectations, discovered units, extras, supervisor) goes into the
+	// top-level status payload via `payload_extras` under `services`, so each
+	// piece lives in its natural home.
+	let payload_services = json!({
+		"supervisor": supervisor_label,
+		"expectations": Value::Array(per_expectation),
+		"discovered": services_json,
+		"extras": Value::Array(extras.into_iter().map(Value::String).collect()),
+	});
+
 	check
 		.with_detail("supervisor", supervisor_label)
-		.with_detail("expectations", Value::Array(per_expectation))
-		.with_detail("services", services_json)
-		.with_detail(
-			"extras",
-			Value::Array(extras.into_iter().map(Value::String).collect()),
-		)
+		.with_detail("diagnostics", Value::Array(diagnostics))
+		.with_payload_extra("services", payload_services)
+}
+
+fn expected_state_label(s: ExpectedState) -> &'static str {
+	match s {
+		ExpectedState::Up => "up",
+		ExpectedState::Down => "down",
+	}
+}
+
+fn actual_for_outcome(exp: &Expectation, outcome: &Outcome) -> (&'static str, Option<String>) {
+	match outcome {
+		Outcome::Ok => (expected_state_label(exp.state), None),
+		Outcome::Missing => ("missing", None),
+		Outcome::Shortfall {
+			running,
+			needed,
+			not_running,
+			missing_named,
+		} => {
+			let mut parts = vec![format!("{running}/{needed} instance(s) running")];
+			if !missing_named.is_empty() {
+				parts.push(format!("missing {}", missing_named.join(", ")));
+			}
+			if !not_running.is_empty() {
+				parts.push(format!("not running: {}", not_running.join(", ")));
+			}
+			("partial", Some(parts.join("; ")))
+		}
+		Outcome::Forbidden { units } => ("up", Some(units.join(", "))),
+	}
 }
 
 fn evaluate_with_source(
@@ -578,8 +608,12 @@ mod tests {
 		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
 		match &check.status {
 			CheckStatus::Fail(reason) => {
-				assert!(reason.contains("forbidden"), "reason was {reason:?}");
+				assert!(reason.contains("expected down"), "reason was {reason:?}");
 				assert!(reason.contains("tamanu-facility"), "reason was {reason:?}");
+				assert!(
+					reason.contains("legacy singleton unit must not be present"),
+					"reason was {reason:?}"
+				);
 			}
 			other => panic!("{other:?}"),
 		}
@@ -600,7 +634,14 @@ mod tests {
 		discovered.push(d("tamanu-patientportal", None, true));
 		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
-		let extras = check.details.get("extras").unwrap().as_array().unwrap();
+		let services = check
+			.payload_extras
+			.get("services")
+			.expect("services payload_extra");
+		let extras = services
+			.get("extras")
+			.and_then(Value::as_array)
+			.expect("extras array");
 		assert_eq!(extras.len(), 1);
 		assert_eq!(extras[0].as_str().unwrap(), "tamanu-patientportal.service");
 	}
@@ -769,5 +810,125 @@ mod tests {
 			}
 			other => panic!("{other:?}"),
 		}
+	}
+
+	#[test]
+	fn diagnostics_carry_per_service_reason_and_state() {
+		// Patient-portal Down with the service actually running is the case
+		// that triggered this restructuring: the wire output should make it
+		// trivial to read "expected down (DB setting features.patientPortal is
+		// false), got up (tamanu-patientportal.service)" rather than parsing
+		// expectations + services arrays.
+		let cfg = central_cfg(true);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg, false);
+		let discovered = vec![
+			d("tamanu-central-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-central-api", Some("1"), true),
+			d("tamanu-central-api", Some("2"), true),
+			d("tamanu-central-fhir-resolve", None, true),
+			d("tamanu-central-fhir-refresh", None, true),
+			d("tamanu-patientportal", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		let diagnostics = check
+			.details
+			.get("diagnostics")
+			.and_then(Value::as_array)
+			.expect("diagnostics array");
+		// Only the failing portal entry should appear — everything else
+		// matched its expectation and lives only in the top-level raw payload.
+		assert_eq!(diagnostics.len(), 1);
+		let portal = &diagnostics[0];
+		assert_eq!(
+			portal.get("name").and_then(Value::as_str),
+			Some("tamanu-patientportal")
+		);
+		assert_eq!(portal.get("expected").and_then(Value::as_str), Some("down"));
+		assert_eq!(portal.get("actual").and_then(Value::as_str), Some("up"));
+		assert_eq!(
+			portal.get("reason").and_then(Value::as_str),
+			Some("DB setting features.patientPortal is false")
+		);
+		assert_eq!(
+			portal.get("detail").and_then(Value::as_str),
+			Some("tamanu-patientportal.service")
+		);
+	}
+
+	#[test]
+	fn diagnostics_empty_when_everything_matches() {
+		// Happy path: no per-service diagnostics in the health[] entry. The
+		// raw inventory is still in the top-level payload under `services`
+		// for anyone who wants to audit what was checked.
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass));
+		let diagnostics = check
+			.details
+			.get("diagnostics")
+			.and_then(Value::as_array)
+			.expect("diagnostics array");
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		// Raw inventory is still available in the top-level payload.
+		assert!(check.payload_extras.get("services").is_some());
+	}
+
+	#[test]
+	fn raw_data_lives_in_payload_extras_not_check_details() {
+		// Bulky data (raw expectations / discovered units / supervisor /
+		// extras) belongs in the top-level status payload via
+		// `payload_extras["services"]`, not under per-check `details`. Keeps
+		// the `health[]` entry focused on human-readable diagnostics.
+		let cfg = cfg(false);
+		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let discovered = vec![
+			d("tamanu-facility-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-facility-api", Some("1"), true),
+			d("tamanu-facility-api", Some("2"), true),
+			d("tamanu-facility-sync", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+
+		assert!(!check.details.contains_key("expectations"));
+		assert!(!check.details.contains_key("extras"));
+		// `services` in details used to be the raw discovered-units array;
+		// it now lives in the top-level payload under that same key.
+		assert!(!check.details.contains_key("services"));
+
+		let services = check
+			.payload_extras
+			.get("services")
+			.expect("services payload extra");
+		assert_eq!(
+			services.get("supervisor").and_then(Value::as_str),
+			Some("systemd")
+		);
+		let raw_exps = services
+			.get("expectations")
+			.and_then(Value::as_array)
+			.expect("raw expectations");
+		assert!(!raw_exps.is_empty());
+		// Each raw expectation carries its reason so the payload is
+		// self-describing without the diagnostics list.
+		assert!(
+			raw_exps
+				.iter()
+				.all(|e| e.get("reason").and_then(Value::as_str).is_some())
+		);
+		assert!(services.get("discovered").is_some());
+		assert!(services.get("extras").is_some());
 	}
 }

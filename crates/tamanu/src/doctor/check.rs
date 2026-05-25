@@ -46,6 +46,13 @@ pub struct Check {
 	pub summary: String,
 	/// Extra JSON fields merged into the per-check wire payload.
 	pub details: Map<String, Value>,
+	/// Fields a check wants to attach to the *top-level* status payload
+	/// (alongside `osTimezone` etc.), rather than to its own `health[]`
+	/// entry. Lifted by `build_payload` and never serialised into
+	/// per-check wire output. Used for bulky data (raw service inventory,
+	/// for instance) that belongs with server facts, not with
+	/// diagnostics.
+	pub payload_extras: Map<String, Value>,
 }
 
 impl Check {
@@ -55,6 +62,7 @@ impl Check {
 			status: CheckStatus::Pass,
 			summary: summary.into(),
 			details: Map::new(),
+			payload_extras: Map::new(),
 		}
 	}
 
@@ -69,6 +77,7 @@ impl Check {
 			status: CheckStatus::Skip(reason.into()),
 			summary: summary.into(),
 			details,
+			payload_extras: Map::new(),
 		}
 	}
 
@@ -82,6 +91,7 @@ impl Check {
 			status: CheckStatus::Warning(reason.into()),
 			summary: summary.into(),
 			details: Map::new(),
+			payload_extras: Map::new(),
 		}
 	}
 
@@ -91,6 +101,7 @@ impl Check {
 			status: CheckStatus::Fail(reason.into()),
 			summary: summary.into(),
 			details: Map::new(),
+			payload_extras: Map::new(),
 		}
 	}
 
@@ -101,6 +112,14 @@ impl Check {
 
 	pub fn with_details(mut self, details: Map<String, Value>) -> Self {
 		self.details = details;
+		self
+	}
+
+	/// Attach a key/value to the top-level status payload (alongside server
+	/// facts like `osTimezone`) rather than this check's own `health[]`
+	/// entry. See [`Self::payload_extras`].
+	pub fn with_payload_extra(mut self, key: &str, value: impl Into<Value>) -> Self {
+		self.payload_extras.insert(key.to_string(), value.into());
 		self
 	}
 
@@ -175,6 +194,7 @@ impl Check {
 			status,
 			summary,
 			details,
+			payload_extras: Map::new(),
 		})
 	}
 }
