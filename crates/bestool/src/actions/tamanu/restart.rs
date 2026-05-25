@@ -30,9 +30,10 @@ pub struct RestartArgs {
 	/// No names = restart every running instance of every Up expectation.
 	pub names: Vec<String>,
 
-	/// Sleep between each critical-instance roll. Lets the
-	/// fresh container settle and downstream caches warm up before we
-	/// move on to the next one.
+	/// Sleep between each critical-instance roll when the HTTP probe is
+	/// disabled (`--no-probe-http`). With probes enabled, the readiness
+	/// probe is the signal — once a fresh instance responds, we move on
+	/// to the next without waiting out the cooldown.
 	#[arg(long, default_value = "30s", value_parser = parse_duration)]
 	pub cooldown: Duration,
 
@@ -86,15 +87,28 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		lifecycle::restart_one(supervisor, instance)?;
 		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60))?;
 
-		if !args.no_probe_http {
-			probe_instance(supervisor, instance, &client).await?;
-		}
+		let probed_ready = if !args.no_probe_http {
+			// `probe_instance` blocks until the new container responds. We
+			// have no reason to give up — the supervisor already says the
+			// unit is running, and the container *will* eventually accept
+			// connections (or the operator can ctrl+c). When it does, the
+			// probe is our readiness signal and we move straight on. The
+			// only way this returns `false` is if we couldn't construct a
+			// probe URL at all (no container IP, no pm2 port).
+			probe_instance(supervisor, instance, &client).await?
+		} else {
+			false
+		};
 
 		if matches!(supervisor, Supervisor::Systemd) {
 			lifecycle::reload_caddy();
 		}
 
-		if i + 1 < critical.len() {
+		// Cooldown only applies when we have no readiness signal at all —
+		// either probing is disabled (`--no-probe-http`) or we couldn't
+		// construct a probe URL. A failed probe is impossible here: the
+		// probe loop retries forever until it succeeds.
+		if i + 1 < critical.len() && !probed_ready {
 			debug!(seconds = args.cooldown.as_secs(), "cooldown");
 			tokio::time::sleep(args.cooldown).await;
 		}
@@ -159,7 +173,17 @@ fn http_client() -> Result<Client> {
 		.into_diagnostic()
 }
 
-async fn probe_instance(supervisor: Supervisor, instance: &Instance, client: &Client) -> Result<()> {
+/// Probe a freshly-restarted instance until it responds.
+///
+/// Returns `Ok(true)` when the probe loop got a non-5xx response, `Ok(false)`
+/// when we couldn't construct a probe URL at all (no container IP, no pm2
+/// port). The probe loop itself retries indefinitely — the container we
+/// just restarted *will* come up eventually.
+async fn probe_instance(
+	supervisor: Supervisor,
+	instance: &Instance,
+	client: &Client,
+) -> Result<bool> {
 	let url = match supervisor {
 		Supervisor::Systemd => {
 			let unit = instance.unit();
@@ -167,42 +191,73 @@ async fn probe_instance(supervisor: Supervisor, instance: &Instance, client: &Cl
 				Some(ip) => format!("http://{ip}:3000/").parse().into_diagnostic()?,
 				None => {
 					warn!(unit, "no container IP discovered, skipping HTTP probe");
-					return Ok(());
+					return Ok(false);
 				}
 			}
 		}
 		Supervisor::Pm2 => {
 			let Some(pm_id) = instance.pm_id else {
 				warn!(name = %instance.name, "pm2 instance has no pm_id, skipping HTTP probe");
-				return Ok(());
+				return Ok(false);
 			};
 			match lifecycle::pm2_port_for(pm_id)? {
 				Some(port) => format!("http://127.0.0.1:{port}/").parse().into_diagnostic()?,
 				None => {
 					info!(name = %instance.name, pm_id, "no PORT in pm2 env, skipping HTTP probe");
-					return Ok(());
+					return Ok(false);
 				}
 			}
 		}
 	};
-	probe_url(client, &url, Duration::from_secs(60)).await
+	probe_until_ready(client, &url).await;
+	Ok(true)
 }
 
+/// Retry `url` every 500ms until it returns a non-5xx response. Never gives
+/// up. Used for the per-instance readiness probe in the rolling restart,
+/// where the container is guaranteed to come up (or the operator can ctrl+c).
+async fn probe_until_ready(client: &Client, url: &Url) {
+	loop {
+		match probe_once(client, url).await {
+			Ok(()) => {
+				debug!(%url, "probe OK");
+				return;
+			}
+			Err(err) => {
+				debug!(%url, err = %err, "probe not ready, retrying");
+				tokio::time::sleep(Duration::from_millis(500)).await;
+			}
+		}
+	}
+}
+
+/// Bounded probe used for the post-restart `--check-url` end-to-end check.
+/// Retries with the same 500ms cadence but bails after `timeout` — unlike
+/// the per-instance probe, a failure here is an actual operator-facing
+/// result (the user explicitly asked us to verify the URL).
 async fn probe_url(client: &Client, url: &Url, timeout: Duration) -> Result<()> {
 	let deadline = std::time::Instant::now() + timeout;
 	loop {
-		let last_err = match client.get(url.clone()).send().await {
-			Ok(resp) if !resp.status().is_server_error() => {
-				debug!(status = %resp.status(), %url, "probe OK");
+		match probe_once(client, url).await {
+			Ok(()) => {
+				debug!(%url, "probe OK");
 				return Ok(());
 			}
-			Ok(resp) => format!("HTTP {}", resp.status()),
-			Err(e) => e.to_string(),
-		};
-		if std::time::Instant::now() >= deadline {
-			bail!("HTTP probe of {url} failed: {last_err}");
+			Err(last_err) => {
+				if std::time::Instant::now() >= deadline {
+					bail!("HTTP probe of {url} failed: {last_err}");
+				}
+				debug!(%url, err = %last_err, "probe not ready, retrying");
+				tokio::time::sleep(Duration::from_millis(500)).await;
+			}
 		}
-		debug!(%url, err = %last_err, "probe not ready, retrying");
-		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+}
+
+async fn probe_once(client: &Client, url: &Url) -> std::result::Result<(), String> {
+	match client.get(url.clone()).send().await {
+		Ok(resp) if !resp.status().is_server_error() => Ok(()),
+		Ok(resp) => Err(format!("HTTP {}", resp.status())),
+		Err(e) => Err(e.to_string()),
 	}
 }
