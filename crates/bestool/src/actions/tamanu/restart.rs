@@ -83,8 +83,8 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		// a "keep one up" availability constraint — the bulk restart
 		// already drops them all briefly, so a single trailing reload is
 		// enough to flush Caddy's stale upstream IPs.
-		if bulk_behind_caddy && matches!(supervisor, Supervisor::Systemd) {
-			lifecycle::reload_caddy();
+		if bulk_behind_caddy {
+			lifecycle::reload_caddy().await;
 		}
 	} else {
 		debug!("no bulk-restart services");
@@ -113,8 +113,8 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 			false
 		};
 
-		if *behind_caddy && matches!(supervisor, Supervisor::Systemd) {
-			lifecycle::reload_caddy();
+		if *behind_caddy {
+			lifecycle::reload_caddy().await;
 		}
 
 		// Cooldown only applies when we have no readiness signal at all —

@@ -85,8 +85,8 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	// a stale upstream. `restart` reloads per-instance for critical
 	// services; `start` brings everything up in one batch, so a single
 	// reload at the end covers them all.
-	if started_behind_caddy && matches!(supervisor, Supervisor::Systemd) {
-		lifecycle::reload_caddy();
+	if started_behind_caddy {
+		lifecycle::reload_caddy().await;
 	}
 
 	Ok(())

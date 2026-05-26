@@ -410,16 +410,34 @@ fn is_pm2_pm_id_online(pm_id: Option<i64>) -> bool {
 	}
 }
 
-/// Reload caddy + flush systemd-resolved. Needed after restarting a
-/// containerised tamanu service: caddy's upstream list is by hostname,
-/// resolved caches IPs, and the restarted container has a new IP. Both
-/// calls are best-effort: failures are logged but don't bail.
+/// Reload caddy (Linux: + flush systemd-resolved). Needed after
+/// restarting a containerised tamanu service: caddy's upstream list is by
+/// hostname, resolved caches IPs, and the restarted container has a new
+/// IP. All calls are best-effort: failures are logged but don't bail.
+///
+/// Uses the platform-native path that reads the on-disk Caddyfile:
+///
+/// - Linux: `systemctl reload caddy`. We deliberately don't POST the
+///   Caddyfile to the admin API here even though it'd work for a
+///   single-file config — production deployments split their Caddyfile
+///   across `/etc/caddy/conf.d/*` includes, and the safest way to pick
+///   up every fragment is to let caddy re-read from disk the same way
+///   it did at startup.
+/// - Windows: tries the admin API first (`POST localhost:2019/load`
+///   with the Caddyfile content) since it's the most reliable when
+///   available; falls back to `caddy reload --config <path> --adapter
+///   caddyfile` if the admin endpoint is unreachable.
+///
+/// On Linux, also runs `resolvectl flush-caches` regardless of which
+/// reload path actually fired — systemd-resolved caches DNS independently
+/// of caddy's upstream list.
 ///
 /// Mirror of the ansible "Reload caddy" handler from #313.
-pub fn reload_caddy() {
+#[cfg(target_os = "linux")]
+pub async fn reload_caddy() {
 	let status = Command::new("systemctl").args(["reload", "caddy"]).status();
 	match status {
-		Ok(s) if s.success() => debug!("caddy reloaded"),
+		Ok(s) if s.success() => debug!("caddy reloaded via systemctl"),
 		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
 		Err(e) => warn!("could not reload caddy: {e}"),
 	}
@@ -429,6 +447,63 @@ pub fn reload_caddy() {
 		Ok(s) => warn!("resolvectl flush-caches exited with {s}"),
 		Err(e) => debug!("resolvectl not available: {e}"),
 	}
+}
+
+#[cfg(target_os = "windows")]
+pub async fn reload_caddy() {
+	let path = r"C:\Caddy\Caddyfile";
+	match reload_caddy_via_admin_api(path).await {
+		Ok(()) => {
+			debug!("caddy reloaded via admin API");
+			return;
+		}
+		Err(err) => debug!(%err, "caddy admin API unreachable, falling back to CLI"),
+	}
+	// `caddy reload` reads the file, adapts it, and POSTs to the admin
+	// API on the caddy process's behalf. Same end-state as the admin-API
+	// path above; this fallback handles the case where caddy is running
+	// but the admin endpoint is locked down or relocated.
+	let status = Command::new("caddy")
+		.args(["reload", "--config", path, "--adapter", "caddyfile"])
+		.status();
+	match status {
+		Ok(s) if s.success() => debug!("caddy reloaded via CLI"),
+		Ok(s) => warn!("caddy reload exited with {s}"),
+		Err(e) => warn!("could not run caddy reload: {e}"),
+	}
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub async fn reload_caddy() {
+	debug!("caddy reload is unsupported on this OS");
+}
+
+/// POST the Caddyfile content to Caddy's admin API at the default
+/// `localhost:2019/load` endpoint with `Content-Type: text/caddyfile`,
+/// telling Caddy to adapt + load it in-process. Returns an error string
+/// (with enough context to debug) if the file can't be read, the API
+/// doesn't respond, or it returns a non-2xx — the caller logs at debug
+/// and falls back to the platform CLI.
+#[cfg(target_os = "windows")]
+async fn reload_caddy_via_admin_api(path: &str) -> std::result::Result<(), String> {
+	let content = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+	let client = reqwest::Client::builder()
+		.timeout(Duration::from_secs(5))
+		.build()
+		.map_err(|e| format!("build client: {e}"))?;
+	let resp = client
+		.post("http://localhost:2019/load")
+		.header("Content-Type", "text/caddyfile")
+		.body(content)
+		.send()
+		.await
+		.map_err(|e| format!("POST localhost:2019/load: {e}"))?;
+	if !resp.status().is_success() {
+		let status = resp.status();
+		let body = resp.text().await.unwrap_or_default();
+		return Err(format!("admin API returned {status}: {body}"));
+	}
+	Ok(())
 }
 
 /// Look up the netavark IP of the podman container backing a systemd
