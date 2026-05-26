@@ -13,6 +13,7 @@ use crate::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 
+pub mod caddy_version;
 pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
@@ -122,6 +123,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("uptime", uptime),
 		entry!("time_sync", time_sync),
 		entry!("tamanu_http", tamanu_http),
+		entry!("caddy_version", caddy_version),
 		entry!("http_errors", http_errors),
 		entry!("tailscale", tailscale, off_wire),
 		entry!("tamanu_service", tamanu_service),
