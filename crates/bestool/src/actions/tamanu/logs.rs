@@ -20,6 +20,7 @@ use bestool_tamanu::{
 	ApiServerKind,
 	config::load_config,
 	pm2::{self, LogSource},
+	server_info::query_patient_portal_enabled,
 	services::{self, ExpectedState, Expectation, Instances, Supervisor},
 };
 
@@ -142,7 +143,29 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		bail!("tamanu logs is only supported on Linux (systemd) and Windows (pm2)");
 	};
 
-	let all_expectations = services::expected(supervisor, kind, &config, false);
+	// Read `features.patientPortal` from the DB so that `bestool tamanu logs
+	// tamanu-patientportal` actually matches when the flag is on; without
+	// this lookup the portal expectation is `Down` and gets filtered out by
+	// the `state == Up` predicate below.
+	let patient_portal_enabled =
+		if matches!(supervisor, Supervisor::Systemd) && matches!(kind, ApiServerKind::Central) {
+			match bestool_postgres::pool::connect_one(
+				&config.database_url(),
+				"bestool-tamanu-logs",
+			)
+			.await
+			{
+				Ok(client) => query_patient_portal_enabled(&client).await,
+				Err(err) => {
+					tracing::warn!(%err, "could not query features.patientPortal; assuming false");
+					false
+				}
+			}
+		} else {
+			false
+		};
+
+	let all_expectations = services::expected(supervisor, kind, &config, patient_portal_enabled);
 	let up_expectations: Vec<&Expectation> = all_expectations
 		.iter()
 		.filter(|e| e.state == ExpectedState::Up)

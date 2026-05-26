@@ -17,6 +17,7 @@ use bestool_tamanu::{
 	ApiServerKind,
 	config::load_config,
 	pm2,
+	server_info::query_patient_portal_enabled,
 	services::{self, Expectation, Supervisor, parse_systemd_unit},
 };
 
@@ -27,7 +28,16 @@ use super::{TamanuArgs, find_tamanu};
 /// Picks systemd on Linux, pm2 on Windows; bails on other platforms.
 /// Loads the tamanu config from the discovered root and asks
 /// `services::expected` for the canonical expectation list.
-pub fn config_and_expectations(tamanu: &TamanuArgs) -> Result<(Supervisor, Vec<Expectation>)> {
+///
+/// On Linux/central, opens a short-lived DB connection to read
+/// `features.patientPortal` so the patient-portal expectation reflects what
+/// Tamanu itself thinks is enabled — without this lookup the expectation is
+/// always `Down`, which silently no-ops `bestool tamanu start|restart
+/// tamanu-patientportal` on deployments where the flag is on. Falls back to
+/// `false` on DB error (matches what the doctor reports in the same case).
+pub async fn config_and_expectations(
+	tamanu: &TamanuArgs,
+) -> Result<(Supervisor, Vec<Expectation>)> {
 	let supervisor = if cfg!(target_os = "linux") {
 		Supervisor::Systemd
 	} else if cfg!(target_os = "windows") {
@@ -44,7 +54,27 @@ pub fn config_and_expectations(tamanu: &TamanuArgs) -> Result<(Supervisor, Vec<E
 		ApiServerKind::Central
 	};
 
-	let expectations = services::expected(supervisor, kind, &config, false);
+	// The patient-portal expectation is only emitted on Linux/central; skip
+	// the DB round-trip in any other shape.
+	let patient_portal_enabled =
+		if matches!(supervisor, Supervisor::Systemd) && matches!(kind, ApiServerKind::Central) {
+			match bestool_postgres::pool::connect_one(
+				&config.database_url(),
+				"bestool-tamanu-lifecycle",
+			)
+			.await
+			{
+				Ok(client) => query_patient_portal_enabled(&client).await,
+				Err(err) => {
+					warn!(%err, "could not query features.patientPortal; assuming false");
+					false
+				}
+			}
+		} else {
+			false
+		};
+
+	let expectations = services::expected(supervisor, kind, &config, patient_portal_enabled);
 	Ok((supervisor, expectations))
 }
 

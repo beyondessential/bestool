@@ -34,7 +34,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu)?;
+	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	let discovered = lifecycle::discover(supervisor)?;
