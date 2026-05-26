@@ -1,0 +1,12 @@
+[package]
+name = "bestool-kopia"
+version = "0.0.0"
+edition = "2024"
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "(Internal) BES tooling: shared library for interacting with the kopia CLI"
+repository = "https://github.com/beyondessential/bestool/tree/main/crates/kopia"
+exclude.workspace = true
+
+[lints]
+workspace = true

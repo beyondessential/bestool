@@ -6,6 +6,7 @@ members = [
 	"crates/bestool",
 	"crates/canopy",
 	"crates/improv-wifi",
+	"crates/kopia",
 	"crates/postgres",
 	"crates/psql",
 	"crates/rpi-st7789v2-driver",

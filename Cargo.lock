@@ -675,6 +675,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bestool-kopia"
+version = "0.0.0"
+
+[[package]]
 name = "bestool-postgres"
 version = "1.0.10"
 dependencies = [
