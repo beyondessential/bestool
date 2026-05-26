@@ -1,6 +1,6 @@
 use clap::Parser;
+use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::UTF8_HORIZONTAL_ONLY};
 use miette::{IntoDiagnostic, Result, bail};
-use owo_colors::OwoColorize;
 use serde::Serialize;
 
 use bestool_tamanu::services::{
@@ -57,13 +57,8 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 		return Ok(());
 	}
 
-	let mut any_short = false;
-	for (exp, instances) in &groups {
-		let short = render(exp, instances, use_colours);
-		if short {
-			any_short = true;
-		}
-	}
+	let (table, any_short) = render_table(&groups, use_colours);
+	println!("{table}");
 
 	if any_short {
 		bail!("some expectations are not met");
@@ -85,6 +80,7 @@ struct ExpectationReport {
 	running: usize,
 	min_count: usize,
 	status: &'static str,
+	reason: String,
 	instances: Vec<InstanceReport>,
 }
 
@@ -154,6 +150,7 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 				running,
 				min_count: exp.instances.min_count(),
 				status,
+				reason: exp.reason.clone(),
 				instances: instances
 					.iter()
 					.map(|i| InstanceReport {
@@ -172,64 +169,212 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 	}
 }
 
-/// Render one expectation + its discovered instances. Returns true if
-/// the expectation is "short": Up but with fewer running instances than
-/// `min_count`, or Down but with anything present.
-fn render(exp: &Expectation, instances: &[Instance], use_colours: bool) -> bool {
-	let running = instances.iter().filter(|i| i.running).count();
+/// Per-expectation outcome, used to pick the colour and structure of the
+/// "Actual" cell. Drives both the table render and the bail-out at the end
+/// of `run` — `is_short` returns true for every non-OK variant.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Outcome {
+	/// `Up` and at least `min_count` instances running.
+	Up,
+	/// `Up` but some — not all — instances are not running.
+	Short,
+	/// `Up` but no instances running (either missing entirely or all stopped).
+	Down,
+	/// `Down` and nothing present (after `drop_disabled_down` ran).
+	Absent,
+	/// `Down` but one or more instances are present in a meaningful way
+	/// (running, or stopped+enabled). The matching units are surfaced in the
+	/// Actual cell.
+	Forbidden,
+}
 
-	let (label, short) = match exp.state {
+impl Outcome {
+	fn is_short(self) -> bool {
+		!matches!(self, Outcome::Up | Outcome::Absent)
+	}
+
+	fn colour(self) -> Color {
+		match self {
+			Outcome::Up | Outcome::Absent => Color::Green,
+			Outcome::Short => Color::Yellow,
+			Outcome::Down | Outcome::Forbidden => Color::Red,
+		}
+	}
+}
+
+fn classify(exp: &Expectation, instances: &[Instance]) -> Outcome {
+	let running = instances.iter().filter(|i| i.running).count();
+	match exp.state {
 		ExpectedState::Up => {
 			let needed = exp.instances.min_count();
 			if running >= needed {
-				(painted("UP", "green", use_colours), false)
+				Outcome::Up
 			} else if running == 0 {
-				(painted("DOWN", "red", use_colours), true)
+				Outcome::Down
 			} else {
-				(painted("SHORT", "yellow", use_colours), true)
+				Outcome::Short
 			}
 		}
 		ExpectedState::Down => {
 			if instances.is_empty() {
-				(painted("ABSENT", "green", use_colours), false)
+				Outcome::Absent
 			} else {
-				(painted("FORBIDDEN", "red", use_colours), true)
+				Outcome::Forbidden
 			}
 		}
-	};
+	}
+}
 
-	let crit = match (exp.state, exp.criticality) {
+/// Build a table with Service / Expected / Actual / Reason columns from the
+/// grouped discovery output. Returns the table and an `any_short` flag the
+/// caller uses to set the exit status.
+fn render_table(groups: &[(&Expectation, Vec<Instance>)], use_colours: bool) -> (Table, bool) {
+	let mut table = Table::new();
+	table
+		.load_preset(UTF8_HORIZONTAL_ONLY)
+		.set_content_arrangement(ContentArrangement::Dynamic)
+		.set_header(header_cells(use_colours));
+
+	let mut any_short = false;
+	for (exp, instances) in groups {
+		let outcome = classify(exp, instances);
+		if outcome.is_short() {
+			any_short = true;
+		}
+		table.add_row(vec![
+			service_cell(exp),
+			expected_cell(exp),
+			actual_cell(exp, instances, outcome, use_colours),
+			reason_cell(&exp.reason, use_colours),
+		]);
+	}
+	(table, any_short)
+}
+
+fn header_cells(use_colours: bool) -> Vec<Cell> {
+	["Service", "Expected", "Actual", "Reason"]
+		.iter()
+		.map(|s| {
+			let c = Cell::new(s);
+			if use_colours {
+				c.add_attribute(Attribute::Bold)
+			} else {
+				c
+			}
+		})
+		.collect()
+}
+
+fn service_cell(exp: &Expectation) -> Cell {
+	let suffix = match (exp.state, exp.criticality) {
 		(ExpectedState::Up, Criticality::Critical) => " (critical)",
 		_ => "",
 	};
-
-	let needed = match exp.state {
-		ExpectedState::Up => format!("{}/{}", running, exp.instances.min_count()),
-		ExpectedState::Down => format!("{}", instances.len()),
-	};
-
-	println!("{:10} {} [{}]{}", label, exp.name, needed, crit);
-	for inst in instances {
-		let status = if inst.running {
-			painted("running", "green", use_colours)
-		} else {
-			painted("stopped", "yellow", use_colours)
-		};
-		println!("           {} {}", inst.display(), status);
-	}
-
-	short
+	Cell::new(format!("{}{suffix}", exp.name))
 }
 
-fn painted(s: &str, colour: &str, on: bool) -> String {
-	if !on {
-		return s.to_string();
+fn expected_cell(exp: &Expectation) -> Cell {
+	let text = match exp.state {
+		ExpectedState::Up => {
+			let n = exp.instances.min_count();
+			if n == 1 {
+				"up".to_string()
+			} else {
+				format!("up \u{00d7}{n}")
+			}
+		}
+		ExpectedState::Down => "absent".to_string(),
+	};
+	Cell::new(text)
+}
+
+fn actual_cell(
+	exp: &Expectation,
+	instances: &[Instance],
+	outcome: Outcome,
+	use_colours: bool,
+) -> Cell {
+	let running = instances.iter().filter(|i| i.running).count();
+	let needed = exp.instances.min_count();
+
+	let summary = match outcome {
+		Outcome::Up => {
+			if needed == 1 {
+				"running".to_string()
+			} else {
+				format!("{running}/{needed} running")
+			}
+		}
+		Outcome::Short => format!("{running}/{needed} running"),
+		Outcome::Down => {
+			if instances.is_empty() {
+				"missing".to_string()
+			} else {
+				format!("0/{needed} running")
+			}
+		}
+		Outcome::Absent => "absent".to_string(),
+		Outcome::Forbidden => forbidden_summary(instances),
+	};
+
+	let mut lines = vec![summary];
+	let want_details = match outcome {
+		Outcome::Short | Outcome::Down => instances.len() > 1 || needed > 1,
+		Outcome::Forbidden => instances.len() > 1,
+		_ => false,
+	};
+	if want_details {
+		for inst in instances {
+			lines.push(format!(
+				"  {}: {}",
+				inst.display(),
+				instance_word(inst, exp.state)
+			));
+		}
 	}
-	match colour {
-		"green" => s.green().to_string(),
-		"red" => s.red().to_string(),
-		"yellow" => s.yellow().to_string(),
-		_ => s.to_string(),
+
+	let cell = Cell::new(lines.join("\n"));
+	if use_colours {
+		cell.fg(outcome.colour())
+	} else {
+		cell
+	}
+}
+
+fn forbidden_summary(instances: &[Instance]) -> String {
+	if instances.len() == 1 {
+		instance_word(&instances[0], ExpectedState::Down).to_string()
+	} else {
+		let running = instances.iter().filter(|i| i.running).count();
+		let stopped = instances.len() - running;
+		match (running, stopped) {
+			(0, _) => format!("{stopped} stopped, but still enabled"),
+			(_, 0) => format!("{running} running"),
+			_ => format!("{running} running, {stopped} stopped but still enabled"),
+		}
+	}
+}
+
+/// Short status word for one instance in the Actual cell.
+///
+/// Surviving stopped instances of a `Down` expectation are known to be
+/// enabled (otherwise `drop_disabled_down` would have removed them), so we
+/// flag that explicitly — it's the actionable detail that distinguishes a
+/// false-positive from "the operator forgot to disable this".
+fn instance_word(inst: &Instance, expected: ExpectedState) -> &'static str {
+	match (inst.running, expected) {
+		(true, _) => "running",
+		(false, ExpectedState::Down) => "stopped, but still enabled",
+		(false, ExpectedState::Up) => "stopped",
+	}
+}
+
+fn reason_cell(reason: &str, use_colours: bool) -> Cell {
+	let cell = Cell::new(reason);
+	if use_colours {
+		cell.add_attribute(Attribute::Dim)
+	} else {
+		cell
 	}
 }
 
@@ -292,6 +437,87 @@ mod tests {
 		let report = build_report(&groups);
 		assert!(report.any_short, "stopped+enabled is still FORBIDDEN");
 		assert_eq!(report.expectations[0].status, "forbidden");
+	}
+
+	fn ok_up_exp() -> Expectation {
+		Expectation {
+			name: "tamanu-central-tasks",
+			instances: Instances::Single,
+			state: ExpectedState::Up,
+			criticality: Criticality::Background,
+			reason: "always required".into(),
+		}
+	}
+
+	#[test]
+	fn render_table_sample_output() {
+		// Snapshot of the realistic mixed-status output the user would see
+		// in production: a healthy singleton Up, a critical multi-instance
+		// Up, an absent Down (good), and a stopped+enabled Down (the
+		// FORBIDDEN false-positive case that motivated this work).
+		let tasks = ok_up_exp();
+		let frontend = up_exp();
+		let absent_down = Expectation {
+			name: "tamanu-facility",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			criticality: Criticality::Background,
+			reason: "legacy singleton unit must not be present".into(),
+		};
+		let portal = Expectation {
+			name: "tamanu-patientportal",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			criticality: Criticality::Background,
+			reason: "DB setting features.patientPortal is false".into(),
+		};
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
+			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
+			(
+				&frontend,
+				vec![
+					inst("tamanu-frontend", Some("a"), true),
+					inst("tamanu-frontend", Some("b"), true),
+				],
+			),
+			(&absent_down, vec![]),
+			(&portal, vec![inst("tamanu-patientportal", None, false)]),
+		];
+		let (table, any_short) = render_table(&groups, false);
+		assert!(any_short, "stopped+enabled Down expectation should bail");
+		let rendered = table.to_string();
+		assert!(rendered.contains("tamanu-central-tasks"));
+		assert!(rendered.contains("tamanu-frontend (critical)"));
+		assert!(rendered.contains("up \u{00d7}2"));
+		assert!(rendered.contains("tamanu-facility"));
+		assert!(rendered.contains("absent"));
+		assert!(rendered.contains("stopped, but still enabled"));
+		assert!(rendered.contains("always required"));
+		assert!(
+			rendered.contains("features.patientPortal"),
+			"reason column should show portal's DB reason"
+		);
+	}
+
+	#[test]
+	fn render_table_short_up_lists_per_instance() {
+		// Multi-instance Up with one instance stopped should expand the
+		// Actual cell to show each instance's state — the summary alone
+		// ("1/2 running") doesn't tell the operator which one to start.
+		let exp = up_exp();
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-frontend", Some("a"), true),
+				inst("tamanu-frontend", Some("b"), false),
+			],
+		)];
+		let (table, any_short) = render_table(&groups, false);
+		assert!(any_short);
+		let rendered = table.to_string();
+		assert!(rendered.contains("1/2 running"));
+		assert!(rendered.contains("tamanu-frontend@a: running"));
+		assert!(rendered.contains("tamanu-frontend@b: stopped"));
 	}
 
 	#[test]
