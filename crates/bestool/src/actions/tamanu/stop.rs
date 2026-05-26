@@ -1,5 +1,5 @@
 use clap::Parser;
-use miette::{IntoDiagnostic, Result, bail};
+use miette::Result;
 
 use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
 
@@ -42,11 +42,7 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	tracing::info!(?targets, "stopping");
-	match supervisor {
-		Supervisor::Systemd => systemctl_stop(&targets)?,
-		Supervisor::Pm2 => pm2_stop(&targets)?,
-	}
-
+	lifecycle::stop_targets(supervisor, &targets)?;
 	lifecycle::wait_stopped(supervisor, &targets)?;
 	Ok(())
 }
@@ -74,26 +70,3 @@ fn plan_stop(
 	targets
 }
 
-fn systemctl_stop(units: &[String]) -> Result<()> {
-	let status = std::process::Command::new("systemctl")
-		.arg("stop")
-		.args(units)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("systemctl stop failed: exit {status}");
-	}
-	Ok(())
-}
-
-fn pm2_stop(names: &[String]) -> Result<()> {
-	let status = std::process::Command::new("pm2")
-		.arg("stop")
-		.args(names)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("pm2 stop failed: exit {status}");
-	}
-	Ok(())
-}
