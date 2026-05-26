@@ -6,7 +6,10 @@ use super::CheckContext;
 use crate::{
 	doctor::check::Check,
 	pm2,
-	services::{Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit},
+	services::{
+		Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit,
+		systemd_is_enabled,
+	},
 };
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -60,27 +63,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return check;
 	}
 
-	// Probe `is-enabled` for any Down expectation whose unit didn't show up in
-	// `list-units` — catches `enabled-but-not-loaded` cases (rare but possible).
 	if matches!(supervisor, Supervisor::Systemd) {
-		for exp in &expectations {
-			if !matches!(exp.state, ExpectedState::Down) {
-				continue;
-			}
-			let already = discovered.iter().any(|d| d.name == exp.name);
-			if already {
-				continue;
-			}
-			if systemd_is_enabled(exp.name) {
-				discovered.push(Discovered {
-					name: exp.name.to_string(),
-					instance: None,
-					running: false,
-					present: true,
-					raw: format!("{}.service (enabled)", exp.name),
-				});
-			}
-		}
+		reconcile_down_with_enabled(&expectations, &mut discovered, |unit| {
+			systemd_is_enabled(unit)
+		});
 	}
 
 	evaluate_with_source(supervisor, &expectations, &discovered, pm2_source)
@@ -116,19 +102,6 @@ fn pm2_dump_fallback_indeterminate(
 	} else {
 		None
 	}
-}
-
-fn systemd_is_enabled(name: &str) -> bool {
-	let output = Command::new("systemctl")
-		.args(["is-enabled", &format!("{name}.service")])
-		.output();
-	// Catch "enabled" and "enabled-runtime"; ignore "static" (can't be
-	// enabled/disabled), "alias" (just a symlink), "disabled", "masked",
-	// "linked", and "not-found".
-	let Ok(o) = output else { return false };
-	let state = String::from_utf8_lossy(&o.stdout);
-	let state = state.trim();
-	state == "enabled" || state == "enabled-runtime"
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +200,52 @@ enum Outcome {
 	Forbidden {
 		units: Vec<String>,
 	},
+}
+
+/// Cross-reference Down expectations against `is-enabled` to handle the two
+/// cases `list-units` alone can't disambiguate:
+///
+/// - Unit not in `list-units` but *is* enabled → add it as a stopped+enabled
+///   `Discovered` so it gets flagged FORBIDDEN. Catches the rare
+///   `enabled-but-not-loaded` state (operator enabled the unit but hasn't
+///   started it or rebooted yet).
+/// - Unit in `list-units` (loaded) but stopped *and* disabled → drop it.
+///   Loaded-but-stopped is just systemd memory: after `systemctl stop` the
+///   unit can stay loaded until the next `daemon-reload`. Combined with
+///   `disabled`, it's effectively absent — it won't auto-start, has no
+///   running process, and the operator has clearly indicated they don't want
+///   it. Reporting FORBIDDEN here would be a false positive.
+fn reconcile_down_with_enabled(
+	expectations: &[Expectation],
+	discovered: &mut Vec<Discovered>,
+	is_enabled: impl Fn(&str) -> bool,
+) {
+	for exp in expectations {
+		if !matches!(exp.state, ExpectedState::Down) {
+			continue;
+		}
+		let unit = format!("{}.service", exp.name);
+		let pos = discovered.iter().position(|d| d.name == exp.name);
+		match pos {
+			None => {
+				if is_enabled(&unit) {
+					discovered.push(Discovered {
+						name: exp.name.to_string(),
+						instance: None,
+						running: false,
+						present: true,
+						raw: format!("{}.service (enabled)", exp.name),
+					});
+				}
+			}
+			Some(idx) if !discovered[idx].running => {
+				if !is_enabled(&unit) {
+					discovered.remove(idx);
+				}
+			}
+			Some(_) => {}
+		}
+	}
 }
 
 fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, Vec<usize>) {
@@ -603,7 +622,7 @@ mod tests {
 			d("tamanu-facility-api", Some("2"), true),
 			d("tamanu-facility-sync", None, true),
 			// legacy singleton that must not be present:
-			d("tamanu-facility", None, false),
+			d("tamanu-facility", None, true),
 		];
 		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
 		match &check.status {
@@ -617,6 +636,73 @@ mod tests {
 			}
 			other => panic!("{other:?}"),
 		}
+	}
+
+	fn portal_down_exp() -> Expectation {
+		Expectation {
+			name: "tamanu-patientportal",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			criticality: crate::services::Criticality::Background,
+			reason: "test".into(),
+		}
+	}
+
+	#[test]
+	fn reconcile_drops_stopped_and_disabled_down_unit() {
+		// `list-units --all` reported a stopped tamanu-patientportal.service
+		// (loaded but inactive), and the unit is also disabled. That's the
+		// "operator stopped and disabled a service we no longer expect" case
+		// — should be dropped before evaluation so it doesn't trigger
+		// FORBIDDEN.
+		let exps = vec![portal_down_exp()];
+		let mut discovered = vec![d("tamanu-patientportal", None, false)];
+		reconcile_down_with_enabled(&exps, &mut discovered, |_unit| false);
+		assert!(
+			discovered.is_empty(),
+			"stopped+disabled unit should be dropped: {discovered:?}",
+		);
+	}
+
+	#[test]
+	fn reconcile_keeps_stopped_but_enabled_down_unit() {
+		// Stopped but still enabled = "will auto-start at next boot". That's
+		// the case the check exists to catch — keep it as discovered so the
+		// evaluator marks it FORBIDDEN.
+		let exps = vec![portal_down_exp()];
+		let mut discovered = vec![d("tamanu-patientportal", None, false)];
+		reconcile_down_with_enabled(&exps, &mut discovered, |_unit| true);
+		assert_eq!(discovered.len(), 1);
+	}
+
+	#[test]
+	fn reconcile_keeps_running_down_unit_regardless_of_is_enabled() {
+		// Running services are unambiguously present; the is-enabled probe
+		// shouldn't even fire for them.
+		let exps = vec![portal_down_exp()];
+		let mut discovered = vec![d("tamanu-patientportal", None, true)];
+		reconcile_down_with_enabled(&exps, &mut discovered, |unit| {
+			panic!("is_enabled should not be called for running unit, got {unit}");
+		});
+		assert_eq!(discovered.len(), 1);
+	}
+
+	#[test]
+	fn reconcile_adds_enabled_but_not_loaded_down_unit() {
+		// Unit isn't in `list-units` output at all, but is-enabled returns
+		// true — synthesise a stopped+enabled Discovered so evaluation flags
+		// FORBIDDEN.
+		let exps = vec![portal_down_exp()];
+		let mut discovered: Vec<Discovered> = Vec::new();
+		reconcile_down_with_enabled(&exps, &mut discovered, |unit| {
+			unit == "tamanu-patientportal.service"
+		});
+		let portal = discovered
+			.iter()
+			.find(|d| d.name == "tamanu-patientportal")
+			.expect("portal should be synthesised");
+		assert!(!portal.running);
+		assert!(portal.raw.contains("enabled"));
 	}
 
 	#[test]

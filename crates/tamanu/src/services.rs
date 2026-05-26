@@ -297,6 +297,23 @@ pub fn match_names<'a>(
 	Ok(matched)
 }
 
+/// Ask systemd whether a unit is enabled (will auto-start at boot).
+///
+/// Returns `true` only for `enabled` / `enabled-runtime`. Treats
+/// `disabled`, `static`, `alias`, `masked`, `linked`, `not-found`, and any
+/// error from `systemctl` as not-enabled. `unit_name` is the unit's full
+/// name with the `.service` suffix already attached (e.g.
+/// `tamanu-patientportal.service`).
+pub fn systemd_is_enabled(unit_name: &str) -> bool {
+	let output = std::process::Command::new("systemctl")
+		.args(["is-enabled", unit_name])
+		.output();
+	let Ok(o) = output else { return false };
+	let state = String::from_utf8_lossy(&o.stdout);
+	let state = state.trim();
+	state == "enabled" || state == "enabled-runtime"
+}
+
 /// Parse a systemd unit name (`tamanu-foo@1.service`, `tamanu-foo.service`,
 /// `tamanu-foo`) into its base name and optional instance.
 ///
