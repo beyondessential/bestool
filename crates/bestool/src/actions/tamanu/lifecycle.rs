@@ -472,6 +472,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 
@@ -482,6 +483,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 

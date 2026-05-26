@@ -41,6 +41,14 @@ pub struct Expectation {
 	/// `"config integrations.fhir.worker.enabled is false"`,
 	/// `"DB setting features.patientPortal is true"`.
 	pub reason: String,
+	/// True for expectations that exist solely to catch leftover state from
+	/// older deployment shapes — e.g. the `tamanu-facility` singleton unit
+	/// from before facility servers split into per-role templates. Renderers
+	/// hide compliant `legacy` rows by default so the 90% of deployments
+	/// that never had the leftover aren't paying attention cost for a row
+	/// that will always read OK. Non-compliant legacy rows still surface
+	/// (and fail the check) just like any other.
+	pub legacy: bool,
 }
 
 /// Whether a service must keep at least one instance up at all times.
@@ -149,6 +157,7 @@ pub fn expected(
 		state: ExpectedState::Up,
 		criticality: Criticality::Background,
 		reason: "always required".into(),
+		legacy: false,
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -158,6 +167,7 @@ pub fn expected(
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
 			reason: "always required on systemd".into(),
+			legacy: false,
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
@@ -166,6 +176,7 @@ pub fn expected(
 			// criticality is unused for Down; Background is the harmless default.
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
+			legacy: true,
 		});
 	}
 
@@ -182,6 +193,7 @@ pub fn expected(
 		state: ExpectedState::Up,
 		criticality: Criticality::Critical,
 		reason: "always required".into(),
+		legacy: false,
 	});
 
 	match kind {
@@ -209,6 +221,7 @@ pub fn expected(
 				state: fhir_state,
 				criticality: Criticality::Background,
 				reason: fhir_reason.clone(),
+				legacy: false,
 			});
 			out.push(Expectation {
 				name: refresh,
@@ -216,6 +229,7 @@ pub fn expected(
 				state: fhir_state,
 				criticality: Criticality::Background,
 				reason: fhir_reason,
+				legacy: false,
 			});
 
 			// The patient portal quadlet (`tamanu-patientportal.service`) is
@@ -237,6 +251,7 @@ pub fn expected(
 					reason: format!(
 						"DB setting features.patientPortal is {patient_portal_enabled}"
 					),
+					legacy: false,
 				});
 			}
 		}
@@ -251,6 +266,7 @@ pub fn expected(
 				state: ExpectedState::Up,
 				criticality: Criticality::Background,
 				reason: "kind is facility".into(),
+				legacy: false,
 			});
 		}
 	}
@@ -295,6 +311,23 @@ pub fn match_names<'a>(
 		.filter(|e| names.iter().any(|name| e.name.contains(name)))
 		.collect();
 	Ok(matched)
+}
+
+/// Ask systemd whether a unit is enabled (will auto-start at boot).
+///
+/// Returns `true` only for `enabled` / `enabled-runtime`. Treats
+/// `disabled`, `static`, `alias`, `masked`, `linked`, `not-found`, and any
+/// error from `systemctl` as not-enabled. `unit_name` is the unit's full
+/// name with the `.service` suffix already attached (e.g.
+/// `tamanu-patientportal.service`).
+pub fn systemd_is_enabled(unit_name: &str) -> bool {
+	let output = std::process::Command::new("systemctl")
+		.args(["is-enabled", unit_name])
+		.output();
+	let Ok(o) = output else { return false };
+	let state = String::from_utf8_lossy(&o.stdout);
+	let state = state.trim();
+	state == "enabled" || state == "enabled-runtime"
 }
 
 /// Parse a systemd unit name (`tamanu-foo@1.service`, `tamanu-foo.service`,
@@ -603,6 +636,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 
