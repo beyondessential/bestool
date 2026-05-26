@@ -4,7 +4,7 @@ use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
 use bestool_tamanu::services::{
-	self, Criticality, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
+	self, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
 };
 
 use crate::actions::{
@@ -56,7 +56,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	};
 	let Plan {
 		targets,
-		started_critical,
+		started_behind_caddy,
 	} = plan_start(supervisor, &groups)?;
 	if stop_plan.is_empty() && targets.is_empty() {
 		tracing::info!("nothing to do; everything matches expected state");
@@ -78,14 +78,15 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 		lifecycle::wait_running(supervisor, &targets)?;
 	}
 
-	// Critical services are the API and frontend, whose containers Caddy
-	// reaches by hostname. When one of those comes up fresh, Caddy's
-	// upstream DNS cache may still hold a stale (NXDOMAIN) entry from
-	// before the container existed — `restart` handles this per-instance,
-	// but `start` brings up a batch in one go, so a single reload at the
-	// end covers all of them.
-	if started_critical && matches!(supervisor, Supervisor::Systemd) {
-		lifecycle::reload_caddy();
+	// Behind-caddy services (API, frontend, patient portal) reach Caddy by
+	// container hostname. When one of those comes up fresh its podman
+	// container has a brand-new netavark IP, but Caddy and systemd-resolved
+	// still hold the previous one — without a reload the next request hits
+	// a stale upstream. `restart` reloads per-instance for critical
+	// services; `start` brings everything up in one batch, so a single
+	// reload at the end covers them all.
+	if started_behind_caddy {
+		lifecycle::reload_caddy().await;
 	}
 
 	Ok(())
@@ -198,9 +199,10 @@ fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
 /// What `plan_start` decided to do.
 struct Plan {
 	targets: Vec<String>,
-	/// Whether any of the planned starts was for a `Criticality::Critical`
-	/// expectation — drives the post-start caddy reload.
-	started_critical: bool,
+	/// Whether any of the planned starts was for a `behind_caddy: true`
+	/// expectation — drives the post-start caddy reload so Caddy sees the
+	/// fresh container IPs of the services that just came up.
+	started_behind_caddy: bool,
 }
 
 /// Compute the list of supervisor identifiers to start.
@@ -214,7 +216,7 @@ fn plan_start(
 	groups: &[(&Expectation, Vec<Instance>)],
 ) -> Result<Plan> {
 	let mut targets = Vec::new();
-	let mut started_critical = false;
+	let mut started_behind_caddy = false;
 	for (exp, instances) in groups {
 		if exp.state != ExpectedState::Up {
 			continue;
@@ -249,13 +251,13 @@ fn plan_start(
 				}
 			}
 		}
-		if targets.len() > before && exp.criticality == Criticality::Critical {
-			started_critical = true;
+		if targets.len() > before && exp.behind_caddy {
+			started_behind_caddy = true;
 		}
 	}
 	Ok(Plan {
 		targets,
-		started_critical,
+		started_behind_caddy,
 	})
 }
 
@@ -288,39 +290,41 @@ mod tests {
 	use super::*;
 	use bestool_tamanu::services::Instances;
 
-	fn exp(name: &'static str, crit: Criticality) -> Expectation {
+	fn exp(name: &'static str, behind_caddy: bool) -> Expectation {
 		Expectation {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: crit,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy,
 		}
 	}
 
 	#[test]
-	fn started_critical_set_when_a_critical_unit_is_planned() {
-		let api = exp("tamanu-central-api", Criticality::Critical);
+	fn started_behind_caddy_set_when_a_behind_caddy_unit_is_planned() {
+		let api = exp("tamanu-central-api", true);
 		let groups = vec![(&api, Vec::<Instance>::new())];
 		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
 		assert!(!plan.targets.is_empty());
-		assert!(plan.started_critical);
+		assert!(plan.started_behind_caddy);
 	}
 
 	#[test]
-	fn started_critical_unset_when_only_background_planned() {
-		let tasks = exp("tamanu-central-tasks", Criticality::Background);
+	fn started_behind_caddy_unset_when_only_internal_planned() {
+		// Internal-only services (tasks, workers) trigger no caddy reload —
+		// caddy doesn't route to them.
+		let tasks = exp("tamanu-central-tasks", false);
 		let groups = vec![(&tasks, Vec::<Instance>::new())];
 		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
 		assert!(!plan.targets.is_empty());
-		assert!(!plan.started_critical);
+		assert!(!plan.started_behind_caddy);
 	}
 
 	#[test]
-	fn started_critical_unset_when_critical_already_running() {
-		// Critical expectation is fully satisfied — no targets, no caddy reload.
-		let api = exp("tamanu-central-api", Criticality::Critical);
+	fn started_behind_caddy_unset_when_behind_caddy_already_running() {
+		// behind-caddy expectation is fully satisfied — no targets, no caddy reload.
+		let api = exp("tamanu-central-api", true);
 		let already_running = vec![Instance {
 			name: "tamanu-central-api".into(),
 			instance: None,
@@ -330,19 +334,19 @@ mod tests {
 		let groups = vec![(&api, already_running)];
 		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
 		assert!(plan.targets.is_empty());
-		assert!(!plan.started_critical);
+		assert!(!plan.started_behind_caddy);
 	}
 
 	#[test]
-	fn started_critical_tracks_any_critical_in_a_mixed_batch() {
-		let tasks = exp("tamanu-central-tasks", Criticality::Background);
-		let api = exp("tamanu-central-api", Criticality::Critical);
+	fn started_behind_caddy_tracks_any_behind_caddy_in_a_mixed_batch() {
+		let tasks = exp("tamanu-central-tasks", false);
+		let api = exp("tamanu-central-api", true);
 		let groups = vec![
 			(&tasks, Vec::<Instance>::new()),
 			(&api, Vec::<Instance>::new()),
 		];
 		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
-		assert!(plan.started_critical);
+		assert!(plan.started_behind_caddy);
 	}
 
 	fn down_exp(name: &'static str) -> Expectation {
@@ -350,9 +354,9 @@ mod tests {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -419,7 +423,7 @@ mod tests {
 		// An Up expectation with a (transiently) stopped instance must not
 		// be added to the stop/disable list — the start phase will bring it
 		// back, not normalise it away.
-		let api = exp("tamanu-central-api", Criticality::Critical);
+		let api = exp("tamanu-central-api", true);
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
 			&api,
 			vec![Instance {

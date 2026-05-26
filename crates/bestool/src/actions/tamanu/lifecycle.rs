@@ -273,6 +273,41 @@ pub fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	Ok(())
 }
 
+/// Restart a batch of pm2 targets by stop-then-start with a short pause
+/// between, rather than `pm2 restart`. `targets` are pm2-acceptable
+/// identifiers (process names, or pm_ids stringified).
+///
+/// `pm2 restart` has been observed to occasionally leak the previous
+/// node process — it shows up as no longer owned by pm2 (and no longer in
+/// `pm2 list`) but still holding the TCP port, causing the freshly
+/// started replacement to either fail to bind or sit alongside the
+/// zombie. Splitting into explicit stop and start with ~1s in between
+/// gives the old process time to exit and release its handles before pm2
+/// hands them to the new one. No-op for an empty slice.
+pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
+	if targets.is_empty() {
+		return Ok(());
+	}
+	let stop = Command::new("pm2")
+		.arg("stop")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !stop.success() {
+		bail!("pm2 stop failed: exit {stop}");
+	}
+	sleep(Duration::from_secs(1));
+	let start = Command::new("pm2")
+		.arg("start")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !start.success() {
+		bail!("pm2 start failed: exit {start}");
+	}
+	Ok(())
+}
+
 /// Delete (i.e. unregister) a batch of pm2 processes. pm2's analogue of
 /// `systemctl disable`: removes the process entry from pm2's list entirely,
 /// so it won't be picked up by `pm2 resurrect` after the next pm2 restart
@@ -363,14 +398,7 @@ pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 			let id = instance
 				.pm_id
 				.ok_or_else(|| miette::miette!("pm2 instance {} has no pm_id", instance.name))?;
-			let status = Command::new("pm2")
-				.args(["restart", &id.to_string()])
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("pm2 restart {id} failed: {status}");
-			}
-			Ok(())
+			pm2_restart_targets(&[id.to_string()])
 		}
 	}
 }
@@ -410,16 +438,34 @@ fn is_pm2_pm_id_online(pm_id: Option<i64>) -> bool {
 	}
 }
 
-/// Reload caddy + flush systemd-resolved. Needed after restarting a
-/// containerised tamanu service: caddy's upstream list is by hostname,
-/// resolved caches IPs, and the restarted container has a new IP. Both
-/// calls are best-effort: failures are logged but don't bail.
+/// Reload caddy (Linux: + flush systemd-resolved). Needed after
+/// restarting a containerised tamanu service: caddy's upstream list is by
+/// hostname, resolved caches IPs, and the restarted container has a new
+/// IP. All calls are best-effort: failures are logged but don't bail.
+///
+/// Uses the platform-native path that reads the on-disk Caddyfile:
+///
+/// - Linux: `systemctl reload caddy`. We deliberately don't POST the
+///   Caddyfile to the admin API here even though it'd work for a
+///   single-file config — production deployments split their Caddyfile
+///   across `/etc/caddy/conf.d/*` includes, and the safest way to pick
+///   up every fragment is to let caddy re-read from disk the same way
+///   it did at startup.
+/// - Windows: tries the admin API first (`POST localhost:2019/load`
+///   with the Caddyfile content) since it's the most reliable when
+///   available; falls back to `caddy reload --config <path> --adapter
+///   caddyfile` if the admin endpoint is unreachable.
+///
+/// On Linux, also runs `resolvectl flush-caches` regardless of which
+/// reload path actually fired — systemd-resolved caches DNS independently
+/// of caddy's upstream list.
 ///
 /// Mirror of the ansible "Reload caddy" handler from #313.
-pub fn reload_caddy() {
+#[cfg(target_os = "linux")]
+pub async fn reload_caddy() {
 	let status = Command::new("systemctl").args(["reload", "caddy"]).status();
 	match status {
-		Ok(s) if s.success() => debug!("caddy reloaded"),
+		Ok(s) if s.success() => debug!("caddy reloaded via systemctl"),
 		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
 		Err(e) => warn!("could not reload caddy: {e}"),
 	}
@@ -429,6 +475,63 @@ pub fn reload_caddy() {
 		Ok(s) => warn!("resolvectl flush-caches exited with {s}"),
 		Err(e) => debug!("resolvectl not available: {e}"),
 	}
+}
+
+#[cfg(target_os = "windows")]
+pub async fn reload_caddy() {
+	let path = r"C:\Caddy\Caddyfile";
+	match reload_caddy_via_admin_api(path).await {
+		Ok(()) => {
+			debug!("caddy reloaded via admin API");
+			return;
+		}
+		Err(err) => debug!(%err, "caddy admin API unreachable, falling back to CLI"),
+	}
+	// `caddy reload` reads the file, adapts it, and POSTs to the admin
+	// API on the caddy process's behalf. Same end-state as the admin-API
+	// path above; this fallback handles the case where caddy is running
+	// but the admin endpoint is locked down or relocated.
+	let status = Command::new("caddy")
+		.args(["reload", "--config", path, "--adapter", "caddyfile"])
+		.status();
+	match status {
+		Ok(s) if s.success() => debug!("caddy reloaded via CLI"),
+		Ok(s) => warn!("caddy reload exited with {s}"),
+		Err(e) => warn!("could not run caddy reload: {e}"),
+	}
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub async fn reload_caddy() {
+	debug!("caddy reload is unsupported on this OS");
+}
+
+/// POST the Caddyfile content to Caddy's admin API at the default
+/// `localhost:2019/load` endpoint with `Content-Type: text/caddyfile`,
+/// telling Caddy to adapt + load it in-process. Returns an error string
+/// (with enough context to debug) if the file can't be read, the API
+/// doesn't respond, or it returns a non-2xx — the caller logs at debug
+/// and falls back to the platform CLI.
+#[cfg(target_os = "windows")]
+async fn reload_caddy_via_admin_api(path: &str) -> std::result::Result<(), String> {
+	let content = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+	let client = reqwest::Client::builder()
+		.timeout(Duration::from_secs(5))
+		.build()
+		.map_err(|e| format!("build client: {e}"))?;
+	let resp = client
+		.post("http://localhost:2019/load")
+		.header("Content-Type", "text/caddyfile")
+		.body(content)
+		.send()
+		.await
+		.map_err(|e| format!("POST localhost:2019/load: {e}"))?;
+	if !resp.status().is_success() {
+		let status = resp.status();
+		let body = resp.text().await.unwrap_or_default();
+		return Err(format!("admin API returned {status}: {body}"));
+	}
+	Ok(())
 }
 
 /// Look up the netavark IP of the podman container backing a systemd
@@ -530,16 +633,16 @@ fn is_running(supervisor: Supervisor, target: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bestool_tamanu::services::{Criticality, ExpectedState, Instances};
+	use bestool_tamanu::services::{ExpectedState, Instances};
 
 	fn exp(name: &'static str) -> Expectation {
 		Expectation {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -548,9 +651,9 @@ mod tests {
 			name,
 			instances: Instances::NumericAtLeast(2),
 			state: ExpectedState::Up,
-			criticality: Criticality::Critical,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 

@@ -32,9 +32,6 @@ pub struct Expectation {
 	pub name: &'static str,
 	pub instances: Instances,
 	pub state: ExpectedState,
-	/// Availability constraint when restarting. Only meaningful for
-	/// `ExpectedState::Up` services.
-	pub criticality: Criticality,
 	/// Why this expectation has its current shape — surfaced in doctor
 	/// diagnostics so operators can see *why* a given service is expected up
 	/// or down. Examples: `"always required"`, `"kind is facility"`,
@@ -49,18 +46,24 @@ pub struct Expectation {
 	/// that will always read OK. Non-compliant legacy rows still surface
 	/// (and fail the check) just like any other.
 	pub legacy: bool,
+	/// True for services Caddy reverse-proxies to by container hostname —
+	/// frontend, API, patient portal. Whenever one of these is started or
+	/// restarted its podman container gets a fresh netavark IP, but Caddy
+	/// and systemd-resolved still cache the previous one; without a reload
+	/// the next request hits a stale upstream. Lifecycle commands key off
+	/// this flag to decide when to call `lifecycle::reload_caddy`.
+	pub behind_caddy: bool,
 }
 
-/// Whether a service must keep at least one instance up at all times.
-///
-/// Drives the restart strategy: `Critical` rolls one instance at a time
-/// with a readiness probe between each; `Background` restarts in bulk.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Criticality {
-	/// Must always have at least one instance up. API and frontend.
-	Critical,
-	/// No availability constraint. Tasks, sync, fhir-*.
-	Background,
+impl Expectation {
+	/// Whether `bestool tamanu restart` should roll this service one
+	/// instance at a time (with a readiness probe between each) instead of
+	/// bulk-restarting. The criterion is purely technical: rolling needs at
+	/// least two instances to keep one available during the roll. Single
+	/// instances bulk-restart regardless of how user-facing they are.
+	pub fn rolling_restart(&self) -> bool {
+		self.instances.min_count() >= 2
+	}
 }
 
 /// How the instances of a logical service are arranged.
@@ -155,9 +158,9 @@ pub fn expected(
 		name: tasks_name,
 		instances: Instances::Single,
 		state: ExpectedState::Up,
-		criticality: Criticality::Background,
 		reason: "always required".into(),
 		legacy: false,
+		behind_caddy: false,
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -165,18 +168,18 @@ pub fn expected(
 			name: "tamanu-frontend",
 			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Up,
-			criticality: Criticality::Critical,
 			reason: "always required on systemd".into(),
 			legacy: false,
+			behind_caddy: true,
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
 			// criticality is unused for Down; Background is the harmless default.
-			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
+			behind_caddy: false,
 		});
 	}
 
@@ -191,9 +194,9 @@ pub fn expected(
 		name: api_name,
 		instances: Instances::NumericAtLeast(2),
 		state: ExpectedState::Up,
-		criticality: Criticality::Critical,
 		reason: "always required".into(),
 		legacy: false,
+		behind_caddy: true,
 	});
 
 	match kind {
@@ -219,17 +222,17 @@ pub fn expected(
 				name: resolve,
 				instances: Instances::Single,
 				state: fhir_state,
-				criticality: Criticality::Background,
 				reason: fhir_reason.clone(),
 				legacy: false,
+				behind_caddy: false,
 			});
 			out.push(Expectation {
 				name: refresh,
 				instances: Instances::Single,
 				state: fhir_state,
-				criticality: Criticality::Background,
 				reason: fhir_reason,
 				legacy: false,
+				behind_caddy: false,
 			});
 
 			// The patient portal quadlet (`tamanu-patientportal.service`) is
@@ -247,11 +250,11 @@ pub fn expected(
 					name: "tamanu-patientportal",
 					instances: Instances::Single,
 					state: portal_state,
-					criticality: Criticality::Background,
 					reason: format!(
 						"DB setting features.patientPortal is {patient_portal_enabled}"
 					),
 					legacy: false,
+					behind_caddy: true,
 				});
 			}
 		}
@@ -264,9 +267,9 @@ pub fn expected(
 				name: sync_name,
 				instances: Instances::Single,
 				state: ExpectedState::Up,
-				criticality: Criticality::Background,
 				reason: "kind is facility".into(),
 				legacy: false,
+				behind_caddy: false,
 			});
 		}
 	}
@@ -565,57 +568,45 @@ mod tests {
 		assert!(!Instances::Single.admits_instance(Some("1")));
 	}
 
-	fn criticality_for(es: &[Expectation], name: &str) -> Criticality {
+	fn rolling_for(es: &[Expectation], name: &str) -> bool {
 		es.iter()
 			.find(|e| e.name == name)
 			.unwrap_or_else(|| panic!("no expectation named {name}"))
-			.criticality
+			.rolling_restart()
 	}
 
 	#[test]
-	fn api_and_frontend_are_critical() {
+	fn api_and_frontend_are_rolling_restartable() {
+		// Both run as templated/clustered units; rolling restart can keep
+		// one instance live while the other swaps.
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
 			false,
 		);
-		assert_eq!(
-			criticality_for(&central, "tamanu-central-api"),
-			Criticality::Critical
-		);
-		assert_eq!(
-			criticality_for(&central, "tamanu-frontend"),
-			Criticality::Critical
-		);
+		assert!(rolling_for(&central, "tamanu-central-api"));
+		assert!(rolling_for(&central, "tamanu-frontend"));
 
 		let facility_pm2 = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false), false);
-		assert_eq!(
-			criticality_for(&facility_pm2, "tamanu-api"),
-			Criticality::Critical
-		);
+		assert!(rolling_for(&facility_pm2, "tamanu-api"));
 	}
 
 	#[test]
-	fn tasks_sync_fhir_are_background() {
+	fn singletons_bulk_restart() {
+		// Single-instance services bulk-restart: there's no second instance
+		// to take traffic during a roll. This includes patient-portal,
+		// which is single-but-behind-caddy.
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(true),
-			false,
+			true,
 		);
-		assert_eq!(
-			criticality_for(&central, "tamanu-central-tasks"),
-			Criticality::Background
-		);
-		assert_eq!(
-			criticality_for(&central, "tamanu-central-fhir-resolve"),
-			Criticality::Background
-		);
-		assert_eq!(
-			criticality_for(&central, "tamanu-central-fhir-refresh"),
-			Criticality::Background
-		);
+		assert!(!rolling_for(&central, "tamanu-central-tasks"));
+		assert!(!rolling_for(&central, "tamanu-central-fhir-resolve"));
+		assert!(!rolling_for(&central, "tamanu-central-fhir-refresh"));
+		assert!(!rolling_for(&central, "tamanu-patientportal"));
 
 		let facility = expected(
 			Supervisor::Systemd,
@@ -623,10 +614,7 @@ mod tests {
 			&cfg(false),
 			false,
 		);
-		assert_eq!(
-			criticality_for(&facility, "tamanu-facility-sync"),
-			Criticality::Background
-		);
+		assert!(!rolling_for(&facility, "tamanu-facility-sync"));
 	}
 
 	fn exp(name: &'static str) -> Expectation {
@@ -634,9 +622,9 @@ mod tests {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 

@@ -1093,7 +1093,7 @@ Alias: t
 * `psql` — Connect to Tamanu's database
 * `tags` — Fetch this device's tags from canopy.
 * `restart` — Rolling-restart all running tamanu services.
-* `start` — Bring up any expected tamanu services that aren't running.
+* `start` — Normalise tamanu services to the expected running state.
 * `status` — Report on tamanu services: what's expected vs what's actually running.
 * `stop` — Stop running tamanu services.
 
@@ -1851,16 +1851,26 @@ instance up to take traffic.
 
 ## `bestool tamanu start`
 
-Bring up any expected tamanu services that aren't running.
+Normalise tamanu services to the expected running state.
 
-Idempotent: services already up are left alone. Use `tamanu status`
-first if you want to see what's missing.
+Default mode does both halves: stops (and disables, on systemd) any
+service we expect to be `Down` that's currently running or enabled,
+then starts any `Up` service that's currently missing or short. With
+`--up-only` it behaves like the previous `start`-only version: just
+brings up missing services without touching anything else.
 
-**Usage:** `bestool tamanu start [NAMES]...`
+Idempotent: services already in the expected state are left alone.
+Use `tamanu status` first to see what's drifted.
+
+**Usage:** `bestool tamanu start [OPTIONS] [NAMES]...`
 
 ###### **Arguments:**
 
-* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = start every Up expectation that's currently short
+* `<NAMES>` — Limit to expectations whose name contains any of these substrings. No names = consider every expectation
+
+###### **Options:**
+
+* `--up-only` — Skip the stop/disable phase: only bring up missing Up services, leave any drifted Down services as-is. Useful when you want to avoid touching a service that's running but shouldn't be (e.g. because you're mid-investigation)
 
 
 
@@ -1881,6 +1891,7 @@ check, or before/after a `tamanu start` / `restart` to see the impact.
 ###### **Options:**
 
 * `--json` — Emit the wire-shape JSON instead of the human-readable render
+* `--all` — Include compliant legacy expectations (e.g. `tamanu-facility`) in the output. Without this flag, legacy rows are hidden when they're in their expected state — they only show up if they fail, so the 90% of deployments that never had the leftover unit don't see a permanent OK row for it. Implied when name filters are supplied
 
 
 
