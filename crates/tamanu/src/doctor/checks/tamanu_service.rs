@@ -337,6 +337,7 @@ fn evaluate(
 			"instances": instances_to_json(&exp.instances),
 			"outcome": outcome_to_json(&outcome),
 			"reason": exp.reason,
+			"legacy": exp.legacy,
 		}));
 
 		if !matches!(outcome, Outcome::Ok) {
@@ -645,6 +646,7 @@ mod tests {
 			state: ExpectedState::Down,
 			criticality: crate::services::Criticality::Background,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 

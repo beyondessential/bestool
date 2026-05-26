@@ -30,6 +30,14 @@ pub struct StatusArgs {
 	/// Emit the wire-shape JSON instead of the human-readable render.
 	#[arg(long)]
 	pub json: bool,
+
+	/// Include compliant legacy expectations (e.g. `tamanu-facility`) in
+	/// the output. Without this flag, legacy rows are hidden when they're
+	/// in their expected state — they only show up if they fail, so the
+	/// 90% of deployments that never had the leftover unit don't see a
+	/// permanent OK row for it. Implied when name filters are supplied.
+	#[arg(long)]
+	pub all: bool,
 }
 
 pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
@@ -43,6 +51,9 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let mut groups = lifecycle::group_by_expectation(&matched, &discovered);
 	if matches!(supervisor, Supervisor::Systemd) {
 		drop_disabled_down(&mut groups, systemd_is_enabled);
+	}
+	if !args.all && args.names.is_empty() {
+		hide_compliant_legacy(&mut groups);
 	}
 
 	if args.json {
@@ -81,6 +92,7 @@ struct ExpectationReport {
 	min_count: usize,
 	status: &'static str,
 	reason: String,
+	legacy: bool,
 	instances: Vec<InstanceReport>,
 }
 
@@ -113,6 +125,15 @@ fn drop_disabled_down(
 		}
 		instances.retain(|i| i.running || is_enabled(&i.unit()));
 	}
+}
+
+/// Drop `legacy` expectations whose outcome is OK from the groups list, so
+/// the renderer doesn't print a permanent green row for state that never
+/// applied to this deployment. A non-OK legacy expectation (e.g. the
+/// long-defunct `tamanu-facility` unit somehow still running) is *kept* so
+/// operators still get the prompt to clean it up.
+fn hide_compliant_legacy(groups: &mut Vec<(&Expectation, Vec<Instance>)>) {
+	groups.retain(|(exp, instances)| !exp.legacy || classify(exp, instances).is_short());
 }
 
 fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
@@ -151,6 +172,7 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 				min_count: exp.instances.min_count(),
 				status,
 				reason: exp.reason.clone(),
+				legacy: exp.legacy,
 				instances: instances
 					.iter()
 					.map(|i| InstanceReport {
@@ -390,6 +412,7 @@ mod tests {
 			state: ExpectedState::Down,
 			criticality: Criticality::Background,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 
@@ -400,6 +423,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 
@@ -446,6 +470,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
 			reason: "always required".into(),
+			legacy: false,
 		}
 	}
 
@@ -463,6 +488,7 @@ mod tests {
 			state: ExpectedState::Down,
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
+			legacy: true,
 		};
 		let portal = Expectation {
 			name: "tamanu-patientportal",
@@ -470,6 +496,7 @@ mod tests {
 			state: ExpectedState::Down,
 			criticality: Criticality::Background,
 			reason: "DB setting features.patientPortal is false".into(),
+			legacy: false,
 		};
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
 			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
@@ -518,6 +545,55 @@ mod tests {
 		assert!(rendered.contains("1/2 running"));
 		assert!(rendered.contains("tamanu-frontend@a: running"));
 		assert!(rendered.contains("tamanu-frontend@b: stopped"));
+	}
+
+	#[test]
+	fn hide_compliant_legacy_drops_absent_legacy_row() {
+		// Legacy Down expectation, nothing present → compliant → hidden.
+		let legacy = Expectation {
+			name: "tamanu-facility",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			criticality: Criticality::Background,
+			reason: "legacy singleton unit must not be present".into(),
+			legacy: true,
+		};
+		let tasks = ok_up_exp();
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![
+			(&legacy, vec![]),
+			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
+		];
+		hide_compliant_legacy(&mut groups);
+		assert_eq!(groups.len(), 1);
+		assert_eq!(groups[0].0.name, "tamanu-central-tasks");
+	}
+
+	#[test]
+	fn hide_compliant_legacy_keeps_failing_legacy_row() {
+		// Non-compliant legacy (running when it should be absent) must
+		// stay visible — that's exactly the case the check exists to catch.
+		let legacy = Expectation {
+			name: "tamanu-facility",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			criticality: Criticality::Background,
+			reason: "legacy singleton unit must not be present".into(),
+			legacy: true,
+		};
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
+			vec![(&legacy, vec![inst("tamanu-facility", None, true)])];
+		hide_compliant_legacy(&mut groups);
+		assert_eq!(groups.len(), 1);
+		assert_eq!(groups[0].0.name, "tamanu-facility");
+	}
+
+	#[test]
+	fn hide_compliant_legacy_keeps_non_legacy_compliant_rows() {
+		// Non-legacy expectations are never filtered, even when compliant.
+		let portal = down_exp();
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![(&portal, vec![])];
+		hide_compliant_legacy(&mut groups);
+		assert_eq!(groups.len(), 1, "non-legacy Down/absent must remain shown");
 	}
 
 	#[test]

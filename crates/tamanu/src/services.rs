@@ -41,6 +41,14 @@ pub struct Expectation {
 	/// `"config integrations.fhir.worker.enabled is false"`,
 	/// `"DB setting features.patientPortal is true"`.
 	pub reason: String,
+	/// True for expectations that exist solely to catch leftover state from
+	/// older deployment shapes — e.g. the `tamanu-facility` singleton unit
+	/// from before facility servers split into per-role templates. Renderers
+	/// hide compliant `legacy` rows by default so the 90% of deployments
+	/// that never had the leftover aren't paying attention cost for a row
+	/// that will always read OK. Non-compliant legacy rows still surface
+	/// (and fail the check) just like any other.
+	pub legacy: bool,
 }
 
 /// Whether a service must keep at least one instance up at all times.
@@ -149,6 +157,7 @@ pub fn expected(
 		state: ExpectedState::Up,
 		criticality: Criticality::Background,
 		reason: "always required".into(),
+		legacy: false,
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -158,6 +167,7 @@ pub fn expected(
 			state: ExpectedState::Up,
 			criticality: Criticality::Critical,
 			reason: "always required on systemd".into(),
+			legacy: false,
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
@@ -166,6 +176,7 @@ pub fn expected(
 			// criticality is unused for Down; Background is the harmless default.
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
+			legacy: true,
 		});
 	}
 
@@ -182,6 +193,7 @@ pub fn expected(
 		state: ExpectedState::Up,
 		criticality: Criticality::Critical,
 		reason: "always required".into(),
+		legacy: false,
 	});
 
 	match kind {
@@ -209,6 +221,7 @@ pub fn expected(
 				state: fhir_state,
 				criticality: Criticality::Background,
 				reason: fhir_reason.clone(),
+				legacy: false,
 			});
 			out.push(Expectation {
 				name: refresh,
@@ -216,6 +229,7 @@ pub fn expected(
 				state: fhir_state,
 				criticality: Criticality::Background,
 				reason: fhir_reason,
+				legacy: false,
 			});
 
 			// The patient portal quadlet (`tamanu-patientportal.service`) is
@@ -237,6 +251,7 @@ pub fn expected(
 					reason: format!(
 						"DB setting features.patientPortal is {patient_portal_enabled}"
 					),
+					legacy: false,
 				});
 			}
 		}
@@ -251,6 +266,7 @@ pub fn expected(
 				state: ExpectedState::Up,
 				criticality: Criticality::Background,
 				reason: "kind is facility".into(),
+				legacy: false,
 			});
 		}
 	}
@@ -620,6 +636,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: Criticality::Background,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 

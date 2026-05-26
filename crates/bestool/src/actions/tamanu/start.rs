@@ -166,6 +166,7 @@ mod tests {
 			state: ExpectedState::Up,
 			criticality: crit,
 			reason: "test".into(),
+			legacy: false,
 		}
 	}
 
