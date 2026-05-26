@@ -248,7 +248,7 @@ fn get_args() -> Result<(Args, WorkerGuard)> {
 	Ok((args, log_guard))
 }
 
-fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+async fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
 	let database_url = daemon
 		.database_url
 		.ok_or_else(|| miette!("--database-url is required"))?;
@@ -290,12 +290,18 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 		None
 	};
 
-	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(daemon.glob, database_url, daemon.tamanu_version)
-			.with_dry_run(daemon.dry_run)
-			.with_no_server(daemon.no_server)
-			.with_server_addrs(daemon.server_addr)
-			.with_watchdog_timeout(watchdog_timeout);
+	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
+
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(
+		daemon.glob,
+		pg_pool,
+		database_url,
+		daemon.tamanu_version,
+	)
+	.with_dry_run(daemon.dry_run)
+	.with_no_server(daemon.no_server)
+	.with_server_addrs(daemon.server_addr)
+	.with_watchdog_timeout(watchdog_timeout);
 
 	if let Some(email) = email {
 		daemon_config = daemon_config.with_email(email);
@@ -309,7 +315,7 @@ fn build_daemon_config(daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfi
 }
 
 async fn run_daemon(daemon: DaemonArgs) -> Result<()> {
-	let daemon_config = build_daemon_config(daemon)?;
+	let daemon_config = build_daemon_config(daemon).await?;
 	bestool_alertd::run(daemon_config).await
 }
 
@@ -374,7 +380,7 @@ async fn main() -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let daemon_config = build_daemon_config(daemon)?;
+			let daemon_config = build_daemon_config(daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
 		Command::Docs => {
