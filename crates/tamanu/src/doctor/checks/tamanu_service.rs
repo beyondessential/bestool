@@ -645,7 +645,6 @@ mod tests {
 			name: "tamanu-patientportal",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: crate::services::Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,

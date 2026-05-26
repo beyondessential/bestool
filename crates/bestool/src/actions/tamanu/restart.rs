@@ -6,7 +6,7 @@ use miette::{IntoDiagnostic, Result, bail};
 use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
-use bestool_tamanu::services::{self, Criticality, ExpectedState, Expectation, Supervisor};
+use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
 
 use crate::actions::{
 	Context,
@@ -67,34 +67,34 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	let Partitioned {
-		background,
-		background_behind_caddy,
-		critical,
+		bulk,
+		bulk_behind_caddy,
+		rolling,
 	} = partition(supervisor, &groups);
 	let client = http_client()?;
 
-	if !background.is_empty() {
-		info!(targets = ?background, "restarting background services");
-		bulk_restart(supervisor, &background)?;
-		lifecycle::wait_running(supervisor, &background)?;
-		// One reload after the bulk covers every behind-caddy background
-		// service in the batch (currently just patient-portal). Per-service
-		// rolling reloads aren't needed here because background services
-		// don't have a "keep one up" availability constraint — the bulk
-		// restart already drops them all briefly, so a single trailing
-		// reload is enough to flush Caddy's stale upstream IPs.
-		if background_behind_caddy && matches!(supervisor, Supervisor::Systemd) {
+	if !bulk.is_empty() {
+		info!(targets = ?bulk, "bulk-restarting non-rolling services");
+		bulk_restart(supervisor, &bulk)?;
+		lifecycle::wait_running(supervisor, &bulk)?;
+		// One reload after the bulk covers every behind-caddy service in
+		// the batch (currently just patient-portal). Per-service rolling
+		// reloads aren't needed here because singleton services don't have
+		// a "keep one up" availability constraint — the bulk restart
+		// already drops them all briefly, so a single trailing reload is
+		// enough to flush Caddy's stale upstream IPs.
+		if bulk_behind_caddy && matches!(supervisor, Supervisor::Systemd) {
 			lifecycle::reload_caddy();
 		}
 	} else {
-		debug!("no background services to restart");
+		debug!("no bulk-restart services");
 	}
 
-	for (i, (instance, behind_caddy)) in critical.iter().enumerate() {
+	for (i, (instance, behind_caddy)) in rolling.iter().enumerate() {
 		info!(
 			"rolling restart {}/{}: {}",
 			i + 1,
-			critical.len(),
+			rolling.len(),
 			instance.display(),
 		);
 		lifecycle::restart_one(supervisor, instance)?;
@@ -121,7 +121,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		// either probing is disabled (`--no-probe-http`) or we couldn't
 		// construct a probe URL. A failed probe is impossible here: the
 		// probe loop retries forever until it succeeds.
-		if i + 1 < critical.len() && !probed_ready {
+		if i + 1 < rolling.len() && !probed_ready {
 			debug!(seconds = args.cooldown.as_secs(), "cooldown");
 			tokio::time::sleep(args.cooldown).await;
 		}
@@ -135,28 +135,34 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	Ok(())
 }
 
-/// Output of [`partition`]: background services are restarted in bulk,
-/// critical services one-at-a-time with a per-instance readiness probe
-/// between each. `Down` expectations are dropped entirely (they wouldn't
-/// be running, so there's nothing to restart).
+/// Output of [`partition`]: rolling-eligible services restart one
+/// instance at a time with a per-instance readiness probe between each;
+/// everything else bulk-restarts. `Down` expectations are dropped entirely
+/// (they wouldn't be running, so there's nothing to restart).
+///
+/// "Rolling-eligible" comes from [`Expectation::rolling_restart`]:
+/// `min_count >= 2`, i.e. the expectation has enough instances that
+/// rolling can keep one available while the next swaps. Singletons (even
+/// behind-caddy ones like patient-portal) bulk-restart because there's no
+/// second instance to take traffic during the roll.
 struct Partitioned {
 	/// Supervisor-native identifiers to bulk-restart.
-	background: Vec<String>,
-	/// True if any background entry's expectation has `behind_caddy: true`
-	/// — drives a single trailing `reload_caddy` after the bulk completes
-	/// so Caddy sees the new container IPs (currently relevant for
+	bulk: Vec<String>,
+	/// True if any bulk entry's expectation has `behind_caddy: true` —
+	/// drives a single trailing `reload_caddy` after the bulk completes so
+	/// Caddy sees the new container IPs (currently relevant for
 	/// patient-portal).
-	background_behind_caddy: bool,
-	/// Instances to roll one-at-a-time, paired with their
-	/// expectation's `behind_caddy` flag so each iteration knows whether
-	/// to reload Caddy after the restart settles.
-	critical: Vec<(Instance, bool)>,
+	bulk_behind_caddy: bool,
+	/// Instances to roll one-at-a-time, paired with their expectation's
+	/// `behind_caddy` flag so each iteration knows whether to reload Caddy
+	/// after the restart settles.
+	rolling: Vec<(Instance, bool)>,
 }
 
 fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -> Partitioned {
-	let mut background = Vec::new();
-	let mut background_behind_caddy = false;
-	let mut critical = Vec::new();
+	let mut bulk = Vec::new();
+	let mut bulk_behind_caddy = false;
+	let mut rolling = Vec::new();
 	for (exp, instances) in groups {
 		if exp.state != ExpectedState::Up {
 			continue;
@@ -165,24 +171,23 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 			if !inst.running {
 				continue;
 			}
-			match exp.criticality {
-				Criticality::Background => {
-					background.push(match supervisor {
-						Supervisor::Systemd => inst.unit(),
-						Supervisor::Pm2 => inst.name.clone(),
-					});
-					if exp.behind_caddy {
-						background_behind_caddy = true;
-					}
+			if exp.rolling_restart() {
+				rolling.push((inst.clone(), exp.behind_caddy));
+			} else {
+				bulk.push(match supervisor {
+					Supervisor::Systemd => inst.unit(),
+					Supervisor::Pm2 => inst.name.clone(),
+				});
+				if exp.behind_caddy {
+					bulk_behind_caddy = true;
 				}
-				Criticality::Critical => critical.push((inst.clone(), exp.behind_caddy)),
 			}
 		}
 	}
 	Partitioned {
-		background,
-		background_behind_caddy,
-		critical,
+		bulk,
+		bulk_behind_caddy,
+		rolling,
 	}
 }
 
@@ -303,66 +308,85 @@ mod tests {
 	use super::*;
 	use bestool_tamanu::services::Instances;
 
-	fn up_exp(name: &'static str, crit: Criticality, behind_caddy: bool) -> Expectation {
+	fn up_exp(name: &'static str, instances: Instances, behind_caddy: bool) -> Expectation {
 		Expectation {
 			name,
-			instances: Instances::Single,
+			instances,
 			state: ExpectedState::Up,
-			criticality: crit,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy,
 		}
 	}
 
-	fn inst(name: &str, running: bool) -> Instance {
+	fn inst(name: &str, instance: Option<&str>, running: bool) -> Instance {
 		Instance {
 			name: name.into(),
-			instance: None,
+			instance: instance.map(Into::into),
 			pm_id: None,
 			running,
 		}
 	}
 
 	#[test]
-	fn partition_flags_background_behind_caddy_when_portal_runs() {
-		// Patient portal is Background but behind Caddy — a bulk restart of
-		// it must still trigger a Caddy reload at the end so Caddy picks up
-		// the new container IP.
-		let portal = up_exp("tamanu-patientportal", Criticality::Background, true);
-		let tasks = up_exp("tamanu-central-tasks", Criticality::Background, false);
+	fn partition_flags_bulk_behind_caddy_when_portal_runs() {
+		// Patient portal is single-instance (so bulk-restartable) but behind
+		// Caddy — a bulk restart must still trigger a Caddy reload at the
+		// end so Caddy picks up the new container IP.
+		let portal = up_exp("tamanu-patientportal", Instances::Single, true);
+		let tasks = up_exp("tamanu-central-tasks", Instances::Single, false);
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
-			(&portal, vec![inst("tamanu-patientportal", true)]),
-			(&tasks, vec![inst("tamanu-central-tasks", true)]),
+			(&portal, vec![inst("tamanu-patientportal", None, true)]),
+			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
 		];
 		let p = partition(Supervisor::Systemd, &groups);
-		assert!(p.background_behind_caddy);
-		assert_eq!(p.background.len(), 2);
+		assert!(p.bulk_behind_caddy);
+		assert_eq!(p.bulk.len(), 2);
+		assert!(p.rolling.is_empty());
 	}
 
 	#[test]
-	fn partition_no_background_behind_caddy_when_no_caddy_service_in_background() {
-		// All-internal background batch — no caddy reload should fire.
-		let tasks = up_exp("tamanu-central-tasks", Criticality::Background, false);
-		let sync = up_exp("tamanu-facility-sync", Criticality::Background, false);
+	fn partition_no_bulk_behind_caddy_when_no_caddy_service_in_bulk() {
+		// All-internal bulk batch — no caddy reload should fire.
+		let tasks = up_exp("tamanu-central-tasks", Instances::Single, false);
+		let sync = up_exp("tamanu-facility-sync", Instances::Single, false);
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
-			(&tasks, vec![inst("tamanu-central-tasks", true)]),
-			(&sync, vec![inst("tamanu-facility-sync", true)]),
+			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
+			(&sync, vec![inst("tamanu-facility-sync", None, true)]),
 		];
 		let p = partition(Supervisor::Systemd, &groups);
-		assert!(!p.background_behind_caddy);
+		assert!(!p.bulk_behind_caddy);
 	}
 
 	#[test]
-	fn partition_carries_behind_caddy_per_critical_instance() {
-		let api = up_exp("tamanu-central-api", Criticality::Critical, true);
+	fn partition_carries_behind_caddy_per_rolling_instance() {
+		// Multi-instance API is rolling-eligible; each rolling entry carries
+		// the behind_caddy flag so the loop can reload caddy per swap.
+		let api = up_exp("tamanu-central-api", Instances::NumericAtLeast(2), true);
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&api,
+			vec![
+				inst("tamanu-central-api", Some("1"), true),
+				inst("tamanu-central-api", Some("2"), true),
+			],
+		)];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert_eq!(p.rolling.len(), 2);
+		assert!(p.rolling.iter().all(|(_, behind_caddy)| *behind_caddy));
+		assert!(p.bulk.is_empty());
+	}
+
+	#[test]
+	fn partition_singleton_behind_caddy_is_bulk_not_rolling() {
+		// Patient portal: single-instance, behind caddy. The user-facing
+		// "kind of critical" case — should bulk-restart (only one
+		// instance), but still trigger caddy reload.
+		let portal = up_exp("tamanu-patientportal", Instances::Single, true);
 		let groups: Vec<(&Expectation, Vec<Instance>)> =
-			vec![(&api, vec![inst("tamanu-central-api", true)])];
+			vec![(&portal, vec![inst("tamanu-patientportal", None, true)])];
 		let p = partition(Supervisor::Systemd, &groups);
-		assert_eq!(p.critical.len(), 1);
-		assert!(
-			p.critical[0].1,
-			"behind_caddy flag should ride along on each critical instance"
-		);
+		assert!(p.rolling.is_empty(), "singleton must not roll");
+		assert_eq!(p.bulk.len(), 1);
+		assert!(p.bulk_behind_caddy);
 	}
 }

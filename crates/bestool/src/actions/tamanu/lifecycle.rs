@@ -530,14 +530,13 @@ fn is_running(supervisor: Supervisor, target: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bestool_tamanu::services::{Criticality, ExpectedState, Instances};
+	use bestool_tamanu::services::{ExpectedState, Instances};
 
 	fn exp(name: &'static str) -> Expectation {
 		Expectation {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,
@@ -549,7 +548,6 @@ mod tests {
 			name,
 			instances: Instances::NumericAtLeast(2),
 			state: ExpectedState::Up,
-			criticality: Criticality::Critical,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,

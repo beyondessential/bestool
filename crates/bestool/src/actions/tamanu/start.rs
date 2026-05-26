@@ -288,14 +288,13 @@ fn pm2_start(names: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bestool_tamanu::services::{Criticality, Instances};
+	use bestool_tamanu::services::Instances;
 
 	fn exp(name: &'static str, behind_caddy: bool) -> Expectation {
 		Expectation {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy,
@@ -355,7 +354,6 @@ mod tests {
 			name,
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,

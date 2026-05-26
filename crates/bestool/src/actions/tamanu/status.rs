@@ -4,7 +4,7 @@ use miette::{IntoDiagnostic, Result, bail};
 use serde::Serialize;
 
 use bestool_tamanu::services::{
-	self, Criticality, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
+	self, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
 };
 
 use crate::actions::{
@@ -87,12 +87,12 @@ struct Report {
 struct ExpectationReport {
 	name: &'static str,
 	expected_state: &'static str,
-	criticality: &'static str,
 	running: usize,
 	min_count: usize,
 	status: &'static str,
 	reason: String,
 	legacy: bool,
+	behind_caddy: bool,
 	instances: Vec<InstanceReport>,
 }
 
@@ -164,15 +164,12 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 					ExpectedState::Up => "up",
 					ExpectedState::Down => "down",
 				},
-				criticality: match exp.criticality {
-					Criticality::Critical => "critical",
-					Criticality::Background => "background",
-				},
 				running,
 				min_count: exp.instances.min_count(),
 				status,
 				reason: exp.reason.clone(),
 				legacy: exp.legacy,
+				behind_caddy: exp.behind_caddy,
 				instances: instances
 					.iter()
 					.map(|i| InstanceReport {
@@ -288,11 +285,7 @@ fn header_cells(use_colours: bool) -> Vec<Cell> {
 }
 
 fn service_cell(exp: &Expectation) -> Cell {
-	let suffix = match (exp.state, exp.criticality) {
-		(ExpectedState::Up, Criticality::Critical) => " (critical)",
-		_ => "",
-	};
-	Cell::new(format!("{}{suffix}", exp.name))
+	Cell::new(exp.name)
 }
 
 fn expected_cell(exp: &Expectation) -> Cell {
@@ -403,14 +396,13 @@ fn reason_cell(reason: &str, use_colours: bool) -> Cell {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bestool_tamanu::services::{Criticality, Instances};
+	use bestool_tamanu::services::Instances;
 
 	fn down_exp() -> Expectation {
 		Expectation {
 			name: "tamanu-patientportal",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,
@@ -422,7 +414,6 @@ mod tests {
 			name: "tamanu-frontend",
 			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Up,
-			criticality: Criticality::Critical,
 			reason: "test".into(),
 			legacy: false,
 			behind_caddy: false,
@@ -470,7 +461,6 @@ mod tests {
 			name: "tamanu-central-tasks",
 			instances: Instances::Single,
 			state: ExpectedState::Up,
-			criticality: Criticality::Background,
 			reason: "always required".into(),
 			legacy: false,
 			behind_caddy: false,
@@ -489,7 +479,6 @@ mod tests {
 			name: "tamanu-facility",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
 			behind_caddy: false,
@@ -498,7 +487,6 @@ mod tests {
 			name: "tamanu-patientportal",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "DB setting features.patientPortal is false".into(),
 			legacy: false,
 			behind_caddy: false,
@@ -519,7 +507,7 @@ mod tests {
 		assert!(any_short, "stopped+enabled Down expectation should bail");
 		let rendered = table.to_string();
 		assert!(rendered.contains("tamanu-central-tasks"));
-		assert!(rendered.contains("tamanu-frontend (critical)"));
+		assert!(rendered.contains("tamanu-frontend"));
 		assert!(rendered.contains("up \u{00d7}2"));
 		assert!(rendered.contains("tamanu-facility"));
 		assert!(rendered.contains("absent"));
@@ -559,7 +547,6 @@ mod tests {
 			name: "tamanu-facility",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
 			behind_caddy: false,
@@ -582,7 +569,6 @@ mod tests {
 			name: "tamanu-facility",
 			instances: Instances::Single,
 			state: ExpectedState::Down,
-			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
 			behind_caddy: false,
