@@ -158,6 +158,7 @@ tamanu-doctor = [
 	"tamanu-config",
 	"bestool-tamanu/doctor",
 	"dep:bestool-canopy",
+	"dep:bestool-postgres",
 	"dep:bestool-psql",
 	"dep:owo-colors",
 	"dep:p256",

@@ -455,9 +455,9 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 
 /// Read the Tamanu device key from the standard on-disk path.
 ///
-/// Tries the file-based source only. `bestool-tamanu`'s full `fetch_device_key`
-/// also falls back to the Tamanu DB, but pulling in that path here would drag
-/// the doctor-only tokio runtime into the psql feature for what's a small
+/// Tries the file-based source only. `bestool-tamanu::fetch_device_key_with`
+/// also falls back to the Tamanu DB if a connection is available, but
+/// reaching for it here would add an extra DB round-trip for what's a small
 /// best-effort lookup — psql's canopy use degrades cleanly to direct fetches
 /// when the device key isn't readable.
 fn read_device_key() -> Option<String> {

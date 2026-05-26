@@ -521,16 +521,15 @@ pub(super) async fn perform_sweep(
 ) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
 	// `db_connect` check separately measures the open latency for reporting.
-	let db = match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
-		Ok((client, conn)) => {
-			tokio::spawn(async move {
-				if let Err(err) = conn.await {
-					warn!("doctor db connection error: {err}");
-				}
-			});
-			Some(Arc::new(client))
+	// Goes through `bestool_postgres::pool::connect_one` so all DB opens in
+	// the project share one SSL fallback / auth retry / app-name path.
+	let db = match bestool_postgres::pool::connect_one(database_url, "bestool-tamanu-doctor").await
+	{
+		Ok(client) => Some(Arc::new(client)),
+		Err(err) => {
+			warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
+			None
 		}
-		Err(_) => None,
 	};
 
 	let kind = bestool_tamanu::detect_kind(&config, db.as_deref()).await;

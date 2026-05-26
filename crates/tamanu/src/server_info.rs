@@ -276,27 +276,16 @@ fn generate_device_key_pem() -> Result<String> {
 
 /// Best-effort load of the Tamanu deviceKey PEM.
 ///
-/// Tries the standard file path first ([`standard_device_key_path`]). If that
-/// isn't readable, falls back to the legacy `local_system_facts.deviceKey`
-/// row in the Tamanu DB by opening a fresh connection to `database_url`. When
-/// the fallback succeeds and the standard path doesn't already exist,
-/// attempts a best-effort copy so subsequent runs don't need the DB.
+/// Tries the standard file path first ([`standard_device_key_path`]). If
+/// that isn't readable, falls back to the legacy
+/// `local_system_facts.deviceKey` row via the caller-supplied closure (which
+/// receives the chance to use a pre-existing DB client). When the fallback
+/// succeeds and the standard path doesn't already exist, attempts a
+/// best-effort copy so subsequent runs don't need the DB.
 ///
-/// Callers that already have a Tamanu DB client should use
-/// [`fetch_device_key_with`] instead to avoid opening a second connection.
-///
-/// Returns `None` if neither source yields a key. Logging is the only signal:
-/// callers without a device key continue to work (canopy tailscale path is
-/// still available).
-pub async fn fetch_device_key(database_url: &str) -> Option<String> {
-	fetch_device_key_with(|| fetch_device_key_from_db(database_url)).await
-}
-
-/// Like [`fetch_device_key`] but with a caller-supplied DB-fallback fetcher.
-///
-/// Use this from contexts that already hold a `tokio_postgres::Client` so we
-/// don't open a second connection. The closure is invoked only if the file at
-/// the standard path is missing/unreadable.
+/// Returns `None` if neither source yields a key. Logging is the only
+/// signal: callers without a device key continue to work (canopy tailscale
+/// path is still available).
 pub async fn fetch_device_key_with<F, Fut>(db_fetch: F) -> Option<String>
 where
 	F: FnOnce() -> Fut,
@@ -449,24 +438,6 @@ fn write_device_key_file(path: &Path, pem: &str) -> std::io::Result<()> {
 		f.sync_all()?;
 	}
 	std::fs::rename(&tmp, path)
-}
-
-async fn fetch_device_key_from_db(database_url: &str) -> Option<String> {
-	let (client, connection) =
-		match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
-			Ok(c) => c,
-			Err(err) => {
-				warn!("failed to connect for deviceKey fetch: {err}");
-				return None;
-			}
-		};
-	tokio::spawn(async move {
-		if let Err(err) = connection.await {
-			warn!("deviceKey-fetch connection error: {err}");
-		}
-	});
-
-	query_device_key_row(&client).await
 }
 
 /// Read the tailscale Self node's first IP and DNS name, if tailscale is
