@@ -10,8 +10,7 @@ use tracing::{debug, info};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
-	connection_url::ConnectionUrlBuilder,
-	server_info::fetch_device_key,
+	server_info::{fetch_device_key_with, query_device_key_row},
 };
 
 use super::{TamanuArgs, find_tamanu};
@@ -318,19 +317,8 @@ async fn build_config(
 
 	info!("starting alertd daemon");
 
-	let database_url = ConnectionUrlBuilder {
-		username: config.db.username.clone(),
-		password: Some(config.db.password.clone()),
-		host: config
-			.db
-			.host
-			.clone()
-			.unwrap_or_else(|| "localhost".to_string()),
-		port: config.db.port,
-		database: config.db.name.clone(),
-		ssl_mode: None,
-	}
-	.build();
+	let database_url = config.database_url();
+	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
 
 	let email = config
 		.mailgun
@@ -347,17 +335,32 @@ async fn build_config(
 		Some(std::time::Duration::from_secs(watchdog_timeout))
 	};
 
-	let device_key_pem = fetch_device_key(&database_url).await;
+	let device_key_pem = fetch_device_key_with(|| async {
+		match pg_pool.get().await {
+			Ok(conn) => query_device_key_row(&conn).await,
+			Err(err) => {
+				tracing::warn!(%err, "could not get DB conn for deviceKey fetch");
+				None
+			}
+		}
+	})
+	.await;
 
 	let config = Arc::new(config);
 
-	let mut daemon_config =
-		bestool_alertd::DaemonConfig::new(dirs, database_url.clone(), tamanu_version.to_string())
-			.with_dry_run(dry_run)
-			.with_no_server(no_server)
-			.with_server_addrs(server_addr)
-			.with_watchdog_timeout(watchdog)
-			.with_server_kind(detect_server_kind(&config, &database_url).await);
+	let server_kind = detect_server_kind(&config, &pg_pool).await;
+
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(
+		dirs,
+		pg_pool.clone(),
+		database_url.clone(),
+		tamanu_version.to_string(),
+	)
+	.with_dry_run(dry_run)
+	.with_no_server(no_server)
+	.with_server_addrs(server_addr)
+	.with_watchdog_timeout(watchdog)
+	.with_server_kind(server_kind);
 
 	if !no_healthchecks {
 		daemon_config = daemon_config.with_task(Arc::new(DoctorTask::new(
@@ -381,31 +384,24 @@ async fn build_config(
 
 /// Resolve the Tamanu server kind for alertd's alert-definition filter.
 ///
-/// Opens a short-lived DB connection so [`bestool_tamanu::detect_kind`] can
-/// check `local_system_facts`; the daemon itself uses a fresh pool later.
-/// Alertd is plugin-agnostic — it takes the kind as an opaque string and
-/// compares against alert YAML `server-kind:` values by equality. The Tamanu
+/// Borrows a connection from the daemon pool so
+/// [`bestool_tamanu::detect_kind`] can check `local_system_facts`. Alertd is
+/// plugin-agnostic — it takes the kind as an opaque string and compares
+/// against alert YAML `server-kind:` values by equality. The Tamanu
 /// vocabulary (`central` / `facility`) is decided here, at the integration
 /// boundary, not by alertd.
 async fn detect_server_kind(
 	config: &bestool_tamanu::config::TamanuConfig,
-	database_url: &str,
+	pg_pool: &bestool_postgres::pool::PgPool,
 ) -> &'static str {
-	let db = match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
-		Ok((client, conn)) => {
-			tokio::spawn(async move {
-				if let Err(err) = conn.await {
-					tracing::warn!("kind-detection connection error: {err}");
-				}
-			});
-			Some(client)
-		}
+	let conn = match pg_pool.get().await {
+		Ok(c) => Some(c),
 		Err(err) => {
 			tracing::debug!(%err, "no DB for kind detection; falling back to config-only");
 			None
 		}
 	};
-	match bestool_tamanu::detect_kind(config, db.as_ref()).await {
+	match bestool_tamanu::detect_kind(config, conn.as_deref()).await {
 		bestool_tamanu::ApiServerKind::Central => "central",
 		bestool_tamanu::ApiServerKind::Facility => "facility",
 	}

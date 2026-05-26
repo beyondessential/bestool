@@ -164,6 +164,21 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 	Ok(pool)
 }
 
+/// Open a single connection using the same SSL fallback, auth retry, and
+/// application-name path as [`create_pool`].
+///
+/// For one-shot commands that open exactly one connection and exit (doctor
+/// sweeps, the patient-portal flag lookup in lifecycle subcommands, etc.).
+/// Internally builds a pool, takes one client out, then drops the pool. The
+/// returned client owns its connection driver task — it remains usable after
+/// the pool is gone.
+pub async fn connect_one(url: &str, application_name: &str) -> Result<tokio_postgres::Client> {
+	use mobc::Manager as _;
+
+	let pool = create_pool(url, application_name).await?;
+	pool.manager.connect().await.into_diagnostic()
+}
+
 /// Check if we can actually establish a connection
 async fn check_pool(pool: &PgPool) -> Result<()> {
 	let conn = match pool.get().await {

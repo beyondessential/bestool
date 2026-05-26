@@ -51,7 +51,16 @@ pub struct DaemonConfig {
 	/// On occasion, patterns are re-evaluated to pick up newly created paths.
 	pub alert_globs: Vec<String>,
 
-	/// Database connection URL
+	/// Database connection pool, opened by the caller.
+	///
+	/// Centralising pool creation at the caller lets `bestool tamanu alertd`
+	/// reuse the pool for one-off setup queries (kind detection, device key
+	/// lookup) instead of opening additional short-lived connections.
+	pub pg_pool: bestool_postgres::pool::PgPool,
+
+	/// Database connection URL, retained for redacted display and as a
+	/// substitution variable in alert templates (e.g. the `DatabaseDown`
+	/// event context).
 	pub database_url: String,
 
 	/// Email server configuration
@@ -126,9 +135,15 @@ impl fmt::Debug for DaemonConfig {
 }
 
 impl DaemonConfig {
-	pub fn new(alert_globs: Vec<String>, database_url: String, tamanu_version: String) -> Self {
+	pub fn new(
+		alert_globs: Vec<String>,
+		pg_pool: bestool_postgres::pool::PgPool,
+		database_url: String,
+		tamanu_version: String,
+	) -> Self {
 		Self {
 			alert_globs,
+			pg_pool,
 			database_url,
 			email: None,
 			device_key_pem: None,

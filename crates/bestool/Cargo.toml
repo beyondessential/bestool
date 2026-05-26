@@ -20,6 +20,7 @@ workspace = true
 algae-cli = { version = "1.0.20", path = "../algae-cli", optional = true }
 bestool-alertd = { version = "5.0.0", path = "../alertd", default-features = false, optional = true }
 bestool-canopy = { version = "0.1.1", path = "../canopy", optional = true }
+bestool-postgres = { version = "1.0.9", path = "../postgres", optional = true }
 bestool-psql = { version = "1.5.4", path = "../psql", default-features = false, optional = true }
 bestool-tamanu = { version = "0.4.1", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
@@ -147,7 +148,7 @@ tamanu-alerts = [
 	"dep:tokio-postgres",
 	"dep:walkdir",
 ]
-tamanu-alertd = ["__tamanu", "tamanu-config", "bestool-tamanu/doctor", "dep:bestool-alertd", "dep:p256", "dep:serde_path_to_error", "dep:serde_yaml", "dep:tokio-postgres", "dep:tokio-stream", "dep:walkdir"]
+tamanu-alertd = ["__tamanu", "tamanu-config", "bestool-tamanu/doctor", "dep:bestool-alertd", "dep:bestool-postgres", "dep:p256", "dep:serde_path_to_error", "dep:serde_yaml", "dep:tokio-postgres", "dep:tokio-stream", "dep:walkdir"]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
@@ -157,6 +158,7 @@ tamanu-doctor = [
 	"tamanu-config",
 	"bestool-tamanu/doctor",
 	"dep:bestool-canopy",
+	"dep:bestool-postgres",
 	"dep:bestool-psql",
 	"dep:owo-colors",
 	"dep:p256",

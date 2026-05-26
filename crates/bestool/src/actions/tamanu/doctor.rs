@@ -15,7 +15,6 @@ use tracing::{debug, warn};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
-	connection_url::ConnectionUrlBuilder,
 	doctor::{
 		check::{Check, CheckStatus, OverallResult},
 		checks::{self, CheckContext},
@@ -85,7 +84,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let (version, root) = find_tamanu(tamanu)?;
 	let config = Arc::new(load_config(&root, None)?);
 
-	let database_url = build_database_url(&config);
+	let database_url = config.database_url();
 	let http_client = reqwest::Client::new();
 
 	let (sweep, source) = if args.no_daemon {
@@ -505,22 +504,6 @@ pub(super) struct SweepResult {
 	pub pg_version: Option<String>,
 }
 
-pub(super) fn build_database_url(config: &TamanuConfig) -> String {
-	ConnectionUrlBuilder {
-		username: config.db.username.clone(),
-		password: Some(config.db.password.clone()),
-		host: config
-			.db
-			.host
-			.clone()
-			.unwrap_or_else(|| "localhost".to_string()),
-		port: config.db.port,
-		database: config.db.name.clone(),
-		ssl_mode: None,
-	}
-	.build()
-}
-
 #[expect(
 	clippy::too_many_arguments,
 	reason = "each argument is a distinct knob the CLI and daemon callers need to thread through"
@@ -538,16 +521,15 @@ pub(super) async fn perform_sweep(
 ) -> Result<SweepResult> {
 	// Open a single connection up-front. Checks that need the DB share it; the
 	// `db_connect` check separately measures the open latency for reporting.
-	let db = match tokio_postgres::connect(database_url, tokio_postgres::NoTls).await {
-		Ok((client, conn)) => {
-			tokio::spawn(async move {
-				if let Err(err) = conn.await {
-					warn!("doctor db connection error: {err}");
-				}
-			});
-			Some(Arc::new(client))
+	// Goes through `bestool_postgres::pool::connect_one` so all DB opens in
+	// the project share one SSL fallback / auth retry / app-name path.
+	let db = match bestool_postgres::pool::connect_one(database_url, "bestool-tamanu-doctor").await
+	{
+		Ok(client) => Some(Arc::new(client)),
+		Err(err) => {
+			warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
+			None
 		}
-		Err(_) => None,
 	};
 
 	let kind = bestool_tamanu::detect_kind(&config, db.as_deref()).await;

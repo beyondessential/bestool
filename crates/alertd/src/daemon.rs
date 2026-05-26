@@ -100,10 +100,7 @@ pub async fn run_with_shutdown_and_reload(
 	metrics::init_metrics();
 	metrics::record_activity();
 
-	debug!(database_url = %daemon_config.database_url, "creating database connection pool");
-
-	let pool =
-		bestool_postgres::pool::create_pool(&daemon_config.database_url, "bestool-alertd").await?;
+	let pool = daemon_config.pg_pool.clone();
 
 	let canopy_client = match CanopyClient::new(
 		daemon_config.tamanu_version.clone(),
