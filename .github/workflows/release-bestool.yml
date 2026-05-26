@@ -231,7 +231,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           echo -n "$version" > latest-version.txt
           aws s3 cp latest-version.txt s3://bes-ops-tools/bestool/latest-version.txt --no-progress
-          aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest-version.txt'
+          MSYS_NO_PATHCONV=1 aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest-version.txt'
 
       - name: Upload for GHA
         shell: bash
