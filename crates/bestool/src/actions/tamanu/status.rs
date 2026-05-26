@@ -413,6 +413,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -424,6 +425,7 @@ mod tests {
 			criticality: Criticality::Critical,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -471,6 +473,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "always required".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -489,6 +492,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
+			behind_caddy: false,
 		};
 		let portal = Expectation {
 			name: "tamanu-patientportal",
@@ -497,6 +501,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "DB setting features.patientPortal is false".into(),
 			legacy: false,
+			behind_caddy: false,
 		};
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
 			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
@@ -557,6 +562,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
+			behind_caddy: false,
 		};
 		let tasks = ok_up_exp();
 		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![
@@ -579,6 +585,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
+			behind_caddy: false,
 		};
 		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
 			vec![(&legacy, vec![inst("tamanu-facility", None, true)])];

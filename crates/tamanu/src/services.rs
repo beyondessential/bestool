@@ -49,6 +49,16 @@ pub struct Expectation {
 	/// that will always read OK. Non-compliant legacy rows still surface
 	/// (and fail the check) just like any other.
 	pub legacy: bool,
+	/// True for services Caddy reverse-proxies to by container hostname —
+	/// frontend, API, patient portal. Whenever one of these is started or
+	/// restarted its podman container gets a fresh netavark IP, but Caddy
+	/// and systemd-resolved still cache the previous one; without a reload
+	/// the next request hits a stale upstream. Lifecycle commands key off
+	/// this flag to decide when to call `lifecycle::reload_caddy` —
+	/// `Criticality::Critical` happens to currently mean the same thing,
+	/// but only because nothing background is behind Caddy *yet*; patient
+	/// portal is the first counterexample.
+	pub behind_caddy: bool,
 }
 
 /// Whether a service must keep at least one instance up at all times.
@@ -158,6 +168,7 @@ pub fn expected(
 		criticality: Criticality::Background,
 		reason: "always required".into(),
 		legacy: false,
+		behind_caddy: false,
 	});
 
 	if matches!(supervisor, Supervisor::Systemd) {
@@ -168,6 +179,7 @@ pub fn expected(
 			criticality: Criticality::Critical,
 			reason: "always required on systemd".into(),
 			legacy: false,
+			behind_caddy: true,
 		});
 		out.push(Expectation {
 			name: "tamanu-facility",
@@ -177,6 +189,7 @@ pub fn expected(
 			criticality: Criticality::Background,
 			reason: "legacy singleton unit must not be present".into(),
 			legacy: true,
+			behind_caddy: false,
 		});
 	}
 
@@ -194,6 +207,7 @@ pub fn expected(
 		criticality: Criticality::Critical,
 		reason: "always required".into(),
 		legacy: false,
+		behind_caddy: true,
 	});
 
 	match kind {
@@ -222,6 +236,7 @@ pub fn expected(
 				criticality: Criticality::Background,
 				reason: fhir_reason.clone(),
 				legacy: false,
+				behind_caddy: false,
 			});
 			out.push(Expectation {
 				name: refresh,
@@ -230,6 +245,7 @@ pub fn expected(
 				criticality: Criticality::Background,
 				reason: fhir_reason,
 				legacy: false,
+				behind_caddy: false,
 			});
 
 			// The patient portal quadlet (`tamanu-patientportal.service`) is
@@ -252,6 +268,7 @@ pub fn expected(
 						"DB setting features.patientPortal is {patient_portal_enabled}"
 					),
 					legacy: false,
+					behind_caddy: true,
 				});
 			}
 		}
@@ -267,6 +284,7 @@ pub fn expected(
 				criticality: Criticality::Background,
 				reason: "kind is facility".into(),
 				legacy: false,
+				behind_caddy: false,
 			});
 		}
 	}
@@ -637,6 +655,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 

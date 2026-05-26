@@ -540,6 +540,7 @@ mod tests {
 			criticality: Criticality::Background,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
@@ -551,6 +552,7 @@ mod tests {
 			criticality: Criticality::Critical,
 			reason: "test".into(),
 			legacy: false,
+			behind_caddy: false,
 		}
 	}
 
