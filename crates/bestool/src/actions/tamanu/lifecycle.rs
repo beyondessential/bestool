@@ -248,6 +248,73 @@ pub fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	wait_for(supervisor, targets, false, "inactive")
 }
 
+/// Issue a stop call to the right supervisor for every target.
+///
+/// `targets` are supervisor-native identifiers — systemd unit names
+/// (`tamanu-foo.service`, `tamanu-foo@1.service`) or pm2 process names.
+/// No-op for an empty slice. Bails non-zero on supervisor failure; doesn't
+/// itself wait for the stop to complete (use `wait_stopped` afterwards).
+pub fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	if targets.is_empty() {
+		return Ok(());
+	}
+	let (cmd, verb) = match supervisor {
+		Supervisor::Systemd => ("systemctl", "stop"),
+		Supervisor::Pm2 => ("pm2", "stop"),
+	};
+	let status = Command::new(cmd)
+		.arg(verb)
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !status.success() {
+		bail!("{cmd} {verb} failed: exit {status}");
+	}
+	Ok(())
+}
+
+/// Delete (i.e. unregister) a batch of pm2 processes. pm2's analogue of
+/// `systemctl disable`: removes the process entry from pm2's list entirely,
+/// so it won't be picked up by `pm2 resurrect` after the next pm2 restart
+/// and won't show up in `pm2 list`. Implies stopping the process if it was
+/// running. No-op for an empty slice.
+///
+/// More aggressive than systemd's `disable`: there's no plain "don't
+/// auto-start" toggle on pm2, so re-bringing-up requires the ops setup
+/// playbook to re-register the process via the ecosystem file.
+pub fn delete_pm2(names: &[String]) -> Result<()> {
+	if names.is_empty() {
+		return Ok(());
+	}
+	let status = Command::new("pm2")
+		.arg("delete")
+		.args(names)
+		.status()
+		.into_diagnostic()?;
+	if !status.success() {
+		bail!("pm2 delete failed: exit {status}");
+	}
+	Ok(())
+}
+
+/// Disable a batch of systemd units. No-op for an empty slice. Errors
+/// bubble up — callers that want best-effort behaviour should filter the
+/// list with `systemd_is_enabled` first (the typical pattern).
+pub fn disable_systemd_units(units: &[String]) -> Result<()> {
+	if units.is_empty() {
+		return Ok(());
+	}
+	let status = Command::new("systemctl")
+		.arg("disable")
+		.args(units)
+		.status()
+		.into_diagnostic()?;
+	if !status.success() {
+		bail!("systemctl disable failed: exit {status}");
+	}
+	Ok(())
+}
+
 fn wait_for(
 	supervisor: Supervisor,
 	targets: &[String],
