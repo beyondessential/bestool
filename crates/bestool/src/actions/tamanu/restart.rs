@@ -192,19 +192,20 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 }
 
 fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
-	let (cmd, verb) = match supervisor {
-		Supervisor::Systemd => ("systemctl", "restart"),
-		Supervisor::Pm2 => ("pm2", "restart"),
-	};
-	let status = std::process::Command::new(cmd)
-		.arg(verb)
-		.args(targets)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("{cmd} {verb} failed: {status}");
+	match supervisor {
+		Supervisor::Systemd => {
+			let status = std::process::Command::new("systemctl")
+				.arg("restart")
+				.args(targets)
+				.status()
+				.into_diagnostic()?;
+			if !status.success() {
+				bail!("systemctl restart failed: {status}");
+			}
+			Ok(())
+		}
+		Supervisor::Pm2 => lifecycle::pm2_restart_targets(targets),
 	}
-	Ok(())
 }
 
 fn http_client() -> Result<Client> {

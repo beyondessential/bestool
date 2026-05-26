@@ -273,6 +273,41 @@ pub fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	Ok(())
 }
 
+/// Restart a batch of pm2 targets by stop-then-start with a short pause
+/// between, rather than `pm2 restart`. `targets` are pm2-acceptable
+/// identifiers (process names, or pm_ids stringified).
+///
+/// `pm2 restart` has been observed to occasionally leak the previous
+/// node process — it shows up as no longer owned by pm2 (and no longer in
+/// `pm2 list`) but still holding the TCP port, causing the freshly
+/// started replacement to either fail to bind or sit alongside the
+/// zombie. Splitting into explicit stop and start with ~1s in between
+/// gives the old process time to exit and release its handles before pm2
+/// hands them to the new one. No-op for an empty slice.
+pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
+	if targets.is_empty() {
+		return Ok(());
+	}
+	let stop = Command::new("pm2")
+		.arg("stop")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !stop.success() {
+		bail!("pm2 stop failed: exit {stop}");
+	}
+	sleep(Duration::from_secs(1));
+	let start = Command::new("pm2")
+		.arg("start")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !start.success() {
+		bail!("pm2 start failed: exit {start}");
+	}
+	Ok(())
+}
+
 /// Delete (i.e. unregister) a batch of pm2 processes. pm2's analogue of
 /// `systemctl disable`: removes the process entry from pm2's list entirely,
 /// so it won't be picked up by `pm2 resurrect` after the next pm2 restart
@@ -363,14 +398,7 @@ pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 			let id = instance
 				.pm_id
 				.ok_or_else(|| miette::miette!("pm2 instance {} has no pm_id", instance.name))?;
-			let status = Command::new("pm2")
-				.args(["restart", &id.to_string()])
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("pm2 restart {id} failed: {status}");
-			}
-			Ok(())
+			pm2_restart_targets(&[id.to_string()])
 		}
 	}
 }
