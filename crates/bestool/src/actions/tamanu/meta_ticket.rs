@@ -8,7 +8,6 @@ use tracing::debug;
 
 use bestool_tamanu::{
 	config::load_config,
-	connection_url::ConnectionUrlBuilder,
 	server_info::{
 		detect_virtualisation, get_or_create_device_key, get_or_create_server_id,
 		get_tailscale_info,
@@ -49,19 +48,7 @@ pub async fn run(_args: MetaTicketArgs, ctx: Context) -> Result<()> {
 	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 	let config = load_config(&root, None)?;
 
-	let builder = ConnectionUrlBuilder {
-		username: config.db.username.clone(),
-		password: Some(config.db.password.clone()),
-		host: config
-			.db
-			.host
-			.clone()
-			.unwrap_or_else(|| "localhost".to_string()),
-		port: config.db.port,
-		database: config.db.name.clone(),
-		ssl_mode: None,
-	};
-	let url = builder.build();
+	let url = config.database_url();
 
 	debug!(url, "connecting to database");
 	let pool = bestool_psql::create_pool(&url).await?;

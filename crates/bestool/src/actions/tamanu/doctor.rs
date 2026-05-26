@@ -15,7 +15,6 @@ use tracing::{debug, warn};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
-	connection_url::ConnectionUrlBuilder,
 	doctor::{
 		check::{Check, CheckStatus, OverallResult},
 		checks::{self, CheckContext},
@@ -85,7 +84,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let (version, root) = find_tamanu(tamanu)?;
 	let config = Arc::new(load_config(&root, None)?);
 
-	let database_url = build_database_url(&config);
+	let database_url = config.database_url();
 	let http_client = reqwest::Client::new();
 
 	let (sweep, source) = if args.no_daemon {
@@ -503,22 +502,6 @@ pub(super) struct SweepResult {
 	/// callers (e.g. the daemon plugin) can cache it across ticks instead of
 	/// re-querying every minute.
 	pub pg_version: Option<String>,
-}
-
-pub(super) fn build_database_url(config: &TamanuConfig) -> String {
-	ConnectionUrlBuilder {
-		username: config.db.username.clone(),
-		password: Some(config.db.password.clone()),
-		host: config
-			.db
-			.host
-			.clone()
-			.unwrap_or_else(|| "localhost".to_string()),
-		port: config.db.port,
-		database: config.db.name.clone(),
-		ssl_mode: None,
-	}
-	.build()
 }
 
 #[expect(

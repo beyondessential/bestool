@@ -63,6 +63,28 @@ impl TamanuConfig {
 	pub fn fhir_worker_enabled(&self) -> bool {
 		self.integrations.fhir.worker.enabled
 	}
+
+	/// Build the `postgresql://` URL from `db` for the canonical
+	/// username/password the local Tamanu install uses. Hosts default to
+	/// `localhost`, port defers to the URL's libpq default when unset.
+	///
+	/// Subcommands that need a different role (e.g. psql's report-schema
+	/// connections) build their own `ConnectionUrlBuilder` instead.
+	pub fn database_url(&self) -> String {
+		crate::connection_url::ConnectionUrlBuilder {
+			username: self.db.username.clone(),
+			password: Some(self.db.password.clone()),
+			host: self
+				.db
+				.host
+				.clone()
+				.unwrap_or_else(|| "localhost".to_string()),
+			port: self.db.port,
+			database: self.db.name.clone(),
+			ssl_mode: None,
+		}
+		.build()
+	}
 }
 
 /// The `integrations` block of the Tamanu config.

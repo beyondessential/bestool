@@ -10,7 +10,6 @@ use tracing::{debug, info};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
-	connection_url::ConnectionUrlBuilder,
 	server_info::fetch_device_key,
 };
 
@@ -318,19 +317,7 @@ async fn build_config(
 
 	info!("starting alertd daemon");
 
-	let database_url = ConnectionUrlBuilder {
-		username: config.db.username.clone(),
-		password: Some(config.db.password.clone()),
-		host: config
-			.db
-			.host
-			.clone()
-			.unwrap_or_else(|| "localhost".to_string()),
-		port: config.db.port,
-		database: config.db.name.clone(),
-		ssl_mode: None,
-	}
-	.build();
+	let database_url = config.database_url();
 
 	let email = config
 		.mailgun
