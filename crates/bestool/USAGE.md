@@ -33,6 +33,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool iti temperature`↴](#bestool-iti-temperature)
 * [`bestool kopia`↴](#bestool-kopia)
 * [`bestool kopia info`↴](#bestool-kopia-info)
+* [`bestool kopia list`↴](#bestool-kopia-list)
 * [`bestool rdp`↴](#bestool-rdp)
 * [`bestool rdp monitor`↴](#bestool-rdp-monitor)
 * [`bestool rdp service`↴](#bestool-rdp-service)
@@ -925,6 +926,7 @@ Wraps the `kopia` CLI to add ergonomics for our deployments: defaults scoped to 
 ###### **Subcommands:**
 
 * `info` — Show kopia repository connection status
+* `list` — List kopia snapshots, defaulting to those from this host
 
 ###### **Options:**
 
@@ -944,6 +946,24 @@ Show kopia repository connection status.
 Wraps `kopia repository status`. Useful as a quick check that the configured repository is reachable and we're connected.
 
 **Usage:** `bestool kopia info`
+
+
+
+## `bestool kopia list`
+
+List kopia snapshots, defaulting to those from this host
+
+**Usage:** `bestool kopia list [OPTIONS]`
+
+###### **Options:**
+
+* `--all` — List snapshots from every host (otherwise: only this hostname)
+* `--source-host <HOST>` — Filter by source host. Defaults to this machine's hostname
+* `--tag <KEY:VALUE>` — Filter by tag. Repeatable. Format: `key:value`
+* `--path <SUBSTR>` — Filter snapshots whose source path contains this substring (case-insensitive)
+* `--since <DURATION>` — Only show snapshots taken within this duration (e.g. `24h`, `7d`)
+* `-n`, `--limit <N>` — Cap to the N most recent matches
+* `--json` — Emit machine-readable JSON instead of a table
 
 
 

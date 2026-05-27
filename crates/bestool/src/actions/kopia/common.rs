@@ -17,6 +17,13 @@ pub fn kopia_binary(args: &KopiaArgs) -> Result<std::path::PathBuf> {
 	})
 }
 
+/// Current host's name, used as the default `--source-host` filter by the
+/// `list` / `restore` / `mount` commands. `bestool-kopia` doesn't query
+/// `sysinfo` itself; the caller threads the hostname through.
+pub fn current_hostname() -> Option<String> {
+	sysinfo::System::host_name()
+}
+
 /// On Linux, if there's a system kopia install and we're a non-`kopia`
 /// user, re-exec the current command under `sudo -u kopia --`. If `sudo`
 /// can't elevate (no NOPASSWD rule, no TTY), the resulting kopia invocation
