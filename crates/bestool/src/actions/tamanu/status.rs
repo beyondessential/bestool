@@ -1,16 +1,19 @@
+use std::collections::HashMap;
+
 use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::UTF8_HORIZONTAL_ONLY};
 use miette::{IntoDiagnostic, Result, bail};
 use serde::Serialize;
 
-use bestool_tamanu::services::{
-	self, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
+use bestool_tamanu::{
+	services::{self, ExpectedState, Expectation, Supervisor, systemd_is_enabled},
+	versions::{self, ExpectedVersions, VersionStatus},
 };
 
 use crate::actions::{
 	Context,
 	tamanu::{
-		TamanuArgs,
+		TamanuArgs, find_tamanu,
 		lifecycle::{self, Instance},
 	},
 };
@@ -56,8 +59,25 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 		hide_compliant_legacy(&mut groups);
 	}
 
+	// Probe version expected vs running. Both are best-effort:
+	// missing data degrades cleanly to "unknown" rather than failing the
+	// status check, since the same data sources already power other (more
+	// authoritative) drift signals upstream.
+	let (install_version, _root) = find_tamanu(tamanu)?;
+	let expected_versions = versions::expected_for_supervisor(supervisor, &install_version);
+	let running_versions = match supervisor {
+		Supervisor::Systemd => versions::running_versions_linux(),
+		Supervisor::Pm2 => HashMap::new(),
+	};
+	let probe = VersionProbe {
+		supervisor,
+		expected: expected_versions,
+		running: running_versions,
+		install: install_version.to_string(),
+	};
+
 	if args.json {
-		let report = build_report(&groups);
+		let report = build_report(&groups, &probe);
 		println!(
 			"{}",
 			serde_json::to_string_pretty(&report).into_diagnostic()?
@@ -68,13 +88,52 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 		return Ok(());
 	}
 
-	let (table, any_short) = render_table(&groups, use_colours);
+	let (table, any_short) = render_table(&groups, &probe, use_colours);
 	println!("{table}");
 
 	if any_short {
 		bail!("some expectations are not met");
 	}
 	Ok(())
+}
+
+/// Bundle of resolved version data — passed to renderers so they can ask
+/// per-instance "what version is this on, and does it match?".
+struct VersionProbe {
+	supervisor: Supervisor,
+	expected: ExpectedVersions,
+	/// Linux: unit name → image tag. Empty on pm2.
+	running: HashMap<String, String>,
+	/// Install-root version, used as the actual version for every pm2
+	/// instance (pm2 has no per-process version concept).
+	install: String,
+}
+
+impl VersionProbe {
+	fn expected_for(&self, expectation_name: &str) -> Option<&str> {
+		self.expected.for_service(expectation_name)
+	}
+
+	fn actual_for(&self, instance: &Instance) -> Option<String> {
+		match self.supervisor {
+			Supervisor::Systemd => {
+				if instance.running {
+					self.running.get(&instance.unit()).cloned()
+				} else {
+					None
+				}
+			}
+			Supervisor::Pm2 if instance.running => Some(self.install.clone()),
+			Supervisor::Pm2 => None,
+		}
+	}
+
+	fn classify(&self, expectation: &Expectation, instance: &Instance) -> VersionStatus {
+		versions::classify(
+			self.actual_for(instance).as_deref(),
+			self.expected_for(expectation.name),
+		)
+	}
 }
 
 #[derive(Serialize)]
@@ -93,6 +152,8 @@ struct ExpectationReport {
 	reason: String,
 	legacy: bool,
 	behind_caddy: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	expected_version: Option<String>,
 	instances: Vec<InstanceReport>,
 }
 
@@ -102,6 +163,9 @@ struct InstanceReport {
 	instance: Option<String>,
 	pm_id: Option<i64>,
 	running: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	version_actual: Option<String>,
+	version_status: &'static str,
 }
 
 /// Filter `Down`-expected groups so that loaded-but-stopped systemd units
@@ -136,7 +200,7 @@ fn hide_compliant_legacy(groups: &mut Vec<(&Expectation, Vec<Instance>)>) {
 	groups.retain(|(exp, instances)| !exp.legacy || classify(exp, instances).is_short());
 }
 
-fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
+fn build_report(groups: &[(&Expectation, Vec<Instance>)], probe: &VersionProbe) -> Report {
 	let mut any_short = false;
 	let expectations = groups
 		.iter()
@@ -158,6 +222,7 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 					"forbidden"
 				}
 			};
+			let expected_version = probe.expected_for(exp.name).map(str::to_string);
 			ExpectationReport {
 				name: exp.name,
 				expected_state: match exp.state {
@@ -170,13 +235,27 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)]) -> Report {
 				reason: exp.reason.clone(),
 				legacy: exp.legacy,
 				behind_caddy: exp.behind_caddy,
+				expected_version,
 				instances: instances
 					.iter()
-					.map(|i| InstanceReport {
-						name: i.name.clone(),
-						instance: i.instance.clone(),
-						pm_id: i.pm_id,
-						running: i.running,
+					.map(|i| {
+						let actual = probe.actual_for(i);
+						let version_status = probe.classify(exp, i);
+						if version_status.is_mismatch() {
+							any_short = true;
+						}
+						InstanceReport {
+							name: i.name.clone(),
+							instance: i.instance.clone(),
+							pm_id: i.pm_id,
+							running: i.running,
+							version_actual: actual,
+							version_status: match version_status {
+								VersionStatus::Match => "match",
+								VersionStatus::Mismatch => "mismatch",
+								VersionStatus::Unknown => "unknown",
+							},
+						}
 					})
 					.collect(),
 			}
@@ -244,10 +323,15 @@ fn classify(exp: &Expectation, instances: &[Instance]) -> Outcome {
 	}
 }
 
-/// Build a table with Service / Expected / Actual / Reason columns from the
-/// grouped discovery output. Returns the table and an `any_short` flag the
-/// caller uses to set the exit status.
-fn render_table(groups: &[(&Expectation, Vec<Instance>)], use_colours: bool) -> (Table, bool) {
+/// Build a table with Service / Expected / Actual / Version / Reason columns
+/// from the grouped discovery output. Returns the table and an `any_short`
+/// flag the caller uses to set the exit status (version drift contributes to
+/// it just like a stopped service).
+fn render_table(
+	groups: &[(&Expectation, Vec<Instance>)],
+	probe: &VersionProbe,
+	use_colours: bool,
+) -> (Table, bool) {
 	let mut table = Table::new();
 	table
 		.load_preset(UTF8_HORIZONTAL_ONLY)
@@ -260,10 +344,15 @@ fn render_table(groups: &[(&Expectation, Vec<Instance>)], use_colours: bool) -> 
 		if outcome.is_short() {
 			any_short = true;
 		}
+		let (version_cell_, any_drift) = version_cell(exp, instances, probe, use_colours);
+		if any_drift {
+			any_short = true;
+		}
 		table.add_row(vec![
 			service_cell(exp),
 			expected_cell(exp),
 			actual_cell(exp, instances, outcome, use_colours),
+			version_cell_,
 			reason_cell(&exp.reason, use_colours),
 		]);
 	}
@@ -271,7 +360,7 @@ fn render_table(groups: &[(&Expectation, Vec<Instance>)], use_colours: bool) -> 
 }
 
 fn header_cells(use_colours: bool) -> Vec<Cell> {
-	["Service", "Expected", "Actual", "Reason"]
+	["Service", "Expected", "Actual", "Version", "Reason"]
 		.iter()
 		.map(|s| {
 			let c = Cell::new(s);
@@ -393,6 +482,70 @@ fn reason_cell(reason: &str, use_colours: bool) -> Cell {
 	}
 }
 
+/// Build the Version cell. Summary on the first line; per-instance detail
+/// follows when there's more than one instance or when at least one is
+/// mismatched (so the operator can tell *which* one drifted). Returns
+/// `(cell, any_drift)` where `any_drift` is whether any running instance
+/// is on a different tag than expected — bubbled up to set the exit code.
+fn version_cell(
+	exp: &Expectation,
+	instances: &[Instance],
+	probe: &VersionProbe,
+	use_colours: bool,
+) -> (Cell, bool) {
+	let expected = probe.expected_for(exp.name);
+	let per_instance: Vec<(&Instance, Option<String>, VersionStatus)> = instances
+		.iter()
+		.map(|i| (i, probe.actual_for(i), probe.classify(exp, i)))
+		.collect();
+
+	let any_drift = per_instance
+		.iter()
+		.any(|(_, _, status)| status.is_mismatch());
+
+	if instances.is_empty() {
+		// `Down` expectations with no instances — version column has nothing
+		// meaningful to say.
+		return (Cell::new("—"), false);
+	}
+
+	let summary = match expected {
+		Some(v) => v.to_string(),
+		None => "?".to_string(),
+	};
+	let show_details = instances.len() > 1 || any_drift;
+	let mut lines = vec![summary];
+	if show_details {
+		for (inst, actual, status) in &per_instance {
+			let actual_str = actual.as_deref().unwrap_or("?");
+			let suffix = match status {
+				VersionStatus::Match => "ok",
+				VersionStatus::Mismatch => "drift",
+				VersionStatus::Unknown => "unknown",
+			};
+			lines.push(format!("  {}: {} ({})", inst.display(), actual_str, suffix));
+		}
+	}
+
+	let cell = Cell::new(lines.join("\n"));
+	let cell = if use_colours {
+		let colour = if any_drift {
+			Color::Red
+		} else if per_instance
+			.iter()
+			.all(|(_, _, status)| matches!(status, VersionStatus::Match))
+		{
+			Color::Green
+		} else {
+			Color::Yellow
+		};
+		cell.fg(colour)
+	} else {
+		cell
+	};
+	(cell, any_drift)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -429,6 +582,30 @@ mod tests {
 		}
 	}
 
+	fn empty_probe() -> VersionProbe {
+		VersionProbe {
+			supervisor: Supervisor::Systemd,
+			expected: ExpectedVersions::default(),
+			running: HashMap::new(),
+			install: String::new(),
+		}
+	}
+
+	fn probe_with(expected: &str, running: &[(&str, &str)]) -> VersionProbe {
+		VersionProbe {
+			supervisor: Supervisor::Systemd,
+			expected: ExpectedVersions {
+				tamanu: Some(expected.into()),
+				frontend: None,
+			},
+			running: running
+				.iter()
+				.map(|(k, v)| (k.to_string(), v.to_string()))
+				.collect(),
+			install: expected.into(),
+		}
+	}
+
 	#[test]
 	fn drop_disabled_down_removes_stopped_and_disabled() {
 		let exp = down_exp();
@@ -439,7 +616,7 @@ mod tests {
 			groups[0].1.is_empty(),
 			"stopped+disabled Down unit should be dropped",
 		);
-		let report = build_report(&groups);
+		let report = build_report(&groups, &empty_probe());
 		assert!(!report.any_short, "should be ABSENT/OK now");
 		assert_eq!(report.expectations[0].status, "absent");
 	}
@@ -451,7 +628,7 @@ mod tests {
 			vec![(&exp, vec![inst("tamanu-patientportal", None, false)])];
 		drop_disabled_down(&mut groups, |_| true);
 		assert_eq!(groups[0].1.len(), 1);
-		let report = build_report(&groups);
+		let report = build_report(&groups, &empty_probe());
 		assert!(report.any_short, "stopped+enabled is still FORBIDDEN");
 		assert_eq!(report.expectations[0].status, "forbidden");
 	}
@@ -503,7 +680,7 @@ mod tests {
 			(&absent_down, vec![]),
 			(&portal, vec![inst("tamanu-patientportal", None, false)]),
 		];
-		let (table, any_short) = render_table(&groups, false);
+		let (table, any_short) = render_table(&groups, &empty_probe(), false);
 		assert!(any_short, "stopped+enabled Down expectation should bail");
 		let rendered = table.to_string();
 		assert!(rendered.contains("tamanu-central-tasks"));
@@ -517,6 +694,7 @@ mod tests {
 			rendered.contains("features.patientPortal"),
 			"reason column should show portal's DB reason"
 		);
+		assert!(rendered.contains("Version"), "Version column header present");
 	}
 
 	#[test]
@@ -532,12 +710,87 @@ mod tests {
 				inst("tamanu-frontend", Some("b"), false),
 			],
 		)];
-		let (table, any_short) = render_table(&groups, false);
+		let (table, any_short) = render_table(&groups, &empty_probe(), false);
 		assert!(any_short);
 		let rendered = table.to_string();
 		assert!(rendered.contains("1/2 running"));
 		assert!(rendered.contains("tamanu-frontend@a: running"));
 		assert!(rendered.contains("tamanu-frontend@b: stopped"));
+	}
+
+	#[test]
+	fn version_drift_marks_any_short() {
+		// One frontend instance on the expected tag, another on a stale
+		// tag — the drift alone must bail, even though both instances are
+		// "running".
+		let exp = up_exp();
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-frontend", Some("a"), true),
+				inst("tamanu-frontend", Some("b"), true),
+			],
+		)];
+		let probe = probe_with(
+			"v2.10.0",
+			&[
+				("tamanu-frontend@a.service", "v2.10.0"),
+				("tamanu-frontend@b.service", "v2.9.5"),
+			],
+		);
+		let report = build_report(&groups, &probe);
+		assert!(report.any_short, "drift should fail the check");
+		let inst_reports = &report.expectations[0].instances;
+		assert_eq!(inst_reports[0].version_status, "match");
+		assert_eq!(inst_reports[1].version_status, "mismatch");
+		assert_eq!(inst_reports[1].version_actual.as_deref(), Some("v2.9.5"));
+
+		let (table, any_short) = render_table(&groups, &probe, false);
+		assert!(any_short);
+		let rendered = table.to_string();
+		assert!(rendered.contains("v2.10.0"));
+		assert!(rendered.contains("v2.9.5"));
+		assert!(rendered.contains("drift"));
+	}
+
+	#[test]
+	fn version_match_doesnt_fail() {
+		let exp = up_exp();
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-frontend", Some("a"), true),
+				inst("tamanu-frontend", Some("b"), true),
+			],
+		)];
+		let probe = probe_with(
+			"v2.10.0",
+			&[
+				("tamanu-frontend@a.service", "v2.10.0"),
+				("tamanu-frontend@b.service", "v2.10.0"),
+			],
+		);
+		let report = build_report(&groups, &probe);
+		assert!(!report.any_short);
+		assert!(
+			report.expectations[0]
+				.instances
+				.iter()
+				.all(|i| i.version_status == "match")
+		);
+	}
+
+	#[test]
+	fn version_unknown_doesnt_fail() {
+		// `running_versions_linux` returned nothing (podman down). Don't
+		// flag mismatch — the actual is just not known.
+		let exp = ok_up_exp(); // singleton, so running=1 satisfies min_count
+		let groups: Vec<(&Expectation, Vec<Instance>)> =
+			vec![(&exp, vec![inst("tamanu-central-tasks", None, true)])];
+		let probe = probe_with("v2.10.0", &[]);
+		let report = build_report(&groups, &probe);
+		assert!(!report.any_short, "unknown isn't a failure");
+		assert_eq!(report.expectations[0].instances[0].version_status, "unknown");
 	}
 
 	#[test]
