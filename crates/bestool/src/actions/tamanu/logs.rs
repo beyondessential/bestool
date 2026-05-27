@@ -99,6 +99,11 @@ pub struct LogsArgs {
 struct Selection {
 	tamanu_names: Vec<String>,
 	include_caddy: bool,
+	/// Set when the user passed no NAMES at all. Tails every expected-Up
+	/// tamanu service. Distinct from `tamanu_names.is_empty()`, which is also
+	/// true when the user passed only `caddy` — in that case we must NOT
+	/// auto-include every tamanu service.
+	all_tamanu: bool,
 }
 
 fn select(names: &[String]) -> Selection {
@@ -106,6 +111,7 @@ fn select(names: &[String]) -> Selection {
 		return Selection {
 			tamanu_names: Vec::new(),
 			include_caddy: true,
+			all_tamanu: true,
 		};
 	}
 	let mut tamanu_names = Vec::new();
@@ -120,6 +126,7 @@ fn select(names: &[String]) -> Selection {
 	Selection {
 		tamanu_names,
 		include_caddy,
+		all_tamanu: false,
 	}
 }
 
@@ -172,22 +179,30 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		.collect();
 
 	// We use the same matcher as the lifecycle commands but only consider
-	// expected-Up services as candidates for the NAMES filter.
-	let tamanu_name_refs: Vec<&str> = selection
-		.tamanu_names
-		.iter()
-		.map(String::as_str)
-		.collect();
-	let matches: Vec<&Expectation> = {
+	// expected-Up services as candidates for the NAMES filter. When the user
+	// passed no NAMES we tail every up service; when they passed only `caddy`
+	// we tail no tamanu services at all (just caddy below).
+	let matches: Vec<&Expectation> = if selection.all_tamanu {
+		up_expectations.clone()
+	} else if selection.tamanu_names.is_empty() {
+		Vec::new()
+	} else {
+		let tamanu_name_refs: Vec<&str> = selection
+			.tamanu_names
+			.iter()
+			.map(String::as_str)
+			.collect();
 		let up_owned: Vec<Expectation> = up_expectations.iter().map(|e| (*e).clone()).collect();
 		let m = services::match_names(&up_owned, &tamanu_name_refs)?;
-		m.iter().map(|e| {
-			up_expectations
-				.iter()
-				.copied()
-				.find(|x| x.name == e.name)
-				.expect("match came from up_expectations")
-		}).collect()
+		m.iter()
+			.map(|e| {
+				up_expectations
+					.iter()
+					.copied()
+					.find(|x| x.name == e.name)
+					.expect("match came from up_expectations")
+			})
+			.collect()
 	};
 
 	debug!(
@@ -667,16 +682,20 @@ mod tests {
 	}
 
 	#[test]
-	fn select_empty_includes_caddy_and_no_tamanu_filter() {
+	fn select_empty_includes_caddy_and_all_tamanu() {
 		let s = select(&[]);
 		assert!(s.include_caddy);
+		assert!(s.all_tamanu);
 		assert!(s.tamanu_names.is_empty());
 	}
 
 	#[test]
-	fn select_caddy_alone() {
+	fn select_caddy_alone_does_not_imply_all_tamanu() {
+		// Regression: `bestool tamanu logs caddy` used to tail every service
+		// because empty `tamanu_names` was conflated with "no filter at all".
 		let s = select(&["caddy".to_string()]);
 		assert!(s.include_caddy);
+		assert!(!s.all_tamanu);
 		assert!(s.tamanu_names.is_empty());
 	}
 
@@ -684,6 +703,7 @@ mod tests {
 	fn select_caddy_with_others() {
 		let s = select(&["caddy".to_string(), "api".to_string()]);
 		assert!(s.include_caddy);
+		assert!(!s.all_tamanu);
 		assert_eq!(s.tamanu_names, vec!["api".to_string()]);
 	}
 
@@ -691,6 +711,7 @@ mod tests {
 	fn select_without_caddy_excludes_it() {
 		let s = select(&["api".to_string(), "tasks".to_string()]);
 		assert!(!s.include_caddy);
+		assert!(!s.all_tamanu);
 		assert_eq!(s.tamanu_names, vec!["api".to_string(), "tasks".to_string()]);
 	}
 
