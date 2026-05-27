@@ -67,6 +67,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
+* [`bestool tamanu sync`↴](#bestool-tamanu-sync)
 * [`bestool tamanu tags`↴](#bestool-tamanu-tags)
 * [`bestool tamanu restart`↴](#bestool-tamanu-restart)
 * [`bestool tamanu start`↴](#bestool-tamanu-start)
@@ -1181,6 +1182,7 @@ Alias: t
 * `logs` — Tail logs for tamanu services and (optionally) caddy.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
+* `sync` — Trigger a manual sync on a facility server and watch it run.
 * `tags` — Fetch this device's tags from canopy.
 * `restart` — Rolling-restart all running tamanu services.
 * `start` — Normalise tamanu services to the expected running state.
@@ -1887,6 +1889,31 @@ Aliases: p, pg, sql
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
+
+
+
+## `bestool tamanu sync`
+
+Trigger a manual sync on a facility server and watch it run.
+
+Sends `POST /sync/run` to the local facility sync sub-process
+(`http://localhost:4100` by default, bound to localhost and not
+authed). The request blocks until the sync completes; while it
+runs, this command tails the sync service's logs so the operator
+can see what's happening.
+
+Only valid on facility servers — central servers have no sync
+sub-process to talk to.
+
+**Usage:** `bestool tamanu sync [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — Number of trailing log lines to print before tailing
+
+  Default value: `10`
+* `--no-follow` — Just trigger the sync, don't tail the service logs
+* `--timeout <TIMEOUT>` — Give up if the sync hasn't responded after this long. By default the command waits indefinitely — `/sync/run` itself has no server-side timeout and a real sync can take minutes against a busy central
 
 
 

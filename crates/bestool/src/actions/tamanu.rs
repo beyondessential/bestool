@@ -76,6 +76,8 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs),
+	#[cfg(feature = "tamanu-sync")]
+	sync => Sync(SyncArgs),
 	#[cfg(feature = "tamanu-tags")]
 	tags => Tags(TagsArgs),
 	#[cfg(feature = "tamanu-lifecycle")]
