@@ -14,6 +14,7 @@ workspace = true
 [features]
 default = ["doctor"]
 doctor = [
+	"dep:bestool-kopia",
 	"dep:futures",
 	"dep:hickory-resolver",
 	"dep:owo-colors",
@@ -47,6 +48,7 @@ uuid = { version = "1.23.1", features = ["v4"] }
 p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
 
 # doctor-only
+bestool-kopia = { version = "0.1.0", path = "../kopia", optional = true }
 futures = { workspace = true, optional = true }
 hickory-resolver = { version = "0.26.1", optional = true }
 owo-colors = { version = "4.2.3", optional = true }
