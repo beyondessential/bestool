@@ -32,6 +32,7 @@ pub mod tamanu_http;
 pub mod tamanu_service;
 pub mod time_sync;
 pub mod uptime;
+pub mod version_drift;
 
 /// Shared context handed to every check.
 ///
@@ -127,6 +128,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("http_errors", http_errors),
 		entry!("tailscale", tailscale, off_wire),
 		entry!("tamanu_service", tamanu_service),
+		entry!("version_drift", version_drift),
 		entry!("external_users", external_users),
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),

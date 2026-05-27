@@ -13,6 +13,7 @@ pub mod pm2;
 pub mod roots;
 pub mod server_info;
 pub mod services;
+pub mod versions;
 
 #[cfg(feature = "doctor")]
 pub mod doctor;
