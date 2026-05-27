@@ -34,6 +34,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool kopia`↴](#bestool-kopia)
 * [`bestool kopia info`↴](#bestool-kopia-info)
 * [`bestool kopia list`↴](#bestool-kopia-list)
+* [`bestool kopia restore`↴](#bestool-kopia-restore)
 * [`bestool rdp`↴](#bestool-rdp)
 * [`bestool rdp monitor`↴](#bestool-rdp-monitor)
 * [`bestool rdp service`↴](#bestool-rdp-service)
@@ -927,6 +928,7 @@ Wraps the `kopia` CLI to add ergonomics for our deployments: defaults scoped to 
 
 * `info` — Show kopia repository connection status
 * `list` — List kopia snapshots, defaulting to those from this host
+* `restore` — Restore a kopia snapshot to a destination directory
 
 ###### **Options:**
 
@@ -964,6 +966,38 @@ List kopia snapshots, defaulting to those from this host
 * `--since <DURATION>` — Only show snapshots taken within this duration (e.g. `24h`, `7d`)
 * `-n`, `--limit <N>` — Cap to the N most recent matches
 * `--json` — Emit machine-readable JSON instead of a table
+
+
+
+## `bestool kopia restore`
+
+Restore a kopia snapshot to a destination directory.
+
+Without `--snapshot` or `--latest`, opens an interactive picker over the matching snapshots (filtered by `--source-host` / `--tag` / `--path` / `--since`). `--latest` picks the newest match without prompting — required when stdout isn't a terminal, and requires `--tag` or `--path` so the chosen snapshot is unambiguous.
+
+**Usage:** `bestool kopia restore [OPTIONS] <DESTINATION>`
+
+###### **Arguments:**
+
+* `<DESTINATION>` — Destination directory. Kopia creates this directory; with `--overwrite` it'll restore into an existing one
+
+###### **Options:**
+
+* `--snapshot <ID>` — Snapshot ID (full or short prefix). Without this or `--latest`, the command opens an interactive picker
+* `--latest` — Use the newest matching snapshot without prompting.
+
+   Requires at least one of `--tag` or `--path` so the "newest" is unambiguous — a kopia repo holds many kinds of snapshots and "the latest one for this host" would otherwise pick whichever ran most recently, regardless of what it was backing up.
+* `--source-host <HOST>` — Filter: source host. Defaults to this host
+* `--all` — Filter: list snapshots from every host
+* `--tag <KEY:VALUE>` — Filter: tag. Repeatable. Format: `key:value`
+* `--path <SUBSTR>` — Filter: source path substring (case-insensitive)
+* `--since <DURATION>` — Filter: only snapshots within this duration (e.g. `24h`, `7d`)
+* `--dry-run` — Resolve the snapshot to restore and print it — don't invoke `kopia snapshot restore`
+* `--overwrite` — Allow restoring into a destination that already exists or already has files. Passes `--overwrite-directories --overwrite-files` to kopia
+* `--no-space-check` — Skip the pre-flight free-space check.
+
+   By default the command compares the snapshot's stated size against the available free space on the destination's filesystem and refuses to proceed if the snapshot won't fit. Pass this to skip the check — useful when the snapshot's recorded size is an over-estimate (kopia can deduplicate within and across snapshots, so the actual restored bytes may be less than the summed size).
+* `--json` — Emit the resolved snapshot as JSON on stdout (works with `--dry-run`)
 
 
 
