@@ -1898,9 +1898,14 @@ Trigger a manual sync on a facility server and watch it run.
 
 Sends `POST /sync/run` to the local facility sync sub-process
 (`http://localhost:4100` by default, bound to localhost and not
-authed). The request blocks until the sync completes; while it
-runs, this command tails the sync service's logs so the operator
-can see what's happening.
+authed). If central queues the device (`{ ran: false, queued: true }`),
+retries until central lets the sync run or `--start-timeout` elapses.
+Once a sync runs, cross-checks `GET /sync/status` to confirm
+`lastCompletedAt` actually advanced — so a `ran: true` response that
+was somehow stale won't be silently accepted.
+
+While the sync runs, the command tails the sync service's logs so
+the operator can see what's happening.
 
 Only valid on facility servers — central servers have no sync
 sub-process to talk to.
@@ -1913,7 +1918,11 @@ sub-process to talk to.
 
   Default value: `10`
 * `--no-follow` — Just trigger the sync, don't tail the service logs
-* `--timeout <TIMEOUT>` — Give up if the sync hasn't responded after this long. By default the command waits indefinitely — `/sync/run` itself has no server-side timeout and a real sync can take minutes against a busy central
+* `--retry-interval <RETRY_INTERVAL>` — How long to wait between retries when central has queued the device. Matches the cadence Tamanu's own facility-server CLI uses (15s)
+
+  Default value: `15s`
+* `--start-timeout <START_TIMEOUT>` — Exit non-zero if central is still queueing the device (the sync hasn't *started*) after this long. Default: no limit; keep retrying
+* `--timeout <TIMEOUT>` — Exit non-zero if the sync hasn't *completed* (including all retries) within this long. Default: no limit
 
 
 
