@@ -81,6 +81,9 @@ subcommands! {
 	file => File(FileArgs),
 	#[cfg(feature = "__iti")]
 	iti => Iti(ItiArgs),
+	#[cfg(feature = "kopia")]
+	#[clap(alias = "k")]
+	kopia => Kopia(KopiaArgs),
 	#[cfg(feature = "rdp")]
 	rdp => Rdp(RdpArgs),
 	#[cfg(feature = "self-update")]
