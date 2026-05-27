@@ -48,5 +48,7 @@ super::subcommands! {
 	info => Info(InfoArgs),
 	#[clap(alias = "ls")]
 	list => List(ListArgs),
+	#[clap(alias = "m")]
+	mount => Mount(MountArgs),
 	restore => Restore(RestoreArgs)
 }

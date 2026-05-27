@@ -34,6 +34,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool kopia`↴](#bestool-kopia)
 * [`bestool kopia info`↴](#bestool-kopia-info)
 * [`bestool kopia list`↴](#bestool-kopia-list)
+* [`bestool kopia mount`↴](#bestool-kopia-mount)
 * [`bestool kopia restore`↴](#bestool-kopia-restore)
 * [`bestool rdp`↴](#bestool-rdp)
 * [`bestool rdp monitor`↴](#bestool-rdp-monitor)
@@ -928,6 +929,7 @@ Wraps the `kopia` CLI to add ergonomics for our deployments: defaults scoped to 
 
 * `info` — Show kopia repository connection status
 * `list` — List kopia snapshots, defaulting to those from this host
+* `mount` — Mount a kopia snapshot read-only via FUSE
 * `restore` — Restore a kopia snapshot to a destination directory
 
 ###### **Options:**
@@ -966,6 +968,33 @@ List kopia snapshots, defaulting to those from this host
 * `--since <DURATION>` — Only show snapshots taken within this duration (e.g. `24h`, `7d`)
 * `-n`, `--limit <N>` — Cap to the N most recent matches
 * `--json` — Emit machine-readable JSON instead of a table
+
+
+
+## `bestool kopia mount`
+
+Mount a kopia snapshot read-only via FUSE.
+
+Snapshot selection mirrors `restore`: explicit `--snapshot ID`, `--latest` (which requires `--tag` or `--path`), or an interactive picker over the filter flags when neither is given.
+
+**Usage:** `bestool kopia mount [OPTIONS] <MOUNTPOINT>`
+
+###### **Arguments:**
+
+* `<MOUNTPOINT>` — Mountpoint. The directory must exist and be empty (kopia requirement)
+
+###### **Options:**
+
+* `--snapshot <ID>` — Snapshot ID (full or short prefix). Without this or `--latest`, the command opens an interactive picker
+* `--latest` — Use the newest matching snapshot without prompting.
+
+   Requires at least one of `--tag` or `--path` so the "newest" is unambiguous — a kopia repo holds many kinds of snapshots and "the latest one for this host" would otherwise pick whichever ran most recently, regardless of what it was backing up.
+* `--source-host <HOST>` — Filter: source host. Defaults to this host
+* `--all` — Filter: list snapshots from every host
+* `--tag <KEY:VALUE>` — Filter: tag. Repeatable. Format: `key:value`
+* `--path <SUBSTR>` — Filter: source path substring (case-insensitive)
+* `--since <DURATION>` — Filter: only snapshots within this duration (e.g. `24h`, `7d`)
+* `--background` — Detach the mount process and return immediately. Unix-only; on Windows the kopia mount stays in foreground regardless
 
 
 
