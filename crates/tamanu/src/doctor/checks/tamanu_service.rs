@@ -8,7 +8,7 @@ use crate::{
 	pm2,
 	services::{
 		Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit,
-		systemd_is_enabled,
+		systemd_is_enabled, systemd_patient_portal_instanced,
 	},
 };
 
@@ -29,8 +29,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
 		None => false,
 	};
+	let patient_portal_instanced =
+		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced();
 
-	let expectations = expected(supervisor, ctx.kind, &ctx.config, patient_portal_enabled);
+	let expectations = expected(
+		supervisor,
+		ctx.kind,
+		&ctx.config,
+		patient_portal_enabled,
+		patient_portal_instanced,
+	);
 
 	let mut pm2_source: Option<pm2::Source> = None;
 	let mut discovered = match supervisor {
@@ -534,7 +542,13 @@ mod tests {
 	#[test]
 	fn happy_facility_systemd() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -550,7 +564,13 @@ mod tests {
 	#[test]
 	fn fails_when_tasks_missing() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-frontend", Some("a"), true),
 			d("tamanu-frontend", Some("b"), true),
@@ -571,7 +591,13 @@ mod tests {
 	#[test]
 	fn fails_on_api_shortfall() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -591,7 +617,13 @@ mod tests {
 	#[test]
 	fn fails_on_frontend_named_missing() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -615,7 +647,13 @@ mod tests {
 	#[test]
 	fn fails_when_forbidden_facility_singleton_present() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -711,7 +749,13 @@ mod tests {
 	#[test]
 	fn extras_recorded_but_dont_fail() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let mut discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -738,7 +782,13 @@ mod tests {
 	#[test]
 	fn central_with_fhir_requires_workers() {
 		let cfg = central_cfg(true);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-central-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -769,7 +819,13 @@ mod tests {
 		// expects `tamanu-patientportal` Down — i.e. absent from `discovered`
 		// is the pass case.
 		let cfg = central_cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-central-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -784,7 +840,7 @@ mod tests {
 	#[test]
 	fn pm2_facility_happy() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg, false, false);
 		let discovered = vec![
 			Discovered {
 				name: "tamanu-tasks".into(),
@@ -879,7 +935,13 @@ mod tests {
 	#[test]
 	fn not_running_listed_as_diagnosis() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, false), // not running
 			d("tamanu-frontend", Some("a"), true),
@@ -909,7 +971,13 @@ mod tests {
 		// false), got up (tamanu-patientportal.service)" rather than parsing
 		// expectations + services arrays.
 		let cfg = central_cfg(true);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Central, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-central-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -952,7 +1020,13 @@ mod tests {
 		// raw inventory is still in the top-level payload under `services`
 		// for anyone who wants to audit what was checked.
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
@@ -980,7 +1054,13 @@ mod tests {
 		// `payload_extras["services"]`, not under per-check `details`. Keeps
 		// the `health[]` entry focused on human-readable diagnostics.
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg, false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg,
+			false,
+			false,
+		);
 		let discovered = vec![
 			d("tamanu-facility-tasks", None, true),
 			d("tamanu-frontend", Some("a"), true),
