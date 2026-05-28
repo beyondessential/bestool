@@ -223,25 +223,26 @@ pub async fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<
 ///
 /// `targets` are supervisor-native identifiers — systemd unit names
 /// (`tamanu-foo.service`, `tamanu-foo@1.service`) or pm2 process names.
-/// No-op for an empty slice. Bails non-zero on supervisor failure; doesn't
-/// itself wait for the stop to complete (use `wait_stopped` afterwards).
-pub fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+/// No-op for an empty slice. Bails on supervisor failure; doesn't itself
+/// wait for the stop to complete (use `wait_stopped` afterwards).
+pub async fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	if targets.is_empty() {
 		return Ok(());
 	}
-	let (cmd, verb) = match supervisor {
-		Supervisor::Systemd => ("systemctl", "stop"),
-		Supervisor::Pm2 => ("pm2", "stop"),
-	};
-	let status = Command::new(cmd)
-		.arg(verb)
-		.args(targets)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("{cmd} {verb} failed: exit {status}");
+	match supervisor {
+		Supervisor::Systemd => systemd::stop(targets).await,
+		Supervisor::Pm2 => {
+			let status = Command::new("pm2")
+				.arg("stop")
+				.args(targets)
+				.status()
+				.into_diagnostic()?;
+			if !status.success() {
+				bail!("pm2 stop failed: exit {status}");
+			}
+			Ok(())
+		}
 	}
-	Ok(())
 }
 
 /// Restart a batch of pm2 targets by stop-then-start with a short pause
@@ -305,20 +306,9 @@ pub fn delete_pm2(names: &[String]) -> Result<()> {
 
 /// Disable a batch of systemd units. No-op for an empty slice. Errors
 /// bubble up — callers that want best-effort behaviour should filter the
-/// list with `systemd_is_enabled` first (the typical pattern).
-pub fn disable_systemd_units(units: &[String]) -> Result<()> {
-	if units.is_empty() {
-		return Ok(());
-	}
-	let status = Command::new("systemctl")
-		.arg("disable")
-		.args(units)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("systemctl disable failed: exit {status}");
-	}
-	Ok(())
+/// list with `systemd::collect_enabled` first (the typical pattern).
+pub async fn disable_systemd_units(units: &[String]) -> Result<()> {
+	systemd::disable(units).await
 }
 
 async fn wait_for(

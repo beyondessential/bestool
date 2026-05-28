@@ -92,7 +92,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	if !targets.is_empty() {
 		tracing::info!(?targets, "starting");
 		match supervisor {
-			Supervisor::Systemd => systemctl_start(&targets)?,
+			Supervisor::Systemd => systemctl_start(&targets).await?,
 			Supervisor::Pm2 => pm2_start(&targets)?,
 		}
 		lifecycle::wait_running(supervisor, &targets).await?;
@@ -202,12 +202,12 @@ fn plan_stop(
 async fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
 	if !plan.stop.is_empty() {
 		tracing::info!(targets = ?plan.stop, "stopping services expected down");
-		lifecycle::stop_targets(supervisor, &plan.stop)?;
+		lifecycle::stop_targets(supervisor, &plan.stop).await?;
 		lifecycle::wait_stopped(supervisor, &plan.stop).await?;
 	}
 	if !plan.disable.is_empty() {
 		tracing::info!(units = ?plan.disable, "disabling units expected down");
-		lifecycle::disable_systemd_units(&plan.disable)?;
+		lifecycle::disable_systemd_units(&plan.disable).await?;
 	}
 	if !plan.delete.is_empty() {
 		tracing::info!(processes = ?plan.delete, "deleting pm2 processes expected down");
@@ -281,16 +281,8 @@ fn plan_start(
 	})
 }
 
-fn systemctl_start(units: &[String]) -> Result<()> {
-	let status = std::process::Command::new("systemctl")
-		.arg("start")
-		.args(units)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("systemctl start failed: exit {status}");
-	}
-	Ok(())
+async fn systemctl_start(units: &[String]) -> Result<()> {
+	systemd::start(units).await
 }
 
 fn pm2_start(names: &[String]) -> Result<()> {
