@@ -18,7 +18,7 @@ use bestool_tamanu::{
 	config::load_config,
 	pm2,
 	server_info::query_patient_portal_enabled,
-	services::{self, Expectation, Supervisor, parse_systemd_unit},
+	services::{self, Expectation, Supervisor, parse_systemd_unit, systemd_patient_portal_instanced},
 };
 
 use super::{TamanuArgs, find_tamanu};
@@ -74,7 +74,17 @@ pub async fn config_and_expectations(
 			false
 		};
 
-	let expectations = services::expected(supervisor, kind, &config, patient_portal_enabled);
+	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
+		&& matches!(kind, ApiServerKind::Central)
+		&& systemd_patient_portal_instanced();
+
+	let expectations = services::expected(
+		supervisor,
+		kind,
+		&config,
+		patient_portal_enabled,
+		patient_portal_instanced,
+	);
 	Ok((supervisor, expectations))
 }
 

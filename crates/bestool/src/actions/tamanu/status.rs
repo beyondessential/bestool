@@ -554,7 +554,7 @@ mod tests {
 	fn down_exp() -> Expectation {
 		Expectation {
 			name: "tamanu-patientportal",
-			instances: Instances::Single,
+			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Down,
 			reason: "test".into(),
 			legacy: false,
@@ -609,12 +609,17 @@ mod tests {
 	#[test]
 	fn drop_disabled_down_removes_stopped_and_disabled() {
 		let exp = down_exp();
-		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
-			vec![(&exp, vec![inst("tamanu-patientportal", None, false)])];
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-patientportal", Some("a"), false),
+				inst("tamanu-patientportal", Some("b"), false),
+			],
+		)];
 		drop_disabled_down(&mut groups, |_| false);
 		assert!(
 			groups[0].1.is_empty(),
-			"stopped+disabled Down unit should be dropped",
+			"stopped+disabled Down units should all be dropped",
 		);
 		let report = build_report(&groups, &empty_probe());
 		assert!(!report.any_short, "should be ABSENT/OK now");
@@ -624,10 +629,15 @@ mod tests {
 	#[test]
 	fn drop_disabled_down_keeps_stopped_but_enabled() {
 		let exp = down_exp();
-		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
-			vec![(&exp, vec![inst("tamanu-patientportal", None, false)])];
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-patientportal", Some("a"), false),
+				inst("tamanu-patientportal", Some("b"), false),
+			],
+		)];
 		drop_disabled_down(&mut groups, |_| true);
-		assert_eq!(groups[0].1.len(), 1);
+		assert_eq!(groups[0].1.len(), 2);
 		let report = build_report(&groups, &empty_probe());
 		assert!(report.any_short, "stopped+enabled is still FORBIDDEN");
 		assert_eq!(report.expectations[0].status, "forbidden");
@@ -662,7 +672,7 @@ mod tests {
 		};
 		let portal = Expectation {
 			name: "tamanu-patientportal",
-			instances: Instances::Single,
+			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Down,
 			reason: "DB setting features.patientPortal is false".into(),
 			legacy: false,
@@ -678,7 +688,13 @@ mod tests {
 				],
 			),
 			(&absent_down, vec![]),
-			(&portal, vec![inst("tamanu-patientportal", None, false)]),
+			(
+				&portal,
+				vec![
+					inst("tamanu-patientportal", Some("a"), false),
+					inst("tamanu-patientportal", Some("b"), false),
+				],
+			),
 		];
 		let (table, any_short) = render_table(&groups, &empty_probe(), false);
 		assert!(any_short, "stopped+enabled Down expectation should bail");

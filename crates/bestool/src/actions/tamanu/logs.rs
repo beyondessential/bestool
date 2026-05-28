@@ -172,7 +172,16 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			false
 		};
 
-	let all_expectations = services::expected(supervisor, kind, &config, patient_portal_enabled);
+	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
+		&& matches!(kind, ApiServerKind::Central)
+		&& services::systemd_patient_portal_instanced();
+	let all_expectations = services::expected(
+		supervisor,
+		kind,
+		&config,
+		patient_portal_enabled,
+		patient_portal_instanced,
+	);
 	let up_expectations: Vec<&Expectation> = all_expectations
 		.iter()
 		.filter(|e| e.state == ExpectedState::Up)
@@ -940,7 +949,13 @@ mod tests {
 
 	#[test]
 	fn journalctl_pattern_handles_each_instance_kind() {
-		let exps = services::expected(Supervisor::Systemd, ApiServerKind::Facility, &cfg(true, false), false);
+		let exps = services::expected(
+			Supervisor::Systemd,
+			ApiServerKind::Facility,
+			&cfg(true, false),
+			false,
+			false,
+		);
 		let tasks = exps.iter().find(|e| e.name == "tamanu-facility-tasks").unwrap();
 		assert_eq!(journalctl_pattern(tasks), "tamanu-facility-tasks.service");
 
