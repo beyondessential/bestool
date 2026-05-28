@@ -131,17 +131,23 @@ pub fn parse_image_tag(image: &str) -> Option<&str> {
 /// unknown".
 #[cfg(target_os = "linux")]
 #[instrument(level = "debug")]
-pub fn running_versions_linux() -> HashMap<String, String> {
-	let output = match duct::cmd!(
-		"podman",
-		"ps",
-		"--format",
-		"{{.Labels.PODMAN_SYSTEMD_UNIT}}\t{{.Image}}"
-	)
-	.stderr_null()
-	.read()
-	{
-		Ok(o) => o,
+pub async fn running_versions_linux() -> HashMap<String, String> {
+	use std::process::Stdio;
+	let result = tokio::process::Command::new("podman")
+		.args([
+			"ps",
+			"--format",
+			"{{.Labels.PODMAN_SYSTEMD_UNIT}}\t{{.Image}}",
+		])
+		.stderr(Stdio::null())
+		.output()
+		.await;
+	let output = match result {
+		Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+		Ok(o) => {
+			debug!(status = %o.status, "podman ps exited non-zero; no actual-version info");
+			return HashMap::new();
+		}
 		Err(err) => {
 			debug!(%err, "podman ps unavailable; no actual-version info");
 			return HashMap::new();
@@ -168,7 +174,7 @@ pub fn running_versions_linux() -> HashMap<String, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn running_versions_linux() -> HashMap<String, String> {
+pub async fn running_versions_linux() -> HashMap<String, String> {
 	HashMap::new()
 }
 

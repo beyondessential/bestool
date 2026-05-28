@@ -3,10 +3,7 @@
 //! Used by `meta_ticket`, `alertd`, and `doctor`. Kept here so each subcommand
 //! pulls from one place rather than reaching into a sibling's module.
 
-use std::{
-	path::{Path, PathBuf},
-	process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, info, warn};
@@ -471,11 +468,12 @@ fn write_device_key_file(path: &Path, pem: &str) -> std::io::Result<()> {
 
 /// Read the tailscale Self node's first IP and DNS name, if tailscale is
 /// installed and responding to `status --json`.
-pub fn get_tailscale_info() -> (Option<String>, Option<String>) {
-	let output = match Command::new("tailscale")
+pub async fn get_tailscale_info() -> (Option<String>, Option<String>) {
+	let output = match tokio::process::Command::new("tailscale")
 		.arg("status")
 		.arg("--json")
 		.output()
+		.await
 	{
 		Ok(output) if output.status.success() => output,
 		Ok(output) => {
@@ -515,8 +513,11 @@ pub fn get_tailscale_info() -> (Option<String>, Option<String>) {
 /// Linux: read `systemd-detect-virt`'s output. Returns `None` if the command
 /// is unavailable. The string is whatever systemd reports (e.g. `kvm`, `lxc`,
 /// `none` for bare metal).
-pub fn detect_virtualisation() -> Option<String> {
-	let output = Command::new("systemd-detect-virt").output().ok()?;
+pub async fn detect_virtualisation() -> Option<String> {
+	let output = tokio::process::Command::new("systemd-detect-virt")
+		.output()
+		.await
+		.ok()?;
 
 	let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
 	if stdout.is_empty() {

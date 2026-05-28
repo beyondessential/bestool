@@ -1,14 +1,14 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use super::CheckContext;
 use crate::doctor::check::Check;
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	if cfg!(target_os = "linux") {
-		return run_linux();
+		return run_linux().await;
 	}
 	if cfg!(target_os = "windows") {
-		return run_windows();
+		return run_windows().await;
 	}
 	Check::skip(
 		"time_sync",
@@ -17,10 +17,11 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	)
 }
 
-fn run_linux() -> Check {
+async fn run_linux() -> Check {
 	let output = match Command::new("timedatectl")
 		.args(["show", "-p", "NTPSynchronized", "--value"])
 		.output()
+		.await
 	{
 		Ok(o) if o.status.success() => o,
 		Ok(_) | Err(_) => {
@@ -60,8 +61,12 @@ fn run_linux() -> Check {
 ///
 /// If neither line is present (older Windows builds, locked-down configs), we
 /// skip rather than guessing.
-fn run_windows() -> Check {
-	let output = match Command::new("w32tm").args(["/query", "/status"]).output() {
+async fn run_windows() -> Check {
+	let output = match Command::new("w32tm")
+		.args(["/query", "/status"])
+		.output()
+		.await
+	{
 		Ok(o) if o.status.success() => o,
 		Ok(_) | Err(_) => {
 			return Check::skip(

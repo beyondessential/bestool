@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::CheckContext;
+use super::{CheckContext, fmt_chain};
 use crate::doctor::check::Check;
 
 const PING_URL: &str = "http://localhost/api/public/ping";
@@ -33,7 +33,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Err(err) => Check::fail(
 			"tamanu_http",
 			format!("could not reach {PING_URL}"),
-			err.to_string(),
+			fmt_chain(&err),
 		),
 	};
 

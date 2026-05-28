@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use super::CheckContext;
+use super::{CheckContext, fmt_chain};
 use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
@@ -108,7 +108,7 @@ async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
 				return FetchResult::Skip(Check::skip(
 					"http_errors",
 					"caddy /metrics body read failed",
-					err.to_string(),
+					fmt_chain(&err),
 				));
 			}
 		},
@@ -126,7 +126,10 @@ async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
 			return FetchResult::Skip(Check::skip(
 				"http_errors",
 				"caddy admin unreachable",
-				format!("could not reach caddy admin at {CADDY_METRICS_URL}: {err}"),
+				format!(
+					"could not reach caddy admin at {CADDY_METRICS_URL}: {}",
+					fmt_chain(&err)
+				),
 			));
 		}
 	};

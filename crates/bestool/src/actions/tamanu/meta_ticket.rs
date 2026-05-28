@@ -60,8 +60,8 @@ pub async fn run(_args: MetaTicketArgs, ctx: Context) -> Result<()> {
 
 	let server_id = get_or_create_server_id(Some(&client)).await?;
 
-	let (tailscale_ip, tailscale_name) = get_tailscale_info();
-	let hosting = detect_hosting();
+	let (tailscale_ip, tailscale_name) = get_tailscale_info().await;
+	let hosting = detect_hosting().await;
 
 	let kind = if config.is_facility() {
 		"facility"
@@ -101,7 +101,7 @@ fn derive_public_key_pem(private_key_pem: &str) -> Result<String> {
 	Ok(pem)
 }
 
-fn detect_hosting() -> Option<String> {
+async fn detect_hosting() -> Option<String> {
 	if is_raspberry_pi() {
 		return Some("iti".to_string());
 	}
@@ -110,7 +110,7 @@ fn detect_hosting() -> Option<String> {
 		return Some("ec2".to_string());
 	}
 
-	match detect_virtualisation() {
+	match detect_virtualisation().await {
 		Some(virt) if virt == "none" => Some("bare metal".to_string()),
 		Some(virt) => Some(virt),
 		None => None,

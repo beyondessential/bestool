@@ -2,7 +2,7 @@ use super::CheckContext;
 use crate::{doctor::check::Check, server_info::get_tailscale_info};
 
 pub async fn run(_ctx: CheckContext) -> Check {
-	let (ip, name) = get_tailscale_info();
+	let (ip, name) = get_tailscale_info().await;
 	match (ip, name) {
 		(Some(ip), Some(name)) => Check::pass("tailscale", format!("{name} ({ip})"))
 			.with_detail("ip", ip)

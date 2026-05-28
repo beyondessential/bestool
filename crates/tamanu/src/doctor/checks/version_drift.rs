@@ -43,7 +43,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	let expected_versions = versions::expected_for_supervisor(supervisor, &ctx.tamanu_version);
-	let running = versions::running_versions_linux();
+	let running = versions::running_versions_linux().await;
 
 	// Only look at units that show up in our expectations registry. Hand-
 	// started or orphaned containers aren't drift; they're outside the

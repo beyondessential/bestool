@@ -14,9 +14,8 @@
 //! check pre-emptively flags any 2.10.x / 2.11.x point releases that aren't
 //! 2.10.0–2.10.2 as unsafe on Linux until 2.11.4 ships.
 
-use std::process::Command;
-
 use node_semver::Version;
+use tokio::process::Command;
 
 use super::CheckContext;
 use crate::doctor::check::Check;
@@ -35,7 +34,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		}
 	};
 
-	let output = match Command::new("caddy").arg("version").output() {
+	let output = match Command::new("caddy").arg("version").output().await {
 		Ok(o) if o.status.success() => o,
 		Ok(o) => {
 			let stderr = String::from_utf8_lossy(&o.stderr);
