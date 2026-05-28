@@ -61,8 +61,6 @@ pub struct CheckContext {
 /// The actual SQL message lives in the optional `DbError` underneath; this
 /// helper surfaces it where present and falls back to the source chain.
 pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
-	use std::error::Error;
-
 	if let Some(db) = err.as_db_error() {
 		let mut s = format!("{}: {}", db.severity(), db.message());
 		if let Some(detail) = db.detail() {
@@ -71,6 +69,18 @@ pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
 		}
 		return s;
 	}
+
+	fmt_chain(err)
+}
+
+/// Walk a `std::error::Error`'s source chain and join all the messages.
+///
+/// `reqwest::Error`'s Display is just "error sending request for url (...)";
+/// the actual cause (DNS error, connection refused, timed out, proxy failure)
+/// is one or two `.source()` calls down. Without walking the chain, doctor
+/// `FAIL` rows lose the only diagnostic that matters.
+pub fn fmt_chain<E: std::error::Error + ?Sized>(err: &E) -> String {
+	use std::error::Error;
 
 	let mut parts = vec![err.to_string()];
 	let mut src: Option<&dyn Error> = err.source();
