@@ -6,10 +6,8 @@ use super::CheckContext;
 use crate::{
 	doctor::check::Check,
 	pm2,
-	services::{
-		Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit,
-		systemd_is_enabled,
-	},
+	services::{Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit},
+	systemd,
 };
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -64,8 +62,14 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	if matches!(supervisor, Supervisor::Systemd) {
+		let candidates: Vec<String> = expectations
+			.iter()
+			.filter(|e| matches!(e.state, ExpectedState::Down))
+			.map(|e| format!("{}.service", e.name))
+			.collect();
+		let enabled = systemd::collect_enabled(candidates).await;
 		reconcile_down_with_enabled(&expectations, &mut discovered, |unit| {
-			systemd_is_enabled(unit)
+			enabled.contains(unit)
 		});
 	}
 

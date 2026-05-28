@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
-use bestool_tamanu::services::{
-	self, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
+use bestool_tamanu::{
+	services::{self, ExpectedState, Expectation, Supervisor},
+	systemd,
 };
 
 use crate::actions::{
@@ -52,7 +53,26 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let stop_plan = if args.up_only {
 		StopPlan::default()
 	} else {
-		plan_stop(supervisor, &groups, systemd_is_enabled)
+		let candidates: HashSet<String> = groups
+			.iter()
+			.filter(|(exp, _)| matches!(exp.state, ExpectedState::Down))
+			.flat_map(|(exp, instances)| {
+				let mut units = exp.instances.required_systemd_units(exp.name);
+				for inst in instances {
+					let u = inst.unit();
+					if !units.contains(&u) {
+						units.push(u);
+					}
+				}
+				units
+			})
+			.collect();
+		let enabled = if matches!(supervisor, Supervisor::Systemd) {
+			systemd::collect_enabled(candidates).await
+		} else {
+			HashSet::new()
+		};
+		plan_stop(supervisor, &groups, |unit| enabled.contains(unit))
 	};
 	let Plan {
 		targets,
