@@ -23,6 +23,34 @@ use bestool_tamanu::{
 
 use super::{TamanuArgs, find_tamanu};
 
+/// How long `config_and_expectations` should wait for the DB to come up
+/// before falling back to `features.patientPortal = false`.
+///
+/// `No` matches the historical behaviour: try once, warn-and-default on
+/// failure. Right for interactive/inspection commands (`status`, `logs`)
+/// where reporting current state is the goal — flagging "DB unreachable"
+/// is more useful than blocking on it.
+///
+/// `Yes` polls until the DB accepts a connection or [`DB_WAIT_TIMEOUT`]
+/// elapses, warning on each retry so operators running manually see
+/// what's going on. Right for boot-time `tamanu start`: without it, a
+/// host where postgres hasn't finished starting yet sees the portal as
+/// disabled and silently skips it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WaitForDb {
+	No,
+	Yes,
+}
+
+/// How long [`WaitForDb::Yes`] keeps retrying the DB connection before
+/// giving up. Sized for systemd boot: postgres usually accepts
+/// connections within a few seconds, but a slow-starting host (rebuilt
+/// index, fsck, large WAL replay) can take longer.
+const DB_WAIT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Interval between DB connection retries when [`WaitForDb::Yes`].
+const DB_WAIT_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Resolve the supervisor + expectation set for the current host.
 ///
 /// Picks systemd on Linux, pm2 on Windows; bails on other platforms.
@@ -33,10 +61,14 @@ use super::{TamanuArgs, find_tamanu};
 /// `features.patientPortal` so the patient-portal expectation reflects what
 /// Tamanu itself thinks is enabled — without this lookup the expectation is
 /// always `Down`, which silently no-ops `bestool tamanu start|restart
-/// tamanu-patientportal` on deployments where the flag is on. Falls back to
-/// `false` on DB error (matches what the doctor reports in the same case).
+/// tamanu-patientportal` on deployments where the flag is on. `wait_for_db`
+/// controls what happens when the DB doesn't answer: [`WaitForDb::No`]
+/// warns and defaults to false (right for inspection commands), while
+/// [`WaitForDb::Yes`] polls for up to [`DB_WAIT_TIMEOUT`] so a boot-time
+/// `start` doesn't silently skip DB-gated services.
 pub async fn config_and_expectations(
 	tamanu: &TamanuArgs,
+	wait_for_db: WaitForDb,
 ) -> Result<(Supervisor, Vec<Expectation>)> {
 	let supervisor = if cfg!(target_os = "linux") {
 		Supervisor::Systemd
@@ -58,18 +90,7 @@ pub async fn config_and_expectations(
 	// the DB round-trip in any other shape.
 	let patient_portal_enabled =
 		if matches!(supervisor, Supervisor::Systemd) && matches!(kind, ApiServerKind::Central) {
-			match bestool_postgres::pool::connect_one(
-				&config.database_url(),
-				"bestool-tamanu-lifecycle",
-			)
-			.await
-			{
-				Ok(client) => query_patient_portal_enabled(&client).await,
-				Err(err) => {
-					warn!(%err, "could not query features.patientPortal; assuming false");
-					false
-				}
-			}
+			query_patient_portal_enabled_with_wait(&config.database_url(), wait_for_db).await
 		} else {
 			false
 		};
@@ -86,6 +107,65 @@ pub async fn config_and_expectations(
 		patient_portal_instanced,
 	);
 	Ok((supervisor, expectations))
+}
+
+/// Connect to the DB and read `features.patientPortal`. With
+/// [`WaitForDb::No`], one attempt; on failure, warn and return `false`.
+/// With [`WaitForDb::Yes`], retry every [`DB_WAIT_INTERVAL`] for up to
+/// [`DB_WAIT_TIMEOUT`], warning on each failure so an operator running
+/// the command manually while the DB is down sees what's happening.
+async fn query_patient_portal_enabled_with_wait(database_url: &str, wait_for_db: WaitForDb) -> bool {
+	query_patient_portal_enabled_with_wait_inner(
+		database_url,
+		wait_for_db,
+		DB_WAIT_TIMEOUT,
+		DB_WAIT_INTERVAL,
+	)
+	.await
+}
+
+/// Test-shimmed core of [`query_patient_portal_enabled_with_wait`] — the
+/// retry loop itself, with timing parameters injected so tests can run it
+/// with sub-second values instead of the 2-minute production default.
+async fn query_patient_portal_enabled_with_wait_inner(
+	database_url: &str,
+	wait_for_db: WaitForDb,
+	timeout: Duration,
+	interval: Duration,
+) -> bool {
+	let deadline = match wait_for_db {
+		WaitForDb::No => None,
+		WaitForDb::Yes => Some(Instant::now() + timeout),
+	};
+
+	loop {
+		match bestool_postgres::pool::connect_one(database_url, "bestool-tamanu-lifecycle").await {
+			Ok(client) => return query_patient_portal_enabled(&client).await,
+			Err(err) => match deadline {
+				None => {
+					warn!(%err, "could not query features.patientPortal; assuming false");
+					return false;
+				}
+				Some(deadline) if Instant::now() >= deadline => {
+					warn!(
+						%err,
+						"timed out after {}s waiting for the database; assuming features.patientPortal is false",
+						timeout.as_secs(),
+					);
+					return false;
+				}
+				Some(_) => {
+					warn!(
+						%err,
+						"database not ready; retrying in {}s (will give up after {}s total)",
+						interval.as_secs(),
+						timeout.as_secs(),
+					);
+					tokio::time::sleep(interval).await;
+				}
+			},
+		}
+	}
 }
 
 /// A live service instance discovered from the supervisor.
@@ -712,5 +792,48 @@ mod tests {
 			running: true,
 		};
 		assert_eq!(pm2.display(), "tamanu-api#3");
+	}
+
+	/// A postgres URL pointing at a port nothing should listen on, so
+	/// `connect_one` returns an error fast and the retry loop runs the
+	/// timing-out path without waiting on real I/O.
+	const UNREACHABLE_DB_URL: &str = "postgres://localhost:1/x";
+
+	#[tokio::test]
+	async fn wait_for_db_no_returns_false_after_single_attempt() {
+		let start = Instant::now();
+		let result = query_patient_portal_enabled_with_wait_inner(
+			UNREACHABLE_DB_URL,
+			WaitForDb::No,
+			Duration::from_secs(10),
+			Duration::from_millis(50),
+		)
+		.await;
+		assert!(!result);
+		assert!(
+			start.elapsed() < Duration::from_secs(5),
+			"WaitForDb::No should not loop; took {:?}",
+			start.elapsed(),
+		);
+	}
+
+	#[tokio::test]
+	async fn wait_for_db_yes_retries_until_timeout() {
+		// Short timeout + short interval keeps the test fast. The point is
+		// that we make >1 attempt before giving up.
+		let start = Instant::now();
+		let result = query_patient_portal_enabled_with_wait_inner(
+			UNREACHABLE_DB_URL,
+			WaitForDb::Yes,
+			Duration::from_millis(300),
+			Duration::from_millis(50),
+		)
+		.await;
+		assert!(!result, "should default to false after timeout");
+		assert!(
+			start.elapsed() >= Duration::from_millis(300),
+			"should have waited at least the timeout; took {:?}",
+			start.elapsed(),
+		);
 	}
 }
