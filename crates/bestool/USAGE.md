@@ -68,6 +68,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
+* [`bestool tamanu sync`↴](#bestool-tamanu-sync)
 * [`bestool tamanu tags`↴](#bestool-tamanu-tags)
 * [`bestool tamanu restart`↴](#bestool-tamanu-restart)
 * [`bestool tamanu start`↴](#bestool-tamanu-start)
@@ -1210,6 +1211,7 @@ Alias: t
 * `logs` — Tail logs for tamanu services and (optionally) caddy.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
+* `sync` — Trigger a manual sync on a facility server and watch it run.
 * `tags` — Fetch this device's tags from canopy.
 * `restart` — Rolling-restart all running tamanu services.
 * `start` — Normalise tamanu services to the expected running state.
@@ -1916,6 +1918,40 @@ Aliases: p, pg, sql
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.
+
+
+
+## `bestool tamanu sync`
+
+Trigger a manual sync on a facility server and watch it run.
+
+Sends `POST /sync/run` to the local facility sync sub-process
+(`http://localhost:4100` by default, bound to localhost and not
+authed). If central queues the device (`{ ran: false, queued: true }`),
+retries until central lets the sync run or `--start-timeout` elapses.
+Once a sync runs, cross-checks `GET /sync/status` to confirm
+`lastCompletedAt` actually advanced — so a `ran: true` response that
+was somehow stale won't be silently accepted.
+
+While the sync runs, the command tails the sync service's logs so
+the operator can see what's happening.
+
+Only valid on facility servers — central servers have no sync
+sub-process to talk to.
+
+**Usage:** `bestool tamanu sync [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — Number of trailing log lines to print before tailing
+
+  Default value: `10`
+* `--no-follow` — Just trigger the sync, don't tail the service logs
+* `--retry-interval <RETRY_INTERVAL>` — How long to wait between retries when central has queued the device. Matches the cadence Tamanu's own facility-server CLI uses (15s)
+
+  Default value: `15s`
+* `--start-timeout <START_TIMEOUT>` — Exit non-zero if central is still queueing the device (the sync hasn't *started*) after this long. Default: no limit; keep retrying
+* `--timeout <TIMEOUT>` — Exit non-zero if the sync hasn't *completed* (including all retries) within this long. Default: no limit
 
 
 
