@@ -348,18 +348,9 @@ async fn wait_for(
 
 /// Restart a single instance, identified by its supervisor-native key
 /// (systemd unit name, or pm2 pm_id).
-pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
+pub async fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 	match supervisor {
-		Supervisor::Systemd => {
-			let status = Command::new("systemctl")
-				.args(["restart", &instance.unit()])
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("systemctl restart {} failed: {status}", instance.unit());
-			}
-			Ok(())
-		}
+		Supervisor::Systemd => systemd::restart(&instance.unit()).await,
 		Supervisor::Pm2 => {
 			let id = instance
 				.pm_id
@@ -433,10 +424,8 @@ fn is_pm2_pm_id_online(pm_id: Option<i64>) -> bool {
 /// Mirror of the ansible "Reload caddy" handler from #313.
 #[cfg(target_os = "linux")]
 pub async fn reload_caddy() {
-	let status = Command::new("systemctl").args(["reload", "caddy"]).status();
-	match status {
-		Ok(s) if s.success() => debug!("caddy reloaded via systemctl"),
-		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
+	match systemd::reload("caddy.service").await {
+		Ok(()) => debug!("caddy reloaded"),
 		Err(e) => warn!("could not reload caddy: {e}"),
 	}
 	let status = Command::new("resolvectl").arg("flush-caches").status();

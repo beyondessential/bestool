@@ -193,6 +193,47 @@ mod linux {
 		wait_for_job(&mut signals, &job, "restart", unit).await
 	}
 
+	/// `systemctl restart <units>` with mode `replace`. Fires all restarts on
+	/// one shared `JobRemoved` subscription, then waits for every job to come
+	/// back `done`. Any non-`done` result bails. No-op for an empty slice.
+	pub async fn restart_all(units: &[String]) -> Result<()> {
+		if units.is_empty() {
+			return Ok(());
+		}
+		let mgr = manager().await?;
+		let mut signals = mgr.receive_job_removed().await.into_diagnostic()?;
+		let mut pending: Vec<(OwnedObjectPath, &str)> = Vec::with_capacity(units.len());
+		for unit in units {
+			let job = mgr
+				.restart_unit(unit.clone(), "replace".into())
+				.await
+				.into_diagnostic()?;
+			pending.push((job, unit.as_str()));
+		}
+		while !pending.is_empty()
+			&& let Some(removed) = signals.next().await
+		{
+			let args = removed.args().into_diagnostic()?;
+			if let Some(idx) = pending.iter().position(|(j, _)| j == args.job()) {
+				let (_, unit) = pending.remove(idx);
+				let result = args.result();
+				debug!(unit, verb = "restart", %result, "JobRemoved");
+				if result != "done" {
+					bail!("restart {unit}: job ended with result {result}");
+				}
+			}
+		}
+		if !pending.is_empty() {
+			let names: Vec<&str> = pending.iter().map(|(_, u)| *u).collect();
+			bail!(
+				"JobRemoved stream closed before {} restart job(s) completed: {}",
+				pending.len(),
+				names.join(", ")
+			);
+		}
+		Ok(())
+	}
+
 	/// `systemctl reload <unit>` with mode `replace`. Same JobRemoved-await
 	/// semantics as `restart`.
 	pub async fn reload(unit: &str) -> Result<()> {
@@ -253,6 +294,9 @@ mod stub {
 		bail!("{UNSUPPORTED}")
 	}
 	pub async fn restart(_: &str) -> Result<()> {
+		bail!("{UNSUPPORTED}")
+	}
+	pub async fn restart_all(_: &[String]) -> Result<()> {
 		bail!("{UNSUPPORTED}")
 	}
 	pub async fn reload(_: &str) -> Result<()> {

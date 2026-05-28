@@ -6,7 +6,10 @@ use miette::{IntoDiagnostic, Result, bail};
 use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
-use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
+use bestool_tamanu::{
+	services::{self, ExpectedState, Expectation, Supervisor},
+	systemd,
+};
 
 use crate::actions::{
 	Context,
@@ -75,7 +78,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 
 	if !bulk.is_empty() {
 		info!(targets = ?bulk, "bulk-restarting non-rolling services");
-		bulk_restart(supervisor, &bulk)?;
+		bulk_restart(supervisor, &bulk).await?;
 		lifecycle::wait_running(supervisor, &bulk).await?;
 		// One reload after the bulk covers every behind-caddy service in
 		// the batch (currently just patient-portal). Per-service rolling
@@ -97,7 +100,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 			rolling.len(),
 			instance.display(),
 		);
-		lifecycle::restart_one(supervisor, instance)?;
+		lifecycle::restart_one(supervisor, instance).await?;
 		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60)).await?;
 
 		let probed_ready = if !args.no_probe_http {
@@ -191,19 +194,9 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 	}
 }
 
-fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	match supervisor {
-		Supervisor::Systemd => {
-			let status = std::process::Command::new("systemctl")
-				.arg("restart")
-				.args(targets)
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("systemctl restart failed: {status}");
-			}
-			Ok(())
-		}
+		Supervisor::Systemd => systemd::restart_all(targets).await,
 		Supervisor::Pm2 => lifecycle::pm2_restart_targets(targets),
 	}
 }
