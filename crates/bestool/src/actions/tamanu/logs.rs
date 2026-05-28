@@ -164,12 +164,15 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			{
 				Ok(client) => query_patient_portal_enabled(&client).await,
 				Err(err) => {
-					tracing::warn!(%err, "could not query features.patientPortal; assuming false");
-					false
+					tracing::warn!(
+						%err,
+						"could not query features.patientPortal; portal logs may be missing from output"
+					);
+					None
 				}
 			}
 		} else {
-			false
+			Some(false)
 		};
 
 	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
@@ -953,7 +956,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(true, false),
-			false,
+			Some(false),
 			false,
 		);
 		let tasks = exps.iter().find(|e| e.name == "tamanu-facility-tasks").unwrap();

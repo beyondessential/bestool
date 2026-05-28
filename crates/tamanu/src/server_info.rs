@@ -349,9 +349,14 @@ where
 ///
 /// Settings are stored as one row per dotted leaf path, with the value column
 /// as `JSONB`. The default if the row is absent is `false` (per the global
-/// schema in `packages/settings/src/schema/global.ts`), so we treat missing
-/// rows and decode failures as `false`.
-pub async fn query_patient_portal_enabled(client: &tokio_postgres::Client) -> bool {
+/// schema in `packages/settings/src/schema/global.ts`), so missing rows
+/// resolve to `Some(false)`.
+///
+/// Returns `None` only when the query itself failed — that's the
+/// "DB unreachable" / "transient SQL error" case, kept distinct from
+/// `Some(false)` so callers can emit an Unknown expectation rather than
+/// silently treating outage as opt-out.
+pub async fn query_patient_portal_enabled(client: &tokio_postgres::Client) -> Option<bool> {
 	match client
 		.query_opt(
 			"SELECT value FROM settings WHERE key = 'features.patientPortal' LIMIT 1",
@@ -359,15 +364,16 @@ pub async fn query_patient_portal_enabled(client: &tokio_postgres::Client) -> bo
 		)
 		.await
 	{
-		Ok(Some(row)) => row
-			.try_get::<_, serde_json::Value>(0)
-			.ok()
-			.and_then(|v| v.as_bool())
-			.unwrap_or(false),
-		Ok(None) => false,
+		Ok(Some(row)) => Some(
+			row.try_get::<_, serde_json::Value>(0)
+				.ok()
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false),
+		),
+		Ok(None) => Some(false),
 		Err(err) => {
 			debug!(%err, "could not query features.patientPortal setting");
-			false
+			None
 		}
 	}
 }

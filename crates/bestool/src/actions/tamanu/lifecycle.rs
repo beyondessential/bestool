@@ -87,12 +87,14 @@ pub async fn config_and_expectations(
 	};
 
 	// The patient-portal expectation is only emitted on Linux/central; skip
-	// the DB round-trip in any other shape.
+	// the DB round-trip in any other shape. On other deployment shapes
+	// there's no portal flag to read, so `Some(false)` is correct — not
+	// Unknown, which would falsely imply "we couldn't tell".
 	let patient_portal_enabled =
 		if matches!(supervisor, Supervisor::Systemd) && matches!(kind, ApiServerKind::Central) {
 			query_patient_portal_enabled_with_wait(&config.database_url(), wait_for_db).await
 		} else {
-			false
+			Some(false)
 		};
 
 	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
@@ -109,12 +111,21 @@ pub async fn config_and_expectations(
 	Ok((supervisor, expectations))
 }
 
-/// Connect to the DB and read `features.patientPortal`. With
-/// [`WaitForDb::No`], one attempt; on failure, warn and return `false`.
-/// With [`WaitForDb::Yes`], retry every [`DB_WAIT_INTERVAL`] for up to
-/// [`DB_WAIT_TIMEOUT`], warning on each failure so an operator running
-/// the command manually while the DB is down sees what's happening.
-async fn query_patient_portal_enabled_with_wait(database_url: &str, wait_for_db: WaitForDb) -> bool {
+/// Connect to the DB and read `features.patientPortal`. Returns
+/// `Some(value)` when the query succeeds (including the missing-row case,
+/// where Tamanu's default of `false` applies), `None` when the DB is
+/// unreachable — callers map `None` to the Unknown expectation state so
+/// lifecycle commands leave the portal alone rather than guessing.
+///
+/// With [`WaitForDb::No`], one attempt; on failure, warn and return
+/// `None`. With [`WaitForDb::Yes`], retry every [`DB_WAIT_INTERVAL`] for
+/// up to [`DB_WAIT_TIMEOUT`], warning on each failure so an operator
+/// running the command manually while the DB is down sees what's
+/// happening.
+async fn query_patient_portal_enabled_with_wait(
+	database_url: &str,
+	wait_for_db: WaitForDb,
+) -> Option<bool> {
 	query_patient_portal_enabled_with_wait_inner(
 		database_url,
 		wait_for_db,
@@ -132,7 +143,7 @@ async fn query_patient_portal_enabled_with_wait_inner(
 	wait_for_db: WaitForDb,
 	timeout: Duration,
 	interval: Duration,
-) -> bool {
+) -> Option<bool> {
 	let deadline = match wait_for_db {
 		WaitForDb::No => None,
 		WaitForDb::Yes => Some(Instant::now() + timeout),
@@ -143,16 +154,16 @@ async fn query_patient_portal_enabled_with_wait_inner(
 			Ok(client) => return query_patient_portal_enabled(&client).await,
 			Err(err) => match deadline {
 				None => {
-					warn!(%err, "could not query features.patientPortal; assuming false");
-					return false;
+					warn!(%err, "could not query features.patientPortal; expectation will be Unknown");
+					return None;
 				}
 				Some(deadline) if Instant::now() >= deadline => {
 					warn!(
 						%err,
-						"timed out after {}s waiting for the database; assuming features.patientPortal is false",
+						"timed out after {}s waiting for the database; features.patientPortal expectation will be Unknown",
 						timeout.as_secs(),
 					);
-					return false;
+					return None;
 				}
 				Some(_) => {
 					warn!(
@@ -277,6 +288,22 @@ fn discover_pm2() -> Result<(Vec<Instance>, pm2::Source)> {
 		});
 	}
 	Ok((out, source))
+}
+
+/// Warn-log every expectation whose state is Unknown — lifecycle commands
+/// silently skip Unknown services (we don't know what they should be doing,
+/// so we leave them alone), but operators running interactively should see
+/// what's been left out and why.
+pub fn warn_unknown_expectations(expectations: &[&Expectation]) {
+	for exp in expectations {
+		if matches!(exp.state, services::ExpectedState::Unknown) {
+			warn!(
+				name = exp.name,
+				reason = %exp.reason,
+				"leaving service alone: expected state is Unknown"
+			);
+		}
+	}
 }
 
 /// Group discovered instances under the expectation each belongs to.
@@ -800,7 +827,7 @@ mod tests {
 	const UNREACHABLE_DB_URL: &str = "postgres://localhost:1/x";
 
 	#[tokio::test]
-	async fn wait_for_db_no_returns_false_after_single_attempt() {
+	async fn wait_for_db_no_returns_none_after_single_attempt() {
 		let start = Instant::now();
 		let result = query_patient_portal_enabled_with_wait_inner(
 			UNREACHABLE_DB_URL,
@@ -809,7 +836,7 @@ mod tests {
 			Duration::from_millis(50),
 		)
 		.await;
-		assert!(!result);
+		assert_eq!(result, None, "DB unreachable must surface as Unknown, not a guess");
 		assert!(
 			start.elapsed() < Duration::from_secs(5),
 			"WaitForDb::No should not loop; took {:?}",
@@ -829,7 +856,7 @@ mod tests {
 			Duration::from_millis(50),
 		)
 		.await;
-		assert!(!result, "should default to false after timeout");
+		assert_eq!(result, None, "should surface as Unknown after timeout");
 		assert!(
 			start.elapsed() >= Duration::from_millis(300),
 			"should have waited at least the timeout; took {:?}",

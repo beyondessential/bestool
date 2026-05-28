@@ -53,6 +53,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 		lifecycle::config_and_expectations(tamanu, WaitForDb::Yes).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
+	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor)?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
@@ -306,6 +307,48 @@ mod tests {
 			legacy: false,
 			behind_caddy,
 		}
+	}
+
+	fn unknown_exp(name: &'static str) -> Expectation {
+		Expectation {
+			name,
+			instances: Instances::Single,
+			state: ExpectedState::Unknown,
+			reason: "test: DB unreachable".into(),
+			legacy: false,
+			behind_caddy: true,
+		}
+	}
+
+	#[test]
+	fn plan_start_skips_unknown_expectations() {
+		// Unknown means "we don't know what this should be" — start must
+		// not touch it.
+		let portal = unknown_exp("tamanu-patientportal");
+		let groups = vec![(&portal, Vec::<Instance>::new())];
+		let plan = plan_start(Supervisor::Systemd, &groups).unwrap();
+		assert!(plan.targets.is_empty(), "Unknown must not be started");
+		assert!(!plan.started_behind_caddy);
+	}
+
+	#[test]
+	fn plan_stop_skips_unknown_expectations() {
+		// Same on the stop side: even if a discovered instance is running,
+		// Unknown means hands-off.
+		let portal = unknown_exp("tamanu-patientportal");
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&portal,
+			vec![Instance {
+				name: "tamanu-patientportal".into(),
+				instance: None,
+				pm_id: None,
+				running: true,
+			}],
+		)];
+		let plan = plan_stop(Supervisor::Systemd, &groups, |unit| {
+			panic!("is_enabled must not be called for Unknown, got {unit}");
+		});
+		assert!(plan.is_empty(), "Unknown must not be stopped or disabled");
 	}
 
 	#[test]
