@@ -360,46 +360,15 @@ pub fn match_names<'a>(
 /// singleton `tamanu-patientportal.service`; we detect which is installed by
 /// asking systemd for the template's unit file.
 ///
-/// Returns `false` on any systemctl error, on hosts where the template isn't
+/// Returns `false` on any D-Bus error, on hosts where the template isn't
 /// installed, or on non-Linux systems — callers map `false` to the singleton
 /// layout, which is the historical default and a safe fallback when the
 /// expectation is Down anyway.
-pub fn systemd_patient_portal_instanced() -> bool {
-	let output = std::process::Command::new("systemctl")
-		.args([
-			"list-unit-files",
-			"--no-legend",
-			"--no-pager",
-			"tamanu-patientportal@.service",
-		])
-		.output();
-	let Ok(o) = output else { return false };
-	if !o.status.success() {
-		return false;
-	}
-	let stdout = String::from_utf8_lossy(&o.stdout);
-	stdout
-		.lines()
-		.any(|l| l.trim_start().starts_with("tamanu-patientportal@.service"))
+pub async fn systemd_patient_portal_instanced() -> bool {
+	crate::systemd::unit_file_exists("tamanu-patientportal@.service")
+		.await
+		.unwrap_or(false)
 }
-
-/// Ask systemd whether a unit is enabled (will auto-start at boot).
-///
-/// Returns `true` only for `enabled` / `enabled-runtime`. Treats
-/// `disabled`, `static`, `alias`, `masked`, `linked`, `not-found`, and any
-/// error from `systemctl` as not-enabled. `unit_name` is the unit's full
-/// name with the `.service` suffix already attached (e.g.
-/// `tamanu-patientportal.service`).
-pub fn systemd_is_enabled(unit_name: &str) -> bool {
-	let output = std::process::Command::new("systemctl")
-		.args(["is-enabled", unit_name])
-		.output();
-	let Ok(o) = output else { return false };
-	let state = String::from_utf8_lossy(&o.stdout);
-	let state = state.trim();
-	state == "enabled" || state == "enabled-runtime"
-}
-
 /// Parse a systemd unit name (`tamanu-foo@1.service`, `tamanu-foo.service`,
 /// `tamanu-foo`) into its base name and optional instance.
 ///

@@ -32,7 +32,7 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
-	let discovered = lifecycle::discover(supervisor)?;
+	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
 	let targets = plan_stop(supervisor, &groups);
@@ -44,8 +44,8 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	tracing::info!(?targets, "stopping");
-	lifecycle::stop_targets(supervisor, &targets)?;
-	lifecycle::wait_stopped(supervisor, &targets)?;
+	lifecycle::stop_targets(supervisor, &targets).await?;
+	lifecycle::wait_stopped(supervisor, &targets).await?;
 	Ok(())
 }
 

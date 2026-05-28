@@ -15,6 +15,8 @@ pub mod server_info;
 pub mod services;
 pub mod versions;
 
+pub mod systemd;
+
 #[cfg(feature = "doctor")]
 pub mod doctor;
 

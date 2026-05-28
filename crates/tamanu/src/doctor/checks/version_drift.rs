@@ -53,7 +53,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		None => None,
 	};
 	let patient_portal_instanced =
-		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced();
+		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced().await;
 	let expectations = expected(
 		supervisor,
 		ctx.kind,

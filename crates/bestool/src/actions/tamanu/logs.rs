@@ -177,7 +177,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 
 	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
 		&& matches!(kind, ApiServerKind::Central)
-		&& services::systemd_patient_portal_instanced();
+		&& services::systemd_patient_portal_instanced().await;
 	let all_expectations = services::expected(
 		supervisor,
 		kind,

@@ -6,7 +6,10 @@ use miette::{IntoDiagnostic, Result, bail};
 use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
-use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
+use bestool_tamanu::{
+	services::{self, ExpectedState, Expectation, Supervisor},
+	systemd,
+};
 
 use crate::actions::{
 	Context,
@@ -63,7 +66,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
-	let discovered = lifecycle::discover(supervisor)?;
+	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
 	lifecycle::ensure_root_or_reexec(supervisor)?;
@@ -77,8 +80,8 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 
 	if !bulk.is_empty() {
 		info!(targets = ?bulk, "bulk-restarting non-rolling services");
-		bulk_restart(supervisor, &bulk)?;
-		lifecycle::wait_running(supervisor, &bulk)?;
+		bulk_restart(supervisor, &bulk).await?;
+		lifecycle::wait_running(supervisor, &bulk).await?;
 		// One reload after the bulk covers every behind-caddy service in
 		// the batch — relevant for older deployments whose patient-portal
 		// is a singleton (the frontend always rolls, and on newer
@@ -100,8 +103,8 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 			rolling.len(),
 			instance.display(),
 		);
-		lifecycle::restart_one(supervisor, instance)?;
-		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60))?;
+		lifecycle::restart_one(supervisor, instance).await?;
+		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60)).await?;
 
 		let probed_ready = if !args.no_probe_http {
 			// `probe_instance` blocks until the new container responds. We
@@ -194,19 +197,9 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 	}
 }
 
-fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	match supervisor {
-		Supervisor::Systemd => {
-			let status = std::process::Command::new("systemctl")
-				.arg("restart")
-				.args(targets)
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("systemctl restart failed: {status}");
-			}
-			Ok(())
-		}
+		Supervisor::Systemd => systemd::restart_all(targets).await,
 		Supervisor::Pm2 => lifecycle::pm2_restart_targets(targets),
 	}
 }

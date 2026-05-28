@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::UTF8_HORIZONTAL_ONLY};
@@ -6,7 +6,8 @@ use miette::{IntoDiagnostic, Result, bail};
 use serde::Serialize;
 
 use bestool_tamanu::{
-	services::{self, ExpectedState, Expectation, Supervisor, systemd_is_enabled},
+	services::{self, ExpectedState, Expectation, Supervisor},
+	systemd,
 	versions::{self, ExpectedVersions, VersionStatus},
 };
 
@@ -51,10 +52,16 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
-	let discovered = lifecycle::discover(supervisor)?;
+	let discovered = lifecycle::discover(supervisor).await?;
 	let mut groups = lifecycle::group_by_expectation(&matched, &discovered);
 	if matches!(supervisor, Supervisor::Systemd) {
-		drop_disabled_down(&mut groups, systemd_is_enabled);
+		let candidates: HashSet<String> = groups
+			.iter()
+			.filter(|(exp, _)| matches!(exp.state, ExpectedState::Down))
+			.flat_map(|(_, instances)| instances.iter().map(Instance::unit))
+			.collect();
+		let enabled = systemd::collect_enabled(candidates).await;
+		drop_disabled_down(&mut groups, |unit| enabled.contains(unit));
 	}
 	if !args.all && args.names.is_empty() {
 		hide_compliant_legacy(&mut groups);

@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail};
 
-use bestool_tamanu::services::{
-	self, ExpectedState, Expectation, Supervisor, systemd_is_enabled,
+use bestool_tamanu::{
+	services::{self, ExpectedState, Expectation, Supervisor},
+	systemd,
 };
 
 use crate::actions::{
@@ -54,13 +55,32 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
-	let discovered = lifecycle::discover(supervisor)?;
+	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
 	let stop_plan = if args.up_only {
 		StopPlan::default()
 	} else {
-		plan_stop(supervisor, &groups, systemd_is_enabled)
+		let candidates: HashSet<String> = groups
+			.iter()
+			.filter(|(exp, _)| matches!(exp.state, ExpectedState::Down))
+			.flat_map(|(exp, instances)| {
+				let mut units = exp.instances.required_systemd_units(exp.name);
+				for inst in instances {
+					let u = inst.unit();
+					if !units.contains(&u) {
+						units.push(u);
+					}
+				}
+				units
+			})
+			.collect();
+		let enabled = if matches!(supervisor, Supervisor::Systemd) {
+			systemd::collect_enabled(candidates).await
+		} else {
+			HashSet::new()
+		};
+		plan_stop(supervisor, &groups, |unit| enabled.contains(unit))
 	};
 	let Plan {
 		targets,
@@ -74,16 +94,16 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	if !stop_plan.is_empty() {
-		execute_stop(supervisor, &stop_plan)?;
+		execute_stop(supervisor, &stop_plan).await?;
 	}
 
 	if !targets.is_empty() {
 		tracing::info!(?targets, "starting");
 		match supervisor {
-			Supervisor::Systemd => systemctl_start(&targets)?,
+			Supervisor::Systemd => systemctl_start(&targets).await?,
 			Supervisor::Pm2 => pm2_start(&targets)?,
 		}
-		lifecycle::wait_running(supervisor, &targets)?;
+		lifecycle::wait_running(supervisor, &targets).await?;
 	}
 
 	// Behind-caddy services (API, frontend, patient portal) reach Caddy by
@@ -187,15 +207,15 @@ fn plan_stop(
 	plan
 }
 
-fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
+async fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
 	if !plan.stop.is_empty() {
 		tracing::info!(targets = ?plan.stop, "stopping services expected down");
-		lifecycle::stop_targets(supervisor, &plan.stop)?;
-		lifecycle::wait_stopped(supervisor, &plan.stop)?;
+		lifecycle::stop_targets(supervisor, &plan.stop).await?;
+		lifecycle::wait_stopped(supervisor, &plan.stop).await?;
 	}
 	if !plan.disable.is_empty() {
 		tracing::info!(units = ?plan.disable, "disabling units expected down");
-		lifecycle::disable_systemd_units(&plan.disable)?;
+		lifecycle::disable_systemd_units(&plan.disable).await?;
 	}
 	if !plan.delete.is_empty() {
 		tracing::info!(processes = ?plan.delete, "deleting pm2 processes expected down");
@@ -269,16 +289,8 @@ fn plan_start(
 	})
 }
 
-fn systemctl_start(units: &[String]) -> Result<()> {
-	let status = std::process::Command::new("systemctl")
-		.arg("start")
-		.args(units)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("systemctl start failed: exit {status}");
-	}
-	Ok(())
+async fn systemctl_start(units: &[String]) -> Result<()> {
+	systemd::start(units).await
 }
 
 fn pm2_start(names: &[String]) -> Result<()> {

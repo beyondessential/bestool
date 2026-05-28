@@ -6,7 +6,6 @@
 
 use std::{
 	process::Command,
-	thread::sleep,
 	time::{Duration, Instant},
 };
 
@@ -19,6 +18,7 @@ use bestool_tamanu::{
 	pm2,
 	server_info::query_patient_portal_enabled,
 	services::{self, Expectation, Supervisor, parse_systemd_unit, systemd_patient_portal_instanced},
+	systemd,
 };
 
 use super::{TamanuArgs, find_tamanu};
@@ -99,7 +99,7 @@ pub async fn config_and_expectations(
 
 	let patient_portal_instanced = matches!(supervisor, Supervisor::Systemd)
 		&& matches!(kind, ApiServerKind::Central)
-		&& systemd_patient_portal_instanced();
+		&& systemd_patient_portal_instanced().await;
 
 	let expectations = services::expected(
 		supervisor,
@@ -220,54 +220,25 @@ impl Instance {
 ///
 /// Includes both running and non-running entries — discovery doesn't
 /// itself filter against expectations; that's `match_instances`.
-pub fn discover(supervisor: Supervisor) -> Result<Vec<Instance>> {
+pub async fn discover(supervisor: Supervisor) -> Result<Vec<Instance>> {
 	match supervisor {
-		Supervisor::Systemd => discover_systemd(),
+		Supervisor::Systemd => discover_systemd().await,
 		Supervisor::Pm2 => discover_pm2().map(|(v, _)| v),
 	}
 }
 
-fn discover_systemd() -> Result<Vec<Instance>> {
-	let output = Command::new("systemctl")
-		.args([
-			"list-units",
-			"--type=service",
-			"--all",
-			"--no-legend",
-			"--plain",
-			"--no-pager",
-			"tamanu-*.service",
-		])
-		.output()
-		.into_diagnostic()?;
-	if !output.status.success() {
-		bail!(
-			"systemctl list-units failed: {}",
-			String::from_utf8_lossy(&output.stderr).trim()
-		);
-	}
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
+async fn discover_systemd() -> Result<Vec<Instance>> {
+	let units = systemd::list_units(&["tamanu-*.service"]).await?;
 	let mut out = Vec::new();
-	for line in stdout.lines() {
-		let mut parts = line.split_whitespace();
-		let (Some(unit), Some(load), Some(active), Some(sub)) =
-			(parts.next(), parts.next(), parts.next(), parts.next())
-		else {
+	for u in units {
+		let Some((base, instance)) = parse_systemd_unit(&u.name) else {
 			continue;
 		};
-		if load == "not-found" {
-			continue;
-		}
-		let Some((base, instance)) = parse_systemd_unit(unit) else {
-			continue;
-		};
-		let running = active == "active" && (sub == "running" || sub == "exited");
 		out.push(Instance {
 			name: base.to_string(),
 			instance: instance.map(str::to_string),
 			pm_id: None,
-			running,
+			running: u.running(),
 		});
 	}
 	Ok(out)
@@ -356,38 +327,39 @@ pub fn ensure_root_or_reexec(supervisor: Supervisor) -> Result<()> {
 /// Poll the supervisor until every target is running, or the timeout
 /// elapses. Targets are unit names (systemd) or process names (pm2),
 /// matching the input given to `systemctl start` / `pm2 start`.
-pub fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
-	wait_for(supervisor, targets, true, "active")
+pub async fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, true, "active").await
 }
 
 /// Mirror of `wait_running`: poll until every target is stopped.
-pub fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
-	wait_for(supervisor, targets, false, "inactive")
+pub async fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, false, "inactive").await
 }
 
 /// Issue a stop call to the right supervisor for every target.
 ///
 /// `targets` are supervisor-native identifiers — systemd unit names
 /// (`tamanu-foo.service`, `tamanu-foo@1.service`) or pm2 process names.
-/// No-op for an empty slice. Bails non-zero on supervisor failure; doesn't
-/// itself wait for the stop to complete (use `wait_stopped` afterwards).
-pub fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+/// No-op for an empty slice. Bails on supervisor failure; doesn't itself
+/// wait for the stop to complete (use `wait_stopped` afterwards).
+pub async fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	if targets.is_empty() {
 		return Ok(());
 	}
-	let (cmd, verb) = match supervisor {
-		Supervisor::Systemd => ("systemctl", "stop"),
-		Supervisor::Pm2 => ("pm2", "stop"),
-	};
-	let status = Command::new(cmd)
-		.arg(verb)
-		.args(targets)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("{cmd} {verb} failed: exit {status}");
+	match supervisor {
+		Supervisor::Systemd => systemd::stop(targets).await,
+		Supervisor::Pm2 => {
+			let status = Command::new("pm2")
+				.arg("stop")
+				.args(targets)
+				.status()
+				.into_diagnostic()?;
+			if !status.success() {
+				bail!("pm2 stop failed: exit {status}");
+			}
+			Ok(())
+		}
 	}
-	Ok(())
 }
 
 /// Restart a batch of pm2 targets by stop-then-start with a short pause
@@ -413,7 +385,7 @@ pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
 	if !stop.success() {
 		bail!("pm2 stop failed: exit {stop}");
 	}
-	sleep(Duration::from_secs(1));
+	std::thread::sleep(Duration::from_secs(1));
 	let start = Command::new("pm2")
 		.arg("start")
 		.args(targets)
@@ -451,23 +423,12 @@ pub fn delete_pm2(names: &[String]) -> Result<()> {
 
 /// Disable a batch of systemd units. No-op for an empty slice. Errors
 /// bubble up — callers that want best-effort behaviour should filter the
-/// list with `systemd_is_enabled` first (the typical pattern).
-pub fn disable_systemd_units(units: &[String]) -> Result<()> {
-	if units.is_empty() {
-		return Ok(());
-	}
-	let status = Command::new("systemctl")
-		.arg("disable")
-		.args(units)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("systemctl disable failed: exit {status}");
-	}
-	Ok(())
+/// list with `systemd::collect_enabled` first (the typical pattern).
+pub async fn disable_systemd_units(units: &[String]) -> Result<()> {
+	systemd::disable(units).await
 }
 
-fn wait_for(
+async fn wait_for(
 	supervisor: Supervisor,
 	targets: &[String],
 	want_running: bool,
@@ -476,41 +437,37 @@ fn wait_for(
 	let deadline = Instant::now() + Duration::from_secs(60);
 	let interval = Duration::from_millis(500);
 	loop {
-		let all_match = targets
-			.iter()
-			.all(|t| is_running(supervisor, t) == want_running);
+		let mut all_match = true;
+		for t in targets {
+			if is_running(supervisor, t).await != want_running {
+				all_match = false;
+				break;
+			}
+		}
 		if all_match {
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
-			let still_wrong: Vec<&str> = targets
-				.iter()
-				.filter(|t| is_running(supervisor, t) != want_running)
-				.map(String::as_str)
-				.collect();
+			let mut still_wrong: Vec<&str> = Vec::new();
+			for t in targets {
+				if is_running(supervisor, t).await != want_running {
+					still_wrong.push(t.as_str());
+				}
+			}
 			bail!(
 				"timed out after 60s waiting for {} to become {state_label}",
 				still_wrong.join(", ")
 			);
 		}
-		sleep(interval);
+		tokio::time::sleep(interval).await;
 	}
 }
 
 /// Restart a single instance, identified by its supervisor-native key
 /// (systemd unit name, or pm2 pm_id).
-pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
+pub async fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 	match supervisor {
-		Supervisor::Systemd => {
-			let status = Command::new("systemctl")
-				.args(["restart", &instance.unit()])
-				.status()
-				.into_diagnostic()?;
-			if !status.success() {
-				bail!("systemctl restart {} failed: {status}", instance.unit());
-			}
-			Ok(())
-		}
+		Supervisor::Systemd => systemd::restart(&instance.unit()).await,
 		Supervisor::Pm2 => {
 			let id = instance
 				.pm_id
@@ -525,12 +482,16 @@ pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 /// For systemd, polls `systemctl is-active`. For pm2, polls jlist and
 /// matches by `pm_id` (so we can distinguish individual processes that
 /// share a name).
-pub fn wait_running_one(supervisor: Supervisor, instance: &Instance, timeout: Duration) -> Result<()> {
+pub async fn wait_running_one(
+	supervisor: Supervisor,
+	instance: &Instance,
+	timeout: Duration,
+) -> Result<()> {
 	let deadline = Instant::now() + timeout;
 	let interval = Duration::from_millis(500);
 	loop {
 		let up = match supervisor {
-			Supervisor::Systemd => is_running(supervisor, &instance.unit()),
+			Supervisor::Systemd => is_running(supervisor, &instance.unit()).await,
 			Supervisor::Pm2 => is_pm2_pm_id_online(instance.pm_id),
 		};
 		if up {
@@ -543,7 +504,7 @@ pub fn wait_running_one(supervisor: Supervisor, instance: &Instance, timeout: Du
 				instance.display(),
 			);
 		}
-		sleep(interval);
+		tokio::time::sleep(interval).await;
 	}
 }
 
@@ -580,10 +541,8 @@ fn is_pm2_pm_id_online(pm_id: Option<i64>) -> bool {
 /// Mirror of the ansible "Reload caddy" handler from #313.
 #[cfg(target_os = "linux")]
 pub async fn reload_caddy() {
-	let status = Command::new("systemctl").args(["reload", "caddy"]).status();
-	match status {
-		Ok(s) if s.success() => debug!("caddy reloaded via systemctl"),
-		Ok(s) => warn!("systemctl reload caddy exited with {s}"),
+	match systemd::reload("caddy.service").await {
+		Ok(()) => debug!("caddy reloaded"),
 		Err(e) => warn!("could not reload caddy: {e}"),
 	}
 	let status = Command::new("resolvectl").arg("flush-caches").status();
@@ -733,13 +692,9 @@ pub fn pm2_port_for(pm_id: i64) -> Result<Option<u16>> {
 	Ok(port)
 }
 
-fn is_running(supervisor: Supervisor, target: &str) -> bool {
+async fn is_running(supervisor: Supervisor, target: &str) -> bool {
 	match supervisor {
-		Supervisor::Systemd => Command::new("systemctl")
-			.args(["is-active", "--quiet", target])
-			.status()
-			.map(|s| s.success())
-			.unwrap_or(false),
+		Supervisor::Systemd => systemd::is_active(target).await.unwrap_or(false),
 		Supervisor::Pm2 => match pm2::list() {
 			Ok((procs, _)) => procs.iter().any(|p| p.name == target && p.running),
 			Err(_) => false,
