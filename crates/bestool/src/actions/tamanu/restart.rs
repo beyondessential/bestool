@@ -76,7 +76,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	if !bulk.is_empty() {
 		info!(targets = ?bulk, "bulk-restarting non-rolling services");
 		bulk_restart(supervisor, &bulk)?;
-		lifecycle::wait_running(supervisor, &bulk)?;
+		lifecycle::wait_running(supervisor, &bulk).await?;
 		// One reload after the bulk covers every behind-caddy service in
 		// the batch (currently just patient-portal). Per-service rolling
 		// reloads aren't needed here because singleton services don't have
@@ -98,7 +98,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 			instance.display(),
 		);
 		lifecycle::restart_one(supervisor, instance)?;
-		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60))?;
+		lifecycle::wait_running_one(supervisor, instance, Duration::from_secs(60)).await?;
 
 		let probed_ready = if !args.no_probe_http {
 			// `probe_instance` blocks until the new container responds. We

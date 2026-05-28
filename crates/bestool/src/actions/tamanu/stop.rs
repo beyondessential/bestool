@@ -43,7 +43,7 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 
 	tracing::info!(?targets, "stopping");
 	lifecycle::stop_targets(supervisor, &targets)?;
-	lifecycle::wait_stopped(supervisor, &targets)?;
+	lifecycle::wait_stopped(supervisor, &targets).await?;
 	Ok(())
 }
 

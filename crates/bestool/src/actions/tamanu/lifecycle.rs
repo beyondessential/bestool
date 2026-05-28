@@ -6,7 +6,6 @@
 
 use std::{
 	process::Command,
-	thread::sleep,
 	time::{Duration, Instant},
 };
 
@@ -19,6 +18,7 @@ use bestool_tamanu::{
 	pm2,
 	server_info::query_patient_portal_enabled,
 	services::{self, Expectation, Supervisor, parse_systemd_unit},
+	systemd,
 };
 
 use super::{TamanuArgs, find_tamanu};
@@ -239,13 +239,13 @@ pub fn ensure_root_or_reexec(supervisor: Supervisor) -> Result<()> {
 /// Poll the supervisor until every target is running, or the timeout
 /// elapses. Targets are unit names (systemd) or process names (pm2),
 /// matching the input given to `systemctl start` / `pm2 start`.
-pub fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
-	wait_for(supervisor, targets, true, "active")
+pub async fn wait_running(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, true, "active").await
 }
 
 /// Mirror of `wait_running`: poll until every target is stopped.
-pub fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
-	wait_for(supervisor, targets, false, "inactive")
+pub async fn wait_stopped(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	wait_for(supervisor, targets, false, "inactive").await
 }
 
 /// Issue a stop call to the right supervisor for every target.
@@ -296,7 +296,7 @@ pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
 	if !stop.success() {
 		bail!("pm2 stop failed: exit {stop}");
 	}
-	sleep(Duration::from_secs(1));
+	std::thread::sleep(Duration::from_secs(1));
 	let start = Command::new("pm2")
 		.arg("start")
 		.args(targets)
@@ -350,7 +350,7 @@ pub fn disable_systemd_units(units: &[String]) -> Result<()> {
 	Ok(())
 }
 
-fn wait_for(
+async fn wait_for(
 	supervisor: Supervisor,
 	targets: &[String],
 	want_running: bool,
@@ -359,24 +359,29 @@ fn wait_for(
 	let deadline = Instant::now() + Duration::from_secs(60);
 	let interval = Duration::from_millis(500);
 	loop {
-		let all_match = targets
-			.iter()
-			.all(|t| is_running(supervisor, t) == want_running);
+		let mut all_match = true;
+		for t in targets {
+			if is_running(supervisor, t).await != want_running {
+				all_match = false;
+				break;
+			}
+		}
 		if all_match {
 			return Ok(());
 		}
 		if Instant::now() >= deadline {
-			let still_wrong: Vec<&str> = targets
-				.iter()
-				.filter(|t| is_running(supervisor, t) != want_running)
-				.map(String::as_str)
-				.collect();
+			let mut still_wrong: Vec<&str> = Vec::new();
+			for t in targets {
+				if is_running(supervisor, t).await != want_running {
+					still_wrong.push(t.as_str());
+				}
+			}
 			bail!(
 				"timed out after 60s waiting for {} to become {state_label}",
 				still_wrong.join(", ")
 			);
 		}
-		sleep(interval);
+		tokio::time::sleep(interval).await;
 	}
 }
 
@@ -408,12 +413,16 @@ pub fn restart_one(supervisor: Supervisor, instance: &Instance) -> Result<()> {
 /// For systemd, polls `systemctl is-active`. For pm2, polls jlist and
 /// matches by `pm_id` (so we can distinguish individual processes that
 /// share a name).
-pub fn wait_running_one(supervisor: Supervisor, instance: &Instance, timeout: Duration) -> Result<()> {
+pub async fn wait_running_one(
+	supervisor: Supervisor,
+	instance: &Instance,
+	timeout: Duration,
+) -> Result<()> {
 	let deadline = Instant::now() + timeout;
 	let interval = Duration::from_millis(500);
 	loop {
 		let up = match supervisor {
-			Supervisor::Systemd => is_running(supervisor, &instance.unit()),
+			Supervisor::Systemd => is_running(supervisor, &instance.unit()).await,
 			Supervisor::Pm2 => is_pm2_pm_id_online(instance.pm_id),
 		};
 		if up {
@@ -426,7 +435,7 @@ pub fn wait_running_one(supervisor: Supervisor, instance: &Instance, timeout: Du
 				instance.display(),
 			);
 		}
-		sleep(interval);
+		tokio::time::sleep(interval).await;
 	}
 }
 
@@ -616,13 +625,9 @@ pub fn pm2_port_for(pm_id: i64) -> Result<Option<u16>> {
 	Ok(port)
 }
 
-fn is_running(supervisor: Supervisor, target: &str) -> bool {
+async fn is_running(supervisor: Supervisor, target: &str) -> bool {
 	match supervisor {
-		Supervisor::Systemd => Command::new("systemctl")
-			.args(["is-active", "--quiet", target])
-			.status()
-			.map(|s| s.success())
-			.unwrap_or(false),
+		Supervisor::Systemd => systemd::is_active(target).await.unwrap_or(false),
 		Supervisor::Pm2 => match pm2::list() {
 			Ok((procs, _)) => procs.iter().any(|p| p.name == target && p.running),
 			Err(_) => false,

@@ -86,7 +86,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	if !stop_plan.is_empty() {
-		execute_stop(supervisor, &stop_plan)?;
+		execute_stop(supervisor, &stop_plan).await?;
 	}
 
 	if !targets.is_empty() {
@@ -95,7 +95,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 			Supervisor::Systemd => systemctl_start(&targets)?,
 			Supervisor::Pm2 => pm2_start(&targets)?,
 		}
-		lifecycle::wait_running(supervisor, &targets)?;
+		lifecycle::wait_running(supervisor, &targets).await?;
 	}
 
 	// Behind-caddy services (API, frontend, patient portal) reach Caddy by
@@ -199,11 +199,11 @@ fn plan_stop(
 	plan
 }
 
-fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
+async fn execute_stop(supervisor: Supervisor, plan: &StopPlan) -> Result<()> {
 	if !plan.stop.is_empty() {
 		tracing::info!(targets = ?plan.stop, "stopping services expected down");
 		lifecycle::stop_targets(supervisor, &plan.stop)?;
-		lifecycle::wait_stopped(supervisor, &plan.stop)?;
+		lifecycle::wait_stopped(supervisor, &plan.stop).await?;
 	}
 	if !plan.disable.is_empty() {
 		tracing::info!(units = ?plan.disable, "disabling units expected down");
