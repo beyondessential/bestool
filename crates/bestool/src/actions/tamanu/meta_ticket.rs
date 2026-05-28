@@ -58,7 +58,7 @@ pub async fn run(_args: MetaTicketArgs, ctx: Context) -> Result<()> {
 
 	let public_key_pem = derive_public_key_pem(&device_key_pem)?;
 
-	let server_id = get_or_create_server_id(&client).await?;
+	let server_id = get_or_create_server_id(Some(&client)).await?;
 
 	let (tailscale_ip, tailscale_name) = get_tailscale_info();
 	let hosting = detect_hosting();
