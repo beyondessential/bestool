@@ -50,7 +50,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// expected set.
 	let patient_portal_enabled = match ctx.db.as_deref() {
 		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
-		None => false,
+		None => None,
 	};
 	let patient_portal_instanced =
 		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced();

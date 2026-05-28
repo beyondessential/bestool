@@ -91,6 +91,12 @@ pub enum ExpectedState {
 	Up,
 	/// Must NOT be active and (on systemd) must NOT be enabled.
 	Down,
+	/// We couldn't resolve what this service should be doing — typically
+	/// because the signal that drives the expectation (e.g. a Tamanu DB
+	/// setting) was unreachable. Lifecycle commands leave Unknown
+	/// services alone: neither start nor stop them. Doctor and status
+	/// report the row without flagging a failure.
+	Unknown,
 }
 
 impl Instances {
@@ -136,12 +142,16 @@ impl Instances {
 
 /// All services expected to exist (or be absent) for this deployment.
 ///
-/// `patient_portal_enabled` is the `features.patientPortal` setting read from
-/// the central server's DB. Callers without a DB connection should pass
-/// `false`; we'll then emit a Down expectation, which is the same thing the
-/// doctor would have asserted on a deployment that hasn't opted into the
-/// portal. The signal is sourced from the DB rather than `local.json5`
-/// because Tamanu's central-server code reads the setting (not the unused
+/// `patient_portal_enabled` carries the `features.patientPortal` setting
+/// from the central server's DB as a tri-state:
+/// - `Some(true)` → portal expected Up
+/// - `Some(false)` → portal expected Down (the deployment has opted out)
+/// - `None` → expectation is Unknown (signal couldn't be resolved, usually
+///   because the DB is unreachable). Lifecycle commands skip Unknown
+///   services so a transient outage doesn't trigger spurious stops/starts.
+///
+/// The signal is sourced from the DB rather than `local.json5` because
+/// Tamanu's central-server code reads the setting (not the unused
 /// `patientPortal.portalUrl` config field) to decide whether to mount the
 /// portal API.
 ///
@@ -149,13 +159,12 @@ impl Instances {
 /// true, expect a frontend-style `Named(["a", "b"])` template; when false,
 /// expect the historical singleton. Callers should source this from
 /// [`systemd_patient_portal_instanced`] on systemd hosts and pass `false`
-/// otherwise (the singleton default has no false-positive impact when the
-/// expectation is Down anyway).
+/// otherwise.
 pub fn expected(
 	supervisor: Supervisor,
 	kind: ApiServerKind,
 	config: &TamanuConfig,
-	patient_portal_enabled: bool,
+	patient_portal_enabled: Option<bool>,
 	patient_portal_instanced: bool,
 ) -> Vec<Expectation> {
 	let mut out = Vec::new();
@@ -255,12 +264,23 @@ pub fn expected(
 			// and bulk-restart. Expected Up iff the Tamanu DB setting
 			// `features.patientPortal` is true — if the flag is on but
 			// nothing's running, that's an ops misalignment worth
-			// flagging.
+			// flagging. When the DB is unreachable we can't decide,
+			// so the expectation is Unknown and lifecycle commands
+			// leave the portal alone.
 			if matches!(supervisor, Supervisor::Systemd) {
-				let portal_state = if patient_portal_enabled {
-					ExpectedState::Up
-				} else {
-					ExpectedState::Down
+				let (portal_state, portal_reason) = match patient_portal_enabled {
+					Some(true) => (
+						ExpectedState::Up,
+						"DB setting features.patientPortal is true".to_string(),
+					),
+					Some(false) => (
+						ExpectedState::Down,
+						"DB setting features.patientPortal is false".to_string(),
+					),
+					None => (
+						ExpectedState::Unknown,
+						"DB unreachable, cannot read features.patientPortal".to_string(),
+					),
 				};
 				let portal_instances = if patient_portal_instanced {
 					Instances::Named(&["a", "b"])
@@ -271,9 +291,7 @@ pub fn expected(
 					name: "tamanu-patientportal",
 					instances: portal_instances,
 					state: portal_state,
-					reason: format!(
-						"DB setting features.patientPortal is {patient_portal_enabled}"
-					),
+					reason: portal_reason,
 					legacy: false,
 					behind_caddy: true,
 				});
@@ -420,7 +438,7 @@ mod tests {
 			Supervisor::Pm2,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert_eq!(
@@ -441,7 +459,7 @@ mod tests {
 			Supervisor::Pm2,
 			ApiServerKind::Central,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert_eq!(
@@ -469,7 +487,7 @@ mod tests {
 			Supervisor::Pm2,
 			ApiServerKind::Central,
 			&cfg(true),
-			false,
+			Some(false),
 			false,
 		);
 		assert_eq!(
@@ -489,7 +507,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert_eq!(
@@ -515,7 +533,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(true),
-			true,
+			Some(true),
 			true,
 		);
 		assert_eq!(
@@ -540,7 +558,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			true,
+			Some(true),
 			true,
 		);
 		let pp = es
@@ -559,7 +577,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			true,
+			Some(true),
 			false,
 		);
 		let pp = es
@@ -568,6 +586,30 @@ mod tests {
 			.expect("patient portal expectation should be present");
 		assert_eq!(pp.state, ExpectedState::Up);
 		assert_eq!(pp.instances, Instances::Single);
+	}
+
+	#[test]
+	fn central_systemd_marks_patient_portal_unknown_when_db_unreachable() {
+		// `patient_portal_enabled = None` means "we couldn't read the DB
+		// flag" — the expectation must be Unknown so lifecycle commands
+		// leave the portal alone rather than guessing Down.
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			None,
+			false,
+		);
+		let pp = es
+			.iter()
+			.find(|e| e.name == "tamanu-patientportal")
+			.expect("portal expectation should still be emitted");
+		assert_eq!(pp.state, ExpectedState::Unknown);
+		assert!(
+			pp.reason.contains("DB"),
+			"reason should mention DB: {}",
+			pp.reason
+		);
 	}
 
 	#[test]
@@ -580,7 +622,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		let pp = es
@@ -596,7 +638,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
-			true,
+			Some(true),
 			true,
 		);
 		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
@@ -611,7 +653,7 @@ mod tests {
 			Supervisor::Pm2,
 			ApiServerKind::Central,
 			&cfg(true),
-			true,
+			Some(true),
 			true,
 		);
 		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
@@ -623,7 +665,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		let fe = es.iter().find(|e| e.name == "tamanu-frontend").unwrap();
@@ -637,7 +679,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		let api = es.iter().find(|e| e.name == "tamanu-facility-api").unwrap();
@@ -683,7 +725,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert!(rolling_for(&central, "tamanu-central-api"));
@@ -693,7 +735,7 @@ mod tests {
 			Supervisor::Pm2,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert!(rolling_for(&facility_pm2, "tamanu-api"));
@@ -707,7 +749,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			true,
+			Some(true),
 			true,
 		);
 		assert!(rolling_for(&central, "tamanu-patientportal"));
@@ -721,7 +763,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
-			true,
+			Some(true),
 			false,
 		);
 		assert!(!rolling_for(&central, "tamanu-patientportal"));
@@ -735,7 +777,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(true),
-			true,
+			Some(true),
 			true,
 		);
 		assert!(!rolling_for(&central, "tamanu-central-tasks"));
@@ -746,7 +788,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
-			false,
+			Some(false),
 			false,
 		);
 		assert!(!rolling_for(&facility, "tamanu-facility-sync"));

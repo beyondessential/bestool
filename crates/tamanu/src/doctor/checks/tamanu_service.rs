@@ -23,11 +23,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	// Patient-portal expectation is gated on Tamanu's own `features.patientPortal`
-	// DB setting. Without a DB client (e.g. unreachable), treat the flag as off
-	// — same as the `expected()` default for missing-config callers.
+	// DB setting. Without a DB client (e.g. unreachable), pass `None` so the
+	// expectation surfaces as Unknown rather than a false-negative Down.
 	let patient_portal_enabled = match ctx.db.as_deref() {
 		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
-		None => false,
+		None => None,
 	};
 	let patient_portal_instanced =
 		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced();
@@ -208,6 +208,12 @@ enum Outcome {
 	Forbidden {
 		units: Vec<String>,
 	},
+	/// Expectation is `Unknown` (the driving signal was unreachable). We
+	/// record what's there but neither pass nor fail; the row exists so
+	/// operators see that we couldn't decide for this service.
+	Indeterminate {
+		discovered: Vec<String>,
+	},
 }
 
 /// Cross-reference Down expectations against `is-enabled` to handle the two
@@ -265,6 +271,13 @@ fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, 
 		.collect();
 
 	match exp.state {
+		ExpectedState::Unknown => {
+			let units: Vec<String> = matched_idx
+				.iter()
+				.map(|i| discovered[*i].raw.clone())
+				.collect();
+			(Outcome::Indeterminate { discovered: units }, matched_idx)
+		}
 		ExpectedState::Down => {
 			if matched_idx.is_empty() {
 				(Outcome::Ok, matched_idx)
@@ -349,7 +362,24 @@ fn evaluate(
 			"behind_caddy": exp.behind_caddy,
 		}));
 
-		if !matches!(outcome, Outcome::Ok) {
+		// `Indeterminate` is the Unknown-expectation outcome: we couldn't
+		// decide what should be running. That's not a failure (we never
+		// claimed the actual state is wrong), so it doesn't go in the
+		// failures list — but it does land in `diagnostics` so operators
+		// see the row was deliberately not evaluated.
+		if matches!(outcome, Outcome::Indeterminate { .. }) {
+			let (actual, detail) = actual_for_outcome(exp, &outcome);
+			let mut diag = json!({
+				"name": exp.name,
+				"expected": expected_state_label(exp.state),
+				"reason": exp.reason,
+				"actual": actual,
+			});
+			if let Some(d) = detail {
+				diag["detail"] = Value::String(d);
+			}
+			diagnostics.push(diag);
+		} else if !matches!(outcome, Outcome::Ok) {
 			let (actual, detail) = actual_for_outcome(exp, &outcome);
 			let expected_label = expected_state_label(exp.state);
 			let mut diag = json!({
@@ -436,6 +466,7 @@ fn expected_state_label(s: ExpectedState) -> &'static str {
 	match s {
 		ExpectedState::Up => "up",
 		ExpectedState::Down => "down",
+		ExpectedState::Unknown => "unknown",
 	}
 }
 
@@ -459,6 +490,14 @@ fn actual_for_outcome(exp: &Expectation, outcome: &Outcome) -> (&'static str, Op
 			("partial", Some(parts.join("; ")))
 		}
 		Outcome::Forbidden { units } => ("up", Some(units.join(", "))),
+		Outcome::Indeterminate { discovered } => {
+			let detail = if discovered.is_empty() {
+				None
+			} else {
+				Some(discovered.join(", "))
+			};
+			("indeterminate", detail)
+		}
 	}
 }
 
@@ -500,6 +539,9 @@ fn outcome_to_json(o: &Outcome) -> Value {
 			"missing_named": missing_named,
 		}),
 		Outcome::Forbidden { units } => json!({"kind": "forbidden", "units": units}),
+		Outcome::Indeterminate { discovered } => {
+			json!({"kind": "indeterminate", "discovered": discovered})
+		}
 	}
 }
 
@@ -546,7 +588,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -568,7 +610,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -595,7 +637,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -621,7 +663,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -651,7 +693,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -753,7 +795,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let mut discovered = vec![
@@ -780,13 +822,42 @@ mod tests {
 	}
 
 	#[test]
+	fn unknown_portal_expectation_does_not_fail_check() {
+		// DB unreachable → portal expectation is Unknown. The doctor must
+		// not flag this as a service-check failure: we don't know what the
+		// portal should be doing, so any running/stopped state is fine.
+		let cfg = central_cfg(true);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg,
+			None,
+			false,
+		);
+		let discovered = vec![
+			d("tamanu-central-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-central-api", Some("1"), true),
+			d("tamanu-central-api", Some("2"), true),
+			d("tamanu-central-fhir-resolve", None, true),
+			d("tamanu-central-fhir-refresh", None, true),
+			// patient portal is running; with Unknown expectation, that
+			// must NOT count as a failure.
+			d("tamanu-patientportal", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
 	fn central_with_fhir_requires_workers() {
 		let cfg = central_cfg(true);
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -823,7 +894,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -840,7 +911,13 @@ mod tests {
 	#[test]
 	fn pm2_facility_happy() {
 		let cfg = cfg(false);
-		let exps = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg, false, false);
+		let exps = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Facility,
+			&cfg,
+			Some(false),
+			false,
+		);
 		let discovered = vec![
 			Discovered {
 				name: "tamanu-tasks".into(),
@@ -939,7 +1016,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -975,7 +1052,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -1024,7 +1101,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
@@ -1058,7 +1135,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg,
-			false,
+			Some(false),
 			false,
 		);
 		let discovered = vec![
