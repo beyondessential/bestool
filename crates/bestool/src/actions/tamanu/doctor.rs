@@ -592,15 +592,15 @@ pub(super) async fn perform_sweep(
 	completed.sort_by_key(|(idx, _, _)| *idx);
 	let results: Vec<(Check, bool)> = completed.into_iter().map(|(_, c, w)| (c, w)).collect();
 
-	let server_id = match db.as_deref() {
-		Some(client) => match get_or_create_server_id(client).await {
-			Ok(id) => Some(id),
-			Err(err) => {
-				warn!("could not resolve metaServerId: {err}");
-				None
-			}
-		},
-		None => None,
+	// Resolve via the file path first so a doctor sweep can still report to
+	// canopy when the DB is down — that's exactly the moment canopy most
+	// needs to hear from us.
+	let server_id = match get_or_create_server_id(db.as_deref()).await {
+		Ok(id) => Some(id),
+		Err(err) => {
+			warn!("could not resolve metaServerId: {err}");
+			None
+		}
 	};
 
 	let facts = collect_server_facts(&config, db.as_deref(), cached_pg_version).await;

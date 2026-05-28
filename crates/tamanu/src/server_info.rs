@@ -63,21 +63,44 @@ pub fn standard_tags_path() -> PathBuf {
 /// Resolve the `metaServerId` for this Tamanu server.
 ///
 /// Resolution order:
-/// 1. Read [`standard_server_id_path`] if present.
-/// 2. Read the legacy `local_system_facts.metaServerId` row; best-effort copy
-///    to the file path so subsequent runs don't need the DB.
-/// 3. Generate a fresh UUIDv4. Persist to the file path; if the file write
-///    fails, fall back to inserting into `local_system_facts` so the new ID
-///    isn't lost across runs.
-pub async fn get_or_create_server_id(client: &tokio_postgres::Client) -> Result<String> {
-	let path = standard_server_id_path();
+/// 1. Read [`standard_server_id_path`] if present. This is the only step that
+///    works without a DB connection; on already-provisioned hosts it always
+///    succeeds, so callers like the doctor daemon can report status to canopy
+///    even when postgres is down (which is precisely when canopy most needs
+///    to hear from us).
+/// 2. If `client` is `Some`, read the legacy `local_system_facts.metaServerId`
+///    row; best-effort copy to the file path so subsequent runs don't need
+///    the DB.
+/// 3. If `client` is `Some`, generate a fresh UUIDv4. Persist to the file
+///    path; if the file write fails, fall back to inserting into
+///    `local_system_facts` so the new ID isn't lost across runs.
+///
+/// Returns an error when `client` is `None` *and* the file isn't present —
+/// brand-new hosts have to reach the DB at least once to mint an ID.
+pub async fn get_or_create_server_id(client: Option<&tokio_postgres::Client>) -> Result<String> {
+	get_or_create_server_id_at(&standard_server_id_path(), client).await
+}
 
-	if let Some(id) = read_server_id_file(&path) {
+/// Test-shimmed core of [`get_or_create_server_id`] — same contract, with
+/// the file path injected so unit tests can drive it without touching
+/// `/etc/tamanu`.
+async fn get_or_create_server_id_at(
+	path: &Path,
+	client: Option<&tokio_postgres::Client>,
+) -> Result<String> {
+	if let Some(id) = read_server_id_file(path) {
 		return Ok(id);
 	}
 
+	let Some(client) = client else {
+		miette::bail!(
+			"no server-id file at {} and no DB connection to mint one from",
+			path.display()
+		);
+	};
+
 	if let Some(id) = query_server_id_row(client).await? {
-		match write_server_id_file(&path, &id) {
+		match write_server_id_file(path, &id) {
 			Ok(()) => info!(
 				path = %path.display(),
 				"copied metaServerId from Tamanu DB to standard path"
@@ -94,7 +117,7 @@ pub async fn get_or_create_server_id(client: &tokio_postgres::Client) -> Result<
 	let id = Uuid::new_v4().to_string();
 	info!(server_id = %id, "generating new metaServerId");
 
-	match write_server_id_file(&path, &id) {
+	match write_server_id_file(path, &id) {
 		Ok(()) => Ok(id),
 		Err(err) => {
 			debug!(
@@ -540,7 +563,7 @@ mod tests {
 		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
-		let id = get_or_create_server_id(&client).await.unwrap();
+		let id = get_or_create_server_id(Some(&client)).await.unwrap();
 		assert!(!id.is_empty());
 		uuid::Uuid::parse_str(&id).expect("should be a valid UUID");
 
@@ -568,7 +591,7 @@ mod tests {
 			.await
 			.unwrap();
 
-		let id = get_or_create_server_id(&client).await.unwrap();
+		let id = get_or_create_server_id(Some(&client)).await.unwrap();
 		assert_eq!(id, "existing-id-123");
 	}
 
@@ -577,9 +600,37 @@ mod tests {
 		let _lock = DB_TEST_MUTEX.lock().await;
 		let client = test_db_client().await;
 
-		let id1 = get_or_create_server_id(&client).await.unwrap();
-		let id2 = get_or_create_server_id(&client).await.unwrap();
+		let id1 = get_or_create_server_id(Some(&client)).await.unwrap();
+		let id2 = get_or_create_server_id(Some(&client)).await.unwrap();
 		assert_eq!(id1, id2);
+	}
+
+	#[tokio::test]
+	async fn server_id_resolves_from_file_without_db() {
+		// The boot-time canopy push case: postgres isn't reachable yet, but
+		// the host's been provisioned so the standard file path has an id.
+		// Resolution must succeed without consulting the DB at all.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let cached = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &cached).unwrap();
+
+		let id = get_or_create_server_id_at(&path, None).await.unwrap();
+		assert_eq!(id, cached);
+	}
+
+	#[tokio::test]
+	async fn server_id_errors_without_db_and_without_file() {
+		// Brand-new host with no DB connection: there's no id to find, and
+		// no way to mint one — must surface as an error so the caller knows
+		// the cause.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let err = get_or_create_server_id_at(&path, None)
+			.await
+			.expect_err("no file, no db → must error");
+		let msg = format!("{err}");
+		assert!(msg.contains("server-id"), "{msg}");
 	}
 
 	#[test]
