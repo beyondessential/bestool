@@ -108,7 +108,7 @@ pub async fn gather(
 		})
 		.collect();
 
-	let virt = detect_virtualisation();
+	let virt = detect_virtualisation().await;
 	let virtualised = !matches!(virt.as_deref(), None | Some("none"));
 
 	let (ipv4, ipv6, nat64) = futures::join!(probe_ipv4(), probe_ipv6(), probe_nat64());

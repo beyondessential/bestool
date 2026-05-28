@@ -33,10 +33,10 @@ const FAIL_AGE_SECS: i64 = 24 * 60 * 60;
 
 pub async fn run(_ctx: CheckContext) -> Check {
 	if cfg!(target_os = "linux") {
-		return run_linux();
+		return run_linux().await;
 	}
 	if cfg!(target_os = "windows") {
-		return run_windows();
+		return run_windows().await;
 	}
 	Check::skip(
 		CHECK_NAME,
@@ -45,7 +45,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	)
 }
 
-fn run_linux() -> Check {
+async fn run_linux() -> Check {
 	let Some(kopia_binary) = bestool_kopia::find_kopia_binary(None) else {
 		return Check::skip(
 			CHECK_NAME,
@@ -66,11 +66,9 @@ fn run_linux() -> Check {
 		}
 	};
 
-	let output = match cmd
-		.args(["snapshot", "list", "--json", "--no-all"])
-		.env("KOPIA_CHECK_FOR_UPDATES", "false")
-		.output()
-	{
+	cmd.args(["snapshot", "list", "--json", "--no-all"])
+		.env("KOPIA_CHECK_FOR_UPDATES", "false");
+	let output = match tokio::process::Command::from(cmd).output().await {
 		Ok(o) if o.status.success() => o,
 		Ok(o) => {
 			let stderr = String::from_utf8_lossy(&o.stderr);
@@ -114,7 +112,7 @@ fn elevation_label(e: &Elevation) -> &'static str {
 	}
 }
 
-fn run_windows() -> Check {
+async fn run_windows() -> Check {
 	let Some(binary) = bestool_kopia::find_kopia_binary(None) else {
 		return Check::skip(
 			CHECK_NAME,
@@ -130,11 +128,12 @@ fn run_windows() -> Check {
 		);
 	};
 
-	let output = match std::process::Command::new(&binary)
+	let output = match tokio::process::Command::new(&binary)
 		.args(["snapshot", "list", "--json", "--no-all"])
 		.env("KOPIA_CONFIG_PATH", &config)
 		.env("KOPIA_CHECK_FOR_UPDATES", "false")
 		.output()
+		.await
 	{
 		Ok(o) if o.status.success() => o,
 		Ok(o) => {

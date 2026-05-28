@@ -74,7 +74,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let (install_version, _root) = find_tamanu(tamanu)?;
 	let expected_versions = versions::expected_for_supervisor(supervisor, &install_version);
 	let running_versions = match supervisor {
-		Supervisor::Systemd => versions::running_versions_linux(),
+		Supervisor::Systemd => versions::running_versions_linux().await,
 		Supervisor::Pm2 => HashMap::new(),
 	};
 	let probe = VersionProbe {
