@@ -15,6 +15,9 @@ pub mod server_info;
 pub mod services;
 pub mod versions;
 
+#[cfg(target_os = "linux")]
+pub mod systemd;
+
 #[cfg(feature = "doctor")]
 pub mod doctor;
 
