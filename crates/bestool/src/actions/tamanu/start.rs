@@ -47,7 +47,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
-	let discovered = lifecycle::discover(supervisor)?;
+	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
 	let stop_plan = if args.up_only {

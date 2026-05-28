@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use serde_json::{Value, json};
 
 use super::CheckContext;
@@ -32,10 +30,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let mut pm2_source: Option<pm2::Source> = None;
 	let mut discovered = match supervisor {
-		Supervisor::Systemd => match discover_systemd() {
+		Supervisor::Systemd => match discover_systemd().await {
 			Ok(d) => d,
 			Err(err) => {
-				return Check::skip("tamanu_service", "systemctl unavailable", err)
+				return Check::skip("tamanu_service", "systemd unavailable", err)
 					.with_detail("supervisor", "systemd");
 			}
 		},
@@ -124,42 +122,21 @@ struct Discovered {
 	raw: String,
 }
 
-fn discover_systemd() -> Result<Vec<Discovered>, String> {
-	let output = Command::new("systemctl")
-		.args([
-			"list-units",
-			"--type=service",
-			"--all",
-			"--no-legend",
-			"--plain",
-			"--no-pager",
-			"tamanu-*.service",
-		])
-		.output()
+async fn discover_systemd() -> Result<Vec<Discovered>, String> {
+	let units = systemd::list_units(&["tamanu-*.service"])
+		.await
 		.map_err(|e| e.to_string())?;
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
 	let mut out = Vec::new();
-	for line in stdout.lines() {
-		let mut parts = line.split_whitespace();
-		let (Some(unit), Some(load), Some(active), Some(sub)) =
-			(parts.next(), parts.next(), parts.next(), parts.next())
-		else {
+	for u in units {
+		let Some((base, instance)) = parse_systemd_unit(&u.name) else {
 			continue;
 		};
-		if load == "not-found" {
-			continue;
-		}
-		let Some((base, instance)) = parse_systemd_unit(unit) else {
-			continue;
-		};
-		let running = active == "active" && (sub == "running" || sub == "exited");
 		out.push(Discovered {
 			name: base.to_string(),
 			instance: instance.map(str::to_string),
-			running,
+			running: u.running(),
 			present: true,
-			raw: unit.to_string(),
+			raw: u.name,
 		});
 	}
 	Ok(out)

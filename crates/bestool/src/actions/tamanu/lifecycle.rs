@@ -119,54 +119,25 @@ impl Instance {
 ///
 /// Includes both running and non-running entries — discovery doesn't
 /// itself filter against expectations; that's `match_instances`.
-pub fn discover(supervisor: Supervisor) -> Result<Vec<Instance>> {
+pub async fn discover(supervisor: Supervisor) -> Result<Vec<Instance>> {
 	match supervisor {
-		Supervisor::Systemd => discover_systemd(),
+		Supervisor::Systemd => discover_systemd().await,
 		Supervisor::Pm2 => discover_pm2().map(|(v, _)| v),
 	}
 }
 
-fn discover_systemd() -> Result<Vec<Instance>> {
-	let output = Command::new("systemctl")
-		.args([
-			"list-units",
-			"--type=service",
-			"--all",
-			"--no-legend",
-			"--plain",
-			"--no-pager",
-			"tamanu-*.service",
-		])
-		.output()
-		.into_diagnostic()?;
-	if !output.status.success() {
-		bail!(
-			"systemctl list-units failed: {}",
-			String::from_utf8_lossy(&output.stderr).trim()
-		);
-	}
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
+async fn discover_systemd() -> Result<Vec<Instance>> {
+	let units = systemd::list_units(&["tamanu-*.service"]).await?;
 	let mut out = Vec::new();
-	for line in stdout.lines() {
-		let mut parts = line.split_whitespace();
-		let (Some(unit), Some(load), Some(active), Some(sub)) =
-			(parts.next(), parts.next(), parts.next(), parts.next())
-		else {
+	for u in units {
+		let Some((base, instance)) = parse_systemd_unit(&u.name) else {
 			continue;
 		};
-		if load == "not-found" {
-			continue;
-		}
-		let Some((base, instance)) = parse_systemd_unit(unit) else {
-			continue;
-		};
-		let running = active == "active" && (sub == "running" || sub == "exited");
 		out.push(Instance {
 			name: base.to_string(),
 			instance: instance.map(str::to_string),
 			pm_id: None,
-			running,
+			running: u.running(),
 		});
 	}
 	Ok(out)
