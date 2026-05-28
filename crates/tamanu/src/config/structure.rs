@@ -64,6 +64,23 @@ impl TamanuConfig {
 		self.integrations.fhir.worker.enabled
 	}
 
+	/// Build the base URL for the facility sync sub-process's API
+	/// (`sync.syncApiConnection`). Returns `None` when the config has no
+	/// `sync` block at all (i.e. central server) — callers should check
+	/// [`Self::is_facility`] first to give a better error.
+	///
+	/// The returned URL has no path; routes are `sync/run` and `sync/status`.
+	pub fn sync_api_url(&self) -> Option<Url> {
+		let conn = self
+			.sync
+			.as_ref()?
+			.sync_api_connection
+			.clone()
+			.unwrap_or_default();
+		let raw = format!("{}:{}", conn.host().trim_end_matches('/'), conn.port());
+		Url::parse(&raw).ok()
+	}
+
 	/// Build the `postgresql://` URL from `db` for the canonical
 	/// username/password the local Tamanu install uses. Hosts default to
 	/// `localhost`, port defers to the URL's libpq default when unset.
@@ -105,6 +122,35 @@ pub struct Sync {
 	/// URL of the central server this facility syncs against. Only set on
 	/// facility servers.
 	pub host: Option<Url>,
+	/// Facility-only: connection details for the sync sub-process's
+	/// `POST /sync/run` / `GET /sync/status` API. Bound to localhost by
+	/// default and not authed, so callers must be local to the box.
+	pub sync_api_connection: Option<SyncApiConnection>,
+}
+
+/// Facility sync sub-process address (`sync.syncApiConnection`).
+///
+/// Mirrors `tamanu/packages/facility-server/config/default.json5` —
+/// `host` defaults to `http://localhost` and `port` to `4100` when the
+/// block is absent or only partly filled.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncApiConnection {
+	pub host: Option<String>,
+	pub port: Option<u16>,
+}
+
+impl SyncApiConnection {
+	pub const DEFAULT_HOST: &'static str = "http://localhost";
+	pub const DEFAULT_PORT: u16 = 4100;
+
+	pub fn host(&self) -> &str {
+		self.host.as_deref().unwrap_or(Self::DEFAULT_HOST)
+	}
+
+	pub fn port(&self) -> u16 {
+		self.port.unwrap_or(Self::DEFAULT_PORT)
+	}
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -234,6 +280,61 @@ mod tests {
 	#[test]
 	fn fhir_worker_disabled_when_integrations_missing() {
 		assert!(!parse(base()).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn sync_api_url_missing_block_is_none() {
+		assert!(parse(base()).sync_api_url().is_none());
+	}
+
+	#[test]
+	fn sync_api_url_defaults_when_block_empty() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({});
+		assert_eq!(
+			parse(json).sync_api_url().unwrap().as_str(),
+			"http://localhost:4100/"
+		);
+	}
+
+	#[test]
+	fn sync_api_url_uses_configured_port() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({
+			"syncApiConnection": { "port": 4200 },
+		});
+		assert_eq!(
+			parse(json).sync_api_url().unwrap().as_str(),
+			"http://localhost:4200/"
+		);
+	}
+
+	#[test]
+	fn sync_api_url_uses_configured_host_and_port() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({
+			"syncApiConnection": { "host": "http://127.0.0.1", "port": 9999 },
+		});
+		assert_eq!(
+			parse(json).sync_api_url().unwrap().as_str(),
+			"http://127.0.0.1:9999/"
+		);
+	}
+
+	#[test]
+	fn sync_api_url_strips_trailing_slash_in_host() {
+		// `host` in the default config is "http://localhost" (no trailing
+		// slash), but operators occasionally paste in a URL with one. The
+		// facility-server itself strips trailing slashes before concatenating
+		// the port, so we do the same.
+		let mut json = base();
+		json["sync"] = serde_json::json!({
+			"syncApiConnection": { "host": "http://localhost/" },
+		});
+		assert_eq!(
+			parse(json).sync_api_url().unwrap().as_str(),
+			"http://localhost:4100/"
+		);
 	}
 
 	#[test]

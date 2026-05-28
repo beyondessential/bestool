@@ -13,6 +13,11 @@
 //!   exposed as template suffixes `@1`, `@2`, … Exceptions:
 //!   - `frontend` lives at `tamanu-frontend` (no kind prefix) with named
 //!     instances `@a` and `@b`.
+//!   - `patientportal` lives at `tamanu-patientportal` (no kind prefix). On
+//!     older deployments it's a singleton; newer ones (and rolling forward)
+//!     use a frontend-style template with `@a` and `@b` instances. Which
+//!     layout is installed is detected at runtime by
+//!     [`systemd_patient_portal_instanced`].
 //!   - `tamanu-facility` is a literal singleton unit (no kind prefix, no
 //!     `${thing}` segment) that's a leftover from older deployments and must
 //!     not be active or enabled on current ones.
@@ -86,6 +91,12 @@ pub enum ExpectedState {
 	Up,
 	/// Must NOT be active and (on systemd) must NOT be enabled.
 	Down,
+	/// We couldn't resolve what this service should be doing — typically
+	/// because the signal that drives the expectation (e.g. a Tamanu DB
+	/// setting) was unreachable. Lifecycle commands leave Unknown
+	/// services alone: neither start nor stop them. Doctor and status
+	/// report the row without flagging a failure.
+	Unknown,
 }
 
 impl Instances {
@@ -131,19 +142,30 @@ impl Instances {
 
 /// All services expected to exist (or be absent) for this deployment.
 ///
-/// `patient_portal_enabled` is the `features.patientPortal` setting read from
-/// the central server's DB. Callers without a DB connection should pass
-/// `false`; we'll then emit a Down expectation, which is the same thing the
-/// doctor would have asserted on a deployment that hasn't opted into the
-/// portal. The signal is sourced from the DB rather than `local.json5`
-/// because Tamanu's central-server code reads the setting (not the unused
+/// `patient_portal_enabled` carries the `features.patientPortal` setting
+/// from the central server's DB as a tri-state:
+/// - `Some(true)` → portal expected Up
+/// - `Some(false)` → portal expected Down (the deployment has opted out)
+/// - `None` → expectation is Unknown (signal couldn't be resolved, usually
+///   because the DB is unreachable). Lifecycle commands skip Unknown
+///   services so a transient outage doesn't trigger spurious stops/starts.
+///
+/// The signal is sourced from the DB rather than `local.json5` because
+/// Tamanu's central-server code reads the setting (not the unused
 /// `patientPortal.portalUrl` config field) to decide whether to mount the
 /// portal API.
+///
+/// `patient_portal_instanced` decides the patient portal's unit shape: when
+/// true, expect a frontend-style `Named(["a", "b"])` template; when false,
+/// expect the historical singleton. Callers should source this from
+/// [`systemd_patient_portal_instanced`] on systemd hosts and pass `false`
+/// otherwise.
 pub fn expected(
 	supervisor: Supervisor,
 	kind: ApiServerKind,
 	config: &TamanuConfig,
-	patient_portal_enabled: bool,
+	patient_portal_enabled: Option<bool>,
+	patient_portal_instanced: bool,
 ) -> Vec<Expectation> {
 	let mut out = Vec::new();
 
@@ -235,24 +257,41 @@ pub fn expected(
 				behind_caddy: false,
 			});
 
-			// The patient portal quadlet (`tamanu-patientportal.service`) is
-			// expected Up iff the Tamanu DB setting `features.patientPortal`
-			// is true. If the flag is on but the container isn't running,
-			// that's an ops misalignment worth flagging — exactly the case
-			// the doctor exists to catch.
+			// Patient portal layout depends on what the host actually
+			// ships. The frontend-style A/B template (new + rolling
+			// forward) lets rolling restart keep one instance up while
+			// the other swaps; older deployments still ship a singleton
+			// and bulk-restart. Expected Up iff the Tamanu DB setting
+			// `features.patientPortal` is true — if the flag is on but
+			// nothing's running, that's an ops misalignment worth
+			// flagging. When the DB is unreachable we can't decide,
+			// so the expectation is Unknown and lifecycle commands
+			// leave the portal alone.
 			if matches!(supervisor, Supervisor::Systemd) {
-				let portal_state = if patient_portal_enabled {
-					ExpectedState::Up
+				let (portal_state, portal_reason) = match patient_portal_enabled {
+					Some(true) => (
+						ExpectedState::Up,
+						"DB setting features.patientPortal is true".to_string(),
+					),
+					Some(false) => (
+						ExpectedState::Down,
+						"DB setting features.patientPortal is false".to_string(),
+					),
+					None => (
+						ExpectedState::Unknown,
+						"DB unreachable, cannot read features.patientPortal".to_string(),
+					),
+				};
+				let portal_instances = if patient_portal_instanced {
+					Instances::Named(&["a", "b"])
 				} else {
-					ExpectedState::Down
+					Instances::Single
 				};
 				out.push(Expectation {
 					name: "tamanu-patientportal",
-					instances: Instances::Single,
+					instances: portal_instances,
 					state: portal_state,
-					reason: format!(
-						"DB setting features.patientPortal is {patient_portal_enabled}"
-					),
+					reason: portal_reason,
 					legacy: false,
 					behind_caddy: true,
 				});
@@ -316,6 +355,20 @@ pub fn match_names<'a>(
 	Ok(matched)
 }
 
+/// Whether the patient portal is deployed as a templated multi-instance unit
+/// (`tamanu-patientportal@.service`). Older deployments still ship the
+/// singleton `tamanu-patientportal.service`; we detect which is installed by
+/// asking systemd for the template's unit file.
+///
+/// Returns `false` on any D-Bus error, on hosts where the template isn't
+/// installed, or on non-Linux systems — callers map `false` to the singleton
+/// layout, which is the historical default and a safe fallback when the
+/// expectation is Down anyway.
+pub async fn systemd_patient_portal_instanced() -> bool {
+	crate::systemd::unit_file_exists("tamanu-patientportal@.service")
+		.await
+		.unwrap_or(false)
+}
 /// Parse a systemd unit name (`tamanu-foo@1.service`, `tamanu-foo.service`,
 /// `tamanu-foo`) into its base name and optional instance.
 ///
@@ -350,7 +403,13 @@ mod tests {
 
 	#[test]
 	fn facility_pm2_no_fhir() {
-		let es = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false), false);
+		let es = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Facility,
+			&cfg(false),
+			Some(false),
+			false,
+		);
 		assert_eq!(
 			names(&es),
 			vec!["tamanu-tasks", "tamanu-api", "tamanu-sync"]
@@ -365,7 +424,13 @@ mod tests {
 		// alert if the corresponding services are still running — that's
 		// usually a deploy that's flipped the toggle without taking the
 		// units down. So the expectations exist, but with state Down.
-		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(false), false);
+		let es = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Central,
+			&cfg(false),
+			Some(false),
+			false,
+		);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -387,7 +452,13 @@ mod tests {
 
 	#[test]
 	fn central_pm2_with_fhir_adds_resolve_and_refresh() {
-		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(true), false);
+		let es = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Central,
+			&cfg(true),
+			Some(false),
+			false,
+		);
 		assert_eq!(
 			names(&es),
 			vec![
@@ -405,6 +476,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
+			Some(false),
 			false,
 		);
 		assert_eq!(
@@ -430,6 +502,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(true),
+			Some(true),
 			true,
 		);
 		assert_eq!(
@@ -447,14 +520,34 @@ mod tests {
 	}
 
 	#[test]
-	fn central_systemd_expects_patient_portal_up_when_db_flag_on() {
-		// `features.patientPortal = true` in the central DB means Tamanu has
-		// mounted the portal API; the doctor expects the matching unit running.
+	fn central_systemd_expects_patient_portal_instanced_when_template_installed() {
+		// `features.patientPortal = true` + the templated unit file is
+		// installed → expect a frontend-style A/B template.
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
+			Some(true),
 			true,
+		);
+		let pp = es
+			.iter()
+			.find(|e| e.name == "tamanu-patientportal")
+			.expect("patient portal expectation should be present");
+		assert_eq!(pp.state, ExpectedState::Up);
+		assert_eq!(pp.instances, Instances::Named(&["a", "b"]));
+	}
+
+	#[test]
+	fn central_systemd_expects_patient_portal_singleton_on_older_deployments() {
+		// `features.patientPortal = true` but the templated unit file isn't
+		// installed → fall back to the historical singleton layout.
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			Some(true),
+			false,
 		);
 		let pp = es
 			.iter()
@@ -465,14 +558,40 @@ mod tests {
 	}
 
 	#[test]
-	fn central_systemd_expects_patient_portal_down_when_db_flag_off() {
-		// `features.patientPortal = false` → Tamanu's portal API is unmounted.
-		// If the container's still running we want to know (stale install),
-		// so the expectation stays in the list but with state Down.
+	fn central_systemd_marks_patient_portal_unknown_when_db_unreachable() {
+		// `patient_portal_enabled = None` means "we couldn't read the DB
+		// flag" — the expectation must be Unknown so lifecycle commands
+		// leave the portal alone rather than guessing Down.
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
+			None,
+			false,
+		);
+		let pp = es
+			.iter()
+			.find(|e| e.name == "tamanu-patientportal")
+			.expect("portal expectation should still be emitted");
+		assert_eq!(pp.state, ExpectedState::Unknown);
+		assert!(
+			pp.reason.contains("DB"),
+			"reason should mention DB: {}",
+			pp.reason
+		);
+	}
+
+	#[test]
+	fn central_systemd_expects_patient_portal_down_when_db_flag_off() {
+		// `features.patientPortal = false` → Tamanu's portal API is unmounted.
+		// If the container's still running we want to know (stale install),
+		// so the expectation stays in the list but with state Down. The
+		// detected layout still drives which units we check for absence.
+		let es = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			Some(false),
 			false,
 		);
 		let pp = es
@@ -488,6 +607,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
+			Some(true),
 			true,
 		);
 		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
@@ -498,7 +618,13 @@ mod tests {
 		// pm2 is Windows-only; tamanu-patientportal is a systemd-managed unit
 		// in our Linux deployments, so the pm2 expectation list shouldn't
 		// include it regardless of the DB flag.
-		let es = expected(Supervisor::Pm2, ApiServerKind::Central, &cfg(true), true);
+		let es = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Central,
+			&cfg(true),
+			Some(true),
+			true,
+		);
 		assert!(es.iter().all(|e| e.name != "tamanu-patientportal"));
 	}
 
@@ -508,6 +634,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
+			Some(false),
 			false,
 		);
 		let fe = es.iter().find(|e| e.name == "tamanu-frontend").unwrap();
@@ -521,6 +648,7 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
+			Some(false),
 			false,
 		);
 		let api = es.iter().find(|e| e.name == "tamanu-facility-api").unwrap();
@@ -566,35 +694,70 @@ mod tests {
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(false),
+			Some(false),
 			false,
 		);
 		assert!(rolling_for(&central, "tamanu-central-api"));
 		assert!(rolling_for(&central, "tamanu-frontend"));
 
-		let facility_pm2 = expected(Supervisor::Pm2, ApiServerKind::Facility, &cfg(false), false);
+		let facility_pm2 = expected(
+			Supervisor::Pm2,
+			ApiServerKind::Facility,
+			&cfg(false),
+			Some(false),
+			false,
+		);
 		assert!(rolling_for(&facility_pm2, "tamanu-api"));
+	}
+
+	#[test]
+	fn instanced_patient_portal_is_rolling_restartable() {
+		// When the A/B template is installed the portal has two instances,
+		// so rolling restart can keep one up while the other swaps.
+		let central = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			Some(true),
+			true,
+		);
+		assert!(rolling_for(&central, "tamanu-patientportal"));
+	}
+
+	#[test]
+	fn singleton_patient_portal_bulk_restarts() {
+		// Older deployments still ship the singleton; with only one instance
+		// rolling can't keep traffic up, so we bulk-restart.
+		let central = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg(false),
+			Some(true),
+			false,
+		);
+		assert!(!rolling_for(&central, "tamanu-patientportal"));
 	}
 
 	#[test]
 	fn singletons_bulk_restart() {
 		// Single-instance services bulk-restart: there's no second instance
-		// to take traffic during a roll. This includes patient-portal,
-		// which is single-but-behind-caddy.
+		// to take traffic during a roll.
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
 			&cfg(true),
+			Some(true),
 			true,
 		);
 		assert!(!rolling_for(&central, "tamanu-central-tasks"));
 		assert!(!rolling_for(&central, "tamanu-central-fhir-resolve"));
 		assert!(!rolling_for(&central, "tamanu-central-fhir-refresh"));
-		assert!(!rolling_for(&central, "tamanu-patientportal"));
 
 		let facility = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
 			&cfg(false),
+			Some(false),
 			false,
 		);
 		assert!(!rolling_for(&facility, "tamanu-facility-sync"));

@@ -121,6 +121,28 @@ mod linux {
 		Ok(raw.first().is_some_and(|u| u.3 == "active"))
 	}
 
+	/// True iff systemd has a unit file installed for `unit`. Mirrors
+	/// `systemctl list-unit-files <unit>` returning a row. Useful for
+	/// existence probes where the enabled/disabled state is irrelevant — e.g.
+	/// "is the template `tamanu-patientportal@.service` installed at all?".
+	pub async fn unit_file_exists(unit: &str) -> Result<bool> {
+		let mgr = manager().await?;
+		match mgr.get_unit_file_state(unit.to_string()).await {
+			Ok(_) => Ok(true),
+			Err(zbus::Error::MethodError(name, _, _))
+				if matches!(
+					name.as_str(),
+					"org.freedesktop.systemd1.NoSuchUnit"
+						| "org.freedesktop.systemd1.NoSuchUnitFile"
+						| "org.freedesktop.DBus.Error.InvalidArgs"
+				) =>
+			{
+				Ok(false)
+			}
+			Err(e) => Err(miette!("systemd get_unit_file_state({unit}) failed: {e}")),
+		}
+	}
+
 	/// `systemctl is-enabled <unit>`. True for `enabled` and `enabled-runtime`,
 	/// false for `disabled`, `static`, `masked`, `alias`, `linked`, `not-found`,
 	/// and any not-loaded/not-installed errors.
@@ -282,6 +304,9 @@ mod stub {
 		Ok(false)
 	}
 	pub async fn is_enabled(_: &str) -> Result<bool> {
+		Ok(false)
+	}
+	pub async fn unit_file_exists(_: &str) -> Result<bool> {
 		Ok(false)
 	}
 	pub async fn start(_: &[String]) -> Result<()> {

@@ -15,7 +15,7 @@ use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs,
-		lifecycle::{self, Instance},
+		lifecycle::{self, Instance, WaitForDb},
 	},
 };
 
@@ -61,9 +61,11 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 
-	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu).await?;
+	let (supervisor, expectations) =
+		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
+	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 
@@ -81,11 +83,12 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		bulk_restart(supervisor, &bulk).await?;
 		lifecycle::wait_running(supervisor, &bulk).await?;
 		// One reload after the bulk covers every behind-caddy service in
-		// the batch (currently just patient-portal). Per-service rolling
-		// reloads aren't needed here because singleton services don't have
-		// a "keep one up" availability constraint — the bulk restart
-		// already drops them all briefly, so a single trailing reload is
-		// enough to flush Caddy's stale upstream IPs.
+		// the batch — relevant for older deployments whose patient-portal
+		// is a singleton (the frontend always rolls, and on newer
+		// deployments the patient-portal does too). Per-service rolling
+		// reloads aren't needed for singletons: bulk-restart already
+		// drops them all briefly, so a single trailing reload is enough
+		// to flush Caddy's stale upstream IPs.
 		if bulk_behind_caddy {
 			lifecycle::reload_caddy().await;
 		}
@@ -145,16 +148,16 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 ///
 /// "Rolling-eligible" comes from [`Expectation::rolling_restart`]:
 /// `min_count >= 2`, i.e. the expectation has enough instances that
-/// rolling can keep one available while the next swaps. Singletons (even
-/// behind-caddy ones like patient-portal) bulk-restart because there's no
-/// second instance to take traffic during the roll.
+/// rolling can keep one available while the next swaps. Singletons bulk-
+/// restart because there's no second instance to take traffic during the
+/// roll.
 struct Partitioned {
 	/// Supervisor-native identifiers to bulk-restart.
 	bulk: Vec<String>,
 	/// True if any bulk entry's expectation has `behind_caddy: true` —
 	/// drives a single trailing `reload_caddy` after the bulk completes so
-	/// Caddy sees the new container IPs (currently relevant for
-	/// patient-portal).
+	/// Caddy sees the new container IPs (relevant on older deployments
+	/// where the patient-portal is still a singleton).
 	bulk_behind_caddy: bool,
 	/// Instances to roll one-at-a-time, paired with their expectation's
 	/// `behind_caddy` flag so each iteration knows whether to reload Caddy
@@ -323,10 +326,29 @@ mod tests {
 	}
 
 	#[test]
-	fn partition_flags_bulk_behind_caddy_when_portal_runs() {
-		// Patient portal is single-instance (so bulk-restartable) but behind
-		// Caddy — a bulk restart must still trigger a Caddy reload at the
-		// end so Caddy picks up the new container IP.
+	fn partition_rolls_patient_portal_a_b() {
+		// Patient portal is multi-instance (@a/@b) and behind Caddy — like
+		// the frontend, it should roll one instance at a time so there's
+		// always one up to take traffic.
+		let portal = up_exp("tamanu-patientportal", Instances::Named(&["a", "b"]), true);
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&portal,
+			vec![
+				inst("tamanu-patientportal", Some("a"), true),
+				inst("tamanu-patientportal", Some("b"), true),
+			],
+		)];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert!(p.bulk.is_empty());
+		assert_eq!(p.rolling.len(), 2);
+		assert!(p.rolling.iter().all(|(_, behind_caddy)| *behind_caddy));
+	}
+
+	#[test]
+	fn partition_flags_bulk_behind_caddy_when_singleton_portal_runs() {
+		// Older deployments still run patient-portal as a singleton, so a
+		// bulk restart must trigger a Caddy reload at the end to flush
+		// the stale container IP.
 		let portal = up_exp("tamanu-patientportal", Instances::Single, true);
 		let tasks = up_exp("tamanu-central-tasks", Instances::Single, false);
 		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![
@@ -371,10 +393,10 @@ mod tests {
 	}
 
 	#[test]
-	fn partition_singleton_behind_caddy_is_bulk_not_rolling() {
-		// Patient portal: single-instance, behind caddy. The user-facing
-		// "kind of critical" case — should bulk-restart (only one
-		// instance), but still trigger caddy reload.
+	fn partition_singleton_portal_is_bulk_not_rolling() {
+		// Singleton patient-portal (older deployments): rolling needs ≥2
+		// instances to keep one up while the other swaps, so a singleton
+		// bulk-restarts but still triggers a caddy reload.
 		let portal = up_exp("tamanu-patientportal", Instances::Single, true);
 		let groups: Vec<(&Expectation, Vec<Instance>)> =
 			vec![(&portal, vec![inst("tamanu-patientportal", None, true)])];

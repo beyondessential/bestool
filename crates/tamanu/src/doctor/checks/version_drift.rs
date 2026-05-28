@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::CheckContext;
 use crate::{
 	doctor::check::Check,
-	services::{Supervisor, expected, parse_systemd_unit},
+	services::{Supervisor, expected, parse_systemd_unit, systemd_patient_portal_instanced},
 	versions,
 };
 
@@ -50,9 +50,17 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// expected set.
 	let patient_portal_enabled = match ctx.db.as_deref() {
 		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
-		None => false,
+		None => None,
 	};
-	let expectations = expected(supervisor, ctx.kind, &ctx.config, patient_portal_enabled);
+	let patient_portal_instanced =
+		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced().await;
+	let expectations = expected(
+		supervisor,
+		ctx.kind,
+		&ctx.config,
+		patient_portal_enabled,
+		patient_portal_instanced,
+	);
 
 	let mut rows: Vec<Value> = Vec::new();
 	let mut drifted: Vec<String> = Vec::new();

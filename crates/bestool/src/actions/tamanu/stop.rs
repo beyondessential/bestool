@@ -7,7 +7,7 @@ use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs,
-		lifecycle::{self, Instance},
+		lifecycle::{self, Instance, WaitForDb},
 	},
 };
 
@@ -27,9 +27,11 @@ pub struct StopArgs {
 pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 
-	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu).await?;
+	let (supervisor, expectations) =
+		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
+	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(&matched, &discovered);
 

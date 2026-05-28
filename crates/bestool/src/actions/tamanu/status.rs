@@ -15,7 +15,7 @@ use crate::actions::{
 	Context,
 	tamanu::{
 		TamanuArgs, find_tamanu,
-		lifecycle::{self, Instance},
+		lifecycle::{self, Instance, WaitForDb},
 	},
 };
 
@@ -48,7 +48,8 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	let (supervisor, expectations) = lifecycle::config_and_expectations(tamanu).await?;
+	let (supervisor, expectations) =
+		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	let discovered = lifecycle::discover(supervisor).await?;
@@ -228,6 +229,12 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)], probe: &VersionProbe) 
 					any_short = true;
 					"forbidden"
 				}
+				// Unknown is *not* short: we deliberately don't know what the
+				// expectation should be (typically because the DB-derived
+				// signal was unreachable), so there's nothing to act on or
+				// alarm about. The row still appears in the table so
+				// operators see the gap.
+				ExpectedState::Unknown => "unknown",
 			};
 			let expected_version = probe.expected_for(exp.name).map(str::to_string);
 			ExpectationReport {
@@ -235,6 +242,7 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)], probe: &VersionProbe) 
 				expected_state: match exp.state {
 					ExpectedState::Up => "up",
 					ExpectedState::Down => "down",
+					ExpectedState::Unknown => "unknown",
 				},
 				running,
 				min_count: exp.instances.min_count(),
@@ -291,6 +299,10 @@ enum Outcome {
 	/// (running, or stopped+enabled). The matching units are surfaced in the
 	/// Actual cell.
 	Forbidden,
+	/// Expectation state was `Unknown` — the driving signal (e.g. a DB
+	/// flag) couldn't be read. We don't claim the actual state is anything
+	/// in particular; the row is rendered but isn't a failure.
+	Unknown,
 }
 
 impl Outcome {
@@ -303,6 +315,10 @@ impl Outcome {
 			Outcome::Up | Outcome::Absent => Color::Green,
 			Outcome::Short => Color::Yellow,
 			Outcome::Down | Outcome::Forbidden => Color::Red,
+			// Coloured Yellow rather than Red so the operator sees the row
+			// is worth attention but not a failure. The driving signal (DB
+			// flag) couldn't be read, so anything could be true.
+			Outcome::Unknown => Color::Yellow,
 		}
 	}
 }
@@ -327,6 +343,10 @@ fn classify(exp: &Expectation, instances: &[Instance]) -> Outcome {
 				Outcome::Forbidden
 			}
 		}
+		// We deliberately don't know what should be running — surface the
+		// row so operators see the gap, but classify it as Unknown rather
+		// than guessing Up/Down.
+		ExpectedState::Unknown => Outcome::Unknown,
 	}
 }
 
@@ -395,6 +415,7 @@ fn expected_cell(exp: &Expectation) -> Cell {
 			}
 		}
 		ExpectedState::Down => "absent".to_string(),
+		ExpectedState::Unknown => "unknown".to_string(),
 	};
 	Cell::new(text)
 }
@@ -426,6 +447,21 @@ fn actual_cell(
 		}
 		Outcome::Absent => "absent".to_string(),
 		Outcome::Forbidden => forbidden_summary(instances),
+		Outcome::Unknown => {
+			// Surface whatever's actually there, without claiming it
+			// matches an expectation. Bare "unknown" would hide useful
+			// detail; the running/stopped split is still real.
+			if instances.is_empty() {
+				"unknown (nothing present)".to_string()
+			} else if running == instances.len() {
+				format!("unknown ({running} running)")
+			} else if running == 0 {
+				format!("unknown ({} stopped)", instances.len())
+			} else {
+				let stopped = instances.len() - running;
+				format!("unknown ({running} running, {stopped} stopped)")
+			}
+		}
 	};
 
 	let mut lines = vec![summary];
@@ -477,6 +513,8 @@ fn instance_word(inst: &Instance, expected: ExpectedState) -> &'static str {
 		(true, _) => "running",
 		(false, ExpectedState::Down) => "stopped, but still enabled",
 		(false, ExpectedState::Up) => "stopped",
+		// We don't know whether stopped is right or wrong, so just say so.
+		(false, ExpectedState::Unknown) => "stopped",
 	}
 }
 
@@ -561,7 +599,7 @@ mod tests {
 	fn down_exp() -> Expectation {
 		Expectation {
 			name: "tamanu-patientportal",
-			instances: Instances::Single,
+			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Down,
 			reason: "test".into(),
 			legacy: false,
@@ -616,12 +654,17 @@ mod tests {
 	#[test]
 	fn drop_disabled_down_removes_stopped_and_disabled() {
 		let exp = down_exp();
-		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
-			vec![(&exp, vec![inst("tamanu-patientportal", None, false)])];
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-patientportal", Some("a"), false),
+				inst("tamanu-patientportal", Some("b"), false),
+			],
+		)];
 		drop_disabled_down(&mut groups, |_| false);
 		assert!(
 			groups[0].1.is_empty(),
-			"stopped+disabled Down unit should be dropped",
+			"stopped+disabled Down units should all be dropped",
 		);
 		let report = build_report(&groups, &empty_probe());
 		assert!(!report.any_short, "should be ABSENT/OK now");
@@ -631,10 +674,15 @@ mod tests {
 	#[test]
 	fn drop_disabled_down_keeps_stopped_but_enabled() {
 		let exp = down_exp();
-		let mut groups: Vec<(&Expectation, Vec<Instance>)> =
-			vec![(&exp, vec![inst("tamanu-patientportal", None, false)])];
+		let mut groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-patientportal", Some("a"), false),
+				inst("tamanu-patientportal", Some("b"), false),
+			],
+		)];
 		drop_disabled_down(&mut groups, |_| true);
-		assert_eq!(groups[0].1.len(), 1);
+		assert_eq!(groups[0].1.len(), 2);
 		let report = build_report(&groups, &empty_probe());
 		assert!(report.any_short, "stopped+enabled is still FORBIDDEN");
 		assert_eq!(report.expectations[0].status, "forbidden");
@@ -669,7 +717,7 @@ mod tests {
 		};
 		let portal = Expectation {
 			name: "tamanu-patientportal",
-			instances: Instances::Single,
+			instances: Instances::Named(&["a", "b"]),
 			state: ExpectedState::Down,
 			reason: "DB setting features.patientPortal is false".into(),
 			legacy: false,
@@ -685,7 +733,13 @@ mod tests {
 				],
 			),
 			(&absent_down, vec![]),
-			(&portal, vec![inst("tamanu-patientportal", None, false)]),
+			(
+				&portal,
+				vec![
+					inst("tamanu-patientportal", Some("a"), false),
+					inst("tamanu-patientportal", Some("b"), false),
+				],
+			),
 		];
 		let (table, any_short) = render_table(&groups, &empty_probe(), false);
 		assert!(any_short, "stopped+enabled Down expectation should bail");
