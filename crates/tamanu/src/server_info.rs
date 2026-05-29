@@ -510,6 +510,36 @@ pub async fn get_tailscale_info() -> (Option<String>, Option<String>) {
 	(ip, name)
 }
 
+/// Detect the host's installed Node.js version by running `node --version`.
+///
+/// Returns `None` if node isn't on `PATH` or the command fails. The leading
+/// `v` that node prints (e.g. `v20.11.0`) is stripped, so the value is a bare
+/// version string.
+pub async fn detect_node_version() -> Option<String> {
+	let output = tokio::process::Command::new("node")
+		.arg("--version")
+		.output()
+		.await
+		.ok()?;
+	if !output.status.success() {
+		debug!(status = %output.status, "node --version failed");
+		return None;
+	}
+
+	parse_node_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse the output of `node --version` (e.g. `v20.11.0\n`) into a bare version
+/// string. Returns `None` for empty/whitespace-only input.
+fn parse_node_version(raw: &str) -> Option<String> {
+	let version = raw.trim().trim_start_matches('v');
+	if version.is_empty() {
+		None
+	} else {
+		Some(version.to_string())
+	}
+}
+
 /// Linux: read `systemd-detect-virt`'s output. Returns `None` if the command
 /// is unavailable. The string is whatever systemd reports (e.g. `kvm`, `lxc`,
 /// `none` for bare metal).
@@ -638,6 +668,22 @@ mod tests {
 			.expect_err("no file, no db → must error");
 		let msg = format!("{err}");
 		assert!(msg.contains("server-id"), "{msg}");
+	}
+
+	#[test]
+	fn parse_node_version_strips_v_prefix_and_whitespace() {
+		assert_eq!(parse_node_version("v20.11.0\n").as_deref(), Some("20.11.0"));
+		assert_eq!(
+			parse_node_version("  v18.19.1  ").as_deref(),
+			Some("18.19.1")
+		);
+		assert_eq!(parse_node_version("20.11.0").as_deref(), Some("20.11.0"));
+	}
+
+	#[test]
+	fn parse_node_version_treats_empty_as_none() {
+		assert!(parse_node_version("").is_none());
+		assert!(parse_node_version("  \n").is_none());
 	}
 
 	#[test]
