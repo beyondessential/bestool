@@ -374,7 +374,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 	match metacmd {
 		Metacommand::Quit => ReplAction::Exit,
 		Metacommand::Expanded => ReplAction::ToggleExpanded,
-		Metacommand::WriteMode => ReplAction::ToggleWriteMode,
+		Metacommand::WriteMode { ots } => ReplAction::ToggleWriteMode { ots },
 		Metacommand::ToggleRedaction => ReplAction::ToggleRedaction,
 		Metacommand::Edit => ReplAction::Edit,
 		Metacommand::Copy => ReplAction::Copy,

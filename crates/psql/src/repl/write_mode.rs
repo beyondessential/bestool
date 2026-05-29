@@ -47,7 +47,10 @@ fn should_time_out_write_mode(
 	matches!(tx_state, TransactionState::Idle | TransactionState::None)
 }
 
-pub async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
+pub async fn handle_write_mode_toggle(
+	ctx: &mut ReplContext<'_>,
+	ots: Option<String>,
+) -> ControlFlow<()> {
 	let state = { ctx.repl_state.lock().unwrap().clone() };
 
 	if state.write_mode {
@@ -79,7 +82,16 @@ pub async fn handle_write_mode_toggle(ctx: &mut ReplContext<'_>) -> ControlFlow<
 			}
 		}
 	} else {
-		match ots::prompt_for_ots(ctx.rl.history()) {
+		// A trimmed, non-empty argument is recorded directly as the OTS; an
+		// empty or absent argument falls back to the interactive prompt. Either
+		// way the value flows into `new_state.ots`, so the audit records it
+		// identically to the prompted path.
+		let supplied_ots = ots.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+		let new_ots = match supplied_ots {
+			Some(ots) => Ok(ots),
+			None => ots::prompt_for_ots(ctx.rl.history()),
+		};
+		match new_ots {
 			Ok(new_ots) => {
 				let mut new_state = state.clone();
 				new_state.write_mode = true;

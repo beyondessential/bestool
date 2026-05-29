@@ -14,7 +14,9 @@ pub(crate) enum ReplAction {
 	},
 	Exit,
 	ToggleExpanded,
-	ToggleWriteMode,
+	ToggleWriteMode {
+		ots: Option<String>,
+	},
 	ToggleRedaction,
 	Edit,
 	Copy,
@@ -229,6 +231,32 @@ mod tests {
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
 		assert!(matches!(actions[0], ReplAction::ToggleExpanded));
+	}
+
+	#[test]
+	fn test_handle_input_write_mode_metacommand() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "\\W", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(
+			actions[0],
+			ReplAction::ToggleWriteMode { ots: None }
+		));
+	}
+
+	#[test]
+	fn test_handle_input_write_mode_metacommand_with_arg() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "\\W bob", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0] {
+			ReplAction::ToggleWriteMode { ots } => {
+				assert_eq!(ots.as_deref(), Some("bob"));
+			}
+			_ => panic!("Expected ToggleWriteMode action"),
+		}
 	}
 
 	#[test]
