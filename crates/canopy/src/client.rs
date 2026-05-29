@@ -2,6 +2,7 @@ use std::{
 	fmt,
 	io::Write,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+	sync::{Arc, OnceLock},
 	time::Duration,
 };
 
@@ -54,6 +55,37 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Factory producing the base [`reqwest::ClientBuilder`] for canopy's clients.
+///
+/// The caller supplies this so it owns cross-cutting client config (user-agent,
+/// `SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
+/// rebuild a client — at probe time, on mTLS cert renewal, and on reload — then
+/// layers its own concerns (mTLS identity, DNS overrides, timeouts) on top.
+pub type ClientBuilderFactory = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>;
+
+/// Browser-style user-agent string, e.g. `bestool/1.2.3 (Linux 7.0.9 Arch Linux; x86_64)`.
+///
+/// `product` and `version` identify the calling binary; the OS comment is
+/// detected at runtime and cached.
+pub fn user_agent(product: &str, version: &str) -> String {
+	static OS_COMMENT: OnceLock<String> = OnceLock::new();
+	let os_comment = OS_COMMENT.get_or_init(|| {
+		let os = sysinfo::System::long_os_version()
+			.or_else(sysinfo::System::name)
+			.unwrap_or_else(|| std::env::consts::OS.to_owned());
+		format!("{os}; {}", sysinfo::System::cpu_arch())
+	});
+	format!("{product}/{version} ({os_comment})")
+}
+
+/// A [`reqwest::ClientBuilder`] carrying the `bestool` [`user_agent`] for `version`.
+///
+/// Convenience for callers that don't need any extra client config; suitable as
+/// the base of a [`ClientBuilderFactory`].
+pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
+	reqwest::Client::builder().user_agent(user_agent("bestool", version))
+}
+
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -102,6 +134,8 @@ pub struct CanopyClient {
 	/// that don't carry one. Sourced from the running Tamanu install's
 	/// `package.json` (via `find_tamanu`); not the bestool / alertd version.
 	tamanu_version: String,
+	/// Produces the base client builder; see [`ClientBuilderFactory`].
+	make_builder: ClientBuilderFactory,
 	state: RwLock<State>,
 }
 
@@ -137,28 +171,35 @@ impl CanopyClient {
 	///
 	/// `tamanu_version` is the version of the Tamanu install this client
 	/// speaks for; sent on every request via the `X-Version` header.
+	///
+	/// `make_builder` supplies the base [`reqwest::ClientBuilder`] — see
+	/// [`ClientBuilderFactory`]. Use [`client_builder`] for a sensible default.
 	pub async fn new(
 		tamanu_version: impl Into<String>,
 		device_key_pem: Option<&str>,
+		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
 		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
+		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
-		if let Some(http) = probe_tailscale().await {
+		if let Some(http) = probe_tailscale(&make_builder).await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
 				device_key,
 				tamanu_version,
+				make_builder,
 				state: RwLock::new(State::Tailscale(http)),
 			}));
 		}
 
 		if let Some(pem) = device_key_pem {
 			debug!("canopy: tailscale unreachable, falling back to mTLS");
-			let http = build_mtls_http(pem)?;
+			let http = build_mtls_http(&make_builder, pem)?;
 			return Ok(Some(Self {
 				device_key,
 				tamanu_version,
+				make_builder,
 				state: RwLock::new(State::Mtls(http)),
 			}));
 		}
@@ -175,7 +216,7 @@ impl CanopyClient {
 	///
 	/// Intended to be called when the daemon receives a reload signal.
 	pub async fn refresh(&self) -> Result<()> {
-		if let Some(http) = probe_tailscale().await {
+		if let Some(http) = probe_tailscale(&self.make_builder).await {
 			let mut state = self.state.write().await;
 			if !state.is_tailscale() {
 				debug!("canopy refresh: switching to tailscale path");
@@ -185,7 +226,7 @@ impl CanopyClient {
 		}
 
 		if let Some(pem) = &self.device_key {
-			let http = build_mtls_http(&pem.0)?;
+			let http = build_mtls_http(&self.make_builder, &pem.0)?;
 			let mut state = self.state.write().await;
 			if state.is_tailscale() {
 				debug!("canopy refresh: tailscale dropped, falling back to mTLS");
@@ -211,7 +252,7 @@ impl CanopyClient {
 		if state.is_tailscale() {
 			return Ok(());
 		}
-		*state = State::Mtls(build_mtls_http(&pem.0)?);
+		*state = State::Mtls(build_mtls_http(&self.make_builder, &pem.0)?);
 		Ok(())
 	}
 
@@ -380,7 +421,7 @@ impl CanopyClient {
 ///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
 /// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
 /// - it's read-only, so probing it has no side effects.
-async fn probe_tailscale() -> Option<reqwest::Client> {
+async fn probe_tailscale(make_builder: &ClientBuilderFactory) -> Option<reqwest::Client> {
 	let dns_addrs: Vec<SocketAddr> = tailscale_resolver()
 		.lookup_ip("canopy")
 		.await
@@ -388,7 +429,7 @@ async fn probe_tailscale() -> Option<reqwest::Client> {
 		.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
 		.unwrap_or_default();
 	if !dns_addrs.is_empty()
-		&& let Some(client) = try_probe(&dns_addrs).await
+		&& let Some(client) = try_probe(&dns_addrs, make_builder).await
 	{
 		return Some(client);
 	}
@@ -401,11 +442,14 @@ async fn probe_tailscale() -> Option<reqwest::Client> {
 		?hardcoded,
 		"canopy tailscale DNS lookup empty or probe failed, trying hardcoded IPs"
 	);
-	try_probe(&hardcoded).await
+	try_probe(&hardcoded, make_builder).await
 }
 
-async fn try_probe(addrs: &[SocketAddr]) -> Option<reqwest::Client> {
-	let client = reqwest::Client::builder()
+async fn try_probe(
+	addrs: &[SocketAddr],
+	make_builder: &ClientBuilderFactory,
+) -> Option<reqwest::Client> {
+	let client = make_builder()
 		.timeout(TAILSCALE_PROBE_TIMEOUT)
 		.resolve_to_addrs(TAILSCALE_HOST, addrs)
 		.build()
@@ -448,7 +492,10 @@ fn gzip_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
 	encoder.finish()
 }
 
-fn build_mtls_http(device_key_pem: &str) -> Result<reqwest::Client> {
+fn build_mtls_http(
+	make_builder: &ClientBuilderFactory,
+	device_key_pem: &str,
+) -> Result<reqwest::Client> {
 	let key_pair = KeyPair::from_pem(device_key_pem)
 		.into_diagnostic()
 		.wrap_err("parsing device key PEM")?;
@@ -478,7 +525,7 @@ fn build_mtls_http(device_key_pem: &str) -> Result<reqwest::Client> {
 		.into_diagnostic()
 		.wrap_err("building reqwest TLS identity")?;
 
-	reqwest::Client::builder()
+	make_builder()
 		.identity(identity)
 		.use_rustls_tls()
 		.timeout(Duration::from_secs(30))
@@ -498,25 +545,30 @@ KxD5Wipc/h8lglVsy1UFZq/SZbGhRANCAAT2EsEq7xjeWVnim9XwdYXga/LBbppm
 fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 -----END PRIVATE KEY-----";
 
+	fn test_factory() -> ClientBuilderFactory {
+		Arc::new(reqwest::Client::builder)
+	}
+
 	#[test]
 	fn build_mtls_http_from_p256_key() {
 		// Direct mTLS-path build, bypassing the async constructor / tailscale probe.
-		let result = build_mtls_http(TEST_DEVICE_KEY);
+		let result = build_mtls_http(&test_factory(), TEST_DEVICE_KEY);
 		assert!(result.is_ok(), "{:?}", result.err());
 	}
 
 	#[test]
 	fn build_mtls_http_fails_on_garbage_key() {
-		assert!(build_mtls_http("not a real PEM").is_err());
+		assert!(build_mtls_http(&test_factory(), "not a real PEM").is_err());
 	}
 
 	#[tokio::test]
 	async fn renew_with_mtls_state_swaps_in_fresh_client() {
 		// Construct an mTLS-state client directly (no network probe) and renew it.
-		let http = build_mtls_http(TEST_DEVICE_KEY).unwrap();
+		let http = build_mtls_http(&test_factory(), TEST_DEVICE_KEY).unwrap();
 		let client = CanopyClient {
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
 			tamanu_version: "2.54.2".into(),
+			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
 		};
 		client.renew().await.expect("renew should succeed");
@@ -530,10 +582,26 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let client = CanopyClient {
 			device_key: None,
 			tamanu_version: "2.54.2".into(),
+			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(http)),
 		};
 		client.renew().await.expect("renew should be a no-op");
 		assert!(client.is_tailscale().await);
+	}
+
+	#[test]
+	fn user_agent_has_product_and_os_comment() {
+		let ua = user_agent("bestool", "1.2.3");
+		assert!(
+			ua.starts_with("bestool/1.2.3 "),
+			"unexpected user-agent: {ua}"
+		);
+		assert!(ua.contains('('), "expected OS comment in: {ua}");
+		assert!(ua.ends_with(')'), "expected OS comment in: {ua}");
+		assert!(
+			ua.contains(sysinfo::System::cpu_arch().as_str()),
+			"expected arch in: {ua}"
+		);
 	}
 
 	#[test]
