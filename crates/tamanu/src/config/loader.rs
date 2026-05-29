@@ -89,8 +89,21 @@ pub fn package_config(
 		Ok(config)
 	}
 
-	find_config_dir(root, package, file)
-		.map(|path| inner(&path).wrap_err(path.to_string_lossy().into_owned()))
+	if let Some(path) = find_config_dir(root, package, file) {
+		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
+	}
+
+	// Linux container deployments only ship operator overrides on disk; the
+	// in-image base configs (notably `default.json5`) sit at
+	// `/app/packages/{package}/config/<file>` inside the running container.
+	// Without this fallback, downstream consumers see partial config.
+	if super::container::root_looks_like_container_host(root)
+		&& let Some(result) = super::container::read_bundled_config(package, file)
+	{
+		return Some(result.wrap_err_with(|| format!("extracting {file} from container")));
+	}
+
+	None
 }
 
 #[instrument(level = "trace")]

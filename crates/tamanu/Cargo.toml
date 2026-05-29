@@ -38,6 +38,7 @@ regex = "1.11.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 sysinfo = { workspace = true }
+tempfile = "3.21.0"
 tokio = { workspace = true, features = ["process", "time", "sync", "rt", "net", "macros"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 tracing = { workspace = true }
@@ -54,7 +55,6 @@ owo-colors = { version = "4.2.3", optional = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = "3.21.0"
 tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
