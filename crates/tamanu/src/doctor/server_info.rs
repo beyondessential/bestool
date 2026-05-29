@@ -12,7 +12,7 @@ use sysinfo::{Disks, System};
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::server_info::detect_virtualisation;
+use crate::server_info::{detect_node_version, detect_virtualisation};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const IPV4_PROBE_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
@@ -40,6 +40,10 @@ pub struct Filesystem {
 pub struct ServerInfo {
 	pub bestool_version: &'static str,
 	pub tamanu_version: String,
+	/// Host's installed Node.js version (bare, no leading `v`), if node is on
+	/// `PATH`. Omitted when node isn't installed or can't be queried.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub node_version: Option<String>,
 	pub hostname: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub canonical_url: Option<String>,
@@ -120,6 +124,7 @@ pub async fn gather(
 	ServerInfo {
 		bestool_version,
 		tamanu_version: tamanu_version.to_string(),
+		node_version: detect_node_version().await,
 		hostname: System::host_name(),
 		canonical_url: facts.canonical_url,
 		current_sync_tick: facts.current_sync_tick,
