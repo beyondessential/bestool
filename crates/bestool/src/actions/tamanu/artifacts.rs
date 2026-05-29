@@ -2,7 +2,7 @@ use clap::Parser;
 use comfy_table::{ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use detect_targets::detect_targets;
 use miette::{IntoDiagnostic, Result};
-use reqwest::{Client, Url};
+use reqwest::Url;
 use serde::Deserialize;
 use std::str::FromStr;
 use target_tuples::{
@@ -59,7 +59,7 @@ pub struct Artifact {
 
 pub async fn get_artifacts(version: &str, for_platform: &Platform) -> Result<Vec<Artifact>> {
 	let url = format!("https://meta.tamanu.app/versions/{version}/artifacts");
-	let client = Client::new();
+	let client = crate::http::client();
 
 	let response = client.get(&url).send().await.into_diagnostic()?;
 

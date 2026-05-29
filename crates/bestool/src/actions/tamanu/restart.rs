@@ -205,7 +205,7 @@ async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> 
 }
 
 fn http_client() -> Result<Client> {
-	Client::builder()
+	crate::http::client_builder()
 		.timeout(Duration::from_secs(5))
 		.build()
 		.into_diagnostic()

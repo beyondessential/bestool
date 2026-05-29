@@ -221,6 +221,7 @@ pub async fn run(args: AlertsArgs, ctx: Context) -> Result<()> {
 	let canopy_client = match bestool_canopy::CanopyClient::new(
 		version.to_string(),
 		device_key_pem.as_deref(),
+		crate::http::client_builder,
 	)
 	.await
 	{
@@ -245,7 +246,7 @@ pub async fn run(args: AlertsArgs, ctx: Context) -> Result<()> {
 	let config = Arc::new(config);
 	let internal_ctx = Arc::new(InternalContext {
 		pg_client: client,
-		http_client: reqwest::Client::new(),
+		http_client: crate::http::client(),
 		canopy_client,
 	});
 

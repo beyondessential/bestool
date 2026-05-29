@@ -118,8 +118,12 @@ enum Source {
 
 async fn fetch_online(tamanu_version: &str) -> Result<Vec<String>> {
 	let device_key = read_device_key();
-	let canopy = CanopyClient::new(tamanu_version.to_owned(), device_key.as_deref())
-		.await?
+	let canopy = CanopyClient::new(
+		tamanu_version.to_owned(),
+		device_key.as_deref(),
+		crate::http::client_builder,
+	)
+	.await?
 		.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
 
 	debug!(

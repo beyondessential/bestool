@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn reqwest_client() -> Result<reqwest::Client> {
-	let mut builder = reqwest::Client::builder();
+	let mut builder = crate::http::client_builder();
 	for source in [
 		DownloadSource::Tools,
 		DownloadSource::Servers,
@@ -39,7 +39,7 @@ pub async fn reqwest_client() -> Result<reqwest::Client> {
 }
 
 pub async fn client() -> Result<Client> {
-	let mut builder = Client::default_builder(crate::APP_NAME, None, &mut iter::empty());
+	let mut builder = Client::default_builder(crate::http::user_agent(), None, &mut iter::empty());
 	for source in [
 		DownloadSource::Tools,
 		DownloadSource::Servers,

@@ -8,12 +8,10 @@ pub(crate) mod args;
 #[cfg(feature = "download")]
 pub(crate) mod download;
 pub mod find_postgres;
+pub(crate) mod http;
 
 #[cfg(feature = "tamanu-alerts")]
 pub(crate) mod postgres_to_value;
-
-#[allow(dead_code)] // some subcommands don't use it, but it's easier to have it everywhere
-pub(crate) const APP_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
 
 #[cfg(doc)]
 pub mod __help {

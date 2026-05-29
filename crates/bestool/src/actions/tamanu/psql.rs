@@ -408,7 +408,13 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 
 	let canopy = if let Some(ref tamanu_version) = version {
 		let device_key = read_device_key();
-		match CanopyClient::new(tamanu_version.clone(), device_key.as_deref()).await {
+		match CanopyClient::new(
+			tamanu_version.clone(),
+			device_key.as_deref(),
+			crate::http::client_builder,
+		)
+		.await
+		{
 			Ok(Some(client)) => {
 				if client.is_tailscale().await {
 					debug!("canopy ready via tailscale for snippet fetch");
@@ -578,7 +584,11 @@ async fn fetch_redactions_from_source(version: &str) -> Result<HashSet<ColumnRef
 	let url = format!("https://docs.data.bes.au/tamanu/v{version}/manifest.json");
 	debug!("fetching redactions from {}", url);
 
-	let response = reqwest::get(&url).await.into_diagnostic()?;
+	let response = crate::http::client()
+		.get(&url)
+		.send()
+		.await
+		.into_diagnostic()?;
 	let text = response.text().await.into_diagnostic()?;
 
 	parse_manifest(&text)
