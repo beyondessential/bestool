@@ -591,7 +591,7 @@ pub async fn reload_caddy() {
 #[cfg(target_os = "windows")]
 async fn reload_caddy_via_admin_api(path: &str) -> std::result::Result<(), String> {
 	let content = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-	let client = reqwest::Client::builder()
+	let client = crate::http::client_builder()
 		.timeout(Duration::from_secs(5))
 		.build()
 		.map_err(|e| format!("build client: {e}"))?;

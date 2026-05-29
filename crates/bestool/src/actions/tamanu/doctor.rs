@@ -85,7 +85,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let config = Arc::new(load_config(&root, None)?);
 
 	let database_url = config.database_url();
-	let http_client = reqwest::Client::new();
+	let http_client = crate::http::client();
 
 	let (sweep, source) = if args.no_daemon {
 		(

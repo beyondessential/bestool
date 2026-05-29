@@ -670,6 +670,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sysinfo",
  "time",
  "tokio",
  "tracing",

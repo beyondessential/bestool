@@ -3,7 +3,8 @@ use std::fmt;
 mod client;
 
 pub use client::{
-	CERT_RENEW_AFTER, CanopyClient, DEFAULT_CANOPY_URL, NewEvent, Severity, TAILSCALE_URL,
+	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, NewEvent, Severity,
+	TAILSCALE_URL, client_builder, user_agent,
 };
 
 /// Wraps a sensitive value so its `Debug` output doesn't leak the contents.

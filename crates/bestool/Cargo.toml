@@ -74,7 +74,7 @@ serde_json = "1.0.143"
 serde_path_to_error = { version = "0.1.17", optional = true }
 serde_yaml = { version = "0.9.33", optional = true }
 ssh-key = { version = "0.6.6", optional = true }
-sysinfo = { workspace = true, optional = true }
+sysinfo = { workspace = true }
 target-tuples = { version = "0.16.1", optional = true }
 tempfile = "3.21.0"
 tera = { version = "1.19.1", optional = true }
@@ -111,7 +111,7 @@ caddy = ["download", "dep:tera"]
 completions = ["dep:clap_complete", "dep:clap_complete_nushell"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
 file = ["dep:blake3", "dep:indicatif", "dep:tokio-util"]
-kopia = ["dep:bestool-kopia", "bestool-kopia/cli", "dep:comfy-table", "dep:sysinfo"]
+kopia = ["dep:bestool-kopia", "bestool-kopia/cli", "dep:comfy-table"]
 rdp = ["dep:duct", "dep:privilege", "dep:quick-xml", "dep:tauri-winrt-notification", "dep:windows-service"]
 self-update = ["download", "dep:semver", "dep:upgrade", "dep:windows-env"]
 ssh = ["dep:dirs", "dep:duct", "dep:fs4", "dep:ssh-key", "dep:privilege", "dep:windows-acl"]
@@ -146,7 +146,6 @@ tamanu-alerts = [
 	"dep:pulldown-cmark",
 	"dep:serde_path_to_error",
 	"dep:serde_yaml",
-	"dep:sysinfo",
 	"dep:tera",
 	"dep:tokio-postgres",
 	"dep:walkdir",
@@ -173,8 +172,8 @@ tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
-tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors", "dep:sysinfo"]
-tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:sysinfo", "dep:tokio-postgres"]
+tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
+tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:tokio-postgres"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:bestool-psql"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:comfy-table"]
@@ -195,7 +194,7 @@ iti = [ # enable all iti subcommands
 ]
 iti-battery = ["__iti", "dep:rppal"]
 iti-improv-wifi = ["__iti", "dep:improv-wifi", "dep:rppal"]
-iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver", "dep:sysinfo"]
+iti-lcd = ["__iti", "dep:ctrlc", "dep:embedded-graphics", "dep:rpi-st7789v2-driver"]
 iti-temperature = ["__iti", "dep:duct"]
 __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 

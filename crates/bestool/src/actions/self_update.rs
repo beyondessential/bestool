@@ -201,7 +201,11 @@ fn add_self_to_path() -> Result<()> {
 #[cfg(windows)]
 async fn is_alertd_service_running() -> bool {
 	// Try to query the alertd HTTP API status endpoint
-	match reqwest::get("http://127.0.0.1:8271/status").await {
+	match crate::http::client()
+		.get("http://127.0.0.1:8271/status")
+		.send()
+		.await
+	{
 		Ok(response) => response.status().is_success(),
 		Err(_) => false,
 	}

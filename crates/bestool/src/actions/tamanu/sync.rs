@@ -136,7 +136,7 @@ pub async fn run(args: SyncArgs, ctx: Context) -> Result<()> {
 		.ok_or_else(|| miette::miette!("config has no sync.syncApiConnection block"))?;
 	debug!(%base_url, %service_name, ?kind, "preparing sync");
 
-	let client = Client::builder()
+	let client = crate::http::client_builder()
 		// No client-side timeout: we manage the overall and start timeouts
 		// ourselves, around the whole retry loop. The sync sub-process's
 		// `/sync/run` has no server-side timeout either, so a single POST can
