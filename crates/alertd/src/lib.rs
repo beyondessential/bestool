@@ -34,6 +34,21 @@ pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse}
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Base builder for alertd's outbound HTTP clients.
+///
+/// Carries the browser-style `bestool/<version>` User-Agent (and whatever else
+/// [`canopy::client_builder`] sets). Call sites add their own timeouts etc.
+pub fn http_builder() -> reqwest::ClientBuilder {
+	canopy::client_builder(VERSION)
+}
+
+/// A built [`reqwest::Client`] from [`http_builder`].
+pub fn http_client() -> reqwest::Client {
+	http_builder()
+		.build()
+		.expect("failed to build alertd HTTP client")
+}
+
 /// Email server configuration
 #[derive(Debug, Clone)]
 pub struct EmailConfig {

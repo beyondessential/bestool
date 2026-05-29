@@ -105,6 +105,7 @@ pub async fn run_with_shutdown_and_reload(
 	let canopy_client = match CanopyClient::new(
 		daemon_config.tamanu_version.clone(),
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
+		crate::http_builder,
 	)
 	.await
 	{
@@ -145,7 +146,7 @@ pub async fn run_with_shutdown_and_reload(
 
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
-		http_client: reqwest::Client::new(),
+		http_client: crate::http_client(),
 		canopy_client,
 	});
 

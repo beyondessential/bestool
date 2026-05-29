@@ -6,7 +6,7 @@ use tracing::info;
 /// until one succeeds. This is an alternative to SIGHUP that works on all platforms
 /// including Windows.
 pub async fn send_reload(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
-	let client = reqwest::Client::new();
+	let client = crate::http_client();
 
 	let mut last_error = None;
 
