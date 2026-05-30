@@ -531,7 +531,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.19.0"
+version = "1.19.1"
 dependencies = [
  "algae-cli",
  "base64 0.22.1",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.5.6"
+version = "1.5.7"
 dependencies = [
  "aegis",
  "bestool-postgres",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bestool-kopia",
  "dirs",
