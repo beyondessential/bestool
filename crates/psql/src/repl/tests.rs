@@ -28,6 +28,42 @@ fn test_snippet_save_excluded_from_preceding_command() {
 	}
 }
 
+#[test]
+fn test_edit_invocation_excluded_from_history() {
+	use crate::audit::Audit;
+	use crate::input::ReplAction;
+	use rustyline::history::SearchDirection;
+	use tempfile::TempDir;
+
+	// The history-add guard in `ReplAction::handle` must skip the `\e`
+	// invocation, otherwise `handle_edit` would read `\e` as the editor's
+	// initial content instead of the previous query.
+	assert!(matches!(
+		ReplAction::Edit,
+		ReplAction::SnippetSave { .. } | ReplAction::Edit
+	));
+	assert!(!matches!(
+		ReplAction::Copy,
+		ReplAction::SnippetSave { .. } | ReplAction::Edit
+	));
+
+	// With `\e` excluded, the last history entry is the prior query, which is
+	// exactly what `handle_edit` seeds the editor buffer with.
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let repl_state = Arc::new(Mutex::new(ReplState::new()));
+	let mut audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+	audit.add_entry("SELECT 42;".into()).unwrap();
+
+	let last_idx = audit.len() - 1;
+	let initial = audit
+		.get(last_idx, SearchDirection::Forward)
+		.unwrap()
+		.map(|r| r.entry.to_string())
+		.unwrap_or_default();
+	assert_eq!(initial, "SELECT 42;");
+}
+
 #[tokio::test]
 async fn test_text_cast_for_record_types() {
 	let connection_string =

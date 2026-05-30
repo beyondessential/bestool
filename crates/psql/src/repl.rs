@@ -47,8 +47,10 @@ mod tests;
 
 impl ReplAction {
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
-		// Add to history, except for SnippetSave
-		if !matches!(self, ReplAction::SnippetSave { .. }) {
+		// Add to history, except for SnippetSave and Edit. Edit must be excluded
+		// so that `handle_edit` picks up the previous query as the editor's
+		// initial content rather than the `\e` invocation itself.
+		if !matches!(self, ReplAction::SnippetSave { .. } | ReplAction::Edit) {
 			let history = ctx.rl.history_mut();
 			if let Err(e) = history.add_entry(line.into()) {
 				debug!("failed to add to history: {e}");
