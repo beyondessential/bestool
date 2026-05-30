@@ -17,7 +17,6 @@ echo "Updating USAGE.md files..."
 
 genusage algae algae-cli
 genusage "bestool --features iti,iti-improv-wifi" bestool
-genusage bestool-alertd alertd
 genusage bestool-psql psql
 
 echo "All USAGE.md files updated successfully"
