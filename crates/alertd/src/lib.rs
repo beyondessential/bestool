@@ -6,6 +6,7 @@ pub use bestool_canopy::Redacted;
 mod alert;
 pub mod commands;
 mod daemon;
+pub mod doctor;
 mod events;
 mod glob_resolver;
 pub mod http_server;

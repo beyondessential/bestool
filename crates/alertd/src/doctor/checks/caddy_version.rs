@@ -17,8 +17,10 @@
 use node_semver::Version;
 use tokio::process::Command;
 
+use bestool_tamanu::caddy;
+
 use super::CheckContext;
-use crate::{caddy, doctor::check::Check};
+use crate::doctor::check::Check;
 
 const CHECK_NAME: &str = "caddy_version";
 

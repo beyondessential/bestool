@@ -4,7 +4,7 @@ version = "0.10.2"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
-description = "(Internal) BES tooling: Tamanu library (config, discovery, healthchecks)"
+description = "(Internal) BES tooling: Tamanu library (config, discovery)"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/tamanu"
 exclude.workspace = true
 
@@ -12,13 +12,6 @@ exclude.workspace = true
 workspace = true
 
 [features]
-default = ["doctor"]
-doctor = [
-	"dep:bestool-kopia",
-	"dep:hickory-resolver",
-	"dep:owo-colors",
-	"dep:reqwest",
-]
 meta-ticket = ["dep:p256"]
 
 [dependencies]
@@ -47,12 +40,6 @@ uuid = { version = "1.23.1", features = ["v4"] }
 
 # meta-ticket-only
 p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
-
-# doctor-only
-bestool-kopia = { version = "0.1.0", path = "../kopia", optional = true }
-hickory-resolver = { version = "0.26.1", optional = true }
-owo-colors = { version = "4.2.3", optional = true }
-reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

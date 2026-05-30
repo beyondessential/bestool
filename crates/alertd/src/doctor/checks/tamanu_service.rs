@@ -1,8 +1,6 @@
 use serde_json::{Value, json};
 
-use super::CheckContext;
-use crate::{
-	doctor::check::Check,
+use bestool_tamanu::{
 	pm2,
 	services::{
 		Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit,
@@ -10,6 +8,9 @@ use crate::{
 	},
 	systemd,
 };
+
+use super::CheckContext;
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let supervisor = if cfg!(target_os = "linux") {
@@ -25,7 +26,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// DB setting. Without a DB client (e.g. unreachable), pass `None` so the
 	// expectation surfaces as Unknown rather than a false-negative Down.
 	let patient_portal_enabled = match ctx.db.as_deref() {
-		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
+		Some(client) => bestool_tamanu::server_info::query_patient_portal_enabled(client).await,
 		None => None,
 	};
 	let patient_portal_instanced =
@@ -531,8 +532,10 @@ fn outcome_to_json(o: &Outcome) -> Value {
 
 #[cfg(test)]
 mod tests {
+	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+
 	use super::*;
-	use crate::{ApiServerKind, config::TamanuConfig, doctor::check::CheckStatus};
+	use crate::doctor::check::CheckStatus;
 
 	fn cfg(fhir_worker: bool) -> TamanuConfig {
 		let json = serde_json::json!({

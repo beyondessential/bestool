@@ -1,11 +1,6 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use bestool_alertd::{
-	BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse,
-	canopy::DEFAULT_CANOPY_URL,
-	tasks::TaskEndpointHandler,
-};
-use bestool_tamanu::{config::TamanuConfig, doctor::progress::DoctorEvent};
+use bestool_tamanu::config::TamanuConfig;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
@@ -15,7 +10,10 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
-use crate::actions::tamanu::doctor;
+use crate::canopy::DEFAULT_CANOPY_URL;
+use crate::doctor::{self, progress::DoctorEvent};
+use crate::tasks::TaskEndpointHandler;
+use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
 const DOCTOR_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -29,6 +27,7 @@ pub struct DoctorTask {
 }
 
 struct DoctorTaskInner {
+	binary_version: String,
 	tamanu_version: Version,
 	tamanu_root: PathBuf,
 	config: Arc<TamanuConfig>,
@@ -53,6 +52,7 @@ struct LatestSweep {
 
 impl DoctorTask {
 	pub fn new(
+		binary_version: String,
 		tamanu_version: Version,
 		tamanu_root: PathBuf,
 		config: Arc<TamanuConfig>,
@@ -60,6 +60,7 @@ impl DoctorTask {
 	) -> Self {
 		Self {
 			inner: Arc::new(DoctorTaskInner {
+				binary_version,
 				tamanu_version,
 				tamanu_root,
 				config,
@@ -78,10 +79,11 @@ impl DoctorTaskInner {
 	async fn run_sweep(
 		self: &Arc<Self>,
 		ctx: &TaskContext,
-		progress: Option<bestool_tamanu::doctor::progress::ProgressSender>,
+		progress: Option<doctor::progress::ProgressSender>,
 	) -> Result<doctor::SweepResult> {
 		let cached = self.pg_version_cache.lock().await.clone();
 		let sweep = doctor::perform_sweep(
+			&self.binary_version,
 			&self.tamanu_version,
 			&self.tamanu_root,
 			self.config.clone(),
@@ -189,9 +191,8 @@ impl DoctorTaskInner {
 			}
 		});
 
-		let stream: BoxStream<'static, Value> = Box::pin(
-			tokio_stream::wrappers::UnboundedReceiverStream::new(out_rx).map(|v| v),
-		);
+		let stream: BoxStream<'static, Value> =
+			Box::pin(tokio_stream::wrappers::UnboundedReceiverStream::new(out_rx).map(|v| v));
 		TaskEndpointResponse::JsonLines(stream)
 	}
 }

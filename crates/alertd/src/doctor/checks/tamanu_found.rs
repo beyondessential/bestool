@@ -1,5 +1,7 @@
+use bestool_tamanu::ApiServerKind;
+
 use super::CheckContext;
-use crate::{ApiServerKind, doctor::check::Check};
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let kind = match ctx.kind {

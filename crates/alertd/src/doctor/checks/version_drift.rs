@@ -7,12 +7,13 @@
 
 use serde_json::{Value, json};
 
-use super::CheckContext;
-use crate::{
-	doctor::check::Check,
+use bestool_tamanu::{
 	services::{Supervisor, expected, parse_systemd_unit, systemd_patient_portal_instanced},
 	versions,
 };
+
+use super::CheckContext;
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let supervisor = if cfg!(target_os = "linux") {
@@ -49,7 +50,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// started or orphaned containers aren't drift; they're outside the
 	// expected set.
 	let patient_portal_enabled = match ctx.db.as_deref() {
-		Some(client) => crate::server_info::query_patient_portal_enabled(client).await,
+		Some(client) => bestool_tamanu::server_info::query_patient_portal_enabled(client).await,
 		None => None,
 	};
 	let patient_portal_instanced =

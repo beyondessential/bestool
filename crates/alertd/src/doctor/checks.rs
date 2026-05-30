@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 use node_semver::Version;
 use tokio_postgres::Client as PgClient;
 
-use crate::{ApiServerKind, config::TamanuConfig};
+use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 

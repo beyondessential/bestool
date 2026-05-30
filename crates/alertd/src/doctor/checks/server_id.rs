@@ -1,5 +1,7 @@
+use bestool_tamanu::server_info::get_or_create_server_id;
+
 use super::CheckContext;
-use crate::{doctor::check::Check, server_info::get_or_create_server_id};
+use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	// Pass the DB through optionally: an already-provisioned host has the id

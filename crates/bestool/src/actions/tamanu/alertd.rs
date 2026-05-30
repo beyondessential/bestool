@@ -13,12 +13,10 @@ use bestool_tamanu::{
 	server_info::{fetch_device_key_with, query_device_key_row},
 };
 
+use bestool_alertd::doctor::DoctorTask;
+
 use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
-
-mod doctor_task;
-
-use doctor_task::DoctorTask;
 
 /// Run the alert daemon
 ///
@@ -364,6 +362,7 @@ async fn build_config(
 
 	if !no_healthchecks {
 		daemon_config = daemon_config.with_task(Arc::new(DoctorTask::new(
+			env!("CARGO_PKG_VERSION").to_string(),
 			tamanu_version.clone(),
 			root.to_path_buf(),
 			config.clone(),
