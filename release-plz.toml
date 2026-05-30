@@ -2,7 +2,11 @@
 pr_name = "repo: release"
 pr_branch_prefix = "release-plz/"
 pr_labels = ["autorelease"]
-changelog_update = false
+# Generate changelogs so the release PR body lists the changes, but keep them
+# out of the repo: CHANGELOG.md is gitignored, so release-plz writes it to
+# populate the PR body without committing it. GitHub release notes are derived
+# from the committed file, so they stay empty by design.
+changelog_update = true
 git_tag_name = "{{ package }}-v{{ version }}"
 
 [[package]]
