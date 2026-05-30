@@ -13,17 +13,24 @@ use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 
+pub mod util;
+
 pub mod caddy_version;
+pub mod certificate_notification_errors;
 pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
 pub mod external_users;
+pub mod fhir_job_errors;
 pub mod fhir_jobs;
 pub mod http_errors;
+pub mod ips_errors;
 pub mod kopia_backup;
 pub mod load;
 pub mod memory;
 pub mod migrations;
+pub mod patient_communication_errors;
+pub mod report_errors;
 pub mod server_id;
 pub mod sync_sessions;
 pub mod tailscale;
@@ -143,5 +150,83 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),
 		entry!("kopia_backup", kopia_backup),
+		entry!(
+			"certificate_notification_errors",
+			certificate_notification_errors
+		),
+		entry!("ips_errors", ips_errors),
+		entry!("patient_communication_errors", patient_communication_errors),
+		entry!("report_errors", report_errors),
+		entry!("fhir_job_errors", fhir_job_errors),
 	]
+}
+
+#[cfg(test)]
+pub mod test_support {
+	//! Helpers for DB-backed check tests.
+	//!
+	//! Each check is central-only and DB-backed, so its tests need a
+	//! [`CheckContext`] wired to one of the local `tamanu-central` /
+	//! `tamanu-facility` databases. These connect lazily and return `None` when
+	//! the DB is unavailable so the suite degrades gracefully off-CI.
+
+	use std::sync::Arc;
+
+	use node_semver::Version;
+
+	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+
+	use super::CheckContext;
+
+	fn central_config() -> TamanuConfig {
+		serde_json::from_value(serde_json::json!({
+			"db": { "name": "tamanu-central", "username": "u", "password": "p" },
+		}))
+		.expect("central test config should parse")
+	}
+
+	fn facility_config() -> TamanuConfig {
+		serde_json::from_value(serde_json::json!({
+			"db": { "name": "tamanu-facility", "username": "u", "password": "p" },
+			"serverFacilityIds": ["facility-1"],
+		}))
+		.expect("facility test config should parse")
+	}
+
+	async fn connect(db_name: &str) -> Option<Arc<tokio_postgres::Client>> {
+		let url = format!("postgresql://localhost/{db_name}");
+		match bestool_postgres::pool::connect_one(&url, "bestool-alertd-test").await {
+			Ok(client) => Some(Arc::new(client)),
+			Err(_) => None,
+		}
+	}
+
+	/// A central [`CheckContext`] backed by `tamanu-central`, or `None` if that
+	/// DB can't be reached.
+	pub async fn central_ctx() -> Option<CheckContext> {
+		let db = connect("tamanu-central").await?;
+		Some(CheckContext {
+			tamanu_version: Version::parse("0.0.0").unwrap(),
+			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+			config: Arc::new(central_config()),
+			kind: ApiServerKind::Central,
+			database_url: "postgresql://localhost/tamanu-central".into(),
+			db: Some(db),
+			http_client: reqwest::Client::new(),
+		})
+	}
+
+	/// A facility [`CheckContext`] with no DB; central-only checks skip on it
+	/// before ever touching the database.
+	pub fn facility_ctx() -> CheckContext {
+		CheckContext {
+			tamanu_version: Version::parse("0.0.0").unwrap(),
+			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+			config: Arc::new(facility_config()),
+			kind: ApiServerKind::Facility,
+			database_url: "postgresql://localhost/tamanu-facility".into(),
+			db: None,
+			http_client: reqwest::Client::new(),
+		}
+	}
 }
