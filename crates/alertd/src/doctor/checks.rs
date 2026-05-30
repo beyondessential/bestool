@@ -23,6 +23,7 @@ pub mod disk_free;
 pub mod external_users;
 pub mod fhir_job_errors;
 pub mod fhir_jobs;
+pub mod fhir_service_requests_unresolved;
 pub mod http_errors;
 pub mod ips_errors;
 pub mod kopia_backup;
@@ -166,6 +167,10 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("sync_facility_stale", sync_facility_stale),
 		entry!("sync_lookup", sync_lookup),
 		entry!("sync_restart_loop", sync_restart_loop),
+		entry!(
+			"fhir_service_requests_unresolved",
+			fhir_service_requests_unresolved
+		),
 	]
 }
 
