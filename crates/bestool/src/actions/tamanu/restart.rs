@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use clap::Parser;
-use jiff::SignedDuration;
-use miette::{IntoDiagnostic, Result, bail};
+use miette::Result;
 use reqwest::{Client, Url};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use bestool_tamanu::{
 	services::{self, ExpectedState, Expectation, Supervisor},
@@ -16,6 +15,7 @@ use crate::actions::{
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance, WaitForDb},
+		probe,
 	},
 };
 
@@ -37,7 +37,7 @@ pub struct RestartArgs {
 	/// disabled (`--no-probe-http`). With probes enabled, the readiness
 	/// probe is the signal — once a fresh instance responds, we move on
 	/// to the next without waiting out the cooldown.
-	#[arg(long, default_value = "30s", value_parser = parse_duration)]
+	#[arg(long, default_value = "30s", value_parser = probe::parse_duration)]
 	pub cooldown: Duration,
 
 	/// Skip the per-instance HTTP probe. Useful if the deployment isn't
@@ -50,12 +50,6 @@ pub struct RestartArgs {
 	/// end-to-end reachability. Bails non-zero if the probe fails.
 	#[arg(long, value_name = "URL")]
 	pub check_url: Option<Url>,
-}
-
-fn parse_duration(s: &str) -> Result<Duration, String> {
-	s.parse::<SignedDuration>()
-		.map_err(|e| e.to_string())
-		.and_then(|d| Duration::try_from(d).map_err(|e| e.to_string()))
 }
 
 pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
@@ -76,7 +70,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		bulk_behind_caddy,
 		rolling,
 	} = partition(supervisor, &groups);
-	let client = http_client()?;
+	let client = probe::http_client()?;
 
 	if !bulk.is_empty() {
 		info!(targets = ?bulk, "bulk-restarting non-rolling services");
@@ -135,7 +129,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 
 	if let Some(url) = &args.check_url {
 		info!(%url, "final end-to-end probe");
-		probe_url(&client, url, Duration::from_secs(60)).await?;
+		probe::probe_url(&client, url, Duration::from_secs(60)).await?;
 	}
 
 	Ok(())
@@ -204,13 +198,6 @@ async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> 
 	}
 }
 
-fn http_client() -> Result<Client> {
-	crate::http::client_builder()
-		.timeout(Duration::from_secs(5))
-		.build()
-		.into_diagnostic()
-}
-
 /// Probe a freshly-restarted instance until it responds.
 ///
 /// Returns `Ok(true)` when the probe loop got a non-5xx response, `Ok(false)`
@@ -222,82 +209,11 @@ async fn probe_instance(
 	instance: &Instance,
 	client: &Client,
 ) -> Result<bool> {
-	let url = match supervisor {
-		Supervisor::Systemd => {
-			let unit = instance.unit();
-			match lifecycle::container_ip_for_unit(&unit)? {
-				Some(ip) => format!("http://{ip}:3000/").parse().into_diagnostic()?,
-				None => {
-					warn!(unit, "no container IP discovered, skipping HTTP probe");
-					return Ok(false);
-				}
-			}
-		}
-		Supervisor::Pm2 => {
-			let Some(pm_id) = instance.pm_id else {
-				warn!(name = %instance.name, "pm2 instance has no pm_id, skipping HTTP probe");
-				return Ok(false);
-			};
-			match lifecycle::pm2_port_for(pm_id)? {
-				Some(port) => format!("http://127.0.0.1:{port}/").parse().into_diagnostic()?,
-				None => {
-					info!(name = %instance.name, pm_id, "no PORT in pm2 env, skipping HTTP probe");
-					return Ok(false);
-				}
-			}
-		}
+	let Some(url) = probe::instance_probe_url(supervisor, instance)? else {
+		return Ok(false);
 	};
-	probe_until_ready(client, &url).await;
+	probe::probe_until_ready(client, &url).await;
 	Ok(true)
-}
-
-/// Retry `url` every 500ms until it returns a non-5xx response. Never gives
-/// up. Used for the per-instance readiness probe in the rolling restart,
-/// where the container is guaranteed to come up (or the operator can ctrl+c).
-async fn probe_until_ready(client: &Client, url: &Url) {
-	loop {
-		match probe_once(client, url).await {
-			Ok(()) => {
-				debug!(%url, "probe OK");
-				return;
-			}
-			Err(err) => {
-				debug!(%url, err = %err, "probe not ready, retrying");
-				tokio::time::sleep(Duration::from_millis(500)).await;
-			}
-		}
-	}
-}
-
-/// Bounded probe used for the post-restart `--check-url` end-to-end check.
-/// Retries with the same 500ms cadence but bails after `timeout` — unlike
-/// the per-instance probe, a failure here is an actual operator-facing
-/// result (the user explicitly asked us to verify the URL).
-async fn probe_url(client: &Client, url: &Url, timeout: Duration) -> Result<()> {
-	let deadline = std::time::Instant::now() + timeout;
-	loop {
-		match probe_once(client, url).await {
-			Ok(()) => {
-				debug!(%url, "probe OK");
-				return Ok(());
-			}
-			Err(last_err) => {
-				if std::time::Instant::now() >= deadline {
-					bail!("HTTP probe of {url} failed: {last_err}");
-				}
-				debug!(%url, err = %last_err, "probe not ready, retrying");
-				tokio::time::sleep(Duration::from_millis(500)).await;
-			}
-		}
-	}
-}
-
-async fn probe_once(client: &Client, url: &Url) -> std::result::Result<(), String> {
-	match client.get(url.clone()).send().await {
-		Ok(resp) if !resp.status().is_server_error() => Ok(()),
-		Ok(resp) => Err(format!("HTTP {}", resp.status())),
-		Err(e) => Err(e.to_string()),
-	}
 }
 
 #[cfg(test)]
