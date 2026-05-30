@@ -42,8 +42,6 @@ super::subcommands! {
 		Ok((action, ctx))
 	}]
 
-	#[cfg(feature = "tamanu-alerts")]
-	alerts => Alerts(AlertsArgs),
 	#[cfg(feature = "tamanu-alertd")]
 	alertd => Alertd(AlertdArgs),
 	#[cfg(feature = "tamanu-artifacts")]

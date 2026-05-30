@@ -1,2 +1,0 @@
-bin.name = "bestool"
-args = "tamanu --root ./tamanu alerts --interval 1w --dir ./alerts --dry-run"
