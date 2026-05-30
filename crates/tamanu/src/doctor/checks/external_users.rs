@@ -16,10 +16,10 @@
 //! "is this *person* connected" is what's measured, even if their Windows
 //! session ID changes across reconnects); fall back to user@line otherwise.
 //!
-//! Two thresholds:
-//!   * 12h+ → warning ("healthy: false" on the wire for this check, but does
-//!     not flip the overall result to FAILING)
-//!   * 24h+ → fail (does flip the overall result)
+//! A single threshold: sessions of 12h+ produce a warning ("healthy: false"
+//! on the wire for this check, but never flips the overall result to FAILING).
+//! A long-lived session can only ever warn, not fail — so a forgotten RDP
+//! session won't take the whole doctor result down.
 //!
 //! On Linux/macOS we shell out to `who`; on Windows to `quser`. The Tailscale
 //! login for each session's source address is looked up via `tailscale whois`
@@ -39,9 +39,6 @@ use crate::doctor::check::Check;
 /// Sessions older than this trigger a check warning (degrades doctor's
 /// `external_users` line but does not flip the top-level result).
 const WARN_AGE: Duration = Duration::from_secs(12 * 3600);
-
-/// Sessions older than this fail the check and flip the top-level result.
-const FAIL_AGE: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Debug, Clone)]
 struct ExternalUser {
@@ -117,16 +114,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 	);
 	let user_details = serde_json::Value::Array(users.iter().map(user_to_json).collect());
 
-	let check = if oldest_age >= FAIL_AGE {
-		Check::fail(
-			"external_users",
-			summary,
-			format!(
-				"a session has been connected for over {}h",
-				FAIL_AGE.as_secs() / 3600
-			),
-		)
-	} else if oldest_age >= WARN_AGE {
+	let check = if oldest_age >= WARN_AGE {
 		Check::warning(
 			"external_users",
 			summary,
