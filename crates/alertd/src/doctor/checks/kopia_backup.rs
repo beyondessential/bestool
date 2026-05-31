@@ -29,6 +29,7 @@ use super::CheckContext;
 use crate::doctor::check::Check;
 
 const CHECK_NAME: &str = "kopia_backup";
+const WARN_AGE_SECS: i64 = 12 * 60 * 60;
 const FAIL_AGE_SECS: i64 = 24 * 60 * 60;
 
 pub async fn run(_ctx: CheckContext) -> Check {
@@ -206,6 +207,12 @@ fn evaluate(snapshots: &[Snapshot], now: Timestamp) -> Check {
 			summary.clone(),
 			format!("no backup in {}", humanise_age(FAIL_AGE_SECS)),
 		)
+	} else if age_secs >= WARN_AGE_SECS {
+		Check::warning(
+			CHECK_NAME,
+			summary.clone(),
+			format!("no backup in {}", humanise_age(WARN_AGE_SECS)),
+		)
 	} else {
 		Check::pass(CHECK_NAME, summary)
 	};
@@ -298,6 +305,18 @@ mod tests {
 		)];
 		let check = evaluate(&snapshots, now);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn warn_when_postgres_snapshot_between_12h_and_24h() {
+		let now = Timestamp::from_second(20_000_000).unwrap();
+		let snapshots = vec![snapshot(
+			"/var/lib/postgresql/16/main",
+			Some(now - 18.hours()),
+			None,
+		)];
+		let check = evaluate(&snapshots, now);
+		assert!(matches!(check.status, CheckStatus::Warning(_)), "{check:?}");
 	}
 
 	#[test]

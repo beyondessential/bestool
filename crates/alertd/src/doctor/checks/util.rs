@@ -64,32 +64,78 @@ pub async fn fetch_rows(
 	Ok(RowSet { rows, truncated })
 }
 
-/// Run a single wrapped query: fail (with capped rows + count) if it
-/// returns any rows, else pass.
+/// Run a single wrapped query and tier the outcome on the number of
+/// matching rows: PASS below `warn_min`, WARN at or above it, FAIL at or above
+/// `fail_min`.
 ///
-/// `summary_pass` is the headline shown when nothing matched;
-/// `summary_fail_prefix` is prepended to the count when rows are found.
-pub async fn fail_if_any_rows(
+/// `summary_pass` is the headline shown when nothing crosses `warn_min`;
+/// `summary_prefix` is prepended to the count for the WARN/FAIL summary.
+///
+/// Rows are capped at [`REPORT_CAP`] (reported as `"100+"`), which is enough to
+/// distinguish the small WARN/FAIL boundaries the error-stream checks use.
+#[expect(
+	clippy::too_many_arguments,
+	reason = "shared query helper; each parameter is a distinct knob the call sites set"
+)]
+pub async fn tiered_rows_check(
 	client: &Arc<PgClient>,
 	name: &'static str,
 	summary_pass: &str,
-	summary_fail_prefix: &str,
+	summary_prefix: &str,
 	sql: &str,
 	params: &[&(dyn ToSql + Sync)],
+	warn_min: usize,
+	fail_min: usize,
 ) -> Check {
 	match fetch_rows(client, sql, params).await {
-		Ok(set) if set.is_empty() => Check::pass(name, summary_pass.to_string()),
 		Ok(set) => {
+			// `truncated` means there were more than REPORT_CAP rows, which is
+			// well past any realistic fail_min, so treat it as the cap.
+			let n = if set.truncated {
+				REPORT_CAP + 1
+			} else {
+				set.rows.len()
+			};
 			let count = set.count();
-			Check::fail(
-				name,
-				format!("{summary_fail_prefix}{count}"),
-				format!("{} matching row(s)", count),
-			)
-			.with_detail("rows", Value::Array(set.rows))
-			.with_detail("truncated", set.truncated)
-			.with_detail("count", count)
+			if n < warn_min {
+				return Check::pass(name, summary_pass.to_string());
+			}
+			let summary = format!("{summary_prefix}{count}");
+			let reason = format!("{count} matching row(s)");
+			let check = if n >= fail_min {
+				Check::fail(name, summary, reason)
+			} else {
+				Check::warning(name, summary, reason)
+			};
+			check
+				.with_detail("rows", Value::Array(set.rows))
+				.with_detail("truncated", set.truncated)
+				.with_detail("count", count)
 		}
 		Err(err) => Check::fail(name, "query failed", fmt_db_error(&err)),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	/// Pure count→tier decision mirroring [`tiered_rows_check`], factored so the
+	/// WARN/FAIL boundaries can be asserted without a database.
+	fn tier(n: usize, warn_min: usize, fail_min: usize) -> &'static str {
+		if n >= fail_min {
+			"fail"
+		} else if n >= warn_min {
+			"warning"
+		} else {
+			"pass"
+		}
+	}
+
+	#[test]
+	fn error_stream_boundaries() {
+		assert_eq!(tier(0, 1, 10), "pass");
+		assert_eq!(tier(1, 1, 10), "warning");
+		assert_eq!(tier(9, 1, 10), "warning");
+		assert_eq!(tier(10, 1, 10), "fail");
+		assert_eq!(tier(100, 1, 10), "fail");
 	}
 }

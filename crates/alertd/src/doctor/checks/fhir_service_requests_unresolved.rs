@@ -1,17 +1,24 @@
 //! FHIR service requests that have stayed unresolved for too long.
 //!
-//! Fails when a FHIR service request linked to a lab request has been
-//! unresolved for over an hour.
+//! Lists FHIR service requests linked to a lab request that have been
+//! unresolved for over an hour, tiering on the longest outstanding duration:
+//! WARN past 1h, FAIL past 6h.
 
-use super::{CheckContext, util::fail_if_any_rows};
+use super::{CheckContext, fmt_db_error};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
+use serde_json::{Value, json};
 
 const NAME: &str = "fhir_service_requests_unresolved";
+
+const WARN_MINUTES: f64 = 60.0;
+const FAIL_MINUTES: f64 = 6.0 * 60.0;
+
 const SQL: &str = "SELECT lr.display_id AS lab_request_id, \
-	ROUND(EXTRACT(EPOCH FROM (NOW() - fsr.last_updated)) / 60)::text AS duration_minutes \
+	EXTRACT(EPOCH FROM (NOW() - fsr.last_updated)) / 60 AS duration_minutes \
 	FROM fhir.service_requests fsr JOIN lab_requests lr ON fsr.upstream_id = lr.id \
-	WHERE fsr.resolved = FALSE AND NOW() - fsr.last_updated > INTERVAL '1 hours'";
+	WHERE fsr.resolved = FALSE AND NOW() - fsr.last_updated > INTERVAL '1 hours' \
+	ORDER BY duration_minutes DESC";
 
 pub async fn run(ctx: CheckContext) -> Check {
 	if ctx.kind != ApiServerKind::Central {
@@ -25,19 +32,53 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	fail_if_any_rows(
-		client,
-		NAME,
-		"no unresolved FHIR service requests",
-		"unresolved FHIR service requests: ",
-		SQL,
-		&[],
-	)
-	.await
+	let rows = match client.query(SQL, &[]).await {
+		Ok(r) => r,
+		Err(err) => return Check::fail(NAME, "query failed", fmt_db_error(&err)),
+	};
+
+	if rows.is_empty() {
+		return Check::pass(NAME, "no unresolved FHIR service requests");
+	}
+
+	let mut warn = Vec::new();
+	let mut fail = Vec::new();
+	for row in &rows {
+		let lab_request_id: Option<String> = row.try_get("lab_request_id").ok();
+		let minutes: f64 = row.try_get("duration_minutes").unwrap_or(0.0);
+		let entry = json!({
+			"lab_request_id": lab_request_id,
+			"duration_minutes": minutes.round() as i64,
+		});
+		if minutes > FAIL_MINUTES {
+			fail.push(entry);
+		} else if minutes > WARN_MINUTES {
+			warn.push(entry);
+		}
+	}
+
+	if warn.is_empty() && fail.is_empty() {
+		return Check::pass(NAME, "no unresolved FHIR service requests");
+	}
+
+	let summary = format!(
+		"unresolved FHIR service requests: {} over 6h, {} over 1h",
+		fail.len(),
+		warn.len()
+	);
+	let check = if fail.is_empty() {
+		Check::warning(NAME, summary, "unresolved FHIR service request(s)")
+	} else {
+		Check::fail(NAME, summary, "unresolved FHIR service request(s)")
+	};
+	check
+		.with_detail("fail", Value::Array(fail))
+		.with_detail("warn", Value::Array(warn))
 }
 
 #[cfg(test)]
 mod tests {
+	use crate::doctor::check::CheckStatus;
 	use crate::doctor::checks::test_support::{central_ctx, facility_ctx};
 
 	#[tokio::test]
@@ -47,6 +88,10 @@ mod tests {
 		};
 		let check = super::run(ctx).await;
 		assert_eq!(check.name, "fhir_service_requests_unresolved");
+		assert!(matches!(
+			check.status,
+			CheckStatus::Pass | CheckStatus::Warning(_) | CheckStatus::Fail(_)
+		));
 	}
 
 	#[tokio::test]
