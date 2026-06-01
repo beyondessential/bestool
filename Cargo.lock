@@ -687,7 +687,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "whoami 1.6.1",
+ "whoami",
 ]
 
 [[package]]
@@ -3834,10 +3834,7 @@ version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
 dependencies = [
- "bitflags 2.11.1",
  "libc",
- "plain",
- "redox_syscall 0.7.5",
 ]
 
 [[package]]
@@ -4787,7 +4784,7 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall 0.5.18",
+ "redox_syscall",
  "smallvec",
  "windows-link 0.2.1",
 ]
@@ -5049,12 +5046,6 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
-
-[[package]]
-name = "plain"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plist"
@@ -5698,15 +5689,6 @@ name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
-dependencies = [
- "bitflags 2.11.1",
-]
-
-[[package]]
-name = "redox_syscall"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4666a1a60d8412eab19d94f6d13dcc9cea0a5ef4fdf6a5db306537413c661b1b"
 dependencies = [
  "bitflags 2.11.1",
 ]
@@ -7229,7 +7211,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-util",
- "whoami 2.1.2",
+ "whoami",
 ]
 
 [[package]]
@@ -8067,12 +8049,6 @@ dependencies = [
 
 [[package]]
 name = "wasite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
-
-[[package]]
-name = "wasite"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fe902b4a6b8028a753d5424909b764ccf79b7a209eac9bf97e59cda9f71a42"
@@ -8234,17 +8210,6 @@ dependencies = [
 
 [[package]]
 name = "whoami"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
-dependencies = [
- "libredox",
- "wasite 0.1.0",
- "web-sys",
-]
-
-[[package]]
-name = "whoami"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998767ef88740d1f5b0682a9c53c24431453923962269c2db68ee43788c5a40d"
@@ -8252,7 +8217,7 @@ dependencies = [
  "libc",
  "libredox",
  "objc2-system-configuration",
- "wasite 1.0.2",
+ "wasite",
  "web-sys",
 ]
 
