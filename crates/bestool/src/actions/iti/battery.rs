@@ -126,8 +126,7 @@ pub async fn once(args: &BatteryArgs, rolling: Option<&mut VecDeque<f64>>) -> Re
 				Some(curr - pre)
 			})
 			.enumerate()
-			.filter(|(n, diff)| *n >= 4.min(rolling.len() - 1) && *diff != 0.0)
-			.next()
+			.find(|(n, diff)| *n >= 4.min(rolling.len() - 1) && *diff != 0.0)
 			.map(|(n, _)| n)
 			.unwrap_or(rolling.len() - 1);
 
@@ -239,7 +238,7 @@ pub async fn once(args: &BatteryArgs, rolling: Option<&mut VecDeque<f64>>) -> Re
 		const BLACK: [u8; 3] = [0, 0, 0];
 		const WHITE: [u8; 3] = [255, 255, 255];
 
-		let (fill, stroke) = if estimates.as_ref().map_or(false, |(rate, _)| *rate > 0.0) {
+		let (fill, stroke) = if estimates.as_ref().is_some_and(|(rate, _)| *rate > 0.0) {
 			(GREEN, BLACK)
 		} else if capacity <= 3.0 {
 			(RED, WHITE)
@@ -273,7 +272,12 @@ pub async fn once(args: &BatteryArgs, rolling: Option<&mut VecDeque<f64>>) -> Re
 				..Default::default()
 			});
 			(18, 254)
-		} else if estimates.is_some_and(|(rate, _)| !(rate > 0.0) && !(rate < -0.0)) {
+		} else if estimates.is_some_and(|(rate, _)| {
+			!matches!(
+				rate.partial_cmp(&0.0),
+				Some(std::cmp::Ordering::Less | std::cmp::Ordering::Greater)
+			)
+		}) {
 			if capacity == 100.0 {
 				items.push(Item {
 					x: 20,

@@ -219,7 +219,7 @@ fn loop_inner(
 	let polled = zmq::poll(&mut polls, 1000)
 		.into_diagnostic()
 		.wrap_err("zmq: poll")?;
-	if running.load(Ordering::SeqCst) == false {
+	if !running.load(Ordering::SeqCst) {
 		info!("ctrl-c received, exiting");
 		return Ok(ControlFlow::Break(()));
 	}
