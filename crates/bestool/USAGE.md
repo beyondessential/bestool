@@ -11,6 +11,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool caddy download`↴](#bestool-caddy-download)
 * [`bestool canopy`↴](#bestool-canopy)
 * [`bestool canopy register`↴](#bestool-canopy-register)
+* [`bestool canopy export`↴](#bestool-canopy-export)
+* [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool completions`↴](#bestool-completions)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
@@ -224,6 +226,8 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 ###### **Subcommands:**
 
 * `register` — Enrol this machine as a Canopy server
+* `export` — Export this machine's canopy registration for transfer to another machine
+* `import` — Import a canopy registration exported from another machine
 
 
 
@@ -231,7 +235,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 
 Enrol this machine as a Canopy server.
 
-An operator first creates the server record in Canopy, which hands back an encrypted enrollment ticket plus a separate passphrase (shared out of band). This command decrypts the ticket, then claims the pre-created server over mTLS by proving the machine holds the private key behind the certificate it presents.
+An operator first creates the server record in Canopy, which hands back an encrypted enrollment ticket plus a separate passphrase (shared out of band). This command decrypts the ticket, then claims the pre-created server over mTLS by proving the machine holds the private key behind the certificate it presents. On success the device key, server id, device id, and api url are stored in the machine-bound encrypted registration.
 
 **Usage:** `bestool canopy register [OPTIONS] [TICKET]`
 
@@ -243,9 +247,51 @@ An operator first creates the server record in Canopy, which hands back an encry
 
 ###### **Options:**
 
-* `--config <DIR>` — Directory holding the machine's mTLS identity and Canopy state.
+* `--config <DIR>` — Directory holding the encrypted canopy registration.
 
-   Defaults to the standard Tamanu config directory (`/etc/tamanu`, or `C:\Tamanu` on Windows). The device key, server-id, and registration record are read from and written under here.
+   Defaults to the platform's machine-global config directory (`/etc/bestool`, or `%ProgramData%\bestool` on Windows).
+* `-P`, `--passphrase-path <PASSPHRASE_PATH>` — Path to a file containing a passphrase.
+
+   The contents of the file will be trimmed of whitespace.
+* `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
+
+   This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
+
+
+
+## `bestool canopy export`
+
+Export this machine's canopy registration for transfer to another machine.
+
+Decrypts the local registration, re-encrypts it under a freshly generated passphrase, and prints the base64 blob and the passphrase. Carry the blob and the passphrase on *separate* channels — together they're enough to enrol the other machine.
+
+**Usage:** `bestool canopy export [OPTIONS]`
+
+###### **Options:**
+
+* `--config <DIR>` — Directory holding the encrypted canopy registration.
+
+   Defaults to the platform's machine-global config directory (`/etc/bestool`, or `%ProgramData%\bestool` on Windows).
+
+
+
+## `bestool canopy import`
+
+Import a canopy registration exported from another machine.
+
+Decrypts the export blob with its passphrase and re-stores it under this machine's identity, so the registration is bound to this host going forward.
+
+**Usage:** `bestool canopy import [OPTIONS] [BLOB]`
+
+###### **Arguments:**
+
+* `<BLOB>` — Base64 export blob. Read from stdin if omitted
+
+###### **Options:**
+
+* `--config <DIR>` — Directory to write the encrypted canopy registration to.
+
+   Defaults to the platform's machine-global config directory (`/etc/bestool`, or `%ProgramData%\bestool` on Windows).
 * `-P`, `--passphrase-path <PASSPHRASE_PATH>` — Path to a file containing a passphrase.
 
    The contents of the file will be trimmed of whitespace.

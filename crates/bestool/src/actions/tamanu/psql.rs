@@ -407,7 +407,7 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 	};
 
 	let canopy = if let Some(ref tamanu_version) = version {
-		let device_key = read_device_key();
+		let device_key = bestool_tamanu::server_info::fetch_device_key().await;
 		match CanopyClient::new(
 			tamanu_version.clone(),
 			device_key.as_deref(),
@@ -457,21 +457,6 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		},
 	)
 	.await
-}
-
-/// Read the Tamanu device key from the standard on-disk path.
-///
-/// Tries the file-based source only. `bestool-tamanu::fetch_device_key_with`
-/// also falls back to the Tamanu DB if a connection is available, but
-/// reaching for it here would add an extra DB round-trip for what's a small
-/// best-effort lookup — psql's canopy use degrades cleanly to direct fetches
-/// when the device key isn't readable.
-fn read_device_key() -> Option<String> {
-	let path = bestool_tamanu::server_info::standard_device_key_path();
-	match std::fs::read_to_string(&path) {
-		Ok(s) if !s.trim().is_empty() => Some(s),
-		_ => None,
-	}
 }
 
 async fn get_tamanu_version(pool: &bestool_psql::PgPool) -> Option<String> {

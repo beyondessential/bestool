@@ -129,7 +129,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-sync",
 	"tamanu-tags",
 ]
-tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:bestool-postgres", "dep:p256"]
+tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:bestool-postgres", "bestool-tamanu/canopy-registration", "dep:p256"]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
@@ -138,6 +138,7 @@ tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",
 	"dep:bestool-alertd",
+	"bestool-tamanu/canopy-registration",
 	"dep:bestool-canopy",
 	"dep:bestool-postgres",
 	"dep:bestool-psql",
@@ -152,9 +153,9 @@ tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:bestool-psql"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
-tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:comfy-table"]
+tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:comfy-table"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:bestool-tamanu",
 	"dep:dirs",
@@ -166,8 +167,12 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 ## Canopy subcommands
 canopy = [ # enable all canopy subcommands
 	"canopy-register",
+	"canopy-export",
+	"canopy-import",
 ]
-canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "dep:p256"]
+canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:p256"]
+canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
+canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
 __canopy = ["dep:bestool-canopy"] # internal feature to enable the canopy subcommand common code
 
 ## Iti subcommands

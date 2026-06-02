@@ -1,6 +1,7 @@
 use std::fmt;
 
 mod client;
+pub mod registration;
 
 pub use client::{
 	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, NewEvent, Severity,

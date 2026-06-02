@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use miette::{IntoDiagnostic, Result, WrapErr};
+use miette::{IntoDiagnostic, Result};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -85,6 +85,13 @@ async fn get_or_create_server_id_at(
 	path: &Path,
 	client: Option<&tokio_postgres::Client>,
 ) -> Result<String> {
+	#[cfg(feature = "canopy-registration")]
+	if let Some(reg) = load_registration().await
+		&& let Some(id) = reg.server_id
+	{
+		return Ok(id);
+	}
+
 	if let Some(id) = read_server_id_file(path) {
 		return Ok(id);
 	}
@@ -209,33 +216,16 @@ fn write_server_id_file(path: &Path, id: &str) -> std::io::Result<()> {
 	std::fs::rename(&tmp, path)
 }
 
-/// Resolve the device key from a file, creating one if missing.
+/// Generate a fresh P-256 device key as a PKCS#8 PEM.
 ///
-/// Reads the PEM at `path`; if absent, generates a fresh P-256 private key and
-/// writes it there. Unlike the DB-backed resolvers this never touches the
-/// Tamanu database, so `canopy register` can provision the machine's mTLS
-/// identity without a database connection.
-///
-/// Generating a key here is safe in the operator-first canopy flow: the
-/// operator creates the server record in canopy before running register, and
-/// register publishes the machine's public key to it over mTLS, so a freshly
-/// minted key is bound rather than stranded.
+/// `canopy register` calls this to mint the machine's mTLS identity when it
+/// has none yet; the key is then kept inside the encrypted canopy registration
+/// rather than written to a standalone file. Safe in the operator-first flow:
+/// the operator creates the server record in canopy first, and register
+/// publishes the public key over mTLS, so a freshly minted key is bound rather
+/// than stranded.
 #[cfg(feature = "device-key")]
-pub fn get_or_create_device_key_file(path: &Path) -> Result<String> {
-	if let Some(pem) = read_device_key_file(path) {
-		return Ok(pem);
-	}
-
-	let pem = generate_device_key_pem()?;
-	info!(path = %path.display(), "generating new device key");
-	write_device_key_file(path, &pem)
-		.into_diagnostic()
-		.wrap_err("persisting generated device key")?;
-	Ok(pem)
-}
-
-#[cfg(feature = "device-key")]
-fn generate_device_key_pem() -> Result<String> {
+pub fn generate_device_key_pem() -> Result<String> {
 	use miette::miette;
 	use p256::{
 		SecretKey,
@@ -262,11 +252,46 @@ fn generate_device_key_pem() -> Result<String> {
 /// Returns `None` if neither source yields a key. Logging is the only
 /// signal: callers without a device key continue to work (canopy tailscale
 /// path is still available).
+/// Load this host's canopy registration, logging (and swallowing) errors.
+///
+/// The registration is the source of truth for the device key and server id;
+/// callers fall back to the legacy plaintext paths / DB when it's absent.
+#[cfg(feature = "canopy-registration")]
+async fn load_registration() -> Option<bestool_canopy::registration::Registration> {
+	match bestool_canopy::registration::load().await {
+		Ok(opt) => opt,
+		Err(err) => {
+			warn!(%err, "could not load canopy registration; falling back to legacy paths");
+			None
+		}
+	}
+}
+
+/// Best-effort device key from the canopy registration or the standard file
+/// path (no DB). Used by callers that degrade cleanly when it's absent.
+pub async fn fetch_device_key() -> Option<String> {
+	#[cfg(feature = "canopy-registration")]
+	if let Some(reg) = load_registration().await
+		&& let Some(key) = reg.device_key
+	{
+		return Some(key);
+	}
+
+	read_device_key_file(&standard_device_key_path())
+}
+
 pub async fn fetch_device_key_with<F, Fut>(db_fetch: F) -> Option<String>
 where
 	F: FnOnce() -> Fut,
 	Fut: std::future::Future<Output = Option<String>>,
 {
+	#[cfg(feature = "canopy-registration")]
+	if let Some(reg) = load_registration().await
+		&& let Some(key) = reg.device_key
+	{
+		return Some(key);
+	}
+
 	let path = standard_device_key_path();
 
 	if let Some(pem) = read_device_key_file(&path) {
@@ -761,25 +786,10 @@ mod tests {
 
 	#[cfg(feature = "device-key")]
 	#[test]
-	fn get_or_create_device_key_file_generates_and_persists() {
+	fn generate_device_key_pem_parses_as_p256() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
 
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("device-key.pem");
-
-		let pem = get_or_create_device_key_file(&path).unwrap();
+		let pem = generate_device_key_pem().unwrap();
 		SecretKey::from_pkcs8_pem(&pem).expect("returned PEM must parse as P-256 PKCS8");
-		assert_eq!(std::fs::read_to_string(&path).unwrap(), pem);
-	}
-
-	#[cfg(feature = "device-key")]
-	#[test]
-	fn get_or_create_device_key_file_is_stable() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("device-key.pem");
-
-		let a = get_or_create_device_key_file(&path).unwrap();
-		let b = get_or_create_device_key_file(&path).unwrap();
-		assert_eq!(a, b);
 	}
 }

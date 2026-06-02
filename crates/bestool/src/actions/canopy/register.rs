@@ -1,23 +1,17 @@
-use std::{
-	io::Read as _,
-	path::{Path, PathBuf},
-	time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 use algae_cli::{
 	passphrases::{Passphrase, PassphraseArgs},
 	streams::decrypt_stream,
 };
-use base64::{
-	Engine as _,
-	engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use bestool_canopy::{
+	client_builder, device_identity,
+	registration::{self, Registration},
 };
-use bestool_canopy::{client_builder, device_identity};
-use bestool_tamanu::server_info::{
-	get_or_create_device_key_file, standard_device_key_path, standard_server_id_path,
-};
+use bestool_tamanu::server_info::generate_device_key_pem;
 use clap::Parser;
-use miette::{IntoDiagnostic as _, Result, WrapErr as _, bail, miette};
+use miette::{IntoDiagnostic as _, Result, WrapErr as _, bail};
 use p256::{
 	SecretKey,
 	ecdsa::{Signature, SigningKey, signature::Signer as _},
@@ -25,7 +19,7 @@ use p256::{
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::actions::Context;
@@ -36,7 +30,8 @@ use crate::actions::Context;
 /// encrypted enrollment ticket plus a separate passphrase (shared out of band).
 /// This command decrypts the ticket, then claims the pre-created server over
 /// mTLS by proving the machine holds the private key behind the certificate it
-/// presents.
+/// presents. On success the device key, server id, device id, and api url are
+/// stored in the machine-bound encrypted registration.
 #[derive(Debug, Clone, Parser)]
 pub struct RegisterArgs {
 	/// Encrypted enrollment ticket from Canopy.
@@ -46,11 +41,10 @@ pub struct RegisterArgs {
 	/// line. If omitted, the ticket is read from stdin.
 	pub ticket: Option<String>,
 
-	/// Directory holding the machine's mTLS identity and Canopy state.
+	/// Directory holding the encrypted canopy registration.
 	///
-	/// Defaults to the standard Tamanu config directory (`/etc/tamanu`, or
-	/// `C:\Tamanu` on Windows). The device key, server-id, and registration
-	/// record are read from and written under here.
+	/// Defaults to the platform's machine-global config directory
+	/// (`/etc/bestool`, or `%ProgramData%\bestool` on Windows).
 	#[arg(long, value_name = "DIR")]
 	pub config: Option<PathBuf>,
 
@@ -69,15 +63,6 @@ struct EnrollTicket {
 	api_url: String,
 	server_id: String,
 	token: String,
-}
-
-/// On-disk record of a completed enrollment.
-#[derive(Debug, Serialize, Deserialize)]
-struct Registration {
-	v: String,
-	server_id: String,
-	device_id: String,
-	api_url: String,
 }
 
 #[derive(Serialize)]
@@ -123,9 +108,9 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	let ticket_b64 = match ticket {
 		Some(t) => t,
-		None => read_ticket_from_stdin()?,
+		None => super::read_stdin("ticket")?,
 	};
-	let encrypted = decode_ticket_base64(ticket_b64.trim())?;
+	let encrypted = super::decode_base64(ticket_b64.trim())?;
 
 	let pass = passphrase.require().await?;
 	let ticket = decrypt_ticket(&encrypted, pass).await?;
@@ -151,24 +136,30 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	debug!(%api_url, %server_id, "decrypted enrollment ticket");
 
-	let paths = StatePaths::new(config.as_deref());
+	let existing = super::load_registration(config.as_deref())
+		.await
+		.wrap_err("reading existing canopy registration")?;
+	let dir = config.unwrap_or_else(registration::default_dir);
 
 	// Idempotency: if we've already enrolled this server with our identity, the
 	// token has been consumed and re-running would only fail opaquely. Treat a
 	// matching local record as success.
-	if let Some(existing) = read_registration(&paths.registration)
-		&& existing.server_id == ticket.server_id
-		&& !existing.device_id.is_empty()
+	if let Some(reg) = &existing
+		&& reg.server_id.as_deref() == Some(ticket.server_id.as_str())
+		&& let Some(device_id) = &reg.device_id
 	{
-		info!(server_id = %existing.server_id, device_id = %existing.device_id, "already enrolled");
 		println!("Already enrolled with Canopy.");
-		println!("  server id: {}", existing.server_id);
-		println!("  device id: {}", existing.device_id);
+		println!("  server id: {}", ticket.server_id);
+		println!("  device id: {device_id}");
 		return Ok(());
 	}
 
-	// Establish the machine's mTLS identity, reusing the device key if present.
-	let device_key_pem = get_or_create_device_key_file(&paths.device_key)?;
+	// Establish the machine's mTLS identity, reusing the device key from an
+	// existing registration if present.
+	let device_key_pem = match existing.as_ref().and_then(|r| r.device_key.clone()) {
+		Some(pem) => pem,
+		None => generate_device_key_pem()?,
+	};
 	let identity = device_identity(&device_key_pem)?;
 	let spki_der = spki_der(&device_key_pem)?;
 	let signing_key = SigningKey::from_pkcs8_pem(&device_key_pem)
@@ -211,42 +202,20 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	// Persist the result so the agent knows it's bound and where to report.
 	let registration = Registration {
-		v: "registered-1".into(),
-		server_id: complete.server_id.clone(),
-		device_id: complete.device_id.clone(),
-		api_url: api_url.to_string(),
+		server_id: Some(complete.server_id.clone()),
+		device_key: Some(device_key_pem),
+		device_id: Some(complete.device_id.clone()),
+		api_url: Some(api_url.to_string()),
+		..Registration::default()
 	};
-	write_registration(&paths.registration, &registration)?;
-	persist_server_id(&paths.server_id, &complete.server_id)?;
+	registration::store_in(&dir, &registration)
+		.await
+		.wrap_err("storing canopy registration")?;
 
-	info!(server_id = %complete.server_id, device_id = %complete.device_id, "enrolled with canopy");
 	println!("Enrolled with Canopy.");
 	println!("  server id: {}", complete.server_id);
 	println!("  device id: {}", complete.device_id);
 	Ok(())
-}
-
-fn read_ticket_from_stdin() -> Result<String> {
-	let mut buf = String::new();
-	std::io::stdin()
-		.read_to_string(&mut buf)
-		.into_diagnostic()
-		.wrap_err("reading ticket from stdin")?;
-	if buf.trim().is_empty() {
-		bail!("no ticket given on the command line or stdin");
-	}
-	Ok(buf)
-}
-
-/// Base64-decode the ticket, accepting every variant Canopy's lenient encoder
-/// might produce (standard / no-pad / url-safe / url-safe-no-pad).
-fn decode_ticket_base64(input: &str) -> Result<Vec<u8>> {
-	for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
-		if let Ok(bytes) = engine.decode(input) {
-			return Ok(bytes);
-		}
-	}
-	Err(miette!("ticket is not valid base64"))
 }
 
 async fn decrypt_ticket(encrypted: &[u8], pass: Passphrase) -> Result<EnrollTicket> {
@@ -364,74 +333,6 @@ async fn parse_json_or_problem<T: serde::de::DeserializeOwned>(
 	bail!("canopy {what} failed ({status}): {text}")
 }
 
-/// Where the mTLS identity and Canopy state live on disk.
-struct StatePaths {
-	device_key: PathBuf,
-	server_id: PathBuf,
-	registration: PathBuf,
-}
-
-impl StatePaths {
-	fn new(config_dir: Option<&Path>) -> Self {
-		match config_dir {
-			Some(dir) => Self {
-				device_key: dir.join("device-key.pem"),
-				server_id: dir.join("server-id"),
-				registration: dir.join("canopy-registration.json"),
-			},
-			None => {
-				let device_key = standard_device_key_path();
-				let registration = device_key
-					.parent()
-					.unwrap_or_else(|| Path::new("."))
-					.join("canopy-registration.json");
-				Self {
-					device_key,
-					server_id: standard_server_id_path(),
-					registration,
-				}
-			}
-		}
-	}
-}
-
-fn read_registration(path: &Path) -> Option<Registration> {
-	let bytes = std::fs::read(path).ok()?;
-	match serde_json::from_slice(&bytes) {
-		Ok(reg) => Some(reg),
-		Err(err) => {
-			debug!(path = %path.display(), %err, "ignoring unreadable registration record");
-			None
-		}
-	}
-}
-
-fn write_registration(path: &Path, reg: &Registration) -> Result<()> {
-	let json = serde_json::to_vec_pretty(reg)
-		.into_diagnostic()
-		.wrap_err("serialising registration record")?;
-	std::fs::write(path, json)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("writing registration to {}", path.display()))
-}
-
-fn persist_server_id(path: &Path, id: &str) -> Result<()> {
-	if let Ok(existing) = std::fs::read_to_string(path) {
-		let existing = existing.trim();
-		if !existing.is_empty() && existing != id {
-			warn!(
-				path = %path.display(),
-				old = existing,
-				new = id,
-				"replacing existing server-id with the enrolled one"
-			);
-		}
-	}
-	std::fs::write(path, format!("{id}\n"))
-		.into_diagnostic()
-		.wrap_err_with(|| format!("writing server-id to {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
 	use age::secrecy::SecretString;
@@ -453,24 +354,6 @@ mod tests {
 			.to_pkcs8_pem(LineEnding::LF)
 			.unwrap()
 			.to_string()
-	}
-
-	#[test]
-	fn decode_ticket_base64_accepts_all_variants() {
-		let raw = b"\x00\xff\x10hello world?!";
-		for encoded in [
-			STANDARD.encode(raw),
-			STANDARD_NO_PAD.encode(raw),
-			URL_SAFE.encode(raw),
-			URL_SAFE_NO_PAD.encode(raw),
-		] {
-			assert_eq!(decode_ticket_base64(&encoded).unwrap(), raw);
-		}
-	}
-
-	#[test]
-	fn decode_ticket_base64_rejects_garbage() {
-		assert!(decode_ticket_base64("not valid base64 !!!! \u{00a0}").is_err());
 	}
 
 	#[test]
@@ -537,60 +420,5 @@ mod tests {
 
 		let verifying = VerifyingKey::from_public_key_der(&spki).unwrap();
 		verifying.verify(&transcript, &parsed).unwrap();
-	}
-
-	#[test]
-	fn state_paths_default_share_a_directory() {
-		let paths = StatePaths::new(None);
-		assert_eq!(paths.device_key.parent(), paths.registration.parent());
-		assert_eq!(paths.server_id.parent(), paths.registration.parent());
-		assert_eq!(
-			paths.registration.file_name().unwrap(),
-			"canopy-registration.json"
-		);
-	}
-
-	#[test]
-	fn state_paths_override_directory() {
-		let paths = StatePaths::new(Some(Path::new("/tmp/canopy-test")));
-		assert_eq!(
-			paths.device_key,
-			Path::new("/tmp/canopy-test/device-key.pem")
-		);
-		assert_eq!(paths.server_id, Path::new("/tmp/canopy-test/server-id"));
-		assert_eq!(
-			paths.registration,
-			Path::new("/tmp/canopy-test/canopy-registration.json")
-		);
-	}
-
-	#[test]
-	fn registration_roundtrips_through_disk() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("canopy-registration.json");
-		let reg = Registration {
-			v: "registered-1".into(),
-			server_id: "7deb2793-0425-427e-8a19-7213946fa9be".into(),
-			device_id: "11111111-2222-3333-4444-555555555555".into(),
-			api_url: "https://canopy.example/".into(),
-		};
-		write_registration(&path, &reg).unwrap();
-
-		let read = read_registration(&path).unwrap();
-		assert_eq!(read.server_id, reg.server_id);
-		assert_eq!(read.device_id, reg.device_id);
-		assert_eq!(read.api_url, reg.api_url);
-	}
-
-	#[test]
-	fn persist_server_id_writes_and_replaces() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("server-id");
-
-		persist_server_id(&path, "first-id").unwrap();
-		assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "first-id");
-
-		persist_server_id(&path, "second-id").unwrap();
-		assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "second-id");
 	}
 }
