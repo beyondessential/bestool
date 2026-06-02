@@ -1,11 +1,11 @@
 //! Shared helpers for collecting Tamanu server identity and host facts.
 //!
-//! Used by `meta_ticket`, `alertd`, and `doctor`. Kept here so each subcommand
-//! pulls from one place rather than reaching into a sibling's module.
+//! Used by `canopy register`, `alertd`, and `doctor`. Kept here so each
+//! subcommand pulls from one place rather than reaching into a sibling's module.
 
 use std::path::{Path, PathBuf};
 
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -209,76 +209,32 @@ fn write_server_id_file(path: &Path, id: &str) -> std::io::Result<()> {
 	std::fs::rename(&tmp, path)
 }
 
-/// Resolve the device key for this Tamanu server, creating one if missing.
+/// Resolve the device key from a file, creating one if missing.
 ///
-/// Resolution order:
-/// 1. Read [`standard_device_key_path`] if present.
-/// 2. Read the legacy `local_system_facts.deviceKey` row; best-effort copy
-///    to the file path so subsequent runs don't need the DB.
-/// 3. Generate a fresh P-256 private key. Persist to the file path; if the
-///    file write fails, fall back to inserting into `local_system_facts` so
-///    the new key isn't lost across runs.
+/// Reads the PEM at `path`; if absent, generates a fresh P-256 private key and
+/// writes it there. Unlike the DB-backed resolvers this never touches the
+/// Tamanu database, so `canopy register` can provision the machine's mTLS
+/// identity without a database connection.
 ///
-/// Only the meta-ticket flow should call this — generating a key without
-/// publishing the matching public key to the meta-server (via the ticket)
-/// would leave canopy targets unreachable. Other callers should use
-/// [`fetch_device_key`] / [`fetch_device_key_with`] and treat absence as
-/// "no canopy".
-#[cfg(feature = "meta-ticket")]
-pub async fn get_or_create_device_key(client: &tokio_postgres::Client) -> Result<String> {
-	let path = standard_device_key_path();
-
-	if let Some(pem) = read_device_key_file(&path) {
-		return Ok(pem);
-	}
-
-	let db_row = client
-		.query_opt(
-			"SELECT value FROM local_system_facts WHERE key = 'deviceKey'",
-			&[],
-		)
-		.await
-		.into_diagnostic()?;
-	if let Some(row) = db_row {
-		let pem: String = row.try_get(0).into_diagnostic()?;
-		match write_device_key_file(&path, &pem) {
-			Ok(()) => info!(
-				path = %path.display(),
-				"copied deviceKey from Tamanu DB to standard path"
-			),
-			Err(err) => debug!(
-				path = %path.display(),
-				%err,
-				"could not copy deviceKey to standard path; will retry next run"
-			),
-		}
+/// Generating a key here is safe in the operator-first canopy flow: the
+/// operator creates the server record in canopy before running register, and
+/// register publishes the machine's public key to it over mTLS, so a freshly
+/// minted key is bound rather than stranded.
+#[cfg(feature = "device-key")]
+pub fn get_or_create_device_key_file(path: &Path) -> Result<String> {
+	if let Some(pem) = read_device_key_file(path) {
 		return Ok(pem);
 	}
 
 	let pem = generate_device_key_pem()?;
-	info!("generating new deviceKey");
-
-	match write_device_key_file(&path, &pem) {
-		Ok(()) => Ok(pem),
-		Err(err) => {
-			debug!(
-				path = %path.display(),
-				%err,
-				"could not persist new deviceKey to file; falling back to DB"
-			);
-			client
-				.execute(
-					"INSERT INTO local_system_facts (key, value) VALUES ('deviceKey', $1)",
-					&[&pem],
-				)
-				.await
-				.into_diagnostic()?;
-			Ok(pem)
-		}
-	}
+	info!(path = %path.display(), "generating new device key");
+	write_device_key_file(path, &pem)
+		.into_diagnostic()
+		.wrap_err("persisting generated device key")?;
+	Ok(pem)
 }
 
-#[cfg(feature = "meta-ticket")]
+#[cfg(feature = "device-key")]
 fn generate_device_key_pem() -> Result<String> {
 	use miette::miette;
 	use p256::{
@@ -784,7 +740,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(feature = "meta-ticket")]
+	#[cfg(feature = "device-key")]
 	#[test]
 	fn generate_device_key_pem_produces_valid_pkcs8() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
@@ -795,7 +751,7 @@ mod tests {
 		SecretKey::from_pkcs8_pem(&pem).expect("generated PEM must parse as P-256 PKCS8");
 	}
 
-	#[cfg(feature = "meta-ticket")]
+	#[cfg(feature = "device-key")]
 	#[test]
 	fn generate_device_key_pem_is_non_deterministic() {
 		let a = generate_device_key_pem().unwrap();
@@ -803,45 +759,27 @@ mod tests {
 		assert_ne!(a, b);
 	}
 
-	#[cfg(feature = "meta-ticket")]
-	#[tokio::test]
-	async fn test_get_or_create_device_key_generates_new() {
+	#[cfg(feature = "device-key")]
+	#[test]
+	fn get_or_create_device_key_file_generates_and_persists() {
 		use p256::{SecretKey, pkcs8::DecodePrivateKey as _};
 
-		let _lock = DB_TEST_MUTEX.lock().await;
-		let client = test_db_client().await;
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("device-key.pem");
 
-		let pem = get_or_create_device_key(&client).await.unwrap();
+		let pem = get_or_create_device_key_file(&path).unwrap();
 		SecretKey::from_pkcs8_pem(&pem).expect("returned PEM must parse as P-256 PKCS8");
+		assert_eq!(std::fs::read_to_string(&path).unwrap(), pem);
 	}
 
-	#[cfg(feature = "meta-ticket")]
-	#[tokio::test]
-	async fn test_get_or_create_device_key_returns_existing_from_db() {
-		let _lock = DB_TEST_MUTEX.lock().await;
-		let client = test_db_client().await;
+	#[cfg(feature = "device-key")]
+	#[test]
+	fn get_or_create_device_key_file_is_stable() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("device-key.pem");
 
-		let canned = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVvhzsYiidp38GYn1\nKxD5Wipc/h8lglVsy1UFZq/SZbGhRANCAAT2EsEq7xjeWVnim9XwdYXga/LBbppm\nfXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN\n-----END PRIVATE KEY-----\n";
-		client
-			.execute(
-				"INSERT INTO local_system_facts (key, value) VALUES ('deviceKey', $1)",
-				&[&canned],
-			)
-			.await
-			.unwrap();
-
-		let pem = get_or_create_device_key(&client).await.unwrap();
-		assert_eq!(pem, canned);
-	}
-
-	#[cfg(feature = "meta-ticket")]
-	#[tokio::test]
-	async fn test_get_or_create_device_key_is_stable() {
-		let _lock = DB_TEST_MUTEX.lock().await;
-		let client = test_db_client().await;
-
-		let a = get_or_create_device_key(&client).await.unwrap();
-		let b = get_or_create_device_key(&client).await.unwrap();
+		let a = get_or_create_device_key_file(&path).unwrap();
+		let b = get_or_create_device_key_file(&path).unwrap();
 		assert_eq!(a, b);
 	}
 }

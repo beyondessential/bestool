@@ -492,10 +492,15 @@ fn gzip_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
 	encoder.finish()
 }
 
-fn build_mtls_http(
-	make_builder: &ClientBuilderFactory,
-	device_key_pem: &str,
-) -> Result<reqwest::Client> {
+/// Build a short-lived self-signed client certificate from a P-256 device key
+/// PEM and wrap it as a reqwest mTLS [`Identity`].
+///
+/// Canopy identifies a device by its certificate's public key (SPKI), not by a
+/// CA chain, so a fresh self-signed cert from the device key is all that's
+/// needed. The same device key drives both the long-running canopy client here
+/// and the one-shot `canopy register` enrollment handshake, so they present the
+/// same identity to canopy.
+pub fn device_identity(device_key_pem: &str) -> Result<reqwest::Identity> {
 	let key_pair = KeyPair::from_pem(device_key_pem)
 		.into_diagnostic()
 		.wrap_err("parsing device key PEM")?;
@@ -521,9 +526,16 @@ fn build_mtls_http(
 	combined.push('\n');
 	combined.push_str(&key_pair.serialize_pem());
 
-	let identity = reqwest::Identity::from_pem(combined.as_bytes())
+	reqwest::Identity::from_pem(combined.as_bytes())
 		.into_diagnostic()
-		.wrap_err("building reqwest TLS identity")?;
+		.wrap_err("building reqwest TLS identity")
+}
+
+fn build_mtls_http(
+	make_builder: &ClientBuilderFactory,
+	device_key_pem: &str,
+) -> Result<reqwest::Client> {
+	let identity = device_identity(device_key_pem)?;
 
 	make_builder()
 		.identity(identity)

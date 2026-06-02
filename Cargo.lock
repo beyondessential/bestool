@@ -533,6 +533,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 name = "bestool"
 version = "1.20.0"
 dependencies = [
+ "age",
  "algae-cli",
  "base64 0.22.1",
  "bestool-alertd",
@@ -577,7 +578,6 @@ dependencies = [
  "percent-encoding",
  "privilege",
  "quick-xml 0.40.1",
- "rand_core 0.6.4",
  "regex",
  "reqwest",
  "rpi-st7789v2-driver",

@@ -9,6 +9,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool caddy`↴](#bestool-caddy)
 * [`bestool caddy configure-tamanu`↴](#bestool-caddy-configure-tamanu)
 * [`bestool caddy download`↴](#bestool-caddy-download)
+* [`bestool canopy`↴](#bestool-canopy)
+* [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool completions`↴](#bestool-completions)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
@@ -60,7 +62,6 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
-* [`bestool tamanu meta-ticket`↴](#bestool-tamanu-meta-ticket)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 * [`bestool tamanu sync`↴](#bestool-tamanu-sync)
 * [`bestool tamanu tags`↴](#bestool-tamanu-tags)
@@ -81,6 +82,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 
 * `audit-psql` — Export audit database entries as JSON
 * `caddy` — Manage Caddy
+* `canopy` — Interact with Canopy (the Tamanu meta-monitoring service)
 * `completions` — Generate a shell completions script
 * `crypto` — Cryptographic operations
 * `file` — File utilities
@@ -210,6 +212,46 @@ Download caddy
 * `--target <TARGET>` — Target to download.
 
    Usually the auto-detected default is fine, in rare cases you may need to override it.
+
+
+
+## `bestool canopy`
+
+Interact with Canopy (the Tamanu meta-monitoring service)
+
+**Usage:** `bestool canopy <COMMAND>`
+
+###### **Subcommands:**
+
+* `register` — Enrol this machine as a Canopy server
+
+
+
+## `bestool canopy register`
+
+Enrol this machine as a Canopy server.
+
+An operator first creates the server record in Canopy, which hands back an encrypted enrollment ticket plus a separate passphrase (shared out of band). This command decrypts the ticket, then claims the pre-created server over mTLS by proving the machine holds the private key behind the certificate it presents.
+
+**Usage:** `bestool canopy register [OPTIONS] [TICKET]`
+
+###### **Arguments:**
+
+* `<TICKET>` — Encrypted enrollment ticket from Canopy.
+
+   Copy-paste the whole `bestool canopy register <ticket>` line Canopy shows you. The ticket is encrypted, so it's safe to pass on the command line. If omitted, the ticket is read from stdin.
+
+###### **Options:**
+
+* `--config <DIR>` — Directory holding the machine's mTLS identity and Canopy state.
+
+   Defaults to the standard Tamanu config directory (`/etc/tamanu`, or `C:\Tamanu` on Windows). The device key, server-id, and registration record are read from and written under here.
+* `-P`, `--passphrase-path <PASSPHRASE_PATH>` — Path to a file containing a passphrase.
+
+   The contents of the file will be trimmed of whitespace.
+* `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
+
+   This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
 
 
 
@@ -1203,7 +1245,6 @@ Alias: t
 * `greenmask-config` — Generate a Greenmask config file
 * `logs` — Tail logs for tamanu services and (optionally) the caddy and postgres
 pseudo-services.
-* `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
 * `sync` — Trigger a manual sync on a facility server and watch it run.
 * `tags` — Fetch this device's tags from canopy.
@@ -1703,16 +1744,6 @@ on Windows it tails the `.log` files from the Postgres data directory.
 * `-v`, `--invert-match` — Invert the grep match — print lines that do NOT match. Only has an effect when combined with `--grep`. Mirrors `grep -v`.
 
    `journalctl` has no native inverse-match, so on Linux the filter is applied client-side when `-v` is in use; without `-v` the regex is still pushed down into `journalctl -g` for the kernel-side speedup.
-
-
-
-## `bestool tamanu meta-ticket`
-
-Generate a meta-ticket for this Tamanu server
-
-Connects to the Tamanu database, retrieves the device key, and produces a base64-encoded JSON ticket containing server identity information.
-
-**Usage:** `bestool tamanu meta-ticket`
 
 
 
