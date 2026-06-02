@@ -33,6 +33,16 @@ use crate::actions::{
 /// alongside whatever tamanu services are matched.
 const CADDY: &str = "caddy";
 
+/// True when `name` is one of the recognised postgres aliases. The postgres
+/// pseudo-service accepts a small set of common spellings so operators don't
+/// have to remember an exact form.
+fn is_postgres_alias(name: &str) -> bool {
+	matches!(
+		name.to_ascii_lowercase().as_str(),
+		"postgres" | "postgresql" | "postgre" | "pg" | "psql" | "pgsql"
+	)
+}
+
 /// Per-source line formatter used by `tail_one`. Takes the raw line and the
 /// caller's "use colours" setting, returns the (possibly transformed) line.
 type LineFormatter = fn(&str, bool) -> String;
@@ -48,7 +58,8 @@ struct TailSource {
 	formatter: LineFormatter,
 }
 
-/// Tail logs for tamanu services and (optionally) caddy.
+/// Tail logs for tamanu services and (optionally) the caddy and postgres
+/// pseudo-services.
 ///
 /// Each NAME is matched as a substring against the expected-Up service
 /// list, so `tamanu logs api` picks up `tamanu-{central,facility}-api@*`
@@ -61,13 +72,19 @@ struct TailSource {
 /// `.log` files under `C:\Caddy\logs` (or `C:\Caddy`) on Windows. Caddy
 /// emits JSON-per-line logs; bestool detects these and applies
 /// opportunistic syntax highlighting per line.
+///
+/// `postgres` is likewise a recognised pseudo-service, fuzzily matched
+/// so any of `postgres`, `postgresql`, `postgre`, `pg`, `psql` or
+/// `pgsql` triggers it. On Linux this tails BOTH the journald units
+/// matching `postgresql*` AND the files under `/var/log/postgresql/*.log`;
+/// on Windows it tails the `.log` files from the Postgres data directory.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct LogsArgs {
 	/// Service names. Each is matched as a substring against the
-	/// expected service list. `caddy` is a recognised pseudo-service.
-	/// With no names, tails everything (every expected-Up tamanu
-	/// service plus caddy).
+	/// expected service list. `caddy` and `postgres` are recognised
+	/// pseudo-services. With no names, tails everything (every
+	/// expected-Up tamanu service plus caddy).
 	pub names: Vec<String>,
 
 	/// Number of trailing lines to print before tailing.
@@ -95,14 +112,15 @@ pub struct LogsArgs {
 }
 
 /// Result of partitioning the NAMES argument into tamanu service patterns
-/// and the caddy pseudo-service flag.
+/// and the pseudo-service flags.
 struct Selection {
 	tamanu_names: Vec<String>,
 	include_caddy: bool,
+	include_postgres: bool,
 	/// Set when the user passed no NAMES at all. Tails every expected-Up
 	/// tamanu service. Distinct from `tamanu_names.is_empty()`, which is also
-	/// true when the user passed only `caddy` — in that case we must NOT
-	/// auto-include every tamanu service.
+	/// true when the user passed only a pseudo-service such as `caddy` or
+	/// `postgres` — in that case we must NOT auto-include every tamanu service.
 	all_tamanu: bool,
 }
 
@@ -111,14 +129,18 @@ fn select(names: &[String]) -> Selection {
 		return Selection {
 			tamanu_names: Vec::new(),
 			include_caddy: true,
+			include_postgres: false,
 			all_tamanu: true,
 		};
 	}
 	let mut tamanu_names = Vec::new();
 	let mut include_caddy = false;
+	let mut include_postgres = false;
 	for n in names {
 		if n == CADDY {
 			include_caddy = true;
+		} else if is_postgres_alias(n) {
+			include_postgres = true;
 		} else {
 			tamanu_names.push(n.clone());
 		}
@@ -126,6 +148,7 @@ fn select(names: &[String]) -> Selection {
 	Selection {
 		tamanu_names,
 		include_caddy,
+		include_postgres,
 		all_tamanu: false,
 	}
 }
@@ -220,6 +243,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	debug!(
 		matched = ?matches.iter().map(|m| m.name).collect::<Vec<_>>(),
 		caddy = selection.include_caddy,
+		postgres = selection.include_postgres,
 		"logs selection"
 	);
 
@@ -232,14 +256,16 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 		Supervisor::Systemd => run_journalctl(
 			&matches,
 			selection.include_caddy,
+			selection.include_postgres,
 			args.lines,
 			args.follow,
-			grep.as_ref(),
+			grep,
 			tamanu.use_colours,
 		),
 		Supervisor::Pm2 => run_pm2_logs(
 			&matches,
 			selection.include_caddy,
+			selection.include_postgres,
 			args.lines,
 			args.follow,
 			grep,
@@ -311,6 +337,79 @@ fn caddy_prefix(path: &Path) -> String {
 	format!("[{name}]")
 }
 
+fn postgres_prefix(path: &Path) -> String {
+	let name = path
+		.file_name()
+		.and_then(|s| s.to_str())
+		.unwrap_or("postgres");
+	format!("[postgresql/{name}]")
+}
+
+/// Linux: Postgres logs are written to files under `/var/log/postgresql`
+/// (in addition to journald). Returns every `*.log` under that directory,
+/// or an empty vec if the directory is absent.
+fn postgres_log_files_linux() -> Vec<PathBuf> {
+	const DIR: &str = "/var/log/postgresql";
+	let Ok(entries) = std::fs::read_dir(DIR) else {
+		return Vec::new();
+	};
+	let mut files: Vec<PathBuf> = entries
+		.filter_map(|e| e.ok())
+		.map(|e| e.path())
+		.filter(|p| p.is_file())
+		.filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("log")))
+		.collect();
+	files.sort();
+	files
+}
+
+/// Windows: Postgres installs under `C:\Program Files\PostgreSQL\<ver>`, with
+/// logs in the data directory (`data\log` or `data\pg_log`). We enumerate the
+/// version subdirectories and probe both conventional log locations,
+/// returning every `.log` found. Returns an empty vec if nothing is present —
+/// the overall "nothing to tail" check handles the wholly-empty case.
+fn postgres_tail_sources_windows() -> Result<Vec<TailSource>> {
+	let files = postgres_log_files_windows();
+	debug!(count = files.len(), "found postgres log files");
+	Ok(files
+		.into_iter()
+		.map(|path| TailSource {
+			prefix: postgres_prefix(&path),
+			path,
+			formatter: format_log_line,
+		})
+		.collect())
+}
+
+fn postgres_log_files_windows() -> Vec<PathBuf> {
+	const ROOT: &str = r"C:\Program Files\PostgreSQL";
+	const LOG_SUBDIRS: &[&str] = &["log", "pg_log"];
+	let Ok(versions) = std::fs::read_dir(ROOT) else {
+		return Vec::new();
+	};
+	let mut files: Vec<PathBuf> = Vec::new();
+	for version in versions.filter_map(|e| e.ok()).map(|e| e.path()) {
+		if !version.is_dir() {
+			continue;
+		}
+		for sub in LOG_SUBDIRS {
+			let dir = version.join("data").join(sub);
+			let Ok(entries) = std::fs::read_dir(&dir) else {
+				continue;
+			};
+			files.extend(
+				entries
+					.filter_map(|e| e.ok())
+					.map(|e| e.path())
+					.filter(|p| p.is_file())
+					.filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("log"))),
+			);
+		}
+	}
+	files.sort();
+	files
+}
+
 /// If `line` looks like a JSON object, format it with colored tokens; else
 /// return it as-is. `color = false` always returns the line unchanged.
 fn format_log_line(line: &str, color: bool) -> String {
@@ -371,21 +470,35 @@ fn write_colored_json(v: &Value, out: &mut String) {
 }
 
 /// Single journalctl call covering every matched tamanu unit plus,
-/// optionally, caddy. Caddy emits JSON-per-line logs; on systemd we run
-/// with `--output=cat` so journalctl's own prefix doesn't double up
-/// with caddy's timestamps, and pipe stdout through the JSON
+/// optionally, caddy and/or postgres. Caddy emits JSON-per-line logs; on
+/// systemd we run with `--output=cat` so journalctl's own prefix doesn't
+/// double up with caddy's timestamps, and pipe stdout through the JSON
 /// highlighter (which is opportunistic — non-JSON lines pass through
 /// unchanged).
+///
+/// Postgres on Linux logs to journald (units matching `postgresql*`) AND to
+/// files under `/var/log/postgresql`. When such files exist we tail them
+/// concurrently with the journalctl stream, interleaving both into the
+/// shared `tail_one` channel so the combined output stays in order of
+/// arrival. With no postgres files present this behaves exactly as a plain
+/// journalctl call.
 fn run_journalctl(
 	matches: &[&Expectation],
 	include_caddy: bool,
+	include_postgres: bool,
 	lines: usize,
 	follow: bool,
-	grep: Option<&GrepFilter>,
+	grep: Option<GrepFilter>,
 	use_colours: bool,
 ) -> Result<()> {
-	if matches.is_empty() && !include_caddy {
-		bail!("nothing to tail: no matched services and caddy not included");
+	let postgres_files = if include_postgres {
+		postgres_log_files_linux()
+	} else {
+		Vec::new()
+	};
+
+	if matches.is_empty() && !include_caddy && !include_postgres {
+		bail!("nothing to tail: no matched services, caddy, or postgres included");
 	}
 
 	let mut cmd = Command::new("journalctl");
@@ -395,6 +508,9 @@ fn run_journalctl(
 	if include_caddy {
 		cmd.arg("-u").arg("caddy.service");
 	}
+	if include_postgres {
+		cmd.arg("-u").arg("postgresql*");
+	}
 	cmd.arg("-n").arg(lines.to_string());
 	if follow {
 		cmd.arg("-f");
@@ -402,7 +518,7 @@ fn run_journalctl(
 	// journalctl has no inverse-match flag, so when `-v` is in play we have to
 	// pull the unfiltered stream and apply the inverted regex client-side.
 	// Without `-v` we still let journalctl do the work (kernel-side scan).
-	if let Some(g) = grep
+	if let Some(g) = &grep
 		&& !g.invert
 	{
 		cmd.arg("-g").arg(g.regex.as_str());
@@ -412,41 +528,95 @@ fn run_journalctl(
 
 	let mut child = cmd.spawn().into_diagnostic()?;
 	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
-	let reader = BufReader::new(stdout);
 
-	let out_handle = std::io::stdout();
-	let mut out = out_handle.lock();
-	for line in reader.lines() {
-		let line = match line {
-			Ok(l) => l,
-			Err(_) => break,
-		};
-		
-		if let Some(g) = grep
-			&& g.invert
-			&& !g.matches(&line)
-		{
-      // In `-v` mode, journalctl was given no `-g`, so apply the inverted
-		  // match here. Non-inverted matches were already filtered by journalctl.
-      continue;
-    } else if line.trim().is_empty() {
-      // `journalctl --output=cat` emits the raw MESSAGE field, which is empty
-      // for some service log records (e.g. heartbeat / no-op messages) and
-      // also gets emitted as a blank line when journald separators slip
-      // through. Either way they're noise — skip them.
-			continue;
+	// No postgres files: keep the original single-stream path, writing
+	// directly to stdout without the channel machinery.
+	if postgres_files.is_empty() {
+		let reader = BufReader::new(stdout);
+		let out_handle = std::io::stdout();
+		let mut out = out_handle.lock();
+		for line in reader.lines() {
+			let Ok(line) = line else { break };
+			if !journalctl_line_passes(&line, grep.as_ref()) {
+				continue;
+			}
+			let formatted = format_log_line(&line, use_colours);
+			if writeln!(out, "{formatted}").is_err() {
+				break;
+			}
 		}
-    
-		let formatted = format_log_line(&line, use_colours);
-		if writeln!(out, "{formatted}").is_err() {
+		let status = child.wait().into_diagnostic()?;
+		if !status.success() {
+			bail!("journalctl exited with {status}");
+		}
+		return Ok(());
+	}
+
+	// Postgres files present: fan the journalctl stream and each file tail
+	// into a shared channel so their lines interleave on stdout.
+	let (tx, rx) = channel::<String>();
+
+	let journal_grep = grep.clone();
+	let journal_tx = tx.clone();
+	let journal_handle = thread::spawn(move || {
+		let reader = BufReader::new(stdout);
+		for line in reader.lines() {
+			let Ok(line) = line else { break };
+			if !journalctl_line_passes(&line, journal_grep.as_ref()) {
+				continue;
+			}
+			let formatted = format_log_line(&line, use_colours);
+			if journal_tx.send(format!("{formatted}\n")).is_err() {
+				break;
+			}
+		}
+	});
+
+	for path in postgres_files {
+		let source = TailSource {
+			prefix: postgres_prefix(&path),
+			path,
+			formatter: format_log_line,
+		};
+		let tx = tx.clone();
+		let grep = grep.clone();
+		thread::spawn(move || tail_one(source, lines, follow, grep.as_ref(), use_colours, tx));
+	}
+	drop(tx);
+
+	let stdout_handle = std::io::stdout();
+	let mut out = stdout_handle.lock();
+	while let Ok(msg) = rx.recv() {
+		if out.write_all(msg.as_bytes()).is_err() {
 			break;
 		}
 	}
+
+	let _ = journal_handle.join();
 	let status = child.wait().into_diagnostic()?;
 	if !status.success() {
 		bail!("journalctl exited with {status}");
 	}
 	Ok(())
+}
+
+/// Whether a journalctl `--output=cat` line should be printed, given the grep
+/// filter. In `-v` (invert) mode journalctl gets no `-g`, so the inverted
+/// match is applied here; non-inverted matches were already filtered by
+/// journalctl. Blank lines are always dropped: the raw MESSAGE field is empty
+/// for some records (e.g. heartbeats) and journald separators can slip through
+/// as blanks — either way they're noise.
+fn journalctl_line_passes(line: &str, grep: Option<&GrepFilter>) -> bool {
+	if line.trim().is_empty() {
+		return false;
+	}
+	if let Some(g) = grep
+		&& g.invert
+		&& !g.matches(line)
+	{
+		return false;
+	}
+	true
 }
 
 fn journalctl_pattern(expectation: &Expectation) -> String {
@@ -461,6 +631,7 @@ fn journalctl_pattern(expectation: &Expectation) -> String {
 fn run_pm2_logs(
 	matches: &[&Expectation],
 	include_caddy: bool,
+	include_postgres: bool,
 	lines: usize,
 	follow: bool,
 	grep: Option<GrepFilter>,
@@ -485,8 +656,12 @@ fn run_pm2_logs(
 		tail_sources.extend(caddy_tail_sources_windows()?);
 	}
 
+	if include_postgres {
+		tail_sources.extend(postgres_tail_sources_windows()?);
+	}
+
 	if tail_sources.is_empty() {
-		bail!("nothing to tail: no matched services and caddy not included");
+		bail!("nothing to tail: no matched services, caddy, or postgres included");
 	}
 
 	tail_files(tail_sources, lines, follow, grep, use_colours)
@@ -697,6 +872,7 @@ mod tests {
 	fn select_empty_includes_caddy_and_all_tamanu() {
 		let s = select(&[]);
 		assert!(s.include_caddy);
+		assert!(!s.include_postgres);
 		assert!(s.all_tamanu);
 		assert!(s.tamanu_names.is_empty());
 	}
@@ -707,6 +883,7 @@ mod tests {
 		// because empty `tamanu_names` was conflated with "no filter at all".
 		let s = select(&["caddy".to_string()]);
 		assert!(s.include_caddy);
+		assert!(!s.include_postgres);
 		assert!(!s.all_tamanu);
 		assert!(s.tamanu_names.is_empty());
 	}
@@ -715,6 +892,7 @@ mod tests {
 	fn select_caddy_with_others() {
 		let s = select(&["caddy".to_string(), "api".to_string()]);
 		assert!(s.include_caddy);
+		assert!(!s.include_postgres);
 		assert!(!s.all_tamanu);
 		assert_eq!(s.tamanu_names, vec!["api".to_string()]);
 	}
@@ -723,8 +901,69 @@ mod tests {
 	fn select_without_caddy_excludes_it() {
 		let s = select(&["api".to_string(), "tasks".to_string()]);
 		assert!(!s.include_caddy);
+		assert!(!s.include_postgres);
 		assert!(!s.all_tamanu);
 		assert_eq!(s.tamanu_names, vec!["api".to_string(), "tasks".to_string()]);
+	}
+
+	#[test]
+	fn select_postgres_alone_does_not_imply_all_tamanu() {
+		let s = select(&["postgres".to_string()]);
+		assert!(s.include_postgres);
+		assert!(!s.include_caddy);
+		assert!(!s.all_tamanu);
+		assert!(s.tamanu_names.is_empty());
+	}
+
+	#[test]
+	fn select_postgres_alias_pg() {
+		let s = select(&["pg".to_string()]);
+		assert!(s.include_postgres);
+		assert!(s.tamanu_names.is_empty());
+	}
+
+	#[test]
+	fn select_postgres_with_caddy_and_others() {
+		let s = select(&[
+			"psql".to_string(),
+			"caddy".to_string(),
+			"api".to_string(),
+		]);
+		assert!(s.include_postgres);
+		assert!(s.include_caddy);
+		assert!(!s.all_tamanu);
+		assert_eq!(s.tamanu_names, vec!["api".to_string()]);
+	}
+
+	#[test]
+	fn is_postgres_alias_accepts_known_spellings() {
+		for name in [
+			"postgres",
+			"postgresql",
+			"postgre",
+			"pg",
+			"psql",
+			"pgsql",
+			"Postgres",
+			"POSTGRESQL",
+			"PG",
+		] {
+			assert!(is_postgres_alias(name), "expected {name} to match");
+		}
+	}
+
+	#[test]
+	fn is_postgres_alias_rejects_others() {
+		for name in ["api", "caddy", "postgresqlx", "p", "pgbouncer", ""] {
+			assert!(!is_postgres_alias(name), "expected {name} not to match");
+		}
+	}
+
+	#[test]
+	fn postgres_prefix_uses_filename() {
+		let mut p = PathBuf::from("/var/log/postgresql");
+		p.push("postgresql-16-main.log");
+		assert_eq!(postgres_prefix(&p), "[postgresql/postgresql-16-main.log]");
 	}
 
 	#[test]

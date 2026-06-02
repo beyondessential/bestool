@@ -1208,7 +1208,8 @@ Alias: t
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
 * `greenmask-config` — Generate a Greenmask config file
-* `logs` — Tail logs for tamanu services and (optionally) caddy.
+* `logs` — Tail logs for tamanu services and (optionally) the caddy and postgres
+pseudo-services.
 * `meta-ticket` — Generate a meta-ticket for this Tamanu server
 * `psql` — Connect to Tamanu's database
 * `sync` — Trigger a manual sync on a facility server and watch it run.
@@ -1817,7 +1818,8 @@ Generate a Greenmask config file
 
 ## `bestool tamanu logs`
 
-Tail logs for tamanu services and (optionally) caddy.
+Tail logs for tamanu services and (optionally) the caddy and postgres
+pseudo-services.
 
 Each NAME is matched as a substring against the expected-Up service
 list, so `tamanu logs api` picks up `tamanu-{central,facility}-api@*`
@@ -1831,11 +1833,17 @@ tails caddy: from `journalctl -u caddy.service` on Linux, and from
 emits JSON-per-line logs; bestool detects these and applies
 opportunistic syntax highlighting per line.
 
+`postgres` is likewise a recognised pseudo-service, fuzzily matched
+so any of `postgres`, `postgresql`, `postgre`, `pg`, `psql` or
+`pgsql` triggers it. On Linux this tails BOTH the journald units
+matching `postgresql*` AND the files under `/var/log/postgresql/*.log`;
+on Windows it tails the `.log` files from the Postgres data directory.
+
 **Usage:** `bestool tamanu logs [OPTIONS] [NAMES]...`
 
 ###### **Arguments:**
 
-* `<NAMES>` — Service names. Each is matched as a substring against the expected service list. `caddy` is a recognised pseudo-service. With no names, tails everything (every expected-Up tamanu service plus caddy)
+* `<NAMES>` — Service names. Each is matched as a substring against the expected service list. `caddy` and `postgres` are recognised pseudo-services. With no names, tails everything (every expected-Up tamanu service plus caddy)
 
 ###### **Options:**
 
