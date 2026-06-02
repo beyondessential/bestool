@@ -48,14 +48,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool ssh`↴](#bestool-ssh)
 * [`bestool ssh add-key`↴](#bestool-ssh-add-key)
 * [`bestool tamanu`↴](#bestool-tamanu)
-* [`bestool tamanu alerts`↴](#bestool-tamanu-alerts)
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
-* [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
-* [`bestool tamanu alertd reload`↴](#bestool-tamanu-alertd-reload)
-* [`bestool tamanu alertd loaded-alerts`↴](#bestool-tamanu-alertd-loaded-alerts)
-* [`bestool tamanu alertd pause-alert`↴](#bestool-tamanu-alertd-pause-alert)
-* [`bestool tamanu alertd validate`↴](#bestool-tamanu-alertd-validate)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -1197,8 +1191,7 @@ Alias: t
 
 ###### **Subcommands:**
 
-* `alerts` — Execute alert definitions against Tamanu
-* `alertd` — Run the alert daemon
+* `alertd` — Run the healthcheck daemon
 * `artifacts` — List available artifacts for a Tamanu version
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
@@ -1225,189 +1218,44 @@ pseudo-services.
 
 
 
-## `bestool tamanu alerts`
-
-Execute alert definitions against Tamanu
-
-DEPRECATED. Use `bestool tamanu alertd` for all new deployments.
-
-The alert and target definitions are documented online at:
-<https://github.com/beyondessential/bestool/blob/main/crates/alertd/ALERTS.md>
-and <https://github.com/beyondessential/bestool/blob/main/crates/alertd/TARGETS.md>.
-
-**Usage:** `bestool tamanu alerts [OPTIONS]`
-
-###### **Options:**
-
-* `--dir <DIR>` — Folder containing alert definitions.
-
-   This folder will be read recursively for files with the `.yaml` or `.yml` extension.
-
-   Files that don't match the expected format will be skipped, as will files with `enabled: false` at the top level. Syntax errors will be reported for YAML files.
-
-   It's entirely valid to provide a folder that only contains a `_targets.yml` file.
-
-   Can be provided multiple times. Defaults to (depending on platform): `C:\Tamanu\alerts`, `C:\Tamanu\{current-version}\alerts`, `/opt/tamanu-toolbox/alerts`, `/etc/tamanu/alerts`, `/alerts`, and `./alerts`.
-* `--interval <INTERVAL>` — How far back to look for alerts.
-
-   This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc. It should match the task scheduling / cron interval for this command.
-
-  Default value: `15m`
-* `--timeout <TIMEOUT>` — Timeout for each alert.
-
-   If an alert takes longer than this to query the database or run the shell script, it will be skipped. Defaults to 30 seconds.
-
-   This is a duration string, e.g. `1d` for one day, `1h` for one hour, etc.
-
-  Default value: `30s`
-* `--dry-run` — Don't actually send alerts, just print them to stdout
-
-
-
 ## `bestool tamanu alertd`
 
-Run the alert daemon
+Run the healthcheck daemon
 
-The alert and target definitions are documented online at:
-<https://github.com/beyondessential/bestool/blob/main/crates/alertd/ALERTS.md>
-and <https://github.com/beyondessential/bestool/blob/main/crates/alertd/TARGETS.md>.
-
-Configuration for database and email is read from Tamanu's config files.
+Periodically runs the doctor healthcheck sweep and posts the result to
+canopy. Database and device-key configuration is read from Tamanu's config
+files.
 
 **Usage:** `bestool tamanu alertd <COMMAND>`
 
 ###### **Subcommands:**
 
-* `run` — Run the alert daemon
-* `status` — Show status and health of a running daemon
-* `reload` — Send reload signal to running daemon
-* `loaded-alerts` — List currently loaded alert files
-* `pause-alert` — Temporarily pause an alert
-* `validate` — Validate an alert definition file
+* `run` — Run the healthcheck daemon
 
 
 
 ## `bestool tamanu alertd run`
 
-Run the alert daemon
+Run the healthcheck daemon
 
-Starts the daemon which monitors alert definition files and executes alerts based on their configured schedules. The daemon will watch for file changes and automatically reload when definitions are modified.
+Starts the daemon which runs the doctor healthcheck sweep on a schedule and posts the result to canopy.
 
 **Usage:** `bestool tamanu alertd run [OPTIONS]`
 
 ###### **Options:**
 
-* `--glob <GLOB>` — Glob patterns for alert definitions
-
-   Patterns can match directories (which will be read recursively) or individual files. Can be provided multiple times. Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
-* `--dry-run` — Execute all alerts once and quit (ignoring intervals)
 * `--no-server` — Disable the HTTP server
 * `--server-addr <SERVER_ADDR>` — HTTP server bind address(es)
 
    Can be provided multiple times. The server will attempt to bind to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 * `--watchdog-timeout <WATCHDOG_TIMEOUT>` — Watchdog timeout in seconds
 
-   If no alert task reports activity within this many seconds, the daemon will exit so the service manager can restart it. Defaults to 600 (10 minutes).
+   If no task reports activity within this many seconds, the daemon will exit so the service manager can restart it. Defaults to 600 (10 minutes).
 
   Default value: `600`
 * `--no-watchdog` — Disable the watchdog
 
-   By default, the daemon will exit if no alert activity is detected within the watchdog timeout. This flag disables that behavior.
-* `--no-healthchecks` — Disable the periodic doctor healthcheck sweep
-
-   By default, the daemon runs the full doctor check registry every minute and posts the result to canopy. This flag turns that off.
-
-
-
-## `bestool tamanu alertd status`
-
-Show status and health of a running daemon
-
-Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
-
-**Usage:** `bestool tamanu alertd status [OPTIONS]`
-
-###### **Options:**
-
-* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
-
-   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-
-
-
-## `bestool tamanu alertd reload`
-
-Send reload signal to running daemon
-
-Connects to the running daemon's HTTP API and triggers a reload. This is an alternative to SIGHUP that works on all platforms including Windows.
-
-**Usage:** `bestool tamanu alertd reload [OPTIONS]`
-
-###### **Options:**
-
-* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
-
-   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-
-
-
-## `bestool tamanu alertd loaded-alerts`
-
-List currently loaded alert files
-
-Connects to the running daemon's HTTP API and retrieves the list of currently loaded alert definition files.
-
-**Usage:** `bestool tamanu alertd loaded-alerts [OPTIONS]`
-
-###### **Options:**
-
-* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
-
-   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-* `--detail` — Show detailed state information for each alert
-
-
-
-## `bestool tamanu alertd pause-alert`
-
-Temporarily pause an alert
-
-Pauses an alert until the specified time. The alert will not execute during this period. The pause is lost when the daemon restarts.
-
-**Usage:** `bestool tamanu alertd pause-alert [OPTIONS] <ALERT>`
-
-###### **Arguments:**
-
-* `<ALERT>` — Alert file path to pause
-
-###### **Options:**
-
-* `--until <UNTIL>` — Time until which to pause the alert (fuzzy time format)
-
-   Examples: "1 hour", "2 days", "next monday", "2024-12-25T10:00:00Z" Defaults to 1 week from now if not specified.
-* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
-
-   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-
-
-
-## `bestool tamanu alertd validate`
-
-Validate an alert definition file
-
-Parses an alert definition file and reports any syntax or validation errors. Uses pretty error reporting to pinpoint the exact location of problems. Requires the daemon to be running.
-
-**Usage:** `bestool tamanu alertd validate [OPTIONS] <FILE>`
-
-###### **Arguments:**
-
-* `<FILE>` — Path to the alert definition file to validate
-
-###### **Options:**
-
-* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
-
-   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+   By default, the daemon will exit if no task activity is detected within the watchdog timeout. This flag disables that behaviour.
 
 
 
