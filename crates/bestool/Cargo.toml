@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.19.1"
+version = "1.19.2"
 edition = "2024"
 default-run = "bestool"
 
@@ -22,7 +22,7 @@ bestool-alertd = { version = "6.1.0", path = "../alertd", default-features = fal
 bestool-canopy = { version = "0.2.0", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.1.0", path = "../kopia", optional = true }
 bestool-postgres = { version = "1.0.10", path = "../postgres", optional = true }
-bestool-psql = { version = "1.5.7", path = "../psql", default-features = false, optional = true }
+bestool-psql = { version = "1.6.0", path = "../psql", default-features = false, optional = true }
 bestool-tamanu = { version = "0.10.1", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
