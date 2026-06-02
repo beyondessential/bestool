@@ -18,7 +18,7 @@ use node_semver::Version;
 use tokio::process::Command;
 
 use super::CheckContext;
-use crate::doctor::check::Check;
+use crate::{caddy, doctor::check::Check};
 
 const CHECK_NAME: &str = "caddy_version";
 
@@ -34,7 +34,7 @@ pub async fn run(_ctx: CheckContext) -> Check {
 		}
 	};
 
-	let output = match Command::new("caddy").arg("version").output().await {
+	let output = match Command::new(caddy::program()).arg("version").output().await {
 		Ok(o) if o.status.success() => o,
 		Ok(o) => {
 			let stderr = String::from_utf8_lossy(&o.stderr);

@@ -7,6 +7,7 @@ use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
+pub mod caddy;
 pub mod config;
 pub mod connection_url;
 pub mod pm2;
