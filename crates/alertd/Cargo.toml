@@ -1,6 +1,6 @@
 [package]
 name = "bestool-alertd"
-version = "6.1.0"
+version = "6.1.1"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -19,7 +19,7 @@ required-features = ["cli"]
 [dependencies]
 axum = "0.8.9"
 bestool-canopy = { version = "0.2.0", path = "../canopy" }
-bestool-postgres = { version = "1.0.10", path = "../postgres" }
+bestool-postgres = { version = "1.0.11", path = "../postgres" }
 blake3 = "1.8.5"
 bytes = "1.9.0"
 clap = { workspace = true, optional = true, features = ["env", "wrap_help"] }
