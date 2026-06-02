@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, iter::repeat, time::Duration};
+use std::{collections::VecDeque, iter::repeat_n, time::Duration};
 
 use clap::Parser;
 use miette::Result;
@@ -144,7 +144,7 @@ pub fn render(
 		FG_MEM,
 	));
 
-	send(&zmq_socket, Screen::Layout(items))?;
+	send(zmq_socket, Screen::Layout(items))?;
 
 	Ok(())
 }
@@ -156,8 +156,7 @@ fn spark_line<'a>(
 	height: i32,
 	colour: [u8; 3],
 ) -> impl Iterator<Item = Item> + 'a {
-	repeat(0.0)
-		.take((INNER_WIDTH as usize).saturating_sub(data.len()))
+	repeat_n(0.0, (INNER_WIDTH as usize).saturating_sub(data.len()))
 		.chain(data)
 		.map(move |v| {
 			let v = v.clamp(0.0, 1.0);
