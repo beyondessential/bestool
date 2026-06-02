@@ -1,12 +1,8 @@
-use std::{
-	net::SocketAddr,
-	path::{Path, PathBuf},
-	sync::Arc,
-};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
-use tracing::{debug, info};
+use tracing::debug;
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
@@ -18,13 +14,11 @@ use bestool_alertd::doctor::DoctorTask;
 use super::{TamanuArgs, find_tamanu};
 use crate::actions::Context;
 
-/// Run the alert daemon
+/// Run the healthcheck daemon
 ///
-/// The alert and target definitions are documented online at:
-/// <https://github.com/beyondessential/bestool/blob/main/crates/alertd/ALERTS.md>
-/// and <https://github.com/beyondessential/bestool/blob/main/crates/alertd/TARGETS.md>.
-///
-/// Configuration for database and email is read from Tamanu's config files.
+/// Periodically runs the doctor healthcheck sweep and posts the result to
+/// canopy. Database and device-key configuration is read from Tamanu's config
+/// files.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertdArgs {
@@ -35,18 +29,6 @@ pub struct AlertdArgs {
 /// Common arguments for running the daemon
 #[derive(Debug, Clone, Parser)]
 struct DaemonArgs {
-	/// Glob patterns for alert definitions
-	///
-	/// Patterns can match directories (which will be read recursively) or individual files.
-	/// Can be provided multiple times.
-	/// Examples: /etc/tamanu/alerts, /opt/*/alerts, /etc/tamanu/alerts/**/*.yml
-	#[arg(long)]
-	glob: Vec<String>,
-
-	/// Execute all alerts once and quit (ignoring intervals)
-	#[arg(long)]
-	dry_run: bool,
-
 	/// Disable the HTTP server
 	#[arg(long)]
 	no_server: bool,
@@ -60,119 +42,28 @@ struct DaemonArgs {
 
 	/// Watchdog timeout in seconds
 	///
-	/// If no alert task reports activity within this many seconds, the daemon
+	/// If no task reports activity within this many seconds, the daemon
 	/// will exit so the service manager can restart it. Defaults to 600 (10 minutes).
 	#[arg(long, default_value = "600")]
 	watchdog_timeout: u64,
 
 	/// Disable the watchdog
 	///
-	/// By default, the daemon will exit if no alert activity is detected within
-	/// the watchdog timeout. This flag disables that behavior.
+	/// By default, the daemon will exit if no task activity is detected within
+	/// the watchdog timeout. This flag disables that behaviour.
 	#[arg(long)]
 	no_watchdog: bool,
-
-	/// Disable the periodic doctor healthcheck sweep
-	///
-	/// By default, the daemon runs the full doctor check registry every minute
-	/// and posts the result to canopy. This flag turns that off.
-	#[arg(long)]
-	no_healthchecks: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
-	/// Run the alert daemon
+	/// Run the healthcheck daemon
 	///
-	/// Starts the daemon which monitors alert definition files and executes alerts
-	/// based on their configured schedules. The daemon will watch for file changes
-	/// and automatically reload when definitions are modified.
+	/// Starts the daemon which runs the doctor healthcheck sweep on a schedule
+	/// and posts the result to canopy.
 	Run {
 		#[command(flatten)]
 		daemon: DaemonArgs,
-	},
-
-	/// Show status and health of a running daemon
-	///
-	/// Connects to the running daemon's HTTP API and displays version, uptime,
-	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
-	Status {
-		/// HTTP server address(es) to try
-		///
-		/// Can be provided multiple times. Will attempt to connect to each address
-		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-		#[arg(long)]
-		server_addr: Vec<SocketAddr>,
-	},
-
-	/// Send reload signal to running daemon
-	///
-	/// Connects to the running daemon's HTTP API and triggers a reload.
-	/// This is an alternative to SIGHUP that works on all platforms including Windows.
-	Reload {
-		/// HTTP server address(es) to try
-		///
-		/// Can be provided multiple times. Will attempt to connect to each address
-		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-		#[arg(long)]
-		server_addr: Vec<SocketAddr>,
-	},
-
-	/// List currently loaded alert files
-	///
-	/// Connects to the running daemon's HTTP API and retrieves the list of
-	/// currently loaded alert definition files.
-	LoadedAlerts {
-		/// HTTP server address(es) to try
-		///
-		/// Can be provided multiple times. Will attempt to connect to each address
-		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-		#[arg(long)]
-		server_addr: Vec<SocketAddr>,
-
-		/// Show detailed state information for each alert
-		#[arg(long)]
-		detail: bool,
-	},
-
-	/// Temporarily pause an alert
-	///
-	/// Pauses an alert until the specified time. The alert will not execute during
-	/// this period. The pause is lost when the daemon restarts.
-	PauseAlert {
-		/// Alert file path to pause
-		alert: String,
-
-		/// Time until which to pause the alert (fuzzy time format)
-		///
-		/// Examples: "1 hour", "2 days", "next monday", "2024-12-25T10:00:00Z"
-		/// Defaults to 1 week from now if not specified.
-		#[arg(long)]
-		until: Option<String>,
-
-		/// HTTP server address(es) to try
-		///
-		/// Can be provided multiple times. Will attempt to connect to each address
-		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-		#[arg(long)]
-		server_addr: Vec<SocketAddr>,
-	},
-
-	/// Validate an alert definition file
-	///
-	/// Parses an alert definition file and reports any syntax or validation errors.
-	/// Uses pretty error reporting to pinpoint the exact location of problems.
-	/// Requires the daemon to be running.
-	Validate {
-		/// Path to the alert definition file to validate
-		file: PathBuf,
-
-		/// HTTP server address(es) to try
-		///
-		/// Can be provided multiple times. Will attempt to connect to each address
-		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
-		#[arg(long)]
-		server_addr: Vec<SocketAddr>,
 	},
 
 	/// Install the daemon as a Windows service
@@ -206,33 +97,6 @@ enum Command {
 
 pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	match args.command {
-		Command::Status { server_addr } => {
-			let addrs = resolve_addrs(server_addr);
-			bestool_alertd::commands::get_status(&addrs).await
-		}
-		Command::Validate { file, server_addr } => {
-			let addrs = resolve_addrs(server_addr);
-			bestool_alertd::commands::validate_alert(&file, &addrs).await
-		}
-		Command::Reload { server_addr } => {
-			let addrs = resolve_addrs(server_addr);
-			bestool_alertd::commands::send_reload(&addrs).await
-		}
-		Command::LoadedAlerts {
-			server_addr,
-			detail,
-		} => {
-			let addrs = resolve_addrs(server_addr);
-			bestool_alertd::commands::get_loaded_alerts(&addrs, detail).await
-		}
-		Command::PauseAlert {
-			alert,
-			until,
-			server_addr,
-		} => {
-			let addrs = resolve_addrs(server_addr);
-			bestool_alertd::commands::pause_alert(&alert, until.as_deref(), &addrs).await
-		}
 		Command::Run { daemon } => {
 			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 			let config = load_config(&root, None)?;
@@ -263,7 +127,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			// Check and auto-apply recovery configuration if needed
 			match bestool_alertd::windows_service::is_recovery_configured() {
 				Ok(false) => {
-					info!("failure recovery not configured, applying automatically");
+					tracing::info!("failure recovery not configured, applying automatically");
 					if let Err(e) = bestool_alertd::windows_service::configure_recovery() {
 						tracing::warn!("failed to auto-configure recovery: {e}");
 					}
@@ -280,52 +144,19 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	}
 }
 
-fn resolve_addrs(server_addr: Vec<SocketAddr>) -> Vec<SocketAddr> {
-	if server_addr.is_empty() {
-		bestool_alertd::commands::default_server_addrs()
-	} else {
-		server_addr
-	}
-}
-
 async fn build_config(
 	root: &Path,
 	tamanu_version: &node_semver::Version,
 	config: TamanuConfig,
 	DaemonArgs {
-		glob,
-		dry_run,
 		no_server,
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
-		no_healthchecks,
 	}: DaemonArgs,
 ) -> Result<bestool_alertd::DaemonConfig> {
-	let dirs = if glob.is_empty() {
-		default_dirs(root).await
-	} else {
-		glob
-	};
-	debug!(?dirs, "alert directories");
-
-	if dirs.is_empty() {
-		return Err(miette::miette!("no alert directories found or specified"));
-	}
-
-	info!("starting alertd daemon");
-
 	let database_url = config.database_url();
 	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
-
-	let email = config
-		.mailgun
-		.as_ref()
-		.map(|mg| bestool_alertd::EmailConfig {
-			from: mg.sender.clone(),
-			mailgun_api_key: mg.api_key.clone(),
-			mailgun_domain: mg.domain.clone(),
-		});
 
 	let watchdog = if no_watchdog {
 		None
@@ -346,87 +177,25 @@ async fn build_config(
 
 	let config = Arc::new(config);
 
-	let server_kind = detect_server_kind(&config, &pg_pool).await;
-
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(
-		dirs,
 		pg_pool.clone(),
 		database_url.clone(),
 		tamanu_version.to_string(),
 	)
-	.with_dry_run(dry_run)
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog)
-	.with_server_kind(server_kind);
-
-	if !no_healthchecks {
-		daemon_config = daemon_config.with_task(Arc::new(DoctorTask::new(
-			env!("CARGO_PKG_VERSION").to_string(),
-			tamanu_version.clone(),
-			root.to_path_buf(),
-			config.clone(),
-			database_url,
-		)));
-	}
-
-	if let Some(email) = email {
-		daemon_config = daemon_config.with_email(email);
-	}
+	.with_task(Arc::new(DoctorTask::new(
+		env!("CARGO_PKG_VERSION").to_string(),
+		tamanu_version.clone(),
+		root.to_path_buf(),
+		config.clone(),
+		database_url,
+	)));
 
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
 	}
 
 	Ok(daemon_config)
-}
-
-/// Resolve the Tamanu server kind for alertd's alert-definition filter.
-///
-/// Borrows a connection from the daemon pool so
-/// [`bestool_tamanu::detect_kind`] can check `local_system_facts`. Alertd is
-/// plugin-agnostic — it takes the kind as an opaque string and compares
-/// against alert YAML `server-kind:` values by equality. The Tamanu
-/// vocabulary (`central` / `facility`) is decided here, at the integration
-/// boundary, not by alertd.
-async fn detect_server_kind(
-	config: &bestool_tamanu::config::TamanuConfig,
-	pg_pool: &bestool_postgres::pool::PgPool,
-) -> &'static str {
-	let conn = match pg_pool.get().await {
-		Ok(c) => Some(c),
-		Err(err) => {
-			tracing::debug!(%err, "no DB for kind detection; falling back to config-only");
-			None
-		}
-	};
-	match bestool_tamanu::detect_kind(config, conn.as_deref()).await {
-		bestool_tamanu::ApiServerKind::Central => "central",
-		bestool_tamanu::ApiServerKind::Facility => "facility",
-	}
-}
-
-async fn default_dirs(root: &std::path::Path) -> Vec<String> {
-	use futures::future::join_all;
-
-	let mut dirs = vec![
-		PathBuf::from(r"C:\Tamanu\alerts"),
-		root.join("alerts"),
-		PathBuf::from("/opt/tamanu-toolbox/alerts"),
-		PathBuf::from("/etc/tamanu/alerts"),
-		PathBuf::from("/alerts"),
-	];
-	if let Ok(cwd) = std::env::current_dir() {
-		dirs.push(cwd.join("alerts"));
-	}
-
-	join_all(
-		dirs.into_iter()
-			.map(|dir| async { if dir.exists() { Some(dir) } else { None } }),
-	)
-	.await
-	.into_iter()
-	.flatten()
-	.map(|p| p.display().to_string())
-	.collect()
 }

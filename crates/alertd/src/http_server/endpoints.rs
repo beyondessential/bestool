@@ -1,21 +1,11 @@
-mod alerts;
 mod health;
 mod index;
 mod metrics;
-mod pause_alert;
-mod reload;
 mod status;
-mod targets;
 mod tasks;
-mod validate;
 
-pub use alerts::handle_alerts;
 pub use health::handle_health;
 pub use index::handle_index;
 pub use metrics::handle_metrics;
-pub use pause_alert::handle_pause_alert;
-pub use reload::handle_reload;
 pub use status::handle_status;
-pub use targets::handle_targets;
 pub use tasks::handle_task_endpoint;
-pub use validate::handle_validate;

@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use jiff::Timestamp;
-use tokio::sync::mpsc;
 
-use crate::{alert::InternalContext, scheduler::Scheduler};
+use crate::context::InternalContext;
 
 use super::ServerState;
 
@@ -17,25 +16,11 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		http_client: reqwest::Client::new(),
 		canopy_client: None,
 	});
-	let scheduler = Arc::new(Scheduler::new(
-		vec![],
-		ctx.clone(),
-		None,
-		true, // dry_run
-		None, // server_kind
-	));
-
-	let (reload_tx, _reload_rx) = mpsc::channel::<()>(10);
 
 	Arc::new(ServerState {
-		reload_tx,
 		started_at: Timestamp::now(),
 		pid: std::process::id(),
-		event_manager: None,
 		internal_context: ctx,
-		email_config: None,
-		dry_run: true,
-		scheduler,
 		watchdog_timeout: Some(std::time::Duration::from_secs(600)),
 		task_endpoints: Arc::new(HashMap::new()),
 	})

@@ -10,9 +10,6 @@ pub(crate) mod download;
 pub mod find_postgres;
 pub(crate) mod http;
 
-#[cfg(feature = "tamanu-alerts")]
-pub(crate) mod postgres_to_value;
-
 #[cfg(doc)]
 pub mod __help {
 	//! Documentation-only module containing the help pages for the CLI tool.
