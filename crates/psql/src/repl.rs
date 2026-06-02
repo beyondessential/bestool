@@ -60,7 +60,9 @@ impl ReplAction {
 		match self {
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
 			ReplAction::Exit => exit::handle_exit(ctx).await,
-			ReplAction::ToggleWriteMode => write_mode::handle_write_mode_toggle(ctx).await,
+			ReplAction::ToggleWriteMode { ots } => {
+				write_mode::handle_write_mode_toggle(ctx, ots).await
+			}
 			ReplAction::ToggleRedaction => redaction::handle_toggle_redaction(ctx),
 			ReplAction::Edit => edit::handle_edit(ctx).await,
 			ReplAction::Copy => copy::handle_copy(),
@@ -247,7 +249,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 			redact_mode: config.redact_mode,
 		};
 
-		if ReplAction::ToggleWriteMode
+		if (ReplAction::ToggleWriteMode { ots: None })
 			.handle(&mut ctx, "")
 			.await
 			.is_break()
