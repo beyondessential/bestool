@@ -2,20 +2,13 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use axum::{
-	Router,
-	routing::{get, post},
-};
+use axum::{Router, routing::get};
 use jiff::Timestamp;
-use tokio::sync::mpsc;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, error, info, warn};
 
 use crate::{
-	EmailConfig,
-	alert::InternalContext,
-	events::EventManager,
-	scheduler::Scheduler,
+	context::InternalContext,
 	tasks::{BackgroundTask, TaskEndpointHandler},
 };
 
@@ -29,18 +22,9 @@ pub use endpoints::*;
 pub use state::ServerState;
 pub use types::*;
 
-#[expect(
-	clippy::too_many_arguments,
-	reason = "server startup needs all these pieces"
-)]
 pub async fn start_server(
-	reload_tx: mpsc::Sender<()>,
-	event_manager: Option<Arc<EventManager>>,
 	internal_context: Arc<InternalContext>,
-	email_config: Option<EmailConfig>,
-	dry_run: bool,
 	addrs: Vec<std::net::SocketAddr>,
-	scheduler: Arc<Scheduler>,
 	watchdog_timeout: Option<Duration>,
 	background_tasks: &[Arc<dyn BackgroundTask>],
 ) {
@@ -50,24 +34,15 @@ pub async fn start_server(
 	let task_endpoints = collect_task_endpoints(background_tasks);
 
 	let state = ServerState {
-		reload_tx,
 		started_at,
 		pid,
-		event_manager,
 		internal_context,
-		email_config,
-		dry_run,
-		scheduler,
 		watchdog_timeout,
 		task_endpoints: Arc::new(task_endpoints),
 	};
 
 	let app = Router::new()
 		.route("/", get(handle_index))
-		.route("/reload", post(handle_reload))
-		.route("/alerts", get(handle_alerts).delete(handle_pause_alert))
-		.route("/targets", get(handle_targets))
-		.route("/validate", post(handle_validate))
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.route("/health", get(handle_health))
