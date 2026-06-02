@@ -12,7 +12,10 @@ pub fn handle_help() -> ControlFlow<()> {
 	metacmds.add_row(vec!["\\help", "Show this help"]);
 	metacmds.add_row(vec!["\\q", "Quit"]);
 	metacmds.add_row(vec!["\\x", "Toggle expanded output mode"]);
-	metacmds.add_row(vec!["\\W", "Toggle write mode"]);
+	metacmds.add_row(vec![
+		"\\W [ots]",
+		"Toggle write mode (optional OTS skips the prompt)",
+	]);
 	metacmds.add_row(vec![
 		"\\R",
 		"Toggle redaction mode (when redactions are configured)",
