@@ -12,6 +12,8 @@ use bestool_tamanu::find_tamanu as _find_tamanu;
 
 #[cfg(feature = "tamanu-lifecycle")]
 pub mod lifecycle;
+#[cfg(feature = "tamanu-lifecycle")]
+mod probe;
 
 /// Interact with Tamanu.
 ///

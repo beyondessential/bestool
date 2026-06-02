@@ -2025,6 +2025,13 @@ brings up missing services without touching anything else.
 Idempotent: services already in the expected state are left alone.
 Use `tamanu status` first to see what's drifted.
 
+After starting, the behind-caddy HTTP services (API, frontend, patient
+portal) are probed for readiness within a one-minute budget
+(`--probe-timeout`); if any don't come up, `start` bails. Pass
+`--no-probe-http` to skip the check. With `--logs`, the tamanu service
+logs are streamed for the duration of the start so the operator can
+watch startup.
+
 **Usage:** `bestool tamanu start [OPTIONS] [NAMES]...`
 
 ###### **Arguments:**
@@ -2034,6 +2041,11 @@ Use `tamanu status` first to see what's drifted.
 ###### **Options:**
 
 * `--up-only` — Skip the stop/disable phase: only bring up missing Up services, leave any drifted Down services as-is. Useful when you want to avoid touching a service that's running but shouldn't be (e.g. because you're mid-investigation)
+* `--no-probe-http` — Skip the post-start HTTP readiness probe
+* `--probe-timeout <PROBE_TIMEOUT>` — How long to wait for started services to pass their readiness probe before bailing
+
+  Default value: `1m`
+* `--logs` — Stream tamanu service logs while starting
 
 
 
