@@ -12,6 +12,8 @@ use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "sync_session_errors";
 
+const FAIL_ERRORS: usize = 10;
+
 const MOBILE_SQL: &str = "SELECT id, errors::text, \
 	jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
 	created_at::text AS created, (completed_at - created_at)::text AS duration \
@@ -62,11 +64,20 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let (mobile_count, mobile_truncated) = (mobile.count(), mobile.truncated);
 	let (server_count, server_truncated) = (server.count(), server.truncated);
 
-	let check = Check::fail(
-		NAME,
-		format!("sync session errors: {mobile_count} mobile, {server_count} server"),
-		"recent sync session error(s)",
-	);
+	// Truncation means well over FAIL_ERRORS rows, so saturate the total there.
+	let total = if mobile.truncated || server.truncated {
+		FAIL_ERRORS
+	} else {
+		mobile.rows.len() + server.rows.len()
+	};
+
+	let summary = format!("sync session errors: {mobile_count} mobile, {server_count} server");
+	let reason = "recent sync session error(s)";
+	let check = if total >= FAIL_ERRORS {
+		Check::fail(NAME, summary, reason)
+	} else {
+		Check::warning(NAME, summary, reason)
+	};
 	check
 		.with_detail("mobile", Value::Array(mobile.rows))
 		.with_detail("mobile_count", mobile_count)

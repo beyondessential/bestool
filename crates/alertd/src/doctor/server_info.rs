@@ -8,7 +8,7 @@ use std::{
 };
 
 use serde::Serialize;
-use sysinfo::{Disks, System};
+use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 use tokio::net::TcpStream;
 use tracing::debug;
 
@@ -63,6 +63,10 @@ pub struct ServerInfo {
 	pub pg_version: Option<String>,
 
 	pub uptime_secs: u64,
+	/// Logical CPU count (what load average is relative to, i.e. `nproc`).
+	pub cpu_cores: usize,
+	/// Total physical memory, in bytes.
+	pub total_memory_bytes: u64,
 	pub os_kind: &'static str,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub os_name: Option<String>,
@@ -115,6 +119,14 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 		.iana_name()
 		.map(|s| s.to_string());
 
+	let sys = System::new_with_specifics(
+		RefreshKind::nothing()
+			.with_cpu(CpuRefreshKind::nothing())
+			.with_memory(MemoryRefreshKind::nothing().with_ram()),
+	);
+	let cpu_cores = sys.cpus().len();
+	let total_memory_bytes = sys.total_memory();
+
 	ServerInfo {
 		bestool_version: bestool_version.to_string(),
 		tamanu_version: tamanu_version.to_string(),
@@ -126,6 +138,8 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 		os_timezone,
 		pg_version: facts.pg_version,
 		uptime_secs: System::uptime(),
+		cpu_cores,
+		total_memory_bytes,
 		os_kind: if cfg!(target_os = "linux") {
 			"linux"
 		} else if cfg!(target_os = "windows") {

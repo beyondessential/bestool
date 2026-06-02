@@ -1,36 +1,38 @@
 //! Facilities whose sync has gone stale.
 //!
-//! Flags facilities that synced in the last 48h but have had no completion in
-//! the last 30m, as well as facilities whose last successful sync was over an
-//! hour ago.
+//! Sync runs about every 60s, so for each facility that has synced in the last
+//! 48h we compute the minutes since its last successful (errorless, completed)
+//! sync and tier: WARN past 10 minutes, FAIL past 30. The 48h-active guard
+//! keeps decommissioned facilities from flagging.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::{CheckContext, util::fetch_rows};
+use super::{CheckContext, fmt_db_error};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "sync_facility_stale";
 
-const NOT_SYNCING_SQL: &str = "with sync_sessions_with_facility_id as ( \
-		select created_at, completed_at, \
-			jsonb_array_elements_text(parameters->'facilityIds') as facility_id \
-		from sync_sessions where parameters->>'isMobile' <> 'true' \
-	) \
-	select distinct facility_id from sync_sessions_with_facility_id \
-	where created_at > current_timestamp - '48 hours'::interval \
-	except \
-	select facility_id from sync_sessions_with_facility_id \
-	where completed_at > current_timestamp - '30 minutes'::interval \
-	group by facility_id order by facility_id";
+const WARN_MINUTES: f64 = 10.0;
+const FAIL_MINUTES: f64 = 30.0;
 
-const NO_RECENT_SUCCESS_SQL: &str = "SELECT facility_id, last_successful_sync FROM ( \
-		SELECT facility_id, max(completed_at) as last_successful_sync FROM ( \
-			SELECT jsonb_array_elements_text(parameters->'facilityIds') as facility_id, completed_at \
-			FROM sync_sessions WHERE errors IS NULL \
-		) AS successful_syncs GROUP BY facility_id \
-	) AS last_successful_facility_syncs \
-	WHERE last_successful_sync < now() - interval '1 hour'";
+const SQL: &str = "WITH facility_sessions AS ( \
+		SELECT jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
+			created_at, completed_at, errors \
+		FROM sync_sessions WHERE parameters->>'isMobile' <> 'true' \
+	), active AS ( \
+		SELECT DISTINCT facility_id FROM facility_sessions \
+		WHERE created_at > now() - interval '48 hours' \
+	), last_success AS ( \
+		SELECT facility_id, max(completed_at) AS last_successful_sync \
+		FROM facility_sessions WHERE errors IS NULL AND completed_at IS NOT NULL \
+		GROUP BY facility_id \
+	) \
+	SELECT a.facility_id, \
+		ls.last_successful_sync::text AS last_successful_sync, \
+		EXTRACT(EPOCH FROM (now() - ls.last_successful_sync)) / 60 AS minutes_since_success \
+	FROM active a LEFT JOIN last_success ls USING (facility_id) \
+	ORDER BY minutes_since_success DESC NULLS FIRST";
 
 pub async fn run(ctx: CheckContext) -> Check {
 	if ctx.kind != ApiServerKind::Central {
@@ -44,41 +46,55 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let not_syncing = match fetch_rows(client, NOT_SYNCING_SQL, &[]).await {
-		Ok(set) => set,
-		Err(err) => return Check::fail(NAME, "query failed", super::fmt_db_error(&err)),
-	};
-	let no_recent_success = match fetch_rows(client, NO_RECENT_SUCCESS_SQL, &[]).await {
-		Ok(set) => set,
-		Err(err) => return Check::fail(NAME, "query failed", super::fmt_db_error(&err)),
+	let rows = match client.query(SQL, &[]).await {
+		Ok(r) => r,
+		Err(err) => return Check::fail(NAME, "query failed", fmt_db_error(&err)),
 	};
 
-	if not_syncing.is_empty() && no_recent_success.is_empty() {
+	let mut warn = Vec::new();
+	let mut fail = Vec::new();
+	for row in &rows {
+		let facility_id: String = row.try_get("facility_id").unwrap_or_default();
+		let last: Option<String> = row.try_get("last_successful_sync").ok();
+		// A facility that is active but has never had a successful sync (NULL
+		// minutes) is as bad as a very stale one: treat it as a failure.
+		let minutes: Option<f64> = row.try_get("minutes_since_success").ok();
+		let entry = json!({
+			"facility_id": facility_id,
+			"last_successful_sync": last,
+			"minutes_since_success": minutes,
+		});
+		match minutes {
+			Some(m) if m <= WARN_MINUTES => {}
+			Some(m) if m <= FAIL_MINUTES => warn.push(entry),
+			_ => fail.push(entry),
+		}
+	}
+
+	if warn.is_empty() && fail.is_empty() {
 		return Check::pass(NAME, "all facilities syncing");
 	}
 
-	let (not_syncing_count, not_syncing_truncated) = (not_syncing.count(), not_syncing.truncated);
-	let (no_recent_count, no_recent_truncated) =
-		(no_recent_success.count(), no_recent_success.truncated);
-
-	let check = Check::fail(
-		NAME,
-		format!(
-			"stale sync: {not_syncing_count} not syncing, {no_recent_count} with no recent success"
-		),
-		"facility sync stale",
+	let summary = format!(
+		"stale sync: {} over {}m, {} over {}m",
+		fail.len(),
+		FAIL_MINUTES as i64,
+		warn.len(),
+		WARN_MINUTES as i64
 	);
+	let check = if fail.is_empty() {
+		Check::warning(NAME, summary, "facility sync stale")
+	} else {
+		Check::fail(NAME, summary, "facility sync stale")
+	};
 	check
-		.with_detail("not_syncing", Value::Array(not_syncing.rows))
-		.with_detail("not_syncing_count", not_syncing_count)
-		.with_detail("not_syncing_truncated", not_syncing_truncated)
-		.with_detail("no_recent_success", Value::Array(no_recent_success.rows))
-		.with_detail("no_recent_success_count", no_recent_count)
-		.with_detail("no_recent_success_truncated", no_recent_truncated)
+		.with_detail("fail", Value::Array(fail))
+		.with_detail("warn", Value::Array(warn))
 }
 
 #[cfg(test)]
 mod tests {
+	use crate::doctor::check::CheckStatus;
 	use crate::doctor::checks::test_support::{central_ctx, facility_ctx};
 
 	#[tokio::test]
@@ -88,6 +104,10 @@ mod tests {
 		};
 		let check = super::run(ctx).await;
 		assert_eq!(check.name, "sync_facility_stale");
+		assert!(matches!(
+			check.status,
+			CheckStatus::Pass | CheckStatus::Warning(_) | CheckStatus::Fail(_)
+		));
 	}
 
 	#[tokio::test]

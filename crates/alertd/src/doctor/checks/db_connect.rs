@@ -3,6 +3,9 @@ use std::time::Instant;
 use super::CheckContext;
 use crate::doctor::check::Check;
 
+/// Connect latency above which the DB is treated as degraded.
+const WARN_LATENCY_MS: u64 = 1000;
+
 pub async fn run(ctx: CheckContext) -> Check {
 	let host = ctx
 		.config
@@ -21,10 +24,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 			tokio::spawn(async move {
 				let _ = conn.await;
 			});
-			Check::pass(
-				"db_connect",
-				format!("postgres at {host}/{name} ({latency_ms}ms)"),
-			)
+			let summary = format!("postgres at {host}/{name} ({latency_ms}ms)");
+			if latency_ms > WARN_LATENCY_MS {
+				Check::warning(
+					"db_connect",
+					summary,
+					format!("connect latency {latency_ms}ms over {WARN_LATENCY_MS}ms"),
+				)
+			} else {
+				Check::pass("db_connect", summary)
+			}
 		}
 		Err(err) => Check::fail(
 			"db_connect",

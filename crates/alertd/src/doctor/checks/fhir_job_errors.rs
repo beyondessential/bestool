@@ -5,7 +5,7 @@
 
 use jiff::{Timestamp, ToSpan};
 
-use super::{CheckContext, util::fail_if_any_rows};
+use super::{CheckContext, util::tiered_rows_check};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
@@ -29,13 +29,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	let since = Timestamp::now() - LOOKBACK_HOURS.hours();
-	fail_if_any_rows(
+	tiered_rows_check(
 		client,
 		"fhir_job_errors",
 		"no recent FHIR job errors",
 		"FHIR job errors: ",
 		SQL,
 		&[&since],
+		1,
+		10,
 	)
 	.await
 }

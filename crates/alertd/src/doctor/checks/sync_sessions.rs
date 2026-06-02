@@ -12,10 +12,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		SELECT
 			count(*) FILTER (WHERE completed_at IS NULL) AS active_count,
 			count(*) FILTER (
-				WHERE completed_at IS NULL AND start_time < now() - interval '1 hour'
+				WHERE completed_at IS NULL AND start_time < now() - interval '15 minutes'
 			) AS stuck_warn,
 			count(*) FILTER (
-				WHERE completed_at IS NULL AND start_time < now() - interval '6 hours'
+				WHERE completed_at IS NULL AND start_time < now() - interval '45 minutes'
 			) AS stuck_fail,
 			min(start_time) FILTER (WHERE completed_at IS NULL) AS oldest_started_at
 		FROM sync_sessions
@@ -42,18 +42,18 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let stuck_fail: i64 = row.try_get("stuck_fail").unwrap_or(0);
 	let oldest: Option<Timestamp> = row.try_get("oldest_started_at").ok();
 
-	let summary = format!("{active} active, {stuck_warn} stuck >1h");
+	let summary = format!("{active} active, {stuck_warn} stuck >15m");
 	let check = if stuck_fail > 0 {
 		Check::fail(
 			"sync_sessions",
 			summary.clone(),
-			format!("{stuck_fail} session(s) stuck >6h"),
+			format!("{stuck_fail} session(s) stuck >45m"),
 		)
 	} else if stuck_warn > 0 {
 		Check::warning(
 			"sync_sessions",
 			summary.clone(),
-			format!("{stuck_warn} session(s) stuck >1h"),
+			format!("{stuck_warn} session(s) stuck >15m"),
 		)
 	} else {
 		Check::pass("sync_sessions", summary)

@@ -3,9 +3,22 @@ use sysinfo::System;
 use super::CheckContext;
 use crate::doctor::check::Check;
 
+/// Below this uptime the host has rebooted recently, which may be unexpected.
+const WARN_UPTIME_SECS: u64 = 10 * 60;
+
 pub async fn run(_ctx: CheckContext) -> Check {
 	let secs = System::uptime();
-	Check::pass("uptime", humanise(secs)).with_detail("uptime_secs", secs)
+	let summary = humanise(secs);
+	let check = if secs < WARN_UPTIME_SECS {
+		Check::warning(
+			"uptime",
+			summary,
+			"host rebooted within the last 10 minutes",
+		)
+	} else {
+		Check::pass("uptime", summary)
+	};
+	check.with_detail("uptime_secs", secs)
 }
 
 fn humanise(secs: u64) -> String {
