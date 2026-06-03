@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.21.2"
+version = "1.21.3"
 edition = "2024"
 default-run = "bestool"
 
@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 algae-cli = { version = "1.1.0", path = "../algae-cli", optional = true }
-bestool-alertd = { version = "8.0.0", path = "../alertd", default-features = false, optional = true }
+bestool-alertd = { version = "8.0.1", path = "../alertd", default-features = false, optional = true }
 bestool-canopy = { version = "0.3.1", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.1.2", path = "../kopia", optional = true }
 bestool-postgres = { version = "1.0.11", path = "../postgres", optional = true }
