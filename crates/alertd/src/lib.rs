@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 pub use bestool_canopy as canopy;
 pub use bestool_canopy::Redacted;
 
+pub mod commands;
 mod context;
 mod daemon;
 pub mod doctor;

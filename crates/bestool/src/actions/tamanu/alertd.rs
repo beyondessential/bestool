@@ -66,6 +66,19 @@ enum Command {
 		daemon: DaemonArgs,
 	},
 
+	/// Show status and health of a running daemon
+	///
+	/// Connects to the running daemon's HTTP API and displays version, uptime,
+	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+	Status {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
 	/// Install the daemon as a Windows service
 	///
 	/// Creates a Windows service named 'bestool-alertd' that will start automatically
@@ -97,6 +110,14 @@ enum Command {
 
 pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	match args.command {
+		Command::Status { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::get_status(&addrs).await
+		}
 		Command::Run { daemon } => {
 			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 			let config = load_config(&root, None)?;
