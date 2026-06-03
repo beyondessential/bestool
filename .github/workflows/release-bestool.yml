@@ -130,8 +130,6 @@ jobs:
           # Install license/copyright and documentation
           install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool/copyright"
           install -Dm644 crates/bestool/USAGE.md "$deb_dir/usr/share/doc/bestool/USAGE.md"
-          install -Dm644 crates/alertd/ALERTS.md "$deb_dir/usr/share/doc/bestool/ALERTS.md"
-          install -Dm644 crates/alertd/TARGETS.md "$deb_dir/usr/share/doc/bestool/TARGETS.md"
           install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool/PSQL-EXAMPLES.md"
 
           cat > "$deb_dir/DEBIAN/control" << EOF
