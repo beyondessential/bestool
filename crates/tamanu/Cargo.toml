@@ -1,6 +1,6 @@
 [package]
 name = "bestool-tamanu"
-version = "0.10.2"
+version = "0.11.0"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -16,7 +16,7 @@ device-key = ["dep:p256"]
 canopy-registration = ["dep:bestool-canopy"]
 
 [dependencies]
-bestool-canopy = { version = "0.2.0", path = "../canopy", optional = true }
+bestool-canopy = { version = "0.2.1", path = "../canopy", optional = true }
 dirs = "6.0.0"
 duct = "1.1.0"
 futures = { workspace = true }
