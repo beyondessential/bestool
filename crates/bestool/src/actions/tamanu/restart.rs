@@ -1,9 +1,9 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use clap::Parser;
 use miette::Result;
 use reqwest::{Client, Url};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
 	services::{self, ExpectedState, Expectation, Supervisor},
@@ -26,6 +26,10 @@ use crate::actions::{
 /// instance at a time, each followed by a readiness probe, caddy
 /// reload, and a cooldown — so there's always at least one critical
 /// instance up to take traffic.
+///
+/// Services expected up but not currently running are started first,
+/// before any restarts, so capacity is back at full strength before
+/// the roll begins.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct RestartArgs {
@@ -66,28 +70,36 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	let Partitioned {
+		start,
 		bulk,
-		bulk_behind_caddy,
+		batch_behind_caddy,
 		rolling,
 	} = partition(supervisor, &groups);
 	let client = probe::http_client()?;
+
+	if !start.is_empty() {
+		info!(targets = ?start, "starting missing services");
+		lifecycle::start_targets(supervisor, &start).await?;
+		lifecycle::wait_running(supervisor, &start).await?;
+	}
 
 	if !bulk.is_empty() {
 		info!(targets = ?bulk, "bulk-restarting non-rolling services");
 		bulk_restart(supervisor, &bulk).await?;
 		lifecycle::wait_running(supervisor, &bulk).await?;
-		// One reload after the bulk covers every behind-caddy service in
-		// the batch — relevant for older deployments whose patient-portal
-		// is a singleton (the frontend always rolls, and on newer
-		// deployments the patient-portal does too). Per-service rolling
-		// reloads aren't needed for singletons: bulk-restart already
-		// drops them all briefly, so a single trailing reload is enough
-		// to flush Caddy's stale upstream IPs.
-		if bulk_behind_caddy {
-			lifecycle::reload_caddy().await;
-		}
 	} else {
 		debug!("no bulk-restart services");
+	}
+
+	// One reload after the start+bulk batch covers every behind-caddy
+	// service in it — relevant for older deployments whose patient-portal
+	// is a singleton (the frontend always rolls, and on newer
+	// deployments the patient-portal does too). Per-service rolling
+	// reloads aren't needed for singletons: bulk-restart already
+	// drops them all briefly, so a single trailing reload is enough
+	// to flush Caddy's stale upstream IPs.
+	if batch_behind_caddy {
+		lifecycle::reload_caddy().await;
 	}
 
 	for (i, (instance, behind_caddy)) in rolling.iter().enumerate() {
@@ -135,10 +147,11 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	Ok(())
 }
 
-/// Output of [`partition`]: rolling-eligible services restart one
-/// instance at a time with a per-instance readiness probe between each;
-/// everything else bulk-restarts. `Down` expectations are dropped entirely
-/// (they wouldn't be running, so there's nothing to restart).
+/// Output of [`partition`]: expected-Up services that aren't running get
+/// started; rolling-eligible running services restart one instance at a
+/// time with a per-instance readiness probe between each; everything else
+/// bulk-restarts. `Down` expectations are dropped entirely (they wouldn't
+/// be running, so there's nothing to restart).
 ///
 /// "Rolling-eligible" comes from [`Expectation::rolling_restart`]:
 /// `min_count >= 2`, i.e. the expectation has enough instances that
@@ -146,13 +159,20 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 /// restart because there's no second instance to take traffic during the
 /// roll.
 struct Partitioned {
+	/// Supervisor-native identifiers to start: expected-Up units that
+	/// aren't currently running, whether discovered-but-stopped or not
+	/// loaded at all. Same selection as `tamanu start`'s planner — on
+	/// systemd, the expectation's required units minus the running ones;
+	/// on pm2, registered-but-stopped processes (pm2 can't create
+	/// entries, so under-registration only warns).
+	start: Vec<String>,
 	/// Supervisor-native identifiers to bulk-restart.
 	bulk: Vec<String>,
-	/// True if any bulk entry's expectation has `behind_caddy: true` —
-	/// drives a single trailing `reload_caddy` after the bulk completes so
-	/// Caddy sees the new container IPs (relevant on older deployments
-	/// where the patient-portal is still a singleton).
-	bulk_behind_caddy: bool,
+	/// True if any start or bulk entry's expectation has `behind_caddy:
+	/// true` — drives a single trailing `reload_caddy` after the batch
+	/// completes so Caddy sees the new container IPs (relevant on older
+	/// deployments where the patient-portal is still a singleton).
+	batch_behind_caddy: bool,
 	/// Instances to roll one-at-a-time, paired with their expectation's
 	/// `behind_caddy` flag so each iteration knows whether to reload Caddy
 	/// after the restart settles.
@@ -160,12 +180,51 @@ struct Partitioned {
 }
 
 fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -> Partitioned {
+	let mut start = Vec::new();
 	let mut bulk = Vec::new();
-	let mut bulk_behind_caddy = false;
+	let mut batch_behind_caddy = false;
 	let mut rolling = Vec::new();
 	for (exp, instances) in groups {
 		if exp.state != ExpectedState::Up {
 			continue;
+		}
+		let start_before = start.len();
+		match supervisor {
+			Supervisor::Systemd => {
+				let running: HashSet<String> = instances
+					.iter()
+					.filter(|i| i.running)
+					.map(Instance::unit)
+					.collect();
+				for unit in exp.instances.required_systemd_units(exp.name) {
+					if !running.contains(&unit) {
+						start.push(unit);
+					}
+				}
+			}
+			Supervisor::Pm2 => {
+				// Unlike `tamanu start`, don't bail on under-registration:
+				// restart's primary job is restarting what exists, and
+				// failing here would also skip that.
+				let registered = instances.len();
+				let needed = exp.instances.min_count();
+				if registered < needed {
+					warn!(
+						"`{}` needs at least {needed} pm2 process(es) but only {registered} are \
+						 registered; restart can't add new entries — that's the ops setup \
+						 playbook's job",
+						exp.name,
+					);
+				}
+				for inst in instances {
+					if !inst.running {
+						start.push(inst.name.clone());
+					}
+				}
+			}
+		}
+		if start.len() > start_before && exp.behind_caddy {
+			batch_behind_caddy = true;
 		}
 		for inst in instances {
 			if !inst.running {
@@ -179,14 +238,15 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 					Supervisor::Pm2 => inst.name.clone(),
 				});
 				if exp.behind_caddy {
-					bulk_behind_caddy = true;
+					batch_behind_caddy = true;
 				}
 			}
 		}
 	}
 	Partitioned {
+		start,
 		bulk,
-		bulk_behind_caddy,
+		batch_behind_caddy,
 		rolling,
 	}
 }
@@ -255,6 +315,7 @@ mod tests {
 			],
 		)];
 		let p = partition(Supervisor::Systemd, &groups);
+		assert!(p.start.is_empty());
 		assert!(p.bulk.is_empty());
 		assert_eq!(p.rolling.len(), 2);
 		assert!(p.rolling.iter().all(|(_, behind_caddy)| *behind_caddy));
@@ -272,7 +333,7 @@ mod tests {
 			(&tasks, vec![inst("tamanu-central-tasks", None, true)]),
 		];
 		let p = partition(Supervisor::Systemd, &groups);
-		assert!(p.bulk_behind_caddy);
+		assert!(p.batch_behind_caddy);
 		assert_eq!(p.bulk.len(), 2);
 		assert!(p.rolling.is_empty());
 	}
@@ -287,7 +348,7 @@ mod tests {
 			(&sync, vec![inst("tamanu-facility-sync", None, true)]),
 		];
 		let p = partition(Supervisor::Systemd, &groups);
-		assert!(!p.bulk_behind_caddy);
+		assert!(!p.batch_behind_caddy);
 	}
 
 	#[test]
@@ -319,6 +380,105 @@ mod tests {
 		let p = partition(Supervisor::Systemd, &groups);
 		assert!(p.rolling.is_empty(), "singleton must not roll");
 		assert_eq!(p.bulk.len(), 1);
-		assert!(p.bulk_behind_caddy);
+		assert!(p.batch_behind_caddy);
+	}
+
+	#[test]
+	fn partition_starts_unit_missing_from_discovery() {
+		// Expected-Up singleton with no discovered instances at all — the
+		// unit isn't loaded, so restart must start it rather than skip it.
+		let tasks = up_exp("tamanu-central-tasks", Instances::Single, false);
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(&tasks, vec![])];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert_eq!(p.start, vec!["tamanu-central-tasks.service"]);
+		assert!(p.bulk.is_empty());
+		assert!(p.rolling.is_empty());
+		assert!(!p.batch_behind_caddy);
+	}
+
+	#[test]
+	fn partition_starts_stopped_discovered_instance() {
+		// Discovered but inactive: previously silently skipped, now started.
+		let tasks = up_exp("tamanu-central-tasks", Instances::Single, false);
+		let groups: Vec<(&Expectation, Vec<Instance>)> =
+			vec![(&tasks, vec![inst("tamanu-central-tasks", None, false)])];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert_eq!(p.start, vec!["tamanu-central-tasks.service"]);
+		assert!(p.bulk.is_empty());
+	}
+
+	#[test]
+	fn partition_starts_missing_instance_and_rolls_running_one() {
+		// Multi-instance API with @1 running and @2 absent: @2 starts (in
+		// the up-front batch, so capacity is back before the roll), @1
+		// still rolls.
+		let api = up_exp("tamanu-central-api", Instances::NumericAtLeast(2), true);
+		let groups: Vec<(&Expectation, Vec<Instance>)> =
+			vec![(&api, vec![inst("tamanu-central-api", Some("1"), true)])];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert_eq!(p.start, vec!["tamanu-central-api@2.service"]);
+		assert_eq!(p.rolling.len(), 1);
+		assert!(p.batch_behind_caddy, "started behind-caddy unit needs a reload");
+	}
+
+	#[test]
+	fn partition_does_not_start_down_or_unknown() {
+		let down = Expectation {
+			name: "tamanu-patientportal",
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			reason: "test".into(),
+			legacy: false,
+			behind_caddy: true,
+		};
+		let unknown = Expectation {
+			name: "tamanu-fhir-worker",
+			instances: Instances::Single,
+			state: ExpectedState::Unknown,
+			reason: "test".into(),
+			legacy: false,
+			behind_caddy: false,
+		};
+		let groups: Vec<(&Expectation, Vec<Instance>)> =
+			vec![(&down, vec![]), (&unknown, vec![])];
+		let p = partition(Supervisor::Systemd, &groups);
+		assert!(p.start.is_empty());
+		assert!(!p.batch_behind_caddy);
+	}
+
+	#[test]
+	fn partition_pm2_starts_stopped_registered_process() {
+		let tasks = up_exp("tamanu-tasks", Instances::Single, false);
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&tasks,
+			vec![Instance {
+				name: "tamanu-tasks".into(),
+				instance: None,
+				pm_id: Some(2),
+				running: false,
+			}],
+		)];
+		let p = partition(Supervisor::Pm2, &groups);
+		assert_eq!(p.start, vec!["tamanu-tasks"]);
+		assert!(p.bulk.is_empty());
+	}
+
+	#[test]
+	fn partition_pm2_under_registration_still_restarts_running() {
+		// pm2 can't create new entries, so a short registration only warns;
+		// the running process must still be restarted.
+		let api = up_exp("tamanu-api", Instances::NumericAtLeast(2), true);
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&api,
+			vec![Instance {
+				name: "tamanu-api".into(),
+				instance: None,
+				pm_id: Some(0),
+				running: true,
+			}],
+		)];
+		let p = partition(Supervisor::Pm2, &groups);
+		assert!(p.start.is_empty());
+		assert_eq!(p.rolling.len(), 1);
 	}
 }

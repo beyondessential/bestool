@@ -362,6 +362,33 @@ pub async fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<
 	}
 }
 
+/// Issue a start call to the right supervisor for every target.
+///
+/// `targets` are supervisor-native identifiers — systemd unit names or pm2
+/// process names (which must already be registered with pm2; this can't
+/// create new entries). No-op for an empty slice. Bails on supervisor
+/// failure; doesn't itself wait for the start to complete (use
+/// `wait_running` afterwards).
+pub async fn start_targets(supervisor: Supervisor, targets: &[String]) -> Result<()> {
+	if targets.is_empty() {
+		return Ok(());
+	}
+	match supervisor {
+		Supervisor::Systemd => systemd::start(targets).await,
+		Supervisor::Pm2 => {
+			let status = Command::new("pm2")
+				.arg("start")
+				.args(targets)
+				.status()
+				.into_diagnostic()?;
+			if !status.success() {
+				bail!("pm2 start failed: exit {status}");
+			}
+			Ok(())
+		}
+	}
+}
+
 /// Restart a batch of pm2 targets by stop-then-start with a short pause
 /// between, rather than `pm2 restart`. `targets` are pm2-acceptable
 /// identifiers (process names, or pm_ids stringified).
