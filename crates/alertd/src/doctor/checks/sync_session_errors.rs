@@ -50,11 +50,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let mobile = match fetch_rows(client, MOBILE_SQL, &[]).await {
 		Ok(set) => set,
-		Err(err) => return Check::fail(NAME, "query failed", super::fmt_db_error(&err)),
+		Err(err) => return super::query_error_check(NAME, &err),
 	};
 	let server = match fetch_rows(client, SERVER_SQL, &[]).await {
 		Ok(set) => set,
-		Err(err) => return Check::fail(NAME, "query failed", super::fmt_db_error(&err)),
+		Err(err) => return super::query_error_check(NAME, &err),
 	};
 
 	if mobile.is_empty() && server.is_empty() {

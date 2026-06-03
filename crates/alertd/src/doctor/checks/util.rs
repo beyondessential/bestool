@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio_postgres::{Client as PgClient, types::ToSql};
 
-use super::fmt_db_error;
+use super::query_error_check;
 use crate::doctor::check::Check;
 
 /// Rows reported in `details` are capped here; one extra row is fetched to
@@ -112,7 +112,7 @@ pub async fn tiered_rows_check(
 				.with_detail("truncated", set.truncated)
 				.with_detail("count", count)
 		}
-		Err(err) => Check::fail(name, "query failed", fmt_db_error(&err)),
+		Err(err) => query_error_check(name, &err),
 	}
 }
 

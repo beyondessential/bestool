@@ -9,7 +9,7 @@
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use super::{CheckContext, fmt_db_error};
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::Check;
 
 const WARN_DEPTH: i64 = 200;
@@ -44,7 +44,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 				return Check::pass("fhir_jobs", "fhir.jobs table not present")
 					.with_detail("skipped", true);
 			}
-			return Check::fail("fhir_jobs", "query failed", fmt_db_error(&err));
+			return query_error_check("fhir_jobs", &err);
 		}
 	};
 

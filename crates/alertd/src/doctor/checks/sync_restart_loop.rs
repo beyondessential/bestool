@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use super::{CheckContext, fmt_db_error};
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
@@ -35,7 +35,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let rows = match client.query(SQL, &[]).await {
 		Ok(r) => r,
-		Err(err) => return Check::fail(NAME, "query failed", fmt_db_error(&err)),
+		Err(err) => return query_error_check(NAME, &err),
 	};
 
 	let mut warn = Vec::new();
