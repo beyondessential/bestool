@@ -194,6 +194,7 @@ walg = []
 
 [dev-dependencies]
 age = { version = "0.11.3", features = ["async"] }
+jsonschema = { version = "0.46.5", default-features = false }
 trycmd = "1.2.0"
 
 [package.metadata.binstall]

@@ -67,31 +67,31 @@ struct EnrollTicket {
 }
 
 #[derive(Serialize)]
-struct BeginRequest<'a> {
-	server_id: &'a str,
-	token: &'a str,
+pub(crate) struct BeginRequest<'a> {
+	pub(crate) server_id: &'a str,
+	pub(crate) token: &'a str,
 	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
 	/// where there's no client cert for canopy to read it from.
 	#[serde(skip_serializing_if = "Option::is_none")]
-	spki: Option<&'a str>,
+	pub(crate) spki: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
-struct BeginResponse {
-	nonce: String,
+pub(crate) struct BeginResponse {
+	pub(crate) nonce: String,
 	#[serde(default)]
-	channel_binding_required: bool,
+	pub(crate) channel_binding_required: bool,
 }
 
 #[derive(Serialize)]
-struct CompleteRequest<'a> {
-	server_id: &'a str,
-	nonce: &'a str,
-	signature: &'a str,
+pub(crate) struct CompleteRequest<'a> {
+	pub(crate) server_id: &'a str,
+	pub(crate) nonce: &'a str,
+	pub(crate) signature: &'a str,
 	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
 	/// where there's no client cert for canopy to read it from.
 	#[serde(skip_serializing_if = "Option::is_none")]
-	spki: Option<&'a str>,
+	pub(crate) spki: Option<&'a str>,
 }
 
 /// Which network path the enrollment handshake takes.
@@ -134,9 +134,9 @@ impl Transport {
 }
 
 #[derive(Deserialize)]
-struct CompleteResponse {
-	server_id: String,
-	device_id: String,
+pub(crate) struct CompleteResponse {
+	pub(crate) server_id: String,
+	pub(crate) device_id: String,
 }
 
 /// RFC-7807-style problem body. Canopy's register errors are intentionally

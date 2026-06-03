@@ -18,10 +18,10 @@ use bestool_tamanu::{config::load_config, connection_url::ConnectionUrlBuilder};
 use super::{TamanuArgs, find_tamanu};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Snippet {
-	sql: String,
+pub(crate) struct Snippet {
+	pub(crate) sql: String,
 	#[serde(default)]
-	description: Option<String>,
+	pub(crate) description: Option<String>,
 }
 
 /// Asynchronous snippet provider that fetches snippets from an API.
