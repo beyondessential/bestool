@@ -5,7 +5,7 @@ pub mod registration;
 
 pub use client::{
 	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, NewEvent, Severity,
-	TAILSCALE_URL, client_builder, device_identity, user_agent,
+	TAILSCALE_URL, client_builder, device_identity, tailscale_client, user_agent,
 };
 
 /// Wraps a sensitive value so its `Debug` output doesn't leak the contents.

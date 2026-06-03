@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use algae_cli::{
 	passphrases::{Passphrase, PassphraseArgs},
@@ -6,8 +6,9 @@ use algae_cli::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bestool_canopy::{
-	client_builder, device_identity,
+	TAILSCALE_URL, device_identity,
 	registration::{self, Registration},
+	tailscale_client,
 };
 use bestool_tamanu::server_info::generate_device_key_pem;
 use clap::Parser;
@@ -69,6 +70,10 @@ struct EnrollTicket {
 struct BeginRequest<'a> {
 	server_id: &'a str,
 	token: &'a str,
+	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
+	/// where there's no client cert for canopy to read it from.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	spki: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +88,49 @@ struct CompleteRequest<'a> {
 	server_id: &'a str,
 	nonce: &'a str,
 	signature: &'a str,
+	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
+	/// where there's no client cert for canopy to read it from.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	spki: Option<&'a str>,
+}
+
+/// Which network path the enrollment handshake takes.
+///
+/// Mirrors the rest of bestool's canopy traffic: prefer the tailnet when it's
+/// reachable, fall back to the public mTLS interface otherwise.
+enum Transport {
+	/// Reachable over the canopy tailnet: plain HTTPS to `/public/...`, no
+	/// client cert (tailnet identity authenticates), device SPKI carried in the
+	/// `complete` body.
+	Tailscale(reqwest::Client),
+	/// Public mTLS to the ticket's `api_url`: the client cert is presented and
+	/// canopy reads the SPKI from it.
+	Mtls(reqwest::Client),
+}
+
+impl Transport {
+	fn client(&self) -> &reqwest::Client {
+		match self {
+			Transport::Tailscale(c) | Transport::Mtls(c) => c,
+		}
+	}
+
+	fn carries_spki_in_body(&self) -> bool {
+		matches!(self, Transport::Tailscale(_))
+	}
+
+	fn url(&self, api_url: &Url, step: &str) -> Result<Url> {
+		match self {
+			Transport::Tailscale(_) => format!("{TAILSCALE_URL}/public/servers/register/{step}")
+				.parse()
+				.into_diagnostic()
+				.wrap_err_with(|| format!("building tailscale register/{step} URL")),
+			Transport::Mtls(_) => api_url
+				.join(&format!("/servers/register/{step}"))
+				.into_diagnostic()
+				.wrap_err_with(|| format!("building register/{step} URL")),
+		}
+	}
 }
 
 #[derive(Deserialize)]
@@ -154,28 +202,50 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 		return Ok(());
 	}
 
-	// Establish the machine's mTLS identity, reusing the device key from an
-	// existing registration if present.
+	// Reuse the device key from an existing registration if present, else mint
+	// one. Needed in both transports: the signature and the SPKI derive from it.
 	let device_key_pem = match existing.as_ref().and_then(|r| r.device_key.clone()) {
 		Some(pem) => pem,
 		None => generate_device_key_pem()?,
 	};
-	let identity = device_identity(&device_key_pem)?;
 	let spki_der = spki_der(&device_key_pem)?;
 	let signing_key = SigningKey::from_pkcs8_pem(&device_key_pem)
 		.into_diagnostic()
 		.wrap_err("loading device key for signing")?;
 
-	let http = client_builder(env!("CARGO_PKG_VERSION"))
-		.identity(identity)
-		.use_rustls_tls()
-		.timeout(Duration::from_secs(30))
-		.build()
-		.into_diagnostic()
-		.wrap_err("building mTLS HTTP client")?;
+	// Prefer the tailnet, like the rest of bestool's canopy traffic; fall back
+	// to public mTLS against the ticket's api_url.
+	let factory: bestool_canopy::ClientBuilderFactory = Arc::new(crate::http::client_builder);
+	let transport = match tailscale_client(&factory).await {
+		Some(client) => {
+			debug!("enrolling over the canopy tailnet");
+			Transport::Tailscale(client)
+		}
+		None => {
+			debug!("tailnet unreachable; enrolling over public mTLS");
+			let identity = device_identity(&device_key_pem)?;
+			let client = crate::http::client_builder()
+				.identity(identity)
+				.use_rustls_tls()
+				.timeout(Duration::from_secs(30))
+				.build()
+				.into_diagnostic()
+				.wrap_err("building mTLS HTTP client")?;
+			Transport::Mtls(client)
+		}
+	};
+
+	let spki_b64 = STANDARD.encode(&spki_der);
 
 	// Step 1: begin — fetch the challenge nonce. The token isn't consumed here.
-	let begin = begin(&http, &api_url, &ticket.server_id, &ticket.token).await?;
+	let begin = begin(
+		&transport,
+		&api_url,
+		&ticket.server_id,
+		&ticket.token,
+		&spki_b64,
+	)
+	.await?;
 	if begin.channel_binding_required {
 		bail!(
 			"this Canopy server requires TLS channel binding, which this version of bestool does not support yet"
@@ -192,11 +262,12 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	let signature_b64 = STANDARD.encode(signature.to_der().as_bytes());
 
 	let complete = complete(
-		&http,
+		&transport,
 		&api_url,
 		&ticket.server_id,
 		&begin.nonce,
 		&signature_b64,
+		&spki_b64,
 	)
 	.await?;
 
@@ -260,18 +331,21 @@ fn build_transcript(nonce: &[u8], server_id: &Uuid, spki_der: &[u8]) -> Vec<u8> 
 }
 
 async fn begin(
-	http: &reqwest::Client,
+	transport: &Transport,
 	api_url: &Url,
 	server_id: &str,
 	token: &str,
+	spki: &str,
 ) -> Result<BeginResponse> {
-	let url = api_url
-		.join("/servers/register/begin")
-		.into_diagnostic()
-		.wrap_err("building register/begin URL")?;
-	let resp = http
+	let url = transport.url(api_url, "begin")?;
+	let resp = transport
+		.client()
 		.post(url)
-		.json(&BeginRequest { server_id, token })
+		.json(&BeginRequest {
+			server_id,
+			token,
+			spki: transport.carries_spki_in_body().then_some(spki),
+		})
 		.send()
 		.await
 		.into_diagnostic()
@@ -280,22 +354,22 @@ async fn begin(
 }
 
 async fn complete(
-	http: &reqwest::Client,
+	transport: &Transport,
 	api_url: &Url,
 	server_id: &str,
 	nonce: &str,
 	signature: &str,
+	spki: &str,
 ) -> Result<CompleteResponse> {
-	let url = api_url
-		.join("/servers/register/complete")
-		.into_diagnostic()
-		.wrap_err("building register/complete URL")?;
-	let resp = http
+	let url = transport.url(api_url, "complete")?;
+	let resp = transport
+		.client()
 		.post(url)
 		.json(&CompleteRequest {
 			server_id,
 			nonce,
 			signature,
+			spki: transport.carries_spki_in_body().then_some(spki),
 		})
 		.send()
 		.await
@@ -354,6 +428,25 @@ mod tests {
 			.to_pkcs8_pem(LineEnding::LF)
 			.unwrap()
 			.to_string()
+	}
+
+	#[test]
+	fn transport_routes_and_spki_placement() {
+		let api: Url = "https://canopy.example".parse().unwrap();
+
+		let ts = Transport::Tailscale(reqwest::Client::new());
+		assert_eq!(
+			ts.url(&api, "begin").unwrap().as_str(),
+			"https://canopy.tail53aef.ts.net/public/servers/register/begin"
+		);
+		assert!(ts.carries_spki_in_body());
+
+		let mtls = Transport::Mtls(reqwest::Client::new());
+		assert_eq!(
+			mtls.url(&api, "complete").unwrap().as_str(),
+			"https://canopy.example/servers/register/complete"
+		);
+		assert!(!mtls.carries_spki_in_body());
 	}
 
 	#[test]

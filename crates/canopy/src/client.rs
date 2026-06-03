@@ -86,6 +86,18 @@ pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
 	reqwest::Client::builder().user_agent(user_agent("bestool", version))
 }
 
+/// Probe the canopy tailnet endpoint, returning a client routed to it if
+/// reachable.
+///
+/// The returned client carries the same DNS / hardcoded-IP resolution override
+/// the reporting client uses and presents **no** client certificate — callers
+/// reaching canopy this way authenticate by tailnet identity. Returns `None`
+/// when the tailnet endpoint isn't reachable, so callers can fall back to
+/// public mTLS.
+pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<reqwest::Client> {
+	probe_tailscale(make_builder).await
+}
+
 /// RFC 5424 syslog severities accepted by the canopy `/events` API.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
