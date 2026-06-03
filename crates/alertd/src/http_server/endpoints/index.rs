@@ -8,31 +8,6 @@ pub async fn handle_index() -> impl IntoResponse {
 			"description": "List of available endpoints"
 		},
 		{
-			"method": "POST",
-			"path": "/reload",
-			"description": "Trigger a configuration reload (equivalent to SIGHUP)"
-		},
-		{
-			"method": "GET",
-			"path": "/alerts",
-			"description": "List currently loaded alert files"
-		},
-		{
-			"method": "DELETE",
-			"path": "/alerts",
-			"description": "Temporarily pause an alert until the specified timestamp (JSON body: {\"alert\": \"PATH\", \"until\": \"TIMESTAMP\"})"
-		},
-		{
-			"method": "GET",
-			"path": "/targets",
-			"description": "List all currently loaded external targets"
-		},
-		{
-			"method": "POST",
-			"path": "/validate",
-			"description": "Validate an alert definition (send YAML as request body, returns validation result as JSON)"
-		},
-		{
 			"method": "GET",
 			"path": "/metrics",
 			"description": "Prometheus-formatted metrics for monitoring"
@@ -46,6 +21,11 @@ pub async fn handle_index() -> impl IntoResponse {
 			"method": "GET",
 			"path": "/health",
 			"description": "Health check endpoint (returns 200 if healthy, 530 if stalled)"
+		},
+		{
+			"method": "GET",
+			"path": "/tasks/{task}/{endpoint}",
+			"description": "Invoke an endpoint exposed by a registered background task"
 		}
 	]);
 

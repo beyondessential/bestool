@@ -1,7 +1,12 @@
-use std::collections::HashSet;
+use std::{
+	collections::HashSet,
+	process::{Child, Command, Stdio},
+	time::{Duration, Instant},
+};
 
 use clap::Parser;
-use miette::{IntoDiagnostic, Result, bail};
+use miette::{IntoDiagnostic, Result, WrapErr, bail};
+use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
 	services::{self, ExpectedState, Expectation, Supervisor},
@@ -13,6 +18,7 @@ use crate::actions::{
 	tamanu::{
 		TamanuArgs,
 		lifecycle::{self, Instance, WaitForDb},
+		probe,
 	},
 };
 
@@ -26,6 +32,13 @@ use crate::actions::{
 ///
 /// Idempotent: services already in the expected state are left alone.
 /// Use `tamanu status` first to see what's drifted.
+///
+/// After starting, the behind-caddy HTTP services (API, frontend, patient
+/// portal) are probed for readiness within a one-minute budget
+/// (`--probe-timeout`); if any don't come up, `start` bails. Pass
+/// `--no-probe-http` to skip the check. With `--logs`, the tamanu service
+/// logs are streamed for the duration of the start so the operator can
+/// watch startup.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct StartArgs {
@@ -39,6 +52,18 @@ pub struct StartArgs {
 	/// because you're mid-investigation).
 	#[arg(long)]
 	pub up_only: bool,
+
+	/// Skip the post-start HTTP readiness probe.
+	#[arg(long)]
+	pub no_probe_http: bool,
+
+	/// How long to wait for started services to pass their readiness probe before bailing.
+	#[arg(long, default_value = "1m", value_parser = probe::parse_duration)]
+	pub probe_timeout: Duration,
+
+	/// Stream tamanu service logs while starting.
+	#[arg(long)]
+	pub logs: bool,
 }
 
 pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
@@ -93,6 +118,21 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
+	// Spawn the log follower (if requested) before issuing the start, so the
+	// operator sees startup output as it happens. The guard's Drop kills the
+	// follower when `run` returns — on success or on a bail from the probe
+	// phase below.
+	let _follower = if args.logs {
+		let log_targets: Vec<String> = groups
+			.iter()
+			.filter(|(exp, _)| exp.state == ExpectedState::Up)
+			.map(|(exp, _)| exp.name.to_string())
+			.collect();
+		spawn_log_follower(supervisor, &log_targets)
+	} else {
+		None
+	};
+
 	if !stop_plan.is_empty() {
 		execute_stop(supervisor, &stop_plan).await?;
 	}
@@ -117,7 +157,121 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 		lifecycle::reload_caddy().await;
 	}
 
+	// Verify the behind-caddy HTTP services actually came up. The supervisor
+	// reporting the unit active isn't the same as the container accepting
+	// connections, so probe each within a single overall budget and bail if
+	// any fails to respond in time.
+	if started_behind_caddy && !args.no_probe_http {
+		let discovered = lifecycle::discover(supervisor).await?;
+		let groups = lifecycle::group_by_expectation(&matched, &discovered);
+		let to_probe = instances_to_probe(&groups);
+		probe_started(supervisor, &to_probe, args.probe_timeout).await?;
+	}
+
 	Ok(())
+}
+
+/// Select the running, behind-caddy, expected-Up instances to probe after a
+/// start. Excludes non-behind-caddy, non-running, and non-Up instances.
+fn instances_to_probe(groups: &[(&Expectation, Vec<Instance>)]) -> Vec<Instance> {
+	let mut out = Vec::new();
+	for (exp, instances) in groups {
+		if exp.state != ExpectedState::Up || !exp.behind_caddy {
+			continue;
+		}
+		for inst in instances {
+			if inst.running {
+				out.push(inst.clone());
+			}
+		}
+	}
+	out
+}
+
+/// Probe every selected instance for readiness within a single overall
+/// deadline. Bails (naming the instance) on the first one that doesn't pass
+/// in time. Instances without a constructable probe URL are skipped.
+async fn probe_started(
+	supervisor: Supervisor,
+	instances: &[Instance],
+	timeout: Duration,
+) -> Result<()> {
+	if instances.is_empty() {
+		return Ok(());
+	}
+	let client = probe::http_client()?;
+	let deadline = Instant::now() + timeout;
+	for inst in instances {
+		let Some(url) = probe::instance_probe_url(supervisor, inst)? else {
+			debug!(instance = %inst.display(), "no probe URL, skipping readiness check");
+			continue;
+		};
+		let remaining = deadline.saturating_duration_since(Instant::now());
+		if remaining.is_zero() {
+			bail!(
+				"readiness probe budget exhausted before probing {}",
+				inst.display()
+			);
+		}
+		info!(instance = %inst.display(), %url, "probing started service for readiness");
+		probe::probe_url(&client, &url, remaining)
+			.await
+			.wrap_err_with(|| format!("{} did not become ready", inst.display()))?;
+	}
+	Ok(())
+}
+
+/// Holds a spawned log-follower child process and kills it on drop, so the
+/// follower lives exactly as long as the `start` work and is torn down on
+/// both success and bail.
+struct LogFollower {
+	child: Child,
+}
+
+impl Drop for LogFollower {
+	fn drop(&mut self) {
+		let _ = self.child.kill();
+		let _ = self.child.wait();
+	}
+}
+
+/// Spawn a log follower for the given service base names, inheriting stdio so
+/// its output interleaves with `start`'s progress logs. Spawn failures are
+/// non-fatal: warn and return `None`.
+fn spawn_log_follower(supervisor: Supervisor, targets: &[String]) -> Option<LogFollower> {
+	if targets.is_empty() {
+		return None;
+	}
+	let mut cmd = match supervisor {
+		Supervisor::Systemd => {
+			let mut cmd = Command::new("journalctl");
+			cmd.args(["-f", "-n", "0"]);
+			for t in targets {
+				cmd.arg("-u").arg(format!("{t}*"));
+			}
+			cmd
+		}
+		Supervisor::Pm2 => {
+			let mut deduped: Vec<&String> = Vec::new();
+			for t in targets {
+				if !deduped.contains(&t) {
+					deduped.push(t);
+				}
+			}
+			let mut cmd = Command::new("pm2");
+			cmd.args(["logs", "--lines", "0"]);
+			cmd.args(deduped);
+			cmd
+		}
+	};
+	cmd.stdin(Stdio::null());
+	match cmd.spawn() {
+		Ok(child) => Some(LogFollower { child }),
+		Err(err) => {
+			warn!(%err, "could not start log follower; continuing without it");
+			None
+		}
+	}
 }
 
 /// What `plan_stop` decided to do for the Down-side normalisation phase.
@@ -551,5 +705,76 @@ mod tests {
 		)];
 		let plan = plan_stop(Supervisor::Pm2, &groups, |_| false);
 		assert_eq!(plan.delete, vec!["tamanu-fhir-resolve"]);
+	}
+
+	fn down_behind_caddy_exp(name: &'static str) -> Expectation {
+		Expectation {
+			name,
+			instances: Instances::Single,
+			state: ExpectedState::Down,
+			reason: "test".into(),
+			legacy: false,
+			behind_caddy: true,
+		}
+	}
+
+	fn inst(name: &str, running: bool) -> Instance {
+		Instance {
+			name: name.into(),
+			instance: None,
+			pm_id: None,
+			running,
+		}
+	}
+
+	#[test]
+	fn instances_to_probe_includes_behind_caddy_running_up() {
+		let api = exp("tamanu-central-api", true);
+		let groups = vec![(&api, vec![inst("tamanu-central-api", true)])];
+		let probed = instances_to_probe(&groups);
+		assert_eq!(probed.len(), 1);
+		assert_eq!(probed[0].name, "tamanu-central-api");
+	}
+
+	#[test]
+	fn instances_to_probe_excludes_non_behind_caddy() {
+		let tasks = exp("tamanu-central-tasks", false);
+		let groups = vec![(&tasks, vec![inst("tamanu-central-tasks", true)])];
+		assert!(instances_to_probe(&groups).is_empty());
+	}
+
+	#[test]
+	fn instances_to_probe_excludes_not_running() {
+		let api = exp("tamanu-central-api", true);
+		let groups = vec![(&api, vec![inst("tamanu-central-api", false)])];
+		assert!(instances_to_probe(&groups).is_empty());
+	}
+
+	#[test]
+	fn instances_to_probe_excludes_non_up() {
+		// Down (and Unknown) behind-caddy services must not be probed — we
+		// didn't start them, so their readiness is none of start's business.
+		let portal = down_behind_caddy_exp("tamanu-patientportal");
+		let unknown = unknown_exp("tamanu-patientportal-2");
+		let groups = vec![
+			(&portal, vec![inst("tamanu-patientportal", true)]),
+			(&unknown, vec![inst("tamanu-patientportal-2", true)]),
+		];
+		assert!(instances_to_probe(&groups).is_empty());
+	}
+
+	#[test]
+	fn instances_to_probe_mixed_batch_keeps_only_eligible() {
+		let api = exp("tamanu-central-api", true);
+		let tasks = exp("tamanu-central-tasks", false);
+		let portal = down_behind_caddy_exp("tamanu-patientportal");
+		let groups = vec![
+			(&api, vec![inst("tamanu-central-api", true)]),
+			(&tasks, vec![inst("tamanu-central-tasks", true)]),
+			(&portal, vec![inst("tamanu-patientportal", true)]),
+		];
+		let probed = instances_to_probe(&groups);
+		assert_eq!(probed.len(), 1);
+		assert_eq!(probed[0].name, "tamanu-central-api");
 	}
 }

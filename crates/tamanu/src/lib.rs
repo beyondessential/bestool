@@ -7,6 +7,7 @@ use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use tracing::{debug, instrument};
 
+pub mod caddy;
 pub mod config;
 pub mod connection_url;
 pub mod pm2;
@@ -16,9 +17,6 @@ pub mod services;
 pub mod versions;
 
 pub mod systemd;
-
-#[cfg(feature = "doctor")]
-pub mod doctor;
 
 /// What kind of server to interact with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

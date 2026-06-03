@@ -567,7 +567,7 @@ pub async fn reload_caddy() {
 	// API on the caddy process's behalf. Same end-state as the admin-API
 	// path above; this fallback handles the case where caddy is running
 	// but the admin endpoint is locked down or relocated.
-	let status = Command::new("caddy")
+	let status = Command::new(bestool_tamanu::caddy::program())
 		.args(["reload", "--config", path, "--adapter", "caddyfile"])
 		.status();
 	match status {

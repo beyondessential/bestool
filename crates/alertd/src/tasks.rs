@@ -4,7 +4,7 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use miette::Result;
 use serde_json::Value;
 
-use crate::{alert::InternalContext, canopy::CanopyClient};
+use crate::{canopy::CanopyClient, context::InternalContext};
 
 /// Shared resources passed to background tasks on every tick.
 ///

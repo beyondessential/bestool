@@ -117,7 +117,7 @@ enum Source {
 }
 
 async fn fetch_online(tamanu_version: &str) -> Result<Vec<String>> {
-	let device_key = read_device_key();
+	let device_key = bestool_tamanu::server_info::fetch_device_key().await;
 	let canopy = CanopyClient::new(
 		tamanu_version.to_owned(),
 		device_key.as_deref(),
@@ -210,21 +210,6 @@ fn render_text(tags: &[String], source: Source, use_colours: bool) -> Result<()>
 		}
 	}
 	Ok(())
-}
-
-/// Read the Tamanu device key from the standard on-disk path.
-///
-/// Mirrors the helper used by `tamanu psql` for snippet fetching — the
-/// full DB-fallback fetcher in `bestool-tamanu` pulls in the doctor-only
-/// tokio runtime, which we don't need here. Reading the file directly is
-/// enough for canopy mTLS auth; absence is OK and just falls back to the
-/// tailscale path.
-fn read_device_key() -> Option<String> {
-	let path = bestool_tamanu::server_info::standard_device_key_path();
-	match std::fs::read_to_string(&path) {
-		Ok(s) if !s.trim().is_empty() => Some(s),
-		_ => None,
-	}
 }
 
 fn load_cache(path: &Path) -> Result<Option<TagsCache>> {

@@ -25,7 +25,9 @@ mod write_mode;
 pub(crate) enum Metacommand {
 	Quit,
 	Expanded,
-	WriteMode,
+	WriteMode {
+		ots: Option<String>,
+	},
 	ToggleRedaction,
 	Edit,
 	Copy,

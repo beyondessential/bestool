@@ -12,6 +12,8 @@ use bestool_tamanu::find_tamanu as _find_tamanu;
 
 #[cfg(feature = "tamanu-lifecycle")]
 pub mod lifecycle;
+#[cfg(feature = "tamanu-lifecycle")]
+mod probe;
 
 /// Interact with Tamanu.
 ///
@@ -40,8 +42,6 @@ super::subcommands! {
 		Ok((action, ctx))
 	}]
 
-	#[cfg(feature = "tamanu-alerts")]
-	alerts => Alerts(AlertsArgs),
 	#[cfg(feature = "tamanu-alertd")]
 	alertd => Alertd(AlertdArgs),
 	#[cfg(feature = "tamanu-artifacts")]
@@ -71,8 +71,6 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-logs")]
 	#[clap(alias = "l")]
 	logs => Logs(LogsArgs),
-	#[cfg(feature = "tamanu-meta-ticket")]
-	meta_ticket => MetaTicket(MetaTicketArgs),
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs),
