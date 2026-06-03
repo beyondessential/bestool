@@ -116,7 +116,7 @@ pub fn find_windows_kopia_config() -> Option<PathBuf> {
 /// Current process's username (via `whoami`). `None` if `whoami` can't
 /// determine it (rare).
 pub fn current_username() -> Option<String> {
-	whoami::fallible::username().ok()
+	whoami::username().ok()
 }
 
 /// What to do about elevation on Linux when we want to run kopia.
