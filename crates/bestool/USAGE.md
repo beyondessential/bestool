@@ -1333,6 +1333,9 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 
 ###### **Options:**
 
+* `--glob <GLOB>` — Deprecated, does nothing.
+
+   Previously selected the alert definition files to load. The daemon no longer loads alert definitions; the option is still accepted so existing invocations keep working until they are migrated.
 * `--no-server` — Disable the HTTP server
 * `--server-addr <SERVER_ADDR>` — HTTP server bind address(es)
 

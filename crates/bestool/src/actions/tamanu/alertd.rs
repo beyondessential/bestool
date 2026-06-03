@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
@@ -29,6 +29,14 @@ pub struct AlertdArgs {
 /// Common arguments for running the daemon
 #[derive(Debug, Clone, Parser)]
 struct DaemonArgs {
+	/// Deprecated, does nothing.
+	///
+	/// Previously selected the alert definition files to load. The daemon no
+	/// longer loads alert definitions; the option is still accepted so
+	/// existing invocations keep working until they are migrated.
+	#[arg(long, value_name = "GLOB")]
+	glob: Vec<String>,
+
 	/// Disable the HTTP server
 	#[arg(long)]
 	no_server: bool,
@@ -170,12 +178,17 @@ async fn build_config(
 	tamanu_version: &node_semver::Version,
 	config: TamanuConfig,
 	DaemonArgs {
+		glob,
 		no_server,
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
 	}: DaemonArgs,
 ) -> Result<bestool_alertd::DaemonConfig> {
+	if !glob.is_empty() {
+		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
+	}
+
 	let database_url = config.database_url();
 	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
 
