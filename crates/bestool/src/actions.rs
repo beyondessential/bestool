@@ -70,6 +70,8 @@ subcommands! {
 	audit_psql => AuditPsql(AuditPsqlArgs),
 	#[cfg(feature = "caddy")]
 	caddy => Caddy(CaddyArgs),
+	#[cfg(feature = "__canopy")]
+	canopy => Canopy(CanopyArgs),
 	#[cfg(feature = "completions")]
 	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
