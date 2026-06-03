@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 
-use super::{CheckContext, fmt_db_error};
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -30,10 +30,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 			if let Some(db) = err.as_db_error()
 				&& db.code() == &tokio_postgres::error::SqlState::UNDEFINED_TABLE
 			{
-				return Check::pass("sync_sessions", "sync_sessions table not present")
-					.with_detail("skipped", true);
+				return Check::skip(
+					"sync_sessions",
+					"sync_sessions table not present",
+					"table absent",
+				);
 			}
-			return Check::fail("sync_sessions", "query failed", fmt_db_error(&err));
+			return query_error_check("sync_sessions", &err);
 		}
 	};
 

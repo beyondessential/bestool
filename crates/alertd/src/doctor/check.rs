@@ -1,31 +1,41 @@
 use serde_json::{Map, Value, json};
 
 /// Outcome of a single healthcheck.
+///
+/// Serialised on the wire as the per-check `result` field, a proper sum type
+/// exhaustively matchable on both sides:
+/// `passed | warning | failed | broken | skipped`.
 #[derive(Debug, Clone)]
 pub enum CheckStatus {
-	/// All good.
+	/// Check ran, system OK. `result: "passed"`.
 	Pass,
-	/// The check couldn't be run — either the platform doesn't support it, the
-	/// caller lacked the privilege to query the underlying source, or the
-	/// upstream (e.g. caddy `/metrics`) wasn't reachable. Reported as
-	/// `healthy: true` on the wire (we have no evidence of unhealth) but does
-	/// NOT count as "passing" in human-readable output.
+	/// Precondition not met; the check didn't run — either the platform
+	/// doesn't support it, the caller lacked the privilege to query the
+	/// underlying source, or the check doesn't apply to this server kind.
+	/// Says nothing about the system. `result: "skipped"`.
 	Skip(String),
-	/// Non-fatal degradation. Reported as `healthy: false` per-check on the
-	/// canopy wire format, but does NOT flip the top-level `healthy` flag.
+	/// Check ran, system degraded but not fatally. `result: "warning"`.
 	Warning(String),
-	/// Fatal failure. Sets `healthy: false` per-check AND flips top-level to
-	/// `healthy: false`.
+	/// Check ran, system under test is unhealthy. `result: "failed"`.
 	Fail(String),
+	/// The check itself errored or is misconfigured (e.g. its SQL no longer
+	/// matches the schema); says nothing about the system. `result: "broken"`.
+	Broken(String),
 }
 
 impl CheckStatus {
-	/// Whether this status maps to `healthy: true` in the per-check wire format.
-	pub fn is_healthy_on_wire(&self) -> bool {
-		matches!(self, CheckStatus::Pass | CheckStatus::Skip(_))
+	/// The `result` value for this status in the per-check wire format.
+	pub fn wire_result(&self) -> &'static str {
+		match self {
+			CheckStatus::Pass => "passed",
+			CheckStatus::Skip(_) => "skipped",
+			CheckStatus::Warning(_) => "warning",
+			CheckStatus::Fail(_) => "failed",
+			CheckStatus::Broken(_) => "broken",
+		}
 	}
 
-	/// Whether this status is fatal (flips top-level `healthy` to false).
+	/// Whether this status is fatal (the system under test is unhealthy).
 	pub fn is_fatal(&self) -> bool {
 		matches!(self, CheckStatus::Fail(_))
 	}
@@ -66,17 +76,15 @@ impl Check {
 		}
 	}
 
-	/// Build a Skip result. The `reason` is recorded in `details.reason` (or
-	/// kept on the status) so the operator sees *why* the check couldn't be
-	/// run; the summary is the short headline shown alongside `SKIP`.
+	/// Build a Skip result. The `reason` is kept on the status so the operator
+	/// sees *why* the check couldn't be run; the summary is the short headline
+	/// shown alongside `SKIP`.
 	pub fn skip(name: &'static str, summary: impl Into<String>, reason: impl Into<String>) -> Self {
-		let mut details = Map::new();
-		details.insert("skipped".into(), Value::Bool(true));
 		Self {
 			name,
 			status: CheckStatus::Skip(reason.into()),
 			summary: summary.into(),
-			details,
+			details: Map::new(),
 			payload_extras: Map::new(),
 		}
 	}
@@ -105,6 +113,22 @@ impl Check {
 		}
 	}
 
+	/// Build a Broken result: the check itself errored or is misconfigured,
+	/// which says nothing about the system under test.
+	pub fn broken(
+		name: &'static str,
+		summary: impl Into<String>,
+		reason: impl Into<String>,
+	) -> Self {
+		Self {
+			name,
+			status: CheckStatus::Broken(reason.into()),
+			summary: summary.into(),
+			details: Map::new(),
+			payload_extras: Map::new(),
+		}
+	}
+
 	pub fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
 		self.details.insert(key.to_string(), value.into());
 		self
@@ -127,7 +151,7 @@ impl Check {
 	pub fn to_wire(&self) -> Value {
 		let mut obj = Map::new();
 		obj.insert("check".into(), self.name.into());
-		obj.insert("healthy".into(), self.status.is_healthy_on_wire().into());
+		obj.insert("result".into(), self.status.wire_result().into());
 		for (k, v) in &self.details {
 			obj.insert(k.clone(), v.clone());
 		}
@@ -137,15 +161,16 @@ impl Check {
 	/// Encode this Check for streaming over the daemon's task endpoint.
 	///
 	/// Distinct from [`Self::to_wire`]: that one is the canopy-bound payload
-	/// (which collapses Warning/Fail status to a bare `healthy: false`); this
-	/// one preserves the full `CheckStatus` enum so consumers can render the
-	/// same colours and reason lines as a local sweep.
+	/// (which drops the reason); this one preserves the full `CheckStatus`
+	/// enum including reasons so consumers can render the same colours and
+	/// reason lines as a local sweep.
 	pub fn to_streaming_json(&self) -> Value {
 		let (status, reason) = match &self.status {
 			CheckStatus::Pass => ("pass", None),
 			CheckStatus::Skip(r) => ("skip", Some(r.as_str())),
 			CheckStatus::Warning(r) => ("warning", Some(r.as_str())),
 			CheckStatus::Fail(r) => ("fail", Some(r.as_str())),
+			CheckStatus::Broken(r) => ("broken", Some(r.as_str())),
 		};
 		let mut obj = json!({
 			"name": self.name,
@@ -181,6 +206,7 @@ impl Check {
 			("skip", Some(r)) => CheckStatus::Skip(r),
 			("warning", Some(r)) => CheckStatus::Warning(r),
 			("fail", Some(r)) => CheckStatus::Fail(r),
+			("broken", Some(r)) => CheckStatus::Broken(r),
 			_ => return None,
 		};
 		let summary = value.get("summary")?.as_str()?.to_string();
@@ -213,17 +239,12 @@ impl OverallResult {
 			OverallResult::Failing
 		} else if checks
 			.iter()
-			.any(|c| matches!(c.status, CheckStatus::Warning(_)))
+			.any(|c| matches!(c.status, CheckStatus::Warning(_) | CheckStatus::Broken(_)))
 		{
 			OverallResult::Degraded
 		} else {
 			OverallResult::Healthy
 		}
-	}
-
-	/// Whether the top-level `healthy` flag on the wire is `true`.
-	pub fn is_healthy_top_level(self) -> bool {
-		!matches!(self, OverallResult::Failing)
 	}
 
 	pub fn label(self) -> &'static str {
@@ -240,33 +261,38 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn pass_is_healthy_on_wire() {
-		assert!(Check::pass("x", "ok").status.is_healthy_on_wire());
+	fn wire_results() {
+		assert_eq!(CheckStatus::Pass.wire_result(), "passed");
+		assert_eq!(CheckStatus::Skip("r".into()).wire_result(), "skipped");
+		assert_eq!(CheckStatus::Warning("r".into()).wire_result(), "warning");
+		assert_eq!(CheckStatus::Fail("r".into()).wire_result(), "failed");
+		assert_eq!(CheckStatus::Broken("r".into()).wire_result(), "broken");
 	}
 
 	#[test]
-	fn warning_is_unhealthy_on_wire_but_not_fatal() {
-		let s = CheckStatus::Warning("w".into());
-		assert!(!s.is_healthy_on_wire());
-		assert!(!s.is_fatal());
+	fn warning_is_not_fatal() {
+		assert!(!CheckStatus::Warning("w".into()).is_fatal());
 	}
 
 	#[test]
-	fn fail_is_unhealthy_and_fatal() {
-		let s = CheckStatus::Fail("f".into());
-		assert!(!s.is_healthy_on_wire());
-		assert!(s.is_fatal());
+	fn fail_is_fatal() {
+		assert!(CheckStatus::Fail("f".into()).is_fatal());
 	}
 
 	#[test]
-	fn skip_is_healthy_on_wire_and_not_fatal() {
-		// Skip means "we didn't run this check" — it must not fire alerts
-		// or flip the top-level healthy flag, since we have no evidence of
-		// unhealth either way.
+	fn skip_is_not_fatal() {
+		// Skip means "we didn't run this check" — it must not fire alerts,
+		// since we have no evidence of unhealth either way.
 		let s = CheckStatus::Skip("reason".into());
-		assert!(s.is_healthy_on_wire());
 		assert!(!s.is_fatal());
 		assert!(s.is_skip());
+	}
+
+	#[test]
+	fn broken_is_not_fatal() {
+		// Broken means the check itself errored — it says nothing about the
+		// system under test, so it must not flag the deployment as failing.
+		assert!(!CheckStatus::Broken("reason".into()).is_fatal());
 	}
 
 	#[test]
@@ -276,16 +302,6 @@ mod tests {
 			OverallResult::from_checks(&with_skip),
 			OverallResult::Healthy
 		);
-	}
-
-	#[test]
-	fn skip_constructor_marks_skipped_detail() {
-		let c = Check::skip("memory", "not available", "platform mismatch");
-		assert_eq!(
-			c.details.get("skipped").and_then(Value::as_bool),
-			Some(true)
-		);
-		assert!(matches!(c.status, CheckStatus::Skip(_)));
 	}
 
 	#[test]
@@ -299,15 +315,11 @@ mod tests {
 			OverallResult::Degraded
 		);
 
+		let broken = vec![Check::pass("a", ""), Check::broken("b", "", "x")];
+		assert_eq!(OverallResult::from_checks(&broken), OverallResult::Degraded);
+
 		let failing = vec![Check::warning("a", "", "x"), Check::fail("b", "", "y")];
 		assert_eq!(OverallResult::from_checks(&failing), OverallResult::Failing);
-	}
-
-	#[test]
-	fn overall_top_level_healthy_only_true_when_not_failing() {
-		assert!(OverallResult::Healthy.is_healthy_top_level());
-		assert!(OverallResult::Degraded.is_healthy_top_level());
-		assert!(!OverallResult::Failing.is_healthy_top_level());
 	}
 
 	#[test]
@@ -315,14 +327,29 @@ mod tests {
 		let c = Check::pass("db_connect", "ok").with_detail("latency_ms", 3);
 		let v = c.to_wire();
 		assert_eq!(v["check"], "db_connect");
-		assert_eq!(v["healthy"], true);
+		assert_eq!(v["result"], "passed");
 		assert_eq!(v["latency_ms"], 3);
 	}
 
 	#[test]
-	fn check_to_wire_warning_marks_unhealthy() {
-		let c = Check::warning("disk_free", "20% used", "below threshold");
-		let v = c.to_wire();
-		assert_eq!(v["healthy"], false);
+	fn check_to_wire_statuses() {
+		let warn = Check::warning("disk_free", "20% used", "below threshold");
+		assert_eq!(warn.to_wire()["result"], "warning");
+		let fail = Check::fail("disk_free", "1% free", "out of space");
+		assert_eq!(fail.to_wire()["result"], "failed");
+		let broken = Check::broken("x", "query broken", "no such column");
+		assert_eq!(broken.to_wire()["result"], "broken");
+		let skip = Check::skip("x", "n/a", "central-only");
+		assert_eq!(skip.to_wire()["result"], "skipped");
+	}
+
+	#[test]
+	fn broken_round_trips_through_streaming_json() {
+		let c = Check::broken("x", "query broken", "no such column");
+		let v = c.to_streaming_json();
+		assert_eq!(v["status"], "broken");
+		assert_eq!(v["reason"], "no such column");
+		let back = Check::from_streaming_json(&v, |_| Some("x")).unwrap();
+		assert!(matches!(back.status, CheckStatus::Broken(r) if r == "no such column"));
 	}
 }

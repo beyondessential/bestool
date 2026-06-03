@@ -1,4 +1,4 @@
-use super::CheckContext;
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -18,6 +18,6 @@ pub async fn run(ctx: CheckContext) -> Check {
 			"no migrations applied",
 			"SequelizeMeta is empty",
 		),
-		Err(err) => Check::fail("migrations", "query failed", err.to_string()),
+		Err(err) => query_error_check("migrations", &err),
 	}
 }

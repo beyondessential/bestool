@@ -275,7 +275,8 @@ impl CanopyClient {
 	/// URL is used. In mTLS mode, posts to `{base_url}/status/{server_id}`.
 	///
 	/// The payload is free-form JSON; the canopy `/status` contract reserves the
-	/// top-level `healthy: bool` and `health: []` keys. The body is gzip-encoded
+	/// top-level `health: []` key, whose entries each carry a `result` of
+	/// `passed | warning | failed | broken | skipped`. The body is gzip-encoded
 	/// with `Content-Encoding: gzip`.
 	pub async fn post_status(
 		&self,
@@ -634,7 +635,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		use flate2::read::GzDecoder;
 		use std::io::Read;
 
-		let original = br#"{"healthy":true,"health":[{"check":"x","healthy":true}]}"#;
+		let original = br#"{"health":[{"check":"x","result":"passed"}]}"#;
 		let compressed = gzip_bytes(original).expect("gzip should succeed");
 		assert!(
 			compressed.starts_with(&[0x1f, 0x8b]),

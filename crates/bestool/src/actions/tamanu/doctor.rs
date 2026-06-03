@@ -527,6 +527,7 @@ fn write_check_line<W: Write>(
 		CheckStatus::Skip(_) => colour_skip(use_colours, "SKIP"),
 		CheckStatus::Warning(_) => colour_warn(use_colours, "WARN"),
 		CheckStatus::Fail(_) => colour_fail(use_colours, "FAIL"),
+		CheckStatus::Broken(_) => colour_broken(use_colours, "BRKN"),
 	};
 	writeln!(
 		out,
@@ -535,7 +536,11 @@ fn write_check_line<W: Write>(
 		width = name_width,
 		summary = check.summary,
 	)?;
-	if let CheckStatus::Skip(r) | CheckStatus::Warning(r) | CheckStatus::Fail(r) = &check.status {
+	if let CheckStatus::Skip(r)
+	| CheckStatus::Warning(r)
+	| CheckStatus::Fail(r)
+	| CheckStatus::Broken(r) = &check.status
+	{
 		let dim = if use_colours {
 			format!("{}", r.dimmed())
 		} else {
@@ -557,13 +562,14 @@ fn write_result_line<W: Write>(
 	overall: OverallResult,
 	use_colours: bool,
 ) -> std::io::Result<()> {
-	let (mut warnings, mut fails, mut skips) = (0usize, 0usize, 0usize);
+	let (mut warnings, mut fails, mut skips, mut brokens) = (0usize, 0usize, 0usize, 0usize);
 	for (check, _) in results {
 		match &check.status {
 			CheckStatus::Pass => {}
 			CheckStatus::Skip(_) => skips += 1,
 			CheckStatus::Warning(_) => warnings += 1,
 			CheckStatus::Fail(_) => fails += 1,
+			CheckStatus::Broken(_) => brokens += 1,
 		}
 	}
 	let label = overall.label();
@@ -572,6 +578,11 @@ fn write_result_line<W: Write>(
 		OverallResult::Degraded => colour_warn(use_colours, label),
 		OverallResult::Failing => colour_fail(use_colours, label),
 	};
+	let broken_suffix = if brokens > 0 {
+		format!(", {brokens} broken")
+	} else {
+		String::new()
+	};
 	let skip_suffix = if skips > 0 {
 		format!(", {skips} skipped")
 	} else {
@@ -579,7 +590,7 @@ fn write_result_line<W: Write>(
 	};
 	writeln!(
 		out,
-		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural}{skip_suffix})",
+		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural}{broken_suffix}{skip_suffix})",
 		plural = if warnings == 1 { "" } else { "s" },
 	)
 }
@@ -703,6 +714,14 @@ fn colour_warn(use_colours: bool, s: &str) -> String {
 fn colour_fail(use_colours: bool, s: &str) -> String {
 	if use_colours {
 		format!("{}", s.red().bold())
+	} else {
+		s.to_string()
+	}
+}
+
+fn colour_broken(use_colours: bool, s: &str) -> String {
+	if use_colours {
+		format!("{}", s.magenta().bold())
 	} else {
 		s.to_string()
 	}

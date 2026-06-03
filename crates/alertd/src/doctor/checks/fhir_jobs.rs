@@ -9,7 +9,7 @@
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use super::{CheckContext, fmt_db_error};
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::Check;
 
 const WARN_DEPTH: i64 = 200;
@@ -19,8 +19,11 @@ const FAIL_OLDEST_SECS: i64 = 60 * 60; // 1h
 
 pub async fn run(ctx: CheckContext) -> Check {
 	if ctx.config.is_facility() {
-		return Check::pass("fhir_jobs", "not applicable on facility server")
-			.with_detail("skipped", true);
+		return Check::skip(
+			"fhir_jobs",
+			"not applicable on facility server",
+			"central-only check",
+		);
 	}
 
 	let Some(client) = ctx.db.as_deref() else {
@@ -41,10 +44,9 @@ pub async fn run(ctx: CheckContext) -> Check {
 				&& (db.code() == &tokio_postgres::error::SqlState::UNDEFINED_TABLE
 					|| db.code() == &tokio_postgres::error::SqlState::INVALID_SCHEMA_NAME)
 			{
-				return Check::pass("fhir_jobs", "fhir.jobs table not present")
-					.with_detail("skipped", true);
+				return Check::skip("fhir_jobs", "fhir.jobs table not present", "table absent");
 			}
-			return Check::fail("fhir_jobs", "query failed", fmt_db_error(&err));
+			return query_error_check("fhir_jobs", &err);
 		}
 	};
 

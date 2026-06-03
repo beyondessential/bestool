@@ -18,8 +18,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 	} else if cfg!(target_os = "windows") {
 		Supervisor::Pm2
 	} else {
-		return Check::pass("tamanu_service", "service check skipped on this platform")
-			.with_detail("skipped", true);
+		return Check::skip(
+			"tamanu_service",
+			"service check skipped on this platform",
+			"no supervisor support on this platform",
+		);
 	};
 
 	// Patient-portal expectation is gated on Tamanu's own `features.patientPortal`

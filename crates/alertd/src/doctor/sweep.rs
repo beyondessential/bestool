@@ -137,7 +137,7 @@ pub async fn perform_sweep(
 
 	let overall =
 		OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-	let payload = build_payload(&info_value, &results, overall);
+	let payload = build_payload(&info_value, &results);
 
 	Ok(SweepResult {
 		server_id,
@@ -193,34 +193,24 @@ async fn collect_server_facts(
 }
 
 pub fn overall_from_payload(payload: &Value) -> OverallResult {
-	let healthy = payload
-		.get("healthy")
-		.and_then(Value::as_bool)
-		.unwrap_or(true);
-	if !healthy {
-		return OverallResult::Failing;
-	}
-	// `healthy: true` covers both Healthy and Degraded — peek at the
-	// per-check entries to disambiguate. A `healthy: false` entry in a
-	// top-level-healthy payload means a warning was logged.
-	let degraded = payload
-		.get("health")
-		.and_then(Value::as_array)
-		.map(|arr| {
-			arr.iter().any(|c| {
-				c.get("healthy") == Some(&Value::Bool(false))
-					&& c.get("skipped") != Some(&Value::Bool(true))
-			})
-		})
-		.unwrap_or(false);
-	if degraded {
+	let results = || {
+		payload
+			.get("health")
+			.and_then(Value::as_array)
+			.into_iter()
+			.flatten()
+			.filter_map(|c| c.get("result").and_then(Value::as_str))
+	};
+	if results().any(|r| r == "failed") {
+		OverallResult::Failing
+	} else if results().any(|r| r == "warning" || r == "broken") {
 		OverallResult::Degraded
 	} else {
 		OverallResult::Healthy
 	}
 }
 
-fn build_payload(info: &Value, results: &[(Check, bool)], overall: OverallResult) -> Value {
+fn build_payload(info: &Value, results: &[(Check, bool)]) -> Value {
 	let mut payload: Map<String, Value> = match info {
 		Value::Object(o) => o.clone(),
 		_ => Map::new(),
@@ -242,7 +232,6 @@ fn build_payload(info: &Value, results: &[(Check, bool)], overall: OverallResult
 		.map(|(c, _)| c.to_wire())
 		.collect();
 
-	payload.insert("healthy".into(), overall.is_healthy_top_level().into());
 	payload.insert("health".into(), Value::Array(health));
 
 	Value::Object(payload)
@@ -266,33 +255,46 @@ mod tests {
 	}
 
 	#[test]
-	fn payload_all_pass_is_healthy() {
+	fn payload_all_pass() {
 		let results = vec![pass("a"), pass("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
-		assert_eq!(payload["healthy"], true);
+		let payload = build_payload(&Value::Object(Default::default()), &results);
+		assert!(payload.get("healthy").is_none());
 		assert_eq!(payload["health"].as_array().unwrap().len(), 2);
-		assert!(payload["health"][0]["healthy"].as_bool().unwrap());
+		assert_eq!(payload["health"][0]["result"], "passed");
 	}
 
 	#[test]
-	fn payload_warning_keeps_top_healthy_but_check_unhealthy() {
-		let results = vec![pass("a"), warn("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
-		assert_eq!(payload["healthy"], true);
-		assert_eq!(payload["health"][1]["healthy"], false);
-	}
-
-	#[test]
-	fn payload_fail_flips_top_level() {
+	fn payload_per_check_results() {
 		let results = vec![pass("a"), warn("b"), fail("c")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
-		assert_eq!(payload["healthy"], false);
+		let payload = build_payload(&Value::Object(Default::default()), &results);
+		assert_eq!(payload["health"][0]["result"], "passed");
+		assert_eq!(payload["health"][1]["result"], "warning");
+		assert_eq!(payload["health"][2]["result"], "failed");
+	}
+
+	#[test]
+	fn overall_from_payload_tiers_on_results() {
+		let mk = |results: &[&str]| {
+			serde_json::json!({
+				"health": results.iter().map(|r| serde_json::json!({"check": "x", "result": r})).collect::<Vec<_>>(),
+			})
+		};
+		assert_eq!(
+			overall_from_payload(&mk(&["passed", "skipped"])),
+			OverallResult::Healthy
+		);
+		assert_eq!(
+			overall_from_payload(&mk(&["passed", "warning"])),
+			OverallResult::Degraded
+		);
+		assert_eq!(
+			overall_from_payload(&mk(&["passed", "broken"])),
+			OverallResult::Degraded
+		);
+		assert_eq!(
+			overall_from_payload(&mk(&["warning", "failed"])),
+			OverallResult::Failing
+		);
 	}
 
 	#[test]
@@ -311,9 +313,7 @@ mod tests {
 				serde_json::json!({"supervisor": "systemd", "expectations": []}),
 			);
 		let results = vec![(check, true)];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&info_value, &results, overall);
+		let payload = build_payload(&info_value, &results);
 
 		assert_eq!(payload["osTimezone"], "Pacific/Auckland");
 		// Lifted into the top level, alongside osTimezone.
@@ -331,9 +331,7 @@ mod tests {
 			(Check::pass("on", "ok"), true),
 			(Check::pass("off", "ok"), false),
 		];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
+		let payload = build_payload(&Value::Object(Default::default()), &results);
 		let names: Vec<&str> = payload["health"]
 			.as_array()
 			.unwrap()
@@ -344,15 +342,11 @@ mod tests {
 	}
 
 	#[test]
-	fn payload_skip_is_healthy_on_wire() {
+	fn payload_skip_result_on_wire() {
 		// The whole point of distinguishing Skip from Fail/Warning is that
 		// "we don't know" shouldn't fire alerts downstream of the wire format.
 		let results = vec![pass("a"), skip("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let payload = build_payload(&Value::Object(Default::default()), &results, overall);
-		assert_eq!(payload["healthy"], true);
-		assert_eq!(payload["health"][1]["healthy"], true);
-		assert_eq!(payload["health"][1]["skipped"], true);
+		let payload = build_payload(&Value::Object(Default::default()), &results);
+		assert_eq!(payload["health"][1]["result"], "skipped");
 	}
 }

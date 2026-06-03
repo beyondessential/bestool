@@ -73,6 +73,19 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
 
+  contract:
+    name: Canopy contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Contract tests against live canopy
+        run: cargo test -p bestool --lib canopy_contract -- --ignored
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -112,7 +125,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, check-docs]
+    needs: [test, contract, check-docs]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

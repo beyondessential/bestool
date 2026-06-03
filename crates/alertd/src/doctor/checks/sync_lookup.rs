@@ -4,7 +4,7 @@
 //! staleness: WARN past 2 minutes, FAIL past 5. If the tracking row is absent,
 //! treat the lookup as not tracked and pass.
 
-use super::{CheckContext, fmt_db_error};
+use super::{CheckContext, query_error_check};
 use crate::doctor::check::{Check, CheckStatus};
 use bestool_tamanu::ApiServerKind;
 
@@ -31,7 +31,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let row = match client.query_opt(SQL, &[]).await {
 		Ok(Some(r)) => r,
 		Ok(None) => return Check::pass(NAME, "lookup table not tracked"),
-		Err(err) => return Check::fail(NAME, "query failed", fmt_db_error(&err)),
+		Err(err) => return query_error_check(NAME, &err),
 	};
 
 	let last_sync_tick: Option<String> = row.try_get("last_sync_tick").ok();

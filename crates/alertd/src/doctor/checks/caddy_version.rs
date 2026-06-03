@@ -189,6 +189,7 @@ mod tests {
 			Skip(_) => "skip",
 			Warning(_) => "warning",
 			Fail(_) => "fail",
+			Broken(_) => "broken",
 		}
 	}
 
