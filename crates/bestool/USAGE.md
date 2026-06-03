@@ -1892,8 +1892,9 @@ sub-process to talk to.
 
 Fetch this device's tags from canopy.
 
-Tags are stored server-side in canopy and identify what role / fleet /
-labels this device carries. The fetch is authenticated by the canopy
+Tags are key→value labels stored server-side in canopy, identifying what
+role / fleet / labels this device carries; the server's own tags are
+merged over its group's. The fetch is authenticated by the canopy
 client (tailscale identity, or mTLS with the device key).
 
 On a successful fetch the result is cached to disk alongside the
@@ -1906,7 +1907,7 @@ human-readable output.
 
 ###### **Options:**
 
-* `--json` — Emit the tags as JSON rather than a human-readable list
+* `--json` — Emit the tags as JSON rather than a human-readable table
 * `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
 
 

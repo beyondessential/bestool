@@ -5,6 +5,13 @@ pub use crate::args::get_args as args;
 
 pub(crate) mod actions;
 pub(crate) mod args;
+#[cfg(all(
+	test,
+	feature = "canopy-register",
+	feature = "tamanu-artifacts",
+	feature = "tamanu-psql"
+))]
+mod canopy_contract;
 #[cfg(feature = "download")]
 pub(crate) mod download;
 pub mod find_postgres;

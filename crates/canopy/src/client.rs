@@ -98,16 +98,17 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 	probe_tailscale(make_builder).await
 }
 
-/// RFC 5424 syslog severities accepted by the canopy `/events` API.
+/// Severities accepted by the canopy `/events` API.
+///
+/// Canopy narrowed its vocabulary from RFC 5424 to this five-level set; the
+/// retired syslog severities (`emergency`, `alert`, `notice`) are rejected by
+/// the strict enum validation on `POST /events`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
-	Emergency,
-	Alert,
 	Critical,
 	Error,
 	Warning,
-	Notice,
 	Info,
 	Debug,
 }
@@ -652,8 +653,8 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			"\"warning\""
 		);
 		assert_eq!(
-			serde_json::to_string(&Severity::Emergency).unwrap(),
-			"\"emergency\""
+			serde_json::to_string(&Severity::Critical).unwrap(),
+			"\"critical\""
 		);
 	}
 
