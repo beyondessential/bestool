@@ -6,6 +6,11 @@
 //! samples decode into bestool's types. These tests need network access, and
 //! fail honestly when live canopy doesn't (yet) serve an endpoint bestool
 //! depends on.
+//!
+//! All tests here are `#[ignore]`d so plain `cargo test` skips them; CI runs
+//! them in a dedicated job (`cargo test -p bestool --lib canopy_contract --
+//! --ignored`) so a contract failure is clearly drift against live canopy
+//! rather than a fault in bestool's own test suite.
 
 use std::collections::BTreeMap;
 
@@ -109,6 +114,7 @@ fn response_schema(path: &str, method: &str) -> String {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn events_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/events", "post");
@@ -137,6 +143,7 @@ async fn events_request_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn severity_vocabulary_matches_spec() {
 	let spec = spec().await;
 	let spec_levels: Vec<&str> = resolve(spec, "/components/schemas/Severity")
@@ -183,6 +190,7 @@ async fn severity_vocabulary_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn status_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/status/{server_id}", "post");
@@ -208,6 +216,7 @@ async fn status_request_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn servers_probe_path_exists() {
 	// `GET /servers` is the no-auth probe `CanopyClient` uses to detect the
 	// tailscale path.
@@ -215,6 +224,7 @@ async fn servers_probe_path_exists() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn register_begin_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/begin", "post");
@@ -243,6 +253,7 @@ async fn register_begin_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn register_complete_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/complete", "post");
@@ -275,6 +286,7 @@ async fn register_complete_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn tags_response_matches_decode() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/tags", "get");
@@ -295,6 +307,7 @@ async fn tags_response_matches_decode() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn snippets_response_matches_decode() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/bestool/snippets", "get");
@@ -310,6 +323,7 @@ async fn snippets_response_matches_decode() {
 }
 
 #[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
 async fn artifacts_response_matches_decode() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/versions/{version}/artifacts", "get");
