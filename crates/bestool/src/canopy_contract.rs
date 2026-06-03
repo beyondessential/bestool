@@ -187,13 +187,15 @@ async fn status_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/status/{server_id}", "post");
 
-	// Representative sweep payload: the reserved `healthy`/`health` keys plus
-	// free-form extras, as posted by alertd's doctor task.
+	// Representative sweep payload: the reserved `health` key plus free-form
+	// extras, as posted by alertd's doctor task.
 	let instance = json!({
-		"healthy": false,
 		"health": [
-			{"check": "uptime", "healthy": true, "uptime_secs": 12345},
-			{"check": "disk", "healthy": false, "free_percent": 3},
+			{"check": "uptime", "result": "passed", "uptime_secs": 12345},
+			{"check": "disk", "result": "failed", "free_percent": 3},
+			{"check": "sync_lookup", "result": "broken"},
+			{"check": "fhir_jobs", "result": "skipped"},
+			{"check": "load", "result": "warning"},
 		],
 		"hostname": "test-host",
 		"pg_version": "16.4",

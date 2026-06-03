@@ -16,8 +16,8 @@
 //! "is this *person* connected" is what's measured, even if their Windows
 //! session ID changes across reconnects); fall back to user@line otherwise.
 //!
-//! A single threshold: sessions of 12h+ produce a warning ("healthy: false"
-//! on the wire for this check, but never flips the overall result to FAILING).
+//! A single threshold: sessions of 12h+ produce a warning (`result: "warning"`
+//! on the wire for this check, which never flips the overall result to FAILING).
 //! A long-lived session can only ever warn, not fail — so a forgotten RDP
 //! session won't take the whole doctor result down.
 //!

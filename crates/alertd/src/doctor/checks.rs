@@ -90,16 +90,15 @@ pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
 /// Class 42 ("syntax error or access rule violation": dropped or renamed
 /// columns, json/jsonb drift, missing functions) means the check's own SQL no
 /// longer matches the schema — a fault in the healthcheck, not the deployment
-/// — so it reports as WARNING with `healthcheckBroken: true` in details
-/// rather than flagging the server as failing. Everything else stays FAIL.
+/// — so it reports as BROKEN rather than flagging the server as failing.
+/// Everything else stays FAIL.
 pub fn query_error_check(name: &'static str, err: &tokio_postgres::Error) -> Check {
 	let reason = fmt_db_error(err);
 	if err
 		.as_db_error()
 		.is_some_and(|db| db.code().code().starts_with("42"))
 	{
-		Check::warning(name, "healthcheck query broken", reason)
-			.with_detail("healthcheckBroken", true)
+		Check::broken(name, "healthcheck query broken", reason)
 	} else {
 		Check::fail(name, "query failed", reason)
 	}
@@ -283,31 +282,24 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn schema_drift_warns_with_healthcheck_broken() {
+	async fn schema_drift_is_broken() {
 		// 42P01 undefined_table — the shape a dropped/renamed relation takes.
 		let Some(err) = query_err("SELECT nope FROM no_such_table_bestool_test").await else {
 			return;
 		};
 		let check = query_error_check("x", &err);
-		assert!(matches!(check.status, CheckStatus::Warning(_)));
-		assert_eq!(
-			check.details.get("healthcheckBroken"),
-			Some(&Value::Bool(true))
-		);
+		assert!(matches!(check.status, CheckStatus::Broken(_)));
+		assert_eq!(check.to_wire()["result"], Value::from("broken"));
 	}
 
 	#[tokio::test]
-	async fn syntax_error_warns_with_healthcheck_broken() {
+	async fn syntax_error_is_broken() {
 		// 42601 syntax_error.
 		let Some(err) = query_err("SELECT FROM WHERE").await else {
 			return;
 		};
 		let check = query_error_check("x", &err);
-		assert!(matches!(check.status, CheckStatus::Warning(_)));
-		assert_eq!(
-			check.details.get("healthcheckBroken"),
-			Some(&Value::Bool(true))
-		);
+		assert!(matches!(check.status, CheckStatus::Broken(_)));
 	}
 
 	#[tokio::test]
@@ -318,6 +310,6 @@ mod tests {
 		};
 		let check = query_error_check("x", &err);
 		assert!(check.status.is_fatal());
-		assert!(!check.details.contains_key("healthcheckBroken"));
+		assert_eq!(check.to_wire()["result"], Value::from("failed"));
 	}
 }
