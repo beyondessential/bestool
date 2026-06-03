@@ -8,7 +8,7 @@
 //! online fetch always overwrites it; an offline run consults whatever was
 //! last cached and warns that the data may be stale.
 
-use std::{path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use bestool_canopy::{CanopyClient, DEFAULT_CANOPY_URL};
 use clap::Parser;
@@ -27,8 +27,9 @@ use crate::actions::{
 
 /// Fetch this device's tags from canopy.
 ///
-/// Tags are stored server-side in canopy and identify what role / fleet /
-/// labels this device carries. The fetch is authenticated by the canopy
+/// Tags are key→value labels stored server-side in canopy, identifying what
+/// role / fleet / labels this device carries; the server's own tags are
+/// merged over its group's. The fetch is authenticated by the canopy
 /// client (tailscale identity, or mTLS with the device key).
 ///
 /// On a successful fetch the result is cached to disk alongside the
@@ -39,7 +40,7 @@ use crate::actions::{
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct TagsArgs {
-	/// Emit the tags as JSON rather than a human-readable list.
+	/// Emit the tags as JSON rather than a human-readable table.
 	#[arg(long)]
 	pub json: bool,
 
@@ -51,13 +52,16 @@ pub struct TagsArgs {
 
 /// On-disk shape for the tags cache.
 ///
-/// Wraps the bare tag list in a struct so we can carry a `fetched_at`
-/// timestamp for "how stale is this cache" reporting. Forward-compatible
-/// against future fields by being a named-fields struct rather than just
-/// `Vec<String>`.
+/// Wraps the tag map in a struct so we can carry a `fetched_at` timestamp
+/// for "how stale is this cache" reporting. Forward-compatible against
+/// future fields by being a named-fields struct rather than just the map.
+///
+/// Caches written before tags became a key→value map (when they were a bare
+/// list) fail to parse and are ignored by [`load_cache`], same as any other
+/// unparseable cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TagsCache {
-	tags: Vec<String>,
+	tags: BTreeMap<String, String>,
 	#[serde(default)]
 	fetched_at: Option<jiff::Timestamp>,
 }
@@ -116,7 +120,7 @@ enum Source {
 	Cache(Option<jiff::Timestamp>),
 }
 
-async fn fetch_online(tamanu_version: &str) -> Result<Vec<String>> {
+async fn fetch_online(tamanu_version: &str) -> Result<BTreeMap<String, String>> {
 	let device_key = bestool_tamanu::server_info::fetch_device_key().await;
 	let canopy = CanopyClient::new(
 		tamanu_version.to_owned(),
@@ -136,28 +140,28 @@ async fn fetch_online(tamanu_version: &str) -> Result<Vec<String>> {
 		.into_diagnostic()
 		.wrap_err("parsing canopy base URL")?;
 
-	// `/public/tags/self` is reachable from tagged-device tailscale callers
-	// (the only mount that admits them); `/tags/self` is the mTLS path on
-	// the main canopy host.
+	// `/public/tags` is reachable from tagged-device tailscale callers
+	// (the only mount that admits them); `/tags` is the mTLS path on
+	// the main canopy host. Returns the merged server+group tag map.
 	let response = canopy
-		.get(&base, "/public/tags/self", "/tags/self")
+		.get(&base, "/public/tags", "/tags")
 		.await
-		.wrap_err("GET /tags/self via canopy")?;
+		.wrap_err("GET /tags via canopy")?;
 
 	let status = response.status();
 	if !status.is_success() {
 		let body = response.text().await.unwrap_or_default();
-		bail!("canopy /tags/self returned {status}: {body}");
+		bail!("canopy /tags returned {status}: {body}");
 	}
 
 	response
-		.json::<Vec<String>>()
+		.json::<BTreeMap<String, String>>()
 		.await
 		.into_diagnostic()
 		.wrap_err("decoding canopy tags response")
 }
 
-fn render_json(tags: &[String], source: Source) -> Result<()> {
+fn render_json(tags: &BTreeMap<String, String>, source: Source) -> Result<()> {
 	let payload = serde_json::json!({
 		"tags": tags,
 		"source": match source {
@@ -175,15 +179,15 @@ fn render_json(tags: &[String], source: Source) -> Result<()> {
 	Ok(())
 }
 
-fn render_text(tags: &[String], source: Source, use_colours: bool) -> Result<()> {
+fn render_text(tags: &BTreeMap<String, String>, source: Source, use_colours: bool) -> Result<()> {
 	if tags.is_empty() {
 		println!("(no tags assigned)");
 	} else {
 		let mut table = Table::new();
 		table.load_preset(NOTHING);
-		table.set_header(Row::from(vec!["Tag"]));
-		for t in tags {
-			table.add_row(Row::from(vec![t.clone()]));
+		table.set_header(Row::from(vec!["Tag", "Value"]));
+		for (key, value) in tags {
+			table.add_row(Row::from(vec![key.clone(), value.clone()]));
 		}
 		println!("{table}");
 	}
