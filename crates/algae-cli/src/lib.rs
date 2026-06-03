@@ -71,8 +71,7 @@
 //! Or you can prompt for a passphrase with the same flags and logic as algae with:
 //!
 //! ```no_run
-//! use age::secrecy::ExposeSecret;
-//! use algae_cli::passphrases::PassphraseArgs;
+//! use algae_cli::passphrases::{ExposeSecret, PassphraseArgs};
 //! use clap::Parser;
 //! use miette::Result;
 //!
