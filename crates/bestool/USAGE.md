@@ -54,6 +54,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu`↴](#bestool-tamanu)
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
+* [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -1318,6 +1319,7 @@ files.
 ###### **Subcommands:**
 
 * `run` — Run the healthcheck daemon
+* `status` — Show status and health of a running daemon
 
 
 
@@ -1331,6 +1333,9 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 
 ###### **Options:**
 
+* `--glob <GLOB>` — Deprecated, does nothing.
+
+   Previously selected the alert definition files to load. The daemon no longer loads alert definitions; the option is still accepted so existing invocations keep working until they are migrated.
 * `--no-server` — Disable the HTTP server
 * `--server-addr <SERVER_ADDR>` — HTTP server bind address(es)
 
@@ -1343,6 +1348,22 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 * `--no-watchdog` — Disable the watchdog
 
    By default, the daemon will exit if no task activity is detected within the watchdog timeout. This flag disables that behaviour.
+
+
+
+## `bestool tamanu alertd status`
+
+Show status and health of a running daemon
+
+Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+
+**Usage:** `bestool tamanu alertd status [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
+
+   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 
 
 

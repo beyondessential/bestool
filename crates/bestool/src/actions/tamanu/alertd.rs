@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use bestool_tamanu::{
 	config::{TamanuConfig, load_config},
@@ -29,6 +29,14 @@ pub struct AlertdArgs {
 /// Common arguments for running the daemon
 #[derive(Debug, Clone, Parser)]
 struct DaemonArgs {
+	/// Deprecated, does nothing.
+	///
+	/// Previously selected the alert definition files to load. The daemon no
+	/// longer loads alert definitions; the option is still accepted so
+	/// existing invocations keep working until they are migrated.
+	#[arg(long, value_name = "GLOB")]
+	glob: Vec<String>,
+
 	/// Disable the HTTP server
 	#[arg(long)]
 	no_server: bool,
@@ -66,6 +74,19 @@ enum Command {
 		daemon: DaemonArgs,
 	},
 
+	/// Show status and health of a running daemon
+	///
+	/// Connects to the running daemon's HTTP API and displays version, uptime,
+	/// health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+	Status {
+		/// HTTP server address(es) to try
+		///
+		/// Can be provided multiple times. Will attempt to connect to each address
+		/// in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
 	/// Install the daemon as a Windows service
 	///
 	/// Creates a Windows service named 'bestool-alertd' that will start automatically
@@ -97,6 +118,14 @@ enum Command {
 
 pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	match args.command {
+		Command::Status { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::get_status(&addrs).await
+		}
 		Command::Run { daemon } => {
 			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
 			let config = load_config(&root, None)?;
@@ -149,12 +178,17 @@ async fn build_config(
 	tamanu_version: &node_semver::Version,
 	config: TamanuConfig,
 	DaemonArgs {
+		glob,
 		no_server,
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
 	}: DaemonArgs,
 ) -> Result<bestool_alertd::DaemonConfig> {
+	if !glob.is_empty() {
+		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
+	}
+
 	let database_url = config.database_url();
 	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
 
