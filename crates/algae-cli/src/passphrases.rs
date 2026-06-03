@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
-use age::{secrecy::SecretString, Identity, Recipient};
+use age::{Identity, Recipient};
 use clap::Parser;
 use dialoguer::Password;
 use miette::{miette, Context as _, IntoDiagnostic as _, Result};
 use pinentry::PassphraseInput;
 use tokio::fs::read_to_string;
+
+/// Re-exported from [`age`] so dependents can name and read passphrase secrets
+/// without taking a direct dependency on age.
+pub use age::secrecy::{ExposeSecret, SecretString};
 
 /// [Clap][clap] arguments for passphrases.
 ///
