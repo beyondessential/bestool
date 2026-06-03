@@ -1,6 +1,6 @@
 [package]
 name = "bestool-alertd"
-version = "7.0.0"
+version = "7.0.1"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -13,10 +13,10 @@ workspace = true
 
 [dependencies]
 axum = "0.8.9"
-bestool-canopy = { version = "0.2.1", path = "../canopy" }
-bestool-kopia = { version = "0.1.1", path = "../kopia" }
+bestool-canopy = { version = "0.3.0", path = "../canopy" }
+bestool-kopia = { version = "0.1.2", path = "../kopia" }
 bestool-postgres = { version = "1.0.11", path = "../postgres" }
-bestool-tamanu = { version = "0.11.0", path = "../tamanu", features = ["canopy-registration"] }
+bestool-tamanu = { version = "0.11.1", path = "../tamanu", features = ["canopy-registration"] }
 bytes = "1.9.0"
 dirs = "6.0.0"
 duct = "1.1.0"
