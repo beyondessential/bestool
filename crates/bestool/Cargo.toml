@@ -61,7 +61,6 @@ p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
 percent-encoding = { version = "2.3.1", optional = true }
 privilege = { version = "0.3.0", optional = true }
 quick-xml = { version = "0.40.1", features = ["serialize"], optional = true }
-rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 regex = { version = "1.11.2", optional = true }
 reqwest = { workspace = true }
 rpi-st7789v2-driver = { version = "0.3.13", path = "../rpi-st7789v2-driver", features = ["miette"], optional = true }
@@ -97,7 +96,7 @@ windows-service = { version = "0.8.0", optional = true }
 windows_exe_info = { version = "0.5.2", features = ["manifest"] }
 
 [features]
-default = ["caddy", "completions", "crypto", "kopia", "rdp", "self-update", "ssh", "tamanu"]
+default = ["caddy", "canopy", "completions", "crypto", "kopia", "rdp", "self-update", "ssh", "tamanu"]
 
 ## Common dep groups (not meant to be used directly)
 download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolver"]
@@ -126,12 +125,11 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-greenmask",
 	"tamanu-lifecycle",
 	"tamanu-logs",
-	"tamanu-meta-ticket",
 	"tamanu-psql",
 	"tamanu-sync",
 	"tamanu-tags",
 ]
-tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:bestool-postgres", "dep:p256"]
+tamanu-alertd = ["__tamanu", "tamanu-config", "dep:bestool-alertd", "dep:bestool-postgres", "bestool-tamanu/canopy-registration", "dep:p256"]
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
@@ -140,6 +138,7 @@ tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",
 	"dep:bestool-alertd",
+	"bestool-tamanu/canopy-registration",
 	"dep:bestool-canopy",
 	"dep:bestool-postgres",
 	"dep:bestool-psql",
@@ -154,10 +153,9 @@ tamanu-find = ["__tamanu"]
 tamanu-greenmask = ["__tamanu", "tamanu-config", "dep:bestool-psql", "dep:dunce", "dep:serde_yaml", "dep:walkdir"]
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
-tamanu-meta-ticket = ["__tamanu", "tamanu-config", "bestool-tamanu/meta-ticket", "dep:base64", "dep:bestool-psql", "dep:p256", "dep:rand_core", "dep:tokio-postgres"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:bestool-psql"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
-tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "dep:comfy-table"]
+tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:comfy-table"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:bestool-tamanu",
 	"dep:dirs",
@@ -165,6 +163,17 @@ __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:node-semver",
 	"dep:regex",
 ]
+
+## Canopy subcommands
+canopy = [ # enable all canopy subcommands
+	"canopy-register",
+	"canopy-export",
+	"canopy-import",
+]
+canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:p256"]
+canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
+canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
+__canopy = ["dep:bestool-canopy"] # internal feature to enable the canopy subcommand common code
 
 ## Iti subcommands
 iti = [ # enable all iti subcommands
@@ -184,6 +193,7 @@ tamanu-upgrade = []
 walg = []
 
 [dev-dependencies]
+age = { version = "0.11.3", features = ["async"] }
 trycmd = "1.2.0"
 
 [package.metadata.binstall]

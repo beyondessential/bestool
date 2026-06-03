@@ -12,10 +12,15 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
+algae-cli = { version = "1.0.21", path = "../algae-cli" }
+base64 = "0.22.1"
+blake3 = "1.8.5"
 flate2 = "1.0.34"
-futures = { workspace = true }
+futures = { workspace = true, features = ["executor"] }
+getrandom = "0.3.4"
 hickory-resolver = "0.26.1"
 jiff = { version = "0.2.24", features = ["serde"] }
+machine-uid = "0.6.0"
 miette = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true }
@@ -25,3 +30,6 @@ sysinfo = { workspace = true }
 time = "0.3"
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.21.0"
