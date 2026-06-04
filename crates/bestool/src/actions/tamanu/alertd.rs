@@ -127,7 +127,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			bestool_alertd::commands::get_status(&addrs).await
 		}
 		Command::Run { daemon } => {
-			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 
@@ -149,7 +149,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 			let config = load_config(&root, None)?;
 			debug!(?config, "parsed Tamanu config");
 

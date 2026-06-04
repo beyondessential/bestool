@@ -88,6 +88,6 @@ super::subcommands! {
 	stop => Stop(StopArgs)
 }
 
-pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
-	_find_tamanu(args.root.as_deref())
+pub async fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
+	_find_tamanu(args.root.as_deref()).await
 }

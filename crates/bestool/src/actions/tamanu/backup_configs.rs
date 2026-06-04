@@ -175,7 +175,7 @@ pub async fn run(args: BackupConfigsArgs, ctx: Context) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("creating dest dir")?;
 
-	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	// Load config without forcing a specific package: load_config tries each
 	// package directory in order and picks the first that exists. Combined
 	// with the now-broader `is_facility()` detection, this avoids the old

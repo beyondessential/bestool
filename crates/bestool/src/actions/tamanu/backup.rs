@@ -116,7 +116,7 @@ pub async fn run(args: BackupArgs, ctx: Context) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("creating dest dir")?;
 
-	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 

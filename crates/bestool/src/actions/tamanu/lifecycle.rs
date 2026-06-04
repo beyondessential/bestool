@@ -78,7 +78,7 @@ pub async fn config_and_expectations(
 		bail!("tamanu lifecycle commands are only supported on Linux (systemd) and Windows (pm2)");
 	};
 
-	let (_, root) = find_tamanu(tamanu)?;
+	let (_, root) = find_tamanu(tamanu).await?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
 		ApiServerKind::Facility

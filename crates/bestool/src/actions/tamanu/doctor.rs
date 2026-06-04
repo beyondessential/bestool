@@ -78,7 +78,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	let (version, root) = find_tamanu(tamanu)?;
+	let (version, root) = find_tamanu(tamanu).await?;
 	let config = Arc::new(load_config(&root, None)?);
 
 	let database_url = config.database_url();

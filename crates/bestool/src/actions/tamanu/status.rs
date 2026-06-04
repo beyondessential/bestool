@@ -71,7 +71,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	// missing data degrades cleanly to "unknown" rather than failing the
 	// status check, since the same data sources already power other (more
 	// authoritative) drift signals upstream.
-	let (install_version, _root) = find_tamanu(tamanu)?;
+	let (install_version, _root) = find_tamanu(tamanu).await?;
 	let expected_versions = versions::expected_for_supervisor(supervisor, &install_version);
 	let running_versions = match supervisor {
 		Supervisor::Systemd => versions::running_versions_linux().await,

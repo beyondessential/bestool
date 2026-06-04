@@ -5,7 +5,7 @@ use std::{
 
 use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 pub mod caddy;
 pub mod config;
@@ -43,22 +43,87 @@ impl ApiServerKind {
 }
 
 #[instrument(level = "debug")]
-pub fn find_tamanu(root: Option<&Path>) -> Result<(Version, PathBuf)> {
-	#[inline]
-	fn inner(root: Option<&Path>) -> Result<(Version, PathBuf)> {
-		if let Some(root) = root {
-			let version = roots::version_of_root(root)?
-				.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
-			Ok((version, root.canonicalize().into_diagnostic()?))
-		} else {
-			roots::find_versions()?
-				.into_iter()
-				.next()
-				.ok_or_else(|| miette!("no tamanu discovered, use --root"))
+pub async fn find_tamanu(root: Option<&Path>) -> Result<(Version, PathBuf)> {
+	if let Some(root) = root {
+		let version = roots::version_of_root(root)?
+			.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
+		let root = root.canonicalize().into_diagnostic()?;
+		debug!(?root, ?version, "found Tamanu root");
+		return Ok((version, root));
+	}
+
+	let candidates = roots::find_versions()?;
+
+	// On Linux container deployments, `/etc/tamanu/<version>` directories are
+	// config dirs: one can be pre-staged ahead of an upgrade or left behind by
+	// a rollback, so its presence says nothing about the active version. Those
+	// roots are only selectable when a live signal corroborates them.
+	let is_config_dir = |root: &Path| cfg!(target_os = "linux") && root.starts_with("/etc/tamanu");
+	if candidates.iter().any(|(_, root)| is_config_dir(root)) {
+		if let Some((version, root)) = select_active(&candidates).await {
+			debug!(?root, ?version, "found active Tamanu root");
+			return Ok((version, root));
+		}
+
+		// Other roots carry their version intrinsically (package.json), so
+		// they remain selectable without a signal.
+		return candidates
+			.into_iter()
+			.find(|(_, root)| !is_config_dir(root))
+			.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
+			.ok_or_else(|| {
+				miette!(
+					"cannot determine the active Tamanu version: no running container, \
+					database record, or env file matches a config dir under /etc/tamanu; \
+					use --root"
+				)
+			});
+	}
+
+	candidates
+		.into_iter()
+		.next()
+		.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
+		.ok_or_else(|| miette!("no tamanu discovered, use --root"))
+}
+
+/// Match the deployment's active version to a discovered root.
+///
+/// Signals, most authoritative first:
+/// 1. the running API container's image tag (what is running),
+/// 2. the database's `currentVersion` fact (what last ran),
+/// 3. `/etc/tamanu/env`'s `TAMANU_VERSION` (what will start).
+async fn select_active(candidates: &[(Version, PathBuf)]) -> Option<(Version, PathBuf)> {
+	let matching = |version: &Version| candidates.iter().find(|(v, _)| v == version).cloned();
+
+	if let Some(running) = versions::running_version().await {
+		match matching(&running) {
+			Some(found) => return Some(found),
+			None => warn!(%running, "running version has no discovered root"),
 		}
 	}
 
-	inner(root).inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
+	// Reading the DB requires a config, which we don't have a root for yet;
+	// DB credentials don't vary between versioned config dirs, so any
+	// candidate's config will do.
+	if let Some((_, provisional)) = candidates.first()
+		&& let Ok(config) = config::load_config(provisional, None)
+		&& let Some(last_ran) = versions::db_current_version(&config.database_url()).await
+	{
+		match matching(&last_ran) {
+			Some(found) => return Some(found),
+			None => warn!(%last_ran, "database version has no discovered root"),
+		}
+	}
+
+	if let Some(configured) = versions::env_file_version(Path::new("/etc/tamanu/env")) {
+		match matching(&configured) {
+			Some(found) => return Some(found),
+			None => warn!(%configured, "configured version has no discovered root"),
+		}
+	}
+
+	None
 }
 
 /// Decide whether a Tamanu install is a facility or a central server.

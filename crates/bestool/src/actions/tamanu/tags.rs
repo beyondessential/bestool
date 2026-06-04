@@ -67,7 +67,7 @@ struct TagsCache {
 }
 
 pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
-	let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (version, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	let config = Arc::new(load_config(&root, None)?);
 
 	let tamanu_version = version.to_string();
