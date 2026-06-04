@@ -1,12 +1,12 @@
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 const WARN_PCT_USED: f64 = 90.0;
 const FAIL_PCT_USED: f64 = 98.0;
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	let sys = System::new_with_specifics(
 		RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
 	);

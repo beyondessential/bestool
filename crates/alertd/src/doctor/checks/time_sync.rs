@@ -1,9 +1,9 @@
 use tokio::process::Command;
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	if cfg!(target_os = "linux") {
 		return run_linux().await;
 	}

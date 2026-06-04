@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use tokio::task::spawn_blocking;
 use tracing::{debug, trace, warn};
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 /// Sessions older than this trigger a check warning (degrades doctor's
@@ -60,7 +60,7 @@ struct ExternalUser {
 	connected_since: Timestamp,
 }
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	let mut users = match collect_users().await {
 		Ok(CollectOutcome::Users(u)) => u,
 		Ok(CollectOutcome::Unavailable(reason)) => {

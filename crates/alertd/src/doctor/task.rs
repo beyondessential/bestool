@@ -1,10 +1,8 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use bestool_tamanu::config::TamanuConfig;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
-use node_semver::Version;
 use reqwest::Url;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
@@ -28,10 +26,9 @@ pub struct DoctorTask {
 
 struct DoctorTaskInner {
 	binary_version: String,
-	tamanu_version: Version,
-	tamanu_root: PathBuf,
-	config: Arc<TamanuConfig>,
-	database_url: String,
+	/// `None` on hosts with no Tamanu deployment: sweeps still run (and post),
+	/// with all Tamanu-dependent checks skipped.
+	tamanu: Option<doctor::SweepTamanu>,
 	canopy_base_url: Url,
 	/// `SELECT version()` result, populated on the first tick that succeeds in
 	/// reaching the database. Stable for the lifetime of the PG instance, so we
@@ -51,20 +48,11 @@ struct LatestSweep {
 }
 
 impl DoctorTask {
-	pub fn new(
-		binary_version: String,
-		tamanu_version: Version,
-		tamanu_root: PathBuf,
-		config: Arc<TamanuConfig>,
-		database_url: String,
-	) -> Self {
+	pub fn new(binary_version: String, tamanu: Option<doctor::SweepTamanu>) -> Self {
 		Self {
 			inner: Arc::new(DoctorTaskInner {
 				binary_version,
-				tamanu_version,
-				tamanu_root,
-				config,
-				database_url,
+				tamanu,
 				canopy_base_url: DEFAULT_CANOPY_URL
 					.parse()
 					.expect("default canopy URL is valid"),
@@ -84,10 +72,7 @@ impl DoctorTaskInner {
 		let cached = self.pg_version_cache.lock().await.clone();
 		let sweep = doctor::perform_sweep(
 			&self.binary_version,
-			&self.tamanu_version,
-			&self.tamanu_root,
-			self.config.clone(),
-			&self.database_url,
+			self.tamanu.clone(),
 			ctx.http_client.clone(),
 			&[],
 			&[],

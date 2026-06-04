@@ -43,10 +43,12 @@ pub struct DaemonConfig {
 	/// Centralising pool creation at the caller lets `bestool tamanu alertd`
 	/// reuse the pool for one-off setup queries (kind detection, device key
 	/// lookup) instead of opening additional short-lived connections.
-	pub pg_pool: bestool_postgres::pool::PgPool,
+	///
+	/// `None` on hosts with no Tamanu deployment (and therefore no database).
+	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 
 	/// Database connection URL, retained for redacted display.
-	pub database_url: String,
+	pub database_url: Option<String>,
 
 	/// Tamanu device key PEM, used as the client identity for canopy.
 	///
@@ -103,8 +105,8 @@ impl fmt::Debug for DaemonConfig {
 
 impl DaemonConfig {
 	pub fn new(
-		pg_pool: bestool_postgres::pool::PgPool,
-		database_url: String,
+		pg_pool: Option<bestool_postgres::pool::PgPool>,
+		database_url: Option<String>,
 		tamanu_version: String,
 	) -> Self {
 		Self {

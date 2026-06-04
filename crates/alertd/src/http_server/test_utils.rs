@@ -12,7 +12,7 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		.await
 		.unwrap();
 	let ctx = Arc::new(InternalContext {
-		pg_pool: pool,
+		pg_pool: Some(pool),
 		http_client: reqwest::Client::new(),
 		canopy_client: None,
 	});
