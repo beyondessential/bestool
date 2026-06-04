@@ -42,27 +42,43 @@ impl ApiServerKind {
 	}
 }
 
+/// Whether this root is a `/etc/tamanu/<version>` config dir, whose name says
+/// nothing about the active version (one can be pre-staged ahead of an
+/// upgrade or left behind by a rollback).
+fn is_config_dir(root: &Path) -> bool {
+	cfg!(target_os = "linux") && root.starts_with("/etc/tamanu")
+}
+
+const ENV_FILE: &str = "/etc/tamanu/env";
+
+/// Discover the Tamanu install on this host.
+///
+/// `Ok(None)` means the host carries no trace of Tamanu: on Linux, no
+/// `/etc/tamanu/env` (which every Tamanu deployment has) and no
+/// package.json-versioned root (dev checkout, container, bare-metal install);
+/// elsewhere, no known root at all. Callers like the doctor treat that as
+/// "not a Tamanu host" and skip rather than fail.
+///
+/// `Err` means there *is* a Tamanu presence but it can't be resolved (invalid
+/// `--root`, or an env file whose deployment doesn't match any config dir).
 #[instrument(level = "debug")]
-pub async fn find_tamanu(root: Option<&Path>) -> Result<(Version, PathBuf)> {
+pub async fn try_find_tamanu(root: Option<&Path>) -> Result<Option<(Version, PathBuf)>> {
 	if let Some(root) = root {
 		let version = roots::version_of_root(root)?
 			.ok_or_else(|| miette!("no tamanu found in --root={root:?}"))?;
 		let root = root.canonicalize().into_diagnostic()?;
 		debug!(?root, ?version, "found Tamanu root");
-		return Ok((version, root));
+		return Ok(Some((version, root)));
 	}
 
-	let candidates = roots::find_versions()?;
+	let mut candidates = roots::find_versions()?;
+	gate_config_dirs(&mut candidates, Path::new(ENV_FILE).exists());
 
-	// On Linux container deployments, `/etc/tamanu/<version>` directories are
-	// config dirs: one can be pre-staged ahead of an upgrade or left behind by
-	// a rollback, so its presence says nothing about the active version. Those
-	// roots are only selectable when a live signal corroborates them.
-	let is_config_dir = |root: &Path| cfg!(target_os = "linux") && root.starts_with("/etc/tamanu");
+	// Config dirs are only selectable when a live signal corroborates them.
 	if candidates.iter().any(|(_, root)| is_config_dir(root)) {
 		if let Some((version, root)) = select_active(&candidates).await {
 			debug!(?root, ?version, "found active Tamanu root");
-			return Ok((version, root));
+			return Ok(Some((version, root)));
 		}
 
 		// Other roots carry their version intrinsically (package.json), so
@@ -77,14 +93,44 @@ pub async fn find_tamanu(root: Option<&Path>) -> Result<(Version, PathBuf)> {
 					database record, or env file matches a config dir under /etc/tamanu; \
 					use --root"
 				)
-			});
+			})
+			.map(Some);
 	}
 
-	candidates
+	Ok(candidates
 		.into_iter()
 		.next()
-		.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
-		.ok_or_else(|| miette!("no tamanu discovered, use --root"))
+		.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root")))
+}
+
+/// [`try_find_tamanu`], erroring when the host has no Tamanu at all. For
+/// commands that can't do anything without an install.
+pub async fn find_tamanu(root: Option<&Path>) -> Result<(Version, PathBuf)> {
+	try_find_tamanu(root).await?.ok_or_else(|| {
+		if cfg!(target_os = "linux") && !Path::new(ENV_FILE).exists() {
+			miette!("not a Tamanu host: {ENV_FILE} not found (use --root to override)")
+		} else {
+			miette!("no tamanu discovered, use --root")
+		}
+	})
+}
+
+/// A Tamanu host always carries the env file; without it, config dirs under
+/// /etc/tamanu don't indicate a deployment at all and are dropped.
+fn gate_config_dirs(candidates: &mut Vec<(Version, PathBuf)>, env_present: bool) {
+	if env_present {
+		return;
+	}
+	candidates.retain(|(_, root)| {
+		let keep = !is_config_dir(root);
+		if !keep {
+			debug!(
+				?root,
+				"ignoring config dir: no {ENV_FILE}, not a Tamanu host"
+			);
+		}
+		keep
+	});
 }
 
 /// Match the deployment's active version to a discovered root.
@@ -116,7 +162,7 @@ async fn select_active(candidates: &[(Version, PathBuf)]) -> Option<(Version, Pa
 		}
 	}
 
-	if let Some(configured) = versions::env_file_version(Path::new("/etc/tamanu/env")) {
+	if let Some(configured) = versions::env_file_version(Path::new(ENV_FILE)) {
 		match matching(&configured) {
 			Some(found) => return Some(found),
 			None => warn!(%configured, "configured version has no discovered root"),
@@ -202,6 +248,28 @@ async fn detect_kind_from_db(client: &tokio_postgres::Client) -> Option<ApiServe
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	#[cfg(target_os = "linux")]
+	fn gate_drops_config_dirs_without_env_file() {
+		let v = |s: &str| Version::parse(s).unwrap();
+		let mut candidates = vec![
+			(v("2.55.4"), PathBuf::from("/etc/tamanu/v2.55.4")),
+			(v("2.48.5"), PathBuf::from("/etc/tamanu/v2.48.5")),
+			(v("2.40.0"), PathBuf::from("/home/dev/tamanu")),
+		];
+
+		let mut kept = candidates.clone();
+		gate_config_dirs(&mut kept, true);
+		assert_eq!(kept.len(), 3, "env file present keeps config dirs");
+
+		gate_config_dirs(&mut candidates, false);
+		assert_eq!(
+			candidates,
+			vec![(v("2.40.0"), PathBuf::from("/home/dev/tamanu"))],
+			"no env file drops config dirs but keeps intrinsically-versioned roots"
+		);
+	}
 
 	fn cfg_from(json: serde_json::Value) -> config::TamanuConfig {
 		serde_json::from_value(json).expect("test config should parse")
