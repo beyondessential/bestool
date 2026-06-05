@@ -28,6 +28,8 @@
 //! On hosts with systemd-logind, the `who` output is cross-checked against
 //! logind: utmp accumulates stale entries (dropped SSH connections aren't
 //! always marked dead), so only ttys with a live logind session are reported.
+//! Where logind can't answer, utmp's own dead records (`who --dead`) stand in:
+//! an entry whose tty has a dead record newer than its login time is dropped.
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -332,9 +334,83 @@ async fn collect_users() -> miette::Result<CollectOutcome> {
 			}
 			keep
 		});
+	} else {
+		// No logind to consult: fall back to utmp's own dead records. A
+		// dead record at least as new as an entry's login time means that
+		// login has ended; an older one is a previous occupant of a reused
+		// tty. This catches less than logind does (stale entries aren't
+		// always dead-marked at all), but it's the best signal available.
+		let dead = spawn_blocking(dead_records).await.unwrap_or_default();
+		users.retain(|u| {
+			let keep = dead.get(&u.line).is_none_or(|&d| d < u.login);
+			if !keep {
+				debug!(name=%u.name, line=%u.line, "dropping utmp entry with newer dead record");
+			}
+			keep
+		});
 	}
 
 	Ok(CollectOutcome::Users(users))
+}
+
+/// Latest dead-record timestamp per tty, from `who --dead`.
+///
+/// Best-effort: returns an empty map if `who --dead` fails or its output
+/// doesn't parse (e.g. BSD `who` formats dates differently — those lines are
+/// skipped by the date matcher).
+#[cfg(unix)]
+fn dead_records() -> HashMap<String, Timestamp> {
+	match duct::cmd!("who", "--dead")
+		.stdout_capture()
+		.stderr_capture()
+		.unchecked()
+		.run()
+	{
+		Ok(out) if out.status.success() => {
+			parse_dead_records(&String::from_utf8_lossy(&out.stdout))
+		}
+		Ok(out) => {
+			trace!(status = ?out.status, "who --dead returned non-zero");
+			HashMap::new()
+		}
+		Err(err) => {
+			trace!(%err, "could not run who --dead");
+			HashMap::new()
+		}
+	}
+}
+
+/// Parse `who --dead` output into a map of tty → latest dead-record time.
+///
+/// Lines look like:
+///
+/// ```text
+///          pts/1        2026-06-01 13:56             62942 id=ts/1  term=0 exit=1
+/// ```
+///
+/// The NAME column is typically empty for dead records, so columns are located
+/// relative to the `YYYY-MM-DD` date token: the tty is the token just before
+/// it.
+#[cfg(any(test, unix))]
+fn parse_dead_records(text: &str) -> HashMap<String, Timestamp> {
+	let mut out: HashMap<String, Timestamp> = HashMap::new();
+	for line in text.lines() {
+		let tokens: Vec<&str> = line.split_whitespace().collect();
+		let Some(date_idx) = tokens.iter().position(|t| looks_like_iso_date(t)) else {
+			continue;
+		};
+		if date_idx == 0 || date_idx + 1 >= tokens.len() {
+			continue;
+		}
+		let tty = tokens[date_idx - 1];
+		let Some(time) = parse_local_datetime(tokens[date_idx], tokens[date_idx + 1]) else {
+			continue;
+		};
+		out.entry(tty.to_string())
+			.and_modify(|t| *t = (*t).max(time))
+			.or_insert(time);
+	}
+	out
 }
 
 /// TTYs that have a live (non-closing) logind session.
@@ -954,6 +1030,52 @@ mod tests {
 	#[test]
 	fn parses_live_ttys_json_empty_list() {
 		assert_eq!(parse_live_ttys_json("[]"), Some(HashSet::new()));
+	}
+
+	#[test]
+	fn parses_dead_records() {
+		let text = "         pts/1        2026-06-01 13:56             62942 id=ts/1  term=0 exit=1\n\
+		            pts/9        2026-06-02 13:33            289783 id=ts/9  term=2 exit=0\n\
+		            garbage line\n";
+		let out = parse_dead_records(text);
+		assert_eq!(out.len(), 2);
+		assert!(out.contains_key("pts/1"));
+		assert!(out.contains_key("pts/9"));
+	}
+
+	#[test]
+	fn parses_dead_records_keeps_latest_per_tty() {
+		let text = "pts/1        2026-06-01 13:56             62942 id=ts/1  term=0 exit=1\n\
+		            pts/1        2026-06-03 08:00             70001 id=ts/1  term=0 exit=0\n";
+		let out = parse_dead_records(text);
+		assert_eq!(out.len(), 1);
+		let expected = parse_local_datetime("2026-06-03", "08:00").unwrap();
+		assert_eq!(out["pts/1"], expected);
+	}
+
+	#[test]
+	fn dead_record_filter_drops_ended_logins_keeps_reused_ttys() {
+		// pts/1: dead record below is newer than its login — ended.
+		// pts/9: dead record predates its login — tty was reused.
+		// pts/8: no dead record at all.
+		let mut users = parse_who(
+			"ubuntu   pts/1        2026-06-01 04:01 (100.95.192.1)\n\
+			 ubuntu   pts/9        2026-06-05 11:58 (100.94.77.1)\n\
+			 ubuntu   pts/8        2026-06-02 03:26 (100.82.152.128)\n",
+		);
+		assert_eq!(users.len(), 3);
+		let dead = parse_dead_records(
+			"pts/1        2026-06-01 13:56             62942 id=ts/1  term=0 exit=1\n\
+			 pts/9        2026-06-02 13:33            289783 id=ts/9  term=2 exit=0\n",
+		);
+		users.retain(|u| dead.get(&u.line).is_none_or(|&d| d < u.login));
+		assert_eq!(users.len(), 2);
+		assert!(users.iter().any(|u| u.line == "pts/9"), "reused tty kept");
+		assert!(users.iter().any(|u| u.line == "pts/8"), "no dead record");
+		assert!(
+			users.iter().all(|u| u.line != "pts/1"),
+			"ended login dropped"
+		);
 	}
 
 	#[test]
