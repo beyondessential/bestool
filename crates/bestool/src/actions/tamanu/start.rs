@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::Parser;
-use miette::{IntoDiagnostic, Result, WrapErr, bail};
+use miette::{Result, WrapErr, bail};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
@@ -139,10 +139,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 
 	if !targets.is_empty() {
 		tracing::info!(?targets, "starting");
-		match supervisor {
-			Supervisor::Systemd => systemctl_start(&targets).await?,
-			Supervisor::Pm2 => pm2_start(&targets)?,
-		}
+		lifecycle::start_targets(supervisor, &targets).await?;
 		lifecycle::wait_running(supervisor, &targets).await?;
 	}
 
@@ -441,22 +438,6 @@ fn plan_start(
 		targets,
 		started_behind_caddy,
 	})
-}
-
-async fn systemctl_start(units: &[String]) -> Result<()> {
-	systemd::start(units).await
-}
-
-fn pm2_start(names: &[String]) -> Result<()> {
-	let status = std::process::Command::new("pm2")
-		.arg("start")
-		.args(names)
-		.status()
-		.into_diagnostic()?;
-	if !status.success() {
-		bail!("pm2 start failed: exit {status}");
-	}
-	Ok(())
 }
 
 #[cfg(test)]

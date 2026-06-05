@@ -1943,6 +1943,10 @@ instance at a time, each followed by a readiness probe, caddy
 reload, and a cooldown — so there's always at least one critical
 instance up to take traffic.
 
+Services expected up but not currently running are started first,
+before any restarts, so capacity is back at full strength before
+the roll begins.
+
 **Usage:** `bestool tamanu restart [OPTIONS] [NAMES]...`
 
 ###### **Arguments:**
