@@ -36,7 +36,7 @@ pub struct ConfigArgs {
 }
 
 pub async fn run(args: ConfigArgs, ctx: Context) -> Result<()> {
-	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 
 	let config = load_config_as_object(&root, args.package.as_deref())?;
 

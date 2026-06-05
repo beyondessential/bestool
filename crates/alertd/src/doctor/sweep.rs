@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use miette::{IntoDiagnostic, Result, miette};
@@ -10,10 +10,19 @@ use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_server_id}
 
 use crate::doctor::{
 	check::{Check, OverallResult},
-	checks::{self, CheckContext},
+	checks::{self, CheckContext, SweepContext},
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
 };
+
+/// The Tamanu deployment a sweep runs against, when the host has one.
+#[derive(Clone)]
+pub struct SweepTamanu {
+	pub version: Version,
+	pub root: PathBuf,
+	pub config: Arc<TamanuConfig>,
+	pub database_url: String,
+}
 
 pub struct SweepResult {
 	pub server_id: Option<String>,
@@ -26,45 +35,52 @@ pub struct SweepResult {
 	pub pg_version: Option<String>,
 }
 
-#[expect(
-	clippy::too_many_arguments,
-	reason = "each argument is a distinct knob the CLI and daemon callers need to thread through"
-)]
 pub async fn perform_sweep(
 	binary_version: &str,
-	version: &Version,
-	root: &Path,
-	config: Arc<TamanuConfig>,
-	database_url: &str,
+	tamanu: Option<SweepTamanu>,
 	http_client: reqwest::Client,
 	selected_names: &[String],
 	skip_names: &[String],
 	cached_pg_version: Option<String>,
 	progress: Option<ProgressSender>,
 ) -> Result<SweepResult> {
-	// Open a single connection up-front. Checks that need the DB share it; the
-	// `db_connect` check separately measures the open latency for reporting.
-	// Goes through `bestool_postgres::pool::connect_one` so all DB opens in
-	// the project share one SSL fallback / auth retry / app-name path.
-	let db = match bestool_postgres::pool::connect_one(database_url, "bestool-tamanu-doctor").await
-	{
-		Ok(client) => Some(Arc::new(client)),
-		Err(err) => {
-			warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
-			None
+	let tamanu_ctx = match &tamanu {
+		Some(t) => {
+			// Open a single connection up-front. Checks that need the DB share
+			// it; the `db_connect` check separately measures the open latency
+			// for reporting. Goes through `bestool_postgres::pool::connect_one`
+			// so all DB opens in the project share one SSL fallback / auth
+			// retry / app-name path.
+			let db =
+				match bestool_postgres::pool::connect_one(&t.database_url, "bestool-tamanu-doctor")
+					.await
+				{
+					Ok(client) => Some(Arc::new(client)),
+					Err(err) => {
+						warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
+						None
+					}
+				};
+
+			let kind = bestool_tamanu::detect_kind(&t.config, db.as_deref()).await;
+			debug!(?kind, "detected Tamanu server kind for doctor sweep");
+
+			Some(CheckContext {
+				tamanu_version: t.version.clone(),
+				tamanu_root: t.root.clone(),
+				config: t.config.clone(),
+				kind,
+				database_url: t.database_url.clone(),
+				db,
+				http_client: http_client.clone(),
+			})
 		}
+		None => None,
 	};
+	let db = tamanu_ctx.as_ref().and_then(|c| c.db.clone());
 
-	let kind = bestool_tamanu::detect_kind(&config, db.as_deref()).await;
-	debug!(?kind, "detected Tamanu server kind for doctor sweep");
-
-	let check_ctx = CheckContext {
-		tamanu_version: version.clone(),
-		tamanu_root: root.to_path_buf(),
-		config: config.clone(),
-		kind,
-		database_url: database_url.to_owned(),
-		db: db.clone(),
+	let check_ctx = SweepContext {
+		tamanu: tamanu_ctx,
 		http_client,
 	};
 
@@ -126,13 +142,23 @@ pub async fn perform_sweep(
 		}
 	};
 
-	let facts = collect_server_facts(&config, db.as_deref(), cached_pg_version).await;
+	let facts = collect_server_facts(
+		tamanu.as_ref().map(|t| t.config.as_ref()),
+		db.as_deref(),
+		cached_pg_version,
+	)
+	.await;
 	let pg_version = facts.pg_version.clone();
 	// `binary_version` is the running binary's (bestool's) version, threaded in
 	// by the caller. Evaluating `env!("CARGO_PKG_VERSION")` here would resolve
 	// to this library's version instead, which is the wrong answer for the wire
-	// payload.
-	let info = server_info::gather(binary_version, &version.to_string(), facts).await;
+	// payload. On hosts with no Tamanu, `0.0.0` is the agreed sentinel — canopy
+	// requires a version on every payload and request.
+	let tamanu_version = tamanu
+		.as_ref()
+		.map(|t| t.version.to_string())
+		.unwrap_or_else(|| "0.0.0".into());
+	let info = server_info::gather(binary_version, &tamanu_version, facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
 	let overall =
@@ -149,13 +175,17 @@ pub async fn perform_sweep(
 }
 
 async fn collect_server_facts(
-	config: &TamanuConfig,
+	config: Option<&TamanuConfig>,
 	db: Option<&tokio_postgres::Client>,
 	cached_pg_version: Option<String>,
 ) -> ServerFacts {
 	let mut facts = ServerFacts {
-		canonical_url: config.canonical_url().map(|u| u.to_string()),
-		timezone: config.primary_time_zone().map(|s| s.to_string()),
+		canonical_url: config
+			.and_then(|c| c.canonical_url())
+			.map(|u| u.to_string()),
+		timezone: config
+			.and_then(|c| c.primary_time_zone())
+			.map(|s| s.to_string()),
 		pg_version: cached_pg_version,
 		..Default::default()
 	};
@@ -252,6 +282,39 @@ mod tests {
 	}
 	fn skip(name: &'static str) -> (Check, bool) {
 		(Check::skip(name, "not run", "reason"), true)
+	}
+
+	#[tokio::test]
+	async fn sweep_without_tamanu_skips_tamanu_checks_and_runs_host_checks() {
+		// Restrict to a deterministic subset: tamanu-dependent checks plus one
+		// host check with no external dependencies.
+		let sweep = perform_sweep(
+			"0.0.0-test",
+			None,
+			reqwest::Client::new(),
+			&["tamanu_found".into(), "db_version".into(), "uptime".into()],
+			&[],
+			None,
+			None,
+		)
+		.await
+		.unwrap();
+
+		let result_of = |name: &str| {
+			sweep.payload["health"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|c| c["check"] == name)
+				.unwrap_or_else(|| panic!("{name} missing from health[]"))["result"]
+				.clone()
+		};
+		assert_eq!(result_of("tamanu_found"), "skipped");
+		assert_eq!(result_of("db_version"), "skipped");
+		// Freshly-booted test machines legitimately warn here; it ran either way.
+		assert_ne!(result_of("uptime"), "skipped");
+		// The 0.0.0 sentinel marks "no Tamanu" on the wire.
+		assert_eq!(sweep.payload["tamanuVersion"], "0.0.0");
 	}
 
 	#[test]

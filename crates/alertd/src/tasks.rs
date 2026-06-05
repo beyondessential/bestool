@@ -12,7 +12,8 @@ use crate::{canopy::CanopyClient, context::InternalContext};
 /// connection pool stays warm across tick intervals.
 #[derive(Clone)]
 pub struct TaskContext {
-	pub pg_pool: bestool_postgres::pool::PgPool,
+	/// `None` on hosts with no Tamanu deployment (and therefore no database).
+	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 	pub http_client: reqwest::Client,
 	pub canopy_client: Option<Arc<CanopyClient>>,
 }

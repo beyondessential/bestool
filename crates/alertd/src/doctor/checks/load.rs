@@ -1,6 +1,6 @@
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::{Check, CheckStatus};
 
 /// Multiplier on the logical core count above which the 5-minute load average
@@ -10,7 +10,7 @@ const FAIL_PER_CORE: f64 = 4.0;
 /// is treated as a warning.
 const WARN_PER_CORE: f64 = 1.5;
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	if cfg!(target_os = "windows") {
 		return Check::skip(
 			"load",

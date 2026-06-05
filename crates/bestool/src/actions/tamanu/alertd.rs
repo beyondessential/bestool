@@ -1,17 +1,18 @@
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
+use node_semver::Version;
 use tracing::{debug, warn};
 
 use bestool_tamanu::{
-	config::{TamanuConfig, load_config},
+	config::load_config,
 	server_info::{fetch_device_key_with, query_device_key_row},
 };
 
-use bestool_alertd::doctor::DoctorTask;
+use bestool_alertd::doctor::{DoctorTask, SweepTamanu};
 
-use super::{TamanuArgs, find_tamanu};
+use super::{TamanuArgs, try_find_tamanu};
 use crate::actions::Context;
 
 /// Run the healthcheck daemon
@@ -127,11 +128,8 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			bestool_alertd::commands::get_status(&addrs).await
 		}
 		Command::Run { daemon } => {
-			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
-			let config = load_config(&root, None)?;
-			debug!(?config, "parsed Tamanu config");
-
-			let daemon_config = build_config(&root, &version, config, daemon).await?;
+			let install = try_find_tamanu(ctx.require::<TamanuArgs>()).await?;
+			let daemon_config = build_config(install, daemon).await?;
 			bestool_alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
@@ -149,9 +147,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let (version, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
-			let config = load_config(&root, None)?;
-			debug!(?config, "parsed Tamanu config");
+			let install = try_find_tamanu(ctx.require::<TamanuArgs>()).await?;
 
 			// Check and auto-apply recovery configuration if needed
 			match bestool_alertd::windows_service::is_recovery_configured() {
@@ -167,16 +163,14 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 				Ok(true) => {}
 			}
 
-			let daemon_config = build_config(&root, &version, config, daemon).await?;
+			let daemon_config = build_config(install, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
 	}
 }
 
 async fn build_config(
-	root: &Path,
-	tamanu_version: &node_semver::Version,
-	config: TamanuConfig,
+	install: Option<(Version, PathBuf)>,
 	DaemonArgs {
 		glob,
 		no_server,
@@ -189,8 +183,32 @@ async fn build_config(
 		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
 	}
 
-	let database_url = config.database_url();
-	let pg_pool = bestool_postgres::pool::create_pool(&database_url, "bestool-alertd").await?;
+	// `None` when this host has no Tamanu: the daemon still runs (and posts
+	// sweeps), with every Tamanu-dependent check skipped.
+	let tamanu = match install {
+		Some((version, root)) => {
+			let config = load_config(&root, None)?;
+			debug!(?config, "parsed Tamanu config");
+			let database_url = config.database_url();
+			Some(SweepTamanu {
+				version,
+				root,
+				config: Arc::new(config),
+				database_url,
+			})
+		}
+		None => {
+			warn!("no Tamanu on this host; doctor sweeps will skip Tamanu checks");
+			None
+		}
+	};
+
+	let pg_pool = match &tamanu {
+		Some(t) => {
+			Some(bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await?)
+		}
+		None => None,
+	};
 
 	let watchdog = if no_watchdog {
 		None
@@ -199,32 +217,37 @@ async fn build_config(
 	};
 
 	let device_key_pem = fetch_device_key_with(|| async {
-		match pg_pool.get().await {
-			Ok(conn) => query_device_key_row(&conn).await,
-			Err(err) => {
-				tracing::warn!(%err, "could not get DB conn for deviceKey fetch");
-				None
-			}
+		match &pg_pool {
+			Some(pool) => match pool.get().await {
+				Ok(conn) => query_device_key_row(&conn).await,
+				Err(err) => {
+					warn!(%err, "could not get DB conn for deviceKey fetch");
+					None
+				}
+			},
+			None => None,
 		}
 	})
 	.await;
 
-	let config = Arc::new(config);
+	// Canopy requires a version on every request; `0.0.0` is the agreed
+	// sentinel for hosts with no Tamanu.
+	let tamanu_version = tamanu
+		.as_ref()
+		.map(|t| t.version.to_string())
+		.unwrap_or_else(|| "0.0.0".into());
 
 	let mut daemon_config = bestool_alertd::DaemonConfig::new(
 		pg_pool.clone(),
-		database_url.clone(),
-		tamanu_version.to_string(),
+		tamanu.as_ref().map(|t| t.database_url.clone()),
+		tamanu_version,
 	)
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog)
 	.with_task(Arc::new(DoctorTask::new(
 		env!("CARGO_PKG_VERSION").to_string(),
-		tamanu_version.clone(),
-		root.to_path_buf(),
-		config.clone(),
-		database_url,
+		tamanu,
 	)));
 
 	if let Some(pem) = device_key_pem {

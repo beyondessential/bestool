@@ -1,12 +1,12 @@
 use sysinfo::System;
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 /// Below this uptime the host has rebooted recently, which may be unexpected.
 const WARN_UPTIME_SECS: u64 = 10 * 60;
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	let secs = System::uptime();
 	let summary = humanise(secs);
 	let check = if secs < WARN_UPTIME_SECS {

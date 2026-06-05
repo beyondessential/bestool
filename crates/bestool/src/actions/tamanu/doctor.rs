@@ -1,27 +1,25 @@
 use std::{
 	io::{IsTerminal as _, Write},
-	path::Path,
 	sync::Arc,
 };
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
-use node_semver::Version;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use bestool_alertd::doctor::{
-	SweepResult,
+	SweepResult, SweepTamanu,
 	check::{Check, CheckStatus, OverallResult},
 	checks,
 	overall_from_payload, perform_sweep,
 	progress::DoctorEvent,
 };
-use bestool_tamanu::config::{TamanuConfig, load_config};
+use bestool_tamanu::config::load_config;
 
-use super::{TamanuArgs, find_tamanu};
+use super::{TamanuArgs, try_find_tamanu};
 use crate::actions::Context;
 
 /// Gather server info + healthchecks for a Tamanu install
@@ -78,24 +76,29 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	let (version, root) = find_tamanu(tamanu)?;
-	let config = Arc::new(load_config(&root, None)?);
-
-	let database_url = config.database_url();
+	// `None` when this host has no Tamanu: the sweep still runs, with every
+	// Tamanu-dependent check skipped.
+	let install = match try_find_tamanu(tamanu).await? {
+		Some((version, root)) => {
+			let config = Arc::new(load_config(&root, None)?);
+			let database_url = config.database_url();
+			Some(SweepTamanu {
+				version,
+				root,
+				config,
+				database_url,
+			})
+		}
+		None => {
+			warn!("no Tamanu on this host; running host-level checks only");
+			None
+		}
+	};
 	let http_client = crate::http::client();
 
 	let (sweep, source) = if args.no_daemon {
 		(
-			run_local_sweep(
-				&version,
-				&root,
-				config.clone(),
-				&database_url,
-				http_client.clone(),
-				&args,
-				use_colours,
-			)
-			.await?,
+			run_local_sweep(install.clone(), http_client.clone(), &args, use_colours).await?,
 			SweepSource::Local,
 		)
 	} else if args.fresh {
@@ -104,16 +107,8 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 			Err(err) => {
 				debug!(%err, "daemon recompute unavailable, falling back to local");
 				(
-					run_local_sweep(
-						&version,
-						&root,
-						config.clone(),
-						&database_url,
-						http_client.clone(),
-						&args,
-						use_colours,
-					)
-					.await?,
+					run_local_sweep(install.clone(), http_client.clone(), &args, use_colours)
+						.await?,
 					SweepSource::Local,
 				)
 			}
@@ -124,16 +119,8 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 			Err(err) => {
 				debug!(%err, "daemon latest unavailable, falling back to local");
 				(
-					run_local_sweep(
-						&version,
-						&root,
-						config.clone(),
-						&database_url,
-						http_client.clone(),
-						&args,
-						use_colours,
-					)
-					.await?,
+					run_local_sweep(install.clone(), http_client.clone(), &args, use_colours)
+						.await?,
 					SweepSource::Local,
 				)
 			}
@@ -149,10 +136,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 }
 
 async fn run_local_sweep(
-	version: &Version,
-	root: &Path,
-	config: Arc<TamanuConfig>,
-	database_url: &str,
+	install: Option<SweepTamanu>,
 	http_client: reqwest::Client,
 	args: &DoctorArgs,
 	use_colours: bool,
@@ -175,10 +159,7 @@ async fn run_local_sweep(
 	let progress = renderer.as_ref().map(|(tx, _)| tx.clone());
 	let sweep = perform_sweep(
 		env!("CARGO_PKG_VERSION"),
-		version,
-		root,
-		config,
-		database_url,
+		install,
 		http_client,
 		&args.only,
 		&args.skip,

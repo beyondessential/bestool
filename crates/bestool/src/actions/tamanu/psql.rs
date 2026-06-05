@@ -327,7 +327,7 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		}
 		url.to_string()
 	} else {
-		let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+		let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 		let config = load_config(&root, None)?;
 
 		let (username, password) = if let Some(ref user) = username {

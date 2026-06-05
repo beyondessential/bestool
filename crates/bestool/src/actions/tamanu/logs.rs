@@ -157,7 +157,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let selection = select(&args.names);
 
-	let (_, root) = find_tamanu(tamanu)?;
+	let (_, root) = find_tamanu(tamanu).await?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
 		ApiServerKind::Facility

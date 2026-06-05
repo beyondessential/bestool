@@ -106,7 +106,7 @@ struct GreenmaskTransformation {
 }
 
 pub async fn run(args: GreenmaskConfigArgs, ctx: Context) -> Result<()> {
-	let (_, tamanu_folder) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (_, tamanu_folder) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	let root = tamanu_folder.parent().unwrap();
 
 	let config = load_config(&tamanu_folder, None)?;

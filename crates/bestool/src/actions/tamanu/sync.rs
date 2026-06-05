@@ -110,7 +110,7 @@ fn completed_at_to_ms(v: &Value) -> i64 {
 
 pub async fn run(args: SyncArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
-	let (_, root) = find_tamanu(tamanu)?;
+	let (_, root) = find_tamanu(tamanu).await?;
 	let config = load_config(&root, None)?;
 
 	if !config.is_facility() {

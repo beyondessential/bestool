@@ -3,16 +3,19 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 use sysinfo::Disks;
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 const WARN_PCT_USED: f64 = 80.0;
 const FAIL_PCT_USED: f64 = 95.0;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: SweepContext) -> Check {
 	let disks = Disks::new_with_refreshed_list();
 
-	let tamanu_mount = best_mount_for(&disks, &ctx.tamanu_root);
+	let tamanu_mount = ctx
+		.tamanu
+		.as_ref()
+		.and_then(|t| best_mount_for(&disks, &t.tamanu_root));
 	let root_mount = if cfg!(windows) {
 		best_mount_for(&disks, &PathBuf::from(r"C:\"))
 	} else {

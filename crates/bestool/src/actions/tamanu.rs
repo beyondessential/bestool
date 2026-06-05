@@ -88,6 +88,12 @@ super::subcommands! {
 	stop => Stop(StopArgs)
 }
 
-pub fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
-	_find_tamanu(args.root.as_deref())
+pub async fn find_tamanu(args: &TamanuArgs) -> Result<(Version, PathBuf)> {
+	_find_tamanu(args.root.as_deref()).await
+}
+
+/// Like [`find_tamanu`], but `Ok(None)` when the host has no Tamanu at all,
+/// for callers that can do something useful anyway (e.g. the doctor).
+pub async fn try_find_tamanu(args: &TamanuArgs) -> Result<Option<(Version, PathBuf)>> {
+	bestool_tamanu::try_find_tamanu(args.root.as_deref()).await
 }

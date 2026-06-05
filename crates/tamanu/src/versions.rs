@@ -14,8 +14,9 @@
 //!     filtering on `PODMAN_SYSTEMD_UNIT`.
 //!   - Windows: same value for every pm2 process (the install version).
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::Duration};
 
+use node_semver::Version;
 use tracing::{debug, instrument};
 
 #[cfg(target_os = "linux")]
@@ -176,6 +177,99 @@ pub async fn running_versions_linux() -> HashMap<String, String> {
 #[cfg(not(target_os = "linux"))]
 pub async fn running_versions_linux() -> HashMap<String, String> {
 	HashMap::new()
+}
+
+/// Parse a version string leniently, tolerating a leading `v` (image tags and
+/// env values both occur in `v2.48.5` form) and surrounding whitespace.
+pub fn parse_version_loose(s: &str) -> Option<Version> {
+	Version::parse(s.trim().trim_start_matches('v')).ok()
+}
+
+/// Pick the running server version out of a unit→tag map (as returned by
+/// [`running_versions_linux`]).
+///
+/// Prefers the `tamanu-{central,facility}-api` units; falls back to any other
+/// `tamanu-*` unit except the frontend, which legitimately runs its own
+/// version. When instances disagree (mid-upgrade), returns the highest.
+pub fn pick_running_version(running: &HashMap<String, String>) -> Option<Version> {
+	let mut api = Vec::new();
+	let mut other = Vec::new();
+	for (unit, tag) in running {
+		let Some((base, _instance)) = super::services::parse_systemd_unit(unit) else {
+			continue;
+		};
+		let Some(version) = parse_version_loose(tag) else {
+			continue;
+		};
+		match base {
+			"tamanu-central-api" | "tamanu-facility-api" => api.push(version),
+			"tamanu-frontend" => {}
+			_ => other.push(version),
+		}
+	}
+	if api.is_empty() { other } else { api }.into_iter().max()
+}
+
+/// The version of Tamanu that's actually running, from container image tags.
+pub async fn running_version() -> Option<Version> {
+	pick_running_version(&running_versions_linux().await)
+}
+
+/// The version Tamanu last recorded in its own database. The server writes
+/// `local_system_facts.currentVersion` on boot, so this reflects the last
+/// version that ran against this database even when nothing is up right now.
+pub async fn db_current_version(database_url: &str) -> Option<Version> {
+	const TIMEOUT: Duration = Duration::from_secs(5);
+
+	let client = match tokio::time::timeout(
+		TIMEOUT,
+		bestool_postgres::pool::connect_one(database_url, "bestool-tamanu-discovery"),
+	)
+	.await
+	{
+		Ok(Ok(client)) => client,
+		Ok(Err(err)) => {
+			debug!(%err, "could not open DB for version discovery");
+			return None;
+		}
+		Err(_) => {
+			debug!("DB connection timed out during version discovery");
+			return None;
+		}
+	};
+
+	let row = match tokio::time::timeout(
+		TIMEOUT,
+		client.query_opt(
+			"SELECT value FROM local_system_facts WHERE key = 'currentVersion'",
+			&[],
+		),
+	)
+	.await
+	{
+		Ok(Ok(row)) => row?,
+		Ok(Err(err)) => {
+			debug!(%err, "could not query currentVersion");
+			return None;
+		}
+		Err(_) => {
+			debug!("currentVersion query timed out");
+			return None;
+		}
+	};
+
+	row.try_get::<_, String>(0)
+		.ok()
+		.as_deref()
+		.and_then(parse_version_loose)
+}
+
+/// The version the deployment is configured to start, from the env file.
+pub fn env_file_version(path: &Path) -> Option<Version> {
+	read_env_file(path)
+		.tamanu
+		.as_deref()
+		.and_then(parse_version_loose)
 }
 
 /// Comparison verdict for one instance.
@@ -358,6 +452,78 @@ TAMANU_VERSION = v2.10.0
 			tag.is_none() || tag == Some("abcdef"),
 			"unexpected tag parse: {tag:?}"
 		);
+	}
+
+	#[test]
+	fn parse_version_loose_tolerates_v_prefix_and_whitespace() {
+		let v: Version = "2.48.5".parse().unwrap();
+		assert_eq!(parse_version_loose("2.48.5"), Some(v.clone()));
+		assert_eq!(parse_version_loose("v2.48.5"), Some(v.clone()));
+		assert_eq!(parse_version_loose(" v2.48.5 "), Some(v));
+		assert_eq!(parse_version_loose("latest"), None);
+		assert_eq!(parse_version_loose(""), None);
+	}
+
+	#[test]
+	fn pick_running_version_prefers_api_units() {
+		let running = HashMap::from([
+			(
+				"tamanu-central-api@1.service".to_string(),
+				"v2.48.5".to_string(),
+			),
+			(
+				"tamanu-central-tasks.service".to_string(),
+				"v2.55.4".to_string(),
+			),
+		]);
+		assert_eq!(
+			pick_running_version(&running),
+			Some("2.48.5".parse().unwrap())
+		);
+	}
+
+	#[test]
+	fn pick_running_version_ignores_frontend_and_foreign_units() {
+		let running = HashMap::from([
+			(
+				"tamanu-frontend@a.service".to_string(),
+				"v2.55.4".to_string(),
+			),
+			("caddy.service".to_string(), "v9.9.9".to_string()),
+			(
+				"tamanu-central-tasks.service".to_string(),
+				"v2.48.5".to_string(),
+			),
+		]);
+		assert_eq!(
+			pick_running_version(&running),
+			Some("2.48.5".parse().unwrap())
+		);
+	}
+
+	#[test]
+	fn pick_running_version_takes_highest_on_disagreement() {
+		// Mid-rolling-upgrade two API instances can briefly run different
+		// tags; either answer is defensible, so pick deterministically.
+		let running = HashMap::from([
+			(
+				"tamanu-central-api@1.service".to_string(),
+				"v2.48.5".to_string(),
+			),
+			(
+				"tamanu-central-api@2.service".to_string(),
+				"v2.55.4".to_string(),
+			),
+		]);
+		assert_eq!(
+			pick_running_version(&running),
+			Some("2.55.4".parse().unwrap())
+		);
+	}
+
+	#[test]
+	fn pick_running_version_empty() {
+		assert_eq!(pick_running_version(&HashMap::new()), None);
 	}
 
 	#[test]

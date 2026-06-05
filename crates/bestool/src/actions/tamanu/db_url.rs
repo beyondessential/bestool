@@ -25,7 +25,7 @@ pub struct DbUrlArgs {
 }
 
 pub async fn run(args: DbUrlArgs, ctx: Context) -> Result<()> {
-	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>())?;
+	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	let config = load_config(&root, None)?;
 
 	let (username, password) = if let Some(ref user) = args.username {

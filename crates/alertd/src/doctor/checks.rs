@@ -46,7 +46,18 @@ pub mod time_sync;
 pub mod uptime;
 pub mod version_drift;
 
-/// Shared context handed to every check.
+/// Everything a sweep hands to its checks.
+///
+/// `tamanu` is `None` on hosts with no Tamanu deployment: the registry skips
+/// Tamanu-dependent checks without running them, and host-level checks run
+/// with what's left.
+#[derive(Clone)]
+pub struct SweepContext {
+	pub tamanu: Option<CheckContext>,
+	pub http_client: reqwest::Client,
+}
+
+/// Shared context handed to every Tamanu-dependent check.
 ///
 /// Each check picks the fields it needs and ignores the rest. The DB client is
 /// `Option` because not every check needs the DB, and `db_connect` itself runs
@@ -129,18 +140,39 @@ pub struct CheckEntry {
 	/// canopy `health[]` wire array (e.g. `tailscale`, which canopy already
 	/// tracks elsewhere).
 	pub on_wire: bool,
-	pub run: fn(CheckContext) -> futures::future::BoxFuture<'static, Check>,
+	pub run: fn(SweepContext) -> futures::future::BoxFuture<'static, Check>,
 }
 
 macro_rules! entry {
+	// Tamanu-dependent check: skipped without running when the host has no
+	// Tamanu deployment.
 	($name:literal, $module:ident) => {
+		CheckEntry {
+			name: $name,
+			on_wire: true,
+			run: |ctx| {
+				Box::pin(async move {
+					match ctx.tamanu {
+						Some(tamanu) => $module::run(tamanu).await,
+						None => Check::skip(
+							$name,
+							"no Tamanu on this host",
+							"check needs a Tamanu deployment, and this host has none",
+						),
+					}
+				})
+			},
+		}
+	};
+	// Host-level check: runs whether or not Tamanu is deployed.
+	($name:literal, $module:ident, host) => {
 		CheckEntry {
 			name: $name,
 			on_wire: true,
 			run: |ctx| Box::pin($module::run(ctx)),
 		}
 	};
-	($name:literal, $module:ident, off_wire) => {
+	($name:literal, $module:ident, host, off_wire) => {
 		CheckEntry {
 			name: $name,
 			on_wire: false,
@@ -159,18 +191,18 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("db_version", db_version),
 		entry!("server_id", server_id),
 		entry!("migrations", migrations),
-		entry!("disk_free", disk_free),
-		entry!("memory", memory),
-		entry!("load", load),
-		entry!("uptime", uptime),
-		entry!("time_sync", time_sync),
+		entry!("disk_free", disk_free, host),
+		entry!("memory", memory, host),
+		entry!("load", load, host),
+		entry!("uptime", uptime, host),
+		entry!("time_sync", time_sync, host),
 		entry!("tamanu_http", tamanu_http),
 		entry!("caddy_version", caddy_version),
 		entry!("http_errors", http_errors),
-		entry!("tailscale", tailscale, off_wire),
+		entry!("tailscale", tailscale, host, off_wire),
 		entry!("tamanu_service", tamanu_service),
 		entry!("version_drift", version_drift),
-		entry!("external_users", external_users),
+		entry!("external_users", external_users, host),
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),
 		entry!("kopia_backup", kopia_backup),
@@ -267,8 +299,42 @@ pub mod test_support {
 mod tests {
 	use serde_json::Value;
 
-	use super::{query_error_check, test_support::central_ctx};
+	use super::{SweepContext, all, query_error_check, test_support::central_ctx};
 	use crate::doctor::check::CheckStatus;
+
+	fn no_tamanu_ctx() -> SweepContext {
+		SweepContext {
+			tamanu: None,
+			http_client: reqwest::Client::new(),
+		}
+	}
+
+	#[tokio::test]
+	async fn tamanu_checks_skip_without_tamanu() {
+		// The registry wrapper skips Tamanu-dependent checks before they run,
+		// so on a non-Tamanu host nothing downstream alerts.
+		for name in ["tamanu_found", "db_version", "version_drift", "tamanu_http"] {
+			let entry = all().into_iter().find(|e| e.name == name).unwrap();
+			let check = (entry.run)(no_tamanu_ctx()).await;
+			assert!(
+				matches!(check.status, CheckStatus::Skip(_)),
+				"{name} should skip without tamanu, got {:?}",
+				check.to_wire()["result"]
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn host_checks_run_without_tamanu() {
+		for name in ["memory", "disk_free", "uptime"] {
+			let entry = all().into_iter().find(|e| e.name == name).unwrap();
+			let check = (entry.run)(no_tamanu_ctx()).await;
+			assert!(
+				!matches!(check.status, CheckStatus::Skip(_)),
+				"{name} should run without tamanu"
+			);
+		}
+	}
 
 	async fn query_err(sql: &str) -> Option<tokio_postgres::Error> {
 		let ctx = central_ctx().await?;
