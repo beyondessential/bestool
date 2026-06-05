@@ -119,6 +119,24 @@ impl Passphrase {
 			age::scrypt::Identity::new(secret),
 		)
 	}
+
+	/// Initialise from a string, with a fixed scrypt work factor (`N = 2^log_n`).
+	///
+	/// [`Passphrase::new`] calibrates the work factor to take about one second,
+	/// which on a fast machine means hundreds of MiB of scrypt arena (memory
+	/// scales with `N`: 128 × 8 × 2^log_n bytes). That hardness only matters
+	/// when the secret is a guessable human passphrase; for a high-entropy
+	/// generated secret it buys nothing, and a low work factor avoids the
+	/// memory and CPU spike.
+	///
+	/// # Panics
+	///
+	/// Panics if `log_n == 0` or `log_n >= 64`.
+	pub fn with_work_factor(secret: SecretString, log_n: u8) -> Self {
+		let mut recipient = age::scrypt::Recipient::new(secret.clone());
+		recipient.set_work_factor(log_n);
+		Self(recipient, age::scrypt::Identity::new(secret))
+	}
 }
 
 impl Recipient for Passphrase {
