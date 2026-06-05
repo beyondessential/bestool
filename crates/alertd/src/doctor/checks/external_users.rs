@@ -25,7 +25,11 @@
 //! login for each session's source address is looked up via `tailscale whois`
 //! so the operator can see which person is behind the IP.
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+	collections::{HashMap, HashSet},
+	path::PathBuf,
+	time::Duration,
+};
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use serde::{Deserialize, Serialize};
@@ -307,7 +311,177 @@ async fn collect_users() -> miette::Result<CollectOutcome> {
 	}
 
 	let text = String::from_utf8_lossy(&output.stdout);
-	Ok(CollectOutcome::Users(parse_who(&text)))
+	let mut users = parse_who(&text);
+
+	// utmp (which `who` reads) keeps entries around for sessions logind has
+	// already marked as closing — e.g. an SSH connection that dropped but
+	// whose scope unit still has lingering processes. Those aren't connected
+	// humans, so drop them.
+	let closing = spawn_blocking(closing_ttys).await.unwrap_or_default();
+	users.retain(|u| {
+		let closing = closing.contains(&u.line);
+		if closing {
+			debug!(name=%u.name, line=%u.line, "dropping closing logind session");
+		}
+		!closing
+	});
+
+	Ok(CollectOutcome::Users(users))
+}
+
+/// TTYs whose logind sessions are all in the "closing" state.
+///
+/// This mirrors what procps `w` does when built with systemd support: it
+/// lists logind sessions directly, so closing sessions never appear. We keep
+/// `who` as the session source for its parseable ISO timestamps (`w` degrades
+/// LOGIN@ to relative forms like `Tue13`) and use logind purely as the state
+/// authority.
+///
+/// A closing session pins its TTY name even after the underlying pty has been
+/// freed and reallocated to a new login, so a tty is only filtered when *no*
+/// non-closing session also claims it.
+///
+/// Best-effort: on hosts without systemd-logind (or without `loginctl` on
+/// PATH) this returns an empty set, leaving the `who` output unfiltered.
+///
+/// Prefers `list-sessions --json=short` (one call, no column parsing), but
+/// the JSON output only gained a state field in recent systemd versions —
+/// when it's missing or `--json` is unsupported, falls back to one
+/// `show-session -p State -p TTY` call across all session IDs.
+#[cfg(unix)]
+fn closing_ttys() -> HashSet<String> {
+	closing_ttys_json().unwrap_or_else(closing_ttys_show_session)
+}
+
+/// `None` means "couldn't determine via JSON" (old systemd without `--json`,
+/// or JSON entries without a state field) — fall back to `show-session`.
+#[cfg(unix)]
+fn closing_ttys_json() -> Option<HashSet<String>> {
+	let out = duct::cmd!("loginctl", "list-sessions", "--json=short")
+		.stdout_capture()
+		.stderr_capture()
+		.unchecked()
+		.run()
+		.ok()?;
+	if !out.status.success() {
+		trace!(status = ?out.status, "loginctl list-sessions --json unsupported or failed");
+		return None;
+	}
+	parse_closing_ttys_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `loginctl list-sessions --json=short` output. Returns `None` if the
+/// JSON doesn't parse or any entry lacks a `state` field (systemd versions
+/// that support `--json` but predate the state field).
+#[cfg(any(test, unix))]
+fn parse_closing_ttys_json(text: &str) -> Option<HashSet<String>> {
+	let sessions: Vec<serde_json::Value> = serde_json::from_str(text).ok()?;
+	if sessions.iter().any(|s| s.get("state").is_none()) {
+		return None;
+	}
+	let mut closing = HashSet::new();
+	let mut live = HashSet::new();
+	for session in &sessions {
+		let Some(tty) = session["tty"].as_str() else {
+			continue;
+		};
+		if session["state"]
+			.as_str()
+			.is_some_and(|st| st.eq_ignore_ascii_case("closing"))
+		{
+			closing.insert(tty.to_owned());
+		} else {
+			live.insert(tty.to_owned());
+		}
+	}
+	closing.retain(|tty| !live.contains(tty));
+	Some(closing)
+}
+
+#[cfg(unix)]
+fn closing_ttys_show_session() -> HashSet<String> {
+	let list = match duct::cmd!("loginctl", "list-sessions", "--no-legend")
+		.stdout_capture()
+		.stderr_capture()
+		.unchecked()
+		.run()
+	{
+		Ok(out) if out.status.success() => out,
+		Ok(out) => {
+			trace!(status = ?out.status, "loginctl list-sessions returned non-zero");
+			return HashSet::new();
+		}
+		Err(err) => {
+			trace!(%err, "could not run loginctl");
+			return HashSet::new();
+		}
+	};
+
+	let ids: Vec<String> = String::from_utf8_lossy(&list.stdout)
+		.lines()
+		.filter_map(|l| l.split_whitespace().next().map(str::to_owned))
+		.collect();
+	if ids.is_empty() {
+		return HashSet::new();
+	}
+
+	let mut args = vec![
+		"show-session".to_string(),
+		"-p".into(),
+		"State".into(),
+		"-p".into(),
+		"TTY".into(),
+	];
+	args.extend(ids);
+	match duct::cmd("loginctl", args)
+		.stdout_capture()
+		.stderr_capture()
+		.unchecked()
+		.run()
+	{
+		Ok(out) if out.status.success() => {
+			parse_closing_ttys(&String::from_utf8_lossy(&out.stdout))
+		}
+		Ok(out) => {
+			trace!(status = ?out.status, "loginctl show-session returned non-zero");
+			HashSet::new()
+		}
+		Err(err) => {
+			trace!(%err, "could not run loginctl show-session");
+			HashSet::new()
+		}
+	}
+}
+
+/// Parse `loginctl show-session <id>... -p State -p TTY` output: one
+/// `Key=Value` block per session, blocks separated by blank lines. Returns
+/// the TTYs whose sessions are all "closing".
+#[cfg(any(test, unix))]
+fn parse_closing_ttys(text: &str) -> HashSet<String> {
+	let mut closing = HashSet::new();
+	let mut live = HashSet::new();
+	for block in text.split("\n\n") {
+		let mut tty = None;
+		let mut is_closing = false;
+		for line in block.lines() {
+			if let Some(v) = line.trim().strip_prefix("TTY=") {
+				if !v.is_empty() {
+					tty = Some(v.to_string());
+				}
+			} else if let Some(v) = line.trim().strip_prefix("State=") {
+				is_closing = v.eq_ignore_ascii_case("closing");
+			}
+		}
+		if let Some(tty) = tty {
+			if is_closing {
+				closing.insert(tty);
+			} else {
+				live.insert(tty);
+			}
+		}
+	}
+	closing.retain(|tty| !live.contains(tty));
+	closing
 }
 
 #[cfg(windows)]
@@ -707,6 +881,97 @@ mod tests {
 		let out = parse_quser(text);
 		assert_eq!(out.len(), 2);
 		assert!(out.iter().all(|u| u.name != "besd"));
+	}
+
+	#[test]
+	fn parses_closing_ttys_from_show_session_blocks() {
+		let text = "TTY=pts/5\nState=closing\n\n\
+		            TTY=pts/8\nState=active\n\n\
+		            TTY=\nState=active\n\n\
+		            State=closing\nTTY=pts/0\n";
+		let out = parse_closing_ttys(text);
+		assert_eq!(out.len(), 2);
+		assert!(out.contains("pts/5"));
+		assert!(out.contains("pts/0"), "property order should not matter");
+	}
+
+	#[test]
+	fn parses_closing_ttys_ignores_ttyless_closing_sessions() {
+		// Manager/service sessions have no TTY; a closing one shouldn't
+		// produce an entry that could never match a who line anyway.
+		let out = parse_closing_ttys("TTY=\nState=closing\n");
+		assert!(out.is_empty());
+	}
+
+	#[test]
+	fn parses_closing_ttys_empty_input() {
+		assert!(parse_closing_ttys("").is_empty());
+	}
+
+	#[test]
+	fn closing_tty_reclaimed_by_live_session_is_kept() {
+		// A closing session pins its TTY name even after the pty has been
+		// reallocated to a new login; the live session wins.
+		let text = "TTY=pts/5\nState=closing\n\n\
+		            TTY=pts/5\nState=active\n\n\
+		            TTY=pts/0\nState=closing\n";
+		let out = parse_closing_ttys(text);
+		assert_eq!(out.len(), 1);
+		assert!(out.contains("pts/0"));
+		assert!(!out.contains("pts/5"));
+	}
+
+	#[test]
+	fn parses_closing_ttys_json_with_state_field() {
+		let text = r#"[
+			{"session":"187","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/5","state":"closing","idle":true},
+			{"session":"214","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/8","state":"active","idle":true},
+			{"session":"4","uid":1000,"user":"ubuntu","seat":null,"tty":null,"state":"closing","idle":false}
+		]"#;
+		let out = parse_closing_ttys_json(text).expect("state field present");
+		assert_eq!(out.len(), 1);
+		assert!(out.contains("pts/5"));
+	}
+
+	#[test]
+	fn parses_closing_ttys_json_without_state_field_falls_back() {
+		// systemd versions that support --json but predate the state field.
+		let text = r#"[{"session":"3","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/5","idle":false}]"#;
+		assert_eq!(parse_closing_ttys_json(text), None);
+	}
+
+	#[test]
+	fn parses_closing_ttys_json_keeps_reclaimed_tty() {
+		let text = r#"[
+			{"session":"187","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/5","state":"closing","idle":true},
+			{"session":"731","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/5","state":"active","idle":false},
+			{"session":"29","uid":1000,"user":"ubuntu","seat":null,"tty":"pts/0","state":"closing","idle":true}
+		]"#;
+		let out = parse_closing_ttys_json(text).expect("state field present");
+		assert_eq!(out.len(), 1);
+		assert!(out.contains("pts/0"));
+	}
+
+	#[test]
+	fn parses_closing_ttys_json_rejects_invalid() {
+		assert_eq!(parse_closing_ttys_json("not json"), None);
+	}
+
+	#[test]
+	fn parses_closing_ttys_json_empty_list() {
+		assert_eq!(parse_closing_ttys_json("[]"), Some(HashSet::new()));
+	}
+
+	#[test]
+	fn closing_sessions_filtered_from_who_output() {
+		let mut users = parse_who(
+			"ubuntu   pts/5        2026-06-01 12:34 (203.0.113.5)\n\
+			 ubuntu   pts/8        2026-06-02 12:34 (203.0.113.5)\n",
+		);
+		let closing: HashSet<String> = ["pts/5".to_string()].into();
+		users.retain(|u| !closing.contains(&u.line));
+		assert_eq!(users.len(), 1);
+		assert_eq!(users[0].line, "pts/8");
 	}
 
 	#[test]
