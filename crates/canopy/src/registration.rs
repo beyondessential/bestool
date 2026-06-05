@@ -19,6 +19,8 @@
 //! in hardware via [`machine_passphrase`] — while hosts without one keep using
 //! the machine id, and neither the file format nor any consumer changes.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::{
 	fmt,
 	path::{Path, PathBuf},
@@ -46,6 +48,13 @@ const DIR_ENV: &str = "BESTOOL_CANOPY_DIR";
 /// blake3 KDF context string for the machine-id-derived file passphrase. Bump
 /// the version suffix if the derivation ever changes.
 const KDF_CONTEXT: &str = "bestool canopy-registration v1 (machine-id)";
+
+/// Unix mode for the registration file. Group-readable so unprivileged runs
+/// sharing the daemon's group (e.g. `bestool tamanu doctor` run by hand) read
+/// the same registration instead of falling back to the database and
+/// rewriting the legacy `/etc/tamanu` files.
+#[cfg(unix)]
+const REG_FILE_MODE: u32 = 0o640;
 
 /// This host's canopy enrollment state.
 ///
@@ -219,6 +228,17 @@ pub fn decrypt_with_passphrase(bytes: &[u8], passphrase: Passphrase) -> Result<R
 }
 
 async fn read_and_decrypt(path: &Path) -> Result<Registration> {
+	// Repair the mode of files written before group read was granted.
+	// Best-effort: only the owner can chmod, and unprivileged readers that get
+	// this far don't need to.
+	#[cfg(unix)]
+	if let Ok(meta) = tokio::fs::metadata(path).await
+		&& meta.permissions().mode() & 0o777 != REG_FILE_MODE
+	{
+		let _ =
+			tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(REG_FILE_MODE)).await;
+	}
+
 	let bytes = tokio::fs::read(path)
 		.await
 		.into_diagnostic()
@@ -339,7 +359,7 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 	}
 	#[cfg(unix)]
 	{
-		opts.mode(0o600);
+		opts.mode(REG_FILE_MODE);
 	}
 	let mut f = opts
 		.open(&tmp)
@@ -350,6 +370,15 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 	f.write_all(bytes).await.into_diagnostic()?;
 	f.sync_all().await.into_diagnostic()?;
 	drop(f);
+
+	// `mode()` only applies on creation and is filtered by the umask, so set
+	// the permissions explicitly to cover pre-existing tmp files and
+	// restrictive service umasks.
+	#[cfg(unix)]
+	tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(REG_FILE_MODE))
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("setting permissions on {}", tmp.display()))?;
 
 	tokio::fs::rename(&tmp, path)
 		.await
@@ -431,6 +460,39 @@ mod tests {
 			!raw.windows(b"PRIVATE KEY".len())
 				.any(|w| w == b"PRIVATE KEY"),
 			"registration file should be encrypted"
+		);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn store_writes_group_readable_file() {
+		let dir = tempfile::tempdir().unwrap();
+		store_in(dir.path(), &sample()).await.unwrap();
+
+		let mode = std::fs::metadata(registration_file(dir.path()))
+			.unwrap()
+			.permissions()
+			.mode() & 0o777;
+		assert_eq!(
+			mode, REG_FILE_MODE,
+			"expected {REG_FILE_MODE:o}, got {mode:o}"
+		);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn load_repairs_mode_of_old_files() {
+		let dir = tempfile::tempdir().unwrap();
+		store_in(dir.path(), &sample()).await.unwrap();
+
+		let path = registration_file(dir.path());
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+		load_from(dir.path()).await.unwrap().unwrap();
+		let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+		assert_eq!(
+			mode, REG_FILE_MODE,
+			"expected {REG_FILE_MODE:o}, got {mode:o}"
 		);
 	}
 }
