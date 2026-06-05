@@ -132,6 +132,9 @@ jobs:
           install -Dm644 crates/bestool/USAGE.md "$deb_dir/usr/share/doc/bestool/USAGE.md"
           install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool/PSQL-EXAMPLES.md"
 
+          # State directory for the canopy registration
+          install -dm755 "$deb_dir/etc/bestool"
+
           cat > "$deb_dir/DEBIAN/control" << EOF
           Package: bestool
           Version: $version
