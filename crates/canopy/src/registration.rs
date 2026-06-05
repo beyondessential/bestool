@@ -56,6 +56,14 @@ const KDF_CONTEXT: &str = "bestool canopy-registration v1 (machine-id)";
 #[cfg(unix)]
 const REG_FILE_MODE: u32 = 0o640;
 
+/// scrypt work factor (`N = 2^REG_WORK_FACTOR`) for the registration file.
+///
+/// The machine passphrase is a 256-bit blake3-derived key, so scrypt's
+/// memory-hardness adds no protection; age's default calibrates to ~1 second
+/// of scrypt, which on a fast server is a 512MiB arena — enough to blow
+/// through a service MemoryMax. 2^12 keeps the arena at 4MiB.
+const REG_WORK_FACTOR: u8 = 12;
+
 /// This host's canopy enrollment state.
 ///
 /// Every field is optional so a partially-provisioned or migrated host can
@@ -245,9 +253,40 @@ async fn read_and_decrypt(path: &Path) -> Result<Registration> {
 		.wrap_err_with(|| format!("reading {}", path.display()))?;
 	let plaintext = decrypt_bytes(&bytes, machine_passphrase()?)
 		.wrap_err("decrypting registration (was this disk cloned from another machine?)")?;
+
+	// Files written before the work factor was fixed used age's calibrated
+	// default, which costs hundreds of MiB to decrypt on every load. Re-encrypt
+	// once with the cheap factor. Best-effort: unprivileged readers can't write
+	// here, and the owner will on its next load.
+	if scrypt_work_factor(&bytes).is_some_and(|log_n| log_n > REG_WORK_FACTOR) {
+		match encrypt_bytes(&plaintext, machine_passphrase()?) {
+			Ok(cheap) => match write_atomic(path, &cheap).await {
+				Ok(()) => {
+					info!(path = %path.display(), "re-encrypted registration with cheap work factor")
+				}
+				Err(err) => debug!(%err, "could not rewrite registration with cheap work factor"),
+			},
+			Err(err) => debug!(%err, "could not re-encrypt registration with cheap work factor"),
+		}
+	}
+
 	serde_json::from_slice(&plaintext)
 		.into_diagnostic()
 		.wrap_err("parsing registration")
+}
+
+/// Extract the scrypt work factor (log_n) from an age file header.
+///
+/// The header is ASCII text even in the binary format: a version line, then
+/// `-> scrypt <salt> <log_n>` for passphrase-encrypted files.
+fn scrypt_work_factor(ciphertext: &[u8]) -> Option<u8> {
+	ciphertext
+		.split(|&b| b == b'\n')
+		.take(2)
+		.filter_map(|line| std::str::from_utf8(line).ok())
+		.find_map(|line| line.strip_prefix("-> scrypt "))
+		.and_then(|rest| rest.split_ascii_whitespace().nth(1))
+		.and_then(|n| n.parse().ok())
 }
 
 async fn migrate_from_legacy(dir: &Path) -> Result<Option<Registration>> {
@@ -314,7 +353,10 @@ fn read_trimmed(path: &Path) -> Option<String> {
 fn machine_passphrase() -> Result<Passphrase> {
 	let id =
 		machine_uid::get().map_err(|err| miette!("could not read the host machine id: {err}"))?;
-	Ok(Passphrase::new(derive_passphrase(&id).into()))
+	Ok(Passphrase::with_work_factor(
+		derive_passphrase(&id).into(),
+		REG_WORK_FACTOR,
+	))
 }
 
 fn derive_passphrase(machine_id: &str) -> String {
@@ -461,6 +503,42 @@ mod tests {
 				.any(|w| w == b"PRIVATE KEY"),
 			"registration file should be encrypted"
 		);
+	}
+
+	#[tokio::test]
+	async fn store_uses_cheap_work_factor() {
+		let dir = tempfile::tempdir().unwrap();
+		store_in(dir.path(), &sample()).await.unwrap();
+
+		let raw = std::fs::read(registration_file(dir.path())).unwrap();
+		assert_eq!(scrypt_work_factor(&raw), Some(REG_WORK_FACTOR));
+	}
+
+	#[tokio::test]
+	async fn load_reencrypts_expensive_files() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = registration_file(dir.path());
+		let reg = sample();
+
+		// Simulate a file written before the work factor was fixed (one notch
+		// up, to keep the test fast).
+		let machine_id = machine_uid::get().unwrap();
+		let expensive = Passphrase::with_work_factor(
+			derive_passphrase(&machine_id).into(),
+			REG_WORK_FACTOR + 1,
+		);
+		let blob = encrypt_bytes(&serde_json::to_vec(&reg).unwrap(), expensive).unwrap();
+		write_atomic(&path, &blob).await.unwrap();
+		assert_eq!(scrypt_work_factor(&blob), Some(REG_WORK_FACTOR + 1));
+
+		let back = load_from(dir.path()).await.unwrap().unwrap();
+		assert_eq!(back.server_id, reg.server_id);
+		assert_eq!(back.device_key, reg.device_key);
+
+		let raw = std::fs::read(&path).unwrap();
+		assert_eq!(scrypt_work_factor(&raw), Some(REG_WORK_FACTOR));
+		let again = load_from(dir.path()).await.unwrap().unwrap();
+		assert_eq!(again.server_id, reg.server_id);
 	}
 
 	#[cfg(unix)]
