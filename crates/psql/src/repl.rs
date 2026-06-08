@@ -57,6 +57,15 @@ impl ReplAction {
 			}
 		}
 
+		self.dispatch(ctx, line).await
+	}
+
+	/// Run the action without touching history.
+	///
+	/// This is the shared dispatch used both by [`handle`](Self::handle) (after
+	/// it records the line in history) and by snippet/include execution, which
+	/// replays a script's actions without polluting interactive history.
+	pub(crate) async fn dispatch(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
 		match self {
 			ReplAction::ToggleExpanded => expanded::handle_toggle_expanded(ctx),
 			ReplAction::Exit => exit::handle_exit(ctx).await,

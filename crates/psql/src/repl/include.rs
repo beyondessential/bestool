@@ -3,15 +3,13 @@ use std::{fs, ops::ControlFlow, path::Path};
 use tracing::debug;
 
 use super::state::ReplContext;
-use crate::input::{ReplAction, handle_input};
+use crate::input::handle_input;
 
 pub async fn handle_include(
 	ctx: &mut ReplContext<'_>,
 	file_path: &Path,
 	vars: Vec<(String, String)>,
 ) -> ControlFlow<()> {
-	use super::execute::handle_execute;
-
 	let content = match fs::read_to_string(file_path) {
 		Ok(content) => content,
 		Err(e) => {
@@ -53,16 +51,11 @@ pub async fn handle_include(
 
 		let mut result = ControlFlow::Continue(());
 		for action in actions {
-			if let ReplAction::Execute {
-				input,
-				sql,
-				modifiers,
-			} = action
-			{
-				result = handle_execute(ctx, input, sql, modifiers).await;
-				if result.is_break() {
-					break;
-				}
+			// Boxed because an included file may itself include/run another,
+			// making dispatch indirectly recursive.
+			result = Box::pin(action.dispatch(ctx, "")).await;
+			if result.is_break() {
+				break;
 			}
 		}
 

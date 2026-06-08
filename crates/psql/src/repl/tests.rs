@@ -1952,3 +1952,91 @@ async fn test_gset_with_multiple_unprintable_columns() {
 		c_val
 	);
 }
+
+/// A snippet/include is a script: its metacommands (here `\default`) must run
+/// before the query, otherwise a `${var}` referencing them fails with
+/// "Variable '…' is not set". Exercised via `handle_include`, which shares the
+/// same action-dispatch loop as `handle_run_snippet`.
+#[tokio::test]
+async fn test_include_runs_metacommands_before_query() {
+	use crate::audit::Audit;
+	use crate::completer::SqlCompleter;
+	use crate::repl::{ReplContext, ReplState};
+	use crate::theme::Theme;
+	use rustyline::Editor;
+	use tempfile::TempDir;
+
+	let connection_string =
+		std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+
+	let pool = crate::create_pool(&connection_string)
+		.await
+		.expect("Failed to create pool");
+	let client = pool.get().await.expect("Failed to get connection");
+
+	let temp_dir = TempDir::new().unwrap();
+	let audit_path = temp_dir.path().join("history.redb");
+	let output_path = temp_dir.path().join("out.txt");
+	let include_path = temp_dir.path().join("snippet.sql");
+	std::fs::write(
+		&include_path,
+		"\\default n 2\nSELECT generate_series(1, ${n}) AS i;",
+	)
+	.unwrap();
+
+	let mut repl_state = ReplState::new();
+	let file = File::create_new(&output_path).await.unwrap();
+	repl_state.output_file = Some(Arc::new(tokio::sync::Mutex::new(file)));
+	let repl_state = Arc::new(Mutex::new(repl_state));
+
+	let audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
+	let completer = SqlCompleter::new(Theme::Dark);
+	let mut rl: Editor<SqlCompleter, Audit> = Editor::with_history(
+		rustyline::Config::builder()
+			.auto_add_history(false)
+			.enable_signals(false)
+			.build(),
+		audit,
+	)
+	.unwrap();
+	rl.set_helper(Some(completer));
+
+	let monitor_client = pool.get().await.expect("Failed to get monitor connection");
+	let backend_pid: i32 = client
+		.query_one("SELECT pg_backend_pid()", &[])
+		.await
+		.expect("Failed to get backend PID")
+		.get(0);
+	let schema_cache_manager = crate::schema_cache::SchemaCacheManager::new(pool.clone());
+
+	{
+		let mut ctx = ReplContext {
+			config: &Default::default(),
+			client: &client,
+			monitor_client: &monitor_client,
+			backend_pid,
+			repl_state: &repl_state,
+			rl: &mut rl,
+			pool: &pool,
+			schema_cache_manager: &schema_cache_manager,
+			redact_mode: false,
+		};
+
+		let result = crate::repl::include::handle_include(&mut ctx, &include_path, vec![]).await;
+		assert!(result.is_continue());
+		repl_state.lock().unwrap().output_file.take().unwrap();
+	}
+
+	// `\default n 2` ran, so `n` is set.
+	assert_eq!(
+		repl_state.lock().unwrap().vars.get("n"),
+		Some(&"2".to_string()),
+	);
+
+	// The query interpolated `${n}` and executed (rows 1 and 2 from the series).
+	let output = std::fs::read_to_string(&output_path).unwrap();
+	assert!(
+		output.contains('1') && output.contains('2'),
+		"Expected the limited series in output, got: {output}"
+	);
+}
