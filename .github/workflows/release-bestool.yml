@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Configure toolchain
         run: |
@@ -74,7 +74,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: bestool-${{ matrix.target }}
-      - uses: taiki-e/install-action@v2.79.1
+      - uses: taiki-e/install-action@v2.79.7
         with:
           tool: cargo-zigbuild,cargo-auditable
 
