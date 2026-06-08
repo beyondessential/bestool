@@ -374,6 +374,9 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		let is_expanded = ctx.modifiers.contains(&QueryModifier::Expanded);
 		let is_json = ctx.modifiers.contains(&QueryModifier::Json);
 		let is_zero = ctx.modifiers.contains(&QueryModifier::Zero);
+		let is_plain = ctx.modifiers.contains(&QueryModifier::Plain);
+		let is_sql = ctx.modifiers.contains(&QueryModifier::Sql);
+		let use_colours = ctx.use_colours;
 
 		// Only display if not using Zero modifier
 		if !is_zero {
@@ -384,34 +387,67 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 				(&rows[..], false)
 			};
 
-			display::display(
-				&mut display::DisplayContext {
-					config: ctx.config,
-					columns,
-					rows: display_rows,
-					unprintable_columns: &unprintable_columns,
-					text_caster: text_caster.clone(),
-					writer: ctx.writer,
-					use_colours: ctx.use_colours,
-					column_indices: None,
-					redact_mode: ctx.redact_mode,
-					column_refs: &column_refs,
-				},
-				is_json,
-				is_expanded,
-			)
-			.await?;
+			// Derive the INSERT target table for SQL output.
+			let sql_table = if is_sql {
+				let derived = crate::column_extractor::derive_table_name(statement);
+				if derived.is_none() {
+					eprintln!(
+						"warning: could not derive a table name from the query; using 'results'"
+					);
+				}
+				Some(derived.unwrap_or_else(|| "results".to_string()))
+			} else {
+				None
+			};
+
+			let mut display_ctx = display::DisplayContext {
+				config: ctx.config,
+				columns,
+				rows: display_rows,
+				unprintable_columns: &unprintable_columns,
+				text_caster: text_caster.clone(),
+				writer: ctx.writer,
+				use_colours,
+				column_indices: None,
+				redact_mode: ctx.redact_mode,
+				column_refs: &column_refs,
+			};
+
+			// Format precedence: plain > sql > json/table (x means expanded).
+			if is_plain {
+				display::display_plain(&mut display_ctx).await?;
+			} else if let Some(table) = &sql_table {
+				display::display_sql(&mut display_ctx, is_expanded, table).await?;
+			} else {
+				display::display(&mut display_ctx, is_json, is_expanded).await?;
+			}
 
 			// Print truncation message if needed
 			if was_truncated {
-				let truncation_msg = format!(
-					"{}\n",
-					colors::style_warning(
-						"[output truncated, use \\re show limit=N to print more]",
-						ctx.use_colours
-					)
-				);
-				eprint!("{}", truncation_msg);
+				if is_sql {
+					// Inline so the notice survives piping/capture of the SQL output.
+					let fmt = if is_expanded { "sql-expanded" } else { "sql" };
+					let msg = format!(
+						"-- output truncated at {} of {} rows;\n-- use \\re show format={} to emit all rows\n",
+						display_rows.len(),
+						rows.len(),
+						fmt
+					);
+					display_ctx
+						.writer
+						.write_all(msg.as_bytes())
+						.await
+						.map_err(|e| miette::miette!("Failed to write output: {}", e))?;
+				} else {
+					let truncation_msg = format!(
+						"{}\n",
+						colors::style_warning(
+							"[output truncated, use \\re show limit=N to print more]",
+							use_colours
+						)
+					);
+					eprint!("{}", truncation_msg);
+				}
 			}
 		}
 

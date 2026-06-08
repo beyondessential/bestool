@@ -115,6 +115,9 @@ impl super::SqlCompleter {
 					"csv",
 					"excel",
 					"sqlite",
+					"plain",
+					"sql",
+					"sql-expanded",
 				];
 				let mut completions = Vec::new();
 				for format in formats {

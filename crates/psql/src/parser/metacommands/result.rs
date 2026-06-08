@@ -15,6 +15,9 @@ pub(crate) enum ResultFormat {
 	Csv,
 	Excel,
 	Sqlite,
+	Plain,
+	Sql,
+	SqlExpanded,
 }
 
 impl ResultFormat {
@@ -91,6 +94,9 @@ pub fn parse(
 							"csv" => Some(ResultFormat::Csv),
 							"excel" => Some(ResultFormat::Excel),
 							"sqlite" => Some(ResultFormat::Sqlite),
+							"plain" => Some(ResultFormat::Plain),
+							"sql" => Some(ResultFormat::Sql),
+							"sql-expanded" => Some(ResultFormat::SqlExpanded),
 							_ => return Ok(super::Metacommand::Help),
 						};
 					} else if let Some(value_str) = param_or_value.strip_prefix("to=") {
@@ -236,6 +242,26 @@ mod tests {
 					}
 				}) if f == expected && cols.is_empty()
 			));
+		}
+	}
+
+	#[test]
+	fn test_parse_re_show_new_formats() {
+		for (name, expected) in [
+			("plain", ResultFormat::Plain),
+			("sql", ResultFormat::Sql),
+			("sql-expanded", ResultFormat::SqlExpanded),
+		] {
+			let result = parse_metacommand(&format!(r"\re show format={name}")).unwrap();
+			assert!(
+				matches!(
+					result,
+					Some(Metacommand::Result {
+						subcommand: ResultSubcommand::Show { format: Some(ref f), .. }
+					}) if *f == expected
+				),
+				"format={name} parsed as {result:?}"
+			);
 		}
 	}
 

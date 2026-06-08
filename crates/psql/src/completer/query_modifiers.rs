@@ -1,7 +1,7 @@
 use rustyline::completion::Pair;
 
 /// Valid modifier characters that can appear after \g
-const MODIFIER_CHARS: &[char] = &['x', 'j', 'o', 'v', 'z'];
+const MODIFIER_CHARS: &[char] = &['x', 'j', 'o', 'v', 'z', 'p', 's'];
 
 /// Generate query modifier completions based on what the user has typed
 pub(super) fn generate_completions(current_word: &str) -> Vec<Pair> {
@@ -37,9 +37,19 @@ pub(super) fn generate_completions(current_word: &str) -> Vec<Pair> {
 	let mut has_set = false;
 	let mut chars_iter = after_g_lower.chars().peekable();
 
-	while let Some(ch) = chars_iter.peek() {
-		if MODIFIER_CHARS.contains(ch) {
-			used_modifiers.push(*ch);
+	while let Some(&ch) = chars_iter.peek() {
+		// A trailing `s` that begins `set` is the set keyword, not the sql modifier.
+		if ch == 's' {
+			let mut look = chars_iter.clone();
+			look.next();
+			// `s` followed by `e` is heading toward the `set` keyword; a bare `s` (or one
+			// followed by another modifier) is the sql modifier.
+			if look.collect::<String>().starts_with('e') {
+				break;
+			}
+		}
+		if MODIFIER_CHARS.contains(&ch) {
+			used_modifiers.push(ch);
 			chars_iter.next();
 		} else {
 			break;
@@ -102,6 +112,26 @@ pub(super) fn generate_completions(current_word: &str) -> Vec<Pair> {
 		}
 	}
 
+	// A trailing `s` is ambiguous: it may be the sql modifier or the start of `set`.
+	// Offer the `set` interpretation too (drop the trailing `s`, append `set`).
+	if !has_set && remaining.is_empty() && used_modifiers.last() == Some(&'s') {
+		let mut completion = String::from("\\g");
+		for &m in &used_modifiers[..used_modifiers.len() - 1] {
+			completion.push(m);
+		}
+		completion.push_str("set");
+
+		if completion
+			.to_lowercase()
+			.starts_with(&current_word.to_lowercase())
+		{
+			completions.push(Pair {
+				display: completion.clone(),
+				replacement: completion,
+			});
+		}
+	}
+
 	// Add partial "set" completions
 	if !has_set && !remaining.is_empty() && "set".starts_with(&remaining) {
 		let mut completion = String::from("\\g");
@@ -137,6 +167,26 @@ mod tests {
 		assert!(completions.iter().any(|c| c.display == "\\go"));
 		assert!(completions.iter().any(|c| c.display == "\\gv"));
 		assert!(completions.iter().any(|c| c.display == "\\gz"));
+	}
+
+	#[test]
+	fn test_generate_g_includes_plain_and_sql() {
+		let completions = generate_completions("\\g");
+		assert!(completions.iter().any(|c| c.display == "\\gp"));
+		assert!(completions.iter().any(|c| c.display == "\\gs"));
+	}
+
+	#[test]
+	fn test_generate_gs_then_x() {
+		let completions = generate_completions("\\gs");
+		assert!(completions.iter().any(|c| c.display == "\\gsx"));
+	}
+
+	#[test]
+	fn test_generate_gset_still_completes() {
+		// A trailing `s` beginning `set` must not be eaten as the sql modifier.
+		let completions = generate_completions("\\gse");
+		assert!(completions.iter().any(|c| c.display == "\\gset"));
 	}
 
 	#[test]
