@@ -15,12 +15,12 @@ workspace = true
 bytes = "1.9.0"
 fraction = { version = "0.15", features = ["with-postgres-support"] }
 hex = "0.4.3"
-jiff = "0.2.24"
+jiff = "0.2.28"
 miette = { workspace = true }
 mobc = "0.9.0"
 mobc-postgres = { version = "0.9.0", features = ["with-serde_json-1"] }
 percent-encoding = "2.3"
-rpassword = "7.4.0"
+rpassword = "7.5.4"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8.2"
 serde_json = "1.0.145"

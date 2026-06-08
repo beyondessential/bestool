@@ -19,7 +19,7 @@ flate2 = "1.0.34"
 futures = { workspace = true, features = ["executor"] }
 getrandom = "0.3.4"
 hickory-resolver = "0.26.1"
-jiff = { version = "0.2.24", features = ["serde"] }
+jiff = { version = "0.2.28", features = ["serde"] }
 machine-uid = "0.6.0"
 miette = { workspace = true }
 rcgen = { workspace = true }
