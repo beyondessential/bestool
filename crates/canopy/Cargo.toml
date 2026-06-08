@@ -17,7 +17,7 @@ base64 = "0.22.1"
 blake3 = "1.8.5"
 flate2 = "1.0.34"
 futures = { workspace = true, features = ["executor"] }
-getrandom = "0.3.4"
+getrandom = "0.4.2"
 hickory-resolver = "0.26.1"
 jiff = { version = "0.2.24", features = ["serde"] }
 machine-uid = "0.6.0"
