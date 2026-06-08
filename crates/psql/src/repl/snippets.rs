@@ -37,7 +37,7 @@ pub async fn handle_run_snippet(
 ) -> ControlFlow<()> {
 	match get_snippet(ctx, &name).await {
 		Some(content) => {
-			use crate::input::{ReplAction, handle_input};
+			use crate::input::handle_input;
 
 			let saved_vars: Vec<(String, Option<String>)> = {
 				let mut state = ctx.repl_state.lock().unwrap();
@@ -65,17 +65,11 @@ pub async fn handle_run_snippet(
 
 			let mut result = ControlFlow::Continue(());
 			for action in actions {
-				if let ReplAction::Execute {
-					input,
-					sql,
-					modifiers,
-				} = action
-				{
-					use super::execute::handle_execute;
-					result = handle_execute(ctx, input, sql, modifiers).await;
-					if result.is_break() {
-						break;
-					}
+				// Boxed because a snippet may itself run another snippet/include,
+				// making dispatch indirectly recursive.
+				result = Box::pin(action.dispatch(ctx, "")).await;
+				if result.is_break() {
+					break;
 				}
 			}
 
