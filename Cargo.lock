@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "age",
  "age-core",
@@ -551,7 +551,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.22.3"
+version = "1.22.4"
 dependencies = [
  "age",
  "algae-cli",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "9.1.1"
+version = "9.1.2"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-canopy"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "algae-cli",
  "base64 0.22.1",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-kopia"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "dialoguer",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-postgres"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "bytes",
  "fraction",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.6.2"
+version = "1.6.3"
 dependencies = [
  "aegis",
  "bestool-postgres",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.11.5"
+version = "0.11.6"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -3444,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "improv-wifi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
