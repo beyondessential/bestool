@@ -30,7 +30,7 @@ miette = "7.6.0"
 rand = "0.10.1"
 rcgen = "0.14.8"
 reqwest = { version = "0.13.3", features = ["json", "rustls"] }
-sysinfo = "0.39.1"
+sysinfo = "0.39.3"
 thiserror = "2.0.16"
 tokio = "1.47.1"
 tokio-util = "0.7.16"

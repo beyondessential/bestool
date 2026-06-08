@@ -29,7 +29,7 @@ diceware_wordlists = "1.2.3"
 futures = { workspace = true }
 indicatif = { workspace = true }
 itertools = { workspace = true }
-jiff = "0.2.24"
+jiff = "0.2.28"
 miette = { workspace = true, features = ["fancy"] }
 pinentry = "0.8.0"
 rand.workspace = true
