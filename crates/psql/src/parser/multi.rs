@@ -6,7 +6,10 @@ use winnow::{
 	token::{any, take_till},
 };
 
-use super::{Metacommand, QueryModifiers, parse_metacommand, parse_query_modifiers, strip_comment};
+use super::{
+	Metacommand, QueryModifiers, SqlLexState, parse_metacommand, parse_query_modifiers,
+	strip_comment,
+};
 use crate::{input::ReplAction, repl::ReplState};
 
 /// Parse multiple statements from input, returning completed actions and remaining buffer
@@ -171,190 +174,64 @@ enum SqlResult {
 
 /// Parse SQL until a terminator (semicolon or \g) is found
 ///
-/// This function handles various PostgreSQL syntax features to avoid
-/// treating content inside strings or comments as statement terminators:
+/// Lexical bookkeeping (string literals, dollar-quoted strings, line and block
+/// comments) is handled by [`SqlLexState`] so that semicolons and `\g` inside
+/// strings or comments are not treated as terminators. This function layers the
+/// REPL-specific terminator policy on top:
 ///
-/// Supported:
-/// - Single-quoted strings: 'text'
-/// - Double-quoted identifiers: "identifier"
-/// - Dollar-quoted strings: $tag$text$tag$ (including empty tags: $$text$$)
-/// - Line comments: -- comment
-/// - Block comments: /* comment */ (including nested: /* outer /* inner */ */)
-/// - Escape sequences in strings (handled naturally by tracking quote state)
+/// - a `;` in code ends the statement (left in the input for the caller);
+/// - a `\g`/`\G` in code ends the statement (left in the input for the caller);
+/// - a newline in code immediately followed by a non-`\g` metacommand ends the
+///   statement (the newline is consumed, the metacommand left for the caller).
 ///
-/// The parser correctly handles:
-/// - Semicolons inside strings and comments
-/// - Operators that look like comments (e.g., `- -` for subtraction)
-/// - Arrays with string literals: ARRAY['a;b', 'c;d']
-///
-/// Not specifically handled (but work correctly due to quote tracking):
-/// - Escape strings: E'text\n' (treated as regular strings)
-/// - Unicode strings: U&'text' (treated as regular strings)
-/// - Bit/hex strings: B'101', X'1a2b' (treated as regular strings)
-///
-/// Potential future additions if needed:
-/// - C-style escape sequences: E'\\' vs E'\' (currently relies on prev_char check)
-/// - String continuation across lines (PostgreSQL allows this)
-/// - Special handling for specific operators
+/// On a terminator, `*input` is advanced to point at the terminator (or, for the
+/// metacommand-newline case, at the metacommand). Returns `Backtrack` if the
+/// input ends before any terminator is found.
 fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextError>> {
+	let original = *input;
+	let chars: Vec<char> = original.chars().collect();
+	let mut state = SqlLexState::default();
 	let mut result = String::new();
-	let mut in_single_quote = false;
-	let mut in_double_quote = false;
-	let mut in_dollar_quote: Option<String> = None;
-	let mut in_line_comment = false;
-	let mut block_comment_depth: usize = 0;
-	let mut prev_char = '\0';
+	let mut byte_pos = 0;
+	let mut i = 0;
 
-	while !input.is_empty() {
-		let before = *input;
-		let ch: char = any::<_, ContextError>
-			.parse_next(input)
-			.map_err(ErrMode::Backtrack)?;
+	while i < chars.len() {
+		let ch = chars[i];
 
-		match ch {
-			'\n' => {
-				in_line_comment = false;
-				result.push(ch);
-
-				// Check if next non-whitespace is a metacommand
-				if !in_single_quote
-					&& !in_double_quote
-					&& in_dollar_quote.is_none()
-					&& block_comment_depth == 0
-				{
-					let rest = input.trim_start();
-					if rest.starts_with('\\')
-						&& let Some(second_char) = rest.chars().nth(1)
-						&& second_char != 'g'
-						&& second_char != 'G'
-					{
-						// This is a metacommand, end the query here
-						result.pop(); // Remove the newline
-						return Ok(SqlResult::BackslashG(result.trim().to_string()));
-					}
-				}
-			}
-			'-' if !in_single_quote
-				&& !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& block_comment_depth == 0
-				&& !in_line_comment
-				&& prev_char == '-' =>
-			{
-				in_line_comment = true;
-				result.push(ch);
-			}
-			'/' if !in_single_quote
-				&& !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& prev_char == '*'
-				&& block_comment_depth > 0 =>
-			{
-				// End of block comment
-				block_comment_depth -= 1;
-				result.push(ch);
-			}
-			'*' if !in_single_quote
-				&& !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& prev_char == '/' =>
-			{
-				// Start of block comment
-				block_comment_depth += 1;
-				result.push(ch);
-			}
-			'\'' if !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& block_comment_depth == 0
-				&& prev_char != '\\' =>
-			{
-				in_single_quote = !in_single_quote;
-				result.push(ch);
-			}
-			'"' if !in_single_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& block_comment_depth == 0
-				&& prev_char != '\\' =>
-			{
-				in_double_quote = !in_double_quote;
-				result.push(ch);
-			}
-			'$' if !in_single_quote
-				&& !in_double_quote
-				&& !in_line_comment
-				&& block_comment_depth == 0 =>
-			{
-				// Check for dollar-quoted string
-				result.push(ch);
-				*input = before;
-				let _ = any::<_, ContextError>.parse_next(input); // consume the $
-
-				// Extract the tag (alphanumeric/underscore characters between the dollars)
-				let tag_start = *input;
-				let mut tag = String::new();
-				while let Some(next_ch) = input.chars().next() {
-					if next_ch.is_alphanumeric() || next_ch == '_' {
-						tag.push(next_ch);
-						let _ = any::<_, ContextError>.parse_next(input);
-						result.push(next_ch);
-					} else if next_ch == '$' {
-						// Found closing $, this is a dollar quote
-						let _ = any::<_, ContextError>.parse_next(input);
-						result.push('$');
-
-						if let Some(ref current_tag) = in_dollar_quote {
-							// Check if this closes the current dollar quote
-							if &tag == current_tag {
-								in_dollar_quote = None;
-							}
-						} else {
-							// Starting a new dollar quote
-							in_dollar_quote = Some(tag);
-						}
-						break;
-					} else {
-						// Not a dollar quote, just a regular $ character
-						*input = tag_start;
-						break;
-					}
-				}
-			}
-			';' if !in_single_quote
-				&& !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& block_comment_depth == 0 =>
-			{
-				// Found terminating semicolon
-				*input = before;
+		if state.in_code() {
+			// Terminating semicolon: leave it for the caller to consume.
+			if ch == ';' {
+				*input = &original[byte_pos..];
 				return Ok(SqlResult::Semicolon(result.trim().to_string()));
 			}
-			'\\' if !in_single_quote
-				&& !in_double_quote
-				&& in_dollar_quote.is_none()
-				&& !in_line_comment
-				&& block_comment_depth == 0 =>
-			{
-				// Check if next char is 'g' or 'G'
-				if let Some(next_ch) = input.chars().next()
-					&& (next_ch == 'g' || next_ch == 'G')
+
+			// \g / \G terminator: leave it for the caller to consume.
+			if ch == '\\' && chars.get(i + 1).is_some_and(|c| *c == 'g' || *c == 'G') {
+				*input = &original[byte_pos..];
+				return Ok(SqlResult::BackslashG(result.trim().to_string()));
+			}
+
+			// Newline followed by a (non-\g) metacommand ends the query here;
+			// consume the newline and leave the metacommand for the caller.
+			if ch == '\n' {
+				let mut k = i + 1;
+				while k < chars.len() && chars[k].is_whitespace() {
+					k += 1;
+				}
+				if chars.get(k) == Some(&'\\')
+					&& chars.get(k + 1).is_some_and(|c| *c != 'g' && *c != 'G')
 				{
-					// Found \g terminator
-					*input = before;
+					*input = &original[byte_pos + ch.len_utf8()..];
 					return Ok(SqlResult::BackslashG(result.trim().to_string()));
 				}
-				result.push(ch);
-			}
-			_ => {
-				result.push(ch);
 			}
 		}
 
-		prev_char = ch;
+		let n = state.step(&chars, i, &mut result);
+		for ch in &chars[i..i + n] {
+			byte_pos += ch.len_utf8();
+		}
+		i += n;
 	}
 
 	// No terminator found

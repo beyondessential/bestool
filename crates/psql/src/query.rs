@@ -20,7 +20,7 @@ use bestool_postgres::{
 
 use crate::{
 	column_extractor::extract_column_refs,
-	parser::{QueryModifier, QueryModifiers},
+	parser::{QueryModifier, QueryModifiers, SqlLexState},
 	repl::ReplState,
 	schema_cache::SchemaCacheManager,
 	signals::{reset_sigint, sigint_received},
@@ -90,46 +90,31 @@ pub(crate) async fn execute_query<W: AsyncWrite + Unpin>(
 	Ok(())
 }
 
-/// Split SQL into multiple statements by semicolon
+/// Split SQL into multiple statements by semicolon.
+///
+/// Semicolons inside single/double-quoted strings, dollar-quoted strings
+/// (including nested and untagged `$$`), line comments (`--`) and block
+/// comments (`/* */`, nestable) are not treated as statement separators.
 fn split_statements(sql: &str) -> Vec<String> {
+	let chars: Vec<char> = sql.chars().collect();
 	let mut statements = Vec::new();
 	let mut current = String::new();
-	let mut in_string = false;
-	let mut string_char = ' ';
-	let mut escaped = false;
+	let mut state = SqlLexState::default();
+	let mut i = 0;
 
-	for ch in sql.chars() {
-		if escaped {
-			current.push(ch);
-			escaped = false;
+	while i < chars.len() {
+		if state.in_code() && chars[i] == ';' {
+			let trimmed = current.trim();
+			if !trimmed.is_empty() {
+				statements.push(trimmed.to_string());
+			}
+			current.clear();
+			state = SqlLexState::default();
+			i += 1;
 			continue;
 		}
 
-		match ch {
-			'\\' if in_string => {
-				escaped = true;
-				current.push(ch);
-			}
-			'\'' | '"' => {
-				if !in_string {
-					in_string = true;
-					string_char = ch;
-				} else if ch == string_char {
-					in_string = false;
-				}
-				current.push(ch);
-			}
-			';' if !in_string => {
-				let trimmed = current.trim();
-				if !trimmed.is_empty() {
-					statements.push(trimmed.to_string());
-				}
-				current.clear();
-			}
-			_ => {
-				current.push(ch);
-			}
-		}
+		i += state.step(&chars, i, &mut current);
 	}
 
 	// Add remaining statement if any
@@ -577,6 +562,59 @@ mod tests {
 		let statements = split_statements(sql);
 		assert_eq!(statements.len(), 2);
 		assert_eq!(statements[0], "SELECT 1");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_dollar_quoted_function() {
+		let sql = "CREATE FUNCTION f() RETURNS void AS $function$\nBEGIN\n  SELECT 1;\nEND;\n$function$ LANGUAGE plpgsql";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 1);
+		assert_eq!(statements[0], sql);
+	}
+
+	#[test]
+	fn test_split_statements_untagged_dollar_quote() {
+		let sql = "SELECT $$a; b$$; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], "SELECT $$a; b$$");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_nested_dollar_quote() {
+		let sql = "SELECT $outer$x $inner$y;z$inner$ w;$outer$; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], "SELECT $outer$x $inner$y;z$inner$ w;$outer$");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_line_comment() {
+		let sql = "SELECT 1 -- ; not a separator\n; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_block_comment() {
+		let sql = "SELECT /* ; nested ; */ 1; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert_eq!(statements[0], "SELECT /* ; nested ; */ 1");
+		assert_eq!(statements[1], "SELECT 2");
+	}
+
+	#[test]
+	fn test_split_statements_dollar_quoted_with_string_literals() {
+		// Single quotes inside a dollar-quoted body must not toggle string state.
+		let sql = "CREATE FUNCTION f(d json) RETURNS void AS $function$\nBEGIN\n  RETURN QUERY SELECT d->>'a', d->>'b';\nEND;\n$function$ LANGUAGE plpgsql; SELECT 2";
+		let statements = split_statements(sql);
+		assert_eq!(statements.len(), 2);
+		assert!(statements[0].ends_with("LANGUAGE plpgsql"));
 		assert_eq!(statements[1], "SELECT 2");
 	}
 
