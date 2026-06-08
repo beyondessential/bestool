@@ -50,6 +50,41 @@ pub fn extract_column_refs(
 	Ok(column_refs)
 }
 
+/// Best-effort derivation of the base table name for a query, for use as the target of
+/// generated INSERT statements.
+///
+/// Returns the schema-qualified name of the leftmost `RangeVar` in the first SELECT's
+/// FROM clause. Returns `None` when nothing satisfactory can be derived (no FROM clause,
+/// a subquery or VALUES source, or a join whose leftmost arm is not a plain table).
+pub fn derive_table_name(sql: &str) -> Option<String> {
+	let parse_result = parse(sql).ok()?;
+
+	for statement in parse_result.protobuf.stmts {
+		let Some(stmt) = statement.stmt else { continue };
+		if let Some(NodeEnum::SelectStmt(select)) = &stmt.node {
+			let first = select.from_clause.first()?;
+			return leftmost_table(&first.node);
+		}
+	}
+
+	None
+}
+
+fn leftmost_table(node: &Option<NodeEnum>) -> Option<String> {
+	match node.as_ref()? {
+		NodeEnum::RangeVar(range) => {
+			let name = if range.schemaname.is_empty() {
+				range.relname.clone()
+			} else {
+				format!("{}.{}", range.schemaname, range.relname)
+			};
+			(!name.is_empty()).then_some(name)
+		}
+		NodeEnum::JoinExpr(join) => leftmost_table(&join.larg.as_ref()?.node),
+		_ => None,
+	}
+}
+
 struct ExtractionContext<'a> {
 	schema_cache: Option<&'a SchemaCache>,
 	column_refs: &'a mut Vec<ColumnRef>,
@@ -457,6 +492,31 @@ mod tests {
 			table: "patient".into(),
 			column: "baz".into()
 		}));
+	}
+
+	#[test]
+	fn test_derive_table_name() {
+		assert_eq!(
+			derive_table_name("SELECT * FROM patients"),
+			Some("patients".to_string())
+		);
+		assert_eq!(
+			derive_table_name("SELECT id, name FROM public.patients p WHERE id > 1"),
+			Some("public.patients".to_string())
+		);
+		// Leftmost table of a join.
+		assert_eq!(
+			derive_table_name("SELECT * FROM patients p JOIN visits v ON v.pid = p.id"),
+			Some("patients".to_string())
+		);
+		// No satisfactory base table.
+		assert_eq!(derive_table_name("SELECT 1"), None);
+		assert_eq!(derive_table_name("SELECT * FROM (SELECT 1) AS sub"), None);
+		assert_eq!(
+			derive_table_name("SELECT * FROM (VALUES (1), (2)) AS t(v)"),
+			None
+		);
+		assert_eq!(derive_table_name("not valid sql"), None);
 	}
 
 	#[test]

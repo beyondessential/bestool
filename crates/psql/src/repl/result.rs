@@ -382,6 +382,18 @@ async fn format_result_using_display_module(
 		ResultFormat::Csv => {
 			crate::query::display::display_csv(&mut display_ctx).await?;
 		}
+		ResultFormat::Plain => {
+			crate::query::display::display_plain(&mut display_ctx).await?;
+		}
+		fmt @ (ResultFormat::Sql | ResultFormat::SqlExpanded) => {
+			let expanded = matches!(fmt, ResultFormat::SqlExpanded);
+			let table = crate::column_extractor::derive_table_name(&result.query);
+			if table.is_none() {
+				eprintln!("warning: could not derive a table name from the query; using 'results'");
+			}
+			let table = table.unwrap_or_else(|| "results".to_string());
+			crate::query::display::display_sql(&mut display_ctx, expanded, &table).await?;
+		}
 		ResultFormat::Excel | ResultFormat::Sqlite => {
 			return Err(miette::miette!(
 				"File-only formats should be handled by display_to_file"

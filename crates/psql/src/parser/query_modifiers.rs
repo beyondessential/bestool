@@ -4,7 +4,7 @@ use miette::Result;
 use winnow::{
 	Parser,
 	ascii::{space0, space1},
-	combinator::{alt, opt, preceded},
+	combinator::{alt, not, opt, peek, preceded},
 	error::ErrMode,
 	token::{literal, rest, take_till},
 };
@@ -17,6 +17,8 @@ pub(crate) enum QueryModifier {
 	VarSet { prefix: Option<String> },
 	Output { file_path: String },
 	Zero,
+	Plain,
+	Sql,
 }
 
 pub(crate) type QueryModifiers = HashSet<QueryModifier>;
@@ -39,6 +41,11 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 			literal('o').map(|_| 'o'),
 			literal('v').map(|_| 'v'),
 			literal('z').map(|_| 'z'),
+			literal('p').map(|_| 'p'),
+			// 's' for SQL, but not when it begins the `set` keyword. The lookahead is
+			// inside `peek` so the branch consumes nothing when it fails (it would
+			// otherwise eat the 's' of `set` and break that keyword).
+			preceded(peek((literal('s'), not(literal("et")))), literal('s')).map(|_| 's'),
 		))
 		.parse_next(input)
 	}
@@ -124,6 +131,12 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 					}
 					'z' => {
 						modifiers.insert(QueryModifier::Zero);
+					}
+					'p' => {
+						modifiers.insert(QueryModifier::Plain);
+					}
+					's' => {
+						modifiers.insert(QueryModifier::Sql);
 					}
 					_ => {}
 				}
@@ -591,6 +604,62 @@ mod tests {
 		assert_eq!(sql, "SELECT * FROM users");
 		assert!(mods.contains(&QueryModifier::Zero));
 		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gp() {
+		let result = parse_query_modifiers(r"SELECT name FROM users \gp").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT name FROM users");
+		assert!(mods.contains(&QueryModifier::Plain));
+		assert!(!mods.contains(&QueryModifier::Sql));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gs() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gs").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Sql));
+		assert!(!mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gsx() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gsx").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Sql));
+		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gxs() {
+		let result = parse_query_modifiers(r"SELECT * FROM users \gxs").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Sql));
+		assert!(mods.contains(&QueryModifier::Expanded));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gset_not_sql() {
+		// `\gset` must still parse as the set keyword, not sql + leftover.
+		let result = parse_query_modifiers(r"SELECT * FROM users \gset").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(!mods.contains(&QueryModifier::Sql));
+		assert!(mods.contains(&QueryModifier::VarSet { prefix: None }));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_gsset() {
+		// sql modifier followed by the set keyword.
+		let result = parse_query_modifiers(r"SELECT * FROM users \gsset").unwrap();
+		let (sql, mods) = result.unwrap();
+		assert_eq!(sql, "SELECT * FROM users");
+		assert!(mods.contains(&QueryModifier::Sql));
+		assert!(mods.contains(&QueryModifier::VarSet { prefix: None }));
 	}
 
 	#[test]

@@ -331,6 +331,72 @@ pub fn can_print(row: &tokio_postgres::Row, i: usize) -> bool {
 	matches!(row.try_get::<_, Option<String>>(i), Ok(None))
 }
 
+/// Determine whether the value at the given column is SQL NULL.
+///
+/// Type-aware: matches on the column type to pick the right `Option<T>` so it works for
+/// non-text columns (where `Option<String>` would be a type mismatch rather than NULL).
+pub fn is_null(row: &tokio_postgres::Row, i: usize) -> bool {
+	use tokio_postgres::types::Type;
+
+	macro_rules! check {
+		($t:ty) => {
+			matches!(row.try_get::<_, Option<$t>>(i), Ok(None))
+		};
+	}
+
+	match row.columns().get(i).map(|c| c.type_()) {
+		Some(&Type::BOOL) => check!(bool),
+		Some(&Type::INT2) => check!(i16),
+		Some(&Type::INT4) => check!(i32),
+		Some(&Type::INT8) => check!(i64),
+		Some(&Type::FLOAT4) => check!(f32),
+		Some(&Type::FLOAT8) => check!(f64),
+		Some(&Type::NUMERIC) => check!(fraction::Decimal),
+		Some(&Type::BYTEA) => check!(Vec<u8>),
+		Some(&Type::TIMESTAMP) => check!(jiff::civil::DateTime),
+		Some(&Type::TIMESTAMPTZ) => check!(jiff::Timestamp),
+		Some(&Type::DATE) => check!(jiff::civil::Date),
+		Some(&Type::TIME) => check!(jiff::civil::Time),
+		_ => {
+			if let Ok(v) = row.try_get::<_, Option<String>>(i) {
+				v.is_none()
+			} else {
+				matches!(row.try_get::<_, Option<Vec<u8>>>(i), Ok(None))
+			}
+		}
+	}
+}
+
+/// Render a cell's already-stringified text as a SQL literal suitable for an INSERT.
+///
+/// Numeric and boolean types are emitted bare; everything else is single-quoted with
+/// embedded quotes doubled. NULLs become the `NULL` keyword.
+pub fn sql_quote(ty: &tokio_postgres::types::Type, text: &str, is_null: bool) -> String {
+	use tokio_postgres::types::Type;
+
+	if is_null {
+		return "NULL".to_string();
+	}
+
+	match ty {
+		&Type::INT2
+		| &Type::INT4
+		| &Type::INT8
+		| &Type::FLOAT4
+		| &Type::FLOAT8
+		| &Type::NUMERIC
+		| &Type::OID => text.to_string(),
+		&Type::BOOL => {
+			if text == "true" || text == "t" {
+				"TRUE".to_string()
+			} else {
+				"FALSE".to_string()
+			}
+		}
+		_ => format!("'{}'", text.replace('\'', "''")),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

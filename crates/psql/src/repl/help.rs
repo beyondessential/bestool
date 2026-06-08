@@ -83,6 +83,11 @@ pub fn handle_help() -> ControlFlow<()> {
 	modifiers.add_row(vec!["\\g", "Execute query"]);
 	modifiers.add_row(vec!["\\gx", "...with expanded output"]);
 	modifiers.add_row(vec!["\\gj", "...with JSON output"]);
+	modifiers.add_row(vec!["\\gp", "...with plain output (first column only)"]);
+	modifiers.add_row(vec![
+		"\\gs",
+		"...as SQL INSERT statements (\\gsx for one per row)",
+	]);
 	modifiers.add_row(vec!["\\gv", "...without variable interpolation"]);
 	modifiers.add_row(vec!["\\gz", "...without displaying output"]);
 	modifiers.add_row(vec!["\\go <file>", "...and write output to file"]);
@@ -130,6 +135,21 @@ pub fn handle_help() -> ControlFlow<()> {
 		"json-pretty",
 		r"\gjx",
 		"Array of objects, pretty-printed",
+	]);
+	fmts.add_row(vec![
+		"plain",
+		r"\gp",
+		"First column only, one value per line",
+	]);
+	fmts.add_row(vec![
+		"sql",
+		r"\gs",
+		"INSERT statements, one multi-row statement",
+	]);
+	fmts.add_row(vec![
+		"sql-expanded",
+		r"\gsx",
+		"INSERT statements, one per row",
 	]);
 	fmts.add_row(vec!["csv", "", "CSV spreadsheet, with header"]);
 	fmts.add_row(vec!["excel", "", "XLSX spreadsheet, only using to="]);

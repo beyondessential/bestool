@@ -11,6 +11,8 @@ mod excel;
 mod expanded;
 mod json;
 mod normal;
+mod plain;
+mod sql;
 mod sqlite;
 
 /// Context for displaying query results.
@@ -60,6 +62,18 @@ pub async fn display<W: AsyncWrite + Unpin>(
 
 pub async fn display_csv<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
 	csv::display(ctx).await
+}
+
+pub async fn display_plain<W: AsyncWrite + Unpin>(ctx: &mut DisplayContext<'_, W>) -> Result<()> {
+	plain::display(ctx).await
+}
+
+pub async fn display_sql<W: AsyncWrite + Unpin>(
+	ctx: &mut DisplayContext<'_, W>,
+	expanded: bool,
+	table: &str,
+) -> Result<()> {
+	sql::display(ctx, expanded, table).await
 }
 
 pub async fn display_excel<W: AsyncWrite + Unpin>(
