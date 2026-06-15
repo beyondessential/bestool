@@ -8,7 +8,7 @@
 //! Thresholds:
 //!   * always warn when <2.10.2
 //!   * Linux fails when <2.10.0 or (>2.10.2 and <2.11.4)
-//!   * Windows fails when <2.8.0
+//!   * Windows fails when <2.7.6
 //!
 //! The 2.11.4 upper bound is intentional — 2.11.4 is not yet released, the
 //! check pre-emptively flags any 2.10.x / 2.11.x point releases that aren't
@@ -97,7 +97,7 @@ fn parse_caddy_version(output: &str) -> Option<Version> {
 }
 
 fn build_check(version: &Version, platform: Platform) -> Check {
-	let v_2_8_0 = Version::parse("2.8.0").unwrap();
+	let v_2_7_6 = Version::parse("2.7.6").unwrap();
 	let v_2_10_0 = Version::parse("2.10.0").unwrap();
 	let v_2_10_2 = Version::parse("2.10.2").unwrap();
 	let v_2_11_4 = Version::parse("2.11.4").unwrap();
@@ -115,8 +115,8 @@ fn build_check(version: &Version, platform: Platform) -> Check {
 			}
 		}
 		Platform::Windows => {
-			if *version < v_2_8_0 {
-				Some(format!("caddy {version} is older than 2.8 on Windows"))
+			if *version < v_2_7_6 {
+				Some(format!("caddy {version} is older than 2.7.6 on Windows"))
 			} else {
 				None
 			}
@@ -245,7 +245,7 @@ mod tests {
 
 	#[test]
 	fn windows_warn_on_2_9_5() {
-		// 2.9.5 is below 2.10.2 (warn) but at/above 2.8 (no Windows error).
+		// 2.9.5 is below 2.10.2 (warn) but at/above 2.7.6 (no Windows error).
 		assert_eq!(
 			status(&build_check(&v("2.9.5"), Platform::Windows)),
 			"warning"
@@ -261,8 +261,16 @@ mod tests {
 	}
 
 	#[test]
-	fn windows_fail_below_2_8() {
-		assert_eq!(status(&build_check(&v("2.7.6"), Platform::Windows)), "fail");
+	fn windows_warn_on_2_7_6() {
+		assert_eq!(
+			status(&build_check(&v("2.7.6"), Platform::Windows)),
+			"warning"
+		);
+	}
+
+	#[test]
+	fn windows_fail_below_2_7_6() {
+		assert_eq!(status(&build_check(&v("2.7.5"), Platform::Windows)), "fail");
 		assert_eq!(status(&build_check(&v("2.0.0"), Platform::Windows)), "fail");
 	}
 
