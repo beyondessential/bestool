@@ -38,6 +38,7 @@ pub mod sync_lookup;
 pub mod sync_restart_loop;
 pub mod sync_session_errors;
 pub mod sync_sessions;
+pub mod sync_snapshot_tables;
 pub mod tailscale;
 pub mod tamanu_found;
 pub mod tamanu_http;
@@ -216,6 +217,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("fhir_job_errors", fhir_job_errors),
 		entry!("sync_session_errors", sync_session_errors),
 		entry!("sync_facility_stale", sync_facility_stale),
+		entry!("sync_snapshot_tables", sync_snapshot_tables),
 		entry!("sync_lookup", sync_lookup),
 		entry!("sync_restart_loop", sync_restart_loop),
 		entry!(
