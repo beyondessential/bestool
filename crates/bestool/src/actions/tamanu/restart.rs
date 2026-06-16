@@ -6,7 +6,7 @@ use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
-	services::{self, ExpectedState, Expectation, Supervisor},
+	services::{self, ExpectedState, Expectation, Supervisor, parse_systemd_unit},
 	systemd,
 };
 
@@ -65,7 +65,12 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
-	let groups = lifecycle::group_by_expectation(&matched, &discovered);
+	let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
+	// Leftover singletons on a host that's migrated to an instanced layout:
+	// retired (stop + disable) at the end, once their instanced replacements
+	// are up and serving. Detected against the full discovered set, since
+	// `group_by_expectation` no longer admits them into the instanced group.
+	let retire = lifecycle::stale_shape_groups(supervisor, &matched, &discovered);
 
 	lifecycle::ensure_root_or_reexec(supervisor)?;
 
@@ -139,11 +144,66 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 		}
 	}
 
+	// Retire leftover singletons last: the instanced replacements were
+	// brought up in the start batch (and Caddy reloaded), so cutting the
+	// singleton now completes a singleton→instanced migration with no gap in
+	// service. We confirm the replacements are actually serving first.
+	if !retire.is_empty() {
+		for (exp, instances) in &retire {
+			let stale: Vec<String> = instances.iter().map(Instance::display).collect();
+			info!(
+				service = exp.name,
+				?stale,
+				"retiring leftover units after migration to instanced layout"
+			);
+			if !args.no_probe_http {
+				wait_replacements_ready(supervisor, exp, &client).await?;
+			} else {
+				// No readiness signal to wait on; give the freshly-started
+				// replacements the same grace a roll would before cutting over.
+				debug!(seconds = args.cooldown.as_secs(), "cooldown before retiring");
+				tokio::time::sleep(args.cooldown).await;
+			}
+		}
+		let units: Vec<String> = retire
+			.iter()
+			.flat_map(|(_, instances)| instances.iter().map(Instance::unit))
+			.collect();
+		lifecycle::retire_systemd_units(&units).await;
+	}
+
 	if let Some(url) = &args.check_url {
 		info!(%url, "final end-to-end probe");
 		probe::probe_url(&client, url, Duration::from_secs(60)).await?;
 	}
 
+	Ok(())
+}
+
+/// Block until every instanced unit the expectation requires responds to an
+/// HTTP probe. Used before retiring a leftover singleton, so we never cut the
+/// old unit until its replacements are serving. Units without a constructable
+/// probe URL (no container IP yet) are skipped — same best-effort semantics as
+/// the rolling probe.
+async fn wait_replacements_ready(
+	supervisor: Supervisor,
+	exp: &Expectation,
+	client: &Client,
+) -> Result<()> {
+	for unit in exp.instances.required_systemd_units(exp.name) {
+		let Some((base, instance)) = parse_systemd_unit(&unit) else {
+			continue;
+		};
+		let inst = Instance {
+			name: base.to_string(),
+			instance: instance.map(str::to_string),
+			pm_id: None,
+			running: true,
+		};
+		if let Some(url) = probe::instance_probe_url(supervisor, &inst)? {
+			probe::probe_until_ready(client, &url).await;
+		}
+	}
 	Ok(())
 }
 

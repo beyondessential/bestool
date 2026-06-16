@@ -53,7 +53,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
 	let matched = services::match_names(&expectations, &names)?;
 	let discovered = lifecycle::discover(supervisor).await?;
-	let mut groups = lifecycle::group_by_expectation(&matched, &discovered);
+	let mut groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
 	if matches!(supervisor, Supervisor::Systemd) {
 		let candidates: HashSet<String> = groups
 			.iter()
