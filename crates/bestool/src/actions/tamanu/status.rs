@@ -4,6 +4,7 @@ use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::UTF8_HORIZONTAL_ONLY};
 use miette::{IntoDiagnostic, Result, bail};
 use serde::Serialize;
+use tracing::warn;
 
 use bestool_tamanu::{
 	services::{self, ExpectedState, Expectation, Supervisor},
@@ -86,10 +87,20 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	// authoritative) drift signals upstream.
 	let (install_version, _root) = find_tamanu(tamanu).await?;
 	let expected_versions = versions::expected_for_supervisor(supervisor, &install_version);
-	let running_versions = match supervisor {
-		Supervisor::Systemd => versions::running_versions_linux().await,
-		Supervisor::Pm2 => HashMap::new(),
+	// `Err` here means we couldn't read podman at all (vs. an empty map, which
+	// means nothing is running). Keep the reason so the render can say the
+	// Version column is showing expected-only rather than silently presenting
+	// the configured version as if it were confirmed running.
+	let (running_versions, running_error) = match supervisor {
+		Supervisor::Systemd => match versions::running_versions_linux().await {
+			Ok(map) => (map, None),
+			Err(reason) => (HashMap::new(), Some(reason)),
+		},
+		Supervisor::Pm2 => (HashMap::new(), None),
 	};
+	if let Some(reason) = &running_error {
+		warn!(%reason, "could not read running container versions; Version column shows expected only");
+	}
 	let probe = VersionProbe {
 		supervisor,
 		expected: expected_versions,
@@ -111,6 +122,13 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 
 	let (table, any_short) = render_table(&groups, &probe, use_colours);
 	println!("{table}");
+
+	if let Some(reason) = &running_error {
+		println!(
+			"\nNote: couldn't read running container versions ({reason}); the Version \
+			 column shows the configured (expected) versions only, not what's live."
+		);
+	}
 
 	if any_short {
 		bail!("some expectations are not met");

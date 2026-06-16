@@ -124,35 +124,41 @@ pub fn parse_image_tag(image: &str) -> Option<&str> {
 }
 
 /// Returns a map from systemd unit name (e.g. `tamanu-central-api@1.service`)
-/// to the running container's image tag. Best-effort: containers without an
-/// image tag, or containers not labelled as systemd-managed, are skipped.
+/// to the running container's image tag. Containers without an image tag, or
+/// not labelled as systemd-managed, are skipped.
 ///
-/// Empty `HashMap` when podman is unavailable or no relevant containers are
-/// running — the caller treats "no entry for unit X" as "actual version
-/// unknown".
+/// `Ok(map)` means podman answered — an empty map then genuinely means "no
+/// tamanu containers are running". `Err(reason)` means we couldn't ask at all:
+/// podman is missing, or (the common case) the containers are root-owned and
+/// this process can't see them — e.g. an unprivileged `podman ps`. Callers
+/// must distinguish the two: surfacing `Err` as "no containers" hides a blind
+/// spot behind a healthy-looking result.
 #[cfg(target_os = "linux")]
 #[instrument(level = "debug")]
-pub async fn running_versions_linux() -> HashMap<String, String> {
-	use std::process::Stdio;
+pub async fn running_versions_linux() -> Result<HashMap<String, String>, String> {
 	let result = tokio::process::Command::new("podman")
 		.args([
 			"ps",
 			"--format",
 			"{{.Labels.PODMAN_SYSTEMD_UNIT}}\t{{.Image}}",
 		])
-		.stderr(Stdio::null())
 		.output()
 		.await;
 	let output = match result {
 		Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
 		Ok(o) => {
-			debug!(status = %o.status, "podman ps exited non-zero; no actual-version info");
-			return HashMap::new();
+			let stderr = String::from_utf8_lossy(&o.stderr);
+			let stderr = stderr.trim();
+			return Err(if stderr.is_empty() {
+				format!("podman ps exited {}", o.status)
+			} else {
+				format!("podman ps exited {}: {stderr}", o.status)
+			});
 		}
-		Err(err) => {
-			debug!(%err, "podman ps unavailable; no actual-version info");
-			return HashMap::new();
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+			return Err("podman not found on PATH".to_string());
 		}
+		Err(err) => return Err(format!("could not run podman ps: {err}")),
 	};
 
 	let mut out = HashMap::new();
@@ -171,12 +177,12 @@ pub async fn running_versions_linux() -> HashMap<String, String> {
 		};
 		out.insert(unit.to_string(), tag.to_string());
 	}
-	out
+	Ok(out)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn running_versions_linux() -> HashMap<String, String> {
-	HashMap::new()
+pub async fn running_versions_linux() -> Result<HashMap<String, String>, String> {
+	Ok(HashMap::new())
 }
 
 /// Parse a version string leniently, tolerating a leading `v` (image tags and
@@ -211,8 +217,12 @@ pub fn pick_running_version(running: &HashMap<String, String>) -> Option<Version
 }
 
 /// The version of Tamanu that's actually running, from container image tags.
+/// `None` when podman can't be read or nothing is running.
 pub async fn running_version() -> Option<Version> {
-	pick_running_version(&running_versions_linux().await)
+	match running_versions_linux().await {
+		Ok(map) => pick_running_version(&map),
+		Err(_) => None,
+	}
 }
 
 /// The version Tamanu last recorded in its own database. The server writes
