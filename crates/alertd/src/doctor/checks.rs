@@ -15,6 +15,7 @@ use super::check::Check;
 
 pub mod util;
 
+pub mod btrfs;
 pub mod caddy_version;
 pub mod certificate_notification_errors;
 pub mod db_connect;
@@ -193,6 +194,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("server_id", server_id),
 		entry!("migrations", migrations),
 		entry!("disk_free", disk_free, host),
+		entry!("btrfs", btrfs, host),
 		entry!("memory", memory, host),
 		entry!("load", load, host),
 		entry!("uptime", uptime, host),
