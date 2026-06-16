@@ -5,11 +5,15 @@
 //! complete, etc. The user-visible symptom for those is "everything looks
 //! OK in `tamanu status`" but the service is actually serving stale code.
 
+use std::collections::HashMap;
+
 use serde_json::{Value, json};
 
 use bestool_tamanu::{
-	services::{Supervisor, expected, parse_systemd_unit, systemd_patient_portal_instanced},
-	versions,
+	services::{
+		Expectation, Supervisor, expected, parse_systemd_unit, systemd_patient_portal_instanced,
+	},
+	versions::{self, ExpectedVersions},
 };
 
 use super::CheckContext;
@@ -43,8 +47,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.with_detail("install_version", ctx.tamanu_version.to_string());
 	}
 
+	let running = match versions::running_versions_linux().await {
+		Ok(map) => map,
+		// We couldn't read what's running, so we can't judge drift. Bail before
+		// the DB round-trip below — there's nothing to compare against.
+		Err(reason) => return unreadable_check(&reason),
+	};
 	let expected_versions = versions::expected_for_supervisor(supervisor, &ctx.tamanu_version);
-	let running = versions::running_versions_linux().await;
 
 	// Only look at units that show up in our expectations registry. Hand-
 	// started or orphaned containers aren't drift; they're outside the
@@ -63,11 +72,36 @@ pub async fn run(ctx: CheckContext) -> Check {
 		patient_portal_instanced,
 	);
 
+	evaluate_drift(&running, &expected_versions, &expectations)
+}
+
+/// Warning result for when `podman ps` couldn't be read at all. We can't judge
+/// drift, and must not report a pass — that would dress up a blind check as a
+/// healthy one. Most often this is alertd lacking access to the root-owned
+/// containers (see the podman-socket / privilege notes).
+fn unreadable_check(reason: &str) -> Check {
+	Check::warning(
+		"version_drift",
+		"could not read running container versions",
+		format!("`podman ps` failed, so version drift can't be checked: {reason}"),
+	)
+	.with_detail("supervisor", "systemd")
+}
+
+/// Compare each running container's image tag against the version the
+/// deployment is configured for, given an already-read `running` map. An empty
+/// map is a genuine "nothing running" pass — distinct from the unreadable case
+/// handled by [`unreadable_check`].
+fn evaluate_drift(
+	running: &HashMap<String, String>,
+	expected_versions: &ExpectedVersions,
+	expectations: &[Expectation],
+) -> Check {
 	let mut rows: Vec<Value> = Vec::new();
 	let mut drifted: Vec<String> = Vec::new();
 	let mut total_running = 0usize;
 
-	for (unit, actual) in &running {
+	for (unit, actual) in running {
 		let Some((base, _instance)) = parse_systemd_unit(unit) else {
 			continue;
 		};
@@ -117,5 +151,92 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Check::fail("version_drift", summary, drifted.join("; "))
 			.with_detail("expected", expected_summary)
 			.with_detail("instances", Value::Array(rows))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::doctor::check::CheckStatus;
+	use bestool_tamanu::services::{ExpectedState, Instances};
+
+	fn exp(name: &'static str, instances: Instances) -> Expectation {
+		Expectation {
+			name,
+			instances,
+			state: ExpectedState::Up,
+			reason: "test".into(),
+			legacy: false,
+			behind_caddy: false,
+		}
+	}
+
+	fn ev(tamanu: &str, frontend: Option<&str>) -> ExpectedVersions {
+		ExpectedVersions {
+			tamanu: Some(tamanu.into()),
+			frontend: frontend.map(Into::into),
+		}
+	}
+
+	#[test]
+	fn unreadable_is_warning_not_pass() {
+		// The regression that motivated this: a blind check must NOT look healthy.
+		let check = unreadable_check("podman not found on PATH");
+		assert!(matches!(check.status, CheckStatus::Warning(_)), "{check:?}");
+	}
+
+	#[test]
+	fn empty_running_is_pass() {
+		// podman answered with nothing running — genuinely fine, distinct from blind.
+		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
+		let check = evaluate_drift(&HashMap::new(), &ev("v2.54.7", None), &exps);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn matching_versions_pass() {
+		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
+		let running = HashMap::from([
+			(
+				"tamanu-central-api@1.service".to_string(),
+				"v2.54.7".to_string(),
+			),
+			(
+				"tamanu-central-api@2.service".to_string(),
+				"v2.54.7".to_string(),
+			),
+		]);
+		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn drifted_frontend_fails_naming_the_unit() {
+		// env wants frontend v2.54.12 but the container is still on v2.54.7 —
+		// exactly the case `tamanu status` couldn't see when run unprivileged.
+		let exps = [
+			exp("tamanu-frontend", Instances::Named(&["a", "b"])),
+			exp("tamanu-central-api", Instances::NumericAtLeast(2)),
+		];
+		let running = HashMap::from([(
+			"tamanu-frontend@a.service".to_string(),
+			"v2.54.7".to_string(),
+		)]);
+		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("tamanu-frontend@a"), "{reason}")
+			}
+			other => panic!("expected fail, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn unexpected_unit_is_not_drift() {
+		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
+		let running =
+			HashMap::from([("tamanu-orphan@1.service".to_string(), "v1.0.0".to_string())]);
+		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 }

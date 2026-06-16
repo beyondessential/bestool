@@ -250,11 +250,20 @@ fn reconcile_down_with_enabled(
 	}
 }
 
-fn match_expectation(exp: &Expectation, discovered: &[Discovered]) -> (Outcome, Vec<usize>) {
+fn match_expectation(
+	supervisor: Supervisor,
+	exp: &Expectation,
+	discovered: &[Discovered],
+) -> (Outcome, Vec<usize>) {
 	let matched_idx: Vec<usize> = discovered
 		.iter()
 		.enumerate()
-		.filter(|(_, d)| d.name == exp.name && exp.instances.admits_instance(d.instance.as_deref()))
+		.filter(|(_, d)| {
+			d.name == exp.name
+				&& exp
+					.instances
+					.admits_instance(supervisor, d.instance.as_deref())
+		})
 		.map(|(i, _)| i)
 		.collect();
 
@@ -336,7 +345,7 @@ fn evaluate(
 	let mut failures: Vec<String> = Vec::new();
 
 	for exp in expectations {
-		let (outcome, idxs) = match_expectation(exp, discovered);
+		let (outcome, idxs) = match_expectation(supervisor, exp, discovered);
 		for i in idxs {
 			matched_any[i] = true;
 		}
@@ -805,6 +814,49 @@ mod tests {
 			.expect("services payload_extra");
 		let extras = services
 			.get("extras")
+			.and_then(Value::as_array)
+			.expect("extras array");
+		assert_eq!(extras.len(), 1);
+		assert_eq!(extras[0].as_str().unwrap(), "tamanu-patientportal.service");
+	}
+
+	#[test]
+	fn leftover_singleton_does_not_satisfy_instanced_portal() {
+		// Host mid-migration: the @a/@b template is installed (so the portal
+		// expectation is instanced and Up) but only the old singleton is
+		// running. The singleton must not count toward the instanced
+		// requirement — the check should fail for the missing @a/@b, and the
+		// singleton lands in `extras`.
+		let cfg = central_cfg(false);
+		let exps = expected(
+			Supervisor::Systemd,
+			ApiServerKind::Central,
+			&cfg,
+			Some(true),
+			true,
+		);
+		let discovered = vec![
+			d("tamanu-central-tasks", None, true),
+			d("tamanu-frontend", Some("a"), true),
+			d("tamanu-frontend", Some("b"), true),
+			d("tamanu-central-api", Some("1"), true),
+			d("tamanu-central-api", Some("2"), true),
+			d("tamanu-central-fhir-resolve", None, true),
+			d("tamanu-central-fhir-refresh", None, true),
+			d("tamanu-patientportal", None, true),
+		];
+		let check = evaluate(Supervisor::Systemd, &exps, &discovered);
+		match &check.status {
+			CheckStatus::Fail(reason) => assert!(
+				reason.contains("tamanu-patientportal"),
+				"reason was {reason:?}"
+			),
+			other => panic!("expected fail, got {other:?}"),
+		}
+		let extras = check
+			.payload_extras
+			.get("services")
+			.and_then(|s| s.get("extras"))
 			.and_then(Value::as_array)
 			.expect("extras array");
 		assert_eq!(extras.len(), 1);

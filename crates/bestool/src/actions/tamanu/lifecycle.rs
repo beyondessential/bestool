@@ -284,6 +284,7 @@ pub fn warn_unknown_expectations(expectations: &[&Expectation]) {
 /// instances are dropped (they're not "expected", so lifecycle commands
 /// don't touch them).
 pub fn group_by_expectation<'a>(
+	supervisor: Supervisor,
 	expectations: &'a [&'a Expectation],
 	instances: &[Instance],
 ) -> Vec<(&'a Expectation, Vec<Instance>)> {
@@ -293,13 +294,72 @@ pub fn group_by_expectation<'a>(
 			let matches: Vec<Instance> = instances
 				.iter()
 				.filter(|d| {
-					d.name == exp.name && exp.instances.admits_instance(d.instance.as_deref())
+					d.name == exp.name
+						&& exp.instances.admits_instance(supervisor, d.instance.as_deref())
 				})
 				.cloned()
 				.collect();
 			(*exp, matches)
 		})
 		.collect()
+}
+
+/// Discovered running instances that belong (by name) to a templated,
+/// expected-Up expectation but whose shape that expectation doesn't admit —
+/// i.e. a leftover bare singleton on a host that's since migrated to the
+/// `@a`/`@b` template. Grouped under the expectation they're stale for so
+/// callers can find the instanced replacements.
+///
+/// `restart` retires these (stop + disable) once the instanced units are up
+/// and serving, so a singleton→instanced migration takes no downtime.
+/// systemd-only: pm2 has no `@instance` notion, so a `None` instance there is
+/// a legitimate cluster member, not a stale singleton.
+pub fn stale_shape_groups<'a>(
+	supervisor: Supervisor,
+	expectations: &'a [&'a Expectation],
+	instances: &[Instance],
+) -> Vec<(&'a Expectation, Vec<Instance>)> {
+	if !matches!(supervisor, Supervisor::Systemd) {
+		return Vec::new();
+	}
+	expectations
+		.iter()
+		.filter(|exp| {
+			matches!(exp.state, services::ExpectedState::Up) && exp.instances.min_count() >= 2
+		})
+		.filter_map(|exp| {
+			let stale: Vec<Instance> = instances
+				.iter()
+				.filter(|d| {
+					d.running
+						&& d.name == exp.name
+						&& !exp.instances.admits_instance(supervisor, d.instance.as_deref())
+				})
+				.cloned()
+				.collect();
+			(!stale.is_empty()).then_some((*exp, stale))
+		})
+		.collect()
+}
+
+/// Stop then disable a batch of systemd units, best-effort. Used to retire
+/// leftover singleton units after a host has migrated to an instanced layout:
+/// failures are logged but never abort the caller, since the units are
+/// already redundant and the migration's success doesn't hinge on them.
+///
+/// `stop` works even on a masked unit (systemd only refuses *activation* of
+/// masked units, not deactivation); `disable` clears any enablement so the
+/// unit can't return on the next boot.
+pub async fn retire_systemd_units(units: &[String]) {
+	if units.is_empty() {
+		return;
+	}
+	if let Err(e) = systemd::stop(units).await {
+		warn!(?units, "could not stop leftover units: {e}");
+	}
+	if let Err(e) = systemd::disable(units).await {
+		warn!(?units, "could not disable leftover units: {e}");
+	}
 }
 
 /// On Linux/systemd, re-exec the current process under sudo if not
@@ -776,12 +836,111 @@ mod tests {
 			inst("tamanu-central-tasks", None, true),
 			inst("tamanu-orphan", None, true), // unrelated, dropped
 		];
-		let groups = group_by_expectation(&expectations, &instances);
+		let groups = group_by_expectation(Supervisor::Systemd, &expectations, &instances);
 		assert_eq!(groups.len(), 2);
 		assert_eq!(groups[0].0.name, "tamanu-central-api");
 		assert_eq!(groups[0].1.len(), 2);
 		assert_eq!(groups[1].0.name, "tamanu-central-tasks");
 		assert_eq!(groups[1].1.len(), 1);
+	}
+
+	fn named_exp(name: &'static str, names: &'static [&'static str]) -> Expectation {
+		Expectation {
+			name,
+			instances: Instances::Named(names),
+			state: ExpectedState::Up,
+			reason: "test".into(),
+			legacy: false,
+			behind_caddy: true,
+		}
+	}
+
+	#[test]
+	fn group_by_expectation_excludes_leftover_singleton_on_systemd() {
+		// Host mid-migration: the @a/@b template is installed (so the portal
+		// expectation is instanced) but an old singleton `tamanu-patientportal`
+		// is still running. On systemd that singleton must NOT be grouped under
+		// the instanced expectation — otherwise restart would try to roll the
+		// bare (and possibly masked) `.service` unit.
+		let portal = named_exp("tamanu-patientportal", &["a", "b"]);
+		let expectations = [&portal];
+		let instances = vec![
+			inst("tamanu-patientportal", None, true),
+			inst("tamanu-patientportal", Some("a"), true),
+			inst("tamanu-patientportal", Some("b"), true),
+		];
+		let groups = group_by_expectation(Supervisor::Systemd, &expectations, &instances);
+		assert_eq!(groups.len(), 1);
+		let matched: Vec<Option<&str>> =
+			groups[0].1.iter().map(|i| i.instance.as_deref()).collect();
+		assert_eq!(matched, vec![Some("a"), Some("b")]);
+	}
+
+	#[test]
+	fn stale_shape_groups_finds_leftover_singleton() {
+		let portal = named_exp("tamanu-patientportal", &["a", "b"]);
+		let expectations = [&portal];
+		let instances = vec![
+			inst("tamanu-patientportal", None, true),
+			inst("tamanu-patientportal", Some("a"), true),
+			inst("tamanu-patientportal", Some("b"), true),
+		];
+		let stale = stale_shape_groups(Supervisor::Systemd, &expectations, &instances);
+		assert_eq!(stale.len(), 1);
+		assert_eq!(stale[0].0.name, "tamanu-patientportal");
+		assert_eq!(stale[0].1.len(), 1);
+		assert_eq!(stale[0].1[0].instance, None);
+	}
+
+	#[test]
+	fn stale_shape_groups_ignores_stopped_singleton() {
+		// A leftover singleton that isn't running needs no retiring — it's
+		// already down. (It'd surface as a Down-expectation concern elsewhere,
+		// not as something restart should stop.)
+		let portal = named_exp("tamanu-patientportal", &["a", "b"]);
+		let expectations = [&portal];
+		let instances = vec![inst("tamanu-patientportal", None, false)];
+		let stale = stale_shape_groups(Supervisor::Systemd, &expectations, &instances);
+		assert!(stale.is_empty());
+	}
+
+	#[test]
+	fn stale_shape_groups_ignores_singleton_expectation() {
+		// On an un-migrated host the expectation is itself a singleton, so the
+		// running `None` unit is the real thing, not a leftover.
+		let portal = exp("tamanu-patientportal");
+		let expectations = [&portal];
+		let instances = vec![inst("tamanu-patientportal", None, true)];
+		let stale = stale_shape_groups(Supervisor::Systemd, &expectations, &instances);
+		assert!(stale.is_empty());
+	}
+
+	#[test]
+	fn stale_shape_groups_empty_on_pm2() {
+		// pm2 clusters legitimately share one name with no @suffix, so a `None`
+		// instance under a templated expectation is a member, not a leftover.
+		let api = templated_exp("tamanu-api");
+		let expectations = [&api];
+		let instances = vec![
+			inst("tamanu-api", None, true),
+			inst("tamanu-api", None, true),
+		];
+		let stale = stale_shape_groups(Supervisor::Pm2, &expectations, &instances);
+		assert!(stale.is_empty());
+	}
+
+	#[test]
+	fn stale_shape_groups_skips_down_and_unknown() {
+		let mut down = named_exp("tamanu-patientportal", &["a", "b"]);
+		down.state = ExpectedState::Down;
+		let mut unknown = named_exp("tamanu-patientportal", &["a", "b"]);
+		unknown.state = ExpectedState::Unknown;
+		let running = vec![inst("tamanu-patientportal", None, true)];
+		for exp in [&down, &unknown] {
+			let expectations = [exp];
+			let stale = stale_shape_groups(Supervisor::Systemd, &expectations, &running);
+			assert!(stale.is_empty(), "{:?} should not retire", exp.state);
+		}
 	}
 
 	#[test]

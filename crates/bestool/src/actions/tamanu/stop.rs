@@ -33,7 +33,7 @@ pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
-	let groups = lifecycle::group_by_expectation(&matched, &discovered);
+	let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
 
 	let targets = plan_stop(supervisor, &groups);
 	if targets.is_empty() {

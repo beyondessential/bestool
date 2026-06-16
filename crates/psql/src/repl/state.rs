@@ -31,6 +31,10 @@ pub struct ReplState {
 	pub result_store: ResultStore,
 	pub from_snippet_or_include: bool,
 	pub initial_content: Option<String>,
+	/// Buffer the last `\e` invocation produced, kept only while `\e`s run
+	/// back-to-back. A repeated `\e` reopens it so you can keep refining the
+	/// same text; any other command clears it, so the next `\e` starts empty.
+	pub last_edit_content: Option<String>,
 	/// When write mode was last considered "active" — either toggled on, or
 	/// just after a successful query while in write mode. Used by the idle
 	/// timeout watcher to decide when to revert write mode to read-only.
@@ -61,6 +65,7 @@ impl ReplState {
 			result_store: ResultStore::new(),
 			from_snippet_or_include: false,
 			initial_content: None,
+			last_edit_content: None,
 			write_mode_active_at: None,
 		}
 	}

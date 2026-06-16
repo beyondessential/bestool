@@ -154,11 +154,22 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 		passphrase,
 	} = args;
 
+	let dir = config.clone().unwrap_or_else(registration::default_dir);
+	// Elevate now if we can't write the registration — before prompting for a
+	// passphrase, and before the enrollment token is consumed over the network.
+	super::ensure_writable_or_reexec(&dir)?;
+
 	let ticket_b64 = match ticket {
 		Some(t) => t,
 		None => super::read_stdin("ticket")?,
 	};
 	let encrypted = super::decode_base64(ticket_b64.trim())?;
+
+	// Fail fast on an obviously-invalid ticket before prompting for a passphrase,
+	// so the operator isn't asked for a secret that can't decrypt anything.
+	if !is_age_ciphertext(&encrypted) {
+		bail!("ticket is not a valid Canopy enrollment ticket");
+	}
 
 	let pass = passphrase.require().await?;
 	let ticket = decrypt_ticket(&encrypted, pass).await?;
@@ -187,7 +198,6 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	let existing = super::load_registration(config.as_deref())
 		.await
 		.wrap_err("reading existing canopy registration")?;
-	let dir = config.unwrap_or_else(registration::default_dir);
 
 	// Idempotency: if we've already enrolled this server with our identity, the
 	// token has been consumed and re-running would only fail opaquely. Treat a
@@ -287,6 +297,15 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	println!("  server id: {}", complete.server_id);
 	println!("  device id: {}", complete.device_id);
 	Ok(())
+}
+
+/// Whether `bytes` is the start of an age v1 ciphertext.
+///
+/// The binary age format begins with the header line `age-encryption.org/v1`;
+/// checking for it lets us reject a bogus ticket without first decrypting (and
+/// thus without prompting for a passphrase).
+fn is_age_ciphertext(bytes: &[u8]) -> bool {
+	bytes.starts_with(b"age-encryption.org/v1")
 }
 
 async fn decrypt_ticket(encrypted: &[u8], pass: Passphrase) -> Result<EnrollTicket> {
@@ -460,6 +479,21 @@ mod tests {
 		assert_eq!(&transcript[..32], &nonce);
 		assert_eq!(&transcript[32..48], server_id.as_bytes());
 		assert_eq!(&transcript[48..], &spki);
+	}
+
+	#[tokio::test]
+	async fn rejects_non_age_ticket_before_decrypting() {
+		// A "foo" ticket decodes to bytes that aren't an age ciphertext, so it must
+		// be rejected up front rather than after prompting for a passphrase.
+		assert!(!is_age_ciphertext(b"foo"));
+
+		let pass_phrase = SecretString::from("correct-horse-battery-staple");
+		let recipient = Passphrase::new(pass_phrase);
+		let mut cursor = futures::io::Cursor::new(Vec::new());
+		encrypt_stream(SAMPLE_TICKET.as_bytes(), &mut cursor, Box::new(recipient))
+			.await
+			.unwrap();
+		assert!(is_age_ciphertext(&cursor.into_inner()));
 	}
 
 	#[tokio::test]
