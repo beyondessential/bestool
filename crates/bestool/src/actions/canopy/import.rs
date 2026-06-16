@@ -35,6 +35,11 @@ pub async fn run(args: ImportArgs, _ctx: Context) -> Result<()> {
 		passphrase,
 	} = args;
 
+	let dir = config.unwrap_or_else(registration::default_dir);
+	// Elevate now if we can't write the registration, before prompting for the
+	// export passphrase (otherwise we'd fail only after the operator typed it).
+	super::ensure_writable_or_reexec(&dir)?;
+
 	let blob_b64 = match blob {
 		Some(b) => b,
 		None => super::read_stdin("export blob")?,
@@ -45,7 +50,6 @@ pub async fn run(args: ImportArgs, _ctx: Context) -> Result<()> {
 	let reg = registration::decrypt_with_passphrase(&bytes, pass)
 		.wrap_err("decrypting export (wrong passphrase?)")?;
 
-	let dir = config.unwrap_or_else(registration::default_dir);
 	registration::store_in(&dir, &reg)
 		.await
 		.wrap_err("storing canopy registration")?;

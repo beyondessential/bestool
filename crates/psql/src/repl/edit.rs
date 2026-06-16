@@ -1,24 +1,28 @@
 use std::ops::ControlFlow;
 
-use rustyline::history::{History, SearchDirection};
 use tracing::{debug, warn};
 
 use super::state::ReplContext;
 use crate::input::{ReplAction, handle_input};
 
+/// What to seed the `\e` editor with.
+///
+/// Empty by default; when the immediately-preceding command was also `\e`, its
+/// resulting buffer (passed here via `last_edit`), so back-to-back `\e` keeps
+/// refining the same text. Never the bare `\e` invocation itself.
+fn editor_seed(last_edit: Option<&str>) -> String {
+	match last_edit {
+		Some(prev) if prev.trim() != "\\e" => prev.to_string(),
+		_ => String::new(),
+	}
+}
+
 pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 	use super::execute::handle_execute;
 
 	let initial_content = {
-		let hist_len = ctx.rl.history().len();
-		if hist_len > 0 {
-			match ctx.rl.history().get(hist_len - 1, SearchDirection::Forward) {
-				Ok(Some(result)) => result.entry.to_string(),
-				_ => String::new(),
-			}
-		} else {
-			String::new()
-		}
+		let state = ctx.repl_state.lock().unwrap();
+		editor_seed(state.last_edit_content.as_deref())
 	};
 
 	match edit::edit(&initial_content) {
@@ -27,6 +31,9 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 
 			if !edited_trimmed.is_empty() {
 				debug!("editor returned content, processing it");
+
+				// Remember it so a follow-up `\e` reopens this buffer.
+				ctx.repl_state.lock().unwrap().last_edit_content = Some(edited_content.clone());
 
 				let history = ctx.rl.history_mut();
 				if let Err(e) = history.add_entry(edited_content.clone()) {
@@ -62,6 +69,8 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 				}
 			} else {
 				debug!("editor returned empty content, skipping");
+				// The edit produced nothing, so a follow-up `\e` starts empty.
+				ctx.repl_state.lock().unwrap().last_edit_content = None;
 			}
 		}
 		Err(e) => {
@@ -70,4 +79,25 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 	}
 
 	ControlFlow::Continue(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::editor_seed;
+
+	#[test]
+	fn seed_empty_by_default() {
+		assert_eq!(editor_seed(None), "");
+	}
+
+	#[test]
+	fn seed_reuses_previous_edit() {
+		assert_eq!(editor_seed(Some("SELECT 1")), "SELECT 1");
+	}
+
+	#[test]
+	fn seed_never_the_edit_metacommand() {
+		assert_eq!(editor_seed(Some("\\e")), "");
+		assert_eq!(editor_seed(Some("  \\e  ")), "");
+	}
 }

@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::{io::IsTerminal, path::PathBuf};
 
 use age::{Identity, Recipient};
 use clap::Parser;
 use dialoguer::Password;
-use miette::{miette, Context as _, IntoDiagnostic as _, Result};
+use miette::{bail, miette, Context as _, IntoDiagnostic as _, Result};
 use pinentry::PassphraseInput;
 use tokio::fs::read_to_string;
 
@@ -86,22 +86,85 @@ impl PassphraseArgs {
 				.wrap_err("reading keyfile")?
 				.trim()
 				.into())
-		} else if let Some(mut input) = PassphraseInput::with_default_binary() {
-			input
-				.with_prompt("Passphrase:")
-				.required("Cannot use an empty passphrase");
-			if confirm {
-				input.with_confirmation("Confirm passphrase:", "Passphrases do not match");
-			}
-			input.interact().map_err(|err| miette!("{err}"))
 		} else {
-			let mut prompt = Password::new().with_prompt("Passphrase");
-			if confirm {
-				prompt = prompt.with_confirmation("Confirm passphrase", "Passphrases do not match");
-			}
-			let phrase = prompt.interact().into_diagnostic()?;
-			Ok(phrase.into())
+			prompt_passphrase(confirm)
 		}
+	}
+}
+
+/// How pinentry should be driven, given the surrounding environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinentryMode {
+	/// No terminal and no display: prompting can never succeed, so don't try.
+	Unavailable,
+	/// Force pinentry onto the controlling terminal. Used over SSH, where a GUI
+	/// pinentry can't render its dialog and would hang forever at `GETPIN`.
+	ForceTty,
+	/// Let pinentry pick its own backend: a local GUI if a display is present,
+	/// otherwise the terminal.
+	Default,
+}
+
+/// Decide how to drive pinentry from what the environment offers.
+///
+/// Over SSH a GUI pinentry (gnome3/gtk/qt) has no display it can actually draw
+/// on, so it blocks indefinitely; force it onto the terminal instead. With
+/// neither a terminal nor a display there's nothing to prompt on at all.
+fn pinentry_mode(stdin_is_tty: bool, has_display: bool, over_ssh: bool) -> PinentryMode {
+	if over_ssh && stdin_is_tty {
+		PinentryMode::ForceTty
+	} else if stdin_is_tty || has_display {
+		PinentryMode::Default
+	} else {
+		PinentryMode::Unavailable
+	}
+}
+
+/// Prompt the user for a passphrase, via pinentry when available.
+fn prompt_passphrase(confirm: bool) -> Result<SecretString> {
+	let ssh_tty = std::env::var("SSH_TTY").ok().filter(|tty| !tty.is_empty());
+	let over_ssh = ssh_tty.is_some() || std::env::var_os("SSH_CONNECTION").is_some();
+	let has_display = ["DISPLAY", "WAYLAND_DISPLAY"]
+		.into_iter()
+		.any(|key| std::env::var_os(key).is_some_and(|val| !val.is_empty()));
+	let stdin_is_tty = std::io::stdin().is_terminal();
+
+	let mode = pinentry_mode(stdin_is_tty, has_display, over_ssh);
+	if mode == PinentryMode::Unavailable {
+		bail!(
+			"no terminal or display is available to prompt for a passphrase; pass --passphrase-path or --insecure-passphrase"
+		);
+	}
+
+	if let Some(mut input) = PassphraseInput::with_default_binary() {
+		input
+			.with_prompt("Passphrase:")
+			.required("Cannot use an empty passphrase");
+		if confirm {
+			input.with_confirmation("Confirm passphrase:", "Passphrases do not match");
+		}
+
+		// Over SSH the inherited DISPLAY/WAYLAND_DISPLAY makes pinentry pick a GUI
+		// backend that can't render and hangs at GETPIN. Clear them so it falls back
+		// to the curses/tty backend, and point ttyname at the SSH terminal.
+		#[cfg(unix)]
+		if mode == PinentryMode::ForceTty {
+			use pinentry::unix::Options;
+			let mut builder = Options::builder().x11_display("").wayland_display("");
+			if let Some(ref tty) = ssh_tty {
+				builder = builder.tty_name(tty);
+			}
+			input.with_unix_options(builder.build());
+		}
+
+		input.interact().map_err(|err| miette!("{err}"))
+	} else {
+		let mut prompt = Password::new().with_prompt("Passphrase");
+		if confirm {
+			prompt = prompt.with_confirmation("Confirm passphrase", "Passphrases do not match");
+		}
+		let phrase = prompt.interact().into_diagnostic()?;
+		Ok(phrase.into())
 	}
 }
 
@@ -167,5 +230,49 @@ impl Identity for Passphrase {
 		stanzas: &[age_core::format::Stanza],
 	) -> Option<std::result::Result<age_core::format::FileKey, age::DecryptError>> {
 		self.1.unwrap_stanzas(stanzas)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{pinentry_mode, PinentryMode};
+
+	#[test]
+	fn ssh_with_terminal_forces_tty() {
+		assert_eq!(
+			pinentry_mode(true, false, true),
+			PinentryMode::ForceTty,
+			"interactive SSH session must use the terminal, not a GUI"
+		);
+		assert_eq!(
+			pinentry_mode(true, true, true),
+			PinentryMode::ForceTty,
+			"a forwarded display over SSH must not override the terminal"
+		);
+	}
+
+	#[test]
+	fn local_terminal_or_display_uses_defaults() {
+		assert_eq!(pinentry_mode(true, false, false), PinentryMode::Default);
+		assert_eq!(pinentry_mode(false, true, false), PinentryMode::Default);
+		assert_eq!(pinentry_mode(true, true, false), PinentryMode::Default);
+	}
+
+	#[test]
+	fn no_terminal_and_no_display_is_unavailable() {
+		assert_eq!(
+			pinentry_mode(false, false, false),
+			PinentryMode::Unavailable
+		);
+		assert_eq!(
+			pinentry_mode(false, false, true),
+			PinentryMode::Unavailable,
+			"SSH without a pty (ssh -T) and no display can't prompt"
+		);
+	}
+
+	#[test]
+	fn ssh_without_terminal_but_forwarded_display_uses_defaults() {
+		assert_eq!(pinentry_mode(false, true, true), PinentryMode::Default);
 	}
 }

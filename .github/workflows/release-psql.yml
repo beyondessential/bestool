@@ -72,7 +72,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: psql-${{ matrix.target }}
-      - uses: taiki-e/install-action@v2.79.7
+      - uses: taiki-e/install-action@v2.81.1
         with:
           tool: cargo-zigbuild,cargo-auditable
 
@@ -171,7 +171,7 @@ jobs:
 
       - name: Configure AWS Credentials
         if: contains(matrix.target, 'linux-gnu')
-        uses: aws-actions/configure-aws-credentials@v6.1.1
+        uses: aws-actions/configure-aws-credentials@v6.2.0
         with:
           aws-region: ap-southeast-2
           role-to-assume: arn:aws:iam::143295493206:role/gha-tamanu-tools-upload

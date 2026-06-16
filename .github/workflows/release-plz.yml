@@ -30,7 +30,7 @@ jobs:
           rustup default stable
       - id: crates-io-auth
         uses: rust-lang/crates-io-auth-action@v1
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - uses: MarcoIeni/release-plz-action@v0.5.129
         with:
           command: release
         env:
@@ -55,7 +55,7 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - id: release-plz-pr
-        uses: MarcoIeni/release-plz-action@v0.5
+        uses: MarcoIeni/release-plz-action@v0.5.129
         with:
           command: release-pr
         env:
