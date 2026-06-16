@@ -25,6 +25,7 @@ pub mod fhir_job_errors;
 pub mod fhir_jobs;
 pub mod fhir_service_requests_unresolved;
 pub mod http_errors;
+pub mod inodes;
 pub mod ips_errors;
 pub mod kopia_backup;
 pub mod load;
@@ -192,6 +193,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("server_id", server_id),
 		entry!("migrations", migrations),
 		entry!("disk_free", disk_free, host),
+		entry!("inodes", inodes, host),
 		entry!("memory", memory, host),
 		entry!("load", load, host),
 		entry!("uptime", uptime, host),
