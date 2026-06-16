@@ -81,7 +81,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let matched = services::match_names(&expectations, &names)?;
 	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
-	let groups = lifecycle::group_by_expectation(&matched, &discovered);
+	let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
 
 	let stop_plan = if args.up_only {
 		StopPlan::default()
@@ -160,7 +160,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	// any fails to respond in time.
 	if started_behind_caddy && !args.no_probe_http {
 		let discovered = lifecycle::discover(supervisor).await?;
-		let groups = lifecycle::group_by_expectation(&matched, &discovered);
+		let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
 		let to_probe = instances_to_probe(&groups);
 		probe_started(supervisor, &to_probe, args.probe_timeout).await?;
 	}

@@ -127,14 +127,24 @@ impl Instances {
 	}
 
 	/// Whether a discovered `instance` (the bit after `@`, or `None` if there
-	/// was no `@` suffix) is one this pattern admits.
-	pub fn admits_instance(&self, instance: Option<&str>) -> bool {
+	/// was no `@` suffix) is one this pattern admits under `supervisor`.
+	///
+	/// The `None` case is supervisor-dependent. pm2 has no `@instance`
+	/// notation, so every process of a clustered service carries
+	/// `instance: None` — there a templated pattern (`NumericAtLeast` /
+	/// `Named`) must admit `None`. On systemd a `None` means a bare singleton
+	/// `.service` unit, which does **not** satisfy a templated expectation:
+	/// admitting it would let a leftover singleton (e.g. an older
+	/// `tamanu-patientportal.service` on a host since migrated to the `@a`/`@b`
+	/// template) masquerade as a healthy instanced member, and would make
+	/// `tamanu restart` try to roll the singleton unit itself.
+	pub fn admits_instance(&self, supervisor: Supervisor, instance: Option<&str>) -> bool {
 		match (self, instance) {
 			(Instances::Single, None) => true,
 			(Instances::Single, Some(_)) => false,
-			(Instances::NumericAtLeast(_), None) => true, // pm2 case
+			(Instances::NumericAtLeast(_), None) => matches!(supervisor, Supervisor::Pm2),
 			(Instances::NumericAtLeast(_), Some(s)) => s.chars().all(|c| c.is_ascii_digit()),
-			(Instances::Named(_), None) => true, // pm2 case
+			(Instances::Named(_), None) => matches!(supervisor, Supervisor::Pm2),
 			(Instances::Named(xs), Some(s)) => xs.contains(&s),
 		}
 	}
@@ -659,24 +669,31 @@ mod tests {
 	#[test]
 	fn admits_instance_numeric_only_takes_digits() {
 		let n = Instances::NumericAtLeast(1);
-		assert!(n.admits_instance(Some("1")));
-		assert!(n.admits_instance(Some("42")));
-		assert!(!n.admits_instance(Some("a")));
-		assert!(n.admits_instance(None)); // pm2
+		assert!(n.admits_instance(Supervisor::Systemd, Some("1")));
+		assert!(n.admits_instance(Supervisor::Systemd, Some("42")));
+		assert!(!n.admits_instance(Supervisor::Systemd, Some("a")));
+		// pm2 clusters share one name with no @suffix, so None is admitted;
+		// on systemd a bare singleton must not satisfy a numeric template.
+		assert!(n.admits_instance(Supervisor::Pm2, None));
+		assert!(!n.admits_instance(Supervisor::Systemd, None));
 	}
 
 	#[test]
 	fn admits_instance_named_matches_listed() {
 		let n = Instances::Named(&["a", "b"]);
-		assert!(n.admits_instance(Some("a")));
-		assert!(n.admits_instance(Some("b")));
-		assert!(!n.admits_instance(Some("c")));
+		assert!(n.admits_instance(Supervisor::Systemd, Some("a")));
+		assert!(n.admits_instance(Supervisor::Systemd, Some("b")));
+		assert!(!n.admits_instance(Supervisor::Systemd, Some("c")));
+		// Same supervisor split as the numeric case: pm2 None admitted,
+		// systemd singleton rejected.
+		assert!(n.admits_instance(Supervisor::Pm2, None));
+		assert!(!n.admits_instance(Supervisor::Systemd, None));
 	}
 
 	#[test]
 	fn admits_instance_single_rejects_atsuffix() {
-		assert!(Instances::Single.admits_instance(None));
-		assert!(!Instances::Single.admits_instance(Some("1")));
+		assert!(Instances::Single.admits_instance(Supervisor::Systemd, None));
+		assert!(!Instances::Single.admits_instance(Supervisor::Systemd, Some("1")));
 	}
 
 	fn rolling_for(es: &[Expectation], name: &str) -> bool {
