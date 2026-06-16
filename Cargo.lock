@@ -650,16 +650,19 @@ dependencies = [
  "node-semver",
  "prometheus",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sysinfo",
  "tokio",
  "tokio-postgres",
+ "tokio-rustls",
  "tokio-stream",
  "tower-http",
  "tracing",
  "url",
  "windows-service",
+ "x509-parser",
 ]
 
 [[package]]
