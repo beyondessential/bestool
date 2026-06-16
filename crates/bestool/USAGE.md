@@ -5,6 +5,9 @@ This document contains the help content for the `bestool` command-line program.
 **Command Overview:**
 
 * [`bestool`↴](#bestool)
+* [`bestool alertd`↴](#bestool-alertd)
+* [`bestool alertd run`↴](#bestool-alertd-run)
+* [`bestool alertd status`↴](#bestool-alertd-status)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
 * [`bestool caddy`↴](#bestool-caddy)
 * [`bestool caddy configure-tamanu`↴](#bestool-caddy-configure-tamanu)
@@ -52,9 +55,9 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool ssh`↴](#bestool-ssh)
 * [`bestool ssh add-key`↴](#bestool-ssh-add-key)
 * [`bestool tamanu`↴](#bestool-tamanu)
-* [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
-* [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
-* [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
+* [`bestool tamanu alert`↴](#bestool-tamanu-alert)
+* [`bestool tamanu alert run`↴](#bestool-tamanu-alert-run)
+* [`bestool tamanu alert status`↴](#bestool-tamanu-alert-status)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -83,6 +86,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 
 ###### **Subcommands:**
 
+* `alertd` — Run the healthcheck daemon
 * `audit-psql` — Export audit database entries as JSON
 * `caddy` — Manage Caddy
 * `canopy` — Interact with Canopy (the Tamanu meta-monitoring service)
@@ -136,6 +140,68 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
    This can be useful when running under service managers that capture logs, to avoid having two timestamps. When run under systemd, this is automatically enabled.
 
    This option is ignored if the log file is set, or when using `RUST_LOG` or equivalent (as logging is initialized before arguments are parsed in that case); you may want to use `LOG_TIMELESS` instead in the latter case.
+
+
+
+## `bestool alertd`
+
+Run the healthcheck daemon
+
+Periodically runs the doctor healthcheck sweep and posts the result to
+canopy. On a Tamanu host, database and device-key configuration is read from
+Tamanu's config files; on other hosts the daemon still runs and posts
+sweeps, with every Tamanu-dependent check skipped.
+
+**Usage:** `bestool alertd <COMMAND>`
+
+###### **Subcommands:**
+
+* `run` — Run the healthcheck daemon
+* `status` — Show status and health of a running daemon
+
+
+
+## `bestool alertd run`
+
+Run the healthcheck daemon
+
+Starts the daemon which runs the doctor healthcheck sweep on a schedule and posts the result to canopy.
+
+**Usage:** `bestool alertd run [OPTIONS]`
+
+###### **Options:**
+
+* `--glob <GLOB>` — Deprecated, does nothing.
+
+   Previously selected the alert definition files to load. The daemon no longer loads alert definitions; the option is still accepted so existing invocations keep working until they are migrated.
+* `--no-server` — Disable the HTTP server
+* `--server-addr <SERVER_ADDR>` — HTTP server bind address(es)
+
+   Can be provided multiple times. The server will attempt to bind to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+* `--watchdog-timeout <WATCHDOG_TIMEOUT>` — Watchdog timeout in seconds
+
+   If no task reports activity within this many seconds, the daemon will exit so the service manager can restart it. Defaults to 600 (10 minutes).
+
+  Default value: `600`
+* `--no-watchdog` — Disable the watchdog
+
+   By default, the daemon will exit if no task activity is detected within the watchdog timeout. This flag disables that behaviour.
+
+
+
+## `bestool alertd status`
+
+Show status and health of a running daemon
+
+Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
+
+**Usage:** `bestool alertd status [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
+
+   Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
 
 
 
@@ -1280,7 +1346,7 @@ Alias: t
 
 ###### **Subcommands:**
 
-* `alertd` — Run the healthcheck daemon
+* `alert` — Run the healthcheck daemon
 * `artifacts` — List available artifacts for a Tamanu version
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
@@ -1306,15 +1372,16 @@ pseudo-services.
 
 
 
-## `bestool tamanu alertd`
+## `bestool tamanu alert`
 
 Run the healthcheck daemon
 
 Periodically runs the doctor healthcheck sweep and posts the result to
-canopy. Database and device-key configuration is read from Tamanu's config
-files.
+canopy. On a Tamanu host, database and device-key configuration is read from
+Tamanu's config files; on other hosts the daemon still runs and posts
+sweeps, with every Tamanu-dependent check skipped.
 
-**Usage:** `bestool tamanu alertd <COMMAND>`
+**Usage:** `bestool tamanu alert <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -1323,13 +1390,13 @@ files.
 
 
 
-## `bestool tamanu alertd run`
+## `bestool tamanu alert run`
 
 Run the healthcheck daemon
 
 Starts the daemon which runs the doctor healthcheck sweep on a schedule and posts the result to canopy.
 
-**Usage:** `bestool tamanu alertd run [OPTIONS]`
+**Usage:** `bestool tamanu alert run [OPTIONS]`
 
 ###### **Options:**
 
@@ -1351,13 +1418,13 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 
 
 
-## `bestool tamanu alertd status`
+## `bestool tamanu alert status`
 
 Show status and health of a running daemon
 
 Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
 
-**Usage:** `bestool tamanu alertd status [OPTIONS]`
+**Usage:** `bestool tamanu alert status [OPTIONS]`
 
 ###### **Options:**
 

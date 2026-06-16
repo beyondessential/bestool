@@ -47,3 +47,41 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.with_detail("db_name", name)
 		.with_detail("latency_ms", latency_ms)
 }
+
+#[cfg(test)]
+mod tests {
+	use std::sync::Arc;
+
+	use node_semver::Version;
+
+	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+
+	use super::*;
+	use crate::doctor::check::CheckStatus;
+
+	/// An unreachable postgres must surface as a FAIL (an alert), never a crash
+	/// or hang — this is what lets the daemon flag a down database. Port 1 has
+	/// nothing listening, so the connection is refused immediately.
+	#[tokio::test]
+	async fn unreachable_postgres_alerts() {
+		let config: TamanuConfig = serde_json::from_value(serde_json::json!({
+			"db": { "name": "tamanu-central", "username": "u", "password": "p" }
+		}))
+		.unwrap();
+		let ctx = CheckContext {
+			tamanu_version: Version::parse("0.0.0").unwrap(),
+			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+			config: Arc::new(config),
+			kind: ApiServerKind::Central,
+			database_url: "postgresql://127.0.0.1:1/tamanu-central".into(),
+			db: None,
+			http_client: reqwest::Client::new(),
+		};
+		let check = run(ctx).await;
+		assert!(
+			matches!(check.status, CheckStatus::Fail(_)),
+			"expected FAIL on unreachable postgres, got {:?}",
+			check.status
+		);
+	}
+}
