@@ -2004,9 +2004,13 @@ watch startup.
 
 Report on tamanu services: what's expected vs what's actually running.
 
-A lighter cousin of `tamanu doctor`: discovery only, no HTTP probes or
-database queries. Useful as a quick "is anything down right now?"
-check, or before/after a `tamanu start` / `restart` to see the impact.
+A lighter cousin of `tamanu doctor`: discovery only, no HTTP probes.
+Useful as a quick "is anything down right now?" check, or before/after a
+`tamanu start` / `restart` to see the impact.
+
+Re-execs under sudo when not already root: reading each service's running
+version means inspecting its (root-owned) podman container, which an
+unprivileged process can't see.
 
 **Usage:** `bestool tamanu status [OPTIONS] [NAMES]...`
 

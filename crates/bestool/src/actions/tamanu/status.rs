@@ -21,9 +21,13 @@ use crate::actions::{
 
 /// Report on tamanu services: what's expected vs what's actually running.
 ///
-/// A lighter cousin of `tamanu doctor`: discovery only, no HTTP probes or
-/// database queries. Useful as a quick "is anything down right now?"
-/// check, or before/after a `tamanu start` / `restart` to see the impact.
+/// A lighter cousin of `tamanu doctor`: discovery only, no HTTP probes.
+/// Useful as a quick "is anything down right now?" check, or before/after a
+/// `tamanu start` / `restart` to see the impact.
+///
+/// Re-execs under sudo when not already root: reading each service's running
+/// version means inspecting its (root-owned) podman container, which an
+/// unprivileged process can't see.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct StatusArgs {
@@ -66,6 +70,15 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	if !args.all && args.names.is_empty() {
 		hide_compliant_legacy(&mut groups);
 	}
+
+	// Reading each instance's *running* version means inspecting its podman
+	// container, and on these deployments the containers are root-owned — a
+	// `podman ps` as a normal user sees nothing, so every actual version comes
+	// back "unknown" and only the expected (env-file) version is left on show.
+	// Discovery above works unprivileged via systemd's D-Bus; elevate here, the
+	// same way the mutating lifecycle commands do, so the version probe below
+	// can actually see what's running.
+	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	// Probe version expected vs running. Both are best-effort:
 	// missing data degrades cleanly to "unknown" rather than failing the
