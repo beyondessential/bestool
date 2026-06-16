@@ -154,6 +154,11 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 		passphrase,
 	} = args;
 
+	let dir = config.clone().unwrap_or_else(registration::default_dir);
+	// Elevate now if we can't write the registration — before prompting for a
+	// passphrase, and before the enrollment token is consumed over the network.
+	super::ensure_writable_or_reexec(&dir)?;
+
 	let ticket_b64 = match ticket {
 		Some(t) => t,
 		None => super::read_stdin("ticket")?,
@@ -193,7 +198,6 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	let existing = super::load_registration(config.as_deref())
 		.await
 		.wrap_err("reading existing canopy registration")?;
-	let dir = config.unwrap_or_else(registration::default_dir);
 
 	// Idempotency: if we've already enrolled this server with our identity, the
 	// token has been consumed and re-running would only fail opaquely. Treat a

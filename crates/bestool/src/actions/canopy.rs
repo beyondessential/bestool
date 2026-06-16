@@ -47,6 +47,70 @@ async fn load_registration(
 	}
 }
 
+/// Elevate up front when the registration can't be written from here.
+///
+/// `canopy register` / `import` only write the registration at the very end —
+/// after prompting for a passphrase, and (for register) after consuming the
+/// one-shot enrollment token over the network. If the registration directory
+/// isn't writable — the common case on a deployed host where `/etc/bestool` is
+/// root-owned — failing at that last step wastes all of it. So check up front
+/// and, when we aren't already privileged, re-exec the whole command under
+/// sudo; the elevated run does the prompt and the write.
+///
+/// Returns `Ok(())` to proceed in-process when we can already write, or when
+/// we're root and sudo wouldn't change anything (let the operation run and
+/// surface any genuine error, e.g. a read-only filesystem). Non-Unix is always
+/// a no-op: there's no sudo, and the dir's ACLs govern writability directly.
+#[cfg(all(unix, any(feature = "canopy-register", feature = "canopy-import")))]
+fn ensure_writable_or_reexec(dir: &std::path::Path) -> Result<()> {
+	if registration_dir_writable(dir) || privilege::user::privileged() {
+		return Ok(());
+	}
+
+	tracing::info!(
+		dir = %dir.display(),
+		"registration directory is not writable; re-executing under sudo"
+	);
+	let args: Vec<String> = std::env::args().collect();
+	let status = std::process::Command::new("sudo")
+		.args(args)
+		.status()
+		.into_diagnostic()?;
+	std::process::exit(status.code().unwrap_or(1));
+}
+
+#[cfg(all(not(unix), any(feature = "canopy-register", feature = "canopy-import")))]
+fn ensure_writable_or_reexec(_dir: &std::path::Path) -> Result<()> {
+	Ok(())
+}
+
+/// Whether we can create the registration file in `dir`. Storing creates the
+/// directory if missing and then writes a file inside it, so we test the
+/// nearest existing ancestor for "can create an entry here" by actually trying
+/// — more reliable than reasoning about mode bits, ACLs, ownership, and setgid.
+#[cfg(all(unix, any(feature = "canopy-register", feature = "canopy-import")))]
+fn registration_dir_writable(dir: &std::path::Path) -> bool {
+	let mut candidate = dir;
+	let existing = loop {
+		if candidate.exists() {
+			break candidate;
+		}
+		match candidate.parent() {
+			Some(parent) => candidate = parent,
+			None => return false,
+		}
+	};
+
+	let probe = existing.join(format!(".bestool-write-test.{}", std::process::id()));
+	match std::fs::File::create(&probe) {
+		Ok(_) => {
+			let _ = std::fs::remove_file(&probe);
+			true
+		}
+		Err(_) => false,
+	}
+}
+
 /// Read base64 input from stdin, erroring if it's empty.
 #[cfg(any(feature = "canopy-register", feature = "canopy-import"))]
 fn read_stdin(what: &str) -> Result<String> {
@@ -94,5 +158,32 @@ mod tests {
 	#[test]
 	fn decode_base64_rejects_garbage() {
 		assert!(decode_base64("not valid base64 !!!! \u{00a0}").is_err());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn registration_dir_writable_true_for_writable_dir() {
+		let dir = std::env::temp_dir().join(format!("bestool-canopy-rw-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		assert!(registration_dir_writable(&dir), "fresh temp dir should be writable");
+		// A not-yet-created subpath is writable too, via its nearest ancestor.
+		assert!(registration_dir_writable(&dir.join("missing/deeper")));
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn registration_dir_writable_false_for_readonly_dir() {
+		use std::os::unix::fs::PermissionsExt as _;
+		// Root bypasses directory write bits, so this only holds unprivileged.
+		if privilege::user::privileged() {
+			return;
+		}
+		let dir = std::env::temp_dir().join(format!("bestool-canopy-ro-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+		assert!(!registration_dir_writable(&dir), "0500 dir must not be writable");
+		std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+		std::fs::remove_dir_all(&dir).ok();
 	}
 }
