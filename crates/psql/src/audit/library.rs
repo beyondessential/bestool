@@ -123,6 +123,7 @@ impl Audit {
 			result_store: crate::result_store::ResultStore::new(),
 			from_snippet_or_include: false,
 			initial_content: None,
+			last_edit_content: None,
 			write_mode_active_at: None,
 		};
 
