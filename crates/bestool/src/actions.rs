@@ -66,6 +66,8 @@ subcommands! {
 		Ok((action, ctx))
 	}]
 
+	#[cfg(feature = "alertd")]
+	alertd => Alertd(AlertdArgs),
 	#[cfg(feature = "tamanu-psql")]
 	audit_psql => AuditPsql(AuditPsqlArgs),
 	#[cfg(feature = "caddy")]

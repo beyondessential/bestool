@@ -1,25 +1,19 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use miette::Result;
-use node_semver::Version;
-use tracing::{debug, warn};
+use tracing::warn;
 
-use bestool_tamanu::{
-	config::load_config,
-	server_info::{fetch_device_key_with, query_device_key_row},
-};
+use bestool_alertd::doctor::DoctorTask;
 
-use bestool_alertd::doctor::{DoctorTask, SweepTamanu};
-
-use super::{TamanuArgs, try_find_tamanu};
 use crate::actions::Context;
 
 /// Run the healthcheck daemon
 ///
 /// Periodically runs the doctor healthcheck sweep and posts the result to
-/// canopy. Database and device-key configuration is read from Tamanu's config
-/// files.
+/// canopy. On a Tamanu host, database and device-key configuration is read from
+/// Tamanu's config files; on other hosts the daemon still runs and posts
+/// sweeps, with every Tamanu-dependent check skipped.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct AlertdArgs {
@@ -128,15 +122,13 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			bestool_alertd::commands::get_status(&addrs).await
 		}
 		Command::Run { daemon } => {
-			let install = try_find_tamanu(ctx.require::<TamanuArgs>()).await?;
-			let daemon_config = build_config(install, daemon).await?;
+			let daemon_config = build_config(&ctx, daemon).await?;
 			bestool_alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
 		Command::Install => {
 			use std::ffi::OsString;
 			bestool_alertd::windows_service::install_service_with_args(&[
-				OsString::from("tamanu"),
 				OsString::from("alertd"),
 				OsString::from("service"),
 			])
@@ -147,8 +139,6 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
-			let install = try_find_tamanu(ctx.require::<TamanuArgs>()).await?;
-
 			// Check and auto-apply recovery configuration if needed
 			match bestool_alertd::windows_service::is_recovery_configured() {
 				Ok(false) => {
@@ -163,25 +153,45 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 				Ok(true) => {}
 			}
 
-			let daemon_config = build_config(install, daemon).await?;
+			let daemon_config = build_config(&ctx, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
 		}
 	}
 }
 
-async fn build_config(
-	install: Option<(Version, PathBuf)>,
-	DaemonArgs {
+/// Build the daemon config, reading Tamanu's config files and DB for the
+/// database URL and (migrated) device key. Honours a `--root` when invoked via
+/// the `tamanu alert` alias; top-level `bestool alertd` probes the default
+/// locations. A host with no Tamanu still runs the daemon, with every
+/// Tamanu-dependent check skipped.
+#[cfg(feature = "alertd-tamanu")]
+async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+	use std::path::PathBuf;
+
+	use node_semver::Version;
+	use tracing::debug;
+
+	use bestool_alertd::doctor::SweepTamanu;
+	use bestool_tamanu::{
+		config::load_config,
+		server_info::{fetch_device_key_with, query_device_key_row},
+	};
+
+	let DaemonArgs {
 		glob,
 		no_server,
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
-	}: DaemonArgs,
-) -> Result<bestool_alertd::DaemonConfig> {
+	} = daemon;
 	if !glob.is_empty() {
 		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
 	}
+
+	let root = ctx
+		.get::<crate::actions::tamanu::TamanuArgs>()
+		.and_then(|t| t.root.clone());
+	let install: Option<(Version, PathBuf)> = bestool_tamanu::try_find_tamanu(root.as_deref()).await?;
 
 	// `None` when this host has no Tamanu: the daemon still runs (and posts
 	// sweeps), with every Tamanu-dependent check skipped.
@@ -203,10 +213,20 @@ async fn build_config(
 		}
 	};
 
+	// A pool error here means postgres is down or unreachable. Don't abort
+	// startup over it: the daemon must still run so the `db_connect` check
+	// (which connects via `database_url`, not this pool) can report it. The
+	// pool is only used for the device-key DB read below, which falls back to
+	// the registration anyway.
 	let pg_pool = match &tamanu {
-		Some(t) => {
-			Some(bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await?)
-		}
+		Some(t) => match bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await
+		{
+			Ok(pool) => Some(pool),
+			Err(err) => {
+				warn!(%err, "postgres not reachable at startup; db_connect will report it");
+				None
+			}
+		},
 		None => None,
 	};
 
@@ -254,5 +274,52 @@ async fn build_config(
 		daemon_config = daemon_config.with_device_key_pem(pem);
 	}
 
+	Ok(daemon_config)
+}
+
+/// Build the daemon config without any Tamanu integration (this build has no
+/// Tamanu support). The daemon still runs and posts sweeps; every
+/// Tamanu-dependent check is skipped.
+#[cfg(not(feature = "alertd-tamanu"))]
+async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+	let DaemonArgs {
+		glob,
+		no_server,
+		server_addr,
+		watchdog_timeout,
+		no_watchdog,
+	} = daemon;
+	if !glob.is_empty() {
+		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
+	}
+	warn!("this build has no Tamanu support; doctor sweeps will skip Tamanu checks");
+
+	let watchdog = if no_watchdog {
+		None
+	} else {
+		Some(std::time::Duration::from_secs(watchdog_timeout))
+	};
+
+	// The device key (for mTLS to canopy) always comes from the canopy
+	// registration — enrolled via `bestool canopy register`, not Tamanu.
+	let device_key_pem = bestool_canopy::registration::load()
+		.await
+		.ok()
+		.flatten()
+		.and_then(|reg| reg.device_key);
+
+	// Canopy requires a version on every request; `0.0.0` is the agreed
+	// sentinel for hosts with no Tamanu.
+	let mut daemon_config = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
+		.with_no_server(no_server)
+		.with_server_addrs(server_addr)
+		.with_watchdog_timeout(watchdog)
+		.with_task(Arc::new(DoctorTask::new(
+			env!("CARGO_PKG_VERSION").to_string(),
+			None,
+		)));
+	if let Some(pem) = device_key_pem {
+		daemon_config = daemon_config.with_device_key_pem(pem);
+	}
 	Ok(daemon_config)
 }

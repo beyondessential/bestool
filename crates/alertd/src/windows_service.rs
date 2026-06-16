@@ -298,7 +298,7 @@ fn run_diagnostics() {
 	match Command::new("sc").args(&["query", SERVICE_NAME]).output() {
 		Ok(output) if output.status.success() => {
 			println!("✗ Service already exists");
-			println!("  Tip: Run 'bestool tamanu alertd uninstall' first\n");
+			println!("  Tip: Run 'bestool alertd uninstall' first\n");
 		}
 		_ => {
 			println!("✓ Service not found (good)");
@@ -413,7 +413,7 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		.map_err(|e| {
 			let error_msg = e.to_string();
 			if error_msg.contains("Already exists") || error_msg.contains("ERROR_SERVICE_EXISTS") {
-				miette!("Service 'bestool-alertd' already exists.\n\nTroubleshoot:\n  - To reinstall, run: bestool tamanu alertd uninstall\n  - Then run: bestool tamanu alertd install")
+				miette!("Service 'bestool-alertd' already exists.\n\nTroubleshoot:\n  - To reinstall, run: bestool alertd uninstall\n  - Then run: bestool alertd install")
 			} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
 				miette!("Failed to create service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
 			} else {

@@ -86,6 +86,32 @@ jobs:
       - name: Contract tests against live canopy
         run: cargo test -p bestool --lib canopy_contract -- --ignored
 
+  alertd-no-db:
+    name: alertd / graceful without postgres
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build alertd tests
+        run: cargo test -p bestool-alertd --lib --no-run --message-format=json > alertd-tests.json
+      - name: Run doctor checks in a postgres-less network namespace
+        run: |
+          set -euo pipefail
+          bin=$(jq -r 'select(.reason == "compiler-artifact" and (.target.kind == ["lib"]) and .executable != null and (.package_id | test("bestool-alertd"))) | .executable' alertd-tests.json | tail -n1)
+          test -n "$bin" || { echo "could not locate alertd lib test binary"; exit 1; }
+          echo "running doctor checks in a fresh network namespace: $bin"
+          # A new network namespace has no route to the host's postgres, so the
+          # doctor checks must degrade gracefully (db_connect alerts, DB-backed
+          # checks skip) rather than hang or panic. `sudo unshare` runs as real
+          # root, sidestepping ubuntu 24.04's restriction on unprivileged user
+          # namespaces. We scope to `doctor::` because the http_server tests need
+          # working loopback HTTP that a bare namespace doesn't provide.
+          sudo unshare --net -- bash -c "ip link set lo up && exec '$bin' doctor::"
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -125,7 +151,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs]
+    needs: [test, contract, check-docs, alertd-no-db]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

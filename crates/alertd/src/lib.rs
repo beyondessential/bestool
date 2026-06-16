@@ -40,7 +40,7 @@ pub fn http_client() -> reqwest::Client {
 pub struct DaemonConfig {
 	/// Database connection pool, opened by the caller.
 	///
-	/// Centralising pool creation at the caller lets `bestool tamanu alertd`
+	/// Centralising pool creation at the caller lets `bestool alertd`
 	/// reuse the pool for one-off setup queries (kind detection, device key
 	/// lookup) instead of opening additional short-lived connections.
 	///
