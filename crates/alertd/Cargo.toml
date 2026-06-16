@@ -27,15 +27,18 @@ node-semver = "2.2.0"
 miette = { workspace = true }
 prometheus = "0.14.0"
 reqwest = { workspace = true }
+rustls = "0.23.40"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sysinfo.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1"] }
+tokio-rustls = "0.26.4"
 tokio-stream = "0.1.17"
 tower-http = { version = "0.6.6", features = ["trace"] }
 tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
+x509-parser = "0.18.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"

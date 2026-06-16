@@ -16,6 +16,7 @@ use super::check::Check;
 pub mod util;
 
 pub mod btrfs;
+pub mod caddy_certs;
 pub mod caddy_version;
 pub mod certificate_notification_errors;
 pub mod db_connect;
@@ -203,6 +204,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("time_sync", time_sync, host),
 		entry!("tamanu_http", tamanu_http),
 		entry!("caddy_version", caddy_version),
+		entry!("caddy_certs", caddy_certs),
 		entry!("http_errors", http_errors),
 		entry!("tailscale", tailscale, host, off_wire),
 		entry!("tamanu_service", tamanu_service),
