@@ -332,11 +332,19 @@ pub fn expected(
 /// - Otherwise: an expectation matches if **any** name in `names` is a
 ///   substring of the expectation's name.
 ///
-/// Returns an error if any name in `names` matched zero expectations
-/// (typo safety in multi-name invocations).
+/// When a name in `names` matches zero expectations, the behaviour depends on
+/// `ignore_unmatched`:
+/// - `false` (the default for interactive use): returns an error naming the
+///   unmatched patterns and the available names (typo safety in multi-name
+///   invocations).
+/// - `true`: warns about the unmatched patterns and proceeds with whatever did
+///   match (possibly nothing). Lets an automated caller send a fixed list of
+///   services without knowing which are enabled on this particular host — e.g.
+///   the patient portal (central-only) or the FHIR worker (config-gated).
 pub fn match_names<'a>(
 	expectations: &'a [Expectation],
 	names: &[&str],
+	ignore_unmatched: bool,
 ) -> miette::Result<Vec<&'a Expectation>> {
 	use miette::bail;
 
@@ -350,12 +358,19 @@ pub fn match_names<'a>(
 		.filter(|name| !expectations.iter().any(|e| e.name.contains(name)))
 		.collect();
 	if !unmatched.is_empty() {
-		let available: Vec<&str> = expectations.iter().map(|e| e.name).collect();
-		bail!(
-			"no service matches: {}; available names are: {}",
-			unmatched.join(", "),
-			available.join(", "),
-		);
+		if ignore_unmatched {
+			tracing::warn!(
+				unmatched = unmatched.join(", "),
+				"ignoring service name(s) not in this deployment's expected set"
+			);
+		} else {
+			let available: Vec<&str> = expectations.iter().map(|e| e.name).collect();
+			bail!(
+				"no service matches: {}; available names are: {}",
+				unmatched.join(", "),
+				available.join(", "),
+			);
+		}
 	}
 
 	let matched: Vec<&Expectation> = expectations
@@ -794,14 +809,14 @@ mod tests {
 	#[test]
 	fn match_names_empty_returns_everything() {
 		let es = [exp("tamanu-api"), exp("tamanu-tasks"), exp("tamanu-sync")];
-		let m = match_names(&es, &[]).unwrap();
+		let m = match_names(&es, &[], false).unwrap();
 		assert_eq!(m.len(), 3);
 	}
 
 	#[test]
 	fn match_names_substring() {
 		let es = [exp("tamanu-central-api"), exp("tamanu-central-tasks")];
-		let m = match_names(&es, &["api"]).unwrap();
+		let m = match_names(&es, &["api"], false).unwrap();
 		assert_eq!(m.len(), 1);
 		assert_eq!(m[0].name, "tamanu-central-api");
 	}
@@ -813,14 +828,14 @@ mod tests {
 			exp("tamanu-central-tasks"),
 			exp("tamanu-central-fhir-resolve"),
 		];
-		let m = match_names(&es, &["api", "fhir"]).unwrap();
+		let m = match_names(&es, &["api", "fhir"], false).unwrap();
 		assert_eq!(m.len(), 2);
 	}
 
 	#[test]
 	fn match_names_zero_match_bails() {
 		let es = [exp("tamanu-api"), exp("tamanu-tasks")];
-		let err = match_names(&es, &["nope"]).unwrap_err();
+		let err = match_names(&es, &["nope"], false).unwrap_err();
 		let msg = format!("{err}");
 		assert!(msg.contains("nope"));
 		assert!(msg.contains("tamanu-api"));
@@ -829,8 +844,28 @@ mod tests {
 	#[test]
 	fn match_names_partial_typo_still_bails() {
 		let es = [exp("tamanu-api"), exp("tamanu-tasks")];
-		let err = match_names(&es, &["api", "nope"]).unwrap_err();
+		let err = match_names(&es, &["api", "nope"], false).unwrap_err();
 		assert!(format!("{err}").contains("nope"));
+	}
+
+	#[test]
+	fn match_names_ignore_unmatched_keeps_matched_and_skips_rest() {
+		// Automated callers send a fixed list; a name absent from this
+		// deployment's set (e.g. the central-only patient portal on a facility)
+		// is skipped rather than failing the whole invocation.
+		let es = [exp("tamanu-frontend"), exp("tamanu-facility-api")];
+		let m = match_names(&es, &["frontend", "patientportal"], true).unwrap();
+		assert_eq!(m.len(), 1);
+		assert_eq!(m[0].name, "tamanu-frontend");
+	}
+
+	#[test]
+	fn match_names_ignore_unmatched_all_absent_returns_empty() {
+		// Every requested name is absent → empty match (nothing to do), not the
+		// "no names = everything" path.
+		let es = [exp("tamanu-frontend"), exp("tamanu-facility-api")];
+		let m = match_names(&es, &["patientportal"], true).unwrap();
+		assert!(m.is_empty());
 	}
 
 	#[test]

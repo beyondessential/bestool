@@ -37,6 +37,13 @@ pub struct RestartArgs {
 	/// No names = restart every running instance of every Up expectation.
 	pub names: Vec<String>,
 
+	/// Don't error when a NAME matches no service in this deployment's
+	/// expected set; warn and skip it instead. Lets an automated caller send
+	/// a fixed service list (e.g. one that includes the patient portal or the
+	/// FHIR worker) without knowing whether each is enabled on this host.
+	#[arg(long)]
+	pub ignore_unmatched: bool,
+
 	/// Sleep between each critical-instance roll when the HTTP probe is
 	/// disabled (`--no-probe-http`). With probes enabled, the readiness
 	/// probe is the signal — once a fresh instance responds, we move on
@@ -62,7 +69,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	let (supervisor, expectations) =
 		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
-	let matched = services::match_names(&expectations, &names)?;
+	let matched = services::match_names(&expectations, &names, args.ignore_unmatched)?;
 	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);

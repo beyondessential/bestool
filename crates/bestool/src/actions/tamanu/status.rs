@@ -56,7 +56,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let (supervisor, expectations) =
 		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
-	let matched = services::match_names(&expectations, &names)?;
+	let matched = services::match_names(&expectations, &names, false)?;
 	let discovered = lifecycle::discover(supervisor).await?;
 	let mut groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);
 	if matches!(supervisor, Supervisor::Systemd) {

@@ -2022,6 +2022,7 @@ the roll begins.
 
 ###### **Options:**
 
+* `--ignore-unmatched` — Don't error when a NAME matches no service in this deployment's expected set; warn and skip it instead. Lets an automated caller send a fixed service list (e.g. one that includes the patient portal or the FHIR worker) without knowing whether each is enabled on this host
 * `--cooldown <COOLDOWN>` — Sleep between each critical-instance roll when the HTTP probe is disabled (`--no-probe-http`). With probes enabled, the readiness probe is the signal — once a fresh instance responds, we move on to the next without waiting out the cooldown
 
   Default value: `30s`
@@ -2058,6 +2059,7 @@ watch startup.
 
 ###### **Options:**
 
+* `--ignore-unmatched` — Don't error when a NAME matches no service in this deployment's expected set; warn and skip it instead. Lets an automated caller send a fixed service list (e.g. one that includes the patient portal or the FHIR worker) without knowing whether each is enabled on this host
 * `--up-only` — Skip the stop/disable phase: only bring up missing Up services, leave any drifted Down services as-is. Useful when you want to avoid touching a service that's running but shouldn't be (e.g. because you're mid-investigation)
 * `--no-probe-http` — Skip the post-start HTTP readiness probe
 * `--probe-timeout <PROBE_TIMEOUT>` — How long to wait for started services to pass their readiness probe before bailing
