@@ -40,6 +40,13 @@ pub struct Filesystem {
 pub struct ServerInfo {
 	pub bestool_version: String,
 	pub tamanu_version: String,
+	/// Filesystem root of the Tamanu install, when one was found on disk.
+	/// Absent on hosts driven by `TAMANU_DATABASE_URL` alone (no install).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_root: Option<String>,
+	/// Whether this server is a `central` or `facility`, when known.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_server_kind: Option<&'static str>,
 	/// Host's installed Node.js version (bare, no leading `v`), if node is on
 	/// `PATH`. Omitted when node isn't installed or can't be queried.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +99,8 @@ pub struct ServerFacts {
 	pub current_sync_tick: Option<String>,
 	pub timezone: Option<String>,
 	pub pg_version: Option<String>,
+	pub tamanu_root: Option<String>,
+	pub tamanu_server_kind: Option<&'static str>,
 }
 
 /// Build the status-payload `ServerInfo` block.
@@ -130,6 +139,8 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 	ServerInfo {
 		bestool_version: bestool_version.to_string(),
 		tamanu_version: tamanu_version.to_string(),
+		tamanu_root: facts.tamanu_root,
+		tamanu_server_kind: facts.tamanu_server_kind,
 		node_version: detect_node_version().await,
 		hostname: System::host_name(),
 		canonical_url: facts.canonical_url,

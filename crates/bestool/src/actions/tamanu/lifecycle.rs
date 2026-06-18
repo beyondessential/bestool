@@ -104,7 +104,7 @@ pub async fn config_and_expectations(
 	let expectations = services::expected(
 		supervisor,
 		kind,
-		&config,
+		Some(&config),
 		patient_portal_enabled,
 		patient_portal_instanced,
 	);

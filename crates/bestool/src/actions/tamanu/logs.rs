@@ -204,7 +204,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let all_expectations = services::expected(
 		supervisor,
 		kind,
-		&config,
+		Some(&config),
 		patient_portal_enabled,
 		patient_portal_instanced,
 	);
@@ -1194,7 +1194,7 @@ mod tests {
 		let exps = services::expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(true, false),
+			Some(&cfg(true, false)),
 			Some(false),
 			false,
 		);

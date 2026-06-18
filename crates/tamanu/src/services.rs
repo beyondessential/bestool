@@ -152,6 +152,10 @@ impl Instances {
 
 /// All services expected to exist (or be absent) for this deployment.
 ///
+/// `config` is `Some` when the install's config files are available, and `None`
+/// when only a `TAMANU_DATABASE_URL` is — in which case the one config-derived
+/// expectation (the FHIR worker) is reported as Unknown rather than guessed.
+///
 /// `patient_portal_enabled` carries the `features.patientPortal` setting
 /// from the central server's DB as a tri-state:
 /// - `Some(true)` → portal expected Up
@@ -173,7 +177,7 @@ impl Instances {
 pub fn expected(
 	supervisor: Supervisor,
 	kind: ApiServerKind,
-	config: &TamanuConfig,
+	config: Option<&TamanuConfig>,
 	patient_portal_enabled: Option<bool>,
 	patient_portal_instanced: bool,
 ) -> Vec<Expectation> {
@@ -243,13 +247,21 @@ pub fn expected(
 			// config, and explicitly Down when it isn't — that way the doctor
 			// catches the case where a deployment leaves the worker units
 			// running after `integrations.fhir.worker.enabled` is flipped off.
-			let fhir_enabled = config.fhir_worker_enabled();
-			let fhir_state = if fhir_enabled {
-				ExpectedState::Up
-			} else {
-				ExpectedState::Down
+			let (fhir_state, fhir_reason) = match config.map(|c| c.fhir_worker_enabled()) {
+				Some(true) => (
+					ExpectedState::Up,
+					"config integrations.fhir.worker.enabled is true".to_string(),
+				),
+				Some(false) => (
+					ExpectedState::Down,
+					"config integrations.fhir.worker.enabled is false".to_string(),
+				),
+				None => (
+					ExpectedState::Unknown,
+					"no Tamanu config available; cannot read integrations.fhir.worker.enabled"
+						.to_string(),
+				),
 			};
-			let fhir_reason = format!("config integrations.fhir.worker.enabled is {fhir_enabled}");
 			out.push(Expectation {
 				name: resolve,
 				instances: Instances::Single,
@@ -416,7 +428,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -437,7 +449,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -465,7 +477,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Central,
-			&cfg(true),
+			Some(&cfg(true)),
 			Some(false),
 			false,
 		);
@@ -485,7 +497,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -511,7 +523,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(true),
+			Some(&cfg(true)),
 			Some(true),
 			true,
 		);
@@ -536,7 +548,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(true),
 			true,
 		);
@@ -555,7 +567,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(true),
 			false,
 		);
@@ -575,7 +587,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			None,
 			false,
 		);
@@ -600,7 +612,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -616,7 +628,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(true),
 			true,
 		);
@@ -631,7 +643,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Central,
-			&cfg(true),
+			Some(&cfg(true)),
 			Some(true),
 			true,
 		);
@@ -643,7 +655,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -657,7 +669,7 @@ mod tests {
 		let es = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -710,7 +722,7 @@ mod tests {
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -720,7 +732,7 @@ mod tests {
 		let facility_pm2 = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);
@@ -734,7 +746,7 @@ mod tests {
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(true),
 			true,
 		);
@@ -748,7 +760,7 @@ mod tests {
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(true),
 			false,
 		);
@@ -762,7 +774,7 @@ mod tests {
 		let central = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg(true),
+			Some(&cfg(true)),
 			Some(true),
 			true,
 		);
@@ -773,7 +785,7 @@ mod tests {
 		let facility = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg(false),
+			Some(&cfg(false)),
 			Some(false),
 			false,
 		);

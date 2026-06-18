@@ -1723,6 +1723,8 @@ Generate a DATABASE_URL connection string
 
 This command reads the Tamanu configuration and outputs a PostgreSQL connection string in the standard DATABASE_URL format: `postgresql://user:password@host/database`.
 
+If the TAMANU_DATABASE_URL environment variable is set, it is used instead of the config (and printed verbatim), so no Tamanu install is required.
+
 Aliases: db, u, url
 
 **Usage:** `bestool tamanu db-url [OPTIONS]`

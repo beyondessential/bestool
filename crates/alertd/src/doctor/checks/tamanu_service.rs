@@ -35,10 +35,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let patient_portal_instanced =
 		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced().await;
 
+	// With only a database URL and no install, the config-derived expectation
+	// (the FHIR worker) can't be known, so pass `None` and let it surface as
+	// Unknown. Everything else comes from the supervisor, the kind (DB-derived),
+	// and the patient-portal DB setting, so it runs fine.
+	let config = ctx.has_install.then(|| ctx.config.as_ref());
 	let expectations = expected(
 		supervisor,
 		ctx.kind,
-		&ctx.config,
+		config,
 		patient_portal_enabled,
 		patient_portal_instanced,
 	);
@@ -586,7 +591,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -608,7 +613,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -635,7 +640,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -661,7 +666,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -691,7 +696,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -793,7 +798,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -831,7 +836,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg,
+			Some(&cfg),
 			Some(true),
 			true,
 		);
@@ -872,7 +877,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg,
+			Some(&cfg),
 			None,
 			false,
 		);
@@ -898,7 +903,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -935,7 +940,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -956,7 +961,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Pm2,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -1057,7 +1062,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -1093,7 +1098,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Central,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -1142,7 +1147,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);
@@ -1176,7 +1181,7 @@ mod tests {
 		let exps = expected(
 			Supervisor::Systemd,
 			ApiServerKind::Facility,
-			&cfg,
+			Some(&cfg),
 			Some(false),
 			false,
 		);

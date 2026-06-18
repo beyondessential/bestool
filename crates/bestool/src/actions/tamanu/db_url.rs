@@ -1,7 +1,10 @@
 use clap::Parser;
 use miette::Result;
 
-use bestool_tamanu::{config::load_config, connection_url::ConnectionUrlBuilder};
+use bestool_tamanu::{
+	config::{Database, database_url_override, load_config},
+	connection_url::ConnectionUrlBuilder,
+};
 
 use crate::actions::{
 	Context,
@@ -12,6 +15,9 @@ use crate::actions::{
 ///
 /// This command reads the Tamanu configuration and outputs a PostgreSQL connection string
 /// in the standard DATABASE_URL format: `postgresql://user:password@host/database`.
+///
+/// If the TAMANU_DATABASE_URL environment variable is set, it is used instead of
+/// the config (and printed verbatim), so no Tamanu install is required.
 ///
 /// Aliases: db, u, url
 #[derive(Debug, Clone, Parser)]
@@ -25,6 +31,29 @@ pub struct DbUrlArgs {
 }
 
 pub async fn run(args: DbUrlArgs, ctx: Context) -> Result<()> {
+	// When TAMANU_DATABASE_URL is set it's authoritative, and no Tamanu install
+	// is needed. With no `-U`, echo it verbatim so any Unix-socket / query-param
+	// form survives untouched; with `-U`, re-point it at the requested role
+	// (the override carries no report-schema credentials, so no password).
+	if let Some(url) = database_url_override() {
+		match args.username {
+			None => println!("{url}"),
+			Some(user) => {
+				let db = Database::from_url(&url)?;
+				let builder = ConnectionUrlBuilder {
+					username: user,
+					password: None,
+					host: db.host.unwrap_or_else(|| "localhost".to_string()),
+					port: db.port,
+					database: db.name,
+					ssl_mode: None,
+				};
+				println!("{}", builder.build());
+			}
+		}
+		return Ok(());
+	}
+
 	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 	let config = load_config(&root, None)?;
 

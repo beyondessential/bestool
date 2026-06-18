@@ -110,6 +110,8 @@ pub async fn run(args: GreenmaskConfigArgs, ctx: Context) -> Result<()> {
 	let root = tamanu_folder.parent().unwrap();
 
 	let config = load_config(&tamanu_folder, None)?;
+	// Honours TAMANU_DATABASE_URL when set, otherwise the config's `db` block.
+	let db = config.database()?;
 
 	let pg_bin_path = crate::find_postgres::find_postgres_bin("psql")
 		.wrap_err("failed to find psql executable")?;
@@ -183,10 +185,10 @@ pub async fn run(args: GreenmaskConfigArgs, ctx: Context) -> Result<()> {
 			pg_dump_options: GreenmaskDumpOptions {
 				dbname: format!(
 					"host='{}' user='{}' password='{}' dbname='{}'",
-					config.db.host.as_deref().unwrap_or("localhost"),
-					config.db.username,
-					config.db.password,
-					config.db.name
+					db.host.as_deref().unwrap_or("localhost"),
+					db.username,
+					db.password,
+					db.name
 				),
 				schema: "public".into(),
 			},

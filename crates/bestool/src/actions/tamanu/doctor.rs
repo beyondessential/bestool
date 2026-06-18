@@ -1,7 +1,4 @@
-use std::{
-	io::{IsTerminal as _, Write},
-	sync::Arc,
-};
+use std::io::{IsTerminal as _, Write};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
@@ -16,8 +13,8 @@ use bestool_alertd::doctor::{
 	checks,
 	overall_from_payload, perform_sweep,
 	progress::DoctorEvent,
+	resolve_sweep_tamanu,
 };
-use bestool_tamanu::config::load_config;
 
 use super::{TamanuArgs, try_find_tamanu};
 use crate::actions::Context;
@@ -76,24 +73,12 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	// `None` when this host has no Tamanu: the sweep still runs, with every
-	// Tamanu-dependent check skipped.
-	let install = match try_find_tamanu(tamanu).await? {
-		Some((version, root)) => {
-			let config = Arc::new(load_config(&root, None)?);
-			let database_url = config.database_url();
-			Some(SweepTamanu {
-				version,
-				root,
-				config,
-				database_url,
-			})
-		}
-		None => {
-			warn!("no Tamanu on this host; running host-level checks only");
-			None
-		}
-	};
+	// A real install, a DB-only context synthesised from `TAMANU_DATABASE_URL`,
+	// or `None` (host-level checks only).
+	let install = resolve_sweep_tamanu(try_find_tamanu(tamanu).await?)?;
+	if install.is_none() {
+		warn!("no Tamanu on this host; running host-level checks only");
+	}
 	let http_client = crate::http::client();
 
 	let (sweep, source) = if args.no_daemon {

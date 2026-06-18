@@ -248,6 +248,15 @@ pub async fn db_current_version(database_url: &str) -> Option<Version> {
 		}
 	};
 
+	current_version(&client).await
+}
+
+/// Like [`db_current_version`], but over a connection the caller already holds —
+/// so a doctor sweep can reuse its single open connection instead of dialing
+/// again.
+pub async fn current_version(client: &tokio_postgres::Client) -> Option<Version> {
+	const TIMEOUT: Duration = Duration::from_secs(5);
+
 	let row = match tokio::time::timeout(
 		TIMEOUT,
 		client.query_opt(

@@ -171,11 +171,8 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	use node_semver::Version;
 	use tracing::debug;
 
-	use bestool_alertd::doctor::SweepTamanu;
-	use bestool_tamanu::{
-		config::load_config,
-		server_info::{fetch_device_key_with, query_device_key_row},
-	};
+	use bestool_alertd::doctor::resolve_sweep_tamanu;
+	use bestool_tamanu::server_info::{fetch_device_key_with, query_device_key_row};
 
 	let DaemonArgs {
 		glob,
@@ -193,25 +190,15 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		.and_then(|t| t.root.clone());
 	let install: Option<(Version, PathBuf)> = bestool_tamanu::try_find_tamanu(root.as_deref()).await?;
 
-	// `None` when this host has no Tamanu: the daemon still runs (and posts
-	// sweeps), with every Tamanu-dependent check skipped.
-	let tamanu = match install {
-		Some((version, root)) => {
-			let config = load_config(&root, None)?;
-			debug!(?config, "parsed Tamanu config");
-			let database_url = config.database_url();
-			Some(SweepTamanu {
-				version,
-				root,
-				config: Arc::new(config),
-				database_url,
-			})
-		}
-		None => {
-			warn!("no Tamanu on this host; doctor sweeps will skip Tamanu checks");
-			None
-		}
-	};
+	// A real install, a DB-only context synthesised from `TAMANU_DATABASE_URL`,
+	// or `None`. The daemon still runs and posts sweeps in every case; with
+	// `None`, Tamanu/DB checks are skipped, but with only a database URL the DB
+	// checks run while install-dependent ones skip.
+	let tamanu = resolve_sweep_tamanu(install)?;
+	match &tamanu {
+		Some(t) => debug!(has_install = t.has_install, "resolved Tamanu sweep context"),
+		None => warn!("no Tamanu install and no TAMANU_DATABASE_URL; Tamanu checks will skip"),
+	}
 
 	// A pool error here means postgres is down or unreachable. Don't abort
 	// startup over it: the daemon must still run so the `db_connect` check

@@ -22,6 +22,50 @@ pub struct SweepTamanu {
 	pub root: PathBuf,
 	pub config: Arc<TamanuConfig>,
 	pub database_url: String,
+	/// `false` when this was synthesised from a `TAMANU_DATABASE_URL` with no
+	/// Tamanu install on the host: DB checks run, but install-dependent ones
+	/// (the install metadata, local HTTP, caddy, services, kopia) skip.
+	pub has_install: bool,
+}
+
+/// Resolve the Tamanu context for a sweep from an optionally-discovered install.
+///
+/// * `Some(install)` → a real install: its config is loaded and `has_install`
+///   is true.
+/// * no install but [`TAMANU_DATABASE_URL`] set → a DB-only context synthesised
+///   from that URL (`has_install` false) so DB checks still run against it.
+/// * neither → `None`: host-level checks only.
+///
+/// [`TAMANU_DATABASE_URL`]: bestool_tamanu::config::DATABASE_URL_ENV
+pub fn resolve_sweep_tamanu(install: Option<(Version, PathBuf)>) -> Result<Option<SweepTamanu>> {
+	use bestool_tamanu::config::{Database, TamanuConfig, database_url_override, load_config};
+
+	match install {
+		Some((version, root)) => {
+			let config = load_config(&root, None)?;
+			let database_url = config.database_url();
+			Ok(Some(SweepTamanu {
+				version,
+				root,
+				config: Arc::new(config),
+				database_url,
+				has_install: true,
+			}))
+		}
+		None => match database_url_override() {
+			Some(url) => {
+				let db = Database::from_url(&url)?;
+				Ok(Some(SweepTamanu {
+					version: Version::parse("0.0.0").into_diagnostic()?,
+					root: PathBuf::new(),
+					config: Arc::new(TamanuConfig::from_database(db)),
+					database_url: url,
+					has_install: false,
+				}))
+			}
+			None => Ok(None),
+		},
+	}
 }
 
 pub struct SweepResult {
@@ -65,19 +109,44 @@ pub async fn perform_sweep(
 			let kind = bestool_tamanu::detect_kind(&t.config, db.as_deref()).await;
 			debug!(?kind, "detected Tamanu server kind for doctor sweep");
 
+			// With a real install, the version is the env-file/install version.
+			// Without one (a `TAMANU_DATABASE_URL`-only host), fall back to the
+			// version Tamanu last recorded in its own DB (`currentVersion`), so
+			// version-aware checks can still run against it.
+			let tamanu_version = match (t.has_install, db.as_deref()) {
+				(false, Some(client)) => bestool_tamanu::versions::current_version(client)
+					.await
+					.unwrap_or_else(|| t.version.clone()),
+				_ => t.version.clone(),
+			};
+
 			Some(CheckContext {
-				tamanu_version: t.version.clone(),
+				tamanu_version,
 				tamanu_root: t.root.clone(),
 				config: t.config.clone(),
 				kind,
 				database_url: t.database_url.clone(),
 				db,
 				http_client: http_client.clone(),
+				has_install: t.has_install,
 			})
 		}
 		None => None,
 	};
 	let db = tamanu_ctx.as_ref().and_then(|c| c.db.clone());
+	// The version resolved above (install version, or the DB's `currentVersion`
+	// for a database-only host), kept for the wire payload after `tamanu_ctx` is
+	// moved into the check context below. The server kind and (when there's a
+	// real install) its root go into the top-level status facts too.
+	let resolved_version = tamanu_ctx.as_ref().map(|c| c.tamanu_version.clone());
+	let tamanu_server_kind = tamanu_ctx.as_ref().map(|c| match c.kind {
+		bestool_tamanu::ApiServerKind::Central => "central",
+		bestool_tamanu::ApiServerKind::Facility => "facility",
+	});
+	let tamanu_root = tamanu
+		.as_ref()
+		.filter(|t| t.has_install)
+		.map(|t| t.root.display().to_string());
 
 	let check_ctx = SweepContext {
 		tamanu: tamanu_ctx,
@@ -142,21 +211,23 @@ pub async fn perform_sweep(
 		}
 	};
 
-	let facts = collect_server_facts(
+	let mut facts = collect_server_facts(
 		tamanu.as_ref().map(|t| t.config.as_ref()),
 		db.as_deref(),
 		cached_pg_version,
 	)
 	.await;
+	facts.tamanu_root = tamanu_root;
+	facts.tamanu_server_kind = tamanu_server_kind;
 	let pg_version = facts.pg_version.clone();
 	// `binary_version` is the running binary's (bestool's) version, threaded in
 	// by the caller. Evaluating `env!("CARGO_PKG_VERSION")` here would resolve
 	// to this library's version instead, which is the wrong answer for the wire
 	// payload. On hosts with no Tamanu, `0.0.0` is the agreed sentinel — canopy
-	// requires a version on every payload and request.
-	let tamanu_version = tamanu
-		.as_ref()
-		.map(|t| t.version.to_string())
+	// requires a version on every payload and request. A database-only host
+	// reports the version resolved from its DB rather than the sentinel.
+	let tamanu_version = resolved_version
+		.map(|v| v.to_string())
 		.unwrap_or_else(|| "0.0.0".into());
 	let info = server_info::gather(binary_version, &tamanu_version, facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
@@ -286,13 +357,13 @@ mod tests {
 
 	#[tokio::test]
 	async fn sweep_without_tamanu_skips_tamanu_checks_and_runs_host_checks() {
-		// Restrict to a deterministic subset: tamanu-dependent checks plus one
-		// host check with no external dependencies.
+		// Restrict to a deterministic on-wire subset: a tamanu-dependent check
+		// plus one host check with no external dependencies.
 		let sweep = perform_sweep(
 			"0.0.0-test",
 			None,
 			reqwest::Client::new(),
-			&["tamanu_found".into(), "db_version".into(), "uptime".into()],
+			&["tamanu_http".into(), "memory".into()],
 			&[],
 			None,
 			None,
@@ -309,10 +380,8 @@ mod tests {
 				.unwrap_or_else(|| panic!("{name} missing from health[]"))["result"]
 				.clone()
 		};
-		assert_eq!(result_of("tamanu_found"), "skipped");
-		assert_eq!(result_of("db_version"), "skipped");
-		// Freshly-booted test machines legitimately warn here; it ran either way.
-		assert_ne!(result_of("uptime"), "skipped");
+		assert_eq!(result_of("tamanu_http"), "skipped");
+		assert_ne!(result_of("memory"), "skipped");
 		// The 0.0.0 sentinel marks "no Tamanu" on the wire.
 		assert_eq!(sweep.payload["tamanuVersion"], "0.0.0");
 	}

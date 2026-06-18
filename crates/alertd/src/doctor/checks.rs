@@ -35,7 +35,6 @@ pub mod memory;
 pub mod migrations;
 pub mod patient_communication_errors;
 pub mod report_errors;
-pub mod server_id;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -43,7 +42,6 @@ pub mod sync_session_errors;
 pub mod sync_sessions;
 pub mod sync_snapshot_tables;
 pub mod tailscale;
-pub mod tamanu_found;
 pub mod tamanu_http;
 pub mod tamanu_service;
 pub mod time_sync;
@@ -82,6 +80,11 @@ pub struct CheckContext {
 	pub database_url: String,
 	pub db: Option<Arc<PgClient>>,
 	pub http_client: reqwest::Client,
+	/// Whether a real Tamanu install backs this context. `false` when the
+	/// context was synthesised from a `TAMANU_DATABASE_URL` alone (DB reachable,
+	/// but no install files to inspect). Drives whether the version comes from
+	/// the install or the DB, and whether the install root is reported.
+	pub has_install: bool,
 }
 
 /// `tokio_postgres::Error`'s top-level Display is the unhelpful `"db error"`.
@@ -168,6 +171,27 @@ macro_rules! entry {
 			},
 		}
 	};
+	// Tamanu-dependent check rendered to the CLI but kept OFF the canopy
+	// `health[]` wire array — for checks that report a value already carried as
+	// a top-level status fact, so they're useful locally but shouldn't alert.
+	($name:literal, $module:ident, off_wire) => {
+		CheckEntry {
+			name: $name,
+			on_wire: false,
+			run: |ctx| {
+				Box::pin(async move {
+					match ctx.tamanu {
+						Some(tamanu) => $module::run(tamanu).await,
+						None => Check::skip(
+							$name,
+							"no Tamanu on this host",
+							"check needs a Tamanu deployment, and this host has none",
+						),
+					}
+				})
+			},
+		}
+	};
 	// Host-level check: runs whether or not Tamanu is deployed.
 	($name:literal, $module:ident, host) => {
 		CheckEntry {
@@ -190,29 +214,43 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("tamanu_found", tamanu_found),
 		entry!("db_connect", db_connect),
-		entry!("db_version", db_version),
-		entry!("server_id", server_id),
+		// Reports the postgres version, which is already the top-level `pgVersion`
+		// status fact — useful in the CLI render, but off the wire.
+		entry!("db_version", db_version, off_wire),
 		entry!("migrations", migrations),
 		entry!("disk_free", disk_free, host),
 		entry!("inodes", inodes, host),
 		entry!("btrfs", btrfs, host),
 		entry!("memory", memory, host),
 		entry!("load", load, host),
-		entry!("uptime", uptime, host),
+		// Uptime is already the top-level `uptimeSecs` status fact; the soft
+		// "recently rebooted" warning is CLI-only, so keep it off the wire.
+		entry!("uptime", uptime, host, off_wire),
 		entry!("time_sync", time_sync, host),
+		// Tamanu-level: needs a reachable Tamanu DB / deployment but not the
+		// config files, so it runs against a `TAMANU_DATABASE_URL`-only host too.
 		entry!("tamanu_http", tamanu_http),
-		entry!("caddy_version", caddy_version),
-		entry!("caddy_certs", caddy_certs),
-		entry!("http_errors", http_errors),
+		// Host/service probes: they inspect the running host, not the Tamanu
+		// install or config, and Skip gracefully when caddy/kopia isn't present.
+		// So they run regardless of install — including against a
+		// `TAMANU_DATABASE_URL`-only host.
+		entry!("caddy_version", caddy_version, host),
+		entry!("caddy_certs", caddy_certs, host),
+		entry!("http_errors", http_errors, host),
 		entry!("tailscale", tailscale, host, off_wire),
+		// Tamanu-level: the config-derived FHIR expectation degrades to Unknown
+		// without config (see `services::expected`); the rest is DB/host-derived.
 		entry!("tamanu_service", tamanu_service),
+		// Tamanu-level: compares running container tags against the deployment's
+		// version, which is the install's env-file version when present and the
+		// DB's recorded `currentVersion` otherwise. It self-skips if neither is
+		// available.
 		entry!("version_drift", version_drift),
 		entry!("external_users", external_users, host),
 		entry!("sync_sessions", sync_sessions),
 		entry!("fhir_jobs", fhir_jobs),
-		entry!("kopia_backup", kopia_backup),
+		entry!("kopia_backup", kopia_backup, host),
 		entry!(
 			"certificate_notification_errors",
 			certificate_notification_errors
@@ -285,6 +323,7 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			db: Some(db),
 			http_client: reqwest::Client::new(),
+			has_install: true,
 		})
 	}
 
@@ -299,6 +338,7 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			db: None,
 			http_client: reqwest::Client::new(),
+			has_install: true,
 		}
 	}
 }
@@ -317,11 +357,76 @@ mod tests {
 		}
 	}
 
+	/// A context synthesised from a database URL alone (no install): `db` is
+	/// `None` and the URL points at a closed port so connection attempts fail
+	/// fast.
+	fn db_only_ctx() -> SweepContext {
+		use std::sync::Arc;
+
+		use bestool_tamanu::{
+			ApiServerKind,
+			config::{Database, TamanuConfig},
+		};
+		use node_semver::Version;
+
+		let db = Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap();
+		SweepContext {
+			tamanu: Some(super::CheckContext {
+				tamanu_version: Version::parse("0.0.0").unwrap(),
+				tamanu_root: std::path::PathBuf::new(),
+				config: Arc::new(TamanuConfig::from_database(db)),
+				kind: ApiServerKind::Central,
+				database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
+				db: None,
+				http_client: reqwest::Client::new(),
+				has_install: false,
+			}),
+			http_client: reqwest::Client::new(),
+		}
+	}
+
+	#[tokio::test]
+	async fn checks_run_with_db_only_context() {
+		// Every Tamanu-level check and host/service probe runs against a
+		// database-only context (no install): they execute and, where their
+		// target is absent on the test box, Skip for their own reason. None is
+		// gated out for lack of an install — there's no install gate any more.
+		for name in [
+			"tamanu_http",
+			"tamanu_service",
+			"version_drift",
+			"caddy_version",
+			"caddy_certs",
+			"http_errors",
+			"kopia_backup",
+		] {
+			let entry = all().into_iter().find(|e| e.name == name).unwrap();
+			let check = (entry.run)(db_only_ctx()).await;
+			assert_ne!(
+				check.summary, "no Tamanu install on this host",
+				"{name} should not be install-gated"
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn db_connect_runs_with_db_only_context() {
+		// db_connect goes through the install gate because it only needs the URL.
+		// An unreachable URL must FAIL (an alert), proving it wasn't skipped.
+		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let check = (entry.run)(db_only_ctx()).await;
+		assert!(
+			matches!(check.status, CheckStatus::Fail(_)),
+			"db_connect should run (and fail) with a db-only context, got {:?}",
+			check.to_wire()["result"]
+		);
+	}
+
 	#[tokio::test]
 	async fn tamanu_checks_skip_without_tamanu() {
 		// The registry wrapper skips Tamanu-dependent checks before they run,
 		// so on a non-Tamanu host nothing downstream alerts.
-		for name in ["tamanu_found", "db_version", "version_drift", "tamanu_http"] {
+		for name in ["db_version", "version_drift", "tamanu_http"] {
 			let entry = all().into_iter().find(|e| e.name == name).unwrap();
 			let check = (entry.run)(no_tamanu_ctx()).await;
 			assert!(
