@@ -46,6 +46,13 @@ pub struct StartArgs {
 	/// No names = consider every expectation.
 	pub names: Vec<String>,
 
+	/// Don't error when a NAME matches no service in this deployment's
+	/// expected set; warn and skip it instead. Lets an automated caller send
+	/// a fixed service list (e.g. one that includes the patient portal or the
+	/// FHIR worker) without knowing whether each is enabled on this host.
+	#[arg(long)]
+	pub ignore_unmatched: bool,
+
 	/// Skip the stop/disable phase: only bring up missing Up services,
 	/// leave any drifted Down services as-is. Useful when you want to
 	/// avoid touching a service that's running but shouldn't be (e.g.
@@ -78,7 +85,7 @@ pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let (supervisor, expectations) =
 		lifecycle::config_and_expectations(tamanu, WaitForDb::Yes).await?;
 	let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
-	let matched = services::match_names(&expectations, &names)?;
+	let matched = services::match_names(&expectations, &names, args.ignore_unmatched)?;
 	lifecycle::warn_unknown_expectations(&matched);
 	let discovered = lifecycle::discover(supervisor).await?;
 	let groups = lifecycle::group_by_expectation(supervisor, &matched, &discovered);

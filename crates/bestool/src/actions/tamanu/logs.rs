@@ -228,7 +228,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			.map(String::as_str)
 			.collect();
 		let up_owned: Vec<Expectation> = up_expectations.iter().map(|e| (*e).clone()).collect();
-		let m = services::match_names(&up_owned, &tamanu_name_refs)?;
+		let m = services::match_names(&up_owned, &tamanu_name_refs, false)?;
 		m.iter()
 			.map(|e| {
 				up_expectations
