@@ -163,7 +163,8 @@ tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:co
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
-tamanu-tags = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:comfy-table"]
+# Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
+tamanu-tags = ["canopy-tags"]
 __tamanu = [ # internal feature to enable the tamanu subcommand common code
 	"dep:bestool-tamanu",
 	"dep:dirs",
@@ -177,10 +178,12 @@ canopy = [ # enable all canopy subcommands
 	"canopy-register",
 	"canopy-export",
 	"canopy-import",
+	"canopy-tags",
 ]
 canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:p256"]
 canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
+canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration", "dep:comfy-table", "dep:owo-colors"]
 __canopy = ["dep:bestool-canopy"] # internal feature to enable the canopy subcommand common code
 
 ## Iti subcommands

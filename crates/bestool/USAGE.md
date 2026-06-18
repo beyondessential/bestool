@@ -16,6 +16,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
+* [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool completions`↴](#bestool-completions)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
@@ -295,6 +296,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `register` — Enrol this machine as a Canopy server
 * `export` — Export this machine's canopy registration for transfer to another machine
 * `import` — Import a canopy registration exported from another machine
+* `tags` — Fetch this device's tags from canopy.
 
 
 
@@ -365,6 +367,30 @@ Decrypts the export blob with its passphrase and re-stores it under this machine
 * `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
 
    This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
+
+
+
+## `bestool canopy tags`
+
+Fetch this device's tags from canopy.
+
+Tags are key→value labels stored server-side in canopy, identifying what
+role / fleet / labels this device carries; the server's own tags are
+merged over its group's. The fetch is authenticated by the canopy
+client (tailscale identity, or mTLS with the device key).
+
+On a successful fetch the result is cached to disk alongside the
+`server-id` file; on a failed fetch (canopy unreachable, no auth path,
+HTTP error) the cached copy — if any — is read and printed instead, with
+a `cached` flag set in the JSON output and a one-line note in the
+human-readable output.
+
+**Usage:** `bestool canopy tags [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Emit the tags as JSON rather than a human-readable table
+* `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
 
 
 
