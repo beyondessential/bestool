@@ -118,14 +118,16 @@ jobs:
           mkdir -p "$deb_dir/DEBIAN"
           install -Dm755 "target/$target/dist/bestool" "$deb_dir/usr/bin/bestool"
 
-          # Generate shell completions
+          # Shell completion registration stubs. Completions are dynamic: the
+          # binary emits the actual completer when invoked with COMPLETE=<shell>,
+          # so each shell only needs a one-line stub to hook it up.
           mkdir -p "$deb_dir/usr/share/bash-completion/completions"
           mkdir -p "$deb_dir/usr/share/fish/vendor_completions.d"
           mkdir -p "$deb_dir/usr/share/zsh/vendor-completions"
 
-          "$deb_dir/usr/bin/bestool" completions --shell bash > "$deb_dir/usr/share/bash-completion/completions/bestool"
-          "$deb_dir/usr/bin/bestool" completions --shell fish > "$deb_dir/usr/share/fish/vendor_completions.d/bestool.fish"
-          "$deb_dir/usr/bin/bestool" completions --shell zsh > "$deb_dir/usr/share/zsh/vendor-completions/_bestool"
+          echo 'source <(COMPLETE=bash bestool)' > "$deb_dir/usr/share/bash-completion/completions/bestool"
+          echo 'source (COMPLETE=fish bestool | psub)' > "$deb_dir/usr/share/fish/vendor_completions.d/bestool.fish"
+          echo 'source <(COMPLETE=zsh bestool)' > "$deb_dir/usr/share/zsh/vendor-completions/_bestool"
 
           # Install license/copyright and documentation
           install -Dm644 COPYING "$deb_dir/usr/share/doc/bestool/copyright"

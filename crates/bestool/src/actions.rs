@@ -74,8 +74,6 @@ subcommands! {
 	caddy => Caddy(CaddyArgs),
 	#[cfg(feature = "__canopy")]
 	canopy => Canopy(CanopyArgs),
-	#[cfg(feature = "completions")]
-	completions => Completions(CompletionsArgs),
 	#[cfg(feature = "crypto")]
 	crypto => Crypto(CryptoArgs),
 	#[clap(hide = true)]

@@ -16,7 +16,6 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
-* [`bestool completions`↴](#bestool-completions)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -89,7 +88,6 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `audit-psql` — Export audit database entries as JSON
 * `caddy` — Manage Caddy
 * `canopy` — Interact with Canopy (the Tamanu meta-monitoring service)
-* `completions` — Generate a shell completions script
 * `crypto` — Cryptographic operations
 * `file` — File utilities
 * `iti` — Tamanu Iti subcommands
@@ -364,23 +362,6 @@ Decrypts the export blob with its passphrase and re-stores it under this machine
 * `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
 
    This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
-
-
-
-## `bestool completions`
-
-Generate a shell completions script.
-
-Provides a completions script or configuration for the given shell.
-
-**Usage:** `bestool completions --shell <SHELL>`
-
-###### **Options:**
-
-* `--shell <SHELL>` — Shell to generate a completions script for
-
-  Possible values: `bash`, `elvish`, `fish`, `nu`, `powershell`, `zsh`
-
 
 
 
