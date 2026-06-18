@@ -55,9 +55,9 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool ssh`↴](#bestool-ssh)
 * [`bestool ssh add-key`↴](#bestool-ssh-add-key)
 * [`bestool tamanu`↴](#bestool-tamanu)
-* [`bestool tamanu alert`↴](#bestool-tamanu-alert)
-* [`bestool tamanu alert run`↴](#bestool-tamanu-alert-run)
-* [`bestool tamanu alert status`↴](#bestool-tamanu-alert-status)
+* [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
+* [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
+* [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -66,7 +66,6 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu doctor`↴](#bestool-tamanu-doctor)
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
-* [`bestool tamanu greenmask-config`↴](#bestool-tamanu-greenmask-config)
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 * [`bestool tamanu sync`↴](#bestool-tamanu-sync)
@@ -1346,7 +1345,7 @@ Alias: t
 
 ###### **Subcommands:**
 
-* `alert` — Run the healthcheck daemon
+* `alertd` — Run the healthcheck daemon
 * `artifacts` — List available artifacts for a Tamanu version
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
@@ -1355,7 +1354,6 @@ Alias: t
 * `doctor` — Gather server info + healthchecks for a Tamanu install
 * `download` — Download Tamanu artifacts
 * `find` — Find Tamanu installations
-* `greenmask-config` — Generate a Greenmask config file
 * `logs` — Tail logs for tamanu services and (optionally) the caddy and postgres
 pseudo-services.
 * `psql` — Connect to Tamanu's database
@@ -1372,7 +1370,7 @@ pseudo-services.
 
 
 
-## `bestool tamanu alert`
+## `bestool tamanu alertd`
 
 Run the healthcheck daemon
 
@@ -1381,7 +1379,7 @@ canopy. On a Tamanu host, database and device-key configuration is read from
 Tamanu's config files; on other hosts the daemon still runs and posts
 sweeps, with every Tamanu-dependent check skipped.
 
-**Usage:** `bestool tamanu alert <COMMAND>`
+**Usage:** `bestool tamanu alertd <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -1390,13 +1388,13 @@ sweeps, with every Tamanu-dependent check skipped.
 
 
 
-## `bestool tamanu alert run`
+## `bestool tamanu alertd run`
 
 Run the healthcheck daemon
 
 Starts the daemon which runs the doctor healthcheck sweep on a schedule and posts the result to canopy.
 
-**Usage:** `bestool tamanu alert run [OPTIONS]`
+**Usage:** `bestool tamanu alertd run [OPTIONS]`
 
 ###### **Options:**
 
@@ -1418,13 +1416,13 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 
 
 
-## `bestool tamanu alert status`
+## `bestool tamanu alertd status`
 
 Show status and health of a running daemon
 
 Connects to the running daemon's HTTP API and displays version, uptime, health, and watchdog information. Exits with code 1 if the daemon is unhealthy.
 
-**Usage:** `bestool tamanu alert status [OPTIONS]`
+**Usage:** `bestool tamanu alertd status [OPTIONS]`
 
 ###### **Options:**
 
@@ -1814,30 +1812,6 @@ Find Tamanu installations
 * `--with-version` — With version.
 
    Print parsed version information for each root.
-
-
-
-## `bestool tamanu greenmask-config`
-
-Generate a Greenmask config file
-
-**Usage:** `bestool tamanu greenmask-config [OPTIONS] [FOLDERS]...`
-
-###### **Arguments:**
-
-* `<FOLDERS>` — Folders containing table masking definitions.
-
-   Can be specified multiple times, entries will be merged.
-
-   By default, it will look in the `greenmask/config` folder in the Tamanu root, and the `greenmask` folder in the Tamanu release folder. Non-existent folders are ignored.
-
-###### **Options:**
-
-* `--storage-dir <STORAGE_DIR>` — Folder where dumps are stored.
-
-   By default, this is the `greenmask/dumps` folder in the Tamanu root.
-
-   If the folder does not exist, it will be created.
 
 
 
