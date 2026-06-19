@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.24.1"
+version = "1.25.0"
 edition = "2024"
 default-run = "bestool"
 
