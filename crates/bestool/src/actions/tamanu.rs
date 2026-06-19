@@ -43,8 +43,7 @@ super::subcommands! {
 	}]
 
 	#[cfg(feature = "alertd")]
-	#[clap(alias = "alertd")]
-	alert => Alert(AlertArgs),
+	alertd => Alertd(AlertdArgs),
 	#[cfg(feature = "tamanu-artifacts")]
 	#[clap(alias = "art")]
 	artifacts => Artifacts(ArtifactsArgs),
@@ -67,8 +66,6 @@ super::subcommands! {
 	download => Download(DownloadArgs),
 	#[cfg(feature = "tamanu-find")]
 	find => Find(FindArgs),
-	#[cfg(feature = "tamanu-greenmask")]
-	greenmask_config => GreenmaskConfig(GreenmaskConfigArgs),
 	#[cfg(feature = "tamanu-logs")]
 	#[clap(alias = "l")]
 	logs => Logs(LogsArgs),
