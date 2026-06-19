@@ -17,7 +17,6 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
-* [`bestool completions`↴](#bestool-completions)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -90,7 +89,6 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `audit-psql` — Export audit database entries as JSON
 * `caddy` — Manage Caddy
 * `canopy` — Interact with Canopy (the Tamanu meta-monitoring service)
-* `completions` — Generate a shell completions script
 * `crypto` — Cryptographic operations
 * `file` — File utilities
 * `iti` — Tamanu Iti subcommands
@@ -390,23 +388,6 @@ human-readable output.
 
 * `--json` — Emit the tags as JSON rather than a human-readable table
 * `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
-
-
-
-## `bestool completions`
-
-Generate a shell completions script.
-
-Provides a completions script or configuration for the given shell.
-
-**Usage:** `bestool completions --shell <SHELL>`
-
-###### **Options:**
-
-* `--shell <SHELL>` — Shell to generate a completions script for
-
-  Possible values: `bash`, `elvish`, `fish`, `nu`, `powershell`, `zsh`
-
 
 
 

@@ -21,6 +21,16 @@ pub struct Args {
 }
 
 pub fn get_args() -> Result<(Args, WorkerGuard)> {
+	// Dynamic shell completions: when invoked with the `COMPLETE` env var set
+	// (via the registration snippet `source <(COMPLETE=bash bestool)` etc.),
+	// this emits completions and exits. Must run before anything writes to
+	// stdout, hence first thing here.
+	#[cfg(feature = "completions")]
+	{
+		use clap::CommandFactory as _;
+		clap_complete::CompleteEnv::with_factory(Args::command).complete();
+	}
+
 	let log_guard = PreArgs::parse().setup().map_err(|err| miette!("{err}"))?;
 
 	debug!("parsing arguments");
