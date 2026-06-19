@@ -16,6 +16,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
+* [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -292,6 +293,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `register` — Enrol this machine as a Canopy server
 * `export` — Export this machine's canopy registration for transfer to another machine
 * `import` — Import a canopy registration exported from another machine
+* `tags` — Fetch this device's tags from canopy.
 
 
 
@@ -362,6 +364,30 @@ Decrypts the export blob with its passphrase and re-stores it under this machine
 * `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
 
    This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
+
+
+
+## `bestool canopy tags`
+
+Fetch this device's tags from canopy.
+
+Tags are key→value labels stored server-side in canopy, identifying what
+role / fleet / labels this device carries; the server's own tags are
+merged over its group's. The fetch is authenticated by the canopy
+client (tailscale identity, or mTLS with the device key).
+
+On a successful fetch the result is cached to disk alongside the
+`server-id` file; on a failed fetch (canopy unreachable, no auth path,
+HTTP error) the cached copy — if any — is read and printed instead, with
+a `cached` flag set in the JSON output and a one-line note in the
+human-readable output.
+
+**Usage:** `bestool canopy tags [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Emit the tags as JSON rather than a human-readable table
+* `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
 
 
 
@@ -1979,6 +2005,7 @@ the roll begins.
 
 ###### **Options:**
 
+* `--ignore-unmatched` — Don't error when a NAME matches no service in this deployment's expected set; warn and skip it instead. Lets an automated caller send a fixed service list (e.g. one that includes the patient portal or the FHIR worker) without knowing whether each is enabled on this host
 * `--cooldown <COOLDOWN>` — Sleep between each critical-instance roll when the HTTP probe is disabled (`--no-probe-http`). With probes enabled, the readiness probe is the signal — once a fresh instance responds, we move on to the next without waiting out the cooldown
 
   Default value: `30s`
@@ -2015,6 +2042,7 @@ watch startup.
 
 ###### **Options:**
 
+* `--ignore-unmatched` — Don't error when a NAME matches no service in this deployment's expected set; warn and skip it instead. Lets an automated caller send a fixed service list (e.g. one that includes the patient portal or the FHIR worker) without knowing whether each is enabled on this host
 * `--up-only` — Skip the stop/disable phase: only bring up missing Up services, leave any drifted Down services as-is. Useful when you want to avoid touching a service that's running but shouldn't be (e.g. because you're mid-investigation)
 * `--no-probe-http` — Skip the post-start HTTP readiness probe
 * `--probe-timeout <PROBE_TIMEOUT>` — How long to wait for started services to pass their readiness probe before bailing

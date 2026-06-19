@@ -1,11 +1,15 @@
+#[cfg(any(feature = "canopy-register", feature = "canopy-import"))]
 use std::io::Read as _;
 
+#[cfg(any(feature = "canopy-register", feature = "canopy-import"))]
 use base64::{
 	Engine as _,
 	engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
 };
 use clap::{Parser, Subcommand};
-use miette::{IntoDiagnostic as _, Result, bail, miette};
+#[cfg(any(feature = "canopy-register", feature = "canopy-import"))]
+use miette::{IntoDiagnostic as _, bail, miette};
+use miette::Result;
 
 use super::Context;
 
@@ -29,7 +33,9 @@ super::subcommands! {
 	#[cfg(feature = "canopy-export")]
 	export => Export(ExportArgs),
 	#[cfg(feature = "canopy-import")]
-	import => Import(ImportArgs)
+	import => Import(ImportArgs),
+	#[cfg(feature = "canopy-tags")]
+	tags => Tags(TagsArgs)
 }
 
 /// Load the registration for a command that takes an optional `--config <DIR>`.
