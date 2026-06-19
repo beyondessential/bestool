@@ -137,6 +137,34 @@ jobs:
           # State directory for the canopy registration
           install -dm755 "$deb_dir/etc/bestool"
 
+          # bestool-alertd systemd unit. Shipped disabled: the bestool package
+          # is installed broadly as a general CLI, so the unit must not start on
+          # every host. Deployment (ansible) enables it and drops a
+          # bestool-alertd.service.d/*.conf override with the host-specific
+          # TAMANU_DATABASE_URL where alertd should actually run.
+          install -Dm644 services/bestool-alertd.service \
+            "$deb_dir/usr/lib/systemd/system/bestool-alertd.service"
+
+          # daemon-reload after install/upgrade/removal so systemd picks up unit
+          # changes. The unit ships disabled, so nothing is enabled or started.
+          cat > "$deb_dir/DEBIAN/postinst" << 'EOF'
+          #!/bin/sh
+          set -e
+          if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+          fi
+          EOF
+          chmod 755 "$deb_dir/DEBIAN/postinst"
+
+          cat > "$deb_dir/DEBIAN/postrm" << 'EOF'
+          #!/bin/sh
+          set -e
+          if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+          fi
+          EOF
+          chmod 755 "$deb_dir/DEBIAN/postrm"
+
           cat > "$deb_dir/DEBIAN/control" << EOF
           Package: bestool
           Version: $version

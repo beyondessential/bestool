@@ -1,0 +1,83 @@
+[Unit]
+Description=Tamanu alert daemon
+After=network.target
+
+[Service]
+Type=simple
+# Distinct journal identifier so rsyslog can filter alertd apart from other
+# bestool invocations (which all otherwise log as "bestool").
+SyslogIdentifier=bestool-alertd
+ExecStart=/usr/bin/bestool alertd run
+MemoryMax=500M
+Restart=always
+RestartSec=10
+
+# Talk to the rootful podman API socket instead of forking a privileged podman.
+# Every podman call becomes a thin API client — the privileged container work
+# happens in the daemon — so this unit can drop caps, namespaces, devices, and
+# @mount below. Requires `systemctl enable --now podman.socket`. The CLI reads
+# CONTAINER_HOST from the env automatically.
+Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
+
+# Doctor's DB checks connect as a dedicated read-only Postgres role over the
+# socket, authenticated by peer (pg_ident maps root -> that role) so there's no
+# password to keep in sync with the app. The connection string is host-specific
+# (it varies per tamanu install), so it is not baked into this unit: the
+# deployment drops a /etc/systemd/system/bestool-alertd.service.d/*.conf
+# override with `Environment=TAMANU_DATABASE_URL=...` on the hosts that need it.
+
+# Runs as root with a restricted capability bounding set rather than the full
+# root set. As uid 0 the kernel grants the whole bounding set into the effective
+# set on exec (and the btrfs child below re-derives it the same way), so listing
+# the caps here is enough and AmbientCapabilities stays empty.
+#   - CAP_DAC_READ_SEARCH: root reads any file (e.g. kopia's mode-0600 repo
+#     config) without also gaining DAC write-override. Without it kopia flips to
+#     wanting sudo, which NoNewPrivileges then blocks.
+#   - CAP_SYS_ADMIN: the btrfs disk-stats doctor check shells out to `btrfs
+#     device stats`, whose device-info ioctls return EPERM without it.
+# CAP_SYS_ADMIN is broad (near root-equivalent), so the Protect*/seccomp/
+# namespace directives below carry the hardening here, not the capability set.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+ProtectSystem=strict
+# read-only, NOT `yes`: a tamanu install may live under /home.
+ProtectHome=read-only
+CacheDirectory=bestool
+# Point the `dirs` crate's cache at /var/cache/bestool (the CacheDirectory).
+Environment=XDG_CACHE_HOME=%C
+# bestool writes to its config dir, which ProtectSystem=strict otherwise
+# locks read-only along with the rest of /etc.
+ReadWritePaths=/etc/bestool
+# podman cp's tempdir lands in a private /tmp.
+PrivateTmp=yes
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# reads time-sync status, never sets the clock.
+ProtectClock=yes
+ProtectHostname=yes
+# but NOT ProcSubset=pid — sysinfo needs /proc/meminfo and /proc/loadavg.
+ProtectProc=invisible
+
+PrivateDevices=yes
+# safe only because CONTAINER_HOST points at the (remote) rootful podman.
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+# 0007, not 0077: /etc/bestool is a setgid tamanu-group dir shared with
+# interactive (login user) and kopia/tamanu bestool invocations, so files this
+# service writes there must stay group-readable and -writable. Other gets none.
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target
