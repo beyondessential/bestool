@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use super::{CheckContext, fmt_chain};
+use super::{SweepContext, fmt_chain};
 use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
@@ -56,7 +56,7 @@ struct Snapshot {
 	counts: BTreeMap<String, u64>,
 }
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: SweepContext) -> Check {
 	let client = ctx.http_client.clone();
 	let current_counts = match fetch_counts(&client).await {
 		FetchResult::Counts(c) => c,

@@ -25,14 +25,14 @@
 use bestool_kopia::{Elevation, Snapshot};
 use jiff::Timestamp;
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 const CHECK_NAME: &str = "kopia_backup";
 const WARN_AGE_SECS: i64 = 12 * 60 * 60;
 const FAIL_AGE_SECS: i64 = 24 * 60 * 60;
 
-pub async fn run(_ctx: CheckContext) -> Check {
+pub async fn run(_ctx: SweepContext) -> Check {
 	if cfg!(target_os = "linux") {
 		return run_linux().await;
 	}

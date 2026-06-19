@@ -39,7 +39,7 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::debug;
 use x509_parser::prelude::*;
 
-use super::CheckContext;
+use super::SweepContext;
 use crate::doctor::check::Check;
 
 const NAME: &str = "caddy_certs";
@@ -94,7 +94,7 @@ fn classify_expiry(remaining: i64, lifetime: i64) -> Expiry {
 	}
 }
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: SweepContext) -> Check {
 	// The live admin config is the source of truth for which certs matter: the
 	// on-disk store keeps certs for sites that have since been removed, and we
 	// must not alert on those. So we read the config, then only consider managed

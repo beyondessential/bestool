@@ -20,6 +20,21 @@ use super::CheckContext;
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
+	// The comparison baseline is the install's env-file version when present,
+	// else the DB's recorded `currentVersion`. If neither resolved, the version
+	// is the 0.0.0 sentinel and there's nothing to compare against — skip rather
+	// than flag every running container as drifted.
+	if ctx.tamanu_version.major == 0
+		&& ctx.tamanu_version.minor == 0
+		&& ctx.tamanu_version.patch == 0
+	{
+		return Check::skip(
+			"version_drift",
+			"Tamanu version unknown",
+			"no install on disk and the database has no recorded currentVersion to compare against",
+		);
+	}
+
 	let supervisor = if cfg!(target_os = "linux") {
 		Supervisor::Systemd
 	} else if cfg!(target_os = "windows") {
@@ -67,7 +82,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let expectations = expected(
 		supervisor,
 		ctx.kind,
-		&ctx.config,
+		Some(ctx.config.as_ref()),
 		patient_portal_enabled,
 		patient_portal_instanced,
 	);

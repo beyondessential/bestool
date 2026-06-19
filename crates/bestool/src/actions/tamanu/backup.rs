@@ -120,6 +120,9 @@ pub async fn run(args: BackupArgs, ctx: Context) -> Result<()> {
 	let config = load_config(&root, None)?;
 	debug!(?config, "parsed Tamanu config");
 
+	// Honours TAMANU_DATABASE_URL when set, otherwise the config's `db` block.
+	let db = config.database()?;
+
 	let pg_dump = crate::find_postgres::find_postgres_bin("pg_dump")?;
 
 	// check key
@@ -163,18 +166,18 @@ pub async fn run(args: BackupArgs, ctx: Context) -> Result<()> {
 	duct::cmd(
 		pg_dump,
 		[
-			"--username".into(), config.db.username.into(),
+			"--username".into(), db.username.into(),
 			"--verbose".into(),
 			"--format".into(), "c".into(),
 			"--compress".into(), args.compression_level.to_string().into(),
 			"--file".into(), output.clone().into(),
-			"--dbname".into(), config.db.name.into(),
+			"--dbname".into(), db.name.into(),
 		]
 		.into_iter()
 		.chain(excluded_tables)
 		.chain(args.args),
 	)
-	.env("PGPASSWORD", config.db.password)
+	.env("PGPASSWORD", db.password)
 	.run()
 	.into_diagnostic()
 	.wrap_err("executing pg_dump")?;

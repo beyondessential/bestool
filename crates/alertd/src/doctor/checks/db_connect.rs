@@ -76,6 +76,7 @@ mod tests {
 			database_url: "postgresql://127.0.0.1:1/tamanu-central".into(),
 			db: None,
 			http_client: reqwest::Client::new(),
+			has_install: true,
 		};
 		let check = run(ctx).await;
 		assert!(

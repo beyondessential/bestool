@@ -13,7 +13,10 @@ use tracing::{debug, info, instrument, warn};
 use crate::actions::Context;
 use crate::download::{DownloadSource, reqwest_client};
 
-use bestool_tamanu::{config::load_config, connection_url::ConnectionUrlBuilder};
+use bestool_tamanu::{
+	config::{database_url_override, load_config},
+	connection_url::ConnectionUrlBuilder,
+};
 
 use super::{TamanuArgs, find_tamanu};
 
@@ -326,6 +329,16 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 			url.query_pairs_mut().append_pair("sslmode", ssl.as_str());
 		}
 		url.to_string()
+	} else if let Some(url) = database_url_override() {
+		// Passed straight to the connection stack, which parses libpq/URL forms
+		// (including Unix sockets) itself. We deliberately don't route it through
+		// `reqwest::Url` to inject `--ssl`: that parser rejects the empty-host
+		// socket form (`user@/db?host=…`), and the URL's own `sslmode` (or, for
+		// sockets, the auto-disable in the pool) governs anyway.
+		if username.is_some() {
+			warn!("--username is ignored when {} is set", bestool_tamanu::config::DATABASE_URL_ENV);
+		}
+		url
 	} else {
 		let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
 		let config = load_config(&root, None)?;

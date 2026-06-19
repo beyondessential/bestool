@@ -1,6 +1,23 @@
 use std::collections::HashMap;
 
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use url::Url;
+
+/// Environment variable that overrides the database connection otherwise read
+/// from the Tamanu config. Holds a full `postgresql://…` URL.
+///
+/// Honoured by every bestool command that connects to or emits the Tamanu
+/// database connection (alertd, doctor, logs, lifecycle, psql, db_url, backup,
+/// greenmask). When set, the command does not need the config's `db` block —
+/// and alertd does not need a Tamanu install at all.
+pub const DATABASE_URL_ENV: &str = "TAMANU_DATABASE_URL";
+
+/// The [`DATABASE_URL_ENV`] override, if set to a non-empty value.
+pub fn database_url_override() -> Option<String> {
+	std::env::var(DATABASE_URL_ENV)
+		.ok()
+		.filter(|s| !s.is_empty())
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,9 +102,16 @@ impl TamanuConfig {
 	/// username/password the local Tamanu install uses. Hosts default to
 	/// `localhost`, port defers to the URL's libpq default when unset.
 	///
+	/// When [`DATABASE_URL_ENV`] is set, its value is returned verbatim
+	/// instead — preserving any query parameters (e.g. `sslmode`) the operator
+	/// included.
+	///
 	/// Subcommands that need a different role (e.g. psql's report-schema
 	/// connections) build their own `ConnectionUrlBuilder` instead.
 	pub fn database_url(&self) -> String {
+		if let Some(url) = database_url_override() {
+			return url;
+		}
 		crate::connection_url::ConnectionUrlBuilder {
 			username: self.db.username.clone(),
 			password: Some(self.db.password.clone()),
@@ -101,6 +125,36 @@ impl TamanuConfig {
 			ssl_mode: None,
 		}
 		.build()
+	}
+
+	/// The effective database connection details: parsed from
+	/// [`DATABASE_URL_ENV`] when set, otherwise the config's own `db` block.
+	///
+	/// Used by subcommands that need the individual fields (host, user,
+	/// password, name) rather than a URL — e.g. backup's `pg_dump`, greenmask,
+	/// and psql/db_url's report-schema handling.
+	pub fn database(&self) -> Result<Database> {
+		match database_url_override() {
+			Some(url) => Database::from_url(&url),
+			None => Ok(self.db.clone()),
+		}
+	}
+
+	/// A config carrying only a database section, for callers that have a
+	/// database URL but no Tamanu install to read (see [`DATABASE_URL_ENV`]).
+	pub fn from_database(db: Database) -> Self {
+		Self {
+			canonical_host_name: None,
+			canonical_url: None,
+			server_facility_ids: None,
+			server_facility_id: None,
+			db,
+			mailgun: None,
+			primary_time_zone: None,
+			country_time_zone: None,
+			integrations: Integrations::default(),
+			sync: None,
+		}
 	}
 }
 
@@ -174,6 +228,48 @@ pub struct Database {
 	pub username: String,
 	pub password: String,
 	pub report_schemas: Option<ReportSchemas>,
+}
+
+impl Database {
+	/// Parse a `postgresql://…` URL (or libpq key/value string) into the
+	/// database fields, via tokio-postgres's own connection-string parser so
+	/// every form it accepts at connect time — including Unix sockets and
+	/// percent-encoded credentials — parses the same way here.
+	///
+	/// Report-schema credentials are config-only and have no place in a URL, so
+	/// the result always has `report_schemas: None`.
+	pub fn from_url(url: &str) -> Result<Self> {
+		let parsed: tokio_postgres::Config = url
+			.parse()
+			.into_diagnostic()
+			.wrap_err_with(|| format!("parsing {DATABASE_URL_ENV}"))?;
+
+		// tokio-postgres allows multiple hosts/ports for failover; bestool only
+		// ever connects to one, so take the first of each.
+		let host = parsed.get_hosts().first().map(|h| match h {
+			tokio_postgres::config::Host::Tcp(h) => h.clone(),
+			#[cfg(unix)]
+			tokio_postgres::config::Host::Unix(p) => p.display().to_string(),
+		});
+		let port = parsed.get_ports().first().copied();
+		let name = parsed
+			.get_dbname()
+			.filter(|n| !n.is_empty())
+			.ok_or_else(|| miette!("{DATABASE_URL_ENV} must include a database name"))?
+			.to_owned();
+
+		Ok(Self {
+			host,
+			port,
+			name,
+			username: parsed.get_user().unwrap_or_default().to_owned(),
+			password: parsed
+				.get_password()
+				.map(|p| String::from_utf8_lossy(p).into_owned())
+				.unwrap_or_default(),
+			report_schemas: None,
+		})
+	}
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -345,5 +441,50 @@ mod tests {
 		let mut json = base();
 		json["fhir"] = serde_json::json!({ "worker": { "enabled": true } });
 		assert!(!parse(json).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn database_from_url_parses_tcp() {
+		let db = Database::from_url("postgresql://user:pass@db.example:5544/tamanu").unwrap();
+		assert_eq!(db.host.as_deref(), Some("db.example"));
+		assert_eq!(db.port, Some(5544));
+		assert_eq!(db.name, "tamanu");
+		assert_eq!(db.username, "user");
+		assert_eq!(db.password, "pass");
+		assert!(db.report_schemas.is_none());
+	}
+
+	#[test]
+	fn database_from_url_decodes_userinfo() {
+		let db = Database::from_url("postgresql://u%40d:p%40ss%2Fword@localhost/tamanu").unwrap();
+		assert_eq!(db.username, "u@d");
+		assert_eq!(db.password, "p@ss/word");
+	}
+
+	#[test]
+	fn database_from_url_unix_socket_host_query() {
+		let db =
+			Database::from_url("postgresql://user:pass@/tamanu?host=/var/run/postgresql").unwrap();
+		assert_eq!(db.host.as_deref(), Some("/var/run/postgresql"));
+		assert_eq!(db.name, "tamanu");
+	}
+
+	#[test]
+	fn database_from_url_defaults_port_to_libpq_default() {
+		// tokio-postgres fills the libpq default (5432) when the URL omits a
+		// port. Making it explicit is harmless — it's the port a portless URL
+		// would have connected to anyway.
+		let db = Database::from_url("postgresql://user:pass@localhost/tamanu").unwrap();
+		assert_eq!(db.port, Some(5432));
+	}
+
+	#[test]
+	fn database_from_url_rejects_wrong_scheme() {
+		assert!(Database::from_url("mysql://user@localhost/tamanu").is_err());
+	}
+
+	#[test]
+	fn database_from_url_requires_database_name() {
+		assert!(Database::from_url("postgresql://user:pass@localhost/").is_err());
 	}
 }
