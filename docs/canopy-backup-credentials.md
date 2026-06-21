@@ -61,17 +61,21 @@ Follow the established `canopy` subcommand layout (mirrors `register` / `export`
 
 ```
 crates/bestool/src/actions/canopy.rs                    # add the subcommand variant(s)
-crates/bestool/src/actions/canopy/backup.rs             # the driver + the loopback creds endpoint (NEW)
+crates/bestool/src/actions/canopy/backup.rs             # the driver (shared run logic) (NEW)
+crates/bestool/src/actions/canopy/backup/creds.rs       # token→creds registry + GET handler (NEW)
 crates/bestool/src/actions/canopy/backup_credentials.rs # the manual diagnostic command (NEW; optional)
+crates/alertd/src/tasks/…                               # the backup task: trigger + in-process driver call (when run under alertd)
 crates/canopy/src/client.rs                             # add backup_credentials() / backup_target() / backup_report() to CanopyClient
 crates/canopy/src/lib.rs                                # re-export the new request/response types
 ```
 
-The loopback container-credentials endpoint is small and self-contained; put it
-beside the driver (e.g. `canopy/backup/creds_endpoint.rs`). It mirrors canopy's
-`crates/jobs/src/backup/creds_server.rs` almost exactly, except the credential
-*source* is an HTTP fetch from Canopy's `/backup-credentials` rather than an
-in-process `AssumeRoleProvider` (the device has no IRSA identity to assume from).
+The token→creds registry + handler are small and self-contained; they mirror
+canopy's `crates/jobs/src/backup/creds_server.rs` almost exactly, except the
+credential *source* is an HTTP fetch from Canopy's `/backup-credentials` rather
+than an in-process `AssumeRoleProvider` (the device has no IRSA identity to
+assume from). Keep the driver's run logic in a shared module so both the alertd
+task (in-process, reusing alertd's server) and the standalone subcommand
+(ephemeral server) call the same code — see "Hosting".
 
 Client transport, mTLS, tailscale-vs-public fallback, and cert renewal already
 exist on `bestool_canopy::CanopyClient` (`crates/canopy/src/client.rs`). Add the
@@ -142,10 +146,16 @@ bodies. Default is `Backup`.
 ## The loopback container-credentials endpoint (how kopia gets creds)
 
 kopia's minio-go S3 backend obtains AWS creds from an **ECS-style
-container-credentials endpoint** and self-refreshes by re-polling it. The driver
-stands one up on loopback for the duration of a run and points kopia at it.
-This mirrors canopy's `crates/jobs/src/backup/creds_server.rs`; the only
-difference is the credential source.
+container-credentials endpoint** and self-refreshes by re-polling it. bestool
+serves one on loopback and points the kopia subprocess at it. This mirrors
+canopy's `crates/jobs/src/backup/creds_server.rs`; the only difference is the
+credential source (an HTTP fetch from Canopy, not an in-process
+`AssumeRoleProvider`).
+
+**Where the endpoint is hosted depends on how the backup runs (see "Hosting"
+below): under the `bestool-alertd` daemon it's a route on alertd's existing
+loopback server; as a standalone `bestool canopy backup` one-shot it's an
+ephemeral per-run server.** Either way the wire contract kopia sees is identical.
 
 Verified facts (kopia 0.23.1 + minio-go 7.2.0, per the canopy spike):
 
@@ -160,34 +170,66 @@ Verified facts (kopia 0.23.1 + minio-go 7.2.0, per the canopy spike):
   RFC3339 `Z`. (This is *not* the `credential_process` shape; it's the
   container-creds shape.) minio-go re-polls at ~80% of the remaining lifetime.
 
-Design:
+Design (hosting-agnostic — the same handler + registry serve both modes):
 
-1. Bind a `TcpListener` on `127.0.0.1:0` (ephemeral port); the URI is
-   `http://127.0.0.1:<port>/creds`. Mint a random bearer token (`Uuid`).
-2. Serve `GET /creds`: if the `Authorization` header matches the token, return
-   the currently-cached creds in container-creds shape; else `403`.
+1. **Token→creds registry.** A `HashMap<token, cached creds>` behind an
+   `Arc<Mutex<…>>`, exactly like canopy's `Registry`. A `GET` creds handler
+   reads the `Authorization` header, looks the token up, and returns the cached
+   creds in container-creds shape; unknown/missing token → `403`.
+2. **Lease per run.** At run start, mint a random bearer token (`Uuid`) and
+   insert it into the registry; **deregister it when the run ends** (drop guard /
+   explicit removal) so a leaked token stops working once the op finishes.
 3. **Credential source = Canopy.** Lazily (and on near-expiry) `POST
    /backup-credentials { type, purpose }` to public-server, which returns the
    `credential_process`-shaped JSON (`AccessKeyId`/`SecretAccessKey`/
    `SessionToken`/`Expiration`, 1h STS). **Translate** it to the container-creds
    shape — copy `SessionToken` → `Token`, pass `Expiration` through — and cache
-   it. Refresh by re-POSTing when a request arrives and the cache is within,
-   say, a couple of minutes of `Expiration`. (Because Canopy chains from its own
-   session, each issuance is ~1h-capped; long runs simply re-fetch. No session
-   ceiling — the device mTLS identity is durable — but **Canopy must stay
-   reachable for the whole run**, not just the start.)
-4. Set on the kopia subprocess env: `AWS_CONTAINER_CREDENTIALS_FULL_URI`,
-   `AWS_CONTAINER_AUTHORIZATION_TOKEN`, and `KOPIA_PASSWORD`. **Scrub** anything
-   that precedes the container-creds provider in minio-go's chain so it can't
-   shadow the endpoint — `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-   `AWS_SESSION_TOKEN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN`,
+   it against the token. Refresh by re-POSTing when a request arrives and the
+   cache is within, say, a couple of minutes of `Expiration`. (Because Canopy
+   chains from its own session, each issuance is ~1h-capped; long runs simply
+   re-fetch. No session ceiling — the device mTLS identity is durable — but
+   **Canopy must stay reachable for the whole run**, not just the start.)
+4. Set on the kopia subprocess env: `AWS_CONTAINER_CREDENTIALS_FULL_URI` (the
+   host's loopback URL for this lease), `AWS_CONTAINER_AUTHORIZATION_TOKEN` (the
+   leased token), and `KOPIA_PASSWORD`. **Scrub** anything that precedes the
+   container-creds provider in minio-go's chain so it can't shadow the endpoint —
+   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+   `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN`,
    `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`
    (exactly the set `KopiaEnv::apply` removes canopy-side).
-5. Tear the endpoint down when the run ends (drop the listener / abort the
-   task), so a leaked token stops working once the op finishes.
 
 Hold the creds (and the repo password) only in memory, wrapped in
 `bestool_canopy::Redacted<T>`; never persist them.
+
+### Hosting: reuse alertd's server, or an ephemeral one
+
+The registry+handler above don't care *which* HTTP server they're mounted on.
+Two modes:
+
+- **Under `bestool-alertd` (production / preferred).** alertd already runs a
+  long-lived axum server, by default on loopback (`[::1]:8271` then
+  `127.0.0.1:8271`), with a **task-endpoint registry** (`/tasks/{task}/{endpoint}`
+  dispatched from `ServerState`, see `crates/alertd/src/http_server/`). The
+  backup task registers a `creds` endpoint there (→ `GET /tasks/backup/creds`)
+  and keeps the token→creds registry in its task state. This means **the backup
+  runs in-process as an alertd task**, not as a spawned subprocess — a subprocess
+  couldn't share alertd's registry/server. `FULL_URI` =
+  `http://127.0.0.1:8271/tasks/backup/creds`. **No second server.**
+  - ⚠️ **Loopback guard.** alertd's bind addresses are configurable; the creds
+    endpoint must be reachable on loopback **only** — both because minio-go
+    requires it and because we don't want creds reachable off-host even behind
+    the bearer token. If alertd is bound to a non-loopback address, the backup
+    task must stand up its **own** ephemeral loopback listener for creds (the
+    mode below) rather than mount on the shared server. Decide whether to detect
+    this or always use a dedicated loopback listener for creds regardless (open
+    question).
+- **Standalone `bestool canopy backup` one-shot** (manual / external scheduler,
+  no alertd). Bind an ephemeral `TcpListener` on `127.0.0.1:0` for the run;
+  `FULL_URI` = `http://127.0.0.1:<port>/creds`; drop the listener at run end.
+
+Keep the backup driver logic in a shared module callable from both the alertd
+task and the standalone subcommand, parameterised over "how do I get a creds URL
++ token for this run" so the hosting choice is the only difference.
 
 ## `bestool canopy backup-credentials` (manual diagnostic)
 
@@ -314,11 +356,12 @@ question where it isn't already pinned.
 ## Backup cadence and the "back up now" signal (transport TBD)
 
 **Canopy is authoritative for *when* a device backs up.** The device holds no
-schedule. bestool does not poll a timer; it launches `bestool canopy backup` as
-a one-shot process *when Canopy tells it to*. Canopy computes "back up now? /
-nothing to do" on each ~1-minute device↔canopy healthcheck tick (the cadence
-that already underpins `reachability` and status reporting — see
-`alertd`'s status loop and `CanopyClient::post_status`).
+schedule. bestool does not poll a timer; it runs the backup driver *when Canopy
+tells it to* — in-process as an alertd task (preferred), or as a one-shot
+`bestool canopy backup` process. Canopy computes "back up now? / nothing to do"
+on each ~1-minute device↔canopy healthcheck tick (the cadence that already
+underpins `reachability` and status reporting — see `alertd`'s status loop and
+`CanopyClient::post_status`).
 
 **The command-channel transport is not yet specified — note it, don't build it
 blind.** Today's status-POST *response* carries no command payload, so there is
@@ -326,18 +369,19 @@ no existing channel for Canopy to say "back up now." The canopy-side plan
 explicitly defers this (tailnet poll, device poll on the status response, or a
 held-open connection) to the repo-alignment pass. For bestool that means:
 
-- The two subcommands above (`backup-credentials`, `backup`) are the stable,
-  shippable surface and are *transport-independent*: whatever channel lands,
-  it ultimately runs `bestool canopy backup`.
-- **Open decision for bestool:** does the daemon (`alertd`) gain a
-  backup-trigger task that consumes the signal and spawns `bestool canopy
-  backup`, or does an external unit (systemd timer/path, Windows scheduler)
-  invoke it? The plan's preferred shape is the existing minute-cadence
-  healthcheck carrying the signal, which points at an `alertd` task reading the
-  status-response and spawning the backup process. This spec deliberately does
-  not pick the transport; it specifies the *command* such that any transport can
-  drive it. Implement the transport in a follow-up once the canopy side defines
-  the response shape.
+- The backup driver is the stable, shippable surface and is
+  *transport-independent*: whatever channel lands, it ultimately invokes the
+  driver (in-process under alertd, or via the standalone subcommand).
+- **Preferred shape:** the existing minute-cadence healthcheck carries the
+  signal, and an `alertd` task reads the status-response and runs the driver
+  **in-process**. In-process matters beyond tidiness: it lets the creds endpoint
+  live on alertd's existing loopback server and share the token→creds registry
+  (see "Hosting") instead of standing up a per-run server. The alternative — an
+  external unit (systemd timer/path, Windows scheduler) invoking `bestool canopy
+  backup` — still works, but that one-shot stands up its own ephemeral creds
+  server. This spec deliberately does not pick the transport; it specifies the
+  command/driver such that any transport can drive it. Implement the transport in
+  a follow-up once the canopy side defines the status-response shape.
 - **Operator one-off** and **scheduled** both reduce, device-side, to the same
   thing: Canopy says "back up now," bestool runs `backup`. No device-side
   branching on schedule-vs-manual.
@@ -506,10 +550,17 @@ device side has no DB). Patterns to follow:
 ## Open questions / decisions to make
 
 1. **Command-channel transport (deferred upstream).** How "back up now" reaches
-   the device is unspecified canopy-side. bestool decision: an `alertd` task
-   consuming the status-response signal and spawning `bestool canopy backup`, vs.
-   an external scheduler invoking the subcommand. Build the subcommands now;
-   defer the trigger until canopy defines the status-response command shape.
+   the device is unspecified canopy-side. The preferred shape is an `alertd` task
+   consuming the status-response signal and running the driver **in-process**
+   (so the creds endpoint reuses alertd's loopback server, see "Hosting"); an
+   external scheduler invoking `bestool canopy backup` is the fallback. Build the
+   driver + standalone subcommand now; defer the trigger (and the alertd task)
+   until canopy defines the status-response command shape.
+1a. **Creds-endpoint loopback guard.** When hosting on alertd's shared server,
+   decide whether to (a) refuse and fall back to a dedicated ephemeral loopback
+   listener if alertd is bound non-loopback, or (b) always use a dedicated
+   loopback listener for creds regardless of alertd's bind config. (b) is simpler
+   and strictly safer; (a) saves a socket. Leaning (b).
 2. **kopia S3 creds wiring — RESOLVED.** kopia cannot use `credential_process`
    or a static creds file (verified canopy-side, kopia 0.23.1 + minio-go 7.2.0);
    creds go through the loopback container-credentials endpoint (see "The
