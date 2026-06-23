@@ -73,14 +73,8 @@ pub async fn prepare(
 			.wrap_err_with(|| format!("creating {}", parent.display()))?;
 	}
 
-	let bin = crate::find_postgres::find_postgres_bin("pg_basebackup")
-		.map(|p| p.to_string_lossy().into_owned())
-		.unwrap_or_else(|_| "pg_basebackup".to_owned());
-
 	info!(dest = %dest.display(), "streaming pg_basebackup");
-	// Run as the postgres OS user (peer auth + replication privilege).
-	let mut cmd = tokio::process::Command::new("sudo");
-	cmd.args(["-u", "postgres", &bin]);
+	let mut cmd = super::pg_command(&super::postgres_bin("pg_basebackup", &resolved.data_dir));
 	cmd.args(basebackup_args(&dest, socket, port));
 	cmd.stdin(Stdio::null());
 	let status = cmd
@@ -92,6 +86,7 @@ pub async fn prepare(
 		bail!("pg_basebackup failed ({status})");
 	}
 
+	#[cfg(unix)]
 	make_readable_by_kopia(&root).await;
 	Ok((dest, root))
 }
@@ -107,6 +102,7 @@ pub async fn teardown(root: PathBuf) -> Result<()> {
 /// pg_basebackup writes files owned by postgres and mode 0600; hand them to the
 /// kopia user so the (elevated-to-kopia) kopia run can read them. Best-effort —
 /// when there's no kopia user the run is direct (current user already reads it).
+#[cfg(unix)]
 async fn make_readable_by_kopia(root: &Path) {
 	let kopia_exists = tokio::process::Command::new("id")
 		.args(["-u", "kopia"])
