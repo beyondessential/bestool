@@ -72,10 +72,15 @@ pub async fn run_with_shutdown(
 		}
 	};
 
+	// Reload channel: the SIGHUP/SIGUSR1 handler bumps it; tasks watch it to
+	// refresh without a restart.
+	let (reload_tx, reload_rx) = tokio::sync::watch::channel(0u64);
+
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: crate::http_client(),
 		canopy_client,
+		reload: reload_rx,
 	});
 
 	let (event_tx, mut event_rx) = mpsc::channel(100);
@@ -130,7 +135,33 @@ pub async fn run_with_shutdown(
 			info!("received SIGTERM, shutting down");
 			let _ = signal_tx_term.send(DaemonEvent::Shutdown).await;
 		});
+
+		// Reload on SIGHUP (systemd's notify-reload `ReloadSignal`) or SIGUSR1:
+		// notify systemd we're reloading, bump the reload channel so tasks
+		// refresh, then notify ready again. The reload work itself is async and
+		// best-effort, so READY is sent once the refresh is dispatched.
+		tokio::spawn(async move {
+			let mut sighup = signal(SignalKind::hangup()).expect("failed to setup SIGHUP handler");
+			let mut sigusr1 =
+				signal(SignalKind::user_defined1()).expect("failed to setup SIGUSR1 handler");
+			loop {
+				tokio::select! {
+					_ = sighup.recv() => {}
+					_ = sigusr1.recv() => {}
+				}
+				info!("received reload signal; refreshing");
+				let mut reloading = vec![sd_notify::NotifyState::Reloading];
+				if let Ok(stamp) = sd_notify::NotifyState::monotonic_usec_now() {
+					reloading.push(stamp);
+				}
+				let _ = sd_notify::notify(&reloading);
+				reload_tx.send_modify(|n| *n = n.wrapping_add(1));
+				let _ = sd_notify::notify(&[sd_notify::NotifyState::Ready]);
+			}
+		});
 	}
+	#[cfg(not(unix))]
+	let _ = reload_tx; // no reload signals off Unix; tasks keep their other triggers
 
 	// Registered background tasks (e.g. the doctor sweep). Each ticks at its
 	// own interval; errors are logged but don't tear down the daemon.
@@ -185,11 +216,20 @@ pub async fn run_with_shutdown(
 	}
 
 	info!("daemon started successfully");
+	// Tell systemd (Type=notify[-reload]) we're up; no-op when not under systemd.
+	#[cfg(unix)]
+	let _ = sd_notify::notify(&[
+		sd_notify::NotifyState::Ready,
+		sd_notify::NotifyState::Status("monitoring"),
+	]);
 
 	// Block until the first lifecycle event arrives: a shutdown signal, or the
 	// watchdog firing. `None` means every sender was dropped, which we treat as
 	// a shutdown too.
-	match event_rx.recv().await {
+	let event = event_rx.recv().await;
+	#[cfg(unix)]
+	let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
+	match event {
 		Some(DaemonEvent::Shutdown) | None => {
 			info!("daemon stopped");
 			Ok(())
