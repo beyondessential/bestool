@@ -555,6 +555,7 @@ version = "1.25.0"
 dependencies = [
  "age",
  "algae-cli",
+ "axum",
  "base64 0.22.1",
  "bestool-alertd",
  "bestool-canopy",
@@ -615,6 +616,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-util",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "trycmd",
  "upgrade",

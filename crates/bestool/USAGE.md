@@ -17,6 +17,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
+* [`bestool canopy backup`↴](#bestool-canopy-backup)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -294,6 +295,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `export` — Export this machine's canopy registration for transfer to another machine
 * `import` — Import a canopy registration exported from another machine
 * `tags` — Fetch this device's tags from canopy.
+* `backup` — Run a configured backup, driving kopia and reporting to Canopy
 
 
 
@@ -388,6 +390,22 @@ human-readable output.
 
 * `--json` — Emit the tags as JSON rather than a human-readable table
 * `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
+
+
+
+## `bestool canopy backup`
+
+Run a configured backup, driving kopia and reporting to Canopy
+
+**Usage:** `bestool canopy backup [OPTIONS] --type <TYPE>`
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type to run.
+
+   Must have a definition in the backups directory (a `*.toml` whose `type` matches).
+* `--config <DIR>` — Override the registration directory (matching `register`/`export`)
+* `--backups-dir <DIR>` — Override the backups definition directory
 
 
 
