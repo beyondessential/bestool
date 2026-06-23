@@ -14,13 +14,17 @@ workspace = true
 [features]
 default = []
 cli = ["dep:clap", "dep:dialoguer"]
+proxy = ["dep:hmac", "dep:sha2", "dep:hex"]
 
 [dependencies]
 clap = { workspace = true, optional = true }
 dialoguer = { version = "0.12.0", default-features = false, optional = true }
+hex = { version = "0.4.3", optional = true }
+hmac = { version = "0.12.1", optional = true }
 jiff = { version = "0.2.28", features = ["serde"] }
 miette = { workspace = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
+sha2 = { version = "0.10.9", optional = true }
 tracing = { workspace = true }
 whoami = "2.1.2"

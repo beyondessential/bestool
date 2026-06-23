@@ -697,10 +697,13 @@ version = "0.1.4"
 dependencies = [
  "clap",
  "dialoguer",
+ "hex",
+ "hmac 0.12.1",
  "jiff",
  "miette",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
  "whoami",
 ]
