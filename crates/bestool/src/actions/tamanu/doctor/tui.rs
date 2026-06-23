@@ -1,22 +1,19 @@
 use std::{
-	io::{self, Stdout},
+	io::{self, Stdout, Write},
 	time::Duration,
 };
 
-use miette::{IntoDiagnostic, Result};
-use ratatui::{
-	Terminal,
-	backend::CrosstermBackend,
-	crossterm::{
-		event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-		execute,
-		terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+use crossterm::{
+	cursor::{Hide, MoveTo, Show},
+	event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+	execute, queue,
+	style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
+	terminal::{
+		Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+		enable_raw_mode,
 	},
-	layout::{Constraint, Direction, Layout},
-	style::{Color, Modifier, Style},
-	text::{Line, Span},
-	widgets::Paragraph,
 };
+use miette::{IntoDiagnostic, Result};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use bestool_alertd::doctor::{
@@ -48,27 +45,59 @@ pub struct TuiOutcome {
 	pub interrupted: bool,
 }
 
+/// A single styled segment within a rendered line.
+#[derive(Clone, Debug)]
+struct Segment {
+	text: String,
+	style: SegStyle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SegStyle {
+	Plain,
+	Dim,
+	BoldFg(Color),
+}
+
+type StyledLine = Vec<Segment>;
+
+fn plain<S: Into<String>>(s: S) -> Segment {
+	Segment {
+		text: s.into(),
+		style: SegStyle::Plain,
+	}
+}
+fn dim<S: Into<String>>(s: S) -> Segment {
+	Segment {
+		text: s.into(),
+		style: SegStyle::Dim,
+	}
+}
+fn bold_fg<S: Into<String>>(s: S, c: Color) -> Segment {
+	Segment {
+		text: s.into(),
+		style: SegStyle::BoldFg(c),
+	}
+}
+
 /// RAII guard that restores the terminal on drop (including on panic).
 struct TerminalGuard {
-	terminal: Terminal<CrosstermBackend<Stdout>>,
+	stdout: Stdout,
 }
 
 impl TerminalGuard {
 	fn new() -> io::Result<Self> {
 		let mut stdout = io::stdout();
 		enable_raw_mode()?;
-		execute!(stdout, EnterAlternateScreen)?;
-		let backend = CrosstermBackend::new(stdout);
-		let terminal = Terminal::new(backend)?;
-		Ok(Self { terminal })
+		execute!(stdout, EnterAlternateScreen, Hide)?;
+		Ok(Self { stdout })
 	}
 }
 
 impl Drop for TerminalGuard {
 	fn drop(&mut self) {
+		let _ = execute!(self.stdout, Show, LeaveAlternateScreen);
 		let _ = disable_raw_mode();
-		let _ = execute!(io::stdout(), LeaveAlternateScreen);
-		let _ = self.terminal.show_cursor();
 	}
 }
 
@@ -92,15 +121,19 @@ pub async fn run_tui(
 	let mut interrupted = false;
 
 	let mut guard = TerminalGuard::new().into_diagnostic()?;
-	guard.terminal.hide_cursor().into_diagnostic()?;
 
 	loop {
 		drain_progress(&mut progress_rx, &mut rows);
 
-		guard
-			.terminal
-			.draw(|f| draw(f, &rows, total, &source, only_failing, spinner))
-			.into_diagnostic()?;
+		draw(
+			&mut guard.stdout,
+			&rows,
+			total,
+			&source,
+			only_failing,
+			spinner,
+		)
+		.into_diagnostic()?;
 
 		if all_completed(&rows) {
 			break;
@@ -176,56 +209,61 @@ fn poll_for_quit(timeout: Duration) -> io::Result<bool> {
 }
 
 fn draw(
-	f: &mut ratatui::Frame<'_>,
+	out: &mut Stdout,
 	rows: &[TuiRow],
 	total: usize,
 	source: &SweepSource,
 	only_failing: bool,
 	spinner: usize,
-) {
-	let area = f.area();
-	let layout = Layout::default()
-		.direction(Direction::Vertical)
-		.constraints([
-			Constraint::Length(source_lines(source)),
-			Constraint::Min(0),
-			Constraint::Length(1),
-		])
-		.split(area);
+) -> io::Result<()> {
+	queue!(out, MoveTo(0, 0), Clear(ClearType::All))?;
 
-	let source_para = Paragraph::new(source_line(source)).style(dim_style());
-	f.render_widget(source_para, layout[0]);
-
-	let lines = build_rows(rows, only_failing, spinner);
-	let list_para = Paragraph::new(lines);
-	f.render_widget(list_para, layout[1]);
-
-	let footer = footer_line(rows, total, spinner);
-	let footer_para = Paragraph::new(footer).style(dim_style());
-	f.render_widget(footer_para, layout[2]);
-}
-
-fn source_lines(source: &SweepSource) -> u16 {
-	match source {
-		SweepSource::Local => 0,
-		_ => 1,
+	let mut lines: Vec<StyledLine> = Vec::new();
+	if let Some(line) = source_line(source) {
+		lines.push(line);
 	}
+	lines.extend(build_rows(rows, only_failing, spinner));
+	lines.push(footer_line(rows, total, spinner));
+
+	for line in lines {
+		write_line(out, &line)?;
+		out.write_all(b"\r\n")?;
+	}
+	out.flush()
 }
 
-fn source_line(source: &SweepSource) -> Line<'_> {
-	match source {
-		SweepSource::Local => Line::raw(""),
-		SweepSource::DaemonStreamed => Line::raw("Source: alertd daemon (just now, on demand)"),
-		SweepSource::DaemonCached { computed_at } => {
-			let age = super::render::humanise_age_since(*computed_at);
-			Line::raw(format!(
-				"Source: alertd daemon (computed {age} ago, at {computed_at})"
-			))
+fn write_line(out: &mut Stdout, line: &StyledLine) -> io::Result<()> {
+	for seg in line {
+		match seg.style {
+			SegStyle::Plain => out.write_all(seg.text.as_bytes())?,
+			SegStyle::Dim => {
+				queue!(out, SetAttribute(Attribute::Dim))?;
+				out.write_all(seg.text.as_bytes())?;
+				queue!(out, SetAttribute(Attribute::Reset))?;
+			}
+			SegStyle::BoldFg(c) => {
+				queue!(out, SetForegroundColor(c), SetAttribute(Attribute::Bold))?;
+				out.write_all(seg.text.as_bytes())?;
+				queue!(out, SetAttribute(Attribute::Reset), ResetColor)?;
+			}
 		}
 	}
+	Ok(())
 }
 
-fn build_rows(rows: &[TuiRow], only_failing: bool, spinner: usize) -> Vec<Line<'static>> {
+fn source_line(source: &SweepSource) -> Option<StyledLine> {
+	let text = match source {
+		SweepSource::Local => return None,
+		SweepSource::DaemonStreamed => "Source: alertd daemon (just now, on demand)".to_string(),
+		SweepSource::DaemonCached { computed_at } => {
+			let age = super::render::humanise_age_since(*computed_at);
+			format!("Source: alertd daemon (computed {age} ago, at {computed_at})")
+		}
+	};
+	Some(vec![dim(text)])
+}
+
+fn build_rows(rows: &[TuiRow], only_failing: bool, spinner: usize) -> Vec<StyledLine> {
 	let name_width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
 
 	let mut ordered: Vec<&TuiRow> = rows
@@ -259,40 +297,37 @@ fn sort_key(row: &TuiRow) -> u8 {
 	}
 }
 
-fn row_line_running(name: &str, name_width: usize, spinner: usize) -> Line<'static> {
+fn row_line_running(name: &str, name_width: usize, spinner: usize) -> StyledLine {
 	let frame = SPINNER_FRAMES[spinner % SPINNER_FRAMES.len()];
 	let pad = " ".repeat(name_width.saturating_sub(name.len()));
-	Line::from(vec![
-		Span::raw("  "),
-		Span::styled(format!("{frame:<4}"), dim_style()),
-		Span::raw("    "),
-		Span::raw(name.to_string()),
-		Span::raw(pad),
-		Span::raw("   "),
-		Span::styled("…".to_string(), dim_style()),
-	])
+	vec![
+		plain("  "),
+		dim(format!("{frame:<4}")),
+		plain("    "),
+		plain(name.to_string()),
+		plain(pad),
+		plain("   "),
+		dim("…"),
+	]
 }
 
-fn row_line_completed(check: &Check, name_width: usize) -> Line<'static> {
-	let (tag, style) = tag_for(check);
+fn row_line_completed(check: &Check, name_width: usize) -> StyledLine {
+	let (tag, color) = tag_for(check);
 	let pad = " ".repeat(name_width.saturating_sub(check.name.len()));
-	Line::from(vec![
-		Span::raw("  "),
-		Span::styled(format!("{tag:<4}"), style),
-		Span::raw("    "),
-		Span::raw(check.name.to_string()),
-		Span::raw(pad),
-		Span::raw("   "),
-		Span::raw(check.summary.clone()),
-	])
+	vec![
+		plain("  "),
+		bold_fg(format!("{tag:<4}"), color),
+		plain("    "),
+		plain(check.name.to_string()),
+		plain(pad),
+		plain("   "),
+		plain(check.summary.clone()),
+	]
 }
 
-fn reason_line(reason: &str, name_width: usize) -> Line<'static> {
+fn reason_line(reason: &str, name_width: usize) -> StyledLine {
 	let lead = " ".repeat(10 + name_width + 5);
-	Line::from(vec![
-		Span::raw(lead),
-		Span::styled(reason.to_string(), dim_style()),
-	])
+	vec![plain(lead), dim(reason.to_string())]
 }
 
 fn reason_for(check: &Check) -> Option<&str> {
@@ -305,48 +340,31 @@ fn reason_for(check: &Check) -> Option<&str> {
 	}
 }
 
-fn tag_for(check: &Check) -> (&'static str, Style) {
+fn tag_for(check: &Check) -> (&'static str, Color) {
 	match &check.status {
-		CheckStatus::Pass => ("PASS", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
-		CheckStatus::Skip(_) => (
-			"SKIP",
-			Style::new()
-				.fg(Color::DarkGray)
-				.add_modifier(Modifier::BOLD),
-		),
-		CheckStatus::Warning(_) => (
-			"WARN",
-			Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-		),
-		CheckStatus::Broken(_) => (
-			"BRKN",
-			Style::new()
-				.fg(Color::Magenta)
-				.add_modifier(Modifier::BOLD),
-		),
-		CheckStatus::Fail(_) => ("FAIL", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
+		CheckStatus::Pass => ("PASS", Color::Green),
+		CheckStatus::Skip(_) => ("SKIP", Color::DarkGrey),
+		CheckStatus::Warning(_) => ("WARN", Color::Yellow),
+		CheckStatus::Broken(_) => ("BRKN", Color::Magenta),
+		CheckStatus::Fail(_) => ("FAIL", Color::Red),
 	}
 }
 
-fn footer_line(rows: &[TuiRow], total: usize, spinner: usize) -> Line<'static> {
+fn footer_line(rows: &[TuiRow], total: usize, spinner: usize) -> StyledLine {
 	let completed = rows
 		.iter()
 		.filter(|r| matches!(r.state, RowState::Completed(_)))
 		.count();
 	let frame = SPINNER_FRAMES[spinner % SPINNER_FRAMES.len()];
-	Line::raw(format!("{frame} {completed} / {total} complete"))
-}
-
-fn dim_style() -> Style {
-	Style::new().add_modifier(Modifier::DIM)
+	vec![dim(format!("{frame} {completed} / {total} complete"))]
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	fn line_text(line: &Line<'_>) -> String {
-		line.spans.iter().map(|s| s.content.as_ref()).collect()
+	fn line_text(line: &StyledLine) -> String {
+		line.iter().map(|s| s.text.as_str()).collect()
 	}
 
 	#[test]

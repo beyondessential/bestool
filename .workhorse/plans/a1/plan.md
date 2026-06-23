@@ -20,7 +20,9 @@ This keeps the "least severe at top, most severe at bottom" theme: the most urge
 
 ### TUI
 
-Built on ratatui + crossterm in alternate-screen mode. The check list takes the bulk of the screen, with a footer line showing `<spinner> <completed> / <total> complete`.
+Built on crossterm in alternate-screen mode. The check list takes the bulk of the screen, with a footer line showing `<spinner> <completed> / <total> complete`.
+
+We initially used ratatui but ratatui 0.29.0 pins `unicode-width = "=0.2.0"` which conflicts with rustyline 18.0.0's `^0.2.2` requirement (used transitively by bestool-psql). Driving crossterm directly keeps the same screen layout without the dep conflict.
 
 Each row tracks its own state (Pending → Running → Completed(Check)) and renders accordingly:
 
@@ -49,7 +51,7 @@ The spec drops the `Tamanu doctor (server-id: …)` header line from human-reada
 
 ### Dependencies
 
-Add `ratatui` to bestool's `tamanu-doctor` feature. Pair with `crossterm` (already a transitive via psql but added explicitly here for terminal lifecycle handling — Ctrl+C raw mode, alt-screen entry/exit).
+Add `crossterm` to bestool's `tamanu-doctor` feature. It's already a transitive via bestool-psql, so adding it explicitly here doesn't change the lockfile — it just lets us drive the alternate-screen TUI directly (Ctrl+C raw mode, alt-screen entry/exit, styled rendering).
 
 ### Module split
 
@@ -62,7 +64,7 @@ Add `ratatui` to bestool's `tamanu-doctor` feature. Pair with `crossterm` (alrea
 
 ## Checklist
 
-- [x] Add `ratatui` and `crossterm` deps to bestool (`tamanu-doctor` feature)
+- [x] Add `crossterm` dep to bestool (`tamanu-doctor` feature)
 - [x] Add `DoctorArgs::only_failing` field with `--only-failing` / `-F`
 - [x] Add ordering module (group key + sort + filter helper)
 - [x] Add plain render module (grouped, with -F support, source note, no server-id header)
