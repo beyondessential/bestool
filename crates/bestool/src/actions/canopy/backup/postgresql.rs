@@ -12,6 +12,7 @@ pub mod lvm;
 pub mod resolve;
 pub mod strategy;
 mod sys;
+pub mod vss;
 
 use std::{
 	collections::BTreeMap,
@@ -102,9 +103,15 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 				teardown: Teardown::BaseBackup(root),
 			})
 		}
-		Strategy::Vss => bail!(
-			"the Windows VSS backup backend is not implemented yet"
-		),
+		Strategy::Vss => {
+			let (source, shadow) = vss::prepare(&resolved, backup_type).await?;
+			Ok(Prepared {
+				path: source,
+				extra_tags: metadata_tags(&resolved, strategy),
+				ignore: ignore_globs(),
+				teardown: Teardown::Vss(shadow),
+			})
+		}
 	}
 }
 
