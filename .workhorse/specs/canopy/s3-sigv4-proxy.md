@@ -4,7 +4,7 @@ id: S3P
 
 # S3 SigV4 re-signing proxy
 
-A small loopback HTTP proxy that fronts a real S3 endpoint and re-signs every request with live, auto-refreshing credentials, so a long-running S3 client that binds its credentials once at start-up can keep talking to S3 past the lifetime of any single set of credentials. It is a standalone, publishable crate so both Canopy (server-side maintenance, inspection, init) and bestool (device backups and restores) drive kopia through the same mechanism.
+A small loopback HTTP proxy that fronts a real S3 endpoint and re-signs every request with live, auto-refreshing credentials, so a long-running S3 client that binds its credentials once at start-up can keep talking to S3 past the lifetime of any single set of credentials. It lives in the `bestool-kopia` crate, behind a cargo feature so the crate's lighter consumers don't pull in the proxy's async and TLS dependencies; both Canopy (server-side maintenance, inspection, init) and bestool (device backups and restores) drive kopia through it.
 
 ## Why it exists
 
@@ -29,11 +29,19 @@ The credential source is the one integration seam. The crate defines a provider 
 
 The crate carries neither Canopy nor bestool specifics beyond this trait.
 
-## Signing correctness is the hard part
+## Signing
 
-The proxy must reproduce a correct SigV4 signature for each forwarded request, which means it must handle however kopia's S3 client (minio-go) chooses to sign request bodies — in particular streaming uploads. minio-go signs large PUTs over a non-TLS endpoint with a streaming, chunked payload signature (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`), where per-chunk signatures embedded in the body are keyed to the signing key. The proxy cannot simply swap the `Authorization` header and pass the body through: the in-body chunk signatures were computed with the dummy key and would not verify upstream.
+A spike settled how the proxy must sign, verified against kopia 0.23.1 and accepted by AWS S3 (the full lifecycle below ran through the proxy with real STS credentials, restoring byte-identically).
 
-The proxy must therefore either re-derive the streaming chunk signatures with the live key as it streams the body, or coerce the client into a payload mode it can re-sign by header alone (e.g. unsigned payload over the trusted loopback leg, signed afresh upstream over TLS). Either way, request and response bodies must stream — large objects must not be buffered whole. **This is the primary technical risk and must be validated with a spike before the rest is built;** the choice of approach should be settled by what minio-go can actually be made to emit and what S3 accepts, not assumed. Whatever bound is chosen (max in-flight size, buffering threshold), it must be explicit, not silent.
+Over the non-TLS loopback leg, minio-go (kopia's S3 client) signs every object PUT — whatever its size — with a streaming, chunked payload signature (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`): the body is split into chunks, each prefixed on the wire by a signature chained from the request's seed signature and keyed to the signing key. minio-go does this unconditionally for a non-TLS endpoint and exposes no option, through kopia, to turn it off. So the proxy cannot swap the `Authorization` header and pass the body through — the in-body chunk signatures were computed with the dummy key and would not verify upstream. It re-derives them.
+
+For each PUT the proxy computes a fresh seed signature for the re-signed request, derives the signing key from the live credentials, then walks the body chunk by chunk recomputing each chunk signature — `HMAC-SHA256(signing_key, "AWS4-HMAC-SHA256-PAYLOAD\n" + amz_date + "\n" + scope + "\n" + previous_signature + "\n" + SHA256("") + "\n" + SHA256(chunk_data))`, seeded by the request signature and chained through to the terminating zero-length chunk. Chunk sizes are copied from the incoming framing verbatim, so the re-encoded body is the same byte length and `Content-Length` is unchanged.
+
+GET, HEAD and DELETE carry no body and are re-signed by recomputing the `Authorization` header alone. No multipart upload occurs: kopia caps pack blobs at around twenty megabytes and minio-go sends each as a single PUT, so the proxy handles only single-object PUT, GET, HEAD, DELETE and bucket listing.
+
+Bodies stream both ways — the proxy never holds a whole object. Chunks are self-framing, so it parses and re-emits the request body one chunk at a time; the only buffer is the current chunk (minio-go's default streaming chunk is 64 KiB). Responses are streamed through verbatim.
+
+The signed header set is `host`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-decoded-content-length` on streaming PUTs; for STS credentials `x-amz-security-token` is added before signing so it is covered by the signature; `content-type`, `content-md5` and `content-encoding` are signed when present. A credential refresh between two requests changes only the key material the next request is signed with — kopia's view does not change.
 
 ## Lifecycle and concurrency
 
