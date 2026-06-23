@@ -14,7 +14,10 @@
 
 use std::collections::BTreeMap;
 
-use bestool_canopy::{NewEvent, Severity};
+use bestool_canopy::{
+	BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget, CapabilitiesRequest,
+	NewEvent, Outcome, Purpose, Severity,
+};
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
@@ -344,5 +347,143 @@ async fn artifacts_response_matches_decode() {
 	assert_eq!(
 		decoded[0].download_url.as_str(),
 		"https://example.com/artifact.tar.gz",
+	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn backup_capabilities_request_matches_spec() {
+	let spec = spec().await;
+	assert_operation_exists(spec, "/backup-capabilities", "post");
+
+	let types = vec!["tamanu-postgres".to_owned()];
+	let instance = serde_json::to_value(CapabilitiesRequest { types: &types }).unwrap();
+	assert_valid(
+		spec,
+		&request_schema("/backup-capabilities", "post"),
+		&instance,
+	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn backup_credentials_request_and_response_match_spec() {
+	let spec = spec().await;
+	assert_operation_exists(spec, "/backup-credentials", "post");
+
+	let instance = serde_json::to_value(BackupCredentialsRequest {
+		r#type: "tamanu-postgres",
+		purpose: Purpose::Backup,
+	})
+	.unwrap();
+	assert_valid(
+		spec,
+		&request_schema("/backup-credentials", "post"),
+		&instance,
+	);
+
+	// Negative case, proving the validation isn't vacuous: an invalid purpose
+	// must be rejected.
+	let mut invalid = instance.clone();
+	invalid["purpose"] = json!("sideways");
+	let validator = validator_at(spec, &request_schema("/backup-credentials", "post"));
+	assert!(
+		!validator.is_valid(&invalid),
+		"spec accepted an invalid purpose; the validator is not checking refs",
+	);
+
+	// A spec-valid credential_process response decodes into BackupCredentials.
+	let sample = json!({
+		"Version": 1,
+		"AccessKeyId": "AKIA",
+		"SecretAccessKey": "secret",
+		"SessionToken": "token",
+		"Expiration": "2026-05-21T13:00:00Z",
+	});
+	assert_valid(
+		spec,
+		&response_schema("/backup-credentials", "post"),
+		&sample,
+	);
+	let decoded: BackupCredentials = serde_json::from_value(sample).unwrap();
+	assert_eq!(decoded.version, 1);
+	assert_eq!(&*decoded.session_token, "token");
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn backup_target_response_matches_decode() {
+	let spec = spec().await;
+	assert_operation_exists(spec, "/backup-target", "get");
+
+	let sample = json!({
+		"storage": "s3",
+		"bucket": "my-bucket",
+		"prefix": "",
+		"region": "ap-southeast-2",
+		"repo_password": "hunter2",
+	});
+	assert_valid(spec, &response_schema("/backup-target", "get"), &sample);
+	let decoded: BackupTarget = serde_json::from_value(sample).unwrap();
+	assert_eq!(decoded.bucket, "my-bucket");
+	assert_eq!(&*decoded.repo_password, "hunter2");
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn backup_report_request_matches_spec() {
+	let spec = spec().await;
+	assert_operation_exists(spec, "/backup-report", "post");
+
+	let instance = serde_json::to_value(BackupReport {
+		run_id: "00000000-0000-0000-0000-000000000000",
+		r#type: "tamanu-postgres",
+		purpose: Purpose::Backup,
+		outcome: Outcome::Success,
+		error: None,
+		bytes_uploaded: Some(12345),
+		snapshot_id: Some("abc123"),
+	})
+	.unwrap();
+	assert_valid(spec, &request_schema("/backup-report", "post"), &instance);
+
+	// Negative case: an invalid outcome must be rejected.
+	let mut invalid = instance.clone();
+	invalid["outcome"] = json!("maybe");
+	let validator = validator_at(spec, &request_schema("/backup-report", "post"));
+	assert!(
+		!validator.is_valid(&invalid),
+		"spec accepted an invalid outcome; the validator is not checking refs",
+	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn status_response_carries_backup_now() {
+	// The "back up now" trigger reads `backup_now` off the status response;
+	// confirm canopy still serves it as a string array.
+	let spec = spec().await;
+	let schema = resolve(spec, &response_schema("/status/{server_id}", "post"));
+	// The response flattens `Status` + `backup_now`, so it's serialised as an
+	// `allOf` — look for `backup_now` directly or in any `allOf` member.
+	let backup_now = schema
+		.pointer("/properties/backup_now")
+		.or_else(|| {
+			schema
+				.get("allOf")?
+				.as_array()?
+				.iter()
+				.find_map(|member| member.pointer("/properties/backup_now"))
+		})
+		.unwrap_or_else(|| panic!("status response has no backup_now: {schema:#}"));
+	assert_eq!(
+		backup_now.pointer("/type"),
+		Some(&json!("array")),
+		"backup_now is no longer an array: {backup_now:#}",
+	);
+	assert_eq!(
+		backup_now.pointer("/items/type"),
+		Some(&json!("string")),
+		"backup_now items are no longer strings: {backup_now:#}",
 	);
 }
