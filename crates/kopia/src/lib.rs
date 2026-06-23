@@ -230,10 +230,7 @@ impl S3KopiaEnv<'_> {
 	/// The (key, value) pairs this env sets on a kopia process.
 	fn vars(&self) -> [(&'static str, std::ffi::OsString); 4] {
 		[
-			(
-				"AWS_CONTAINER_CREDENTIALS_FULL_URI",
-				self.full_uri.into(),
-			),
+			("AWS_CONTAINER_CREDENTIALS_FULL_URI", self.full_uri.into()),
 			("AWS_CONTAINER_AUTHORIZATION_TOKEN", self.token.into()),
 			("KOPIA_PASSWORD", self.password.into()),
 			("KOPIA_CONFIG_PATH", self.config_path.as_os_str().to_owned()),
@@ -319,6 +316,15 @@ pub fn args_snapshot_create(cmd: &mut Command, path: &Path, tags: &BTreeMap<Stri
 /// Push `snapshot restore` args (restore a snapshot id into `dest`).
 pub fn args_snapshot_restore(cmd: &mut Command, snapshot_id: &str, dest: &Path) {
 	cmd.args(["snapshot", "restore", snapshot_id]).arg(dest);
+}
+
+/// Push `policy set --add-ignore=… <path>` args (ignore transient files at a source).
+pub fn args_policy_set_ignores(cmd: &mut Command, path: &Path, ignores: &[String]) {
+	cmd.args(["policy", "set"]);
+	for glob in ignores {
+		cmd.arg(format!("--add-ignore={glob}"));
+	}
+	cmd.arg(path);
 }
 
 /// A single kopia snapshot, as emitted by `kopia snapshot list --json`.
@@ -790,6 +796,26 @@ mod tests {
 		assert_eq!(
 			args_of(&cmd),
 			vec!["snapshot", "restore", "abc123", "/restore/here"]
+		);
+	}
+
+	#[test]
+	fn policy_set_ignores_args() {
+		let mut cmd = Command::new("kopia");
+		args_policy_set_ignores(
+			&mut cmd,
+			Path::new("/data/pg"),
+			&["postmaster.pid".to_owned(), "*.log".to_owned()],
+		);
+		assert_eq!(
+			args_of(&cmd),
+			vec![
+				"policy",
+				"set",
+				"--add-ignore=postmaster.pid",
+				"--add-ignore=*.log",
+				"/data/pg",
+			]
 		);
 	}
 

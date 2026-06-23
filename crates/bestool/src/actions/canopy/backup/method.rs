@@ -19,6 +19,20 @@ pub struct Prepared {
 	/// Extra tags the method contributes (merged with the canopy-* tags and the
 	/// def's own `[tags]`).
 	pub extra_tags: BTreeMap<String, String>,
+	/// kopia ignore globs the driver applies to the source before snapshotting
+	/// (e.g. postgres transient files).
+	pub ignore: Vec<String>,
+	/// Method-specific teardown, run by [`Method::cleanup`].
+	pub(super) teardown: Teardown,
+}
+
+/// What [`Method::cleanup`] has to undo for a prepared source.
+#[derive(Debug)]
+pub(super) enum Teardown {
+	/// Nothing to release (e.g. the simple method).
+	Nothing,
+	/// A btrfs snapshot + its mounts.
+	Btrfs(super::postgresql::btrfs::Mounts),
 }
 
 /// `[simple]` method: snapshot a path verbatim.
@@ -32,10 +46,6 @@ pub struct SimpleConfig {
 ///
 /// Driven entirely by this table — generic postgres, no Tamanu coupling.
 #[derive(Debug, Clone, Deserialize)]
-#[expect(
-	dead_code,
-	reason = "fields are read by the postgresql snapshot machinery, implemented next"
-)]
 pub struct PostgresqlConfig {
 	/// The cluster name (e.g. `main`); resolves the data dir / connection.
 	pub cluster: String,
@@ -72,28 +82,25 @@ impl Method {
 		}
 	}
 
-	/// Produce the source kopia will snapshot.
-	pub async fn prepare(&self) -> Result<Prepared> {
+	/// Produce the source kopia will snapshot. `backup_type` is the def's label,
+	/// used by methods that key stable paths on it (e.g. btrfs mount points).
+	pub async fn prepare(&self, backup_type: &str) -> Result<Prepared> {
 		match self {
 			Method::Simple(config) => Ok(Prepared {
 				path: config.path.clone(),
 				extra_tags: BTreeMap::new(),
+				ignore: Vec::new(),
+				teardown: Teardown::Nothing,
 			}),
-			Method::Postgresql(_config) => {
-				// Implemented in the postgresql submodule (btrfs first); wired
-				// here once the snapshot machinery lands.
-				Err(miette::miette!(
-					"the postgresql backup method is not implemented yet"
-				))
-			}
+			Method::Postgresql(config) => super::postgresql::prepare(config, backup_type).await,
 		}
 	}
 
 	/// Release whatever `prepare` set up (snapshot, mount, staging dir).
-	pub async fn cleanup(&self, _prepared: Prepared) -> Result<()> {
-		match self {
-			Method::Simple(_) => Ok(()),
-			Method::Postgresql(_) => Ok(()),
+	pub async fn cleanup(&self, prepared: Prepared) -> Result<()> {
+		match prepared.teardown {
+			Teardown::Nothing => Ok(()),
+			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
 		}
 	}
 }
@@ -107,22 +114,10 @@ mod tests {
 		let method = Method::Simple(SimpleConfig {
 			path: PathBuf::from("/data/custom"),
 		});
-		let prepared = method.prepare().await.unwrap();
+		let prepared = method.prepare("custom").await.unwrap();
 		assert_eq!(prepared.path, PathBuf::from("/data/custom"));
 		assert!(prepared.extra_tags.is_empty());
+		assert!(prepared.ignore.is_empty());
 		method.cleanup(prepared).await.unwrap();
-	}
-
-	#[tokio::test]
-	async fn postgresql_prepare_is_not_yet_implemented() {
-		let method = Method::Postgresql(PostgresqlConfig {
-			cluster: "main".into(),
-			data_dir: None,
-			version: None,
-			port: None,
-			socket: None,
-			strategy: None,
-		});
-		assert!(method.prepare().await.is_err());
 	}
 }
