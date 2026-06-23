@@ -8,6 +8,10 @@ Type=simple
 # bestool invocations (which all otherwise log as "bestool").
 SyslogIdentifier=bestool-alertd
 ExecStart=/usr/bin/bestool alertd run
+# `systemctl reload bestool-alertd` re-registers backup capabilities with canopy,
+# picking up changes under /etc/bestool/backups without a restart (handled by the
+# daemon's SIGHUP/SIGUSR1 reload).
+ExecReload=/bin/kill -HUP $MAINPID
 MemoryMax=500M
 Restart=always
 RestartSec=10
