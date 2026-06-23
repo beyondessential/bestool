@@ -2,9 +2,37 @@
 id: DOC
 ---
 
-# Tamanu doctor output
+# Tamanu doctor
 
-The `bestool tamanu doctor` command runs a set of health checks against a Tamanu install and renders the outcome. Each check resolves to one of five outcomes: pass, skip, warning, broken (the check itself errored), or fail. This spec describes how the command displays results during the sweep, in the final rendered output, and when the only-failing filter is applied.
+The `bestool tamanu doctor` command gathers server facts and runs a set of health checks against a Tamanu install, then renders the outcome for a human operator or as a machine-readable payload. Checks may pass, be skipped, warn, fail, or be broken (the check itself errored). This spec describes how the command selects checks, where the sweep data comes from, and how results are displayed.
+
+## Checks and outcomes
+
+- [ ] The command runs a fixed registry of named checks covering both host-level concerns (disk, memory, time sync, etc.) and Tamanu-specific concerns (database, HTTP, services, certificates, sync state, and so on)
+- [ ] Each check resolves to exactly one of five outcomes: pass, skip, warning, broken, or fail
+- [ ] A check produces a one-line summary; checks with a skip, warning, broken, or fail outcome also carry a reason
+- [ ] The overall outcome of the sweep is failing if any check failed, degraded if any check warned or broke without any failing, and healthy otherwise — skipped checks do not degrade the overall outcome
+
+## Selecting checks
+
+- [ ] `--check NAME` restricts the sweep to the named check; the flag is repeatable to select several
+- [ ] `--skip NAME` excludes the named check; the flag is repeatable and applies after `--check`
+- [ ] With no selection flags, every check in the registry runs
+- [ ] An unknown check name in either flag is a fatal error that lists the known check names
+
+## Tamanu install context
+
+- [ ] When a Tamanu install is present on the host, the sweep runs against it: install-dependent checks (configuration, local HTTP, services, certificates, backup) and database-dependent checks both run
+- [ ] When no install is present but a Tamanu database URL is configured via the environment, the sweep runs against that database: database-dependent checks run, install-dependent checks skip
+- [ ] When neither is present, only host-level checks run and the command warns that no Tamanu was found on this host
+
+## Sweep source
+
+- [ ] By default, the command reads the most recent sweep cached by the alertd daemon on the same host
+- [ ] `--fresh` asks the daemon to recompute and streams the per-check results back as they complete
+- [ ] `--no-daemon` skips the daemon integration and computes the sweep locally
+- [ ] If the daemon cannot be reached or returns an error, the command falls back to computing the sweep locally
+- [ ] A source note in both the live display and the final rendered output identifies whether the data was computed locally, streamed from the daemon, or read from the daemon's last cached sweep, and how long ago a cached sweep was computed
 
 ## Grouping and ordering
 
@@ -20,7 +48,7 @@ The `bestool tamanu doctor` command runs a set of health checks against a Tamanu
 - [ ] A pending check shows a neutral indicator, a running check shows an animated spinner, and a completed check shows its outcome tag alongside the check name and one-line summary
 - [ ] As each check completes, its row moves to its grouped-and-ordered position
 - [ ] A footer line shows an animated spinner together with a running count of how many checks have completed out of the total
-- [ ] A dimmed source note in the TUI identifies whether the data is being computed locally, streamed from the alertd daemon, or read from the daemon's last cached sweep
+- [ ] The source note appears in the TUI as dimmed text
 - [ ] On completion, the TUI tears down and the final rendered output is written to the terminal's normal scrollback so it remains visible after the command exits
 - [ ] If the user interrupts the command (Ctrl+C), the TUI tears down cleanly and whatever results have been collected so far are written to scrollback before exit
 
@@ -29,7 +57,7 @@ The `bestool tamanu doctor` command runs a set of health checks against a Tamanu
 - [ ] The final output lists each displayed check on its own row with a coloured outcome tag, the check name, and a one-line summary, in grouped-and-ordered position
 - [ ] A blank line separates the check list from the result line
 - [ ] The result line gives an overall outcome — healthy, degraded, or failing — and counts of failed, warning, broken, and skipped checks
-- [ ] A dimmed source note states whether the data was computed locally, streamed from the alertd daemon, or read from the daemon's last cached sweep, including how long ago a cached sweep was computed
+- [ ] The source note appears as dimmed text below the result line
 - [ ] The result line is always shown, even when the displayed check list is empty
 
 ## Only-failing filter
@@ -48,7 +76,8 @@ The `bestool tamanu doctor` command runs a set of health checks against a Tamanu
 
 ## JSON output
 
-- [ ] When JSON output is requested, the command emits the full machine-readable sweep payload and suppresses the human-readable rendering
+- [ ] When JSON output is requested, the command emits a machine-readable payload and suppresses the human-readable rendering
+- [ ] The payload contains the sweep's wire data, a source field naming where the data came from, and a computed-at timestamp when the source is the daemon's last cached sweep
 - [ ] The only-failing filter does not affect JSON output: every selected check is included
 
 ## Exit code
