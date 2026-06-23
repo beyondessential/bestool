@@ -6,17 +6,29 @@
 //! captures it. btrfs is implemented; thin-LVM / Windows VSS / `pg_basebackup`
 //! land in follow-ups.
 
+pub mod basebackup;
 pub mod btrfs;
 pub mod resolve;
 pub mod strategy;
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
 
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use tracing::{info, warn};
 
 use self::strategy::Strategy;
 use super::method::{PostgresqlConfig, Prepared, Teardown};
+
+/// The stable path the snapshot/basebackup is exposed at for kopia — fixed per
+/// backup type so kopia's history/dedup attribute to one source, regardless of
+/// which strategy produced it (a host migrating btrfs↔basebackup keeps its
+/// history). The version/cluster suffix the caller adds is the only moving part.
+pub(super) fn stable_source_dir(backup_type: &str) -> PathBuf {
+	PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+}
 
 /// Transient files safe to exclude from the snapshot. Never `pg_wal`, `pg_xact`,
 /// `pg_control`, `global`, or tablespaces — those are required for recovery.
@@ -64,8 +76,24 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 				teardown: Teardown::Btrfs(mounts),
 			})
 		}
+		Strategy::BaseBackup => {
+			let (source, root) = basebackup::prepare(
+				&resolved,
+				backup_type,
+				config.socket.as_deref(),
+				config.port,
+			)
+			.await?;
+			Ok(Prepared {
+				path: source,
+				extra_tags: metadata_tags(&resolved, strategy),
+				ignore: ignore_globs(),
+				teardown: Teardown::BaseBackup(root),
+			})
+		}
 		other => bail!(
-			"postgresql backup strategy {other:?} is not implemented yet (btrfs only for now)"
+			"postgresql backup strategy {other:?} is not implemented yet \
+			 (btrfs and pg_basebackup are; thin-LVM and VSS are coming)"
 		),
 	}
 }
