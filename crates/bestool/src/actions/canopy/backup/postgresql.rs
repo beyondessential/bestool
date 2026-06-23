@@ -30,7 +30,17 @@ use super::method::{PostgresqlConfig, Prepared, Teardown};
 /// which strategy produced it (a host migrating btrfs↔basebackup keeps its
 /// history). The version/cluster suffix the caller adds is the only moving part.
 pub(super) fn stable_source_dir(backup_type: &str) -> PathBuf {
-	PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+	#[cfg(unix)]
+	{
+		PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+	}
+	#[cfg(not(unix))]
+	{
+		let base = std::env::var_os("ProgramData")
+			.map(PathBuf::from)
+			.unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+		base.join("bestool").join("backup-source").join(backup_type)
+	}
 }
 
 /// Transient files safe to exclude from the snapshot. Never `pg_wal`, `pg_xact`,
@@ -67,52 +77,71 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 	// recovery replays on restore. It's an optimisation, not a correctness
 	// requirement — the snapshot is crash-consistent regardless — so a failure
 	// here must not fail the backup.
-	checkpoint(config).await;
+	checkpoint(config, &resolved.data_dir).await;
 
 	match strategy {
+		Strategy::BaseBackup => basebackup_prepared(&resolved, backup_type, config).await,
+		// For a snapshot backend (btrfs/thin-LVM/VSS): if the snapshot can't be
+		// taken — VSS unavailable, missing privileges, a layout we can't capture
+		// atomically — fall back to pg_basebackup rather than fail. That's a safe
+		// degradation (a correct, if heavier, base backup) — never the live dir.
+		snapshot => match snapshot_prepared(snapshot, &resolved, backup_type).await {
+			Ok(prepared) => Ok(prepared),
+			Err(err) => {
+				warn!(
+					strategy = ?snapshot,
+					"snapshot backend unavailable ({err}); falling back to pg_basebackup"
+				);
+				basebackup_prepared(&resolved, backup_type, config).await
+			}
+		},
+	}
+}
+
+/// Prepare via a snapshot backend (btrfs / thin-LVM / VSS).
+async fn snapshot_prepared(
+	strategy: Strategy,
+	resolved: &resolve::ResolvedCluster,
+	backup_type: &str,
+) -> Result<Prepared> {
+	let (path, teardown) = match strategy {
 		Strategy::Btrfs => {
-			let (source, mounts) = btrfs::prepare(&resolved, backup_type).await?;
-			Ok(Prepared {
-				path: source,
-				extra_tags: metadata_tags(&resolved, strategy),
-				ignore: ignore_globs(),
-				teardown: Teardown::Btrfs(mounts),
-			})
+			let (path, mounts) = btrfs::prepare(resolved, backup_type).await?;
+			(path, Teardown::Btrfs(mounts))
 		}
 		Strategy::ThinLvm => {
-			let (source, snapshot) = lvm::prepare(&resolved, backup_type).await?;
-			Ok(Prepared {
-				path: source,
-				extra_tags: metadata_tags(&resolved, strategy),
-				ignore: ignore_globs(),
-				teardown: Teardown::Lvm(snapshot),
-			})
-		}
-		Strategy::BaseBackup => {
-			let (source, root) = basebackup::prepare(
-				&resolved,
-				backup_type,
-				config.socket.as_deref(),
-				config.port,
-			)
-			.await?;
-			Ok(Prepared {
-				path: source,
-				extra_tags: metadata_tags(&resolved, strategy),
-				ignore: ignore_globs(),
-				teardown: Teardown::BaseBackup(root),
-			})
+			let (path, snapshot) = lvm::prepare(resolved, backup_type).await?;
+			(path, Teardown::Lvm(snapshot))
 		}
 		Strategy::Vss => {
-			let (source, shadow) = vss::prepare(&resolved, backup_type).await?;
-			Ok(Prepared {
-				path: source,
-				extra_tags: metadata_tags(&resolved, strategy),
-				ignore: ignore_globs(),
-				teardown: Teardown::Vss(shadow),
-			})
+			let (path, shadow) = vss::prepare(resolved, backup_type).await?;
+			(path, Teardown::Vss(shadow))
 		}
-	}
+		Strategy::BaseBackup => unreachable!("basebackup is handled by the caller"),
+	};
+	Ok(Prepared {
+		path,
+		extra_tags: metadata_tags(resolved, strategy),
+		ignore: ignore_globs(),
+		teardown,
+	})
+}
+
+/// Prepare via `pg_basebackup` (the always-correct fallback).
+async fn basebackup_prepared(
+	resolved: &resolve::ResolvedCluster,
+	backup_type: &str,
+	config: &PostgresqlConfig,
+) -> Result<Prepared> {
+	let (path, root) =
+		basebackup::prepare(resolved, backup_type, config.socket.as_deref(), config.port).await?;
+	Ok(Prepared {
+		path,
+		// Tagged as basebackup even on fallback — it reflects what actually ran.
+		extra_tags: metadata_tags(resolved, Strategy::BaseBackup),
+		ignore: ignore_globs(),
+		teardown: Teardown::BaseBackup(root),
+	})
 }
 
 /// Restore a postgres cluster from a freshly-restored tree (`staging`): stop the
@@ -151,7 +180,7 @@ pub async fn restore(
 		start_cluster(&target).await?;
 	}
 
-	verify(config).await;
+	verify(config, &target.data_dir).await;
 	info!("restore complete; run migrations / config sync as needed");
 	Ok(())
 }
@@ -174,18 +203,14 @@ async fn fix_ownership(data_dir: &Path) -> Result<()> {
 }
 
 async fn pg_resetwal(data_dir: &Path) -> Result<()> {
-	let bin = crate::find_postgres::find_postgres_bin("pg_resetwal")
-		.map(|p| p.to_string_lossy().into_owned())
-		.unwrap_or_else(|_| "pg_resetwal".to_owned());
-	run_status("sudo", &["-u", "postgres", &bin, "-f", path(data_dir)]).await
+	let mut cmd = pg_command(&postgres_bin("pg_resetwal", data_dir));
+	cmd.arg("-f").arg(data_dir);
+	run_checked(cmd, "pg_resetwal").await
 }
 
-async fn verify(config: &PostgresqlConfig) {
-	let psql = crate::find_postgres::find_postgres_bin("psql")
-		.map(|p| p.to_string_lossy().into_owned())
-		.unwrap_or_else(|_| "psql".to_owned());
-	let mut cmd = tokio::process::Command::new("sudo");
-	cmd.args(["-u", "postgres", &psql, "-X", "-q", "-tAc", "SELECT 1"]);
+async fn verify(config: &PostgresqlConfig, data_dir: &Path) {
+	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
+	cmd.args(["-X", "-q", "-tAc", "SELECT 1"]);
 	if let Some(port) = config.port {
 		cmd.arg("-p").arg(port.to_string());
 	}
@@ -215,15 +240,68 @@ async fn run_status(program: &str, args: &[&str]) -> Result<()> {
 	Ok(())
 }
 
-/// Best-effort `CHECKPOINT` as the postgres superuser over the local socket.
-async fn checkpoint(config: &PostgresqlConfig) {
-	let psql = crate::find_postgres::find_postgres_bin("psql")
-		.map(|p| p.to_string_lossy().into_owned())
-		.unwrap_or_else(|_| "psql".to_owned());
+/// Locate a postgres binary.
+///
+/// On Windows the bins aren't on `PATH`; they sit beside the data dir in the
+/// EDB layout (`<data_dir>\..\bin`, wherever the install is rooted), so look
+/// there first. Otherwise fall back to the standard-install search.
+pub(super) fn postgres_bin(name: &str, data_dir: &Path) -> String {
+	#[cfg(windows)]
+	if let Some(candidate) = bin_beside_data_dir(name, data_dir).filter(|p| p.is_file()) {
+		return candidate.to_string_lossy().into_owned();
+	}
+	#[cfg(not(windows))]
+	let _ = data_dir;
 
-	// Run as the `postgres` OS user (peer auth) since the backup runs elevated.
-	let mut cmd = tokio::process::Command::new("sudo");
-	cmd.args(["-u", "postgres", &psql, "-X", "-q"]);
+	crate::find_postgres::find_postgres_bin(name)
+		.map(|p| p.to_string_lossy().into_owned())
+		.unwrap_or_else(|_| name.to_owned())
+}
+
+/// The EDB-layout binary path beside the data dir (`<data_dir>\..\bin\<name>`).
+#[cfg(any(windows, test))]
+fn bin_beside_data_dir(name: &str, data_dir: &Path) -> Option<PathBuf> {
+	let exe = if cfg!(windows) {
+		format!("{name}.exe")
+	} else {
+		name.to_owned()
+	};
+	data_dir.parent().map(|p| p.join("bin").join(exe))
+}
+
+/// A command that runs a postgres tool as the right user: `sudo -u postgres` on
+/// Unix (peer auth + superuser/replication privilege), directly on Windows.
+pub(super) fn pg_command(bin: &str) -> tokio::process::Command {
+	#[cfg(unix)]
+	{
+		let mut cmd = tokio::process::Command::new("sudo");
+		cmd.args(["-u", "postgres", bin]);
+		cmd
+	}
+	#[cfg(not(unix))]
+	{
+		tokio::process::Command::new(bin)
+	}
+}
+
+/// Run a prepared command, erroring on non-zero exit.
+async fn run_checked(mut cmd: tokio::process::Command, what: &str) -> Result<()> {
+	let status = cmd
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning {what}"))?;
+	if !status.success() {
+		bail!("{what} failed ({status})");
+	}
+	Ok(())
+}
+
+/// Best-effort `CHECKPOINT` as the postgres superuser over the local socket.
+async fn checkpoint(config: &PostgresqlConfig, data_dir: &Path) {
+	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
+	cmd.args(["-X", "-q"]);
 	if let Some(socket) = &config.socket {
 		cmd.arg("-h").arg(socket);
 	}
@@ -246,6 +324,17 @@ async fn checkpoint(config: &PostgresqlConfig) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn bin_beside_data_dir_is_sibling_of_data() {
+		let candidate = bin_beside_data_dir("pg_basebackup", Path::new("/opt/pg/16/data")).unwrap();
+		let name = if cfg!(windows) {
+			"pg_basebackup.exe"
+		} else {
+			"pg_basebackup"
+		};
+		assert_eq!(candidate, Path::new("/opt/pg/16/bin").join(name));
+	}
 
 	#[test]
 	fn ignore_globs_never_include_required_dirs() {
