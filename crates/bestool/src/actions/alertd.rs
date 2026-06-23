@@ -159,6 +159,103 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	}
 }
 
+/// Build the doctor task, wiring the canopy backup trigger when backups are
+/// compiled in.
+fn doctor_task(
+	version: String,
+	tamanu: Option<bestool_alertd::doctor::SweepTamanu>,
+) -> DoctorTask {
+	let task = DoctorTask::new(version, tamanu);
+	#[cfg(feature = "canopy-backup")]
+	let task = task.with_backup_dispatch(backup_dispatch());
+	task
+}
+
+/// Register the daemon's tasks, adding the backup-capabilities task when backups
+/// are compiled in.
+fn with_daemon_tasks(
+	config: bestool_alertd::DaemonConfig,
+	doctor: DoctorTask,
+) -> bestool_alertd::DaemonConfig {
+	let config = config.with_task(Arc::new(doctor));
+	#[cfg(feature = "canopy-backup")]
+	let config = config.with_task(Arc::new(backup::BackupCapabilitiesTask));
+	config
+}
+
+/// The in-process backup trigger: runs the driver for each type canopy requests
+/// via `backup_now`, skipping any type already in flight.
+#[cfg(feature = "canopy-backup")]
+fn backup_dispatch() -> bestool_alertd::doctor::BackupDispatch {
+	use std::collections::HashSet;
+
+	use tokio::sync::Mutex;
+
+	let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
+	Arc::new(move |types: Vec<String>| {
+		for backup_type in types {
+			let in_flight = in_flight.clone();
+			tokio::spawn(async move {
+				// Overlap guard: skip a type whose previous run is still going
+				// (canopy re-emits idempotently until the report clears it).
+				if !in_flight.lock().await.insert(backup_type.clone()) {
+					return;
+				}
+				if let Err(err) =
+					crate::actions::canopy::backup::run_backup(&backup_type, None, None).await
+				{
+					tracing::error!("backup '{backup_type}' failed: {err}");
+				}
+				in_flight.lock().await.remove(&backup_type);
+			});
+		}
+	})
+}
+
+/// A background task that registers this server's backup capabilities with
+/// canopy (the types of every def in the backups directory).
+#[cfg(feature = "canopy-backup")]
+mod backup {
+	use std::time::Duration;
+
+	use futures::future::BoxFuture;
+	use miette::{IntoDiagnostic as _, Result};
+	use tracing::info;
+
+	use crate::actions::canopy::backup::config;
+
+	pub(super) struct BackupCapabilitiesTask;
+
+	impl bestool_alertd::BackgroundTask for BackupCapabilitiesTask {
+		fn name(&self) -> &'static str {
+			"backup-capabilities"
+		}
+
+		fn interval(&self) -> Duration {
+			// Re-register hourly so newly-dropped defs get picked up; the first
+			// tick fires at startup.
+			Duration::from_secs(3600)
+		}
+
+		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
+			Box::pin(async move {
+				let Some(client) = ctx.canopy_client.as_ref() else {
+					return Ok(());
+				};
+				let defs = config::load_dir(&config::backups_dir()).await?;
+				let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
+				if types.is_empty() {
+					return Ok(());
+				}
+				let base_url = bestool_canopy::DEFAULT_CANOPY_URL.parse().into_diagnostic()?;
+				client.backup_capabilities(&base_url, &types).await?;
+				info!(?types, "registered backup capabilities with canopy");
+				Ok(())
+			})
+		}
+	}
+}
+
 /// Build the daemon config, reading Tamanu's config files and DB for the
 /// database URL and (migrated) device key. Honours a `--root` when invoked via
 /// the `tamanu alert` alias; top-level `bestool alertd` probes the default
@@ -244,18 +341,16 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		.map(|t| t.version.to_string())
 		.unwrap_or_else(|| "0.0.0".into());
 
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(
+	let base = bestool_alertd::DaemonConfig::new(
 		pg_pool.clone(),
 		tamanu.as_ref().map(|t| t.database_url.clone()),
 		tamanu_version,
 	)
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
-	.with_watchdog_timeout(watchdog)
-	.with_task(Arc::new(DoctorTask::new(
-		env!("CARGO_PKG_VERSION").to_string(),
-		tamanu,
-	)));
+	.with_watchdog_timeout(watchdog);
+	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), tamanu);
+	let mut daemon_config = with_daemon_tasks(base, doctor);
 
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
@@ -297,14 +392,12 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 
 	// Canopy requires a version on every request; `0.0.0` is the agreed
 	// sentinel for hosts with no Tamanu.
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
+	let base = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
-		.with_watchdog_timeout(watchdog)
-		.with_task(Arc::new(DoctorTask::new(
-			env!("CARGO_PKG_VERSION").to_string(),
-			None,
-		)));
+		.with_watchdog_timeout(watchdog);
+	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), None);
+	let mut daemon_config = with_daemon_tasks(base, doctor);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
 	}

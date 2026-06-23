@@ -8,4 +8,4 @@ pub mod task;
 pub use sweep::{
 	SweepResult, SweepTamanu, overall_from_payload, perform_sweep, resolve_sweep_tamanu,
 };
-pub use task::DoctorTask;
+pub use task::{BackupDispatch, DoctorTask};
