@@ -11,3 +11,4 @@
 //! See the S3P spec for the design.
 
 pub mod sigv4;
+pub mod stream;
