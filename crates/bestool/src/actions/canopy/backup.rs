@@ -74,10 +74,51 @@ struct SnapshotResult {
 
 /// The per-run kopia env values (loopback creds endpoint + repo password),
 /// owned so they outlive the borrow of the lease.
-struct LeaseEnv {
-	uri: String,
-	token: String,
-	password: String,
+pub(super) struct LeaseEnv {
+	pub uri: String,
+	pub token: String,
+	pub password: String,
+}
+
+/// Lease a creds token bound to a `(type, purpose)`, refreshed from Canopy.
+pub(super) fn make_lease(
+	server: &CredsServer,
+	client: Arc<CanopyClient>,
+	base_url: Url,
+	backup_type: String,
+	purpose: Purpose,
+) -> creds::CredsLease {
+	server.lease(Arc::new(move || {
+		let client = client.clone();
+		let base_url = base_url.clone();
+		let backup_type = backup_type.clone();
+		Box::pin(async move {
+			client
+				.backup_credentials(&base_url, &backup_type, purpose)
+				.await
+				.map_err(|err| format!("{err}"))
+		})
+	}))
+}
+
+/// Connect kopia to the canopy-managed repo (source host = server id).
+pub(super) async fn connect_repo(
+	kopia: &Path,
+	s3env: &S3KopiaEnv<'_>,
+	target: &bestool_canopy::BackupTarget,
+	server_id: &str,
+) -> Result<()> {
+	let mut connect = build_kopia_command_with_s3(kopia, s3env).map_err(|e| miette!("{e}"))?;
+	args_repository_connect_s3(
+		&mut connect,
+		&target.bucket,
+		&target.prefix,
+		&target.region,
+		"canopy",
+		server_id,
+	);
+	run_kopia(connect, "repository connect").await?;
+	Ok(())
 }
 
 /// Drive one backup run end-to-end.
@@ -133,22 +174,13 @@ pub async fn run_backup(
 	};
 
 	let creds_server = CredsServer::start().await?;
-	let lease = {
-		let client = client.clone();
-		let base_url = base_url.clone();
-		let backup_type = backup_type.to_owned();
-		creds_server.lease(Arc::new(move || {
-			let client = client.clone();
-			let base_url = base_url.clone();
-			let backup_type = backup_type.clone();
-			Box::pin(async move {
-				client
-					.backup_credentials(&base_url, &backup_type, Purpose::Backup)
-					.await
-					.map_err(|err| format!("{err}"))
-			})
-		}))
-	};
+	let lease = make_lease(
+		&creds_server,
+		client.clone(),
+		base_url.clone(),
+		backup_type.to_owned(),
+		Purpose::Backup,
+	);
 
 	let env = LeaseEnv {
 		uri: lease.uri().to_owned(),
@@ -238,16 +270,7 @@ async fn snapshot(
 		config_path: &config_path,
 	};
 
-	let mut connect = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
-	args_repository_connect_s3(
-		&mut connect,
-		&target.bucket,
-		&target.prefix,
-		&target.region,
-		"canopy",
-		server_id,
-	);
-	run_kopia(connect, "repository connect").await?;
+	connect_repo(&kopia, &s3env, target, server_id).await?;
 
 	if !ignore.is_empty() {
 		let mut policy = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
@@ -262,7 +285,7 @@ async fn snapshot(
 }
 
 /// Run a kopia command, returning its stdout on success.
-async fn run_kopia(cmd: std::process::Command, what: &str) -> Result<String> {
+pub(super) async fn run_kopia(cmd: std::process::Command, what: &str) -> Result<String> {
 	let output = tokio::process::Command::from(cmd)
 		.output()
 		.await

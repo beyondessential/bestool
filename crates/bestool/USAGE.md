@@ -18,6 +18,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
+* [`bestool canopy restore`↴](#bestool-canopy-restore)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -296,6 +297,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `import` — Import a canopy registration exported from another machine
 * `tags` — Fetch this device's tags from canopy.
 * `backup` — Run a configured backup, driving kopia and reporting to Canopy
+* `restore` — Restore a backup from Canopy's repository
 
 
 
@@ -405,6 +407,24 @@ Run a configured backup, driving kopia and reporting to Canopy
 
    Must have a definition in the backups directory (a `*.toml` whose `type` matches).
 * `--config <DIR>` — Override the registration directory (matching `register`/`export`)
+* `--backups-dir <DIR>` — Override the backups definition directory
+
+
+
+## `bestool canopy restore`
+
+Restore a backup from Canopy's repository
+
+**Usage:** `bestool canopy restore [OPTIONS] --type <TYPE>`
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type to restore (must have a def in the backups directory)
+* `--id <ID>` — Restore a specific snapshot id (a prefix is accepted)
+* `--latest` — Restore the most recent snapshot of this type
+* `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
+* `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
+* `--config <DIR>` — Override the registration directory
 * `--backups-dir <DIR>` — Override the backups definition directory
 
 

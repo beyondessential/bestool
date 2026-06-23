@@ -313,6 +313,11 @@ pub fn args_snapshot_create(cmd: &mut Command, path: &Path, tags: &BTreeMap<Stri
 	cmd.arg(path);
 }
 
+/// Push `snapshot list --json --all` args (every snapshot, all sources).
+pub fn args_snapshot_list(cmd: &mut Command) {
+	cmd.args(["snapshot", "list", "--json", "--all"]);
+}
+
 /// Push `snapshot restore` args (restore a snapshot id into `dest`).
 pub fn args_snapshot_restore(cmd: &mut Command, snapshot_id: &str, dest: &Path) {
 	cmd.args(["snapshot", "restore", snapshot_id]).arg(dest);

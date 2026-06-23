@@ -10,9 +10,9 @@ pub mod btrfs;
 pub mod resolve;
 pub mod strategy;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
-use miette::{Result, bail};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use tracing::{info, warn};
 
 use self::strategy::Strategy;
@@ -68,6 +68,106 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 			"postgresql backup strategy {other:?} is not implemented yet (btrfs only for now)"
 		),
 	}
+}
+
+/// Restore a postgres cluster from a freshly-restored tree (`staging`): stop the
+/// cluster, swap the data directory into place (keeping the old one as
+/// `<data>.old`), start it via plain crash recovery, and verify.
+///
+/// Refuses to overwrite an existing data directory unless `opts.clobber` is set
+/// (the command sets it from the flag or an interactive confirmation).
+pub async fn restore(
+	config: &PostgresqlConfig,
+	staging: &Path,
+	opts: &super::method::RestoreOpts,
+) -> Result<()> {
+	let target = resolve::resolve_target(config)?;
+	let restored = resolve::locate_pgdata(staging)?;
+	info!(
+		cluster = %target.cluster,
+		version = %target.version,
+		data_dir = %target.data_dir.display(),
+		"restoring postgres cluster",
+	);
+
+	super::method::ensure_not_clobbering(&target.data_dir, opts.clobber)?;
+
+	stop_cluster(&target).await;
+
+	super::method::replace_dir(&restored, &target.data_dir).await?;
+	fix_ownership(&target.data_dir).await?;
+
+	if let Err(err) = start_cluster(&target).await {
+		warn!(
+			"cluster did not start cleanly ({err}); resetting WAL as a last resort \
+			 (this may indicate a non-clean backup)"
+		);
+		pg_resetwal(&target.data_dir).await?;
+		start_cluster(&target).await?;
+	}
+
+	verify(config).await;
+	info!("restore complete; run migrations / config sync as needed");
+	Ok(())
+}
+
+async fn stop_cluster(target: &resolve::ResolvedCluster) {
+	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
+	if let Err(err) = run_status("systemctl", &["stop", &unit]).await {
+		warn!("stopping {unit} failed (continuing): {err}");
+	}
+}
+
+async fn start_cluster(target: &resolve::ResolvedCluster) -> Result<()> {
+	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
+	run_status("systemctl", &["start", &unit]).await
+}
+
+async fn fix_ownership(data_dir: &Path) -> Result<()> {
+	run_status("chown", &["-R", "postgres:postgres", path(data_dir)]).await?;
+	run_status("chmod", &["0750", path(data_dir)]).await
+}
+
+async fn pg_resetwal(data_dir: &Path) -> Result<()> {
+	let bin = crate::find_postgres::find_postgres_bin("pg_resetwal")
+		.map(|p| p.to_string_lossy().into_owned())
+		.unwrap_or_else(|_| "pg_resetwal".to_owned());
+	run_status("sudo", &["-u", "postgres", &bin, "-f", path(data_dir)]).await
+}
+
+async fn verify(config: &PostgresqlConfig) {
+	let psql = crate::find_postgres::find_postgres_bin("psql")
+		.map(|p| p.to_string_lossy().into_owned())
+		.unwrap_or_else(|_| "psql".to_owned());
+	let mut cmd = tokio::process::Command::new("sudo");
+	cmd.args(["-u", "postgres", &psql, "-X", "-q", "-tAc", "SELECT 1"]);
+	if let Some(port) = config.port {
+		cmd.arg("-p").arg(port.to_string());
+	}
+	cmd.stdin(std::process::Stdio::null());
+	match cmd.status().await {
+		Ok(s) if s.success() => info!("restored cluster accepts connections"),
+		Ok(s) => warn!(%s, "post-restore verification query failed"),
+		Err(err) => warn!("could not run verification query: {err}"),
+	}
+}
+
+fn path(p: &Path) -> &str {
+	p.to_str().unwrap_or_default()
+}
+
+async fn run_status(program: &str, args: &[&str]) -> Result<()> {
+	let status = tokio::process::Command::new(program)
+		.args(args)
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning {program}"))?;
+	if !status.success() {
+		bail!("{program} {} failed ({status})", args.join(" "));
+	}
+	Ok(())
 }
 
 /// Best-effort `CHECKPOINT` as the postgres superuser over the local socket.
