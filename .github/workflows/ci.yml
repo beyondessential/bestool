@@ -112,6 +112,45 @@ jobs:
           # working loopback HTTP that a bare namespace doesn't provide.
           sudo unshare --net -- bash -c "ip link set lo up && exec '$bin' doctor::"
 
+  kopia-proxy:
+    name: kopia S3 proxy / e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin123 \
+            quay.io/minio/minio:latest server /data
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then echo "minio ready"; break; fi
+            sleep 1
+          done
+      - name: Create bucket
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin123
+          AWS_DEFAULT_REGION: us-east-1
+        run: aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://kopia-proxy-ci
+      - name: Install kopia
+        run: |
+          curl -fsSL https://github.com/kopia/kopia/releases/download/v0.23.1/kopia-0.23.1-linux-x64.tar.gz -o kopia.tgz
+          tar xzf kopia.tgz
+          echo "KOPIA_BIN=$PWD/kopia-0.23.1-linux-x64/kopia" >> "$GITHUB_ENV"
+      - name: Run proxy end-to-end test
+        env:
+          KOPIA_PROXY_TEST_ENDPOINT: http://127.0.0.1:9000
+          KOPIA_PROXY_TEST_BUCKET: kopia-proxy-ci
+          KOPIA_PROXY_TEST_ACCESS_KEY: minioadmin
+          KOPIA_PROXY_TEST_SECRET_KEY: minioadmin123
+          KOPIA_PROXY_TEST_REGION: us-east-1
+        run: cargo test -p bestool-kopia --features proxy --test proxy_e2e -- --ignored --nocapture
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -151,7 +190,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db]
+    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
