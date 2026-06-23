@@ -8,6 +8,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd`↴](#bestool-alertd)
 * [`bestool alertd run`↴](#bestool-alertd-run)
 * [`bestool alertd status`↴](#bestool-alertd-status)
+* [`bestool alertd reload`↴](#bestool-alertd-reload)
+* [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
 * [`bestool caddy`↴](#bestool-caddy)
 * [`bestool caddy configure-tamanu`↴](#bestool-caddy-configure-tamanu)
@@ -60,6 +62,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
 * [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
+* [`bestool tamanu alertd reload`↴](#bestool-tamanu-alertd-reload)
+* [`bestool tamanu alertd restart`↴](#bestool-tamanu-alertd-restart)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -158,6 +162,8 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `reload` — Reload a running daemon
+* `restart` — Restart a running daemon
 
 
 
@@ -202,6 +208,34 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool alertd reload`
+
+Reload a running daemon
+
+Asks the daemon to re-register backup capabilities and pick up changes under /etc/bestool/backups, without restarting.
+
+**Usage:** `bestool alertd reload [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+
+
+
+## `bestool alertd restart`
+
+Restart a running daemon
+
+Asks the daemon to exit so the service manager restarts it — e.g. to pick up a freshly-installed bestool binary.
+
+**Usage:** `bestool alertd restart [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
 
 
 
@@ -1430,6 +1464,8 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `reload` — Reload a running daemon
+* `restart` — Restart a running daemon
 
 
 
@@ -1474,6 +1510,34 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool tamanu alertd reload`
+
+Reload a running daemon
+
+Asks the daemon to re-register backup capabilities and pick up changes under /etc/bestool/backups, without restarting.
+
+**Usage:** `bestool tamanu alertd reload [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+
+
+
+## `bestool tamanu alertd restart`
+
+Restart a running daemon
+
+Asks the daemon to exit so the service manager restarts it — e.g. to pick up a freshly-installed bestool binary.
+
+**Usage:** `bestool tamanu alertd restart [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
 
 
 
