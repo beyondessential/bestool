@@ -141,6 +141,15 @@ pub async fn run_backup(
 	let def = config::find_def(&dir, backup_type)
 		.await?
 		.ok_or_else(|| miette!("no backup def for type '{backup_type}' in {}", dir.display()))?;
+
+	// Cross-process guard: a run holds an exclusive lock for its type for its
+	// whole duration, so a re-emitted "back up now" or a manual run racing the
+	// daemon doesn't start a second concurrent kopia. Held until the function
+	// returns (the OS releases it if we crash).
+	let Some(_lock) = try_acquire_lock(&lock_path(backup_type)).await? else {
+		info!(backup_type, "a backup of this type is already running; skipping");
+		return Ok(());
+	};
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
 
 	let reg = load_registration(registration_dir)
@@ -397,6 +406,45 @@ fn trim_error(err: &miette::Report) -> String {
 	msg.chars().take(500).collect()
 }
 
+/// Per-type lockfile path, in a runtime dir (tmpfs on Linux, so it's cleared on
+/// reboot and never stale across crashes).
+fn lock_path(backup_type: &str) -> std::path::PathBuf {
+	let name = format!("backup-{}.lock", backup_type.replace(['/', '\\'], "_"));
+	#[cfg(unix)]
+	{
+		std::path::PathBuf::from("/run/bestool").join(name)
+	}
+	#[cfg(not(unix))]
+	{
+		std::env::temp_dir().join(format!("bestool-{name}"))
+	}
+}
+
+/// Try to take the exclusive per-run lock. `Ok(Some(file))` holds the lock for
+/// as long as the returned handle lives; `Ok(None)` means another run holds it.
+async fn try_acquire_lock(path: &Path) -> Result<Option<tokio::fs::File>> {
+	use fs4::tokio::AsyncFileExt as _;
+
+	if let Some(parent) = path.parent() {
+		tokio::fs::create_dir_all(parent).await.ok();
+	}
+	let file = tokio::fs::OpenOptions::new()
+		.create(true)
+		.write(true)
+		.truncate(false)
+		.open(path)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("opening backup lockfile {}", path.display()))?;
+	match file.try_lock() {
+		Ok(()) => Ok(Some(file)),
+		Err(fs4::TryLockError::WouldBlock) => Ok(None),
+		Err(fs4::TryLockError::Error(err)) => Err(err)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("locking backup lockfile {}", path.display())),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -420,6 +468,36 @@ mod tests {
 			tags.get("canopy-type").map(String::as_str),
 			Some("tamanu-postgres")
 		);
+	}
+
+	#[test]
+	fn lock_path_names_per_type_and_sanitises_separators() {
+		assert!(
+			lock_path("tamanu-postgres")
+				.to_string_lossy()
+				.ends_with("backup-tamanu-postgres.lock")
+		);
+		assert!(
+			lock_path("a/b")
+				.to_string_lossy()
+				.ends_with("backup-a_b.lock")
+		);
+	}
+
+	#[tokio::test]
+	async fn lock_is_exclusive_and_releases_on_drop() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("backup-test.lock");
+		let held = try_acquire_lock(&path).await.unwrap();
+		assert!(held.is_some(), "first acquire takes the lock");
+		// A second attempt while the first is held is refused.
+		assert!(
+			try_acquire_lock(&path).await.unwrap().is_none(),
+			"a concurrent run is locked out"
+		);
+		drop(held);
+		// Released → acquirable again.
+		assert!(try_acquire_lock(&path).await.unwrap().is_some());
 	}
 
 	#[test]
