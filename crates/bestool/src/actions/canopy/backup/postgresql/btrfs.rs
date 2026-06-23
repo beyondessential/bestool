@@ -39,11 +39,10 @@ pub struct Mounts {
 	kopia_mount: PathBuf,
 }
 
-/// The stable mount path for a backup type — fixed across runs so kopia sees one
-/// source. The version/cluster suffix in the source path (added by the caller)
-/// is the only part that moves, and only across a major-version upgrade.
+/// The stable mount path for a backup type (see
+/// [`super::stable_source_dir`]).
 fn stable_kopia_mount(backup_type: &str) -> PathBuf {
-	PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+	super::stable_source_dir(backup_type)
 }
 
 /// Name for this run's ephemeral snapshot subvolume.

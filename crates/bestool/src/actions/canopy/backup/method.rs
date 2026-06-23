@@ -36,6 +36,8 @@ pub(super) enum Teardown {
 	Nothing,
 	/// A btrfs snapshot + its mounts.
 	Btrfs(super::postgresql::btrfs::Mounts),
+	/// A streamed base backup directory to remove.
+	BaseBackup(PathBuf),
 }
 
 /// `[simple]` method: snapshot a path verbatim.
@@ -104,6 +106,7 @@ impl Method {
 		match prepared.teardown {
 			Teardown::Nothing => Ok(()),
 			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
+			Teardown::BaseBackup(root) => super::postgresql::basebackup::teardown(root).await,
 		}
 	}
 
