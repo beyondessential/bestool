@@ -16,6 +16,9 @@ pub struct TaskContext {
 	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 	pub http_client: reqwest::Client,
 	pub canopy_client: Option<Arc<CanopyClient>>,
+	/// Bumped on each reload request (SIGHUP/SIGUSR1); a task can
+	/// `reload.changed().await` to refresh its state without a restart.
+	pub reload: tokio::sync::watch::Receiver<u64>,
 }
 
 impl TaskContext {
@@ -24,6 +27,7 @@ impl TaskContext {
 			pg_pool: ctx.pg_pool.clone(),
 			http_client: ctx.http_client.clone(),
 			canopy_client: ctx.canopy_client.clone(),
+			reload: ctx.reload.clone(),
 		}
 	}
 }

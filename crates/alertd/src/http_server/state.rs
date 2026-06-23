@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 
-use crate::{context::InternalContext, tasks::TaskEndpointHandler};
+use crate::{context::InternalContext, daemon::DaemonControl, tasks::TaskEndpointHandler};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -14,4 +14,6 @@ pub struct ServerState {
 	/// `(task_name, endpoint_name)` so the `/tasks/:task/:endpoint` route can
 	/// dispatch in O(1) without walking the task registry per request.
 	pub task_endpoints: Arc<HashMap<(String, String), TaskEndpointHandler>>,
+	/// Drives the daemon's `/reload` and `/restart` control endpoints.
+	pub control: DaemonControl,
 }

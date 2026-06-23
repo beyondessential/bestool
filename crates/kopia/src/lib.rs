@@ -191,6 +191,147 @@ pub fn build_kopia_command(kopia: &Path) -> Result<Command, String> {
 	}
 }
 
+/// AWS environment variables that precede the container-credentials provider in
+/// minio-go's resolution chain.
+///
+/// They're scrubbed from kopia's environment so they can't shadow the loopback
+/// container-credentials endpoint the device serves. (`FULL_URI` and
+/// `AUTHORIZATION_TOKEN` are *not* here — those are the endpoint we point kopia
+/// at.)
+pub const S3_SHADOWING_ENV_VARS: [&str; 7] = [
+	"AWS_ACCESS_KEY_ID",
+	"AWS_SECRET_ACCESS_KEY",
+	"AWS_SESSION_TOKEN",
+	"AWS_WEB_IDENTITY_TOKEN_FILE",
+	"AWS_ROLE_ARN",
+	"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+	"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+];
+
+/// Environment for a kopia run that gets its S3 creds from a loopback
+/// container-credentials endpoint.
+///
+/// `token` and `password` are secrets — passed via the environment (never argv)
+/// so they don't show up in the process list. `config_path` points kopia at a
+/// transient per-run config so the bucket/password never persist to the device's
+/// kopia config.
+pub struct S3KopiaEnv<'a> {
+	/// `AWS_CONTAINER_CREDENTIALS_FULL_URI` (the loopback creds endpoint).
+	pub full_uri: &'a str,
+	/// `AWS_CONTAINER_AUTHORIZATION_TOKEN` (the leased bearer token).
+	pub token: &'a str,
+	/// `KOPIA_PASSWORD` (the repo passphrase).
+	pub password: &'a str,
+	/// `KOPIA_CONFIG_PATH` (a transient per-run config file).
+	pub config_path: &'a Path,
+}
+
+impl S3KopiaEnv<'_> {
+	/// The (key, value) pairs this env sets on a kopia process.
+	fn vars(&self) -> [(&'static str, std::ffi::OsString); 4] {
+		[
+			("AWS_CONTAINER_CREDENTIALS_FULL_URI", self.full_uri.into()),
+			("AWS_CONTAINER_AUTHORIZATION_TOKEN", self.token.into()),
+			("KOPIA_PASSWORD", self.password.into()),
+			("KOPIA_CONFIG_PATH", self.config_path.as_os_str().to_owned()),
+		]
+	}
+
+	/// The keys to forward across a `sudo` env reset (`--preserve-env=…`).
+	fn preserve_env_keys(&self) -> String {
+		self.vars()
+			.iter()
+			.map(|(k, _)| *k)
+			.collect::<Vec<_>>()
+			.join(",")
+	}
+}
+
+/// Build a kopia [`Command`] that gets its S3 creds from a loopback
+/// container-credentials endpoint.
+///
+/// On Linux, kopia runs as the [`LINUX_KOPIA_USER`] via `sudo` when needed;
+/// `sudo`'s `env_reset` drops the parent environment (so the
+/// [`S3_SHADOWING_ENV_VARS`] never reach kopia) and the creds/password vars are
+/// forwarded explicitly via `--preserve-env`. Run directly, the child inherits
+/// our environment, so the shadowing vars are removed explicitly instead.
+pub fn build_kopia_command_with_s3(kopia: &Path, env: &S3KopiaEnv<'_>) -> Result<Command, String> {
+	let mut cmd = if cfg!(target_os = "linux") {
+		match linux_elevation() {
+			Elevation::Direct => Command::new(kopia),
+			Elevation::Sudo => {
+				let mut c = Command::new("sudo");
+				c.arg(format!("--preserve-env={}", env.preserve_env_keys()));
+				c.arg("-u").arg(LINUX_KOPIA_USER).arg("--").arg(kopia);
+				c
+			}
+			Elevation::Skip(reason) => return Err(reason),
+		}
+	} else {
+		Command::new(kopia)
+	};
+
+	// Under sudo, env_reset already dropped these; removing them here covers the
+	// direct (inherited-environment) path.
+	for key in S3_SHADOWING_ENV_VARS {
+		cmd.env_remove(key);
+	}
+	for (key, value) in env.vars() {
+		cmd.env(key, value);
+	}
+	Ok(cmd)
+}
+
+/// Push `repository connect s3` args (the canopy-managed repo connection).
+pub fn args_repository_connect_s3(
+	cmd: &mut Command,
+	bucket: &str,
+	prefix: &str,
+	region: &str,
+	username: &str,
+	hostname: &str,
+) {
+	cmd.args(["repository", "connect", "s3"])
+		.arg("--bucket")
+		.arg(bucket)
+		.arg("--prefix")
+		.arg(prefix)
+		.arg("--region")
+		.arg(region)
+		.arg("--override-username")
+		.arg(username)
+		.arg("--override-hostname")
+		.arg(hostname);
+}
+
+/// Push `snapshot create --json` args, with each tag as `key:value`.
+pub fn args_snapshot_create(cmd: &mut Command, path: &Path, tags: &BTreeMap<String, String>) {
+	cmd.args(["snapshot", "create", "--json"]);
+	for (key, value) in tags {
+		cmd.arg("--tags").arg(format!("{key}:{value}"));
+	}
+	cmd.arg(path);
+}
+
+/// Push `snapshot list --json --all` args (every snapshot, all sources).
+pub fn args_snapshot_list(cmd: &mut Command) {
+	cmd.args(["snapshot", "list", "--json", "--all"]);
+}
+
+/// Push `snapshot restore` args (restore a snapshot id into `dest`).
+pub fn args_snapshot_restore(cmd: &mut Command, snapshot_id: &str, dest: &Path) {
+	cmd.args(["snapshot", "restore", snapshot_id]).arg(dest);
+}
+
+/// Push `policy set --add-ignore=… <path>` args (ignore transient files at a source).
+pub fn args_policy_set_ignores(cmd: &mut Command, path: &Path, ignores: &[String]) {
+	cmd.args(["policy", "set"]);
+	for glob in ignores {
+		cmd.arg(format!("--add-ignore={glob}"));
+	}
+	cmd.arg(path);
+}
+
 /// A single kopia snapshot, as emitted by `kopia snapshot list --json`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -592,6 +733,151 @@ mod tests {
 	use jiff::ToSpan;
 
 	use super::*;
+
+	fn args_of(cmd: &Command) -> Vec<String> {
+		cmd.get_args()
+			.map(|a| a.to_string_lossy().into_owned())
+			.collect()
+	}
+
+	#[test]
+	fn repository_connect_s3_args_are_in_order() {
+		let mut cmd = Command::new("kopia");
+		args_repository_connect_s3(
+			&mut cmd,
+			"my-bucket",
+			"",
+			"ap-southeast-2",
+			"canopy",
+			"server-id-123",
+		);
+		assert_eq!(
+			args_of(&cmd),
+			vec![
+				"repository",
+				"connect",
+				"s3",
+				"--bucket",
+				"my-bucket",
+				"--prefix",
+				"",
+				"--region",
+				"ap-southeast-2",
+				"--override-username",
+				"canopy",
+				"--override-hostname",
+				"server-id-123",
+			]
+		);
+	}
+
+	#[test]
+	fn snapshot_create_args_emit_sorted_colon_tags() {
+		let mut cmd = Command::new("kopia");
+		let mut tags = BTreeMap::new();
+		tags.insert("canopy-run".to_owned(), "run-uuid".to_owned());
+		tags.insert("canopy-device".to_owned(), "device-uuid".to_owned());
+		args_snapshot_create(&mut cmd, Path::new("/data/pg"), &tags);
+		assert_eq!(
+			args_of(&cmd),
+			vec![
+				"snapshot",
+				"create",
+				"--json",
+				// BTreeMap iterates sorted: canopy-device before canopy-run.
+				"--tags",
+				"canopy-device:device-uuid",
+				"--tags",
+				"canopy-run:run-uuid",
+				"/data/pg",
+			]
+		);
+	}
+
+	#[test]
+	fn snapshot_restore_args() {
+		let mut cmd = Command::new("kopia");
+		args_snapshot_restore(&mut cmd, "abc123", Path::new("/restore/here"));
+		assert_eq!(
+			args_of(&cmd),
+			vec!["snapshot", "restore", "abc123", "/restore/here"]
+		);
+	}
+
+	#[test]
+	fn policy_set_ignores_args() {
+		let mut cmd = Command::new("kopia");
+		args_policy_set_ignores(
+			&mut cmd,
+			Path::new("/data/pg"),
+			&["postmaster.pid".to_owned(), "*.log".to_owned()],
+		);
+		assert_eq!(
+			args_of(&cmd),
+			vec![
+				"policy",
+				"set",
+				"--add-ignore=postmaster.pid",
+				"--add-ignore=*.log",
+				"/data/pg",
+			]
+		);
+	}
+
+	#[test]
+	fn s3_env_sets_creds_vars_and_scrubs_shadowing_ones() {
+		let env = S3KopiaEnv {
+			full_uri: "http://127.0.0.1:5000/creds",
+			token: "bearer-token",
+			password: "repo-pass",
+			config_path: Path::new("/run/bestool/kopia.config"),
+		};
+		let cmd = build_kopia_command_with_s3(Path::new("/usr/bin/kopia"), &env).unwrap();
+		let envs: std::collections::HashMap<String, Option<String>> = cmd
+			.get_envs()
+			.map(|(k, v)| {
+				(
+					k.to_string_lossy().into_owned(),
+					v.map(|v| v.to_string_lossy().into_owned()),
+				)
+			})
+			.collect();
+
+		assert_eq!(
+			envs.get("AWS_CONTAINER_CREDENTIALS_FULL_URI"),
+			Some(&Some("http://127.0.0.1:5000/creds".to_owned()))
+		);
+		assert_eq!(
+			envs.get("AWS_CONTAINER_AUTHORIZATION_TOKEN"),
+			Some(&Some("bearer-token".to_owned()))
+		);
+		assert_eq!(
+			envs.get("KOPIA_PASSWORD"),
+			Some(&Some("repo-pass".to_owned()))
+		);
+		assert_eq!(
+			envs.get("KOPIA_CONFIG_PATH"),
+			Some(&Some("/run/bestool/kopia.config".to_owned()))
+		);
+		// Shadowing vars are explicitly removed (None == env_remove).
+		for key in S3_SHADOWING_ENV_VARS {
+			assert_eq!(envs.get(key), Some(&None), "{key} must be scrubbed");
+		}
+	}
+
+	#[test]
+	fn preserve_env_keys_lists_all_creds_vars() {
+		let env = S3KopiaEnv {
+			full_uri: "http://127.0.0.1:0/creds",
+			token: "t",
+			password: "p",
+			config_path: Path::new("/tmp/c"),
+		};
+		assert_eq!(
+			env.preserve_env_keys(),
+			"AWS_CONTAINER_CREDENTIALS_FULL_URI,AWS_CONTAINER_AUTHORIZATION_TOKEN,KOPIA_PASSWORD,KOPIA_CONFIG_PATH"
+		);
+	}
 
 	fn snapshot(id: &str, host: &str, path: &str, taken: Timestamp) -> Snapshot {
 		Snapshot {

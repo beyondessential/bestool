@@ -8,6 +8,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd`↴](#bestool-alertd)
 * [`bestool alertd run`↴](#bestool-alertd-run)
 * [`bestool alertd status`↴](#bestool-alertd-status)
+* [`bestool alertd reload`↴](#bestool-alertd-reload)
+* [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
 * [`bestool caddy`↴](#bestool-caddy)
 * [`bestool caddy configure-tamanu`↴](#bestool-caddy-configure-tamanu)
@@ -17,6 +19,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
+* [`bestool canopy backup`↴](#bestool-canopy-backup)
+* [`bestool canopy restore`↴](#bestool-canopy-restore)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -58,6 +62,8 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
 * [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
+* [`bestool tamanu alertd reload`↴](#bestool-tamanu-alertd-reload)
+* [`bestool tamanu alertd restart`↴](#bestool-tamanu-alertd-restart)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
@@ -156,6 +162,8 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `reload` — Reload a running daemon
+* `restart` — Restart a running daemon
 
 
 
@@ -200,6 +208,34 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool alertd reload`
+
+Reload a running daemon
+
+Asks the daemon to re-register backup capabilities and pick up changes under /etc/bestool/backups, without restarting.
+
+**Usage:** `bestool alertd reload [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+
+
+
+## `bestool alertd restart`
+
+Restart a running daemon
+
+Asks the daemon to exit so the service manager restarts it — e.g. to pick up a freshly-installed bestool binary.
+
+**Usage:** `bestool alertd restart [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
 
 
 
@@ -294,6 +330,8 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `export` — Export this machine's canopy registration for transfer to another machine
 * `import` — Import a canopy registration exported from another machine
 * `tags` — Fetch this device's tags from canopy.
+* `backup` — Run a configured backup, driving kopia and reporting to Canopy
+* `restore` — Restore a backup from Canopy's repository
 
 
 
@@ -388,6 +426,40 @@ human-readable output.
 
 * `--json` — Emit the tags as JSON rather than a human-readable table
 * `--offline` — Skip the network fetch and print whatever's in the cache, without trying canopy first. Useful for fully-offline diagnostic runs
+
+
+
+## `bestool canopy backup`
+
+Run a configured backup, driving kopia and reporting to Canopy
+
+**Usage:** `bestool canopy backup [OPTIONS] --type <TYPE>`
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type to run.
+
+   Must have a definition in the backups directory (a `*.toml` whose `type` matches).
+* `--config <DIR>` — Override the registration directory (matching `register`/`export`)
+* `--backups-dir <DIR>` — Override the backups definition directory
+
+
+
+## `bestool canopy restore`
+
+Restore a backup from Canopy's repository
+
+**Usage:** `bestool canopy restore [OPTIONS] --type <TYPE>`
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type to restore (must have a def in the backups directory)
+* `--id <ID>` — Restore a specific snapshot id (a prefix is accepted)
+* `--latest` — Restore the most recent snapshot of this type
+* `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
+* `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
+* `--config <DIR>` — Override the registration directory
+* `--backups-dir <DIR>` — Override the backups definition directory
 
 
 
@@ -1392,6 +1464,8 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `reload` — Reload a running daemon
+* `restart` — Restart a running daemon
 
 
 
@@ -1436,6 +1510,34 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool tamanu alertd reload`
+
+Reload a running daemon
+
+Asks the daemon to re-register backup capabilities and pick up changes under /etc/bestool/backups, without restarting.
+
+**Usage:** `bestool tamanu alertd reload [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+
+
+
+## `bestool tamanu alertd restart`
+
+Restart a running daemon
+
+Asks the daemon to exit so the service manager restarts it — e.g. to pick up a freshly-installed bestool binary.
+
+**Usage:** `bestool tamanu alertd restart [OPTIONS]`
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
 
 
 

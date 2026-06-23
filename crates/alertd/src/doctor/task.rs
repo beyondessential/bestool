@@ -15,6 +15,13 @@ use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
 const DOCTOR_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Invoked with the `backup_now` list from canopy's status response.
+///
+/// alertd has no backup logic of its own; the bestool binary supplies this to
+/// run the in-process backup driver. Fire-and-forget: the callback spawns its
+/// own work and guards against overlapping runs.
+pub type BackupDispatch = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
 /// Periodic doctor sweep, plus on-demand `latest` / `recompute` HTTP endpoints.
 ///
 /// The outer struct just holds an `Arc<Inner>` so we can hand inner clones to
@@ -38,6 +45,9 @@ struct DoctorTaskInner {
 	/// HTTP endpoint so `bestool tamanu doctor` can read what the daemon
 	/// already computed instead of re-running the checks itself.
 	latest: Mutex<Option<LatestSweep>>,
+	/// Runs the backup driver for the types canopy asks for via `backup_now`.
+	/// `None` when backups aren't compiled in.
+	backup_dispatch: Option<BackupDispatch>,
 }
 
 #[derive(Clone)]
@@ -58,7 +68,20 @@ impl DoctorTask {
 					.expect("default canopy URL is valid"),
 				pg_version_cache: Mutex::new(None),
 				latest: Mutex::new(None),
+				backup_dispatch: None,
 			}),
+		}
+	}
+
+	/// Attach the backup dispatcher invoked when canopy requests a backup.
+	///
+	/// Call right after [`DoctorTask::new`] (before the task is shared).
+	pub fn with_backup_dispatch(self, dispatch: BackupDispatch) -> Self {
+		let mut inner =
+			Arc::try_unwrap(self.inner).unwrap_or_else(|_| panic!("DoctorTask already shared"));
+		inner.backup_dispatch = Some(dispatch);
+		Self {
+			inner: Arc::new(inner),
 		}
 	}
 }
@@ -111,10 +134,22 @@ impl DoctorTaskInner {
 			return Ok(());
 		};
 
-		canopy
+		let backup_now = canopy
 			.post_status(&self.canopy_base_url, &server_id, &sweep.payload)
 			.await
-			.map_err(|err| miette!("posting doctor status to canopy: {err}"))
+			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
+
+		if !backup_now.is_empty() {
+			match &self.backup_dispatch {
+				Some(dispatch) => dispatch(backup_now),
+				None => warn!(
+					?backup_now,
+					"canopy requested a backup but no backup dispatcher is configured"
+				),
+			}
+		}
+
+		Ok(())
 	}
 
 	/// `GET /tasks/doctor/latest` — return the last sweep this daemon

@@ -15,6 +15,7 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		pg_pool: Some(pool),
 		http_client: reqwest::Client::new(),
 		canopy_client: None,
+		reload: tokio::sync::watch::channel(0).1,
 	});
 
 	Arc::new(ServerState {
@@ -23,5 +24,6 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		internal_context: ctx,
 		watchdog_timeout: Some(std::time::Duration::from_secs(600)),
 		task_endpoints: Arc::new(HashMap::new()),
+		control: crate::daemon::DaemonControl::detached(),
 	})
 }

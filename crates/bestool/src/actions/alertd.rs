@@ -82,6 +82,26 @@ enum Command {
 		server_addr: Vec<SocketAddr>,
 	},
 
+	/// Reload a running daemon
+	///
+	/// Asks the daemon to re-register backup capabilities and pick up changes
+	/// under /etc/bestool/backups, without restarting.
+	Reload {
+		/// HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
+	/// Restart a running daemon
+	///
+	/// Asks the daemon to exit so the service manager restarts it — e.g. to pick
+	/// up a freshly-installed bestool binary.
+	Restart {
+		/// HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
 	/// Install the daemon as a Windows service
 	///
 	/// Creates a Windows service named 'bestool-alertd' that will start automatically
@@ -121,6 +141,22 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			};
 			bestool_alertd::commands::get_status(&addrs).await
 		}
+		Command::Reload { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::reload(&addrs).await
+		}
+		Command::Restart { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::restart(&addrs).await
+		}
 		Command::Run { daemon } => {
 			let daemon_config = build_config(&ctx, daemon).await?;
 			bestool_alertd::run(daemon_config).await
@@ -155,6 +191,177 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 
 			let daemon_config = build_config(&ctx, daemon).await?;
 			bestool_alertd::windows_service::run_service(daemon_config)
+		}
+	}
+}
+
+/// Build the doctor task, wiring the canopy backup trigger when backups are
+/// compiled in.
+fn doctor_task(
+	version: String,
+	tamanu: Option<bestool_alertd::doctor::SweepTamanu>,
+) -> DoctorTask {
+	let task = DoctorTask::new(version, tamanu);
+	#[cfg(feature = "canopy-backup")]
+	let task = task.with_backup_dispatch(backup_dispatch());
+	task
+}
+
+/// Register the daemon's tasks, adding the backup-capabilities task when backups
+/// are compiled in.
+fn with_daemon_tasks(
+	config: bestool_alertd::DaemonConfig,
+	doctor: DoctorTask,
+) -> bestool_alertd::DaemonConfig {
+	let config = config.with_task(Arc::new(doctor));
+	#[cfg(feature = "canopy-backup")]
+	let config = config.with_task(Arc::new(backup::BackupCapabilitiesTask));
+	config
+}
+
+/// The in-process backup trigger: runs the driver for each type canopy requests
+/// via `backup_now`, skipping any type already in flight.
+#[cfg(feature = "canopy-backup")]
+fn backup_dispatch() -> bestool_alertd::doctor::BackupDispatch {
+	use std::collections::HashSet;
+
+	use tokio::sync::Mutex;
+
+	let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
+	Arc::new(move |types: Vec<String>| {
+		for backup_type in types {
+			let in_flight = in_flight.clone();
+			tokio::spawn(async move {
+				// Overlap guard: skip a type whose previous run is still going
+				// (canopy re-emits idempotently until the report clears it).
+				if !in_flight.lock().await.insert(backup_type.clone()) {
+					return;
+				}
+				if let Err(err) =
+					crate::actions::canopy::backup::run_backup(&backup_type, None, None).await
+				{
+					tracing::error!("backup '{backup_type}' failed: {err}");
+				}
+				in_flight.lock().await.remove(&backup_type);
+			});
+		}
+	})
+}
+
+/// A background task that registers this server's backup capabilities with
+/// canopy (the types of every def in the backups directory).
+///
+/// It's a resident task: after the initial registration it stays running and
+/// re-registers when the backups directory changes, when a reload signal
+/// (SIGHUP/SIGUSR1) arrives, or on a periodic safety-net tick — so dropping a
+/// new def in `/etc/bestool/backups` is picked up without restarting the daemon.
+#[cfg(feature = "canopy-backup")]
+mod backup {
+	use std::time::Duration;
+
+	use futures::future::BoxFuture;
+	use miette::{IntoDiagnostic as _, Result};
+	use tokio::sync::mpsc;
+	use tracing::{info, warn};
+
+	use crate::actions::canopy::backup::config;
+
+	/// Re-register at least this often even without an external trigger, so a
+	/// missed event still converges.
+	const REREGISTER_INTERVAL: Duration = Duration::from_secs(3600);
+
+	pub(super) struct BackupCapabilitiesTask;
+
+	/// Load the configured backup types and register them with canopy.
+	async fn register(ctx: &bestool_alertd::TaskContext) -> Result<()> {
+		let Some(client) = ctx.canopy_client.as_ref() else {
+			return Ok(());
+		};
+		let defs = config::load_dir(&config::backups_dir()).await?;
+		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
+		if types.is_empty() {
+			return Ok(());
+		}
+		let base_url = bestool_canopy::DEFAULT_CANOPY_URL.parse().into_diagnostic()?;
+		client.backup_capabilities(&base_url, &types).await?;
+		info!(?types, "registered backup capabilities with canopy");
+		Ok(())
+	}
+
+	/// Re-register, logging the trigger; failures are warned, never fatal.
+	async fn reregister(reason: &str, ctx: &bestool_alertd::TaskContext) {
+		info!(reason, "registering backup capabilities");
+		if let Err(err) = register(ctx).await {
+			warn!("registering backup capabilities failed (will retry): {err}");
+		}
+	}
+
+	/// Watch the backups directory, sending `()` on any change. Returns the
+	/// watcher (kept alive by the caller) or `None` if it couldn't be set up
+	/// (e.g. the directory doesn't exist yet) — the periodic tick still covers it.
+	fn watch_backups_dir(tx: mpsc::UnboundedSender<()>) -> Option<notify::RecommendedWatcher> {
+		use notify::{RecursiveMode, Watcher as _};
+
+		let dir = config::backups_dir();
+		let mut watcher =
+			notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+				if res.is_ok() {
+					let _ = tx.send(());
+				}
+			})
+			.inspect_err(|err| warn!("could not create backups-dir watcher: {err}"))
+			.ok()?;
+		match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+			Ok(()) => Some(watcher),
+			Err(err) => {
+				warn!(dir = %dir.display(), "could not watch backups dir (using timer/signals): {err}");
+				None
+			}
+		}
+	}
+
+	/// Coalesce a burst of fs events into one re-registration.
+	fn drain(rx: &mut mpsc::UnboundedReceiver<()>) {
+		while rx.try_recv().is_ok() {}
+	}
+
+	impl bestool_alertd::BackgroundTask for BackupCapabilitiesTask {
+		fn name(&self) -> &'static str {
+			"backup-capabilities"
+		}
+
+		fn interval(&self) -> Duration {
+			// run() is resident, so this only gates the (single) first tick.
+			REREGISTER_INTERVAL
+		}
+
+		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
+			Box::pin(async move {
+				reregister("startup", ctx).await;
+
+				let (tx, mut rx) = mpsc::unbounded_channel();
+				// Held for the task's lifetime so events keep arriving.
+				let _watcher = watch_backups_dir(tx);
+
+				// The daemon turns SIGHUP/SIGUSR1 (and systemd's reload) into a
+				// bump on this channel; we also re-register on a backups-dir
+				// change and a periodic safety-net tick.
+				let mut reload = ctx.reload.clone();
+				let mut periodic = tokio::time::interval(REREGISTER_INTERVAL);
+				periodic.tick().await; // consume the immediate first tick
+
+				loop {
+					tokio::select! {
+						_ = periodic.tick() => reregister("periodic", ctx).await,
+						_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
+						changed = reload.changed() => match changed {
+							Ok(()) => reregister("reload signal", ctx).await,
+							// Sender dropped → daemon is shutting down.
+							Err(_) => break Ok(()),
+						},
+					}
+				}
+			})
 		}
 	}
 }
@@ -244,18 +451,16 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		.map(|t| t.version.to_string())
 		.unwrap_or_else(|| "0.0.0".into());
 
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(
+	let base = bestool_alertd::DaemonConfig::new(
 		pg_pool.clone(),
 		tamanu.as_ref().map(|t| t.database_url.clone()),
 		tamanu_version,
 	)
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
-	.with_watchdog_timeout(watchdog)
-	.with_task(Arc::new(DoctorTask::new(
-		env!("CARGO_PKG_VERSION").to_string(),
-		tamanu,
-	)));
+	.with_watchdog_timeout(watchdog);
+	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), tamanu);
+	let mut daemon_config = with_daemon_tasks(base, doctor);
 
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
@@ -297,14 +502,12 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 
 	// Canopy requires a version on every request; `0.0.0` is the agreed
 	// sentinel for hosts with no Tamanu.
-	let mut daemon_config = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
+	let base = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
-		.with_watchdog_timeout(watchdog)
-		.with_task(Arc::new(DoctorTask::new(
-			env!("CARGO_PKG_VERSION").to_string(),
-			None,
-		)));
+		.with_watchdog_timeout(watchdog);
+	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), None);
+	let mut daemon_config = with_daemon_tasks(base, doctor);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
 	}

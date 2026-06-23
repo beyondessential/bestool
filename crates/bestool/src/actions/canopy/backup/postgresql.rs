@@ -1,0 +1,363 @@
+//! The `postgresql` backup method: physical, crash-consistent cluster snapshots.
+//!
+//! Generic postgres (no Tamanu coupling): driven by the `[postgresql]` config
+//! table. Resolves the cluster's data directory, issues a best-effort
+//! `CHECKPOINT` to bound WAL replay on restore, detects the storage backend, and
+//! captures it: a crash-consistent btrfs or thin-LVM snapshot where available,
+//! else a `pg_basebackup` base backup. (Windows VSS is the remaining backend.)
+
+pub mod basebackup;
+pub mod btrfs;
+pub mod lvm;
+pub mod resolve;
+pub mod strategy;
+mod sys;
+pub mod vss;
+
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
+
+use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use tracing::{info, warn};
+
+use self::strategy::Strategy;
+use super::method::{PostgresqlConfig, Prepared, Teardown};
+
+/// The stable path the snapshot/basebackup is exposed at for kopia — fixed per
+/// backup type so kopia's history/dedup attribute to one source, regardless of
+/// which strategy produced it (a host migrating btrfs↔basebackup keeps its
+/// history). The version/cluster suffix the caller adds is the only moving part.
+pub(super) fn stable_source_dir(backup_type: &str) -> PathBuf {
+	#[cfg(unix)]
+	{
+		PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+	}
+	#[cfg(not(unix))]
+	{
+		let base = std::env::var_os("ProgramData")
+			.map(PathBuf::from)
+			.unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+		base.join("bestool").join("backup-source").join(backup_type)
+	}
+}
+
+/// Transient files safe to exclude from the snapshot. Never `pg_wal`, `pg_xact`,
+/// `pg_control`, `global`, or tablespaces — those are required for recovery.
+fn ignore_globs() -> Vec<String> {
+	["postmaster.pid", "*.log", "pg_stat_tmp/*", "lost+found"]
+		.into_iter()
+		.map(String::from)
+		.collect()
+}
+
+/// Snapshot metadata carried as kopia tags (drives observability + restore).
+fn metadata_tags(resolved: &resolve::ResolvedCluster, strategy: Strategy) -> BTreeMap<String, String> {
+	BTreeMap::from([
+		("pg-version".to_owned(), resolved.version.clone()),
+		("pg-cluster".to_owned(), resolved.cluster.clone()),
+		("pg-strategy".to_owned(), format!("{strategy:?}").to_lowercase()),
+	])
+}
+
+/// Prepare a crash-consistent source for kopia.
+pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Prepared> {
+	let resolved = resolve::resolve(config)?;
+	let strategy = strategy::detect(config.strategy.as_deref(), &resolved.data_dir)?;
+	info!(
+		cluster = %resolved.cluster,
+		version = %resolved.version,
+		?strategy,
+		data_dir = %resolved.data_dir.display(),
+		"preparing postgresql backup",
+	);
+
+	// An explicit CHECKPOINT just before the snapshot bounds how much WAL
+	// recovery replays on restore. It's an optimisation, not a correctness
+	// requirement — the snapshot is crash-consistent regardless — so a failure
+	// here must not fail the backup.
+	checkpoint(config, &resolved.data_dir).await;
+
+	match strategy {
+		Strategy::BaseBackup => basebackup_prepared(&resolved, backup_type, config).await,
+		// For a snapshot backend (btrfs/thin-LVM/VSS): if the snapshot can't be
+		// taken — VSS unavailable, missing privileges, a layout we can't capture
+		// atomically — fall back to pg_basebackup rather than fail. That's a safe
+		// degradation (a correct, if heavier, base backup) — never the live dir.
+		snapshot => match snapshot_prepared(snapshot, &resolved, backup_type).await {
+			Ok(prepared) => Ok(prepared),
+			Err(err) => {
+				warn!(
+					strategy = ?snapshot,
+					"snapshot backend unavailable ({err}); falling back to pg_basebackup"
+				);
+				basebackup_prepared(&resolved, backup_type, config).await
+			}
+		},
+	}
+}
+
+/// Prepare via a snapshot backend (btrfs / thin-LVM / VSS).
+async fn snapshot_prepared(
+	strategy: Strategy,
+	resolved: &resolve::ResolvedCluster,
+	backup_type: &str,
+) -> Result<Prepared> {
+	let (path, teardown) = match strategy {
+		Strategy::Btrfs => {
+			let (path, mounts) = btrfs::prepare(resolved, backup_type).await?;
+			(path, Teardown::Btrfs(mounts))
+		}
+		Strategy::ThinLvm => {
+			let (path, snapshot) = lvm::prepare(resolved, backup_type).await?;
+			(path, Teardown::Lvm(snapshot))
+		}
+		Strategy::Vss => {
+			let (path, shadow) = vss::prepare(resolved, backup_type).await?;
+			(path, Teardown::Vss(shadow))
+		}
+		Strategy::BaseBackup => unreachable!("basebackup is handled by the caller"),
+	};
+	Ok(Prepared {
+		path,
+		extra_tags: metadata_tags(resolved, strategy),
+		ignore: ignore_globs(),
+		teardown,
+	})
+}
+
+/// Prepare via `pg_basebackup` (the always-correct fallback).
+async fn basebackup_prepared(
+	resolved: &resolve::ResolvedCluster,
+	backup_type: &str,
+	config: &PostgresqlConfig,
+) -> Result<Prepared> {
+	let (path, root) =
+		basebackup::prepare(resolved, backup_type, config.socket.as_deref(), config.port).await?;
+	Ok(Prepared {
+		path,
+		// Tagged as basebackup even on fallback — it reflects what actually ran.
+		extra_tags: metadata_tags(resolved, Strategy::BaseBackup),
+		ignore: ignore_globs(),
+		teardown: Teardown::BaseBackup(root),
+	})
+}
+
+/// Restore a postgres cluster from a freshly-restored tree (`staging`): stop the
+/// cluster, swap the data directory into place (keeping the old one as
+/// `<data>.old`), start it via plain crash recovery, and verify.
+///
+/// Refuses to overwrite an existing data directory unless `opts.clobber` is set
+/// (the command sets it from the flag or an interactive confirmation).
+pub async fn restore(
+	config: &PostgresqlConfig,
+	staging: &Path,
+	opts: &super::method::RestoreOpts,
+) -> Result<()> {
+	let target = resolve::resolve_target(config)?;
+	let restored = resolve::locate_pgdata(staging)?;
+	info!(
+		cluster = %target.cluster,
+		version = %target.version,
+		data_dir = %target.data_dir.display(),
+		"restoring postgres cluster",
+	);
+
+	super::method::ensure_not_clobbering(&target.data_dir, opts.clobber)?;
+
+	stop_cluster(&target).await;
+
+	super::method::replace_dir(&restored, &target.data_dir).await?;
+	fix_ownership(&target.data_dir).await?;
+
+	if let Err(err) = start_cluster(&target).await {
+		warn!(
+			"cluster did not start cleanly ({err}); resetting WAL as a last resort \
+			 (this may indicate a non-clean backup)"
+		);
+		pg_resetwal(&target.data_dir).await?;
+		start_cluster(&target).await?;
+	}
+
+	verify(config, &target.data_dir).await;
+	info!("restore complete; run migrations / config sync as needed");
+	Ok(())
+}
+
+async fn stop_cluster(target: &resolve::ResolvedCluster) {
+	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
+	if let Err(err) = run_status("systemctl", &["stop", &unit]).await {
+		warn!("stopping {unit} failed (continuing): {err}");
+	}
+}
+
+async fn start_cluster(target: &resolve::ResolvedCluster) -> Result<()> {
+	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
+	run_status("systemctl", &["start", &unit]).await
+}
+
+async fn fix_ownership(data_dir: &Path) -> Result<()> {
+	run_status("chown", &["-R", "postgres:postgres", path(data_dir)]).await?;
+	run_status("chmod", &["0750", path(data_dir)]).await
+}
+
+async fn pg_resetwal(data_dir: &Path) -> Result<()> {
+	let mut cmd = pg_command(&postgres_bin("pg_resetwal", data_dir));
+	cmd.arg("-f").arg(data_dir);
+	run_checked(cmd, "pg_resetwal").await
+}
+
+async fn verify(config: &PostgresqlConfig, data_dir: &Path) {
+	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
+	cmd.args(["-X", "-q", "-tAc", "SELECT 1"]);
+	if let Some(port) = config.port {
+		cmd.arg("-p").arg(port.to_string());
+	}
+	cmd.stdin(std::process::Stdio::null());
+	match cmd.status().await {
+		Ok(s) if s.success() => info!("restored cluster accepts connections"),
+		Ok(s) => warn!(%s, "post-restore verification query failed"),
+		Err(err) => warn!("could not run verification query: {err}"),
+	}
+}
+
+fn path(p: &Path) -> &str {
+	p.to_str().unwrap_or_default()
+}
+
+async fn run_status(program: &str, args: &[&str]) -> Result<()> {
+	let status = tokio::process::Command::new(program)
+		.args(args)
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning {program}"))?;
+	if !status.success() {
+		bail!("{program} {} failed ({status})", args.join(" "));
+	}
+	Ok(())
+}
+
+/// Locate a postgres binary.
+///
+/// On Windows the bins aren't on `PATH`; they sit beside the data dir in the
+/// EDB layout (`<data_dir>\..\bin`, wherever the install is rooted), so look
+/// there first. Otherwise fall back to the standard-install search.
+pub(super) fn postgres_bin(name: &str, data_dir: &Path) -> String {
+	#[cfg(windows)]
+	if let Some(candidate) = bin_beside_data_dir(name, data_dir).filter(|p| p.is_file()) {
+		return candidate.to_string_lossy().into_owned();
+	}
+	#[cfg(not(windows))]
+	let _ = data_dir;
+
+	crate::find_postgres::find_postgres_bin(name)
+		.map(|p| p.to_string_lossy().into_owned())
+		.unwrap_or_else(|_| name.to_owned())
+}
+
+/// The EDB-layout binary path beside the data dir (`<data_dir>\..\bin\<name>`).
+#[cfg(any(windows, test))]
+fn bin_beside_data_dir(name: &str, data_dir: &Path) -> Option<PathBuf> {
+	let exe = if cfg!(windows) {
+		format!("{name}.exe")
+	} else {
+		name.to_owned()
+	};
+	data_dir.parent().map(|p| p.join("bin").join(exe))
+}
+
+/// A command that runs a postgres tool as the right user: `sudo -u postgres` on
+/// Unix (peer auth + superuser/replication privilege), directly on Windows.
+pub(super) fn pg_command(bin: &str) -> tokio::process::Command {
+	#[cfg(unix)]
+	{
+		let mut cmd = tokio::process::Command::new("sudo");
+		cmd.args(["-u", "postgres", bin]);
+		cmd
+	}
+	#[cfg(not(unix))]
+	{
+		tokio::process::Command::new(bin)
+	}
+}
+
+/// Run a prepared command, erroring on non-zero exit.
+async fn run_checked(mut cmd: tokio::process::Command, what: &str) -> Result<()> {
+	let status = cmd
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning {what}"))?;
+	if !status.success() {
+		bail!("{what} failed ({status})");
+	}
+	Ok(())
+}
+
+/// Best-effort `CHECKPOINT` as the postgres superuser over the local socket.
+async fn checkpoint(config: &PostgresqlConfig, data_dir: &Path) {
+	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
+	cmd.args(["-X", "-q"]);
+	if let Some(socket) = &config.socket {
+		cmd.arg("-h").arg(socket);
+	}
+	if let Some(port) = config.port {
+		cmd.arg("-p").arg(port.to_string());
+	}
+	cmd.args(["-c", "CHECKPOINT;"]);
+	cmd.stdin(std::process::Stdio::null());
+
+	match cmd.status().await {
+		Ok(status) if status.success() => info!("issued CHECKPOINT before snapshot"),
+		Ok(status) => warn!(
+			%status,
+			"CHECKPOINT failed; snapshot is still crash-consistent, recovery may just replay more WAL"
+		),
+		Err(err) => warn!("could not run CHECKPOINT (continuing): {err}"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn bin_beside_data_dir_is_sibling_of_data() {
+		let candidate = bin_beside_data_dir("pg_basebackup", Path::new("/opt/pg/16/data")).unwrap();
+		let name = if cfg!(windows) {
+			"pg_basebackup.exe"
+		} else {
+			"pg_basebackup"
+		};
+		assert_eq!(candidate, Path::new("/opt/pg/16/bin").join(name));
+	}
+
+	#[test]
+	fn ignore_globs_never_include_required_dirs() {
+		let globs = ignore_globs();
+		assert!(globs.contains(&"postmaster.pid".to_owned()));
+		for required in ["pg_wal", "pg_xact", "pg_control", "global"] {
+			assert!(
+				!globs.iter().any(|g| g.contains(required)),
+				"{required} must never be ignored"
+			);
+		}
+	}
+
+	#[test]
+	fn metadata_tags_carry_version_cluster_strategy() {
+		let resolved = resolve::ResolvedCluster {
+			data_dir: "/var/lib/postgresql/16/main".into(),
+			version: "16".into(),
+			cluster: "main".into(),
+		};
+		let tags = metadata_tags(&resolved, Strategy::Btrfs);
+		assert_eq!(tags.get("pg-version").map(String::as_str), Some("16"));
+		assert_eq!(tags.get("pg-cluster").map(String::as_str), Some("main"));
+		assert_eq!(tags.get("pg-strategy").map(String::as_str), Some("btrfs"));
+	}
+}

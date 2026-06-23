@@ -1,0 +1,174 @@
+//! `pg_basebackup` base backup.
+//!
+//! For backends with no cheap atomic snapshot (ext4/xfs, thick LVM):
+//! `pg_basebackup --wal-method=stream` streams a complete base backup with the
+//! WAL **and the backup-end record** bundled in, so it restores by clean crash
+//! recovery — no `pg_resetwal`, no forced REINDEX. Always correct, just heavier
+//! than a CoW snapshot (a full copy each run).
+//!
+//! The streaming + chown steps are privileged and verified on-host; the pure
+//! helpers (paths, argv) are unit-tested.
+
+use std::{
+	path::{Path, PathBuf},
+	process::Stdio,
+};
+
+use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use tracing::info;
+
+use super::resolve::ResolvedCluster;
+
+/// Where this run's base backup is streamed to (and what kopia snapshots). Nests
+/// `<version>/<cluster>` under the stable source dir so the kopia source path
+/// matches the btrfs strategy's — a host can migrate between them and keep one
+/// continuous history.
+fn destination(backup_type: &str, resolved: &ResolvedCluster) -> PathBuf {
+	super::stable_source_dir(backup_type)
+		.join(&resolved.version)
+		.join(&resolved.cluster)
+}
+
+/// `pg_basebackup` args for a plain (uncompressed) base backup with streamed WAL.
+fn basebackup_args(dest: &Path, socket: Option<&Path>, port: Option<u16>) -> Vec<String> {
+	let mut args = vec![
+		"-D".to_owned(),
+		dest.to_string_lossy().into_owned(),
+		"--wal-method=stream".to_owned(),
+		"--checkpoint=fast".to_owned(),
+		"--no-password".to_owned(),
+	];
+	if let Some(socket) = socket {
+		args.push("-h".to_owned());
+		args.push(socket.to_string_lossy().into_owned());
+	}
+	if let Some(port) = port {
+		args.push("-p".to_owned());
+		args.push(port.to_string());
+	}
+	args
+}
+
+/// Stream a base backup and return (kopia source path, the dir to clean up).
+pub async fn prepare(
+	resolved: &ResolvedCluster,
+	backup_type: &str,
+	socket: Option<&Path>,
+	port: Option<u16>,
+) -> Result<(PathBuf, PathBuf)> {
+	let root = super::stable_source_dir(backup_type);
+	let dest = destination(backup_type, resolved);
+
+	// pg_basebackup requires an empty target; clear leftovers from a crashed run.
+	if root.exists() {
+		tokio::fs::remove_dir_all(&root)
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("clearing stale base backup at {}", root.display()))?;
+	}
+	if let Some(parent) = dest.parent() {
+		tokio::fs::create_dir_all(parent)
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("creating {}", parent.display()))?;
+	}
+
+	info!(dest = %dest.display(), "streaming pg_basebackup");
+	let mut cmd = super::pg_command(&super::postgres_bin("pg_basebackup", &resolved.data_dir));
+	cmd.args(basebackup_args(&dest, socket, port));
+	cmd.stdin(Stdio::null());
+	let status = cmd
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err("spawning pg_basebackup")?;
+	if !status.success() {
+		bail!("pg_basebackup failed ({status})");
+	}
+
+	#[cfg(unix)]
+	make_readable_by_kopia(&root).await;
+	Ok((dest, root))
+}
+
+/// Remove the streamed base backup (a full copy; reclaim the space).
+pub async fn teardown(root: PathBuf) -> Result<()> {
+	tokio::fs::remove_dir_all(&root)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("removing base backup at {}", root.display()))
+}
+
+/// pg_basebackup writes files owned by postgres and mode 0600; hand them to the
+/// kopia user so the (elevated-to-kopia) kopia run can read them. Best-effort —
+/// when there's no kopia user the run is direct (current user already reads it).
+#[cfg(unix)]
+async fn make_readable_by_kopia(root: &Path) {
+	let kopia_exists = tokio::process::Command::new("id")
+		.args(["-u", "kopia"])
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.status()
+		.await
+		.map(|s| s.success())
+		.unwrap_or(false);
+	if !kopia_exists {
+		return;
+	}
+	let status = tokio::process::Command::new("chown")
+		.args(["-R", "kopia:kopia"])
+		.arg(root)
+		.stdin(Stdio::null())
+		.status()
+		.await;
+	if !matches!(status, Ok(s) if s.success()) {
+		tracing::warn!("could not chown base backup to the kopia user; kopia may fail to read it");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn destination_nests_version_and_cluster_under_stable_dir() {
+		let resolved = ResolvedCluster {
+			data_dir: "/var/lib/postgresql/16/main".into(),
+			version: "16".into(),
+			cluster: "main".into(),
+		};
+		assert_eq!(
+			destination("tamanu-postgres", &resolved),
+			super::super::stable_source_dir("tamanu-postgres")
+				.join("16")
+				.join("main")
+		);
+	}
+
+	#[test]
+	fn basebackup_args_stream_wal_and_fast_checkpoint() {
+		let args = basebackup_args(Path::new("/staging/16/main"), None, None);
+		assert_eq!(
+			args,
+			vec![
+				"-D",
+				"/staging/16/main",
+				"--wal-method=stream",
+				"--checkpoint=fast",
+				"--no-password",
+			]
+		);
+	}
+
+	#[test]
+	fn basebackup_args_include_socket_and_port() {
+		let args = basebackup_args(
+			Path::new("/staging/16/main"),
+			Some(Path::new("/var/run/postgresql")),
+			Some(5433),
+		);
+		assert!(args.windows(2).any(|w| w == ["-h", "/var/run/postgresql"]));
+		assert!(args.windows(2).any(|w| w == ["-p", "5433"]));
+	}
+}

@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 algae-cli = { version = "1.1.4", path = "../algae-cli", optional = true }
+axum = { version = "0.8.9", optional = true }
 bestool-alertd = { version = "10.0.0", path = "../alertd", default-features = false, optional = true }
 bestool-canopy = { version = "0.3.6", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.1.3", path = "../kopia", optional = true }
@@ -55,6 +56,7 @@ merkle_hash = { version = "3.8.0", optional = true }
 miette = { workspace = true, features = ["fancy"] }
 mimalloc = "0.1.50"
 node-semver = { version = "2.2.0", optional = true }
+notify = { version = "8.2.0", optional = true }
 owo-colors = { version = "4.2.3", optional = true }
 p256 = { version = "0.13.2", features = ["pkcs8", "pem"], optional = true }
 percent-encoding = { version = "2.3.1", optional = true }
@@ -76,6 +78,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
 tokio-util = { workspace = true, optional = true }
+toml = { version = "1", optional = true }
 tracing = { workspace = true }
 upgrade = { version = "2.0.1", optional = true }
 uuid = { version = "1.23.2", features = ["v4"] }
@@ -174,11 +177,18 @@ canopy = [ # enable all canopy subcommands
 	"canopy-export",
 	"canopy-import",
 	"canopy-tags",
+	"canopy-backup",
+	"canopy-restore",
 ]
 canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:p256"]
 canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration", "dep:comfy-table", "dep:owo-colors"]
+# Config-driven backups: registers capabilities with canopy, runs pre/method/post
+# per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
+# method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
+canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "dep:bestool-postgres", "dep:axum", "dep:toml", "dep:notify", "dep:fs4"]
+canopy-restore = ["canopy-backup"]
 __canopy = ["dep:bestool-canopy"] # internal feature to enable the canopy subcommand common code
 
 ## Iti subcommands
@@ -197,6 +207,7 @@ __iti = ["dep:zmq"] # internal feature to enable the iti subcommand common code
 ## Legacy noop features to avoid breaking builds
 tamanu-upgrade = []
 walg = []
+notify = ["dep:notify"]
 
 [dev-dependencies]
 age = { version = "0.11.3", features = ["async"] }
