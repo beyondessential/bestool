@@ -21,7 +21,13 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::Redacted;
+use crate::{
+	Redacted,
+	backup::{
+		BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget,
+		CapabilitiesRequest, Purpose, TargetOutcome,
+	},
+};
 
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 
@@ -278,12 +284,17 @@ impl CanopyClient {
 	/// top-level `health: []` key, whose entries each carry a `result` of
 	/// `passed | warning | failed | broken | skipped`. The body is gzip-encoded
 	/// with `Content-Encoding: gzip`.
+	///
+	/// Returns `backup_now`: the backup-type names canopy says this server should
+	/// back up right now (operator one-offs + schedule-due). Empty means nothing
+	/// to do. A response that predates the field (no `backup_now`) yields an empty
+	/// list, so older canopy deployments keep working.
 	pub async fn post_status(
 		&self,
 		base_url: &Url,
 		server_id: &str,
 		payload: &serde_json::Value,
-	) -> Result<()> {
+	) -> Result<Vec<String>> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {
@@ -330,7 +341,21 @@ impl CanopyClient {
 			return Err(miette::miette!("canopy /status returned {status}: {body}"));
 		}
 
-		Ok(())
+		#[derive(Deserialize, Default)]
+		struct StatusResponseTail {
+			#[serde(default)]
+			backup_now: Vec<String>,
+		}
+
+		// The response flattens the persisted Status plus `backup_now`; we read
+		// only the latter and ignore the rest. A body that fails to parse (or
+		// predates the field) is treated as "nothing to do" rather than failing
+		// the status push.
+		let tail = response
+			.json::<StatusResponseTail>()
+			.await
+			.unwrap_or_default();
+		Ok(tail.backup_now)
 	}
 
 	/// GET a path on the canopy server, routed via tailscale when available.
@@ -415,6 +440,144 @@ impl CanopyClient {
 			return Err(miette::miette!("canopy /events returned {status}: {body}"));
 		}
 
+		Ok(())
+	}
+
+	/// Resolve an endpoint URL for the current auth path.
+	///
+	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
+	/// same endpoint is mounted under `/public`, so this prepends it.
+	async fn endpoint_url(&self, base_url: &Url, path: &str) -> Result<(reqwest::Client, Url)> {
+		let state = self.state.read().await;
+		let url = match &*state {
+			State::Tailscale(_) => format!("{TAILSCALE_URL}/public{path}")
+				.parse::<Url>()
+				.into_diagnostic()
+				.wrap_err_with(|| format!("building tailscale /public{path} URL"))?,
+			State::Mtls(_) => base_url
+				.join(path)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("building {path} URL"))?,
+		};
+		Ok((state.http(), url))
+	}
+
+	/// Register the backup types this server can run (`POST /backup-capabilities`).
+	pub async fn backup_capabilities(&self, base_url: &Url, types: &[String]) -> Result<()> {
+		let (http, url) = self.endpoint_url(base_url, "/backup-capabilities").await?;
+		debug!(%url, ?types, "registering backup capabilities with canopy");
+		let response = http
+			.post(url)
+			.header("X-Version", &self.tamanu_version)
+			.json(&CapabilitiesRequest { types })
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("posting backup capabilities to canopy")?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!(
+				"canopy /backup-capabilities returned {status}: {body}"
+			));
+		}
+		Ok(())
+	}
+
+	/// Obtain short-lived S3 credentials for a backup type (`POST /backup-credentials`).
+	///
+	/// Returns the `credential_process`-shaped creds; the caller translates them
+	/// to the container-creds shape for kopia. `412`/`409`/`502` surface as errors.
+	pub async fn backup_credentials(
+		&self,
+		base_url: &Url,
+		backup_type: &str,
+		purpose: Purpose,
+	) -> Result<BackupCredentials> {
+		let (http, url) = self.endpoint_url(base_url, "/backup-credentials").await?;
+		debug!(%url, backup_type, ?purpose, "requesting backup credentials from canopy");
+		let response = http
+			.post(url)
+			.header("X-Version", &self.tamanu_version)
+			.json(&BackupCredentialsRequest {
+				r#type: backup_type,
+				purpose,
+			})
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("posting backup credentials request to canopy")?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!(
+				"canopy /backup-credentials returned {status}: {body}"
+			));
+		}
+		response
+			.json::<BackupCredentials>()
+			.await
+			.into_diagnostic()
+			.wrap_err("parsing backup credentials from canopy")
+	}
+
+	/// Fetch the S3 repo target (`GET /backup-target`).
+	///
+	/// `412`/`409` mean the device isn't yet authorised for backups; these map to
+	/// [`TargetOutcome::Dormant`] (a benign idle state) rather than an error.
+	pub async fn backup_target(&self, base_url: &Url) -> Result<TargetOutcome> {
+		let (http, url) = self.endpoint_url(base_url, "/backup-target").await?;
+		debug!(%url, "fetching backup target from canopy");
+		let response = http
+			.get(url)
+			.header("X-Version", &self.tamanu_version)
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("fetching backup target from canopy")?;
+
+		let status = response.status();
+		if status == reqwest::StatusCode::PRECONDITION_FAILED
+			|| status == reqwest::StatusCode::CONFLICT
+		{
+			return Ok(TargetOutcome::Dormant);
+		}
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!(
+				"canopy /backup-target returned {status}: {body}"
+			));
+		}
+		let target = response
+			.json::<BackupTarget>()
+			.await
+			.into_diagnostic()
+			.wrap_err("parsing backup target from canopy")?;
+		Ok(TargetOutcome::Ready(target))
+	}
+
+	/// Report a completed backup/restore run (`POST /backup-report`).
+	pub async fn backup_report(&self, base_url: &Url, report: &BackupReport<'_>) -> Result<()> {
+		let (http, url) = self.endpoint_url(base_url, "/backup-report").await?;
+		debug!(%url, run_id = report.run_id, "reporting backup outcome to canopy");
+		let response = http
+			.post(url)
+			.header("X-Version", &self.tamanu_version)
+			.json(report)
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err("posting backup report to canopy")?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!(
+				"canopy /backup-report returned {status}: {body}"
+			));
+		}
 		Ok(())
 	}
 }

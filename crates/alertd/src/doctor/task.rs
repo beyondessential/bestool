@@ -111,10 +111,22 @@ impl DoctorTaskInner {
 			return Ok(());
 		};
 
-		canopy
+		let backup_now = canopy
 			.post_status(&self.canopy_base_url, &server_id, &sweep.payload)
 			.await
-			.map_err(|err| miette!("posting doctor status to canopy: {err}"))
+			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
+
+		if !backup_now.is_empty() {
+			// TODO(canopy-backup): dispatch each named type to the in-process
+			// backup driver (Layer 4 trigger), guarding against overlapping runs.
+			// Lands with the `bestool canopy backup` driver.
+			warn!(
+				?backup_now,
+				"canopy requested a backup but the backup driver is not wired yet"
+			);
+		}
+
+		Ok(())
 	}
 
 	/// `GET /tasks/doctor/latest` — return the last sweep this daemon
