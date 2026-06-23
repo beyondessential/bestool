@@ -13,6 +13,7 @@
 pub mod config;
 pub mod creds;
 pub mod method;
+pub mod postgresql;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -21,8 +22,8 @@ use bestool_canopy::{
 	registration::Registration,
 };
 use bestool_kopia::{
-	S3KopiaEnv, args_repository_connect_s3, args_snapshot_create, build_kopia_command_with_s3,
-	find_kopia_binary,
+	S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
+	build_kopia_command_with_s3, find_kopia_binary,
 };
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
@@ -199,11 +200,11 @@ async fn run_kopia_backup(
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
-	let prepared = def.method.prepare().await?;
+	let prepared = def.method.prepare(&def.r#type).await?;
 	let source_path = prepared.path.clone();
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
-	let result = snapshot(target, env, &source_path, server_id, &tags).await;
+	let result = snapshot(target, env, &source_path, server_id, &tags, &prepared.ignore).await;
 
 	// Cleanup and post-hooks run regardless of the snapshot outcome.
 	let cleanup = def.method.cleanup(prepared).await;
@@ -221,6 +222,7 @@ async fn snapshot(
 	source_path: &Path,
 	server_id: &str,
 	tags: &BTreeMap<String, String>,
+	ignore: &[String],
 ) -> Result<SnapshotResult> {
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
 
@@ -246,6 +248,12 @@ async fn snapshot(
 		server_id,
 	);
 	run_kopia(connect, "repository connect").await?;
+
+	if !ignore.is_empty() {
+		let mut policy = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
+		args_policy_set_ignores(&mut policy, source_path, ignore);
+		run_kopia(policy, "policy set").await?;
+	}
 
 	let mut create = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
 	args_snapshot_create(&mut create, source_path, tags);
