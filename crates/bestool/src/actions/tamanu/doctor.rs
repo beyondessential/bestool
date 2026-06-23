@@ -2,7 +2,6 @@ use std::io::{IsTerminal as _, Write};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
-use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -12,12 +11,16 @@ use bestool_alertd::doctor::{
 	check::{Check, CheckStatus, OverallResult},
 	checks,
 	overall_from_payload, perform_sweep,
-	progress::DoctorEvent,
+	progress::ProgressSender,
 	resolve_sweep_tamanu,
 };
 
 use super::{TamanuArgs, try_find_tamanu};
 use crate::actions::Context;
+
+mod order;
+mod render;
+mod tui;
 
 /// Gather server info + healthchecks for a Tamanu install
 ///
@@ -27,7 +30,7 @@ use crate::actions::Context;
 /// computed. Otherwise — or with `--fresh` / `--no-daemon` — the checks are
 /// run locally.
 ///
-/// Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
+/// Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING, 130 on interrupt.
 #[derive(Debug, Clone, Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct DoctorArgs {
@@ -43,6 +46,10 @@ pub struct DoctorArgs {
 	#[arg(long = "skip", value_name = "NAME")]
 	pub skip: Vec<String>,
 
+	/// Hide passing and skipped checks; show only warning, broken, and failing.
+	#[arg(long = "only-failing", short = 'F')]
+	pub only_failing: bool,
+
 	/// Force a fresh sweep. With alertd running, asks the daemon to recompute
 	/// and streams the results back as they come in; without alertd, runs the
 	/// checks locally exactly like before.
@@ -57,8 +64,8 @@ pub struct DoctorArgs {
 }
 
 /// Where the displayed sweep came from.
-enum SweepSource {
-	/// Daemon's last periodic sweep — include `computed_at` so we can warn how
+pub enum SweepSource {
+	/// Daemon's last periodic sweep — include `computed_at` so we can note how
 	/// old it is in the rendered output.
 	DaemonCached { computed_at: jiff::Timestamp },
 	/// Daemon-driven fresh recompute, streamed back over the task endpoint.
@@ -73,193 +80,240 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let use_colours = tamanu.use_colours;
 
-	// A real install, a DB-only context synthesised from `TAMANU_DATABASE_URL`,
-	// or `None` (host-level checks only).
 	let install = resolve_sweep_tamanu(try_find_tamanu(tamanu).await?)?;
 	if install.is_none() {
 		warn!("no Tamanu on this host; running host-level checks only");
 	}
 	let http_client = crate::http::client();
 
-	let (sweep, source) = if args.no_daemon {
-		(
-			run_local_sweep(install.clone(), http_client.clone(), &args, use_colours).await?,
-			SweepSource::Local,
-		)
+	let live_tty = !args.json && std::io::stdout().is_terminal();
+
+	let (sweep, source, interrupted) = if args.no_daemon {
+		let outcome = run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+		(outcome.sweep, SweepSource::Local, outcome.interrupted)
 	} else if args.fresh {
-		match run_daemon_recompute(&http_client, &args, use_colours).await {
-			Ok(sweep) => (sweep, SweepSource::DaemonStreamed),
+		match run_daemon_recompute(&http_client, &args, live_tty).await {
+			Ok(outcome) => (outcome.sweep, SweepSource::DaemonStreamed, outcome.interrupted),
 			Err(err) => {
 				debug!(%err, "daemon recompute unavailable, falling back to local");
-				(
-					run_local_sweep(install.clone(), http_client.clone(), &args, use_colours)
-						.await?,
-					SweepSource::Local,
-				)
+				let outcome =
+					run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+				(outcome.sweep, SweepSource::Local, outcome.interrupted)
 			}
 		}
 	} else {
 		match fetch_daemon_latest(&http_client).await {
-			Ok((sweep, computed_at)) => (sweep, SweepSource::DaemonCached { computed_at }),
+			Ok((sweep, computed_at)) => (sweep, SweepSource::DaemonCached { computed_at }, false),
 			Err(err) => {
 				debug!(%err, "daemon latest unavailable, falling back to local");
-				(
-					run_local_sweep(install.clone(), http_client.clone(), &args, use_colours)
-						.await?,
-					SweepSource::Local,
-				)
+				let outcome =
+					run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+				(outcome.sweep, SweepSource::Local, outcome.interrupted)
 			}
 		}
 	};
 
-	render_final(&args, &sweep, &source, use_colours)?;
+	emit_output(&args, &sweep, &source, use_colours)?;
 
+	if interrupted {
+		std::process::exit(130);
+	}
 	if sweep.overall == OverallResult::Failing {
 		std::process::exit(1);
 	}
 	Ok(())
 }
 
+struct SweepOutcome {
+	sweep: SweepResult,
+	interrupted: bool,
+}
+
 async fn run_local_sweep(
 	install: Option<SweepTamanu>,
 	http_client: reqwest::Client,
 	args: &DoctorArgs,
-	use_colours: bool,
-) -> Result<SweepResult> {
-	let live = !args.json && std::io::stdout().is_terminal();
-	let selected_names = selected_names_for_render(&args.only, &args.skip)?;
-	let renderer = if live {
-		let (tx, rx) = mpsc::unbounded_channel();
-		let names = selected_names.clone();
-		let handle = tokio::task::spawn_blocking(move || {
-			let stdout = std::io::stdout();
-			let mut out = stdout.lock();
-			let _ = render_live(&mut out, &names, rx, use_colours);
-		});
-		Some((tx, handle))
+	live_tty: bool,
+) -> Result<SweepOutcome> {
+	let selected_names = selected_names(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, args, SweepSource::Local);
+
+	let sweep_args_only = args.only.clone();
+	let sweep_args_skip = args.skip.clone();
+	let sweep_handle = tokio::spawn(async move {
+		perform_sweep(
+			env!("CARGO_PKG_VERSION"),
+			install,
+			http_client,
+			&sweep_args_only,
+			&sweep_args_skip,
+			None,
+			progress,
+		)
+		.await
+	});
+
+	let interrupted = if let Some(handle) = tui_handle {
+		let outcome = handle.await.into_diagnostic()??;
+		if outcome.interrupted {
+			sweep_handle.abort();
+			let mut synthetic = synthetic_sweep(outcome.results);
+			synthetic.payload = serde_json::Value::Object(Default::default());
+			return Ok(SweepOutcome {
+				sweep: synthetic,
+				interrupted: true,
+			});
+		}
+		false
 	} else {
-		None
+		false
 	};
 
-	let progress = renderer.as_ref().map(|(tx, _)| tx.clone());
-	let sweep = perform_sweep(
-		env!("CARGO_PKG_VERSION"),
-		install,
-		http_client,
-		&args.only,
-		&args.skip,
-		None,
-		progress,
-	)
-	.await?;
-
-	if let Some((tx, handle)) = renderer {
-		drop(tx);
-		let _ = handle.await;
-	}
-
-	Ok(sweep)
+	let sweep = sweep_handle.await.into_diagnostic()??;
+	Ok(SweepOutcome { sweep, interrupted })
 }
 
-fn render_final(
+/// Drive a fresh sweep on the daemon and stream the per-check results back.
+async fn run_daemon_recompute(
+	http: &reqwest::Client,
 	args: &DoctorArgs,
-	sweep: &SweepResult,
-	source: &SweepSource,
-	use_colours: bool,
-) -> Result<()> {
-	let stdout = std::io::stdout();
-	let mut out = stdout.lock();
-	let live = !args.json && std::io::stdout().is_terminal();
+	live_tty: bool,
+) -> Result<SweepOutcome> {
+	let url = format!("{DAEMON_BASE}/tasks/doctor/recompute");
+	let response = http
+		.get(&url)
+		.timeout(std::time::Duration::from_secs(5))
+		.send()
+		.await
+		.into_diagnostic()
+		.wrap_err("contacting local alertd")?;
 
-	if args.json {
-		// Embed source info alongside the payload so JSON consumers can tell
-		// where the data came from. The original payload becomes the inner
-		// `wire` field; cached daemon reads also carry `computedAt`.
-		let mut wrapped = serde_json::Map::new();
-		wrapped.insert("wire".into(), sweep.payload.clone());
-		match source {
-			SweepSource::Local => {
-				wrapped.insert("source".into(), Value::String("local".into()));
-			}
-			SweepSource::DaemonStreamed => {
-				wrapped.insert("source".into(), Value::String("daemon-streamed".into()));
-			}
-			SweepSource::DaemonCached { computed_at } => {
-				wrapped.insert("source".into(), Value::String("daemon-cached".into()));
-				wrapped.insert("computedAt".into(), Value::String(computed_at.to_string()));
-			}
-		}
-		serde_json::to_writer_pretty(&mut out, &Value::Object(wrapped)).into_diagnostic()?;
-		writeln!(out).into_diagnostic()?;
-		return Ok(());
+	if !response.status().is_success() {
+		return Err(miette!(
+			"alertd /tasks/doctor/recompute returned {}",
+			response.status()
+		));
 	}
 
-	if live {
-		// In live mode the per-check render already happened. Just append the
-		// summary + source note.
-		write_source_note(&mut out, source, use_colours).into_diagnostic()?;
-		render_summary(
-			&mut out,
-			sweep.server_id.as_deref(),
-			&sweep.results,
-			sweep.overall,
-			use_colours,
-		)
-		.into_diagnostic()?;
+	let selected_names = selected_names(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(
+		live_tty,
+		&selected_names,
+		args,
+		SweepSource::DaemonStreamed,
+	);
+
+	let stream_handle = tokio::spawn(drain_recompute_stream(response, progress));
+
+	let interrupted = if let Some(handle) = tui_handle {
+		let outcome = handle.await.into_diagnostic()??;
+		if outcome.interrupted {
+			stream_handle.abort();
+			return Ok(SweepOutcome {
+				sweep: synthetic_sweep(outcome.results),
+				interrupted: true,
+			});
+		}
+		false
 	} else {
-		render(
-			&mut out,
-			sweep.server_id.as_deref(),
-			&sweep.results,
-			sweep.overall,
-			use_colours,
-		)
-		.into_diagnostic()?;
-		write_source_note(&mut out, source, use_colours).into_diagnostic()?;
-	}
-	Ok(())
-}
-
-fn write_source_note<W: Write>(
-	out: &mut W,
-	source: &SweepSource,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	let line = match source {
-		SweepSource::Local => return Ok(()),
-		SweepSource::DaemonStreamed => "Source: alertd daemon (just now, on demand)".to_string(),
-		SweepSource::DaemonCached { computed_at } => {
-			let age = humanise_age_since(*computed_at);
-			format!("Source: alertd daemon (computed {age} ago, at {computed_at})")
-		}
+		false
 	};
-	if use_colours {
-		writeln!(out, "{}", line.dimmed())
-	} else {
-		writeln!(out, "{line}")
-	}
+
+	let streamed = stream_handle.await.into_diagnostic()??;
+	let overall = overall_from_payload(&streamed.payload);
+	Ok(SweepOutcome {
+		sweep: SweepResult {
+			server_id: streamed.server_id,
+			results: streamed.results,
+			overall,
+			payload: streamed.payload,
+			pg_version: None,
+		},
+		interrupted,
+	})
 }
 
-fn humanise_age_since(then: jiff::Timestamp) -> String {
-	let now = jiff::Timestamp::now();
-	let secs = now.as_second().saturating_sub(then.as_second()).max(0) as u64;
-	if secs < 60 {
-		format!("{secs}s")
-	} else if secs < 3600 {
-		format!("{}m {}s", secs / 60, secs % 60)
-	} else {
-		format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+struct StreamedSweep {
+	payload: Value,
+	server_id: Option<String>,
+	results: Vec<(Check, bool)>,
+}
+
+async fn drain_recompute_stream(
+	response: reqwest::Response,
+	progress: Option<ProgressSender>,
+) -> Result<StreamedSweep> {
+	use bestool_alertd::doctor::progress::DoctorEvent;
+	use futures::StreamExt as _;
+
+	let registry = checks::all();
+	let resolve_name = |s: &str| registry.iter().find(|e| e.name == s).map(|e| e.name);
+
+	let mut stream = response.bytes_stream();
+	let mut buffer = Vec::<u8>::new();
+	let mut final_payload: Option<Value> = None;
+	let mut server_id: Option<String> = None;
+	let mut results: Vec<(Check, bool)> = Vec::new();
+
+	while let Some(chunk) = stream.next().await {
+		let chunk = chunk
+			.into_diagnostic()
+			.wrap_err("reading alertd recompute stream")?;
+		buffer.extend_from_slice(&chunk);
+		while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = buffer.drain(..=nl).collect();
+			let line = &line[..line.len() - 1];
+			if line.is_empty() {
+				continue;
+			}
+			let value: Value = match serde_json::from_slice(line) {
+				Ok(v) => v,
+				Err(err) => {
+					warn!(%err, "could not parse alertd recompute line");
+					continue;
+				}
+			};
+			match value.get("event").and_then(Value::as_str) {
+				Some("check") => {
+					if let Some(check_json) = value.get("check")
+						&& let Some(check) = Check::from_streaming_json(check_json, resolve_name)
+					{
+						if let Some(tx) = progress.as_ref() {
+							let _ = tx.send(DoctorEvent::Completed(check.clone()));
+						}
+						results.push((check, true));
+					}
+				}
+				Some("done") => {
+					final_payload = value.get("payload").cloned();
+					server_id = value
+						.get("serverId")
+						.and_then(Value::as_str)
+						.map(str::to_string);
+				}
+				Some("error") => {
+					let msg = value
+						.get("message")
+						.and_then(Value::as_str)
+						.unwrap_or("unknown");
+					return Err(miette!("alertd recompute reported error: {msg}"));
+				}
+				_ => {}
+			}
+		}
 	}
+
+	let payload = final_payload
+		.ok_or_else(|| miette!("alertd recompute stream ended without a done event"))?;
+	Ok(StreamedSweep {
+		payload,
+		server_id,
+		results,
+	})
 }
 
 /// Read the alertd daemon's most recent sweep over `/tasks/doctor/latest`.
-///
-/// The short timeout is intentional: this is run on every `tamanu doctor`
-/// invocation, and if alertd isn't on this host (or its HTTP server is
-/// missing) we want to bail out fast and fall back to a local sweep.
-async fn fetch_daemon_latest(
-	http: &reqwest::Client,
-) -> Result<(SweepResult, jiff::Timestamp)> {
+async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jiff::Timestamp)> {
 	let url = format!("{DAEMON_BASE}/tasks/doctor/latest");
 	let response = http
 		.get(&url)
@@ -299,10 +353,11 @@ async fn fetch_daemon_latest(
 		.map(str::to_string);
 
 	let overall = overall_from_payload(&inner);
+	let results = results_from_wire(&inner);
 	Ok((
 		SweepResult {
 			server_id,
-			results: Vec::new(),
+			results,
 			overall,
 			payload: inner,
 			pg_version: None,
@@ -311,125 +366,79 @@ async fn fetch_daemon_latest(
 	))
 }
 
-/// Drive a fresh sweep on the daemon and stream the per-check results back.
-///
-/// Each NDJSON line is a `{"event": ...}` object; check events feed the same
-/// live renderer that local sweeps use, the final `done` event carries the
-/// full payload to render the summary off.
-async fn run_daemon_recompute(
-	http: &reqwest::Client,
-	args: &DoctorArgs,
-	use_colours: bool,
-) -> Result<SweepResult> {
-	let url = format!("{DAEMON_BASE}/tasks/doctor/recompute");
-	let response = http
-		.get(&url)
-		.timeout(std::time::Duration::from_secs(5))
-		.send()
-		.await
-		.into_diagnostic()
-		.wrap_err("contacting local alertd")?;
-
-	if !response.status().is_success() {
-		return Err(miette!(
-			"alertd /tasks/doctor/recompute returned {}",
-			response.status()
-		));
-	}
-
-	let live = !args.json && std::io::stdout().is_terminal();
-	let selected_names = selected_names_for_render(&args.only, &args.skip)?;
-	let renderer = if live {
-		let (tx, rx) = mpsc::unbounded_channel();
-		let names = selected_names.clone();
-		let handle = tokio::task::spawn_blocking(move || {
-			let stdout = std::io::stdout();
-			let mut out = stdout.lock();
-			let _ = render_live(&mut out, &names, rx, use_colours);
-		});
-		Some((tx, handle))
-	} else {
-		None
+/// Reconstruct per-check entries from the daemon's wire payload so the cached
+/// path can render the check list and accurate result-line counts. The wire
+/// format drops summaries and reasons, so reconstructed entries have empty
+/// strings for those fields.
+fn results_from_wire(payload: &Value) -> Vec<(Check, bool)> {
+	let Some(health) = payload.get("health").and_then(Value::as_array) else {
+		return Vec::new();
 	};
-
 	let registry = checks::all();
-	let resolve_name = |s: &str| {
-		registry
-			.iter()
-			.find(|e| e.name == s)
-			.map(|e| e.name)
-	};
-
-	let mut stream = response.bytes_stream();
-	let mut buffer = Vec::<u8>::new();
-	let mut final_payload: Option<Value> = None;
-	let mut server_id: Option<String> = None;
-
-	use futures::StreamExt as _;
-	while let Some(chunk) = stream.next().await {
-		let chunk = chunk
-			.into_diagnostic()
-			.wrap_err("reading alertd recompute stream")?;
-		buffer.extend_from_slice(&chunk);
-		while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
-			let line: Vec<u8> = buffer.drain(..=nl).collect();
-			let line = &line[..line.len() - 1];
-			if line.is_empty() {
-				continue;
-			}
-			let value: Value = match serde_json::from_slice(line) {
-				Ok(v) => v,
-				Err(err) => {
-					warn!(%err, "could not parse alertd recompute line");
-					continue;
-				}
+	health
+		.iter()
+		.filter_map(|entry| {
+			let name = entry.get("check").and_then(Value::as_str)?;
+			let result = entry.get("result").and_then(Value::as_str)?;
+			let name_static = registry.iter().find(|e| e.name == name)?.name;
+			let status = match result {
+				"passed" => CheckStatus::Pass,
+				"skipped" => CheckStatus::Skip(String::new()),
+				"warning" => CheckStatus::Warning(String::new()),
+				"failed" => CheckStatus::Fail(String::new()),
+				"broken" => CheckStatus::Broken(String::new()),
+				_ => return None,
 			};
-			match value.get("event").and_then(Value::as_str) {
-				Some("check") => {
-					if let Some(check_json) = value.get("check")
-						&& let Some(check) = Check::from_streaming_json(check_json, resolve_name)
-						&& let Some((tx, _)) = &renderer
-					{
-						let _ = tx.send(DoctorEvent::Completed(check));
-					}
-				}
-				Some("done") => {
-					final_payload = value.get("payload").cloned();
-					server_id = value
-						.get("serverId")
-						.and_then(Value::as_str)
-						.map(str::to_string);
-				}
-				Some("error") => {
-					let msg = value
-						.get("message")
-						.and_then(Value::as_str)
-						.unwrap_or("unknown");
-					return Err(miette!("alertd recompute reported error: {msg}"));
-				}
-				_ => {}
-			}
-		}
-	}
-
-	if let Some((tx, handle)) = renderer {
-		drop(tx);
-		let _ = handle.await;
-	}
-
-	let payload = final_payload
-		.ok_or_else(|| miette!("alertd recompute stream ended without a done event"))?;
-	let overall = overall_from_payload(&payload);
-	Ok(SweepResult {
-		server_id,
-		results: Vec::new(),
-		overall,
-		payload,
-		pg_version: None,
-	})
+			Some((
+				Check {
+					name: name_static,
+					status,
+					summary: String::new(),
+					details: serde_json::Map::new(),
+					payload_extras: serde_json::Map::new(),
+				},
+				true,
+			))
+		})
+		.collect()
 }
 
-fn selected_names_for_render(only: &[String], skip: &[String]) -> Result<Vec<&'static str>> {
+/// Set up the progress channel and (when running in a TTY) the live TUI task.
+/// The TUI task ends either when every selected check has reported a result or
+/// when the user interrupts. When `live_tty` is false (non-interactive output
+/// or JSON), no TUI is spawned and the sweep simply runs silently.
+fn setup_progress(
+	live_tty: bool,
+	selected_names: &[&'static str],
+	args: &DoctorArgs,
+	source: SweepSource,
+) -> (
+	Option<ProgressSender>,
+	Option<tokio::task::JoinHandle<Result<tui::TuiOutcome>>>,
+) {
+	if !live_tty {
+		return (None, None);
+	}
+	let (tx, rx) = mpsc::unbounded_channel();
+	let names = selected_names.to_vec();
+	let only_failing = args.only_failing;
+	let handle = tokio::spawn(tui::run_tui(names, only_failing, source, rx));
+	(Some(tx), Some(handle))
+}
+
+fn synthetic_sweep(results: Vec<(Check, bool)>) -> SweepResult {
+	let overall =
+		OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+	SweepResult {
+		server_id: None,
+		results,
+		overall,
+		payload: Value::Object(Default::default()),
+		pg_version: None,
+	}
+}
+
+fn selected_names(only: &[String], skip: &[String]) -> Result<Vec<&'static str>> {
 	let registry = checks::all();
 	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
 	if let Some(unknown) = only.iter().find(|n| !known.contains(&n.as_str())) {
@@ -452,334 +461,68 @@ fn selected_names_for_render(only: &[String], skip: &[String]) -> Result<Vec<&'s
 		.collect())
 }
 
-fn render<W: Write>(
-	out: &mut W,
-	server_id: Option<&str>,
-	results: &[(Check, bool)],
-	overall: OverallResult,
+fn emit_output(
+	args: &DoctorArgs,
+	sweep: &SweepResult,
+	source: &SweepSource,
 	use_colours: bool,
-) -> std::io::Result<()> {
-	write_header(out, server_id)?;
+) -> Result<()> {
+	let stdout = std::io::stdout();
+	let mut out = stdout.lock();
 
-	let name_width = results
-		.iter()
-		.map(|(c, _)| c.name.len())
-		.max()
-		.unwrap_or(0);
-
-	for (check, _) in results {
-		write_check_line(out, check, name_width, use_colours)?;
-	}
-
-	writeln!(out)?;
-	write_result_line(out, results, overall, use_colours)?;
-	Ok(())
-}
-
-fn write_header<W: Write>(out: &mut W, server_id: Option<&str>) -> std::io::Result<()> {
-	let server_id = server_id.unwrap_or("unknown");
-	writeln!(out, "Tamanu doctor (server-id: {server_id})")?;
-	writeln!(out)
-}
-
-fn write_check_line<W: Write>(
-	out: &mut W,
-	check: &Check,
-	name_width: usize,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	let tag_coloured = match &check.status {
-		CheckStatus::Pass => colour_pass(use_colours, "PASS"),
-		CheckStatus::Skip(_) => colour_skip(use_colours, "SKIP"),
-		CheckStatus::Warning(_) => colour_warn(use_colours, "WARN"),
-		CheckStatus::Fail(_) => colour_fail(use_colours, "FAIL"),
-		CheckStatus::Broken(_) => colour_broken(use_colours, "BRKN"),
-	};
-	writeln!(
-		out,
-		"  {tag_coloured}    {name:<width$}   {summary}",
-		name = check.name,
-		width = name_width,
-		summary = check.summary,
-	)?;
-	if let CheckStatus::Skip(r)
-	| CheckStatus::Warning(r)
-	| CheckStatus::Fail(r)
-	| CheckStatus::Broken(r) = &check.status
-	{
-		let dim = if use_colours {
-			format!("{}", r.dimmed())
-		} else {
-			r.clone()
-		};
-		writeln!(
-			out,
-			"          {empty:<width$}     {dim}",
-			empty = "",
-			width = name_width
-		)?;
-	}
-	Ok(())
-}
-
-fn write_result_line<W: Write>(
-	out: &mut W,
-	results: &[(Check, bool)],
-	overall: OverallResult,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	let (mut warnings, mut fails, mut skips, mut brokens) = (0usize, 0usize, 0usize, 0usize);
-	for (check, _) in results {
-		match &check.status {
-			CheckStatus::Pass => {}
-			CheckStatus::Skip(_) => skips += 1,
-			CheckStatus::Warning(_) => warnings += 1,
-			CheckStatus::Fail(_) => fails += 1,
-			CheckStatus::Broken(_) => brokens += 1,
-		}
-	}
-	let label = overall.label();
-	let label_coloured = match overall {
-		OverallResult::Healthy => colour_pass(use_colours, label),
-		OverallResult::Degraded => colour_warn(use_colours, label),
-		OverallResult::Failing => colour_fail(use_colours, label),
-	};
-	let broken_suffix = if brokens > 0 {
-		format!(", {brokens} broken")
-	} else {
-		String::new()
-	};
-	let skip_suffix = if skips > 0 {
-		format!(", {skips} skipped")
-	} else {
-		String::new()
-	};
-	writeln!(
-		out,
-		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural}{broken_suffix}{skip_suffix})",
-		plural = if warnings == 1 { "" } else { "s" },
-	)
-}
-
-/// Streams check results to `out` as they come in over `rx`, with a rewriting
-/// "Outstanding: ..." line below the printed results. The outstanding line is
-/// truncated to the terminal width so `\r\x1b[2K` reliably erases it on the
-/// next update; without that, terminal wrapping leaves orphaned rows behind
-/// as the cursor only sits on the last wrapped row.
-fn render_live<W: Write>(
-	out: &mut W,
-	selected_names: &[&'static str],
-	mut rx: mpsc::UnboundedReceiver<DoctorEvent>,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	let name_width = selected_names.iter().map(|n| n.len()).max().unwrap_or(0);
-	let term_width = terminal_size::terminal_size()
-		.map(|(terminal_size::Width(w), _)| w)
-		.unwrap_or(80);
-	let mut outstanding: Vec<&'static str> = selected_names.to_vec();
-
-	write_outstanding(out, &outstanding, term_width, use_colours)?;
-	out.flush()?;
-
-	while let Some(event) = rx.blocking_recv() {
-		match event {
-			DoctorEvent::Completed(check) => {
-				clear_current_line(out)?;
-				write_check_line(out, &check, name_width, use_colours)?;
-				outstanding.retain(|n| *n != check.name);
-				write_outstanding(out, &outstanding, term_width, use_colours)?;
-				out.flush()?;
+	if args.json {
+		let mut wrapped = serde_json::Map::new();
+		wrapped.insert("wire".into(), sweep.payload.clone());
+		match source {
+			SweepSource::Local => {
+				wrapped.insert("source".into(), Value::String("local".into()));
+			}
+			SweepSource::DaemonStreamed => {
+				wrapped.insert("source".into(), Value::String("daemon-streamed".into()));
+			}
+			SweepSource::DaemonCached { computed_at } => {
+				wrapped.insert("source".into(), Value::String("daemon-cached".into()));
+				wrapped.insert("computedAt".into(), Value::String(computed_at.to_string()));
 			}
 		}
-	}
-
-	clear_current_line(out)?;
-	out.flush()
-}
-
-fn render_summary<W: Write>(
-	out: &mut W,
-	server_id: Option<&str>,
-	results: &[(Check, bool)],
-	overall: OverallResult,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	writeln!(out)?;
-	let server_id = server_id.unwrap_or("unknown");
-	writeln!(out, "Server: {server_id}")?;
-	write_result_line(out, results, overall, use_colours)
-}
-
-fn write_outstanding<W: Write>(
-	out: &mut W,
-	outstanding: &[&'static str],
-	term_width: u16,
-	use_colours: bool,
-) -> std::io::Result<()> {
-	if outstanding.is_empty() {
+		serde_json::to_writer_pretty(&mut out, &Value::Object(wrapped)).into_diagnostic()?;
+		writeln!(out).into_diagnostic()?;
 		return Ok(());
 	}
-	let plain = format!("Outstanding: {}", outstanding.join(", "));
-	let truncated = truncate_to_width(&plain, term_width);
-	if use_colours {
-		write!(out, "{}", truncated.dimmed())
-	} else {
-		write!(out, "{truncated}")
-	}
-}
 
-/// Truncate `s` to fit within `width` display columns, appending `…` when the
-/// string is cut. Treats each char as one column — fine for the ASCII-only
-/// check names this is used with.
-fn truncate_to_width(s: &str, width: u16) -> String {
-	let width = width as usize;
-	if width == 0 {
-		return String::new();
-	}
-	if s.chars().count() <= width {
-		return s.to_string();
-	}
-	if width == 1 {
-		return "…".to_string();
-	}
-	let take = width - 1;
-	let mut out: String = s.chars().take(take).collect();
-	out.push('…');
-	out
-}
-
-fn clear_current_line<W: Write>(out: &mut W) -> std::io::Result<()> {
-	// CR brings cursor to col 0; \x1b[2K erases the whole line.
-	write!(out, "\r\x1b[2K")
-}
-
-fn colour_pass(use_colours: bool, s: &str) -> String {
-	if use_colours {
-		format!("{}", s.green().bold())
-	} else {
-		s.to_string()
-	}
-}
-
-fn colour_skip(use_colours: bool, s: &str) -> String {
-	if use_colours {
-		format!("{}", s.dimmed().bold())
-	} else {
-		s.to_string()
-	}
-}
-
-fn colour_warn(use_colours: bool, s: &str) -> String {
-	if use_colours {
-		format!("{}", s.yellow().bold())
-	} else {
-		s.to_string()
-	}
-}
-
-fn colour_fail(use_colours: bool, s: &str) -> String {
-	if use_colours {
-		format!("{}", s.red().bold())
-	} else {
-		s.to_string()
-	}
-}
-
-fn colour_broken(use_colours: bool, s: &str) -> String {
-	if use_colours {
-		format!("{}", s.magenta().bold())
-	} else {
-		s.to_string()
-	}
+	let displayed = order::filter_and_sort(&sweep.results, args.only_failing);
+	render::render_plain(&mut out, &displayed, sweep.overall, source, use_colours)
+		.into_diagnostic()?;
+	Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	fn pass(name: &'static str) -> (Check, bool) {
-		(Check::pass(name, "ok"), true)
-	}
-	fn warn(name: &'static str) -> (Check, bool) {
-		(Check::warning(name, "deg", "reason"), true)
-	}
-	fn fail(name: &'static str) -> (Check, bool) {
-		(Check::fail(name, "bad", "reason"), true)
-	}
-	fn skip(name: &'static str) -> (Check, bool) {
-		(Check::skip(name, "not run", "reason"), true)
-	}
-
-	#[test]
-	fn render_plain_contains_summary_line() {
-		let results = vec![pass("a"), warn("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let mut buf = Vec::new();
-		render(&mut buf, Some("sid-1"), &results, overall, false).unwrap();
-		let out = String::from_utf8(buf).unwrap();
-		assert!(out.contains("sid-1"));
-		assert!(out.contains("PASS"));
-		assert!(out.contains("WARN"));
-		assert!(out.contains("DEGRADED"));
-		assert!(out.contains("1 warning"));
-	}
-
-	#[test]
-	fn skip_renders_as_skip_and_doesnt_degrade_overall() {
-		// A skipped check should appear with the SKIP tag, not be counted as
-		// a warning or failure, and keep the overall result HEALTHY.
-		let results = vec![pass("a"), skip("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		assert_eq!(overall, OverallResult::Healthy);
-
-		let mut buf = Vec::new();
-		render(&mut buf, Some("sid"), &results, overall, false).unwrap();
-		let out = String::from_utf8(buf).unwrap();
-		assert!(out.contains("SKIP"));
-		assert!(out.contains("HEALTHY"));
-		assert!(out.contains("1 skipped"));
-		// Skip should NOT bump the warning count
-		assert!(!out.contains("1 warning"));
-	}
-
-	#[test]
-	fn render_failing_summary() {
-		let results = vec![fail("a")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let mut buf = Vec::new();
-		render(&mut buf, None, &results, overall, false).unwrap();
-		let out = String::from_utf8(buf).unwrap();
-		assert!(out.contains("FAILING"));
-		assert!(out.contains("1 failed"));
-	}
-
 	#[test]
 	fn selected_names_default_returns_full_registry() {
-		let names = selected_names_for_render(&[], &[]).unwrap();
+		let names = selected_names(&[], &[]).unwrap();
 		let registry: Vec<&str> = checks::all().iter().map(|e| e.name).collect();
 		assert_eq!(names, registry);
 	}
 
 	#[test]
 	fn selected_names_only_filters_to_listed() {
-		let names =
-			selected_names_for_render(&["db_connect".into(), "memory".into()], &[]).unwrap();
+		let names = selected_names(&["db_connect".into(), "memory".into()], &[]).unwrap();
 		assert_eq!(names, vec!["db_connect", "memory"]);
 	}
 
 	#[test]
 	fn selected_names_skip_excludes_listed() {
-		let names = selected_names_for_render(&[], &["tailscale".into()]).unwrap();
+		let names = selected_names(&[], &["tailscale".into()]).unwrap();
 		assert!(!names.contains(&"tailscale"));
 		assert!(names.contains(&"db_connect"));
 	}
 
 	#[test]
 	fn selected_names_only_and_skip_compose() {
-		let names = selected_names_for_render(
+		let names = selected_names(
 			&["db_connect".into(), "memory".into(), "tailscale".into()],
 			&["tailscale".into()],
 		)
@@ -789,71 +532,57 @@ mod tests {
 
 	#[test]
 	fn selected_names_unknown_skip_is_error() {
-		let err = selected_names_for_render(&[], &["does_not_exist".into()]).unwrap_err();
+		let err = selected_names(&[], &["does_not_exist".into()]).unwrap_err();
 		assert!(format!("{err}").contains("does_not_exist"));
 	}
 
 	#[test]
-	fn truncate_to_width_pads_short_strings_unchanged() {
-		assert_eq!(truncate_to_width("abc", 10), "abc");
+	fn synthetic_sweep_marks_overall_from_results() {
+		let results = vec![(Check::fail("a", "bad", "r"), true)];
+		let sweep = synthetic_sweep(results);
+		assert_eq!(sweep.overall, OverallResult::Failing);
 	}
 
 	#[test]
-	fn truncate_to_width_chops_with_ellipsis() {
-		assert_eq!(truncate_to_width("abcdefghij", 5), "abcd…");
+	fn doctor_args_only_failing_short_flag() {
+		use clap::Parser;
+		let parsed = DoctorArgs::parse_from(["doctor", "-F"]);
+		assert!(parsed.only_failing);
 	}
 
 	#[test]
-	fn truncate_to_width_handles_exact_fit() {
-		assert_eq!(truncate_to_width("abcde", 5), "abcde");
+	fn doctor_args_only_failing_long_flag() {
+		use clap::Parser;
+		let parsed = DoctorArgs::parse_from(["doctor", "--only-failing"]);
+		assert!(parsed.only_failing);
 	}
 
 	#[test]
-	fn write_outstanding_truncates_to_one_terminal_row() {
-		let mut buf = Vec::new();
-		let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
-		write_outstanding(&mut buf, &names, 30, false).unwrap();
-		let out = String::from_utf8(buf).unwrap();
-		assert_eq!(out.chars().count(), 30);
-		assert!(out.ends_with('…'));
-		assert!(out.starts_with("Outstanding: "));
+	fn doctor_args_default_is_no_filter() {
+		use clap::Parser;
+		let parsed = DoctorArgs::parse_from(["doctor"]);
+		assert!(!parsed.only_failing);
 	}
 
 	#[test]
-	fn render_live_streams_results_and_clears_outstanding() {
-		let (tx, rx) = mpsc::unbounded_channel();
-		let names = vec!["alpha", "beta"];
-		let handle = std::thread::spawn(move || {
-			let mut buf = Vec::new();
-			render_live(&mut buf, &names, rx, false).unwrap();
-			String::from_utf8(buf).unwrap()
+	fn results_from_wire_reconstructs_per_check_entries() {
+		let registry = checks::all();
+		let known = registry[0].name;
+		let payload = serde_json::json!({
+			"health": [
+				{ "check": known, "result": "passed" },
+				{ "check": "unknown_check_name", "result": "failed" },
+			]
 		});
-		tx.send(DoctorEvent::Completed(Check::pass("alpha", "ok-a")))
-			.unwrap();
-		tx.send(DoctorEvent::Completed(Check::warning(
-			"beta", "deg", "reason",
-		)))
-		.unwrap();
-		drop(tx);
-		let out = handle.join().unwrap();
-		assert!(out.contains("PASS"));
-		assert!(out.contains("alpha"));
-		assert!(out.contains("ok-a"));
-		assert!(out.contains("WARN"));
-		assert!(out.contains("beta"));
-		assert!(out.contains("Outstanding:"));
+		let results = results_from_wire(&payload);
+		assert_eq!(results.len(), 1);
+		assert_eq!(results[0].0.name, known);
+		assert!(matches!(results[0].0.status, CheckStatus::Pass));
 	}
 
 	#[test]
-	fn render_summary_includes_server_and_result() {
-		let results = vec![pass("a"), warn("b")];
-		let overall =
-			OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-		let mut buf = Vec::new();
-		render_summary(&mut buf, Some("sid-9"), &results, overall, false).unwrap();
-		let out = String::from_utf8(buf).unwrap();
-		assert!(out.contains("Server: sid-9"));
-		assert!(out.contains("DEGRADED"));
-		assert!(out.contains("1 warning"));
+	fn results_from_wire_empty_when_no_health_array() {
+		let payload = serde_json::json!({});
+		assert!(results_from_wire(&payload).is_empty());
 	}
 }
