@@ -214,17 +214,80 @@ fn backup_dispatch() -> bestool_alertd::doctor::BackupDispatch {
 
 /// A background task that registers this server's backup capabilities with
 /// canopy (the types of every def in the backups directory).
+///
+/// It's a resident task: after the initial registration it stays running and
+/// re-registers when the backups directory changes, when a reload signal
+/// (SIGHUP/SIGUSR1) arrives, or on a periodic safety-net tick — so dropping a
+/// new def in `/etc/bestool/backups` is picked up without restarting the daemon.
 #[cfg(feature = "canopy-backup")]
 mod backup {
 	use std::time::Duration;
 
 	use futures::future::BoxFuture;
 	use miette::{IntoDiagnostic as _, Result};
-	use tracing::info;
+	use tokio::sync::mpsc;
+	use tracing::{info, warn};
 
 	use crate::actions::canopy::backup::config;
 
+	/// Re-register at least this often even without an external trigger, so a
+	/// missed event still converges.
+	const REREGISTER_INTERVAL: Duration = Duration::from_secs(3600);
+
 	pub(super) struct BackupCapabilitiesTask;
+
+	/// Load the configured backup types and register them with canopy.
+	async fn register(ctx: &bestool_alertd::TaskContext) -> Result<()> {
+		let Some(client) = ctx.canopy_client.as_ref() else {
+			return Ok(());
+		};
+		let defs = config::load_dir(&config::backups_dir()).await?;
+		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
+		if types.is_empty() {
+			return Ok(());
+		}
+		let base_url = bestool_canopy::DEFAULT_CANOPY_URL.parse().into_diagnostic()?;
+		client.backup_capabilities(&base_url, &types).await?;
+		info!(?types, "registered backup capabilities with canopy");
+		Ok(())
+	}
+
+	/// Re-register, logging the trigger; failures are warned, never fatal.
+	async fn reregister(reason: &str, ctx: &bestool_alertd::TaskContext) {
+		info!(reason, "registering backup capabilities");
+		if let Err(err) = register(ctx).await {
+			warn!("registering backup capabilities failed (will retry): {err}");
+		}
+	}
+
+	/// Watch the backups directory, sending `()` on any change. Returns the
+	/// watcher (kept alive by the caller) or `None` if it couldn't be set up
+	/// (e.g. the directory doesn't exist yet) — the periodic tick still covers it.
+	fn watch_backups_dir(tx: mpsc::UnboundedSender<()>) -> Option<notify::RecommendedWatcher> {
+		use notify::{RecursiveMode, Watcher as _};
+
+		let dir = config::backups_dir();
+		let mut watcher =
+			notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+				if res.is_ok() {
+					let _ = tx.send(());
+				}
+			})
+			.inspect_err(|err| warn!("could not create backups-dir watcher: {err}"))
+			.ok()?;
+		match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+			Ok(()) => Some(watcher),
+			Err(err) => {
+				warn!(dir = %dir.display(), "could not watch backups dir (using timer/signals): {err}");
+				None
+			}
+		}
+	}
+
+	/// Coalesce a burst of fs events into one re-registration.
+	fn drain(rx: &mut mpsc::UnboundedReceiver<()>) {
+		while rx.try_recv().is_ok() {}
+	}
 
 	impl bestool_alertd::BackgroundTask for BackupCapabilitiesTask {
 		fn name(&self) -> &'static str {
@@ -232,25 +295,44 @@ mod backup {
 		}
 
 		fn interval(&self) -> Duration {
-			// Re-register hourly so newly-dropped defs get picked up; the first
-			// tick fires at startup.
-			Duration::from_secs(3600)
+			// run() is resident, so this only gates the (single) first tick.
+			REREGISTER_INTERVAL
 		}
 
 		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
 			Box::pin(async move {
-				let Some(client) = ctx.canopy_client.as_ref() else {
-					return Ok(());
-				};
-				let defs = config::load_dir(&config::backups_dir()).await?;
-				let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
-				if types.is_empty() {
-					return Ok(());
+				reregister("startup", ctx).await;
+
+				let (tx, mut rx) = mpsc::unbounded_channel();
+				// Held for the task's lifetime so events keep arriving.
+				let _watcher = watch_backups_dir(tx);
+
+				let mut periodic = tokio::time::interval(REREGISTER_INTERVAL);
+				periodic.tick().await; // consume the immediate first tick
+
+				#[cfg(unix)]
+				{
+					use tokio::signal::unix::{SignalKind, signal};
+					let mut sighup = signal(SignalKind::hangup()).into_diagnostic()?;
+					let mut sigusr1 = signal(SignalKind::user_defined1()).into_diagnostic()?;
+					loop {
+						tokio::select! {
+							_ = periodic.tick() => reregister("periodic", ctx).await,
+							_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
+							_ = sighup.recv() => reregister("SIGHUP", ctx).await,
+							_ = sigusr1.recv() => reregister("SIGUSR1", ctx).await,
+						}
+					}
 				}
-				let base_url = bestool_canopy::DEFAULT_CANOPY_URL.parse().into_diagnostic()?;
-				client.backup_capabilities(&base_url, &types).await?;
-				info!(?types, "registered backup capabilities with canopy");
-				Ok(())
+				#[cfg(not(unix))]
+				{
+					loop {
+						tokio::select! {
+							_ = periodic.tick() => reregister("periodic", ctx).await,
+							_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
+						}
+					}
+				}
 			})
 		}
 	}
