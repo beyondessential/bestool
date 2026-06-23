@@ -31,7 +31,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -54,7 +54,7 @@ jobs:
           rustup target add aarch64-unknown-linux-musl
 
       - if: runner.os == 'Linux'
-        uses: taiki-e/install-action@v2.81.1
+        uses: taiki-e/install-action@v2.81.8
         with:
           tool: cross
 
@@ -77,7 +77,7 @@ jobs:
     name: Canopy contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -90,7 +90,7 @@ jobs:
     name: alertd / graceful without postgres
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -116,13 +116,13 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
           rustup component add clippy
-      - uses: taiki-e/install-action@v2.81.1
+      - uses: taiki-e/install-action@v2.81.8
         with:
           tool: just
       - uses: Swatinem/rust-cache@v2
@@ -132,7 +132,7 @@ jobs:
     name: Check USAGE.md files are up to date
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable

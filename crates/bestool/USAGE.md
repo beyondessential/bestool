@@ -1854,7 +1854,7 @@ from it and rendered, with a note saying when those checks were actually
 computed. Otherwise — or with `--fresh` / `--no-daemon` — the checks are
 run locally.
 
-Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
+Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING, 130 on interrupt.
 
 **Usage:** `bestool tamanu doctor [OPTIONS]`
 
@@ -1863,6 +1863,7 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING.
 * `--json` — Emit the JSON wire payload instead of the human-readable render
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 * `--skip <NAME>` — Skip the named check(s). Repeatable. Applied after `--check`
+* `-F`, `--only-failing` — Hide passing and skipped checks; show only warning, broken, and failing
 * `--fresh` — Force a fresh sweep. With alertd running, asks the daemon to recompute and streams the results back as they come in; without alertd, runs the checks locally exactly like before
 * `--no-daemon` — Skip the alertd integration entirely and always compute locally.
 
