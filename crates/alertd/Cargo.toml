@@ -40,5 +40,9 @@ tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
 
+[target.'cfg(unix)'.dependencies]
+# systemd readiness/reload/status notifications (no-op when not under systemd).
+sd-notify = "0.5.0"
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"

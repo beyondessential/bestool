@@ -3,15 +3,17 @@ Description=Tamanu alert daemon
 After=network.target
 
 [Service]
-Type=simple
+# notify-reload: the daemon signals readiness (READY=1), status, and shutdown
+# (STOPPING=1) over $NOTIFY_SOCKET, and `systemctl reload` sends SIGHUP (the
+# default ReloadSignal) which the daemon answers with RELOADING=1 / READY=1 —
+# re-registering backup capabilities (picking up /etc/bestool/backups changes)
+# without a restart. Needs systemd >= 253; on older systemd use Type=notify plus
+# `ExecReload=/bin/kill -HUP $MAINPID`.
+Type=notify-reload
 # Distinct journal identifier so rsyslog can filter alertd apart from other
 # bestool invocations (which all otherwise log as "bestool").
 SyslogIdentifier=bestool-alertd
 ExecStart=/usr/bin/bestool alertd run
-# `systemctl reload bestool-alertd` re-registers backup capabilities with canopy,
-# picking up changes under /etc/bestool/backups without a restart (handled by the
-# daemon's SIGHUP/SIGUSR1 reload).
-ExecReload=/bin/kill -HUP $MAINPID
 MemoryMax=500M
 Restart=always
 RestartSec=10

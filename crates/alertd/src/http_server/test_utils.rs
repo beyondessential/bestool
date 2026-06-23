@@ -15,6 +15,7 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		pg_pool: Some(pool),
 		http_client: reqwest::Client::new(),
 		canopy_client: None,
+		reload: tokio::sync::watch::channel(0).1,
 	});
 
 	Arc::new(ServerState {

@@ -307,30 +307,22 @@ mod backup {
 				// Held for the task's lifetime so events keep arriving.
 				let _watcher = watch_backups_dir(tx);
 
+				// The daemon turns SIGHUP/SIGUSR1 (and systemd's reload) into a
+				// bump on this channel; we also re-register on a backups-dir
+				// change and a periodic safety-net tick.
+				let mut reload = ctx.reload.clone();
 				let mut periodic = tokio::time::interval(REREGISTER_INTERVAL);
 				periodic.tick().await; // consume the immediate first tick
 
-				#[cfg(unix)]
-				{
-					use tokio::signal::unix::{SignalKind, signal};
-					let mut sighup = signal(SignalKind::hangup()).into_diagnostic()?;
-					let mut sigusr1 = signal(SignalKind::user_defined1()).into_diagnostic()?;
-					loop {
-						tokio::select! {
-							_ = periodic.tick() => reregister("periodic", ctx).await,
-							_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
-							_ = sighup.recv() => reregister("SIGHUP", ctx).await,
-							_ = sigusr1.recv() => reregister("SIGUSR1", ctx).await,
-						}
-					}
-				}
-				#[cfg(not(unix))]
-				{
-					loop {
-						tokio::select! {
-							_ = periodic.tick() => reregister("periodic", ctx).await,
-							_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
-						}
+				loop {
+					tokio::select! {
+						_ = periodic.tick() => reregister("periodic", ctx).await,
+						_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
+						changed = reload.changed() => match changed {
+							Ok(()) => reregister("reload signal", ctx).await,
+							// Sender dropped → daemon is shutting down.
+							Err(_) => break Ok(()),
+						},
 					}
 				}
 			})
