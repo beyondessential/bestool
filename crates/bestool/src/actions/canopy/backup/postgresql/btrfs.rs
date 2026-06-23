@@ -179,9 +179,11 @@ mod tests {
 
 	#[test]
 	fn stable_mount_is_per_type_and_fixed() {
+		// The mount path is exactly the shared per-type source dir, so a host can
+		// migrate between backends and keep one kopia history.
 		assert_eq!(
 			stable_kopia_mount("tamanu-postgres"),
-			PathBuf::from("/var/lib/kopia/bestool-backup/tamanu-postgres")
+			super::super::stable_source_dir("tamanu-postgres")
 		);
 	}
 

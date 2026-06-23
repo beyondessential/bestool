@@ -15,7 +15,7 @@ use std::{
 };
 
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
-use tracing::{info, warn};
+use tracing::info;
 
 use super::resolve::ResolvedCluster;
 
@@ -123,7 +123,7 @@ async fn make_readable_by_kopia(root: &Path) {
 		.status()
 		.await;
 	if !matches!(status, Ok(s) if s.success()) {
-		warn!("could not chown base backup to the kopia user; kopia may fail to read it");
+		tracing::warn!("could not chown base backup to the kopia user; kopia may fail to read it");
 	}
 }
 
@@ -140,7 +140,9 @@ mod tests {
 		};
 		assert_eq!(
 			destination("tamanu-postgres", &resolved),
-			PathBuf::from("/var/lib/kopia/bestool-backup/tamanu-postgres/16/main")
+			super::super::stable_source_dir("tamanu-postgres")
+				.join("16")
+				.join("main")
 		);
 	}
 
