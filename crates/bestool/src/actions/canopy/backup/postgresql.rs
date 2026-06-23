@@ -3,13 +3,15 @@
 //! Generic postgres (no Tamanu coupling): driven by the `[postgresql]` config
 //! table. Resolves the cluster's data directory, issues a best-effort
 //! `CHECKPOINT` to bound WAL replay on restore, detects the storage backend, and
-//! captures it. btrfs is implemented; thin-LVM / Windows VSS / `pg_basebackup`
-//! land in follow-ups.
+//! captures it: a crash-consistent btrfs or thin-LVM snapshot where available,
+//! else a `pg_basebackup` base backup. (Windows VSS is the remaining backend.)
 
 pub mod basebackup;
 pub mod btrfs;
+pub mod lvm;
 pub mod resolve;
 pub mod strategy;
+mod sys;
 
 use std::{
 	collections::BTreeMap,
@@ -76,6 +78,15 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 				teardown: Teardown::Btrfs(mounts),
 			})
 		}
+		Strategy::ThinLvm => {
+			let (source, snapshot) = lvm::prepare(&resolved, backup_type).await?;
+			Ok(Prepared {
+				path: source,
+				extra_tags: metadata_tags(&resolved, strategy),
+				ignore: ignore_globs(),
+				teardown: Teardown::Lvm(snapshot),
+			})
+		}
 		Strategy::BaseBackup => {
 			let (source, root) = basebackup::prepare(
 				&resolved,
@@ -91,9 +102,8 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 				teardown: Teardown::BaseBackup(root),
 			})
 		}
-		other => bail!(
-			"postgresql backup strategy {other:?} is not implemented yet \
-			 (btrfs and pg_basebackup are; thin-LVM and VSS are coming)"
+		Strategy::Vss => bail!(
+			"the Windows VSS backup backend is not implemented yet"
 		),
 	}
 }

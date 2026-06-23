@@ -34,20 +34,17 @@ impl Strategy {
 	}
 }
 
-/// Map a filesystem type to its strategy.
-///
-/// btrfs takes the cheap snapshot path; everything else (thick LV, ext4/xfs,
-/// …) falls back to `pg_basebackup`, which is always correct. (Thin-LVM
-/// detection — distinguishing it from thick — is a separate step added with the
-/// thin-LVM strategy.)
-fn fstype_to_strategy(fstype: &str) -> Strategy {
-	match fstype {
-		"btrfs" => Strategy::Btrfs,
-		_ => Strategy::BaseBackup,
-	}
+/// Whether an `lvs -o segtype` value is a thin LV (the only LVM kind that gets
+/// a cheap snapshot; thick LVs fall back to `pg_basebackup`).
+fn segtype_is_thin(segtype: &str) -> bool {
+	segtype.trim() == "thin"
 }
 
 /// Detect the strategy for `data_dir`, honouring a config override.
+///
+/// btrfs and thin-LVM get cheap crash-consistent snapshots; everything else
+/// (thick LV, plain ext4/xfs partition) falls back to `pg_basebackup`, which is
+/// always correct.
 pub fn detect(strategy_override: Option<&str>, data_dir: &Path) -> Result<Strategy> {
 	if let Some(name) = strategy_override {
 		return Strategy::parse(name);
@@ -55,20 +52,40 @@ pub fn detect(strategy_override: Option<&str>, data_dir: &Path) -> Result<Strate
 	if cfg!(windows) {
 		return Ok(Strategy::Vss);
 	}
-	let fstype = findmnt_fstype(data_dir)?;
-	Ok(fstype_to_strategy(&fstype))
+	if findmnt_field("FSTYPE", data_dir)? == "btrfs" {
+		return Ok(Strategy::Btrfs);
+	}
+	if is_thin_lvm(data_dir) {
+		return Ok(Strategy::ThinLvm);
+	}
+	Ok(Strategy::BaseBackup)
 }
 
-/// `findmnt -no FSTYPE --target <path>` — the filesystem type backing `path`.
-fn findmnt_fstype(path: &Path) -> Result<String> {
+/// Whether `data_dir`'s backing device is a thin LV. Any failure (not LVM, no
+/// `lvs`) is treated as "not thin" — the `pg_basebackup` fallback is correct.
+fn is_thin_lvm(data_dir: &Path) -> bool {
+	let Ok(source) = findmnt_field("SOURCE", data_dir) else {
+		return false;
+	};
+	let Ok(output) = Command::new("lvs")
+		.args(["--noheadings", "-o", "segtype", &source])
+		.output()
+	else {
+		return false;
+	};
+	output.status.success() && segtype_is_thin(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// A single `findmnt -no <field> --target <path>` value.
+fn findmnt_field(field: &str, path: &Path) -> Result<String> {
 	let output = Command::new("findmnt")
-		.args(["-no", "FSTYPE", "--target"])
+		.args(["-no", field, "--target"])
 		.arg(path)
 		.output()
 		.map_err(|e| miette::miette!("running findmnt for {}: {e}", path.display()))?;
 	if !output.status.success() {
 		bail!(
-			"findmnt failed for {}: {}",
+			"findmnt {field} failed for {}: {}",
 			path.display(),
 			String::from_utf8_lossy(&output.stderr).trim()
 		);
@@ -81,10 +98,11 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn fstype_mapping() {
-		assert_eq!(fstype_to_strategy("btrfs"), Strategy::Btrfs);
-		assert_eq!(fstype_to_strategy("ext4"), Strategy::BaseBackup);
-		assert_eq!(fstype_to_strategy("xfs"), Strategy::BaseBackup);
+	fn thin_segtype_detection() {
+		assert!(segtype_is_thin("thin"));
+		assert!(segtype_is_thin("  thin  "));
+		assert!(!segtype_is_thin("linear"));
+		assert!(!segtype_is_thin("striped"));
 	}
 
 	#[test]

@@ -36,6 +36,8 @@ pub(super) enum Teardown {
 	Nothing,
 	/// A btrfs snapshot + its mounts.
 	Btrfs(super::postgresql::btrfs::Mounts),
+	/// A thin-LVM snapshot + its mount.
+	Lvm(super::postgresql::lvm::Snapshot),
 	/// A streamed base backup directory to remove.
 	BaseBackup(PathBuf),
 }
@@ -106,6 +108,7 @@ impl Method {
 		match prepared.teardown {
 			Teardown::Nothing => Ok(()),
 			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
+			Teardown::Lvm(snapshot) => super::postgresql::lvm::teardown(snapshot).await,
 			Teardown::BaseBackup(root) => super::postgresql::basebackup::teardown(root).await,
 		}
 	}
