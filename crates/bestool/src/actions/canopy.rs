@@ -37,7 +37,9 @@ super::subcommands! {
 	#[cfg(feature = "canopy-tags")]
 	tags => Tags(TagsArgs),
 	#[cfg(feature = "canopy-backup")]
-	backup => Backup(BackupArgs)
+	backup => Backup(BackupArgs),
+	#[cfg(feature = "canopy-restore")]
+	restore => Restore(RestoreArgs)
 }
 
 /// Load the registration for a command that takes an optional `--config <DIR>`.
