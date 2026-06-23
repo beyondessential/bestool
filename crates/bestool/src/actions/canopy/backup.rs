@@ -332,7 +332,8 @@ fn parse_snapshot_output(stdout: &str) -> SnapshotResult {
 	SnapshotResult { id, bytes_uploaded }
 }
 
-fn base_url_of(reg: &Registration) -> Result<Url> {
+/// Resolve the canopy base URL from the registration (or the default).
+pub(super) fn base_url_of(reg: &Registration) -> Result<Url> {
 	reg.api_url
 		.as_deref()
 		.unwrap_or(DEFAULT_CANOPY_URL)
@@ -341,7 +342,8 @@ fn base_url_of(reg: &Registration) -> Result<Url> {
 		.wrap_err("parsing canopy api_url")
 }
 
-async fn build_client(device_key: &str) -> Result<Arc<CanopyClient>> {
+/// Build a canopy client for an already-enrolled host (tailscale, then mTLS).
+pub(super) async fn build_client(device_key: &str) -> Result<Arc<CanopyClient>> {
 	let version = env!("CARGO_PKG_VERSION");
 	let client = CanopyClient::new(version, Some(device_key), move || {
 		bestool_canopy::client_builder(version)
@@ -351,7 +353,8 @@ async fn build_client(device_key: &str) -> Result<Arc<CanopyClient>> {
 	Ok(Arc::new(client))
 }
 
-async fn load_registration(config: Option<&Path>) -> Result<Option<Registration>> {
+/// Load the registration, honouring an explicit `--config` dir.
+pub(super) async fn load_registration(config: Option<&Path>) -> Result<Option<Registration>> {
 	match config {
 		Some(dir) => bestool_canopy::registration::load_from(dir).await,
 		None => bestool_canopy::registration::load().await,
