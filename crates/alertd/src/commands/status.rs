@@ -50,7 +50,7 @@ pub async fn get_status(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
 			"           WARNING: running daemon is {}, but this CLI is {local_version}",
 			status.version
 		);
-		println!("           Consider restarting the service to pick up the new version.");
+		println!("           Run `bestool alertd restart` to pick up the new version.");
 	}
 	println!("PID:       {}", status.pid);
 	println!("Started:   {}", status.started_at);

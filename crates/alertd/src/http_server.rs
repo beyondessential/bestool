@@ -2,13 +2,17 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use axum::{Router, routing::get};
+use axum::{
+	Router,
+	routing::{get, post},
+};
 use jiff::Timestamp;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, error, info, warn};
 
 use crate::{
 	context::InternalContext,
+	daemon::DaemonControl,
 	tasks::{BackgroundTask, TaskEndpointHandler},
 };
 
@@ -27,6 +31,7 @@ pub async fn start_server(
 	addrs: Vec<std::net::SocketAddr>,
 	watchdog_timeout: Option<Duration>,
 	background_tasks: &[Arc<dyn BackgroundTask>],
+	control: DaemonControl,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -39,6 +44,7 @@ pub async fn start_server(
 		internal_context,
 		watchdog_timeout,
 		task_endpoints: Arc::new(task_endpoints),
+		control,
 	};
 
 	let app = Router::new()
@@ -46,6 +52,8 @@ pub async fn start_server(
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.route("/health", get(handle_health))
+		.route("/reload", post(handle_reload))
+		.route("/restart", post(handle_restart))
 		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))
 		.layer(
 			TraceLayer::new_for_http()

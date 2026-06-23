@@ -82,6 +82,26 @@ enum Command {
 		server_addr: Vec<SocketAddr>,
 	},
 
+	/// Reload a running daemon
+	///
+	/// Asks the daemon to re-register backup capabilities and pick up changes
+	/// under /etc/bestool/backups, without restarting.
+	Reload {
+		/// HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
+	/// Restart a running daemon
+	///
+	/// Asks the daemon to exit so the service manager restarts it — e.g. to pick
+	/// up a freshly-installed bestool binary.
+	Restart {
+		/// HTTP server address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+		#[arg(long)]
+		server_addr: Vec<SocketAddr>,
+	},
+
 	/// Install the daemon as a Windows service
 	///
 	/// Creates a Windows service named 'bestool-alertd' that will start automatically
@@ -120,6 +140,22 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 				server_addr
 			};
 			bestool_alertd::commands::get_status(&addrs).await
+		}
+		Command::Reload { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::reload(&addrs).await
+		}
+		Command::Restart { server_addr } => {
+			let addrs = if server_addr.is_empty() {
+				bestool_alertd::commands::default_server_addrs()
+			} else {
+				server_addr
+			};
+			bestool_alertd::commands::restart(&addrs).await
 		}
 		Command::Run { daemon } => {
 			let daemon_config = build_config(&ctx, daemon).await?;

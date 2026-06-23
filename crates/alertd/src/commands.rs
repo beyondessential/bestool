@@ -2,8 +2,10 @@
 
 use tracing::info;
 
+pub use control::{reload, restart};
 pub use status::get_status;
 
+mod control;
 mod status;
 
 /// Default server addresses to try when connecting to the daemon

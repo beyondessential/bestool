@@ -10,8 +10,46 @@ use crate::{
 };
 
 enum DaemonEvent {
+	/// Clean stop (SIGINT/SIGTERM, or the service manager): exit 0, no restart.
 	Shutdown,
+	/// Exit non-zero so the service manager (systemd `Restart=`, Windows SCM
+	/// recovery) brings the daemon back — how `bestool alertd restart` works.
+	Restart,
 	WatchdogTimeout,
+}
+
+/// Handle the HTTP control endpoints use to drive the daemon.
+///
+/// `pub` only so it can appear in the (also-internal) `ServerState` /
+/// `start_server` signatures without tripping `private_interfaces`; the
+/// enclosing `daemon` module is private, so it isn't part of the public API.
+#[derive(Clone)]
+pub struct DaemonControl {
+	reload: Arc<tokio::sync::watch::Sender<u64>>,
+	events: mpsc::Sender<DaemonEvent>,
+}
+
+impl DaemonControl {
+	/// Bump the reload channel so tasks refresh (HTTP `/reload`).
+	pub(crate) fn reload(&self) {
+		self.reload.send_modify(|n| *n = n.wrapping_add(1));
+	}
+
+	/// Ask the daemon to exit so the service manager restarts it (HTTP `/restart`).
+	pub(crate) async fn request_restart(&self) {
+		let _ = self.events.send(DaemonEvent::Restart).await;
+	}
+
+	/// A detached control whose channels go nowhere, for tests.
+	#[cfg(test)]
+	pub(crate) fn detached() -> Self {
+		let (reload, _) = tokio::sync::watch::channel(0);
+		let (events, _) = mpsc::channel(1);
+		Self {
+			reload: Arc::new(reload),
+			events,
+		}
+	}
 }
 
 pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
@@ -72,9 +110,10 @@ pub async fn run_with_shutdown(
 		}
 	};
 
-	// Reload channel: the SIGHUP/SIGUSR1 handler bumps it; tasks watch it to
-	// refresh without a restart.
+	// Reload channel: the SIGHUP/SIGUSR1 handler (and the `/reload` HTTP control)
+	// bump it; tasks watch it to refresh without a restart.
 	let (reload_tx, reload_rx) = tokio::sync::watch::channel(0u64);
+	let reload_tx = Arc::new(reload_tx);
 
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
@@ -84,6 +123,12 @@ pub async fn run_with_shutdown(
 	});
 
 	let (event_tx, mut event_rx) = mpsc::channel(100);
+
+	// Control handle for the HTTP server's `/reload` and `/restart` endpoints.
+	let control = DaemonControl {
+		reload: reload_tx.clone(),
+		events: event_tx.clone(),
+	};
 
 	// Start HTTP server
 	if !daemon_config.no_server {
@@ -97,6 +142,7 @@ pub async fn run_with_shutdown(
 				server_addrs,
 				watchdog_timeout,
 				&background_tasks_for_server,
+				control,
 			)
 			.await;
 		});
@@ -233,6 +279,12 @@ pub async fn run_with_shutdown(
 		Some(DaemonEvent::Shutdown) | None => {
 			info!("daemon stopped");
 			Ok(())
+		}
+		Some(DaemonEvent::Restart) => {
+			// Exit non-zero so the service manager restarts us (systemd
+			// `Restart=`, Windows SCM recovery).
+			info!("restart requested; exiting for the service manager to restart");
+			Err(miette!("restart requested"))
 		}
 		Some(DaemonEvent::WatchdogTimeout) => {
 			error!("daemon exiting due to watchdog timeout");
