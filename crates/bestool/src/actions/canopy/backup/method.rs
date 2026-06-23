@@ -38,6 +38,8 @@ pub(super) enum Teardown {
 	Btrfs(super::postgresql::btrfs::Mounts),
 	/// A thin-LVM snapshot + its mount.
 	Lvm(super::postgresql::lvm::Snapshot),
+	/// A Windows VSS shadow copy to delete.
+	Vss(super::postgresql::vss::Shadow),
 	/// A streamed base backup directory to remove.
 	BaseBackup(PathBuf),
 }
@@ -109,6 +111,7 @@ impl Method {
 			Teardown::Nothing => Ok(()),
 			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
 			Teardown::Lvm(snapshot) => super::postgresql::lvm::teardown(snapshot).await,
+			Teardown::Vss(shadow) => super::postgresql::vss::teardown(shadow).await,
 			Teardown::BaseBackup(root) => super::postgresql::basebackup::teardown(root).await,
 		}
 	}
