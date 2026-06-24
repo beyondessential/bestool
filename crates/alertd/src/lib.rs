@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 pub use bestool_canopy as canopy;
 pub use bestool_canopy::Redacted;
 
+pub mod backup;
 pub mod commands;
 mod context;
 mod daemon;
@@ -14,6 +15,7 @@ pub mod tasks;
 #[cfg(windows)]
 pub mod windows_service;
 
+pub use backup::{BackupRegistry, BackupRunner, BackupTask, RunningBackup};
 pub use context::InternalContext;
 pub use daemon::{run, run_with_shutdown};
 pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
