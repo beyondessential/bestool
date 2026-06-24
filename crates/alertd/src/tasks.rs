@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::{future::BoxFuture, stream::BoxStream};
 use miette::Result;
@@ -19,6 +19,9 @@ pub struct TaskContext {
 	/// Bumped on each reload request (SIGHUP/SIGUSR1); a task can
 	/// `reload.changed().await` to refresh its state without a restart.
 	pub reload: tokio::sync::watch::Receiver<u64>,
+	/// Query parameters of the request, for HTTP endpoint handlers. Empty on the
+	/// periodic `run` tick.
+	pub query: BTreeMap<String, String>,
 }
 
 impl TaskContext {
@@ -28,6 +31,7 @@ impl TaskContext {
 			http_client: ctx.http_client.clone(),
 			canopy_client: ctx.canopy_client.clone(),
 			reload: ctx.reload.clone(),
+			query: BTreeMap::new(),
 		}
 	}
 }

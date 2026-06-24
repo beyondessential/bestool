@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
 	Json,
 	body::Body,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
 	response::{IntoResponse, Response},
 };
@@ -25,6 +25,7 @@ use crate::{
 pub async fn handle_task_endpoint(
 	State(state): State<Arc<ServerState>>,
 	Path((task, endpoint)): Path<(String, String)>,
+	Query(query): Query<BTreeMap<String, String>>,
 ) -> Response {
 	let Some(handler) = state.task_endpoints.get(&(task.clone(), endpoint.clone())) else {
 		return (
@@ -34,7 +35,8 @@ pub async fn handle_task_endpoint(
 			.into_response();
 	};
 
-	let ctx = TaskContext::from_internal(&state.internal_context);
+	let mut ctx = TaskContext::from_internal(&state.internal_context);
+	ctx.query = query;
 	let response = handler(ctx).await;
 
 	match response {
