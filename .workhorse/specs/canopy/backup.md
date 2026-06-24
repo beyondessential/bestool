@@ -43,7 +43,7 @@ When the device is not yet authorised for backups — not bound to a live server
 6. cleans up and runs the `post` hooks;
 7. reports the outcome. Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing. A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
 
-The repository password reaches kopia by environment and the bucket details by command line; neither is written to persistent device configuration (kopia runs against a transient per-run config), so the device never holds the bucket.
+The repository password is a real secret and is kept reasonably protected from leakage — out of the process argument list and out of any persisted configuration, so it can't be read from a process listing or left on the device. The S3 credentials kopia is given need no such protection: they are dummy values, the real credentials living only in the re-signing proxy ([S3P](s3-sigv4-proxy.md)). kopia runs against a transient per-run config, so the device never holds the bucket either.
 
 ## Credentials
 
@@ -67,18 +67,13 @@ A standalone `bestool canopy backup` run works without the daemon, for manual us
 
 The method produces an atomic, crash-consistent copy of the cluster and never writes a `backup_label`, so a restore is plain crash recovery — the cluster replays its WAL to a consistent state. This is what keeps restores clean: it avoids the forced WAL reset and full reindex that a partial backup label or a non-atomic copy provoke downstream. An explicit CHECKPOINT is issued just before the capture to bound how much WAL the restore replays; it is an optimisation, not a correctness requirement.
 
-The method is generic postgres, driven by its configuration (a cluster name, with optional data-directory, version, port, and socket overrides) rather than by any application's configuration. It resolves the cluster's data directory, enumerates the volumes the cluster occupies, and picks a capture backend from the storage:
+The method is generic postgres, driven by its configuration (a cluster name, with optional data-directory, version, port, and socket overrides) rather than by any application's configuration. It resolves the cluster's data directory and the volumes the cluster occupies, then captures by the cheapest consistent means the storage offers: where the underlying volume can take a cheap, point-in-time read-only snapshot, it snapshots the volume; otherwise it streams a `pg_basebackup` base backup, which bundles the WAL and the backup-end record so it too restores by clean crash recovery.
 
-- a **btrfs** filesystem takes a read-only subvolume snapshot;
-- a backing **thin LVM** volume takes a thin snapshot;
-- **Windows** takes a VSS shadow copy;
-- anything else (a plain partition, a thick LVM volume) streams a **`pg_basebackup`** base backup, which bundles the WAL and the backup-end record so it too restores by clean crash recovery.
+A volume snapshot necessarily freezes the whole volume the data directory lives on — it is taken at the volume or block level, not of a bare subdirectory — but kopia only backs up the cluster's subdirectory within the frozen, read-only mount, exposed at the stable source path. Transient files (the postmaster lock, logs, the stats temp directory) are ignored; the WAL, transaction-status, control, global, and tablespace data never are.
 
-The snapshot backends necessarily freeze the whole subvolume or volume the data directory lives on — a snapshot is taken at the subvolume or block level, not of a bare subdirectory — but kopia only backs up the cluster's subdirectory within the frozen, read-only mount, exposed at the stable source path. Transient files (the postmaster lock, logs, the stats temp directory) are ignored; the WAL, transaction-status, control, global, and tablespace data never are.
+If a snapshot cannot be taken — the volume's snapshot mechanism is unavailable, insufficient privilege, or a multi-volume layout that cannot be frozen atomically — the method falls back to `pg_basebackup` rather than fail. This is a safe degradation to a correct, if heavier, base backup; it never falls back to reading the live data directory. A capture never silently degrades to an unsafe copy.
 
-If a snapshot backend cannot capture — VSS unavailable, insufficient privilege, or a multi-volume layout that cannot be frozen atomically — the method falls back to `pg_basebackup` rather than fail. This is a safe degradation to a correct, if heavier, base backup; it never falls back to reading the live data directory. A backend never silently degrades to an unsafe copy.
-
-Before creating a capture the method sweeps leftovers from a previously crashed run (a hard reboot skips cleanup), so orphaned snapshots and mounts do not accumulate. Backups run with the privilege the capture needs, and the postgres tools are located beside the data directory where they are not on the path.
+Before creating a capture the method sweeps leftovers from a previously crashed run (a hard reboot skips cleanup), so orphaned snapshots and mounts do not accumulate. Backups run with the privilege the capture needs.
 
 ## Restore
 

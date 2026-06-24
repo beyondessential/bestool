@@ -4,11 +4,11 @@ id: S3P
 
 # S3 SigV4 re-signing proxy
 
-A small loopback HTTP proxy that fronts a real S3 endpoint and re-signs every request with live, auto-refreshing credentials, so a long-running S3 client that binds its credentials once at start-up can keep talking to S3 past the lifetime of any single set of credentials. It lives in the `bestool-kopia` crate, behind a cargo feature so the crate's lighter consumers don't pull in the proxy's async and TLS dependencies; both Canopy (server-side maintenance, inspection, init) and bestool (device backups and restores) drive kopia through it.
+A small loopback HTTP proxy that fronts a real S3 endpoint and re-signs every request with live, auto-refreshing credentials, so a long-running S3 client that binds its credentials once at start-up can keep talking to S3 past the lifetime of any single set of credentials. Both Canopy (server-side maintenance, inspection, init) and bestool (device backups and restores) drive kopia through it.
 
 ## Why it exists
 
-kopia's S3 connector resolves credentials once, at process start, and signs every request for the life of the process with that fixed key material. It has no mid-run refresh: its CLI requires real `--access-key`/`--secret-access-key` at parse time, and it does **not** consume an ECS-style container-credentials endpoint for the S3 backend (verified against kopia 0.23.1 — it errors on the missing flags before it would ever poll the endpoint). Assumed-role / STS credentials are short-lived (about an hour), so any kopia operation that outlives the credentials fails partway through. That window is routinely exceeded: maintenance on a mid-size repository has run 40 minutes and climbing, and device backups and restores of large clusters run much longer.
+kopia's S3 connector resolves credentials once, at process start, and signs every request for the life of the process with that fixed key material. It has no mid-run refresh: it binds real credentials at start-up and has no way to pick up fresh ones for the S3 backend while running. Assumed-role / STS credentials are short-lived (about an hour), so any kopia operation that outlives the credentials fails partway through. That window is routinely exceeded: maintenance on a mid-size repository has run 40 minutes and climbing, and device backups and restores of large clusters run much longer.
 
 Static credentials passed by environment are an adequate stopgap for genuinely short operations (init, stats, listing snapshots, rotation, inspection), but not for these. The proxy removes the time bound: kopia holds only meaningless static dummy keys and points at the loopback proxy; the proxy holds the live credentials, refreshes them transparently, and re-signs each request as it passes through. A run is then limited by how long Canopy stays reachable to reissue credentials, not by the lifetime of one issuance.
 
@@ -20,12 +20,12 @@ The proxy is a forward proxy in spirit but a re-signing reverse proxy in mechani
 
 ## Credentials are pluggable
 
-The credential source is the one integration seam. The crate defines a provider abstraction that yields the current access key, secret key, and session token, and refreshes itself ahead of expiry; the proxy asks the provider for current credentials per request (cheap when unexpired) and never blocks the request path on a network round-trip it can avoid.
+The credential source is the one integration seam. Credentials come from a pluggable provider that yields the current access key, secret key, and session token and refreshes itself ahead of expiry; the proxy asks the provider for current credentials per request (cheap when unexpired) and never blocks the request path on a network round-trip it can avoid.
 
-- **Canopy** plugs an in-process assume-role provider (the pod assumes the group's role; the AWS SDK refreshes the underlying identity), so a run is not capped at the chained-session ceiling.
+- **Canopy** plugs an in-process assume-role provider (the pod assumes the group's role and refreshes the underlying identity), so a run is not capped at the chained-session ceiling.
 - **bestool** plugs a provider backed by Canopy's issue-credentials endpoint, fetching on first use and again as expiry approaches, for the `backup` (write-without-delete) or `restore` (read-only) purpose.
 
-The crate carries neither Canopy nor bestool specifics beyond this trait.
+The proxy carries neither Canopy nor bestool specifics beyond this seam.
 
 ## Signing
 
@@ -45,11 +45,11 @@ The signature binds a request to a host and region, not to a route, so the addre
 
 ## Lifecycle and concurrency
 
-The proxy binds an ephemeral loopback port and lives for the operation it serves. bestool runs one per backup or restore run; Canopy's backups pod runs many groups concurrently, each with its own role, bucket, and region, so the crate must support cheap, independent instances (a proxy per op, each with its own provider and upstream target) rather than a single shared singleton — or, if multiplexed, must key cleanly on the per-op target and credentials. Spawning and tearing one down per op must be inexpensive.
+The proxy binds an ephemeral loopback port and lives for the operation it serves. bestool runs one per backup or restore run; Canopy's backups pod runs many groups concurrently, each with its own role, bucket, and region, so the proxy must support cheap, independent instances (one per op, each with its own provider and upstream target) rather than a single shared singleton — or, if multiplexed, must key cleanly on the per-op target and credentials. Spawning and tearing one down per op must be inexpensive.
 
 ## Security
 
-The proxy binds a loopback literal only and is never exposed off-host. The dummy keys kopia carries are meaningless on their own; the real credentials live only in the proxy's process memory and are never written to disk or logged. Ambient AWS environment variables that could let the host's own credentials shadow the dummy keys are scrubbed from kopia's environment, as today. The loopback leg runs without TLS (trusted, same host); the upstream leg to S3 is always TLS.
+The proxy binds a loopback literal only and is never exposed off-host. The dummy keys kopia carries are meaningless on their own; the real credentials live only in the proxy's process memory and are never written to disk or logged. Ambient AWS environment variables that could let the host's own credentials shadow the dummy keys are scrubbed from kopia's environment. The loopback leg runs without TLS (trusted, same host); the upstream leg to S3 is always TLS.
 
 ## Observability
 
