@@ -102,9 +102,10 @@ pub async fn spawn(
 	config: S3ProxyConfig,
 	provider: Arc<dyn CredentialProvider>,
 ) -> std::io::Result<RunningProxy> {
-	// The TLS upstream leg needs a rustls crypto provider; install ring's if no
-	// process default is set yet (idempotent, ignores "already installed").
-	let _ = rustls::crypto::ring::default_provider().install_default();
+	// The TLS upstream leg needs a rustls crypto provider; install aws-lc-rs's
+	// (the workspace standard) if no process default is set yet (idempotent,
+	// ignores "already installed").
+	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
 	let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
 	let addr = listener.local_addr()?;
