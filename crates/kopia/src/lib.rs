@@ -30,6 +30,9 @@ use jiff::{Span, Timestamp};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "proxy")]
+pub mod proxy;
+
 /// System user that owns the Linux kopia install.
 pub const LINUX_KOPIA_USER: &str = "kopia";
 
