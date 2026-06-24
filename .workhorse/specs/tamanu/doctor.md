@@ -51,10 +51,14 @@ The same grouping and ordering apply during the live sweep and in the final rend
 When stdout is attached to a terminal and JSON output is not requested, the command takes over the terminal in an alternate-screen TUI for the duration of the sweep.
 Every selected check appears as a row in the list from the start of the sweep, in a pending state.
 A pending check shows a neutral indicator, a running check shows an animated spinner, and a completed check shows its outcome tag alongside the check name and one-line summary.
-As each check completes, its row moves to its grouped-and-ordered position.
+As each check completes, its row moves to its grouped-and-ordered position; a check that completes as skipped is removed from the live list entirely.
+
+When the list of rows is taller than the terminal, the operator can scroll it from the keyboard, and the footer indicates how many rows are hidden above and below the viewport.
 
 A footer line shows an animated spinner together with a running count of how many checks have completed out of the total.
 The source note appears in the TUI as dimmed text.
+
+The sweep continues gathering server facts after the last check completes; the live display stays up and the footer indicates that the sweep is finalising until the sweep fully returns, so the final output appears immediately when the live display tears down rather than after a gap.
 
 On completion, the TUI tears down and the final rendered output is written to the terminal's normal scrollback so it remains visible after the command exits.
 If the user interrupts the command (Ctrl+C), the TUI tears down cleanly and whatever results have been collected so far are written to scrollback before exit.
@@ -63,30 +67,29 @@ If the user interrupts the command (Ctrl+C), the TUI tears down cleanly and what
 
 The final output lists each displayed check on its own row with a coloured outcome tag, the check name, and a one-line summary, in grouped-and-ordered position.
 A blank line separates the check list from the result line.
-The result line gives an overall outcome — healthy, degraded, or failing — and counts of failed, warning, broken, and skipped checks.
+The result line gives an overall outcome — healthy, degraded, or failing — and counts of passed, failed, warning, broken, and skipped checks across the whole sweep, regardless of which checks the replay filter displays.
 The source note appears as dimmed text below the result line.
 The result line is always shown, even when the displayed check list is empty.
 
-## Only-failing filter
+## Result replay filter
 
-The command accepts `--only-failing` and its short form `-F`.
-With the filter set, only checks with warning, broken, or failing outcomes appear in the displayed list and the final output.
-The grouping and ordering rules still apply, so displayed checks are ordered warning, then broken, then failing.
+By default the final rendered output lists only checks with warning, broken, or failing outcomes; passing and skipped checks are omitted.
+`--all` and its short form `-a` instead include every selected check in the output.
+The grouping and ordering rules still apply, so without `--all` the displayed checks are ordered warning, then broken, then failing.
 
-In the live TUI under the filter, pending and running rows remain visible for every selected check; once a check's outcome is known, it stays in the list only if it warned, broke, or failed.
-The footer count under the filter still tracks completion against the full set of selected checks.
-When every selected check passes or is skipped, the displayed list is empty and the result line is shown on its own.
+The filter applies only to the final rendered output, never to the live TUI: passing checks stay visible in the live display even though they are omitted from the default output (skipped checks drop from the live display as described above).
+When no check warns, breaks, or fails and `--all` is not set, the displayed list is empty and the result line is shown on its own.
 
 ## Non-interactive output
 
 When stdout is not attached to a terminal and JSON output is not requested, the command produces line-by-line output without an alternate-screen TUI or animated spinner.
-Non-interactive output follows the same grouping, ordering, source note, result line, and only-failing filter rules.
+Non-interactive output follows the same grouping, ordering, source note, result line, and replay filter rules.
 
 ## JSON output
 
 When JSON output is requested, the command emits a machine-readable payload and suppresses the human-readable rendering.
 The payload contains the sweep's wire data, a source field naming where the data came from, and a computed-at timestamp when the source is the daemon's last cached sweep.
-The only-failing filter does not affect JSON output: every selected check is included.
+The replay filter does not affect JSON output: every selected check is included.
 
 ## Exit code
 

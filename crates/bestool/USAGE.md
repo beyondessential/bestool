@@ -1866,7 +1866,9 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING, 130 on interrupt.
 * `--json` — Emit the JSON wire payload instead of the human-readable render
 * `--check <NAME>` — Run only the named check(s). Repeatable. Defaults to all
 * `--skip <NAME>` — Skip the named check(s). Repeatable. Applied after `--check`
-* `-F`, `--only-failing` — Hide passing and skipped checks; show only warning, broken, and failing
+* `-a`, `--all` — Show every check in the result replay, including passing and skipped.
+
+   By default the replay lists only warning, broken, and failing checks; the live progress view always shows every check regardless.
 * `--fresh` — Force a fresh sweep. With alertd running, asks the daemon to recompute and streams the results back as they come in; without alertd, runs the checks locally exactly like before
 * `--no-daemon` — Skip the alertd integration entirely and always compute locally.
 
