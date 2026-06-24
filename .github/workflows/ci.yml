@@ -16,11 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 
-# Cache strategy: only the default branch writes the rust-cache; PRs and the
-# merge queue restore it read-only (the `save-if` on every rust-cache step
-# below). The repo has a 10 GB cache cap — letting every branch save its own
-# large caches evicts the others, so PRs end up rebuilding from scratch. Pinning
-# writes to main keeps one warm set everyone restores from.
+# Cache strategy (the `with:` on every rust-cache step below). The repo has a
+# 10 GB cache cap, so we keep the footprint small:
+#   - shared-key: every job builds the same workspace, so they share one cache
+#     per OS/arch (rust-cache appends those) rather than a cache each.
+#   - save-if: only the default branch writes the cache; PRs and the merge queue
+#     restore it read-only, so branches don't evict each other and rebuild cold.
 jobs:
   test:
     strategy:
@@ -75,6 +76,7 @@ jobs:
           ssl: false
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test
         env:
@@ -91,6 +93,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Contract tests against live canopy
         run: cargo test -p bestool --lib canopy_contract -- --ignored
@@ -106,6 +109,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build alertd tests
         run: cargo test -p bestool-alertd --lib --no-run --message-format=json > alertd-tests.json
@@ -134,6 +138,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Start MinIO
         run: |
@@ -179,6 +184,7 @@ jobs:
           tool: just
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --all-features
 
@@ -193,6 +199,7 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Generate USAGE.md files
         run: ./update-usage.sh
