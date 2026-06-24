@@ -62,6 +62,7 @@ pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
 		&args.backup_type,
 		args.config.as_deref(),
 		args.backups_dir.as_deref(),
+		None,
 	)
 	.await
 }
@@ -71,6 +72,37 @@ pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
 struct SnapshotResult {
 	id: Option<String>,
 	bytes_uploaded: Option<i64>,
+}
+
+/// A status event emitted by [`run_backup`] when it's given a progress sink, so
+/// the daemon's backup task can stream a run's progress to an attached client.
+#[derive(Debug, Clone)]
+#[expect(
+	dead_code,
+	reason = "fields are read by the daemon backup task added later in this stack"
+)]
+pub enum BackupEvent {
+	/// The run acquired its per-type lock and started.
+	Started { run_id: String },
+	/// Entered a named phase: `prepare`, `snapshot`, or `report`.
+	Phase(&'static str),
+	/// The run finished successfully.
+	Done {
+		snapshot_id: Option<String>,
+		bytes_uploaded: Option<i64>,
+	},
+	/// The run failed.
+	Failed { error: String },
+}
+
+/// Sink for [`BackupEvent`]s. Unbounded so emitting never blocks the run on a
+/// slow consumer; events are best-effort and dropped once the receiver is gone.
+pub type BackupProgress = tokio::sync::mpsc::UnboundedSender<BackupEvent>;
+
+fn emit(sink: &Option<BackupProgress>, event: BackupEvent) {
+	if let Some(tx) = sink {
+		let _ = tx.send(event);
+	}
 }
 
 /// Connection details for a kopia run: the loopback proxy endpoint and the repo
@@ -139,6 +171,7 @@ pub async fn run_backup(
 	backup_type: &str,
 	registration_dir: Option<&Path>,
 	backups_dir: Option<&Path>,
+	progress: Option<BackupProgress>,
 ) -> Result<()> {
 	let run_id = Uuid::new_v4().to_string();
 
@@ -160,6 +193,7 @@ pub async fn run_backup(
 		return Ok(());
 	};
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
+	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
 
 	let reg = load_registration(registration_dir)
 		.await?
@@ -204,7 +238,9 @@ pub async fn run_backup(
 		endpoint: proxy.endpoint(),
 		password: target.repo_password.0.clone(),
 	};
-	let outcome = run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id).await;
+	let outcome =
+		run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id, &progress).await;
+	emit(&progress, BackupEvent::Phase("report"));
 
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
@@ -232,6 +268,17 @@ pub async fn run_backup(
 		.await
 		.wrap_err("reporting backup outcome to canopy")?;
 
+	match &outcome {
+		Ok(snapshot) => emit(
+			&progress,
+			BackupEvent::Done {
+				snapshot_id: snapshot.id.clone(),
+				bytes_uploaded: snapshot.bytes_uploaded,
+			},
+		),
+		Err(err) => emit(&progress, BackupEvent::Failed { error: trim_error(err) }),
+	}
+
 	outcome.map(|_| ())
 }
 
@@ -246,13 +293,16 @@ async fn run_kopia_backup(
 	server_id: &str,
 	device_id: &str,
 	run_id: &str,
+	progress: &Option<BackupProgress>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
+	emit(progress, BackupEvent::Phase("prepare"));
 	let prepared = def.method.prepare(&def.r#type).await?;
 	let source_path = prepared.path.clone();
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
+	emit(progress, BackupEvent::Phase("snapshot"));
 	let result = snapshot(target, conn, &source_path, server_id, &tags, &prepared.ignore).await;
 
 	// Cleanup and post-hooks run regardless of the snapshot outcome.

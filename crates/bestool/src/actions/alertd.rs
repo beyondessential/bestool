@@ -238,7 +238,7 @@ fn backup_dispatch() -> bestool_alertd::doctor::BackupDispatch {
 					return;
 				}
 				if let Err(err) =
-					crate::actions::canopy::backup::run_backup(&backup_type, None, None).await
+					crate::actions::canopy::backup::run_backup(&backup_type, None, None, None).await
 				{
 					tracing::error!("backup '{backup_type}' failed: {err}");
 				}
