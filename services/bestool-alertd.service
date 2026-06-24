@@ -36,9 +36,10 @@ Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
 # root set. As uid 0 the kernel grants the whole bounding set into the effective
 # set on exec (and the btrfs child below re-derives it the same way), so listing
 # the caps here is enough and AmbientCapabilities stays empty.
-#   - CAP_DAC_READ_SEARCH: root reads any file (e.g. kopia's mode-0600 repo
-#     config) without also gaining DAC write-override. Without it kopia flips to
-#     wanting sudo, which NoNewPrivileges then blocks.
+#   - CAP_DAC_READ_SEARCH: lets root read other-owned, mode-0600 files the
+#     doctor checks inspect (e.g. a service's TLS key) without also gaining DAC
+#     write-override. (Kopia no longer needs this — it runs as the kopia user
+#     and reads its own config.)
 #   - CAP_SYS_ADMIN: the btrfs disk-stats doctor check shells out to `btrfs
 #     device stats`, whose device-info ioctls return EPERM without it.
 # CAP_SYS_ADMIN is broad (near root-equivalent), so the Protect*/seccomp/
@@ -56,6 +57,11 @@ Environment=XDG_CACHE_HOME=%C
 # bestool writes to its config dir, which ProtectSystem=strict otherwise
 # locks read-only along with the rest of /etc.
 ReadWritePaths=/etc/bestool
+# Everything kopia touches lives under its home, /var/lib/kopia: the repo config
+# (.config/kopia), the cache and logs (.cache/kopia, since we run kopia as the
+# kopia user with HOME there), and the postgres snapshot/base-backup staging
+# (bestool-backup). All of it must be writable.
+ReadWritePaths=/var/lib/kopia
 # podman cp's tempdir lands in a private /tmp.
 PrivateTmp=yes
 
@@ -69,11 +75,21 @@ ProtectHostname=yes
 # but NOT ProcSubset=pid — sysinfo needs /proc/meminfo and /proc/loadavg.
 ProtectProc=invisible
 
-PrivateDevices=yes
-# safe only because CONTAINER_HOST points at the (remote) rootful podman.
-RestrictNamespaces=yes
+# postgres snapshot backups (btrfs/thin-LVM) mount the snapshot block device
+# (/dev/disk/by-uuid/*, /dev/<vg>/<lv>) read-only for kopia; a private /dev
+# would hide it. The container work still goes to the remote rootful podman, so
+# nothing else here needs a real device node.
+PrivateDevices=no
+# The read-only snapshot is mounted with X-mount.idmap so the kopia user can
+# read postgres-owned files, and an idmapped mount creates a user namespace;
+# this allows that one type and no other. The container work still goes to the
+# remote rootful podman, so no other namespace is needed.
+RestrictNamespaces=user
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
+# @mount (mount/umount/mount_setattr/…): snapshot backups mount the snapshot
+# read-only for kopia and unmount it afterwards; without it mount() is EPERM.
+SystemCallFilter=@mount
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 LockPersonality=yes
