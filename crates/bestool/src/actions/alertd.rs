@@ -325,6 +325,42 @@ mod backup {
 		while rx.try_recv().is_ok() {}
 	}
 
+	/// Re-register whenever the backups dir changes, a reload signal arrives, or
+	/// the safety-net tick fires, calling `on_trigger(reason)` each time.
+	///
+	/// The fs arm matches `Some(())` deliberately: if the watcher couldn't be set
+	/// up its sender is dropped, so `recv()` resolves to `None` immediately and
+	/// forever. Matching `Some` leaves that arm unmatched (disabled) instead of
+	/// firing in a tight loop — the periodic tick and reload signal still cover
+	/// re-registration. Returns when the reload sender is dropped (shutdown).
+	async fn event_loop<F, Fut>(
+		mut fs_rx: mpsc::UnboundedReceiver<()>,
+		mut reload: tokio::sync::watch::Receiver<u64>,
+		interval: Duration,
+		mut on_trigger: F,
+	) where
+		F: FnMut(&'static str) -> Fut,
+		Fut: std::future::Future<Output = ()>,
+	{
+		let mut periodic = tokio::time::interval(interval);
+		periodic.tick().await; // consume the immediate first tick
+
+		loop {
+			tokio::select! {
+				_ = periodic.tick() => on_trigger("periodic").await,
+				Some(()) = fs_rx.recv() => {
+					drain(&mut fs_rx);
+					on_trigger("backups dir changed").await;
+				}
+				changed = reload.changed() => match changed {
+					Ok(()) => on_trigger("reload signal").await,
+					// Sender dropped → daemon is shutting down.
+					Err(_) => break,
+				},
+			}
+		}
+	}
+
 	impl bestool_alertd::BackgroundTask for BackupCapabilitiesTask {
 		fn name(&self) -> &'static str {
 			"backup-capabilities"
@@ -339,29 +375,88 @@ mod backup {
 			Box::pin(async move {
 				reregister("startup", ctx).await;
 
-				let (tx, mut rx) = mpsc::unbounded_channel();
-				// Held for the task's lifetime so events keep arriving.
+				let (tx, rx) = mpsc::unbounded_channel();
+				// Held for the task's lifetime so events keep arriving. `None` when
+				// the dir can't be watched yet; the periodic tick still covers it.
 				let _watcher = watch_backups_dir(tx);
 
 				// The daemon turns SIGHUP/SIGUSR1 (and systemd's reload) into a
-				// bump on this channel; we also re-register on a backups-dir
+				// bump on the reload channel; we also re-register on a backups-dir
 				// change and a periodic safety-net tick.
-				let mut reload = ctx.reload.clone();
-				let mut periodic = tokio::time::interval(REREGISTER_INTERVAL);
-				periodic.tick().await; // consume the immediate first tick
-
-				loop {
-					tokio::select! {
-						_ = periodic.tick() => reregister("periodic", ctx).await,
-						_ = rx.recv() => { drain(&mut rx); reregister("backups dir changed", ctx).await }
-						changed = reload.changed() => match changed {
-							Ok(()) => reregister("reload signal", ctx).await,
-							// Sender dropped → daemon is shutting down.
-							Err(_) => break Ok(()),
-						},
-					}
-				}
+				event_loop(rx, ctx.reload.clone(), REREGISTER_INTERVAL, |reason| {
+					reregister(reason, ctx)
+				})
+				.await;
+				Ok(())
 			})
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use std::sync::{
+			Arc,
+			atomic::{AtomicUsize, Ordering},
+		};
+
+		use super::*;
+
+		/// When the watcher can't be set up its sender is dropped, closing the fs
+		/// channel. The loop must stay idle (only periodic/reload trigger it), not
+		/// busy-loop on the closed channel's instant `None`.
+		#[tokio::test]
+		async fn closed_fs_channel_does_not_storm() {
+			let (fs_tx, fs_rx) = mpsc::unbounded_channel::<()>();
+			drop(fs_tx); // simulate watch_backups_dir returning None
+			let (reload_tx, reload_rx) = tokio::sync::watch::channel(0u64);
+
+			let count = Arc::new(AtomicUsize::new(0));
+			let triggers = count.clone();
+			let loop_fut = event_loop(fs_rx, reload_rx, Duration::from_secs(3600), move |_| {
+				let triggers = triggers.clone();
+				async move {
+					triggers.fetch_add(1, Ordering::SeqCst);
+				}
+			});
+
+			// Run briefly: a busy loop would rack up thousands of triggers.
+			let _ = tokio::time::timeout(Duration::from_millis(200), loop_fut).await;
+			drop(reload_tx);
+
+			assert_eq!(
+				count.load(Ordering::SeqCst),
+				0,
+				"a closed fs channel must not trigger re-registration"
+			);
+		}
+
+		/// A reload bump fires exactly one re-registration, and dropping the reload
+		/// sender ends the loop.
+		#[tokio::test]
+		async fn reload_signal_triggers_once_then_shutdown_ends_loop() {
+			let (_fs_tx, fs_rx) = mpsc::unbounded_channel::<()>();
+			let (reload_tx, reload_rx) = tokio::sync::watch::channel(0u64);
+
+			let count = Arc::new(AtomicUsize::new(0));
+			let triggers = count.clone();
+			let handle = tokio::spawn(event_loop(
+				fs_rx,
+				reload_rx,
+				Duration::from_secs(3600),
+				move |_| {
+					let triggers = triggers.clone();
+					async move {
+						triggers.fetch_add(1, Ordering::SeqCst);
+					}
+				},
+			));
+
+			reload_tx.send_modify(|n| *n = n.wrapping_add(1));
+			tokio::time::sleep(Duration::from_millis(50)).await;
+			drop(reload_tx); // shutdown
+
+			handle.await.expect("loop task panicked");
+			assert_eq!(count.load(Ordering::SeqCst), 1);
 		}
 	}
 }
