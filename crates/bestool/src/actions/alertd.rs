@@ -215,7 +215,9 @@ fn with_daemon_tasks(
 	let (config, doctor) = {
 		let registry = bestool_alertd::BackupRegistry::new(backup_runner());
 		let doctor = doctor.with_backup_dispatch(backup_dispatch(registry.clone()));
-		let config = config.with_task(Arc::new(bestool_alertd::BackupTask::new(registry)));
+		let config = config
+			.with_backups(registry.clone())
+			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry)));
 		(config, doctor)
 	};
 

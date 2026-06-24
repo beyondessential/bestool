@@ -44,7 +44,7 @@ struct RunHandle {
 }
 
 /// One in-flight backup, for the daemon's status.
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunningBackup {
 	pub r#type: String,
 	pub run_id: Option<String>,

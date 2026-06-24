@@ -16,4 +16,7 @@ pub struct ServerState {
 	pub task_endpoints: Arc<HashMap<(String, String), TaskEndpointHandler>>,
 	/// Drives the daemon's `/reload` and `/restart` control endpoints.
 	pub control: DaemonControl,
+	/// Backup run registry, when backups are compiled in; lets `/status` list
+	/// in-flight runs.
+	pub backups: Option<Arc<crate::BackupRegistry>>,
 }

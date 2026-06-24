@@ -6,4 +6,8 @@ pub struct StatusResponse {
 	pub version: String,
 	pub started_at: String,
 	pub pid: u32,
+	/// Backups running on this daemon right now (empty when none, or when
+	/// backups aren't compiled in).
+	#[serde(default)]
+	pub backups_running: Vec<crate::RunningBackup>,
 }

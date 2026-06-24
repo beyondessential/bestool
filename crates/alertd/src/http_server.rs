@@ -32,6 +32,7 @@ pub async fn start_server(
 	watchdog_timeout: Option<Duration>,
 	background_tasks: &[Arc<dyn BackgroundTask>],
 	control: DaemonControl,
+	backups: Option<Arc<crate::BackupRegistry>>,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -45,6 +46,7 @@ pub async fn start_server(
 		watchdog_timeout,
 		task_endpoints: Arc::new(task_endpoints),
 		control,
+		backups,
 	};
 
 	let app = Router::new()
