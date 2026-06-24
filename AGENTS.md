@@ -24,4 +24,5 @@
 - When changing Windows-specific code, run `cargo check` with a Windows GNU target (unless currently running on Windows).
 - Releases are automated via release-plz: pushing to `main` opens a `repo: release` PR which auto-merges and publishes to crates.io. No manual release step is needed.
 - It's very important for alertd that postgres (or anything else we're checking) IS NOT REQUIRED for the alertd daemon to start, because otherwise we CANNOT ALERT ON THE DATABASE BEING DOWN.
+- When writing or changing specs in `.workhorse/specs/`, follow the spec rules in [.workhorse/rules.md](.workhorse/rules.md).
 <!-- end rules -->
