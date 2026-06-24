@@ -85,6 +85,27 @@ pub async fn get_status(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
 		println!("Watchdog:  disabled");
 	}
 
+	if status.backups_configured.is_empty() {
+		println!("Backups:   none configured");
+	} else {
+		println!("Backups:   {}", status.backups_configured.join(", "));
+	}
+	if !status.backups_running.is_empty() {
+		println!("  running: {}", status.backups_running.len());
+		for backup in &status.backups_running {
+			let phase = backup
+				.latest
+				.get("event")
+				.and_then(serde_json::Value::as_str)
+				.unwrap_or("?");
+			let run_id = backup.run_id.as_deref().unwrap_or("-");
+			println!(
+				"           - {} [{phase}] run {run_id}, started {}",
+				backup.r#type, backup.started_at
+			);
+		}
+	}
+
 	if !healthy {
 		std::process::exit(1);
 	}

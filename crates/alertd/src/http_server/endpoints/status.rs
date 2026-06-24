@@ -5,9 +5,9 @@ use axum::{Json, extract::State, response::IntoResponse};
 use crate::http_server::{state::ServerState, types::StatusResponse};
 
 pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
-	let backups_running = match &state.backups {
-		Some(registry) => registry.running().await,
-		None => Vec::new(),
+	let (backups_running, backups_configured) = match &state.backups {
+		Some(registry) => (registry.running().await, registry.configured().await),
+		None => (Vec::new(), Vec::new()),
 	};
 	let status = StatusResponse {
 		name: "bestool-alertd".to_string(),
@@ -15,6 +15,7 @@ pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoRe
 		started_at: state.started_at.to_string(),
 		pid: state.pid,
 		backups_running,
+		backups_configured,
 	};
 	Json(status)
 }

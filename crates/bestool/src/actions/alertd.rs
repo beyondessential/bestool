@@ -217,14 +217,12 @@ fn with_daemon_tasks(
 		let doctor = doctor.with_backup_dispatch(backup_dispatch(registry.clone()));
 		let config = config
 			.with_backups(registry.clone())
-			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry)));
+			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry.clone())))
+			.with_task(Arc::new(backup::BackupCapabilitiesTask::new(registry)));
 		(config, doctor)
 	};
 
-	let config = config.with_task(Arc::new(doctor));
-	#[cfg(feature = "canopy-backup")]
-	let config = config.with_task(Arc::new(backup::BackupCapabilitiesTask));
-	config
+	config.with_task(Arc::new(doctor))
 }
 
 /// The in-process backup trigger: routes each type canopy requests via
@@ -322,7 +320,7 @@ fn backup_runner() -> bestool_alertd::BackupRunner {
 /// new def in `/etc/bestool/backups` is picked up without restarting the daemon.
 #[cfg(feature = "canopy-backup")]
 mod backup {
-	use std::time::Duration;
+	use std::{sync::Arc, time::Duration};
 
 	use futures::future::BoxFuture;
 	use miette::{IntoDiagnostic as _, Result};
@@ -335,15 +333,32 @@ mod backup {
 	/// missed event still converges.
 	const REREGISTER_INTERVAL: Duration = Duration::from_secs(3600);
 
-	pub(super) struct BackupCapabilitiesTask;
+	pub(super) struct BackupCapabilitiesTask {
+		registry: Arc<bestool_alertd::BackupRegistry>,
+	}
 
-	/// Load the configured backup types and register them with canopy.
-	async fn register(ctx: &bestool_alertd::TaskContext) -> Result<()> {
+	impl BackupCapabilitiesTask {
+		pub(super) fn new(registry: Arc<bestool_alertd::BackupRegistry>) -> Self {
+			Self { registry }
+		}
+	}
+
+	/// Load the configured backup types, record them for the daemon's status, and
+	/// register them with canopy.
+	///
+	/// The configured types are recorded even when there's no canopy client or no
+	/// defs, so the status reflects the host's config regardless of connectivity.
+	async fn register(
+		registry: &bestool_alertd::BackupRegistry,
+		ctx: &bestool_alertd::TaskContext,
+	) -> Result<()> {
+		let defs = config::load_dir(&config::backups_dir()).await?;
+		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
+		registry.set_configured(types.clone()).await;
+
 		let Some(client) = ctx.canopy_client.as_ref() else {
 			return Ok(());
 		};
-		let defs = config::load_dir(&config::backups_dir()).await?;
-		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
 		if types.is_empty() {
 			return Ok(());
 		}
@@ -354,9 +369,13 @@ mod backup {
 	}
 
 	/// Re-register, logging the trigger; failures are warned, never fatal.
-	async fn reregister(reason: &str, ctx: &bestool_alertd::TaskContext) {
+	async fn reregister(
+		reason: &str,
+		registry: &bestool_alertd::BackupRegistry,
+		ctx: &bestool_alertd::TaskContext,
+	) {
 		info!(reason, "registering backup capabilities");
-		if let Err(err) = register(ctx).await {
+		if let Err(err) = register(registry, ctx).await {
 			warn!("registering backup capabilities failed (will retry): {err}");
 		}
 	}
@@ -461,7 +480,7 @@ mod backup {
 
 		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
 			Box::pin(async move {
-				reregister("startup", ctx).await;
+				reregister("startup", &self.registry, ctx).await;
 
 				let (tx, rx) = mpsc::unbounded_channel();
 				// Held for the task's lifetime so events keep arriving. `None` when
@@ -472,7 +491,7 @@ mod backup {
 				// bump on the reload channel; we also re-register on a backups-dir
 				// change and a periodic safety-net tick.
 				event_loop(rx, ctx.reload.clone(), REREGISTER_INTERVAL, |reason| {
-					reregister(reason, ctx)
+					reregister(reason, &self.registry, ctx)
 				})
 				.await;
 				Ok(())

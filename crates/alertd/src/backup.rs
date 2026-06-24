@@ -56,6 +56,10 @@ pub struct RunningBackup {
 pub struct BackupRegistry {
 	runner: BackupRunner,
 	running: Mutex<HashMap<String, Arc<RunHandle>>>,
+	/// The backup types configured on this host, refreshed by the capabilities
+	/// task as it (re-)reads the backups dir. Surfaced in the daemon's status so
+	/// an operator can see what's registered without listing the config dir.
+	configured: Mutex<Vec<String>>,
 }
 
 impl BackupRegistry {
@@ -63,7 +67,20 @@ impl BackupRegistry {
 		Arc::new(Self {
 			runner,
 			running: Mutex::new(HashMap::new()),
+			configured: Mutex::new(Vec::new()),
 		})
+	}
+
+	/// Record the configured backup types (called by the capabilities task each
+	/// time it reads the backups dir).
+	pub async fn set_configured(&self, mut types: Vec<String>) {
+		types.sort();
+		*self.configured.lock().await = types;
+	}
+
+	/// The configured backup types, for the status endpoint.
+	pub async fn configured(&self) -> Vec<String> {
+		self.configured.lock().await.clone()
 	}
 
 	/// Start a run for `backup_type`, or attach to the one already in flight.

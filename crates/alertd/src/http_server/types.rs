@@ -10,4 +10,8 @@ pub struct StatusResponse {
 	/// backups aren't compiled in).
 	#[serde(default)]
 	pub backups_running: Vec<crate::RunningBackup>,
+	/// Backup types configured on this host (empty when none, or when backups
+	/// aren't compiled in).
+	#[serde(default)]
+	pub backups_configured: Vec<String>,
 }
