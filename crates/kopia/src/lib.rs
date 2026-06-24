@@ -194,13 +194,9 @@ pub fn build_kopia_command(kopia: &Path) -> Result<Command, String> {
 	}
 }
 
-/// AWS environment variables that precede the container-credentials provider in
-/// minio-go's resolution chain.
-///
-/// They're scrubbed from kopia's environment so they can't shadow the loopback
-/// container-credentials endpoint the device serves. (`FULL_URI` and
-/// `AUTHORIZATION_TOKEN` are *not* here — those are the endpoint we point kopia
-/// at.)
+/// Ambient AWS credential environment variables, scrubbed from kopia's
+/// environment so the host's own credentials can't shadow the dummy keys kopia
+/// carries for the loopback re-signing proxy.
 pub const S3_SHADOWING_ENV_VARS: [&str; 7] = [
 	"AWS_ACCESS_KEY_ID",
 	"AWS_SECRET_ACCESS_KEY",
@@ -211,18 +207,13 @@ pub const S3_SHADOWING_ENV_VARS: [&str; 7] = [
 	"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
 ];
 
-/// Environment for a kopia run that gets its S3 creds from a loopback
-/// container-credentials endpoint.
+/// Environment for a kopia run against the canopy-managed repo.
 ///
-/// `token` and `password` are secrets — passed via the environment (never argv)
-/// so they don't show up in the process list. `config_path` points kopia at a
-/// transient per-run config so the bucket/password never persist to the device's
-/// kopia config.
+/// `password` is a secret — passed via the environment (never argv) so it
+/// doesn't show up in the process list. `config_path` points kopia at a
+/// transient per-run config so the bucket/password never persist to the
+/// device's kopia config.
 pub struct S3KopiaEnv<'a> {
-	/// `AWS_CONTAINER_CREDENTIALS_FULL_URI` (the loopback creds endpoint).
-	pub full_uri: &'a str,
-	/// `AWS_CONTAINER_AUTHORIZATION_TOKEN` (the leased bearer token).
-	pub token: &'a str,
 	/// `KOPIA_PASSWORD` (the repo passphrase).
 	pub password: &'a str,
 	/// `KOPIA_CONFIG_PATH` (a transient per-run config file).
@@ -231,10 +222,8 @@ pub struct S3KopiaEnv<'a> {
 
 impl S3KopiaEnv<'_> {
 	/// The (key, value) pairs this env sets on a kopia process.
-	fn vars(&self) -> [(&'static str, std::ffi::OsString); 4] {
+	fn vars(&self) -> [(&'static str, std::ffi::OsString); 2] {
 		[
-			("AWS_CONTAINER_CREDENTIALS_FULL_URI", self.full_uri.into()),
-			("AWS_CONTAINER_AUTHORIZATION_TOKEN", self.token.into()),
 			("KOPIA_PASSWORD", self.password.into()),
 			("KOPIA_CONFIG_PATH", self.config_path.as_os_str().to_owned()),
 		]
@@ -250,12 +239,12 @@ impl S3KopiaEnv<'_> {
 	}
 }
 
-/// Build a kopia [`Command`] that gets its S3 creds from a loopback
-/// container-credentials endpoint.
+/// Build a kopia [`Command`] for the canopy-managed S3 repo, which is reached
+/// through the loopback re-signing proxy.
 ///
 /// On Linux, kopia runs as the [`LINUX_KOPIA_USER`] via `sudo` when needed;
 /// `sudo`'s `env_reset` drops the parent environment (so the
-/// [`S3_SHADOWING_ENV_VARS`] never reach kopia) and the creds/password vars are
+/// [`S3_SHADOWING_ENV_VARS`] never reach kopia) and the password/config vars are
 /// forwarded explicitly via `--preserve-env`. Run directly, the child inherits
 /// our environment, so the shadowing vars are removed explicitly instead.
 pub fn build_kopia_command_with_s3(kopia: &Path, env: &S3KopiaEnv<'_>) -> Result<Command, String> {
@@ -285,12 +274,22 @@ pub fn build_kopia_command_with_s3(kopia: &Path, env: &S3KopiaEnv<'_>) -> Result
 	Ok(cmd)
 }
 
-/// Push `repository connect s3` args (the canopy-managed repo connection).
+/// Dummy S3 credentials kopia carries. Meaningless on their own — the loopback
+/// re-signing proxy discards them and re-signs every request with live
+/// credentials — but kopia's minio-go backend requires non-empty keys at parse
+/// time.
+pub const PROXY_DUMMY_ACCESS_KEY: &str = "bestool-proxy-dummy-access-key";
+pub const PROXY_DUMMY_SECRET_KEY: &str = "bestool-proxy-dummy-secret-key";
+
+/// Push `repository connect s3` args for the canopy-managed repo, reached
+/// through the loopback re-signing proxy at `endpoint` (TLS disabled on that
+/// leg) with dummy credentials.
 pub fn args_repository_connect_s3(
 	cmd: &mut Command,
 	bucket: &str,
 	prefix: &str,
 	region: &str,
+	endpoint: &str,
 	username: &str,
 	hostname: &str,
 ) {
@@ -301,6 +300,13 @@ pub fn args_repository_connect_s3(
 		.arg(prefix)
 		.arg("--region")
 		.arg(region)
+		.arg("--endpoint")
+		.arg(endpoint)
+		.arg("--disable-tls")
+		.arg("--access-key")
+		.arg(PROXY_DUMMY_ACCESS_KEY)
+		.arg("--secret-access-key")
+		.arg(PROXY_DUMMY_SECRET_KEY)
 		.arg("--override-username")
 		.arg(username)
 		.arg("--override-hostname")
@@ -751,6 +757,7 @@ mod tests {
 			"my-bucket",
 			"",
 			"ap-southeast-2",
+			"127.0.0.1:8333",
 			"canopy",
 			"server-id-123",
 		);
@@ -766,6 +773,13 @@ mod tests {
 				"",
 				"--region",
 				"ap-southeast-2",
+				"--endpoint",
+				"127.0.0.1:8333",
+				"--disable-tls",
+				"--access-key",
+				PROXY_DUMMY_ACCESS_KEY,
+				"--secret-access-key",
+				PROXY_DUMMY_SECRET_KEY,
 				"--override-username",
 				"canopy",
 				"--override-hostname",
@@ -828,10 +842,8 @@ mod tests {
 	}
 
 	#[test]
-	fn s3_env_sets_creds_vars_and_scrubs_shadowing_ones() {
+	fn s3_env_sets_repo_vars_and_scrubs_shadowing_ones() {
 		let env = S3KopiaEnv {
-			full_uri: "http://127.0.0.1:5000/creds",
-			token: "bearer-token",
 			password: "repo-pass",
 			config_path: Path::new("/run/bestool/kopia.config"),
 		};
@@ -847,14 +859,6 @@ mod tests {
 			.collect();
 
 		assert_eq!(
-			envs.get("AWS_CONTAINER_CREDENTIALS_FULL_URI"),
-			Some(&Some("http://127.0.0.1:5000/creds".to_owned()))
-		);
-		assert_eq!(
-			envs.get("AWS_CONTAINER_AUTHORIZATION_TOKEN"),
-			Some(&Some("bearer-token".to_owned()))
-		);
-		assert_eq!(
 			envs.get("KOPIA_PASSWORD"),
 			Some(&Some("repo-pass".to_owned()))
 		);
@@ -869,17 +873,12 @@ mod tests {
 	}
 
 	#[test]
-	fn preserve_env_keys_lists_all_creds_vars() {
+	fn preserve_env_keys_lists_repo_vars() {
 		let env = S3KopiaEnv {
-			full_uri: "http://127.0.0.1:0/creds",
-			token: "t",
 			password: "p",
 			config_path: Path::new("/tmp/c"),
 		};
-		assert_eq!(
-			env.preserve_env_keys(),
-			"AWS_CONTAINER_CREDENTIALS_FULL_URI,AWS_CONTAINER_AUTHORIZATION_TOKEN,KOPIA_PASSWORD,KOPIA_CONFIG_PATH"
-		);
+		assert_eq!(env.preserve_env_keys(), "KOPIA_PASSWORD,KOPIA_CONFIG_PATH");
 	}
 
 	fn snapshot(id: &str, host: &str, path: &str, taken: Timestamp) -> Snapshot {

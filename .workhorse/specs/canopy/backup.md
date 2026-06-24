@@ -38,18 +38,16 @@ When the device is not yet authorised for backups — not bound to a live server
 1. mints a run id (which becomes the report's run id and the `canopy-run` snapshot tag) and resolves the definition for the type, failing fast without touching the network if no definition exists;
 2. takes an exclusive per-type lock for the whole run, so a second run for the same type — a re-emitted request, or a manual run racing the daemon — no-ops rather than starting a concurrent kopia. The lock lives in a runtime directory and is released by the OS if the process dies;
 3. fetches the target. A "not yet authorised" response is treated as idle: the run logs that there's nothing to do and exits successfully without reporting. This lets a server image ship backup wiring unconditionally and simply wait until an operator authorises the group;
-4. starts a loopback credentials endpoint for kopia (below) and connects kopia to the repository, reconnecting if the target changed so a server-side bucket change is picked up;
+4. starts a loopback re-signing proxy for kopia (below) and connects kopia to the repository through it, reconnecting if the target changed so a server-side bucket change is picked up;
 5. runs the `pre` hooks, prepares the method's source, applies an ignore policy for any method-supplied transient files, and takes the kopia snapshot;
 6. cleans up and runs the `post` hooks;
 7. reports the outcome. Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing. A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
 
-The repository password reaches kopia by environment and the bucket details by command line; neither is written to persistent device configuration (kopia runs against a transient per-run config), so the device never holds the bucket.
+The repository password is a real secret and is kept reasonably protected from leakage — out of the process argument list and out of any persisted configuration, so it can't be read from a process listing or left on the device. The S3 credentials kopia is given need no such protection: they are dummy values, the real credentials living only in the re-signing proxy ([S3P](s3-sigv4-proxy.md)). kopia runs against a transient per-run config, so the device never holds the bucket either.
 
-## The credentials endpoint
+## Credentials
 
-kopia's object-store backend obtains credentials from an ECS-style container-credentials endpoint and self-refreshes by re-polling it; it cannot consume a credential-process shim or a static credentials file. So the driver serves a loopback HTTP endpoint, bound to a loopback literal, and points kopia at it by environment. Each run leases a random bearer token; a request carrying that token receives the cached credentials, an unknown or absent token is refused, and the token is deregistered when the run ends so a leaked token stops working.
-
-The endpoint fetches credentials from Canopy on first use and again as they approach expiry, translating Canopy's credential-process-shaped response into the container-credentials shape kopia expects. Because each issuance is short-lived, a long run simply re-fetches; Canopy must stay reachable for the whole run, not just the start. Environment variables that would otherwise let the host's ambient credentials shadow the endpoint are scrubbed from kopia's environment.
+kopia binds its S3 credentials once at start-up and has no mid-run refresh, while Canopy's assumed-role credentials are short-lived — so a long operation would otherwise outlive them. The driver bridges this with a loopback re-signing proxy ([S3P](s3-sigv4-proxy.md)): kopia is pointed at the proxy with meaningless dummy keys, and the proxy re-signs each request with live credentials fetched from Canopy, refreshed as they near expiry. A long run is bounded by how long Canopy stays reachable to reissue credentials, not by a single issuance. Environment variables that would otherwise let the host's ambient credentials shadow the dummy keys are scrubbed from kopia's environment.
 
 ## Repository identity and tags
 
@@ -63,24 +61,19 @@ When run under the bestool-alertd daemon, the device registers its capabilities 
 
 Canopy decides when a server backs up. On each device-to-Canopy healthcheck tick, Canopy's response names the backup types the server should run right now (the union of operator one-offs and schedule-due types; empty means nothing to do). The daemon runs each named type's driver in-process, skipping any type whose previous run is still going. Reporting a run clears the corresponding one-off, so the heartbeat stops re-emitting it.
 
-A standalone `bestool canopy backup` run works without the daemon, for manual use or an external scheduler; it serves its own ephemeral credentials endpoint for the run.
+A standalone `bestool canopy backup` run works without the daemon, for manual use or an external scheduler; it spawns its own ephemeral re-signing proxy for the run.
 
 ## The postgresql method
 
 The method produces an atomic, crash-consistent copy of the cluster and never writes a `backup_label`, so a restore is plain crash recovery — the cluster replays its WAL to a consistent state. This is what keeps restores clean: it avoids the forced WAL reset and full reindex that a partial backup label or a non-atomic copy provoke downstream. An explicit CHECKPOINT is issued just before the capture to bound how much WAL the restore replays; it is an optimisation, not a correctness requirement.
 
-The method is generic postgres, driven by its configuration (a cluster name, with optional data-directory, version, port, and socket overrides) rather than by any application's configuration. It resolves the cluster's data directory, enumerates the volumes the cluster occupies, and picks a capture backend from the storage:
+The method is generic postgres, driven by its configuration (a cluster name, with optional data-directory, version, port, and socket overrides) rather than by any application's configuration. It resolves the cluster's data directory and the volumes the cluster occupies, then captures by the cheapest consistent means the storage offers: where the underlying volume can take a cheap, point-in-time read-only snapshot, it snapshots the volume; otherwise it streams a `pg_basebackup` base backup, which bundles the WAL and the backup-end record so it too restores by clean crash recovery.
 
-- a **btrfs** filesystem takes a read-only subvolume snapshot;
-- a backing **thin LVM** volume takes a thin snapshot;
-- **Windows** takes a VSS shadow copy;
-- anything else (a plain partition, a thick LVM volume) streams a **`pg_basebackup`** base backup, which bundles the WAL and the backup-end record so it too restores by clean crash recovery.
+A volume snapshot necessarily freezes the whole volume the data directory lives on — it is taken at the volume or block level, not of a bare subdirectory — but kopia only backs up the cluster's subdirectory within the frozen, read-only mount, exposed at the stable source path. Transient files (the postmaster lock, logs, the stats temp directory) are ignored; the WAL, transaction-status, control, global, and tablespace data never are.
 
-The snapshot backends necessarily freeze the whole subvolume or volume the data directory lives on — a snapshot is taken at the subvolume or block level, not of a bare subdirectory — but kopia only backs up the cluster's subdirectory within the frozen, read-only mount, exposed at the stable source path. Transient files (the postmaster lock, logs, the stats temp directory) are ignored; the WAL, transaction-status, control, global, and tablespace data never are.
+If a snapshot cannot be taken — the volume's snapshot mechanism is unavailable, insufficient privilege, or a multi-volume layout that cannot be frozen atomically — the method falls back to `pg_basebackup` rather than fail. This is a safe degradation to a correct, if heavier, base backup; it never falls back to reading the live data directory. A capture never silently degrades to an unsafe copy.
 
-If a snapshot backend cannot capture — VSS unavailable, insufficient privilege, or a multi-volume layout that cannot be frozen atomically — the method falls back to `pg_basebackup` rather than fail. This is a safe degradation to a correct, if heavier, base backup; it never falls back to reading the live data directory. A backend never silently degrades to an unsafe copy.
-
-Before creating a capture the method sweeps leftovers from a previously crashed run (a hard reboot skips cleanup), so orphaned snapshots and mounts do not accumulate. Backups run with the privilege the capture needs, and the postgres tools are located beside the data directory where they are not on the path.
+Before creating a capture the method sweeps leftovers from a previously crashed run (a hard reboot skips cleanup), so orphaned snapshots and mounts do not accumulate. Backups run with the privilege the capture needs.
 
 ## Restore
 

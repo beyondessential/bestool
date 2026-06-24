@@ -21,8 +21,8 @@ use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use tracing::info;
 
 use super::backup::{
-	base_url_of, build_client, config, connect_repo, creds::CredsServer, load_registration,
-	make_lease, method::RestoreOpts, run_kopia,
+	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
+	run_kopia, spawn_proxy,
 };
 use crate::actions::Context;
 
@@ -96,25 +96,25 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	};
 
 	// Read-only creds + connection (the restore purpose downscopes server-side).
-	let creds_server = CredsServer::start().await?;
-	let lease = make_lease(
-		&creds_server,
+	// The proxy serves for the whole restore; held in scope to the end.
+	let proxy = spawn_proxy(
 		client.clone(),
 		base_url.clone(),
 		args.backup_type.clone(),
 		Purpose::Restore,
-	);
+		&target.region,
+	)
+	.await?;
 	let config_dir = tempfile::tempdir()
 		.into_diagnostic()
 		.wrap_err("creating transient kopia config dir")?;
+	let config_path = config_dir.path().join("repository.config");
 	let s3env = S3KopiaEnv {
-		full_uri: lease.uri(),
-		token: lease.token(),
 		password: &target.repo_password.0,
-		config_path: &config_dir.path().join("repository.config"),
+		config_path: &config_path,
 	};
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
-	connect_repo(&kopia, &s3env, &target, &server_id).await?;
+	connect_repo(&kopia, &s3env, &target, &proxy.endpoint(), &server_id).await?;
 
 	// Select the snapshot to restore.
 	let snapshots = list_snapshots(&kopia, &s3env).await?;
