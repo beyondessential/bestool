@@ -1,12 +1,19 @@
 //! Backup run registry and the on-demand `run` endpoint.
 //!
-//! A backup of a given type runs at most once at a time inside the daemon.
+//! A backup of a given type runs at most once at a time inside the daemon, and
+//! across types the daemon runs at most one backup at a time: a batch of due
+//! backups is linearised through a single run slot, with a quiet period between
+//! consecutive runs, rather than starting together and loading the server.
 //! [`BackupRegistry::ensure_run`] is start-or-attach: it starts a run via the
 //! injected [`BackupRunner`] when the type is idle, or hands back a subscription
 //! to the in-flight run otherwise. A subscriber sees a replay of the latest
 //! status, then live status events and a periodic heartbeat, then the run's
 //! terminal event. [`BackupRegistry::running`] lists in-flight runs for the
 //! daemon's status.
+//!
+//! This serialisation is a daemon concern only; a manual `bestool canopy backup`
+//! invocation drives the backup driver directly and is bounded just by the
+//! cross-process lock, not by this slot.
 //!
 //! The actual backup driver lives in the bestool binary; it's injected here as a
 //! [`BackupRunner`] so this crate carries no backup logic of its own.
@@ -17,7 +24,7 @@ use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::Result;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{
@@ -34,6 +41,10 @@ pub type BackupRunner = Arc<
 
 const HEARTBEAT: Duration = Duration::from_secs(5);
 const BROADCAST_CAPACITY: usize = 256;
+/// Quiet gap held after each backup before the next queued one may start, so a
+/// batch of due backups runs spread out rather than hammering the server
+/// together. Deliberately coarse for now; tune once we have load data.
+const QUIET_PERIOD: Duration = Duration::from_secs(30);
 
 struct RunHandle {
 	started_at: Timestamp,
@@ -60,14 +71,25 @@ pub struct BackupRegistry {
 	/// task as it (re-)reads the backups dir. Surfaced in the daemon's status so
 	/// an operator can see what's registered without listing the config dir.
 	configured: Mutex<Vec<String>>,
+	/// Daemon-wide single-run slot: at most one backup actually runs at a time,
+	/// so a batch of due backups is linearised instead of starting together.
+	run_slot: Semaphore,
+	/// Quiet gap held (still occupying [`run_slot`]) after each run completes.
+	quiet_period: Duration,
 }
 
 impl BackupRegistry {
 	pub fn new(runner: BackupRunner) -> Arc<Self> {
+		Self::with_quiet_period(runner, QUIET_PERIOD)
+	}
+
+	fn with_quiet_period(runner: BackupRunner, quiet_period: Duration) -> Arc<Self> {
 		Arc::new(Self {
 			runner,
 			running: Mutex::new(HashMap::new()),
 			configured: Mutex::new(Vec::new()),
+			run_slot: Semaphore::new(1),
+			quiet_period,
 		})
 	}
 
@@ -112,8 +134,26 @@ impl BackupRegistry {
 		let runner = (self.runner)(backup_type.clone(), sink);
 		let registry = self.clone();
 		tokio::spawn(async move {
+			// Wait for the daemon-wide run slot: only one backup runs at a time,
+			// so multiple due backups queue here rather than loading the server
+			// all at once. The type stays registered (and shows as running) while
+			// queued, so a repeat request still attaches instead of double-starting.
+			let queued = json!({ "event": "queued" });
+			*handle.latest.lock().await = queued.clone();
+			let _ = events.send(queued);
+			let Ok(_permit) = registry.run_slot.acquire().await else {
+				return; // semaphore closed; daemon shutting down
+			};
+
 			tokio::spawn(runner);
-			registry.pump(backup_type, handle, run_rx, events).await;
+			registry
+				.clone()
+				.pump(backup_type, handle, run_rx, events)
+				.await;
+
+			// Hold the slot through a quiet period so the next queued backup
+			// doesn't start back-to-back with this one.
+			tokio::time::sleep(registry.quiet_period).await;
 		});
 
 		subscription(None, receiver)
@@ -283,6 +323,9 @@ mod tests {
 		let registry = BackupRegistry::new(runner);
 
 		let mut starter = registry.ensure_run("pg".into()).await;
+		// The run queues for the daemon-wide slot (free here, so instantly) before
+		// the runner emits its first event.
+		assert_eq!(event(&starter.next().await.unwrap()), "queued");
 		assert_eq!(event(&starter.next().await.unwrap()), "started");
 
 		// A second request for the same type attaches rather than starting a
@@ -297,5 +340,46 @@ mod tests {
 		assert!(starter_events.contains(&"done".to_owned()));
 		let attacher_events: Vec<String> = attacher.map(|v| event(&v)).collect().await;
 		assert!(attacher_events.contains(&"done".to_owned()));
+	}
+
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	async fn distinct_types_run_sequentially_not_concurrently() {
+		use std::sync::atomic::{AtomicUsize, Ordering};
+
+		// Each run records how many are executing at once; the slot must keep that
+		// at 1 even though three types are triggered together.
+		let concurrent = Arc::new(AtomicUsize::new(0));
+		let max_seen = Arc::new(AtomicUsize::new(0));
+		let runner: BackupRunner = {
+			let concurrent = concurrent.clone();
+			let max_seen = max_seen.clone();
+			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>| {
+				let concurrent = concurrent.clone();
+				let max_seen = max_seen.clone();
+				Box::pin(async move {
+					let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+					max_seen.fetch_max(now, Ordering::SeqCst);
+					let _ = sink.send(json!({ "event": "started" }));
+					tokio::time::sleep(Duration::from_millis(50)).await;
+					concurrent.fetch_sub(1, Ordering::SeqCst);
+					let _ = sink.send(json!({ "event": "done", "success": true }));
+				})
+			})
+		};
+		// No quiet period so the test stays fast; serialisation is the slot, not it.
+		let registry = BackupRegistry::with_quiet_period(runner, Duration::ZERO);
+
+		let streams =
+			futures::future::join_all(["a", "b", "c"].map(|t| registry.ensure_run(t.to_owned())))
+				.await;
+		for mut stream in streams {
+			while stream.next().await.is_some() {}
+		}
+
+		assert_eq!(
+			max_seen.load(Ordering::SeqCst),
+			1,
+			"backups of distinct types must not overlap"
+		);
 	}
 }
