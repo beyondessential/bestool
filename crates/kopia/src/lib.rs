@@ -201,13 +201,57 @@ pub fn linux_elevation() -> Elevation {
 	Elevation::Direct
 }
 
-/// The user kopia will actually run as, when that differs from the current user
-/// — so a caller can hand it ownership of transient files (e.g. the per-run
-/// config). `None` when kopia runs as the current user, or off Linux.
+/// Whether the kopia system user exists (via `id -u kopia`).
+#[cfg(target_os = "linux")]
+fn kopia_user_exists() -> bool {
+	std::process::Command::new("id")
+		.arg("-u")
+		.arg(LINUX_KOPIA_USER)
+		.output()
+		.map(|o| o.status.success())
+		.unwrap_or(false)
+}
+
+/// Elevation for the canopy-managed repo. Unlike [`linux_elevation`], it keys on
+/// whether the kopia *user* exists, not on the system repo config: canopy
+/// backups reach the repo through a transient config and the loopback proxy, so
+/// the system config is typically absent even though we still want to run kopia
+/// as the kopia user (for cache ownership and idmapped-snapshot reads).
+#[cfg(target_os = "linux")]
+fn canopy_elevation() -> Elevation {
+	let Some(user) = current_username() else {
+		return Elevation::Skip("could not determine current Unix username".into());
+	};
+	if user == LINUX_KOPIA_USER {
+		return Elevation::Direct;
+	}
+	if !kopia_user_exists() {
+		// No kopia user to drop to; run as ourselves (the command still pins
+		// kopia's home to /var/lib/kopia so the cache stays writable).
+		return Elevation::Direct;
+	}
+	if is_root() {
+		Elevation::SetPriv
+	} else {
+		Elevation::Sudo
+	}
+}
+
+/// The user kopia will actually run as for a canopy-managed run, when that
+/// differs from the current user — so a caller can hand it ownership of
+/// transient files (e.g. the per-run config). `None` when kopia runs as the
+/// current user, or off Linux.
 pub fn kopia_run_as_user() -> Option<&'static str> {
-	match linux_elevation() {
-		Elevation::SetPriv | Elevation::Sudo => Some(LINUX_KOPIA_USER),
-		Elevation::Direct | Elevation::Skip(_) => None,
+	#[cfg(target_os = "linux")]
+	{
+		match canopy_elevation() {
+			Elevation::SetPriv | Elevation::Sudo => Some(LINUX_KOPIA_USER),
+			Elevation::Direct | Elevation::Skip(_) => None,
+		}
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		None
 	}
 }
 
@@ -346,7 +390,16 @@ fn command_for_s3(
 	elevation: Elevation,
 ) -> Result<Command, String> {
 	let mut cmd = match elevation {
-		Elevation::Direct => Command::new(kopia),
+		Elevation::Direct => {
+			// Even unelevated, pin kopia's home to the kopia user's so its cache
+			// and logs land in the writable /var/lib/kopia rather than the
+			// daemon's read-only /var/cache (where the inherited XDG_CACHE_HOME
+			// would otherwise put them).
+			let mut c = Command::new(kopia);
+			c.env("HOME", LINUX_KOPIA_HOME);
+			c.env_remove("XDG_CACHE_HOME");
+			c
+		}
 		Elevation::SetPriv => setpriv_as_kopia(kopia),
 		Elevation::Sudo => sudo_as_kopia(kopia, Some(&env.preserve_env_keys())),
 		Elevation::Skip(reason) => return Err(reason),
@@ -360,7 +413,7 @@ fn command_for_s3(
 pub enum RunAs {
 	/// The kopia user (backup): keeps the repo cache owned by that user and lets
 	/// it read the snapshot's idmapped, postgres-owned files. Elevates per
-	/// [`linux_elevation`].
+	/// `canopy_elevation` (keyed on the kopia user existing).
 	KopiaUser,
 	/// The current user (restore): the command writes destinations the kopia
 	/// user can't reach (e.g. a staging dir beside a postgres data directory),
@@ -377,7 +430,7 @@ pub fn build_kopia_command_with_s3(
 	run_as: RunAs,
 ) -> Result<Command, String> {
 	let elevation = match run_as {
-		RunAs::KopiaUser => linux_elevation(),
+		RunAs::KopiaUser => canopy_elevation(),
 		RunAs::CurrentUser => Elevation::Direct,
 	};
 	command_for_s3(kopia, env, elevation)
@@ -922,6 +975,22 @@ mod tests {
 		let cmd = command_for(Path::new("/usr/bin/kopia"), Elevation::Direct).unwrap();
 		assert_eq!(cmd.get_program(), "/usr/bin/kopia");
 		assert!(args_of(&cmd).is_empty());
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn s3_direct_still_pins_the_cache_home() {
+		// Unelevated (no kopia user / we are it), the canopy command must still
+		// move kopia's cache off the daemon's read-only /var/cache to its home.
+		let env = S3KopiaEnv {
+			password: "hunter2",
+			config_path: Path::new("/tmp/x/repository.config"),
+		};
+		let cmd = command_for_s3(Path::new("/usr/bin/kopia"), &env, Elevation::Direct).unwrap();
+		assert_eq!(cmd.get_program(), "/usr/bin/kopia");
+		let envs = env_of(&cmd);
+		assert_eq!(envs.get("HOME"), Some(&Some(LINUX_KOPIA_HOME.to_owned())));
+		assert_eq!(envs.get("XDG_CACHE_HOME"), Some(&None));
 	}
 
 	#[cfg(target_os = "linux")]
