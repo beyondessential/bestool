@@ -265,11 +265,24 @@ pub async fn run_with_shutdown(
 
 	info!("daemon started successfully");
 	// Tell systemd (Type=notify[-reload]) we're up; no-op when not under systemd.
+	// The status line surfaces the running version and the canopy transport
+	// (which is fixed at startup), so `systemctl status` shows them at a glance.
 	#[cfg(unix)]
-	let _ = sd_notify::notify(&[
-		sd_notify::NotifyState::Ready,
-		sd_notify::NotifyState::Status("monitoring"),
-	]);
+	{
+		let canopy = match &ctx.canopy_client {
+			Some(client) if client.is_tailscale().await => "canopy via tailscale",
+			Some(_) => "canopy via mTLS",
+			None => "canopy not connected",
+		};
+		let status = format!(
+			"monitoring; bestool {}; {canopy}",
+			daemon_config.binary_version
+		);
+		let _ = sd_notify::notify(&[
+			sd_notify::NotifyState::Ready,
+			sd_notify::NotifyState::Status(&status),
+		]);
+	}
 
 	// Block until the first lifecycle event arrives: a shutdown signal, or the
 	// watchdog firing. `None` means every sender was dropped, which we treat as

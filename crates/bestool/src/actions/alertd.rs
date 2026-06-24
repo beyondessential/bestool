@@ -217,14 +217,12 @@ fn with_daemon_tasks(
 		let doctor = doctor.with_backup_dispatch(backup_dispatch(registry.clone()));
 		let config = config
 			.with_backups(registry.clone())
-			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry)));
+			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry.clone())))
+			.with_task(Arc::new(backup::BackupCapabilitiesTask::new(registry)));
 		(config, doctor)
 	};
 
-	let config = config.with_task(Arc::new(doctor));
-	#[cfg(feature = "canopy-backup")]
-	let config = config.with_task(Arc::new(backup::BackupCapabilitiesTask));
-	config
+	config.with_task(Arc::new(doctor))
 }
 
 /// The in-process backup trigger: routes each type canopy requests via
@@ -322,7 +320,7 @@ fn backup_runner() -> bestool_alertd::BackupRunner {
 /// new def in `/etc/bestool/backups` is picked up without restarting the daemon.
 #[cfg(feature = "canopy-backup")]
 mod backup {
-	use std::time::Duration;
+	use std::{sync::Arc, time::Duration};
 
 	use futures::future::BoxFuture;
 	use miette::{IntoDiagnostic as _, Result};
@@ -335,15 +333,32 @@ mod backup {
 	/// missed event still converges.
 	const REREGISTER_INTERVAL: Duration = Duration::from_secs(3600);
 
-	pub(super) struct BackupCapabilitiesTask;
+	pub(super) struct BackupCapabilitiesTask {
+		registry: Arc<bestool_alertd::BackupRegistry>,
+	}
 
-	/// Load the configured backup types and register them with canopy.
-	async fn register(ctx: &bestool_alertd::TaskContext) -> Result<()> {
+	impl BackupCapabilitiesTask {
+		pub(super) fn new(registry: Arc<bestool_alertd::BackupRegistry>) -> Self {
+			Self { registry }
+		}
+	}
+
+	/// Load the configured backup types, record them for the daemon's status, and
+	/// register them with canopy.
+	///
+	/// The configured types are recorded even when there's no canopy client or no
+	/// defs, so the status reflects the host's config regardless of connectivity.
+	async fn register(
+		registry: &bestool_alertd::BackupRegistry,
+		ctx: &bestool_alertd::TaskContext,
+	) -> Result<()> {
+		let defs = config::load_dir(&config::backups_dir()).await?;
+		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
+		registry.set_configured(types.clone()).await;
+
 		let Some(client) = ctx.canopy_client.as_ref() else {
 			return Ok(());
 		};
-		let defs = config::load_dir(&config::backups_dir()).await?;
-		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
 		if types.is_empty() {
 			return Ok(());
 		}
@@ -354,11 +369,36 @@ mod backup {
 	}
 
 	/// Re-register, logging the trigger; failures are warned, never fatal.
-	async fn reregister(reason: &str, ctx: &bestool_alertd::TaskContext) {
+	async fn reregister(
+		reason: &str,
+		registry: &bestool_alertd::BackupRegistry,
+		ctx: &bestool_alertd::TaskContext,
+	) {
 		info!(reason, "registering backup capabilities");
-		if let Err(err) = register(ctx).await {
+		if let Err(err) = register(registry, ctx).await {
 			warn!("registering backup capabilities failed (will retry): {err}");
 		}
+	}
+
+	/// Whether an fs event means a backup def was actually added, edited, renamed,
+	/// or removed — as opposed to read-noise.
+	///
+	/// Re-registration reads the backups dir (it opens, reads, and closes every
+	/// `*.toml`). The inotify backend watches `OPEN`/`CLOSE_NOWRITE`/`ATTRIB`, so
+	/// those reads surface as `Access(_)` events and atime bumps as
+	/// `Modify(Metadata)`. Forwarding them makes each re-registration trigger the
+	/// next, busy-looping several times a second. Every genuine change also
+	/// surfaces as a `Create`/`Remove`/`Modify(Data|Name)` (or, on Windows,
+	/// `Modify(Any)`) event, so dropping the access/metadata noise loses nothing.
+	///
+	/// TODO: when notify 9.0.0 lands, use EventKindMask to filter at the source.
+	fn is_real_change(event: &notify::Event) -> bool {
+		use notify::{EventKind, event::ModifyKind};
+
+		!matches!(
+			event.kind,
+			EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
+		)
 	}
 
 	/// Watch the backups directory, sending `()` on any change. Returns the
@@ -370,7 +410,9 @@ mod backup {
 		let dir = config::backups_dir();
 		let mut watcher =
 			notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-				if res.is_ok() {
+				if let Ok(event) = res
+					&& is_real_change(&event)
+				{
 					let _ = tx.send(());
 				}
 			})
@@ -438,7 +480,7 @@ mod backup {
 
 		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
 			Box::pin(async move {
-				reregister("startup", ctx).await;
+				reregister("startup", &self.registry, ctx).await;
 
 				let (tx, rx) = mpsc::unbounded_channel();
 				// Held for the task's lifetime so events keep arriving. `None` when
@@ -449,7 +491,7 @@ mod backup {
 				// bump on the reload channel; we also re-register on a backups-dir
 				// change and a periodic safety-net tick.
 				event_loop(rx, ctx.reload.clone(), REREGISTER_INTERVAL, |reason| {
-					reregister(reason, ctx)
+					reregister(reason, &self.registry, ctx)
 				})
 				.await;
 				Ok(())
@@ -465,6 +507,44 @@ mod backup {
 		};
 
 		use super::*;
+
+		/// The reads that re-registration performs surface as `Access`/metadata
+		/// events on the watched dir; forwarding them would feed back into another
+		/// re-registration, busy-looping. Those must be ignored while genuine
+		/// add/edit/remove events still pass.
+		#[test]
+		fn read_noise_is_not_a_real_change() {
+			use notify::{
+				Event, EventKind,
+				event::{AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind},
+			};
+
+			let noise = [
+				EventKind::Access(AccessKind::Open(AccessMode::Any)),
+				EventKind::Access(AccessKind::Close(AccessMode::Read)),
+				EventKind::Access(AccessKind::Read),
+				EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+			];
+			for kind in noise {
+				assert!(
+					!is_real_change(&Event::new(kind.clone())),
+					"{kind:?} should be ignored as read-noise"
+				);
+			}
+
+			let real = [
+				EventKind::Create(CreateKind::File),
+				EventKind::Remove(RemoveKind::File),
+				EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+				EventKind::Modify(ModifyKind::Any),
+			];
+			for kind in real {
+				assert!(
+					is_real_change(&Event::new(kind.clone())),
+					"{kind:?} should trigger re-registration"
+				);
+			}
+		}
 
 		/// When the watcher can't be set up its sender is dropped, closing the fs
 		/// channel. The loop must stay idle (only periodic/reload trigger it), not
@@ -616,6 +696,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		tamanu.as_ref().map(|t| t.database_url.clone()),
 		tamanu_version,
 	)
+	.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog);
@@ -663,6 +744,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 	// Canopy requires a version on every request; `0.0.0` is the agreed
 	// sentinel for hosts with no Tamanu.
 	let base = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
+		.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);

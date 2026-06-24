@@ -29,7 +29,7 @@ use bestool_kopia::{
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use reqwest::Url;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use self::{
@@ -97,7 +97,11 @@ enum DaemonError {
 	Failed(String),
 }
 
-const DAEMON_BASE: &str = "http://127.0.0.1:8271";
+/// Loopback bases the alertd daemon may be listening on. It binds the first that
+/// is free (usually IPv6 `[::1]`), so a client fixed to one family can miss it;
+/// we try both, in the daemon's own default order. Kept in step with the
+/// daemon's `default_server_addrs`.
+const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
 
 /// Ask the running daemon to run the backup (starting a run or attaching to one
 /// already in flight) and render its streamed status. Returns `Unreachable` if
@@ -105,12 +109,19 @@ const DAEMON_BASE: &str = "http://127.0.0.1:8271";
 async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonError> {
 	use futures::StreamExt as _;
 
-	let url = format!("{DAEMON_BASE}/tasks/backup/run?type={backup_type}");
-	let response = crate::http::client()
-		.get(&url)
-		.send()
-		.await
-		.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
+	let mut response = None;
+	let mut last_err = String::from("no daemon address to try");
+	for base in DAEMON_BASES {
+		let url = format!("{base}/tasks/backup/run?type={backup_type}");
+		match crate::http::client().get(&url).send().await {
+			Ok(resp) => {
+				response = Some(resp);
+				break;
+			}
+			Err(err) => last_err = err.to_string(),
+		}
+	}
+	let response = response.ok_or(DaemonError::Unreachable(last_err))?;
 	if !response.status().is_success() {
 		return Err(DaemonError::Unreachable(format!(
 			"alertd returned {}",
@@ -339,6 +350,24 @@ pub async fn run_backup(
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
 	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
 
+	let result = backup_after_start(&def, backup_type, &run_id, registration_dir, &progress).await;
+	if let Err(err) = &result {
+		error!(backup_type, %run_id, "backup failed: {}", trim_error(err));
+	}
+	result
+}
+
+/// The networked part of a run: resolve the canopy target, snapshot through the
+/// proxy, and report the outcome. Separated so [`run_backup`] can log one
+/// success/failure line covering every exit path — otherwise an outcome reaches
+/// only canopy, never the daemon's own journal.
+async fn backup_after_start(
+	def: &BackupDef,
+	backup_type: &str,
+	run_id: &str,
+	registration_dir: Option<&Path>,
+	progress: &Option<BackupProgress>,
+) -> Result<()> {
 	let reg = load_registration(registration_dir)
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
@@ -386,13 +415,13 @@ pub async fn run_backup(
 	};
 	let outcome =
 		run_kopia_backup(
-			&def,
+			def,
 			&target,
 			&conn,
 			&server_id,
 			device_id.as_deref(),
-			&run_id,
-			&progress,
+			run_id,
+			progress,
 		)
 		.await;
 	emit(&progress, BackupEvent::Phase("report"));
@@ -400,7 +429,7 @@ pub async fn run_backup(
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
 		Ok(snapshot) => BackupReport {
-			run_id: &run_id,
+			run_id,
 			r#type: backup_type,
 			purpose: Purpose::Backup,
 			outcome: Outcome::Success,
@@ -409,7 +438,7 @@ pub async fn run_backup(
 			snapshot_id: snapshot.id.as_deref(),
 		},
 		Err(err) => BackupReport {
-			run_id: &run_id,
+			run_id,
 			r#type: backup_type,
 			purpose: Purpose::Backup,
 			outcome: Outcome::Failure,
@@ -424,14 +453,23 @@ pub async fn run_backup(
 		.wrap_err("reporting backup outcome to canopy")?;
 
 	match &outcome {
-		Ok(snapshot) => emit(
-			&progress,
-			BackupEvent::Done {
-				snapshot_id: snapshot.id.clone(),
-				bytes_uploaded: snapshot.bytes_uploaded,
-			},
-		),
-		Err(err) => emit(&progress, BackupEvent::Failed { error: trim_error(err) }),
+		Ok(snapshot) => {
+			info!(
+				backup_type,
+				run_id,
+				snapshot_id = ?snapshot.id,
+				bytes_uploaded = ?snapshot.bytes_uploaded,
+				"backup completed"
+			);
+			emit(
+				progress,
+				BackupEvent::Done {
+					snapshot_id: snapshot.id.clone(),
+					bytes_uploaded: snapshot.bytes_uploaded,
+				},
+			)
+		}
+		Err(err) => emit(progress, BackupEvent::Failed { error: trim_error(err) }),
 	}
 
 	outcome.map(|_| ())

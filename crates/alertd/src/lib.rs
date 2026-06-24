@@ -86,6 +86,12 @@ pub struct DaemonConfig {
 	/// Backup run registry, set when backups are compiled in. Surfaced via the
 	/// daemon's status so an operator can see what's backing up right now.
 	pub backups: Option<Arc<BackupRegistry>>,
+
+	/// Version of the running `bestool` binary, shown in the systemd status line.
+	///
+	/// Distinct from this crate's own [`VERSION`]: `bestool` and `bestool-alertd`
+	/// are versioned independently, so the caller threads in its own version.
+	pub binary_version: String,
 }
 
 impl fmt::Debug for DaemonConfig {
@@ -94,6 +100,7 @@ impl fmt::Debug for DaemonConfig {
 			.field("database_url", &self.database_url)
 			.field("device_key_pem", &self.device_key_pem)
 			.field("tamanu_version", &self.tamanu_version)
+			.field("binary_version", &self.binary_version)
 			.field("no_server", &self.no_server)
 			.field("server_addrs", &self.server_addrs)
 			.field("watchdog_timeout", &self.watchdog_timeout)
@@ -125,7 +132,16 @@ impl DaemonConfig {
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
 			background_tasks: Vec::new(),
 			backups: None,
+			// Fallback only; the binary sets its own version via
+			// `with_binary_version`. This crate's version differs from bestool's.
+			binary_version: VERSION.to_string(),
 		}
+	}
+
+	/// Set the running binary's (bestool's) version for the status line.
+	pub fn with_binary_version(mut self, version: String) -> Self {
+		self.binary_version = version;
+		self
 	}
 
 	pub fn with_task(mut self, task: Arc<dyn BackgroundTask>) -> Self {
