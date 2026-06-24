@@ -134,8 +134,11 @@ jobs:
           install -Dm644 crates/bestool/USAGE.md "$deb_dir/usr/share/doc/bestool/USAGE.md"
           install -Dm644 crates/psql/EXAMPLES.md "$deb_dir/usr/share/doc/bestool/PSQL-EXAMPLES.md"
 
-          # State directory for the canopy registration
+          # State directory for the canopy registration, and the backup-definition
+          # directory alertd watches (shipping it lets the watcher attach on hosts
+          # with no backups configured yet, instead of falling back to the timer).
           install -dm755 "$deb_dir/etc/bestool"
+          install -dm755 "$deb_dir/etc/bestool/backups"
 
           # bestool-alertd systemd unit. Shipped disabled: the bestool package
           # is installed broadly as a general CLI, so the unit must not start on
