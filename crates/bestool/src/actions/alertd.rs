@@ -677,6 +677,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		tamanu.as_ref().map(|t| t.database_url.clone()),
 		tamanu_version,
 	)
+	.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog);
@@ -724,6 +725,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 	// Canopy requires a version on every request; `0.0.0` is the agreed
 	// sentinel for hosts with no Tamanu.
 	let base = bestool_alertd::DaemonConfig::new(None, None, "0.0.0".to_string())
+		.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
