@@ -361,6 +361,27 @@ mod backup {
 		}
 	}
 
+	/// Whether an fs event means a backup def was actually added, edited, renamed,
+	/// or removed — as opposed to read-noise.
+	///
+	/// Re-registration reads the backups dir (it opens, reads, and closes every
+	/// `*.toml`). The inotify backend watches `OPEN`/`CLOSE_NOWRITE`/`ATTRIB`, so
+	/// those reads surface as `Access(_)` events and atime bumps as
+	/// `Modify(Metadata)`. Forwarding them makes each re-registration trigger the
+	/// next, busy-looping several times a second. Every genuine change also
+	/// surfaces as a `Create`/`Remove`/`Modify(Data|Name)` (or, on Windows,
+	/// `Modify(Any)`) event, so dropping the access/metadata noise loses nothing.
+	///
+	/// TODO: when notify 9.0.0 lands, use EventKindMask to filter at the source.
+	fn is_real_change(event: &notify::Event) -> bool {
+		use notify::{EventKind, event::ModifyKind};
+
+		!matches!(
+			event.kind,
+			EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
+		)
+	}
+
 	/// Watch the backups directory, sending `()` on any change. Returns the
 	/// watcher (kept alive by the caller) or `None` if it couldn't be set up
 	/// (e.g. the directory doesn't exist yet) — the periodic tick still covers it.
@@ -370,7 +391,9 @@ mod backup {
 		let dir = config::backups_dir();
 		let mut watcher =
 			notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-				if res.is_ok() {
+				if let Ok(event) = res
+					&& is_real_change(&event)
+				{
 					let _ = tx.send(());
 				}
 			})
@@ -465,6 +488,44 @@ mod backup {
 		};
 
 		use super::*;
+
+		/// The reads that re-registration performs surface as `Access`/metadata
+		/// events on the watched dir; forwarding them would feed back into another
+		/// re-registration, busy-looping. Those must be ignored while genuine
+		/// add/edit/remove events still pass.
+		#[test]
+		fn read_noise_is_not_a_real_change() {
+			use notify::{
+				Event, EventKind,
+				event::{AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind},
+			};
+
+			let noise = [
+				EventKind::Access(AccessKind::Open(AccessMode::Any)),
+				EventKind::Access(AccessKind::Close(AccessMode::Read)),
+				EventKind::Access(AccessKind::Read),
+				EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+			];
+			for kind in noise {
+				assert!(
+					!is_real_change(&Event::new(kind.clone())),
+					"{kind:?} should be ignored as read-noise"
+				);
+			}
+
+			let real = [
+				EventKind::Create(CreateKind::File),
+				EventKind::Remove(RemoveKind::File),
+				EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+				EventKind::Modify(ModifyKind::Any),
+			];
+			for kind in real {
+				assert!(
+					is_real_change(&Event::new(kind.clone())),
+					"{kind:?} should trigger re-registration"
+				);
+			}
+		}
 
 		/// When the watcher can't be set up its sender is dropped, closing the fs
 		/// channel. The loop must stay idle (only periodic/reload trigger it), not
