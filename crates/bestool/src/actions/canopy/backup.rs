@@ -121,6 +121,7 @@ async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonErro
 	let mut stream = response.bytes_stream();
 	let mut buffer = Vec::<u8>::new();
 	let mut terminal: Option<std::result::Result<(), String>> = None;
+	let mut on_progress_line = false;
 	while let Some(chunk) = stream.next().await {
 		let chunk = chunk.map_err(|err| DaemonError::Failed(format!("daemon stream: {err}")))?;
 		buffer.extend_from_slice(&chunk);
@@ -129,10 +130,23 @@ async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonErro
 			let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line) else {
 				continue;
 			};
+			if event.get("event").and_then(serde_json::Value::as_str) == Some("progress") {
+				if let Some(status) = event.get("status").and_then(serde_json::Value::as_str) {
+					render_progress(status, &mut on_progress_line);
+				}
+				continue;
+			}
+			// Finish the in-place progress line before logging the next event.
+			if std::mem::take(&mut on_progress_line) {
+				eprintln!();
+			}
 			if let Some(outcome) = render_daemon_event(backup_type, &event) {
 				terminal = Some(outcome);
 			}
 		}
+	}
+	if on_progress_line {
+		eprintln!();
 	}
 
 	match terminal {
@@ -141,6 +155,22 @@ async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonErro
 		None => Err(DaemonError::Failed(
 			"lost the connection to the daemon; the backup may still be running".into(),
 		)),
+	}
+}
+
+/// Render a live progress line: in place (overwriting) on a terminal, or as a
+/// log line otherwise.
+fn render_progress(status: &str, on_progress_line: &mut bool) {
+	use std::io::{IsTerminal as _, Write as _};
+
+	let mut stderr = std::io::stderr();
+	if stderr.is_terminal() {
+		// Carriage return + clear-to-end-of-line: overwrite the previous update.
+		let _ = write!(stderr, "\r{status}\x1b[K");
+		let _ = stderr.flush();
+		*on_progress_line = true;
+	} else {
+		info!(%status, "backup progress");
 	}
 }
 
@@ -197,6 +227,9 @@ pub enum BackupEvent {
 	Started { run_id: String },
 	/// Entered a named phase: `prepare`, `snapshot`, or `report`.
 	Phase(&'static str),
+	/// A live progress line from kopia during the snapshot upload (its own
+	/// human-readable status, e.g. "8 hashed (800 MB), uploaded 800 MB, 100%").
+	Progress(String),
 	/// The run finished successfully.
 	Done {
 		snapshot_id: Option<String>,
@@ -414,7 +447,16 @@ async fn run_kopia_backup(
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
 	emit(progress, BackupEvent::Phase("snapshot"));
-	let result = snapshot(target, conn, &source_path, server_id, &tags, &prepared.ignore).await;
+	let result = snapshot(
+		target,
+		conn,
+		&source_path,
+		server_id,
+		&tags,
+		&prepared.ignore,
+		progress,
+	)
+	.await;
 
 	// Cleanup and post-hooks run regardless of the snapshot outcome.
 	let cleanup = def.method.cleanup(prepared).await;
@@ -433,6 +475,7 @@ async fn snapshot(
 	server_id: &str,
 	tags: &BTreeMap<String, String>,
 	ignore: &[String],
+	progress: &Option<BackupProgress>,
 ) -> Result<SnapshotResult> {
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
 
@@ -455,8 +498,16 @@ async fn snapshot(
 	}
 
 	let mut create = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
-	args_snapshot_create(&mut create, source_path, tags);
-	let stdout = run_kopia(create, "snapshot create").await?;
+	// Force kopia's progress output (it stays silent on a non-TTY otherwise) and
+	// stream it, but only when someone's watching — a local run discards stderr.
+	let stdout = if progress.is_some() {
+		create.arg("--progress");
+		args_snapshot_create(&mut create, source_path, tags);
+		run_kopia_streaming(create, "snapshot create", progress).await?
+	} else {
+		args_snapshot_create(&mut create, source_path, tags);
+		run_kopia(create, "snapshot create").await?
+	};
 	Ok(parse_snapshot_output(&stdout))
 }
 
@@ -472,6 +523,87 @@ pub(super) async fn run_kopia(cmd: std::process::Command, what: &str) -> Result<
 		bail!("kopia {what} failed: {}", stderr.trim());
 	}
 	Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Run a kopia command, streaming its progress lines to the sink as they arrive
+/// (kopia writes progress to stderr, `\r`-separated), and returning its stdout.
+async fn run_kopia_streaming(
+	cmd: std::process::Command,
+	what: &str,
+	progress: &Option<BackupProgress>,
+) -> Result<String> {
+	use std::process::Stdio;
+
+	use tokio::io::AsyncReadExt as _;
+
+	let mut child = tokio::process::Command::from(cmd)
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.spawn()
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning kopia {what}"))?;
+	let mut stdout = child.stdout.take().expect("piped stdout");
+	let mut stderr = child.stderr.take().expect("piped stderr");
+
+	// Read stderr concurrently, splitting on `\r`/`\n` (kopia updates its progress
+	// line with carriage returns), forwarding progress lines and keeping the lot
+	// for an error message.
+	let progress = progress.clone();
+	let stderr_task = tokio::spawn(async move {
+		let mut captured = String::new();
+		let mut buf = [0u8; 4096];
+		let mut segment = Vec::new();
+		while let Ok(n) = stderr.read(&mut buf).await {
+			if n == 0 {
+				break;
+			}
+			for &byte in &buf[..n] {
+				if byte == b'\r' || byte == b'\n' {
+					flush_progress_segment(&mut segment, &mut captured, &progress);
+				} else {
+					segment.push(byte);
+				}
+			}
+		}
+		flush_progress_segment(&mut segment, &mut captured, &progress);
+		captured
+	});
+
+	let mut out = String::new();
+	stdout
+		.read_to_string(&mut out)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("reading kopia {what} stdout"))?;
+	let status = child
+		.wait()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("waiting for kopia {what}"))?;
+	let captured = stderr_task.await.unwrap_or_default();
+
+	if !status.success() {
+		bail!("kopia {what} failed: {}", captured.trim());
+	}
+	Ok(out)
+}
+
+fn flush_progress_segment(segment: &mut Vec<u8>, captured: &mut String, progress: &Option<BackupProgress>) {
+	if segment.is_empty() {
+		return;
+	}
+	let line = String::from_utf8_lossy(segment).trim().to_string();
+	segment.clear();
+	if line.is_empty() {
+		return;
+	}
+	captured.push_str(&line);
+	captured.push('\n');
+	// kopia's progress line carries these counters; other stderr lines (e.g.
+	// maintenance) aren't progress and aren't forwarded.
+	if line.contains("hashing") || line.contains("hashed") || line.contains("uploaded") {
+		emit(progress, BackupEvent::Progress(line));
+	}
 }
 
 /// Run a sequence of hooks. `fail_fast` aborts on the first failure (pre-hooks);
@@ -615,6 +747,30 @@ async fn try_acquire_lock(path: &Path) -> Result<Option<tokio::fs::File>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn flush_forwards_only_progress_lines() {
+		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+		let progress = Some(tx);
+		let mut captured = String::new();
+
+		// A kopia progress update is forwarded…
+		let mut seg = b" * 8 hashing, 8 hashed (800 MB), uploaded 800 MB, 100%".to_vec();
+		flush_progress_segment(&mut seg, &mut captured, &progress);
+		// …an ordinary stderr line (e.g. maintenance) is not.
+		let mut seg = b"Finished full maintenance.".to_vec();
+		flush_progress_segment(&mut seg, &mut captured, &progress);
+
+		drop(progress);
+		let mut events = Vec::new();
+		while let Ok(event) = rx.try_recv() {
+			events.push(event);
+		}
+		assert_eq!(events.len(), 1);
+		assert!(matches!(&events[0], BackupEvent::Progress(line) if line.contains("uploaded")));
+		// Both lines are retained for error context.
+		assert!(captured.contains("Finished full maintenance."));
+	}
 
 	#[test]
 	fn assemble_tags_merges_and_canopy_tags_win() {
