@@ -33,7 +33,7 @@ When the device is not yet authorised for backups — not bound to a live server
 
 ## Taking a backup
 
-`bestool canopy backup --type <type>` drives one run, and is also what the daemon invokes in-process when Canopy asks for a backup. A run:
+A backup run goes through one driver, whether Canopy triggers it through the daemon or an operator runs `bestool canopy backup --type <type>`. A run:
 
 1. mints a run id (which becomes the report's run id and the `canopy-run` snapshot tag) and resolves the definition for the type, failing fast without touching the network if no definition exists;
 2. takes an exclusive per-type lock for the whole run, so a second run for the same type — a re-emitted request, or a manual run racing the daemon — no-ops rather than starting a concurrent kopia. The lock lives in a runtime directory and is released by the OS if the process dies;
@@ -61,7 +61,7 @@ When run under the bestool-alertd daemon, the device registers its capabilities 
 
 Canopy decides when a server backs up. On each device-to-Canopy healthcheck tick, Canopy's response names the backup types the server should run right now (the union of operator one-offs and schedule-due types; empty means nothing to do). The daemon runs each named type's driver in-process, skipping any type whose previous run is still going. Reporting a run clears the corresponding one-off, so the heartbeat stops re-emitting it.
 
-A standalone `bestool canopy backup` run works without the daemon, for manual use or an external scheduler; it spawns its own ephemeral re-signing proxy for the run.
+`bestool canopy backup` prefers the running daemon: it asks the daemon to run the named type and streams the run's progress and outcome back, so a manual backup takes the same in-process path, environment, and per-type lock as a Canopy-triggered one, and a manual run cannot run concurrently with a scheduled one. When no daemon is reachable, or `--no-daemon` is given, the command runs the backup itself. The run is identical either way; only the process hosting it differs.
 
 ## The postgresql method
 
