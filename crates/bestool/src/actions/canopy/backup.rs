@@ -379,10 +379,12 @@ async fn backup_after_start(
 		.server_id
 		.clone()
 		.ok_or_else(|| miette!("registration has no server id"))?;
-	let device_id = reg
-		.device_id
-		.clone()
-		.ok_or_else(|| miette!("registration has no device id"))?;
+	// device_id is only a snapshot tag: canopy authenticates by the device cert,
+	// the report doesn't carry it, and restore selects by server + type, not
+	// device. Legacy-migrated registrations have no device_id (it's only set by
+	// `canopy register` enrolment), so tag the snapshot when we know it and just
+	// omit the tag otherwise.
+	let device_id = reg.device_id.clone();
 	let base_url = base_url_of(&reg)?;
 
 	let client = build_client(&device_key).await?;
@@ -412,8 +414,17 @@ async fn backup_after_start(
 		password: target.repo_password.0.clone(),
 	};
 	let outcome =
-		run_kopia_backup(def, &target, &conn, &server_id, &device_id, run_id, progress).await;
-	emit(progress, BackupEvent::Phase("report"));
+		run_kopia_backup(
+			def,
+			&target,
+			&conn,
+			&server_id,
+			device_id.as_deref(),
+			run_id,
+			progress,
+		)
+		.await;
+	emit(&progress, BackupEvent::Phase("report"));
 
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
@@ -473,7 +484,7 @@ async fn run_kopia_backup(
 	target: &bestool_canopy::BackupTarget,
 	conn: &RepoConn,
 	server_id: &str,
-	device_id: &str,
+	device_id: Option<&str>,
 	run_id: &str,
 	progress: &Option<BackupProgress>,
 ) -> Result<SnapshotResult> {
@@ -680,13 +691,15 @@ async fn run_hook(hook: &Hook) -> Result<()> {
 fn assemble_tags(
 	def_tags: &BTreeMap<String, String>,
 	extra_tags: &BTreeMap<String, String>,
-	device_id: &str,
+	device_id: Option<&str>,
 	run_id: &str,
 	backup_type: &str,
 ) -> BTreeMap<String, String> {
 	let mut tags = def_tags.clone();
 	tags.extend(extra_tags.iter().map(|(k, v)| (k.clone(), v.clone())));
-	tags.insert("canopy-device".to_owned(), device_id.to_owned());
+	if let Some(device_id) = device_id {
+		tags.insert("canopy-device".to_owned(), device_id.to_owned());
+	}
 	tags.insert("canopy-run".to_owned(), run_id.to_owned());
 	tags.insert("canopy-type".to_owned(), backup_type.to_owned());
 	tags
@@ -819,11 +832,37 @@ mod tests {
 		let mut extra = BTreeMap::new();
 		extra.insert("pg-version".to_owned(), "16".to_owned());
 
-		let tags = assemble_tags(&def_tags, &extra, "device-uuid", "run-uuid", "tamanu-postgres");
+		let tags = assemble_tags(
+			&def_tags,
+			&extra,
+			Some("device-uuid"),
+			"run-uuid",
+			"tamanu-postgres",
+		);
 
 		assert_eq!(tags.get("app").map(String::as_str), Some("tamanu"));
 		assert_eq!(tags.get("pg-version").map(String::as_str), Some("16"));
 		assert_eq!(tags.get("canopy-device").map(String::as_str), Some("device-uuid"));
+		assert_eq!(tags.get("canopy-run").map(String::as_str), Some("run-uuid"));
+		assert_eq!(
+			tags.get("canopy-type").map(String::as_str),
+			Some("tamanu-postgres")
+		);
+	}
+
+	#[test]
+	fn assemble_tags_omits_device_when_absent() {
+		// A legacy-migrated host has no device id; the snapshot is still tagged
+		// with run and type, just without canopy-device.
+		let tags = assemble_tags(
+			&BTreeMap::new(),
+			&BTreeMap::new(),
+			None,
+			"run-uuid",
+			"tamanu-postgres",
+		);
+
+		assert!(!tags.contains_key("canopy-device"));
 		assert_eq!(tags.get("canopy-run").map(String::as_str), Some("run-uuid"));
 		assert_eq!(
 			tags.get("canopy-type").map(String::as_str),
