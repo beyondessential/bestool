@@ -8,9 +8,49 @@ bestool is the device-side producer for Canopy's backup control plane. It advert
 
 ## Backup definitions
 
-A backup is configured by a definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup). A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method. A definition with no method table, or with more than one, is a load error. The `type` is the only identity that matters to Canopy; the filename is informational.
+A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup). A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method. A definition with no method table, or with more than one, is a load error. The `type` is the only identity that matters to Canopy; the filename is informational.
 
 Backups are generic: a definition names a method and a target, and `type` is just a label. A `tamanu-postgres` backup is a definition that selects the `postgresql` method; there is nothing Tamanu-specific in the machinery.
+
+### Common fields
+
+```toml
+type = "tamanu-postgres"          # required — the Canopy backup-type label
+
+[tags]                            # optional — extra kopia tags (string to string)
+component = "database"
+
+[[pre]]                           # optional, ordered — run before the snapshot
+command = ["/usr/bin/systemctl", "stop", "example"]
+
+[[post]]                          # optional, ordered — run after cleanup
+command = ["/usr/bin/systemctl", "start", "example"]
+```
+
+A hook is a table with a `command` array, run argv-style (no shell).
+
+### Method tables
+
+There must be exactly one method table.
+
+#### Simple
+
+```toml
+[simple]                          # snapshot a path as-is
+path = "/var/lib/example"         # required
+```
+
+#### PostgreSQL
+
+```toml
+[postgresql]                      # crash-consistent postgres cluster snapshot
+cluster = "main"                  # required — the cluster to resolve
+
+data_dir = "/var/lib/postgresql/16/main"  # optional — override the resolved data directory
+version = "16"                    # optional — override the resolved major version
+port = 5432                       # optional — override the port used to issue CHECKPOINT
+socket = "/var/run/postgresql"    # optional — override the unix socket directory
+```
 
 ## Methods
 
