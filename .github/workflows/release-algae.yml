@@ -73,6 +73,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: algae-${{ matrix.target }}
+          # Release builds run on one-shot tags; don't persist tag-scoped
+          # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.81.8
         with:
           tool: cargo-zigbuild,cargo-auditable

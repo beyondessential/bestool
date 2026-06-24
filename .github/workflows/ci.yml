@@ -16,6 +16,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 
+# Cache strategy: only the default branch writes the rust-cache; PRs and the
+# merge queue restore it read-only (the `save-if` on every rust-cache step
+# below). The repo has a 10 GB cache cap — letting every branch save its own
+# large caches evicts the others, so PRs end up rebuilding from scratch. Pinning
+# writes to main keeps one warm set everyone restores from.
 jobs:
   test:
     strategy:
@@ -69,6 +74,8 @@ jobs:
           database: ci
           ssl: false
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test
         env:
           DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
@@ -83,6 +90,8 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Contract tests against live canopy
         run: cargo test -p bestool --lib canopy_contract -- --ignored
 
@@ -96,6 +105,8 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build alertd tests
         run: cargo test -p bestool-alertd --lib --no-run --message-format=json > alertd-tests.json
       - name: Run doctor checks in a postgres-less network namespace
@@ -122,6 +133,8 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Start MinIO
         run: |
           docker run -d --name minio -p 9000:9000 \
@@ -165,6 +178,8 @@ jobs:
         with:
           tool: just
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --all-features
 
   check-docs:
@@ -177,6 +192,8 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Generate USAGE.md files
         run: ./update-usage.sh
       - name: Check for changes

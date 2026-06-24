@@ -31,11 +31,10 @@
 //! Where logind can't answer, utmp's own dead records (`who --dead`) stand in:
 //! an entry whose tty has a dead record newer than its login time is dropped.
 
-use std::{
-	collections::{HashMap, HashSet},
-	path::PathBuf,
-	time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
+// HashSet only backs the live-tty lookups, which are unix- (or test-) only.
+#[cfg(any(test, unix))]
+use std::collections::HashSet;
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use serde::{Deserialize, Serialize};
