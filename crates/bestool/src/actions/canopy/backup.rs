@@ -29,7 +29,7 @@ use bestool_kopia::{
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use reqwest::Url;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use self::{
@@ -350,6 +350,24 @@ pub async fn run_backup(
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
 	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
 
+	let result = backup_after_start(&def, backup_type, &run_id, registration_dir, &progress).await;
+	if let Err(err) = &result {
+		error!(backup_type, %run_id, "backup failed: {}", trim_error(err));
+	}
+	result
+}
+
+/// The networked part of a run: resolve the canopy target, snapshot through the
+/// proxy, and report the outcome. Separated so [`run_backup`] can log one
+/// success/failure line covering every exit path — otherwise an outcome reaches
+/// only canopy, never the daemon's own journal.
+async fn backup_after_start(
+	def: &BackupDef,
+	backup_type: &str,
+	run_id: &str,
+	registration_dir: Option<&Path>,
+	progress: &Option<BackupProgress>,
+) -> Result<()> {
 	let reg = load_registration(registration_dir)
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
@@ -394,13 +412,13 @@ pub async fn run_backup(
 		password: target.repo_password.0.clone(),
 	};
 	let outcome =
-		run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id, &progress).await;
-	emit(&progress, BackupEvent::Phase("report"));
+		run_kopia_backup(def, &target, &conn, &server_id, &device_id, run_id, progress).await;
+	emit(progress, BackupEvent::Phase("report"));
 
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
 		Ok(snapshot) => BackupReport {
-			run_id: &run_id,
+			run_id,
 			r#type: backup_type,
 			purpose: Purpose::Backup,
 			outcome: Outcome::Success,
@@ -409,7 +427,7 @@ pub async fn run_backup(
 			snapshot_id: snapshot.id.as_deref(),
 		},
 		Err(err) => BackupReport {
-			run_id: &run_id,
+			run_id,
 			r#type: backup_type,
 			purpose: Purpose::Backup,
 			outcome: Outcome::Failure,
@@ -424,14 +442,23 @@ pub async fn run_backup(
 		.wrap_err("reporting backup outcome to canopy")?;
 
 	match &outcome {
-		Ok(snapshot) => emit(
-			&progress,
-			BackupEvent::Done {
-				snapshot_id: snapshot.id.clone(),
-				bytes_uploaded: snapshot.bytes_uploaded,
-			},
-		),
-		Err(err) => emit(&progress, BackupEvent::Failed { error: trim_error(err) }),
+		Ok(snapshot) => {
+			info!(
+				backup_type,
+				run_id,
+				snapshot_id = ?snapshot.id,
+				bytes_uploaded = ?snapshot.bytes_uploaded,
+				"backup completed"
+			);
+			emit(
+				progress,
+				BackupEvent::Done {
+					snapshot_id: snapshot.id.clone(),
+					bytes_uploaded: snapshot.bytes_uploaded,
+				},
+			)
+		}
+		Err(err) => emit(progress, BackupEvent::Failed { error: trim_error(err) }),
 	}
 
 	outcome.map(|_| ())
