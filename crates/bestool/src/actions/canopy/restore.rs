@@ -13,8 +13,8 @@ use std::{
 
 use bestool_canopy::{Purpose, TargetOutcome};
 use bestool_kopia::{
-	S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore, build_kopia_command_with_s3,
-	find_kopia_binary,
+	RunAs, S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore,
+	build_kopia_command_with_s3, find_kopia_binary,
 };
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
@@ -114,7 +114,15 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		config_path: &config_path,
 	};
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
-	connect_repo(&kopia, &s3env, &target, &proxy.endpoint(), &server_id).await?;
+	connect_repo(
+		&kopia,
+		&s3env,
+		&target,
+		&proxy.endpoint(),
+		&server_id,
+		RunAs::CurrentUser,
+	)
+	.await?;
 
 	// Select the snapshot to restore.
 	let snapshots = list_snapshots(&kopia, &s3env).await?;
@@ -138,8 +146,8 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	if staging.exists() {
 		tokio::fs::remove_dir_all(&staging).await.ok();
 	}
-	let mut restore_cmd =
-		build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
+	let mut restore_cmd = build_kopia_command_with_s3(&kopia, &s3env, RunAs::CurrentUser)
+		.map_err(|e| miette!("{e}"))?;
 	args_snapshot_restore(&mut restore_cmd, &snapshot.id, &staging);
 	run_kopia(restore_cmd, "snapshot restore").await?;
 
@@ -152,7 +160,8 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 }
 
 async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Result<Vec<Snapshot>> {
-	let mut cmd = build_kopia_command_with_s3(kopia, s3env).map_err(|e| miette!("{e}"))?;
+	let mut cmd = build_kopia_command_with_s3(kopia, s3env, RunAs::CurrentUser)
+		.map_err(|e| miette!("{e}"))?;
 	args_snapshot_list(&mut cmd);
 	let stdout = run_kopia(cmd, "snapshot list").await?;
 	serde_json::from_str(stdout.trim())

@@ -22,7 +22,7 @@ use bestool_canopy::{
 	registration::Registration,
 };
 use bestool_kopia::{
-	S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
+	RunAs, S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
 	build_kopia_command_with_s3, find_kopia_binary,
 	proxy::{self, RunningProxy, S3ProxyConfig},
 };
@@ -302,8 +302,9 @@ pub(super) async fn connect_repo(
 	target: &bestool_canopy::BackupTarget,
 	endpoint: &str,
 	server_id: &str,
+	run_as: RunAs,
 ) -> Result<()> {
-	let mut connect = build_kopia_command_with_s3(kopia, s3env).map_err(|e| miette!("{e}"))?;
+	let mut connect = build_kopia_command_with_s3(kopia, s3env, run_as).map_err(|e| miette!("{e}"))?;
 	args_repository_connect_s3(
 		&mut connect,
 		&target.bucket,
@@ -533,20 +534,39 @@ async fn snapshot(
 		.into_diagnostic()
 		.wrap_err("creating transient kopia config dir")?;
 	let config_path = config_dir.path().join("repository.config");
+
+	// When kopia runs as the kopia user (not us), it writes and reads this config
+	// itself, so hand the dir to that user. Root-owned 0700 tempdir would deny it.
+	#[cfg(target_os = "linux")]
+	if let Some(user) = bestool_kopia::kopia_run_as_user() {
+		let status = tokio::process::Command::new("chown")
+			.arg("-R")
+			.arg(format!("{user}:{user}"))
+			.arg(config_dir.path())
+			.status()
+			.await
+			.into_diagnostic()
+			.wrap_err("handing the transient kopia config dir to the kopia user")?;
+		if !status.success() {
+			bail!("chown of transient kopia config dir to {user} failed ({status})");
+		}
+	}
 	let s3env = S3KopiaEnv {
 		password: &conn.password,
 		config_path: &config_path,
 	};
 
-	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id).await?;
+	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id, RunAs::KopiaUser).await?;
 
 	if !ignore.is_empty() {
-		let mut policy = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
+		let mut policy =
+			build_kopia_command_with_s3(&kopia, &s3env, RunAs::KopiaUser).map_err(|e| miette!("{e}"))?;
 		args_policy_set_ignores(&mut policy, source_path, ignore);
 		run_kopia(policy, "policy set").await?;
 	}
 
-	let mut create = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
+	let mut create =
+		build_kopia_command_with_s3(&kopia, &s3env, RunAs::KopiaUser).map_err(|e| miette!("{e}"))?;
 	// Force kopia's progress output (it stays silent on a non-TTY otherwise) and
 	// stream it, but only when someone's watching — a local run discards stderr.
 	let stdout = if progress.is_some() {

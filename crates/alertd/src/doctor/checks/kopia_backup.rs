@@ -108,6 +108,7 @@ async fn run_linux() -> Check {
 fn elevation_label(e: &Elevation) -> &'static str {
 	match e {
 		Elevation::Direct => "direct",
+		Elevation::SetPriv => "setpriv",
 		Elevation::Sudo => "sudo",
 		Elevation::Skip(_) => "skip",
 	}

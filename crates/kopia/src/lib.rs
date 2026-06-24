@@ -8,10 +8,11 @@
 //! - [`find_kopia_binary`] / [`find_windows_kopia_binary`] /
 //!   [`find_windows_kopia_config`]: locate kopia and (on Windows) the per-user
 //!   repository config from KopiaUI's standard install locations.
-//! - [`linux_elevation`]: decide whether/how to elevate to the `kopia` system
-//!   user on Linux. Returns [`Elevation::Sudo`] when we're not the kopia user
-//!   and the system kopia install is present, [`Elevation::Direct`] when we
-//!   already have access, [`Elevation::Skip`] otherwise.
+//! - [`linux_elevation`]: decide how to run kopia as the `kopia` system user on
+//!   Linux — [`Elevation::SetPriv`] (drop from root) or [`Elevation::Sudo`]
+//!   (escalate as a mortal) when the system install is present,
+//!   [`Elevation::Direct`] when we already have access, [`Elevation::Skip`]
+//!   otherwise.
 //! - [`Snapshot`] and [`fetch_snapshots`]: deserialise `kopia snapshot list
 //!   --json` output into a typed shape.
 //! - [`SnapshotFilter`] / [`build_filter`]: in-process filtering of a snapshot
@@ -35,6 +36,11 @@ pub mod proxy;
 
 /// System user that owns the Linux kopia install.
 pub const LINUX_KOPIA_USER: &str = "kopia";
+
+/// Home directory of the [`LINUX_KOPIA_USER`]. Kopia derives its config
+/// (`$HOME/.config/kopia`) and cache/logs (`$HOME/.cache/kopia`) from it, so we
+/// set `HOME` to this when running kopia as that user.
+pub const LINUX_KOPIA_HOME: &str = "/var/lib/kopia";
 
 /// Standard location of the system kopia repository config on Linux. Owned
 /// by the [`LINUX_KOPIA_USER`].
@@ -122,32 +128,48 @@ pub fn current_username() -> Option<String> {
 	whoami::username().ok()
 }
 
-/// What to do about elevation on Linux when we want to run kopia.
-#[derive(Debug)]
+/// How to run kopia as the [`LINUX_KOPIA_USER`] on Linux.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Elevation {
 	/// Run as the current user — either we're already the kopia user, or
 	/// there's no system kopia install (the operator's running their own).
 	Direct,
-	/// Wrap the kopia invocation in `sudo -u kopia --`. Used whenever we're
-	/// running as a different user and the system kopia install exists; if
-	/// `sudo` isn't allowed (no NOPASSWD rule, no TTY), the resulting kopia
-	/// invocation will fail and the caller surfaces that as a Skip.
+	/// We're root: drop to the kopia user with `setpriv`. A privilege *drop*,
+	/// so it works under the daemon's `NoNewPrivileges` (where `sudo`, which
+	/// must be able to gain privileges, refuses to run).
+	SetPriv,
+	/// We're a non-root user: elevate to the kopia user with `sudo -u kopia`.
+	/// If `sudo` isn't allowed (no NOPASSWD rule, no TTY), the kopia invocation
+	/// fails and the caller surfaces that as a Skip.
 	Sudo,
 	/// We can't elevate. The caller should bail with a reason.
 	Skip(String),
 }
 
-/// Decide how to invoke kopia on Linux given the current user and whether
-/// the system kopia install is present (and accessible).
+/// Whether the current process's effective uid is 0. No `libc` in the tree, so
+/// ask `id -u` (the backup code resolves uids the same way).
+#[cfg(target_os = "linux")]
+fn is_root() -> bool {
+	std::process::Command::new("id")
+		.arg("-u")
+		.output()
+		.ok()
+		.filter(|o| o.status.success())
+		.and_then(|o| String::from_utf8(o.stdout).ok())
+		.map(|s| s.trim() == "0")
+		.unwrap_or(false)
+}
+
+/// Decide how to invoke kopia on Linux. We always run kopia *as the kopia user*,
+/// never as whoever we happen to be, so the repo config/cache stay owned by that
+/// user and the snapshot's idmapped files are readable.
 ///
-/// Logic:
-/// - If we're the kopia user, run directly.
-/// - Else, probe the system kopia config:
-///   - Not found (ENOENT): no system install. Run directly as current user;
-///     they're presumably running their own kopia under their own config.
-///   - Permission denied (EACCES): exists, owned by kopia user. Elevate via
-///     `sudo -u kopia`.
-///   - Readable: exists and we can read it (unusual mode). Run directly.
+/// - If we're already the kopia user, run directly.
+/// - Else probe the system kopia config:
+///   - Not found (ENOENT): no system install. Run directly as the current user
+///     (they're running their own kopia under their own config).
+///   - Exists (readable as root, or EACCES as a mortal): run as the kopia user —
+///     `setpriv` when we're root, `sudo` otherwise.
 #[cfg(target_os = "linux")]
 pub fn linux_elevation() -> Elevation {
 	let Some(user) = current_username() else {
@@ -158,11 +180,19 @@ pub fn linux_elevation() -> Elevation {
 		return Elevation::Direct;
 	}
 
-	match std::fs::metadata(LINUX_KOPIA_CONFIG) {
-		Ok(_) => Elevation::Direct,
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Elevation::Direct,
-		Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => Elevation::Sudo,
-		Err(err) => Elevation::Skip(format!("checking {LINUX_KOPIA_CONFIG}: {err}")),
+	let exists = match std::fs::metadata(LINUX_KOPIA_CONFIG) {
+		Ok(_) => true,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+		Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => true,
+		Err(err) => return Elevation::Skip(format!("checking {LINUX_KOPIA_CONFIG}: {err}")),
+	};
+	if !exists {
+		return Elevation::Direct;
+	}
+	if is_root() {
+		Elevation::SetPriv
+	} else {
+		Elevation::Sudo
 	}
 }
 
@@ -171,27 +201,76 @@ pub fn linux_elevation() -> Elevation {
 	Elevation::Direct
 }
 
+/// The user kopia will actually run as, when that differs from the current user
+/// — so a caller can hand it ownership of transient files (e.g. the per-run
+/// config). `None` when kopia runs as the current user, or off Linux.
+pub fn kopia_run_as_user() -> Option<&'static str> {
+	match linux_elevation() {
+		Elevation::SetPriv | Elevation::Sudo => Some(LINUX_KOPIA_USER),
+		Elevation::Direct | Elevation::Skip(_) => None,
+	}
+}
+
+/// `setpriv --reuid kopia --regid kopia --init-groups -- <kopia>`, with the
+/// kopia user's environment. setpriv only swaps credentials and leaves the
+/// environment untouched, so set `HOME` (kopia reads its config/cache relative
+/// to it) and drop the inherited `XDG_CACHE_HOME` (so the cache lands in
+/// `$HOME/.cache`, not the daemon's read-only `/var/cache`).
+#[cfg(target_os = "linux")]
+fn setpriv_as_kopia(kopia: &Path) -> Command {
+	let mut c = Command::new("setpriv");
+	c.args([
+		"--reuid",
+		LINUX_KOPIA_USER,
+		"--regid",
+		LINUX_KOPIA_USER,
+		"--init-groups",
+		"--",
+	]);
+	c.arg(kopia);
+	c.env("HOME", LINUX_KOPIA_HOME);
+	c.env_remove("XDG_CACHE_HOME");
+	c
+}
+
+/// `sudo -H -u kopia [--preserve-env=…] -- <kopia>`. `-H` sets `HOME` to the
+/// kopia user's home; `env_reset` (sudo's default) drops the rest, so any vars
+/// kopia needs are forwarded via `--preserve-env`.
+#[cfg(target_os = "linux")]
+fn sudo_as_kopia(kopia: &Path, preserve_env: Option<&str>) -> Command {
+	let mut c = Command::new("sudo");
+	c.arg("-H");
+	if let Some(keys) = preserve_env {
+		c.arg(format!("--preserve-env={keys}"));
+	}
+	c.arg("-u").arg(LINUX_KOPIA_USER).arg("--").arg(kopia);
+	c
+}
+
+/// Build the base kopia command for a given elevation (Linux).
+#[cfg(target_os = "linux")]
+fn command_for(kopia: &Path, elevation: Elevation) -> Result<Command, String> {
+	Ok(match elevation {
+		Elevation::Direct => Command::new(kopia),
+		Elevation::SetPriv => setpriv_as_kopia(kopia),
+		Elevation::Sudo => sudo_as_kopia(kopia, None),
+		Elevation::Skip(reason) => return Err(reason),
+	})
+}
+
 /// Build a `Command` that runs the kopia binary, elevated to the kopia user
 /// if the current platform/user requires it (Linux only).
 ///
-/// On non-Linux platforms or when no elevation is needed, this is just
-/// `Command::new(kopia)`. On Linux with [`Elevation::Sudo`], it returns
-/// `sudo -u kopia -- <kopia>`. [`Elevation::Skip`] is propagated as an
-/// `Err` whose message is the Skip reason.
+/// On non-Linux platforms this is just `Command::new(kopia)`. [`Elevation::Skip`]
+/// is propagated as an `Err` whose message is the Skip reason.
+#[cfg(target_os = "linux")]
 pub fn build_kopia_command(kopia: &Path) -> Result<Command, String> {
-	if cfg!(target_os = "linux") {
-		match linux_elevation() {
-			Elevation::Direct => Ok(Command::new(kopia)),
-			Elevation::Sudo => {
-				let mut c = Command::new("sudo");
-				c.arg("-u").arg(LINUX_KOPIA_USER).arg("--").arg(kopia);
-				Ok(c)
-			}
-			Elevation::Skip(reason) => Err(reason),
-		}
-	} else {
-		Ok(Command::new(kopia))
-	}
+	command_for(kopia, linux_elevation())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn build_kopia_command(kopia: &Path) -> Result<Command, String> {
+	Ok(Command::new(kopia))
 }
 
 /// Ambient AWS credential environment variables, scrubbed from kopia's
@@ -230,6 +309,7 @@ impl S3KopiaEnv<'_> {
 	}
 
 	/// The keys to forward across a `sudo` env reset (`--preserve-env=…`).
+	#[cfg(target_os = "linux")]
 	fn preserve_env_keys(&self) -> String {
 		self.vars()
 			.iter()
@@ -239,38 +319,78 @@ impl S3KopiaEnv<'_> {
 	}
 }
 
-/// Build a kopia [`Command`] for the canopy-managed S3 repo, which is reached
-/// through the loopback re-signing proxy.
-///
-/// On Linux, kopia runs as the [`LINUX_KOPIA_USER`] via `sudo` when needed;
-/// `sudo`'s `env_reset` drops the parent environment (so the
-/// [`S3_SHADOWING_ENV_VARS`] never reach kopia) and the password/config vars are
-/// forwarded explicitly via `--preserve-env`. Run directly, the child inherits
-/// our environment, so the shadowing vars are removed explicitly instead.
-pub fn build_kopia_command_with_s3(kopia: &Path, env: &S3KopiaEnv<'_>) -> Result<Command, String> {
-	let mut cmd = if cfg!(target_os = "linux") {
-		match linux_elevation() {
-			Elevation::Direct => Command::new(kopia),
-			Elevation::Sudo => {
-				let mut c = Command::new("sudo");
-				c.arg(format!("--preserve-env={}", env.preserve_env_keys()));
-				c.arg("-u").arg(LINUX_KOPIA_USER).arg("--").arg(kopia);
-				c
-			}
-			Elevation::Skip(reason) => return Err(reason),
-		}
-	} else {
-		Command::new(kopia)
-	};
-
-	// Under sudo, env_reset already dropped these; removing them here covers the
-	// direct (inherited-environment) path.
+/// Apply the canopy S3 repo environment to a kopia command: scrub the ambient
+/// AWS vars (so they can't shadow the dummy proxy keys) and set the password /
+/// transient-config vars. `setpriv` leaves the environment intact and sudo's
+/// `env_reset` drops the AWS vars already — removing them here covers both and
+/// the direct (inherited-environment) path.
+fn apply_s3_env(cmd: &mut Command, env: &S3KopiaEnv<'_>) {
 	for key in S3_SHADOWING_ENV_VARS {
 		cmd.env_remove(key);
 	}
 	for (key, value) in env.vars() {
 		cmd.env(key, value);
 	}
+}
+
+/// Build a kopia [`Command`] for the canopy-managed S3 repo, which is reached
+/// through the loopback re-signing proxy.
+///
+/// On Linux, kopia runs as the [`LINUX_KOPIA_USER`] (`setpriv` when we're root,
+/// `sudo` otherwise). Under sudo the password/config vars are forwarded across
+/// `env_reset` via `--preserve-env`; under setpriv the environment is intact.
+#[cfg(target_os = "linux")]
+fn command_for_s3(
+	kopia: &Path,
+	env: &S3KopiaEnv<'_>,
+	elevation: Elevation,
+) -> Result<Command, String> {
+	let mut cmd = match elevation {
+		Elevation::Direct => Command::new(kopia),
+		Elevation::SetPriv => setpriv_as_kopia(kopia),
+		Elevation::Sudo => sudo_as_kopia(kopia, Some(&env.preserve_env_keys())),
+		Elevation::Skip(reason) => return Err(reason),
+	};
+	apply_s3_env(&mut cmd, env);
+	Ok(cmd)
+}
+
+/// Which user a canopy-managed kopia command should run as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunAs {
+	/// The kopia user (backup): keeps the repo cache owned by that user and lets
+	/// it read the snapshot's idmapped, postgres-owned files. Elevates per
+	/// [`linux_elevation`].
+	KopiaUser,
+	/// The current user (restore): the command writes destinations the kopia
+	/// user can't reach (e.g. a staging dir beside a postgres data directory),
+	/// and the caller already runs with enough privilege (root).
+	CurrentUser,
+}
+
+/// Build a kopia [`Command`] for the canopy-managed S3 repo, reached through the
+/// loopback re-signing proxy, running as `run_as` (see [`RunAs`]).
+#[cfg(target_os = "linux")]
+pub fn build_kopia_command_with_s3(
+	kopia: &Path,
+	env: &S3KopiaEnv<'_>,
+	run_as: RunAs,
+) -> Result<Command, String> {
+	let elevation = match run_as {
+		RunAs::KopiaUser => linux_elevation(),
+		RunAs::CurrentUser => Elevation::Direct,
+	};
+	command_for_s3(kopia, env, elevation)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn build_kopia_command_with_s3(
+	kopia: &Path,
+	env: &S3KopiaEnv<'_>,
+	_run_as: RunAs,
+) -> Result<Command, String> {
+	let mut cmd = Command::new(kopia);
+	apply_s3_env(&mut cmd, env);
 	Ok(cmd)
 }
 
@@ -749,6 +869,101 @@ mod tests {
 			.collect()
 	}
 
+	#[cfg(target_os = "linux")]
+	fn env_of(cmd: &Command) -> std::collections::HashMap<String, Option<String>> {
+		cmd.get_envs()
+			.map(|(k, v)| {
+				(
+					k.to_string_lossy().into_owned(),
+					v.map(|v| v.to_string_lossy().into_owned()),
+				)
+			})
+			.collect()
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn setpriv_elevation_runs_kopia_as_the_kopia_user() {
+		let cmd = command_for(Path::new("/usr/bin/kopia"), Elevation::SetPriv).unwrap();
+		assert_eq!(cmd.get_program(), "setpriv");
+		let args = args_of(&cmd);
+		assert_eq!(
+			args,
+			vec![
+				"--reuid",
+				LINUX_KOPIA_USER,
+				"--regid",
+				LINUX_KOPIA_USER,
+				"--init-groups",
+				"--",
+				"/usr/bin/kopia",
+			]
+		);
+		let env = env_of(&cmd);
+		assert_eq!(env.get("HOME"), Some(&Some(LINUX_KOPIA_HOME.to_owned())));
+		// XDG_CACHE_HOME is explicitly cleared so the cache lands under $HOME.
+		assert_eq!(env.get("XDG_CACHE_HOME"), Some(&None));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn sudo_elevation_sets_home_and_targets_the_kopia_user() {
+		let cmd = command_for(Path::new("/usr/bin/kopia"), Elevation::Sudo).unwrap();
+		assert_eq!(cmd.get_program(), "sudo");
+		assert_eq!(
+			args_of(&cmd),
+			vec!["-H", "-u", LINUX_KOPIA_USER, "--", "/usr/bin/kopia"]
+		);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn direct_elevation_runs_kopia_unwrapped() {
+		let cmd = command_for(Path::new("/usr/bin/kopia"), Elevation::Direct).unwrap();
+		assert_eq!(cmd.get_program(), "/usr/bin/kopia");
+		assert!(args_of(&cmd).is_empty());
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn s3_setpriv_carries_secrets_and_scrubs_aws() {
+		let env = S3KopiaEnv {
+			password: "hunter2",
+			config_path: Path::new("/tmp/x/repository.config"),
+		};
+		let cmd = command_for_s3(Path::new("/usr/bin/kopia"), &env, Elevation::SetPriv).unwrap();
+		assert_eq!(cmd.get_program(), "setpriv");
+		let envs = env_of(&cmd);
+		assert_eq!(
+			envs.get("KOPIA_PASSWORD"),
+			Some(&Some("hunter2".to_owned()))
+		);
+		assert_eq!(
+			envs.get("KOPIA_CONFIG_PATH"),
+			Some(&Some("/tmp/x/repository.config".to_owned()))
+		);
+		// The ambient AWS vars are scrubbed so they can't shadow the proxy keys.
+		for key in S3_SHADOWING_ENV_VARS {
+			assert_eq!(envs.get(key), Some(&None), "{key} should be removed");
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn s3_sudo_preserves_the_secret_env_across_env_reset() {
+		let env = S3KopiaEnv {
+			password: "hunter2",
+			config_path: Path::new("/tmp/x/repository.config"),
+		};
+		let cmd = command_for_s3(Path::new("/usr/bin/kopia"), &env, Elevation::Sudo).unwrap();
+		assert_eq!(cmd.get_program(), "sudo");
+		assert!(
+			args_of(&cmd)
+				.iter()
+				.any(|a| a == "--preserve-env=KOPIA_PASSWORD,KOPIA_CONFIG_PATH")
+		);
+	}
+
 	#[test]
 	fn repository_connect_s3_args_are_in_order() {
 		let mut cmd = Command::new("kopia");
@@ -847,7 +1062,9 @@ mod tests {
 			password: "repo-pass",
 			config_path: Path::new("/run/bestool/kopia.config"),
 		};
-		let cmd = build_kopia_command_with_s3(Path::new("/usr/bin/kopia"), &env).unwrap();
+		let cmd =
+			build_kopia_command_with_s3(Path::new("/usr/bin/kopia"), &env, RunAs::CurrentUser)
+				.unwrap();
 		let envs: std::collections::HashMap<String, Option<String>> = cmd
 			.get_envs()
 			.map(|(k, v)| {
@@ -872,6 +1089,7 @@ mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn preserve_env_keys_lists_repo_vars() {
 		let env = S3KopiaEnv {

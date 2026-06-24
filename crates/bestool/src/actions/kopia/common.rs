@@ -41,6 +41,10 @@ pub fn maybe_reexec_as_kopia(args: &KopiaArgs) -> Result<()> {
 	}
 	match linux_elevation() {
 		Elevation::Direct => Ok(()),
+		Elevation::SetPriv => {
+			debug!("re-executing under setpriv as {LINUX_KOPIA_USER}");
+			exec_under_setpriv(LINUX_KOPIA_USER)
+		}
 		Elevation::Sudo => {
 			debug!("re-executing under sudo -u {LINUX_KOPIA_USER}");
 			exec_under_sudo(LINUX_KOPIA_USER)
@@ -52,21 +56,44 @@ pub fn maybe_reexec_as_kopia(args: &KopiaArgs) -> Result<()> {
 	}
 }
 
-/// Replace the current process with `sudo -u <user> -- <argv>`. Only
-/// returns if the exec itself failed.
+/// Replace the current process with the given elevation wrapper around our own
+/// argv, running as the kopia user's home so kopia's config/cache resolve there.
+/// Only returns if the exec itself failed.
 #[cfg(unix)]
-fn exec_under_sudo(user: &str) -> Result<()> {
+fn exec_as_kopia(mut cmd: std::process::Command) -> Result<()> {
 	use std::os::unix::process::CommandExt;
 
 	let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
 	let Some((exe, rest)) = argv.split_first() else {
 		return Err(miette!("no argv to re-exec"));
 	};
-
-	let mut cmd = std::process::Command::new("sudo");
-	cmd.arg("-u").arg(user).arg("--").arg(exe).args(rest);
+	cmd.arg(exe).args(rest);
+	cmd.env("HOME", bestool_kopia::LINUX_KOPIA_HOME);
+	cmd.env_remove("XDG_CACHE_HOME");
 	let err = cmd.exec();
-	Err(miette!("failed to re-exec under sudo: {err}"))
+	Err(miette!("failed to re-exec as the kopia user: {err}"))
+}
+
+/// `setpriv --reuid <user> --regid <user> --init-groups -- <argv>` (root drops
+/// privileges; works under NoNewPrivileges where sudo can't).
+#[cfg(unix)]
+fn exec_under_setpriv(user: &str) -> Result<()> {
+	let mut cmd = std::process::Command::new("setpriv");
+	cmd.args(["--reuid", user, "--regid", user, "--init-groups", "--"]);
+	exec_as_kopia(cmd)
+}
+
+#[cfg(not(unix))]
+fn exec_under_setpriv(_user: &str) -> Result<()> {
+	Err(miette!("setpriv re-exec only supported on Unix"))
+}
+
+/// `sudo -u <user> -- <argv>` (non-root escalation).
+#[cfg(unix)]
+fn exec_under_sudo(user: &str) -> Result<()> {
+	let mut cmd = std::process::Command::new("sudo");
+	cmd.arg("-u").arg(user).arg("--");
+	exec_as_kopia(cmd)
 }
 
 #[cfg(not(unix))]
