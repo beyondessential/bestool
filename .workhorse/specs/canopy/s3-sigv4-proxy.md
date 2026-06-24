@@ -31,8 +31,6 @@ The crate carries neither Canopy nor bestool specifics beyond this trait.
 
 ## Signing
 
-A spike settled how the proxy must sign, verified against kopia 0.23.1 and accepted by AWS S3 (the full lifecycle below ran through the proxy with real STS credentials, restoring byte-identically).
-
 Over the non-TLS loopback leg, minio-go (kopia's S3 client) signs every object PUT — whatever its size — with a streaming, chunked payload signature (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`): the body is split into chunks, each prefixed on the wire by a signature chained from the request's seed signature and keyed to the signing key. minio-go does this unconditionally for a non-TLS endpoint and exposes no option, through kopia, to turn it off. So the proxy cannot swap the `Authorization` header and pass the body through — the in-body chunk signatures were computed with the dummy key and would not verify upstream. It re-derives them.
 
 For each PUT the proxy computes a fresh seed signature for the re-signed request, derives the signing key from the live credentials, then walks the body chunk by chunk recomputing each chunk signature — `HMAC-SHA256(signing_key, "AWS4-HMAC-SHA256-PAYLOAD\n" + amz_date + "\n" + scope + "\n" + previous_signature + "\n" + SHA256("") + "\n" + SHA256(chunk_data))`, seeded by the request signature and chained through to the terminating zero-length chunk. Chunk sizes are copied from the incoming framing verbatim, so the re-encoded body is the same byte length and `Content-Length` is unchanged.
@@ -42,6 +40,10 @@ GET, HEAD and DELETE carry no body and are re-signed by recomputing the `Authori
 Bodies stream both ways — the proxy never holds a whole object. Chunks are self-framing, so it parses and re-emits the request body one chunk at a time; the only buffer is the current chunk (minio-go's default streaming chunk is 64 KiB). Responses are streamed through verbatim.
 
 The signed header set is `host`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-decoded-content-length` on streaming PUTs; for STS credentials `x-amz-security-token` is added before signing so it is covered by the signature; `content-type`, `content-md5` and `content-encoding` are signed when present. A credential refresh between two requests changes only the key material the next request is signed with — kopia's view does not change.
+
+## Network path
+
+The signature binds a request to a host and region, not to a route, so the address the proxy connects to is a separate axis from what it signs: the connection target and the signed host/region are independent settings. This leaves the egress path open without touching how requests are signed — S3 can be reached directly, over a Tailscale subnet router into a VPC, or through an S3 interface endpoint (PrivateLink) with private DNS, all while the signed host and region stay the canonical S3 values. The only constraint is that whatever finally reaches S3 carries the host and signature S3 validates: an L3 route that forwards the request unchanged is transparent; a hop that terminates TLS must preserve the `Host` header or re-sign. The upstream TLS leg validates the endpoint's certificate against the host the proxy connects to, so a connection target whose name differs from the signed host needs a certificate that covers it.
 
 ## Lifecycle and concurrency
 
