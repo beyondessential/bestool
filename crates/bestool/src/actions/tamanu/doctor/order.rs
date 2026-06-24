@@ -12,10 +12,11 @@ pub fn severity_key(status: &CheckStatus) -> u8 {
 	}
 }
 
-/// Whether a completed check should appear in human-readable output under the
-/// given `only_failing` filter. The filter hides pass and skip outcomes.
-pub fn keep_under_filter(status: &CheckStatus, only_failing: bool) -> bool {
-	if !only_failing {
+/// Whether a completed check should appear in the result replay. By default the
+/// replay shows only warning, broken, and failing checks; `--all` shows
+/// everything (the live progress view always shows every check regardless).
+pub fn keep_in_replay(status: &CheckStatus, show_all: bool) -> bool {
+	if show_all {
 		return true;
 	}
 	matches!(
@@ -33,11 +34,11 @@ pub fn sort_grouped(results: &mut [(Check, bool)]) {
 	});
 }
 
-/// Filter `results` by the `only_failing` flag, leaving them sorted.
-pub fn filter_and_sort(results: &[(Check, bool)], only_failing: bool) -> Vec<(Check, bool)> {
+/// Filter `results` for the replay by the `show_all` flag, leaving them sorted.
+pub fn filter_and_sort(results: &[(Check, bool)], show_all: bool) -> Vec<(Check, bool)> {
 	let mut out: Vec<(Check, bool)> = results
 		.iter()
-		.filter(|(c, _)| keep_under_filter(&c.status, only_failing))
+		.filter(|(c, _)| keep_in_replay(&c.status, show_all))
 		.cloned()
 		.collect();
 	sort_grouped(&mut out);
@@ -102,25 +103,25 @@ mod tests {
 	}
 
 	#[test]
-	fn keep_under_filter_hides_pass_and_skip() {
-		assert!(!keep_under_filter(&CheckStatus::Pass, true));
-		assert!(!keep_under_filter(&CheckStatus::Skip("".into()), true));
-		assert!(keep_under_filter(&CheckStatus::Warning("".into()), true));
-		assert!(keep_under_filter(&CheckStatus::Broken("".into()), true));
-		assert!(keep_under_filter(&CheckStatus::Fail("".into()), true));
+	fn keep_in_replay_default_hides_pass_and_skip() {
+		assert!(!keep_in_replay(&CheckStatus::Pass, false));
+		assert!(!keep_in_replay(&CheckStatus::Skip("".into()), false));
+		assert!(keep_in_replay(&CheckStatus::Warning("".into()), false));
+		assert!(keep_in_replay(&CheckStatus::Broken("".into()), false));
+		assert!(keep_in_replay(&CheckStatus::Fail("".into()), false));
 	}
 
 	#[test]
-	fn keep_under_filter_off_keeps_everything() {
-		assert!(keep_under_filter(&CheckStatus::Pass, false));
-		assert!(keep_under_filter(&CheckStatus::Skip("".into()), false));
-		assert!(keep_under_filter(&CheckStatus::Warning("".into()), false));
-		assert!(keep_under_filter(&CheckStatus::Broken("".into()), false));
-		assert!(keep_under_filter(&CheckStatus::Fail("".into()), false));
+	fn keep_in_replay_show_all_keeps_everything() {
+		assert!(keep_in_replay(&CheckStatus::Pass, true));
+		assert!(keep_in_replay(&CheckStatus::Skip("".into()), true));
+		assert!(keep_in_replay(&CheckStatus::Warning("".into()), true));
+		assert!(keep_in_replay(&CheckStatus::Broken("".into()), true));
+		assert!(keep_in_replay(&CheckStatus::Fail("".into()), true));
 	}
 
 	#[test]
-	fn filter_and_sort_with_only_failing_drops_pass_and_skip() {
+	fn filter_and_sort_default_drops_pass_and_skip() {
 		let input = vec![
 			pass("a"),
 			warn("b"),
@@ -129,7 +130,7 @@ mod tests {
 			broken("e"),
 			pass("f"),
 		];
-		let out = filter_and_sort(&input, true);
+		let out = filter_and_sort(&input, false);
 		let names: Vec<&str> = out.iter().map(|(c, _)| c.name).collect();
 		assert_eq!(names, vec!["b", "e", "d"]);
 	}

@@ -46,9 +46,12 @@ pub struct DoctorArgs {
 	#[arg(long = "skip", value_name = "NAME")]
 	pub skip: Vec<String>,
 
-	/// Hide passing and skipped checks; show only warning, broken, and failing.
-	#[arg(long = "only-failing", short = 'F')]
-	pub only_failing: bool,
+	/// Show every check in the result replay, including passing and skipped.
+	///
+	/// By default the replay lists only warning, broken, and failing checks; the
+	/// live progress view always shows every check regardless.
+	#[arg(long, short = 'a')]
+	pub all: bool,
 
 	/// Force a fresh sweep. With alertd running, asks the daemon to recompute
 	/// and streams the results back as they come in; without alertd, runs the
@@ -136,7 +139,7 @@ async fn run_local_sweep(
 	live_tty: bool,
 ) -> Result<SweepOutcome> {
 	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, args, SweepSource::Local);
+	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::Local);
 
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
@@ -196,12 +199,7 @@ async fn run_daemon_recompute(
 	}
 
 	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(
-		live_tty,
-		&selected_names,
-		args,
-		SweepSource::DaemonStreamed,
-	);
+	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::DaemonStreamed);
 
 	let stream_handle = tokio::spawn(drain_recompute_stream(response, progress));
 
@@ -410,7 +408,6 @@ fn results_from_wire(payload: &Value) -> Vec<(Check, bool)> {
 fn setup_progress(
 	live_tty: bool,
 	selected_names: &[&'static str],
-	args: &DoctorArgs,
 	source: SweepSource,
 ) -> (
 	Option<ProgressSender>,
@@ -421,8 +418,7 @@ fn setup_progress(
 	}
 	let (tx, rx) = mpsc::unbounded_channel();
 	let names = selected_names.to_vec();
-	let only_failing = args.only_failing;
-	let handle = tokio::spawn(tui::run_tui(names, only_failing, source, rx));
+	let handle = tokio::spawn(tui::run_tui(names, source, rx));
 	(Some(tx), Some(handle))
 }
 
@@ -490,8 +486,8 @@ fn emit_output(
 		return Ok(());
 	}
 
-	let displayed = order::filter_and_sort(&sweep.results, args.only_failing);
-	render::render_plain(&mut out, &displayed, sweep.overall, source, use_colours)
+	let sorted = order::filter_and_sort(&sweep.results, true);
+	render::render_plain(&mut out, &sorted, args.all, sweep.overall, source, use_colours)
 		.into_diagnostic()?;
 	Ok(())
 }
@@ -544,24 +540,24 @@ mod tests {
 	}
 
 	#[test]
-	fn doctor_args_only_failing_short_flag() {
+	fn doctor_args_all_short_flag() {
 		use clap::Parser;
-		let parsed = DoctorArgs::parse_from(["doctor", "-F"]);
-		assert!(parsed.only_failing);
+		let parsed = DoctorArgs::parse_from(["doctor", "-a"]);
+		assert!(parsed.all);
 	}
 
 	#[test]
-	fn doctor_args_only_failing_long_flag() {
+	fn doctor_args_all_long_flag() {
 		use clap::Parser;
-		let parsed = DoctorArgs::parse_from(["doctor", "--only-failing"]);
-		assert!(parsed.only_failing);
+		let parsed = DoctorArgs::parse_from(["doctor", "--all"]);
+		assert!(parsed.all);
 	}
 
 	#[test]
-	fn doctor_args_default_is_no_filter() {
+	fn doctor_args_default_filters_replay() {
 		use clap::Parser;
 		let parsed = DoctorArgs::parse_from(["doctor"]);
-		assert!(!parsed.only_failing);
+		assert!(!parsed.all);
 	}
 
 	#[test]

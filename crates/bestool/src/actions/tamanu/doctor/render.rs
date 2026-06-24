@@ -4,29 +4,34 @@ use owo_colors::OwoColorize;
 
 use bestool_alertd::doctor::check::{Check, CheckStatus, OverallResult};
 
-use super::SweepSource;
-
-/// Width to pad check names to within a rendered list.
-fn name_width(results: &[(Check, bool)]) -> usize {
-	results.iter().map(|(c, _)| c.name.len()).max().unwrap_or(0)
-}
+use super::{SweepSource, order};
 
 /// Render the full human-readable output: grouped check list, blank line,
-/// result line, and dimmed source note. The check list may be empty (under the
-/// `--only-failing` filter on a clean sweep); the result line is shown
-/// regardless.
+/// result line, and dimmed source note. `results` is the complete, sorted set;
+/// the displayed list hides passing and skipped checks unless `show_all` is set
+/// (so a clean sweep shows nothing), but the result line always counts the full
+/// set regardless of what is displayed.
 pub fn render_plain<W: Write>(
 	out: &mut W,
 	results: &[(Check, bool)],
+	show_all: bool,
 	overall: OverallResult,
 	source: &SweepSource,
 	use_colours: bool,
 ) -> io::Result<()> {
-	let width = name_width(results);
-	for (check, _) in results {
+	let displayed: Vec<&(Check, bool)> = results
+		.iter()
+		.filter(|(c, _)| order::keep_in_replay(&c.status, show_all))
+		.collect();
+	let width = displayed
+		.iter()
+		.map(|(c, _)| c.name.len())
+		.max()
+		.unwrap_or(0);
+	for (check, _) in &displayed {
 		write_check_line(out, check, width, use_colours)?;
 	}
-	if !results.is_empty() {
+	if !displayed.is_empty() {
 		writeln!(out)?;
 	}
 	write_result_line(out, results, overall, use_colours)?;
@@ -80,10 +85,11 @@ pub fn write_result_line<W: Write>(
 	overall: OverallResult,
 	use_colours: bool,
 ) -> io::Result<()> {
-	let (mut warnings, mut fails, mut skips, mut brokens) = (0usize, 0usize, 0usize, 0usize);
+	let (mut passes, mut warnings, mut fails, mut skips, mut brokens) =
+		(0usize, 0usize, 0usize, 0usize, 0usize);
 	for (check, _) in results {
 		match &check.status {
-			CheckStatus::Pass => {}
+			CheckStatus::Pass => passes += 1,
 			CheckStatus::Skip(_) => skips += 1,
 			CheckStatus::Warning(_) => warnings += 1,
 			CheckStatus::Fail(_) => fails += 1,
@@ -96,19 +102,9 @@ pub fn write_result_line<W: Write>(
 		OverallResult::Degraded => colour_warn(use_colours, label),
 		OverallResult::Failing => colour_fail(use_colours, label),
 	};
-	let broken_suffix = if brokens > 0 {
-		format!(", {brokens} broken")
-	} else {
-		String::new()
-	};
-	let skip_suffix = if skips > 0 {
-		format!(", {skips} skipped")
-	} else {
-		String::new()
-	};
 	writeln!(
 		out,
-		"Result: {label_coloured} ({fails} failed, {warnings} warning{plural}{broken_suffix}{skip_suffix})",
+		"Result: {label_coloured} ({passes} passed, {fails} failed, {warnings} warning{plural}, {brokens} broken, {skips} skipped)",
 		plural = if warnings == 1 { "" } else { "s" },
 	)
 }
@@ -209,10 +205,10 @@ mod tests {
 	#[test]
 	fn render_plain_lists_results_in_severity_order() {
 		let raw = vec![fail("z-fail"), pass("a-pass"), warn("m-warn")];
-		let sorted = filter_and_sort(&raw, false);
+		let sorted = filter_and_sort(&raw, true);
 		let overall = OverallResult::from_checks(&sorted.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
-		render_plain(&mut buf, &sorted, overall, &SweepSource::Local, false).unwrap();
+		render_plain(&mut buf, &sorted, true, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		let pass_pos = out.find("a-pass").unwrap();
 		let warn_pos = out.find("m-warn").unwrap();
@@ -224,25 +220,28 @@ mod tests {
 	}
 
 	#[test]
-	fn render_plain_only_failing_shows_just_result_line_when_clean() {
+	fn render_plain_default_shows_just_result_line_when_clean() {
 		let raw = vec![pass("a"), pass("b"), skip("c")];
 		let sorted = filter_and_sort(&raw, true);
 		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
-		render_plain(&mut buf, &sorted, overall, &SweepSource::Local, false).unwrap();
+		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(!out.contains("PASS"));
 		assert!(!out.contains("SKIP"));
 		assert!(out.contains("HEALTHY"));
+		// The result line still reports the full counts even though nothing is listed.
+		assert!(out.contains("2 passed"));
+		assert!(out.contains("1 skipped"));
 	}
 
 	#[test]
-	fn render_plain_only_failing_keeps_warn_broken_fail() {
+	fn render_plain_default_keeps_warn_broken_fail() {
 		let raw = vec![pass("a"), warn("b"), broken("c"), fail("d"), skip("e")];
 		let sorted = filter_and_sort(&raw, true);
 		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
-		render_plain(&mut buf, &sorted, overall, &SweepSource::Local, false).unwrap();
+		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(out.contains("WARN"));
 		assert!(out.contains("BRKN"));
@@ -260,10 +259,10 @@ mod tests {
 	#[test]
 	fn render_plain_no_server_id_header() {
 		let raw = vec![pass("a")];
-		let sorted = filter_and_sort(&raw, false);
+		let sorted = filter_and_sort(&raw, true);
 		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
-		render_plain(&mut buf, &sorted, overall, &SweepSource::Local, false).unwrap();
+		render_plain(&mut buf, &sorted, true, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(!out.contains("server-id"));
 		assert!(!out.contains("Server:"));
@@ -272,21 +271,24 @@ mod tests {
 	#[test]
 	fn render_plain_includes_source_note_for_daemon_streamed() {
 		let raw = vec![pass("a")];
-		let sorted = filter_and_sort(&raw, false);
+		let sorted = filter_and_sort(&raw, true);
 		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
-		render_plain(&mut buf, &sorted, overall, &SweepSource::DaemonStreamed, false).unwrap();
+		render_plain(&mut buf, &sorted, false, overall, &SweepSource::DaemonStreamed, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(out.contains("alertd daemon"));
 	}
 
 	#[test]
-	fn result_line_lists_broken_and_skipped_counts() {
+	fn result_line_always_lists_every_count() {
 		let results = vec![broken("a"), skip("b"), pass("c")];
 		let overall = OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		write_result_line(&mut buf, &results, overall, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
+		assert!(out.contains("1 passed"));
+		assert!(out.contains("0 failed"));
+		assert!(out.contains("0 warnings"));
 		assert!(out.contains("1 broken"));
 		assert!(out.contains("1 skipped"));
 		assert!(out.contains("DEGRADED"));
