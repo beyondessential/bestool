@@ -147,6 +147,19 @@ A capture never silently degrades to an unsafe copy.
 Before creating a capture the method sweeps leftovers from a previously crashed run (a hard reboot skips cleanup), so orphaned snapshots and mounts do not accumulate.
 Backups run with the privilege the capture needs.
 
+### What the cluster and host must provide
+
+The method connects as the postgres superuser over the local unix socket — peer authentication, no password.
+So the host must let bestool become that superuser: it runs as root (or equivalent), and the cluster keeps local socket peer auth for the superuser (the default).
+No dedicated backup role, password, or TCP access is needed; set the socket directory or port in the def only when they aren't the defaults.
+
+The snapshot capture needs the cluster's data directory — with its WAL and any tablespaces — on a single volume that can take a cheap, consistent point-in-time snapshot.
+Data spread across volumes that can't be frozen together falls back to the base backup.
+`full_page_writes` must be left on (the default), since recovery from a volume snapshot relies on it.
+
+The base-backup fallback streams over the replication protocol, so the cluster must allow replication: `wal_level` at least `replica` and `max_wal_senders` above zero (both defaults), and a local replication entry for the superuser in the host-based auth configuration.
+The superuser connection already carries the replication privilege.
+
 ## Restore
 
 `bestool canopy restore --type <type>` is the operator-facing restore.
