@@ -11,9 +11,9 @@
 //! code.
 
 pub mod config;
-pub mod creds;
 pub mod method;
 pub mod postgresql;
+pub mod provider;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -24,6 +24,7 @@ use bestool_canopy::{
 use bestool_kopia::{
 	S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
 	build_kopia_command_with_s3, find_kopia_binary,
+	proxy::{self, RunningProxy, S3ProxyConfig},
 };
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
@@ -33,7 +34,7 @@ use uuid::Uuid;
 
 use self::{
 	config::{BackupDef, Hook},
-	creds::CredsServer,
+	provider::CanopyCredentialProvider,
 };
 use crate::actions::Context;
 
@@ -72,40 +73,47 @@ struct SnapshotResult {
 	bytes_uploaded: Option<i64>,
 }
 
-/// The per-run kopia env values (loopback creds endpoint + repo password),
-/// owned so they outlive the borrow of the lease.
-pub(super) struct LeaseEnv {
-	pub uri: String,
-	pub token: String,
+/// Connection details for a kopia run: the loopback proxy endpoint and the repo
+/// passphrase, owned so they outlive the borrows in [`S3KopiaEnv`].
+pub(super) struct RepoConn {
+	pub endpoint: String,
 	pub password: String,
 }
 
-/// Lease a creds token bound to a `(type, purpose)`, refreshed from Canopy.
-pub(super) fn make_lease(
-	server: &CredsServer,
+/// Spawn the loopback re-signing proxy for `(backup_type, purpose)`, drawing
+/// live credentials from Canopy. The returned proxy serves until dropped.
+pub(super) async fn spawn_proxy(
 	client: Arc<CanopyClient>,
 	base_url: Url,
 	backup_type: String,
 	purpose: Purpose,
-) -> creds::CredsLease {
-	server.lease(Arc::new(move || {
-		let client = client.clone();
-		let base_url = base_url.clone();
-		let backup_type = backup_type.clone();
-		Box::pin(async move {
-			client
-				.backup_credentials(&base_url, &backup_type, purpose)
-				.await
-				.map_err(|err| format!("{err}"))
-		})
-	}))
+	region: &str,
+) -> Result<RunningProxy> {
+	let provider = Arc::new(CanopyCredentialProvider::new(
+		client,
+		base_url,
+		backup_type,
+		purpose,
+	));
+	let upstream_host = format!("s3.{region}.amazonaws.com");
+	let config = S3ProxyConfig {
+		upstream: format!("https://{upstream_host}"),
+		upstream_host,
+		region: region.to_owned(),
+	};
+	proxy::spawn(config, provider)
+		.await
+		.into_diagnostic()
+		.wrap_err("starting the S3 re-signing proxy")
 }
 
-/// Connect kopia to the canopy-managed repo (source host = server id).
+/// Connect kopia to the canopy-managed repo through the proxy (source host =
+/// server id).
 pub(super) async fn connect_repo(
 	kopia: &Path,
 	s3env: &S3KopiaEnv<'_>,
 	target: &bestool_canopy::BackupTarget,
+	endpoint: &str,
 	server_id: &str,
 ) -> Result<()> {
 	let mut connect = build_kopia_command_with_s3(kopia, s3env).map_err(|e| miette!("{e}"))?;
@@ -114,6 +122,7 @@ pub(super) async fn connect_repo(
 		&target.bucket,
 		&target.prefix,
 		&target.region,
+		endpoint,
 		"canopy",
 		server_id,
 	);
@@ -182,21 +191,20 @@ pub async fn run_backup(
 		TargetOutcome::Ready(target) => target,
 	};
 
-	let creds_server = CredsServer::start().await?;
-	let lease = make_lease(
-		&creds_server,
+	// The proxy serves for the whole run; held in scope until reporting is done.
+	let proxy = spawn_proxy(
 		client.clone(),
 		base_url.clone(),
 		backup_type.to_owned(),
 		Purpose::Backup,
-	);
-
-	let env = LeaseEnv {
-		uri: lease.uri().to_owned(),
-		token: lease.token().to_owned(),
+		&target.region,
+	)
+	.await?;
+	let conn = RepoConn {
+		endpoint: proxy.endpoint(),
 		password: target.repo_password.0.clone(),
 	};
-	let outcome = run_kopia_backup(&def, &target, &env, &server_id, &device_id, &run_id).await;
+	let outcome = run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id).await;
 
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
@@ -234,7 +242,7 @@ pub async fn run_backup(
 async fn run_kopia_backup(
 	def: &BackupDef,
 	target: &bestool_canopy::BackupTarget,
-	env: &LeaseEnv,
+	conn: &RepoConn,
 	server_id: &str,
 	device_id: &str,
 	run_id: &str,
@@ -245,7 +253,7 @@ async fn run_kopia_backup(
 	let source_path = prepared.path.clone();
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
-	let result = snapshot(target, env, &source_path, server_id, &tags, &prepared.ignore).await;
+	let result = snapshot(target, conn, &source_path, server_id, &tags, &prepared.ignore).await;
 
 	// Cleanup and post-hooks run regardless of the snapshot outcome.
 	let cleanup = def.method.cleanup(prepared).await;
@@ -259,7 +267,7 @@ async fn run_kopia_backup(
 /// Connect to the repo and create the snapshot.
 async fn snapshot(
 	target: &bestool_canopy::BackupTarget,
-	env: &LeaseEnv,
+	conn: &RepoConn,
 	source_path: &Path,
 	server_id: &str,
 	tags: &BTreeMap<String, String>,
@@ -273,13 +281,11 @@ async fn snapshot(
 		.wrap_err("creating transient kopia config dir")?;
 	let config_path = config_dir.path().join("repository.config");
 	let s3env = S3KopiaEnv {
-		full_uri: &env.uri,
-		token: &env.token,
-		password: &env.password,
+		password: &conn.password,
 		config_path: &config_path,
 	};
 
-	connect_repo(&kopia, &s3env, target, server_id).await?;
+	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id).await?;
 
 	if !ignore.is_empty() {
 		let mut policy = build_kopia_command_with_s3(&kopia, &s3env).map_err(|e| miette!("{e}"))?;
