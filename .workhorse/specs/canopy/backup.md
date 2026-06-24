@@ -38,18 +38,16 @@ When the device is not yet authorised for backups — not bound to a live server
 1. mints a run id (which becomes the report's run id and the `canopy-run` snapshot tag) and resolves the definition for the type, failing fast without touching the network if no definition exists;
 2. takes an exclusive per-type lock for the whole run, so a second run for the same type — a re-emitted request, or a manual run racing the daemon — no-ops rather than starting a concurrent kopia. The lock lives in a runtime directory and is released by the OS if the process dies;
 3. fetches the target. A "not yet authorised" response is treated as idle: the run logs that there's nothing to do and exits successfully without reporting. This lets a server image ship backup wiring unconditionally and simply wait until an operator authorises the group;
-4. starts a loopback credentials endpoint for kopia (below) and connects kopia to the repository, reconnecting if the target changed so a server-side bucket change is picked up;
+4. starts a loopback re-signing proxy for kopia (below) and connects kopia to the repository through it, reconnecting if the target changed so a server-side bucket change is picked up;
 5. runs the `pre` hooks, prepares the method's source, applies an ignore policy for any method-supplied transient files, and takes the kopia snapshot;
 6. cleans up and runs the `post` hooks;
 7. reports the outcome. Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing. A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
 
 The repository password reaches kopia by environment and the bucket details by command line; neither is written to persistent device configuration (kopia runs against a transient per-run config), so the device never holds the bucket.
 
-## The credentials endpoint
+## Credentials
 
-kopia's object-store backend obtains credentials from an ECS-style container-credentials endpoint and self-refreshes by re-polling it; it cannot consume a credential-process shim or a static credentials file. So the driver serves a loopback HTTP endpoint, bound to a loopback literal, and points kopia at it by environment. Each run leases a random bearer token; a request carrying that token receives the cached credentials, an unknown or absent token is refused, and the token is deregistered when the run ends so a leaked token stops working.
-
-The endpoint fetches credentials from Canopy on first use and again as they approach expiry, translating Canopy's credential-process-shaped response into the container-credentials shape kopia expects. Because each issuance is short-lived, a long run simply re-fetches; Canopy must stay reachable for the whole run, not just the start. Environment variables that would otherwise let the host's ambient credentials shadow the endpoint are scrubbed from kopia's environment.
+kopia binds its S3 credentials once at start-up and has no mid-run refresh, while Canopy's assumed-role credentials are short-lived — so a long operation would otherwise outlive them. The driver bridges this with a loopback re-signing proxy ([S3P](s3-sigv4-proxy.md)): kopia is pointed at the proxy with meaningless dummy keys, and the proxy re-signs each request with live credentials fetched from Canopy, refreshed as they near expiry. A long run is bounded by how long Canopy stays reachable to reissue credentials, not by a single issuance. Environment variables that would otherwise let the host's ambient credentials shadow the dummy keys are scrubbed from kopia's environment.
 
 ## Repository identity and tags
 
@@ -63,7 +61,7 @@ When run under the bestool-alertd daemon, the device registers its capabilities 
 
 Canopy decides when a server backs up. On each device-to-Canopy healthcheck tick, Canopy's response names the backup types the server should run right now (the union of operator one-offs and schedule-due types; empty means nothing to do). The daemon runs each named type's driver in-process, skipping any type whose previous run is still going. Reporting a run clears the corresponding one-off, so the heartbeat stops re-emitting it.
 
-A standalone `bestool canopy backup` run works without the daemon, for manual use or an external scheduler; it serves its own ephemeral credentials endpoint for the run.
+A standalone `bestool canopy backup` run works without the daemon, for manual use or an external scheduler; it spawns its own ephemeral re-signing proxy for the run.
 
 ## The postgresql method
 

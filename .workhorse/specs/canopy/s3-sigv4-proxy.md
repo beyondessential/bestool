@@ -12,8 +12,6 @@ kopia's S3 connector resolves credentials once, at process start, and signs ever
 
 Static credentials passed by environment are an adequate stopgap for genuinely short operations (init, stats, listing snapshots, rotation, inspection), but not for these. The proxy removes the time bound: kopia holds only meaningless static dummy keys and points at the loopback proxy; the proxy holds the live credentials, refreshes them transparently, and re-signs each request as it passes through. A run is then limited by how long Canopy stays reachable to reissue credentials, not by the lifetime of one issuance.
 
-This supersedes, for the S3 backend, the container-credentials endpoint described in [BAK](backup.md); that endpoint should be retired once this lands.
-
 ## Shape
 
 kopia is configured to use S3 against the proxy: a loopback endpoint (`127.0.0.1:<ephemeral-port>`), TLS disabled on that leg, and fixed dummy access/secret keys. The proxy accepts those requests, discards their dummy signature, re-signs the request with the current real credentials for the true region and the `s3` service, and forwards it to the real S3 host over TLS. The response is streamed back verbatim. Each request is signed independently with whatever credentials are current at that moment, so a credential refresh between two requests is invisible to kopia.
