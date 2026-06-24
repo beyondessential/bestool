@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 pub use bestool_canopy as canopy;
 pub use bestool_canopy::Redacted;
 
+pub mod backup;
 pub mod commands;
 mod context;
 mod daemon;
@@ -14,6 +15,7 @@ pub mod tasks;
 #[cfg(windows)]
 pub mod windows_service;
 
+pub use backup::{BackupRegistry, BackupRunner, BackupTask, RunningBackup};
 pub use context::InternalContext;
 pub use daemon::{run, run_with_shutdown};
 pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
@@ -80,6 +82,10 @@ pub struct DaemonConfig {
 	/// Each task ticks at its own `interval()`. Errors are logged but do not
 	/// kill the daemon. Activity from each tick counts towards the watchdog.
 	pub background_tasks: Vec<Arc<dyn BackgroundTask>>,
+
+	/// Backup run registry, set when backups are compiled in. Surfaced via the
+	/// daemon's status so an operator can see what's backing up right now.
+	pub backups: Option<Arc<BackupRegistry>>,
 }
 
 impl fmt::Debug for DaemonConfig {
@@ -118,11 +124,18 @@ impl DaemonConfig {
 			server_addrs: Vec::new(),
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
 			background_tasks: Vec::new(),
+			backups: None,
 		}
 	}
 
 	pub fn with_task(mut self, task: Arc<dyn BackgroundTask>) -> Self {
 		self.background_tasks.push(task);
+		self
+	}
+
+	/// Attach the backup registry, so the daemon's status can list in-flight runs.
+	pub fn with_backups(mut self, registry: Arc<BackupRegistry>) -> Self {
+		self.backups = Some(registry);
 		self
 	}
 

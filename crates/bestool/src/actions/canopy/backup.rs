@@ -55,15 +55,131 @@ pub struct BackupArgs {
 	/// Override the backups definition directory.
 	#[arg(long, value_name = "DIR")]
 	pub backups_dir: Option<std::path::PathBuf>,
+
+	/// Run the backup in this process instead of delegating to the alertd daemon.
+	///
+	/// By default, when the daemon is running, the backup is run by it and its
+	/// progress is streamed here; this forces a local run.
+	#[arg(long)]
+	pub no_daemon: bool,
 }
 
 pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
-	run_backup(
-		&args.backup_type,
-		args.config.as_deref(),
-		args.backups_dir.as_deref(),
-	)
-	.await
+	let run_local = || {
+		run_backup(
+			&args.backup_type,
+			args.config.as_deref(),
+			args.backups_dir.as_deref(),
+			None,
+		)
+	};
+
+	if args.no_daemon {
+		return run_local().await;
+	}
+
+	match run_via_daemon(&args.backup_type).await {
+		Ok(()) => Ok(()),
+		Err(DaemonError::Failed(message)) => bail!("backup failed: {message}"),
+		Err(DaemonError::Unreachable(err)) => {
+			info!(%err, "alertd daemon not reachable; running the backup locally");
+			run_local().await
+		}
+	}
+}
+
+/// Why a delegated run didn't yield a clean success.
+enum DaemonError {
+	/// The daemon couldn't be reached (or doesn't expose the endpoint); the
+	/// caller should run locally.
+	Unreachable(String),
+	/// The daemon ran the backup and it failed, or the stream was lost mid-run.
+	Failed(String),
+}
+
+const DAEMON_BASE: &str = "http://127.0.0.1:8271";
+
+/// Ask the running daemon to run the backup (starting a run or attaching to one
+/// already in flight) and render its streamed status. Returns `Unreachable` if
+/// the daemon isn't there, so the caller can fall back to a local run.
+async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonError> {
+	use futures::StreamExt as _;
+
+	let url = format!("{DAEMON_BASE}/tasks/backup/run?type={backup_type}");
+	let response = crate::http::client()
+		.get(&url)
+		.send()
+		.await
+		.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
+	if !response.status().is_success() {
+		return Err(DaemonError::Unreachable(format!(
+			"alertd returned {}",
+			response.status()
+		)));
+	}
+
+	let mut stream = response.bytes_stream();
+	let mut buffer = Vec::<u8>::new();
+	let mut terminal: Option<std::result::Result<(), String>> = None;
+	while let Some(chunk) = stream.next().await {
+		let chunk = chunk.map_err(|err| DaemonError::Failed(format!("daemon stream: {err}")))?;
+		buffer.extend_from_slice(&chunk);
+		while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = buffer.drain(..=nl).collect();
+			let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line) else {
+				continue;
+			};
+			if let Some(outcome) = render_daemon_event(backup_type, &event) {
+				terminal = Some(outcome);
+			}
+		}
+	}
+
+	match terminal {
+		Some(Ok(())) => Ok(()),
+		Some(Err(message)) => Err(DaemonError::Failed(message)),
+		None => Err(DaemonError::Failed(
+			"lost the connection to the daemon; the backup may still be running".into(),
+		)),
+	}
+}
+
+/// Render one streamed status event; returns `Some` for a terminal event.
+fn render_daemon_event(
+	backup_type: &str,
+	event: &serde_json::Value,
+) -> Option<std::result::Result<(), String>> {
+	let field = |key| event.get(key).and_then(serde_json::Value::as_str);
+	match field("event") {
+		Some("started") => {
+			info!(backup_type, run_id = field("runId"), "daemon started the backup");
+			None
+		}
+		Some("attached") => {
+			info!(
+				backup_type,
+				run_id = field("runId"),
+				started_at = field("startedAt"),
+				"attached to a backup already running on the daemon"
+			);
+			None
+		}
+		Some("phase") => {
+			info!(backup_type, phase = field("phase"), "backup phase");
+			None
+		}
+		Some("heartbeat") => None,
+		Some("done") => {
+			info!(
+				backup_type,
+				snapshot_id = field("snapshotId"),
+				"daemon finished the backup"
+			);
+			Some(Ok(()))
+		}
+		Some("error") => Some(Err(field("message").unwrap_or("unknown error").to_owned())),
+		_ => None,
+	}
 }
 
 /// Parsed bits of a finished kopia `snapshot create --json` we report to Canopy.
@@ -71,6 +187,33 @@ pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
 struct SnapshotResult {
 	id: Option<String>,
 	bytes_uploaded: Option<i64>,
+}
+
+/// A status event emitted by [`run_backup`] when it's given a progress sink, so
+/// the daemon's backup task can stream a run's progress to an attached client.
+#[derive(Debug, Clone)]
+pub enum BackupEvent {
+	/// The run acquired its per-type lock and started.
+	Started { run_id: String },
+	/// Entered a named phase: `prepare`, `snapshot`, or `report`.
+	Phase(&'static str),
+	/// The run finished successfully.
+	Done {
+		snapshot_id: Option<String>,
+		bytes_uploaded: Option<i64>,
+	},
+	/// The run failed.
+	Failed { error: String },
+}
+
+/// Sink for [`BackupEvent`]s. Unbounded so emitting never blocks the run on a
+/// slow consumer; events are best-effort and dropped once the receiver is gone.
+pub type BackupProgress = tokio::sync::mpsc::UnboundedSender<BackupEvent>;
+
+fn emit(sink: &Option<BackupProgress>, event: BackupEvent) {
+	if let Some(tx) = sink {
+		let _ = tx.send(event);
+	}
 }
 
 /// Connection details for a kopia run: the loopback proxy endpoint and the repo
@@ -139,6 +282,7 @@ pub async fn run_backup(
 	backup_type: &str,
 	registration_dir: Option<&Path>,
 	backups_dir: Option<&Path>,
+	progress: Option<BackupProgress>,
 ) -> Result<()> {
 	let run_id = Uuid::new_v4().to_string();
 
@@ -160,6 +304,7 @@ pub async fn run_backup(
 		return Ok(());
 	};
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
+	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
 
 	let reg = load_registration(registration_dir)
 		.await?
@@ -204,7 +349,9 @@ pub async fn run_backup(
 		endpoint: proxy.endpoint(),
 		password: target.repo_password.0.clone(),
 	};
-	let outcome = run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id).await;
+	let outcome =
+		run_kopia_backup(&def, &target, &conn, &server_id, &device_id, &run_id, &progress).await;
+	emit(&progress, BackupEvent::Phase("report"));
 
 	// Report whatever happened, then surface the original error (if any).
 	let report = match &outcome {
@@ -232,6 +379,17 @@ pub async fn run_backup(
 		.await
 		.wrap_err("reporting backup outcome to canopy")?;
 
+	match &outcome {
+		Ok(snapshot) => emit(
+			&progress,
+			BackupEvent::Done {
+				snapshot_id: snapshot.id.clone(),
+				bytes_uploaded: snapshot.bytes_uploaded,
+			},
+		),
+		Err(err) => emit(&progress, BackupEvent::Failed { error: trim_error(err) }),
+	}
+
 	outcome.map(|_| ())
 }
 
@@ -246,13 +404,16 @@ async fn run_kopia_backup(
 	server_id: &str,
 	device_id: &str,
 	run_id: &str,
+	progress: &Option<BackupProgress>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
+	emit(progress, BackupEvent::Phase("prepare"));
 	let prepared = def.method.prepare(&def.r#type).await?;
 	let source_path = prepared.path.clone();
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
+	emit(progress, BackupEvent::Phase("snapshot"));
 	let result = snapshot(target, conn, &source_path, server_id, &tags, &prepared.ignore).await;
 
 	// Cleanup and post-hooks run regardless of the snapshot outcome.

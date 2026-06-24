@@ -25,5 +25,6 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		watchdog_timeout: Some(std::time::Duration::from_secs(600)),
 		task_endpoints: Arc::new(HashMap::new()),
 		control: crate::daemon::DaemonControl::detached(),
+		backups: None,
 	})
 }
