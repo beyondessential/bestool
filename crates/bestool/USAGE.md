@@ -442,6 +442,9 @@ Run a configured backup, driving kopia and reporting to Canopy
    Must have a definition in the backups directory (a `*.toml` whose `type` matches).
 * `--config <DIR>` — Override the registration directory (matching `register`/`export`)
 * `--backups-dir <DIR>` — Override the backups definition directory
+* `--no-daemon` — Run the backup in this process instead of delegating to the alertd daemon.
+
+   By default, when the daemon is running, the backup is run by it and its progress is streamed here; this forces a local run.
 
 
 

@@ -201,51 +201,113 @@ fn doctor_task(
 	version: String,
 	tamanu: Option<bestool_alertd::doctor::SweepTamanu>,
 ) -> DoctorTask {
-	let task = DoctorTask::new(version, tamanu);
-	#[cfg(feature = "canopy-backup")]
-	let task = task.with_backup_dispatch(backup_dispatch());
-	task
+	DoctorTask::new(version, tamanu)
 }
 
-/// Register the daemon's tasks, adding the backup-capabilities task when backups
-/// are compiled in.
+/// Register the daemon's tasks. When backups are compiled in, this creates the
+/// backup registry once and shares it: the doctor task's canopy-trigger dispatch
+/// and the `backup` task (its `run`/`running` endpoints) drive the same runs.
 fn with_daemon_tasks(
 	config: bestool_alertd::DaemonConfig,
 	doctor: DoctorTask,
 ) -> bestool_alertd::DaemonConfig {
+	#[cfg(feature = "canopy-backup")]
+	let (config, doctor) = {
+		let registry = bestool_alertd::BackupRegistry::new(backup_runner());
+		let doctor = doctor.with_backup_dispatch(backup_dispatch(registry.clone()));
+		let config = config.with_task(Arc::new(bestool_alertd::BackupTask::new(registry)));
+		(config, doctor)
+	};
+
 	let config = config.with_task(Arc::new(doctor));
 	#[cfg(feature = "canopy-backup")]
 	let config = config.with_task(Arc::new(backup::BackupCapabilitiesTask));
 	config
 }
 
-/// The in-process backup trigger: runs the driver for each type canopy requests
-/// via `backup_now`, skipping any type already in flight.
+/// The in-process backup trigger: routes each type canopy requests via
+/// `backup_now` through the registry (which starts a run, or no-ops onto the one
+/// already in flight), draining the status stream — the run reports to canopy
+/// itself.
 #[cfg(feature = "canopy-backup")]
-fn backup_dispatch() -> bestool_alertd::doctor::BackupDispatch {
-	use std::collections::HashSet;
+fn backup_dispatch(
+	registry: Arc<bestool_alertd::BackupRegistry>,
+) -> bestool_alertd::doctor::BackupDispatch {
+	use futures::StreamExt as _;
 
-	use tokio::sync::Mutex;
-
-	let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
 	Arc::new(move |types: Vec<String>| {
 		for backup_type in types {
-			let in_flight = in_flight.clone();
+			let registry = registry.clone();
 			tokio::spawn(async move {
-				// Overlap guard: skip a type whose previous run is still going
-				// (canopy re-emits idempotently until the report clears it).
-				if !in_flight.lock().await.insert(backup_type.clone()) {
-					return;
-				}
-				if let Err(err) =
-					crate::actions::canopy::backup::run_backup(&backup_type, None, None, None).await
-				{
-					tracing::error!("backup '{backup_type}' failed: {err}");
-				}
-				in_flight.lock().await.remove(&backup_type);
+				let mut stream = registry.ensure_run(backup_type).await;
+				while stream.next().await.is_some() {}
 			});
 		}
 	})
+}
+
+/// Builds the registry's runner: drives [`run_backup`] with a sink, mapping its
+/// [`BackupEvent`]s to JSON status lines and guaranteeing a terminal event.
+///
+/// [`run_backup`]: crate::actions::canopy::backup::run_backup
+/// [`BackupEvent`]: crate::actions::canopy::backup::BackupEvent
+#[cfg(feature = "canopy-backup")]
+fn backup_runner() -> bestool_alertd::BackupRunner {
+	use serde_json::{Value, json};
+	use tokio::sync::mpsc;
+
+	use crate::actions::canopy::backup::{BackupEvent, run_backup};
+
+	fn to_json(event: BackupEvent) -> Value {
+		match event {
+			BackupEvent::Started { run_id } => json!({"event": "started", "runId": run_id}),
+			BackupEvent::Phase(phase) => json!({"event": "phase", "phase": phase}),
+			BackupEvent::Done {
+				snapshot_id,
+				bytes_uploaded,
+			} => json!({
+				"event": "done", "success": true,
+				"snapshotId": snapshot_id, "uploadedBytes": bytes_uploaded,
+			}),
+			BackupEvent::Failed { error } => {
+				json!({"event": "error", "success": false, "message": error})
+			}
+		}
+	}
+
+	Arc::new(
+		move |backup_type: String,
+		      out: mpsc::UnboundedSender<Value>|
+		      -> futures::future::BoxFuture<'static, ()> {
+			Box::pin(async move {
+				let (tx, mut rx) = mpsc::unbounded_channel::<BackupEvent>();
+				let run =
+					tokio::spawn(async move { run_backup(&backup_type, None, None, Some(tx)).await });
+
+				let mut terminal = false;
+				while let Some(event) = rx.recv().await {
+					terminal |= matches!(event, BackupEvent::Done { .. } | BackupEvent::Failed { .. });
+					let _ = out.send(to_json(event));
+				}
+
+				// run_backup has returned (its sink dropped). Guarantee a
+				// terminal event for any early-exit path that emitted none.
+				if !terminal {
+					let event = match run.await {
+						Ok(Ok(())) => json!({"event": "done", "success": true}),
+						Ok(Err(err)) => {
+							json!({"event": "error", "success": false, "message": format!("{err}")})
+						}
+						Err(join) => json!({
+							"event": "error", "success": false,
+							"message": format!("backup task aborted: {join}"),
+						}),
+					};
+					let _ = out.send(event);
+				}
+			})
+		},
+	)
 }
 
 /// A background task that registers this server's backup capabilities with

@@ -55,16 +55,131 @@ pub struct BackupArgs {
 	/// Override the backups definition directory.
 	#[arg(long, value_name = "DIR")]
 	pub backups_dir: Option<std::path::PathBuf>,
+
+	/// Run the backup in this process instead of delegating to the alertd daemon.
+	///
+	/// By default, when the daemon is running, the backup is run by it and its
+	/// progress is streamed here; this forces a local run.
+	#[arg(long)]
+	pub no_daemon: bool,
 }
 
 pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
-	run_backup(
-		&args.backup_type,
-		args.config.as_deref(),
-		args.backups_dir.as_deref(),
-		None,
-	)
-	.await
+	let run_local = || {
+		run_backup(
+			&args.backup_type,
+			args.config.as_deref(),
+			args.backups_dir.as_deref(),
+			None,
+		)
+	};
+
+	if args.no_daemon {
+		return run_local().await;
+	}
+
+	match run_via_daemon(&args.backup_type).await {
+		Ok(()) => Ok(()),
+		Err(DaemonError::Failed(message)) => bail!("backup failed: {message}"),
+		Err(DaemonError::Unreachable(err)) => {
+			info!(%err, "alertd daemon not reachable; running the backup locally");
+			run_local().await
+		}
+	}
+}
+
+/// Why a delegated run didn't yield a clean success.
+enum DaemonError {
+	/// The daemon couldn't be reached (or doesn't expose the endpoint); the
+	/// caller should run locally.
+	Unreachable(String),
+	/// The daemon ran the backup and it failed, or the stream was lost mid-run.
+	Failed(String),
+}
+
+const DAEMON_BASE: &str = "http://127.0.0.1:8271";
+
+/// Ask the running daemon to run the backup (starting a run or attaching to one
+/// already in flight) and render its streamed status. Returns `Unreachable` if
+/// the daemon isn't there, so the caller can fall back to a local run.
+async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonError> {
+	use futures::StreamExt as _;
+
+	let url = format!("{DAEMON_BASE}/tasks/backup/run?type={backup_type}");
+	let response = crate::http::client()
+		.get(&url)
+		.send()
+		.await
+		.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
+	if !response.status().is_success() {
+		return Err(DaemonError::Unreachable(format!(
+			"alertd returned {}",
+			response.status()
+		)));
+	}
+
+	let mut stream = response.bytes_stream();
+	let mut buffer = Vec::<u8>::new();
+	let mut terminal: Option<std::result::Result<(), String>> = None;
+	while let Some(chunk) = stream.next().await {
+		let chunk = chunk.map_err(|err| DaemonError::Failed(format!("daemon stream: {err}")))?;
+		buffer.extend_from_slice(&chunk);
+		while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = buffer.drain(..=nl).collect();
+			let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line) else {
+				continue;
+			};
+			if let Some(outcome) = render_daemon_event(backup_type, &event) {
+				terminal = Some(outcome);
+			}
+		}
+	}
+
+	match terminal {
+		Some(Ok(())) => Ok(()),
+		Some(Err(message)) => Err(DaemonError::Failed(message)),
+		None => Err(DaemonError::Failed(
+			"lost the connection to the daemon; the backup may still be running".into(),
+		)),
+	}
+}
+
+/// Render one streamed status event; returns `Some` for a terminal event.
+fn render_daemon_event(
+	backup_type: &str,
+	event: &serde_json::Value,
+) -> Option<std::result::Result<(), String>> {
+	let field = |key| event.get(key).and_then(serde_json::Value::as_str);
+	match field("event") {
+		Some("started") => {
+			info!(backup_type, run_id = field("runId"), "daemon started the backup");
+			None
+		}
+		Some("attached") => {
+			info!(
+				backup_type,
+				run_id = field("runId"),
+				started_at = field("startedAt"),
+				"attached to a backup already running on the daemon"
+			);
+			None
+		}
+		Some("phase") => {
+			info!(backup_type, phase = field("phase"), "backup phase");
+			None
+		}
+		Some("heartbeat") => None,
+		Some("done") => {
+			info!(
+				backup_type,
+				snapshot_id = field("snapshotId"),
+				"daemon finished the backup"
+			);
+			Some(Ok(()))
+		}
+		Some("error") => Some(Err(field("message").unwrap_or("unknown error").to_owned())),
+		_ => None,
+	}
 }
 
 /// Parsed bits of a finished kopia `snapshot create --json` we report to Canopy.
@@ -77,10 +192,6 @@ struct SnapshotResult {
 /// A status event emitted by [`run_backup`] when it's given a progress sink, so
 /// the daemon's backup task can stream a run's progress to an attached client.
 #[derive(Debug, Clone)]
-#[expect(
-	dead_code,
-	reason = "fields are read by the daemon backup task added later in this stack"
-)]
 pub enum BackupEvent {
 	/// The run acquired its per-type lock and started.
 	Started { run_id: String },
