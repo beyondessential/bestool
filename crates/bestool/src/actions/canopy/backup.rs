@@ -97,7 +97,11 @@ enum DaemonError {
 	Failed(String),
 }
 
-const DAEMON_BASE: &str = "http://127.0.0.1:8271";
+/// Loopback bases the alertd daemon may be listening on. It binds the first that
+/// is free (usually IPv6 `[::1]`), so a client fixed to one family can miss it;
+/// we try both, in the daemon's own default order. Kept in step with the
+/// daemon's `default_server_addrs`.
+const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
 
 /// Ask the running daemon to run the backup (starting a run or attaching to one
 /// already in flight) and render its streamed status. Returns `Unreachable` if
@@ -105,12 +109,19 @@ const DAEMON_BASE: &str = "http://127.0.0.1:8271";
 async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonError> {
 	use futures::StreamExt as _;
 
-	let url = format!("{DAEMON_BASE}/tasks/backup/run?type={backup_type}");
-	let response = crate::http::client()
-		.get(&url)
-		.send()
-		.await
-		.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
+	let mut response = None;
+	let mut last_err = String::from("no daemon address to try");
+	for base in DAEMON_BASES {
+		let url = format!("{base}/tasks/backup/run?type={backup_type}");
+		match crate::http::client().get(&url).send().await {
+			Ok(resp) => {
+				response = Some(resp);
+				break;
+			}
+			Err(err) => last_err = err.to_string(),
+		}
+	}
+	let response = response.ok_or(DaemonError::Unreachable(last_err))?;
 	if !response.status().is_success() {
 		return Err(DaemonError::Unreachable(format!(
 			"alertd returned {}",
