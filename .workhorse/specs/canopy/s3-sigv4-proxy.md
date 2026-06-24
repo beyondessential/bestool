@@ -37,7 +37,7 @@ For each PUT the proxy computes a fresh seed signature for the re-signed request
 
 GET, HEAD and DELETE carry no body and are re-signed by recomputing the `Authorization` header alone. The proxy handles single-object PUT, GET, HEAD, DELETE and bucket listing — the operations kopia performs; multipart upload is out of scope, kopia's pack blobs being small enough to send as single PUTs.
 
-Bodies stream both ways — the proxy never holds a whole object. Chunks are self-framing, so it parses and re-emits the request body one chunk at a time; the only buffer is the current chunk (64 KiB). Responses are streamed through verbatim.
+Bodies stream both ways — the proxy never holds a whole object. Chunks are self-framing, so it parses and re-emits the request body one chunk at a time; the only buffer is the current chunk, capped at an explicit ceiling far above kopia's 64 KiB so an unexpectedly large chunk (or an unterminated chunk header) is rejected rather than buffered without bound. Responses are streamed through verbatim.
 
 The signed header set is `host`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-decoded-content-length` on streaming PUTs; for STS credentials `x-amz-security-token` is added before signing so it is covered by the signature; `content-type`, `content-md5` and `content-encoding` are signed when present. A credential refresh between two requests changes only the key material the next request is signed with — kopia's view does not change.
 

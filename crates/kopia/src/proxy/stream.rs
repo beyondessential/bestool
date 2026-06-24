@@ -14,17 +14,39 @@
 
 use super::sigv4;
 
-/// Malformed `aws-chunked` framing.
+/// Largest single chunk payload the proxy will buffer and re-sign. Far above the
+/// 64 KiB chunks kopia emits; a larger chunk is rejected rather than buffered
+/// without bound, so peak memory per in-flight request stays bounded.
+pub const MAX_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Largest chunk header line (`<hexsize>;chunk-signature=<64hex>`) accepted
+/// before its terminating CRLF — guards against an unterminated header growing
+/// the buffer without bound.
+const MAX_HEADER_LEN: usize = 1024;
+
+/// Malformed or oversized `aws-chunked` framing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkError {
 	/// A chunk header's size field was not valid hex.
 	BadSize,
+	/// A chunk declared a payload larger than [`MAX_CHUNK_SIZE`].
+	ChunkTooLarge { size: usize },
+	/// A chunk header line ran past [`MAX_HEADER_LEN`] without terminating.
+	HeaderTooLong,
 }
 
 impl std::fmt::Display for ChunkError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			ChunkError::BadSize => f.write_str("invalid chunk size in aws-chunked framing"),
+			ChunkError::ChunkTooLarge { size } => write!(
+				f,
+				"aws-chunked chunk of {size} bytes exceeds the {MAX_CHUNK_SIZE}-byte limit"
+			),
+			ChunkError::HeaderTooLong => write!(
+				f,
+				"aws-chunked chunk header exceeded {MAX_HEADER_LEN} bytes without terminating"
+			),
 		}
 	}
 }
@@ -67,13 +89,24 @@ impl ChunkResigner {
 		self.buf.extend_from_slice(input);
 		let mut out = Vec::new();
 		let mut cursor = 0;
-		while let Some(rel) = find(&self.buf[cursor..], b"\r\n") {
+		loop {
+			let Some(rel) = find(&self.buf[cursor..], b"\r\n") else {
+				// No complete header line yet; reject an unterminated one.
+				if self.buf.len().saturating_sub(cursor) > MAX_HEADER_LEN {
+					return Err(ChunkError::HeaderTooLong);
+				}
+				break;
+			};
 			let header_end = cursor + rel;
 			let line = &self.buf[cursor..header_end];
 			let hexsize = line.split(|&b| b == b';').next().unwrap_or(line);
 			let size = parse_hex(hexsize).ok_or(ChunkError::BadSize)?;
+			if size > MAX_CHUNK_SIZE {
+				return Err(ChunkError::ChunkTooLarge { size });
+			}
 			let data_start = header_end + 2;
-			// header line + CRLF + data + trailing CRLF
+			// header line + CRLF + data + trailing CRLF (size is bounded above,
+			// so this cannot overflow)
 			let chunk_end = data_start + size + 2;
 			if self.buf.len() < chunk_end {
 				break; // chunk not fully received yet
@@ -190,5 +223,22 @@ mod tests {
 		let mut r = resigner();
 		let err = r.push(b"zzzz;chunk-signature=x\r\ndata\r\n").unwrap_err();
 		assert_eq!(err, ChunkError::BadSize);
+	}
+
+	#[test]
+	fn chunk_larger_than_limit_errors() {
+		let mut r = resigner();
+		// Declare 32 MiB (0x2000000), over the 8 MiB cap; rejected on the header
+		// alone, before any payload is buffered.
+		let header = format!("2000000;chunk-signature={}\r\n", "0".repeat(64));
+		let err = r.push(header.as_bytes()).unwrap_err();
+		assert_eq!(err, ChunkError::ChunkTooLarge { size: 0x2000000 });
+	}
+
+	#[test]
+	fn unterminated_header_errors() {
+		let mut r = resigner();
+		let err = r.push(&vec![b'a'; MAX_HEADER_LEN + 1]).unwrap_err();
+		assert_eq!(err, ChunkError::HeaderTooLong);
 	}
 }
