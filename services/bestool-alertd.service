@@ -79,11 +79,21 @@ ProtectHostname=yes
 # but NOT ProcSubset=pid — sysinfo needs /proc/meminfo and /proc/loadavg.
 ProtectProc=invisible
 
-PrivateDevices=yes
-# safe only because CONTAINER_HOST points at the (remote) rootful podman.
-RestrictNamespaces=yes
+# no, not yes: postgres snapshot backups (btrfs/thin-LVM) mount the snapshot
+# block device (/dev/disk/by-uuid/*, /dev/<vg>/<lv>) read-only for kopia, which
+# a private /dev would hide. The container work still goes to the remote rootful
+# podman, so no local device node is needed for that.
+PrivateDevices=no
+# user only (not yes = block all): the read-only snapshot is mounted with
+# X-mount.idmap so the kopia user can read postgres-owned files, and an
+# idmapped mount creates a user namespace. No other namespace type is allowed —
+# the container work still goes to the remote rootful podman.
+RestrictNamespaces=user
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
+# @mount (mount/umount/mount_setattr/…): snapshot backups mount the snapshot
+# read-only for kopia and unmount it afterwards; without it mount() is EPERM.
+SystemCallFilter=@mount
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 LockPersonality=yes

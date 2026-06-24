@@ -18,8 +18,13 @@ use tracing::{info, warn};
 
 use super::{resolve::ResolvedCluster, sys};
 
+/// Directory the per-run top-level mounts live in. Under `/var/lib/kopia` (not
+/// `/mnt`) so it sits within the daemon's one writable path — `/mnt` is
+/// read-only under the unit's `ProtectSystem=strict`.
+const TOPLEVEL_MOUNT_DIR: &str = "/var/lib/kopia";
+
 /// Where the reaper looks for / makes per-run top-level mounts.
-const TOPLEVEL_MOUNT_PREFIX: &str = "/mnt/bestool-btrfs-toplevel";
+const TOPLEVEL_MOUNT_PREFIX: &str = "/var/lib/kopia/bestool-btrfs-toplevel";
 
 /// Infix marking our ephemeral snapshot subvolumes, so the reaper's glob can
 /// never match a live subvolume.
@@ -143,7 +148,7 @@ pub async fn teardown(mounts: Mounts) -> Result<()> {
 async fn reap_stale(fsdev: &str, kopia_mount: &Path) {
 	sys::umount(kopia_mount).await;
 
-	if let Ok(entries) = sys::glob_prefix("/mnt", "bestool-btrfs-toplevel.") {
+	if let Ok(entries) = sys::glob_prefix(TOPLEVEL_MOUNT_DIR, "bestool-btrfs-toplevel.") {
 		for stale in entries {
 			sys::umount(&stale).await;
 			sys::rmdir(&stale).await;
@@ -191,7 +196,7 @@ mod tests {
 	fn toplevel_mount_path() {
 		assert_eq!(
 			toplevel_mount(7),
-			PathBuf::from("/mnt/bestool-btrfs-toplevel.7")
+			PathBuf::from("/var/lib/kopia/bestool-btrfs-toplevel.7")
 		);
 	}
 }
