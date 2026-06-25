@@ -86,6 +86,25 @@ pub(super) async fn mkdir(dir: &Path) -> Result<()> {
 		.wrap_err_with(|| format!("creating {}", dir.display()))
 }
 
+/// Make `dir` world-traversable (mode 0o755) so the unprivileged kopia user can
+/// descend through it to the mounted source. The daemon runs with a restrictive
+/// umask, which would otherwise leave a freshly-created `backup-source` dir
+/// group-only and deny the kopia user. The dir is a bare mountpoint parent — the
+/// mounted snapshot keeps its own (idmapped) permissions.
+pub(super) async fn make_traversable(dir: &Path) -> Result<()> {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt as _;
+		tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("making {} traversable", dir.display()))?;
+	}
+	#[cfg(not(unix))]
+	let _ = dir;
+	Ok(())
+}
+
 pub(super) async fn umount(dir: &Path) {
 	if is_mountpoint(dir).await {
 		let _ = run_ok("umount", &[path(dir)]).await;

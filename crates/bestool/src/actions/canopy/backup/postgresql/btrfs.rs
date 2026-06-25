@@ -104,6 +104,9 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	mounts.snapshot_path = snapshot_path.clone();
 
 	sys::mkdir(&kopia_mount).await?;
+	if let Some(parent) = kopia_mount.parent() {
+		sys::make_traversable(parent).await?;
+	}
 	sys::run_ok(
 		"mount",
 		&[
