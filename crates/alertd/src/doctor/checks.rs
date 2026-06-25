@@ -87,6 +87,38 @@ pub struct CheckContext {
 	pub has_install: bool,
 }
 
+/// Whether the doctor is running as root (euid 0), read from `/proc/self/status`.
+async fn is_root() -> bool {
+	// euid is the second field of the `Uid:` line.
+	tokio::fs::read_to_string("/proc/self/status")
+		.await
+		.ok()
+		.and_then(|status| {
+			status
+				.lines()
+				.find_map(|line| line.strip_prefix("Uid:"))
+				.and_then(|rest| rest.split_whitespace().nth(1).map(str::to_owned))
+		})
+		.and_then(|euid| euid.parse::<u32>().ok())
+		.is_some_and(|euid| euid == 0)
+}
+
+/// Build a command that runs `program` as root: directly when we already are,
+/// else via `sudo`. Some checks read root-only interfaces — btrfs ioctls
+/// (`device stats`), and the like — that see nothing as a normal user. The
+/// alertd daemon runs the sweep as root (direct); an interactive `bestool tamanu
+/// doctor` elevates rather than reporting blind. (Assumes passwordless sudo
+/// where used; otherwise sudo's own failure surfaces in the check.)
+pub(crate) async fn privileged(program: &str) -> tokio::process::Command {
+	if is_root().await {
+		tokio::process::Command::new(program)
+	} else {
+		let mut cmd = tokio::process::Command::new("sudo");
+		cmd.arg(program);
+		cmd
+	}
+}
+
 /// `tokio_postgres::Error`'s top-level Display is the unhelpful `"db error"`.
 /// The actual SQL message lives in the optional `DbError` underneath; this
 /// helper surfaces it where present and falls back to the source chain.

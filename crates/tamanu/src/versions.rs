@@ -136,7 +136,18 @@ pub fn parse_image_tag(image: &str) -> Option<&str> {
 #[cfg(target_os = "linux")]
 #[instrument(level = "debug")]
 pub async fn running_versions_linux() -> Result<HashMap<String, String>, String> {
-	let result = tokio::process::Command::new("podman")
+	// The deployment runs rootful podman, so the containers are only visible to
+	// root. When we're not root (an interactive `tamanu status` / `doctor`),
+	// elevate via sudo rather than letting podman run rootless and see nothing or
+	// error; the alertd daemon already runs as root and invokes it directly.
+	let mut command = if is_root().await {
+		tokio::process::Command::new("podman")
+	} else {
+		let mut c = tokio::process::Command::new("sudo");
+		c.arg("podman");
+		c
+	};
+	let result = command
 		.args([
 			"ps",
 			"--format",
@@ -183,6 +194,25 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 #[cfg(not(target_os = "linux"))]
 pub async fn running_versions_linux() -> Result<HashMap<String, String>, String> {
 	Ok(HashMap::new())
+}
+
+/// Whether this process is running as root (euid 0), read from
+/// `/proc/self/status`. Used to decide whether reading the rootful podman needs
+/// elevating via sudo.
+#[cfg(target_os = "linux")]
+async fn is_root() -> bool {
+	// euid is the second field of the `Uid:` line.
+	tokio::fs::read_to_string("/proc/self/status")
+		.await
+		.ok()
+		.and_then(|status| {
+			status
+				.lines()
+				.find_map(|line| line.strip_prefix("Uid:"))
+				.and_then(|rest| rest.split_whitespace().nth(1).map(str::to_owned))
+		})
+		.and_then(|euid| euid.parse::<u32>().ok())
+		.is_some_and(|euid| euid == 0)
 }
 
 /// Parse a version string leniently, tolerating a leading `v` (image tags and
