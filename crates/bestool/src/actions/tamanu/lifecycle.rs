@@ -409,7 +409,7 @@ pub async fn stop_targets(supervisor: Supervisor, targets: &[String]) -> Result<
 	match supervisor {
 		Supervisor::Systemd => systemd::stop(targets).await,
 		Supervisor::Pm2 => {
-			let status = Command::new("pm2")
+			let status = pm2::command()
 				.arg("stop")
 				.args(targets)
 				.status()
@@ -436,7 +436,7 @@ pub async fn start_targets(supervisor: Supervisor, targets: &[String]) -> Result
 	match supervisor {
 		Supervisor::Systemd => systemd::start(targets).await,
 		Supervisor::Pm2 => {
-			let status = Command::new("pm2")
+			let status = pm2::command()
 				.arg("start")
 				.args(targets)
 				.status()
@@ -464,7 +464,7 @@ pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
 	if targets.is_empty() {
 		return Ok(());
 	}
-	let stop = Command::new("pm2")
+	let stop = pm2::command()
 		.arg("stop")
 		.args(targets)
 		.status()
@@ -473,7 +473,7 @@ pub fn pm2_restart_targets(targets: &[String]) -> Result<()> {
 		bail!("pm2 stop failed: exit {stop}");
 	}
 	std::thread::sleep(Duration::from_secs(1));
-	let start = Command::new("pm2")
+	let start = pm2::command()
 		.arg("start")
 		.args(targets)
 		.status()
@@ -497,7 +497,7 @@ pub fn delete_pm2(names: &[String]) -> Result<()> {
 	if names.is_empty() {
 		return Ok(());
 	}
-	let status = Command::new("pm2")
+	let status = pm2::command()
 		.arg("delete")
 		.args(names)
 		.status()
@@ -757,7 +757,7 @@ pub fn container_ip_for_unit(unit: &str) -> Result<Option<std::net::IpAddr>> {
 /// `PORT` env var. Returns None if pm2 doesn't expose one — e.g.
 /// workers that don't open a socket.
 pub fn pm2_port_for(pm_id: i64) -> Result<Option<u16>> {
-	let output = Command::new("pm2").arg("jlist").output().into_diagnostic()?;
+	let output = pm2::command().arg("jlist").output().into_diagnostic()?;
 	if !output.status.success() {
 		bail!(
 			"pm2 jlist failed: {}",

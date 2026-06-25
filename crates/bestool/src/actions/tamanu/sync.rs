@@ -309,7 +309,7 @@ fn spawn_log_child(
 			c
 		}
 		Supervisor::Pm2 => {
-			let mut c = Command::new("pm2");
+			let mut c = Command::new(bestool_tamanu::pm2::program());
 			c.arg("logs")
 				.arg(service)
 				.arg("--lines")
