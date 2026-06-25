@@ -91,6 +91,20 @@ impl Method {
 		}
 	}
 
+	/// Which user kopia should run as for this method.
+	///
+	/// `simple` reads arbitrary source paths whose owners/modes we don't control
+	/// (e.g. postgres' `pg_hba.conf`, mode 0640) — only root (via the daemon's
+	/// `CAP_DAC_READ_SEARCH`) can read them all, so it runs as the current user.
+	/// `postgresql` exposes the cluster through an idmapped snapshot / a base
+	/// backup chowned to the kopia user, so kopia reads it unprivileged.
+	pub fn kopia_run_as(&self) -> bestool_kopia::RunAs {
+		match self {
+			Method::Simple(_) => bestool_kopia::RunAs::CurrentUser,
+			Method::Postgresql(_) => bestool_kopia::RunAs::KopiaUser,
+		}
+	}
+
 	/// Produce the source kopia will snapshot. `backup_type` is the def's label,
 	/// used by methods that key stable paths on it (e.g. btrfs mount points).
 	pub async fn prepare(&self, backup_type: &str) -> Result<Prepared> {

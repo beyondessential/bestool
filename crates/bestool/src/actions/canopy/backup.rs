@@ -504,6 +504,7 @@ async fn run_kopia_backup(
 		server_id,
 		&tags,
 		&prepared.ignore,
+		def.method.kopia_run_as(),
 		progress,
 	)
 	.await;
@@ -518,6 +519,10 @@ async fn run_kopia_backup(
 }
 
 /// Connect to the repo and create the snapshot.
+#[expect(
+	clippy::too_many_arguments,
+	reason = "a run's snapshot is parameterised by target, connection, source, tags, ignores, and run-as; bundling them buys little"
+)]
 async fn snapshot(
 	target: &bestool_canopy::BackupTarget,
 	conn: &RepoConn,
@@ -525,6 +530,7 @@ async fn snapshot(
 	server_id: &str,
 	tags: &BTreeMap<String, String>,
 	ignore: &[String],
+	run_as: RunAs,
 	progress: &Option<BackupProgress>,
 ) -> Result<SnapshotResult> {
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
@@ -537,8 +543,11 @@ async fn snapshot(
 
 	// When kopia runs as the kopia user (not us), it writes and reads this config
 	// itself, so hand the dir to that user. Root-owned 0700 tempdir would deny it.
+	// Only for the kopia-user path; a CurrentUser run owns the dir already.
 	#[cfg(target_os = "linux")]
-	if let Some(user) = bestool_kopia::kopia_run_as_user() {
+	if let Some(user) =
+		bestool_kopia::kopia_run_as_user().filter(|_| run_as == RunAs::KopiaUser)
+	{
 		let status = tokio::process::Command::new("chown")
 			.arg("-R")
 			.arg(format!("{user}:{user}"))
@@ -556,17 +565,17 @@ async fn snapshot(
 		config_path: &config_path,
 	};
 
-	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id, RunAs::KopiaUser).await?;
+	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id, run_as).await?;
 
 	if !ignore.is_empty() {
 		let mut policy =
-			build_kopia_command_with_s3(&kopia, &s3env, RunAs::KopiaUser).map_err(|e| miette!("{e}"))?;
+			build_kopia_command_with_s3(&kopia, &s3env, run_as).map_err(|e| miette!("{e}"))?;
 		args_policy_set_ignores(&mut policy, source_path, ignore);
 		run_kopia(policy, "policy set").await?;
 	}
 
 	let mut create =
-		build_kopia_command_with_s3(&kopia, &s3env, RunAs::KopiaUser).map_err(|e| miette!("{e}"))?;
+		build_kopia_command_with_s3(&kopia, &s3env, run_as).map_err(|e| miette!("{e}"))?;
 	// Force kopia's progress output (it stays silent on a non-TTY otherwise) and
 	// stream it, but only when someone's watching — a local run discards stderr.
 	let stdout = if progress.is_some() {

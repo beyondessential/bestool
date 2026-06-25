@@ -201,6 +201,14 @@ pub fn linux_elevation() -> Elevation {
 	Elevation::Direct
 }
 
+/// A writable cache/log dir for kopia when it runs as the current user (root)
+/// under the daemon sandbox, where /var/cache is read-only and /var/lib/kopia
+/// belongs to the kopia user. Honours `$TMPDIR` and the unit's `PrivateTmp`.
+#[cfg(target_os = "linux")]
+fn current_user_cache_dir() -> std::ffi::OsString {
+	std::env::temp_dir().join("bestool-kopia").into_os_string()
+}
+
 /// Whether the kopia system user exists (via `id -u kopia`).
 #[cfg(target_os = "linux")]
 fn kopia_user_exists() -> bool {
@@ -391,13 +399,13 @@ fn command_for_s3(
 ) -> Result<Command, String> {
 	let mut cmd = match elevation {
 		Elevation::Direct => {
-			// Even unelevated, pin kopia's home to the kopia user's so its cache
-			// and logs land in the writable /var/lib/kopia rather than the
-			// daemon's read-only /var/cache (where the inherited XDG_CACHE_HOME
-			// would otherwise put them).
+			// Running unelevated (the `simple` method as root, which must read
+			// arbitrary source files). Point kopia's cache and logs at a writable
+			// temp dir: the inherited XDG_CACHE_HOME=/var/cache is read-only under
+			// the daemon sandbox, and /var/lib/kopia isn't writable by root (it's
+			// the kopia user's). The cache is rebuilt as needed, so ephemeral is fine.
 			let mut c = Command::new(kopia);
-			c.env("HOME", LINUX_KOPIA_HOME);
-			c.env_remove("XDG_CACHE_HOME");
+			c.env("XDG_CACHE_HOME", current_user_cache_dir());
 			c
 		}
 		Elevation::SetPriv => setpriv_as_kopia(kopia),
@@ -979,9 +987,9 @@ mod tests {
 
 	#[cfg(target_os = "linux")]
 	#[test]
-	fn s3_direct_still_pins_the_cache_home() {
-		// Unelevated (no kopia user / we are it), the canopy command must still
-		// move kopia's cache off the daemon's read-only /var/cache to its home.
+	fn s3_direct_moves_cache_off_var_cache() {
+		// Unelevated (the `simple` method as root), the canopy command must move
+		// kopia's cache off the daemon's read-only /var/cache to a writable dir.
 		let env = S3KopiaEnv {
 			password: "hunter2",
 			config_path: Path::new("/tmp/x/repository.config"),
@@ -989,8 +997,12 @@ mod tests {
 		let cmd = command_for_s3(Path::new("/usr/bin/kopia"), &env, Elevation::Direct).unwrap();
 		assert_eq!(cmd.get_program(), "/usr/bin/kopia");
 		let envs = env_of(&cmd);
-		assert_eq!(envs.get("HOME"), Some(&Some(LINUX_KOPIA_HOME.to_owned())));
-		assert_eq!(envs.get("XDG_CACHE_HOME"), Some(&None));
+		let cache = envs
+			.get("XDG_CACHE_HOME")
+			.and_then(|v| v.clone())
+			.expect("XDG_CACHE_HOME set");
+		assert!(cache.ends_with("bestool-kopia"), "cache dir: {cache}");
+		assert_ne!(cache, "/var/cache");
 	}
 
 	#[cfg(target_os = "linux")]
