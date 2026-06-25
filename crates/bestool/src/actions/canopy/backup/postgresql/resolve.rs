@@ -1,8 +1,10 @@
 //! Resolve a postgres cluster's data directory from its `[postgresql]` config.
 //!
-//! Generic over the standard Debian/Ubuntu layout
-//! (`/var/lib/postgresql/<version>/<cluster>`), with explicit overrides for
-//! anything non-standard. No Tamanu coupling.
+//! Handles the standard Debian/Ubuntu layout
+//! (`/var/lib/postgresql/<version>/<cluster>`) and the Windows installer layout
+//! (`%ProgramFiles%\PostgreSQL\<version>\data`, which has no named clusters — the
+//! configured `cluster` is then only a label), with explicit overrides
+//! (`data_dir`, `version`) for anything non-standard. No Tamanu coupling.
 
 use std::path::{Path, PathBuf};
 
@@ -10,8 +12,33 @@ use miette::{Result, bail};
 
 use crate::actions::canopy::backup::method::PostgresqlConfig;
 
-/// The standard base directory clusters live under on Debian/Ubuntu.
-pub const POSTGRES_BASE: &str = "/var/lib/postgresql";
+/// The base directory postgres data directories live under: `/var/lib/postgresql`
+/// on Debian/Ubuntu, `%ProgramFiles%\PostgreSQL` on Windows.
+#[cfg(not(windows))]
+pub fn postgres_base() -> PathBuf {
+	PathBuf::from("/var/lib/postgresql")
+}
+
+#[cfg(windows)]
+pub fn postgres_base() -> PathBuf {
+	std::env::var_os("ProgramFiles")
+		.map(PathBuf::from)
+		.unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
+		.join("PostgreSQL")
+}
+
+/// The data-directory leaf under `<base>/<version>/`. Debian names it after the
+/// cluster; the Windows installer always uses `data` (it has no named clusters),
+/// so the configured `cluster` is only a label there.
+#[cfg(not(windows))]
+fn cluster_subdir(config: &PostgresqlConfig) -> &str {
+	&config.cluster
+}
+
+#[cfg(windows)]
+fn cluster_subdir(_config: &PostgresqlConfig) -> &str {
+	"data"
+}
 
 /// A resolved cluster: where its data directory is, and its version + name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +50,7 @@ pub struct ResolvedCluster {
 
 /// Resolve the cluster against the standard base directory.
 pub fn resolve(config: &PostgresqlConfig) -> Result<ResolvedCluster> {
-	resolve_in(config, Path::new(POSTGRES_BASE))
+	resolve_in(config, &postgres_base())
 }
 
 /// Resolve against a given base directory (the seam tests inject a temp tree at).
@@ -47,7 +74,7 @@ fn resolve_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster>
 
 	// With a version, the path is fully determined.
 	if let Some(version) = &config.version {
-		let data_dir = base.join(version).join(&config.cluster);
+		let data_dir = base.join(version).join(cluster_subdir(config));
 		if !is_data_dir(&data_dir) {
 			bail!(
 				"cluster '{}' version {} not found at {}",
@@ -69,7 +96,7 @@ fn resolve_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster>
 		.map_err(|e| miette::miette!("reading {}: {e}", base.display()))?;
 	for entry in entries.flatten() {
 		let version_dir = entry.path();
-		let candidate = version_dir.join(&config.cluster);
+		let candidate = version_dir.join(cluster_subdir(config));
 		if is_data_dir(&candidate) {
 			matches.push((
 				dir_name(Some(&version_dir)).unwrap_or_default(),
@@ -106,7 +133,7 @@ fn resolve_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster>
 /// explicit `data_dir` or `version` fully determines the path. With neither, it
 /// falls back to [`resolve`] (restoring over an already-present cluster).
 pub fn resolve_target(config: &PostgresqlConfig) -> Result<ResolvedCluster> {
-	resolve_target_in(config, Path::new(POSTGRES_BASE))
+	resolve_target_in(config, &postgres_base())
 }
 
 fn resolve_target_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster> {
@@ -126,7 +153,7 @@ fn resolve_target_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedC
 		return Ok(ResolvedCluster {
 			version: version.clone(),
 			cluster: config.cluster.clone(),
-			data_dir: base.join(version).join(&config.cluster),
+			data_dir: base.join(version).join(cluster_subdir(config)),
 		});
 	}
 	resolve_in(config, base)
@@ -202,32 +229,40 @@ mod tests {
 	#[test]
 	fn resolves_unique_cluster_by_scan() {
 		let tmp = tempfile::tempdir().unwrap();
-		make_cluster(tmp.path(), "16", "main");
-		let resolved = resolve_in(&config("main", None, None), tmp.path()).unwrap();
+		let cfg = config("main", None, None);
+		let leaf = cluster_subdir(&cfg);
+		make_cluster(tmp.path(), "16", leaf);
+		let resolved = resolve_in(&cfg, tmp.path()).unwrap();
 		assert_eq!(resolved.version, "16");
 		assert_eq!(resolved.cluster, "main");
-		assert_eq!(resolved.data_dir, tmp.path().join("16").join("main"));
+		assert_eq!(resolved.data_dir, tmp.path().join("16").join(leaf));
 	}
 
 	#[test]
 	fn version_pins_the_path() {
 		let tmp = tempfile::tempdir().unwrap();
-		make_cluster(tmp.path(), "15", "main");
-		make_cluster(tmp.path(), "16", "main");
-		let resolved = resolve_in(&config("main", Some("15"), None), tmp.path()).unwrap();
+		let cfg = config("main", Some("15"), None);
+		let leaf = cluster_subdir(&cfg);
+		make_cluster(tmp.path(), "15", leaf);
+		make_cluster(tmp.path(), "16", leaf);
+		let resolved = resolve_in(&cfg, tmp.path()).unwrap();
 		assert_eq!(resolved.version, "15");
-		assert_eq!(resolved.data_dir, tmp.path().join("15").join("main"));
+		assert_eq!(resolved.data_dir, tmp.path().join("15").join(leaf));
 	}
 
 	#[test]
 	fn ambiguous_without_version_errors() {
 		let tmp = tempfile::tempdir().unwrap();
-		make_cluster(tmp.path(), "15", "main");
-		make_cluster(tmp.path(), "16", "main");
-		let err = resolve_in(&config("main", None, None), tmp.path()).unwrap_err();
+		let cfg = config("main", None, None);
+		let leaf = cluster_subdir(&cfg);
+		make_cluster(tmp.path(), "15", leaf);
+		make_cluster(tmp.path(), "16", leaf);
+		let err = resolve_in(&cfg, tmp.path()).unwrap_err();
 		assert!(format!("{err}").contains("ambiguous"));
 	}
 
+	// On Debian the cluster name selects the directory; a wrong name finds nothing.
+	#[cfg(not(windows))]
 	#[test]
 	fn missing_cluster_errors() {
 		let tmp = tempfile::tempdir().unwrap();
@@ -236,12 +271,25 @@ mod tests {
 		assert!(format!("{err}").contains("no cluster"));
 	}
 
+	// On Windows there are no named clusters: any label resolves to `<version>\data`.
+	#[cfg(windows)]
+	#[test]
+	fn windows_resolves_data_dir_regardless_of_cluster_label() {
+		let tmp = tempfile::tempdir().unwrap();
+		make_cluster(tmp.path(), "16", "data");
+		let resolved = resolve_in(&config("any-label", None, None), tmp.path()).unwrap();
+		assert_eq!(resolved.data_dir, tmp.path().join("16").join("data"));
+		assert_eq!(resolved.cluster, "any-label");
+	}
+
 	#[test]
 	fn resolve_target_allows_missing_dir_with_version() {
 		let tmp = tempfile::tempdir().unwrap();
-		let resolved = resolve_target_in(&config("main", Some("16"), None), tmp.path()).unwrap();
+		let cfg = config("main", Some("16"), None);
+		let leaf = cluster_subdir(&cfg);
+		let resolved = resolve_target_in(&cfg, tmp.path()).unwrap();
 		assert_eq!(resolved.version, "16");
-		assert_eq!(resolved.data_dir, tmp.path().join("16").join("main"));
+		assert_eq!(resolved.data_dir, tmp.path().join("16").join(leaf));
 		assert!(!resolved.data_dir.exists());
 	}
 
