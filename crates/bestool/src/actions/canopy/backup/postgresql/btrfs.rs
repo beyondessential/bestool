@@ -47,19 +47,19 @@ fn stable_kopia_mount(backup_type: &str) -> PathBuf {
 }
 
 /// Name for this run's ephemeral snapshot subvolume.
-fn snapshot_name(pid: u32) -> String {
-	format!("{SNAPSHOT_INFIX}{pid}")
+fn snapshot_name(token: &str) -> String {
+	format!("{SNAPSHOT_INFIX}{token}")
 }
 
 /// This run's top-level mount path.
-fn toplevel_mount(pid: u32) -> PathBuf {
-	PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.{pid}"))
+fn toplevel_mount(token: &str) -> PathBuf {
+	PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.{token}"))
 }
 
 /// Take the snapshot and mount it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
 pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Mounts)> {
-	let pid = std::process::id();
+	let token = sys::run_token();
 	let base_mount = sys::findmnt_target(&resolved.data_dir).await?;
 	let rel = sys::relative_data_path(&resolved.data_dir, &base_mount)?;
 	let fsdev = format!(
@@ -71,8 +71,8 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	let kopia_mount = stable_kopia_mount(backup_type);
 	reap_stale(&fsdev, &kopia_mount).await;
 
-	let toplevel_mount = toplevel_mount(pid);
-	let snapshot_name = snapshot_name(pid);
+	let toplevel_mount = toplevel_mount(&token);
+	let snapshot_name = snapshot_name(&token);
 	let snapshot_path = toplevel_mount.join(&snapshot_name);
 
 	// Build the teardown state up front so a failure mid-prepare still cleans up.
@@ -158,7 +158,7 @@ async fn reap_stale(fsdev: &str, kopia_mount: &Path) {
 		}
 	}
 
-	let reap_mount = PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}-reap.{}", std::process::id()));
+	let reap_mount = PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.reap-{}", sys::run_token()));
 	if sys::mkdir(&reap_mount).await.is_ok()
 		&& sys::run_ok("mount", &["-o", "subvolid=5", fsdev, sys::path(&reap_mount)])
 			.await
@@ -180,8 +180,8 @@ mod tests {
 
 	#[test]
 	fn snapshot_name_carries_reaper_infix() {
-		let name = snapshot_name(4242);
-		assert_eq!(name, "bestool-kopia-4242");
+		let name = snapshot_name("deadbeef");
+		assert_eq!(name, "bestool-kopia-deadbeef");
 		assert!(name.starts_with(SNAPSHOT_INFIX));
 	}
 
@@ -198,8 +198,18 @@ mod tests {
 	#[test]
 	fn toplevel_mount_path() {
 		assert_eq!(
-			toplevel_mount(7),
-			PathBuf::from("/var/lib/bestool/bestool-btrfs-toplevel.7")
+			toplevel_mount("cafef00d"),
+			PathBuf::from("/var/lib/bestool/bestool-btrfs-toplevel.cafef00d")
 		);
+	}
+
+	#[test]
+	fn reaper_glob_matches_toplevel_and_reap_mounts() {
+		// Both a run's top-level mount and the reaper's own scratch mount must be
+		// swept by the glob, so a crashed reaper leaves nothing behind.
+		let file = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
+		assert!(file(&toplevel_mount("abc")).starts_with("bestool-btrfs-toplevel."));
+		let reap = PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.reap-abc"));
+		assert!(file(&reap).starts_with("bestool-btrfs-toplevel."));
 	}
 }
