@@ -498,6 +498,11 @@ async fn run_kopia_backup(
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
 	emit(progress, BackupEvent::Phase("snapshot"));
+	info!(
+		backup_type = %def.r#type,
+		source = %source_path.display(),
+		"uploading snapshot to kopia repository"
+	);
 	let result = snapshot(
 		target,
 		conn,
