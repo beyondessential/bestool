@@ -61,10 +61,7 @@ pub async fn prepare(
 
 	// pg_basebackup requires an empty target; clear leftovers from a crashed run.
 	if root.exists() {
-		tokio::fs::remove_dir_all(&root)
-			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("clearing stale base backup at {}", root.display()))?;
+		remove_staging(&root).await?;
 	}
 	if let Some(parent) = dest.parent() {
 		tokio::fs::create_dir_all(parent)
@@ -98,7 +95,23 @@ pub async fn prepare(
 
 /// Remove the streamed base backup (a full copy; reclaim the space).
 pub async fn teardown(root: PathBuf) -> Result<()> {
-	tokio::fs::remove_dir_all(&root)
+	remove_staging(&root).await
+}
+
+/// Delete a staging tree the daemon had handed to postgres/kopia. Reclaim
+/// ownership first: root holds CAP_CHOWN but not DAC write-override, so it can't
+/// unlink files inside postgres-/kopia-owned directories otherwise.
+async fn remove_staging(root: &Path) -> Result<()> {
+	#[cfg(unix)]
+	{
+		let _ = tokio::process::Command::new("chown")
+			.args(["-R", "root:root"])
+			.arg(root)
+			.stdin(Stdio::null())
+			.status()
+			.await;
+	}
+	tokio::fs::remove_dir_all(root)
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("removing base backup at {}", root.display()))
