@@ -10,7 +10,15 @@
 //!
 //! See the S3P spec for the design.
 
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{
+	future::Future,
+	net::SocketAddr,
+	pin::Pin,
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+};
 
 use tokio::{net::TcpListener, task::JoinHandle};
 
@@ -20,6 +28,56 @@ pub mod stream;
 
 /// Boxed error used across the proxy's async paths.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Cumulative byte accounting for a proxy's lifetime, shared with the server
+/// task. Since the proxy sees every request, this gives a rough measure of the
+/// S3 traffic a run is accountable for.
+///
+/// `*_raw` counts the full HTTP message — request/status line, headers, and the
+/// body as it goes on the wire, including the SigV4 chunk framing kopia adds to
+/// streaming uploads. `*_payload` counts only the object data (the decoded
+/// body). The difference is protocol overhead.
+#[derive(Default)]
+pub(crate) struct Traffic {
+	sent_raw: AtomicU64,
+	sent_payload: AtomicU64,
+	received_raw: AtomicU64,
+	received_payload: AtomicU64,
+}
+
+impl Traffic {
+	pub(crate) fn add_sent(&self, raw: u64, payload: u64) {
+		self.sent_raw.fetch_add(raw, Ordering::Relaxed);
+		self.sent_payload.fetch_add(payload, Ordering::Relaxed);
+	}
+
+	pub(crate) fn add_received(&self, raw: u64, payload: u64) {
+		self.received_raw.fetch_add(raw, Ordering::Relaxed);
+		self.received_payload.fetch_add(payload, Ordering::Relaxed);
+	}
+
+	fn snapshot(&self) -> TrafficStats {
+		TrafficStats {
+			sent_raw: self.sent_raw.load(Ordering::Relaxed),
+			sent_payload: self.sent_payload.load(Ordering::Relaxed),
+			received_raw: self.received_raw.load(Ordering::Relaxed),
+			received_payload: self.received_payload.load(Ordering::Relaxed),
+		}
+	}
+}
+
+/// A point-in-time read of a proxy's [`Traffic`]. All counts are bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrafficStats {
+	/// Full request bytes sent upstream (line + headers + framed body).
+	pub sent_raw: u64,
+	/// Object-data bytes uploaded (decoded, excluding chunk framing).
+	pub sent_payload: u64,
+	/// Full response bytes received from upstream (line + headers + body).
+	pub received_raw: u64,
+	/// Object-data bytes downloaded (response bodies).
+	pub received_payload: u64,
+}
 
 /// A live set of S3 credentials.
 #[derive(Clone)]
@@ -71,6 +129,7 @@ pub struct S3ProxyConfig {
 pub struct RunningProxy {
 	addr: SocketAddr,
 	task: JoinHandle<()>,
+	traffic: Arc<Traffic>,
 }
 
 impl RunningProxy {
@@ -82,6 +141,11 @@ impl RunningProxy {
 	/// `host:port` form for kopia's `--endpoint` (TLS is disabled on this leg).
 	pub fn endpoint(&self) -> String {
 		self.addr.to_string()
+	}
+
+	/// Bytes sent to and received from upstream S3 over this proxy's lifetime.
+	pub fn traffic(&self) -> TrafficStats {
+		self.traffic.snapshot()
 	}
 
 	/// Stop serving.
@@ -109,7 +173,12 @@ pub async fn spawn(
 
 	let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
 	let addr = listener.local_addr()?;
-	let task = tokio::spawn(server::run(listener, config, provider));
+	let traffic = Arc::new(Traffic::default());
+	let task = tokio::spawn(server::run(listener, config, provider, traffic.clone()));
 	tracing::info!(%addr, "s3 re-signing proxy bound");
-	Ok(RunningProxy { addr, task })
+	Ok(RunningProxy {
+		addr,
+		task,
+		traffic,
+	})
 }

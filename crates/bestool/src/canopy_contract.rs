@@ -443,6 +443,13 @@ async fn backup_report_request_matches_spec() {
 		error: None,
 		bytes_uploaded: Some(12345),
 		snapshot_id: Some("abc123"),
+		// Intentionally populated: this gates the PR. bestool already sends these
+		// (canopy ignores unknown fields), but the contract check stays red until
+		// canopy's OpenAPI spec defines the s3 traffic fields — then it goes green.
+		s3_sent_raw_bytes: Some(2_000_000),
+		s3_sent_payload_bytes: Some(1_950_000),
+		s3_received_raw_bytes: Some(4096),
+		s3_received_payload_bytes: Some(0),
 	})
 	.unwrap();
 	assert_valid(spec, &request_schema("/backup-report", "post"), &instance);
