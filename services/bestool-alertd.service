@@ -45,11 +45,14 @@ Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
 #   - CAP_DAC_READ_SEARCH: lets root read other-owned, mode-0600 files the
 #     doctor checks inspect (e.g. a service's TLS key) without also gaining DAC
 #     write-override.
+#   - CAP_FOWNER: `btrfs subvolume snapshot` of the postgres cluster subvolume,
+#     which is postgres-owned; the snapshot ioctl gates on owning the source, so
+#     root without it gets EPERM (CAP_SYS_ADMIN alone doesn't cover this).
 #   - CAP_SYS_ADMIN: the btrfs disk-stats doctor check shells out to `btrfs
 #     device stats`, whose device-info ioctls return EPERM without it.
 # CAP_SYS_ADMIN is broad (near root-equivalent), so the Protect*/seccomp/
 # namespace directives below carry the hardening here, not the capability set.
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_ADMIN
 AmbientCapabilities=
 NoNewPrivileges=yes
 
