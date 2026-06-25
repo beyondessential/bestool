@@ -177,6 +177,8 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: $arch
+          Depends: bindfs, btrfs-progs, sudo
+          Recommends: lvm2
           Maintainer: BES Developers <support@bes.au>
           Description: BES Deployment tooling
           Homepage: https://github.com/beyondessential/bestool
