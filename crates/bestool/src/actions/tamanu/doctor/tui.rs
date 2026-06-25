@@ -248,14 +248,11 @@ fn draw(
 ) -> io::Result<()> {
 	let term_rows = size().map(|(_, r)| r as usize).unwrap_or(24).max(2);
 
-	let mut body: Vec<StyledLine> = Vec::new();
-	if let Some(line) = source_line(source) {
-		body.push(line);
-	}
-	body.extend(build_rows(rows, spinner));
+	let body = build_rows(rows, spinner);
 
-	// Reserve the last terminal row for the always-visible footer.
-	let viewport = term_rows - 1;
+	// The header (where the sweep is running) is pinned to the top row and the
+	// footer (progress) to the bottom row; the body region is what's between.
+	let viewport = term_rows.saturating_sub(2);
 	scroll.viewport = viewport;
 	scroll.max = body.len().saturating_sub(viewport);
 	scroll.offset = scroll.offset.min(scroll.max);
@@ -263,16 +260,21 @@ fn draw(
 	let end = (scroll.offset + viewport).min(body.len());
 	let visible = &body[scroll.offset..end];
 
-	// Redraw in place rather than clearing the whole screen first: clearing to
-	// end-of-line per row and filling the rest of the viewport avoids the flash
-	// that a full clear produces on every tick.
+	// Redraw in place rather than clearing the whole screen first: clearing each
+	// row to end-of-line avoids the flash a full clear produces every tick. The
+	// body is anchored to the bottom of its region (blank rows padded above it),
+	// so a short check list keeps the content and footer together at the bottom
+	// instead of stranding the footer under a block of whitespace.
 	queue!(out, MoveTo(0, 0))?;
-	for line in visible {
-		write_line(out, line)?;
+	write_line(out, &header_line(source))?;
+	queue!(out, Clear(ClearType::UntilNewLine))?;
+	out.write_all(b"\r\n")?;
+	for _ in 0..viewport.saturating_sub(visible.len()) {
 		queue!(out, Clear(ClearType::UntilNewLine))?;
 		out.write_all(b"\r\n")?;
 	}
-	for _ in visible.len()..viewport {
+	for line in visible {
+		write_line(out, line)?;
 		queue!(out, Clear(ClearType::UntilNewLine))?;
 		out.write_all(b"\r\n")?;
 	}
@@ -301,16 +303,17 @@ fn write_line(out: &mut Stdout, line: &StyledLine) -> io::Result<()> {
 	Ok(())
 }
 
-fn source_line(source: &SweepSource) -> Option<StyledLine> {
+/// The fixed top row: where this sweep is running.
+fn header_line(source: &SweepSource) -> StyledLine {
 	let text = match source {
-		SweepSource::Local => return None,
+		SweepSource::Local => "Source: local".to_string(),
 		SweepSource::DaemonStreamed => "Source: alertd daemon (just now, on demand)".to_string(),
 		SweepSource::DaemonCached { computed_at } => {
 			let age = super::render::humanise_age_since(*computed_at);
 			format!("Source: alertd daemon (computed {age} ago, at {computed_at})")
 		}
 	};
-	Some(vec![dim(text)])
+	vec![dim(text)]
 }
 
 fn build_rows(rows: &[TuiRow], spinner: usize) -> Vec<StyledLine> {
