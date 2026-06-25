@@ -105,6 +105,16 @@ async fn prepare_linux(source: &Path, backup_type: &str) -> Result<(PathBuf, Cle
 		.into_diagnostic()
 		.wrap_err_with(|| format!("creating simple backup view dir {}", view.display()))?;
 
+	// The daemon's restrictive umask would leave `backup-source` group-only;
+	// widen it so the unprivileged kopia user can traverse it to reach the view.
+	if let Some(parent) = view.parent() {
+		use std::os::unix::fs::PermissionsExt as _;
+		tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("making {} traversable", parent.display()))?;
+	}
+
 	// Preferred: a read-only bindfs view presenting the tree as kopia-owned.
 	match Command::new("bindfs")
 		.arg("-r")
