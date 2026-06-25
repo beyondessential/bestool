@@ -15,6 +15,16 @@ pub(super) fn path(p: &Path) -> &str {
 	p.to_str().unwrap_or_default()
 }
 
+/// A unique token to name one backup run's ephemeral snapshot and mounts.
+///
+/// Not the process id: the alertd daemon is long-lived and runs many backups,
+/// so a pid is constant across runs — a failed teardown would then collide with
+/// (and wedge) the next run on the same path. A fresh token per run keeps each
+/// run's scratch state distinct; the reaper still finds orphans by name prefix.
+pub(super) fn run_token() -> String {
+	uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// Run a command, erroring (with stderr) on non-zero exit.
 pub(super) async fn run_ok(program: &str, args: &[&str]) -> Result<()> {
 	let output = tokio::process::Command::new(program)

@@ -30,8 +30,8 @@ pub struct Snapshot {
 	kopia_mount: PathBuf,
 }
 
-fn snapshot_name(pid: u32) -> String {
-	format!("{SNAPSHOT_INFIX}{pid}")
+fn snapshot_name(token: &str) -> String {
+	format!("{SNAPSHOT_INFIX}{token}")
 }
 
 /// Parse `lvs --noheadings -o vg_name,lv_name <dev>` output into `(vg, lv)`.
@@ -57,7 +57,7 @@ fn mount_options(fstype: &str, idmap: &str) -> String {
 /// Take a thin snapshot and mount it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
 pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Snapshot)> {
-	let pid = std::process::id();
+	let token = sys::run_token();
 	let base_mount = sys::findmnt_target(&resolved.data_dir).await?;
 	let rel = sys::relative_data_path(&resolved.data_dir, &base_mount)?;
 	let source = sys::findmnt_field("SOURCE", &resolved.data_dir).await?;
@@ -70,7 +70,7 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	let kopia_mount = super::stable_source_dir(backup_type);
 	reap_stale(&vg, &kopia_mount).await;
 
-	let snapshot_lv = snapshot_name(pid);
+	let snapshot_lv = snapshot_name(&token);
 	let mut snapshot = Snapshot {
 		vg: vg.clone(),
 		lv: String::new(),
@@ -168,6 +168,6 @@ mod tests {
 
 	#[test]
 	fn snapshot_name_carries_reaper_infix() {
-		assert!(snapshot_name(99).starts_with(SNAPSHOT_INFIX));
+		assert!(snapshot_name("deadbeef").starts_with(SNAPSHOT_INFIX));
 	}
 }
