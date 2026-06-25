@@ -14,6 +14,7 @@ pub mod config;
 pub mod method;
 pub mod postgresql;
 pub mod provider;
+mod simple;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 

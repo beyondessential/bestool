@@ -32,8 +32,8 @@ pub struct Prepared {
 /// What [`Method::cleanup`] has to undo for a prepared source.
 #[derive(Debug)]
 pub(super) enum Teardown {
-	/// Nothing to release (e.g. the simple method).
-	Nothing,
+	/// The simple method's kopia-readable view (bindfs mount or copy).
+	Simple(super::simple::Cleanup),
 	/// A btrfs snapshot + its mounts.
 	Btrfs(super::postgresql::btrfs::Mounts),
 	/// A thin-LVM snapshot + its mount.
@@ -95,12 +95,15 @@ impl Method {
 	/// used by methods that key stable paths on it (e.g. btrfs mount points).
 	pub async fn prepare(&self, backup_type: &str) -> Result<Prepared> {
 		match self {
-			Method::Simple(config) => Ok(Prepared {
-				path: config.path.clone(),
-				extra_tags: BTreeMap::new(),
-				ignore: Vec::new(),
-				teardown: Teardown::Nothing,
-			}),
+			Method::Simple(config) => {
+				let (path, cleanup) = super::simple::prepare(&config.path, backup_type).await?;
+				Ok(Prepared {
+					path,
+					extra_tags: BTreeMap::new(),
+					ignore: Vec::new(),
+					teardown: Teardown::Simple(cleanup),
+				})
+			}
 			Method::Postgresql(config) => super::postgresql::prepare(config, backup_type).await,
 		}
 	}
@@ -108,7 +111,7 @@ impl Method {
 	/// Release whatever `prepare` set up (snapshot, mount, staging dir).
 	pub async fn cleanup(&self, prepared: Prepared) -> Result<()> {
 		match prepared.teardown {
-			Teardown::Nothing => Ok(()),
+			Teardown::Simple(cleanup) => super::simple::teardown(cleanup).await,
 			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
 			Teardown::Lvm(snapshot) => super::postgresql::lvm::teardown(snapshot).await,
 			Teardown::Vss(shadow) => super::postgresql::vss::teardown(shadow).await,
