@@ -221,6 +221,10 @@ pub(super) fn with_extension_suffix(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
 	use super::*;
 
+	// On Linux the simple method prepares a kopia-readable *view* (bindfs/copy),
+	// which needs a real source, root, and the kopia user — so it's exercised
+	// on-host, not here. Off Linux it still snapshots the path in place.
+	#[cfg(not(target_os = "linux"))]
 	#[tokio::test]
 	async fn simple_prepare_returns_its_path_and_no_tags() {
 		let method = Method::Simple(SimpleConfig {
