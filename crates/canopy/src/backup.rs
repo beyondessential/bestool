@@ -115,6 +115,18 @@ pub struct BackupReport<'a> {
 	pub bytes_uploaded: Option<i64>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub snapshot_id: Option<&'a str>,
+	/// S3 traffic the run accounted for, measured by the re-signing proxy. `*_raw`
+	/// is the full HTTP message (headers + on-the-wire body incl. SigV4 chunk
+	/// framing); `*_payload` is the decoded object data. A rough per-deployment
+	/// network/S3 measure; distinct from `bytes_uploaded` (kopia's own figure).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub s3_sent_raw_bytes: Option<i64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub s3_sent_payload_bytes: Option<i64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub s3_received_raw_bytes: Option<i64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub s3_received_payload_bytes: Option<i64>,
 }
 
 #[cfg(test)]
@@ -243,6 +255,10 @@ mod tests {
 			error: None,
 			bytes_uploaded: None,
 			snapshot_id: None,
+			s3_sent_raw_bytes: None,
+			s3_sent_payload_bytes: None,
+			s3_received_raw_bytes: None,
+			s3_received_payload_bytes: None,
 		};
 		assert_eq!(
 			serde_json::to_value(&report).unwrap(),
@@ -265,6 +281,10 @@ mod tests {
 			error: Some("kopia exploded"),
 			bytes_uploaded: Some(42),
 			snapshot_id: Some("snap"),
+			s3_sent_raw_bytes: Some(2048),
+			s3_sent_payload_bytes: Some(1024),
+			s3_received_raw_bytes: Some(64),
+			s3_received_payload_bytes: Some(0),
 		};
 		assert_eq!(
 			serde_json::to_value(&report).unwrap(),
@@ -276,6 +296,10 @@ mod tests {
 				"error": "kopia exploded",
 				"bytes_uploaded": 42,
 				"snapshot_id": "snap",
+				"s3_sent_raw_bytes": 2048,
+				"s3_sent_payload_bytes": 1024,
+				"s3_received_raw_bytes": 64,
+				"s3_received_payload_bytes": 0,
 			})
 		);
 	}

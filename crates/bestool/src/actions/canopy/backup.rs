@@ -433,7 +433,26 @@ async fn backup_after_start(
 		.await;
 	emit(&progress, BackupEvent::Phase("report"));
 
-	// Report whatever happened, then surface the original error (if any).
+	// The proxy saw every S3 request this run made (success or failure), so its
+	// tallies are a rough measure of the network/S3 traffic this run accounts for.
+	let traffic = proxy.traffic();
+	info!(
+		backup_type,
+		run_id,
+		sent_raw = traffic.sent_raw,
+		sent_payload = traffic.sent_payload,
+		received_raw = traffic.received_raw,
+		received_payload = traffic.received_payload,
+		"s3 traffic for this run"
+	);
+
+	// Report whatever happened, then surface the original error (if any). The
+	// traffic counts go on both outcomes: bytes flow whether or not it succeeds.
+	let to_i64 = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+	let s3_sent_raw_bytes = Some(to_i64(traffic.sent_raw));
+	let s3_sent_payload_bytes = Some(to_i64(traffic.sent_payload));
+	let s3_received_raw_bytes = Some(to_i64(traffic.received_raw));
+	let s3_received_payload_bytes = Some(to_i64(traffic.received_payload));
 	let report = match &outcome {
 		Ok(snapshot) => BackupReport {
 			run_id,
@@ -443,6 +462,10 @@ async fn backup_after_start(
 			error: None,
 			bytes_uploaded: snapshot.bytes_uploaded,
 			snapshot_id: snapshot.id.as_deref(),
+			s3_sent_raw_bytes,
+			s3_sent_payload_bytes,
+			s3_received_raw_bytes,
+			s3_received_payload_bytes,
 		},
 		Err(err) => BackupReport {
 			run_id,
@@ -452,6 +475,10 @@ async fn backup_after_start(
 			error: Some(&trim_error(err)),
 			bytes_uploaded: None,
 			snapshot_id: None,
+			s3_sent_raw_bytes,
+			s3_sent_payload_bytes,
+			s3_received_raw_bytes,
+			s3_received_payload_bytes,
 		},
 	};
 	client

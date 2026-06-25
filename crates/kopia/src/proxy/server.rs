@@ -12,7 +12,7 @@ use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
 	Request, Response, StatusCode,
 	body::{Body, Frame, Incoming, SizeHint},
-	header::{HeaderName, HeaderValue},
+	header::{HeaderMap, HeaderName, HeaderValue},
 };
 use hyper_util::{
 	client::legacy::{Client, connect::HttpConnector},
@@ -20,7 +20,7 @@ use hyper_util::{
 };
 use tokio::net::TcpListener;
 
-use super::{BoxError, CredentialProvider, S3ProxyConfig, sigv4, stream::ChunkResigner};
+use super::{BoxError, CredentialProvider, S3ProxyConfig, Traffic, sigv4, stream::ChunkResigner};
 
 type ReqBody = BoxBody<Bytes, BoxError>;
 type ResBody = BoxBody<Bytes, BoxError>;
@@ -46,12 +46,14 @@ struct State {
 	config: S3ProxyConfig,
 	provider: Arc<dyn CredentialProvider>,
 	client: HttpsClient,
+	traffic: Arc<Traffic>,
 }
 
 pub(super) async fn run(
 	listener: TcpListener,
 	config: S3ProxyConfig,
 	provider: Arc<dyn CredentialProvider>,
+	traffic: Arc<Traffic>,
 ) {
 	let https = hyper_rustls::HttpsConnectorBuilder::new()
 		.with_webpki_roots()
@@ -63,6 +65,7 @@ pub(super) async fn run(
 		config,
 		provider,
 		client,
+		traffic,
 	});
 
 	loop {
@@ -182,6 +185,20 @@ async fn proxy(state: &State, req: Request<Incoming>) -> Result<Response<ResBody
 		creds.access_key
 	);
 
+	// Account the request: `content-length` is the body as it goes on the wire
+	// (the chunk-framed length for a streaming upload); the payload is the decoded
+	// object data — `x-amz-decoded-content-length` when streaming, else the body.
+	let body_len = header_u64(&headers, "content-length");
+	let payload_len = if streaming {
+		header_u64(&headers, "x-amz-decoded-content-length")
+	} else {
+		body_len
+	};
+	let request_overhead = request_overhead(method.as_str(), &path, &query, &fwd, &authorization);
+	state
+		.traffic
+		.add_sent(request_overhead + body_len, payload_len);
+
 	let upstream_body: ReqBody = if streaming {
 		let exact_len: u64 = headers
 			.get("content-length")
@@ -234,6 +251,10 @@ async fn proxy(state: &State, req: Request<Incoming>) -> Result<Response<ResBody
 		tracing::debug!(%status, %path, "upstream returned non-2xx");
 	}
 	let (parts, body) = resp.into_parts();
+	// Account the response line + headers now; the body is counted as it streams.
+	state
+		.traffic
+		.add_received(response_overhead(status, &parts.headers), 0);
 	let mut out = Response::builder().status(status);
 	for (name, value) in parts.headers.iter() {
 		if DROP_RESPONSE_HEADERS.contains(&name.as_str()) {
@@ -241,7 +262,11 @@ async fn proxy(state: &State, req: Request<Incoming>) -> Result<Response<ResBody
 		}
 		out = out.header(name, value);
 	}
-	let body: ResBody = body.map_err(|e| -> BoxError { Box::new(e) }).boxed();
+	let body: ResBody = CountingBody {
+		inner: body.map_err(|e| -> BoxError { Box::new(e) }).boxed(),
+		traffic: state.traffic.clone(),
+	}
+	.boxed();
 	out.body(body).map_err(|e| -> BoxError { Box::new(e) })
 }
 
@@ -302,5 +327,113 @@ impl Body for ResignBody {
 
 	fn size_hint(&self) -> SizeHint {
 		SizeHint::with_exact(self.exact_len)
+	}
+}
+
+/// Wraps the upstream response body, tallying every byte received into the
+/// proxy's [`Traffic`]. A response body is object data with no extra framing, so
+/// it counts as both raw and payload.
+struct CountingBody {
+	inner: ResBody,
+	traffic: Arc<Traffic>,
+}
+
+impl Body for CountingBody {
+	type Data = Bytes;
+	type Error = BoxError;
+
+	fn poll_frame(
+		self: Pin<&mut Self>,
+		cx: &mut Context<'_>,
+	) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+		let this = self.get_mut();
+		match Pin::new(&mut this.inner).poll_frame(cx) {
+			Poll::Ready(Some(Ok(frame))) => {
+				if let Some(data) = frame.data_ref() {
+					let n = data.len() as u64;
+					this.traffic.add_received(n, n);
+				}
+				Poll::Ready(Some(Ok(frame)))
+			}
+			other => other,
+		}
+	}
+
+	fn size_hint(&self) -> SizeHint {
+		self.inner.size_hint()
+	}
+}
+
+/// A request/response header's value parsed as a `u64`, or 0 if absent/unparsable.
+fn header_u64(headers: &HeaderMap, name: &str) -> u64 {
+	headers
+		.get(name)
+		.and_then(|v| v.to_str().ok())
+		.and_then(|s| s.parse().ok())
+		.unwrap_or(0)
+}
+
+/// Rough wire size of the request line + forwarded headers + authorization
+/// (`name: value\r\n` per header, trailing blank line). An estimate: it doesn't
+/// model HTTP/2 or TLS, which is fine for the per-deployment traffic accounting
+/// this feeds.
+fn request_overhead(
+	method: &str,
+	path: &str,
+	query: &str,
+	fwd: &[(String, String)],
+	authorization: &str,
+) -> u64 {
+	let query_len = if query.is_empty() { 0 } else { 1 + query.len() };
+	let line = method.len() + 1 + path.len() + query_len + " HTTP/1.1\r\n".len();
+	let headers: usize = fwd.iter().map(|(n, v)| n.len() + 2 + v.len() + 2).sum();
+	let auth = "authorization".len() + 2 + authorization.len() + 2;
+	(line + headers + auth + 2) as u64
+}
+
+/// Rough wire size of the response status line + headers.
+fn response_overhead(status: StatusCode, headers: &HeaderMap) -> u64 {
+	let reason = status.canonical_reason().map_or(0, str::len);
+	let line = "HTTP/1.1 ".len() + 3 + 1 + reason + 2;
+	let headers: usize = headers
+		.iter()
+		.map(|(n, v)| n.as_str().len() + 2 + v.as_bytes().len() + 2)
+		.sum();
+	(line + headers + 2) as u64
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn header_u64_parses_or_zeroes() {
+		let mut headers = HeaderMap::new();
+		headers.insert("content-length", HeaderValue::from_static("1234"));
+		assert_eq!(header_u64(&headers, "content-length"), 1234);
+		assert_eq!(header_u64(&headers, "x-amz-decoded-content-length"), 0);
+	}
+
+	#[test]
+	fn request_overhead_sums_line_headers_and_auth() {
+		// "GET /p HTTP/1.1\r\n" (17) + "host: h\r\n" (9) + "authorization: a\r\n"
+		// (18) + trailing "\r\n" (2) = 46.
+		let fwd = vec![("host".to_string(), "h".to_string())];
+		assert_eq!(request_overhead("GET", "/p", "", &fwd, "a"), 46);
+	}
+
+	#[test]
+	fn request_overhead_includes_query() {
+		let fwd = vec![];
+		// "GET /p?x=1 HTTP/1.1\r\n" (21) + "authorization: a\r\n" (18) + "\r\n" (2).
+		assert_eq!(request_overhead("GET", "/p", "x=1", &fwd, "a"), 41);
+	}
+
+	#[test]
+	fn response_overhead_sums_status_line_and_headers() {
+		let mut headers = HeaderMap::new();
+		headers.insert("content-type", HeaderValue::from_static("text/plain"));
+		// "HTTP/1.1 200 OK\r\n" (17) + "content-type: text/plain\r\n" (26) + "\r\n" (2).
+		assert_eq!(response_overhead(StatusCode::OK, &headers), 45);
 	}
 }
