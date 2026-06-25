@@ -132,8 +132,11 @@ async fn copy_to_kopia(source: &Path, dest: &Path) -> Result<()> {
 	use bestool_kopia::LINUX_KOPIA_USER;
 	use tokio::process::Command;
 
+	// --reflink=auto: a cheap CoW clone where the filesystem supports it (btrfs,
+	// xfs w/ reflink), falling back to a full copy elsewhere.
 	let status = Command::new("cp")
 		.arg("-a")
+		.arg("--reflink=auto")
 		.arg(format!("{}/.", source.display()))
 		.arg(dest)
 		.status()
