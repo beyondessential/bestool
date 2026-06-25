@@ -305,7 +305,11 @@ async fn run_checked(mut cmd: tokio::process::Command, what: &str) -> Result<()>
 /// Best-effort `CHECKPOINT` as the postgres superuser over the local socket.
 async fn checkpoint(config: &PostgresqlConfig, data_dir: &Path) {
 	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
-	cmd.args(["-X", "-q"]);
+	// -w: never prompt for a password. libpq reads a password prompt straight from
+	// the terminal, not stdin, so null stdin alone doesn't stop it — without -w a
+	// connection that needs a password (e.g. as the OS user on Windows) blocks the
+	// service forever. With -w it fails fast instead, and CHECKPOINT is best-effort.
+	cmd.args(["-X", "-q", "-w"]);
 	if let Some(socket) = &config.socket {
 		cmd.arg("-h").arg(socket);
 	}
