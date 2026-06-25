@@ -63,6 +63,27 @@ pub(super) async fn findmnt_field(field: &str, data_dir: &Path) -> Result<String
 	capture("findmnt", &["-no", field, "--target", path(data_dir)]).await
 }
 
+/// A single `findmnt` field for `data_dir`, read from `--json` rather than the
+/// raw `-no` form — structured, so e.g. the btrfs subvolume (`FSROOT`) doesn't
+/// have to be teased out of the bracketed `SOURCE` string.
+pub(super) async fn findmnt_json_field(field: &str, data_dir: &Path) -> Result<String> {
+	let out = capture("findmnt", &["--json", "-o", field, "--target", path(data_dir)]).await?;
+	parse_findmnt_field(&out, &field.to_ascii_lowercase())
+		.ok_or_else(|| miette!("findmnt --json had no {field} for {}", data_dir.display()))
+}
+
+/// Pull a column from the first filesystem of `findmnt --json` output.
+fn parse_findmnt_field(json: &str, key: &str) -> Option<String> {
+	let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
+	parsed
+		.get("filesystems")?
+		.as_array()?
+		.first()?
+		.get(key)?
+		.as_str()
+		.map(str::to_owned)
+}
+
 /// A user's numeric uid / gid (via `id`).
 pub(super) async fn uid_of(user: &str) -> Result<u32> {
 	parse_id(&capture("id", &["-u", user]).await?, user)
@@ -171,5 +192,17 @@ mod tests {
 	#[test]
 	fn relative_data_path_rejects_outside() {
 		assert!(relative_data_path(Path::new("/srv/pg"), Path::new("/var/lib/postgresql")).is_err());
+	}
+
+	#[test]
+	fn parse_findmnt_field_reads_first_filesystem() {
+		let json = r#"{"filesystems":[{"target":"/var/lib/postgresql","source":"/dev/sda2[/@postgres]","fsroot":"/@postgres"}]}"#;
+		assert_eq!(parse_findmnt_field(json, "fsroot").as_deref(), Some("/@postgres"));
+		assert_eq!(
+			parse_findmnt_field(json, "source").as_deref(),
+			Some("/dev/sda2[/@postgres]")
+		);
+		assert_eq!(parse_findmnt_field(json, "missing"), None);
+		assert_eq!(parse_findmnt_field("not json", "fsroot"), None);
 	}
 }
