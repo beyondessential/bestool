@@ -16,7 +16,12 @@ pub mod postgresql;
 pub mod provider;
 mod simple;
 
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+	collections::BTreeMap,
+	path::Path,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 
 use bestool_canopy::{
 	BackupReport, CanopyClient, DEFAULT_CANOPY_URL, Outcome, Purpose, TargetOutcome,
@@ -498,6 +503,11 @@ async fn run_kopia_backup(
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
 	emit(progress, BackupEvent::Phase("snapshot"));
+	info!(
+		backup_type = %def.r#type,
+		source = %source_path.display(),
+		"uploading snapshot to kopia repository"
+	);
 	let result = snapshot(
 		target,
 		conn,
@@ -623,19 +633,22 @@ async fn run_kopia_streaming(
 		let mut captured = String::new();
 		let mut buf = [0u8; 4096];
 		let mut segment = Vec::new();
+		// Throttle journal logging: kopia rewrites its progress line many times a
+		// second, but the journal only wants an occasional heartbeat.
+		let mut last_log: Option<Instant> = None;
 		while let Ok(n) = stderr.read(&mut buf).await {
 			if n == 0 {
 				break;
 			}
 			for &byte in &buf[..n] {
 				if byte == b'\r' || byte == b'\n' {
-					flush_progress_segment(&mut segment, &mut captured, &progress);
+					flush_progress_segment(&mut segment, &mut captured, &progress, &mut last_log);
 				} else {
 					segment.push(byte);
 				}
 			}
 		}
-		flush_progress_segment(&mut segment, &mut captured, &progress);
+		flush_progress_segment(&mut segment, &mut captured, &progress, &mut last_log);
 		captured
 	});
 
@@ -658,7 +671,16 @@ async fn run_kopia_streaming(
 	Ok(out)
 }
 
-fn flush_progress_segment(segment: &mut Vec<u8>, captured: &mut String, progress: &Option<BackupProgress>) {
+/// How often a kopia progress line is logged to the journal. Progress also goes
+/// to the status sink unthrottled; this only paces the journal heartbeat.
+const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
+
+fn flush_progress_segment(
+	segment: &mut Vec<u8>,
+	captured: &mut String,
+	progress: &Option<BackupProgress>,
+	last_log: &mut Option<Instant>,
+) {
 	if segment.is_empty() {
 		return;
 	}
@@ -672,6 +694,11 @@ fn flush_progress_segment(segment: &mut Vec<u8>, captured: &mut String, progress
 	// kopia's progress line carries these counters; other stderr lines (e.g.
 	// maintenance) aren't progress and aren't forwarded.
 	if line.contains("hashing") || line.contains("hashed") || line.contains("uploaded") {
+		let now = Instant::now();
+		if last_log.is_none_or(|prev| now.duration_since(prev) >= PROGRESS_LOG_INTERVAL) {
+			info!(progress = %line, "kopia upload progress");
+			*last_log = Some(now);
+		}
 		emit(progress, BackupEvent::Progress(line));
 	}
 }
@@ -825,13 +852,14 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 		let progress = Some(tx);
 		let mut captured = String::new();
+		let mut last_log = None;
 
 		// A kopia progress update is forwarded…
 		let mut seg = b" * 8 hashing, 8 hashed (800 MB), uploaded 800 MB, 100%".to_vec();
-		flush_progress_segment(&mut seg, &mut captured, &progress);
+		flush_progress_segment(&mut seg, &mut captured, &progress, &mut last_log);
 		// …an ordinary stderr line (e.g. maintenance) is not.
 		let mut seg = b"Finished full maintenance.".to_vec();
-		flush_progress_segment(&mut seg, &mut captured, &progress);
+		flush_progress_segment(&mut seg, &mut captured, &progress, &mut last_log);
 
 		drop(progress);
 		let mut events = Vec::new();
