@@ -66,7 +66,7 @@ pub async fn teardown(cleanup: Cleanup) -> Result<()> {
 			// since root (CAP_CHOWN, no DAC write-override) can't otherwise unlink
 			// files inside kopia-owned directories.
 			let _ = tokio::process::Command::new("chown")
-				.args(["-R", "root:root"])
+				.args(["-R", "-P", "root:root"])
 				.arg(&dir)
 				.status()
 				.await;
@@ -95,9 +95,20 @@ async fn prepare_linux(source: &Path, backup_type: &str) -> Result<(PathBuf, Cle
 	use tokio::process::Command;
 
 	let view = view_dir(backup_type);
-	// Clear any leftover from a crashed run (a stale bindfs mount, or a copy).
+	// Clear any leftover from a crashed run: a stale bindfs mount, or a copy whose
+	// tree a prior run chowned to the kopia user. Unmount first; then, if a copy
+	// leftover remains, reclaim it to root before removing it — the daemon has
+	// CAP_CHOWN but not DAC override, so it can't otherwise delete (or overwrite)
+	// kopia-owned files, which is what wedges both the bindfs and copy paths.
 	unmount(&view).await;
-	if view.exists() {
+	if view.exists() && !is_mountpoint(&view).await {
+		// -P: never follow symlinks while recursing — the copied tree can hold a
+		// symlink out of it (e.g. postgres' `current` -> the live data dir).
+		let _ = Command::new("chown")
+			.args(["-R", "-P", "root:root"])
+			.arg(&view)
+			.status()
+			.await;
 		let _ = tokio::fs::remove_dir_all(&view).await;
 	}
 	tokio::fs::create_dir_all(&view)
@@ -167,8 +178,12 @@ async fn copy_to_kopia(source: &Path, dest: &Path) -> Result<()> {
 		bail!("copying simple backup source {} failed ({status})", source.display());
 	}
 
+	// -P: never follow symlinks while recursing. The copied tree can contain a
+	// symlink pointing outside it (e.g. postgres' `current` -> the live data
+	// dir); without it, chown -R would retarget the real file's ownership.
 	let status = Command::new("chown")
 		.arg("-R")
+		.arg("-P")
 		.arg(format!("{LINUX_KOPIA_USER}:{LINUX_KOPIA_USER}"))
 		.arg(dest)
 		.status()
@@ -179,6 +194,19 @@ async fn copy_to_kopia(source: &Path, dest: &Path) -> Result<()> {
 		bail!("chowning the simple backup copy to {LINUX_KOPIA_USER} failed ({status})");
 	}
 	Ok(())
+}
+
+/// Whether `view` is still a mountpoint (so we must not chown through it into
+/// the live source).
+#[cfg(target_os = "linux")]
+async fn is_mountpoint(view: &Path) -> bool {
+	tokio::process::Command::new("mountpoint")
+		.arg("-q")
+		.arg(view)
+		.status()
+		.await
+		.map(|status| status.success())
+		.unwrap_or(false)
 }
 
 /// Best-effort unmount of a bindfs view (FUSE, so `fusermount -u`, else `umount`).
