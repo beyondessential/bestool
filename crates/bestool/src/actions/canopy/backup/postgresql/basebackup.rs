@@ -73,6 +73,11 @@ pub async fn prepare(
 			.wrap_err_with(|| format!("creating {}", parent.display()))?;
 	}
 
+	// pg_basebackup runs as the postgres user (peer auth) and creates its own
+	// output dir, so the root-owned staging must be writable by postgres first.
+	#[cfg(unix)]
+	make_writable_by_postgres(&root).await?;
+
 	info!(dest = %dest.display(), "streaming pg_basebackup");
 	let mut cmd = super::pg_command(&super::postgres_bin("pg_basebackup", &resolved.data_dir));
 	cmd.args(basebackup_args(&dest, socket, port));
@@ -97,6 +102,25 @@ pub async fn teardown(root: PathBuf) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("removing base backup at {}", root.display()))
+}
+
+/// Hand the (root-created) staging to the postgres user so pg_basebackup, which
+/// runs as postgres, can create its output dir and write into it. Required —
+/// without it the stream fails to create its target.
+#[cfg(unix)]
+async fn make_writable_by_postgres(root: &Path) -> Result<()> {
+	let status = tokio::process::Command::new("chown")
+		.args(["-R", "postgres:postgres"])
+		.arg(root)
+		.stdin(Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err("handing the base backup staging to the postgres user")?;
+	if !status.success() {
+		bail!("chown of base backup staging to postgres failed ({status})");
+	}
+	Ok(())
 }
 
 /// pg_basebackup writes files owned by postgres and mode 0600; hand them to the

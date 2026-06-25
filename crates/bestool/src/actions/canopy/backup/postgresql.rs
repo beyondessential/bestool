@@ -32,7 +32,11 @@ use super::method::{PostgresqlConfig, Prepared, Teardown};
 pub(super) fn stable_source_dir(backup_type: &str) -> PathBuf {
 	#[cfg(unix)]
 	{
-		PathBuf::from("/var/lib/kopia/bestool-backup").join(backup_type)
+		// Under the daemon's root-owned StateDirectory (/var/lib/bestool), not the
+		// kopia user's home: the daemon (root, without DAC write-override) creates
+		// the snapshot mount / base-backup staging here, then hands it to the kopia
+		// user. /var/lib/bestool is world-traversable so kopia can still read in.
+		PathBuf::from("/var/lib/bestool/backup-source").join(backup_type)
 	}
 	#[cfg(not(unix))]
 	{
