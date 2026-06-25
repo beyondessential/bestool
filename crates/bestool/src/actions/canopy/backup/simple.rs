@@ -61,10 +61,20 @@ pub async fn teardown(cleanup: Cleanup) -> Result<()> {
 			Ok(())
 		}
 		#[cfg(target_os = "linux")]
-		Cleanup::Copy(dir) => tokio::fs::remove_dir_all(&dir)
-			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("removing simple backup copy at {}", dir.display())),
+		Cleanup::Copy(dir) => {
+			// The copy was chowned to the kopia user; reclaim it before removing,
+			// since root (CAP_CHOWN, no DAC write-override) can't otherwise unlink
+			// files inside kopia-owned directories.
+			let _ = tokio::process::Command::new("chown")
+				.args(["-R", "root:root"])
+				.arg(&dir)
+				.status()
+				.await;
+			tokio::fs::remove_dir_all(&dir)
+				.await
+				.into_diagnostic()
+				.wrap_err_with(|| format!("removing simple backup copy at {}", dir.display()))
+		}
 	}
 }
 
