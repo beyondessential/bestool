@@ -56,6 +56,16 @@ fn toplevel_mount(pid: u32) -> PathBuf {
 	PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.{pid}"))
 }
 
+/// The subvolume's path within the filesystem, parsed from `findmnt -o SOURCE`
+/// (e.g. `/dev/disk/by-uuid/…[/@postgresql]` → `@postgresql`). `None` when the
+/// data dir lives on the top-level subvolume (no `[…]` suffix).
+fn subvol_rel_path(source: &str) -> Option<String> {
+	let start = source.find('[')?;
+	let end = source.rfind(']')?;
+	let sub = source.get(start + 1..end)?.trim_start_matches('/');
+	(!sub.is_empty()).then(|| sub.to_owned())
+}
+
 /// Take the snapshot and mount it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
 pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Mounts)> {
@@ -66,6 +76,11 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 		"/dev/disk/by-uuid/{}",
 		sys::findmnt_field("UUID", &resolved.data_dir).await?
 	);
+	// The subvolume's path within the fs (from findmnt SOURCE), so we can snapshot
+	// it through our own read-write top-level mount rather than its live mount: the
+	// daemon's ProtectSystem=strict makes the live mount read-only, and btrfs
+	// refuses to snapshot a source on a read-only mount.
+	let subvol = subvol_rel_path(&sys::findmnt_field("SOURCE", &resolved.data_dir).await?);
 	let map = sys::postgres_to_kopia_idmap().await?;
 
 	let kopia_mount = stable_kopia_mount(backup_type);
@@ -89,6 +104,13 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	)
 	.await?;
 
+	// Snapshot the subvolume via the read-write top-level mount (see `subvol`),
+	// not its read-only live mount. The top-level subvolume itself when there's
+	// no nested subvol.
+	let snapshot_source = match &subvol {
+		Some(sub) => toplevel_mount.join(sub),
+		None => toplevel_mount.clone(),
+	};
 	info!(snapshot = %snapshot_path.display(), "creating read-only btrfs snapshot");
 	sys::run_ok(
 		"btrfs",
@@ -96,7 +118,7 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 			"subvolume",
 			"snapshot",
 			"-r",
-			sys::path(&base_mount),
+			sys::path(&snapshot_source),
 			sys::path(&snapshot_path),
 		],
 	)
@@ -174,6 +196,21 @@ async fn reap_stale(fsdev: &str, kopia_mount: &Path) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn subvol_rel_path_parses_findmnt_source() {
+		assert_eq!(
+			subvol_rel_path("/dev/disk/by-uuid/abc[/@postgresql]").as_deref(),
+			Some("@postgresql")
+		);
+		assert_eq!(
+			subvol_rel_path("/dev/mapper/vg-lv[/@/var/lib/postgresql]").as_deref(),
+			Some("@/var/lib/postgresql")
+		);
+		// No subvol bracket (top-level subvolume) → None.
+		assert_eq!(subvol_rel_path("/dev/sda2"), None);
+		assert_eq!(subvol_rel_path("/dev/sda2[/]"), None);
+	}
 
 	#[test]
 	fn snapshot_name_carries_reaper_infix() {
