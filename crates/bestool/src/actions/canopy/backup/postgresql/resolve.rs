@@ -187,6 +187,7 @@ mod tests {
 			cluster: cluster.to_owned(),
 			data_dir,
 			version: version.map(str::to_owned),
+			connection_url: None,
 			port: None,
 			socket: None,
 			strategy: None,

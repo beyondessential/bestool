@@ -137,8 +137,7 @@ async fn basebackup_prepared(
 	backup_type: &str,
 	config: &PostgresqlConfig,
 ) -> Result<Prepared> {
-	let (path, root) =
-		basebackup::prepare(resolved, backup_type, config.socket.as_deref(), config.port).await?;
+	let (path, root) = basebackup::prepare(resolved, backup_type, config).await?;
 	Ok(Prepared {
 		path,
 		// Tagged as basebackup even on fallback — it reflects what actually ran.
@@ -214,10 +213,9 @@ async fn pg_resetwal(data_dir: &Path) -> Result<()> {
 
 async fn verify(config: &PostgresqlConfig, data_dir: &Path) {
 	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
-	cmd.args(["-X", "-q", "-tAc", "SELECT 1"]);
-	if let Some(port) = config.port {
-		cmd.arg("-p").arg(port.to_string());
-	}
+	// -w as in `checkpoint`: never block on a terminal password prompt.
+	cmd.args(["-X", "-q", "-w", "-tAc", "SELECT 1"]);
+	apply_connection(&mut cmd, config);
 	cmd.stdin(std::process::Stdio::null());
 	match cmd.status().await {
 		Ok(s) if s.success() => info!("restored cluster accepts connections"),
@@ -288,6 +286,23 @@ pub(super) fn pg_command(bin: &str) -> tokio::process::Command {
 	}
 }
 
+/// Apply connection params to a libpq client command (`psql`, `pg_basebackup`).
+/// A configured `connection_url` (libpq URI / conninfo) carries the role, host
+/// and credentials and takes over; otherwise fall back to the `socket` / `port`
+/// flags and libpq's defaults for the rest.
+pub(super) fn apply_connection(cmd: &mut tokio::process::Command, config: &PostgresqlConfig) {
+	if let Some(url) = &config.connection_url {
+		cmd.arg("-d").arg(url);
+		return;
+	}
+	if let Some(socket) = &config.socket {
+		cmd.arg("-h").arg(socket);
+	}
+	if let Some(port) = config.port {
+		cmd.arg("-p").arg(port.to_string());
+	}
+}
+
 /// Run a prepared command, erroring on non-zero exit.
 async fn run_checked(mut cmd: tokio::process::Command, what: &str) -> Result<()> {
 	let status = cmd
@@ -310,12 +325,7 @@ async fn checkpoint(config: &PostgresqlConfig, data_dir: &Path) {
 	// connection that needs a password (e.g. as the OS user on Windows) blocks the
 	// service forever. With -w it fails fast instead, and CHECKPOINT is best-effort.
 	cmd.args(["-X", "-q", "-w"]);
-	if let Some(socket) = &config.socket {
-		cmd.arg("-h").arg(socket);
-	}
-	if let Some(port) = config.port {
-		cmd.arg("-p").arg(port.to_string());
-	}
+	apply_connection(&mut cmd, config);
 	cmd.args(["-c", "CHECKPOINT;"]);
 	cmd.stdin(std::process::Stdio::null());
 
@@ -354,6 +364,42 @@ mod tests {
 				"{required} must never be ignored"
 			);
 		}
+	}
+
+	fn pg_config(connection_url: Option<&str>, socket: Option<&str>, port: Option<u16>) -> PostgresqlConfig {
+		PostgresqlConfig {
+			cluster: "main".into(),
+			data_dir: None,
+			version: None,
+			connection_url: connection_url.map(str::to_owned),
+			port,
+			socket: socket.map(PathBuf::from),
+			strategy: None,
+		}
+	}
+
+	#[test]
+	fn apply_connection_prefers_the_url() {
+		let mut cmd = tokio::process::Command::new("psql");
+		apply_connection(&mut cmd, &pg_config(Some("postgresql://u:p@h/db"), Some("/run/pg"), Some(5433)));
+		let args: Vec<_> = cmd
+			.as_std()
+			.get_args()
+			.map(|a| a.to_string_lossy().into_owned())
+			.collect();
+		assert_eq!(args, vec!["-d", "postgresql://u:p@h/db"]);
+	}
+
+	#[test]
+	fn apply_connection_falls_back_to_socket_and_port() {
+		let mut cmd = tokio::process::Command::new("psql");
+		apply_connection(&mut cmd, &pg_config(None, Some("/run/pg"), Some(5433)));
+		let args: Vec<_> = cmd
+			.as_std()
+			.get_args()
+			.map(|a| a.to_string_lossy().into_owned())
+			.collect();
+		assert_eq!(args, vec!["-h", "/run/pg", "-p", "5433"]);
 	}
 
 	#[test]
