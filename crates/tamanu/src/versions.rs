@@ -138,13 +138,14 @@ pub fn parse_image_tag(image: &str) -> Option<&str> {
 pub async fn running_versions_linux() -> Result<HashMap<String, String>, String> {
 	// The deployment runs rootful podman, so the containers are only visible to
 	// root. When we're not root (an interactive `tamanu status` / `doctor`),
-	// elevate via sudo rather than letting podman run rootless and see nothing or
-	// error; the alertd daemon already runs as root and invokes it directly.
-	let mut command = if is_root().await {
+	// elevate via `sudo -n` rather than letting podman run rootless and see
+	// nothing or error; the alertd daemon already runs as root and invokes it
+	// directly. `-n` never blocks on a password prompt.
+	let mut command = if is_root() {
 		tokio::process::Command::new("podman")
 	} else {
 		let mut c = tokio::process::Command::new("sudo");
-		c.arg("podman");
+		c.arg("-n").arg("podman");
 		c
 	};
 	let result = command
@@ -196,23 +197,12 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 	Ok(HashMap::new())
 }
 
-/// Whether this process is running as root (euid 0), read from
-/// `/proc/self/status`. Used to decide whether reading the rootful podman needs
-/// elevating via sudo.
+/// Whether this process is running as root (euid 0). Used to decide whether
+/// reading the rootful podman needs elevating via sudo. Asks the kernel via
+/// `geteuid()` rather than parsing `/proc` (which a sandbox can refuse).
 #[cfg(target_os = "linux")]
-async fn is_root() -> bool {
-	// euid is the second field of the `Uid:` line.
-	tokio::fs::read_to_string("/proc/self/status")
-		.await
-		.ok()
-		.and_then(|status| {
-			status
-				.lines()
-				.find_map(|line| line.strip_prefix("Uid:"))
-				.and_then(|rest| rest.split_whitespace().nth(1).map(str::to_owned))
-		})
-		.and_then(|euid| euid.parse::<u32>().ok())
-		.is_some_and(|euid| euid == 0)
+fn is_root() -> bool {
+	rustix::process::geteuid().is_root()
 }
 
 /// Parse a version string leniently, tolerating a leading `v` (image tags and

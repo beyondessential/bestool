@@ -41,6 +41,9 @@ url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
 
 [target.'cfg(unix)'.dependencies]
+# geteuid(), to tell whether we're root without reading /proc (which the
+# daemon's own sandbox can refuse).
+rustix = { version = "1", features = ["process"] }
 # systemd readiness/reload/status notifications (no-op when not under systemd).
 sd-notify = "0.5.0"
 

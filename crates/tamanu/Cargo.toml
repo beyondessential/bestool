@@ -46,4 +46,7 @@ uuid = { version = "1.23.2", features = ["v4"] }
 tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# geteuid(), to tell whether we're root (so we know whether reading rootful
+# podman needs sudo) without parsing /proc.
+rustix = { version = "1", features = ["process"] }
 zbus_systemd = { version = "0.26000.0", default-features = false, features = ["systemd1", "zbus-async-tokio"] }
