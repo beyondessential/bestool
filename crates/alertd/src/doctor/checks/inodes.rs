@@ -33,7 +33,10 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	let output = match Command::new("df").args(["-P", "-i", "-T"]).output().await {
 		Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
 		Ok(o) => {
-			return Check::skip(
+			// df ran but failed, so we couldn't read inode usage at all — the
+			// check couldn't run. That's broken, not a skip (which is for df not
+			// being present at all, handled below).
+			return Check::broken(
 				NAME,
 				"df failed",
 				format!(
