@@ -91,7 +91,9 @@ async fn run_linux() -> Check {
 	let snapshots: Vec<Snapshot> = match serde_json::from_slice(&output.stdout) {
 		Ok(s) => s,
 		Err(err) => {
-			return Check::skip(
+			// kopia succeeded but handed us output we can't decode, so the check
+			// couldn't run — broken, not skip.
+			return Check::broken(
 				CHECK_NAME,
 				"kopia output unparseable",
 				format!("could not decode kopia snapshot list JSON: {err}"),
@@ -158,7 +160,9 @@ async fn run_windows() -> Check {
 	let snapshots: Vec<Snapshot> = match serde_json::from_slice(&output.stdout) {
 		Ok(s) => s,
 		Err(err) => {
-			return Check::skip(
+			// kopia succeeded but handed us output we can't decode, so the check
+			// couldn't run — broken, not skip.
+			return Check::broken(
 				CHECK_NAME,
 				"kopia output unparseable",
 				format!("could not decode kopia snapshot list JSON: {err}"),

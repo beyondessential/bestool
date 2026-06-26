@@ -72,11 +72,17 @@ struct ExternalUser {
 pub async fn run(_ctx: SweepContext) -> Check {
 	let mut users = match collect_users().await {
 		Ok(CollectOutcome::Users(u)) => u,
-		Ok(CollectOutcome::Unavailable(reason)) => {
-			return Check::skip("external_users", "could not enumerate logins", reason);
+		Ok(CollectOutcome::Unsupported(reason)) => {
+			return Check::skip("external_users", "login enumeration unsupported", reason);
+		}
+		Ok(CollectOutcome::Failed(reason)) => {
+			// The enumeration tool ran but errored, so we couldn't read the login
+			// list — the check couldn't run. That's broken, not a skip (which
+			// would imply a precondition like the platform not being supported).
+			return Check::broken("external_users", "could not enumerate logins", reason);
 		}
 		Err(err) => {
-			return Check::skip(
+			return Check::broken(
 				"external_users",
 				"could not enumerate logins",
 				err.to_string(),
@@ -279,14 +285,24 @@ fn humanise_age(d: Duration) -> String {
 
 /// Outcome of trying to enumerate sessions.
 ///
-/// `Unavailable` is distinct from `Users(empty)`: on Windows, `quser` exits
+/// `Failed` is distinct from `Users(empty)`: on Windows, `quser` exits
 /// non-zero (typically with "No User exists for *") both when there genuinely
 /// are no sessions *and* when the caller doesn't have the privilege to list
 /// them. Treating both the same way silently turned a permission failure into
 /// a falsely cheerful PASS, which is the opposite of what the operator needs.
+///
+/// `Failed` (the enumeration tool ran but errored) is in turn distinct from
+/// `Unsupported` (no enumeration implemented for this platform): the former is
+/// a broken check — we couldn't get an answer we expected to — while the latter
+/// is a genuine skip, a precondition that was never going to be met here.
 enum CollectOutcome {
 	Users(Vec<ExternalUser>),
-	Unavailable(String),
+	Failed(String),
+	#[cfg_attr(
+		any(unix, windows),
+		expect(dead_code, reason = "only constructed on platforms without who/quser")
+	)]
+	Unsupported(String),
 }
 
 #[cfg(unix)]
@@ -305,7 +321,7 @@ async fn collect_users() -> miette::Result<CollectOutcome> {
 	if !output.status.success() {
 		let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 		debug!(status = ?output.status, %stderr, "who returned non-zero");
-		return Ok(CollectOutcome::Unavailable(format!(
+		return Ok(CollectOutcome::Failed(format!(
 			"who returned non-zero{}",
 			if stderr.is_empty() {
 				String::new()
@@ -580,7 +596,7 @@ async fn collect_users() -> miette::Result<CollectOutcome> {
 		if stderr.to_lowercase().contains("no user exists for *") {
 			return Ok(CollectOutcome::Users(Vec::new()));
 		}
-		return Ok(CollectOutcome::Unavailable(format!(
+		return Ok(CollectOutcome::Failed(format!(
 			"quser returned non-zero{}",
 			if stderr.trim().is_empty() {
 				String::new()
@@ -596,7 +612,7 @@ async fn collect_users() -> miette::Result<CollectOutcome> {
 
 #[cfg(not(any(unix, windows)))]
 async fn collect_users() -> miette::Result<CollectOutcome> {
-	Ok(CollectOutcome::Unavailable(
+	Ok(CollectOutcome::Unsupported(
 		"session enumeration not implemented for this platform".into(),
 	))
 }
