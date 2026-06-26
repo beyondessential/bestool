@@ -95,20 +95,13 @@ pub fn find_command() -> Option<PathBuf> {
 	candidate_install_paths().into_iter().find(|c| probe(c))
 }
 
-/// Resolve the pm2 CLI executable path via [`find_command`] (which handles
-/// Windows PATHEXT — `Command::new("pm2")` doesn't expand it, so a bare `pm2`
-/// is "program not found" on Windows even when `pm2.cmd` is on PATH — and
-/// common npm-global install dirs). Falls back to a bare `pm2` when discovery
-/// finds nothing: on Linux that's the PATH-resolved binary.
-///
-/// Use this for both `std::process::Command` and `tokio::process::Command`:
-/// `Command::new(pm2::program())`.
+/// Resolve the pm2 CLI path. On Windows `Command::new("pm2")` doesn't apply
+/// PATHEXT, so a bare `pm2` is "program not found" even when `pm2.cmd` is on
+/// PATH; `find_command` handles that. Falls back to bare `pm2` (Linux PATH).
 pub fn program() -> PathBuf {
 	find_command().unwrap_or_else(|| PathBuf::from("pm2"))
 }
 
-/// Build a [`std::process::Command`] for the pm2 CLI with the executable
-/// resolved by [`program`].
 pub fn command() -> Command {
 	Command::new(program())
 }
@@ -504,10 +497,7 @@ mod tests {
 
 	#[test]
 	fn program_falls_back_to_bare_pm2_when_undiscovered() {
-		// On a host with no pm2 install and no override, `program()` must still
-		// hand back a runnable name rather than panicking — the bare `pm2` PATH
-		// lookup. (On Windows this is what `find_command` exists to replace, but
-		// the fallback path itself must hold.)
+		// No pm2 installed + no override: program() must still return a runnable name.
 		if find_command().is_none() {
 			assert_eq!(program(), PathBuf::from("pm2"));
 		}
