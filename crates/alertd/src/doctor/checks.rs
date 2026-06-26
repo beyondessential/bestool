@@ -28,6 +28,7 @@ pub mod fhir_jobs;
 pub mod fhir_service_requests_unresolved;
 pub mod http_errors;
 pub mod inodes;
+pub mod ips;
 pub mod ips_errors;
 pub mod kopia_backup;
 pub mod load;
@@ -271,6 +272,9 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("caddy_certs", caddy_certs, host),
 		entry!("http_errors", http_errors, host),
 		entry!("tailscale", tailscale, host, off_wire),
+		// Reports the host's LAN and best-guess WAN addresses as status facts
+		// (off the wire; carried in the top-level payload, like the timezone).
+		entry!("ips", ips, host, off_wire),
 		// Tamanu-level: the config-derived FHIR expectation degrades to Unknown
 		// without config (see `services::expected`); the rest is DB/host-derived.
 		entry!("tamanu_service", tamanu_service),
