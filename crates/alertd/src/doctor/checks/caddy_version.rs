@@ -39,8 +39,11 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	let output = match Command::new(caddy::program()).arg("version").output().await {
 		Ok(o) if o.status.success() => o,
 		Ok(o) => {
+			// caddy ran but couldn't tell us its version, so the check couldn't
+			// run — that's broken, not a skip (which would imply a precondition
+			// like caddy not being installed).
 			let stderr = String::from_utf8_lossy(&o.stderr);
-			return Check::skip(
+			return Check::broken(
 				CHECK_NAME,
 				"caddy version failed",
 				format!("caddy exited {}: {}", o.status, stderr.trim()),
@@ -59,7 +62,9 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	let version = match parse_caddy_version(&stdout) {
 		Some(v) => v,
 		None => {
-			return Check::skip(
+			// caddy answered but with output we can't read a version from, so
+			// the check couldn't run: broken, not skip.
+			return Check::broken(
 				CHECK_NAME,
 				"caddy version unparseable",
 				format!("could not parse semver from `caddy version` output: {stdout:?}"),
