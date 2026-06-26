@@ -90,12 +90,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 	evaluate_drift(&running, &expected_versions, &expectations)
 }
 
-/// Warning result for when `podman ps` couldn't be read at all. We can't judge
-/// drift, and must not report a pass — that would dress up a blind check as a
-/// healthy one. Most often this is alertd lacking access to the root-owned
-/// containers (see the podman-socket / privilege notes).
+/// Broken result for when `podman ps` couldn't be read at all. The check itself
+/// couldn't run, so it says nothing about the system — that's broken, not a
+/// warning (which would imply a degraded system) and not a pass (which would
+/// dress up a blind check as a healthy one). Most often this is alertd lacking
+/// access to the root-owned containers (see the podman-socket / privilege notes).
 fn unreadable_check(reason: &str) -> Check {
-	Check::warning(
+	Check::broken(
 		"version_drift",
 		"could not read running container versions",
 		format!("`podman ps` failed, so version drift can't be checked: {reason}"),
@@ -194,10 +195,11 @@ mod tests {
 	}
 
 	#[test]
-	fn unreadable_is_warning_not_pass() {
-		// The regression that motivated this: a blind check must NOT look healthy.
+	fn unreadable_is_broken_not_pass() {
+		// The check couldn't run at all, so it says nothing about the system:
+		// broken, not a pass that would dress up a blind check as healthy.
 		let check = unreadable_check("podman not found on PATH");
-		assert!(matches!(check.status, CheckStatus::Warning(_)), "{check:?}");
+		assert!(matches!(check.status, CheckStatus::Broken(_)), "{check:?}");
 	}
 
 	#[test]
