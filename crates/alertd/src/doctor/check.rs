@@ -44,6 +44,17 @@ impl CheckStatus {
 	pub fn is_skip(&self) -> bool {
 		matches!(self, CheckStatus::Skip(_))
 	}
+
+	/// The explanatory reason carried by every non-pass status, if any.
+	pub fn reason(&self) -> Option<&str> {
+		match self {
+			CheckStatus::Pass => None,
+			CheckStatus::Skip(r)
+			| CheckStatus::Warning(r)
+			| CheckStatus::Fail(r)
+			| CheckStatus::Broken(r) => Some(r),
+		}
+	}
 }
 
 /// Result of one healthcheck.
@@ -154,6 +165,13 @@ impl Check {
 		obj.insert("result".into(), self.status.wire_result().into());
 		for (k, v) in &self.details {
 			obj.insert(k.clone(), v.clone());
+		}
+		// Carry the human summary and (for non-pass) the reason so an operator can
+		// see *why* a check warned/failed from canopy, without shelling into the
+		// box. Inserted after the details so the reserved keys always win.
+		obj.insert("summary".into(), self.summary.clone().into());
+		if let Some(reason) = self.status.reason() {
+			obj.insert("reason".into(), reason.into());
 		}
 		Value::Object(obj)
 	}
@@ -329,18 +347,27 @@ mod tests {
 		assert_eq!(v["check"], "db_connect");
 		assert_eq!(v["result"], "passed");
 		assert_eq!(v["latency_ms"], 3);
+		assert_eq!(v["summary"], "ok");
+		// A pass carries no reason.
+		assert!(v.get("reason").is_none());
 	}
 
 	#[test]
 	fn check_to_wire_statuses() {
 		let warn = Check::warning("disk_free", "20% used", "below threshold");
-		assert_eq!(warn.to_wire()["result"], "warning");
+		let v = warn.to_wire();
+		assert_eq!(v["result"], "warning");
+		// The reason and summary travel to canopy so the *why* is visible off-box.
+		assert_eq!(v["summary"], "20% used");
+		assert_eq!(v["reason"], "below threshold");
 		let fail = Check::fail("disk_free", "1% free", "out of space");
 		assert_eq!(fail.to_wire()["result"], "failed");
+		assert_eq!(fail.to_wire()["reason"], "out of space");
 		let broken = Check::broken("x", "query broken", "no such column");
 		assert_eq!(broken.to_wire()["result"], "broken");
 		let skip = Check::skip("x", "n/a", "central-only");
 		assert_eq!(skip.to_wire()["result"], "skipped");
+		assert_eq!(skip.to_wire()["reason"], "central-only");
 	}
 
 	#[test]
