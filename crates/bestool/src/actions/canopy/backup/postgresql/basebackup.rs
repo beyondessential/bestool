@@ -17,7 +17,7 @@ use std::{
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use tracing::info;
 
-use super::resolve::ResolvedCluster;
+use super::{super::method::PostgresqlConfig, resolve::ResolvedCluster};
 
 /// Where this run's base backup is streamed to (and what kopia snapshots). Nests
 /// `<version>/<cluster>` under the stable source dir so the kopia source path
@@ -30,31 +30,23 @@ fn destination(backup_type: &str, resolved: &ResolvedCluster) -> PathBuf {
 }
 
 /// `pg_basebackup` args for a plain (uncompressed) base backup with streamed WAL.
-fn basebackup_args(dest: &Path, socket: Option<&Path>, port: Option<u16>) -> Vec<String> {
-	let mut args = vec![
+/// Connection params (`connection_url` or socket/port) are applied separately by
+/// [`super::apply_connection`]. `--no-password` keeps it from ever prompting.
+fn basebackup_args(dest: &Path) -> Vec<String> {
+	vec![
 		"-D".to_owned(),
 		dest.to_string_lossy().into_owned(),
 		"--wal-method=stream".to_owned(),
 		"--checkpoint=fast".to_owned(),
 		"--no-password".to_owned(),
-	];
-	if let Some(socket) = socket {
-		args.push("-h".to_owned());
-		args.push(socket.to_string_lossy().into_owned());
-	}
-	if let Some(port) = port {
-		args.push("-p".to_owned());
-		args.push(port.to_string());
-	}
-	args
+	]
 }
 
 /// Stream a base backup and return (kopia source path, the dir to clean up).
 pub async fn prepare(
 	resolved: &ResolvedCluster,
 	backup_type: &str,
-	socket: Option<&Path>,
-	port: Option<u16>,
+	config: &PostgresqlConfig,
 ) -> Result<(PathBuf, PathBuf)> {
 	let root = super::stable_source_dir(backup_type);
 	let dest = destination(backup_type, resolved);
@@ -77,7 +69,8 @@ pub async fn prepare(
 
 	info!(dest = %dest.display(), "streaming pg_basebackup");
 	let mut cmd = super::pg_command(&super::postgres_bin("pg_basebackup", &resolved.data_dir));
-	cmd.args(basebackup_args(&dest, socket, port));
+	cmd.args(basebackup_args(&dest));
+	super::apply_connection(&mut cmd, config);
 	cmd.stdin(Stdio::null());
 	let status = cmd
 		.status()
@@ -185,7 +178,9 @@ mod tests {
 
 	#[test]
 	fn basebackup_args_stream_wal_and_fast_checkpoint() {
-		let args = basebackup_args(Path::new("/staging/16/main"), None, None);
+		// Connection params are applied separately (see `apply_connection`); these
+		// are just the fixed base-backup flags.
+		let args = basebackup_args(Path::new("/staging/16/main"));
 		assert_eq!(
 			args,
 			vec![
@@ -196,16 +191,5 @@ mod tests {
 				"--no-password",
 			]
 		);
-	}
-
-	#[test]
-	fn basebackup_args_include_socket_and_port() {
-		let args = basebackup_args(
-			Path::new("/staging/16/main"),
-			Some(Path::new("/var/run/postgresql")),
-			Some(5433),
-		);
-		assert!(args.windows(2).any(|w| w == ["-h", "/var/run/postgresql"]));
-		assert!(args.windows(2).any(|w| w == ["-p", "5433"]));
 	}
 }

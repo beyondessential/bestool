@@ -64,10 +64,20 @@ pub struct PostgresqlConfig {
 	/// Override the resolved major version.
 	#[serde(default)]
 	pub version: Option<String>,
-	/// Override the port used to connect for `CHECKPOINT`.
+	/// libpq connection URI / conninfo for the client commands (`CHECKPOINT`,
+	/// `pg_basebackup`, restore verification). Takes precedence over `socket` /
+	/// `port` and carries the role and credentials — needed where peer auth isn't
+	/// available (e.g. Windows, which has no `sudo -u postgres`). May embed a
+	/// password (then visible in the process's argv); a passwordless URI plus a
+	/// pgpass file / `PGPASSWORD` avoids that.
+	#[serde(default)]
+	pub connection_url: Option<String>,
+	/// Override the port used to connect for `CHECKPOINT` (ignored when
+	/// `connection_url` is set).
 	#[serde(default)]
 	pub port: Option<u16>,
-	/// Override the unix socket directory used to connect.
+	/// Override the unix socket directory used to connect (ignored when
+	/// `connection_url` is set).
 	#[serde(default)]
 	pub socket: Option<PathBuf>,
 	/// Force a snapshot strategy instead of auto-detecting (for testing).
