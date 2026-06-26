@@ -93,14 +93,10 @@ pub async fn get_status(addrs: &[std::net::SocketAddr]) -> miette::Result<()> {
 	if !status.backups_running.is_empty() {
 		println!("  running: {}", status.backups_running.len());
 		for backup in &status.backups_running {
-			let phase = backup
-				.latest
-				.get("event")
-				.and_then(serde_json::Value::as_str)
-				.unwrap_or("?");
+			let descr = describe_latest(&backup.latest);
 			let run_id = backup.run_id.as_deref().unwrap_or("-");
 			println!(
-				"           - {} [{phase}] run {run_id}, started {}",
+				"           - {} [{descr}] run {run_id}, started {}",
 				backup.r#type, backup.started_at
 			);
 		}
@@ -123,5 +119,57 @@ fn format_duration(secs: i64) -> String {
 		format!("{mins}m {secs}s")
 	} else {
 		format!("{secs}s")
+	}
+}
+
+/// A short human descriptor of a running backup's latest status event, so the
+/// status line shows *which* phase it's in (e.g. `phase: snapshot`) or the live
+/// kopia progress — not just the bare event type.
+fn describe_latest(latest: &serde_json::Value) -> String {
+	let field = |key| latest.get(key).and_then(serde_json::Value::as_str);
+	match field("event") {
+		Some("phase") => format!("phase: {}", field("phase").unwrap_or("?")),
+		Some("progress") => match field("status").unwrap_or("") {
+			"" => "progress".to_string(),
+			status if status.chars().count() > 60 => {
+				format!("{}…", status.chars().take(59).collect::<String>())
+			}
+			status => status.to_string(),
+		},
+		Some(other) => other.to_string(),
+		None => "?".to_string(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use serde_json::json;
+
+	use super::*;
+
+	#[test]
+	fn describe_latest_names_the_phase() {
+		assert_eq!(
+			describe_latest(&json!({"event": "phase", "phase": "snapshot"})),
+			"phase: snapshot"
+		);
+	}
+
+	#[test]
+	fn describe_latest_shows_progress_and_truncates() {
+		assert_eq!(
+			describe_latest(&json!({"event": "progress", "status": "hashed 3 files"})),
+			"hashed 3 files"
+		);
+		let long = "x".repeat(100);
+		let out = describe_latest(&json!({"event": "progress", "status": long}));
+		assert!(out.ends_with('…'));
+		assert_eq!(out.chars().count(), 60);
+	}
+
+	#[test]
+	fn describe_latest_falls_back_to_event_type() {
+		assert_eq!(describe_latest(&json!({"event": "started"})), "started");
+		assert_eq!(describe_latest(&json!({})), "?");
 	}
 }
