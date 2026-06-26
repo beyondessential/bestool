@@ -146,7 +146,7 @@ enum CmdErr {
 async fn btrfs_cmd(args: &[&str]) -> Result<String, CmdErr> {
 	// device stats / subvolume list need CAP_SYS_ADMIN; elevate when not root so
 	// an interactive run still collects, matching the root daemon sweep.
-	match super::privileged("btrfs").await.args(args).output().await {
+	match super::privileged("btrfs").args(args).output().await {
 		Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
 		Ok(o) => Err(CmdErr::Failed(format!(
 			"`btrfs {}` exited {}: {}",
