@@ -95,6 +95,17 @@ pub fn find_command() -> Option<PathBuf> {
 	candidate_install_paths().into_iter().find(|c| probe(c))
 }
 
+/// Resolve the pm2 CLI path. On Windows `Command::new("pm2")` doesn't apply
+/// PATHEXT, so a bare `pm2` is "program not found" even when `pm2.cmd` is on
+/// PATH; `find_command` handles that. Falls back to bare `pm2` (Linux PATH).
+pub fn program() -> PathBuf {
+	find_command().unwrap_or_else(|| PathBuf::from("pm2"))
+}
+
+pub fn command() -> Command {
+	Command::new(program())
+}
+
 fn probe(path: &Path) -> bool {
 	Command::new(path)
 		.arg("--version")
@@ -482,6 +493,14 @@ mod tests {
 		let procs = list_via_dump_at(tmp.path()).unwrap();
 		assert_eq!(procs.len(), 1);
 		assert!(!procs[0].running);
+	}
+
+	#[test]
+	fn program_falls_back_to_bare_pm2_when_undiscovered() {
+		// No pm2 installed + no override: program() must still return a runnable name.
+		if find_command().is_none() {
+			assert_eq!(program(), PathBuf::from("pm2"));
+		}
 	}
 
 	#[test]

@@ -9,6 +9,7 @@ use miette::{Result, WrapErr, bail};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
+	pm2,
 	services::{self, ExpectedState, Expectation, Supervisor},
 	systemd,
 };
@@ -262,7 +263,7 @@ fn spawn_log_follower(supervisor: Supervisor, targets: &[String]) -> Option<LogF
 					deduped.push(t);
 				}
 			}
-			let mut cmd = Command::new("pm2");
+			let mut cmd = Command::new(pm2::program());
 			cmd.args(["logs", "--lines", "0"]);
 			cmd.args(deduped);
 			cmd
