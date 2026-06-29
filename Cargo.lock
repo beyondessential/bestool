@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.1.4"
+version = "1.1.5"
 dependencies = [
  "age",
  "age-core",
@@ -551,7 +551,7 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "bestool"
-version = "1.35.2"
+version = "1.35.3"
 dependencies = [
  "age",
  "algae-cli",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "14.3.1"
+version = "14.4.0"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-canopy"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "algae-cli",
  "base64 0.22.1",
@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "aegis",
  "bestool-postgres",
@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.13.5"
+version = "0.14.0"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -6025,7 +6025,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-st7789v2-driver"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "bitvec",
  "embedded-graphics",
