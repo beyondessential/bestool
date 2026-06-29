@@ -23,6 +23,7 @@ pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
 pub mod external_users;
+pub mod fhir_config;
 pub mod fhir_job_errors;
 pub mod fhir_jobs;
 pub mod fhir_service_requests_unresolved;
@@ -281,6 +282,8 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version_drift", version_drift),
 		entry!("external_users", external_users, host),
 		entry!("sync_sessions", sync_sessions),
+		// Config-derived: the FHIR API and worker toggles must agree.
+		entry!("fhir_config", fhir_config),
 		entry!("fhir_jobs", fhir_jobs),
 		entry!("kopia_backup", kopia_backup, host),
 		entry!(
