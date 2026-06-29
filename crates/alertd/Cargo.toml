@@ -35,7 +35,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-rustls = "0.26.4"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
-tower-http = { version = "0.6.6", features = ["trace"] }
+tower-http = { version = "0.7.0", features = ["trace"] }
 tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
