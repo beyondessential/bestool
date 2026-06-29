@@ -77,6 +77,10 @@ impl TamanuConfig {
 			.or(self.country_time_zone.as_deref())
 	}
 
+	pub fn fhir_enabled(&self) -> bool {
+		self.integrations.fhir.enabled
+	}
+
 	pub fn fhir_worker_enabled(&self) -> bool {
 		self.integrations.fhir.worker.enabled
 	}
@@ -210,6 +214,7 @@ impl SyncApiConnection {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Fhir {
+	pub enabled: bool,
 	pub worker: FhirWorker,
 }
 
@@ -376,6 +381,25 @@ mod tests {
 	#[test]
 	fn fhir_worker_disabled_when_integrations_missing() {
 		assert!(!parse(base()).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn fhir_enabled_reads_integrations_path() {
+		let mut json = base();
+		json["integrations"] = serde_json::json!({ "fhir": { "enabled": true } });
+		assert!(parse(json).fhir_enabled());
+	}
+
+	#[test]
+	fn fhir_disabled_when_integrations_says_false() {
+		let mut json = base();
+		json["integrations"] = serde_json::json!({ "fhir": { "enabled": false } });
+		assert!(!parse(json).fhir_enabled());
+	}
+
+	#[test]
+	fn fhir_disabled_when_integrations_missing() {
+		assert!(!parse(base()).fhir_enabled());
 	}
 
 	#[test]
