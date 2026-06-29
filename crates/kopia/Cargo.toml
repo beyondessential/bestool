@@ -42,7 +42,7 @@ miette = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"], optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
-sha2 = { version = "0.10.9", optional = true }
+sha2 = { version = "0.11.0", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros"], optional = true }
 tracing = { workspace = true }
 whoami = "2.1.2"
