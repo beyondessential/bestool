@@ -142,7 +142,7 @@ dependencies = [
  "diceware_wordlists",
  "futures",
  "indicatif",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jiff",
  "miette",
  "pinentry",
@@ -583,7 +583,7 @@ dependencies = [
  "hickory-resolver",
  "improv-wifi",
  "indicatif",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jiff",
  "json5",
  "jsonschema",
@@ -801,7 +801,7 @@ dependencies = [
  "duct",
  "futures",
  "glob",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jiff",
  "json5",
  "leon",
@@ -3640,9 +3640,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
 dependencies = [
  "either",
 ]
@@ -5466,7 +5466,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -5486,7 +5486,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -5499,7 +5499,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -6025,7 +6025,7 @@ version = "0.3.13"
 dependencies = [
  "bitvec",
  "embedded-graphics",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "miette",
  "rppal",
  "thiserror 2.0.18",
