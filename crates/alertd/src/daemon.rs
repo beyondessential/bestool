@@ -52,6 +52,24 @@ impl DaemonControl {
 	}
 }
 
+/// A handle a background task can use to ask the daemon to restart itself.
+///
+/// Held by [`TaskContext`](crate::tasks::TaskContext) so a task that has
+/// replaced the running binary (self-update) can have the daemon exit for the
+/// service manager to relaunch the new binary, via the same path as the
+/// `/restart` control.
+#[derive(Clone, Debug)]
+pub struct RestartTrigger {
+	events: mpsc::Sender<DaemonEvent>,
+}
+
+impl RestartTrigger {
+	/// Ask the daemon to exit so the service manager restarts it.
+	pub async fn request_restart(&self) {
+		let _ = self.events.send(DaemonEvent::Restart).await;
+	}
+}
+
 pub async fn run(daemon_config: DaemonConfig) -> Result<()> {
 	let (_shutdown_tx, shutdown_rx) = oneshot::channel();
 	run_with_shutdown(daemon_config, shutdown_rx).await
@@ -115,14 +133,17 @@ pub async fn run_with_shutdown(
 	let (reload_tx, reload_rx) = tokio::sync::watch::channel(0u64);
 	let reload_tx = Arc::new(reload_tx);
 
+	let (event_tx, mut event_rx) = mpsc::channel(100);
+
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
 		http_client: crate::http_client(),
 		canopy_client,
 		reload: reload_rx,
+		restart: Some(RestartTrigger {
+			events: event_tx.clone(),
+		}),
 	});
-
-	let (event_tx, mut event_rx) = mpsc::channel(100);
 
 	// Control handle for the HTTP server's `/reload` and `/restart` endpoints.
 	let control = DaemonControl {

@@ -2,14 +2,20 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use binstalk_downloader::download::{Download, PkgFmt};
+use binstalk_downloader::download::{DataVerifier as _, Download, PkgFmt};
 use detect_targets::{TARGET, get_desired_targets};
 use miette::{IntoDiagnostic, Result, miette};
-use tracing::{debug, info};
+use tracing::info;
 
-use crate::download::{DownloadSource, client, fetch_latest_version};
+use crate::download::{
+	DownloadSource, ReleaseVerifier, client, fetch_latest_version, fetch_release_signature,
+	remote_is_newer,
+};
 
 use super::Context;
+
+#[cfg(all(windows, feature = "alertd"))]
+pub(crate) mod task;
 
 #[cfg(unix)]
 fn check_exe_writable() -> Result<()> {
@@ -87,6 +93,13 @@ pub struct SelfUpdateArgs {
 }
 
 pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
+	// On Windows, when the alert daemon is running, let it own the binary swap
+	// and its own restart rather than racing it from this separate process.
+	#[cfg(all(windows, feature = "alertd"))]
+	if is_alertd_service_running().await {
+		return delegate_to_daemon(&args).await;
+	}
+
 	#[cfg(unix)]
 	{
 		check_exe_writable()?;
@@ -102,29 +115,78 @@ pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 		add_to_path,
 	} = args;
 
-	if version == "latest" && !force {
-		match fetch_latest_version().await {
-			Ok(latest) => {
-				let current = env!("CARGO_PKG_VERSION");
-				if latest == current {
-					info!(
-						version = current,
-						"Already on the latest version. Use --force to reinstall."
-					);
-					return Ok(());
-				}
-				info!(current = current, latest = %latest, "Update available, proceeding");
-			}
-			Err(err) => {
-				debug!("Failed to check latest version, continuing with download: {err}");
-			}
+	#[cfg(windows)]
+	if add_to_path && let Err(err) = add_self_to_path() {
+		tracing::error!("{err:?}");
+	}
+
+	match perform_update(&version, target, temp_dir, force).await? {
+		UpdateOutcome::AlreadyCurrent { version } => {
+			info!(
+				version = %version,
+				"already on the latest version; use --force to reinstall"
+			);
+		}
+		UpdateOutcome::Updated { from, to } => {
+			info!(from = %from, to = %to, "updated bestool");
 		}
 	}
+
+	Ok(())
+}
+
+/// What [`perform_update`] did.
+#[derive(Debug, Clone)]
+pub(crate) enum UpdateOutcome {
+	/// The running build is already current; nothing was downloaded.
+	AlreadyCurrent { version: String },
+	/// The running binary was replaced; `to` is now installed.
+	Updated { from: String, to: String },
+}
+
+/// Resolve, download, verify, and install a bestool release, replacing the
+/// running binary in place.
+///
+/// `version` is `"latest"` or a specific version. With `"latest"` and `force`
+/// unset, returns [`UpdateOutcome::AlreadyCurrent`] without downloading when the
+/// running build is already at or ahead of the published release. A specific
+/// version is always installed.
+///
+/// The downloaded archive is verified against the embedded release public key
+/// before the binary it contains is swapped in; an artifact with a missing or
+/// invalid signature is never installed. Replacing the binary does not restart
+/// anything — the caller decides what happens next (a CLI invocation exits; the
+/// daemon requests its own restart).
+pub(crate) async fn perform_update(
+	version: &str,
+	target: Option<String>,
+	temp_dir: Option<PathBuf>,
+	force: bool,
+) -> Result<UpdateOutcome> {
+	let current = env!("CARGO_PKG_VERSION");
+
+	let resolved = if version == "latest" {
+		let latest = fetch_latest_version().await?;
+		if !force && !remote_is_newer(current, &latest) {
+			return Ok(UpdateOutcome::AlreadyCurrent {
+				version: current.to_string(),
+			});
+		}
+		latest
+	} else {
+		version.to_string()
+	};
+
+	info!(from = current, to = %resolved, "updating bestool");
 
 	let client = client().await?;
 
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
 	let detected_targets = detected_targets.get().await;
+	let target = detected_targets
+		.first()
+		.cloned()
+		.unwrap_or_else(|| TARGET.into());
 
 	let dir = temp_dir.unwrap_or_else(std::env::temp_dir);
 	let filename = format!(
@@ -135,51 +197,78 @@ pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 	let _ = tokio::fs::remove_file(&dest).await;
 
 	let host = DownloadSource::Tools.host();
-	let target = detected_targets
-		.first()
-		.cloned()
-		.unwrap_or_else(|| TARGET.into());
-	let bin_path = format!("/bestool/{version}/{target}/{filename}");
-	let bin_url = host.join(&bin_path).into_diagnostic()?;
-	let tzst_url = host
-		.join(&format!("{bin_path}.tar.zst"))
+	let archive_path = format!("/bestool/{resolved}/{target}/{filename}.tar.zst");
+	let archive_url = host.join(&archive_path).into_diagnostic()?;
+
+	info!(url = %archive_url, "downloading and verifying release");
+	let signature = fetch_release_signature(&client, &archive_url).await?;
+	let mut verifier = ReleaseVerifier::new(signature);
+	Download::new_with_data_verifier(client, archive_url, &mut verifier)
+		.and_extract(PkgFmt::Tzstd, &dir)
+		.await
 		.into_diagnostic()?;
 
-	let tzst_available = client
-		.remote_gettable(tzst_url.clone())
+	if !verifier.validate() {
+		return Err(miette!(
+			"release signature verification failed; refusing to install {resolved}"
+		));
+	}
+
+	info!(?dest, "signature verified, replacing binary");
+	self_replace::self_replace(&dest).into_diagnostic()?;
+	let _ = tokio::fs::remove_file(&dest).await;
+
+	Ok(UpdateOutcome::Updated {
+		from: current.to_string(),
+		to: resolved,
+	})
+}
+
+/// Ask the running alert daemon to perform the update (and restart itself),
+/// rather than swapping the binary from this separate process.
+///
+/// Surfaces the daemon's decision (updating, or already current) to the
+/// operator who ran the command.
+#[cfg(all(windows, feature = "alertd"))]
+async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
+	use serde_json::Value;
+
+	// Reuse the daemon client that probes every default address (v6 and v4
+	// loopback) and returns the base URL that answered: the daemon binds only
+	// the first address it can, so a hardcoded family can miss it.
+	let (client, base_url) =
+		bestool_alertd::commands::try_connect_daemon(&bestool_alertd::commands::default_server_addrs())
+			.await?;
+
+	let mut url = reqwest::Url::parse(&format!("{base_url}/tasks/self-update/update"))
+		.into_diagnostic()?;
+	url.query_pairs_mut()
+		.append_pair("version", &args.version)
+		.append_pair("force", if args.force { "true" } else { "false" });
+
+	info!("alert daemon is running; delegating update to it");
+	let response = client
+		.get(url)
+		.send()
 		.await
-		.unwrap_or(false);
+		.map_err(|err| miette!("could not reach the alert daemon: {err}"))?;
 
-	if tzst_available {
-		info!(url = %tzst_url, "downloading compressed");
-		Download::new(client, tzst_url)
-			.and_extract(PkgFmt::Tzstd, &dir)
-			.await
-			.into_diagnostic()?;
+	let body: Value = response
+		.json()
+		.await
+		.map_err(|err| miette!("unexpected response from the alert daemon: {err}"))?;
+
+	if body.get("updating").and_then(Value::as_bool) == Some(true) {
+		let from = body.get("from").and_then(Value::as_str).unwrap_or("?");
+		let to = body.get("to").and_then(Value::as_str).unwrap_or("?");
+		info!(from, to, "alert daemon is updating and will restart");
+	} else if let Some(message) = body.get("error").and_then(Value::as_str) {
+		return Err(miette!("alert daemon could not update: {message}"));
 	} else {
-		info!(url = %bin_url, "downloading");
-		Download::new(client, bin_url)
-			.and_extract(PkgFmt::Bin, &dest)
-			.await
-			.into_diagnostic()?;
+		let current = body.get("current").and_then(Value::as_str).unwrap_or("?");
+		info!(version = current, "alert daemon is already on the latest version");
 	}
 
-	#[cfg(windows)]
-	if add_to_path && let Err(err) = add_self_to_path() {
-		tracing::error!("{err:?}");
-	}
-
-	info!(?dest, "downloaded, self-upgrading");
-	upgrade::run_upgrade(&dest, true, vec!["--version"])
-		.map_err(|err| miette!("upgrade: {err:?}"))?;
-	
-	#[cfg(windows)]
-	if is_alertd_service_running().await {
-		if let Err(err) = schedule_service_restart() {
-			tracing::warn!("failed to schedule service restart: {err:?}");
-		}
-	}
-	
 	Ok(())
 }
 
@@ -198,43 +287,13 @@ fn add_self_to_path() -> Result<()> {
 	Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "alertd"))]
 async fn is_alertd_service_running() -> bool {
-	// Try to query the alertd HTTP API status endpoint
-	match crate::http::client()
-		.get("http://127.0.0.1:8271/status")
-		.send()
+	// Probes every default address (v6 and v4 loopback): the daemon binds only
+	// the first address it can, so checking a single family can miss it.
+	bestool_alertd::commands::try_connect_daemon(&bestool_alertd::commands::default_server_addrs())
 		.await
-	{
-		Ok(response) => response.status().is_success(),
-		Err(_) => false,
-	}
-}
-
-#[cfg(windows)]
-fn schedule_service_restart() -> Result<()> {
-	use std::process::Command;
-	
-	// Schedule a service restart using a PowerShell command that waits 60 seconds
-	// then restarts the service
-	let ps_command = "Start-Sleep -Seconds 60; Restart-Service -Name bestool-alertd -Force";
-	
-	let output = Command::new("powershell")
-		.args(&[
-			"-NoProfile",
-			"-Command",
-			&format!("Start-Process powershell -ArgumentList '-NoProfile', '-Command', '{}' -WindowStyle Hidden", ps_command),
-		])
-		.output()
-		.into_diagnostic()?;
-	
-	if !output.status.success() {
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		return Err(miette!("failed to schedule service restart: {}", stderr));
-	}
-	
-	info!("scheduled service restart for 1 minute later");
-	Ok(())
+		.is_ok()
 }
 
 #[cfg(all(test, unix))]

@@ -79,7 +79,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.81.8
         with:
-          tool: cargo-zigbuild,cargo-auditable
+          tool: cargo-zigbuild,cargo-auditable,rsign2
 
       # zigbuild isn't compatible with auditable
       # https://github.com/rust-secure-code/cargo-auditable/issues/179
@@ -210,6 +210,27 @@ jobs:
           fi
           tar -C "$src_dir" -cf - "$name" | zstd -19 -f -o "$src_dir/$name.tar.zst"
 
+      # Sign the compressed artifact (what binstall downloads and what
+      # self-update verifies). The detached signature is published alongside it
+      # as <artifact>.minisig. Assumes SIGNING_KEY is an unencrypted minisign
+      # secret key (the -W automation path); a password-protected key would need
+      # its password supplied here instead.
+      - name: Sign release artifact
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          src_dir="target/${{ matrix.target }}/dist"
+          name="bestool"
+          if [[ ${{ runner.os }} == "Windows" ]]; then
+            name="bestool.exe"
+          fi
+          printf '%s\n' "$SIGNING_KEY" > signing.key
+          rsign sign -W -s signing.key \
+            -x "$src_dir/$name.tar.zst.minisig" \
+            "$src_dir/$name.tar.zst"
+          rm -f signing.key
+
       - uses: actions/upload-artifact@v7
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}
@@ -240,6 +261,7 @@ jobs:
           fi
           aws s3 cp "$src" "$dest" --no-progress
           aws s3 cp "$src.tar.zst" "$dest" --no-progress
+          aws s3 cp "$src.tar.zst.minisig" "$dest" --no-progress
 
           for deb in bestool-*.deb; do
             [[ -f "$deb" ]] || continue
@@ -258,6 +280,7 @@ jobs:
           fi
           aws s3 cp "$src" "$dest" --no-progress
           aws s3 cp "$src.tar.zst" "$dest" --no-progress
+          aws s3 cp "$src.tar.zst.minisig" "$dest" --no-progress
 
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest/*'
 
