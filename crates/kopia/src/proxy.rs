@@ -12,7 +12,7 @@
 
 use std::{
 	future::Future,
-	net::SocketAddr,
+	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	pin::Pin,
 	sync::{
 		Arc,
@@ -171,7 +171,7 @@ pub async fn spawn(
 	// ignores "already installed").
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-	let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+	let listener = bind_loopback().await?;
 	let addr = listener.local_addr()?;
 	let traffic = Arc::new(Traffic::default());
 	let task = tokio::spawn(server::run(listener, config, provider, traffic.clone()));
@@ -181,4 +181,36 @@ pub async fn spawn(
 		task,
 		traffic,
 	})
+}
+
+/// Bind an ephemeral loopback port, preferring IPv6 but falling back to IPv4.
+///
+/// IPv6-only hosts (such as some Kubernetes clusters) can't bind `127.0.0.1`,
+/// and IPv4-only hosts can't bind `::1`, so try each in turn.
+async fn bind_loopback() -> std::io::Result<TcpListener> {
+	let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0);
+	match TcpListener::bind(v6).await {
+		Ok(listener) => Ok(listener),
+		Err(v6_err) => {
+			let v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+			TcpListener::bind(v4).await.map_err(|v4_err| {
+				std::io::Error::other(format!(
+					"could not bind loopback: IPv6 ({v6_err}), IPv4 ({v4_err})"
+				))
+			})
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn bind_loopback_yields_loopback_endpoint() {
+		let listener = bind_loopback().await.expect("bind loopback");
+		let addr = listener.local_addr().expect("local addr");
+		assert!(addr.ip().is_loopback(), "expected loopback, got {addr}");
+		assert_ne!(addr.port(), 0, "expected an ephemeral port");
+	}
 }
