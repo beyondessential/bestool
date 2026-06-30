@@ -30,6 +30,7 @@ sysinfo = { workspace = true }
 time = "0.3"
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
+uuid = { version = "1.23.2", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3.21.0"
