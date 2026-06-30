@@ -1,6 +1,6 @@
 [package]
 name = "bestool-tamanu"
-version = "0.14.0"
+version = "0.14.1"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -16,7 +16,7 @@ device-key = ["dep:p256"]
 canopy-registration = ["dep:bestool-canopy"]
 
 [dependencies]
-bestool-canopy = { version = "0.4.1", path = "../canopy", optional = true }
+bestool-canopy = { version = "0.4.2", path = "../canopy", optional = true }
 bestool-postgres = { version = "1.1.0", path = "../postgres" }
 dirs = "6.0.0"
 duct = "1.1.0"
