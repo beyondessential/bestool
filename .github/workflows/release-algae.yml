@@ -76,7 +76,7 @@ jobs:
           # Release builds run on one-shot tags; don't persist tag-scoped
           # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.81.8
+      - uses: taiki-e/install-action@v2.81.11
         with:
           tool: cargo-zigbuild,cargo-auditable
 
@@ -85,11 +85,11 @@ jobs:
       - if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo auditable build --profile dist --target ${{ matrix.target }} -p algae-cli
 
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@v4.1.0
         if: runner.os != 'Windows'
         with:
           subject-path: target/*/dist/algae
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@v4.1.0
         if: runner.os == 'Windows'
         with:
           subject-path: target/*/dist/algae.exe

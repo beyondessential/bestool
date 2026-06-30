@@ -75,7 +75,7 @@ jobs:
           # Release builds run on one-shot tags; don't persist tag-scoped
           # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.81.8
+      - uses: taiki-e/install-action@v2.81.11
         with:
           tool: cargo-zigbuild,cargo-auditable
 
@@ -117,7 +117,7 @@ jobs:
           tar -C staging --zstd -cf "${name}.tar.zst" .
           echo "asset=${name}.tar.zst" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@v4.1.0
         with:
           subject-path: ${{ steps.package.outputs.asset }}
 
@@ -158,7 +158,7 @@ jobs:
 
           dpkg-deb --build --root-owner-group "$deb_dir" "bestool-psql-${target}-${version}.deb"
 
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@v4.1.0
         if: contains(matrix.target, 'linux-gnu')
         with:
           subject-path: "bestool-psql-${{ matrix.target }}-${{ steps.version.outputs.version }}.deb"
