@@ -48,7 +48,8 @@ The same grouping and ordering apply during the live sweep and in the final rend
 
 ## Live execution in an interactive terminal
 
-When stdout is attached to a terminal and JSON output is not requested, the command takes over the terminal in an alternate-screen TUI for the duration of the sweep.
+When stdout is attached to a terminal that honours ANSI escape sequences and JSON output is not requested, the command takes over the terminal in an alternate-screen TUI for the duration of the sweep.
+A terminal that cannot render ANSI escapes (for instance an older console that does not support them) is treated as non-interactive, and styled colour output is likewise suppressed there.
 Every selected check appears as a row in the list from the start of the sweep, in a pending state.
 A pending check shows a neutral indicator, a running check shows an animated spinner, and a completed check shows its outcome tag alongside the check name and one-line summary.
 As each check completes, its row moves to its grouped-and-ordered position; a check that completes as skipped is removed from the live list entirely.
@@ -82,7 +83,7 @@ When no check warns, breaks, or fails and `--all` is not set, the displayed list
 
 ## Non-interactive output
 
-When stdout is not attached to a terminal and JSON output is not requested, the command produces line-by-line output without an alternate-screen TUI or animated spinner.
+When stdout is not attached to an ANSI-capable terminal and JSON output is not requested, the command produces line-by-line output without an alternate-screen TUI or animated spinner.
 Non-interactive output follows the same grouping, ordering, source note, result line, and replay filter rules.
 
 ## JSON output
