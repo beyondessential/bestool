@@ -15,4 +15,7 @@ pub struct InternalContext {
 	/// Bumped on each reload request (SIGHUP/SIGUSR1); tasks watch it to refresh
 	/// their state without a restart.
 	pub reload: watch::Receiver<u64>,
+	/// Handle to ask the daemon to restart itself. `None` in detached test
+	/// contexts. Used by the self-update task after it replaces the binary.
+	pub restart: Option<crate::daemon::RestartTrigger>,
 }

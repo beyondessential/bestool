@@ -222,6 +222,106 @@ pub async fn check_for_update() -> Result<()> {
 	Ok(())
 }
 
+/// Trust anchor for released binaries: the minisign public key whose private
+/// counterpart is held only by the release pipeline. It ships in the binary so
+/// an update can be verified against a key that travelled with the running
+/// build rather than one fetched at update time.
+#[cfg(feature = "self-update")]
+pub(crate) const RELEASE_PUBLIC_KEY: &str =
+	"RWS1KOzOdZegWyADv/mT0GoLELjY7esgGwjtDVPqt6yaf/Wk1u1ZUCIf";
+
+/// Fetch and decode the detached signature published next to `artifact_url`
+/// (at the artifact URL with a `.minisig` suffix).
+#[cfg(feature = "self-update")]
+pub(crate) async fn fetch_release_signature(
+	client: &Client,
+	artifact_url: &Url,
+) -> Result<minisign_verify::Signature> {
+	use miette::miette;
+
+	let sig_url = Url::parse(&format!("{artifact_url}.minisig")).into_diagnostic()?;
+	debug!(%sig_url, "fetching release signature");
+
+	let response = client
+		.get(sig_url)
+		.send(true)
+		.await
+		.map_err(|err| miette!("could not fetch release signature: {err}"))?;
+	let sig_bytes = response.bytes().await.into_diagnostic()?;
+	let sig_text = std::str::from_utf8(&sig_bytes)
+		.map_err(|err| miette!("release signature is not UTF-8: {err}"))?;
+	minisign_verify::Signature::decode(sig_text)
+		.map_err(|err| miette!("malformed release signature: {err}"))
+}
+
+/// Streams a downloaded artifact through minisign verification against
+/// [`RELEASE_PUBLIC_KEY`].
+///
+/// Plug it into the downloader with [`Download::new_with_data_verifier`], then
+/// call [`DataVerifier::validate`] once the download finishes: it returns
+/// `false` unless the bytes that streamed through carry a valid release
+/// signature. The artifact verified is the exact one downloaded, so an
+/// unverified artifact is rejected before its contents are trusted.
+///
+/// [`Download::new_with_data_verifier`]: binstalk_downloader::download::Download::new_with_data_verifier
+#[cfg(feature = "self-update")]
+pub(crate) struct ReleaseVerifier {
+	signature: minisign_verify::Signature,
+	data: Vec<u8>,
+}
+
+#[cfg(feature = "self-update")]
+impl ReleaseVerifier {
+	pub(crate) fn new(signature: minisign_verify::Signature) -> Self {
+		Self {
+			signature,
+			data: Vec::new(),
+		}
+	}
+}
+
+#[cfg(feature = "self-update")]
+impl binstalk_downloader::download::DataVerifier for ReleaseVerifier {
+	fn update(&mut self, data: &binstalk_downloader::bytes::Bytes) {
+		self.data.extend_from_slice(data);
+	}
+
+	fn validate(&mut self) -> bool {
+		if verify_signed(RELEASE_PUBLIC_KEY, &self.signature, &self.data) {
+			info!("release signature verified");
+			true
+		} else {
+			false
+		}
+	}
+}
+
+/// Check `data` against `signature` under the base64 minisign public key
+/// `public_key_b64`. Rejects the legacy (non-prehashed) minisign format. Logs
+/// and returns `false` on any failure rather than erroring, for the
+/// `DataVerifier::validate` contract.
+#[cfg(feature = "self-update")]
+fn verify_signed(
+	public_key_b64: &str,
+	signature: &minisign_verify::Signature,
+	data: &[u8],
+) -> bool {
+	let public_key = match minisign_verify::PublicKey::from_base64(public_key_b64) {
+		Ok(key) => key,
+		Err(err) => {
+			tracing::error!("invalid release public key: {err}");
+			return false;
+		}
+	};
+	match public_key.verify(data, signature, false) {
+		Ok(()) => true,
+		Err(err) => {
+			tracing::error!("release signature did not verify: {err}");
+			false
+		}
+	}
+}
+
 /// Whether the remote version is strictly higher than the current version.
 ///
 /// Avoids notifying when a dev or pre-release build (e.g. installed from a
@@ -275,5 +375,56 @@ mod tests {
 	fn unparseable_falls_back_to_inequality() {
 		assert!(remote_is_newer("not-semver", "1.0.0"));
 		assert!(!remote_is_newer("not-semver", "not-semver"));
+	}
+}
+
+#[cfg(all(test, feature = "self-update"))]
+mod signature_tests {
+	use std::io::Cursor;
+
+	use minisign_verify::Signature;
+
+	use super::{RELEASE_PUBLIC_KEY, verify_signed};
+
+	/// Sign `data` with a fresh keypair, returning (public-key base64, signature
+	/// text). `minisign::sign` produces a prehashed signature by default — the
+	/// only format the verifier accepts.
+	fn sign(data: &[u8]) -> (String, String) {
+		let keypair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+		let signature = minisign::sign(None, &keypair.sk, Cursor::new(data), None, None).unwrap();
+		(keypair.pk.to_base64(), signature.into_string())
+	}
+
+	#[test]
+	fn embedded_release_key_is_a_valid_minisign_key() {
+		assert!(minisign_verify::PublicKey::from_base64(RELEASE_PUBLIC_KEY).is_ok());
+	}
+
+	#[test]
+	fn accepts_a_valid_signature() {
+		let data = b"the bestool release archive bytes";
+		let (pubkey, sig) = sign(data);
+		let signature = Signature::decode(&sig).unwrap();
+		assert!(verify_signed(&pubkey, &signature, data));
+	}
+
+	#[test]
+	fn rejects_tampered_data() {
+		let (pubkey, sig) = sign(b"the bestool release archive bytes");
+		let signature = Signature::decode(&sig).unwrap();
+		assert!(!verify_signed(
+			&pubkey,
+			&signature,
+			b"tampered archive bytes"
+		));
+	}
+
+	#[test]
+	fn rejects_a_signature_from_a_different_key() {
+		let data = b"the bestool release archive bytes";
+		let (_pubkey, sig) = sign(data);
+		let signature = Signature::decode(&sig).unwrap();
+		let (other_pubkey, _) = sign(data);
+		assert!(!verify_signed(&other_pubkey, &signature, data));
 	}
 }

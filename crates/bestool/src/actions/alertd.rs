@@ -222,6 +222,13 @@ fn with_daemon_tasks(
 		(config, doctor)
 	};
 
+	// On Windows the daemon keeps bestool current itself; on Linux the package
+	// manager owns updates.
+	#[cfg(all(windows, feature = "self-update"))]
+	let config = config.with_task(Arc::new(
+		crate::actions::self_update::task::SelfUpdateTask::new(),
+	));
+
 	config.with_task(Arc::new(doctor))
 }
 

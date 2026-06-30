@@ -17,7 +17,7 @@ pub mod windows_service;
 
 pub use backup::{BackupRegistry, BackupRunner, BackupTask, RunningBackup};
 pub use context::InternalContext;
-pub use daemon::{run, run_with_shutdown};
+pub use daemon::{RestartTrigger, run, run_with_shutdown};
 pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
 /// The version of the alertd library

@@ -19,6 +19,9 @@ pub struct TaskContext {
 	/// Bumped on each reload request (SIGHUP/SIGUSR1); a task can
 	/// `reload.changed().await` to refresh its state without a restart.
 	pub reload: tokio::sync::watch::Receiver<u64>,
+	/// Handle to ask the daemon to restart itself, for a task that has replaced
+	/// the running binary. `None` in detached test contexts.
+	pub restart: Option<crate::daemon::RestartTrigger>,
 	/// Query parameters of the request, for HTTP endpoint handlers. Empty on the
 	/// periodic `run` tick.
 	pub query: BTreeMap<String, String>,
@@ -31,6 +34,7 @@ impl TaskContext {
 			http_client: ctx.http_client.clone(),
 			canopy_client: ctx.canopy_client.clone(),
 			reload: ctx.reload.clone(),
+			restart: ctx.restart.clone(),
 			query: BTreeMap::new(),
 		}
 	}
