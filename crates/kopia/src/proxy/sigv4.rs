@@ -6,7 +6,7 @@
 //! (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`) require. Locked to the published AWS
 //! test vectors in the tests below.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
