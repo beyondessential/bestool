@@ -431,7 +431,7 @@ async fn backup_after_start(
 			progress,
 		)
 		.await;
-	emit(&progress, BackupEvent::Phase("report"));
+	emit(progress, BackupEvent::Phase("report"));
 
 	// The proxy saw every S3 request this run made (success or failure), so its
 	// tallies are a rough measure of the network/S3 traffic this run accounts for.
