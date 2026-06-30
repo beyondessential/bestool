@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod backup;
 mod client;
 pub mod registration;
+mod restore;
 
 pub use backup::{
 	BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget, CapabilitiesRequest,
@@ -13,6 +14,10 @@ pub use backup::{
 pub use client::{
 	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, NewEvent, Severity,
 	TAILSCALE_URL, client_builder, device_identity, tailscale_client, user_agent,
+};
+pub use restore::{
+	RestoreCapabilitiesRequest, RestoreCredentials, RestoreCredentialsRequest, RestoreVerification,
+	WorklistEntry,
 };
 
 /// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
