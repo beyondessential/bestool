@@ -81,7 +81,13 @@ const DAEMON_BASE: &str = "http://127.0.0.1:8271";
 
 pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
-	let use_colours = tamanu.use_colours;
+
+	// When ANSI escapes are not honoured (e.g. an older Windows console where
+	// virtual terminal processing cannot be enabled), the live TUI cannot render
+	// and styled output would print as garbage, so fall back to plain
+	// non-interactive output.
+	let ansi = ansi_supported();
+	let use_colours = tamanu.use_colours && ansi;
 
 	let install = resolve_sweep_tamanu(try_find_tamanu(tamanu).await?)?;
 	if install.is_none() {
@@ -89,7 +95,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	}
 	let http_client = crate::http::client();
 
-	let live_tty = !args.json && std::io::stdout().is_terminal();
+	let live_tty = !args.json && ansi && std::io::stdout().is_terminal();
 
 	let (sweep, source, interrupted) = if args.no_daemon {
 		let outcome = run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
@@ -399,6 +405,22 @@ fn results_from_wire(payload: &Value) -> Vec<(Check, bool)> {
 			))
 		})
 		.collect()
+}
+
+/// Whether the terminal honours ANSI escape sequences, which the live TUI and
+/// styled output both rely on. On Windows this attempts to enable virtual
+/// terminal processing; if that fails on an older console, crossterm falls back
+/// to a winapi screen-buffer path that our buffered drawing cannot target, so
+/// we treat ANSI as unavailable rather than render a black screen.
+fn ansi_supported() -> bool {
+	#[cfg(windows)]
+	{
+		crossterm::ansi_support::supports_ansi()
+	}
+	#[cfg(not(windows))]
+	{
+		true
+	}
 }
 
 /// Set up the progress channel and (when running in a TTY) the live TUI task.
