@@ -820,10 +820,22 @@ fn parse_snapshot_output(stdout: &str) -> SnapshotResult {
 		.get("id")
 		.and_then(|v| v.as_str())
 		.map(|s| s.to_owned());
+	// `snapshot create --json` strips the whole `stats` object (kopia only emits it
+	// under `--json-verbose`), so the size lives in the root directory summary
+	// (`rootEntry.summ.size`), which is always present. It equals `stats.totalSize`
+	// for a complete snapshot (both sum every file once); fall back to it for the
+	// verbose form.
 	let bytes_uploaded = value
-		.get("stats")
-		.and_then(|s| s.get("totalSize"))
-		.and_then(|v| v.as_i64());
+		.get("rootEntry")
+		.and_then(|r| r.get("summ"))
+		.and_then(|s| s.get("size"))
+		.and_then(serde_json::Value::as_i64)
+		.or_else(|| {
+			value
+				.get("stats")
+				.and_then(|s| s.get("totalSize"))
+				.and_then(serde_json::Value::as_i64)
+		});
 	SnapshotResult { id, bytes_uploaded }
 }
 
@@ -1042,6 +1054,20 @@ mod tests {
 			parse_snapshot_output(out),
 			SnapshotResult {
 				id: Some("abc123".to_owned()),
+				bytes_uploaded: Some(987654),
+			}
+		);
+	}
+
+	#[test]
+	fn parse_snapshot_output_prefers_root_summary_size() {
+		// The real `--json` output has no `stats` (kopia strips it); the size comes
+		// from the root summary. When both are present, the root summary wins.
+		let out = r#"{"id":"x","stats":{"totalSize":10},"rootEntry":{"summ":{"size":987654}}}"#;
+		assert_eq!(
+			parse_snapshot_output(out),
+			SnapshotResult {
+				id: Some("x".to_owned()),
 				bytes_uploaded: Some(987654),
 			}
 		);
