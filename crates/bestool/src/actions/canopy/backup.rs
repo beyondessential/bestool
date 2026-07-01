@@ -826,9 +826,19 @@ pub(super) async fn load_registration(config: Option<&Path>) -> Result<Option<Re
 	}
 }
 
+/// Cap a kopia error to a length that fits a log line and a canopy report field.
+const MAX_ERROR_LEN: usize = 1500;
+
 fn trim_error(err: &miette::Report) -> String {
 	let msg = format!("{err}");
-	msg.chars().take(500).collect()
+	let len = msg.chars().count();
+	if len <= MAX_ERROR_LEN {
+		return msg;
+	}
+	// kopia leads with warnings ("too many index blobs …") and progress lines and
+	// prints the operative error last, so keep the tail rather than the head.
+	let tail: String = msg.chars().skip(len - MAX_ERROR_LEN).collect();
+	format!("…{tail}")
 }
 
 /// Per-type lockfile path, in a runtime dir (tmpfs on Linux, so it's cleared on
@@ -873,6 +883,16 @@ async fn try_acquire_lock(path: &Path) -> Result<Option<tokio::fs::File>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn trim_error_keeps_the_operative_tail() {
+		let head = "Found too many index blobs (1256), …\n".repeat(100);
+		let msg = format!("{head}not authorized to perform: s3:PutObjectRetention");
+		let trimmed = trim_error(&miette::miette!("{msg}"));
+		assert!(trimmed.chars().count() <= MAX_ERROR_LEN + 1);
+		assert!(trimmed.contains("s3:PutObjectRetention"));
+		assert!(trimmed.starts_with('…'));
+	}
 
 	#[test]
 	fn flush_forwards_only_progress_lines() {
