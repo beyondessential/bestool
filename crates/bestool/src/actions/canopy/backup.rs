@@ -35,7 +35,7 @@ use bestool_kopia::{
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use reqwest::Url;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use self::{
@@ -288,7 +288,7 @@ pub(super) async fn spawn_proxy(
 		backup_type,
 		purpose,
 	));
-	let upstream_host = format!("s3.{region}.amazonaws.com");
+	let upstream_host = upstream_host_for(region).await;
 	let config = S3ProxyConfig {
 		upstream: format!("https://{upstream_host}"),
 		upstream_host,
@@ -298,6 +298,36 @@ pub(super) async fn spawn_proxy(
 		.await
 		.into_diagnostic()
 		.wrap_err("starting the S3 re-signing proxy")
+}
+
+fn dualstack_host(region: &str) -> String {
+	format!("s3.dualstack.{region}.amazonaws.com")
+}
+
+fn plain_host(region: &str) -> String {
+	format!("s3.{region}.amazonaws.com")
+}
+
+/// The S3 host the proxy connects to for `region`.
+///
+/// Prefer the dualstack endpoint: it carries AAAA records, so the proxy reaches
+/// S3 over IPv6 where the host has it (and A records too, so IPv4-only hosts are
+/// unaffected). Not every partition/region has a dualstack alias, so fall back
+/// to the plain (IPv4-only) endpoint when the dualstack name doesn't resolve.
+async fn upstream_host_for(region: &str) -> String {
+	let dualstack = dualstack_host(region);
+	let resolves = match tokio::net::lookup_host((dualstack.as_str(), 443)).await {
+		Ok(mut addrs) => addrs.next().is_some(),
+		Err(_) => false,
+	};
+	if resolves {
+		debug!(host = %dualstack, "using dualstack S3 endpoint");
+		dualstack
+	} else {
+		let plain = plain_host(region);
+		debug!(host = %plain, "dualstack S3 endpoint unavailable; using plain endpoint");
+		plain
+	}
 }
 
 /// Connect kopia to the canopy-managed repo through the proxy (source host =
@@ -892,6 +922,15 @@ mod tests {
 		assert!(trimmed.chars().count() <= MAX_ERROR_LEN + 1);
 		assert!(trimmed.contains("s3:PutObjectRetention"));
 		assert!(trimmed.starts_with('…'));
+	}
+
+	#[test]
+	fn upstream_host_formats() {
+		assert_eq!(
+			dualstack_host("ap-southeast-2"),
+			"s3.dualstack.ap-southeast-2.amazonaws.com"
+		);
+		assert_eq!(plain_host("ap-southeast-2"), "s3.ap-southeast-2.amazonaws.com");
 	}
 
 	#[test]
