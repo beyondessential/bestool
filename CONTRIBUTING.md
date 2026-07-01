@@ -5,7 +5,7 @@ Thank you for taking the time to contribute, and welcome to this open-source pro
 ## Code of Conduct
 
 This project and everyone participating in it is governed by the
-[BES Open Source Code of Conduct](CODE_OF_CONDUCT.md).
+[BES International Open Source Code of Conduct](CODE_OF_CONDUCT.md).
 By participating, you are expected to uphold this code. Please report unacceptable behavior
 to [opensource@tamanu.io](opensource@tamanu.io).
 
