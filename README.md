@@ -1,6 +1,6 @@
 # bestool
 
-All-in-one tool for BES International ops and dev tasks.
+All-in-one tool for BES ops and dev tasks.
 
 It manifests as a single binary that can be easily uploaded to Windows machines, or downloaded from the internet, and also works cross-platform on Linux and Mac for many tasks.
 
