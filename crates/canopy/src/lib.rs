@@ -7,6 +7,17 @@ mod client;
 pub mod registration;
 mod restore;
 
+/// Wire types generated at build time from canopy's OpenAPI document.
+///
+/// These track canopy's API as it evolves: the build script fetches the live
+/// spec (falling back to a committed snapshot) and regenerates on each build,
+/// so nothing here is hand-maintained or committed. Use them with the generic
+/// [`CanopyClient::request`]/[`CanopyClient::request_json`] methods; the
+/// bespoke endpoint methods keep their own hand-written types.
+pub mod schema {
+	include!(concat!(env!("OUT_DIR"), "/canopy_schema.rs"));
+}
+
 pub use backup::{
 	BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget, CapabilitiesRequest,
 	ContainerCreds, Outcome, Purpose, TargetOutcome,

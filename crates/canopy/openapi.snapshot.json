@@ -1,0 +1,2175 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "canopy public-server",
+        "description": "Internet-facing API for the canopy fleet. Device-authenticated endpoints require an mTLS client certificate.",
+        "contact": {
+            "name": "BES Developers",
+            "email": "contact@bes.au"
+        },
+        "license": {
+            "name": "GPL-3.0-or-later"
+        },
+        "version": ""
+    },
+    "paths": {
+        "/artifacts/{version}/{artifact_type}/{platform}": {
+            "post": {
+                "tags": [
+                    "artifacts"
+                ],
+                "operationId": "create",
+                "parameters": [
+                    {
+                        "name": "version",
+                        "in": "path",
+                        "description": "Exact semver (e.g. `2.10.5`) or range pattern (e.g. `2.10.x`, `^2.10.0`).",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "artifact_type",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "platform",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "description": "Download URL for the artifact, as a plain-text body.",
+                    "content": {
+                        "text/plain": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Artifact"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "releaser-device": []
+                    }
+                ]
+            }
+        },
+        "/backup-capabilities": {
+            "post": {
+                "tags": [
+                    "backup"
+                ],
+                "operationId": "capabilities",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CapabilitiesArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Capabilities registered."
+                    },
+                    "409": {
+                        "description": "Server is not in a group.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Device is not bound to a live server.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/backup-credentials": {
+            "post": {
+                "tags": [
+                    "backup"
+                ],
+                "operationId": "credentials",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CredentialsArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CredentialProcessOutput"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Server ungrouped, no ready config, or type not enabled.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Device is not bound to a live server.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "STS issuance failed or is not configured.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/backup-report": {
+            "post": {
+                "tags": [
+                    "backup"
+                ],
+                "operationId": "report",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ReportArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Run recorded."
+                    },
+                    "409": {
+                        "description": "Server ungrouped, or duplicate run_id.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Device is not bound to a live server.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/backup-target": {
+            "get": {
+                "tags": [
+                    "backup"
+                ],
+                "operationId": "target",
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BackupTarget"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Server ungrouped or no ready config.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Device is not bound to a live server.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Repo-password Secret unavailable or kube not configured.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/bestool/snippets": {
+            "get": {
+                "tags": [
+                    "bestool"
+                ],
+                "operationId": "list_snippets",
+                "responses": {
+                    "200": {
+                        "description": "Current bestool snippets, keyed by name.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "$ref": "#/components/schemas/SnippetResponse"
+                                    },
+                                    "propertyNames": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/events": {
+            "post": {
+                "tags": [
+                    "events"
+                ],
+                "operationId": "create",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/NewEvent"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Issue"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Device is not registered against any server.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/restore-capabilities": {
+            "post": {
+                "tags": [
+                    "restore"
+                ],
+                "operationId": "capabilities",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CapabilitiesArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Capability set registered."
+                    }
+                },
+                "security": [
+                    {
+                        "backup-restore-device": []
+                    }
+                ]
+            }
+        },
+        "/restore-credentials": {
+            "post": {
+                "tags": [
+                    "restore"
+                ],
+                "operationId": "credentials",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CredentialsArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RestoreCredentials"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "No enabled declaration authorizes this (group, type).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Group has no ready backup config.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "STS issuance or repo-password read failed or is not configured.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "backup-restore-device": []
+                    }
+                ]
+            }
+        },
+        "/restore-verification": {
+            "post": {
+                "tags": [
+                    "restore"
+                ],
+                "operationId": "verification",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/VerificationArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Report recorded."
+                    },
+                    "403": {
+                        "description": "No enabled declaration authorizes this (group, type).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "backup-restore-device": []
+                    }
+                ]
+            }
+        },
+        "/restore-worklist": {
+            "get": {
+                "tags": [
+                    "restore"
+                ],
+                "operationId": "worklist",
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/WorklistEntry"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "backup-restore-device": []
+                    }
+                ]
+            }
+        },
+        "/servers": {
+            "get": {
+                "tags": [
+                    "servers"
+                ],
+                "operationId": "list",
+                "responses": {
+                    "200": {
+                        "description": "Publicly-listed central servers, ordered by rank then name.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/PublicServer"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/servers/register/begin": {
+            "post": {
+                "tags": [
+                    "servers"
+                ],
+                "operationId": "register_begin",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BeginArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BeginResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/servers/register/complete": {
+            "post": {
+                "tags": [
+                    "servers"
+                ],
+                "operationId": "register_complete",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CompleteArgs"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CompleteResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/status/{server_id}": {
+            "post": {
+                "tags": [
+                    "statuses"
+                ],
+                "operationId": "create",
+                "parameters": [
+                    {
+                        "name": "server_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "description": "Status push. A `health` array is required (it may be empty); a body without it is rejected with 400, unless the server has `allow_legacy_status` set, in which case the push refreshes reachability only and carries the last known healthchecks forward.",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/StatusPayload"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StatusResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/tags": {
+            "get": {
+                "tags": [
+                    "tags"
+                ],
+                "summary": "Merged tags for the calling device's server.",
+                "description": "The device authenticates with its certificate; we resolve the (unique)\nserver backed by that device, then overlay the server's `tags` onto the\ngroup's `tags` (server wins on key collision). For ungrouped servers,\nreturns just the server's own tags.\n\nOn top of the stored tags we inject synthetic, read-only tags describing\nthe server under the reserved `canopy:` namespace: `canopy:kind`,\n`canopy:rank` (when set), and `canopy:group-id` / `canopy:group-name`\n(when grouped). Operator-set tags can't use that prefix, so they never\ncollide. See [`Server::tags_for_device`].\n\n- **401**: no certificate / cert doesn't match a known device.\n- **412**: device is registered but isn't attached to a server yet.\n- **409**: device is somehow attached to multiple servers (shouldn't\n  happen \u2014 the `servers.device_id` unique index guarantees this can't\n  occur, but the handler still surfaces the case rather than silently\n  picking one).",
+                "operationId": "get_self",
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TagMap"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "server-device": []
+                    }
+                ]
+            }
+        },
+        "/versions": {
+            "get": {
+                "tags": [
+                    "versions"
+                ],
+                "operationId": "list",
+                "responses": {
+                    "200": {
+                        "description": "All published versions.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Version"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/versions/update-for/{version}": {
+            "get": {
+                "tags": [
+                    "versions"
+                ],
+                "operationId": "update_for",
+                "parameters": [
+                    {
+                        "name": "version",
+                        "in": "path",
+                        "description": "Currently-installed version (exact semver).",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Published versions above the given one, used by clients to discover updates.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ViewVersion"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/versions/{version}": {
+            "post": {
+                "tags": [
+                    "versions"
+                ],
+                "operationId": "create",
+                "parameters": [
+                    {
+                        "name": "version",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "description": "Changelog markdown text, up to 1 MiB.",
+                    "content": {
+                        "text/plain": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Version"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "releaser-device": []
+                    }
+                ]
+            },
+            "delete": {
+                "tags": [
+                    "versions"
+                ],
+                "operationId": "remove",
+                "parameters": [
+                    {
+                        "name": "version",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Version marked yanked."
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "admin-device": []
+                    }
+                ]
+            }
+        },
+        "/versions/{version}/artifacts": {
+            "get": {
+                "tags": [
+                    "versions"
+                ],
+                "operationId": "list_artifacts",
+                "parameters": [
+                    {
+                        "name": "version",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Artifacts that match the given exact version or range.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Artifact"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetailsSchema"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Artifact": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "artifact_type",
+                    "platform",
+                    "download_url"
+                ],
+                "properties": {
+                    "artifact_type": {
+                        "type": "string"
+                    },
+                    "device_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "download_url": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "platform": {
+                        "type": "string"
+                    },
+                    "version_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "version_range_pattern": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "BackupPurpose": {
+                "type": "string",
+                "description": "Why a credential was issued / a run executed. A real capability gate\non the issued S3 creds, not just audit metadata: `Backup` grants\nwrite-without-delete, `Restore` grants read-only.",
+                "enum": [
+                    "backup",
+                    "restore"
+                ]
+            },
+            "BackupTarget": {
+                "type": "object",
+                "required": [
+                    "storage",
+                    "bucket",
+                    "prefix",
+                    "region",
+                    "repo_password"
+                ],
+                "properties": {
+                    "bucket": {
+                        "type": "string"
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "Normally empty (the repo lives at the bucket root)."
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "The group config's region, or the deployment default."
+                    },
+                    "repo_password": {
+                        "type": "string",
+                        "description": "The kopia repo passphrase, read from the group's k8s Secret."
+                    },
+                    "storage": {
+                        "type": "string",
+                        "description": "Always `\"s3\"`."
+                    }
+                }
+            },
+            "BeginArgs": {
+                "type": "object",
+                "required": [
+                    "server_id",
+                    "token"
+                ],
+                "properties": {
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "spki": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Base64-standard DER SPKI of the device public key. Required on the\ntailnet transport (there is no client cert to read it from); omitted on\nthe mTLS path, where the key comes from the presented certificate. The\nchallenge is bound to this key, so `complete` must use the same one."
+                    },
+                    "token": {
+                        "type": "string"
+                    }
+                }
+            },
+            "BeginResponse": {
+                "type": "object",
+                "required": [
+                    "nonce",
+                    "channel_binding_required"
+                ],
+                "properties": {
+                    "channel_binding_required": {
+                        "type": "boolean",
+                        "description": "True iff the server requires the TLS exporter (`EKM`) be folded into the\nsigned transcript (channel binding). The client must then append it."
+                    },
+                    "nonce": {
+                        "type": "string",
+                        "description": "Base64 (standard) of the 32-byte challenge nonce."
+                    }
+                }
+            },
+            "CapabilitiesArgs": {
+                "type": "object",
+                "required": [
+                    "types"
+                ],
+                "properties": {
+                    "types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The backup types bestool can run on this server."
+                    }
+                }
+            },
+            "CheckResult": {
+                "type": "string",
+                "description": "Outcome of a single `health[]` check, as reported by bestool.\n\nThe wire field is `result`; legacy senders use `healthy: bool`\ninstead (exactly one of the two must be present per entry). Use\n[`CheckResult::from_entry`] to read either form \u2014 stored status\nrows keep the legacy shape forever, so every reader of `health[]`\nmust go through it.",
+                "enum": [
+                    "passed",
+                    "warning",
+                    "failed",
+                    "broken",
+                    "skipped"
+                ]
+            },
+            "CompleteArgs": {
+                "type": "object",
+                "required": [
+                    "server_id",
+                    "nonce",
+                    "signature"
+                ],
+                "properties": {
+                    "nonce": {
+                        "type": "string",
+                        "description": "Base64 (standard) of the nonce returned by `begin`."
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "signature": {
+                        "type": "string",
+                        "description": "Base64 (standard) of the ASN.1 DER ECDSA-P256-SHA256 signature over the\ntranscript `nonce \u2016 server_id \u2016 spki [\u2016 ekm]`."
+                    },
+                    "spki": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Base64-standard DER SPKI of the device public key. Required on the\ntailnet transport; omitted on the mTLS path (key comes from the cert).\nMust match the key used at `begin`."
+                    }
+                }
+            },
+            "CompleteResponse": {
+                "type": "object",
+                "required": [
+                    "server_id",
+                    "device_id"
+                ],
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                }
+            },
+            "CredentialProcessOutput": {
+                "type": "object",
+                "description": "`credential_process` output. Field names are **fixed by the AWS SDK**:\n`Version/AccessKeyId/SecretAccessKey/SessionToken/Expiration` \u2014 exactly what\n`rename_all = \"PascalCase\"` produces from these field names.",
+                "required": [
+                    "Version",
+                    "AccessKeyId",
+                    "SecretAccessKey",
+                    "SessionToken",
+                    "Expiration"
+                ],
+                "properties": {
+                    "AccessKeyId": {
+                        "type": "string"
+                    },
+                    "Expiration": {
+                        "type": "string",
+                        "description": "RFC3339 / ISO8601 `Z` instant."
+                    },
+                    "SecretAccessKey": {
+                        "type": "string"
+                    },
+                    "SessionToken": {
+                        "type": "string"
+                    },
+                    "Version": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "Always the literal `1`.",
+                        "minimum": 0
+                    }
+                }
+            },
+            "CredentialsArgs": {
+                "type": "object",
+                "required": [
+                    "type"
+                ],
+                "properties": {
+                    "purpose": {
+                        "$ref": "#/components/schemas/BackupPurpose",
+                        "description": "`backup` (default) grants write-without-delete; `restore` is downscoped\nread-only via a session policy."
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "The backup type these creds are for. Must be an enabled capability or\nhave a pending request of this `purpose` (an on-demand backup/restore)."
+                    }
+                }
+            },
+            "HealthCheck": {
+                "allOf": [
+                    {
+                        "type": "object",
+                        "description": "Arbitrary additional fields specific to the check (rendered in\nthe snapshot UI as a key/value block)."
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "check"
+                        ],
+                        "properties": {
+                            "check": {
+                                "type": "string",
+                                "description": "Identifier for the check. Must be a non-empty string. Used as\nthe issue's `ref` (`health/<check>`) so the same check\ntransitions land on the same issue across pushes."
+                            },
+                            "healthy": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Legacy pass/fail for the check: `true` \u21d2 `passed`, `false` \u21d2\n`failed`. Mutually exclusive with `result`."
+                            },
+                            "result": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/CheckResult",
+                                        "description": "Outcome of the check. Exactly one of `result` / `healthy` must\nbe present per entry. `failed` files an issue at the catalog\nseverity; `broken` (the check itself errored, not the system\nunder test) files at a fixed Warning; `skipped` (precondition\nnot met) and `passed` file nothing and close prior issues."
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            "Issue": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "created_at",
+                    "updated_at",
+                    "source",
+                    "ref",
+                    "severity",
+                    "message",
+                    "active",
+                    "first_seen",
+                    "last_seen"
+                ],
+                "properties": {
+                    "active": {
+                        "type": "boolean"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Single-line title/subject. See [`NewEvent::description`]."
+                    },
+                    "device_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "first_seen": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "last_seen": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Body / long detail. See [`NewEvent::message`]."
+                    },
+                    "ref": {
+                        "type": "string"
+                    },
+                    "resolved_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "resolved_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "resolved_reason": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Stored as nullable text; validated as `ResolvedReason` at the API layer\n(avoids the diesel orphan-rules dance for nullable enum columns)."
+                    },
+                    "server_group_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "`NULL` for an ordinary server-scoped issue; `Some` for a group-scoped\ncontrol-plane issue (backup corruption, preflight, \u2026) raised via\n[`raise_group_event`]. Group-scoped issues bypass the per-server\n`is_monitored` gate."
+                    },
+                    "server_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "`NULL` for a group-scoped issue (see [`server_group_id`](Self::server_group_id)).\nExactly one of `server_id` / `server_group_id` is set (DB CHECK)."
+                    },
+                    "severity": {
+                        "$ref": "#/components/schemas/Severity"
+                    },
+                    "snoozed_until": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "NewEvent": {
+                "type": "object",
+                "description": "One event push from a device (public API) or operator (private API).\n\n`ref` is required: clients that don't want dedup can mint a UUID.\n`occurred_at` is optional and is the client's \"when the thing happened\"\ntimestamp; `created_at` is always server-set to NOW().",
+                "required": [
+                    "source",
+                    "ref",
+                    "message"
+                ],
+                "properties": {
+                    "active": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ]
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Short single-line title/subject for this event. Rendered as the\nissue's headline in the UI and as the Slack message subject.\nMust not contain newlines \u2014 `save()` returns `BadRequest` if it\ndoes. Use [`Self::message`] for the body / longer detail."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Body text for this event. Free-form, multi-line OK. Falls back\nto the headline when [`Self::description`] is `None` (the UI\nuses the first line in that case)."
+                    },
+                    "occurredAt": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "ref": {
+                        "type": "string"
+                    },
+                    "severity": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/Severity"
+                            }
+                        ]
+                    },
+                    "source": {
+                        "type": "string"
+                    }
+                }
+            },
+            "ProblemDetailsSchema": {
+                "type": "object",
+                "description": "Wire-shape mirror of [`problem_details::ProblemDetails`] for OpenAPI.\n\nEvery error response from the servers serializes to this RFC 7807 shape via\n[`AppError`]'s `IntoResponse`. This struct exists so OpenAPI specs can\nreference a concrete schema; nothing actually constructs values of this\ntype at runtime.",
+                "required": [
+                    "type",
+                    "title",
+                    "status"
+                ],
+                "properties": {
+                    "detail": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Human-readable explanation specific to this occurrence."
+                    },
+                    "status": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "HTTP status code generated by the origin server.",
+                        "example": 404,
+                        "minimum": 0
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short human-readable summary of the problem."
+                    },
+                    "type": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "A URI reference identifying the problem type.",
+                        "example": "/errors/resource-not-found"
+                    }
+                }
+            },
+            "PublicServer": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "host"
+                ],
+                "properties": {
+                    "host": {
+                        "$ref": "#/components/schemas/UrlField"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "rank": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ServerRank"
+                            }
+                        ]
+                    }
+                }
+            },
+            "ReportArgs": {
+                "type": "object",
+                "required": [
+                    "run_id",
+                    "type",
+                    "purpose",
+                    "outcome"
+                ],
+                "properties": {
+                    "bytes_uploaded": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "outcome": {
+                        "$ref": "#/components/schemas/RunOutcome"
+                    },
+                    "purpose": {
+                        "$ref": "#/components/schemas/BackupPurpose"
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The run-uuid bestool minted at run start (becomes `backup_runs.id`)."
+                    },
+                    "s3_received_payload_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_received_raw_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_sent_payload_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_sent_raw_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "S3 traffic the proxy tallied during the run: `raw` is the full HTTP\nmessage (incl. SigV4 chunk framing), `payload` the decoded object data.\nReported on both success and failure; absent from older clients."
+                    },
+                    "snapshot_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "The backup type that ran."
+                    }
+                }
+            },
+            "RestoreCredentials": {
+                "type": "object",
+                "description": "Read-only credentials plus the repo password for one `(group, type)`. The\nAWS creds are the `credential_process` shape the consumer's proxy refreshes;\nthe password opens the kopia repo.",
+                "required": [
+                    "credentials",
+                    "repo_password"
+                ],
+                "properties": {
+                    "credentials": {
+                        "$ref": "#/components/schemas/CredentialProcessOutput"
+                    },
+                    "repo_password": {
+                        "type": "string",
+                        "description": "The kopia repo passphrase, read from the group's k8s Secret."
+                    }
+                }
+            },
+            "RunOutcome": {
+                "type": "string",
+                "description": "Outcome of a reported backup/restore run.",
+                "enum": [
+                    "success",
+                    "failure"
+                ]
+            },
+            "ServerRank": {
+                "type": "string",
+                "enum": [
+                    "production",
+                    "clone",
+                    "demo",
+                    "test",
+                    "dev"
+                ]
+            },
+            "Severity": {
+                "type": "string",
+                "description": "Canopy's severity vocabulary, narrowed from RFC 5424 to a five-level\nset with operator semantics:\n\n- `Debug`: never participates in incidents (filed for the audit\n  trail / per-server view only).\n- `Info`, `Warning`: join an open incident for context but don't\n  open one or keep one open on their own.\n- `Error`: opens an incident; sits in the per-group `slack_open_delay`\n  holding window before the Slack notification ships.\n- `Critical`: opens an incident and bypasses the holding window \u2014\n  the Slack notification is enqueued for immediate delivery.\n\nStored as text in Postgres; validated as this enum at the API layer.\nDefault is `Error` (the most common severity for a deliberately\nfiled event). The legacy syslog severities `emergency` / `alert` /\n`notice` have been retired \u2014 see the\n`2026-05-29-000000-0000_restrict_severities` migration; the\n`FromStr` impl still accepts them as aliases for forward-compat with\nany device that hasn't been updated.",
+                "enum": [
+                    "critical",
+                    "error",
+                    "warning",
+                    "info",
+                    "debug"
+                ]
+            },
+            "SnippetResponse": {
+                "type": "object",
+                "required": [
+                    "sql"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "sql": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Status": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "created_at",
+                    "server_id",
+                    "extra",
+                    "healthy",
+                    "health"
+                ],
+                "properties": {
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "device_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "extra": {},
+                    "health": {
+                        "description": "Per-check breakdown. Each entry is an object with at least\n`{check: string, healthy: bool, ...}`; extra fields are passed\nthrough verbatim."
+                    },
+                    "healthy": {
+                        "type": "boolean",
+                        "description": "Server's overall self-reported health. Absent in the payload \u21d2 true\n(legacy compat)."
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "version": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/VersionStr"
+                            }
+                        ]
+                    }
+                }
+            },
+            "StatusPayload": {
+                "allOf": [
+                    {
+                        "type": "object",
+                        "description": "Free-form additional data (uptime, postgres version, timezone,\nhostname, etc.). Stored verbatim in `statuses.extra` and\nsurfaced as raw JSON in the status snapshot."
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "health"
+                        ],
+                        "properties": {
+                            "health": {
+                                "type": "array",
+                                "items": {
+                                    "$ref": "#/components/schemas/HealthCheck"
+                                },
+                                "description": "Per-check breakdown. **Required** \u2014 a push without a `health`\narray is rejected with `400` (unless the server opts into the\nlegacy format via `allow_legacy_status`, in which case such a push\nonly refreshes reachability and carries prior checks forward). May\nbe empty (`[]`) for a server that genuinely runs no checks. Each\nentry must include `check`\n(non-empty) and exactly one of `result` / `healthy`; arbitrary\nadditional fields per check (latency, free disk %, certificate\nexpiry, etc.) are passed through verbatim and surfaced in the\nstatus snapshot UI.\n\nEach check name seen \u2014 whatever its result \u2014 upserts into\n`healthcheck_severities` so operators can review and adjust the\nseverity assigned to its failures. Failed checks file (or keep\nactive) an issue at `(status, health/<check>)` using the\ncatalog's current severity for that check name; broken checks\nfile at `(status, health-broken/<check>)` at a fixed Warning."
+                            },
+                            "healthy": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Overall server self-reported health. **Absent \u21d2 `true`** \u2014\nlegacy senders that don't know about this field never\nfalse-positive unhealthy. Persisted on `statuses.healthy` for\nhistorical analysis and the status snapshot UI, but **not\nconsulted for incident or severity decisions**: canopy derives\nthe system-healthy judgement from per-check results, with each\ncheck's severity coming from the operator-owned\n`healthcheck_severities` catalog."
+                            }
+                        }
+                    }
+                ],
+                "description": "Status payload contract \u2014 documents the wire shape only. The\nhandler actually receives `serde_json::Value` and runs its own\nvalidation so arbitrary additional fields flow through into\n`statuses.extra` unchanged.\n\nSchema is reproduced here so the openapi spec describes the\n`healthy` and `health` keys explicitly; otherwise consumers have\nto read the prose to know they exist."
+            },
+            "StatusResponse": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/Status"
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "backup_now"
+                        ],
+                        "properties": {
+                            "backup_now": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Backup types due/requested for this server now. Each serializes as a\nplain string (e.g. `\"tamanu-postgres\"`)."
+                            }
+                        }
+                    }
+                ],
+                "description": "The status-push response: the persisted [`Status`] plus `backup_now`, the\nbackup types this server should back up *right now* (operator one-offs +\nschedule-due; see [`backups_due_now_for_server`]). The device runs each; an\nempty list means \"nothing to do\". The `Status` fields are flattened so they\nstay top-level for clients that predate `backup_now` and ignore it."
+            },
+            "TagMap": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "string"
+                }
+            },
+            "UrlField": {
+                "type": "string",
+                "format": "uri"
+            },
+            "VerificationArgs": {
+                "type": "object",
+                "required": [
+                    "group",
+                    "server_id",
+                    "type",
+                    "intent",
+                    "outcome",
+                    "replica_healthy",
+                    "observed_at"
+                ],
+                "properties": {
+                    "error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "group": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "health_details": {
+                        "description": "Arbitrary health data to record alongside the check (postgres cluster\nstats, whether indexes needed fixing, \u2026). Stored and displayed as-is."
+                    },
+                    "intent": {
+                        "type": "string"
+                    },
+                    "observed_at": {
+                        "type": "string",
+                        "description": "When the restore was observed (RFC3339)."
+                    },
+                    "outcome": {
+                        "type": "string"
+                    },
+                    "postgres_version": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "replica_healthy": {
+                        "type": "boolean",
+                        "description": "Whether the restored database came up healthy and passed readiness."
+                    },
+                    "replica_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "The declaration this report concerns (from the worklist entry); optional\nso a report survives the declaration being retired mid-flight."
+                    },
+                    "s3_received_payload_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_received_raw_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_sent_payload_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "s3_sent_raw_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "snapshot_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The snapshot that was restored; omit on a failure that never got there."
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Version": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "created_at",
+                    "updated_at",
+                    "major",
+                    "minor",
+                    "patch",
+                    "status",
+                    "changelog"
+                ],
+                "properties": {
+                    "changelog": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "device_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "major": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "minor": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "patch": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/VersionStatus"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "VersionStatus": {
+                "type": "string",
+                "enum": [
+                    "draft",
+                    "published",
+                    "yanked"
+                ]
+            },
+            "VersionStr": {
+                "type": "string",
+                "example": "2.10.5"
+            },
+            "ViewVersion": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "major",
+                    "minor",
+                    "patch",
+                    "status",
+                    "changelog"
+                ],
+                "properties": {
+                    "changelog": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "major": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "minor": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "patch": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/VersionStatus"
+                    }
+                }
+            },
+            "WorklistEntry": {
+                "type": "object",
+                "description": "One concrete replica the consumer should maintain: a declaration expanded\nagainst a single server, carrying the snapshot to restore and the repo\ncoordinates to find it. Credentials and the repo password are obtained\nseparately via `/restore-credentials`.",
+                "required": [
+                    "replica_id",
+                    "group_id",
+                    "server_id",
+                    "type",
+                    "intent",
+                    "name",
+                    "storage",
+                    "bucket",
+                    "prefix",
+                    "region"
+                ],
+                "properties": {
+                    "bucket": {
+                        "type": "string"
+                    },
+                    "freshness_seconds": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Max time since the last healthy restore before overdue, in whole seconds\n\u2014 the consumer's restore cadence, not the backup interval; `None` = no\noverdue bound."
+                    },
+                    "group_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "intent": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "prefix": {
+                        "type": "string"
+                    },
+                    "region": {
+                        "type": "string"
+                    },
+                    "replica_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The declaration this entry came from."
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "snapshot_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "RFC3339 timestamp of that snapshot, if known."
+                    },
+                    "snapshot_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The snapshot Canopy wants restored \u2014 the latest successful backup for\nthis `(server, type)`. `None` when no successful backup is yet known."
+                    },
+                    "storage": {
+                        "type": "string",
+                        "description": "Always `\"s3\"`."
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "securitySchemes": {
+            "admin-device": {
+                "type": "mutualTLS",
+                "description": "mTLS client certificate for a device with the `admin` role."
+            },
+            "backup-restore-device": {
+                "type": "mutualTLS",
+                "description": "mTLS client certificate for a device with the `backup-restore` role (or `admin`)."
+            },
+            "releaser-device": {
+                "type": "mutualTLS",
+                "description": "mTLS client certificate for a device with the `releaser` role (or `admin`)."
+            },
+            "server-device": {
+                "type": "mutualTLS",
+                "description": "mTLS client certificate for a device with the `server` role (or `admin`)."
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "artifacts",
+            "description": "Per-version artifact registration by releaser devices."
+        },
+        {
+            "name": "backup",
+            "description": "Device backup credential minting, target config, capability registration, and run reporting."
+        },
+        {
+            "name": "bestool",
+            "description": "Bestool SQL snippet read API."
+        },
+        {
+            "name": "events",
+            "description": "Device-pushed events; rolled up into issues and incidents server-side."
+        },
+        {
+            "name": "restore",
+            "description": "Managed restore replicas: consumer capability registration, worklist, and read-only restore credentials."
+        },
+        {
+            "name": "servers",
+            "description": "Server registry \u2014 listing for the public, self-registration for server devices."
+        },
+        {
+            "name": "statuses",
+            "description": "Heartbeat / status submissions from server devices."
+        },
+        {
+            "name": "versions",
+            "description": "Canopy release versions and their downloadable artifacts."
+        }
+    ]
+}
