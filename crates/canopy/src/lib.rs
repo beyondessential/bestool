@@ -15,6 +15,7 @@ pub use client::{
 	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, NewEvent, Severity,
 	TAILSCALE_URL, client_builder, device_identity, tailscale_client, user_agent,
 };
+pub use reqwest;
 pub use restore::{
 	RestoreCapabilitiesRequest, RestoreCredentials, RestoreCredentialsRequest, RestoreVerification,
 	WorklistEntry,

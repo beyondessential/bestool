@@ -467,6 +467,74 @@ impl CanopyClient {
 		Ok((state.http(), url))
 	}
 
+	/// Start a request to an arbitrary canopy endpoint on the current auth path.
+	///
+	/// This is the generic escape hatch behind the typed endpoint methods: it
+	/// resolves the right HTTP client and URL for the active auth mode, begins
+	/// the request, and sets the `X-Version` header. The returned builder is
+	/// yours to finish — add query params, a body, or extra headers, then
+	/// `.send()` and parse the response however suits.
+	///
+	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
+	/// same endpoint is mounted under `/public`, so this routes it there, the
+	/// same convention the other endpoint methods follow.
+	pub async fn request(
+		&self,
+		method: reqwest::Method,
+		base_url: &Url,
+		path: &str,
+	) -> Result<reqwest::RequestBuilder> {
+		let (http, url) = self.endpoint_url(base_url, path).await?;
+		debug!(%url, %method, "arbitrary canopy request");
+		Ok(http
+			.request(method, url)
+			.header("X-Version", &self.tamanu_version))
+	}
+
+	/// Call an arbitrary canopy endpoint and parse its JSON response.
+	///
+	/// Builds the request via [`Self::request`], attaches `body` as JSON when
+	/// it's `Some`, sends it, and on a 2xx response parses the body into `Res`.
+	/// A non-success status becomes an error carrying the status and response
+	/// body, matching the other endpoint methods. This absorbs the status-check
+	/// and parse boilerplate.
+	///
+	/// Use [`serde_json::Value`] for `Res` (and/or the body) for fully dynamic
+	/// calls, or any concrete type for typed calls. When passing no body, pin
+	/// the inference with a turbofish, e.g. `None::<&()>`.
+	///
+	/// `path` follows the same mTLS/tailscale convention as [`Self::request`].
+	pub async fn request_json<Res: serde::de::DeserializeOwned>(
+		&self,
+		method: reqwest::Method,
+		base_url: &Url,
+		path: &str,
+		body: Option<&(impl serde::Serialize + ?Sized)>,
+	) -> Result<Res> {
+		let mut req = self.request(method, base_url, path).await?;
+		if let Some(body) = body {
+			req = req.json(body);
+		}
+
+		let response = req
+			.send()
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("calling canopy {path}"))?;
+
+		let status = response.status();
+		if !status.is_success() {
+			let body = response.text().await.unwrap_or_default();
+			return Err(miette::miette!("canopy {path} returned {status}: {body}"));
+		}
+
+		response
+			.json::<Res>()
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("parsing canopy {path} response"))
+	}
+
 	/// Register the backup types this server can run (`POST /backup-capabilities`).
 	pub async fn backup_capabilities(&self, base_url: &Url, types: &[String]) -> Result<()> {
 		let (http, url) = self.endpoint_url(base_url, "/backup-capabilities").await?;
@@ -899,6 +967,153 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		};
 		client.renew().await.expect("renew should be a no-op");
 		assert!(client.is_tailscale().await);
+	}
+
+	fn mtls_client_against(base: &str) -> (CanopyClient, Url) {
+		let http = build_mtls_http(&test_factory(), TEST_DEVICE_KEY).unwrap();
+		let client = CanopyClient {
+			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
+			tamanu_version: "2.54.2".into(),
+			make_builder: test_factory(),
+			state: RwLock::new(State::Mtls(http)),
+		};
+		(client, base.parse().unwrap())
+	}
+
+	struct Captured {
+		request_line: String,
+		headers: String,
+		body: Vec<u8>,
+	}
+
+	/// Bind a loopback socket and answer exactly one HTTP request with
+	/// `response`, capturing the received request line, headers, and body.
+	fn serve_once(response: &'static str) -> (String, std::thread::JoinHandle<Captured>) {
+		use std::io::{Read, Write};
+		use std::net::TcpListener;
+
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let base = format!("http://{}", listener.local_addr().unwrap());
+		let handle = std::thread::spawn(move || {
+			let (mut stream, _) = listener.accept().unwrap();
+			let mut buf = Vec::new();
+			let mut chunk = [0u8; 1024];
+			let header_end = loop {
+				if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+					break pos + 4;
+				}
+				let n = stream.read(&mut chunk).unwrap();
+				if n == 0 {
+					panic!("connection closed before headers were complete");
+				}
+				buf.extend_from_slice(&chunk[..n]);
+			};
+
+			let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+			let content_length = head
+				.lines()
+				.find_map(|line| {
+					let (name, value) = line.split_once(':')?;
+					name.trim()
+						.eq_ignore_ascii_case("content-length")
+						.then(|| value.trim().parse::<usize>().ok())
+						.flatten()
+				})
+				.unwrap_or(0);
+
+			let mut body = buf[header_end..].to_vec();
+			while body.len() < content_length {
+				let n = stream.read(&mut chunk).unwrap();
+				if n == 0 {
+					break;
+				}
+				body.extend_from_slice(&chunk[..n]);
+			}
+
+			stream.write_all(response.as_bytes()).unwrap();
+			stream.flush().unwrap();
+
+			let mut lines = head.lines();
+			let request_line = lines.next().unwrap_or_default().to_owned();
+			let headers = lines.collect::<Vec<_>>().join("\n");
+			Captured {
+				request_line,
+				headers,
+				body,
+			}
+		});
+		(base, handle)
+	}
+
+	#[derive(Debug, Deserialize, PartialEq)]
+	struct Echo {
+		ok: bool,
+		who: String,
+	}
+
+	#[tokio::test]
+	async fn request_json_sends_version_and_body_and_parses_response() {
+		let (base, handle) = serve_once(
+			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"ok\":true,\"who\":\"device\"}",
+		);
+		let (client, base_url) = mtls_client_against(&base);
+
+		let payload = serde_json::json!({ "hello": "world" });
+		let got: Echo = client
+			.request_json(reqwest::Method::POST, &base_url, "/thing", Some(&payload))
+			.await
+			.expect("request_json should succeed");
+
+		assert_eq!(
+			got,
+			Echo {
+				ok: true,
+				who: "device".into()
+			}
+		);
+
+		let captured = handle.join().unwrap();
+		assert!(
+			captured.request_line.starts_with("POST /thing "),
+			"unexpected request line: {}",
+			captured.request_line
+		);
+		assert!(
+			captured
+				.headers
+				.to_ascii_lowercase()
+				.contains("x-version: 2.54.2"),
+			"missing X-Version header in:\n{}",
+			captured.headers
+		);
+		let sent: serde_json::Value = serde_json::from_slice(&captured.body).unwrap();
+		assert_eq!(sent, payload);
+	}
+
+	#[tokio::test]
+	async fn request_json_errors_on_non_success_with_body() {
+		let (base, handle) =
+			serve_once("HTTP/1.1 418 I'm a teapot\r\nContent-Length: 14\r\n\r\nno coffee here");
+		let (client, base_url) = mtls_client_against(&base);
+
+		let err = client
+			.request_json::<serde_json::Value>(
+				reqwest::Method::GET,
+				&base_url,
+				"/brew",
+				None::<&()>,
+			)
+			.await
+			.expect_err("non-2xx should error");
+		let msg = err.to_string();
+		assert!(msg.contains("/brew"), "expected path in error: {msg}");
+		assert!(msg.contains("418"), "expected status in error: {msg}");
+		assert!(
+			msg.contains("no coffee here"),
+			"expected body text in error: {msg}"
+		);
+
+		handle.join().unwrap();
 	}
 
 	#[test]
