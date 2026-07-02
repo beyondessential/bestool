@@ -228,7 +228,7 @@ pub async fn check_for_update() -> Result<()> {
 /// build rather than one fetched at update time.
 #[cfg(feature = "self-update")]
 pub(crate) const RELEASE_PUBLIC_KEY: &str =
-	"RWS1KOzOdZegWyADv/mT0GoLELjY7esgGwjtDVPqt6yaf/Wk1u1ZUCIf";
+	"RWT+oj++Y0app3N4K+PLSYTKhtXimltIHxhoFgyWjxR/ZElCG0lDBDl5";
 
 /// Fetch and decode the detached signature published next to `artifact_url`
 /// (at the artifact URL with a `.minisig` suffix).
@@ -398,6 +398,20 @@ mod signature_tests {
 	#[test]
 	fn embedded_release_key_is_a_valid_minisign_key() {
 		assert!(minisign_verify::PublicKey::from_base64(RELEASE_PUBLIC_KEY).is_ok());
+	}
+
+	#[test]
+	fn embedded_release_key_matches_binstall_metadata() {
+		// self-update (RELEASE_PUBLIC_KEY) and binstall (the
+		// [package.metadata.binstall.signing] pubkey) verify against the same
+		// released artifacts, so they must be the same key. Keeping both copies
+		// in step is otherwise a silent, release-only failure.
+		let manifest = include_str!("../Cargo.toml");
+		let expected = format!("pubkey = \"{RELEASE_PUBLIC_KEY}\"");
+		assert!(
+			manifest.contains(&expected),
+			"RELEASE_PUBLIC_KEY must match the binstall signing pubkey in Cargo.toml"
+		);
 	}
 
 	#[test]

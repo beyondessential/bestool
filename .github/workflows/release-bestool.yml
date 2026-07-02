@@ -231,6 +231,29 @@ jobs:
             "$src_dir/$name.tar.zst"
           rm -f signing.key
 
+      # Guard against the signing key drifting from the public key baked into
+      # the binary: verify the just-signed artifact against the exact key the
+      # self-update path trusts (RELEASE_PUBLIC_KEY in download.rs). If they
+      # don't match, no shipped bestool could self-update to this release, so
+      # fail here rather than publish an un-updatable build.
+      - name: Verify signature with the embedded self-update key
+        shell: bash
+        run: |
+          src_dir="target/${{ matrix.target }}/dist"
+          name="bestool"
+          if [[ ${{ runner.os }} == "Windows" ]]; then
+            name="bestool.exe"
+          fi
+          embedded=$(grep -oE 'RW[A-Za-z0-9+/=]{40,}' crates/bestool/src/download.rs | head -n1)
+          if [[ -z "$embedded" ]]; then
+            echo "could not extract RELEASE_PUBLIC_KEY from crates/bestool/src/download.rs" >&2
+            exit 1
+          fi
+          echo "verifying against embedded key: $embedded"
+          rsign verify "$src_dir/$name.tar.zst" \
+            -P "$embedded" \
+            -x "$src_dir/$name.tar.zst.minisig"
+
       - uses: actions/upload-artifact@v7
         with:
           name: bestool-${{ matrix.target }}-${{ github.sha }}

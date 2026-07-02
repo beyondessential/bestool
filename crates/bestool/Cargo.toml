@@ -223,5 +223,5 @@ bin-dir = "{ bin }{ binary-ext }"
 
 [package.metadata.binstall.signing]
 algorithm = "minisign"
-pubkey = "RWS1KOzOdZegWyADv/mT0GoLELjY7esgGwjtDVPqt6yaf/Wk1u1ZUCIf"
+pubkey = "RWT+oj++Y0app3N4K+PLSYTKhtXimltIHxhoFgyWjxR/ZElCG0lDBDl5"
 file = "{ url }.minisig"
