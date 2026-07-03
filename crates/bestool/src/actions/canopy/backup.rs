@@ -848,16 +848,14 @@ pub(super) fn base_url_of(reg: &Registration) -> Result<Url> {
 
 /// Build a canopy client for an already-enrolled host (tailscale, then mTLS).
 pub(super) async fn build_client(base_url: Url, device_key: &str) -> Result<Arc<CanopyClient>> {
-	let version = env!("CARGO_PKG_VERSION");
 	let tailscale_url = bestool_canopy::TAILSCALE_URL
 		.parse()
 		.into_diagnostic()
 		.wrap_err("parsing default canopy tailscale URL")?;
-	let client = CanopyClient::with_urls(base_url, tailscale_url, version, Some(device_key), move || {
-		bestool_canopy::client_builder(version)
-	})
-	.await?
-	.ok_or_else(|| miette!("could not build a canopy client (no auth path available)"))?;
+	let client =
+		CanopyClient::with_urls(base_url, tailscale_url, Some(device_key), crate::http::client_builder)
+			.await?
+			.ok_or_else(|| miette!("could not build a canopy client (no auth path available)"))?;
 	Ok(Arc::new(client))
 }
 

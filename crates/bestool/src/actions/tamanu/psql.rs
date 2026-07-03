@@ -419,13 +419,9 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		(false, HashSet::new())
 	};
 
-	let canopy = if let Some(ref tamanu_version) = version {
+	let canopy = if version.is_some() {
 		let device_key = bestool_tamanu::server_info::fetch_device_key().await;
-		match CanopyClient::new(
-			tamanu_version.clone(),
-			device_key.as_deref(),
-			crate::http::client_builder,
-		)
+		match CanopyClient::new(device_key.as_deref(), crate::http::client_builder)
 		.await
 		{
 			Ok(Some(client)) => {

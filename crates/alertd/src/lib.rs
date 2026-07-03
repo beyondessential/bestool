@@ -23,12 +23,11 @@ pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse}
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Base builder for alertd's outbound HTTP clients.
-///
-/// Carries the browser-style `bestool/<version>` User-Agent (and whatever else
-/// [`canopy::client_builder`] sets). Call sites add their own timeouts etc.
+/// Base builder for alertd's outbound HTTP clients. Call sites add their own
+/// timeouts etc. Canopy sets its own User-Agent, so this one applies to alertd's
+/// other requests.
 pub fn http_builder() -> reqwest::ClientBuilder {
-	canopy::client_builder(VERSION)
+	reqwest::Client::builder().user_agent(concat!("bestool-alertd/", env!("CARGO_PKG_VERSION")))
 }
 
 /// A built [`reqwest::Client`] from [`http_builder`].
@@ -58,11 +57,6 @@ pub struct DaemonConfig {
 	/// then dropped. Wrapped in `Redacted` so debug-logging the config can't
 	/// leak the key.
 	pub device_key_pem: Option<Redacted<String>>,
-
-	/// Tamanu version of the install this daemon is monitoring. Sent in the
-	/// `X-Version` header on every canopy request — canopy rejects requests
-	/// without one.
-	pub tamanu_version: String,
 
 	/// Whether to disable the HTTP server
 	pub no_server: bool,
@@ -99,7 +93,6 @@ impl fmt::Debug for DaemonConfig {
 		f.debug_struct("DaemonConfig")
 			.field("database_url", &self.database_url)
 			.field("device_key_pem", &self.device_key_pem)
-			.field("tamanu_version", &self.tamanu_version)
 			.field("binary_version", &self.binary_version)
 			.field("no_server", &self.no_server)
 			.field("server_addrs", &self.server_addrs)
@@ -120,13 +113,11 @@ impl DaemonConfig {
 	pub fn new(
 		pg_pool: Option<bestool_postgres::pool::PgPool>,
 		database_url: Option<String>,
-		tamanu_version: String,
 	) -> Self {
 		Self {
 			pg_pool,
 			database_url,
 			device_key_pem: None,
-			tamanu_version,
 			no_server: false,
 			server_addrs: Vec::new(),
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),

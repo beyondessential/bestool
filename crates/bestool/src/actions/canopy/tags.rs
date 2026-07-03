@@ -66,10 +66,9 @@ pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
 	// `--root` only exists on the `tamanu` alias path; under `canopy` there's
 	// no `TamanuArgs` in the context, so fall back to default discovery.
 	let root_arg = ctx.get::<TamanuArgs>().and_then(|t| t.root.clone());
-	let (version, root) = bestool_tamanu::find_tamanu(root_arg.as_deref()).await?;
+	let (_version, root) = bestool_tamanu::find_tamanu(root_arg.as_deref()).await?;
 	let config = Arc::new(load_config(&root, None)?);
 
-	let tamanu_version = version.to_string();
 	let cache_path = standard_tags_path();
 
 	let (tags, source) = if args.offline {
@@ -81,7 +80,7 @@ pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
 			),
 		}
 	} else {
-		match fetch_online(&tamanu_version).await {
+		match fetch_online().await {
 			Ok(tags) => {
 				let cache = TagsCache {
 					tags: tags.clone(),
@@ -120,15 +119,11 @@ enum Source {
 	Cache(Option<jiff::Timestamp>),
 }
 
-async fn fetch_online(tamanu_version: &str) -> Result<BTreeMap<String, String>> {
+async fn fetch_online() -> Result<BTreeMap<String, String>> {
 	let device_key = bestool_tamanu::server_info::fetch_device_key().await;
-	let canopy = CanopyClient::new(
-		tamanu_version.to_owned(),
-		device_key.as_deref(),
-		crate::http::client_builder,
-	)
-	.await?
-	.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
+	let canopy = CanopyClient::new(device_key.as_deref(), crate::http::client_builder)
+		.await?
+		.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
 
 	debug!(
 		via = if canopy.is_tailscale().await { "tailscale" } else { "mtls" },

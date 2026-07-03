@@ -62,33 +62,32 @@ const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Factory producing the base [`reqwest::ClientBuilder`] for canopy's clients.
 ///
-/// The caller supplies this so it owns cross-cutting client config (user-agent,
-/// `SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
+/// The caller supplies this so it owns cross-cutting client config
+/// (`SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
 /// rebuild a client — at probe time, on mTLS cert renewal, and on reload — then
-/// layers its own concerns (mTLS identity, DNS overrides, timeouts) on top.
+/// layers its own concerns (its [`user_agent`], mTLS identity, DNS overrides,
+/// timeouts) on top.
 pub type ClientBuilderFactory = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>;
 
-/// Browser-style user-agent string, e.g. `bestool/1.2.3 (Linux 7.0.9 Arch Linux; x86_64)`.
+/// User-agent set on every canopy request, e.g.
+/// `bestool-canopy/0.5.0 (Linux 7.0.9 Arch Linux; x86_64)`.
 ///
-/// `product` and `version` identify the calling binary; the OS comment is
-/// detected at runtime and cached.
-pub fn user_agent(product: &str, version: &str) -> String {
-	static OS_COMMENT: OnceLock<String> = OnceLock::new();
-	let os_comment = OS_COMMENT.get_or_init(|| {
+/// Identifies this client crate and its version; the OS comment is detected at
+/// runtime and cached. The client sets this itself on top of the caller's
+/// [`ClientBuilderFactory`], so canopy traffic identifies the client library
+/// regardless of the calling binary.
+fn user_agent() -> &'static str {
+	static UA: OnceLock<String> = OnceLock::new();
+	UA.get_or_init(|| {
 		let os = sysinfo::System::long_os_version()
 			.or_else(sysinfo::System::name)
 			.unwrap_or_else(|| std::env::consts::OS.to_owned());
-		format!("{os}; {}", sysinfo::System::cpu_arch())
-	});
-	format!("{product}/{version} ({os_comment})")
-}
-
-/// A [`reqwest::ClientBuilder`] carrying the `bestool` [`user_agent`] for `version`.
-///
-/// Convenience for callers that don't need any extra client config; suitable as
-/// the base of a [`ClientBuilderFactory`].
-pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
-	reqwest::Client::builder().user_agent(user_agent("bestool", version))
+		format!(
+			"bestool-canopy/{} ({os}; {})",
+			env!("CARGO_PKG_VERSION"),
+			sysinfo::System::cpu_arch(),
+		)
+	})
 }
 
 /// Probe the canopy tailnet endpoint, returning a client routed to it if
@@ -124,11 +123,6 @@ pub struct CanopyClient {
 	/// on the tailscale path. Fixed for the client's lifetime.
 	tailscale_url: Url,
 	device_key: Option<Redacted<String>>,
-	/// Tamanu version of the install this client speaks for. Sent verbatim in
-	/// the `X-Version` request header — canopy rejects events / status pushes
-	/// that don't carry one. Sourced from the running Tamanu install's
-	/// `package.json` (via `find_tamanu`); not the bestool / alertd version.
-	tamanu_version: String,
 	/// Produces the base client builder; see [`ClientBuilderFactory`].
 	make_builder: ClientBuilderFactory,
 	state: RwLock<State>,
@@ -166,13 +160,9 @@ impl CanopyClient {
 	/// a device key PEM is provided, builds an mTLS client. Returns `Ok(None)` if
 	/// neither path is available.
 	///
-	/// `tamanu_version` is the version of the Tamanu install this client
-	/// speaks for; sent on every request via the `X-Version` header.
-	///
 	/// `make_builder` supplies the base [`reqwest::ClientBuilder`] — see
-	/// [`ClientBuilderFactory`]. Use [`client_builder`] for a sensible default.
+	/// [`ClientBuilderFactory`].
 	pub async fn new(
-		tamanu_version: impl Into<String>,
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
@@ -183,7 +173,6 @@ impl CanopyClient {
 			TAILSCALE_URL
 				.parse()
 				.expect("default tailscale URL is valid"),
-			tamanu_version,
 			device_key_pem,
 			make_builder,
 		)
@@ -199,11 +188,9 @@ impl CanopyClient {
 	pub async fn with_urls(
 		base_url: Url,
 		tailscale_url: Url,
-		tamanu_version: impl Into<String>,
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
-		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
@@ -213,7 +200,6 @@ impl CanopyClient {
 				base_url,
 				tailscale_url,
 				device_key,
-				tamanu_version,
 				make_builder,
 				state: RwLock::new(State::Tailscale(http)),
 			}));
@@ -226,7 +212,6 @@ impl CanopyClient {
 				base_url,
 				tailscale_url,
 				device_key,
-				tamanu_version,
 				make_builder,
 				state: RwLock::new(State::Mtls(http)),
 			}));
@@ -337,7 +322,6 @@ impl CanopyClient {
 
 		let response = http
 			.post(url)
-			.header("X-Version", &self.tamanu_version)
 			.header(reqwest::header::CONTENT_TYPE, "application/json")
 			.header(reqwest::header::CONTENT_ENCODING, "gzip")
 			.body(compressed)
@@ -399,7 +383,6 @@ impl CanopyClient {
 
 		debug!(%url, "GET via canopy");
 		http.get(url)
-			.header("X-Version", &self.tamanu_version)
 			.send()
 			.await
 			.into_diagnostic()
@@ -430,10 +413,9 @@ impl CanopyClient {
 	/// Start a request to an arbitrary canopy endpoint on the current auth path.
 	///
 	/// This is the generic escape hatch behind the typed endpoint methods: it
-	/// resolves the right HTTP client and URL for the active auth mode, begins
-	/// the request, and sets the `X-Version` header. The returned builder is
-	/// yours to finish — add query params, a body, or extra headers, then
-	/// `.send()` and parse the response however suits.
+	/// resolves the right HTTP client and URL for the active auth mode and begins
+	/// the request. The returned builder is yours to finish — add query params, a
+	/// body, or extra headers, then `.send()` and parse the response however suits.
 	///
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
 	/// same endpoint is mounted under `/public`, so this routes it there, the
@@ -445,9 +427,7 @@ impl CanopyClient {
 	) -> Result<reqwest::RequestBuilder> {
 		let (http, url) = self.endpoint_url(path).await?;
 		debug!(%url, %method, "arbitrary canopy request");
-		Ok(http
-			.request(method, url)
-			.header("X-Version", &self.tamanu_version))
+		Ok(http.request(method, url))
 	}
 
 	/// Call an arbitrary canopy endpoint and parse its JSON response.
@@ -499,7 +479,6 @@ impl CanopyClient {
 		debug!(%url, ?types, "registering backup capabilities with canopy");
 		let response = http
 			.post(url)
-			.header("X-Version", &self.tamanu_version)
 			.json(&CapabilitiesArgs {
 				types: types.to_vec(),
 			})
@@ -531,7 +510,6 @@ impl CanopyClient {
 		debug!(%url, backup_type, ?purpose, "requesting backup credentials from canopy");
 		let response = http
 			.post(url)
-			.header("X-Version", &self.tamanu_version)
 			.json(&CredentialsArgs {
 				type_: backup_type.to_owned(),
 				purpose: Some(purpose),
@@ -564,7 +542,6 @@ impl CanopyClient {
 		debug!(%url, "fetching backup target from canopy");
 		let response = http
 			.get(url)
-			.header("X-Version", &self.tamanu_version)
 			.send()
 			.await
 			.into_diagnostic()
@@ -596,7 +573,6 @@ impl CanopyClient {
 		debug!(%url, run_id = %report.run_id, "reporting backup outcome to canopy");
 		let response = http
 			.post(url)
-			.header("X-Version", &self.tamanu_version)
 			.json(report)
 			.send()
 			.await
@@ -673,7 +649,9 @@ async fn try_probe(
 	addrs: &[SocketAddr],
 	make_builder: &ClientBuilderFactory,
 ) -> Option<reqwest::Client> {
-	let mut builder = make_builder().timeout(TAILSCALE_PROBE_TIMEOUT);
+	let mut builder = make_builder()
+		.user_agent(user_agent())
+		.timeout(TAILSCALE_PROBE_TIMEOUT);
 	if !addrs.is_empty() {
 		builder = builder.resolve_to_addrs(host, addrs);
 	}
@@ -762,6 +740,7 @@ fn build_mtls_http(
 	let identity = device_identity(device_key_pem)?;
 
 	make_builder()
+		.user_agent(user_agent())
 		.identity(identity)
 		.use_rustls_tls()
 		.timeout(Duration::from_secs(30))
@@ -805,7 +784,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
 		};
@@ -821,7 +799,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: None,
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(http)),
 		};
@@ -835,7 +812,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: base.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
 		}
@@ -943,8 +919,8 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			captured
 				.headers
 				.to_ascii_lowercase()
-				.contains("x-version: 2.54.2"),
-			"missing X-Version header in:\n{}",
+				.contains("user-agent: bestool-canopy/"),
+			"missing canopy user-agent in:\n{}",
 			captured.headers
 		);
 		let sent: serde_json::Value = serde_json::from_slice(&captured.body).unwrap();
@@ -973,10 +949,10 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	}
 
 	#[test]
-	fn user_agent_has_product_and_os_comment() {
-		let ua = user_agent("bestool", "1.2.3");
+	fn user_agent_identifies_the_crate_with_os_comment() {
+		let ua = user_agent();
 		assert!(
-			ua.starts_with("bestool/1.2.3 "),
+			ua.starts_with(concat!("bestool-canopy/", env!("CARGO_PKG_VERSION"), " ")),
 			"unexpected user-agent: {ua}"
 		);
 		assert!(ua.contains('('), "expected OS comment in: {ua}");

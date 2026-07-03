@@ -43,7 +43,7 @@ pub mod schema {
 pub use backup::{ContainerCreds, TargetOutcome};
 pub use client::{
 	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, TAILSCALE_URL,
-	client_builder, device_identity, tailscale_client, user_agent,
+	device_identity, tailscale_client,
 };
 pub use reqwest;
 

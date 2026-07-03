@@ -87,7 +87,6 @@ pub async fn run_with_shutdown(
 	let pool = daemon_config.pg_pool.clone();
 
 	let canopy_client = match CanopyClient::new(
-		daemon_config.tamanu_version.clone(),
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
 		crate::http_builder,
 	)
