@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use bestool_canopy::schema::{
-	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CapabilitiesArgs, CompleteArgs,
-	CompleteResponse, CredentialProcessOutput, CredentialsArgs, NewEvent, ReportArgs, RunOutcome,
-	Severity,
+	BackupCapabilitiesArgs, BackupCredentialsArgs, BackupPurpose, BackupTarget, BeginArgs,
+	BeginResponse, CompleteArgs, CompleteResponse, CredentialProcessOutput, NewEvent, ReportArgs,
+	RunOutcome, Severity,
 };
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
@@ -361,7 +361,7 @@ async fn backup_capabilities_request_matches_spec() {
 	assert_operation_exists(spec, "/backup-capabilities", "post");
 
 	let types = vec!["tamanu-postgres".to_owned()];
-	let instance = serde_json::to_value(CapabilitiesArgs { types }).unwrap();
+	let instance = serde_json::to_value(BackupCapabilitiesArgs { types }).unwrap();
 	assert_valid(
 		spec,
 		&request_schema("/backup-capabilities", "post"),
@@ -375,7 +375,7 @@ async fn backup_credentials_request_and_response_match_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/backup-credentials", "post");
 
-	let instance = serde_json::to_value(CredentialsArgs {
+	let instance = serde_json::to_value(BackupCredentialsArgs {
 		type_: "tamanu-postgres".to_owned(),
 		purpose: Some(BackupPurpose::Backup),
 	})
