@@ -10,10 +10,12 @@ mod restore;
 /// Wire types generated at build time from canopy's OpenAPI document.
 ///
 /// These are the canonical request and response types for canopy's API, and the
-/// ones to reach for first. The build script fetches the live spec (falling back
-/// to a committed snapshot) and regenerates them on each build, so they track
-/// canopy as it evolves and nothing here is hand-maintained or committed. Each
-/// type carries the schema's own description as rustdoc.
+/// ones to reach for first. The build script fetches the live spec and
+/// regenerates them, so they track canopy as it evolves and nothing here is
+/// hand-maintained or committed. Each type carries the schema's own description
+/// as rustdoc. (A failed fetch fails the build rather than silently using the
+/// committed snapshot, which is reserved for docs.rs and explicit offline
+/// builds — see the build script.)
 ///
 /// Naming follows canopy's schema: request bodies are `…Args` (e.g.
 /// [`CredentialsArgs`], [`ReportArgs`], [`CapabilitiesArgs`]), and credentials
