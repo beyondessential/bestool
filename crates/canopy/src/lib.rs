@@ -37,6 +37,12 @@ pub mod registration;
 /// `raw-requests` feature — reach for it only for something the generated methods
 /// don't cover.
 ///
+/// To check these types are current, [`schema::OPENAPI_BLAKE3`] is the blake3
+/// digest of the OpenAPI document they were generated from (compare it against
+/// `curl -fsS https://meta.tamanu.app/api/openapi.json | b3sum`), and
+/// [`schema::OPENAPI_SOURCE`] records whether that document was fetched live or
+/// read from the committed snapshot.
+///
 /// [`BackupCredentialsArgs`]: schema::BackupCredentialsArgs
 /// [`ReportArgs`]: schema::ReportArgs
 /// [`BackupCapabilitiesArgs`]: schema::BackupCapabilitiesArgs

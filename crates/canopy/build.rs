@@ -36,13 +36,16 @@ fn main() {
 	println!("cargo:rerun-if-env-changed={DOCS_RS_ENV}");
 	println!("cargo:rerun-if-env-changed={OFFLINE_ENV}");
 
-	let spec_text = match fetch_live() {
-		Ok(text) => text,
+	let (spec_text, source) = match fetch_live() {
+		Ok(text) => (text, Source::Live),
 		Err(err) if snapshot_allowed() => {
 			println!(
 				"cargo:warning=canopy OpenAPI live fetch failed ({err}); using committed snapshot"
 			);
-			fs::read_to_string(SNAPSHOT).expect("reading canopy OpenAPI snapshot")
+			(
+				fs::read_to_string(SNAPSHOT).expect("reading canopy OpenAPI snapshot"),
+				Source::Snapshot,
+			)
 		}
 		Err(err) => panic!(
 			"canopy OpenAPI live fetch from {SPEC_URL} failed: {err}\n\
@@ -75,12 +78,59 @@ fn main() {
 		.expect("generating types from canopy schemas");
 
 	let file = syn::parse2(type_space.to_stream()).expect("parsing generated canopy schema tokens");
-	let mut generated = rewrite_types(&prettyplease::unparse(&file));
+	let mut generated = provenance(&spec_text, source);
+	generated.push_str(&rewrite_types(&prettyplease::unparse(&file)));
 	generated.push_str(&generate_client_methods(&spec));
 
 	let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set for build scripts");
 	fs::write(Path::new(&out_dir).join("canopy_schema.rs"), generated)
 		.expect("writing generated canopy schema");
+}
+
+/// Where the OpenAPI document was obtained for this build.
+#[derive(Clone, Copy)]
+enum Source {
+	/// Fetched live from the running canopy deployment.
+	Live,
+	/// Read from the committed snapshot (offline / docs.rs build).
+	Snapshot,
+}
+
+/// Emit the provenance constants for the generated module: [`OPENAPI_SOURCE`]
+/// and [`OPENAPI_BLAKE3`], so consumers can tell which document these types were
+/// generated from and check whether it is still current.
+///
+/// The digest is blake3 over the document's raw bytes exactly as served, so it
+/// reproduces with `curl -fsS <SPEC_URL> | b3sum`. An inner `#![doc]` attribute
+/// can't be used here — `include!` forbids one in this position — so the
+/// provenance surfaces through these documented constants instead, which the
+/// module docs in `lib.rs` point at.
+fn provenance(spec_text: &str, source: Source) -> String {
+	let hash = blake3::hash(spec_text.as_bytes()).to_hex();
+	let (source_const, source_doc) = match source {
+		Source::Live => (
+			"live",
+			format!("fetched live from the canopy deployment at <{SPEC_URL}>"),
+		),
+		Source::Snapshot => (
+			"snapshot",
+			"read from the committed `openapi.snapshot.json` because the live spec was \
+			 unavailable (an offline or docs.rs build), so these types may lag canopy"
+				.to_owned(),
+		),
+	};
+	format!(
+		"/// How the OpenAPI document was obtained when these types were generated: `\"live\"`\n\
+		 /// when fetched live from the running canopy deployment, `\"snapshot\"` for an offline\n\
+		 /// or docs.rs build against the committed `openapi.snapshot.json`.\n\
+		 ///\n\
+		 /// This build: {source_doc}.\n\
+		 pub const OPENAPI_SOURCE: &str = \"{source_const}\";\n\n\
+		 /// blake3 digest of the canopy OpenAPI document these wire types were generated from,\n\
+		 /// over its raw bytes exactly as served. Compare against `curl -fsS {SPEC_URL} | b3sum`\n\
+		 /// to check the generated types are current.\n\
+		 pub const OPENAPI_BLAKE3: &str = \"{hash}\";\n\n"
+	)
 }
 
 const HTTP_VERBS: [&str; 5] = ["get", "post", "put", "delete", "patch"];
