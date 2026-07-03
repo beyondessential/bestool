@@ -18,15 +18,13 @@ use reqwest::Url;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
-use uuid::Uuid;
 
 use crate::{
 	Redacted,
 	backup::TargetOutcome,
-	restore::{RestoreCapabilitiesRequest, RestoreCredentialsRequest},
 	schema::{
 		BackupPurpose, BackupTarget, CapabilitiesArgs, CredentialProcessOutput, CredentialsArgs,
-		NewEvent, ReportArgs, RestoreCredentials, VerificationArgs, WorklistEntry,
+		ReportArgs,
 	},
 };
 
@@ -102,7 +100,10 @@ pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
 /// when the tailnet endpoint isn't reachable, so callers can fall back to
 /// public mTLS.
 pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<reqwest::Client> {
-	probe_tailscale(make_builder).await
+	let tailscale_url = TAILSCALE_URL
+		.parse()
+		.expect("default tailscale URL is valid");
+	probe_tailscale(&tailscale_url, make_builder).await
 }
 
 /// HTTP client with auth configured for talking to a canopy server.
@@ -116,6 +117,12 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 ///
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 pub struct CanopyClient {
+	/// Base URL for the mTLS path (canopy's public API, from the registration's
+	/// `api_url`). Used only on the mTLS path. Fixed for the client's lifetime.
+	base_url: Url,
+	/// Base URL for the tailscale path (defaults to [`TAILSCALE_URL`]). Used only
+	/// on the tailscale path. Fixed for the client's lifetime.
+	tailscale_url: Url,
 	device_key: Option<Redacted<String>>,
 	/// Tamanu version of the install this client speaks for. Sent verbatim in
 	/// the `X-Version` request header — canopy rejects events / status pushes
@@ -151,11 +158,13 @@ impl fmt::Debug for CanopyClient {
 }
 
 impl CanopyClient {
-	/// Build a canopy client, preferring tailscale and falling back to mTLS.
+	/// Build a canopy client against the default public ([`DEFAULT_CANOPY_URL`])
+	/// and tailscale ([`TAILSCALE_URL`]) endpoints. Use [`Self::with_urls`] to
+	/// override them.
 	///
-	/// Probes the tailscale canopy endpoint first; if reachable, uses it.
-	/// Otherwise, if a device key PEM is provided, builds an mTLS client.
-	/// Returns `Ok(None)` if neither path is available.
+	/// Probes the tailscale endpoint first; if reachable, uses it. Otherwise, if
+	/// a device key PEM is provided, builds an mTLS client. Returns `Ok(None)` if
+	/// neither path is available.
 	///
 	/// `tamanu_version` is the version of the Tamanu install this client
 	/// speaks for; sent on every request via the `X-Version` header.
@@ -167,13 +176,42 @@ impl CanopyClient {
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
+		Self::with_urls(
+			DEFAULT_CANOPY_URL
+				.parse()
+				.expect("default canopy URL is valid"),
+			TAILSCALE_URL
+				.parse()
+				.expect("default tailscale URL is valid"),
+			tamanu_version,
+			device_key_pem,
+			make_builder,
+		)
+		.await
+	}
+
+	/// Build a canopy client against explicit endpoints.
+	///
+	/// `base_url` is canopy's public API URL (the registration's `api_url`),
+	/// used on the mTLS path; `tailscale_url` is the tailnet endpoint used on
+	/// the tailscale path. Both are fixed for the client's lifetime. See
+	/// [`Self::new`] for the other arguments and the default-endpoint form.
+	pub async fn with_urls(
+		base_url: Url,
+		tailscale_url: Url,
+		tamanu_version: impl Into<String>,
+		device_key_pem: Option<&str>,
+		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
+	) -> Result<Option<Self>> {
 		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
-		if let Some(http) = probe_tailscale(&make_builder).await {
+		if let Some(http) = probe_tailscale(&tailscale_url, &make_builder).await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
+				base_url,
+				tailscale_url,
 				device_key,
 				tamanu_version,
 				make_builder,
@@ -185,6 +223,8 @@ impl CanopyClient {
 			debug!("canopy: tailscale unreachable, falling back to mTLS");
 			let http = build_mtls_http(&make_builder, pem)?;
 			return Ok(Some(Self {
+				base_url,
+				tailscale_url,
 				device_key,
 				tamanu_version,
 				make_builder,
@@ -204,7 +244,7 @@ impl CanopyClient {
 	///
 	/// Intended to be called when the daemon receives a reload signal.
 	pub async fn refresh(&self) -> Result<()> {
-		if let Some(http) = probe_tailscale(&self.make_builder).await {
+		if let Some(http) = probe_tailscale(&self.tailscale_url, &self.make_builder).await {
 			let mut state = self.state.write().await;
 			if !state.is_tailscale() {
 				debug!("canopy refresh: switching to tailscale path");
@@ -246,8 +286,9 @@ impl CanopyClient {
 
 	/// POST a status snapshot to the canopy server.
 	///
-	/// In tailscale mode, `base_url` is ignored and a `{TAILSCALE_URL}/public/status/{server_id}`
-	/// URL is used. In mTLS mode, posts to `{base_url}/status/{server_id}`.
+	/// In tailscale mode a `{TAILSCALE_URL}/public/status/{server_id}` URL is
+	/// used; in mTLS mode it posts to `{base_url}/status/{server_id}` for the
+	/// client's configured base URL.
 	///
 	/// The payload is free-form JSON; the canopy `/status` contract reserves the
 	/// top-level `health: []` key, whose entries each carry a `result` of
@@ -260,18 +301,19 @@ impl CanopyClient {
 	/// list, so older canopy deployments keep working.
 	pub async fn post_status(
 		&self,
-		base_url: &Url,
 		server_id: &str,
 		payload: &serde_json::Value,
 	) -> Result<Vec<String>> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {
-				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/status/{server_id}")
-					.parse::<Url>()
+				State::Tailscale(_) => self
+					.tailscale_url
+					.join(&format!("/public/status/{server_id}"))
 					.into_diagnostic()
 					.wrap_err("building tailscale /public/status URL")?,
-				State::Mtls(_) => base_url
+				State::Mtls(_) => self
+					.base_url
 					.join(&format!("/status/{server_id}"))
 					.into_diagnostic()
 					.wrap_err("building /status URL")?,
@@ -331,25 +373,23 @@ impl CanopyClient {
 	///
 	/// In tailscale mode, the request goes to `{TAILSCALE_URL}{tailscale_path}`
 	/// (typically `/public/...`, the only mount that accepts tagged-device
-	/// tailscale callers). In mTLS mode, the request goes to `{base_url}{mtls_path}`.
+	/// tailscale callers). In mTLS mode, the request goes to `{base_url}{mtls_path}`
+	/// for the client's configured base URL.
 	///
 	/// Returns the raw response — the caller is responsible for status checks
 	/// and body parsing so they can choose how to fall back if the response
 	/// isn't usable.
-	pub async fn get(
-		&self,
-		base_url: &Url,
-		tailscale_path: &str,
-		mtls_path: &str,
-	) -> Result<reqwest::Response> {
+	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {
-				State::Tailscale(_) => format!("{TAILSCALE_URL}{tailscale_path}")
-					.parse::<Url>()
+				State::Tailscale(_) => self
+					.tailscale_url
+					.join(tailscale_path)
 					.into_diagnostic()
 					.wrap_err("building tailscale GET URL")?,
-				State::Mtls(_) => base_url
+				State::Mtls(_) => self
+					.base_url
 					.join(mtls_path)
 					.into_diagnostic()
 					.wrap_err("building mTLS GET URL")?,
@@ -366,64 +406,20 @@ impl CanopyClient {
 			.wrap_err("GET via canopy")
 	}
 
-	/// POST an event to the canopy server.
-	///
-	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
-	/// In mTLS mode, posts to `{base_url}/events`.
-	pub async fn post_event(&self, base_url: &Url, event: NewEvent) -> Result<()> {
-		let (http, url) = {
-			let state = self.state.read().await;
-			let url = match &*state {
-				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/events")
-					.parse::<Url>()
-					.into_diagnostic()
-					.wrap_err("building tailscale /public/events URL")?,
-				State::Mtls(_) => base_url
-					.join("/events")
-					.into_diagnostic()
-					.wrap_err("building /events URL")?,
-			};
-			(state.http(), url)
-		};
-
-		debug!(
-			%url,
-			source = event.source,
-			r#ref = event.ref_,
-			active = ?event.active,
-			"posting event to canopy"
-		);
-
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&event)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting event to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!("canopy /events returned {status}: {body}"));
-		}
-
-		Ok(())
-	}
-
 	/// Resolve an endpoint URL for the current auth path.
 	///
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
 	/// same endpoint is mounted under `/public`, so this prepends it.
-	async fn endpoint_url(&self, base_url: &Url, path: &str) -> Result<(reqwest::Client, Url)> {
+	async fn endpoint_url(&self, path: &str) -> Result<(reqwest::Client, Url)> {
 		let state = self.state.read().await;
 		let url = match &*state {
-			State::Tailscale(_) => format!("{TAILSCALE_URL}/public{path}")
-				.parse::<Url>()
+			State::Tailscale(_) => self
+				.tailscale_url
+				.join(&format!("/public{path}"))
 				.into_diagnostic()
 				.wrap_err_with(|| format!("building tailscale /public{path} URL"))?,
-			State::Mtls(_) => base_url
+			State::Mtls(_) => self
+				.base_url
 				.join(path)
 				.into_diagnostic()
 				.wrap_err_with(|| format!("building {path} URL"))?,
@@ -445,10 +441,9 @@ impl CanopyClient {
 	pub async fn request(
 		&self,
 		method: reqwest::Method,
-		base_url: &Url,
 		path: &str,
 	) -> Result<reqwest::RequestBuilder> {
-		let (http, url) = self.endpoint_url(base_url, path).await?;
+		let (http, url) = self.endpoint_url(path).await?;
 		debug!(%url, %method, "arbitrary canopy request");
 		Ok(http
 			.request(method, url)
@@ -471,11 +466,10 @@ impl CanopyClient {
 	pub async fn request_json<Res: serde::de::DeserializeOwned>(
 		&self,
 		method: reqwest::Method,
-		base_url: &Url,
 		path: &str,
 		body: Option<&(impl serde::Serialize + ?Sized)>,
 	) -> Result<Res> {
-		let mut req = self.request(method, base_url, path).await?;
+		let mut req = self.request(method, path).await?;
 		if let Some(body) = body {
 			req = req.json(body);
 		}
@@ -500,8 +494,8 @@ impl CanopyClient {
 	}
 
 	/// Register the backup types this server can run (`POST /backup-capabilities`).
-	pub async fn backup_capabilities(&self, base_url: &Url, types: &[String]) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/backup-capabilities").await?;
+	pub async fn backup_capabilities(&self, types: &[String]) -> Result<()> {
+		let (http, url) = self.endpoint_url("/backup-capabilities").await?;
 		debug!(%url, ?types, "registering backup capabilities with canopy");
 		let response = http
 			.post(url)
@@ -530,11 +524,10 @@ impl CanopyClient {
 	/// to the container-creds shape for kopia. `412`/`409`/`502` surface as errors.
 	pub async fn backup_credentials(
 		&self,
-		base_url: &Url,
 		backup_type: &str,
 		purpose: BackupPurpose,
 	) -> Result<CredentialProcessOutput> {
-		let (http, url) = self.endpoint_url(base_url, "/backup-credentials").await?;
+		let (http, url) = self.endpoint_url("/backup-credentials").await?;
 		debug!(%url, backup_type, ?purpose, "requesting backup credentials from canopy");
 		let response = http
 			.post(url)
@@ -566,8 +559,8 @@ impl CanopyClient {
 	///
 	/// `412`/`409` mean the device isn't yet authorised for backups; these map to
 	/// [`TargetOutcome::Dormant`] (a benign idle state) rather than an error.
-	pub async fn backup_target(&self, base_url: &Url) -> Result<TargetOutcome> {
-		let (http, url) = self.endpoint_url(base_url, "/backup-target").await?;
+	pub async fn backup_target(&self) -> Result<TargetOutcome> {
+		let (http, url) = self.endpoint_url("/backup-target").await?;
 		debug!(%url, "fetching backup target from canopy");
 		let response = http
 			.get(url)
@@ -598,8 +591,8 @@ impl CanopyClient {
 	}
 
 	/// Report a completed backup/restore run (`POST /backup-report`).
-	pub async fn backup_report(&self, base_url: &Url, report: &ReportArgs) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/backup-report").await?;
+	pub async fn backup_report(&self, report: &ReportArgs) -> Result<()> {
+		let (http, url) = self.endpoint_url("/backup-report").await?;
 		debug!(%url, run_id = %report.run_id, "reporting backup outcome to canopy");
 		let response = http
 			.post(url)
@@ -615,124 +608,6 @@ impl CanopyClient {
 			let body = response.text().await.unwrap_or_default();
 			return Err(miette::miette!(
 				"canopy /backup-report returned {status}: {body}"
-			));
-		}
-		Ok(())
-	}
-
-	/// Register the restore intents this consumer supports (`POST /restore-capabilities`).
-	///
-	/// Replaces the registered intent set wholesale. Canopy dispatches only
-	/// matching worklist entries.
-	pub async fn restore_capabilities(&self, base_url: &Url, intents: &[&str]) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-capabilities").await?;
-		debug!(%url, ?intents, "registering restore capabilities with canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&RestoreCapabilitiesRequest { intents })
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore capabilities to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-capabilities returned {status}: {body}"
-			));
-		}
-		Ok(())
-	}
-
-	/// Fetch the desired-state worklist of replicas to restore (`GET /restore-worklist`).
-	pub async fn restore_worklist(&self, base_url: &Url) -> Result<Vec<WorklistEntry>> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-worklist").await?;
-		debug!(%url, "fetching restore worklist from canopy");
-		let response = http
-			.get(url)
-			.header("X-Version", &self.tamanu_version)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("fetching restore worklist from canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-worklist returned {status}: {body}"
-			));
-		}
-		response
-			.json::<Vec<WorklistEntry>>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing restore worklist from canopy")
-	}
-
-	/// Obtain read-only S3 credentials and the repo password for a group
-	/// (`POST /restore-credentials`).
-	///
-	/// Creds are 1-hour chained STS; refresh by re-calling. `403`/`409`/`502`
-	/// surface as errors.
-	pub async fn restore_credentials(
-		&self,
-		base_url: &Url,
-		backup_type: &str,
-		group: Uuid,
-	) -> Result<RestoreCredentials> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-credentials").await?;
-		debug!(%url, backup_type, %group, "requesting restore credentials from canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&RestoreCredentialsRequest {
-				group,
-				r#type: backup_type,
-			})
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore credentials request to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-credentials returned {status}: {body}"
-			));
-		}
-		response
-			.json::<RestoreCredentials>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing restore credentials from canopy")
-	}
-
-	/// Report a restore's health (`POST /restore-verification`).
-	pub async fn restore_verification(
-		&self,
-		base_url: &Url,
-		report: &VerificationArgs,
-	) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-verification").await?;
-		debug!(%url, group = %report.group, "reporting restore verification to canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(report)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore verification to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-verification returned {status}: {body}"
 			));
 		}
 		Ok(())
@@ -755,7 +630,18 @@ impl CanopyClient {
 ///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
 /// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
 /// - it's read-only, so probing it has no side effects.
-async fn probe_tailscale(make_builder: &ClientBuilderFactory) -> Option<reqwest::Client> {
+async fn probe_tailscale(
+	tailscale_url: &Url,
+	make_builder: &ClientBuilderFactory,
+) -> Option<reqwest::Client> {
+	let host = tailscale_url.host_str()?;
+
+	// The DNS-server and hardcoded-IP discovery below is specific to canopy's
+	// own tailnet endpoint; probe any other tailscale URL with plain resolution.
+	if host != TAILSCALE_HOST {
+		return try_probe(tailscale_url, host, &[], make_builder).await;
+	}
+
 	let dns_addrs: Vec<SocketAddr> = tailscale_resolver()
 		.lookup_ip("canopy")
 		.await
@@ -763,7 +649,7 @@ async fn probe_tailscale(make_builder: &ClientBuilderFactory) -> Option<reqwest:
 		.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
 		.unwrap_or_default();
 	if !dns_addrs.is_empty()
-		&& let Some(client) = try_probe(&dns_addrs, make_builder).await
+		&& let Some(client) = try_probe(tailscale_url, host, &dns_addrs, make_builder).await
 	{
 		return Some(client);
 	}
@@ -776,21 +662,25 @@ async fn probe_tailscale(make_builder: &ClientBuilderFactory) -> Option<reqwest:
 		?hardcoded,
 		"canopy tailscale DNS lookup empty or probe failed, trying hardcoded IPs"
 	);
-	try_probe(&hardcoded, make_builder).await
+	try_probe(tailscale_url, host, &hardcoded, make_builder).await
 }
 
+/// Probe `{tailscale_url}/public/servers`. When `addrs` is non-empty, `host` is
+/// resolved to them (the tailnet-discovery override); otherwise plain DNS is used.
 async fn try_probe(
+	tailscale_url: &Url,
+	host: &str,
 	addrs: &[SocketAddr],
 	make_builder: &ClientBuilderFactory,
 ) -> Option<reqwest::Client> {
-	let client = make_builder()
-		.timeout(TAILSCALE_PROBE_TIMEOUT)
-		.resolve_to_addrs(TAILSCALE_HOST, addrs)
-		.build()
-		.ok()?;
+	let mut builder = make_builder().timeout(TAILSCALE_PROBE_TIMEOUT);
+	if !addrs.is_empty() {
+		builder = builder.resolve_to_addrs(host, addrs);
+	}
+	let client = builder.build().ok()?;
 
-	let url = format!("{TAILSCALE_URL}/public/servers");
-	match client.get(&url).send().await {
+	let url = tailscale_url.join("/public/servers").ok()?;
+	match client.get(url).send().await {
 		Ok(resp) if resp.status().is_success() => Some(client),
 		Ok(resp) => {
 			debug!(status = %resp.status(), ?addrs, "canopy tailscale probe: unexpected status");
@@ -912,6 +802,8 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		// Construct an mTLS-state client directly (no network probe) and renew it.
 		let http = build_mtls_http(&test_factory(), TEST_DEVICE_KEY).unwrap();
 		let client = CanopyClient {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
 			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
@@ -926,6 +818,8 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		// Tailscale-state client with no device key — renew is a no-op.
 		let http = reqwest::Client::new();
 		let client = CanopyClient {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: None,
 			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
@@ -935,15 +829,16 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		assert!(client.is_tailscale().await);
 	}
 
-	fn mtls_client_against(base: &str) -> (CanopyClient, Url) {
+	fn mtls_client_against(base: &str) -> CanopyClient {
 		let http = build_mtls_http(&test_factory(), TEST_DEVICE_KEY).unwrap();
-		let client = CanopyClient {
+		CanopyClient {
+			base_url: base.parse().unwrap(),
+			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
 			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
-		};
-		(client, base.parse().unwrap())
+		}
 	}
 
 	struct Captured {
@@ -1022,11 +917,11 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let (base, handle) = serve_once(
 			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"ok\":true,\"who\":\"device\"}",
 		);
-		let (client, base_url) = mtls_client_against(&base);
+		let client = mtls_client_against(&base);
 
 		let payload = serde_json::json!({ "hello": "world" });
 		let got: Echo = client
-			.request_json(reqwest::Method::POST, &base_url, "/thing", Some(&payload))
+			.request_json(reqwest::Method::POST, "/thing", Some(&payload))
 			.await
 			.expect("request_json should succeed");
 
@@ -1060,15 +955,10 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	async fn request_json_errors_on_non_success_with_body() {
 		let (base, handle) =
 			serve_once("HTTP/1.1 418 I'm a teapot\r\nContent-Length: 14\r\n\r\nno coffee here");
-		let (client, base_url) = mtls_client_against(&base);
+		let client = mtls_client_against(&base);
 
 		let err = client
-			.request_json::<serde_json::Value>(
-				reqwest::Method::GET,
-				&base_url,
-				"/brew",
-				None::<&()>,
-			)
+			.request_json::<serde_json::Value>(reqwest::Method::GET, "/brew", None::<&()>)
 			.await
 			.expect_err("non-2xx should error");
 		let msg = err.to_string();

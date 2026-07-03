@@ -131,7 +131,7 @@ impl AsyncSnippetProvider {
 
 		if let Some(canopy) = &self.canopy {
 			match canopy
-				.get(&meta_url, "/public/bestool/snippets", "/bestool/snippets")
+				.get("/public/bestool/snippets", "/bestool/snippets")
 				.await
 			{
 				Ok(response) if response.status().is_success() => {
