@@ -52,18 +52,68 @@ fn main() {
 		.expect("generating types from canopy schemas");
 
 	let file = syn::parse2(type_space.to_stream()).expect("parsing generated canopy schema tokens");
-	let generated = prettyplease::unparse(&file).replace(
-		"::chrono::DateTime<::chrono::offset::Utc>",
-		"::jiff::Timestamp",
-	);
-	assert!(
-		!generated.contains("chrono"),
-		"generated canopy schema still references chrono after rewrite to jiff"
-	);
+	let generated = rewrite_types(&prettyplease::unparse(&file));
 
 	let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set for build scripts");
 	fs::write(Path::new(&out_dir).join("canopy_schema.rs"), generated)
 		.expect("writing generated canopy schema");
+}
+
+/// Post-process the generated wire types.
+///
+/// typify emits every field as a plain type from the JSON Schema, which loses
+/// two properties bestool relies on: timestamps should be `jiff::Timestamp`
+/// (canopy models them as `date-time` strings, or bare strings for the
+/// credential expiry), and credential secrets must not be printable. This
+/// rewrites those fields in the generated source: `date-time` fields and the
+/// credential expiry become `jiff::Timestamp`, and each secret field is wrapped
+/// in [`crate::Redacted`] so it stays out of `Debug` output and logs.
+///
+/// The rewrites are string substitutions keyed on the exact field lines typify
+/// produces. The asserts below fail the build if a substitution stops matching
+/// — a schema or codegen change that silently dropped redaction would otherwise
+/// compile clean.
+fn rewrite_types(generated: &str) -> String {
+	let generated = generated
+		.replace(
+			"::chrono::DateTime<::chrono::offset::Utc>",
+			"::jiff::Timestamp",
+		)
+		.replace(
+			"pub expiration: ::std::string::String,",
+			"pub expiration: ::jiff::Timestamp,",
+		)
+		.replace(
+			"pub secret_access_key: ::std::string::String,",
+			"pub secret_access_key: crate::Redacted<::std::string::String>,",
+		)
+		.replace(
+			"pub session_token: ::std::string::String,",
+			"pub session_token: crate::Redacted<::std::string::String>,",
+		)
+		.replace(
+			"pub repo_password: ::std::string::String,",
+			"pub repo_password: crate::Redacted<::std::string::String>,",
+		);
+
+	assert!(
+		!generated.contains("chrono"),
+		"generated canopy schema still references chrono after rewrite to jiff"
+	);
+	for needle in [
+		"pub expiration: ::jiff::Timestamp,",
+		"pub secret_access_key: crate::Redacted<::std::string::String>,",
+		"pub session_token: crate::Redacted<::std::string::String>,",
+		"pub repo_password: crate::Redacted<::std::string::String>,",
+	] {
+		assert!(
+			generated.contains(needle),
+			"canopy schema rewrite did not apply; expected `{needle}` in the generated source \
+			 (did canopy's OpenAPI field names change?)"
+		);
+	}
+
+	generated
 }
 
 fn fetch_live() -> Result<String, ureq::Error> {

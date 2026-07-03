@@ -12,11 +12,9 @@ use hickory_resolver::{
 	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
 	net::runtime::TokioRuntimeProvider,
 };
-use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -24,13 +22,11 @@ use uuid::Uuid;
 
 use crate::{
 	Redacted,
-	backup::{
-		BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget,
-		CapabilitiesRequest, Purpose, TargetOutcome,
-	},
-	restore::{
-		RestoreCapabilitiesRequest, RestoreCredentials, RestoreCredentialsRequest,
-		RestoreVerification, WorklistEntry,
+	backup::TargetOutcome,
+	restore::{RestoreCapabilitiesRequest, RestoreCredentialsRequest},
+	schema::{
+		BackupPurpose, BackupTarget, CapabilitiesArgs, CredentialProcessOutput, CredentialsArgs,
+		NewEvent, ReportArgs, RestoreCredentials, VerificationArgs, WorklistEntry,
 	},
 };
 
@@ -107,38 +103,6 @@ pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
 /// public mTLS.
 pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<reqwest::Client> {
 	probe_tailscale(make_builder).await
-}
-
-/// Severities accepted by the canopy `/events` API.
-///
-/// Canopy narrowed its vocabulary from RFC 5424 to this five-level set; the
-/// retired syslog severities (`emergency`, `alert`, `notice`) are rejected by
-/// the strict enum validation on `POST /events`.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-	Critical,
-	Error,
-	Warning,
-	Info,
-	Debug,
-}
-
-/// Payload for posting to `POST /events` on a canopy server.
-#[derive(Debug, Clone, Serialize)]
-pub struct NewEvent<'a> {
-	pub source: &'a str,
-	#[serde(rename = "ref")]
-	pub r#ref: &'a str,
-	pub message: &'a str,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub description: Option<&'a str>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub severity: Option<Severity>,
-	#[serde(rename = "occurredAt", skip_serializing_if = "Option::is_none")]
-	pub occurred_at: Option<Timestamp>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub active: Option<bool>,
 }
 
 /// HTTP client with auth configured for talking to a canopy server.
@@ -346,7 +310,7 @@ impl CanopyClient {
 			return Err(miette::miette!("canopy /status returned {status}: {body}"));
 		}
 
-		#[derive(Deserialize, Default)]
+		#[derive(serde::Deserialize, Default)]
 		struct StatusResponseTail {
 			#[serde(default)]
 			backup_now: Vec<String>,
@@ -406,7 +370,7 @@ impl CanopyClient {
 	///
 	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
 	/// In mTLS mode, posts to `{base_url}/events`.
-	pub async fn post_event(&self, base_url: &Url, event: NewEvent<'_>) -> Result<()> {
+	pub async fn post_event(&self, base_url: &Url, event: NewEvent) -> Result<()> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {
@@ -425,7 +389,7 @@ impl CanopyClient {
 		debug!(
 			%url,
 			source = event.source,
-			r#ref = event.r#ref,
+			r#ref = event.ref_,
 			active = ?event.active,
 			"posting event to canopy"
 		);
@@ -542,7 +506,9 @@ impl CanopyClient {
 		let response = http
 			.post(url)
 			.header("X-Version", &self.tamanu_version)
-			.json(&CapabilitiesRequest { types })
+			.json(&CapabilitiesArgs {
+				types: types.to_vec(),
+			})
 			.send()
 			.await
 			.into_diagnostic()
@@ -566,16 +532,16 @@ impl CanopyClient {
 		&self,
 		base_url: &Url,
 		backup_type: &str,
-		purpose: Purpose,
-	) -> Result<BackupCredentials> {
+		purpose: BackupPurpose,
+	) -> Result<CredentialProcessOutput> {
 		let (http, url) = self.endpoint_url(base_url, "/backup-credentials").await?;
 		debug!(%url, backup_type, ?purpose, "requesting backup credentials from canopy");
 		let response = http
 			.post(url)
 			.header("X-Version", &self.tamanu_version)
-			.json(&BackupCredentialsRequest {
-				r#type: backup_type,
-				purpose,
+			.json(&CredentialsArgs {
+				type_: backup_type.to_owned(),
+				purpose: Some(purpose),
 			})
 			.send()
 			.await
@@ -590,7 +556,7 @@ impl CanopyClient {
 			));
 		}
 		response
-			.json::<BackupCredentials>()
+			.json::<CredentialProcessOutput>()
 			.await
 			.into_diagnostic()
 			.wrap_err("parsing backup credentials from canopy")
@@ -632,9 +598,9 @@ impl CanopyClient {
 	}
 
 	/// Report a completed backup/restore run (`POST /backup-report`).
-	pub async fn backup_report(&self, base_url: &Url, report: &BackupReport<'_>) -> Result<()> {
+	pub async fn backup_report(&self, base_url: &Url, report: &ReportArgs) -> Result<()> {
 		let (http, url) = self.endpoint_url(base_url, "/backup-report").await?;
-		debug!(%url, run_id = report.run_id, "reporting backup outcome to canopy");
+		debug!(%url, run_id = %report.run_id, "reporting backup outcome to canopy");
 		let response = http
 			.post(url)
 			.header("X-Version", &self.tamanu_version)
@@ -749,7 +715,7 @@ impl CanopyClient {
 	pub async fn restore_verification(
 		&self,
 		base_url: &Url,
-		report: &RestoreVerification<'_>,
+		report: &VerificationArgs,
 	) -> Result<()> {
 		let (http, url) = self.endpoint_url(base_url, "/restore-verification").await?;
 		debug!(%url, group = %report.group, "reporting restore verification to canopy");
@@ -1045,7 +1011,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		(base, handle)
 	}
 
-	#[derive(Debug, Deserialize, PartialEq)]
+	#[derive(Debug, serde::Deserialize, PartialEq)]
 	struct Echo {
 		ok: bool,
 		who: String,
@@ -1146,56 +1112,5 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		let mut decompressed = Vec::new();
 		decoder.read_to_end(&mut decompressed).unwrap();
 		assert_eq!(decompressed, original);
-	}
-
-	#[test]
-	fn severity_serialises_lowercase() {
-		assert_eq!(
-			serde_json::to_string(&Severity::Warning).unwrap(),
-			"\"warning\""
-		);
-		assert_eq!(
-			serde_json::to_string(&Severity::Critical).unwrap(),
-			"\"critical\""
-		);
-	}
-
-	#[test]
-	fn new_event_omits_optional_fields() {
-		let evt = NewEvent {
-			source: "src",
-			r#ref: "host/alert:tgt",
-			message: "msg",
-			description: None,
-			severity: None,
-			occurred_at: None,
-			active: None,
-		};
-		let json = serde_json::to_string(&evt).unwrap();
-		assert!(json.contains("\"source\":\"src\""));
-		assert!(json.contains("\"ref\":\"host/alert:tgt\""));
-		assert!(json.contains("\"message\":\"msg\""));
-		assert!(!json.contains("description"));
-		assert!(!json.contains("severity"));
-		assert!(!json.contains("occurredAt"));
-		assert!(!json.contains("active"));
-	}
-
-	#[test]
-	fn new_event_serialises_occurred_at_as_camel_case() {
-		let evt = NewEvent {
-			source: "src",
-			r#ref: "ref",
-			message: "msg",
-			description: Some("desc"),
-			severity: Some(Severity::Warning),
-			occurred_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
-			active: Some(true),
-		};
-		let json = serde_json::to_string(&evt).unwrap();
-		assert!(json.contains("\"occurredAt\":"));
-		assert!(json.contains("\"description\":\"desc\""));
-		assert!(json.contains("\"severity\":\"warning\""));
-		assert!(json.contains("\"active\":true"));
 	}
 }

@@ -24,8 +24,9 @@ use std::{
 };
 
 use bestool_canopy::{
-	BackupReport, CanopyClient, DEFAULT_CANOPY_URL, Outcome, Purpose, TargetOutcome,
+	CanopyClient, DEFAULT_CANOPY_URL, TargetOutcome,
 	registration::Registration,
+	schema::{BackupPurpose, ReportArgs, RunOutcome},
 };
 use bestool_kopia::{
 	RunAs, S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
@@ -279,7 +280,7 @@ pub(super) async fn spawn_proxy(
 	client: Arc<CanopyClient>,
 	base_url: Url,
 	backup_type: String,
-	purpose: Purpose,
+	purpose: BackupPurpose,
 	region: &str,
 ) -> Result<RunningProxy> {
 	let provider = Arc::new(CanopyCredentialProvider::new(
@@ -335,7 +336,7 @@ async fn upstream_host_for(region: &str) -> String {
 pub(super) async fn connect_repo(
 	kopia: &Path,
 	s3env: &S3KopiaEnv<'_>,
-	target: &bestool_canopy::BackupTarget,
+	target: &bestool_canopy::schema::BackupTarget,
 	endpoint: &str,
 	server_id: &str,
 	run_as: RunAs,
@@ -442,7 +443,7 @@ async fn backup_after_start(
 		client.clone(),
 		base_url.clone(),
 		backup_type.to_owned(),
-		Purpose::Backup,
+		BackupPurpose::Backup,
 		&target.region,
 	)
 	.await?;
@@ -483,26 +484,30 @@ async fn backup_after_start(
 	let s3_sent_payload_bytes = Some(to_i64(traffic.sent_payload));
 	let s3_received_raw_bytes = Some(to_i64(traffic.received_raw));
 	let s3_received_payload_bytes = Some(to_i64(traffic.received_payload));
+	let run_uuid: Uuid = run_id
+		.parse()
+		.into_diagnostic()
+		.wrap_err("backup run_id is not a valid uuid")?;
 	let report = match &outcome {
-		Ok(snapshot) => BackupReport {
-			run_id,
-			r#type: backup_type,
-			purpose: Purpose::Backup,
-			outcome: Outcome::Success,
+		Ok(snapshot) => ReportArgs {
+			run_id: run_uuid,
+			type_: backup_type.to_owned(),
+			purpose: BackupPurpose::Backup,
+			outcome: RunOutcome::Success,
 			error: None,
 			bytes_uploaded: snapshot.bytes_uploaded,
-			snapshot_id: snapshot.id.as_deref(),
+			snapshot_id: snapshot.id.clone(),
 			s3_sent_raw_bytes,
 			s3_sent_payload_bytes,
 			s3_received_raw_bytes,
 			s3_received_payload_bytes,
 		},
-		Err(err) => BackupReport {
-			run_id,
-			r#type: backup_type,
-			purpose: Purpose::Backup,
-			outcome: Outcome::Failure,
-			error: Some(&trim_error(err)),
+		Err(err) => ReportArgs {
+			run_id: run_uuid,
+			type_: backup_type.to_owned(),
+			purpose: BackupPurpose::Backup,
+			outcome: RunOutcome::Failure,
+			error: Some(trim_error(err)),
 			bytes_uploaded: None,
 			snapshot_id: None,
 			s3_sent_raw_bytes,
@@ -545,7 +550,7 @@ async fn backup_after_start(
 /// always runs cleanup + post even when the snapshot fails.
 async fn run_kopia_backup(
 	def: &BackupDef,
-	target: &bestool_canopy::BackupTarget,
+	target: &bestool_canopy::schema::BackupTarget,
 	conn: &RepoConn,
 	server_id: &str,
 	device_id: Option<&str>,
@@ -587,7 +592,7 @@ async fn run_kopia_backup(
 
 /// Connect to the repo and create the snapshot.
 async fn snapshot(
-	target: &bestool_canopy::BackupTarget,
+	target: &bestool_canopy::schema::BackupTarget,
 	conn: &RepoConn,
 	source_path: &Path,
 	server_id: &str,
