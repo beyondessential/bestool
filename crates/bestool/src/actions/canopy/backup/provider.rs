@@ -10,7 +10,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use bestool_canopy::{
 	CanopyClient,
-	schema::{BackupPurpose, CredentialProcessOutput},
+	schema::{BackupPurpose, CredentialProcessOutput, CredentialsArgs},
 };
 use bestool_kopia::proxy::{BoxError, CredentialProvider, Credentials};
 use futures::future::BoxFuture;
@@ -40,7 +40,10 @@ impl CanopyCredentialProvider {
 			let backup_type = backup_type.clone();
 			Box::pin(async move {
 				client
-					.backup_credentials(&backup_type, purpose)
+					.backup_credentials(&CredentialsArgs {
+						type_: backup_type.clone(),
+						purpose: Some(purpose),
+					})
 					.await
 					.map_err(|err| format!("{err}"))
 			})

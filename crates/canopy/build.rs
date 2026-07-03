@@ -75,11 +75,193 @@ fn main() {
 		.expect("generating types from canopy schemas");
 
 	let file = syn::parse2(type_space.to_stream()).expect("parsing generated canopy schema tokens");
-	let generated = rewrite_types(&prettyplease::unparse(&file));
+	let mut generated = rewrite_types(&prettyplease::unparse(&file));
+	generated.push_str(&generate_client_methods(&spec));
 
 	let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR is set for build scripts");
 	fs::write(Path::new(&out_dir).join("canopy_schema.rs"), generated)
 		.expect("writing generated canopy schema");
+}
+
+const HTTP_VERBS: [&str; 5] = ["get", "post", "put", "delete", "patch"];
+
+/// One endpoint's inputs, gathered from the OpenAPI operation.
+struct Endpoint {
+	/// Base method name derived from the path (params dropped, `-`→`_`).
+	name: String,
+	verb: String,
+	path: String,
+	/// Path-parameter names in order of appearance.
+	params: Vec<String>,
+	/// Rust type of the JSON request body, if any.
+	body: Option<String>,
+	/// Rust return type: `Some(ty)` parses JSON into `ty`, `None` expects no body.
+	response: Option<String>,
+}
+
+/// Generate an `impl crate::CanopyClient` block with one method per OpenAPI
+/// operation, routing through the client's shared transport (`call_json` /
+/// `call_empty`). Method names come from the path; where a path is served by
+/// more than one verb the verb is prefixed to disambiguate.
+fn generate_client_methods(spec: &Value) -> String {
+	let paths = spec
+		.get("paths")
+		.and_then(Value::as_object)
+		.expect("canopy OpenAPI document has no paths");
+
+	let mut endpoints = Vec::new();
+	for (path, item) in paths {
+		let item = item.as_object().expect("openapi path item is an object");
+		for (verb, op) in item {
+			if !HTTP_VERBS.contains(&verb.as_str()) {
+				continue;
+			}
+			let params: Vec<String> = path
+				.split('/')
+				.filter_map(|seg| seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
+				.map(str::to_owned)
+				.collect();
+			let name = path
+				.split('/')
+				.filter(|seg| !seg.is_empty() && !seg.starts_with('{'))
+				.map(|seg| seg.replace('-', "_"))
+				.collect::<Vec<_>>()
+				.join("_");
+			endpoints.push(Endpoint {
+				name,
+				verb: verb.clone(),
+				path: path.clone(),
+				params,
+				body: request_body_type(spec, op),
+				response: response_type(op),
+			});
+		}
+	}
+
+	// Disambiguate names shared by multiple verbs (e.g. /versions/{version}).
+	let mut counts = std::collections::HashMap::<&str, usize>::new();
+	for ep in &endpoints {
+		*counts.entry(ep.name.as_str()).or_default() += 1;
+	}
+	let collides: std::collections::HashSet<String> = endpoints
+		.iter()
+		.filter(|ep| counts[ep.name.as_str()] > 1)
+		.map(|ep| ep.name.clone())
+		.collect();
+
+	endpoints.sort_by(|a, b| (&a.path, &a.verb).cmp(&(&b.path, &b.verb)));
+
+	let mut out = String::from("impl crate::CanopyClient {\n");
+	for ep in &endpoints {
+		let method_name = if collides.contains(&ep.name) {
+			format!("{}_{}", ep.verb, ep.name)
+		} else {
+			ep.name.clone()
+		};
+		let http_method = format!("::reqwest::Method::{}", ep.verb.to_uppercase());
+
+		let mut args = String::new();
+		for param in &ep.params {
+			args.push_str(&format!(", {param}: &str"));
+		}
+		if let Some(body) = &ep.body {
+			args.push_str(&format!(", body: &{body}"));
+		}
+
+		let path_expr = if ep.params.is_empty() {
+			format!("{:?}", ep.path)
+		} else {
+			let mut template = ep.path.clone();
+			for param in &ep.params {
+				template = template.replace(&format!("{{{param}}}"), "{}");
+			}
+			format!("&format!({template:?}, {})", ep.params.join(", "))
+		};
+		let body_arg = if ep.body.is_some() {
+			"Some(body)"
+		} else {
+			"None::<&()>"
+		};
+
+		let (call, ret) = match &ep.response {
+			Some(ty) => ("call_json", format!("::miette::Result<{ty}>")),
+			None => ("call_empty", "::miette::Result<()>".to_owned()),
+		};
+
+		out.push_str(&format!(
+			"    /// `{verb} {path}`\n    pub async fn {method_name}(&self{args}) -> {ret} {{\n        self.{call}({http_method}, {path_expr}, {body_arg}).await\n    }}\n",
+			verb = ep.verb.to_uppercase(),
+			path = ep.path,
+		));
+	}
+	out.push_str("}\n");
+	out
+}
+
+/// Rust type for an operation's JSON request body, or `None` if it has none.
+///
+/// A `$ref` to an open schema (an `allOf` that includes a free-form object, like
+/// canopy's `StatusPayload`) can't be losslessly typed, so it maps to
+/// `serde_json::Value`; other `$ref`s use the generated type.
+fn request_body_type(spec: &Value, op: &Value) -> Option<String> {
+	let schema = op.pointer("/requestBody/content/application~1json/schema")?;
+	Some(match schema.get("$ref").and_then(Value::as_str) {
+		Some(reference) => {
+			let name = type_name(reference);
+			if is_open_schema(spec, &name) {
+				"::serde_json::Value".to_owned()
+			} else {
+				name
+			}
+		}
+		None => "::serde_json::Value".to_owned(),
+	})
+}
+
+/// Rust return type for an operation's 200 response: `Some(ty)` to parse JSON,
+/// `None` when there's no JSON body to parse.
+fn response_type(op: &Value) -> Option<String> {
+	let schema = op.pointer("/responses/200/content/application~1json/schema")?;
+	if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+		return Some(type_name(reference));
+	}
+	match schema.get("type").and_then(Value::as_str) {
+		Some("array") => {
+			let item = schema
+				.pointer("/items/$ref")
+				.and_then(Value::as_str)
+				.map(type_name)
+				.unwrap_or_else(|| "::serde_json::Value".to_owned());
+			Some(format!("::std::vec::Vec<{item}>"))
+		}
+		_ => Some("::serde_json::Value".to_owned()),
+	}
+}
+
+/// Last path segment of a `#/components/schemas/Foo` reference.
+fn type_name(reference: &str) -> String {
+	reference
+		.rsplit('/')
+		.next()
+		.expect("schema $ref is non-empty")
+		.to_owned()
+}
+
+/// Whether `components.schemas[name]` is an open `allOf` — one whose members
+/// include a free-form object (no `properties`, no `$ref`). typify drops the
+/// free-form part, so such schemas can't be sent losslessly as their typed form.
+fn is_open_schema(spec: &Value, name: &str) -> bool {
+	let Some(schema) = spec.pointer(&format!("/components/schemas/{name}")) else {
+		return false;
+	};
+	let Some(all_of) = schema.get("allOf").and_then(Value::as_array) else {
+		return false;
+	};
+	all_of.iter().any(|member| {
+		member.get("type").and_then(Value::as_str) == Some("object")
+			&& member.get("properties").is_none()
+			&& member.get("$ref").is_none()
+	})
 }
 
 /// Post-process the generated wire types.

@@ -19,14 +19,7 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::{
-	Redacted,
-	backup::TargetOutcome,
-	schema::{
-		BackupPurpose, BackupTarget, CapabilitiesArgs, CredentialProcessOutput, CredentialsArgs,
-		ReportArgs,
-	},
-};
+use crate::Redacted;
 
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 
@@ -62,33 +55,61 @@ const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Factory producing the base [`reqwest::ClientBuilder`] for canopy's clients.
 ///
-/// The caller supplies this so it owns cross-cutting client config (user-agent,
-/// `SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
+/// The caller supplies this so it owns cross-cutting client config
+/// (`SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
 /// rebuild a client — at probe time, on mTLS cert renewal, and on reload — then
-/// layers its own concerns (mTLS identity, DNS overrides, timeouts) on top.
+/// layers its own concerns (its [`user_agent`], mTLS identity, DNS overrides,
+/// timeouts) on top.
 pub type ClientBuilderFactory = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>;
 
-/// Browser-style user-agent string, e.g. `bestool/1.2.3 (Linux 7.0.9 Arch Linux; x86_64)`.
+/// A non-2xx response from a canopy endpoint.
 ///
-/// `product` and `version` identify the calling binary; the OS comment is
-/// detected at runtime and cached.
-pub fn user_agent(product: &str, version: &str) -> String {
-	static OS_COMMENT: OnceLock<String> = OnceLock::new();
-	let os_comment = OS_COMMENT.get_or_init(|| {
+/// The generated endpoint methods return this (wrapped in a [`miette::Report`])
+/// on any non-success status; downcast the report to it to branch on the code,
+/// e.g. [`TargetOutcome::from_result`](crate::TargetOutcome::from_result) maps a
+/// backup-target `412`/`409` to a dormant device.
+#[derive(Debug, Clone)]
+pub struct CanopyHttpError {
+	/// HTTP status returned by canopy.
+	pub status: reqwest::StatusCode,
+	/// The endpoint path that was called (mTLS-mode form, e.g. `/backup-target`).
+	pub path: String,
+	/// Response body, best-effort (empty if it couldn't be read).
+	pub body: String,
+}
+
+impl fmt::Display for CanopyHttpError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(
+			f,
+			"canopy {} returned {}: {}",
+			self.path, self.status, self.body
+		)
+	}
+}
+
+impl std::error::Error for CanopyHttpError {}
+impl miette::Diagnostic for CanopyHttpError {}
+
+/// User-agent set on every canopy request, e.g.
+/// `bestool-canopy/0.5.0 (Linux 7.0.9 Arch Linux; x86_64)`.
+///
+/// Identifies this client crate and its version; the OS comment is detected at
+/// runtime and cached. The client sets this itself on top of the caller's
+/// [`ClientBuilderFactory`], so canopy traffic identifies the client library
+/// regardless of the calling binary.
+fn user_agent() -> &'static str {
+	static UA: OnceLock<String> = OnceLock::new();
+	UA.get_or_init(|| {
 		let os = sysinfo::System::long_os_version()
 			.or_else(sysinfo::System::name)
 			.unwrap_or_else(|| std::env::consts::OS.to_owned());
-		format!("{os}; {}", sysinfo::System::cpu_arch())
-	});
-	format!("{product}/{version} ({os_comment})")
-}
-
-/// A [`reqwest::ClientBuilder`] carrying the `bestool` [`user_agent`] for `version`.
-///
-/// Convenience for callers that don't need any extra client config; suitable as
-/// the base of a [`ClientBuilderFactory`].
-pub fn client_builder(version: &str) -> reqwest::ClientBuilder {
-	reqwest::Client::builder().user_agent(user_agent("bestool", version))
+		format!(
+			"bestool-canopy/{} ({os}; {})",
+			env!("CARGO_PKG_VERSION"),
+			sysinfo::System::cpu_arch(),
+		)
+	})
 }
 
 /// Probe the canopy tailnet endpoint, returning a client routed to it if
@@ -124,11 +145,6 @@ pub struct CanopyClient {
 	/// on the tailscale path. Fixed for the client's lifetime.
 	tailscale_url: Url,
 	device_key: Option<Redacted<String>>,
-	/// Tamanu version of the install this client speaks for. Sent verbatim in
-	/// the `X-Version` request header — canopy rejects events / status pushes
-	/// that don't carry one. Sourced from the running Tamanu install's
-	/// `package.json` (via `find_tamanu`); not the bestool / alertd version.
-	tamanu_version: String,
 	/// Produces the base client builder; see [`ClientBuilderFactory`].
 	make_builder: ClientBuilderFactory,
 	state: RwLock<State>,
@@ -166,13 +182,9 @@ impl CanopyClient {
 	/// a device key PEM is provided, builds an mTLS client. Returns `Ok(None)` if
 	/// neither path is available.
 	///
-	/// `tamanu_version` is the version of the Tamanu install this client
-	/// speaks for; sent on every request via the `X-Version` header.
-	///
 	/// `make_builder` supplies the base [`reqwest::ClientBuilder`] — see
-	/// [`ClientBuilderFactory`]. Use [`client_builder`] for a sensible default.
+	/// [`ClientBuilderFactory`].
 	pub async fn new(
-		tamanu_version: impl Into<String>,
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
@@ -183,7 +195,6 @@ impl CanopyClient {
 			TAILSCALE_URL
 				.parse()
 				.expect("default tailscale URL is valid"),
-			tamanu_version,
 			device_key_pem,
 			make_builder,
 		)
@@ -199,11 +210,9 @@ impl CanopyClient {
 	pub async fn with_urls(
 		base_url: Url,
 		tailscale_url: Url,
-		tamanu_version: impl Into<String>,
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
-		let tamanu_version = tamanu_version.into();
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
@@ -213,7 +222,6 @@ impl CanopyClient {
 				base_url,
 				tailscale_url,
 				device_key,
-				tamanu_version,
 				make_builder,
 				state: RwLock::new(State::Tailscale(http)),
 			}));
@@ -226,7 +234,6 @@ impl CanopyClient {
 				base_url,
 				tailscale_url,
 				device_key,
-				tamanu_version,
 				make_builder,
 				state: RwLock::new(State::Mtls(http)),
 			}));
@@ -284,129 +291,7 @@ impl CanopyClient {
 		Ok(())
 	}
 
-	/// POST a status snapshot to the canopy server.
-	///
-	/// In tailscale mode a `{TAILSCALE_URL}/public/status/{server_id}` URL is
-	/// used; in mTLS mode it posts to `{base_url}/status/{server_id}` for the
-	/// client's configured base URL.
-	///
-	/// The payload is free-form JSON; the canopy `/status` contract reserves the
-	/// top-level `health: []` key, whose entries each carry a `result` of
-	/// `passed | warning | failed | broken | skipped`. The body is gzip-encoded
-	/// with `Content-Encoding: gzip`.
-	///
-	/// Returns `backup_now`: the backup-type names canopy says this server should
-	/// back up right now (operator one-offs + schedule-due). Empty means nothing
-	/// to do. A response that predates the field (no `backup_now`) yields an empty
-	/// list, so older canopy deployments keep working.
-	pub async fn post_status(
-		&self,
-		server_id: &str,
-		payload: &serde_json::Value,
-	) -> Result<Vec<String>> {
-		let (http, url) = {
-			let state = self.state.read().await;
-			let url = match &*state {
-				State::Tailscale(_) => self
-					.tailscale_url
-					.join(&format!("/public/status/{server_id}"))
-					.into_diagnostic()
-					.wrap_err("building tailscale /public/status URL")?,
-				State::Mtls(_) => self
-					.base_url
-					.join(&format!("/status/{server_id}"))
-					.into_diagnostic()
-					.wrap_err("building /status URL")?,
-			};
-			(state.http(), url)
-		};
-
-		let raw = serde_json::to_vec(payload)
-			.into_diagnostic()
-			.wrap_err("serialising canopy /status payload")?;
-		let compressed = gzip_bytes(&raw)
-			.into_diagnostic()
-			.wrap_err("gzipping canopy /status payload")?;
-
-		debug!(
-			%url,
-			raw_bytes = raw.len(),
-			gzip_bytes = compressed.len(),
-			"posting status snapshot to canopy",
-		);
-
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
-			.header(reqwest::header::CONTENT_ENCODING, "gzip")
-			.body(compressed)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting status to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!("canopy /status returned {status}: {body}"));
-		}
-
-		#[derive(serde::Deserialize, Default)]
-		struct StatusResponseTail {
-			#[serde(default)]
-			backup_now: Vec<String>,
-		}
-
-		// The response flattens the persisted Status plus `backup_now`; we read
-		// only the latter and ignore the rest. A body that fails to parse (or
-		// predates the field) is treated as "nothing to do" rather than failing
-		// the status push.
-		let tail = response
-			.json::<StatusResponseTail>()
-			.await
-			.unwrap_or_default();
-		Ok(tail.backup_now)
-	}
-
-	/// GET a path on the canopy server, routed via tailscale when available.
-	///
-	/// In tailscale mode, the request goes to `{TAILSCALE_URL}{tailscale_path}`
-	/// (typically `/public/...`, the only mount that accepts tagged-device
-	/// tailscale callers). In mTLS mode, the request goes to `{base_url}{mtls_path}`
-	/// for the client's configured base URL.
-	///
-	/// Returns the raw response — the caller is responsible for status checks
-	/// and body parsing so they can choose how to fall back if the response
-	/// isn't usable.
-	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
-		let (http, url) = {
-			let state = self.state.read().await;
-			let url = match &*state {
-				State::Tailscale(_) => self
-					.tailscale_url
-					.join(tailscale_path)
-					.into_diagnostic()
-					.wrap_err("building tailscale GET URL")?,
-				State::Mtls(_) => self
-					.base_url
-					.join(mtls_path)
-					.into_diagnostic()
-					.wrap_err("building mTLS GET URL")?,
-			};
-			(state.http(), url)
-		};
-
-		debug!(%url, "GET via canopy");
-		http.get(url)
-			.header("X-Version", &self.tamanu_version)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("GET via canopy")
-	}
-
-	/// Resolve an endpoint URL for the current auth path.
+	/// Resolve the HTTP client + URL for `path` on the current auth path.
 	///
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
 	/// same endpoint is mounted under `/public`, so this prepends it.
@@ -427,51 +312,32 @@ impl CanopyClient {
 		Ok((state.http(), url))
 	}
 
-	/// Start a request to an arbitrary canopy endpoint on the current auth path.
+	/// Send a request to `path` on the current auth path, gzipping the JSON body
+	/// when there is one.
 	///
-	/// This is the generic escape hatch behind the typed endpoint methods: it
-	/// resolves the right HTTP client and URL for the active auth mode, begins
-	/// the request, and sets the `X-Version` header. The returned builder is
-	/// yours to finish — add query params, a body, or extra headers, then
-	/// `.send()` and parse the response however suits.
-	///
-	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
-	/// same endpoint is mounted under `/public`, so this routes it there, the
-	/// same convention the other endpoint methods follow.
-	pub async fn request(
+	/// A non-success status becomes a [`CanopyHttpError`] (downcast the returned
+	/// report to inspect the status — e.g. [`TargetOutcome::from_result`]). This
+	/// is the shared core behind the generated endpoint methods.
+	async fn send_call<B: serde::Serialize + ?Sized>(
 		&self,
 		method: reqwest::Method,
 		path: &str,
-	) -> Result<reqwest::RequestBuilder> {
+		body: Option<&B>,
+	) -> Result<reqwest::Response> {
 		let (http, url) = self.endpoint_url(path).await?;
-		debug!(%url, %method, "arbitrary canopy request");
-		Ok(http
-			.request(method, url)
-			.header("X-Version", &self.tamanu_version))
-	}
-
-	/// Call an arbitrary canopy endpoint and parse its JSON response.
-	///
-	/// Builds the request via [`Self::request`], attaches `body` as JSON when
-	/// it's `Some`, sends it, and on a 2xx response parses the body into `Res`.
-	/// A non-success status becomes an error carrying the status and response
-	/// body, matching the other endpoint methods. This absorbs the status-check
-	/// and parse boilerplate.
-	///
-	/// Use [`serde_json::Value`] for `Res` (and/or the body) for fully dynamic
-	/// calls, or any concrete type for typed calls. When passing no body, pin
-	/// the inference with a turbofish, e.g. `None::<&()>`.
-	///
-	/// `path` follows the same mTLS/tailscale convention as [`Self::request`].
-	pub async fn request_json<Res: serde::de::DeserializeOwned>(
-		&self,
-		method: reqwest::Method,
-		path: &str,
-		body: Option<&(impl serde::Serialize + ?Sized)>,
-	) -> Result<Res> {
-		let mut req = self.request(method, path).await?;
+		debug!(%url, %method, "canopy request");
+		let mut req = http.request(method, url);
 		if let Some(body) = body {
-			req = req.json(body);
+			let raw = serde_json::to_vec(body)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("serialising canopy {path} body"))?;
+			let compressed = gzip_bytes(&raw)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("gzipping canopy {path} body"))?;
+			req = req
+				.header(reqwest::header::CONTENT_TYPE, "application/json")
+				.header(reqwest::header::CONTENT_ENCODING, "gzip")
+				.body(compressed);
 		}
 
 		let response = req
@@ -483,134 +349,106 @@ impl CanopyClient {
 		let status = response.status();
 		if !status.is_success() {
 			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!("canopy {path} returned {status}: {body}"));
+			return Err(miette::Report::new(CanopyHttpError {
+				status,
+				path: path.to_owned(),
+				body,
+			}));
 		}
+		Ok(response)
+	}
 
+	/// Call an endpoint and parse its JSON response. Backs the generated methods.
+	pub(crate) async fn call_json<B, R>(
+		&self,
+		method: reqwest::Method,
+		path: &str,
+		body: Option<&B>,
+	) -> Result<R>
+	where
+		B: serde::Serialize + ?Sized,
+		R: serde::de::DeserializeOwned,
+	{
+		let response = self.send_call(method, path, body).await?;
 		response
-			.json::<Res>()
+			.json::<R>()
 			.await
 			.into_diagnostic()
 			.wrap_err_with(|| format!("parsing canopy {path} response"))
 	}
 
-	/// Register the backup types this server can run (`POST /backup-capabilities`).
-	pub async fn backup_capabilities(&self, types: &[String]) -> Result<()> {
-		let (http, url) = self.endpoint_url("/backup-capabilities").await?;
-		debug!(%url, ?types, "registering backup capabilities with canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&CapabilitiesArgs {
-				types: types.to_vec(),
-			})
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting backup capabilities to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /backup-capabilities returned {status}: {body}"
-			));
-		}
-		Ok(())
-	}
-
-	/// Obtain short-lived S3 credentials for a backup type (`POST /backup-credentials`).
-	///
-	/// Returns the `credential_process`-shaped creds; the caller translates them
-	/// to the container-creds shape for kopia. `412`/`409`/`502` surface as errors.
-	pub async fn backup_credentials(
+	/// Call an endpoint that returns no body. Backs the generated methods.
+	pub(crate) async fn call_empty<B: serde::Serialize + ?Sized>(
 		&self,
-		backup_type: &str,
-		purpose: BackupPurpose,
-	) -> Result<CredentialProcessOutput> {
-		let (http, url) = self.endpoint_url("/backup-credentials").await?;
-		debug!(%url, backup_type, ?purpose, "requesting backup credentials from canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&CredentialsArgs {
-				type_: backup_type.to_owned(),
-				purpose: Some(purpose),
-			})
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting backup credentials request to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /backup-credentials returned {status}: {body}"
-			));
-		}
-		response
-			.json::<CredentialProcessOutput>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing backup credentials from canopy")
+		method: reqwest::Method,
+		path: &str,
+		body: Option<&B>,
+	) -> Result<()> {
+		self.send_call(method, path, body).await.map(drop)
 	}
 
-	/// Fetch the S3 repo target (`GET /backup-target`).
+	/// GET a path, routed via tailscale when available, returning the raw response.
 	///
-	/// `412`/`409` mean the device isn't yet authorised for backups; these map to
-	/// [`TargetOutcome::Dormant`] (a benign idle state) rather than an error.
-	pub async fn backup_target(&self) -> Result<TargetOutcome> {
-		let (http, url) = self.endpoint_url("/backup-target").await?;
-		debug!(%url, "fetching backup target from canopy");
-		let response = http
-			.get(url)
-			.header("X-Version", &self.tamanu_version)
+	/// Escape hatch behind the generated endpoint methods; needs the `raw-requests`
+	/// feature. In tailscale mode the request goes to `{tailscale_url}{tailscale_path}`
+	/// (typically `/public/...`); in mTLS mode to `{base_url}{mtls_path}`.
+	#[cfg(feature = "raw-requests")]
+	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
+		let (http, url) = {
+			let state = self.state.read().await;
+			let url = match &*state {
+				State::Tailscale(_) => self
+					.tailscale_url
+					.join(tailscale_path)
+					.into_diagnostic()
+					.wrap_err("building tailscale GET URL")?,
+				State::Mtls(_) => self
+					.base_url
+					.join(mtls_path)
+					.into_diagnostic()
+					.wrap_err("building mTLS GET URL")?,
+			};
+			(state.http(), url)
+		};
+
+		debug!(%url, "GET via canopy");
+		http.get(url)
 			.send()
 			.await
 			.into_diagnostic()
-			.wrap_err("fetching backup target from canopy")?;
-
-		let status = response.status();
-		if status == reqwest::StatusCode::PRECONDITION_FAILED
-			|| status == reqwest::StatusCode::CONFLICT
-		{
-			return Ok(TargetOutcome::Dormant);
-		}
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /backup-target returned {status}: {body}"
-			));
-		}
-		let target = response
-			.json::<BackupTarget>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing backup target from canopy")?;
-		Ok(TargetOutcome::Ready(target))
+			.wrap_err("GET via canopy")
 	}
 
-	/// Report a completed backup/restore run (`POST /backup-report`).
-	pub async fn backup_report(&self, report: &ReportArgs) -> Result<()> {
-		let (http, url) = self.endpoint_url("/backup-report").await?;
-		debug!(%url, run_id = %report.run_id, "reporting backup outcome to canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(report)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting backup report to canopy")?;
+	/// Start a request to an arbitrary canopy endpoint on the current auth path.
+	///
+	/// Escape hatch behind the generated endpoint methods; needs the `raw-requests`
+	/// feature. `path` is the mTLS-mode path; over tailscale it's routed under
+	/// `/public`, the same convention the generated methods follow.
+	#[cfg(feature = "raw-requests")]
+	pub async fn request(
+		&self,
+		method: reqwest::Method,
+		path: &str,
+	) -> Result<reqwest::RequestBuilder> {
+		let (http, url) = self.endpoint_url(path).await?;
+		debug!(%url, %method, "arbitrary canopy request");
+		Ok(http.request(method, url))
+	}
 
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /backup-report returned {status}: {body}"
-			));
-		}
-		Ok(())
+	/// Call an arbitrary canopy endpoint and parse its JSON response.
+	///
+	/// Escape hatch behind the generated endpoint methods; needs the `raw-requests`
+	/// feature. Prefer a generated method where one exists. When passing no body,
+	/// pin the inference with a turbofish, e.g. `None::<&()>`. The body is gzipped,
+	/// like every canopy request.
+	#[cfg(feature = "raw-requests")]
+	pub async fn request_json<Res: serde::de::DeserializeOwned>(
+		&self,
+		method: reqwest::Method,
+		path: &str,
+		body: Option<&(impl serde::Serialize + ?Sized)>,
+	) -> Result<Res> {
+		self.call_json(method, path, body).await
 	}
 }
 
@@ -673,7 +511,9 @@ async fn try_probe(
 	addrs: &[SocketAddr],
 	make_builder: &ClientBuilderFactory,
 ) -> Option<reqwest::Client> {
-	let mut builder = make_builder().timeout(TAILSCALE_PROBE_TIMEOUT);
+	let mut builder = make_builder()
+		.user_agent(user_agent())
+		.timeout(TAILSCALE_PROBE_TIMEOUT);
 	if !addrs.is_empty() {
 		builder = builder.resolve_to_addrs(host, addrs);
 	}
@@ -762,6 +602,7 @@ fn build_mtls_http(
 	let identity = device_identity(device_key_pem)?;
 
 	make_builder()
+		.user_agent(user_agent())
 		.identity(identity)
 		.use_rustls_tls()
 		.timeout(Duration::from_secs(30))
@@ -805,7 +646,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
 		};
@@ -821,7 +661,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: None,
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(http)),
 		};
@@ -835,7 +674,6 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			base_url: base.parse().unwrap(),
 			tailscale_url: TAILSCALE_URL.parse().unwrap(),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
-			tamanu_version: "2.54.2".into(),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
 		}
@@ -913,7 +751,7 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	}
 
 	#[tokio::test]
-	async fn request_json_sends_version_and_body_and_parses_response() {
+	async fn call_json_gzips_body_sets_user_agent_and_parses_response() {
 		let (base, handle) = serve_once(
 			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"ok\":true,\"who\":\"device\"}",
 		);
@@ -921,9 +759,9 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 
 		let payload = serde_json::json!({ "hello": "world" });
 		let got: Echo = client
-			.request_json(reqwest::Method::POST, "/thing", Some(&payload))
+			.call_json(reqwest::Method::POST, "/thing", Some(&payload))
 			.await
-			.expect("request_json should succeed");
+			.expect("call_json should succeed");
 
 		assert_eq!(
 			got,
@@ -939,26 +777,37 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			"unexpected request line: {}",
 			captured.request_line
 		);
+		let headers = captured.headers.to_ascii_lowercase();
 		assert!(
-			captured
-				.headers
-				.to_ascii_lowercase()
-				.contains("x-version: 2.54.2"),
-			"missing X-Version header in:\n{}",
+			headers.contains("user-agent: bestool-canopy/"),
+			"missing canopy user-agent in:\n{}",
 			captured.headers
 		);
-		let sent: serde_json::Value = serde_json::from_slice(&captured.body).unwrap();
+		assert!(
+			headers.contains("content-encoding: gzip"),
+			"body should be gzipped:\n{}",
+			captured.headers
+		);
+		// The body is gzipped on the wire; decompress before comparing.
+		use flate2::read::GzDecoder;
+		use std::io::Read as _;
+		let mut decoder = GzDecoder::new(&captured.body[..]);
+		let mut raw = Vec::new();
+		decoder
+			.read_to_end(&mut raw)
+			.expect("body should be valid gzip");
+		let sent: serde_json::Value = serde_json::from_slice(&raw).unwrap();
 		assert_eq!(sent, payload);
 	}
 
 	#[tokio::test]
-	async fn request_json_errors_on_non_success_with_body() {
+	async fn call_json_errors_on_non_success_with_body() {
 		let (base, handle) =
 			serve_once("HTTP/1.1 418 I'm a teapot\r\nContent-Length: 14\r\n\r\nno coffee here");
 		let client = mtls_client_against(&base);
 
 		let err = client
-			.request_json::<serde_json::Value>(reqwest::Method::GET, "/brew", None::<&()>)
+			.call_json::<(), serde_json::Value>(reqwest::Method::GET, "/brew", None::<&()>)
 			.await
 			.expect_err("non-2xx should error");
 		let msg = err.to_string();
@@ -973,10 +822,10 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 	}
 
 	#[test]
-	fn user_agent_has_product_and_os_comment() {
-		let ua = user_agent("bestool", "1.2.3");
+	fn user_agent_identifies_the_crate_with_os_comment() {
+		let ua = user_agent();
 		assert!(
-			ua.starts_with("bestool/1.2.3 "),
+			ua.starts_with(concat!("bestool-canopy/", env!("CARGO_PKG_VERSION"), " ")),
 			"unexpected user-agent: {ua}"
 		);
 		assert!(ua.contains('('), "expected OS comment in: {ua}");

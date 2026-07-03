@@ -26,11 +26,16 @@ pub mod registration;
 /// `session_token`, `repo_password`) are wrapped in [`Redacted`] so they never
 /// surface in `Debug` output or logs — read them through the inner value.
 ///
-/// The typed endpoint methods on [`CanopyClient`] (e.g.
-/// [`CanopyClient::backup_credentials`], [`CanopyClient::backup_target`]) take
-/// and return these types. For an endpoint without a bespoke method, use the
-/// generic [`CanopyClient::request`]/[`CanopyClient::request_json`] with the
-/// matching schema type.
+/// [`CanopyClient`] has one generated method per endpoint (also emitted from the
+/// spec into this module — e.g. `backup_credentials`, `restore_worklist`,
+/// `tags`), taking and returning these types; that's how you call canopy. The
+/// method name is the path (`/backup-credentials` → `backup_credentials`), verb-
+/// prefixed only where a path is served by several verbs. `backup_target`'s
+/// dormant-device case is read from its result via [`TargetOutcome::from_result`];
+/// any non-2xx surfaces as [`CanopyHttpError`]. The generic
+/// `get`/`request`/`request_json` escape hatch is behind the off-by-default
+/// `raw-requests` feature — reach for it only for something the generated methods
+/// don't cover.
 ///
 /// [`CredentialsArgs`]: schema::CredentialsArgs
 /// [`ReportArgs`]: schema::ReportArgs
@@ -42,8 +47,8 @@ pub mod schema {
 
 pub use backup::{ContainerCreds, TargetOutcome};
 pub use client::{
-	CERT_RENEW_AFTER, CanopyClient, ClientBuilderFactory, DEFAULT_CANOPY_URL, TAILSCALE_URL,
-	client_builder, device_identity, tailscale_client, user_agent,
+	CERT_RENEW_AFTER, CanopyClient, CanopyHttpError, ClientBuilderFactory, DEFAULT_CANOPY_URL,
+	TAILSCALE_URL, device_identity, tailscale_client,
 };
 pub use reqwest;
 
