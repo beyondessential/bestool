@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bestool_canopy::{
 	TAILSCALE_URL, device_identity,
 	registration::{self, Registration},
+	schema::{BeginArgs, BeginResponse, CompleteArgs, CompleteResponse},
 	tailscale_client,
 };
 use bestool_tamanu::server_info::generate_device_key_pem;
@@ -19,7 +20,7 @@ use p256::{
 	elliptic_curve::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _},
 };
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -66,34 +67,6 @@ struct EnrollTicket {
 	token: String,
 }
 
-#[derive(Serialize)]
-pub(crate) struct BeginRequest<'a> {
-	pub(crate) server_id: &'a str,
-	pub(crate) token: &'a str,
-	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
-	/// where there's no client cert for canopy to read it from.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub(crate) spki: Option<&'a str>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct BeginResponse {
-	pub(crate) nonce: String,
-	#[serde(default)]
-	pub(crate) channel_binding_required: bool,
-}
-
-#[derive(Serialize)]
-pub(crate) struct CompleteRequest<'a> {
-	pub(crate) server_id: &'a str,
-	pub(crate) nonce: &'a str,
-	pub(crate) signature: &'a str,
-	/// DER SubjectPublicKeyInfo (base64), sent only over the tailscale path
-	/// where there's no client cert for canopy to read it from.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub(crate) spki: Option<&'a str>,
-}
-
 /// Which network path the enrollment handshake takes.
 ///
 /// Mirrors the rest of bestool's canopy traffic: prefer the tailnet when it's
@@ -131,12 +104,6 @@ impl Transport {
 				.wrap_err_with(|| format!("building register/{step} URL")),
 		}
 	}
-}
-
-#[derive(Deserialize)]
-pub(crate) struct CompleteResponse {
-	pub(crate) server_id: String,
-	pub(crate) device_id: String,
 }
 
 /// RFC-7807-style problem body. Canopy's register errors are intentionally
@@ -248,14 +215,7 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	let spki_b64 = STANDARD.encode(&spki_der);
 
 	// Step 1: begin — fetch the challenge nonce. The token isn't consumed here.
-	let begin = begin(
-		&transport,
-		&api_url,
-		&ticket.server_id,
-		&ticket.token,
-		&spki_b64,
-	)
-	.await?;
+	let begin = begin(&transport, &api_url, server_id, &ticket.token, &spki_b64).await?;
 	if begin.channel_binding_required {
 		bail!(
 			"this Canopy server requires TLS channel binding, which this version of bestool does not support yet"
@@ -274,7 +234,7 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	let complete = complete(
 		&transport,
 		&api_url,
-		&ticket.server_id,
+		server_id,
 		&begin.nonce,
 		&signature_b64,
 		&spki_b64,
@@ -283,9 +243,9 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	// Persist the result so the agent knows it's bound and where to report.
 	let registration = Registration {
-		server_id: Some(complete.server_id.clone()),
+		server_id: Some(complete.server_id.to_string()),
 		device_key: Some(device_key_pem),
-		device_id: Some(complete.device_id.clone()),
+		device_id: Some(complete.device_id.to_string()),
 		api_url: Some(api_url.to_string()),
 		..Registration::default()
 	};
@@ -352,7 +312,7 @@ fn build_transcript(nonce: &[u8], server_id: &Uuid, spki_der: &[u8]) -> Vec<u8> 
 async fn begin(
 	transport: &Transport,
 	api_url: &Url,
-	server_id: &str,
+	server_id: Uuid,
 	token: &str,
 	spki: &str,
 ) -> Result<BeginResponse> {
@@ -360,10 +320,12 @@ async fn begin(
 	let resp = transport
 		.client()
 		.post(url)
-		.json(&BeginRequest {
+		.json(&BeginArgs {
 			server_id,
-			token,
-			spki: transport.carries_spki_in_body().then_some(spki),
+			token: token.to_owned(),
+			spki: transport
+				.carries_spki_in_body()
+				.then(|| spki.to_owned()),
 		})
 		.send()
 		.await
@@ -375,7 +337,7 @@ async fn begin(
 async fn complete(
 	transport: &Transport,
 	api_url: &Url,
-	server_id: &str,
+	server_id: Uuid,
 	nonce: &str,
 	signature: &str,
 	spki: &str,
@@ -384,11 +346,13 @@ async fn complete(
 	let resp = transport
 		.client()
 		.post(url)
-		.json(&CompleteRequest {
+		.json(&CompleteArgs {
 			server_id,
-			nonce,
-			signature,
-			spki: transport.carries_spki_in_body().then_some(spki),
+			nonce: nonce.to_owned(),
+			signature: signature.to_owned(),
+			spki: transport
+				.carries_spki_in_body()
+				.then(|| spki.to_owned()),
 		})
 		.send()
 		.await

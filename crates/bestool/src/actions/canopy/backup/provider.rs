@@ -8,7 +8,10 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use bestool_canopy::{BackupCredentials, CanopyClient, Purpose};
+use bestool_canopy::{
+	CanopyClient,
+	schema::{BackupPurpose, CredentialProcessOutput},
+};
 use bestool_kopia::proxy::{BoxError, CredentialProvider, Credentials};
 use futures::future::BoxFuture;
 use jiff::{Timestamp, ToSpan};
@@ -21,12 +24,12 @@ const REFRESH_MARGIN_MINUTES: i64 = 2;
 /// Fetches a fresh set of creds from Canopy. Boxed so the provider is testable
 /// without a live `CanopyClient`.
 type Refresher =
-	Arc<dyn Fn() -> BoxFuture<'static, Result<BackupCredentials, String>> + Send + Sync>;
+	Arc<dyn Fn() -> BoxFuture<'static, Result<CredentialProcessOutput, String>> + Send + Sync>;
 
 /// A [`CredentialProvider`] that draws backup credentials from Canopy.
 pub struct CanopyCredentialProvider {
 	refresh: Refresher,
-	cached: Mutex<Option<BackupCredentials>>,
+	cached: Mutex<Option<CredentialProcessOutput>>,
 }
 
 impl CanopyCredentialProvider {
@@ -36,7 +39,7 @@ impl CanopyCredentialProvider {
 		client: Arc<CanopyClient>,
 		base_url: Url,
 		backup_type: String,
-		purpose: Purpose,
+		purpose: BackupPurpose,
 	) -> Self {
 		let refresh: Refresher = Arc::new(move || {
 			let client = client.clone();
@@ -61,7 +64,7 @@ impl CanopyCredentialProvider {
 }
 
 /// Whether cached creds are absent or within the refresh margin of expiry.
-fn needs_refresh(cached: &Option<BackupCredentials>, now: Timestamp) -> bool {
+fn needs_refresh(cached: &Option<CredentialProcessOutput>, now: Timestamp) -> bool {
 	match cached {
 		None => true,
 		Some(creds) => creds.expiration <= now + REFRESH_MARGIN_MINUTES.minutes(),
@@ -96,7 +99,7 @@ mod tests {
 
 	use super::*;
 
-	fn creds_expiring(expiration: &str) -> BackupCredentials {
+	fn creds_expiring(expiration: &str) -> CredentialProcessOutput {
 		serde_json::from_value(json!({
 			"Version": 1,
 			"AccessKeyId": "AKIA",

@@ -14,17 +14,15 @@
 
 use std::collections::BTreeMap;
 
-use bestool_canopy::{
-	BackupCredentials, BackupCredentialsRequest, BackupReport, BackupTarget, CapabilitiesRequest,
-	NewEvent, Outcome, Purpose, Severity,
+use bestool_canopy::schema::{
+	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CapabilitiesArgs, CompleteArgs,
+	CompleteResponse, CredentialProcessOutput, CredentialsArgs, NewEvent, ReportArgs, RunOutcome,
+	Severity,
 };
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
-use crate::actions::{
-	canopy::register::{BeginRequest, BeginResponse, CompleteRequest, CompleteResponse},
-	tamanu::{artifacts::Artifact, psql::Snippet},
-};
+use crate::actions::tamanu::{artifacts::Artifact, psql::Snippet};
 
 const SPEC_URL: &str = "https://meta.tamanu.app/api/openapi.json";
 
@@ -123,10 +121,10 @@ async fn events_request_matches_spec() {
 	assert_operation_exists(spec, "/events", "post");
 
 	let event = NewEvent {
-		source: "bestool-contract-test",
-		r#ref: "host/alert:target",
-		message: "message",
-		description: Some("description"),
+		source: "bestool-contract-test".to_owned(),
+		ref_: "host/alert:target".to_owned(),
+		message: "message".to_owned(),
+		description: Some("description".to_owned()),
 		severity: Some(Severity::Warning),
 		occurred_at: Some("2026-01-01T00:00:00Z".parse().unwrap()),
 		active: Some(true),
@@ -232,10 +230,10 @@ async fn register_begin_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/begin", "post");
 
-	let request = BeginRequest {
-		server_id: "00000000-0000-0000-0000-000000000000",
-		token: "enrollment-token",
-		spki: Some("c3BraQ=="),
+	let request = BeginArgs {
+		server_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
+		token: "enrollment-token".to_owned(),
+		spki: Some("c3BraQ==".to_owned()),
 	};
 	let instance = serde_json::to_value(&request).unwrap();
 	assert_valid(
@@ -261,10 +259,10 @@ async fn register_complete_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/complete", "post");
 
-	let request = CompleteRequest {
-		server_id: "00000000-0000-0000-0000-000000000000",
-		nonce: "bm9uY2U=",
-		signature: "c2lnbmF0dXJl",
+	let request = CompleteArgs {
+		server_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
+		nonce: "bm9uY2U=".to_owned(),
+		signature: "c2lnbmF0dXJl".to_owned(),
 		spki: None,
 	};
 	let instance = serde_json::to_value(&request).unwrap();
@@ -284,8 +282,14 @@ async fn register_complete_matches_spec() {
 		&sample,
 	);
 	let decoded: CompleteResponse = serde_json::from_value(sample).unwrap();
-	assert_eq!(decoded.server_id, "00000000-0000-0000-0000-000000000000");
-	assert_eq!(decoded.device_id, "11111111-1111-1111-1111-111111111111");
+	assert_eq!(
+		decoded.server_id.to_string(),
+		"00000000-0000-0000-0000-000000000000"
+	);
+	assert_eq!(
+		decoded.device_id.to_string(),
+		"11111111-1111-1111-1111-111111111111"
+	);
 }
 
 #[tokio::test]
@@ -357,7 +361,7 @@ async fn backup_capabilities_request_matches_spec() {
 	assert_operation_exists(spec, "/backup-capabilities", "post");
 
 	let types = vec!["tamanu-postgres".to_owned()];
-	let instance = serde_json::to_value(CapabilitiesRequest { types: &types }).unwrap();
+	let instance = serde_json::to_value(CapabilitiesArgs { types }).unwrap();
 	assert_valid(
 		spec,
 		&request_schema("/backup-capabilities", "post"),
@@ -371,9 +375,9 @@ async fn backup_credentials_request_and_response_match_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/backup-credentials", "post");
 
-	let instance = serde_json::to_value(BackupCredentialsRequest {
-		r#type: "tamanu-postgres",
-		purpose: Purpose::Backup,
+	let instance = serde_json::to_value(CredentialsArgs {
+		type_: "tamanu-postgres".to_owned(),
+		purpose: Some(BackupPurpose::Backup),
 	})
 	.unwrap();
 	assert_valid(
@@ -405,7 +409,7 @@ async fn backup_credentials_request_and_response_match_spec() {
 		&response_schema("/backup-credentials", "post"),
 		&sample,
 	);
-	let decoded: BackupCredentials = serde_json::from_value(sample).unwrap();
+	let decoded: CredentialProcessOutput = serde_json::from_value(sample).unwrap();
 	assert_eq!(decoded.version, 1);
 	assert_eq!(&*decoded.session_token, "token");
 }
@@ -435,14 +439,14 @@ async fn backup_report_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/backup-report", "post");
 
-	let instance = serde_json::to_value(BackupReport {
-		run_id: "00000000-0000-0000-0000-000000000000",
-		r#type: "tamanu-postgres",
-		purpose: Purpose::Backup,
-		outcome: Outcome::Success,
+	let instance = serde_json::to_value(ReportArgs {
+		run_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
+		type_: "tamanu-postgres".to_owned(),
+		purpose: BackupPurpose::Backup,
+		outcome: RunOutcome::Success,
 		error: None,
 		bytes_uploaded: Some(12345),
-		snapshot_id: Some("abc123"),
+		snapshot_id: Some("abc123".to_owned()),
 		// Intentionally populated: this gates the PR. bestool already sends these
 		// (canopy ignores unknown fields), but the contract check stays red until
 		// canopy's OpenAPI spec defines the s3 traffic fields — then it goes green.

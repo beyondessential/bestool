@@ -4,8 +4,8 @@
 //! needed here.
 
 use bestool_canopy::schema::{
-	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CompleteArgs, CompleteResponse, Issue,
-	ReportArgs, RunOutcome,
+	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CompleteArgs, CompleteResponse,
+	CredentialProcessOutput, Issue, NewEvent, ReportArgs, RunOutcome, Severity,
 };
 
 #[test]
@@ -82,6 +82,86 @@ fn register_complete_types_roundtrip() {
 		resp.device_id.to_string(),
 		"1111aaaa-0000-4000-8000-000000000000"
 	);
+}
+
+#[test]
+fn credential_secrets_are_redacted_and_expiry_is_a_timestamp() {
+	let wire = serde_json::json!({
+		"Version": 1,
+		"AccessKeyId": "AKIA",
+		"SecretAccessKey": "super-secret-key",
+		"SessionToken": "super-secret-token",
+		"Expiration": "2026-05-21T13:00:00Z",
+	});
+	let creds: CredentialProcessOutput = serde_json::from_value(wire.clone()).unwrap();
+
+	// Secrets are readable through the inner value but never printed.
+	assert_eq!(&*creds.secret_access_key, "super-secret-key");
+	assert_eq!(&*creds.session_token, "super-secret-token");
+	let debug = format!("{creds:?}");
+	assert!(!debug.contains("super-secret-key"), "{debug}");
+	assert!(!debug.contains("super-secret-token"), "{debug}");
+	assert!(debug.contains("<redacted>"), "{debug}");
+
+	// The expiry is a jiff timestamp, not a bare string.
+	let _: jiff::Timestamp = creds.expiration;
+
+	// Redaction and the timestamp rewrite are serialisation-transparent.
+	assert_eq!(serde_json::to_value(&creds).unwrap(), wire);
+}
+
+#[test]
+fn backup_target_repo_password_is_redacted() {
+	let target: BackupTarget = serde_json::from_value(serde_json::json!({
+		"storage": "s3",
+		"bucket": "backups",
+		"prefix": "",
+		"region": "ap-southeast-2",
+		"repo_password": "hunter2",
+	}))
+	.unwrap();
+	assert_eq!(&*target.repo_password, "hunter2");
+	let debug = format!("{target:?}");
+	assert!(!debug.contains("hunter2"), "{debug}");
+	assert!(debug.contains("<redacted>"), "{debug}");
+}
+
+#[test]
+fn new_event_omits_optional_fields() {
+	let event = NewEvent {
+		source: "src".to_owned(),
+		ref_: "host/alert:tgt".to_owned(),
+		message: "msg".to_owned(),
+		description: None,
+		severity: None,
+		occurred_at: None,
+		active: None,
+	};
+	let json = serde_json::to_string(&event).unwrap();
+	assert!(json.contains("\"source\":\"src\""));
+	assert!(json.contains("\"ref\":\"host/alert:tgt\""));
+	assert!(json.contains("\"message\":\"msg\""));
+	assert!(!json.contains("description"));
+	assert!(!json.contains("severity"));
+	assert!(!json.contains("occurredAt"));
+	assert!(!json.contains("active"));
+}
+
+#[test]
+fn new_event_serialises_occurred_at_camel_case_and_severity_lowercase() {
+	let event = NewEvent {
+		source: "src".to_owned(),
+		ref_: "ref".to_owned(),
+		message: "msg".to_owned(),
+		description: Some("desc".to_owned()),
+		severity: Some(Severity::Warning),
+		occurred_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+		active: Some(true),
+	};
+	let json = serde_json::to_string(&event).unwrap();
+	assert!(json.contains("\"occurredAt\":"));
+	assert!(json.contains("\"severity\":\"warning\""));
+	assert!(json.contains("\"active\":true"));
 }
 
 #[test]

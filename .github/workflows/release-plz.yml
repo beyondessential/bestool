@@ -30,6 +30,19 @@ jobs:
           rustup default stable
       - id: crates-io-auth
         uses: rust-lang/crates-io-auth-action@v1.0.4
+      - name: Refresh canopy OpenAPI snapshot for packaging
+        # Ship a current schema in the published bestool-canopy crate, so its
+        # offline / docs.rs consumers (which can't fetch live) don't get a stale
+        # committed snapshot. Written but not committed; publish_allow_dirty in
+        # release-plz.toml lets it be packaged. Keep the URL in step with
+        # SPEC_URL in crates/canopy/build.rs. Non-fatal: on a fetch blip the
+        # committed snapshot is published instead.
+        run: |
+          if curl -fsS --max-time 30 https://meta.tamanu.app/api/openapi.json -o /tmp/canopy-openapi.json; then
+            mv /tmp/canopy-openapi.json crates/canopy/openapi.snapshot.json
+          else
+            echo "::warning::canopy OpenAPI refresh failed; publishing the committed snapshot"
+          fi
       - uses: MarcoIeni/release-plz-action@v0.5.130
         with:
           command: release

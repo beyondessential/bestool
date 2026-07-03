@@ -11,7 +11,7 @@ use std::{
 	path::PathBuf,
 };
 
-use bestool_canopy::{Purpose, TargetOutcome};
+use bestool_canopy::{TargetOutcome, schema::BackupPurpose};
 use bestool_kopia::{
 	RunAs, S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore,
 	build_kopia_command_with_s3, find_kopia_binary,
@@ -101,7 +101,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		client.clone(),
 		base_url.clone(),
 		args.backup_type.clone(),
-		Purpose::Restore,
+		BackupPurpose::Restore,
 		&target.region,
 	)
 	.await?;
