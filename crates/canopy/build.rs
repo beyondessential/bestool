@@ -97,6 +97,10 @@ struct Endpoint {
 	body: Option<String>,
 	/// Rust return type: `Some(ty)` parses JSON into `ty`, `None` expects no body.
 	response: Option<String>,
+	/// The operation's OpenAPI `summary`, if any.
+	summary: Option<String>,
+	/// The operation's OpenAPI `description`, if any.
+	description: Option<String>,
 }
 
 /// Generate an `impl crate::CanopyClient` block with one method per OpenAPI
@@ -134,6 +138,11 @@ fn generate_client_methods(spec: &Value) -> String {
 				params,
 				body: request_body_type(spec, op),
 				response: response_type(op),
+				summary: op.get("summary").and_then(Value::as_str).map(str::to_owned),
+				description: op
+					.get("description")
+					.and_then(Value::as_str)
+					.map(str::to_owned),
 			});
 		}
 	}
@@ -188,10 +197,25 @@ fn generate_client_methods(spec: &Value) -> String {
 			None => ("call_empty", "::miette::Result<()>".to_owned()),
 		};
 
+		let mut doc = String::new();
+		for text in [&ep.summary, &ep.description].into_iter().flatten() {
+			for line in text.lines() {
+				if line.is_empty() {
+					doc.push_str("    ///\n");
+				} else {
+					doc.push_str(&format!("    /// {line}\n"));
+				}
+			}
+			doc.push_str("    ///\n");
+		}
+		doc.push_str(&format!(
+			"    /// `{} {}`\n",
+			ep.verb.to_uppercase(),
+			ep.path
+		));
+
 		out.push_str(&format!(
-			"    /// `{verb} {path}`\n    pub async fn {method_name}(&self{args}) -> {ret} {{\n        self.{call}({http_method}, {path_expr}, {body_arg}).await\n    }}\n",
-			verb = ep.verb.to_uppercase(),
-			path = ep.path,
+			"{doc}    pub async fn {method_name}(&self{args}) -> {ret} {{\n        self.{call}({http_method}, {path_expr}, {body_arg}).await\n    }}\n",
 		));
 	}
 	out.push_str("}\n");
