@@ -5,7 +5,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod backup;
 mod client;
 pub mod registration;
-mod restore;
 
 /// Wire types generated at build time from canopy's OpenAPI document.
 ///
@@ -47,7 +46,6 @@ pub use client::{
 	client_builder, device_identity, tailscale_client, user_agent,
 };
 pub use reqwest;
-pub use restore::{RestoreCapabilitiesRequest, RestoreCredentialsRequest};
 
 /// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
 #[derive(Clone)]

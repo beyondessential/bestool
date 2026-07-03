@@ -18,15 +18,13 @@ use reqwest::Url;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
-use uuid::Uuid;
 
 use crate::{
 	Redacted,
 	backup::TargetOutcome,
-	restore::{RestoreCapabilitiesRequest, RestoreCredentialsRequest},
 	schema::{
 		BackupPurpose, BackupTarget, CapabilitiesArgs, CredentialProcessOutput, CredentialsArgs,
-		NewEvent, ReportArgs, RestoreCredentials, VerificationArgs, WorklistEntry,
+		ReportArgs,
 	},
 };
 
@@ -366,52 +364,6 @@ impl CanopyClient {
 			.wrap_err("GET via canopy")
 	}
 
-	/// POST an event to the canopy server.
-	///
-	/// In tailscale mode, `base_url` is ignored and [`TAILSCALE_URL`] is used.
-	/// In mTLS mode, posts to `{base_url}/events`.
-	pub async fn post_event(&self, base_url: &Url, event: NewEvent) -> Result<()> {
-		let (http, url) = {
-			let state = self.state.read().await;
-			let url = match &*state {
-				State::Tailscale(_) => format!("{TAILSCALE_URL}/public/events")
-					.parse::<Url>()
-					.into_diagnostic()
-					.wrap_err("building tailscale /public/events URL")?,
-				State::Mtls(_) => base_url
-					.join("/events")
-					.into_diagnostic()
-					.wrap_err("building /events URL")?,
-			};
-			(state.http(), url)
-		};
-
-		debug!(
-			%url,
-			source = event.source,
-			r#ref = event.ref_,
-			active = ?event.active,
-			"posting event to canopy"
-		);
-
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&event)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting event to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!("canopy /events returned {status}: {body}"));
-		}
-
-		Ok(())
-	}
-
 	/// Resolve an endpoint URL for the current auth path.
 	///
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
@@ -615,124 +567,6 @@ impl CanopyClient {
 			let body = response.text().await.unwrap_or_default();
 			return Err(miette::miette!(
 				"canopy /backup-report returned {status}: {body}"
-			));
-		}
-		Ok(())
-	}
-
-	/// Register the restore intents this consumer supports (`POST /restore-capabilities`).
-	///
-	/// Replaces the registered intent set wholesale. Canopy dispatches only
-	/// matching worklist entries.
-	pub async fn restore_capabilities(&self, base_url: &Url, intents: &[&str]) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-capabilities").await?;
-		debug!(%url, ?intents, "registering restore capabilities with canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&RestoreCapabilitiesRequest { intents })
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore capabilities to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-capabilities returned {status}: {body}"
-			));
-		}
-		Ok(())
-	}
-
-	/// Fetch the desired-state worklist of replicas to restore (`GET /restore-worklist`).
-	pub async fn restore_worklist(&self, base_url: &Url) -> Result<Vec<WorklistEntry>> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-worklist").await?;
-		debug!(%url, "fetching restore worklist from canopy");
-		let response = http
-			.get(url)
-			.header("X-Version", &self.tamanu_version)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("fetching restore worklist from canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-worklist returned {status}: {body}"
-			));
-		}
-		response
-			.json::<Vec<WorklistEntry>>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing restore worklist from canopy")
-	}
-
-	/// Obtain read-only S3 credentials and the repo password for a group
-	/// (`POST /restore-credentials`).
-	///
-	/// Creds are 1-hour chained STS; refresh by re-calling. `403`/`409`/`502`
-	/// surface as errors.
-	pub async fn restore_credentials(
-		&self,
-		base_url: &Url,
-		backup_type: &str,
-		group: Uuid,
-	) -> Result<RestoreCredentials> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-credentials").await?;
-		debug!(%url, backup_type, %group, "requesting restore credentials from canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(&RestoreCredentialsRequest {
-				group,
-				r#type: backup_type,
-			})
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore credentials request to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-credentials returned {status}: {body}"
-			));
-		}
-		response
-			.json::<RestoreCredentials>()
-			.await
-			.into_diagnostic()
-			.wrap_err("parsing restore credentials from canopy")
-	}
-
-	/// Report a restore's health (`POST /restore-verification`).
-	pub async fn restore_verification(
-		&self,
-		base_url: &Url,
-		report: &VerificationArgs,
-	) -> Result<()> {
-		let (http, url) = self.endpoint_url(base_url, "/restore-verification").await?;
-		debug!(%url, group = %report.group, "reporting restore verification to canopy");
-		let response = http
-			.post(url)
-			.header("X-Version", &self.tamanu_version)
-			.json(report)
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("posting restore verification to canopy")?;
-
-		let status = response.status();
-		if !status.is_success() {
-			let body = response.text().await.unwrap_or_default();
-			return Err(miette::miette!(
-				"canopy /restore-verification returned {status}: {body}"
 			));
 		}
 		Ok(())
