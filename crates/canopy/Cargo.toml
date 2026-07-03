@@ -8,6 +8,12 @@ description = "(Internal) BES tooling: Canopy client"
 repository = "https://github.com/beyondessential/bestool/tree/main/crates/canopy"
 exclude.workspace = true
 
+[features]
+default = []
+# Exposes the generic escape-hatch methods (`get`, `request`, `request_json`).
+# Off by default: prefer the generated per-endpoint methods.
+raw-requests = []
+
 [lints]
 workspace = true
 

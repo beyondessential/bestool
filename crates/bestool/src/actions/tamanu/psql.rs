@@ -130,19 +130,13 @@ impl AsyncSnippetProvider {
 		let meta_url = DownloadSource::Meta.host();
 
 		if let Some(canopy) = &self.canopy {
-			match canopy
-				.get("/public/bestool/snippets", "/bestool/snippets")
-				.await
-			{
-				Ok(response) if response.status().is_success() => {
-					return response.json().await.into_diagnostic();
-				}
-				Ok(response) => {
-					debug!(
-						status = %response.status(),
-						"canopy snippets fetch returned non-success; falling back to direct"
-					);
-				}
+			match canopy.bestool_snippets().await {
+				Ok(value) => match serde_json::from_value::<BTreeMap<String, Snippet>>(value) {
+					Ok(snippets) => return Ok(snippets),
+					Err(err) => {
+						debug!("decoding canopy snippets failed ({err:#}); falling back to direct")
+					}
+				},
 				Err(err) => {
 					debug!("canopy snippets fetch failed ({err:#}); falling back to direct");
 				}

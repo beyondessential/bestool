@@ -369,7 +369,11 @@ mod backup {
 		if types.is_empty() {
 			return Ok(());
 		}
-		client.backup_capabilities(&types).await?;
+		client
+			.backup_capabilities(&bestool_canopy::schema::CapabilitiesArgs {
+				types: types.clone(),
+			})
+			.await?;
 		info!(?types, "registered backup capabilities with canopy");
 		Ok(())
 	}

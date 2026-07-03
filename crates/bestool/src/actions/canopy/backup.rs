@@ -420,7 +420,7 @@ async fn backup_after_start(
 
 	let client = build_client(base_url_of(&reg)?, &device_key).await?;
 
-	let target = match client.backup_target().await? {
+	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Dormant => {
 			info!(
 				backup_type,

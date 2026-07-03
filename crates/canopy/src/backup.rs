@@ -8,10 +8,13 @@
 //! dormant device state into an enum.
 
 use jiff::Timestamp;
+use miette::Result;
+use reqwest::StatusCode;
 use serde::Serialize;
 
 use crate::{
 	Redacted,
+	client::CanopyHttpError,
 	schema::{BackupTarget, CredentialProcessOutput},
 };
 
@@ -44,6 +47,27 @@ impl From<&CredentialProcessOutput> for ContainerCreds {
 pub enum TargetOutcome {
 	Ready(BackupTarget),
 	Dormant,
+}
+
+impl TargetOutcome {
+	/// Interpret a [`backup_target`](crate::CanopyClient::backup_target) result:
+	/// a `412`/`409` (the device isn't yet authorised for backups) becomes
+	/// [`Dormant`](Self::Dormant), a target becomes [`Ready`](Self::Ready), and
+	/// any other error propagates.
+	pub fn from_result(result: Result<BackupTarget>) -> Result<Self> {
+		match result {
+			Ok(target) => Ok(Self::Ready(target)),
+			Err(report) => match report.downcast_ref::<CanopyHttpError>() {
+				Some(err)
+					if err.status == StatusCode::PRECONDITION_FAILED
+						|| err.status == StatusCode::CONFLICT =>
+				{
+					Ok(Self::Dormant)
+				}
+				_ => Err(report),
+			},
+		}
+	}
 }
 
 #[cfg(test)]

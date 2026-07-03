@@ -130,25 +130,10 @@ async fn fetch_online() -> Result<BTreeMap<String, String>> {
 		"fetching tags"
 	);
 
-	// `/public/tags` is reachable from tagged-device tailscale callers
-	// (the only mount that admits them); `/tags` is the mTLS path on
-	// the main canopy host. Returns the merged server+group tag map.
-	let response = canopy
-		.get("/public/tags", "/tags")
-		.await
-		.wrap_err("GET /tags via canopy")?;
-
-	let status = response.status();
-	if !status.is_success() {
-		let body = response.text().await.unwrap_or_default();
-		bail!("canopy /tags returned {status}: {body}");
-	}
-
-	response
-		.json::<BTreeMap<String, String>>()
-		.await
-		.into_diagnostic()
-		.wrap_err("decoding canopy tags response")
+	// Returns the merged server+group tag map. An error (including a non-2xx)
+	// propagates to the caller, which falls back to the cache.
+	let tags = canopy.tags().await.wrap_err("GET /tags via canopy")?;
+	Ok(tags.0.into_iter().collect())
 }
 
 fn render_json(tags: &BTreeMap<String, String>, source: Source) -> Result<()> {

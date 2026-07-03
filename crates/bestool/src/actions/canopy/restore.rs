@@ -87,7 +87,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		.ok_or_else(|| miette!("registration has no server id"))?;
 	let client = build_client(base_url_of(&reg)?, &device_key).await?;
 
-	let target = match client.backup_target().await? {
+	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Ready(target) => target,
 		TargetOutcome::Dormant => {
 			bail!("device is not authorised for this backup repository (cannot restore)")

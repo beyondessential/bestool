@@ -129,9 +129,10 @@ impl DoctorTaskInner {
 		};
 
 		let backup_now = canopy
-			.post_status(&server_id, &sweep.payload)
+			.status(&server_id, &sweep.payload)
 			.await
-			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
+			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?
+			.backup_now;
 
 		if !backup_now.is_empty() {
 			match &self.backup_dispatch {
