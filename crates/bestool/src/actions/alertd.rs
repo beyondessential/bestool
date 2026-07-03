@@ -330,7 +330,7 @@ mod backup {
 	use std::{sync::Arc, time::Duration};
 
 	use futures::future::BoxFuture;
-	use miette::{IntoDiagnostic as _, Result};
+	use miette::Result;
 	use tokio::sync::mpsc;
 	use tracing::{info, warn};
 
@@ -369,8 +369,7 @@ mod backup {
 		if types.is_empty() {
 			return Ok(());
 		}
-		let base_url = bestool_canopy::DEFAULT_CANOPY_URL.parse().into_diagnostic()?;
-		client.backup_capabilities(&base_url, &types).await?;
+		client.backup_capabilities(&types).await?;
 		info!(?types, "registered backup capabilities with canopy");
 		Ok(())
 	}

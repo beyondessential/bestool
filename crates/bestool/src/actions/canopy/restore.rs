@@ -85,10 +85,9 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		.server_id
 		.clone()
 		.ok_or_else(|| miette!("registration has no server id"))?;
-	let base_url = base_url_of(&reg)?;
-	let client = build_client(&device_key).await?;
+	let client = build_client(base_url_of(&reg)?, &device_key).await?;
 
-	let target = match client.backup_target(&base_url).await? {
+	let target = match client.backup_target().await? {
 		TargetOutcome::Ready(target) => target,
 		TargetOutcome::Dormant => {
 			bail!("device is not authorised for this backup repository (cannot restore)")
@@ -99,7 +98,6 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	// The proxy serves for the whole restore; held in scope to the end.
 	let proxy = spawn_proxy(
 		client.clone(),
-		base_url.clone(),
 		args.backup_type.clone(),
 		BackupPurpose::Restore,
 		&target.region,

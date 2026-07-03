@@ -3,12 +3,10 @@ use std::{sync::Arc, time::Duration};
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
-use reqwest::Url;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
-use crate::canopy::DEFAULT_CANOPY_URL;
 use crate::doctor::{self, progress::DoctorEvent};
 use crate::tasks::TaskEndpointHandler;
 use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
@@ -36,7 +34,6 @@ struct DoctorTaskInner {
 	/// `None` on hosts with no Tamanu deployment: sweeps still run (and post),
 	/// with all Tamanu-dependent checks skipped.
 	tamanu: Option<doctor::SweepTamanu>,
-	canopy_base_url: Url,
 	/// `SELECT version()` result, populated on the first tick that succeeds in
 	/// reaching the database. Stable for the lifetime of the PG instance, so we
 	/// reuse it across ticks instead of re-querying every minute.
@@ -63,9 +60,6 @@ impl DoctorTask {
 			inner: Arc::new(DoctorTaskInner {
 				binary_version,
 				tamanu,
-				canopy_base_url: DEFAULT_CANOPY_URL
-					.parse()
-					.expect("default canopy URL is valid"),
 				pg_version_cache: Mutex::new(None),
 				latest: Mutex::new(None),
 				backup_dispatch: None,
@@ -135,7 +129,7 @@ impl DoctorTaskInner {
 		};
 
 		let backup_now = canopy
-			.post_status(&self.canopy_base_url, &server_id, &sweep.payload)
+			.post_status(&server_id, &sweep.payload)
 			.await
 			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
 

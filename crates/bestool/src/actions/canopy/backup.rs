@@ -278,17 +278,11 @@ pub(super) struct RepoConn {
 /// live credentials from Canopy. The returned proxy serves until dropped.
 pub(super) async fn spawn_proxy(
 	client: Arc<CanopyClient>,
-	base_url: Url,
 	backup_type: String,
 	purpose: BackupPurpose,
 	region: &str,
 ) -> Result<RunningProxy> {
-	let provider = Arc::new(CanopyCredentialProvider::new(
-		client,
-		base_url,
-		backup_type,
-		purpose,
-	));
+	let provider = Arc::new(CanopyCredentialProvider::new(client, backup_type, purpose));
 	let upstream_host = upstream_host_for(region).await;
 	let config = S3ProxyConfig {
 		upstream: format!("https://{upstream_host}"),
@@ -423,11 +417,10 @@ async fn backup_after_start(
 	// `canopy register` enrolment), so tag the snapshot when we know it and just
 	// omit the tag otherwise.
 	let device_id = reg.device_id.clone();
-	let base_url = base_url_of(&reg)?;
 
-	let client = build_client(&device_key).await?;
+	let client = build_client(base_url_of(&reg)?, &device_key).await?;
 
-	let target = match client.backup_target(&base_url).await? {
+	let target = match client.backup_target().await? {
 		TargetOutcome::Dormant => {
 			info!(
 				backup_type,
@@ -441,7 +434,6 @@ async fn backup_after_start(
 	// The proxy serves for the whole run; held in scope until reporting is done.
 	let proxy = spawn_proxy(
 		client.clone(),
-		base_url.clone(),
 		backup_type.to_owned(),
 		BackupPurpose::Backup,
 		&target.region,
@@ -517,7 +509,7 @@ async fn backup_after_start(
 		},
 	};
 	client
-		.backup_report(&base_url, &report)
+		.backup_report(&report)
 		.await
 		.wrap_err("reporting backup outcome to canopy")?;
 
@@ -855,9 +847,13 @@ pub(super) fn base_url_of(reg: &Registration) -> Result<Url> {
 }
 
 /// Build a canopy client for an already-enrolled host (tailscale, then mTLS).
-pub(super) async fn build_client(device_key: &str) -> Result<Arc<CanopyClient>> {
+pub(super) async fn build_client(base_url: Url, device_key: &str) -> Result<Arc<CanopyClient>> {
 	let version = env!("CARGO_PKG_VERSION");
-	let client = CanopyClient::new(version, Some(device_key), move || {
+	let tailscale_url = bestool_canopy::TAILSCALE_URL
+		.parse()
+		.into_diagnostic()
+		.wrap_err("parsing default canopy tailscale URL")?;
+	let client = CanopyClient::with_urls(base_url, tailscale_url, version, Some(device_key), move || {
 		bestool_canopy::client_builder(version)
 	})
 	.await?

@@ -10,11 +10,10 @@
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use bestool_canopy::{CanopyClient, DEFAULT_CANOPY_URL};
+use bestool_canopy::CanopyClient;
 use clap::Parser;
 use comfy_table::{Row, Table, presets::NOTHING};
 use miette::{IntoDiagnostic, Result, WrapErr, bail, miette};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -129,23 +128,18 @@ async fn fetch_online(tamanu_version: &str) -> Result<BTreeMap<String, String>> 
 		crate::http::client_builder,
 	)
 	.await?
-		.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
+	.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
 
 	debug!(
 		via = if canopy.is_tailscale().await { "tailscale" } else { "mtls" },
 		"fetching tags"
 	);
 
-	let base: Url = DEFAULT_CANOPY_URL
-		.parse()
-		.into_diagnostic()
-		.wrap_err("parsing canopy base URL")?;
-
 	// `/public/tags` is reachable from tagged-device tailscale callers
 	// (the only mount that admits them); `/tags` is the mTLS path on
 	// the main canopy host. Returns the merged server+group tag map.
 	let response = canopy
-		.get(&base, "/public/tags", "/tags")
+		.get("/public/tags", "/tags")
 		.await
 		.wrap_err("GET /tags via canopy")?;
 
