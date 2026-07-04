@@ -642,8 +642,8 @@ pub async fn reload_caddy() {
 
 #[cfg(target_os = "windows")]
 pub async fn reload_caddy() {
-	let path = r"C:\Caddy\Caddyfile";
-	match reload_caddy_via_admin_api(path).await {
+	let path = bestool_tamanu::caddy::caddyfile_path();
+	match reload_caddy_via_admin_api(&path).await {
 		Ok(()) => {
 			debug!("caddy reloaded via admin API");
 			return;
@@ -655,7 +655,10 @@ pub async fn reload_caddy() {
 	// path above; this fallback handles the case where caddy is running
 	// but the admin endpoint is locked down or relocated.
 	let status = Command::new(bestool_tamanu::caddy::program())
-		.args(["reload", "--config", path, "--adapter", "caddyfile"])
+		.arg("reload")
+		.arg("--config")
+		.arg(&path)
+		.args(["--adapter", "caddyfile"])
 		.status();
 	match status {
 		Ok(s) if s.success() => debug!("caddy reloaded via CLI"),
@@ -676,8 +679,9 @@ pub async fn reload_caddy() {
 /// doesn't respond, or it returns a non-2xx — the caller logs at debug
 /// and falls back to the platform CLI.
 #[cfg(target_os = "windows")]
-async fn reload_caddy_via_admin_api(path: &str) -> std::result::Result<(), String> {
-	let content = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+async fn reload_caddy_via_admin_api(path: &std::path::Path) -> std::result::Result<(), String> {
+	let content =
+		std::fs::read(path).map_err(|e| format!("read {path}: {e}", path = path.display()))?;
 	let client = crate::http::client_builder()
 		.timeout(Duration::from_secs(5))
 		.build()
