@@ -412,7 +412,7 @@ async fn backup_after_start(
 		.clone()
 		.ok_or_else(|| miette!("registration has no server id"))?;
 	// device_id is only a snapshot tag: canopy authenticates by the device cert,
-	// the report doesn't carry it, and restore selects by server + type, not
+	// the report doesn't carry it, and restore selects by snapshot id + type, not
 	// device. Legacy-migrated registrations have no device_id (it's only set by
 	// `canopy register` enrolment), so tag the snapshot when we know it and just
 	// omit the tag otherwise.
