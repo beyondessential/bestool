@@ -871,7 +871,13 @@ pub(super) async fn load_registration(config: Option<&Path>) -> Result<Option<Re
 const MAX_ERROR_LEN: usize = 1500;
 
 fn trim_error(err: &miette::Report) -> String {
-	let msg = format!("{err}");
+	// Render the whole cause chain: `Display` on a report shows only the outermost
+	// context ("spawning pg_basebackup"), and the cause is the part worth reporting.
+	let msg = err
+		.chain()
+		.map(|e| e.to_string())
+		.collect::<Vec<_>>()
+		.join(": ");
 	let len = msg.chars().count();
 	if len <= MAX_ERROR_LEN {
 		return msg;
@@ -924,6 +930,21 @@ async fn try_acquire_lock(path: &Path) -> Result<Option<tokio::fs::File>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn trim_error_renders_the_cause_chain() {
+		let err = Err::<(), _>(std::io::Error::new(
+			std::io::ErrorKind::NotFound,
+			"No such file or directory",
+		))
+		.into_diagnostic()
+		.wrap_err("spawning pg_basebackup")
+		.unwrap_err();
+		assert_eq!(
+			trim_error(&err),
+			"spawning pg_basebackup: No such file or directory"
+		);
+	}
 
 	#[test]
 	fn trim_error_keeps_the_operative_tail() {

@@ -72,18 +72,35 @@ pub async fn prepare(
 	cmd.args(basebackup_args(&dest));
 	super::apply_connection(&mut cmd, config);
 	cmd.stdin(Stdio::null());
-	let status = cmd
-		.status()
+	// Capture stderr: it carries the operative error (auth, WAL config, disk), and
+	// with inherited stderr all that reaches canopy is the exit status.
+	let output = cmd
+		.output()
 		.await
 		.into_diagnostic()
 		.wrap_err("spawning pg_basebackup")?;
-	if !status.success() {
-		bail!("pg_basebackup failed ({status})");
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	if !output.status.success() {
+		bail!("{}", failure_message(output.status, &stderr));
+	}
+	if !stderr.trim().is_empty() {
+		info!(stderr = %stderr.trim(), "pg_basebackup");
 	}
 
 	#[cfg(unix)]
 	make_readable_by_kopia(&root).await;
 	Ok((dest, root))
+}
+
+/// The error for a failed run: exit status plus what pg_basebackup said on
+/// stderr, so the report to canopy carries the actual cause.
+fn failure_message(status: impl std::fmt::Display, stderr: &str) -> String {
+	let stderr = stderr.trim();
+	if stderr.is_empty() {
+		format!("pg_basebackup failed ({status})")
+	} else {
+		format!("pg_basebackup failed ({status}): {stderr}")
+	}
 }
 
 /// Remove the streamed base backup (a full copy; reclaim the space).
@@ -173,6 +190,25 @@ mod tests {
 			super::super::stable_source_dir("tamanu-postgres")
 				.join("16")
 				.join("main")
+		);
+	}
+
+	#[test]
+	fn failure_message_carries_stderr() {
+		assert_eq!(
+			failure_message(
+				"exit code: 1",
+				"pg_basebackup: error: connection to server at \"localhost\" failed: FATAL: role \"SYSTEM\" does not exist\n",
+			),
+			"pg_basebackup failed (exit code: 1): pg_basebackup: error: connection to server at \"localhost\" failed: FATAL: role \"SYSTEM\" does not exist"
+		);
+	}
+
+	#[test]
+	fn failure_message_without_stderr_is_just_the_status() {
+		assert_eq!(
+			failure_message("exit code: 1", "  \n"),
+			"pg_basebackup failed (exit code: 1)"
 		);
 	}
 
