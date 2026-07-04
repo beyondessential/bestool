@@ -1376,6 +1376,9 @@ Alias: self
 * `--target <TARGET>` — Target to download.
 
    Usually the auto-detected default is fine, in rare cases you may need to override it.
+* `--from-file <FROM_FILE>` — Update from a local file instead of downloading a release.
+
+   The file is copied into place over the running binary. When set, version resolution, download, and signature verification are all skipped, and the `--version`/`--target` inputs are ignored.
 * `--temp-dir <TEMP_DIR>` — Temporary directory to download to.
 
    Defaults to the system temp directory.

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -76,6 +76,14 @@ pub struct SelfUpdateArgs {
 	#[arg(long)]
 	pub target: Option<String>,
 
+	/// Update from a local file instead of downloading a release.
+	///
+	/// The file is copied into place over the running binary. When set, version
+	/// resolution, download, and signature verification are all skipped, and the
+	/// `--version`/`--target` inputs are ignored.
+	#[arg(long)]
+	pub from_file: Option<PathBuf>,
+
 	/// Temporary directory to download to.
 	///
 	/// Defaults to the system temp directory.
@@ -110,6 +118,7 @@ pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 		version,
 		target,
 		temp_dir,
+		from_file,
 		force,
 		#[cfg(windows)]
 		add_to_path,
@@ -120,7 +129,13 @@ pub async fn run(args: SelfUpdateArgs, _ctx: Context) -> Result<()> {
 		tracing::error!("{err:?}");
 	}
 
-	match perform_update(&version, target, temp_dir, force).await? {
+	let outcome = if let Some(path) = from_file {
+		perform_update_from_file(&path).await?
+	} else {
+		perform_update(&version, target, temp_dir, force).await?
+	};
+
+	match outcome {
 		UpdateOutcome::AlreadyCurrent { version } => {
 			info!(
 				version = %version,
@@ -224,6 +239,33 @@ pub(crate) async fn perform_update(
 	})
 }
 
+/// Replace the running binary in place with a local file supplied by the
+/// operator, without downloading or verifying anything.
+///
+/// The signature check that guards the download path is deliberately skipped:
+/// the file is an explicit operator-supplied local binary, analogous to
+/// `--force`. The operator's file is left in place — only the running binary is
+/// overwritten. Replacing the binary does not restart anything; the caller
+/// decides what happens next.
+pub(crate) async fn perform_update_from_file(path: &Path) -> Result<UpdateOutcome> {
+	let current = env!("CARGO_PKG_VERSION");
+
+	if !path.is_file() {
+		return Err(miette!(
+			"cannot update from {}: not an existing file",
+			path.display()
+		));
+	}
+
+	info!(from = %path.display(), "replacing binary from local file");
+	self_replace::self_replace(path).into_diagnostic()?;
+
+	Ok(UpdateOutcome::Updated {
+		from: current.to_string(),
+		to: format!("file:{}", path.display()),
+	})
+}
+
 /// Ask the running alert daemon to perform the update (and restart itself),
 /// rather than swapping the binary from this separate process.
 ///
@@ -245,6 +287,17 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 	url.query_pairs_mut()
 		.append_pair("version", &args.version)
 		.append_pair("force", if args.force { "true" } else { "false" });
+
+	if let Some(path) = &args.from_file {
+		// The daemon runs as LocalSystem with a different working directory, so
+		// a relative path won't resolve there: hand it an absolute one.
+		let absolute = std::fs::canonicalize(path)
+			.map_err(|err| miette!("could not resolve --from-file path {}: {err}", path.display()))?;
+		let absolute = absolute
+			.to_str()
+			.ok_or_else(|| miette!("--from-file path is not valid UTF-8: {}", absolute.display()))?;
+		url.query_pairs_mut().append_pair("from_file", absolute);
+	}
 
 	info!("alert daemon is running; delegating update to it");
 	let response = client
@@ -300,6 +353,20 @@ async fn is_alertd_service_running() -> bool {
 mod tests {
 	use std::fs;
 	use tempfile::TempDir;
+
+	use super::perform_update_from_file;
+
+	#[tokio::test]
+	async fn from_file_missing_path_errors_without_replacing() {
+		// A path that does not exist must be rejected before self_replace is
+		// called, so this test never swaps the running test binary.
+		let temp_dir = TempDir::new().unwrap();
+		let missing = temp_dir.path().join("does-not-exist");
+		assert!(!missing.exists());
+
+		let result = perform_update_from_file(&missing).await;
+		assert!(result.is_err());
+	}
 
 	#[test]
 	fn test_check_exe_writable_with_writable_dir() {
