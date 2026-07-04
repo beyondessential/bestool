@@ -39,7 +39,9 @@ super::subcommands! {
 	#[cfg(feature = "canopy-backup")]
 	backup => Backup(BackupArgs),
 	#[cfg(feature = "canopy-restore")]
-	restore => Restore(RestoreArgs)
+	restore => Restore(RestoreArgs),
+	#[cfg(feature = "canopy-restore")]
+	kopia => Kopia(KopiaArgs)
 }
 
 /// Load the registration for a command that takes an optional `--config <DIR>`.

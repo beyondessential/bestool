@@ -20,6 +20,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
 * [`bestool canopy restore`↴](#bestool-canopy-restore)
+* [`bestool canopy kopia`↴](#bestool-canopy-kopia)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -304,6 +305,7 @@ Interact with Canopy (the Tamanu meta-monitoring service)
 * `tags` — Fetch this device's tags from canopy.
 * `backup` — Run a configured backup, driving kopia and reporting to Canopy
 * `restore` — Restore a backup from Canopy's repository
+* `kopia` — Run a kopia command against Canopy's repository
 
 
 
@@ -437,6 +439,35 @@ Restore a backup from Canopy's repository
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
 * `--config <DIR>` — Override the registration directory
 * `--backups-dir <DIR>` — Override the backups definition directory
+
+
+
+## `bestool canopy kopia`
+
+Run a kopia command against Canopy's repository.
+
+Everything after `--` is passed to kopia verbatim; its output and exit status are the kopia command's own.
+
+**Usage:** `bestool canopy kopia [OPTIONS] --type <TYPE> [KOPIA_ARGS]...`
+
+###### **Arguments:**
+
+* `<KOPIA_ARGS>` — The kopia arguments to run (everything after `--`)
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type whose credentials to use
+* `--purpose <PURPOSE>` — Credential scope: read-only `restore`, or write-without-delete `backup`
+
+  Default value: `restore`
+
+  Possible values:
+  - `restore`:
+    Read-only credentials
+  - `backup`:
+    Write-without-delete credentials
+
+* `--config <DIR>` — Override the registration directory
 
 
 
