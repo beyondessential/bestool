@@ -75,7 +75,6 @@ ssh-key = { version = "0.6.6", optional = true }
 sysinfo = { workspace = true }
 target-tuples = { version = "0.16.1", optional = true }
 tempfile = "3.21.0"
-tera = { version = "2.0.0", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
@@ -107,7 +106,7 @@ download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolv
 # bestool-canopy is core, not Tamanu-gated. `alertd-tamanu` adds reading config
 # and the device key from Tamanu's DB, plus the Tamanu-specific checks.
 alertd = ["dep:bestool-alertd", "dep:bestool-canopy"]
-caddy = ["download", "dep:tera"]
+caddy = ["download", "dep:windows-service"]
 completions = ["dep:clap_complete", "clap_complete/unstable-dynamic"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
 file = ["dep:blake3", "dep:indicatif", "dep:tokio-util"]

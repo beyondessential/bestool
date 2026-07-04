@@ -26,39 +26,26 @@ pub mod __help {
 	//! `*Action` enums contain subcommands below that level. In structs, field names are
 	//! generally transformed to options using by being kebab-cased.
 	//!
-	//! For example, [`caddy::configure_tamanu::ConfigureTamanuArgs`] represents the subcommand:
+	//! For example, [`caddy::upgrade::UpgradeArgs`] represents the subcommand:
 	//!
 	//! ```text
-	//! $ bestool caddy configure-tamanu
+	//! $ bestool caddy upgrade
 	//! ```
 	//!
 	//! and its fields:
 	//!
 	//! ```
-	//! # use std::{num::NonZeroU16, path::PathBuf};
-	//! pub struct ConfigureTamanuArgs {
-	//!     pub path: PathBuf,
-	//!     pub print: bool,
-	//!     pub domain: String,
-	//!     pub api_port: NonZeroU16,
-	//!     pub api_version: String,
-	//!     pub web_version: String,
-	//!     pub email: Option<String>,
-	//!     pub zerossl_api_key: Option<String>,
+	//! pub struct UpgradeArgs {
+	//!     pub version: String,
+	//!     pub target: Option<String>,
 	//! }
 	//! ```
 	//!
 	//! are transformed into these options:
 	//!
 	//! ```text
-	//! --path
-	//! --print
-	//! --domain
-	//! --api-port
-	//! --api-version
-	//! --web-version
-	//! --email
-	//! --zerossl-api-key
+	//! --version
+	//! --target
 	//! ```
 	//!
 	//! Sometimes more information is contained in the `#[clap()]` attributes like defaults and
