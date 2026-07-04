@@ -15,6 +15,7 @@ use super::check::Check;
 
 pub mod util;
 
+pub mod billing_tags;
 pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_version;
@@ -278,6 +279,7 @@ pub fn all() -> Vec<CheckEntry> {
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
+		entry!("billing_tags", billing_tags, host),
 		// Tamanu-level: the config-derived FHIR expectation degrades to Unknown
 		// without config (see `services::expected`); the rest is DB/host-derived.
 		entry!("tamanu_service", tamanu_service),

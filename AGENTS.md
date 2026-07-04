@@ -1,6 +1,5 @@
 ## LLM Rules to follow
 - Use jj/jujutsu locally when available and enabled for the repo.
-- For tests, set the env var `DATABASE_URL=postgresql://localhost/tamanu_meta`.
 - NEVER hardcode database credentials. Always use the environment variable or existing client.
 - When adding or changing features, or when fixing bugs, add tests whenever possible.
 - Never write documentation files or readmes.
@@ -14,7 +13,6 @@
 - Prefer using small dependencies instead of reimplementing the wheel. Ask the user to pick a dependency if there is no obvious choice.
 - Imports: merge them and group them by std, then third-party/workspace, then local (crate, super, self).
 - Ask the user instead of making an assumption if there's a major detail missing from instructions that could affect code quality or implementation design.
-- For tests, set the env var `DATABASE_URL=postgresql://localhost/tamanu_meta`. ENSURE YOU DO THIS INSTEAD OF SKIPPING DATABASE TESTS.
 - When writing parsers, unless very trivial, implement them using winnow or chumsky.
 - Use the newer `foo.rs` / `foo/sub.rs` style of modules.
 - `use` statements always go before `mod` statements.

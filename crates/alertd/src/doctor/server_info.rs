@@ -195,7 +195,7 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 /// when not on EC2, when the token endpoint is unreachable, or when instance
 /// metadata tags aren't enabled for the instance — this is best-effort host
 /// context and never fails the sweep.
-async fn fetch_imds_tags() -> Option<BTreeMap<String, String>> {
+pub(crate) async fn fetch_imds_tags() -> Option<BTreeMap<String, String>> {
 	let client = reqwest::Client::builder()
 		.timeout(IMDS_TIMEOUT)
 		.connect_timeout(IMDS_TIMEOUT)
