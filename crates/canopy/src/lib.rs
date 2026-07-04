@@ -17,8 +17,8 @@ pub mod registration;
 /// builds — see the build script.)
 ///
 /// Naming follows canopy's schema: request bodies are `…Args` (e.g.
-/// [`CredentialsArgs`], [`ReportArgs`], [`CapabilitiesArgs`]), and credentials
-/// come back as [`CredentialProcessOutput`].
+/// [`BackupCredentialsArgs`], [`ReportArgs`], [`BackupCapabilitiesArgs`]), and
+/// credentials come back as [`CredentialProcessOutput`].
 ///
 /// The generated source is rewritten in two ways the raw JSON Schema can't
 /// express (see the build script): timestamp fields are [`jiff::Timestamp`]
@@ -37,9 +37,9 @@ pub mod registration;
 /// `raw-requests` feature — reach for it only for something the generated methods
 /// don't cover.
 ///
-/// [`CredentialsArgs`]: schema::CredentialsArgs
+/// [`BackupCredentialsArgs`]: schema::BackupCredentialsArgs
 /// [`ReportArgs`]: schema::ReportArgs
-/// [`CapabilitiesArgs`]: schema::CapabilitiesArgs
+/// [`BackupCapabilitiesArgs`]: schema::BackupCapabilitiesArgs
 /// [`CredentialProcessOutput`]: schema::CredentialProcessOutput
 pub mod schema {
 	include!(concat!(env!("OUT_DIR"), "/canopy_schema.rs"));

@@ -370,7 +370,7 @@ mod backup {
 			return Ok(());
 		}
 		client
-			.backup_capabilities(&bestool_canopy::schema::CapabilitiesArgs {
+			.backup_capabilities(&bestool_canopy::schema::BackupCapabilitiesArgs {
 				types: types.clone(),
 			})
 			.await?;
