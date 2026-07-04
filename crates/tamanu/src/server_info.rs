@@ -3,7 +3,10 @@
 //! Used by `canopy register`, `alertd`, and `doctor`. Kept here so each
 //! subcommand pulls from one place rather than reaching into a sibling's module.
 
-use std::path::{Path, PathBuf};
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
 
 use miette::{IntoDiagnostic, Result};
 use tracing::{debug, info, warn};
@@ -55,6 +58,45 @@ pub fn standard_tags_path() -> PathBuf {
 	} else {
 		PathBuf::from("/etc/tamanu/tags.json")
 	}
+}
+
+/// Load the cached canopy tags written by `bestool tamanu tags`.
+///
+/// Reads [`standard_tags_path`] and returns the `tags` map. The cache is a
+/// `{ "tags": { .. }, "fetched_at": .. }` object; only the `tags` field is read
+/// here, so the timestamp and any future fields are ignored. Returns `None`
+/// when the cache is absent or unparseable.
+///
+/// Used by callers that need the tags without a canopy round-trip — e.g. the
+/// doctor reconciling `billing.*` tags against the instance's IMDS tags.
+pub fn load_cached_tags() -> Option<BTreeMap<String, String>> {
+	load_cached_tags_at(&standard_tags_path())
+}
+
+fn load_cached_tags_at(path: &Path) -> Option<BTreeMap<String, String>> {
+	let bytes = match std::fs::read(path) {
+		Ok(bytes) => bytes,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+		Err(err) => {
+			debug!(path = %path.display(), %err, "could not read tags cache");
+			return None;
+		}
+	};
+
+	let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+		Ok(value) => value,
+		Err(err) => {
+			debug!(path = %path.display(), %err, "could not parse tags cache");
+			return None;
+		}
+	};
+
+	let obj = value.get("tags")?.as_object()?;
+	Some(
+		obj.iter()
+			.filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+			.collect(),
+	)
 }
 
 /// Resolve the `metaServerId` for this Tamanu server.
@@ -724,6 +766,45 @@ mod tests {
 		// behaviour didn't lose data.
 		write_device_key_file(&path, "NEW").unwrap();
 		assert_eq!(std::fs::read_to_string(&path).unwrap(), "NEW");
+	}
+
+	#[test]
+	fn load_cached_tags_reads_tags_object() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("tags.json");
+		std::fs::write(
+			&path,
+			r#"{"tags":{"billing.customer":"acme","role":"central"},"fetched_at":"2026-01-01T00:00:00Z"}"#,
+		)
+		.unwrap();
+		let tags = load_cached_tags_at(&path).expect("should load");
+		assert_eq!(
+			tags.get("billing.customer").map(String::as_str),
+			Some("acme")
+		);
+		assert_eq!(tags.get("role").map(String::as_str), Some("central"));
+	}
+
+	#[test]
+	fn load_cached_tags_none_for_missing_file() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(load_cached_tags_at(&dir.path().join("nope.json")).is_none());
+	}
+
+	#[test]
+	fn load_cached_tags_none_for_garbage() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("tags.json");
+		std::fs::write(&path, "not json").unwrap();
+		assert!(load_cached_tags_at(&path).is_none());
+	}
+
+	#[test]
+	fn load_cached_tags_empty_when_no_tags_field() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("tags.json");
+		std::fs::write(&path, r#"{"fetched_at":null}"#).unwrap();
+		assert!(load_cached_tags_at(&path).is_none());
 	}
 
 	#[test]

@@ -13,7 +13,7 @@ use miette::Result;
 
 use super::Context;
 
-/// Interact with Canopy (the Tamanu meta-monitoring service).
+/// Interact with Canopy.
 #[derive(Debug, Clone, Parser)]
 pub struct CanopyArgs {
 	/// Canopy subcommand

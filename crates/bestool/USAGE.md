@@ -93,7 +93,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 * `alertd` — Run the healthcheck daemon
 * `audit-psql` — Export audit database entries as JSON
 * `caddy` — Manage Caddy
-* `canopy` — Interact with Canopy (the Tamanu meta-monitoring service)
+* `canopy` — Interact with Canopy
 * `crypto` — Cryptographic operations
 * `file` — File utilities
 * `iti` — Tamanu Iti subcommands
@@ -292,7 +292,7 @@ Windows only: on Linux, Caddy is managed through the package manager.
 
 ## `bestool canopy`
 
-Interact with Canopy (the Tamanu meta-monitoring service)
+Interact with Canopy
 
 **Usage:** `bestool canopy <COMMAND>`
 
