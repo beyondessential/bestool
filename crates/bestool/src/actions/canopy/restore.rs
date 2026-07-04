@@ -30,16 +30,12 @@ use crate::actions::Context;
 #[derive(Debug, Clone, Parser)]
 pub struct RestoreArgs {
 	/// The backup type to restore (must have a def in the backups directory).
-	#[arg(long = "type", value_name = "TYPE")]
+	#[arg(value_name = "TYPE")]
 	pub backup_type: String,
 
-	/// Restore a specific snapshot id (a prefix is accepted).
-	#[arg(long, value_name = "ID", conflicts_with = "latest")]
-	pub id: Option<String>,
-
-	/// Restore the most recent snapshot of this type.
-	#[arg(long)]
-	pub latest: bool,
+	/// The snapshot id to restore (a prefix is accepted).
+	#[arg(value_name = "ID")]
+	pub id: String,
 
 	/// Override the destination (the simple method's path); postgresql always
 	/// targets its configured cluster.
@@ -124,13 +120,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 
 	// Select the snapshot to restore.
 	let snapshots = list_snapshots(&kopia, &s3env).await?;
-	let snapshot = select_snapshot(
-		&snapshots,
-		&args.backup_type,
-		&server_id,
-		args.id.as_deref(),
-		args.latest,
-	)?;
+	let snapshot = select_snapshot(&snapshots, &args.backup_type, &args.id)?;
 	info!(
 		id = %snapshot.id,
 		taken = ?snapshot.end_time.or(snapshot.start_time),
@@ -167,43 +157,27 @@ async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Resu
 		.wrap_err("parsing kopia snapshot list")
 }
 
-/// Pick the snapshot to restore from the repo's list.
+/// Pick the snapshot to restore from the repo's list by id prefix.
+///
+/// Selection is deliberately not scoped to the local server: a restore is
+/// typically onto a different (rebuilt or replacement) host than the one that
+/// took the backup, so the snapshot's source host is not this server's id.
 fn select_snapshot<'a>(
 	snapshots: &'a [Snapshot],
 	backup_type: &str,
-	server_id: &str,
-	id: Option<&str>,
-	latest: bool,
+	id: &str,
 ) -> Result<&'a Snapshot> {
-	let mut matching: Vec<&Snapshot> = snapshots
-		.iter()
-		.filter(|s| {
-			s.source.host == server_id
-				&& s.tags.get("canopy-type").map(String::as_str) == Some(backup_type)
-		})
-		.collect();
-	if matching.is_empty() {
-		bail!("no '{backup_type}' snapshots found for this server in the repository");
+	let mut hits = snapshots.iter().filter(|s| {
+		s.id.starts_with(id)
+			&& s.tags.get("canopy-type").map(String::as_str) == Some(backup_type)
+	});
+	let first = hits
+		.next()
+		.ok_or_else(|| miette!("no '{backup_type}' snapshot matching id '{id}' in the repository"))?;
+	if hits.next().is_some() {
+		bail!("snapshot id '{id}' is ambiguous; give more characters");
 	}
-
-	if let Some(id) = id {
-		let mut hits = matching.iter().filter(|s| s.id.starts_with(id));
-		let first = hits
-			.next()
-			.ok_or_else(|| miette!("no snapshot id matching '{id}' for type '{backup_type}'"))?;
-		if hits.next().is_some() {
-			bail!("snapshot id '{id}' is ambiguous; give more characters");
-		}
-		return Ok(first);
-	}
-
-	if latest {
-		// Newest by end time (falling back to start time).
-		matching.sort_by_key(|s| s.end_time.or(s.start_time));
-		return Ok(matching.last().unwrap());
-	}
-
-	bail!("specify which snapshot to restore with --latest or --id <ID>")
+	Ok(first)
 }
 
 /// Interactive double-confirmation for a destructive restore. Returns `true`
@@ -257,33 +231,39 @@ mod tests {
 	}
 
 	#[test]
-	fn selects_latest_for_type_and_server() {
-		let snaps = vec![
-			snap("aaa", "srv", "tamanu-postgres", Some("2026-01-01T00:00:00Z")),
-			snap("bbb", "srv", "tamanu-postgres", Some("2026-02-01T00:00:00Z")),
-			snap("ccc", "other", "tamanu-postgres", Some("2026-03-01T00:00:00Z")),
-			snap("ddd", "srv", "files", Some("2026-03-01T00:00:00Z")),
-		];
-		let chosen = select_snapshot(&snaps, "tamanu-postgres", "srv", None, true).unwrap();
-		assert_eq!(chosen.id, "bbb");
-	}
-
-	#[test]
 	fn selects_by_id_prefix() {
 		let snaps = vec![snap("abc123", "srv", "tamanu-postgres", None)];
-		let chosen = select_snapshot(&snaps, "tamanu-postgres", "srv", Some("abc"), false).unwrap();
+		let chosen = select_snapshot(&snaps, "tamanu-postgres", "abc").unwrap();
 		assert_eq!(chosen.id, "abc123");
 	}
 
 	#[test]
-	fn errors_without_selector() {
-		let snaps = vec![snap("abc", "srv", "tamanu-postgres", None)];
-		assert!(select_snapshot(&snaps, "tamanu-postgres", "srv", None, false).is_err());
+	fn selects_across_hosts() {
+		// A restore onto a different host: the snapshot's source host is not this
+		// server's id, but selection by id must still find it.
+		let snaps = vec![snap("abc123", "other-host", "tamanu-postgres", None)];
+		let chosen = select_snapshot(&snaps, "tamanu-postgres", "abc").unwrap();
+		assert_eq!(chosen.id, "abc123");
+	}
+
+	#[test]
+	fn errors_on_ambiguous_prefix() {
+		let snaps = vec![
+			snap("abc123", "srv", "tamanu-postgres", None),
+			snap("abc456", "other", "tamanu-postgres", None),
+		];
+		assert!(select_snapshot(&snaps, "tamanu-postgres", "abc").is_err());
 	}
 
 	#[test]
 	fn errors_when_no_match() {
-		let snaps = vec![snap("abc", "other", "tamanu-postgres", None)];
-		assert!(select_snapshot(&snaps, "tamanu-postgres", "srv", None, true).is_err());
+		let snaps = vec![snap("abc", "srv", "tamanu-postgres", None)];
+		assert!(select_snapshot(&snaps, "tamanu-postgres", "zzz").is_err());
+	}
+
+	#[test]
+	fn errors_on_type_mismatch() {
+		let snaps = vec![snap("abc123", "srv", "files", None)];
+		assert!(select_snapshot(&snaps, "tamanu-postgres", "abc").is_err());
 	}
 }

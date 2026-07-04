@@ -424,13 +424,15 @@ Run a configured backup, driving kopia and reporting to Canopy
 
 Restore a backup from Canopy's repository
 
-**Usage:** `bestool canopy restore [OPTIONS] --type <TYPE>`
+**Usage:** `bestool canopy restore [OPTIONS] <TYPE> <ID>`
+
+###### **Arguments:**
+
+* `<TYPE>` — The backup type to restore (must have a def in the backups directory)
+* `<ID>` — The snapshot id to restore (a prefix is accepted)
 
 ###### **Options:**
 
-* `--type <TYPE>` — The backup type to restore (must have a def in the backups directory)
-* `--id <ID>` — Restore a specific snapshot id (a prefix is accepted)
-* `--latest` — Restore the most recent snapshot of this type
 * `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
 * `--config <DIR>` — Override the registration directory
