@@ -12,8 +12,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
 * [`bestool caddy`↴](#bestool-caddy)
-* [`bestool caddy configure-tamanu`↴](#bestool-caddy-configure-tamanu)
-* [`bestool caddy download`↴](#bestool-caddy-download)
+* [`bestool caddy upgrade`↴](#bestool-caddy-upgrade)
 * [`bestool canopy`↴](#bestool-canopy)
 * [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool canopy export`↴](#bestool-canopy-export)
@@ -266,55 +265,28 @@ Manage Caddy
 
 ###### **Subcommands:**
 
-* `configure-tamanu` — Configure Caddy for a Tamanu installation
-* `download` — Download caddy
+* `upgrade` — Upgrade (or install) Caddy
 
 
 
-## `bestool caddy configure-tamanu`
+## `bestool caddy upgrade`
 
-Configure Caddy for a Tamanu installation
+Upgrade (or install) Caddy.
 
-**Usage:** `bestool caddy configure-tamanu [OPTIONS] --domain <DOMAIN> --api-port <PORT> --api-version <VERSION> --web-version <VERSION>`
+Downloads the latest Caddy, replaces the installed binary, and restarts the `caddy` service. If Caddy isn't installed yet, it's placed in the standard location along with a basic Caddyfile.txt and registered as a service.
+
+Windows only: on Linux, Caddy is managed through the package manager.
+
+**Usage:** `bestool caddy upgrade [OPTIONS]`
 
 ###### **Options:**
 
-* `--path <PATH>` — Path to the Caddyfile
-
-  Default value: `/etc/caddy/Caddyfile`
-* `--print` — Print the Caddyfile, don't write it to disk
-* `--domain <DOMAIN>` — Tamanu domain name
-* `--api-port <PORT>` — Tamanu API server port
-* `--api-version <VERSION>` — Tamanu server version to configure
-* `--web-version <VERSION>` — Tamanu frontend version to configure
-* `--email <EMAIL>` — Email for TLS issuance
-* `--zerossl-api-key <ZEROSSL_API_KEY>` — ZeroSSL API Key.
-
-   If not provided, ZeroSSL will still be used as per default Caddy config, but rate limited.
-
-
-
-## `bestool caddy download`
-
-Download caddy
-
-**Usage:** `bestool caddy download [OPTIONS] --path <PATH> [VERSION]`
-
-###### **Arguments:**
-
-* `<VERSION>` — Version to download
+* `--version <VERSION>` — Version to install
 
   Default value: `latest`
-
-###### **Options:**
-
-* `--path <PATH>` — Where to download to
-* `--url-only` — Print the URL, don't download.
-
-   Useful if you want to download it on a different machine, or with a different tool.
 * `--target <TARGET>` — Target to download.
 
-   Usually the auto-detected default is fine, in rare cases you may need to override it.
+   Usually the auto-detected default is fine; in rare cases you may need to override it.
 
 
 
