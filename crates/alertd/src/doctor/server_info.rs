@@ -2,6 +2,7 @@
 //! filesystems, network capability probes.
 
 use std::{
+	collections::BTreeMap,
 	io,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	time::Duration,
@@ -11,10 +12,17 @@ use serde::Serialize;
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 use tokio::net::TcpStream;
 use tracing::debug;
+use url::Url;
 
 use bestool_tamanu::server_info::{detect_node_version, detect_virtualisation};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Link-local IMDS endpoint on EC2. Reachable only from within an instance.
+const IMDS_BASE: &str = "http://169.254.169.254/latest";
+/// Kept short: off-EC2 the address is unroutable, so every request must fail
+/// fast rather than stalling the whole sweep.
+const IMDS_TIMEOUT: Duration = Duration::from_secs(2);
 const IPV4_PROBE_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
 const IPV6_PROBE_ADDR: SocketAddr = SocketAddr::new(
 	IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
@@ -89,6 +97,11 @@ pub struct ServerInfo {
 	pub ipv4: bool,
 	pub ipv6: bool,
 	pub nat64: bool,
+	/// EC2 instance tags read from IMDS, when running on an AWS instance that
+	/// exposes them. Absent off-EC2 or when instance metadata tags aren't
+	/// enabled for the instance.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub instance_tags: Option<BTreeMap<String, String>>,
 }
 
 /// Optional inputs sourced from the Tamanu DB / config that aren't trivially
@@ -122,7 +135,8 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 	let virt = detect_virtualisation().await;
 	let virtualised = !matches!(virt.as_deref(), None | Some("none"));
 
-	let (ipv4, ipv6, nat64) = futures::join!(probe_ipv4(), probe_ipv6(), probe_nat64());
+	let (ipv4, ipv6, nat64, instance_tags) =
+		futures::join!(probe_ipv4(), probe_ipv6(), probe_nat64(), fetch_imds_tags());
 
 	let os_timezone = jiff::tz::TimeZone::system()
 		.iana_name()
@@ -170,7 +184,99 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 		ipv4,
 		ipv6,
 		nat64,
+		instance_tags,
 	}
+}
+
+/// Read EC2 instance tags via IMDSv2.
+///
+/// Uses the token-authenticated v2 flow: `PUT /api/token` then reads the tag
+/// keys from `/meta-data/tags/instance` and fetches each value. Returns `None`
+/// when not on EC2, when the token endpoint is unreachable, or when instance
+/// metadata tags aren't enabled for the instance — this is best-effort host
+/// context and never fails the sweep.
+async fn fetch_imds_tags() -> Option<BTreeMap<String, String>> {
+	let client = reqwest::Client::builder()
+		.timeout(IMDS_TIMEOUT)
+		.connect_timeout(IMDS_TIMEOUT)
+		.build()
+		.ok()?;
+
+	let token = client
+		.put(format!("{IMDS_BASE}/api/token"))
+		.header("X-aws-ec2-metadata-token-ttl-seconds", "60")
+		.send()
+		.await
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.await
+		.ok()?;
+
+	let list = client
+		.get(format!("{IMDS_BASE}/meta-data/tags/instance"))
+		.header("X-aws-ec2-metadata-token", &token)
+		.send()
+		.await
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.await
+		.ok()?;
+
+	let keys = parse_tag_keys(&list);
+	if keys.is_empty() {
+		return None;
+	}
+
+	let mut tags = BTreeMap::new();
+	for key in keys {
+		let mut url = match Url::parse(&format!("{IMDS_BASE}/meta-data/tags/instance")) {
+			Ok(url) => url,
+			Err(err) => {
+				debug!(%err, "could not build IMDS tag URL");
+				continue;
+			}
+		};
+		// `push` percent-encodes the segment, so tag keys with `aws:` prefixes
+		// or other reserved characters resolve to the right path.
+		match url.path_segments_mut() {
+			Ok(mut segments) => {
+				segments.push(&key);
+			}
+			Err(()) => continue,
+		}
+
+		match client
+			.get(url)
+			.header("X-aws-ec2-metadata-token", &token)
+			.send()
+			.await
+			.and_then(|r| r.error_for_status())
+		{
+			Ok(resp) => match resp.text().await {
+				Ok(value) => {
+					tags.insert(key, value);
+				}
+				Err(err) => debug!(%key, %err, "could not read IMDS tag value"),
+			},
+			Err(err) => debug!(%key, %err, "could not fetch IMDS tag"),
+		}
+	}
+
+	if tags.is_empty() { None } else { Some(tags) }
+}
+
+/// Parse the newline-separated tag key listing IMDS returns from
+/// `/meta-data/tags/instance`, dropping blank lines.
+fn parse_tag_keys(list: &str) -> Vec<String> {
+	list.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.map(String::from)
+		.collect()
 }
 
 async fn probe_tcp(addr: SocketAddr) -> bool {
@@ -221,4 +327,29 @@ async fn resolve_aaaa(host: &str) -> io::Result<bool> {
 		.map_err(io::Error::other)?;
 	let response = resolver.ipv6_lookup(host).await.map_err(io::Error::other)?;
 	Ok(!response.answers().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn parse_tag_keys_splits_and_trims_lines() {
+		let list = "Name\nenvironment\naws:cloudformation:stack-name\n";
+		assert_eq!(
+			parse_tag_keys(list),
+			vec![
+				"Name".to_string(),
+				"environment".to_string(),
+				"aws:cloudformation:stack-name".to_string(),
+			]
+		);
+	}
+
+	#[test]
+	fn parse_tag_keys_drops_blank_lines() {
+		assert!(parse_tag_keys("").is_empty());
+		assert!(parse_tag_keys("\n  \n\n").is_empty());
+		assert_eq!(parse_tag_keys("\nName\n\n"), vec!["Name".to_string()]);
+	}
 }
