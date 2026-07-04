@@ -4,10 +4,15 @@
 //!
 //! Two paths into a process list:
 //!
-//! 1. Find and invoke the `pm2` CLI (`pm2 jlist`). Command::new on Windows
-//!    doesn't apply PATHEXT, so we try `pm2.cmd` and `pm2.bat` explicitly,
-//!    then probe common npm-global install locations for hosts where the
-//!    npm bin directory isn't on PATH.
+//! 1. Invoke the `pm2` CLI (`pm2 jlist`). We prefer deriving the invocation
+//!    from the running God daemon — its own `node` plus the same pm2 module's
+//!    `bin/pm2` — which works even when the querying process runs as an account
+//!    (e.g. the LocalSystem alertd service) with neither pm2 nor node on PATH
+//!    and no npm-global install of its own. Otherwise we locate a `pm2.cmd` /
+//!    `pm2.bat` launcher: Command::new on Windows doesn't apply PATHEXT, so we
+//!    try those explicitly, then probe common npm-global install locations
+//!    (including other users' profiles) for hosts where the npm bin directory
+//!    isn't on PATH.
 //! 2. If the CLI isn't reachable, read `PM2_HOME/dump.pm2` directly and
 //!    cross-reference each entry's pid file under `PM2_HOME/pids/` against
 //!    the OS process list. This bypasses pm2 entirely.
@@ -18,13 +23,14 @@
 //! reflects the current intent.
 
 use std::{
+	ffi::OsString,
 	path::{Path, PathBuf},
 	process::Command,
 };
 
 use serde::Deserialize;
 use serde_json::Value;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tracing::debug;
 
 /// Environment variable override for the pm2 CLI to invoke. If set, this is
@@ -72,6 +78,94 @@ pub fn list() -> Result<(Vec<PmProc>, Source), String> {
 	}
 }
 
+/// A resolved way to invoke the pm2 CLI: a program plus any leading arguments
+/// (e.g. `node <module>/bin/pm2`) that precede the pm2 subcommand.
+#[derive(Clone, Debug)]
+struct Pm2Invocation {
+	program: PathBuf,
+	prefix_args: Vec<PathBuf>,
+}
+
+impl Pm2Invocation {
+	fn command(&self) -> Command {
+		let mut cmd = Command::new(&self.program);
+		cmd.args(&self.prefix_args);
+		cmd
+	}
+
+	fn describe(&self) -> String {
+		let mut parts = vec![self.program.display().to_string()];
+		parts.extend(self.prefix_args.iter().map(|p| p.display().to_string()));
+		parts.join(" ")
+	}
+}
+
+/// Resolve how to invoke pm2. Prefers deriving the invocation from the running
+/// God daemon, which yields both a working `node` binary and the exact pm2
+/// module — sidestepping PATH and per-user install-location problems. In our
+/// Windows deployments pm2 is installed under an operator's per-user npm-global
+/// directory, but the alertd service runs as LocalSystem, whose own profile has
+/// no such install and whose PATH lacks both pm2 and node; the daemon-derived
+/// invocation works regardless. Falls back to a discovered pm2 launcher script.
+fn resolve_invocation() -> Option<Pm2Invocation> {
+	daemon_derived_invocation().or_else(|| {
+		find_command().map(|program| Pm2Invocation {
+			program,
+			prefix_args: Vec::new(),
+		})
+	})
+}
+
+/// Find the running pm2 God daemon and derive an invocation from it: its own
+/// `node` executable plus the `bin/pm2` entry point of the same pm2 module.
+/// Because the daemon is already alive, the resulting CLI connects to it rather
+/// than risking spawning a competing daemon.
+fn daemon_derived_invocation() -> Option<Pm2Invocation> {
+	let mut sys = System::new();
+	sys.refresh_processes_specifics(
+		ProcessesToUpdate::All,
+		false,
+		ProcessRefreshKind::nothing()
+			.with_cmd(UpdateKind::Always)
+			.with_exe(UpdateKind::Always),
+	);
+	for proc in sys.processes().values() {
+		let Some(module) = proc.cmd().iter().find_map(pm2_module_from_daemon_arg) else {
+			continue;
+		};
+		let pm2_bin = module.join("bin").join("pm2");
+		if !pm2_bin.is_file() {
+			continue;
+		}
+		let node = proc
+			.exe()
+			.map(Path::to_path_buf)
+			.unwrap_or_else(|| PathBuf::from("node"));
+		return Some(Pm2Invocation {
+			program: node,
+			prefix_args: vec![pm2_bin],
+		});
+	}
+	None
+}
+
+/// If `arg` is the path of pm2's daemon entry point (`<module>/lib/Daemon.js`),
+/// return the pm2 module root (`<module>`). Matches case-insensitively and
+/// tolerates either path separator.
+fn pm2_module_from_daemon_arg(arg: &OsString) -> Option<PathBuf> {
+	const DAEMON_SUFFIX: &str = "/lib/daemon.js";
+	let s = arg.to_str()?;
+	let normalised = s.to_ascii_lowercase().replace('\\', "/");
+	if !normalised.ends_with(&format!("/pm2{DAEMON_SUFFIX}")) {
+		return None;
+	}
+	// Strip the trailing `/lib/Daemon.js` (byte length is preserved by the
+	// ASCII-only normalisation) to leave `<module>`, keeping the original
+	// separators. Done by string, not `Path`, so a Windows path parses the same
+	// regardless of the host OS's separator.
+	Some(PathBuf::from(&s[..s.len() - DAEMON_SUFFIX.len()]))
+}
+
 /// Locate a usable pm2 CLI executable. Order of probes:
 ///
 /// 1. `BESTOOL_PM2_COMMAND` env var, if set.
@@ -95,15 +189,25 @@ pub fn find_command() -> Option<PathBuf> {
 	candidate_install_paths().into_iter().find(|c| probe(c))
 }
 
-/// Resolve the pm2 CLI path. On Windows `Command::new("pm2")` doesn't apply
-/// PATHEXT, so a bare `pm2` is "program not found" even when `pm2.cmd` is on
-/// PATH; `find_command` handles that. Falls back to bare `pm2` (Linux PATH).
-pub fn program() -> PathBuf {
-	find_command().unwrap_or_else(|| PathBuf::from("pm2"))
+/// Resolve how to invoke pm2, as a program plus any leading arguments that
+/// precede the pm2 subcommand (e.g. `node <module>/bin/pm2`). Prefer this over
+/// building a command from a bare path: it applies the same daemon-derived
+/// resolution as [`list`], so it works from a LocalSystem context where neither
+/// pm2 nor node is on PATH. Falls back to bare `pm2` when nothing is found.
+///
+/// Returned as parts rather than a [`Command`] so callers can build either a
+/// [`std::process::Command`] (via [`command`]) or a `tokio::process::Command`.
+pub fn invocation() -> (PathBuf, Vec<PathBuf>) {
+	resolve_invocation()
+		.map(|inv| (inv.program, inv.prefix_args))
+		.unwrap_or_else(|| (PathBuf::from("pm2"), Vec::new()))
 }
 
 pub fn command() -> Command {
-	Command::new(program())
+	let (program, prefix_args) = invocation();
+	let mut cmd = Command::new(program);
+	cmd.args(prefix_args);
+	cmd
 }
 
 fn probe(path: &Path) -> bool {
@@ -126,6 +230,10 @@ fn candidate_install_paths() -> Vec<PathBuf> {
 			.join("Roaming")
 			.join("npm")));
 	}
+	// The alertd service runs as LocalSystem, whose profile has no npm-global
+	// install; scan every user profile's npm-global bin to find the pm2 an
+	// operator installed under their own account.
+	out.extend(other_user_npm_pm2_cmds());
 	if let Ok(pf) = std::env::var("ProgramFiles") {
 		out.push(pm2(PathBuf::from(&pf).join("nodejs")));
 	}
@@ -137,15 +245,39 @@ fn candidate_install_paths() -> Vec<PathBuf> {
 	out
 }
 
+/// `pm2.cmd` under each user profile's npm-global bin
+/// (`%SystemDrive%\Users\<user>\AppData\Roaming\npm\pm2.cmd`). Lets a process
+/// running as one account (e.g. LocalSystem) find a pm2 installed under
+/// another's per-user npm-global directory.
+fn other_user_npm_pm2_cmds() -> Vec<PathBuf> {
+	let drive = std::env::var("SystemDrive").unwrap_or_else(|_| r"C:".to_string());
+	let users = PathBuf::from(format!(r"{drive}\Users"));
+	let Ok(entries) = std::fs::read_dir(&users) else {
+		return Vec::new();
+	};
+	entries
+		.filter_map(Result::ok)
+		.map(|e| {
+			e.path()
+				.join("AppData")
+				.join("Roaming")
+				.join("npm")
+				.join("pm2.cmd")
+		})
+		.collect()
+}
+
 fn list_via_cli() -> Result<Vec<PmProc>, String> {
-	let cmd = find_command().ok_or_else(|| "pm2 not found".to_string())?;
-	let output = Command::new(&cmd)
+	let inv = resolve_invocation().ok_or_else(|| "pm2 not found".to_string())?;
+	let output = inv
+		.command()
 		.arg("jlist")
 		.output()
-		.map_err(|e| format!("running {cmd:?}: {e}"))?;
+		.map_err(|e| format!("running {}: {e}", inv.describe()))?;
 	if !output.status.success() {
 		return Err(format!(
-			"{cmd:?} jlist failed: {}",
+			"{} jlist failed: {}",
+			inv.describe(),
 			String::from_utf8_lossy(&output.stderr).trim()
 		));
 	}
@@ -395,6 +527,44 @@ mod tests {
 		fs::write(home.join("dump.pm2"), json).unwrap();
 	}
 
+	#[test]
+	fn pm2_module_from_daemon_arg_windows_path() {
+		let arg = OsString::from(
+			r"C:\Users\Administrator\AppData\Roaming\npm\node_modules\pm2\lib\Daemon.js",
+		);
+		assert_eq!(
+			pm2_module_from_daemon_arg(&arg),
+			Some(PathBuf::from(
+				r"C:\Users\Administrator\AppData\Roaming\npm\node_modules\pm2"
+			))
+		);
+	}
+
+	#[test]
+	fn pm2_module_from_daemon_arg_unix_path() {
+		let arg = OsString::from("/home/u/.npm-global/lib/node_modules/pm2/lib/Daemon.js");
+		assert_eq!(
+			pm2_module_from_daemon_arg(&arg),
+			Some(PathBuf::from("/home/u/.npm-global/lib/node_modules/pm2"))
+		);
+	}
+
+	#[test]
+	fn pm2_module_from_daemon_arg_rejects_other_args() {
+		for arg in [
+			"jlist",
+			r"C:\Tamanu\node_modules\pm2\lib\ProcessContainerFork.js",
+			"--max_old_space_size=2429",
+			r"C:\some\other\Daemon.js",
+		] {
+			assert_eq!(
+				pm2_module_from_daemon_arg(&OsString::from(arg)),
+				None,
+				"{arg}"
+			);
+		}
+	}
+
 	fn write_pid(home: &Path, name: &str, pm_id: Option<i64>, pid: u32) {
 		let pids = home.join("pids");
 		fs::create_dir_all(&pids).unwrap();
@@ -496,10 +666,11 @@ mod tests {
 	}
 
 	#[test]
-	fn program_falls_back_to_bare_pm2_when_undiscovered() {
-		// No pm2 installed + no override: program() must still return a runnable name.
-		if find_command().is_none() {
-			assert_eq!(program(), PathBuf::from("pm2"));
+	fn invocation_falls_back_to_bare_pm2_when_undiscovered() {
+		// No running daemon, no launcher, no override: invocation() must still
+		// yield a runnable program with no prefix args.
+		if daemon_derived_invocation().is_none() && find_command().is_none() {
+			assert_eq!(invocation(), (PathBuf::from("pm2"), Vec::new()));
 		}
 	}
 

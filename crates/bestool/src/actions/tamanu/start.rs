@@ -263,7 +263,7 @@ fn spawn_log_follower(supervisor: Supervisor, targets: &[String]) -> Option<LogF
 					deduped.push(t);
 				}
 			}
-			let mut cmd = Command::new(pm2::program());
+			let mut cmd = pm2::command();
 			cmd.args(["logs", "--lines", "0"]);
 			cmd.args(deduped);
 			cmd
