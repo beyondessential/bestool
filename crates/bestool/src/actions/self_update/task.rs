@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 
 use bestool_alertd::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
-use super::{UpdateOutcome, perform_update};
+use super::{UpdateOutcome, perform_update, perform_update_from_file};
 use crate::download::{fetch_latest_version, remote_is_newer};
 
 /// How often to check for a new release once the initial stagger has elapsed.
@@ -144,6 +144,39 @@ async fn on_demand_update(
 	failed_version: Arc<Mutex<Option<String>>>,
 ) -> TaskEndpointResponse {
 	let current = env!("CARGO_PKG_VERSION");
+
+	// An operator-supplied local file takes precedence over any download inputs
+	// and skips version resolution entirely. Signature verification is bypassed
+	// deliberately: the file is an explicit local binary handed over by the
+	// operator (analogous to --force), and this endpoint is loopback-only.
+	if let Some(path) = ctx.query.get("from_file") {
+		let path = std::path::PathBuf::from(path);
+		let to = format!("file:{}", path.display());
+		let restart = ctx.restart.clone();
+		tokio::spawn(async move {
+			match perform_update_from_file(&path).await {
+				Ok(_) => {
+					info!(from = %path.display(), "on-demand self-update from file installed; restarting");
+					// Brief grace so the HTTP response flushes before the daemon exits.
+					tokio::time::sleep(Duration::from_secs(1)).await;
+					if let Some(restart) = restart {
+						restart.request_restart().await;
+					}
+				}
+				Err(err) => {
+					warn!(from = %path.display(), "on-demand self-update from file failed: {err}");
+					*failed_version.lock().unwrap() = Some(format!("file:{}", path.display()));
+				}
+			}
+		});
+
+		return TaskEndpointResponse::Json(json!({
+			"updating": true,
+			"from": current,
+			"to": to,
+		}));
+	}
+
 	let requested = ctx
 		.query
 		.get("version")
