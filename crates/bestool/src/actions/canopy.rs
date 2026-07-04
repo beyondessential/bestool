@@ -61,6 +61,33 @@ async fn load_registration(
 	}
 }
 
+/// Ask a running alertd daemon to restart so it re-reads the registration.
+///
+/// The daemon reads the device key and server id once at startup and caches
+/// them for its lifetime, so enrolling or unenrolling only takes effect after
+/// it restarts. Best-effort: a daemon that isn't running (or isn't reachable)
+/// is fine — it reads the registration afresh whenever it next starts.
+///
+/// Only wired up when the daemon is built into this binary; otherwise there's
+/// no control client to reach it with.
+#[cfg(all(
+	feature = "alertd",
+	any(feature = "canopy-register", feature = "canopy-unregister")
+))]
+async fn restart_daemon_for_registration_change() {
+	let addrs = bestool_alertd::commands::default_server_addrs();
+	if let Err(err) = bestool_alertd::commands::restart(&addrs).await {
+		tracing::debug!(%err, "alertd daemon not reachable");
+		println!("(alertd daemon not reachable; it will re-read the registration on next start)");
+	}
+}
+
+#[cfg(all(
+	not(feature = "alertd"),
+	any(feature = "canopy-register", feature = "canopy-unregister")
+))]
+async fn restart_daemon_for_registration_change() {}
+
 /// Elevate up front when the registration can't be written from here.
 ///
 /// `canopy register` / `import` only write the registration at the very end —

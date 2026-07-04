@@ -18,8 +18,9 @@ use crate::actions::Context;
 /// `local_system_facts`. After this the host can be enrolled afresh with
 /// `bestool canopy register`.
 ///
-/// The daemon caches the registration in memory for its lifetime, so restart it
-/// afterwards for the removal to take effect.
+/// A running alertd daemon is asked to restart afterwards so it drops the
+/// removed identity; the daemon caches the registration for its lifetime
+/// otherwise.
 #[derive(Debug, Clone, Parser)]
 pub struct UnregisterArgs {
 	/// Directory holding the encrypted canopy registration.
@@ -88,9 +89,11 @@ pub async fn run(args: UnregisterArgs, _ctx: Context) -> Result<()> {
 		for item in &removed {
 			println!("  {item}");
 		}
-		println!();
-		println!("Restart the alertd daemon so it drops the cached registration.");
 	}
+
+	// Drop the now-removed identity from the running daemon; it caches the
+	// registration for its lifetime otherwise.
+	super::restart_daemon_for_registration_change().await;
 	Ok(())
 }
 

@@ -479,7 +479,7 @@ Erase this machine's canopy enrolment from every place it's stored.
 
 Removes the encrypted registration, the legacy Tamanu identity files (`device-key.pem`, `server-id`), the cached tags, and — when the Tamanu database is reachable — the legacy `deviceKey` / `metaServerId` rows in `local_system_facts`. After this the host can be enrolled afresh with `bestool canopy register`.
 
-The daemon caches the registration in memory for its lifetime, so restart it afterwards for the removal to take effect.
+A running alertd daemon is asked to restart afterwards so it drops the removed identity; the daemon caches the registration for its lifetime otherwise.
 
 **Usage:** `bestool canopy unregister [OPTIONS]`
 

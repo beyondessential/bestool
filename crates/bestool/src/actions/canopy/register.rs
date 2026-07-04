@@ -251,6 +251,10 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	println!("Enrolled with Canopy.");
 	println!("  server id: {}", complete.server_id);
 	println!("  device id: {}", complete.device_id);
+
+	// Pick up the new identity in the running daemon without waiting for the
+	// next manual restart.
+	super::restart_daemon_for_registration_change().await;
 	Ok(())
 }
 
