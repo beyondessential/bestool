@@ -10,7 +10,7 @@
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use bestool_canopy::CanopyClient;
+use bestool_canopy::{CanopyClient, registration};
 use clap::Parser;
 use comfy_table::{Row, Table, presets::NOTHING};
 use miette::{IntoDiagnostic, Result, WrapErr, bail, miette};
@@ -69,10 +69,14 @@ pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
 	let (_version, root) = bestool_tamanu::find_tamanu(root_arg.as_deref()).await?;
 	let config = Arc::new(load_config(&root, None)?);
 
-	let cache_path = standard_tags_path();
+	// The cache lives alongside the registration; the legacy `C:\Tamanu` /
+	// `/etc/tamanu` location is still read so a host that hasn't refreshed since
+	// the move keeps its cached tags until the next online fetch rewrites them.
+	let cache_path = registration::default_tags_path();
+	let legacy_cache_path = standard_tags_path();
 
 	let (tags, source) = if args.offline {
-		match load_cache(&cache_path)? {
+		match load_cached_tags(&cache_path, &legacy_cache_path)? {
 			Some(c) => (c.tags, Source::Cache(c.fetched_at)),
 			None => bail!(
 				"--offline requested but no cached tags at {} — run online once first",
@@ -94,7 +98,7 @@ pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
 			}
 			Err(err) => {
 				warn!(%err, "canopy fetch failed; falling back to cache");
-				match load_cache(&cache_path)? {
+				match load_cached_tags(&cache_path, &legacy_cache_path)? {
 					Some(c) => (c.tags, Source::Cache(c.fetched_at)),
 					None => return Err(err.wrap_err(format!(
 						"canopy unreachable and no cached tags at {}",
@@ -191,6 +195,16 @@ fn render_text(tags: &BTreeMap<String, String>, source: Source, use_colours: boo
 	Ok(())
 }
 
+/// Load the tags cache from `primary`, falling back to `legacy` when the
+/// primary file is absent (a host that predates the move to the registration
+/// directory).
+fn load_cached_tags(primary: &Path, legacy: &Path) -> Result<Option<TagsCache>> {
+	match load_cache(primary)? {
+		Some(cache) => Ok(Some(cache)),
+		None => load_cache(legacy),
+	}
+}
+
 fn load_cache(path: &Path) -> Result<Option<TagsCache>> {
 	match std::fs::read(path) {
 		Ok(bytes) => match serde_json::from_slice::<TagsCache>(&bytes) {
@@ -226,4 +240,46 @@ fn save_cache(path: &Path, cache: &TagsCache) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn write_cache(path: &Path, tag: &str) {
+		let mut tags = BTreeMap::new();
+		tags.insert("role".to_owned(), tag.to_owned());
+		save_cache(
+			path,
+			&TagsCache {
+				tags,
+				fetched_at: None,
+			},
+		)
+		.unwrap();
+	}
+
+	#[test]
+	fn load_cached_tags_prefers_primary_then_falls_back_to_legacy() {
+		let dir = tempfile::tempdir().unwrap();
+		let primary = dir.path().join("tags.json");
+		let legacy = dir.path().join("legacy-tags.json");
+
+		// Neither present: nothing to load.
+		assert!(load_cached_tags(&primary, &legacy).unwrap().is_none());
+
+		// Only the legacy file: read it (a host that hasn't refreshed since the
+		// move to the registration directory).
+		write_cache(&legacy, "legacy");
+		let from_legacy = load_cached_tags(&primary, &legacy).unwrap().unwrap();
+		assert_eq!(from_legacy.tags.get("role").map(String::as_str), Some("legacy"));
+
+		// Primary present: it wins over the legacy file.
+		write_cache(&primary, "primary");
+		let from_primary = load_cached_tags(&primary, &legacy).unwrap().unwrap();
+		assert_eq!(
+			from_primary.tags.get("role").map(String::as_str),
+			Some("primary")
+		);
+	}
 }

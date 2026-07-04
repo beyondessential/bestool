@@ -629,7 +629,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	use tracing::debug;
 
 	use bestool_alertd::doctor::resolve_sweep_tamanu;
-	use bestool_tamanu::server_info::{fetch_device_key_with, query_device_key_row};
+	use bestool_tamanu::server_info::fetch_device_key;
 
 	let DaemonArgs {
 		glob,
@@ -659,9 +659,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 
 	// A pool error here means postgres is down or unreachable. Don't abort
 	// startup over it: the daemon must still run so the `db_connect` check
-	// (which connects via `database_url`, not this pool) can report it. The
-	// pool is only used for the device-key DB read below, which falls back to
-	// the registration anyway.
+	// (which connects via `database_url`, not this pool) can report it.
 	let pg_pool = match &tamanu {
 		Some(t) => match bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await
 		{
@@ -680,19 +678,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 		Some(std::time::Duration::from_secs(watchdog_timeout))
 	};
 
-	let device_key_pem = fetch_device_key_with(|| async {
-		match &pg_pool {
-			Some(pool) => match pool.get().await {
-				Ok(conn) => query_device_key_row(&conn).await,
-				Err(err) => {
-					warn!(%err, "could not get DB conn for deviceKey fetch");
-					None
-				}
-			},
-			None => None,
-		}
-	})
-	.await;
+	let device_key_pem = fetch_device_key().await;
 
 	let base = bestool_alertd::DaemonConfig::new(
 		pg_pool.clone(),

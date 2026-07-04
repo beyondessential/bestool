@@ -162,29 +162,24 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	debug!(%api_url, %server_id, "decrypted enrollment ticket");
 
-	let existing = super::load_registration(config.as_deref())
+	// A fresh enrolment must use only the identity minted here — never a
+	// leftover device key or server id, which would present a stale identity to
+	// canopy and conflict with the server record being claimed. Refuse when any
+	// registration is already present; the operator clears it with
+	// `bestool canopy unregister` before enrolling afresh.
+	if super::load_registration(config.as_deref())
 		.await
-		.wrap_err("reading existing canopy registration")?;
-
-	// Idempotency: if we've already enrolled this server with our identity, the
-	// token has been consumed and re-running would only fail opaquely. Treat a
-	// matching local record as success.
-	if let Some(reg) = &existing
-		&& reg.server_id.as_deref() == Some(ticket.server_id.as_str())
-		&& let Some(device_id) = &reg.device_id
+		.wrap_err("reading existing canopy registration")?
+		.is_some()
 	{
-		println!("Already enrolled with Canopy.");
-		println!("  server id: {}", ticket.server_id);
-		println!("  device id: {device_id}");
-		return Ok(());
+		bail!(
+			"this host already has a canopy registration; run `bestool canopy unregister` to remove it before enrolling afresh"
+		);
 	}
 
-	// Reuse the device key from an existing registration if present, else mint
-	// one. Needed in both transports: the signature and the SPKI derive from it.
-	let device_key_pem = match existing.as_ref().and_then(|r| r.device_key.clone()) {
-		Some(pem) => pem,
-		None => generate_device_key_pem()?,
-	};
+	// Mint a fresh device key: the signature and SPKI derive from it, and it
+	// becomes this host's mTLS identity.
+	let device_key_pem = generate_device_key_pem()?;
 	let spki_der = spki_der(&device_key_pem)?;
 	let signing_key = SigningKey::from_pkcs8_pem(&device_key_pem)
 		.into_diagnostic()

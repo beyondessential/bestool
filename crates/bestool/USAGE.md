@@ -21,6 +21,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
 * [`bestool canopy restore`↴](#bestool-canopy-restore)
 * [`bestool canopy kopia`↴](#bestool-canopy-kopia)
+* [`bestool canopy unregister`↴](#bestool-canopy-unregister)
 * [`bestool crypto`↴](#bestool-crypto)
 * [`bestool crypto decrypt`↴](#bestool-crypto-decrypt)
 * [`bestool crypto encrypt`↴](#bestool-crypto-encrypt)
@@ -306,6 +307,7 @@ Interact with Canopy
 * `backup` — Run a configured backup, driving kopia and reporting to Canopy
 * `restore` — Restore a backup from Canopy's repository
 * `kopia` — Run a kopia command against Canopy's repository
+* `unregister` — Erase this machine's canopy enrolment from every place it's stored
 
 
 
@@ -468,6 +470,25 @@ Everything after `--` is passed to kopia verbatim; its output and exit status ar
     Write-without-delete credentials
 
 * `--config <DIR>` — Override the registration directory
+
+
+
+## `bestool canopy unregister`
+
+Erase this machine's canopy enrolment from every place it's stored.
+
+Removes the encrypted registration, the legacy Tamanu identity files (`device-key.pem`, `server-id`), the cached tags, and — when the Tamanu database is reachable — the legacy `deviceKey` / `metaServerId` rows in `local_system_facts`. After this the host can be enrolled afresh with `bestool canopy register`.
+
+The daemon caches the registration in memory for its lifetime, so restart it afterwards for the removal to take effect.
+
+**Usage:** `bestool canopy unregister [OPTIONS]`
+
+###### **Options:**
+
+* `--config <DIR>` — Directory holding the encrypted canopy registration.
+
+   Defaults to the platform's machine-global config directory (`/etc/bestool`, or `%ProgramData%\bestool` on Windows).
+* `-y`, `--yes` — Skip the confirmation prompt
 
 
 

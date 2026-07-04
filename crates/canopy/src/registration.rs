@@ -131,6 +131,15 @@ fn registration_file(dir: &Path) -> PathBuf {
 	dir.join("canopy-registration")
 }
 
+/// Path to the cached canopy tags file, alongside the registration.
+///
+/// Tags aren't secret, so this is a plaintext JSON file rather than part of the
+/// encrypted registration blob; it lives in the same directory ([`default_dir`],
+/// honouring [`DIR_ENV`]) so all per-host canopy state shares one location.
+pub fn default_tags_path() -> PathBuf {
+	default_dir().join("tags.json")
+}
+
 // Legacy plaintext paths, mirroring bestool-tamanu's `standard_*` paths. Kept
 // as literals here because canopy can't depend on the tamanu crate.
 fn legacy_server_id_path() -> PathBuf {
@@ -207,6 +216,30 @@ pub async fn store_in(dir: &Path, reg: &Registration) -> Result<()> {
 		.wrap_err("serialising registration")?;
 	let ciphertext = encrypt_bytes(&plaintext, machine_passphrase()?)?;
 	write_atomic(&registration_file(dir), &ciphertext).await
+}
+
+/// Remove the registration file (and any stale temp file) from `dir`.
+///
+/// Returns whether a registration file was present. A running daemon caches the
+/// registration in memory for its lifetime, so it must be restarted to notice
+/// the removal.
+pub async fn delete_in(dir: &Path) -> Result<bool> {
+	let path = registration_file(dir);
+	let existed = remove_if_present(&path).await?;
+	// Best-effort: a leftover temp file isn't an enrollment, so a failure to
+	// remove it shouldn't fail the unregister.
+	let _ = remove_if_present(&path.with_extension("tmp")).await;
+	Ok(existed)
+}
+
+async fn remove_if_present(path: &Path) -> Result<bool> {
+	match tokio::fs::remove_file(path).await {
+		Ok(()) => Ok(true),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+		Err(err) => Err(err)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("removing {}", path.display())),
+	}
 }
 
 /// Encrypt a registration under an operator passphrase, for `canopy export`.
@@ -503,6 +536,25 @@ mod tests {
 				.any(|w| w == b"PRIVATE KEY"),
 			"registration file should be encrypted"
 		);
+	}
+
+	#[tokio::test]
+	async fn delete_in_removes_registration_and_reports_presence() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(
+			!delete_in(dir.path()).await.unwrap(),
+			"deleting when absent reports nothing removed"
+		);
+
+		store_in(dir.path(), &sample()).await.unwrap();
+		assert!(registration_file(dir.path()).exists());
+
+		assert!(
+			delete_in(dir.path()).await.unwrap(),
+			"deleting an existing registration reports it was removed"
+		);
+		assert!(!registration_file(dir.path()).exists());
+		assert!(load_from(dir.path()).await.unwrap().is_none());
 	}
 
 	#[tokio::test]

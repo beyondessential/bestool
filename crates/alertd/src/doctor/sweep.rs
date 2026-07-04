@@ -203,7 +203,7 @@ pub async fn perform_sweep(
 	// Resolve via the file path first so a doctor sweep can still report to
 	// canopy when the DB is down — that's exactly the moment canopy most
 	// needs to hear from us.
-	let server_id = match get_or_create_server_id(db.as_deref()).await {
+	let server_id = match get_or_create_server_id().await {
 		Ok(id) => Some(id),
 		Err(err) => {
 			warn!("could not resolve metaServerId: {err}");
