@@ -1,9 +1,10 @@
 use std::{
 	fmt,
+	future::Future,
 	io::Write,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-	sync::{Arc, OnceLock},
-	time::Duration,
+	sync::{Arc, Mutex, OnceLock},
+	time::{Duration, Instant},
 };
 
 use flate2::{Compression, write::GzEncoder};
@@ -52,6 +53,20 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for the tailscale DNS lookup (against 100.100.100.100).
+///
+/// Bounds the lookup so a wedged tailscale DNS server can't stall discovery;
+/// on timeout we fall back to the hardcoded IPs, which are probed concurrently
+/// anyway.
+const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a tailnet-reachability discovery is trusted before re-probing.
+///
+/// Short enough that tailscale coming up or going down is picked up promptly,
+/// long enough that a burst of client constructions in one process shares a
+/// single discovery instead of each paying the probe cost.
+const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Factory producing the base [`reqwest::ClientBuilder`] for canopy's clients.
 ///
@@ -124,7 +139,7 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 	let tailscale_url = TAILSCALE_URL
 		.parse()
 		.expect("default tailscale URL is valid");
-	probe_tailscale(&tailscale_url, make_builder).await
+	probe_tailscale(&tailscale_url, make_builder, true).await
 }
 
 /// HTTP client with auth configured for talking to a canopy server.
@@ -216,7 +231,7 @@ impl CanopyClient {
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
-		if let Some(http) = probe_tailscale(&tailscale_url, &make_builder).await {
+		if let Some(http) = probe_tailscale(&tailscale_url, &make_builder, true).await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
 				base_url,
@@ -251,7 +266,7 @@ impl CanopyClient {
 	///
 	/// Intended to be called when the daemon receives a reload signal.
 	pub async fn refresh(&self) -> Result<()> {
-		if let Some(http) = probe_tailscale(&self.tailscale_url, &self.make_builder).await {
+		if let Some(http) = probe_tailscale(&self.tailscale_url, &self.make_builder, false).await {
 			let mut state = self.state.write().await;
 			if !state.is_tailscale() {
 				debug!("canopy refresh: switching to tailscale path");
@@ -452,18 +467,20 @@ impl CanopyClient {
 	}
 }
 
-/// Probe the tailscale canopy endpoint.
+/// Probe the tailscale canopy endpoint, returning a configured `reqwest::Client`
+/// routed to it if reachable and `None` otherwise (so callers fall back to mTLS).
 ///
-/// Returns a configured `reqwest::Client` if `GET /public/servers` responds
-/// 2xx — anything else (timeout, non-2xx, transport error) returns `None` so
-/// the caller can fall back to mTLS.
+/// For canopy's own tailnet endpoint the work is short-circuited and shared:
+/// 1. **Gate** — if no tailscale interface is present on this host
+///    ([`tailscale_present`]), the tailnet is unreachable by definition, so
+///    skip all network I/O and return `None` immediately.
+/// 2. **Cache** — when `use_cache` is set, a discovery from the last
+///    [`PROBE_CACHE_TTL`] is reused instead of re-probing. `refresh` passes
+///    `false` to force a fresh discovery on reload.
+/// 3. **Discovery** — the tailscale-DNS-resolved probe and the hardcoded-IP
+///    probe run *concurrently* ([`discover_tailnet`]); the first success wins.
 ///
-/// Tries two paths in order:
-/// 1. Resolve `canopy` via the tailscale DNS server (100.100.100.100) and
-///    probe with those addresses.
-/// 2. Use hardcoded tailscale IPs for canopy and probe with those.
-///
-/// `/public/servers` is used because:
+/// `GET /public/servers` is the probe target because:
 /// - it lives under `/public/...`, the only mount that accepts tagged-device
 ///   tailscale callers (everything else 403s with `tagged-device-not-allowed`);
 /// - it's a `GET` with no body, no `VersionHeader` requirement, and no auth;
@@ -471,42 +488,88 @@ impl CanopyClient {
 async fn probe_tailscale(
 	tailscale_url: &Url,
 	make_builder: &ClientBuilderFactory,
+	use_cache: bool,
 ) -> Option<reqwest::Client> {
 	let host = tailscale_url.host_str()?;
 
-	// The DNS-server and hardcoded-IP discovery below is specific to canopy's
+	// The gate, cache, and hardcoded-IP discovery below are specific to canopy's
 	// own tailnet endpoint; probe any other tailscale URL with plain resolution.
 	if host != TAILSCALE_HOST {
-		return try_probe(tailscale_url, host, &[], make_builder).await;
+		return probe_once(tailscale_url, host, &[], make_builder).await;
 	}
 
-	let dns_addrs: Vec<SocketAddr> = tailscale_resolver()
-		.lookup_ip("canopy")
-		.await
-		.ok()
-		.map(|addrs| addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect())
-		.unwrap_or_default();
-	if !dns_addrs.is_empty()
-		&& let Some(client) = try_probe(tailscale_url, host, &dns_addrs, make_builder).await
-	{
-		return Some(client);
+	if use_cache && let Some(outcome) = cached_outcome() {
+		debug!("canopy: reusing cached tailnet reachability");
+		return match outcome {
+			TailnetOutcome::Unreachable => None,
+			TailnetOutcome::Reachable(addrs) => build_probe_client(host, &addrs, make_builder),
+		};
 	}
 
-	let hardcoded = [
-		SocketAddr::new(IpAddr::V4(CANOPY_HARDCODED_V4), 443),
-		SocketAddr::new(IpAddr::V6(CANOPY_HARDCODED_V6), 443),
-	];
-	debug!(
-		?hardcoded,
-		"canopy tailscale DNS lookup empty or probe failed, trying hardcoded IPs"
-	);
-	try_probe(tailscale_url, host, &hardcoded, make_builder).await
+	let discovered = discover_tailnet(tailscale_url, host, make_builder).await;
+	store_outcome(match &discovered {
+		Some((addrs, _)) => TailnetOutcome::Reachable(addrs.clone()),
+		None => TailnetOutcome::Unreachable,
+	});
+	discovered.map(|(_, client)| client)
 }
 
-/// Probe `{tailscale_url}/public/servers`. When `addrs` is non-empty, `host` is
-/// resolved to them (the tailnet-discovery override); otherwise plain DNS is used.
-async fn try_probe(
+/// Discover a reachable route to the canopy tailnet endpoint, or `None`.
+///
+/// Returns the addresses that worked alongside the client built for them, so
+/// the caller can both cache the route and reuse the client without rebuilding.
+async fn discover_tailnet(
 	tailscale_url: &Url,
+	host: &str,
+	make_builder: &ClientBuilderFactory,
+) -> Option<(Vec<SocketAddr>, reqwest::Client)> {
+	if !tailscale_present() {
+		debug!("canopy: no tailscale interface on this host; skipping tailnet probe");
+		return None;
+	}
+
+	let via_dns = async {
+		let addrs = resolve_via_tailscale_dns().await;
+		if addrs.is_empty() {
+			return None;
+		}
+		probe_once(tailscale_url, host, &addrs, make_builder)
+			.await
+			.map(|client| (addrs, client))
+	};
+
+	let via_hardcoded = async {
+		let addrs = vec![
+			SocketAddr::new(IpAddr::V4(CANOPY_HARDCODED_V4), 443),
+			SocketAddr::new(IpAddr::V6(CANOPY_HARDCODED_V6), 443),
+		];
+		probe_once(tailscale_url, host, &addrs, make_builder)
+			.await
+			.map(|client| (addrs, client))
+	};
+
+	race_first_some(via_dns, via_hardcoded).await
+}
+
+/// Resolve `canopy` via the tailscale DNS server (100.100.100.100), bounded by
+/// [`DNS_LOOKUP_TIMEOUT`]. Returns an empty vec on timeout or lookup failure.
+async fn resolve_via_tailscale_dns() -> Vec<SocketAddr> {
+	match tokio::time::timeout(DNS_LOOKUP_TIMEOUT, tailscale_resolver().lookup_ip("canopy")).await {
+		Ok(Ok(addrs)) => addrs.iter().map(|ip| SocketAddr::new(ip, 443)).collect(),
+		Ok(Err(err)) => {
+			debug!("canopy tailscale DNS lookup failed: {err}");
+			Vec::new()
+		}
+		Err(_) => {
+			debug!("canopy tailscale DNS lookup timed out");
+			Vec::new()
+		}
+	}
+}
+
+/// Build the probe client for `host`, resolving it to `addrs` when non-empty
+/// (the tailnet-discovery override); otherwise plain DNS is used.
+fn build_probe_client(
 	host: &str,
 	addrs: &[SocketAddr],
 	make_builder: &ClientBuilderFactory,
@@ -517,8 +580,18 @@ async fn try_probe(
 	if !addrs.is_empty() {
 		builder = builder.resolve_to_addrs(host, addrs);
 	}
-	let client = builder.build().ok()?;
+	builder.build().ok()
+}
 
+/// Build a client for `addrs` and confirm `GET {tailscale_url}/public/servers`
+/// responds 2xx; return the client on success, `None` on any other outcome.
+async fn probe_once(
+	tailscale_url: &Url,
+	host: &str,
+	addrs: &[SocketAddr],
+	make_builder: &ClientBuilderFactory,
+) -> Option<reqwest::Client> {
+	let client = build_probe_client(host, addrs, make_builder)?;
 	let url = tailscale_url.join("/public/servers").ok()?;
 	match client.get(url).send().await {
 		Ok(resp) if resp.status().is_success() => Some(client),
@@ -531,6 +604,85 @@ async fn try_probe(
 			None
 		}
 	}
+}
+
+/// Await two probes concurrently, resolving to the first that yields `Some`.
+///
+/// If the first to finish yields `None`, the other is awaited to completion.
+async fn race_first_some<T>(
+	a: impl Future<Output = Option<T>>,
+	b: impl Future<Output = Option<T>>,
+) -> Option<T> {
+	use futures::future::{Either, select};
+
+	let a = std::pin::pin!(a);
+	let b = std::pin::pin!(b);
+	match select(a, b).await {
+		Either::Left((Some(v), _)) => Some(v),
+		Either::Right((Some(v), _)) => Some(v),
+		Either::Left((None, rest)) => rest.await,
+		Either::Right((None, rest)) => rest.await,
+	}
+}
+
+/// Whether any local interface holds a tailscale-assigned address.
+///
+/// Tailscale hands out IPv4 from the `100.64.0.0/10` CGNAT range and IPv6 from
+/// its `fd7a:115c:a1e0::/48` ULA prefix. When neither is present the host isn't
+/// on the tailnet, so probing canopy's tailnet endpoint can only ever time out
+/// — the check lets us skip it and go straight to mTLS. A host that reaches the
+/// tailnet purely through a subnet router (no address of its own) is treated as
+/// absent and falls back to mTLS, which still works.
+fn tailscale_present() -> bool {
+	sysinfo::Networks::new_with_refreshed_list()
+		.values()
+		.flat_map(|net| net.ip_networks())
+		.any(|net| is_tailscale_addr(&net.addr))
+}
+
+fn is_tailscale_addr(addr: &IpAddr) -> bool {
+	match addr {
+		IpAddr::V4(v4) => {
+			let o = v4.octets();
+			o[0] == 100 && (64..=127).contains(&o[1])
+		}
+		IpAddr::V6(v6) => {
+			let s = v6.segments();
+			s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0
+		}
+	}
+}
+
+/// Outcome of a tailnet-reachability discovery, cached for [`PROBE_CACHE_TTL`].
+#[derive(Clone)]
+enum TailnetOutcome {
+	/// Reachable via these addresses (empty = plain DNS resolution worked).
+	Reachable(Vec<SocketAddr>),
+	Unreachable,
+}
+
+struct CachedProbe {
+	stored_at: Instant,
+	outcome: TailnetOutcome,
+}
+
+fn probe_cache() -> &'static Mutex<Option<CachedProbe>> {
+	static CACHE: OnceLock<Mutex<Option<CachedProbe>>> = OnceLock::new();
+	CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// The cached outcome if one was stored within the last [`PROBE_CACHE_TTL`].
+fn cached_outcome() -> Option<TailnetOutcome> {
+	let guard = probe_cache().lock().expect("canopy probe cache poisoned");
+	let entry = guard.as_ref()?;
+	(entry.stored_at.elapsed() < PROBE_CACHE_TTL).then(|| entry.outcome.clone())
+}
+
+fn store_outcome(outcome: TailnetOutcome) {
+	*probe_cache().lock().expect("canopy probe cache poisoned") = Some(CachedProbe {
+		stored_at: Instant::now(),
+		outcome,
+	});
 }
 
 fn tailscale_resolver() -> Resolver<impl ConnectionProvider> {
@@ -834,6 +986,69 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 			ua.contains(sysinfo::System::cpu_arch().as_str()),
 			"expected arch in: {ua}"
 		);
+	}
+
+	#[test]
+	fn tailscale_addr_classifies_cgnat_v4() {
+		assert!(is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+		assert!(is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(
+			100, 127, 255, 255
+		))));
+		assert!(is_tailscale_addr(&IpAddr::V4(CANOPY_HARDCODED_V4)));
+		// Just outside the 100.64.0.0/10 range on either side.
+		assert!(!is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(
+			100, 63, 255, 255
+		))));
+		assert!(!is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(
+			100, 128, 0, 0
+		))));
+		// A plain public/private v4 must not read as tailscale.
+		assert!(!is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+		assert!(!is_tailscale_addr(&IpAddr::V4(Ipv4Addr::new(100, 0, 0, 1))));
+	}
+
+	#[test]
+	fn tailscale_addr_classifies_ula_v6() {
+		assert!(is_tailscale_addr(&IpAddr::V6(CANOPY_HARDCODED_V6)));
+		assert!(is_tailscale_addr(&IpAddr::V6(Ipv6Addr::new(
+			0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1
+		))));
+		// Different ULA prefix — not tailscale.
+		assert!(!is_tailscale_addr(&IpAddr::V6(Ipv6Addr::new(
+			0xfd00, 0x115c, 0xa1e0, 0, 0, 0, 0, 1
+		))));
+		assert!(!is_tailscale_addr(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+	}
+
+	#[test]
+	fn probe_cache_roundtrips_and_expires() {
+		store_outcome(TailnetOutcome::Reachable(vec![SocketAddr::new(
+			IpAddr::V4(CANOPY_HARDCODED_V4),
+			443,
+		)]));
+		match cached_outcome() {
+			Some(TailnetOutcome::Reachable(addrs)) => {
+				assert_eq!(
+					addrs,
+					vec![SocketAddr::new(IpAddr::V4(CANOPY_HARDCODED_V4), 443)]
+				);
+			}
+			other => panic!(
+				"expected freshly stored Reachable, got {:?}",
+				other.is_some()
+			),
+		}
+
+		// A stale entry (stored before the TTL window) reads as a miss.
+		// Guard the subtraction: a freshly started process may not have enough
+		// monotonic headroom to represent an instant a full TTL in the past.
+		if let Some(stale) = Instant::now().checked_sub(PROBE_CACHE_TTL + Duration::from_secs(1)) {
+			*probe_cache().lock().unwrap() = Some(CachedProbe {
+				stored_at: stale,
+				outcome: TailnetOutcome::Unreachable,
+			});
+			assert!(cached_outcome().is_none());
+		}
 	}
 
 	#[test]
