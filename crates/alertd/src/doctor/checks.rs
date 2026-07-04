@@ -45,6 +45,7 @@ pub mod sync_session_errors;
 pub mod sync_sessions;
 pub mod sync_snapshot_tables;
 pub mod tailscale;
+pub mod tailscale_config;
 pub mod tamanu_http;
 pub mod tamanu_service;
 pub mod time_sync;
@@ -275,6 +276,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("caddy_certs", caddy_certs, host),
 		entry!("http_errors", http_errors, host),
 		entry!("tailscale", tailscale, host, off_wire),
+		entry!("tailscale_config", tailscale_config, host),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
