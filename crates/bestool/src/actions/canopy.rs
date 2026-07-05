@@ -41,7 +41,9 @@ super::subcommands! {
 	#[cfg(feature = "canopy-restore")]
 	restore => Restore(RestoreArgs),
 	#[cfg(feature = "canopy-restore")]
-	kopia => Kopia(KopiaArgs)
+	kopia => Kopia(KopiaArgs),
+	#[cfg(feature = "canopy-unregister")]
+	unregister => Unregister(UnregisterArgs)
 }
 
 /// Load the registration for a command that takes an optional `--config <DIR>`.
@@ -59,6 +61,33 @@ async fn load_registration(
 	}
 }
 
+/// Ask a running alertd daemon to restart so it re-reads the registration.
+///
+/// The daemon reads the device key and server id once at startup and caches
+/// them for its lifetime, so enrolling or unenrolling only takes effect after
+/// it restarts. Best-effort: a daemon that isn't running (or isn't reachable)
+/// is fine — it reads the registration afresh whenever it next starts.
+///
+/// Only wired up when the daemon is built into this binary; otherwise there's
+/// no control client to reach it with.
+#[cfg(all(
+	feature = "alertd",
+	any(feature = "canopy-register", feature = "canopy-unregister")
+))]
+async fn restart_daemon_for_registration_change() {
+	let addrs = bestool_alertd::commands::default_server_addrs();
+	if let Err(err) = bestool_alertd::commands::restart(&addrs).await {
+		tracing::debug!(%err, "alertd daemon not reachable");
+		println!("(alertd daemon not reachable; it will re-read the registration on next start)");
+	}
+}
+
+#[cfg(all(
+	not(feature = "alertd"),
+	any(feature = "canopy-register", feature = "canopy-unregister")
+))]
+async fn restart_daemon_for_registration_change() {}
+
 /// Elevate up front when the registration can't be written from here.
 ///
 /// `canopy register` / `import` only write the registration at the very end —
@@ -73,7 +102,14 @@ async fn load_registration(
 /// we're root and sudo wouldn't change anything (let the operation run and
 /// surface any genuine error, e.g. a read-only filesystem). Non-Unix is always
 /// a no-op: there's no sudo, and the dir's ACLs govern writability directly.
-#[cfg(all(unix, any(feature = "canopy-register", feature = "canopy-import")))]
+#[cfg(all(
+	unix,
+	any(
+		feature = "canopy-register",
+		feature = "canopy-import",
+		feature = "canopy-unregister"
+	)
+))]
 fn ensure_writable_or_reexec(dir: &std::path::Path) -> Result<()> {
 	if registration_dir_writable(dir) || privilege::user::privileged() {
 		return Ok(());
@@ -91,7 +127,14 @@ fn ensure_writable_or_reexec(dir: &std::path::Path) -> Result<()> {
 	std::process::exit(status.code().unwrap_or(1));
 }
 
-#[cfg(all(not(unix), any(feature = "canopy-register", feature = "canopy-import")))]
+#[cfg(all(
+	not(unix),
+	any(
+		feature = "canopy-register",
+		feature = "canopy-import",
+		feature = "canopy-unregister"
+	)
+))]
 fn ensure_writable_or_reexec(_dir: &std::path::Path) -> Result<()> {
 	Ok(())
 }
@@ -100,7 +143,14 @@ fn ensure_writable_or_reexec(_dir: &std::path::Path) -> Result<()> {
 /// directory if missing and then writes a file inside it, so we test the
 /// nearest existing ancestor for "can create an entry here" by actually trying
 /// — more reliable than reasoning about mode bits, ACLs, ownership, and setgid.
-#[cfg(all(unix, any(feature = "canopy-register", feature = "canopy-import")))]
+#[cfg(all(
+	unix,
+	any(
+		feature = "canopy-register",
+		feature = "canopy-import",
+		feature = "canopy-unregister"
+	)
+))]
 fn registration_dir_writable(dir: &std::path::Path) -> bool {
 	let mut candidate = dir;
 	let existing = loop {
