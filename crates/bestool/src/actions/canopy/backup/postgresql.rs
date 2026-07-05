@@ -212,8 +212,12 @@ pub async fn restore(
 	})
 	.await?;
 
-	crate::interactive::retry("fixing data directory ownership", async || {
-		fix_ownership(&target.data_dir).await
+	// The account the server runs as, so its files can be made writable by it
+	// (Windows). Fix the whole restored tree (`dest`): the data dir for a data-only
+	// restore, or the install root — binaries included — for a whole-install one.
+	let service_account = service::service_account(target, config).await;
+	crate::interactive::retry("fixing restored data permissions", async || {
+		fix_ownership(&plan.dest, service_account.as_deref()).await
 	})
 	.await?;
 
@@ -286,17 +290,40 @@ async fn repoint_symlink_if_present(link: &Path, dest: &Path) {
 	}
 }
 
-/// Restore the postgres-owned mode and ownership of the freshly-swapped data
-/// directory. Unix-only: on Windows the directory inherits its parent's ACLs
-/// (the EDB install root), which is what the service account already expects.
+/// Fix up ownership and permissions of the freshly-restored tree (`dest`) so the
+/// postgres server account can read and write it.
+///
+/// On Unix: `chown` to `postgres` and `chmod 0750` — the peer-auth service user.
+///
+/// On Windows: kopia can restore files with an ACL that grants neither the
+/// service account nor Administrators, so the server can't even create
+/// `postmaster.pid` and won't start. Take ownership (the elevated caller always
+/// can), reset each entry to the ACL inherited from the install root, and grant
+/// the server's own account (`account`, e.g. `NT AUTHORITY\NetworkService`) full
+/// control.
 #[cfg(unix)]
-async fn fix_ownership(data_dir: &Path) -> Result<()> {
-	run_status("chown", &["-R", "postgres:postgres", path(data_dir)]).await?;
-	run_status("chmod", &["0750", path(data_dir)]).await
+async fn fix_ownership(dest: &Path, _account: Option<&str>) -> Result<()> {
+	run_status("chown", &["-R", "postgres:postgres", path(dest)]).await?;
+	run_status("chmod", &["0750", path(dest)]).await
 }
 
-#[cfg(not(unix))]
-async fn fix_ownership(_data_dir: &Path) -> Result<()> {
+#[cfg(windows)]
+async fn fix_ownership(dest: &Path, account: Option<&str>) -> Result<()> {
+	let dir = dest.to_string_lossy();
+	// Take ownership so the ACL can be rewritten even when kopia locked it down.
+	run_status("takeown", &["/F", dir.as_ref(), "/R", "/D", "Y"]).await?;
+	// Reset every entry to the ACL inherited from the install root.
+	run_status("icacls", &[dir.as_ref(), "/reset", "/T", "/C", "/Q"]).await?;
+	// Grant the server's own account full control (object + container inherit).
+	if let Some(account) = account {
+		let grant = format!("{account}:(OI)(CI)F");
+		run_status("icacls", &[dir.as_ref(), "/grant", grant.as_str(), "/T", "/C", "/Q"]).await?;
+	}
+	Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn fix_ownership(_dest: &Path, _account: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
@@ -324,7 +351,7 @@ fn path(p: &Path) -> &str {
 	p.to_str().unwrap_or_default()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) async fn run_status(program: &str, args: &[&str]) -> Result<()> {
 	let status = tokio::process::Command::new(program)
 		.args(args)

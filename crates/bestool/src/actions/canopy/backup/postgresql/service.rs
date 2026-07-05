@@ -76,6 +76,22 @@ pub async fn quiesce_other_versions(keep_major: &str) {
 	}
 }
 
+/// The account the cluster's service runs as, when it needs granting access to
+/// the restored files (Windows: the EDB service account, e.g.
+/// `NT AUTHORITY\NetworkService`). `None` when there's nothing extra to grant —
+/// off Windows, or when the service runs as LocalSystem (already `SYSTEM`).
+pub async fn service_account(target: &ResolvedCluster, config: &PostgresqlConfig) -> Option<String> {
+	#[cfg(windows)]
+	{
+		win::query_account(&service_name(target, config)).await
+	}
+	#[cfg(not(windows))]
+	{
+		let _ = (target, config);
+		None
+	}
+}
+
 #[cfg(unix)]
 async fn systemctl(verb: &str, target: &ResolvedCluster) -> Result<()> {
 	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
@@ -124,6 +140,29 @@ mod win {
 				StartType::Manual => "demand",
 			}
 		}
+	}
+
+	/// The account the service runs as, per its SCM config. `None` if the service
+	/// is absent/unreadable or runs as LocalSystem (already `SYSTEM`, and a name
+	/// `icacls` doesn't accept). Best-effort — a failure to read it just means no
+	/// extra grant.
+	pub async fn query_account(name: &str) -> Option<String> {
+		let name = name.to_owned();
+		tokio::task::spawn_blocking(move || {
+			let manager =
+				ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
+			let service = manager.open_service(&name, ServiceAccess::QUERY_CONFIG).ok()?;
+			let account = service.query_config().ok()?.account_name?;
+			let account = account.to_string_lossy().into_owned();
+			if account.eq_ignore_ascii_case("localsystem") {
+				None
+			} else {
+				Some(account)
+			}
+		})
+		.await
+		.ok()
+		.flatten()
 	}
 
 	/// Set a service's start type via `sc config` — the Service Control Manager
