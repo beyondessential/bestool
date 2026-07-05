@@ -21,6 +21,7 @@ workspace = true
 algae-cli = { version = "1.1.6", path = "../algae-cli" }
 base64 = "0.22.1"
 blake3 = "1.8.5"
+bon = "3.9.3"
 flate2 = "1.0.34"
 futures = { workspace = true, features = ["executor"] }
 getrandom = "0.4.2"

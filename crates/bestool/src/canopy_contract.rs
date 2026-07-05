@@ -120,15 +120,15 @@ async fn events_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/events", "post");
 
-	let event = NewEvent {
-		source: "bestool-contract-test".to_owned(),
-		ref_: "host/alert:target".to_owned(),
-		message: "message".to_owned(),
-		description: Some("description".to_owned()),
-		severity: Some(Severity::Warning),
-		occurred_at: Some("2026-01-01T00:00:00Z".parse().unwrap()),
-		active: Some(true),
-	};
+	let event = NewEvent::builder()
+		.source("bestool-contract-test".to_owned())
+		.ref_("host/alert:target".to_owned())
+		.message("message".to_owned())
+		.description("description".to_owned())
+		.severity(Severity::Warning)
+		.occurred_at("2026-01-01T00:00:00Z".parse().unwrap())
+		.active(true)
+		.build();
 	let instance = serde_json::to_value(&event).unwrap();
 	assert_valid(spec, &request_schema("/events", "post"), &instance);
 
@@ -230,11 +230,11 @@ async fn register_begin_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/begin", "post");
 
-	let request = BeginArgs {
-		server_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
-		token: "enrollment-token".to_owned(),
-		spki: Some("c3BraQ==".to_owned()),
-	};
+	let request = BeginArgs::builder()
+		.server_id("00000000-0000-0000-0000-000000000000".parse().unwrap())
+		.token("enrollment-token".to_owned())
+		.spki("c3BraQ==".to_owned())
+		.build();
 	let instance = serde_json::to_value(&request).unwrap();
 	assert_valid(
 		spec,
@@ -259,12 +259,11 @@ async fn register_complete_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/servers/register/complete", "post");
 
-	let request = CompleteArgs {
-		server_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
-		nonce: "bm9uY2U=".to_owned(),
-		signature: "c2lnbmF0dXJl".to_owned(),
-		spki: None,
-	};
+	let request = CompleteArgs::builder()
+		.server_id("00000000-0000-0000-0000-000000000000".parse().unwrap())
+		.nonce("bm9uY2U=".to_owned())
+		.signature("c2lnbmF0dXJl".to_owned())
+		.build();
 	let instance = serde_json::to_value(&request).unwrap();
 	assert_valid(
 		spec,
@@ -361,7 +360,8 @@ async fn backup_capabilities_request_matches_spec() {
 	assert_operation_exists(spec, "/backup-capabilities", "post");
 
 	let types = vec!["tamanu-postgres".to_owned()];
-	let instance = serde_json::to_value(BackupCapabilitiesArgs { types }).unwrap();
+	let instance =
+		serde_json::to_value(BackupCapabilitiesArgs::builder().types(types).build()).unwrap();
 	assert_valid(
 		spec,
 		&request_schema("/backup-capabilities", "post"),
@@ -375,10 +375,12 @@ async fn backup_credentials_request_and_response_match_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/backup-credentials", "post");
 
-	let instance = serde_json::to_value(BackupCredentialsArgs {
-		type_: "tamanu-postgres".to_owned(),
-		purpose: Some(BackupPurpose::Backup),
-	})
+	let instance = serde_json::to_value(
+		BackupCredentialsArgs::builder()
+			.type_("tamanu-postgres".to_owned())
+			.purpose(BackupPurpose::Backup)
+			.build(),
+	)
 	.unwrap();
 	assert_valid(
 		spec,
@@ -439,22 +441,24 @@ async fn backup_report_request_matches_spec() {
 	let spec = spec().await;
 	assert_operation_exists(spec, "/backup-report", "post");
 
-	let instance = serde_json::to_value(ReportArgs {
-		run_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
-		type_: "tamanu-postgres".to_owned(),
-		purpose: BackupPurpose::Backup,
-		outcome: RunOutcome::Success,
-		error: None,
-		bytes_uploaded: Some(12345),
-		snapshot_id: Some("abc123".to_owned()),
-		// Intentionally populated: this gates the PR. bestool already sends these
-		// (canopy ignores unknown fields), but the contract check stays red until
-		// canopy's OpenAPI spec defines the s3 traffic fields — then it goes green.
-		s3_sent_raw_bytes: Some(2_000_000),
-		s3_sent_payload_bytes: Some(1_950_000),
-		s3_received_raw_bytes: Some(4096),
-		s3_received_payload_bytes: Some(0),
-	})
+	// The s3 traffic fields are intentionally populated: this gates the PR.
+	// bestool already sends these (canopy ignores unknown fields), but the
+	// contract check stays red until canopy's OpenAPI spec defines the s3 traffic
+	// fields — then it goes green.
+	let instance = serde_json::to_value(
+		ReportArgs::builder()
+			.run_id("00000000-0000-0000-0000-000000000000".parse().unwrap())
+			.type_("tamanu-postgres".to_owned())
+			.purpose(BackupPurpose::Backup)
+			.outcome(RunOutcome::Success)
+			.bytes_uploaded(12345)
+			.snapshot_id("abc123".to_owned())
+			.s3_sent_raw_bytes(2_000_000)
+			.s3_sent_payload_bytes(1_950_000)
+			.s3_received_raw_bytes(4096)
+			.s3_received_payload_bytes(0)
+			.build(),
+	)
 	.unwrap();
 	assert_valid(spec, &request_schema("/backup-report", "post"), &instance);
 

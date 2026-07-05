@@ -77,7 +77,9 @@ fn main() {
 		.add_root_schema(root_schema)
 		.expect("generating types from canopy schemas");
 
-	let file = syn::parse2(type_space.to_stream()).expect("parsing generated canopy schema tokens");
+	let mut file: syn::File =
+		syn::parse2(type_space.to_stream()).expect("parsing generated canopy schema tokens");
+	inject_builders(&mut file.items);
 	let mut generated = provenance(&spec_text, source);
 	generated.push_str(&rewrite_types(&prettyplease::unparse(&file)));
 	generated.push_str(&generate_client_methods(&spec));
@@ -336,6 +338,42 @@ fn is_open_schema(spec: &Value, name: &str) -> bool {
 			&& member.get("properties").is_none()
 			&& member.get("$ref").is_none()
 	})
+}
+
+/// Give every generated struct a compile-time-checked builder and mark it
+/// `#[non_exhaustive]`.
+///
+/// canopy's OpenAPI evolves independently of bestool, so a struct built with a
+/// literal breaks the moment canopy adds a field. `#[derive(::bon::Builder)]`
+/// lets construction name only the fields it sets: bon treats an `Option<T>`
+/// field as defaulting to `None`, so an added optional field touches no call
+/// site, and `#[non_exhaustive]` stops literal construction from other crates
+/// so the builder is the only way in.
+///
+/// Only structs with named fields get this: bon can't derive on enums or
+/// tuple/newtype structs, and an empty struct has nothing to build. Recurses
+/// into modules so nested types (e.g. under `error`) are considered, then
+/// skipped when they aren't named-field structs.
+fn inject_builders(items: &mut [syn::Item]) {
+	for item in items {
+		match item {
+			syn::Item::Struct(item) => {
+				if let syn::Fields::Named(fields) = &item.fields
+					&& !fields.named.is_empty()
+				{
+					item.attrs
+						.push(syn::parse_quote!(#[derive(::bon::Builder)]));
+					item.attrs.push(syn::parse_quote!(#[non_exhaustive]));
+				}
+			}
+			syn::Item::Mod(item) => {
+				if let Some((_, items)) = &mut item.content {
+					inject_builders(items);
+				}
+			}
+			_ => {}
+		}
+	}
 }
 
 /// Post-process the generated wire types.

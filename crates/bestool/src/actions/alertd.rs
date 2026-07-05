@@ -370,9 +370,11 @@ mod backup {
 			return Ok(());
 		}
 		client
-			.backup_capabilities(&bestool_canopy::schema::BackupCapabilitiesArgs {
-				types: types.clone(),
-			})
+			.backup_capabilities(
+				&bestool_canopy::schema::BackupCapabilitiesArgs::builder()
+					.types(types.clone())
+					.build(),
+			)
 			.await?;
 		info!(?types, "registered backup capabilities with canopy");
 		Ok(())
@@ -537,7 +539,7 @@ mod backup {
 			];
 			for kind in noise {
 				assert!(
-					!is_real_change(&Event::new(kind.clone())),
+					!is_real_change(&Event::new(kind)),
 					"{kind:?} should be ignored as read-noise"
 				);
 			}
@@ -550,7 +552,7 @@ mod backup {
 			];
 			for kind in real {
 				assert!(
-					is_real_change(&Event::new(kind.clone())),
+					is_real_change(&Event::new(kind)),
 					"{kind:?} should trigger re-registration"
 				);
 			}

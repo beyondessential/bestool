@@ -40,10 +40,12 @@ impl CanopyCredentialProvider {
 			let backup_type = backup_type.clone();
 			Box::pin(async move {
 				client
-					.backup_credentials(&BackupCredentialsArgs {
-						type_: backup_type.clone(),
-						purpose: Some(purpose),
-					})
+					.backup_credentials(
+						&BackupCredentialsArgs::builder()
+							.type_(backup_type.clone())
+							.purpose(purpose)
+							.build(),
+					)
 					.await
 					.map_err(|err| format!("{err}"))
 			})
