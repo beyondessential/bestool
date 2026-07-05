@@ -162,8 +162,10 @@ The superuser connection already carries the replication privilege.
 
 ## Restore
 
-`bestool canopy restore --type <type>` is the operator-facing restore.
-It resolves the definition, fetches restore-purpose (read-only) credentials, connects to the repository, and selects a snapshot — the latest, or one named by id — filtered to this server and this backup type.
+`bestool canopy restore <type> <id>` is the operator-facing restore.
+The backup type selects the definition, method, and credential scope; the snapshot to restore is named explicitly by id.
+It resolves the definition, fetches restore-purpose (read-only) credentials, connects to the repository, and selects the snapshot whose id matches.
+Selection is by id across the whole repository — not scoped to the server issuing the restore — so a replacement host can restore a backup taken by the server it succeeds.
 It restores the snapshot into a staging area on the same filesystem as the target so the final move is atomic, then hands off to the method.
 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.

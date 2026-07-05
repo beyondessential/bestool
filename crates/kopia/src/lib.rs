@@ -573,13 +573,15 @@ impl Snapshot {
 	}
 }
 
-/// Filter criteria used by listing/restore/mount.
+/// In-process filter criteria for a snapshot list.
+///
+/// Tag filtering is not here: kopia's `snapshot list` does not echo the
+/// create-time tags, so tags are applied at the source (see
+/// [`fetch_snapshots`]), not against the parsed list.
 #[derive(Debug, Default, Clone)]
 pub struct SnapshotFilter {
 	/// `None` means "any host". `Some(name)` filters source.host == name.
 	pub source_host: Option<String>,
-	/// All entries must match.
-	pub tags: BTreeMap<String, String>,
 	/// Source path must contain this substring (case-insensitive).
 	pub path_substr: Option<String>,
 	/// Snapshot's taken_at must be within this Span from now.
@@ -603,11 +605,6 @@ impl SnapshotFilter {
 					&& s.source.host != *host
 				{
 					return false;
-				}
-				for (k, v) in &self.tags {
-					if s.tags.get(k) != Some(v) {
-						return false;
-					}
 				}
 				if let Some(needle) = &path_substr_lc
 					&& !s.source.path.to_lowercase().contains(needle)
@@ -641,13 +638,22 @@ pub fn parse_tag_kv(s: &str) -> Result<(String, String), String> {
 		.ok_or_else(|| format!("expected KEY:VALUE, got `{s}`"))
 }
 
+/// Parse repeated `--tag KEY:VALUE` flags into a map for [`fetch_snapshots`].
+pub fn parse_tags(tags: &[String]) -> Result<BTreeMap<String, String>> {
+	let mut map = BTreeMap::new();
+	for raw in tags {
+		let (k, v) = parse_tag_kv(raw).map_err(|e| miette!("invalid --tag: {e}"))?;
+		map.insert(k, v);
+	}
+	Ok(map)
+}
+
 /// Build a [`SnapshotFilter`] from CLI-shaped inputs. `all = true` drops any
-/// source-host filter.
+/// source-host filter. Tags are applied at fetch time, not here.
 pub fn build_filter(
 	all: bool,
 	source_host: Option<String>,
 	default_host: Option<String>,
-	tags: &[String],
 	path: Option<String>,
 	since: Option<&str>,
 	limit: Option<usize>,
@@ -658,12 +664,6 @@ pub fn build_filter(
 		source_host.or(default_host)
 	};
 
-	let mut tag_map = BTreeMap::new();
-	for raw in tags {
-		let (k, v) = parse_tag_kv(raw).map_err(|e| miette!("invalid --tag: {e}"))?;
-		tag_map.insert(k, v);
-	}
-
 	let since = since
 		.map(|s| {
 			s.parse::<Span>()
@@ -673,22 +673,35 @@ pub fn build_filter(
 
 	Ok(SnapshotFilter {
 		source_host,
-		tags: tag_map,
 		path_substr: path,
 		since,
 		limit,
 	})
 }
 
-/// Run `kopia snapshot list --json --all` and parse the result.
+/// Build the `kopia snapshot list --json --all` command, filtering by `tags`.
+///
+/// Tags are applied by kopia (`--tags KEY:VALUE`) against the snapshot's
+/// manifest labels: `snapshot list` does not echo the create-time tags in its
+/// output, so filtering on them in-process would match nothing.
+fn snapshot_list_command(bin: &Path, tags: &BTreeMap<String, String>) -> Command {
+	let mut cmd = Command::new(bin);
+	cmd.args(["snapshot", "list", "--json", "--all"]);
+	for (k, v) in tags {
+		cmd.arg("--tags").arg(format!("{k}:{v}"));
+	}
+	cmd.env("KOPIA_CHECK_FOR_UPDATES", "false");
+	cmd
+}
+
+/// Run `kopia snapshot list --json --all` (optionally tag-filtered) and parse
+/// the result.
 ///
 /// `bin` is expected to already be wrapped by [`build_kopia_command`] if
 /// elevation was needed — callers typically run that first and pass the
 /// resulting binary path here.
-pub fn fetch_snapshots(bin: &Path) -> Result<Vec<Snapshot>> {
-	let output = Command::new(bin)
-		.args(["snapshot", "list", "--json", "--all"])
-		.env("KOPIA_CHECK_FOR_UPDATES", "false")
+pub fn fetch_snapshots(bin: &Path, tags: &BTreeMap<String, String>) -> Result<Vec<Snapshot>> {
+	let output = snapshot_list_command(bin, tags)
 		.output()
 		.into_diagnostic()
 		.wrap_err_with(|| format!("invoking {}", bin.display()))?;
@@ -851,12 +864,11 @@ mod cli {
 				);
 			}
 
-			let snapshots = fetch_snapshots(bin)?;
+			let snapshots = fetch_snapshots(bin, &parse_tags(&self.tags)?)?;
 			let filter = build_filter(
 				self.all,
 				self.source_host.clone(),
 				default_host,
-				&self.tags,
 				self.path.clone(),
 				self.since.as_deref(),
 				None,
@@ -883,7 +895,7 @@ mod cli {
 	}
 
 	fn resolve_by_id(bin: &std::path::Path, id_query: &str) -> Result<Snapshot> {
-		let snapshots = fetch_snapshots(bin)?;
+		let snapshots = fetch_snapshots(bin, &BTreeMap::new())?;
 		let matches: Vec<&Snapshot> = snapshots
 			.iter()
 			.filter(|s| s.id.starts_with(id_query))
@@ -1201,23 +1213,32 @@ mod tests {
 	}
 
 	#[test]
-	fn filter_by_tags_requires_all_to_match() {
-		let now = Timestamp::from_second(10_000_000).unwrap();
-		let mut tagged = snapshot("t", "h", "/data", now);
-		tagged.tags.insert("area".into(), "postgres".into());
-		tagged.tags.insert("type".into(), "ext4".into());
-		let snaps = vec![tagged, snapshot("u", "h", "/data", now)];
-
+	fn snapshot_list_command_passes_tags_to_kopia() {
+		// Tags must be filtered by kopia (`--tags KEY:VALUE`), not in-process:
+		// `snapshot list` doesn't echo them, so a parsed snapshot has empty tags.
 		let mut tags = BTreeMap::new();
 		tags.insert("area".into(), "postgres".into());
 		tags.insert("type".into(), "ext4".into());
-		let filter = SnapshotFilter {
-			tags,
-			..Default::default()
-		};
-		let got = filter.apply(&snaps, now);
-		assert_eq!(got.len(), 1);
-		assert_eq!(got[0].id, "t");
+		let cmd = snapshot_list_command(Path::new("kopia"), &tags);
+		let args: Vec<String> = cmd
+			.get_args()
+			.map(|a| a.to_string_lossy().into_owned())
+			.collect();
+		assert!(args.contains(&"--all".to_string()));
+		assert!(
+			args.windows(2)
+				.any(|w| w[0] == "--tags" && w[1] == "area:postgres")
+		);
+		assert!(args.windows(2).any(|w| w[0] == "--tags" && w[1] == "type:ext4"));
+	}
+
+	#[test]
+	fn snapshot_list_command_without_tags_omits_tag_flag() {
+		let cmd = snapshot_list_command(Path::new("kopia"), &BTreeMap::new());
+		assert!(
+			!cmd.get_args()
+				.any(|a| a.to_string_lossy() == "--tags")
+		);
 	}
 
 	#[test]
@@ -1304,23 +1325,14 @@ mod tests {
 
 	#[test]
 	fn build_filter_all_drops_host() {
-		let filter =
-			build_filter(true, None, Some("ignored".into()), &[], None, None, None).unwrap();
+		let filter = build_filter(true, None, Some("ignored".into()), None, None, None).unwrap();
 		assert!(filter.source_host.is_none());
 	}
 
 	#[test]
 	fn build_filter_default_host_used_when_not_overridden() {
-		let filter = build_filter(
-			false,
-			None,
-			Some("default-host".into()),
-			&[],
-			None,
-			None,
-			None,
-		)
-		.unwrap();
+		let filter =
+			build_filter(false, None, Some("default-host".into()), None, None, None).unwrap();
 		assert_eq!(filter.source_host.as_deref(), Some("default-host"));
 	}
 
@@ -1330,7 +1342,6 @@ mod tests {
 			false,
 			Some("explicit".into()),
 			Some("default".into()),
-			&[],
 			None,
 			None,
 			None,
@@ -1341,14 +1352,13 @@ mod tests {
 
 	#[test]
 	fn build_filter_parses_since() {
-		let filter = build_filter(false, None, None, &[], None, Some("24h"), None).unwrap();
+		let filter = build_filter(false, None, None, None, Some("24h"), None).unwrap();
 		assert!(filter.since.is_some());
 	}
 
 	#[test]
 	fn build_filter_rejects_bad_since() {
-		let err =
-			build_filter(false, None, None, &[], None, Some("not-a-duration"), None).unwrap_err();
+		let err = build_filter(false, None, None, None, Some("not-a-duration"), None).unwrap_err();
 		assert!(format!("{err}").contains("--since"));
 	}
 

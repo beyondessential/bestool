@@ -120,7 +120,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 
 	// Select the snapshot to restore.
 	let snapshots = list_snapshots(&kopia, &s3env).await?;
-	let snapshot = select_snapshot(&snapshots, &args.backup_type, &args.id)?;
+	let snapshot = select_snapshot(&snapshots, &args.id)?;
 	info!(
 		id = %snapshot.id,
 		taken = ?snapshot.end_time.or(snapshot.start_time),
@@ -159,25 +159,49 @@ async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Resu
 
 /// Pick the snapshot to restore from the repo's list by id prefix.
 ///
-/// Selection is deliberately not scoped to the local server: a restore is
-/// typically onto a different (rebuilt or replacement) host than the one that
-/// took the backup, so the snapshot's source host is not this server's id.
-fn select_snapshot<'a>(
-	snapshots: &'a [Snapshot],
-	backup_type: &str,
-	id: &str,
-) -> Result<&'a Snapshot> {
-	let mut hits = snapshots.iter().filter(|s| {
-		s.id.starts_with(id)
-			&& s.tags.get("canopy-type").map(String::as_str) == Some(backup_type)
-	});
-	let first = hits
-		.next()
-		.ok_or_else(|| miette!("no '{backup_type}' snapshot matching id '{id}' in the repository"))?;
+/// Selection is by snapshot id alone. It is deliberately not scoped to the
+/// local server — a restore is typically onto a different (rebuilt or
+/// replacement) host, so the snapshot's source host is not this server's id —
+/// nor gated on the `canopy-type` tag: kopia's `snapshot list` does not echo
+/// the tags set at create time, so every listed snapshot deserialises with no
+/// tags and gating on them would reject every snapshot. The backup type still
+/// selects the def, method, and credentials in the caller.
+fn select_snapshot<'a>(snapshots: &'a [Snapshot], id: &str) -> Result<&'a Snapshot> {
+	let mut hits = snapshots.iter().filter(|s| s.id.starts_with(id));
+	let Some(first) = hits.next() else {
+		bail!(
+			"no snapshot matching id '{id}' in the repository{}",
+			available_snapshots_hint(snapshots)
+		);
+	};
 	if hits.next().is_some() {
 		bail!("snapshot id '{id}' is ambiguous; give more characters");
 	}
 	Ok(first)
+}
+
+/// Describe what the connected repository actually holds, appended to the
+/// "no match" error so the operator can see the ids available rather than
+/// guess. Newest first, capped so the message stays readable.
+fn available_snapshots_hint(snapshots: &[Snapshot]) -> String {
+	if snapshots.is_empty() {
+		return "; the repository has no snapshots".to_owned();
+	}
+	const MAX: usize = 20;
+	let mut sorted: Vec<&Snapshot> = snapshots.iter().collect();
+	sorted.sort_by_key(|s| std::cmp::Reverse(s.end_time.or(s.start_time)));
+	let mut out = format!("; {} snapshot(s) available (id, source, taken):", snapshots.len());
+	for s in sorted.iter().take(MAX) {
+		let taken = s
+			.end_time
+			.or(s.start_time)
+			.map_or_else(|| "unknown".to_owned(), |t| t.to_string());
+		out.push_str(&format!("\n  {} {} {taken}", s.id, s.source.host));
+	}
+	if snapshots.len() > MAX {
+		out.push_str(&format!("\n  … and {} more", snapshots.len() - MAX));
+	}
+	out
 }
 
 /// Interactive double-confirmation for a destructive restore. Returns `true`
@@ -214,7 +238,9 @@ mod tests {
 
 	use super::*;
 
-	fn snap(id: &str, host: &str, btype: &str, end: Option<&str>) -> Snapshot {
+	/// A snapshot as kopia's `snapshot list --json` actually emits it: source
+	/// host and id, but no tags (kopia does not echo the create-time tags).
+	fn snap(id: &str, host: &str, end: Option<&str>) -> Snapshot {
 		Snapshot {
 			id: id.into(),
 			source: SnapshotSource {
@@ -225,45 +251,55 @@ mod tests {
 			description: String::new(),
 			start_time: None,
 			end_time: end.map(|t| t.parse().unwrap()),
-			tags: std::collections::BTreeMap::from([("canopy-type".into(), btype.into())]),
+			tags: std::collections::BTreeMap::new(),
 			root_entry: None,
 		}
 	}
 
 	#[test]
 	fn selects_by_id_prefix() {
-		let snaps = vec![snap("abc123", "srv", "tamanu-postgres", None)];
-		let chosen = select_snapshot(&snaps, "tamanu-postgres", "abc").unwrap();
+		let snaps = vec![snap("abc123", "srv", None)];
+		let chosen = select_snapshot(&snaps, "abc").unwrap();
 		assert_eq!(chosen.id, "abc123");
+	}
+
+	#[test]
+	fn selects_when_kopia_omits_tags() {
+		// The regression: kopia's snapshot list returns no tags, so gating on the
+		// canopy-type tag rejected every snapshot. Selection by id must still find
+		// a valid, correct id.
+		let snaps = vec![snap("99f1f3f6e25f483b5196d61d2f28a871", "srv", None)];
+		let chosen = select_snapshot(&snaps, "99f1f3f6e25f483b5196d61d2f28a871").unwrap();
+		assert_eq!(chosen.id, "99f1f3f6e25f483b5196d61d2f28a871");
 	}
 
 	#[test]
 	fn selects_across_hosts() {
 		// A restore onto a different host: the snapshot's source host is not this
 		// server's id, but selection by id must still find it.
-		let snaps = vec![snap("abc123", "other-host", "tamanu-postgres", None)];
-		let chosen = select_snapshot(&snaps, "tamanu-postgres", "abc").unwrap();
+		let snaps = vec![snap("abc123", "other-host", None)];
+		let chosen = select_snapshot(&snaps, "abc").unwrap();
 		assert_eq!(chosen.id, "abc123");
 	}
 
 	#[test]
 	fn errors_on_ambiguous_prefix() {
-		let snaps = vec![
-			snap("abc123", "srv", "tamanu-postgres", None),
-			snap("abc456", "other", "tamanu-postgres", None),
-		];
-		assert!(select_snapshot(&snaps, "tamanu-postgres", "abc").is_err());
+		let snaps = vec![snap("abc123", "srv", None), snap("abc456", "other", None)];
+		assert!(select_snapshot(&snaps, "abc").is_err());
 	}
 
 	#[test]
-	fn errors_when_no_match() {
-		let snaps = vec![snap("abc", "srv", "tamanu-postgres", None)];
-		assert!(select_snapshot(&snaps, "tamanu-postgres", "zzz").is_err());
+	fn errors_when_no_match_lists_available() {
+		let snaps = vec![snap("abc", "srv", Some("2026-01-01T00:00:00Z"))];
+		let err = select_snapshot(&snaps, "zzz").unwrap_err().to_string();
+		assert!(err.contains("no snapshot matching id 'zzz'"));
+		assert!(err.contains("abc"));
 	}
 
 	#[test]
-	fn errors_on_type_mismatch() {
-		let snaps = vec![snap("abc123", "srv", "files", None)];
-		assert!(select_snapshot(&snaps, "tamanu-postgres", "abc").is_err());
+	fn errors_when_repository_empty() {
+		let snaps: Vec<Snapshot> = vec![];
+		let err = select_snapshot(&snaps, "abc").unwrap_err().to_string();
+		assert!(err.contains("no snapshots"));
 	}
 }

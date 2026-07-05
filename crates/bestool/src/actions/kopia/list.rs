@@ -1,6 +1,6 @@
 use bestool_kopia::{
 	Snapshot, build_filter, fetch_snapshots, format_tags, format_taken, human_bytes, parse_tag_kv,
-	short_id,
+	parse_tags, short_id,
 };
 use clap::Parser;
 use comfy_table::{ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
@@ -53,13 +53,12 @@ pub async fn run(args: ListArgs, ctx: Context) -> Result<()> {
 	let kopia = ctx.require::<KopiaArgs>();
 	let bin = kopia_binary(kopia)?;
 
-	let snapshots = fetch_snapshots(&bin)?;
+	let snapshots = fetch_snapshots(&bin, &parse_tags(&args.tags)?)?;
 
 	let filter = build_filter(
 		args.all,
 		args.source_host,
 		current_hostname(),
-		&args.tags,
 		args.path,
 		args.since.as_deref(),
 		args.limit,
