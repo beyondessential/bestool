@@ -22,7 +22,7 @@ use tracing::info;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
-	run_kopia, run_kopia_visible, spawn_proxy,
+	run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir,
 };
 use crate::actions::Context;
 
@@ -99,9 +99,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		&target.region,
 	)
 	.await?;
-	let config_dir = tempfile::tempdir()
-		.into_diagnostic()
-		.wrap_err("creating transient kopia config dir")?;
+	let config_dir = transient_config_dir()?;
 	let config_path = config_dir.path().join("repository.config");
 	let s3env = S3KopiaEnv {
 		password: &target.repo_password.0,
