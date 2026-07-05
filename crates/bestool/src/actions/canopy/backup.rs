@@ -281,8 +281,14 @@ pub(super) async fn spawn_proxy(
 	backup_type: String,
 	purpose: BackupPurpose,
 	region: &str,
+	run_id: Uuid,
 ) -> Result<RunningProxy> {
-	let provider = Arc::new(CanopyCredentialProvider::new(client, backup_type, purpose));
+	let provider = Arc::new(CanopyCredentialProvider::new(
+		client,
+		backup_type,
+		purpose,
+		run_id,
+	));
 	let upstream_host = upstream_host_for(region).await;
 	let config = S3ProxyConfig {
 		upstream: format!("https://{upstream_host}"),
@@ -431,12 +437,20 @@ async fn backup_after_start(
 		TargetOutcome::Ready(target) => target,
 	};
 
+	let run_uuid: Uuid = run_id
+		.parse()
+		.into_diagnostic()
+		.wrap_err("backup run_id is not a valid uuid")?;
+
 	// The proxy serves for the whole run; held in scope until reporting is done.
+	// The run id is carried on every credential issuance so Canopy can correlate
+	// the whole session.
 	let proxy = spawn_proxy(
 		client.clone(),
 		backup_type.to_owned(),
 		BackupPurpose::Backup,
 		&target.region,
+		run_uuid,
 	)
 	.await?;
 	let conn = RepoConn {
@@ -476,10 +490,6 @@ async fn backup_after_start(
 	let s3_sent_payload_bytes = Some(to_i64(traffic.sent_payload));
 	let s3_received_raw_bytes = Some(to_i64(traffic.received_raw));
 	let s3_received_payload_bytes = Some(to_i64(traffic.received_payload));
-	let run_uuid: Uuid = run_id
-		.parse()
-		.into_diagnostic()
-		.wrap_err("backup run_id is not a valid uuid")?;
 	let report = match &outcome {
 		Ok(snapshot) => ReportArgs::builder()
 			.run_id(run_uuid)
