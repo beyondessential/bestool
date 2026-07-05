@@ -140,23 +140,22 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	// own outcome is what the command returns; a reporting failure is only warned.
 	let traffic = proxy.traffic();
 	let to_i64 = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
-	let report = ReportArgs {
-		run_id,
-		type_: args.backup_type.clone(),
-		purpose: BackupPurpose::Restore,
-		outcome: if outcome.is_ok() {
+	let report = ReportArgs::builder()
+		.run_id(run_id)
+		.type_(args.backup_type.clone())
+		.purpose(BackupPurpose::Restore)
+		.outcome(if outcome.is_ok() {
 			RunOutcome::Success
 		} else {
 			RunOutcome::Failure
-		},
-		error: outcome.as_ref().err().map(trim_error),
-		bytes_uploaded: None,
-		snapshot_id: Some(snapshot.id.clone()),
-		s3_sent_raw_bytes: Some(to_i64(traffic.sent_raw)),
-		s3_sent_payload_bytes: Some(to_i64(traffic.sent_payload)),
-		s3_received_raw_bytes: Some(to_i64(traffic.received_raw)),
-		s3_received_payload_bytes: Some(to_i64(traffic.received_payload)),
-	};
+		})
+		.maybe_error(outcome.as_ref().err().map(trim_error))
+		.snapshot_id(snapshot.id.clone())
+		.s3_sent_raw_bytes(to_i64(traffic.sent_raw))
+		.s3_sent_payload_bytes(to_i64(traffic.sent_payload))
+		.s3_received_raw_bytes(to_i64(traffic.received_raw))
+		.s3_received_payload_bytes(to_i64(traffic.received_payload))
+		.build();
 	if let Err(err) = client.backup_report(&report).await {
 		warn!("failed to report the restore to canopy: {err}");
 	}

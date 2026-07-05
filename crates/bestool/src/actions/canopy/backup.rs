@@ -481,32 +481,29 @@ async fn backup_after_start(
 		.into_diagnostic()
 		.wrap_err("backup run_id is not a valid uuid")?;
 	let report = match &outcome {
-		Ok(snapshot) => ReportArgs {
-			run_id: run_uuid,
-			type_: backup_type.to_owned(),
-			purpose: BackupPurpose::Backup,
-			outcome: RunOutcome::Success,
-			error: None,
-			bytes_uploaded: snapshot.bytes_uploaded,
-			snapshot_id: snapshot.id.clone(),
-			s3_sent_raw_bytes,
-			s3_sent_payload_bytes,
-			s3_received_raw_bytes,
-			s3_received_payload_bytes,
-		},
-		Err(err) => ReportArgs {
-			run_id: run_uuid,
-			type_: backup_type.to_owned(),
-			purpose: BackupPurpose::Backup,
-			outcome: RunOutcome::Failure,
-			error: Some(trim_error(err)),
-			bytes_uploaded: None,
-			snapshot_id: None,
-			s3_sent_raw_bytes,
-			s3_sent_payload_bytes,
-			s3_received_raw_bytes,
-			s3_received_payload_bytes,
-		},
+		Ok(snapshot) => ReportArgs::builder()
+			.run_id(run_uuid)
+			.type_(backup_type.to_owned())
+			.purpose(BackupPurpose::Backup)
+			.outcome(RunOutcome::Success)
+			.maybe_bytes_uploaded(snapshot.bytes_uploaded)
+			.maybe_snapshot_id(snapshot.id.clone())
+			.maybe_s3_sent_raw_bytes(s3_sent_raw_bytes)
+			.maybe_s3_sent_payload_bytes(s3_sent_payload_bytes)
+			.maybe_s3_received_raw_bytes(s3_received_raw_bytes)
+			.maybe_s3_received_payload_bytes(s3_received_payload_bytes)
+			.build(),
+		Err(err) => ReportArgs::builder()
+			.run_id(run_uuid)
+			.type_(backup_type.to_owned())
+			.purpose(BackupPurpose::Backup)
+			.outcome(RunOutcome::Failure)
+			.error(trim_error(err))
+			.maybe_s3_sent_raw_bytes(s3_sent_raw_bytes)
+			.maybe_s3_sent_payload_bytes(s3_sent_payload_bytes)
+			.maybe_s3_received_raw_bytes(s3_received_raw_bytes)
+			.maybe_s3_received_payload_bytes(s3_received_payload_bytes)
+			.build(),
 	};
 	client
 		.backup_report(&report)

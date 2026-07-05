@@ -319,13 +319,13 @@ async fn begin(
 	let resp = transport
 		.client()
 		.post(url)
-		.json(&BeginArgs {
-			server_id,
-			token: token.to_owned(),
-			spki: transport
-				.carries_spki_in_body()
-				.then(|| spki.to_owned()),
-		})
+		.json(
+			&BeginArgs::builder()
+				.server_id(server_id)
+				.token(token.to_owned())
+				.maybe_spki(transport.carries_spki_in_body().then(|| spki.to_owned()))
+				.build(),
+		)
 		.send()
 		.await
 		.into_diagnostic()
@@ -345,14 +345,14 @@ async fn complete(
 	let resp = transport
 		.client()
 		.post(url)
-		.json(&CompleteArgs {
-			server_id,
-			nonce: nonce.to_owned(),
-			signature: signature.to_owned(),
-			spki: transport
-				.carries_spki_in_body()
-				.then(|| spki.to_owned()),
-		})
+		.json(
+			&CompleteArgs::builder()
+				.server_id(server_id)
+				.nonce(nonce.to_owned())
+				.signature(signature.to_owned())
+				.maybe_spki(transport.carries_spki_in_body().then(|| spki.to_owned()))
+				.build(),
+		)
 		.send()
 		.await
 		.into_diagnostic()

@@ -128,15 +128,11 @@ fn backup_target_repo_password_is_redacted() {
 
 #[test]
 fn new_event_omits_optional_fields() {
-	let event = NewEvent {
-		source: "src".to_owned(),
-		ref_: "host/alert:tgt".to_owned(),
-		message: "msg".to_owned(),
-		description: None,
-		severity: None,
-		occurred_at: None,
-		active: None,
-	};
+	let event = NewEvent::builder()
+		.source("src".to_owned())
+		.ref_("host/alert:tgt".to_owned())
+		.message("msg".to_owned())
+		.build();
 	let json = serde_json::to_string(&event).unwrap();
 	assert!(json.contains("\"source\":\"src\""));
 	assert!(json.contains("\"ref\":\"host/alert:tgt\""));
@@ -149,15 +145,15 @@ fn new_event_omits_optional_fields() {
 
 #[test]
 fn new_event_serialises_occurred_at_camel_case_and_severity_lowercase() {
-	let event = NewEvent {
-		source: "src".to_owned(),
-		ref_: "ref".to_owned(),
-		message: "msg".to_owned(),
-		description: Some("desc".to_owned()),
-		severity: Some(Severity::Warning),
-		occurred_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
-		active: Some(true),
-	};
+	let event = NewEvent::builder()
+		.source("src".to_owned())
+		.ref_("ref".to_owned())
+		.message("msg".to_owned())
+		.description("desc".to_owned())
+		.severity(Severity::Warning)
+		.occurred_at("2025-01-01T00:00:00Z".parse().unwrap())
+		.active(true)
+		.build();
 	let json = serde_json::to_string(&event).unwrap();
 	assert!(json.contains("\"occurredAt\":"));
 	assert!(json.contains("\"severity\":\"warning\""));
