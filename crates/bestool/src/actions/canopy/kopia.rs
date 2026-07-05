@@ -16,7 +16,9 @@ use bestool_kopia::{
 use clap::{Parser, ValueEnum};
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 
-use super::backup::{base_url_of, build_client, connect_repo, load_registration, spawn_proxy};
+use super::backup::{
+	base_url_of, build_client, connect_repo, load_registration, spawn_proxy, transient_config_dir,
+};
 use crate::actions::Context;
 
 /// Run a kopia command against Canopy's repository.
@@ -97,9 +99,7 @@ pub async fn run(args: KopiaArgs, _ctx: Context) -> Result<()> {
 		&target.region,
 	)
 	.await?;
-	let config_dir = tempfile::tempdir()
-		.into_diagnostic()
-		.wrap_err("creating transient kopia config dir")?;
+	let config_dir = transient_config_dir()?;
 	let config_path = config_dir.path().join("repository.config");
 	let s3env = S3KopiaEnv {
 		password: &target.repo_password.0,
