@@ -11,18 +11,22 @@ use std::{
 	path::PathBuf,
 };
 
-use bestool_canopy::{TargetOutcome, schema::BackupPurpose};
+use bestool_canopy::{
+	TargetOutcome,
+	schema::{BackupPurpose, ReportArgs, RunOutcome},
+};
 use bestool_kopia::{
 	RunAs, S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore,
 	build_kopia_command_with_s3, find_kopia_binary,
 };
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
-use tracing::info;
+use tracing::{info, warn};
+use uuid::Uuid;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
-	run_kopia, run_kopia_visible, spawn_proxy,
+	run_kopia, run_kopia_visible, spawn_proxy, trim_error,
 };
 use crate::actions::Context;
 
@@ -127,6 +131,49 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		"restoring snapshot",
 	);
 
+	// A fresh run id per restore (canopy rejects a repeated one).
+	let run_id = Uuid::new_v4();
+
+	// Perform the restore, capturing the outcome so it can be reported to canopy
+	// whether it succeeds or fails.
+	let outcome = run_restore(&kopia, &s3env, snapshot, &def, &args).await;
+
+	// Report to canopy so the restore shows up in the fleet table. The restore's
+	// own outcome is what the command returns; a reporting failure is only warned.
+	let traffic = proxy.traffic();
+	let to_i64 = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+	let report = ReportArgs {
+		run_id,
+		type_: args.backup_type.clone(),
+		purpose: BackupPurpose::Restore,
+		outcome: if outcome.is_ok() {
+			RunOutcome::Success
+		} else {
+			RunOutcome::Failure
+		},
+		error: outcome.as_ref().err().map(trim_error),
+		bytes_uploaded: None,
+		snapshot_id: Some(snapshot.id.clone()),
+		s3_sent_raw_bytes: Some(to_i64(traffic.sent_raw)),
+		s3_sent_payload_bytes: Some(to_i64(traffic.sent_payload)),
+		s3_received_raw_bytes: Some(to_i64(traffic.received_raw)),
+		s3_received_payload_bytes: Some(to_i64(traffic.received_payload)),
+	};
+	if let Err(err) = client.backup_report(&report).await {
+		warn!("failed to report the restore to canopy: {err}");
+	}
+
+	outcome
+}
+
+/// Run the kopia restore into a staging dir and lay it down via the def's method.
+async fn run_restore(
+	kopia: &std::path::Path,
+	s3env: &S3KopiaEnv<'_>,
+	snapshot: &Snapshot,
+	def: &config::BackupDef,
+	args: &RestoreArgs,
+) -> Result<()> {
 	// Restore into a staging dir colocated with the target's filesystem.
 	let staging = def
 		.method
@@ -134,7 +181,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	if staging.exists() {
 		tokio::fs::remove_dir_all(&staging).await.ok();
 	}
-	let mut restore_cmd = build_kopia_command_with_s3(&kopia, &s3env, RunAs::CurrentUser)
+	let mut restore_cmd = build_kopia_command_with_s3(kopia, s3env, RunAs::CurrentUser)
 		.map_err(|e| miette!("{e}"))?;
 	// Force kopia's progress display (a large restore is otherwise a silent wait)
 	// and run it against the inherited terminal so it's actually visible.
