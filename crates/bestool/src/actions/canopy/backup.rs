@@ -595,9 +595,7 @@ async fn snapshot(
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
 
 	// A transient kopia config so the bucket/password never persist on the device.
-	let config_dir = tempfile::tempdir()
-		.into_diagnostic()
-		.wrap_err("creating transient kopia config dir")?;
+	let config_dir = transient_config_dir()?;
 	let config_path = config_dir.path().join("repository.config");
 
 	// When kopia runs as the kopia user (not us), it writes and reads this config
@@ -643,6 +641,21 @@ async fn snapshot(
 		run_kopia(create, "snapshot create").await?
 	};
 	Ok(parse_snapshot_output(&stdout))
+}
+
+/// Create a transient directory for a throwaway kopia config (so the bucket and
+/// password never persist on the device), ensuring the base temp dir exists
+/// first. On Windows `%TEMP%` is often a per-session subdirectory
+/// (`…\Temp\<session>`) that may not exist yet, and `tempfile` doesn't create the
+/// parent — so create it here, or the tempdir fails with "path not found".
+pub(super) fn transient_config_dir() -> Result<tempfile::TempDir> {
+	let base = std::env::temp_dir();
+	std::fs::create_dir_all(&base)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating temp dir {}", base.display()))?;
+	tempfile::tempdir_in(&base)
+		.into_diagnostic()
+		.wrap_err("creating transient kopia config dir")
 }
 
 /// Run a kopia command with its stdout/stderr inherited, so kopia's own
