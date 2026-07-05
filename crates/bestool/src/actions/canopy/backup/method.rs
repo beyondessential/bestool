@@ -83,6 +83,15 @@ pub struct PostgresqlConfig {
 	/// Force a snapshot strategy instead of auto-detecting (for testing).
 	#[serde(default)]
 	pub strategy: Option<String>,
+	/// Override the service controlled around a restore. On Windows this is the
+	/// service name (defaults to the EDB installer's `postgresql-x64-<version>`);
+	/// ignored on Unix, where the systemd unit is derived from version + cluster.
+	#[serde(default)]
+	#[cfg_attr(
+		not(windows),
+		expect(dead_code, reason = "only read on Windows; Unix derives the systemd unit")
+	)]
+	pub service_name: Option<String>,
 }
 
 /// A built-in backup method, selected by the def's single method table.

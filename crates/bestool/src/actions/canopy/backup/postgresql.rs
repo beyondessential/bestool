@@ -10,6 +10,7 @@ pub mod basebackup;
 pub mod btrfs;
 pub mod lvm;
 pub mod resolve;
+mod service;
 pub mod strategy;
 mod sys;
 pub mod vss;
@@ -169,40 +170,58 @@ pub async fn restore(
 
 	super::method::ensure_not_clobbering(&target.data_dir, opts.clobber)?;
 
-	stop_cluster(&target).await;
+	// Stop the cluster before swapping the data directory: on Windows an open
+	// handle to the running server's files makes the move fail outright; on Unix
+	// it would corrupt a live cluster. Both this and the swap depend on nothing
+	// else holding the files, so let the operator clear a stubborn holder by hand
+	// and retry — each attempt re-checks, so the stop can't be skipped.
+	crate::interactive::retry("stopping the postgres cluster", async || {
+		service::stop(&target, config).await
+	})
+	.await?;
 
-	super::method::replace_dir(&restored, &target.data_dir).await?;
-	fix_ownership(&target.data_dir).await?;
+	crate::interactive::retry("moving the data directory into place", async || {
+		super::method::replace_dir(&restored, &target.data_dir).await
+	})
+	.await?;
 
-	if let Err(err) = start_cluster(&target).await {
-		warn!(
-			"cluster did not start cleanly ({err}); resetting WAL as a last resort \
-			 (this may indicate a non-clean backup)"
-		);
-		pg_resetwal(&target.data_dir).await?;
-		start_cluster(&target).await?;
-	}
+	crate::interactive::retry("fixing data directory ownership", async || {
+		fix_ownership(&target.data_dir).await
+	})
+	.await?;
+
+	// A crash-consistent restore normally starts via ordinary crash recovery. If
+	// it won't, resetting the WAL forces a start but is a destructive last resort,
+	// so it's an explicit operator choice rather than automatic.
+	crate::interactive::retry_or_recover(
+		"starting the postgres cluster",
+		"reset the write-ahead log",
+		"force-reset the WAL so the cluster can start without replaying it — \
+		 destructive: can discard recent transactions or corrupt an \
+		 otherwise-healthy cluster; only sound for a backup that won't start any \
+		 other way",
+		async || service::start(&target, config).await,
+		async || pg_resetwal(&target.data_dir).await,
+	)
+	.await?;
 
 	verify(config, &target.data_dir).await;
 	info!("restore complete; run migrations / config sync as needed");
 	Ok(())
 }
 
-async fn stop_cluster(target: &resolve::ResolvedCluster) {
-	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
-	if let Err(err) = run_status("systemctl", &["stop", &unit]).await {
-		warn!("stopping {unit} failed (continuing): {err}");
-	}
-}
-
-async fn start_cluster(target: &resolve::ResolvedCluster) -> Result<()> {
-	let unit = format!("postgresql@{}-{}", target.version, target.cluster);
-	run_status("systemctl", &["start", &unit]).await
-}
-
+/// Restore the postgres-owned mode and ownership of the freshly-swapped data
+/// directory. Unix-only: on Windows the directory inherits its parent's ACLs
+/// (the EDB install root), which is what the service account already expects.
+#[cfg(unix)]
 async fn fix_ownership(data_dir: &Path) -> Result<()> {
 	run_status("chown", &["-R", "postgres:postgres", path(data_dir)]).await?;
 	run_status("chmod", &["0750", path(data_dir)]).await
+}
+
+#[cfg(not(unix))]
+async fn fix_ownership(_data_dir: &Path) -> Result<()> {
+	Ok(())
 }
 
 async fn pg_resetwal(data_dir: &Path) -> Result<()> {
@@ -224,11 +243,13 @@ async fn verify(config: &PostgresqlConfig, data_dir: &Path) {
 	}
 }
 
+#[cfg(unix)]
 fn path(p: &Path) -> &str {
 	p.to_str().unwrap_or_default()
 }
 
-async fn run_status(program: &str, args: &[&str]) -> Result<()> {
+#[cfg(unix)]
+pub(super) async fn run_status(program: &str, args: &[&str]) -> Result<()> {
 	let status = tokio::process::Command::new(program)
 		.args(args)
 		.stdin(std::process::Stdio::null())
@@ -375,6 +396,7 @@ mod tests {
 			port,
 			socket: socket.map(PathBuf::from),
 			strategy: None,
+			service_name: None,
 		}
 	}
 
