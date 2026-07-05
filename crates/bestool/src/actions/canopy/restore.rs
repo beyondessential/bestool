@@ -179,6 +179,12 @@ async fn run_restore(
 	if staging.exists() {
 		tokio::fs::remove_dir_all(&staging).await.ok();
 	}
+
+	// The download needs room for the whole snapshot on the staging volume. Check
+	// up front and, if short, let the operator free space and retry rather than
+	// fail deep into the download.
+	ensure_free_space(&staging, snapshot.total_size()).await?;
+
 	let mut restore_cmd = build_kopia_command_with_s3(kopia, s3env, RunAs::CurrentUser)
 		.map_err(|e| miette!("{e}"))?;
 	// Force kopia's progress display (a large restore is otherwise a silent wait)
@@ -193,6 +199,52 @@ async fn run_restore(
 		clobber,
 	};
 	def.method.restore(&staging, &opts).await
+}
+
+/// Error unless the volume backing `staging` has room for `needed` bytes (plus a
+/// little headroom), prompting the operator to free space and retry on an
+/// interactive terminal. Skipped when the snapshot size is unknown.
+async fn ensure_free_space(staging: &std::path::Path, needed: Option<i64>) -> Result<()> {
+	let Some(needed) = needed.filter(|n| *n > 0).map(|n| n as u64) else {
+		return Ok(()); // unknown size (no root summary): nothing to check against
+	};
+	// 5% headroom for filesystem overhead and rounding. The swap into place is a
+	// rename (the old data is kept as `.old` in place), so only the staging copy
+	// consumes new space.
+	let required = needed.saturating_add(needed / 20);
+	// Check the parent: `staging` itself doesn't exist yet.
+	let volume = staging.parent().unwrap_or(staging).to_path_buf();
+	crate::interactive::retry("ensuring enough free disk space", async || {
+		let available = fs4::available_space(&volume)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("checking free space on {}", volume.display()))?;
+		if available >= required {
+			return Ok(());
+		}
+		bail!(
+			"restoring needs about {} free on {} but only {} is available; free up space and retry",
+			human_bytes(required),
+			volume.display(),
+			human_bytes(available),
+		)
+	})
+	.await
+}
+
+/// A rough human-readable byte size (binary units), for operator-facing messages.
+fn human_bytes(bytes: u64) -> String {
+	const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+	let mut value = bytes as f64;
+	let mut unit = 0;
+	while value >= 1024.0 && unit < UNITS.len() - 1 {
+		value /= 1024.0;
+		unit += 1;
+	}
+	if unit == 0 {
+		format!("{bytes} B")
+	} else {
+		format!("{value:.1} {}", UNITS[unit])
+	}
 }
 
 async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Result<Vec<Snapshot>> {
@@ -349,5 +401,20 @@ mod tests {
 		let snaps: Vec<Snapshot> = vec![];
 		let err = select_snapshot(&snaps, "abc").unwrap_err().to_string();
 		assert!(err.contains("no snapshots"));
+	}
+
+	#[test]
+	fn human_bytes_scales_units() {
+		assert_eq!(human_bytes(512), "512 B");
+		assert_eq!(human_bytes(1024), "1.0 KiB");
+		assert_eq!(human_bytes(8 * 1024 * 1024 * 1024), "8.0 GiB");
+	}
+
+	#[tokio::test]
+	async fn ensure_free_space_skips_unknown_size() {
+		// No snapshot size: nothing to check, so it never touches the filesystem.
+		ensure_free_space(std::path::Path::new("/nonexistent/staging"), None)
+			.await
+			.unwrap();
 	}
 }
