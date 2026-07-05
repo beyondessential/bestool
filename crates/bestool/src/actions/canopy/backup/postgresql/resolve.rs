@@ -218,6 +218,7 @@ mod tests {
 			port: None,
 			socket: None,
 			strategy: None,
+			service_name: None,
 		}
 	}
 

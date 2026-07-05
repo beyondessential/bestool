@@ -22,7 +22,7 @@ use tracing::info;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
-	run_kopia, spawn_proxy,
+	run_kopia, run_kopia_visible, spawn_proxy,
 };
 use crate::actions::Context;
 
@@ -136,8 +136,11 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	}
 	let mut restore_cmd = build_kopia_command_with_s3(&kopia, &s3env, RunAs::CurrentUser)
 		.map_err(|e| miette!("{e}"))?;
+	// Force kopia's progress display (a large restore is otherwise a silent wait)
+	// and run it against the inherited terminal so it's actually visible.
+	restore_cmd.arg("--progress");
 	args_snapshot_restore(&mut restore_cmd, &snapshot.id, &staging);
-	run_kopia(restore_cmd, "snapshot restore").await?;
+	run_kopia_visible(restore_cmd, "snapshot restore").await?;
 
 	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type)?;
 	let opts = RestoreOpts {

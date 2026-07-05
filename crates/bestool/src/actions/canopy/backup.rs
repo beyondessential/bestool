@@ -645,6 +645,24 @@ async fn snapshot(
 	Ok(parse_snapshot_output(&stdout))
 }
 
+/// Run a kopia command with its stdout/stderr inherited, so kopia's own
+/// progress display reaches the terminal (it stays silent when its output is a
+/// pipe, as [`run_kopia`] leaves it). stdin is detached so kopia can't consume
+/// the caller's prompts. Errors on a non-zero exit; the output the user already
+/// saw stands in for a captured error message.
+pub(super) async fn run_kopia_visible(cmd: std::process::Command, what: &str) -> Result<()> {
+	let status = tokio::process::Command::from(cmd)
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("spawning kopia {what}"))?;
+	if !status.success() {
+		bail!("kopia {what} failed ({status})");
+	}
+	Ok(())
+}
+
 /// Run a kopia command, returning its stdout on success.
 pub(super) async fn run_kopia(cmd: std::process::Command, what: &str) -> Result<String> {
 	let output = tokio::process::Command::from(cmd)

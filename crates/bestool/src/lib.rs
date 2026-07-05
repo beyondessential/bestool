@@ -16,6 +16,8 @@ mod canopy_contract;
 pub(crate) mod download;
 pub mod find_postgres;
 pub(crate) mod http;
+#[cfg(feature = "canopy-restore")]
+pub(crate) mod interactive;
 
 #[cfg(doc)]
 pub mod __help {

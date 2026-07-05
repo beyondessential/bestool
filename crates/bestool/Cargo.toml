@@ -188,7 +188,7 @@ canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration"
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
 # method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
-canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:toml", "dep:notify", "dep:fs4"]
+canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
 canopy-restore = ["canopy-backup"]
 # Erase every trace of a canopy enrolment: the registration, the legacy Tamanu
 # identity files, the cached tags, and the legacy DB rows (when postgres is
