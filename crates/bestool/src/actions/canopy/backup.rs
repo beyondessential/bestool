@@ -901,7 +901,7 @@ pub(super) async fn load_registration(config: Option<&Path>) -> Result<Option<Re
 /// Cap a kopia error to a length that fits a log line and a canopy report field.
 const MAX_ERROR_LEN: usize = 1500;
 
-fn trim_error(err: &miette::Report) -> String {
+pub(super) fn trim_error(err: &miette::Report) -> String {
 	// Render the whole cause chain: `Display` on a report shows only the outermost
 	// context ("spawning pg_basebackup"), and the cause is the part worth reporting.
 	let msg = err
