@@ -39,12 +39,40 @@ pub async fn start(target: &ResolvedCluster, config: &PostgresqlConfig) -> Resul
 	}
 	#[cfg(windows)]
 	{
-		win::transition(&service_name(target, config), win::Desired::Running).await
+		let name = service_name(target, config);
+		// A versioned EDB service for a cluster that isn't the live one is often left
+		// Disabled, which blocks starting it outright. Enable it (Automatic) first so
+		// the restored cluster comes up and stays up across reboots.
+		win::set_start_type(&name, win::StartType::Automatic).await?;
+		win::transition(&name, win::Desired::Running).await
 	}
 	#[cfg(not(any(unix, windows)))]
 	{
 		let _ = (target, config);
 		Ok(())
+	}
+}
+
+/// Stop, and set to manual start, the postgres services for every *other* installed
+/// major version — so a differently-versioned server can't hold the port or
+/// auto-restart over the cluster being restored. Best-effort. Windows-only: Debian
+/// clusters listen on distinct ports, so they don't contend.
+pub async fn quiesce_other_versions(keep_major: &str) {
+	#[cfg(windows)]
+	{
+		for version in super::resolve::installed_server_versions() {
+			if version == keep_major {
+				continue;
+			}
+			let name = format!("postgresql-x64-{version}");
+			if let Err(err) = win::stop_and_set_manual(&name).await {
+				tracing::warn!("could not quiesce the postgres service {name}: {err}");
+			}
+		}
+	}
+	#[cfg(not(windows))]
+	{
+		let _ = keep_major;
 	}
 }
 
@@ -66,7 +94,7 @@ fn service_name(target: &ResolvedCluster, config: &PostgresqlConfig) -> String {
 
 #[cfg(windows)]
 mod win {
-	use std::time::Duration;
+	use std::{process::Stdio, time::Duration};
 
 	use miette::{IntoDiagnostic as _, Result, WrapErr as _, bail};
 	use tracing::info;
@@ -80,6 +108,50 @@ mod win {
 	pub enum Desired {
 		Stopped,
 		Running,
+	}
+
+	/// A service's start type, as `sc config start=` expects it.
+	#[derive(Clone, Copy)]
+	pub enum StartType {
+		Automatic,
+		Manual,
+	}
+
+	impl StartType {
+		fn sc_value(self) -> &'static str {
+			match self {
+				StartType::Automatic => "auto",
+				StartType::Manual => "demand",
+			}
+		}
+	}
+
+	/// Set a service's start type via `sc config` — the Service Control Manager
+	/// crate can only rewrite the *whole* config (clobbering the binary path), so
+	/// `sc` is the safe way to change just the start type.
+	pub async fn set_start_type(name: &str, start: StartType) -> Result<()> {
+		let mode = start.sc_value();
+		// `sc config <name> start= <mode>` — the space after `start=` is required.
+		let output = tokio::process::Command::new("sc")
+			.args(["config", name, "start=", mode])
+			.stdin(Stdio::null())
+			.output()
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("running sc config for {name}"))?;
+		if !output.status.success() {
+			bail!(
+				"sc config {name} start= {mode} failed: {}",
+				String::from_utf8_lossy(&output.stdout).trim()
+			);
+		}
+		Ok(())
+	}
+
+	/// Stop the service (if present/running) and set it to manual start.
+	pub async fn stop_and_set_manual(name: &str) -> Result<()> {
+		let _ = transition(name, Desired::Stopped).await; // best-effort; may be absent/stopped
+		set_start_type(name, StartType::Manual).await
 	}
 
 	/// Drive `name` to `desired`, waiting for the transition to settle. The SCM

@@ -166,11 +166,11 @@ pub async fn restore(
 	staging: &Path,
 	opts: &super::method::RestoreOpts,
 ) -> Result<()> {
-	let mut target = resolve::resolve_target(config)?;
-	let plan = resolve::plan_restore(staging, &target)?;
-	// PG_VERSION is authoritative for the data's major version — trust it over the
-	// target path so the unit/service and any resetwal binary match the data.
-	target.version = plan.data_major.clone();
+	// The plan targets the snapshot's *own* major version (from PG_VERSION), so the
+	// destination, the service stopped/started, and the binaries all match the data
+	// being restored — even when a different major is the currently-installed cluster.
+	let plan = resolve::plan_restore(staging, config)?;
+	let target = &plan.target;
 	info!(
 		cluster = %target.cluster,
 		version = %target.version,
@@ -198,9 +198,14 @@ pub async fn restore(
 	// let the operator clear a stubborn holder by hand and retry — each attempt
 	// re-checks, so the stop can't be skipped.
 	crate::interactive::retry("stopping the postgres cluster", async || {
-		service::stop(&target, config).await
+		service::stop(target, config).await
 	})
 	.await?;
+
+	// Quiesce the other installed postgres versions' services (stop + set to manual
+	// start) so a differently-versioned server can't hold the port or auto-restart
+	// over the cluster we're restoring. Best-effort.
+	service::quiesce_other_versions(&target.version).await;
 
 	crate::interactive::retry("moving the restored data into place", async || {
 		super::method::replace_dir(&plan.source, &plan.dest).await
@@ -222,14 +227,63 @@ pub async fn restore(
 		 destructive: can discard recent transactions or corrupt an \
 		 otherwise-healthy cluster; only sound for a backup that won't start any \
 		 other way",
-		async || service::start(&target, config).await,
+		async || service::start(target, config).await,
 		async || pg_resetwal(&target.data_dir, &target.version).await,
 	)
 	.await?;
 
+	// The BES Linux layout indirects the active cluster through
+	// `/var/lib/postgresql/current` and `/etc/postgresql/current`; point them at the
+	// restored version so `current`-based consumers follow it (a no-op for a
+	// same-major restore, where they already resolve here by path).
+	repoint_current_symlinks(target).await;
+
 	verify(config, &target.data_dir, &target.version).await;
 	info!("restore complete; run migrations / config sync as needed");
 	Ok(())
+}
+
+/// Repoint the BES `current` symlinks at the restored version, so consumers that
+/// resolve the cluster through `/var/lib/postgresql/current` (the data dir) and
+/// `/etc/postgresql/current` (the version config) follow a restore that changes
+/// the active major. Only ever *repoints an existing* symlink (never imposes the
+/// convention on a host that doesn't use it), and only points `/etc` at a config
+/// directory that exists. Best-effort; Unix-only.
+#[cfg(unix)]
+async fn repoint_current_symlinks(target: &resolve::ResolvedCluster) {
+	repoint_symlink_if_present(&resolve::postgres_base().join("current"), &target.data_dir).await;
+
+	let etc_version = PathBuf::from("/etc/postgresql").join(&target.version);
+	if etc_version.is_dir() {
+		repoint_symlink_if_present(Path::new("/etc/postgresql/current"), &etc_version).await;
+	}
+}
+
+#[cfg(not(unix))]
+async fn repoint_current_symlinks(_target: &resolve::ResolvedCluster) {}
+
+/// Atomically repoint `link` at `dest`, but only when `link` already exists and is
+/// a symlink. Best-effort: a failure is warned, not fatal.
+#[cfg(unix)]
+async fn repoint_symlink_if_present(link: &Path, dest: &Path) {
+	match tokio::fs::symlink_metadata(link).await {
+		Ok(meta) if meta.file_type().is_symlink() => {}
+		_ => return, // absent, or not a symlink: the convention isn't in play here
+	}
+	// Stage a new symlink beside it and rename over the old one, so the swap is
+	// atomic (no window where `link` is missing).
+	let staged = link.with_extension("bestool-current");
+	let _ = tokio::fs::remove_file(&staged).await;
+	if let Err(err) = tokio::fs::symlink(dest, &staged).await {
+		warn!("could not stage symlink {} -> {}: {err}", staged.display(), dest.display());
+		return;
+	}
+	if let Err(err) = tokio::fs::rename(&staged, link).await {
+		warn!("could not repoint {} -> {}: {err}", link.display(), dest.display());
+		let _ = tokio::fs::remove_file(&staged).await;
+	} else {
+		info!("repointed {} -> {}", link.display(), dest.display());
+	}
 }
 
 /// Restore the postgres-owned mode and ownership of the freshly-swapped data
@@ -408,6 +462,36 @@ async fn checkpoint(config: &PostgresqlConfig, data_dir: &Path) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn repoint_symlink_updates_an_existing_symlink() {
+		let tmp = tempfile::tempdir().unwrap();
+		let old = tmp.path().join("18");
+		let new = tmp.path().join("17");
+		std::fs::create_dir_all(&old).unwrap();
+		std::fs::create_dir_all(&new).unwrap();
+		let link = tmp.path().join("current");
+		std::os::unix::fs::symlink(&old, &link).unwrap();
+
+		repoint_symlink_if_present(&link, &new).await;
+		assert_eq!(std::fs::read_link(&link).unwrap(), new);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn repoint_symlink_leaves_a_non_symlink_alone() {
+		let tmp = tempfile::tempdir().unwrap();
+		// A real directory at the link path must not be touched.
+		let real = tmp.path().join("current");
+		std::fs::create_dir_all(&real).unwrap();
+		let dest = tmp.path().join("target");
+		std::fs::create_dir_all(&dest).unwrap();
+
+		repoint_symlink_if_present(&real, &dest).await;
+		assert!(real.is_dir());
+		assert!(!std::fs::symlink_metadata(&real).unwrap().file_type().is_symlink());
+	}
 
 	#[test]
 	fn bin_beside_data_dir_is_sibling_of_data() {
