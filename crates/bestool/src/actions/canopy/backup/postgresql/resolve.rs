@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use miette::{Result, bail};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 
 use crate::actions::canopy::backup::method::PostgresqlConfig;
 
@@ -184,6 +184,148 @@ pub fn locate_pgdata(staging: &Path) -> Result<PathBuf> {
 	)
 }
 
+/// A restore's placement, decided from the restored tree and the target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePlan {
+	/// The directory within the staging tree to move into place.
+	pub source: PathBuf,
+	/// Where it's moved to, keeping any existing dir as `<dest>.old`.
+	pub dest: PathBuf,
+	/// The cluster's major version, read from the restored `PG_VERSION`.
+	pub data_major: String,
+	/// Whether the snapshot carries the whole server install (`bin`/`lib` beside
+	/// `data`, as the Windows backup now captures) rather than just the data dir.
+	/// A whole-install restore brings its own matching binaries, so it needs no
+	/// installed-version check.
+	pub whole_install: bool,
+}
+
+/// Decide how to lay a restored tree (`staging`) down for `target`.
+///
+/// A whole-install snapshot (the data dir nested under a tree with a sibling
+/// `bin`) replaces the whole server install directory, bringing its binaries. A
+/// data-only snapshot (the data dir at the tree root) replaces just the cluster
+/// data directory.
+pub fn plan_restore(staging: &Path, target: &ResolvedCluster) -> Result<RestorePlan> {
+	let data = locate_pgdata(staging)?;
+	let data_major = read_pg_version(&data)?;
+
+	// Whole-install only when the data dir is nested inside the restored tree and
+	// its parent (also inside the tree) holds a `bin` directory — never when the
+	// tree root *is* the data dir, where `data.parent()` would be a real host dir.
+	let install_root = if data != staging {
+		data.parent()
+			.filter(|root| root.starts_with(staging) && root.join("bin").is_dir())
+	} else {
+		None
+	};
+	if let Some(install_root) = install_root {
+		let dest = target.data_dir.parent().ok_or_else(|| {
+			miette::miette!(
+				"target data dir {} has no parent install directory to restore into",
+				target.data_dir.display()
+			)
+		})?;
+		return Ok(RestorePlan {
+			source: install_root.to_path_buf(),
+			dest: dest.to_path_buf(),
+			data_major,
+			whole_install: true,
+		});
+	}
+
+	Ok(RestorePlan {
+		source: data,
+		dest: target.data_dir.clone(),
+		data_major,
+		whole_install: false,
+	})
+}
+
+/// The cluster's major version from its `PG_VERSION` file (e.g. `18`, or `9.6`).
+fn read_pg_version(data_dir: &Path) -> Result<String> {
+	let raw = std::fs::read_to_string(data_dir.join("PG_VERSION"))
+		.into_diagnostic()
+		.wrap_err_with(|| format!("reading PG_VERSION in {}", data_dir.display()))?;
+	Ok(raw.trim().to_owned())
+}
+
+/// The base directory server *binaries* live under, per major version:
+/// `/usr/lib/postgresql` on Debian/Ubuntu, `%ProgramFiles%\PostgreSQL` (the same
+/// tree as the data) on Windows.
+fn server_base() -> PathBuf {
+	#[cfg(windows)]
+	{
+		postgres_base()
+	}
+	#[cfg(not(windows))]
+	{
+		PathBuf::from("/usr/lib/postgresql")
+	}
+}
+
+/// The installed server major versions (each a `<version>` dir with a `bin`
+/// subdirectory under [`server_base`]), sorted.
+pub fn installed_server_versions() -> Vec<String> {
+	versions_under(&server_base())
+}
+
+/// The `<version>` dirs (with a `bin` subdirectory) directly under `base`, sorted.
+fn versions_under(base: &Path) -> Vec<String> {
+	let mut out: Vec<String> = std::fs::read_dir(base)
+		.into_iter()
+		.flatten()
+		.flatten()
+		.filter(|entry| entry.path().join("bin").is_dir())
+		.filter_map(|entry| entry.file_name().into_string().ok())
+		.collect();
+	out.sort();
+	out
+}
+
+/// Error unless server binaries for major `wanted` are installed. A data-only
+/// backup doesn't carry binaries, and a physical restore only runs under its own
+/// major version (minor differences are fine), so the matching server must be
+/// present before the restore.
+pub fn ensure_server_version_available(wanted: &str) -> Result<()> {
+	ensure_version_present(wanted, &installed_server_versions())
+}
+
+fn ensure_version_present(wanted: &str, installed: &[String]) -> Result<()> {
+	if installed.iter().any(|version| version == wanted) {
+		return Ok(());
+	}
+	let found = if installed.is_empty() {
+		"none found".to_owned()
+	} else {
+		format!("found {}", installed.join(", "))
+	};
+	bail!(
+		"PostgreSQL {wanted} server binaries are not installed ({found}); a data-only \
+		 backup restores only under its own major version. Install PostgreSQL {wanted} and retry."
+	)
+}
+
+/// The directory a restore stages into: a sibling of what it will replace, on the
+/// same filesystem so the swap is a rename. On Windows that's the `PostgreSQL`
+/// base (so the whole `PostgreSQL\<version>` install can be replaced); elsewhere
+/// the data dir's parent.
+pub fn restore_staging_parent(config: &PostgresqlConfig) -> Option<PathBuf> {
+	let target = resolve_target(config).ok()?;
+	#[cfg(windows)]
+	{
+		target
+			.data_dir
+			.parent()
+			.and_then(Path::parent)
+			.map(Path::to_path_buf)
+	}
+	#[cfg(not(windows))]
+	{
+		target.data_dir.parent().map(Path::to_path_buf)
+	}
+}
+
 fn read_subdirs(dir: &Path) -> Vec<PathBuf> {
 	let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
 		.into_iter()
@@ -326,5 +468,67 @@ mod tests {
 			resolve_in(&config("main", None, Some(data_dir.clone())), tmp.path()).unwrap();
 		assert_eq!(resolved.version, "16");
 		assert_eq!(resolved.data_dir, data_dir);
+	}
+
+	fn target(data_dir: PathBuf) -> ResolvedCluster {
+		ResolvedCluster {
+			version: "18".into(),
+			cluster: "main".into(),
+			data_dir,
+		}
+	}
+
+	#[test]
+	fn plan_restore_data_only_replaces_the_data_dir() {
+		let tmp = tempfile::tempdir().unwrap();
+		// A data-only snapshot: PG_VERSION at the staging root.
+		let staging = tmp.path().join("staging");
+		std::fs::create_dir_all(&staging).unwrap();
+		std::fs::write(staging.join("PG_VERSION"), "18\n").unwrap();
+
+		let data_dir = tmp.path().join("18").join("data");
+		let plan = plan_restore(&staging, &target(data_dir.clone())).unwrap();
+		assert!(!plan.whole_install);
+		assert_eq!(plan.source, staging);
+		assert_eq!(plan.dest, data_dir);
+		assert_eq!(plan.data_major, "18");
+	}
+
+	#[test]
+	fn plan_restore_whole_install_replaces_the_install_root() {
+		let tmp = tempfile::tempdir().unwrap();
+		// A whole-install snapshot: bin/ beside data/PG_VERSION at the staging root.
+		let staging = tmp.path().join("staging");
+		std::fs::create_dir_all(staging.join("bin")).unwrap();
+		let data = staging.join("data");
+		std::fs::create_dir_all(&data).unwrap();
+		std::fs::write(data.join("PG_VERSION"), "18").unwrap();
+
+		let target_data = tmp.path().join("PostgreSQL").join("18").join("data");
+		let plan = plan_restore(&staging, &target(target_data.clone())).unwrap();
+		assert!(plan.whole_install);
+		assert_eq!(plan.source, staging);
+		assert_eq!(plan.dest, target_data.parent().unwrap());
+		assert_eq!(plan.data_major, "18");
+	}
+
+	#[test]
+	fn versions_under_lists_dirs_with_a_bin() {
+		let tmp = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(tmp.path().join("16").join("bin")).unwrap();
+		std::fs::create_dir_all(tmp.path().join("18").join("bin")).unwrap();
+		// No bin: not a server install.
+		std::fs::create_dir_all(tmp.path().join("junk")).unwrap();
+		assert_eq!(versions_under(tmp.path()), vec!["16".to_owned(), "18".to_owned()]);
+	}
+
+	#[test]
+	fn ensure_version_present_checks_membership() {
+		let installed = vec!["16".to_owned(), "18".to_owned()];
+		assert!(ensure_version_present("18", &installed).is_ok());
+		let err = ensure_version_present("17", &installed).unwrap_err();
+		let msg = format!("{err}");
+		assert!(msg.contains("PostgreSQL 17"));
+		assert!(msg.contains("found 16, 18"));
 	}
 }

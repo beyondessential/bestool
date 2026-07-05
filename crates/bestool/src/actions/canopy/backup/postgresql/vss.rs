@@ -12,7 +12,7 @@
 //! Windows host; the pure helpers (path math, script generation) are unit-tested
 //! here (they operate on strings, so the tests are platform-independent).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use tracing::{info, warn};
@@ -21,6 +21,18 @@ use super::resolve::ResolvedCluster;
 
 /// The VSS writer/alias name used in the diskshadow script.
 const ALIAS: &str = "bestoolpg";
+
+/// The directory the backup captures. On the EDB layout the whole server install
+/// (`…\PostgreSQL\<version>`, carrying `bin`/`lib`/`share` beside `data`) sits one
+/// level above the data dir, so snapshot that instead — a restore then brings the
+/// exact matching binaries and is version-independent. Falls back to the data dir
+/// alone for a non-EDB layout (no sibling `bin`).
+fn backup_root(data_dir: &Path) -> &Path {
+	match data_dir.parent() {
+		Some(parent) if parent.join("bin").is_dir() => parent,
+		_ => data_dir,
+	}
+}
 
 /// Teardown state for a prepared shadow copy, released by [`teardown`].
 #[derive(Debug)]
@@ -85,9 +97,9 @@ fn delete_script(expose_target: &str) -> String {
 /// Take the shadow copy and expose it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
 pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Shadow)> {
-	let data_dir = resolved.data_dir.to_string_lossy().into_owned();
-	let volume = volume_of(&data_dir)?.to_owned();
-	let rel = relative_to_volume(&data_dir, &volume).to_owned();
+	let root = backup_root(&resolved.data_dir).to_string_lossy().into_owned();
+	let volume = volume_of(&root)?.to_owned();
+	let rel = relative_to_volume(&root, &volume).to_owned();
 	let expose_target = expose_target_dir(&volume, backup_type);
 	let metadata = std::env::temp_dir().join(format!("bestool-vss-{}.cab", std::process::id()));
 
@@ -183,6 +195,22 @@ mod tests {
 		assert!(script.contains("add volume C: alias bestoolpg"));
 		assert!(script.contains("expose %bestoolpg% \"C:\\shadow\\pg\""));
 		assert!(script.contains("set metadata \"C:\\meta.cab\""));
+	}
+
+	#[test]
+	fn backup_root_is_the_install_dir_on_the_edb_layout() {
+		let tmp = tempfile::tempdir().unwrap();
+		let install = tmp.path().join("18");
+		let data = install.join("data");
+		std::fs::create_dir_all(install.join("bin")).unwrap();
+		std::fs::create_dir_all(&data).unwrap();
+		// With a sibling `bin`, the whole install is captured…
+		assert_eq!(backup_root(&data), install);
+
+		// …without one (non-EDB layout), just the data dir.
+		let bare = tmp.path().join("bare").join("data");
+		std::fs::create_dir_all(&bare).unwrap();
+		assert_eq!(backup_root(&bare), bare);
 	}
 
 	#[test]
