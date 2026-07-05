@@ -91,12 +91,14 @@ pub async fn run(args: KopiaArgs, _ctx: Context) -> Result<()> {
 		}
 	};
 
-	// The proxy serves for the whole command; held in scope to the end.
+	// The proxy serves for the whole command; held in scope to the end. A fresh
+	// run id per invocation lets canopy correlate this session's credential issues.
 	let proxy = spawn_proxy(
 		client.clone(),
 		args.backup_type.clone(),
 		args.purpose.into(),
 		&target.region,
+		uuid::Uuid::new_v4(),
 	)
 	.await?;
 	let config_dir = transient_config_dir()?;

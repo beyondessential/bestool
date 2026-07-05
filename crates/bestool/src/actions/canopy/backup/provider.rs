@@ -16,6 +16,7 @@ use bestool_kopia::proxy::{BoxError, CredentialProvider, Credentials};
 use futures::future::BoxFuture;
 use jiff::{Timestamp, ToSpan};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 /// Refresh creds this far ahead of their `Expiration`.
 const REFRESH_MARGIN_MINUTES: i64 = 2;
@@ -33,8 +34,14 @@ pub struct CanopyCredentialProvider {
 
 impl CanopyCredentialProvider {
 	/// Build a provider that fetches `(backup_type, purpose)` credentials from
-	/// Canopy.
-	pub fn new(client: Arc<CanopyClient>, backup_type: String, purpose: BackupPurpose) -> Self {
+	/// Canopy, tagged with `run_id` so Canopy can correlate every issuance,
+	/// snapshot, and report of one run.
+	pub fn new(
+		client: Arc<CanopyClient>,
+		backup_type: String,
+		purpose: BackupPurpose,
+		run_id: Uuid,
+	) -> Self {
 		let refresh: Refresher = Arc::new(move || {
 			let client = client.clone();
 			let backup_type = backup_type.clone();
@@ -44,6 +51,7 @@ impl CanopyCredentialProvider {
 						&BackupCredentialsArgs::builder()
 							.type_(backup_type.clone())
 							.purpose(purpose)
+							.run_id(run_id)
 							.build(),
 					)
 					.await

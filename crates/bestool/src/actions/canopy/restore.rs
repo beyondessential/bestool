@@ -94,6 +94,10 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		}
 	};
 
+	// A fresh run id per restore (canopy rejects a repeated one), carried on every
+	// credential issuance so canopy can correlate the whole session.
+	let run_id = Uuid::new_v4();
+
 	// Read-only creds + connection (the restore purpose downscopes server-side).
 	// The proxy serves for the whole restore; held in scope to the end.
 	let proxy = spawn_proxy(
@@ -101,6 +105,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		args.backup_type.clone(),
 		BackupPurpose::Restore,
 		&target.region,
+		run_id,
 	)
 	.await?;
 	let config_dir = transient_config_dir()?;
@@ -128,9 +133,6 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		taken = ?snapshot.end_time.or(snapshot.start_time),
 		"restoring snapshot",
 	);
-
-	// A fresh run id per restore (canopy rejects a repeated one).
-	let run_id = Uuid::new_v4();
 
 	// Perform the restore, capturing the outcome so it can be reported to canopy
 	// whether it succeeds or fails.
