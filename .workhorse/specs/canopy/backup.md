@@ -177,3 +177,9 @@ To proceed an operator passes an explicit confirmation flag (for non-interactive
 Migrations, configuration sync, and version upgrades are left to the operator.
 
 Off-host restore verification is Canopy's concern, not this command's; this command's job is to produce clean backups and to restore them on demand.
+
+## Ad-hoc repository access
+
+`bestool canopy kopia --type <type> [--purpose backup|restore] -- <args>` runs an arbitrary kopia command against the repository, for inspection and maintenance without hand-wiring credentials.
+It fetches credentials of the requested purpose (defaulting to read-only restore), connects through the same loopback proxy, and runs the given kopia arguments with the operator's own input, output, and exit status.
+It grants no access the purpose's credentials don't already carry: a `restore`-purpose command cannot write, and no purpose can delete.
