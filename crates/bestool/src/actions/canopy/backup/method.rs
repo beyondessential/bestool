@@ -148,9 +148,7 @@ impl Method {
 				.unwrap_or_else(|| config.path.clone())
 				.parent()
 				.map(Path::to_path_buf),
-			Method::Postgresql(config) => super::postgresql::resolve::resolve_target(config)
-				.ok()
-				.and_then(|r| r.data_dir.parent().map(Path::to_path_buf)),
+			Method::Postgresql(config) => super::postgresql::resolve::restore_staging_parent(config),
 		};
 		parent
 			.unwrap_or_else(std::env::temp_dir)

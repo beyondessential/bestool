@@ -149,39 +149,61 @@ async fn basebackup_prepared(
 }
 
 /// Restore a postgres cluster from a freshly-restored tree (`staging`): stop the
-/// cluster, swap the data directory into place (keeping the old one as
-/// `<data>.old`), start it via plain crash recovery, and verify.
+/// cluster, swap the restored tree into place (keeping the old one as
+/// `<dest>.old`), start it via plain crash recovery, and verify.
 ///
-/// Refuses to overwrite an existing data directory unless `opts.clobber` is set
-/// (the command sets it from the flag or an interactive confirmation).
+/// A Windows backup carries the whole server install, so the swap replaces the
+/// `PostgreSQL\<version>` directory and the exact matching binaries come with it.
+/// A data-only backup (Linux, legacy Windows) replaces just the data directory,
+/// so the matching server major version must already be installed — checked up
+/// front. The version is taken from the restored `PG_VERSION`, not the target
+/// path, so the systemd unit / service name match the data.
+///
+/// Refuses to overwrite an existing directory unless `opts.clobber` is set (the
+/// command sets it from the flag or an interactive confirmation).
 pub async fn restore(
 	config: &PostgresqlConfig,
 	staging: &Path,
 	opts: &super::method::RestoreOpts,
 ) -> Result<()> {
-	let target = resolve::resolve_target(config)?;
-	let restored = resolve::locate_pgdata(staging)?;
+	let mut target = resolve::resolve_target(config)?;
+	let plan = resolve::plan_restore(staging, &target)?;
+	// PG_VERSION is authoritative for the data's major version — trust it over the
+	// target path so the unit/service and any resetwal binary match the data.
+	target.version = plan.data_major.clone();
 	info!(
 		cluster = %target.cluster,
 		version = %target.version,
-		data_dir = %target.data_dir.display(),
+		dest = %plan.dest.display(),
+		whole_install = plan.whole_install,
 		"restoring postgres cluster",
 	);
 
-	super::method::ensure_not_clobbering(&target.data_dir, opts.clobber)?;
+	super::method::ensure_not_clobbering(&plan.dest, opts.clobber)?;
 
-	// Stop the cluster before swapping the data directory: on Windows an open
-	// handle to the running server's files makes the move fail outright; on Unix
-	// it would corrupt a live cluster. Both this and the swap depend on nothing
-	// else holding the files, so let the operator clear a stubborn holder by hand
-	// and retry — each attempt re-checks, so the stop can't be skipped.
+	// A data-only backup carries no binaries; a physical restore only runs under
+	// its own major version. Fail-and-prompt so the operator can install it and
+	// retry (the recheck runs each attempt). A whole-install backup brings its own.
+	if !plan.whole_install {
+		let major = plan.data_major.clone();
+		crate::interactive::retry("checking the installed postgres version", async || {
+			resolve::ensure_server_version_available(&major)
+		})
+		.await?;
+	}
+
+	// Stop the cluster before swapping: on Windows an open handle to the running
+	// server's files makes the move fail outright; on Unix it would corrupt a live
+	// cluster. Both this and the swap depend on nothing else holding the files, so
+	// let the operator clear a stubborn holder by hand and retry — each attempt
+	// re-checks, so the stop can't be skipped.
 	crate::interactive::retry("stopping the postgres cluster", async || {
 		service::stop(&target, config).await
 	})
 	.await?;
 
-	crate::interactive::retry("moving the data directory into place", async || {
-		super::method::replace_dir(&restored, &target.data_dir).await
+	crate::interactive::retry("moving the restored data into place", async || {
+		super::method::replace_dir(&plan.source, &plan.dest).await
 	})
 	.await?;
 
@@ -201,11 +223,11 @@ pub async fn restore(
 		 otherwise-healthy cluster; only sound for a backup that won't start any \
 		 other way",
 		async || service::start(&target, config).await,
-		async || pg_resetwal(&target.data_dir).await,
+		async || pg_resetwal(&target.data_dir, &target.version).await,
 	)
 	.await?;
 
-	verify(config, &target.data_dir).await;
+	verify(config, &target.data_dir, &target.version).await;
 	info!("restore complete; run migrations / config sync as needed");
 	Ok(())
 }
@@ -224,14 +246,14 @@ async fn fix_ownership(_data_dir: &Path) -> Result<()> {
 	Ok(())
 }
 
-async fn pg_resetwal(data_dir: &Path) -> Result<()> {
-	let mut cmd = pg_command(&postgres_bin("pg_resetwal", data_dir));
+async fn pg_resetwal(data_dir: &Path, major: &str) -> Result<()> {
+	let mut cmd = pg_command(&postgres_bin_versioned("pg_resetwal", major, data_dir));
 	cmd.arg("-f").arg(data_dir);
 	run_checked(cmd, "pg_resetwal").await
 }
 
-async fn verify(config: &PostgresqlConfig, data_dir: &Path) {
-	let mut cmd = pg_command(&postgres_bin("psql", data_dir));
+async fn verify(config: &PostgresqlConfig, data_dir: &Path, major: &str) {
+	let mut cmd = pg_command(&postgres_bin_versioned("psql", major, data_dir));
 	// -w as in `checkpoint`: never block on a terminal password prompt.
 	cmd.args(["-X", "-q", "-w", "-tAc", "SELECT 1"]);
 	apply_connection(&mut cmd, config);
@@ -279,6 +301,29 @@ pub(super) fn postgres_bin(name: &str, data_dir: &Path) -> String {
 	crate::find_postgres::find_postgres_bin(name)
 		.map(|p| p.to_string_lossy().into_owned())
 		.unwrap_or_else(|_| name.to_owned())
+}
+
+/// Locate a postgres binary for a specific major version — for restore, where the
+/// tool must match the restored data, not just any install. On Unix that's the
+/// versioned install dir (`/usr/lib/postgresql/<major>/bin/<name>`), avoiding
+/// [`postgres_bin`]'s highest-version fallback when several majors are installed.
+/// On Windows the versioned bin already sits beside the data dir, so this defers
+/// to [`postgres_bin`].
+fn postgres_bin_versioned(name: &str, major: &str, data_dir: &Path) -> String {
+	#[cfg(unix)]
+	{
+		let candidate = PathBuf::from("/usr/lib/postgresql")
+			.join(major)
+			.join("bin")
+			.join(name);
+		if candidate.is_file() {
+			return candidate.to_string_lossy().into_owned();
+		}
+	}
+	#[cfg(not(unix))]
+	let _ = major;
+
+	postgres_bin(name, data_dir)
 }
 
 /// The EDB-layout binary path beside the data dir (`<data_dir>\..\bin\<name>`).
