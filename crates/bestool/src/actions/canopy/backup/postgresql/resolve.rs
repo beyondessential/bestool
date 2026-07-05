@@ -184,7 +184,7 @@ pub fn locate_pgdata(staging: &Path) -> Result<PathBuf> {
 	)
 }
 
-/// A restore's placement, decided from the restored tree and the target.
+/// A restore's placement, decided from the restored tree and the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestorePlan {
 	/// The directory within the staging tree to move into place.
@@ -198,17 +198,31 @@ pub struct RestorePlan {
 	/// A whole-install restore brings its own matching binaries, so it needs no
 	/// installed-version check.
 	pub whole_install: bool,
+	/// The target resolved to the snapshot's own major version — the destination,
+	/// service, and binaries all match the data being restored.
+	pub target: ResolvedCluster,
 }
 
-/// Decide how to lay a restored tree (`staging`) down for `target`.
+/// Decide how to lay a restored tree (`staging`) down for `config`.
+///
+/// The target is resolved to the snapshot's *own* major version (from its
+/// `PG_VERSION`), not the currently-installed cluster: a physical backup only
+/// runs under its own major, so restoring a v17 backup targets the v17 install
+/// (`…\17\data` / `/var/lib/postgresql/17/<cluster>`) and its service — keeping
+/// the destination, the service stopped/started, and the binaries consistent.
 ///
 /// A whole-install snapshot (the data dir nested under a tree with a sibling
 /// `bin`) replaces the whole server install directory, bringing its binaries. A
 /// data-only snapshot (the data dir at the tree root) replaces just the cluster
 /// data directory.
-pub fn plan_restore(staging: &Path, target: &ResolvedCluster) -> Result<RestorePlan> {
+pub fn plan_restore(staging: &Path, config: &PostgresqlConfig) -> Result<RestorePlan> {
+	plan_restore_in(staging, config, &postgres_base())
+}
+
+fn plan_restore_in(staging: &Path, config: &PostgresqlConfig, base: &Path) -> Result<RestorePlan> {
 	let data = locate_pgdata(staging)?;
 	let data_major = read_pg_version(&data)?;
+	let target = resolve_target_for_version(config, &data_major, base);
 
 	// Whole-install only when the data dir is nested inside the restored tree and
 	// its parent (also inside the tree) holds a `bin` directory — never when the
@@ -231,6 +245,7 @@ pub fn plan_restore(staging: &Path, target: &ResolvedCluster) -> Result<RestoreP
 			dest: dest.to_path_buf(),
 			data_major,
 			whole_install: true,
+			target,
 		});
 	}
 
@@ -239,7 +254,26 @@ pub fn plan_restore(staging: &Path, target: &ResolvedCluster) -> Result<RestoreP
 		dest: target.data_dir.clone(),
 		data_major,
 		whole_install: false,
+		target,
 	})
+}
+
+/// Resolve the restore target pinned to `major` (the snapshot's own version). An
+/// explicit `data_dir` override still wins; otherwise the path is
+/// `<base>/<major>/<cluster-subdir>`.
+fn resolve_target_for_version(config: &PostgresqlConfig, major: &str, base: &Path) -> ResolvedCluster {
+	if let Some(data_dir) = &config.data_dir {
+		return ResolvedCluster {
+			version: major.to_owned(),
+			cluster: config.cluster.clone(),
+			data_dir: data_dir.clone(),
+		};
+	}
+	ResolvedCluster {
+		version: major.to_owned(),
+		cluster: config.cluster.clone(),
+		data_dir: base.join(major).join(cluster_subdir(config)),
+	}
 }
 
 /// The cluster's major version from its `PG_VERSION` file (e.g. `18`, or `9.6`).
@@ -470,28 +504,24 @@ mod tests {
 		assert_eq!(resolved.data_dir, data_dir);
 	}
 
-	fn target(data_dir: PathBuf) -> ResolvedCluster {
-		ResolvedCluster {
-			version: "18".into(),
-			cluster: "main".into(),
-			data_dir,
-		}
-	}
-
 	#[test]
-	fn plan_restore_data_only_replaces_the_data_dir() {
+	fn plan_restore_data_only_targets_the_snapshots_own_version() {
 		let tmp = tempfile::tempdir().unwrap();
 		// A data-only snapshot: PG_VERSION at the staging root.
 		let staging = tmp.path().join("staging");
 		std::fs::create_dir_all(&staging).unwrap();
-		std::fs::write(staging.join("PG_VERSION"), "18\n").unwrap();
+		std::fs::write(staging.join("PG_VERSION"), "17\n").unwrap();
 
-		let data_dir = tmp.path().join("18").join("data");
-		let plan = plan_restore(&staging, &target(data_dir.clone())).unwrap();
+		let cfg = config("main", None, None);
+		let leaf = cluster_subdir(&cfg);
+		let plan = plan_restore_in(&staging, &cfg, tmp.path()).unwrap();
 		assert!(!plan.whole_install);
+		assert_eq!(plan.data_major, "17");
+		// Destination and target track the data's own major (17), not any other
+		// installed version.
+		assert_eq!(plan.target.version, "17");
+		assert_eq!(plan.dest, tmp.path().join("17").join(leaf));
 		assert_eq!(plan.source, staging);
-		assert_eq!(plan.dest, data_dir);
-		assert_eq!(plan.data_major, "18");
 	}
 
 	#[test]
@@ -504,12 +534,14 @@ mod tests {
 		std::fs::create_dir_all(&data).unwrap();
 		std::fs::write(data.join("PG_VERSION"), "18").unwrap();
 
-		let target_data = tmp.path().join("PostgreSQL").join("18").join("data");
-		let plan = plan_restore(&staging, &target(target_data.clone())).unwrap();
+		let cfg = config("main", None, None);
+		let plan = plan_restore_in(&staging, &cfg, tmp.path()).unwrap();
 		assert!(plan.whole_install);
-		assert_eq!(plan.source, staging);
-		assert_eq!(plan.dest, target_data.parent().unwrap());
 		assert_eq!(plan.data_major, "18");
+		assert_eq!(plan.source, staging);
+		// The whole install replaces `<base>/18` (the install root).
+		assert_eq!(plan.dest, tmp.path().join("18"));
+		assert_eq!(plan.target.version, "18");
 	}
 
 	#[test]
