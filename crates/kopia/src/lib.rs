@@ -1,13 +1,11 @@
 //! Shared helpers for interacting with the kopia CLI.
 //!
-//! Used by `bestool-tamanu` (for the `kopia_backup` doctor check) and by
-//! `bestool` (for the `bestool kopia` subcommand suite). Has nothing
-//! tamanu-specific in it.
+//! Used by `bestool` (for the `bestool kopia` subcommand suite and the canopy
+//! backup/restore flows). Has nothing tamanu-specific in it.
 //!
 //! Highlights:
-//! - [`find_kopia_binary`] / [`find_windows_kopia_binary`] /
-//!   [`find_windows_kopia_config`]: locate kopia and (on Windows) the per-user
-//!   repository config from KopiaUI's standard install locations.
+//! - [`find_kopia_binary`] / [`find_windows_kopia_binary`]: locate kopia from
+//!   KopiaUI's standard install locations.
 //! - [`linux_elevation`]: decide how to run kopia as the `kopia` system user on
 //!   Linux — [`Elevation::SetPriv`] (drop from root) or [`Elevation::Sudo`]
 //!   (escalate as a mortal) when the system install is present,
@@ -113,13 +111,6 @@ pub fn find_windows_kopia_binary() -> Option<PathBuf> {
 		);
 	}
 	candidates.into_iter().find(|p| p.exists())
-}
-
-/// Standard per-user kopia repository config on Windows, used by KopiaUI.
-pub fn find_windows_kopia_config() -> Option<PathBuf> {
-	let appdata = std::env::var("APPDATA").ok()?;
-	let config = Path::new(&appdata).join("kopia").join("repository.config");
-	config.exists().then_some(config)
 }
 
 /// Current process's username (via `whoami`). `None` if `whoami` can't
@@ -1229,16 +1220,16 @@ mod tests {
 			args.windows(2)
 				.any(|w| w[0] == "--tags" && w[1] == "area:postgres")
 		);
-		assert!(args.windows(2).any(|w| w[0] == "--tags" && w[1] == "type:ext4"));
+		assert!(
+			args.windows(2)
+				.any(|w| w[0] == "--tags" && w[1] == "type:ext4")
+		);
 	}
 
 	#[test]
 	fn snapshot_list_command_without_tags_omits_tag_flag() {
 		let cmd = snapshot_list_command(Path::new("kopia"), &BTreeMap::new());
-		assert!(
-			!cmd.get_args()
-				.any(|a| a.to_string_lossy() == "--tags")
-		);
+		assert!(!cmd.get_args().any(|a| a.to_string_lossy() == "--tags"));
 	}
 
 	#[test]
