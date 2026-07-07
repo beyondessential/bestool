@@ -1,5 +1,10 @@
-use std::io::{IsTerminal as _, Write};
+use std::{
+	collections::HashMap,
+	io::{IsTerminal as _, Write},
+	time::Duration,
+};
 
+use bestool_canopy::schema::CheckSeverity;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde_json::Value;
@@ -147,6 +152,11 @@ async fn run_local_sweep(
 	let selected_names = selected_names(&args.only, &args.skip)?;
 	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::Local);
 
+	// Fetch canopy's effective-severity ceilings concurrently with the checks.
+	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
+	// lowers a verdict, so its absence just leaves the raw sweep.
+	let severities_handle = tokio::spawn(fetch_check_severities());
+
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
 	let sweep_handle = tokio::spawn(async move {
@@ -166,6 +176,7 @@ async fn run_local_sweep(
 		let outcome = handle.await.into_diagnostic()??;
 		if outcome.interrupted {
 			sweep_handle.abort();
+			severities_handle.abort();
 			let mut synthetic = synthetic_sweep(outcome.results);
 			synthetic.payload = serde_json::Value::Object(Default::default());
 			return Ok(SweepOutcome {
@@ -178,8 +189,49 @@ async fn run_local_sweep(
 		false
 	};
 
-	let sweep = sweep_handle.await.into_diagnostic()??;
+	let mut sweep = sweep_handle.await.into_diagnostic()??;
+	// Apply the mapping once it's back (the checks may well have finished first).
+	if let Some(severities) = severities_handle.await.ok().flatten() {
+		sweep.apply_severities(&severities);
+	}
 	Ok(SweepOutcome { sweep, interrupted })
+}
+
+/// Best-effort fetch of canopy's effective-severity ceilings for this server.
+///
+/// Every failure path — no registration, no auth path to canopy, no resolvable
+/// server id, a timeout, or any request/parse error — resolves to `None` ("no
+/// mapping") rather than an error, so a doctor run never fails or stalls on
+/// canopy being unreachable. Bounded by an overall timeout for the same reason.
+async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
+	tokio::time::timeout(Duration::from_secs(10), async {
+		let reg = bestool_canopy::registration::load().await.ok().flatten()?;
+		let device_key = reg.device_key.as_deref()?;
+		let base_url = reg
+			.api_url
+			.as_deref()
+			.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
+			.parse()
+			.ok()?;
+		let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
+		let client = bestool_canopy::CanopyClient::with_urls(
+			base_url,
+			tailscale_url,
+			Some(device_key),
+			crate::http::client_builder,
+		)
+		.await
+		.ok()??;
+
+		let server_id = bestool_tamanu::server_info::get_or_create_server_id()
+			.await
+			.ok()?;
+		let value = client.status_check_severities(&server_id).await.ok()?;
+		serde_json::from_value(value).ok()
+	})
+	.await
+	.ok()
+	.flatten()
 }
 
 /// Drive a fresh sweep on the daemon and stream the per-check results back.

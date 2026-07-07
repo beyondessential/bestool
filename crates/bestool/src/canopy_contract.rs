@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 
 use bestool_canopy::schema::{
 	BackupCapabilitiesArgs, BackupCredentialsArgs, BackupPurpose, BackupTarget, BeginArgs,
-	BeginResponse, CompleteArgs, CompleteResponse, CredentialProcessOutput, NewEvent, ReportArgs,
-	RunOutcome, Severity,
+	BeginResponse, CheckSeverity, CompleteArgs, CompleteResponse, CredentialProcessOutput,
+	NewEvent, ReportArgs, RunOutcome, Severity,
 };
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
@@ -501,4 +501,74 @@ async fn status_response_carries_backup_now() {
 		Some(&json!("string")),
 		"backup_now items are no longer strings: {backup_now:#}",
 	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn status_response_carries_check_severities() {
+	// alertd caches `check_severities` off the status response to cap local
+	// verdicts; confirm canopy still serves it as a map of CheckSeverity.
+	let spec = spec().await;
+	let schema = resolve(spec, &response_schema("/status/{server_id}", "post"));
+	let check_severities = schema
+		.pointer("/properties/check_severities")
+		.or_else(|| {
+			schema
+				.get("allOf")?
+				.as_array()?
+				.iter()
+				.find_map(|member| member.pointer("/properties/check_severities"))
+		})
+		.unwrap_or_else(|| panic!("status response has no check_severities: {schema:#}"));
+	assert_eq!(
+		check_severities.pointer("/type"),
+		Some(&json!("object")),
+		"check_severities is no longer an object map: {check_severities:#}",
+	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn check_severities_endpoint_matches_spec() {
+	// The no-daemon doctor run fetches ceilings from this standalone endpoint.
+	let spec = spec().await;
+	assert_operation_exists(spec, "/status/{server_id}/check-severities", "get");
+
+	// Every value in the map is a CheckSeverity; confirm bestool's generated
+	// enum still round-trips the spec's vocabulary in both directions.
+	let spec_levels: Vec<String> = resolve(spec, "/components/schemas/CheckSeverity")
+		.get("enum")
+		.and_then(Value::as_array)
+		.expect("CheckSeverity schema has an enum")
+		.iter()
+		.map(|v| {
+			v.as_str()
+				.expect("CheckSeverity enum values are strings")
+				.to_owned()
+		})
+		.collect();
+
+	// Exhaustive match: adding a variant breaks this and forces the list update.
+	use CheckSeverity::*;
+	const ALL: &[CheckSeverity] = &[Skip, Warn, Fail];
+	for severity in ALL {
+		match severity {
+			Skip | Warn | Fail => {}
+		}
+	}
+
+	for level in &spec_levels {
+		assert!(
+			serde_json::from_value::<CheckSeverity>(json!(level)).is_ok(),
+			"canopy CheckSeverity {level:?} does not deserialise into bestool's enum",
+		);
+	}
+	for severity in ALL {
+		let ours = serde_json::to_value(severity).unwrap();
+		let ours = ours.as_str().unwrap().to_owned();
+		assert!(
+			spec_levels.contains(&ours),
+			"bestool CheckSeverity {ours:?} is not accepted by canopy (spec has {spec_levels:?})",
+		);
+	}
 }
