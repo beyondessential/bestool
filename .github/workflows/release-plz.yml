@@ -29,7 +29,7 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - id: crates-io-auth
-        uses: rust-lang/crates-io-auth-action@v1.0.4
+        uses: rust-lang/crates-io-auth-action@v1.0.5
       - name: Refresh canopy OpenAPI snapshot for packaging
         # Ship a current schema in the published bestool-canopy crate, so its
         # offline / docs.rs consumers (which can't fetch live) don't get a stale
