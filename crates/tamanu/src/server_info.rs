@@ -111,6 +111,48 @@ fn load_cached_tags_at(path: &Path) -> Option<BTreeMap<String, String>> {
 	)
 }
 
+/// Persist canopy tags to the on-disk cache alongside the registration.
+///
+/// Writes the `{ "tags": .., "fetched_at": .. }` shape [`load_cached_tags`]
+/// reads, to [`bestool_canopy::registration::default_tags_path`], stamped with
+/// the current time and swapped into place atomically. The parent directory is
+/// created if absent.
+///
+/// Callers that have just obtained fresh tags from canopy use this to refresh
+/// the cache: `bestool canopy tags` on an online fetch, and the alertd doctor,
+/// whose status push echoes the server's effective tags back on every tick.
+#[cfg(feature = "canopy-registration")]
+pub fn save_cached_tags(tags: &BTreeMap<String, String>) -> Result<()> {
+	save_cached_tags_at(&bestool_canopy::registration::default_tags_path(), tags)
+}
+
+#[cfg(feature = "canopy-registration")]
+fn save_cached_tags_at(path: &Path, tags: &BTreeMap<String, String>) -> Result<()> {
+	if let Some(parent) = path.parent()
+		&& !parent.exists()
+	{
+		std::fs::create_dir_all(parent)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("creating tags cache dir {}", parent.display()))?;
+	}
+
+	let payload = serde_json::json!({
+		"tags": tags,
+		"fetched_at": jiff::Timestamp::now(),
+	});
+	let json = serde_json::to_vec_pretty(&payload)
+		.into_diagnostic()
+		.wrap_err("serialising tags cache")?;
+
+	let tmp = path.with_extension("json.tmp");
+	std::fs::write(&tmp, &json)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("writing tags cache tempfile at {}", tmp.display()))?;
+	std::fs::rename(&tmp, path)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))
+}
+
 /// Resolve the `metaServerId` for this Tamanu server.
 ///
 /// Resolution order:
@@ -542,6 +584,20 @@ mod tests {
 		let a = dir.path().join("a.json");
 		let b = dir.path().join("b.json");
 		assert!(load_cached_tags_from(&[a, b]).is_none());
+	}
+
+	#[cfg(feature = "canopy-registration")]
+	#[test]
+	fn save_cached_tags_at_roundtrips_through_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("sub").join("tags.json");
+		let mut tags = BTreeMap::new();
+		tags.insert("billing.customer".to_owned(), "acme".to_owned());
+		tags.insert("canopy:kind".to_owned(), "central".to_owned());
+
+		save_cached_tags_at(&path, &tags).expect("should write (and create parent dir)");
+		let loaded = load_cached_tags_at(&path).expect("should read back");
+		assert_eq!(loaded, tags);
 	}
 
 	#[test]

@@ -86,11 +86,7 @@ pub async fn run(args: TagsArgs, ctx: Context) -> Result<()> {
 	} else {
 		match fetch_online().await {
 			Ok(tags) => {
-				let cache = TagsCache {
-					tags: tags.clone(),
-					fetched_at: Some(jiff::Timestamp::now()),
-				};
-				if let Err(err) = save_cache(&cache_path, &cache) {
+				if let Err(err) = bestool_tamanu::server_info::save_cached_tags(&tags) {
 					warn!(%err, path = %cache_path.display(), "could not save tags cache");
 				}
 				let _ = config; // suppress unused; kept so we hold the load_config side effects
@@ -221,27 +217,6 @@ fn load_cache(path: &Path) -> Result<Option<TagsCache>> {
 	}
 }
 
-fn save_cache(path: &Path, cache: &TagsCache) -> Result<()> {
-	if let Some(parent) = path.parent()
-		&& !parent.exists()
-	{
-		std::fs::create_dir_all(parent)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("creating tags cache dir {}", parent.display()))?;
-	}
-	let json = serde_json::to_vec_pretty(cache)
-		.into_diagnostic()
-		.wrap_err("serialising tags cache")?;
-	let tmp = path.with_extension("json.tmp");
-	std::fs::write(&tmp, &json)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("writing tags cache tempfile at {}", tmp.display()))?;
-	std::fs::rename(&tmp, path)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))?;
-	Ok(())
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -249,14 +224,11 @@ mod tests {
 	fn write_cache(path: &Path, tag: &str) {
 		let mut tags = BTreeMap::new();
 		tags.insert("role".to_owned(), tag.to_owned());
-		save_cache(
-			path,
-			&TagsCache {
-				tags,
-				fetched_at: None,
-			},
-		)
-		.unwrap();
+		let cache = TagsCache {
+			tags,
+			fetched_at: None,
+		};
+		std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
 	}
 
 	#[test]
