@@ -1,5 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use bestool_canopy::schema::CheckSeverity;
 use futures::stream::{FuturesUnordered, StreamExt};
 use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
@@ -14,6 +15,23 @@ use crate::doctor::{
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
 };
+
+/// Ceiling applied to a check that canopy's severity map doesn't mention.
+///
+/// A check absent from the map is one canopy doesn't yet know about (it's newer
+/// than the deployment), which canopy's own contract classifies as `warn` until
+/// it catches up. Matching that here keeps a local sweep's verdict in step with
+/// what canopy would show.
+const ABSENT_CHECK_SEVERITY: CheckSeverity = CheckSeverity::Warn;
+
+/// The ceiling to apply to the check named `name`, honouring the absent-check
+/// default ([`ABSENT_CHECK_SEVERITY`]).
+pub fn severity_ceiling(severities: &HashMap<String, CheckSeverity>, name: &str) -> CheckSeverity {
+	severities
+		.get(name)
+		.copied()
+		.unwrap_or(ABSENT_CHECK_SEVERITY)
+}
 
 /// The Tamanu deployment a sweep runs against, when the host has one.
 #[derive(Clone)]
@@ -68,6 +86,7 @@ pub fn resolve_sweep_tamanu(install: Option<(Version, PathBuf)>) -> Result<Optio
 	}
 }
 
+#[derive(Clone)]
 pub struct SweepResult {
 	pub server_id: Option<String>,
 	pub results: Vec<(Check, bool)>,
@@ -77,6 +96,33 @@ pub struct SweepResult {
 	/// callers (e.g. the daemon plugin) can cache it across ticks instead of
 	/// re-querying every minute.
 	pub pg_version: Option<String>,
+}
+
+impl SweepResult {
+	/// Lower each check's status to canopy's effective-severity ceiling, then
+	/// re-derive the overall result and the wire `health[]` array to match.
+	///
+	/// This is a display-time transform for local consumers (the `doctor` CLI):
+	/// the payload posted to canopy is always the raw one, since canopy is the
+	/// source of truth for severities and applies the mapping itself. See
+	/// [`CheckStatus::cap_to`](crate::doctor::check::CheckStatus::cap_to) for the
+	/// ceiling semantics and [`severity_ceiling`] for the absent-check default.
+	pub fn apply_severities(&mut self, severities: &HashMap<String, CheckSeverity>) {
+		for (check, _) in &mut self.results {
+			let ceiling = severity_ceiling(severities, check.name);
+			check.status = check.status.clone().cap_to(ceiling);
+		}
+		self.overall = OverallResult::from_checks(
+			&self
+				.results
+				.iter()
+				.map(|(c, _)| c.clone())
+				.collect::<Vec<_>>(),
+		);
+		if let Value::Object(obj) = &mut self.payload {
+			obj.insert("health".into(), Value::Array(health_array(&self.results)));
+		}
+	}
 }
 
 pub async fn perform_sweep(
@@ -327,15 +373,18 @@ fn build_payload(info: &Value, results: &[(Check, bool)]) -> Value {
 		}
 	}
 
-	let health: Vec<Value> = results
+	payload.insert("health".into(), Value::Array(health_array(results)));
+
+	Value::Object(payload)
+}
+
+/// The `health[]` wire array: one entry per on-wire check, in the given order.
+fn health_array(results: &[(Check, bool)]) -> Vec<Value> {
+	results
 		.iter()
 		.filter(|(_, on_wire)| *on_wire)
 		.map(|(c, _)| c.to_wire())
-		.collect();
-
-	payload.insert("health".into(), Value::Array(health));
-
-	Value::Object(payload)
+		.collect()
 }
 
 #[cfg(test)]
@@ -471,6 +520,73 @@ mod tests {
 			.map(|v| v["check"].as_str().unwrap())
 			.collect();
 		assert_eq!(names, vec!["on"]);
+	}
+
+	#[test]
+	fn apply_severities_caps_results_overall_and_wire() {
+		let results = vec![pass("keep_pass"), fail("noisy"), fail("real")];
+		let payload = build_payload(&Value::Object(Default::default()), &results);
+		let mut sweep = SweepResult {
+			server_id: None,
+			results,
+			overall: OverallResult::Failing,
+			payload,
+			pg_version: None,
+		};
+
+		let mut severities = HashMap::new();
+		severities.insert("noisy".to_string(), CheckSeverity::Skip);
+		severities.insert("real".to_string(), CheckSeverity::Fail);
+		// `keep_pass` is absent from the map: it defaults to warn, but a pass is
+		// never raised, so it stays passing.
+		sweep.apply_severities(&severities);
+
+		let status_of = |name: &str| {
+			sweep
+				.results
+				.iter()
+				.find(|(c, _)| c.name == name)
+				.map(|(c, _)| c.status.wire_result())
+				.unwrap()
+		};
+		assert_eq!(status_of("keep_pass"), "passed");
+		assert_eq!(status_of("noisy"), "skipped");
+		assert_eq!(status_of("real"), "failed");
+
+		// Overall is re-derived from the capped statuses: the only fatal check
+		// left is `real`, so we're still failing; silence `real` too and it drops.
+		assert_eq!(sweep.overall, OverallResult::Failing);
+
+		// The wire health array tracks the capped statuses.
+		let wire_result = |name: &str| {
+			sweep.payload["health"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|c| c["check"] == name)
+				.unwrap()["result"]
+				.clone()
+		};
+		assert_eq!(wire_result("noisy"), "skipped");
+		assert_eq!(wire_result("real"), "failed");
+	}
+
+	#[test]
+	fn apply_severities_absent_check_defaults_to_warn() {
+		// A check canopy hasn't heard of yet is capped at warn, so a computed
+		// failure is shown as a warning rather than promoted or left fatal.
+		let results = vec![fail("brand_new")];
+		let payload = build_payload(&Value::Object(Default::default()), &results);
+		let mut sweep = SweepResult {
+			server_id: None,
+			results,
+			overall: OverallResult::Failing,
+			payload,
+			pg_version: None,
+		};
+		sweep.apply_severities(&HashMap::new());
+		assert_eq!(sweep.results[0].0.status.wire_result(), "warning");
+		assert_eq!(sweep.overall, OverallResult::Degraded);
 	}
 
 	#[test]

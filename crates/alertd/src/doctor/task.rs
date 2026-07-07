@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use bestool_canopy::schema::CheckSeverity;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
@@ -7,7 +8,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
-use crate::doctor::{self, progress::DoctorEvent};
+use crate::doctor::{self, check::Check, progress::DoctorEvent};
 use crate::tasks::TaskEndpointHandler;
 use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
@@ -19,6 +20,22 @@ const DOCTOR_INTERVAL: Duration = Duration::from_secs(60);
 /// run the in-process backup driver. Fire-and-forget: the callback spawns its
 /// own work and guards against overlapping runs.
 pub type BackupDispatch = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
+/// Apply the effective-severity ceiling to a single streamed check, if a
+/// mapping is available (a no-op otherwise). Mirrors
+/// [`doctor::SweepResult::apply_severities`] for the one-check streaming case.
+fn cap_check(check: Check, severities: Option<&HashMap<String, CheckSeverity>>) -> Check {
+	match severities {
+		Some(map) => {
+			let ceiling = doctor::sweep::severity_ceiling(map, check.name);
+			Check {
+				status: check.status.cap_to(ceiling),
+				..check
+			}
+		}
+		None => check,
+	}
+}
 
 /// Periodic doctor sweep, plus on-demand `latest` / `recompute` HTTP endpoints.
 ///
@@ -42,6 +59,12 @@ struct DoctorTaskInner {
 	/// HTTP endpoint so `bestool tamanu doctor` can read what the daemon
 	/// already computed instead of re-running the checks itself.
 	latest: Mutex<Option<LatestSweep>>,
+	/// Effective-severity ceilings canopy last returned on a status push, keyed
+	/// by check name. `None` until the first successful push. Applied to the
+	/// sweeps this daemon serves locally (`latest` / `recompute`) so operators
+	/// see the same severities the CLI and canopy show; the payload posted to
+	/// canopy stays raw. See [`doctor::SweepResult::apply_severities`].
+	check_severities: Mutex<Option<HashMap<String, CheckSeverity>>>,
 	/// Runs the backup driver for the types canopy asks for via `backup_now`.
 	/// `None` when backups aren't compiled in.
 	backup_dispatch: Option<BackupDispatch>,
@@ -50,8 +73,9 @@ struct DoctorTaskInner {
 #[derive(Clone)]
 struct LatestSweep {
 	computed_at: Timestamp,
-	payload: Value,
-	server_id: Option<String>,
+	/// The raw sweep result, kept typed so the `latest` endpoint can apply the
+	/// current severity ceilings on read rather than baking them in at sweep time.
+	sweep: doctor::SweepResult,
 }
 
 impl DoctorTask {
@@ -62,6 +86,7 @@ impl DoctorTask {
 				tamanu,
 				pg_version_cache: Mutex::new(None),
 				latest: Mutex::new(None),
+				check_severities: Mutex::new(None),
 				backup_dispatch: None,
 			}),
 		}
@@ -107,12 +132,25 @@ impl DoctorTaskInner {
 
 		let latest = LatestSweep {
 			computed_at: Timestamp::now(),
-			payload: sweep.payload.clone(),
-			server_id: sweep.server_id.clone(),
+			sweep: sweep.clone(),
 		};
 		*self.latest.lock().await = Some(latest);
 
 		Ok(sweep)
+	}
+
+	/// Snapshot the severity ceilings canopy last returned, if any.
+	async fn severities_snapshot(&self) -> Option<HashMap<String, CheckSeverity>> {
+		self.check_severities.lock().await.clone()
+	}
+
+	/// Apply the current severity ceilings to a sweep, if we have any. A no-op
+	/// (leaving the raw sweep) until canopy has returned a mapping.
+	async fn capped(&self, mut sweep: doctor::SweepResult) -> doctor::SweepResult {
+		if let Some(severities) = self.severities_snapshot().await {
+			sweep.apply_severities(&severities);
+		}
+		sweep
 	}
 
 	async fn tick(self: &Arc<Self>, ctx: &TaskContext) -> Result<()> {
@@ -128,11 +166,17 @@ impl DoctorTaskInner {
 			return Ok(());
 		};
 
-		let backup_now = canopy
+		let response = canopy
 			.status(&server_id, &sweep.payload)
 			.await
-			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?
-			.backup_now;
+			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
+
+		// Cache the effective-severity ceilings for the sweeps we serve locally.
+		// The payload we just posted stays raw: canopy is the source of truth and
+		// maps severities itself.
+		*self.check_severities.lock().await = Some(response.check_severities);
+
+		let backup_now = response.backup_now;
 
 		if !backup_now.is_empty() {
 			match &self.backup_dispatch {
@@ -152,11 +196,14 @@ impl DoctorTaskInner {
 	async fn endpoint_latest(self: Arc<Self>) -> TaskEndpointResponse {
 		let snapshot = self.latest.lock().await.clone();
 		match snapshot {
-			Some(s) => TaskEndpointResponse::Json(json!({
-				"computedAt": s.computed_at.to_string(),
-				"serverId": s.server_id,
-				"payload": s.payload,
-			})),
+			Some(s) => {
+				let sweep = self.capped(s.sweep).await;
+				TaskEndpointResponse::Json(json!({
+					"computedAt": s.computed_at.to_string(),
+					"serverId": sweep.server_id,
+					"payload": sweep.payload,
+				}))
+			}
 			None => TaskEndpointResponse::Error {
 				status: 503,
 				message: "no doctor sweep cached yet (daemon may have just started)".into(),
@@ -170,12 +217,18 @@ impl DoctorTaskInner {
 		let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<DoctorEvent>();
 		let (out_tx, out_rx) = mpsc::unbounded_channel::<Value>();
 
+		// Snapshot the ceilings once so the streamed per-check events and the
+		// final payload are capped consistently, matching what `latest` serves.
+		let severities = self.severities_snapshot().await;
+
 		let task_self = self.clone();
 		tokio::spawn(async move {
 			let progress_forward_tx = out_tx.clone();
+			let stream_severities = severities.clone();
 			let forwarder = tokio::spawn(async move {
 				while let Some(event) = progress_rx.recv().await {
 					let DoctorEvent::Completed(check) = event;
+					let check = cap_check(check, stream_severities.as_ref());
 					let _ = progress_forward_tx.send(json!({
 						"event": "check",
 						"check": check.to_streaming_json(),
@@ -184,7 +237,10 @@ impl DoctorTaskInner {
 			});
 
 			match task_self.run_sweep(&ctx, Some(progress_tx)).await {
-				Ok(sweep) => {
+				Ok(mut sweep) => {
+					if let Some(severities) = &severities {
+						sweep.apply_severities(severities);
+					}
 					// Make sure all `Completed` events arrived before we emit
 					// `done` — perform_sweep drops the sender on return, which
 					// closes the forwarder loop above.
@@ -253,5 +309,39 @@ impl BackgroundTask for DoctorTask {
 				handler: recompute_handler,
 			},
 		]
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::doctor::check::CheckStatus;
+
+	#[test]
+	fn cap_check_applies_ceiling_when_present() {
+		let mut severities = HashMap::new();
+		severities.insert("disk_free".to_string(), CheckSeverity::Warn);
+		let check = Check::fail("disk_free", "1% free", "out of space");
+		let capped = cap_check(check, Some(&severities));
+		match capped.status {
+			CheckStatus::Warning(r) => assert_eq!(r, "out of space"),
+			other => panic!("expected Warning, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn cap_check_absent_check_defaults_to_warn() {
+		// No entry for this check: canopy's default ceiling is warn, so a fail
+		// streams as a warning.
+		let check = Check::fail("brand_new", "bad", "reason");
+		let capped = cap_check(check, Some(&HashMap::new()));
+		assert!(matches!(capped.status, CheckStatus::Warning(_)));
+	}
+
+	#[test]
+	fn cap_check_no_mapping_is_a_noop() {
+		let check = Check::fail("disk_free", "1% free", "out of space");
+		let capped = cap_check(check, None);
+		assert!(matches!(capped.status, CheckStatus::Fail(_)));
 	}
 }

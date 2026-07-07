@@ -1,3 +1,4 @@
+use bestool_canopy::schema::CheckSeverity;
 use serde_json::{Map, Value, json};
 
 /// Outcome of a single healthcheck.
@@ -43,6 +44,35 @@ impl CheckStatus {
 	/// Whether this status is a skip — useful for rendering and accounting.
 	pub fn is_skip(&self) -> bool {
 		matches!(self, CheckStatus::Skip(_))
+	}
+
+	/// Apply canopy's effective-severity ceiling to this status.
+	///
+	/// The severity canopy reports for a check is a *ceiling*, never a floor: a
+	/// computed status is only ever lowered towards it, never raised. So a check
+	/// that passes still passes even when its ceiling is `warn`, and a `warn`
+	/// finding is never promoted to a `fail` just because the ceiling allows it.
+	///
+	/// The ceiling only bites on the two states that would otherwise alert:
+	/// * `fail` ceiling — leaves everything as computed.
+	/// * `warn` ceiling — a computed [`Fail`](Self::Fail) drops to
+	///   [`Warning`](Self::Warning), keeping its reason.
+	/// * `skip` ceiling — the check is silenced for this server, so a computed
+	///   [`Warning`](Self::Warning) or [`Fail`](Self::Fail) drops to
+	///   [`Skip`](Self::Skip), keeping its reason.
+	///
+	/// [`Broken`](Self::Broken) is left untouched: it reports that the check
+	/// itself errored (bad SQL, a missing column), which is a fault in our own
+	/// diagnostics rather than a severity finding about the system, and shouldn't
+	/// be silenced by an operator muting the check's *result*.
+	pub fn cap_to(self, ceiling: CheckSeverity) -> Self {
+		match (ceiling, self) {
+			(CheckSeverity::Skip, CheckStatus::Warning(reason) | CheckStatus::Fail(reason)) => {
+				CheckStatus::Skip(reason)
+			}
+			(CheckSeverity::Warn, CheckStatus::Fail(reason)) => CheckStatus::Warning(reason),
+			(_, status) => status,
+		}
 	}
 
 	/// The explanatory reason carried by every non-pass status, if any.
@@ -368,6 +398,56 @@ mod tests {
 		let skip = Check::skip("x", "n/a", "central-only");
 		assert_eq!(skip.to_wire()["result"], "skipped");
 		assert_eq!(skip.to_wire()["reason"], "central-only");
+	}
+
+	#[test]
+	fn cap_to_never_raises_severity() {
+		// A pass stays a pass regardless of the ceiling.
+		assert!(matches!(
+			CheckStatus::Pass.cap_to(CheckSeverity::Warn),
+			CheckStatus::Pass
+		));
+		assert!(matches!(
+			CheckStatus::Pass.cap_to(CheckSeverity::Fail),
+			CheckStatus::Pass
+		));
+		// A warning is not promoted to a failure by a fail ceiling.
+		assert!(matches!(
+			CheckStatus::Warning("w".into()).cap_to(CheckSeverity::Fail),
+			CheckStatus::Warning(_)
+		));
+	}
+
+	#[test]
+	fn cap_to_lowers_to_the_ceiling() {
+		// fail capped at warn becomes a warning, keeping its reason.
+		match CheckStatus::Fail("disk full".into()).cap_to(CheckSeverity::Warn) {
+			CheckStatus::Warning(r) => assert_eq!(r, "disk full"),
+			other => panic!("expected Warning, got {other:?}"),
+		}
+		// warn and fail capped at skip are silenced, keeping their reason.
+		match CheckStatus::Warning("noisy".into()).cap_to(CheckSeverity::Skip) {
+			CheckStatus::Skip(r) => assert_eq!(r, "noisy"),
+			other => panic!("expected Skip, got {other:?}"),
+		}
+		match CheckStatus::Fail("noisy".into()).cap_to(CheckSeverity::Skip) {
+			CheckStatus::Skip(r) => assert_eq!(r, "noisy"),
+			other => panic!("expected Skip, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn cap_to_leaves_broken_and_skip_untouched() {
+		// Broken is a fault in the check itself, not a severity finding, so an
+		// operator silencing the check's result must not hide it.
+		assert!(matches!(
+			CheckStatus::Broken("bad sql".into()).cap_to(CheckSeverity::Skip),
+			CheckStatus::Broken(_)
+		));
+		assert!(matches!(
+			CheckStatus::Skip("n/a".into()).cap_to(CheckSeverity::Fail),
+			CheckStatus::Skip(_)
+		));
 	}
 
 	#[test]
