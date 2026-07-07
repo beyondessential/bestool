@@ -9,10 +9,13 @@
 //! hardware-derived ones plus the SSD/WAL planner settings that ship wrong by
 //! default.
 //!
-//! Runs on Linux and Windows alike (ops tunes both identically). It compares
-//! the live server against *this host's* RAM, so it only runs when postgres is
-//! local; against a remote database it skips, since the local RAM says nothing
-//! about the database host.
+//! Runs on Linux and Windows alike, with one platform carve-out: Windows
+//! postgres uses a different shared-memory implementation and degrades with a
+//! large shared_buffers, so ops keeps it deliberately low there regardless of
+//! RAM — we don't flag a low shared_buffers on Windows as long as it clears a
+//! sane floor. It compares the live server against *this host's* RAM, so it
+//! only runs when postgres is local; against a remote database it skips, since
+//! the local RAM says nothing about the database host.
 
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
@@ -27,6 +30,11 @@ const WARN_RANDOM_PAGE_COST: f64 = 2.0;
 
 /// max_wal_size at or below this is the stock 1GB default; ops sets 8GB.
 const WARN_MAX_WAL_SIZE: i64 = GB;
+
+/// On Windows, postgres performs poorly with a large shared_buffers, so ops
+/// keeps it deliberately low regardless of RAM. A low shared_buffers on Windows
+/// isn't flagged as long as it clears this floor.
+const WIN_MIN_SHARED_BUFFERS: i64 = 512 * 1024 * 1024;
 
 /// The portion of total RAM a tuned postgres reserves for everything else,
 /// before sizing its own caches. Mirrors the ops tuning: on boxes with real
@@ -126,20 +134,22 @@ fn assess(s: &Settings, total_ram: i64, is_windows: bool) -> Vec<Finding> {
 			),
 		});
 	} else if off_by_over_2x(s.shared_buffers, expected_shared_buffers) {
-		let how = if s.shared_buffers < expected_shared_buffers {
-			"below"
-		} else {
-			"above"
-		};
-		fails.push(Finding {
-			severity: Severity::Fail,
-			message: format!(
-				"shared_buffers {} far {how} expected ~{} for {} RAM — postgres looks untuned",
-				human_bytes(s.shared_buffers),
-				human_bytes(expected_shared_buffers),
-				human_bytes(total_ram),
-			),
-		});
+		let below = s.shared_buffers < expected_shared_buffers;
+		// Windows keeps shared_buffers low by design, so don't flag a low value
+		// there as long as it clears the floor; a genuinely tiny value still trips.
+		let windows_low_ok = is_windows && below && s.shared_buffers >= WIN_MIN_SHARED_BUFFERS;
+		if !windows_low_ok {
+			let how = if below { "below" } else { "above" };
+			fails.push(Finding {
+				severity: Severity::Fail,
+				message: format!(
+					"shared_buffers {} far {how} expected ~{} for {} RAM — postgres looks untuned",
+					human_bytes(s.shared_buffers),
+					human_bytes(expected_shared_buffers),
+					human_bytes(total_ram),
+				),
+			});
+		}
 	}
 
 	// work_mem is per-sort-node, so a busy server can hold many multiples of it
@@ -439,6 +449,64 @@ mod tests {
 			findings
 				.iter()
 				.any(|f| f.message.contains("effective_io_concurrency"))
+		);
+	}
+
+	#[test]
+	fn low_shared_buffers_not_flagged_on_windows() {
+		// A 32GB box where ops capped shared_buffers at 512MB (expected ~7GB) on
+		// Windows. That's below expected but clears the floor, so it's fine.
+		let total = 32 * GB;
+		let mut s = tuned_32gb().0;
+		s.shared_buffers = 512 * MB;
+		let findings = assess(&s, total, true);
+		assert!(
+			!findings
+				.iter()
+				.any(|f| f.message.contains("shared_buffers")),
+			"{findings:?}"
+		);
+	}
+
+	#[test]
+	fn low_shared_buffers_still_flagged_on_linux() {
+		// The same low value on Linux is still an untuned instance.
+		let total = 32 * GB;
+		let mut s = tuned_32gb().0;
+		s.shared_buffers = 512 * MB;
+		let findings = assess(&s, total, false);
+		assert!(
+			findings
+				.iter()
+				.any(|f| f.severity == Severity::Fail && f.message.contains("shared_buffers"))
+		);
+	}
+
+	#[test]
+	fn tiny_shared_buffers_flagged_even_on_windows() {
+		// Below the 512MB floor, so even Windows flags it as untuned.
+		let total = 32 * GB;
+		let mut s = tuned_32gb().0;
+		s.shared_buffers = 128 * MB;
+		let findings = assess(&s, total, true);
+		assert!(
+			findings
+				.iter()
+				.any(|f| f.severity == Severity::Fail && f.message.contains("shared_buffers"))
+		);
+	}
+
+	#[test]
+	fn over_allocated_shared_buffers_still_fails_on_windows() {
+		// The Windows carve-out only excuses low values; over-allocation still fails.
+		let total = 16 * GB;
+		let mut s = tuned_32gb().0;
+		s.shared_buffers = 10 * GB;
+		let findings = assess(&s, total, true);
+		assert!(
+			findings
+				.iter()
+				.any(|f| f.severity == Severity::Fail && f.message.contains("over-allocated"))
 		);
 	}
 
