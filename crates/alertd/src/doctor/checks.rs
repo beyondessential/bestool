@@ -32,7 +32,6 @@ pub mod http_errors;
 pub mod inodes;
 pub mod ips;
 pub mod ips_errors;
-pub mod kopia_backup;
 pub mod load;
 pub mod memory;
 pub mod migrations;
@@ -295,7 +294,6 @@ pub fn all() -> Vec<CheckEntry> {
 		// Config-derived: the FHIR API and worker toggles must agree.
 		entry!("fhir_config", fhir_config),
 		entry!("fhir_jobs", fhir_jobs),
-		entry!("kopia_backup", kopia_backup, host),
 		entry!(
 			"certificate_notification_errors",
 			certificate_notification_errors
@@ -443,7 +441,6 @@ mod tests {
 			"caddy_version",
 			"caddy_certs",
 			"http_errors",
-			"kopia_backup",
 		] {
 			let entry = all().into_iter().find(|e| e.name == name).unwrap();
 			let check = (entry.run)(db_only_ctx()).await;
