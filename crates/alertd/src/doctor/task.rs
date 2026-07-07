@@ -176,6 +176,14 @@ impl DoctorTaskInner {
 		// maps severities itself.
 		*self.check_severities.lock().await = Some(response.check_severities);
 
+		// Refresh the on-disk tags cache from the effective tags canopy echoes
+		// back. Checks that read tags (e.g. billing_tags) and offline `canopy
+		// tags` consult this cache; without this the daemon would never update it.
+		let tags = response.tags.0.into_iter().collect();
+		if let Err(err) = bestool_tamanu::server_info::save_cached_tags(&tags) {
+			warn!(%err, "could not refresh tags cache from status response");
+		}
+
 		let backup_now = response.backup_now;
 
 		if !backup_now.is_empty() {
