@@ -37,7 +37,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -86,7 +86,7 @@ jobs:
     name: Canopy contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -102,7 +102,7 @@ jobs:
     name: alertd / graceful without postgres
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -131,7 +131,7 @@ jobs:
     name: kopia S3 proxy / e2e
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -173,7 +173,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
@@ -192,7 +192,7 @@ jobs:
     name: Check USAGE.md files are up to date
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - name: Configure toolchain
         run: |
           rustup toolchain install --profile minimal --no-self-update stable
