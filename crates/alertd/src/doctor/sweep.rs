@@ -148,9 +148,12 @@ pub async fn perform_sweep(
 		.filter(|t| t.has_install)
 		.map(|t| t.root.display().to_string());
 
+	// Resolved once so the per-subsystem Seedling checks share a single OI query.
+	let seedling = checks::seedling::probe().await;
 	let check_ctx = SweepContext {
 		tamanu: tamanu_ctx,
 		http_client,
+		seedling,
 	};
 
 	let registry = checks::all();

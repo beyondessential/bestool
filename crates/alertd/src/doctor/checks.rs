@@ -63,6 +63,9 @@ pub mod version_drift;
 pub struct SweepContext {
 	pub tamanu: Option<CheckContext>,
 	pub http_client: reqwest::Client,
+	/// The local Seedling daemon's status, resolved once per sweep and shared
+	/// across the Seedling checks. `None` on hosts with no Seedling.
+	pub seedling: seedling::Probe,
 }
 
 /// Shared context handed to every Tamanu-dependent check.
@@ -277,9 +280,23 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("caddy_version", caddy_version, host),
 		entry!("caddy_certs", caddy_certs, host),
 		entry!("http_errors", http_errors, host),
-		// Host/service probe: queries the local Seedling daemon's OI when the
-		// host runs Seedling, and skips otherwise (see SDH).
-		entry!("seedling", seedling, host),
+		// Seedling host/service probes: resolved once per sweep from the local
+		// Seedling daemon's OI (see SDH), and skip when the host runs no Seedling.
+		CheckEntry {
+			name: "seedling_proxy",
+			on_wire: true,
+			run: |ctx| Box::pin(seedling::proxy(ctx)),
+		},
+		CheckEntry {
+			name: "seedling_resolver",
+			on_wire: true,
+			run: |ctx| Box::pin(seedling::resolver(ctx)),
+		},
+		CheckEntry {
+			name: "seedling_apps",
+			on_wire: true,
+			run: |ctx| Box::pin(seedling::apps(ctx)),
+		},
 		entry!("tailscale", tailscale, host, off_wire),
 		entry!("tailscale_config", tailscale_config, host),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
@@ -403,6 +420,7 @@ mod tests {
 		SweepContext {
 			tamanu: None,
 			http_client: reqwest::Client::new(),
+			seedling: None,
 		}
 	}
 
@@ -431,6 +449,7 @@ mod tests {
 				has_install: false,
 			}),
 			http_client: reqwest::Client::new(),
+			seedling: None,
 		}
 	}
 
