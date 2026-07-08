@@ -9,8 +9,8 @@ The Seedling checks share the registry, outcomes, grouping, rendering, and statu
 
 ## Seedling host context
 
-The Seedling checks apply when the host runs Seedling: the local Seedling daemon is reachable and a Seedling database connection is configured in the environment.
-When the daemon cannot be reached, every Seedling check skips, so the same doctor invocation runs safely on a host that carries no Seedling.
+The Seedling checks apply when the host runs Seedling: the daemon's data directory is configured in the environment and the daemon's control interface is present there.
+When no Seedling is configured, every Seedling check skips, so the same doctor invocation runs safely on a host that carries none.
 
 ## Obtaining checks from the daemon
 

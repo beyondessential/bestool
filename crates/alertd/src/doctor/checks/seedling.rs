@@ -44,17 +44,42 @@ pub type Probe = Option<Result<SeedlingStatus, String>>;
 
 /// Query the local Seedling daemon, if this is a Seedling host.
 pub async fn probe() -> Probe {
-	let server_key = seedling_data_dir()?.join("oi.key");
-	if !server_key.exists() {
-		return None;
-	}
+	let data_dir = seedling_data_dir()?;
+	let fingerprint = match server_fingerprint(&data_dir)? {
+		Ok(fp) => fp,
+		Err(reason) => return Some(Err(reason)),
+	};
 	// The connect has its own 5s timeout but the requests don't; the outer
 	// timeout keeps a wedged daemon from stalling the whole sweep.
 	Some(
-		match tokio::time::timeout(std::time::Duration::from_secs(10), query(&server_key)).await {
+		match tokio::time::timeout(std::time::Duration::from_secs(10), query(fingerprint)).await {
 			Ok(result) => result,
 			Err(_) => Err("timed out querying the Seedling daemon".into()),
 		},
+	)
+}
+
+/// The daemon's OI fingerprint to pin, from the public `oi.fingerprint` file
+/// the daemon publishes beside its key; for daemons that predate the file,
+/// derived from the key itself. `None` when neither exists — no Seedling here.
+fn server_fingerprint(data_dir: &Path) -> Option<Result<String, String>> {
+	let fingerprint_path = data_dir.join("oi.fingerprint");
+	if fingerprint_path.exists() {
+		return Some(
+			std::fs::read_to_string(&fingerprint_path)
+				.map(|s| s.trim().to_owned())
+				.map_err(|e| e.to_string()),
+		);
+	}
+	let key_path = data_dir.join("oi.key");
+	if !key_path.exists() {
+		return None;
+	}
+	// The key is present (just checked), so this loads rather than generates.
+	Some(
+		keys::load_or_generate(&key_path)
+			.map(|key| keys::fingerprint(&keys::spki_der(&key)))
+			.map_err(|e| e.to_string()),
 	)
 }
 
@@ -74,12 +99,7 @@ fn client_key_path() -> PathBuf {
 		.join("seedling-oi-client.key")
 }
 
-async fn query(server_key_path: &Path) -> Result<SeedlingStatus, String> {
-	// Pin the local daemon's fingerprint from its persisted key. The key is
-	// present (checked by the caller), so this loads rather than generates.
-	let server_key = keys::load_or_generate(server_key_path).map_err(|e| e.to_string())?;
-	let server_fingerprint = keys::fingerprint(&keys::spki_der(&server_key));
-
+async fn query(server_fingerprint: String) -> Result<SeedlingStatus, String> {
 	let (identity, _is_new) =
 		ClientIdentity::load_or_generate(&client_key_path()).map_err(|e| e.to_string())?;
 
