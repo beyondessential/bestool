@@ -1,17 +1,11 @@
-use std::{
-	io::Read,
-	ops::ControlFlow,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
-};
+use std::io::Read;
 
 use clap::{Parser, Subcommand};
 use embedded_graphics::Drawable;
 use miette::{miette, IntoDiagnostic, Result, WrapErr};
 use rpi_st7789v2_driver::{DriverArgs, Driver};
 use tracing::{error, info, instrument, trace};
+use zeromq::{Socket as _, SocketRecv as _, SocketSend as _, ZmqMessage};
 
 use crate::actions::Context;
 
@@ -94,8 +88,8 @@ pub enum LcdAction {
 	/// The message can be provided either as the first argument, or over stdin.
 	///
 	/// The message will be validated by the client to avoid sending malformed messages to the
-	/// server. The command will block until the message can be sent to the display server, then
-	/// wait for a reply and print it if non-empty.
+	/// server. The command sends the message to the display server, then waits for a reply and
+	/// prints it if non-empty.
 	Send {
 		/// JSON message to send.
 		message: Option<String>,
@@ -103,8 +97,8 @@ pub enum LcdAction {
 
 	/// Set all pixels to a single color.
 	///
-	/// The command will block until the message can be sent to the display server, then wait for a
-	/// reply and print it if non-empty.
+	/// The command sends the message to the display server, then waits for a reply and prints it
+	/// if non-empty.
 	Clear {
 		/// Red value for the background color.
 		#[arg(default_value = "0")]
@@ -125,8 +119,8 @@ pub enum LcdAction {
 	///
 	/// The LCD must then rest for 120ms before any further commands can be sent.
 	///
-	/// The command will block until the message can be sent to the display server, then wait for a
-	/// reply and print it if non-empty.
+	/// The command sends the message to the display server, then waits for a reply and prints it
+	/// if non-empty.
 	On,
 
 	/// Turn the display off.
@@ -135,15 +129,15 @@ pub enum LcdAction {
 	///
 	/// The LCD must then rest for 5ms before any further commands can be sent.
 	///
-	/// The command will block until the message can be sent to the display server, then wait for a
-	/// reply and print it if non-empty.
+	/// The command sends the message to the display server, then waits for a reply and prints it
+	/// if non-empty.
 	Off,
 }
 
 pub async fn run(args: LcdArgs, _ctx: Context) -> Result<()> {
 	use LcdAction::*;
 	match args.action.clone() {
-		Serve => serve(args),
+		Serve => serve(args).await,
 		Send { message } => {
 			let screen = serde_json::from_str(&message.unwrap_or_else(|| {
 				let mut buf = String::new();
@@ -152,36 +146,22 @@ pub async fn run(args: LcdArgs, _ctx: Context) -> Result<()> {
 			}))
 			.into_diagnostic()
 			.wrap_err("json: from_str")?;
-			send(&args.zmq_socket, screen)
+			send(&args.zmq_socket, screen).await
 		}
-		Clear { red, green, blue } => send(&args.zmq_socket, json::Screen::Clear([red, green, blue])),
-		On => send(&args.zmq_socket, json::Screen::Light(true)),
-		Off => send(&args.zmq_socket, json::Screen::Light(false)),
+		Clear { red, green, blue } => {
+			send(&args.zmq_socket, json::Screen::Clear([red, green, blue])).await
+		}
+		On => send(&args.zmq_socket, json::Screen::Light(true)).await,
+		Off => send(&args.zmq_socket, json::Screen::Light(false)).await,
 	}
 }
 
 #[instrument(level = "debug", skip(args))]
-pub fn serve(args: LcdArgs) -> Result<()> {
-	let running = Arc::new(AtomicBool::new(true));
-	let r = running.clone();
-
-	ctrlc::set_handler(move || {
-		r.store(false, Ordering::SeqCst);
-	})
-	.into_diagnostic()
-	.wrap_err("ctrlc: set_handler")?;
-
-	let z = zmq::Context::new();
-	let socket = z
-		.socket(zmq::REP)
-		.into_diagnostic()
-		.wrap_err("zmq: socket(REP)")?;
-	socket
-		.set_ipv6(true)
-		.into_diagnostic()
-		.wrap_err("zmq: set_ipv6")?;
+pub async fn serve(args: LcdArgs) -> Result<()> {
+	let mut socket = zeromq::RepSocket::new();
 	socket
 		.bind(&args.zmq_socket)
+		.await
 		.into_diagnostic()
 		.wrap_err(format!("zmq: bind({})", args.zmq_socket))?;
 	info!(
@@ -194,14 +174,28 @@ pub fn serve(args: LcdArgs) -> Result<()> {
 	lcd.probe_buffer_length()?;
 
 	loop {
-		match loop_inner(running.clone(), &socket, &mut lcd) {
-			Ok(ControlFlow::Continue(_)) => continue,
-			Ok(ControlFlow::Break(_)) => break,
-			Err(err) => {
-				let err = format!("{err:?}");
-				error!("{err}");
-				socket.send(&err, 0).ok();
-				continue;
+		tokio::select! {
+			_ = tokio::signal::ctrl_c() => {
+				info!("ctrl-c received, exiting");
+				break;
+			}
+			request = socket.recv() => {
+				let request = request.into_diagnostic().wrap_err("zmq: recv")?;
+				// REP sockets must reply to every request: answer errors with
+				// their text and successes with an empty message.
+				let reply = match handle(request, &mut lcd) {
+					Ok(()) => ZmqMessage::from(""),
+					Err(err) => {
+						let err = format!("{err:?}");
+						error!("{err}");
+						ZmqMessage::from(err)
+					}
+				};
+				socket
+					.send(reply)
+					.await
+					.into_diagnostic()
+					.wrap_err("zmq: send")?;
 			}
 		}
 	}
@@ -209,31 +203,11 @@ pub fn serve(args: LcdArgs) -> Result<()> {
 	Ok(())
 }
 
-#[instrument(level = "trace", skip(socket, lcd))]
-fn loop_inner(
-	running: Arc<AtomicBool>,
-	socket: &zmq::Socket,
-	lcd: &mut Driver,
-) -> Result<ControlFlow<()>> {
-	let mut polls = [socket.as_poll_item(zmq::POLLIN)];
-	let polled = zmq::poll(&mut polls, 1000)
-		.into_diagnostic()
-		.wrap_err("zmq: poll")?;
-	if !running.load(Ordering::SeqCst) {
-		info!("ctrl-c received, exiting");
-		return Ok(ControlFlow::Break(()));
-	}
-	if polled == 0 || !polls[0].is_readable() {
-		trace!("zmq: no messages (poll timed out)");
-		return Ok(ControlFlow::Continue(()));
-	}
+#[instrument(level = "trace", skip(request, lcd))]
+fn handle(request: ZmqMessage, lcd: &mut Driver) -> Result<()> {
+	let bytes = request.get(0).ok_or_else(|| miette!("zmq: empty message"))?;
 
-	let bytes = socket
-		.recv_bytes(0)
-		.into_diagnostic()
-		.wrap_err("zmq: recv")?;
-
-	let screen: json::Screen = serde_json::from_slice(&bytes)
+	let screen: json::Screen = serde_json::from_slice(bytes)
 		.into_diagnostic()
 		.wrap_err("json: parse")?;
 
@@ -259,27 +233,15 @@ fn loop_inner(
 		}
 	}
 
-	socket
-		.send(zmq::Message::new(), 0)
-		.into_diagnostic()
-		.wrap_err("zmq: send")?;
-
-	Ok(ControlFlow::Continue(()))
+	Ok(())
 }
 
 #[instrument(level = "debug")]
-pub fn send(addr: &str, screen: json::Screen) -> Result<()> {
-	let z = zmq::Context::new();
-	let socket = z
-		.socket(zmq::REQ)
-		.into_diagnostic()
-		.wrap_err("zmq: socket(REQ)")?;
-	socket
-		.set_ipv6(true)
-		.into_diagnostic()
-		.wrap_err("zmq: set_ipv6")?;
+pub async fn send(addr: &str, screen: json::Screen) -> Result<()> {
+	let mut socket = zeromq::ReqSocket::new();
 	socket
 		.connect(addr)
+		.await
 		.into_diagnostic()
 		.wrap_err(format!("zmq: connect({})", addr))?;
 
@@ -287,19 +249,41 @@ pub fn send(addr: &str, screen: json::Screen) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("json: to_vec")?;
 	socket
-		.send(&bytes, 0)
+		.send(bytes.into())
+		.await
 		.into_diagnostic()
 		.wrap_err("zmq: send")?;
 
-	let reply = socket
-		.recv_string(0)
-		.into_diagnostic()
-		.wrap_err("zmq: recv")?
-		.map_err(|bytes| miette!("reply is not valid utf-8, received {} bytes", bytes.len()))
-		.wrap_err("zmq: recv_string")?;
+	let reply = socket.recv().await.into_diagnostic().wrap_err("zmq: recv")?;
+	let reply: String = reply
+		.try_into()
+		.map_err(|err| miette!("zmq: reply is not valid utf-8: {err}"))?;
 	if !reply.is_empty() {
 		println!("{reply}");
 	}
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn send_roundtrip() {
+		let mut server = zeromq::RepSocket::new();
+		let endpoint = server.bind("tcp://127.0.0.1:0").await.unwrap();
+
+		let server_task = tokio::spawn(async move {
+			let request = server.recv().await.unwrap();
+			let screen: json::Screen = serde_json::from_slice(request.get(0).unwrap()).unwrap();
+			assert!(matches!(screen, json::Screen::Light(true)));
+			server.send(ZmqMessage::from("")).await.unwrap();
+		});
+
+		send(&endpoint.to_string(), json::Screen::Light(true))
+			.await
+			.unwrap();
+		server_task.await.unwrap();
+	}
 }

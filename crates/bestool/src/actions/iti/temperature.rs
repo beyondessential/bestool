@@ -101,7 +101,8 @@ pub async fn once(args: &TemperatureArgs) -> Result<()> {
 					..Default::default()
 				},
 			]),
-		)?;
+		)
+		.await?;
 	}
 
 	Ok(())
