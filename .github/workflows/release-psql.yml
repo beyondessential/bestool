@@ -28,14 +28,20 @@ jobs:
             os: macos-15
           - target: aarch64-apple-darwin
             os: macos-15
+          # Linux-gnu builds are zigbuilt against glibc 2.35 so the binaries
+          # and debs run on Debian 12 (glibc 2.36) as well as newer distros,
+          # matching the gnu35 convention of our third-party builds.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+            zigtarget: x86_64-unknown-linux-gnu.2.35
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            zigtarget: aarch64-unknown-linux-gnu.2.35
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            zigtarget: aarch64-unknown-linux-musl
           - target: x86_64-pc-windows-msvc
             os: windows-2022
 
@@ -79,11 +85,9 @@ jobs:
         with:
           tool: cargo-zigbuild,cargo-auditable
 
-      # zigbuild isn't compatible with auditable
-      # https://github.com/rust-secure-code/cargo-auditable/issues/179
-      - if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo zigbuild --profile dist --target ${{ matrix.target }} -p bestool-psql
-      - if: matrix.target != 'aarch64-unknown-linux-musl'
+      - if: matrix.zigtarget
+        run: cargo auditable zigbuild --profile dist --target ${{ matrix.zigtarget }} -p bestool-psql
+      - if: ${{ !matrix.zigtarget }}
         run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool-psql
 
       - name: Extract version
@@ -150,6 +154,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: $arch
+          Depends: libc6 (>= 2.35)
           Maintainer: BES Developers <support@bes.au>
           Description: psql-inspired client for PostgreSQL (BES Tooling)
           Homepage: https://github.com/beyondessential/bestool

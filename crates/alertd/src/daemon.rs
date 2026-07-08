@@ -204,7 +204,7 @@ pub async fn run_with_shutdown(
 			let _ = signal_tx_term.send(DaemonEvent::Shutdown).await;
 		});
 
-		// Reload on SIGHUP (systemd's notify-reload `ReloadSignal`) or SIGUSR1:
+		// Reload on SIGHUP (sent by the unit's ExecReload) or SIGUSR1:
 		// notify systemd we're reloading, bump the reload channel so tasks
 		// refresh, then notify ready again. The reload work itself is async and
 		// best-effort, so READY is sent once the refresh is dispatched.
