@@ -24,6 +24,6 @@ The doctor derives one check per Seedling subsystem the daemon reports on.
 
 A reverse-proxy check reports whether the proxy that fronts application traffic is running, and fails when it is not.
 A resolver check reports whether the Seedling DNS resolver is running, and fails when it is not.
-An applications check reports the health of the Seedling-managed applications: it passes when every app is in its expected running state, warns when some have not yet converged, and fails when an app that should be running is not.
+An applications check reports the health of the Seedling-managed applications: it passes when every app is running (or none are deployed), and warns when some are not running.
 
 Each check carries a one-line summary, and a reason whenever it does not pass, in line with [DOC](../tamanu/doctor.md).

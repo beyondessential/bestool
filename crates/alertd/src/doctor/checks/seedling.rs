@@ -48,7 +48,14 @@ pub async fn probe() -> Probe {
 	if !server_key.exists() {
 		return None;
 	}
-	Some(query(&server_key).await)
+	// The connect has its own 5s timeout but the requests don't; the outer
+	// timeout keeps a wedged daemon from stalling the whole sweep.
+	Some(
+		match tokio::time::timeout(std::time::Duration::from_secs(10), query(&server_key)).await {
+			Ok(result) => result,
+			Err(_) => Err("timed out querying the Seedling daemon".into()),
+		},
+	)
 }
 
 /// Where the Seedling daemon keeps its data. The daemon takes this as a launch
@@ -117,7 +124,7 @@ fn resolve(
 		None => Check::skip(
 			name,
 			"no Seedling on this host",
-			"no reachable Seedling daemon on this host",
+			"no Seedling data directory (with an OI key) is configured on this host",
 		),
 		Some(Err(reason)) => {
 			Check::broken(name, "could not query the Seedling daemon", reason.clone())
