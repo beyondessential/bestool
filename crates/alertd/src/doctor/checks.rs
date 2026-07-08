@@ -39,6 +39,7 @@ pub mod migrations;
 pub mod patient_communication_errors;
 pub mod pg_tuning;
 pub mod report_errors;
+pub mod seedling;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -276,6 +277,9 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("caddy_version", caddy_version, host),
 		entry!("caddy_certs", caddy_certs, host),
 		entry!("http_errors", http_errors, host),
+		// Host/service probe: queries the local Seedling daemon's OI when the
+		// host runs Seedling, and skips otherwise (see SDH).
+		entry!("seedling", seedling, host),
 		entry!("tailscale", tailscale, host, off_wire),
 		entry!("tailscale_config", tailscale_config, host),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
