@@ -11,8 +11,7 @@ See `bestool <subcommand> --help` for extensive help.
 | Platform | Variant | Download |
 | -------- | ------- | -------- |
 | Windows | x86 | [bestool.exe](https://tools.ops.tamanu.io/bestool/latest/x86_64-pc-windows-msvc/bestool.exe) |
-| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-gnu/bestool) |
-| Linux | x86 static | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-musl/bestool) |
+| Linux | x86 | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-unknown-linux-musl/bestool) |
 | Linux | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-unknown-linux-musl/bestool) |
 | Mac | Intel | [bestool](https://tools.ops.tamanu.io/bestool/latest/x86_64-apple-darwin/bestool) |
 | Mac | ARM64 | [bestool](https://tools.ops.tamanu.io/bestool/latest/aarch64-apple-darwin/bestool) |

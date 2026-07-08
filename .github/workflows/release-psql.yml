@@ -28,20 +28,12 @@ jobs:
             os: macos-15
           - target: aarch64-apple-darwin
             os: macos-15
-          # Linux-gnu builds are zigbuilt against glibc 2.35 so the binaries
-          # and debs run on Debian 12 (glibc 2.36) as well as newer distros,
-          # matching the gnu35 convention of our third-party builds.
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            zigtarget: x86_64-unknown-linux-gnu.2.35
+          # Linux releases are static musl binaries, so one build per arch
+          # runs on any distro and glibc era.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            zigtarget: aarch64-unknown-linux-gnu.2.35
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            zigtarget: aarch64-unknown-linux-musl
           - target: x86_64-pc-windows-msvc
             os: windows-2022
 
@@ -70,8 +62,6 @@ jobs:
         run: |
           echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
 
-      - if: runner.os == 'Linux'
-        run: pip install ziglang
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
 
@@ -83,12 +73,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.82.2
         with:
-          tool: cargo-zigbuild,cargo-auditable
+          tool: cargo-auditable
 
-      - if: matrix.zigtarget
-        run: cargo auditable zigbuild --profile dist --target ${{ matrix.zigtarget }} -p bestool-psql
-      - if: ${{ !matrix.zigtarget }}
-        run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool-psql
+      - run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool-psql
 
       - name: Extract version
         id: version
@@ -126,15 +113,15 @@ jobs:
           subject-path: ${{ steps.package.outputs.asset }}
 
       - name: Package DEB
-        if: contains(matrix.target, 'linux-gnu')
+        if: contains(matrix.target, 'linux-musl')
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
           target="${{ matrix.target }}"
           arch=""
-          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+          if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
             arch="amd64"
-          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+          elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
             arch="arm64"
           fi
 
@@ -154,7 +141,6 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: $arch
-          Depends: libc6 (>= 2.35)
           Maintainer: BES Developers <support@bes.au>
           Description: psql-inspired client for PostgreSQL (BES Tooling)
           Homepage: https://github.com/beyondessential/bestool
@@ -164,7 +150,7 @@ jobs:
           dpkg-deb --build --root-owner-group "$deb_dir" "bestool-psql-${target}-${version}.deb"
 
       - uses: actions/attest-build-provenance@v4.1.0
-        if: contains(matrix.target, 'linux-gnu')
+        if: contains(matrix.target, 'linux-musl')
         with:
           subject-path: "bestool-psql-${{ matrix.target }}-${{ steps.version.outputs.version }}.deb"
 
@@ -178,7 +164,7 @@ jobs:
           retention-days: 7
 
       - name: Configure AWS Credentials
-        if: contains(matrix.target, 'linux-gnu')
+        if: contains(matrix.target, 'linux-musl')
         uses: aws-actions/configure-aws-credentials@v6.2.0
         with:
           aws-region: ap-southeast-2
@@ -186,7 +172,7 @@ jobs:
           role-session-name: GHA@BEStool-psql=Build
 
       - name: Upload DEB to S3
-        if: contains(matrix.target, 'linux-gnu')
+        if: contains(matrix.target, 'linux-musl')
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
@@ -196,7 +182,7 @@ jobs:
           aws s3 cp "$deb" "s3://bes-ops-tools/bestool-psql/latest/bestool-psql-${target}.deb" --no-progress
 
       - name: Upload version file
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
@@ -204,7 +190,7 @@ jobs:
           aws s3 cp latest-version.txt s3://bes-ops-tools/bestool-psql/latest-version.txt --no-progress
 
       - name: Invalidate CloudFront
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
