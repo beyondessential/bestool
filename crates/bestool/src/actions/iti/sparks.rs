@@ -76,11 +76,12 @@ pub async fn run(args: SparksArgs, _ctx: Context) -> Result<()> {
 			&args,
 			cpu.iter().rev().copied(),
 			mem.iter().rev().copied(),
-		)?;
+		)
+		.await?;
 	}
 }
 
-pub fn render(
+pub async fn render(
 	args: &SparksArgs,
 	cpu: impl ExactSizeIterator<Item = f32>,
 	mem: impl ExactSizeIterator<Item = f32>,
@@ -144,7 +145,7 @@ pub fn render(
 		FG_MEM,
 	));
 
-	send(zmq_socket, Screen::Layout(items))?;
+	send(zmq_socket, Screen::Layout(items)).await?;
 
 	Ok(())
 }

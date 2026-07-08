@@ -304,7 +304,7 @@ pub async fn once(args: &BatteryArgs, rolling: Option<&mut VecDeque<f64>>) -> Re
 			},
 		);
 
-		send(&args.zmq_socket, Screen::Layout(items))?;
+		send(&args.zmq_socket, Screen::Layout(items)).await?;
 	}
 
 	Ok(capacity)

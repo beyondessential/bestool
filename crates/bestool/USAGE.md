@@ -1064,7 +1064,7 @@ This is useful for debugging or testing the display server, or for interacting w
 
 The message can be provided either as the first argument, or over stdin.
 
-The message will be validated by the client to avoid sending malformed messages to the server. The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+The message will be validated by the client to avoid sending malformed messages to the server. The command sends the message to the display server, then waits for a reply and prints it if non-empty.
 
 **Usage:** `bestool iti lcd send [MESSAGE]`
 
@@ -1078,7 +1078,7 @@ The message will be validated by the client to avoid sending malformed messages 
 
 Set all pixels to a single color.
 
-The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+The command sends the message to the display server, then waits for a reply and prints it if non-empty.
 
 **Usage:** `bestool iti lcd clear [RED] [GREEN] [BLUE]`
 
@@ -1104,7 +1104,7 @@ This wakes the display, turns on the backlight, and shows the current screen con
 
 The LCD must then rest for 120ms before any further commands can be sent.
 
-The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+The command sends the message to the display server, then waits for a reply and prints it if non-empty.
 
 **Usage:** `bestool iti lcd on`
 
@@ -1118,7 +1118,7 @@ This turns off the backlight and puts the display to sleep, which uses less powe
 
 The LCD must then rest for 5ms before any further commands can be sent.
 
-The command will block until the message can be sent to the display server, then wait for a reply and print it if non-empty.
+The command sends the message to the display server, then waits for a reply and prints it if non-empty.
 
 **Usage:** `bestool iti lcd off`
 

@@ -197,11 +197,10 @@ pub(crate) async fn perform_update(
 	let client = client().await?;
 
 	let detected_targets = get_desired_targets(target.map(|t| vec![t]));
-	let detected_targets = detected_targets.get().await;
-	let target = detected_targets
-		.first()
-		.cloned()
-		.unwrap_or_else(|| TARGET.into());
+	let mut candidates = detected_targets.get().await.to_vec();
+	if candidates.is_empty() {
+		candidates.push(TARGET.into());
+	}
 
 	let dir = temp_dir.unwrap_or_else(std::env::temp_dir);
 	let filename = format!(
@@ -211,12 +210,32 @@ pub(crate) async fn perform_update(
 	let dest = dir.join(&filename);
 	let _ = tokio::fs::remove_file(&dest).await;
 
+	// Try each detected target in order until one has artifacts: on a glibc
+	// host detection lists the gnu triple before musl, and Linux releases are
+	// musl-only, so the gnu candidate can 404.
 	let host = DownloadSource::Tools.host();
-	let archive_path = format!("/bestool/{resolved}/{target}/{filename}.tar.zst");
-	let archive_url = host.join(&archive_path).into_diagnostic()?;
+	let mut signature = None;
+	let mut archive_url = None;
+	for target in &candidates {
+		let archive_path = format!("/bestool/{resolved}/{target}/{filename}.tar.zst");
+		let url = host.join(&archive_path).into_diagnostic()?;
+		match fetch_release_signature(&client, &url).await {
+			Ok(sig) => {
+				signature = Some(sig);
+				archive_url = Some(url);
+				break;
+			}
+			Err(err) => info!(%target, "no release artifact for target: {err}"),
+		}
+	}
+	let (Some(signature), Some(archive_url)) = (signature, archive_url) else {
+		return Err(miette!(
+			"no release artifact found for {resolved} (tried targets: {})",
+			candidates.join(", ")
+		));
+	};
 
 	info!(url = %archive_url, "downloading and verifying release");
-	let signature = fetch_release_signature(&client, &archive_url).await?;
 	let mut verifier = ReleaseVerifier::new(signature);
 	Download::new_with_data_verifier(client, archive_url, &mut verifier)
 		.and_extract(PkgFmt::Tzstd, &dir)

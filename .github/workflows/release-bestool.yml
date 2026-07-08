@@ -28,21 +28,18 @@ jobs:
             os: macos-15
           - target: aarch64-apple-darwin
             os: macos-15
-          # Linux-gnu builds are zigbuilt against glibc 2.35 so the binaries
-          # and debs run on Debian 12 (glibc 2.36) as well as newer distros,
-          # matching the gnu35 convention of our third-party builds.
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            zigtarget: x86_64-unknown-linux-gnu.2.35
+          # Linux releases are static musl binaries with the iti features
+          # included, so one build per arch runs on any distro and glibc era.
+          # gnutarget: the linux-gnu target path the artifacts are also
+          # uploaded under, so consumers of the old gnu builds (deployed
+          # binaries self-updating, pinned URLs) keep working while the fleet
+          # rolls over to musl; remove once that's done.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            zigtarget: aarch64-unknown-linux-gnu.2.35
+            gnutarget: x86_64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            zigtarget: aarch64-unknown-linux-musl
-            features: iti
+            gnutarget: aarch64-unknown-linux-gnu
           - target: x86_64-pc-windows-msvc
             os: windows-2022
 
@@ -73,8 +70,6 @@ jobs:
         run: |
           echo 'RUSTFLAGS=-Ctarget-feature=+crt-static' >> "$GITHUB_ENV"
 
-      - if: runner.os == 'Linux'
-        run: pip install ziglang
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl musl-dev musl-tools
 
@@ -86,11 +81,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.82.2
         with:
-          tool: cargo-zigbuild,cargo-auditable,rsign2
+          tool: cargo-auditable,rsign2
 
-      - if: matrix.zigtarget
-        run: cargo auditable zigbuild --profile dist --target ${{ matrix.zigtarget }} -p bestool ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
-      - if: ${{ !matrix.zigtarget }}
+      - if: runner.os == 'Linux'
+        run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool --features iti
+      - if: runner.os != 'Linux'
         run: cargo auditable build --profile dist --target ${{ matrix.target }} -p bestool
 
       - uses: actions/attest-build-provenance@v4.1.0
@@ -110,15 +105,15 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Package DEB
-        if: contains(matrix.target, 'linux-gnu')
+        if: contains(matrix.target, 'linux-musl')
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
           target="${{ matrix.target }}"
           arch=""
-          if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+          if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
             arch="amd64"
-          elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+          elif [[ "$target" == "aarch64-unknown-linux-musl" ]]; then
             arch="arm64"
           fi
 
@@ -182,7 +177,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: $arch
-          Depends: bindfs, btrfs-progs, kopia, libc6 (>= 2.35), sudo
+          Depends: bindfs, btrfs-progs, kopia, sudo
           Recommends: lvm2
           Maintainer: BES Developers <support@bes.au>
           Description: BES Deployment tooling
@@ -291,6 +286,13 @@ jobs:
           aws s3 cp "$src.tar.zst" "$dest" --no-progress
           aws s3 cp "$src.tar.zst.minisig" "$dest" --no-progress
 
+          if [[ -n "${{ matrix.gnutarget }}" ]]; then
+            gnudest="s3://bes-ops-tools/bestool/${version}/${{ matrix.gnutarget }}/"
+            aws s3 cp "$src" "$gnudest" --no-progress
+            aws s3 cp "$src.tar.zst" "$gnudest" --no-progress
+            aws s3 cp "$src.tar.zst.minisig" "$gnudest" --no-progress
+          fi
+
           for deb in bestool-*.deb; do
             [[ -f "$deb" ]] || continue
             aws s3 cp "$deb" "s3://bes-ops-tools/bestool/${version}/" --no-progress
@@ -310,6 +312,13 @@ jobs:
           aws s3 cp "$src.tar.zst" "$dest" --no-progress
           aws s3 cp "$src.tar.zst.minisig" "$dest" --no-progress
 
+          if [[ -n "${{ matrix.gnutarget }}" ]]; then
+            gnudest="s3://bes-ops-tools/bestool/latest/${{ matrix.gnutarget }}/"
+            aws s3 cp "$src" "$gnudest" --no-progress
+            aws s3 cp "$src.tar.zst" "$gnudest" --no-progress
+            aws s3 cp "$src.tar.zst.minisig" "$gnudest" --no-progress
+          fi
+
           aws cloudfront create-invalidation --distribution-id=EDAG0UBS1MN74 --paths '/bestool/latest/*'
 
       - name: Upload version file
@@ -328,7 +337,7 @@ jobs:
         run: |
           src="target/${{ matrix.target }}/dist/bestool"
           dest="s3://bes-ops-tools/bestool/gha"
-          if [[ ${{ matrix.target }} == "x86_64-unknown-linux-gnu" ]]; then
+          if [[ ${{ matrix.target }} == "x86_64-unknown-linux-musl" ]]; then
             dest="$dest/Linux-X64"
           elif [[ ${{ matrix.target }} == "x86_64-apple-darwin" ]]; then
             dest="$dest/macOS-X64"
