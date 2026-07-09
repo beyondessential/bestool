@@ -118,10 +118,19 @@ mod tests {
 		};
 		let check = run(ctx).await;
 		match check.status {
-			CheckStatus::Fail(reason) => assert_ne!(
-				reason, "db error",
-				"should surface postgres's real rejection message, not the generic Display"
-			),
+			// Postgres rejects the startup packet with SQLSTATE 3D000
+			// (invalid_catalog_name), FATAL severity, and a message naming the
+			// missing database — e.g. `FATAL: database "..." does not exist`.
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("does not exist"),
+					"expected postgres's real 'database does not exist' rejection, got {reason:?}"
+				);
+				assert!(
+					reason.contains("bestool-test-nonexistent-db"),
+					"expected the message to name the missing database, got {reason:?}"
+				);
+			}
 			other => panic!("expected FAIL on a rejected connection, got {other:?}"),
 		}
 	}
