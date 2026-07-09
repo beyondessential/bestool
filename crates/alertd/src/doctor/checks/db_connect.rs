@@ -85,4 +85,44 @@ mod tests {
 			check.status
 		);
 	}
+
+	/// A reachable postgres that actively rejects the connection (here, a
+	/// nonexistent database name) produces a real `DbError`, not an IO
+	/// failure. The reported reason must be that error's actual message, not
+	/// `tokio_postgres::Error`'s generic top-level Display for `Kind::Db`
+	/// ("db error") — which is what `fmt_db_error` exists to avoid. Skips if
+	/// there's no local test postgres, mirroring the other DB-backed tests in
+	/// this crate.
+	#[tokio::test]
+	async fn rejected_connection_surfaces_real_reason() {
+		if crate::doctor::checks::test_support::central_ctx()
+			.await
+			.is_none()
+		{
+			return;
+		}
+
+		let config: TamanuConfig = serde_json::from_value(serde_json::json!({
+			"db": { "name": "bestool-test-nonexistent-db", "username": "u", "password": "p" }
+		}))
+		.unwrap();
+		let ctx = CheckContext {
+			tamanu_version: Version::parse("0.0.0").unwrap(),
+			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+			config: Arc::new(config),
+			kind: ApiServerKind::Central,
+			database_url: "postgresql://localhost/bestool-test-nonexistent-db".into(),
+			db: None,
+			http_client: reqwest::Client::new(),
+			has_install: true,
+		};
+		let check = run(ctx).await;
+		match check.status {
+			CheckStatus::Fail(reason) => assert_ne!(
+				reason, "db error",
+				"should surface postgres's real rejection message, not the generic Display"
+			),
+			other => panic!("expected FAIL on a rejected connection, got {other:?}"),
+		}
+	}
 }

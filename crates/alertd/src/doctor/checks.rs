@@ -390,7 +390,7 @@ pub mod test_support {
 mod tests {
 	use serde_json::Value;
 
-	use super::{SweepContext, all, query_error_check, test_support::central_ctx};
+	use super::{SweepContext, all, fmt_db_error, query_error_check, test_support::central_ctx};
 	use crate::doctor::check::CheckStatus;
 
 	fn no_tamanu_ctx() -> SweepContext {
@@ -532,5 +532,21 @@ mod tests {
 		let check = query_error_check("x", &err);
 		assert!(check.status.is_fatal());
 		assert_eq!(check.to_wire()["result"], Value::from("failed"));
+	}
+
+	#[tokio::test]
+	async fn fmt_db_error_surfaces_the_real_message() {
+		// A genuine DbError (as opposed to an IO/connect failure) must not
+		// collapse to tokio_postgres::Error's unhelpful top-level Display
+		// ("db error") — that's the whole reason this helper exists.
+		let Some(err) = query_err("SELECT 1/0").await else {
+			return;
+		};
+		let formatted = fmt_db_error(&err);
+		assert_ne!(formatted, "db error");
+		assert!(
+			formatted.contains("division by zero"),
+			"expected the real postgres message, got {formatted:?}"
+		);
 	}
 }
