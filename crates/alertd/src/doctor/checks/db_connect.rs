@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use super::CheckContext;
+use super::{CheckContext, fmt_db_error};
 use crate::doctor::check::Check;
 
 /// Connect latency above which the DB is treated as degraded.
@@ -38,7 +38,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Err(err) => Check::fail(
 			"db_connect",
 			format!("failed to connect to {host}/{name}"),
-			err.to_string(),
+			fmt_db_error(&err),
 		),
 	};
 
