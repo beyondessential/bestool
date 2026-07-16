@@ -644,6 +644,7 @@ dependencies = [
  "bytes",
  "dirs",
  "duct",
+ "ed25519-dalek",
  "futures",
  "hickory-resolver",
  "jiff",
@@ -6420,7 +6421,7 @@ dependencies = [
 [[package]]
 name = "seedling-protocol"
 version = "0.3.0"
-source = "git+https://github.com/beyondessential/seedling.git#e9e2e4687fbd8346ba6278675120747d0def98ad"
+source = "git+https://github.com/beyondessential/seedling.git?tag=v0.3.0#e9e2e4687fbd8346ba6278675120747d0def98ad"
 dependencies = [
  "compact_str",
  "dirs",

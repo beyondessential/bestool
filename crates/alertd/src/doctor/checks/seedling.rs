@@ -14,6 +14,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
 use seedling_protocol::{
 	actor::Actor,
 	client::{ClientAuth, OiClient},
@@ -75,11 +76,14 @@ fn server_fingerprint(data_dir: &Path) -> Option<Result<String, String>> {
 	if !key_path.exists() {
 		return None;
 	}
-	// The key is present (just checked), so this loads rather than generates.
+	// Strictly read-only: never `keys::load_or_generate` here, which would
+	// create a fresh key at the daemon's path if the file vanished between
+	// the check above and the load — silently replacing the daemon's identity.
 	Some(
-		keys::load_or_generate(&key_path)
-			.map(|key| keys::fingerprint(&keys::spki_der(&key)))
-			.map_err(|e| e.to_string()),
+		std::fs::read(&key_path)
+			.map_err(|e| e.to_string())
+			.and_then(|der| SigningKey::from_pkcs8_der(&der).map_err(|e| e.to_string()))
+			.map(|key| keys::fingerprint(&keys::spki_der(&key))),
 	)
 }
 
@@ -153,55 +157,53 @@ fn resolve(
 	}
 }
 
-fn str_field(v: &Value, key: &str) -> String {
-	v.get(key)
-		.and_then(Value::as_str)
-		.unwrap_or("unknown")
-		.to_owned()
+/// A subsystem's state from `/infra/status`. A response missing the field is a
+/// daemon that cannot answer this check, which per SDH is broken, not failing.
+fn infra_check(s: &SeedlingStatus, name: &'static str, key: &str, label: &str) -> Check {
+	match s.infra.get(key).and_then(Value::as_str) {
+		None => Check::broken(
+			name,
+			format!("daemon did not report the {label}"),
+			format!("`/infra/status` response has no string `{key}` field"),
+		),
+		Some("running") => Check::pass(name, format!("{label} running")),
+		Some(state) => Check::fail(
+			name,
+			format!("{label} {state}"),
+			format!("the Seedling {label} is not running"),
+		),
+	}
 }
 
 pub async fn proxy(ctx: SweepContext) -> Check {
 	resolve(&ctx, "seedling_proxy", |s| {
-		let state = str_field(&s.infra, "proxy");
-		if state == "running" {
-			Check::pass("seedling_proxy", "reverse proxy running")
-		} else {
-			Check::fail(
-				"seedling_proxy",
-				format!("reverse proxy {state}"),
-				"the Seedling reverse proxy is not running",
-			)
-		}
+		infra_check(s, "seedling_proxy", "proxy", "reverse proxy")
 	})
 }
 
 pub async fn resolver(ctx: SweepContext) -> Check {
 	resolve(&ctx, "seedling_resolver", |s| {
-		let state = str_field(&s.infra, "resolver");
-		if state == "running" {
-			Check::pass("seedling_resolver", "DNS resolver running")
-		} else {
-			Check::fail(
-				"seedling_resolver",
-				format!("DNS resolver {state}"),
-				"the Seedling DNS resolver is not running",
-			)
-		}
+		infra_check(s, "seedling_resolver", "resolver", "DNS resolver")
 	})
 }
 
 pub async fn apps(ctx: SweepContext) -> Check {
 	resolve(&ctx, "seedling_apps", |s| {
-		let total = s
-			.status
-			.get("apps_total")
-			.and_then(Value::as_u64)
-			.unwrap_or(0);
-		let running = s
-			.status
-			.get("apps_by_status")
-			.and_then(Value::as_object)
-			.and_then(|m| m.get("running"))
+		let (Some(total), Some(by_status)) = (
+			s.status.get("apps_total").and_then(Value::as_u64),
+			s.status.get("apps_by_status").and_then(Value::as_object),
+		) else {
+			// Missing counts are a daemon that cannot answer: broken, per SDH.
+			return Check::broken(
+				"seedling_apps",
+				"daemon did not report app counts",
+				"`/server/status` response is missing `apps_total` or `apps_by_status`",
+			);
+		};
+		// The daemon only lists statuses that occur, so no `running` entry
+		// means zero apps running, not a malformed response.
+		let running = by_status
+			.get("running")
 			.and_then(Value::as_u64)
 			.unwrap_or(0);
 

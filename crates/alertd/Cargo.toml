@@ -20,6 +20,8 @@ bestool-tamanu = { version = "0.16.1", path = "../tamanu", features = ["canopy-r
 bytes = "1.9.0"
 dirs = "6.0.0"
 duct = "1.1.0"
+# pkcs8 to parse the Seedling daemon's key read-only (see doctor/checks/seedling.rs)
+ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
 futures = { workspace = true }
 hickory-resolver = "0.26.1"
 jiff = { version = "0.2.28", features = ["serde"] }
@@ -28,7 +30,7 @@ miette = { workspace = true }
 prometheus = "0.14.0"
 reqwest = { workspace = true }
 rustls = "0.23.40"
-seedling-protocol = { git = "https://github.com/beyondessential/seedling.git" }
+seedling-protocol = { git = "https://github.com/beyondessential/seedling.git", tag = "v0.3.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sysinfo.workspace = true
