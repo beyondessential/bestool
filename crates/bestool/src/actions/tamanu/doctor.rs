@@ -492,7 +492,7 @@ fn setup_progress(
 	}
 	let (tx, rx) = mpsc::unbounded_channel();
 	let names = selected_names.to_vec();
-	let handle = tokio::spawn(tui::run_tui(names, source, rx));
+	let handle = tokio::task::spawn_blocking(move || tui::run_tui(names, source, rx));
 	(Some(tx), Some(handle))
 }
 

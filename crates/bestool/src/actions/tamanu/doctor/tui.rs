@@ -121,7 +121,18 @@ impl Drop for TerminalGuard {
 
 /// Run the live TUI until either the sweep finishes (progress channel closes
 /// and every selected check has been seen) or the user interrupts (Ctrl+C / q).
-pub async fn run_tui(
+///
+/// This is synchronous and must be run via [`tokio::task::spawn_blocking`], not
+/// `tokio::spawn`: its loop has no `.await` points (the terminal I/O and
+/// `crossterm::event::poll` are plain blocking calls with no runtime
+/// integration), so as an async task it would never yield back to the
+/// executor. On a single-worker-thread runtime — the default on a
+/// single-vCPU host — that starves every other task (the sweep itself
+/// included) for as long as the TUI keeps running, which reads as a total,
+/// permanent hang. `spawn_blocking` moves it onto Tokio's separate blocking
+/// thread pool, which is sized independently of the CPU count, so it can
+/// never contend with the async worker pool.
+pub fn run_tui(
 	selected_names: Vec<&'static str>,
 	source: SweepSource,
 	mut progress_rx: UnboundedReceiver<DoctorEvent>,
