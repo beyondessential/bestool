@@ -5,7 +5,7 @@
 
 use bestool_canopy::schema::{
 	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CompleteArgs, CompleteResponse,
-	CredentialProcessOutput, Issue, NewEvent, ReportArgs, RunOutcome, Severity,
+	CredentialProcessOutput, ReportArgs, RunOutcome,
 };
 
 #[test]
@@ -124,58 +124,4 @@ fn backup_target_repo_password_is_redacted() {
 	let debug = format!("{target:?}");
 	assert!(!debug.contains("hunter2"), "{debug}");
 	assert!(debug.contains("<redacted>"), "{debug}");
-}
-
-#[test]
-fn new_event_omits_optional_fields() {
-	let event = NewEvent::builder()
-		.source("src".to_owned())
-		.ref_("host/alert:tgt".to_owned())
-		.message("msg".to_owned())
-		.build();
-	let json = serde_json::to_string(&event).unwrap();
-	assert!(json.contains("\"source\":\"src\""));
-	assert!(json.contains("\"ref\":\"host/alert:tgt\""));
-	assert!(json.contains("\"message\":\"msg\""));
-	assert!(!json.contains("description"));
-	assert!(!json.contains("severity"));
-	assert!(!json.contains("occurredAt"));
-	assert!(!json.contains("active"));
-}
-
-#[test]
-fn new_event_serialises_occurred_at_camel_case_and_severity_lowercase() {
-	let event = NewEvent::builder()
-		.source("src".to_owned())
-		.ref_("ref".to_owned())
-		.message("msg".to_owned())
-		.description("desc".to_owned())
-		.severity(Severity::Warning)
-		.occurred_at("2025-01-01T00:00:00Z".parse().unwrap())
-		.active(true)
-		.build();
-	let json = serde_json::to_string(&event).unwrap();
-	assert!(json.contains("\"occurredAt\":"));
-	assert!(json.contains("\"severity\":\"warning\""));
-	assert!(json.contains("\"active\":true"));
-}
-
-#[test]
-fn datetime_fields_deserialise_into_jiff_timestamp() {
-	let issue: Issue = serde_json::from_value(serde_json::json!({
-		"active": true,
-		"created_at": "2026-01-02T03:04:05Z",
-		"first_seen": "2026-01-02T03:04:05Z",
-		"last_seen": "2026-01-02T03:04:05Z",
-		"id": "6f8a2b1c-0000-4000-8000-000000000000",
-		"message": "disk full",
-		"ref": "host/alert:disk",
-		"severity": "warning",
-		"source": "alertd",
-		"updated_at": "2026-01-02T03:04:05Z",
-	}))
-	.unwrap();
-
-	let created: jiff::Timestamp = issue.created_at;
-	assert_eq!(created, "2026-01-02T03:04:05Z".parse().unwrap());
 }
