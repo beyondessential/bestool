@@ -15,7 +15,7 @@ use bestool_tamanu::{ApiServerKind, config::load_config, services::Supervisor};
 
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, find_tamanu},
+	tamanu::{TamanuArgs, find_tamanu, lifecycle},
 };
 
 /// Trigger a manual sync on a facility server and watch it run.
@@ -130,6 +130,15 @@ pub async fn run(args: SyncArgs, ctx: Context) -> Result<()> {
 		Supervisor::Pm2 => "tamanu-sync",
 		Supervisor::Systemd => "tamanu-facility-sync",
 	};
+
+	// When we're going to tail the sync service, its journal (`journalctl -u
+	// … -f`) needs root or `adm`/`systemd-journal` membership on systemd —
+	// otherwise the follow shows no lines. Elevate before triggering the sync
+	// so the re-exec doesn't fire the `/sync/run` POST twice. `--no-follow`
+	// never touches the journal, so it stays unprivileged.
+	if !args.no_follow {
+		lifecycle::ensure_root_or_reexec(supervisor)?;
+	}
 
 	let base_url = config
 		.sync_api_url()
