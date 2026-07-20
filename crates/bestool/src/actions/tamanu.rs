@@ -69,6 +69,9 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-logs")]
 	#[clap(alias = "l")]
 	logs => Logs(LogsArgs),
+	#[cfg(all(windows, feature = "tamanu-pgtune"))]
+	#[clap(alias = "pgtune")]
+	pg_tune => PgTune(PgTuneArgs),
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs),
