@@ -126,13 +126,32 @@ impl BackgroundTask for SelfUpdateTask {
 	}
 
 	fn http_endpoints(&self) -> Vec<TaskEndpoint> {
-		let failed_version = self.failed_version.clone();
-		vec![TaskEndpoint {
-			name: "update",
-			handler: Arc::new(move |ctx: TaskContext| {
-				Box::pin(on_demand_update(ctx, failed_version.clone()))
-			}),
-		}]
+		let failed_for_update = self.failed_version.clone();
+		let failed_for_status = self.failed_version.clone();
+		vec![
+			TaskEndpoint {
+				name: "update",
+				handler: Arc::new(move |ctx: TaskContext| {
+					Box::pin(on_demand_update(ctx, failed_for_update.clone()))
+				}),
+			},
+			// Lets `bestool self-update` observe a delegated update: it polls this
+			// to distinguish a failed install (this process stays up and reports
+			// the version it couldn't install) from a still-in-progress one.
+			TaskEndpoint {
+				name: "status",
+				handler: Arc::new(move |_ctx: TaskContext| {
+					let failed_version = failed_for_status.clone();
+					Box::pin(async move {
+						let failed = failed_version.lock().unwrap().clone();
+						TaskEndpointResponse::Json(json!({
+							"current": env!("CARGO_PKG_VERSION"),
+							"failed_version": failed,
+						}))
+					})
+				}),
+			},
+		]
 	}
 }
 

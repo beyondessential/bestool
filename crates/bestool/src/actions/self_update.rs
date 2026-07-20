@@ -6,6 +6,8 @@ use binstalk_downloader::download::{DataVerifier as _, Download, PkgFmt};
 use detect_targets::{TARGET, get_desired_targets};
 use miette::{IntoDiagnostic, Result, miette};
 use tracing::info;
+#[cfg(all(windows, feature = "alertd"))]
+use tracing::warn;
 
 use crate::download::{
 	DownloadSource, ReleaseVerifier, client, fetch_latest_version, fetch_release_signature,
@@ -319,6 +321,13 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 	}
 
 	info!("alert daemon is running; delegating update to it");
+
+	// Record the daemon's start marker before it updates, so we can tell its
+	// eventual restart (a fresh process) apart from the process we're talking to.
+	let previous_started_at = fetch_daemon_status(&client, &base_url)
+		.await
+		.map(|status| status.started_at);
+
 	let response = client
 		.get(url)
 		.send()
@@ -332,8 +341,13 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 
 	if body.get("updating").and_then(Value::as_bool) == Some(true) {
 		let from = body.get("from").and_then(Value::as_str).unwrap_or("?");
-		let to = body.get("to").and_then(Value::as_str).unwrap_or("?");
-		info!(from, to, "alert daemon is updating and will restart");
+		let to = body
+			.get("to")
+			.and_then(Value::as_str)
+			.unwrap_or("?")
+			.to_string();
+		info!(from, to = %to, "alert daemon is updating and will restart");
+		wait_for_daemon_restart(&client, &base_url, previous_started_at.as_deref(), &to).await?;
 	} else if let Some(message) = body.get("error").and_then(Value::as_str) {
 		return Err(miette!("alert daemon could not update: {message}"));
 	} else {
@@ -342,6 +356,122 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 	}
 
 	Ok(())
+}
+
+/// Fetch and parse the daemon's `/status`, or `None` if it's unreachable or the
+/// response can't be parsed (both expected while it's mid-restart).
+#[cfg(all(windows, feature = "alertd"))]
+async fn fetch_daemon_status(
+	client: &reqwest::Client,
+	base_url: &str,
+) -> Option<bestool_alertd::http_server::StatusResponse> {
+	let response = client
+		.get(format!("{base_url}/status"))
+		.send()
+		.await
+		.ok()?;
+	if !response.status().is_success() {
+		return None;
+	}
+	response.json().await.ok()
+}
+
+/// Fetch the version, if any, that the daemon's self-update task last failed to
+/// install, via `/tasks/self-update/status`.
+#[cfg(all(windows, feature = "alertd"))]
+async fn fetch_update_failure(client: &reqwest::Client, base_url: &str) -> Option<String> {
+	use serde_json::Value;
+
+	let response = client
+		.get(format!("{base_url}/tasks/self-update/status"))
+		.send()
+		.await
+		.ok()?;
+	if !response.status().is_success() {
+		return None;
+	}
+	let body: Value = response.json().await.ok()?;
+	body.get("failed_version")
+		.and_then(Value::as_str)
+		.map(str::to_owned)
+}
+
+/// Whether a freshly-observed `/status` means the delegated update has landed:
+/// a changed `started_at` marks a fresh process. Without a baseline (the
+/// pre-update status couldn't be read) we fall back to the running version
+/// matching the requested `target` (or any restart for a `file:` target, whose
+/// installed version we can't predict).
+#[cfg(all(windows, feature = "alertd"))]
+fn restart_completed(
+	previous_started_at: Option<&str>,
+	current_started_at: &str,
+	current_version: &str,
+	target: &str,
+) -> bool {
+	match previous_started_at {
+		Some(previous) => current_started_at != previous,
+		None => target.starts_with("file:") || current_version == target,
+	}
+}
+
+/// Block until the daemon has installed the delegated update and restarted, so
+/// the operator sees the update through to completion instead of the command
+/// exiting the moment the daemon accepts it.
+#[cfg(all(windows, feature = "alertd"))]
+async fn wait_for_daemon_restart(
+	client: &reqwest::Client,
+	base_url: &str,
+	previous_started_at: Option<&str>,
+	target: &str,
+) -> Result<()> {
+	use std::time::{Duration, Instant};
+
+	const TIMEOUT: Duration = Duration::from_secs(300);
+	const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+	let deadline = Instant::now() + TIMEOUT;
+	let target_is_file = target.starts_with("file:");
+
+	info!("waiting for the alert daemon to install the update and restart");
+	loop {
+		// A recorded failure means the daemon we're polling stayed up and won't
+		// restart: surface it rather than waiting out the timeout.
+		if fetch_update_failure(client, base_url).await.as_deref() == Some(target) {
+			return Err(miette!(
+				"alert daemon reported that updating to {target} failed; \
+				check the daemon logs (`bestool alertd status`) for details"
+			));
+		}
+
+		if let Some(status) = fetch_daemon_status(client, base_url).await
+			&& restart_completed(
+				previous_started_at,
+				&status.started_at,
+				&status.version,
+				target,
+			) {
+			if !target_is_file && status.version != target {
+				warn!(
+					expected = %target,
+					running = %status.version,
+					"alert daemon restarted but is not on the expected version"
+				);
+			} else {
+				info!(version = %status.version, "alert daemon updated and restarted");
+			}
+			return Ok(());
+		}
+
+		if Instant::now() >= deadline {
+			return Err(miette!(
+				"timed out after {}s waiting for the alert daemon to restart on the new version; \
+				check `bestool alertd status` and the daemon logs",
+				TIMEOUT.as_secs()
+			));
+		}
+
+		tokio::time::sleep(POLL_INTERVAL).await;
+	}
 }
 
 #[cfg(windows)]
@@ -422,5 +552,46 @@ mod tests {
 		let mut perms = fs::metadata(temp_path).unwrap().permissions();
 		perms.set_mode(0o755);
 		let _ = fs::set_permissions(temp_path, perms);
+	}
+}
+
+#[cfg(all(test, windows, feature = "alertd"))]
+mod delegate_tests {
+	use super::restart_completed;
+
+	#[test]
+	fn changed_started_at_means_restarted() {
+		assert!(restart_completed(
+			Some("2026-07-20T01:00:00Z"),
+			"2026-07-20T01:03:00Z",
+			"1.46.1",
+			"1.46.1",
+		));
+	}
+
+	#[test]
+	fn same_started_at_means_still_running() {
+		assert!(!restart_completed(
+			Some("2026-07-20T01:00:00Z"),
+			"2026-07-20T01:00:00Z",
+			"1.36.2",
+			"1.46.1",
+		));
+	}
+
+	#[test]
+	fn without_baseline_matches_target_version() {
+		assert!(restart_completed(None, "whenever", "1.46.1", "1.46.1"));
+		assert!(!restart_completed(None, "whenever", "1.36.2", "1.46.1"));
+	}
+
+	#[test]
+	fn without_baseline_any_restart_for_file_target() {
+		assert!(restart_completed(
+			None,
+			"whenever",
+			"1.36.2",
+			"file:C:\\tmp\\bestool.exe",
+		));
 	}
 }
