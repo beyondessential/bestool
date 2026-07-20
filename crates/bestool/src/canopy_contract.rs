@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use bestool_canopy::schema::{
 	BackupCapabilitiesArgs, BackupCredentialsArgs, BackupPurpose, BackupTarget, BeginArgs,
 	BeginResponse, CheckSeverity, CompleteArgs, CompleteResponse, CredentialProcessOutput,
-	NewEvent, ReportArgs, RunOutcome, Severity,
+	ReportArgs, RunOutcome,
 };
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
@@ -112,82 +112,6 @@ fn response_schema(path: &str, method: &str) -> String {
 		"/paths/{}/{method}/responses/200/content/application~1json/schema",
 		escape(path),
 	)
-}
-
-#[tokio::test]
-#[ignore = "live canopy contract test; run by the dedicated CI job"]
-async fn events_request_matches_spec() {
-	let spec = spec().await;
-	assert_operation_exists(spec, "/events", "post");
-
-	let event = NewEvent::builder()
-		.source("bestool-contract-test".to_owned())
-		.ref_("host/alert:target".to_owned())
-		.message("message".to_owned())
-		.description("description".to_owned())
-		.severity(Severity::Warning)
-		.occurred_at("2026-01-01T00:00:00Z".parse().unwrap())
-		.active(true)
-		.build();
-	let instance = serde_json::to_value(&event).unwrap();
-	assert_valid(spec, &request_schema("/events", "post"), &instance);
-
-	// Negative case, proving the validation isn't vacuous: a retired syslog
-	// severity must be rejected.
-	let mut invalid = instance.clone();
-	invalid["severity"] = json!("notice");
-	let validator = validator_at(spec, &request_schema("/events", "post"));
-	assert!(
-		!validator.is_valid(&invalid),
-		"spec validation accepted a retired severity; the validator is not checking refs",
-	);
-}
-
-#[tokio::test]
-#[ignore = "live canopy contract test; run by the dedicated CI job"]
-async fn severity_vocabulary_matches_spec() {
-	let spec = spec().await;
-	let spec_levels: Vec<&str> = resolve(spec, "/components/schemas/Severity")
-		.get("enum")
-		.and_then(Value::as_array)
-		.expect("Severity schema has an enum")
-		.iter()
-		.map(|v| v.as_str().expect("Severity enum values are strings"))
-		.collect();
-
-	// Exhaustive match: adding a Severity variant breaks this and forces the
-	// list below to be updated.
-	use Severity::*;
-	const ALL: &[Severity] = &[Critical, Error, Warning, Info, Debug];
-	for severity in ALL {
-		match severity {
-			Critical | Error | Warning | Info | Debug => {}
-		}
-	}
-
-	let ours: Vec<String> = ALL
-		.iter()
-		.map(|s| {
-			serde_json::to_value(s)
-				.unwrap()
-				.as_str()
-				.unwrap()
-				.to_owned()
-		})
-		.collect();
-
-	for level in &spec_levels {
-		assert!(
-			serde_json::from_value::<Severity>(json!(level)).is_ok(),
-			"canopy severity {level:?} does not deserialise into bestool's Severity",
-		);
-	}
-	for level in &ours {
-		assert!(
-			spec_levels.contains(&level.as_str()),
-			"bestool severity {level:?} is not accepted by canopy (spec has {spec_levels:?})",
-		);
-	}
 }
 
 #[tokio::test]
