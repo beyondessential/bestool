@@ -32,3 +32,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 temp-env = "0.3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
