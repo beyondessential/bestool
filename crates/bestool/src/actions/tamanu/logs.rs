@@ -26,7 +26,7 @@ use bestool_tamanu::{
 
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, find_tamanu},
+	tamanu::{TamanuArgs, find_tamanu, lifecycle},
 };
 
 /// The literal pseudo-service name that triggers caddy log tailing
@@ -172,6 +172,12 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	} else {
 		bail!("tamanu logs is only supported on Linux (systemd) and Windows (pm2)");
 	};
+
+	// On systemd, reading a unit's journal (`journalctl -u …`) needs root or
+	// membership in `adm`/`systemd-journal`; without it journalctl returns no
+	// entries and exits 0, so the tail comes back empty with no error. Elevate
+	// the same way the other tamanu subcommands do so the journal is readable.
+	lifecycle::ensure_root_or_reexec(supervisor)?;
 
 	// Read `features.patientPortal` from the DB so that `bestool tamanu logs
 	// tamanu-patientportal` actually matches when the flag is on; without
