@@ -4,6 +4,7 @@ pub use bestool_canopy as canopy;
 pub use bestool_canopy::Redacted;
 
 pub mod backup;
+mod child_confinement;
 pub mod commands;
 mod context;
 mod daemon;
