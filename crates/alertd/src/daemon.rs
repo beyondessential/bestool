@@ -81,6 +81,10 @@ pub async fn run_with_shutdown(
 ) -> Result<()> {
 	info!("starting alertd daemon");
 
+	// Tie spawned children (pg_basebackup, kopia) to this process, so a daemon
+	// restart can't leave a backup running to collide with the next one.
+	crate::child_confinement::confine_children();
+
 	metrics::init_metrics();
 	metrics::record_activity();
 

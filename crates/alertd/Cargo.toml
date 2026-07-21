@@ -48,4 +48,5 @@ rustix = { version = "1", features = ["process"] }
 sd-notify = "0.5.0"
 
 [target.'cfg(windows)'.dependencies]
+win32job = "2.0.3"
 windows-service = "0.8.0"

@@ -926,8 +926,10 @@ pub(super) fn trim_error(err: &miette::Report) -> String {
 	format!("…{tail}")
 }
 
-/// Per-type lockfile path, in a runtime dir (tmpfs on Linux, so it's cleared on
-/// reboot and never stale across crashes).
+/// Per-type lockfile path, in a machine-global runtime dir. On Linux that's
+/// `/run/bestool` (tmpfs, so it's cleared on reboot and never stale across
+/// crashes); on Windows it's under `%ProgramData%` — see [`windows_lock_dir`] for
+/// why there rather than the per-user `%TEMP%`.
 fn lock_path(backup_type: &str) -> std::path::PathBuf {
 	let name = format!("backup-{}.lock", backup_type.replace(['/', '\\'], "_"));
 	#[cfg(unix)]
@@ -936,8 +938,25 @@ fn lock_path(backup_type: &str) -> std::path::PathBuf {
 	}
 	#[cfg(not(unix))]
 	{
-		std::env::temp_dir().join(format!("bestool-{name}"))
+		windows_lock_dir(std::env::var_os("ProgramData").as_deref()).join(name)
 	}
+}
+
+/// The machine-global directory holding backup lockfiles on Windows:
+/// `%ProgramData%\bestool\run`, shared by every account. The daemon runs as
+/// LocalSystem and a manual `bestool canopy backup` as an interactive
+/// administrator; the per-user `%TEMP%` would give each its own lockfile, so the
+/// cross-process guard wouldn't serialise them and two runs could stream a
+/// `pg_basebackup` into the one staging dir at once. The advisory lock is released
+/// by the OS when the holder exits, so a lockfile persisting between runs is never
+/// stale.
+#[cfg(any(not(unix), test))]
+fn windows_lock_dir(program_data: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+	program_data
+		.map(std::path::PathBuf::from)
+		.unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
+		.join("bestool")
+		.join("run")
 }
 
 /// Try to take the exclusive per-run lock. `Ok(Some(file))` holds the lock for
@@ -1086,6 +1105,29 @@ mod tests {
 			lock_path("a/b")
 				.to_string_lossy()
 				.ends_with("backup-a_b.lock")
+		);
+	}
+
+	#[test]
+	fn windows_lock_dir_is_machine_global_under_programdata() {
+		use std::ffi::OsStr;
+
+		// Rooted at %ProgramData% (shared by every account: the LocalSystem daemon and
+		// a manual admin run must contend on one file), never a per-user temp dir.
+		let base = OsStr::new(r"D:\ProgramData");
+		let dir = windows_lock_dir(Some(base));
+		assert!(dir.starts_with(std::path::Path::new(base)));
+		let last_two: Vec<String> = dir
+			.components()
+			.rev()
+			.take(2)
+			.map(|c| c.as_os_str().to_string_lossy().into_owned())
+			.collect();
+		assert_eq!(last_two, vec!["run".to_owned(), "bestool".to_owned()]);
+
+		// Falls back to the default ProgramData when the env var is unset.
+		assert!(
+			windows_lock_dir(None).starts_with(std::path::Path::new(r"C:\ProgramData"))
 		);
 	}
 
