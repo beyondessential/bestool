@@ -11,6 +11,7 @@ pub mod btrfs;
 pub mod lvm;
 pub mod resolve;
 mod service;
+mod space;
 pub mod strategy;
 mod sys;
 pub mod vss;
@@ -84,20 +85,30 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 	// here must not fail the backup.
 	checkpoint(config, &resolved.data_dir).await;
 
+	// The base-backup fallback stages a full copy, and VSS needs copy-on-write
+	// room, so estimate the cluster size up front for those two; the snapshot
+	// backends capture in place and need no space reservation.
+	let need = match strategy {
+		Strategy::BaseBackup | Strategy::Vss => {
+			space::estimate_needed(config, &resolved.data_dir).await
+		}
+		_ => None,
+	};
+
 	match strategy {
-		Strategy::BaseBackup => basebackup_prepared(&resolved, backup_type, config).await,
+		Strategy::BaseBackup => basebackup_prepared(&resolved, backup_type, config, need).await,
 		// For a snapshot backend (btrfs/thin-LVM/VSS): if the snapshot can't be
 		// taken — VSS unavailable, missing privileges, a layout we can't capture
 		// atomically — fall back to pg_basebackup rather than fail. That's a safe
 		// degradation (a correct, if heavier, base backup) — never the live dir.
-		snapshot => match snapshot_prepared(snapshot, &resolved, backup_type).await {
+		snapshot => match snapshot_prepared(snapshot, &resolved, backup_type, need).await {
 			Ok(prepared) => Ok(prepared),
 			Err(err) => {
 				warn!(
 					strategy = ?snapshot,
 					"snapshot backend unavailable ({err}); falling back to pg_basebackup"
 				);
-				basebackup_prepared(&resolved, backup_type, config).await
+				basebackup_prepared(&resolved, backup_type, config, need).await
 			}
 		},
 	}
@@ -108,6 +119,7 @@ async fn snapshot_prepared(
 	strategy: Strategy,
 	resolved: &resolve::ResolvedCluster,
 	backup_type: &str,
+	need: Option<u64>,
 ) -> Result<Prepared> {
 	let (path, teardown) = match strategy {
 		Strategy::Btrfs => {
@@ -119,7 +131,7 @@ async fn snapshot_prepared(
 			(path, Teardown::Lvm(snapshot))
 		}
 		Strategy::Vss => {
-			let (path, shadow) = vss::prepare(resolved, backup_type).await?;
+			let (path, shadow) = vss::prepare(resolved, backup_type, need).await?;
 			(path, Teardown::Vss(shadow))
 		}
 		Strategy::BaseBackup => unreachable!("basebackup is handled by the caller"),
@@ -137,8 +149,9 @@ async fn basebackup_prepared(
 	resolved: &resolve::ResolvedCluster,
 	backup_type: &str,
 	config: &PostgresqlConfig,
+	need: Option<u64>,
 ) -> Result<Prepared> {
-	let (path, root) = basebackup::prepare(resolved, backup_type, config).await?;
+	let (path, root) = basebackup::prepare(resolved, backup_type, config, need).await?;
 	Ok(Prepared {
 		path,
 		// Tagged as basebackup even on fallback — it reflects what actually ran.
@@ -552,6 +565,7 @@ mod tests {
 			port,
 			socket: socket.map(PathBuf::from),
 			strategy: None,
+			staging_dir: None,
 			service_name: None,
 		}
 	}

@@ -20,13 +20,10 @@ use tracing::info;
 use super::{super::method::PostgresqlConfig, resolve::ResolvedCluster};
 
 /// Where this run's base backup is streamed to (and what kopia snapshots). Nests
-/// `<version>/<cluster>` under the stable source dir so the kopia source path
-/// matches the btrfs strategy's — a host can migrate between them and keep one
-/// continuous history.
-fn destination(backup_type: &str, resolved: &ResolvedCluster) -> PathBuf {
-	super::stable_source_dir(backup_type)
-		.join(&resolved.version)
-		.join(&resolved.cluster)
+/// `<version>/<cluster>` under the chosen staging root, matching the btrfs
+/// strategy's layout so the kopia source path lines up.
+fn destination(root: &Path, resolved: &ResolvedCluster) -> PathBuf {
+	root.join(&resolved.version).join(&resolved.cluster)
 }
 
 /// `pg_basebackup` args for a plain (uncompressed) base backup with streamed WAL.
@@ -47,9 +44,12 @@ pub async fn prepare(
 	resolved: &ResolvedCluster,
 	backup_type: &str,
 	config: &PostgresqlConfig,
+	need: Option<u64>,
 ) -> Result<(PathBuf, PathBuf)> {
-	let root = super::stable_source_dir(backup_type);
-	let dest = destination(backup_type, resolved);
+	// Pick a staging root with room for the full copy (a roomier disk when the
+	// default is too small), failing early if nothing fits.
+	let root = super::space::choose_staging_root(backup_type, config.staging_dir.as_deref(), need)?;
+	let dest = destination(&root, resolved);
 
 	// pg_basebackup requires an empty target; clear leftovers from a crashed run.
 	if root.exists() {
@@ -201,17 +201,15 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn destination_nests_version_and_cluster_under_stable_dir() {
+	fn destination_nests_version_and_cluster_under_root() {
 		let resolved = ResolvedCluster {
 			data_dir: "/var/lib/postgresql/16/main".into(),
 			version: "16".into(),
 			cluster: "main".into(),
 		};
 		assert_eq!(
-			destination("tamanu-postgres", &resolved),
-			super::super::stable_source_dir("tamanu-postgres")
-				.join("16")
-				.join("main")
+			destination(Path::new("/staging/tamanu-postgres"), &resolved),
+			Path::new("/staging/tamanu-postgres/16/main")
 		);
 	}
 

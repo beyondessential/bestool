@@ -281,6 +281,7 @@ mod tests {
 			port: None,
 			socket: None,
 			strategy: None,
+			staging_dir: None,
 			service_name: service_name.map(str::to_owned),
 		}
 	}
