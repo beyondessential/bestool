@@ -13,6 +13,6 @@ So backups failing on every host with no `device_id` points at **Canopy server-s
 
 ## Build steps
 
-- [ ] Add `canopy_registration` check module and register it (host-level, on-wire).
-- [ ] Grade per the REG spec: no record / no server id / no device id -> fail; no device key -> warn; server id + device id + device key present -> pass (api_url optional).
-- [ ] Unit-test each state -> outcome, mirroring the check test style in the doctor checks modules.
+- [x] Add `canopy_registration` check module and register it (host-level, on-wire). Placed after `tailscale_config` in the registry.
+- [x] Grade per the REG spec: no record / no server id / no device id -> fail; no device key -> warn; server id + device id + device key present -> pass (api_url optional). A load/decrypt error reports broken (the check couldn't read the record). Field presence is attached as wire details (`registered`, `hasServerId`, `hasDeviceId`, `hasDeviceKey`, `hasApiUrl`).
+- [x] Unit-test each state -> outcome via a pure `grade` function, mirroring the check test style in the doctor checks modules.
