@@ -9,14 +9,16 @@
 //! hardware-derived ones plus the SSD/WAL planner settings that ship wrong by
 //! default.
 //!
-//! Runs on Linux and Windows alike, with one platform carve-out: Windows
-//! postgres uses a different shared-memory implementation and degrades with a
-//! large shared_buffers, so ops keeps it deliberately low there regardless of
-//! RAM — we don't flag a low shared_buffers on Windows as long as it clears a
-//! sane floor. It compares the live server against *this host's* RAM, so it
-//! only runs when postgres is local; against a remote database it skips, since
-//! the local RAM says nothing about the database host.
+//! Runs on Linux and Windows alike. The expected values come from the shared
+//! tuning definition, which budgets Windows hosts to a smaller memory ceiling
+//! (Windows postgres degrades with a large shared_buffers), so the same drift
+//! checks apply on both platforms without a per-GUC carve-out; only the
+//! Linux-specific effective_io_concurrency is skipped on Windows. It compares
+//! the live server against *this host's* RAM, so it only runs when postgres is
+//! local; against a remote database it skips, since the local RAM says nothing
+//! about the database host.
 
+use bestool_postgres::pgtune::{self, Budget, HostResources, Platform};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 use super::{CheckContext, query_error_check};
@@ -31,21 +33,17 @@ const WARN_RANDOM_PAGE_COST: f64 = 2.0;
 /// max_wal_size at or below this is the stock 1GB default; ops sets 8GB.
 const WARN_MAX_WAL_SIZE: i64 = GB;
 
-/// On Windows, postgres performs poorly with a large shared_buffers, so ops
-/// keeps it deliberately low regardless of RAM. A low shared_buffers on Windows
-/// isn't flagged as long as it clears this floor.
-const WIN_MIN_SHARED_BUFFERS: i64 = 512 * 1024 * 1024;
-
-/// The portion of total RAM a tuned postgres reserves for everything else,
-/// before sizing its own caches. Mirrors the ops tuning: on boxes with real
-/// RAM, hold back a fixed slice for the app/caddy/kopia co-tenants; on small
-/// boxes, just split down the middle.
-fn pg_ram_budget(total: i64) -> i64 {
-	if total >= 8 * GB {
-		total - 4 * GB
-	} else {
-		total / 2
-	}
+/// The resource budget for a host, shared with the tuning command so that a
+/// tuned host passes this check. `cpus` is irrelevant to the memory GUCs this
+/// check assesses, so a placeholder is fine.
+fn budget_for(platform: Platform, total_ram: i64) -> Budget {
+	pgtune::budget(
+		platform,
+		HostResources {
+			total_ram_kib: (total_ram / 1024).max(0) as u64,
+			cpus: 1,
+		},
+	)
 }
 
 /// Whether the database is on this same host, so the local RAM describes it.
@@ -93,6 +91,7 @@ struct Settings {
 	random_page_cost: f64,
 	effective_io_concurrency: i64,
 	max_wal_size: i64,
+	server_version_num: i64,
 }
 
 fn human_bytes(n: i64) -> String {
@@ -111,19 +110,26 @@ fn human_bytes(n: i64) -> String {
 /// Compare the live settings against what the host's RAM warrants and return
 /// every issue found, most-severe-first. Pure so it can be tested without a
 /// database.
-fn assess(s: &Settings, total_ram: i64, is_windows: bool) -> Vec<Finding> {
+fn assess(s: &Settings, total_ram: i64, platform: Platform, pg_major: u32) -> Vec<Finding> {
 	let mut fails = Vec::new();
 	let mut warns = Vec::new();
+	let is_windows = platform == Platform::Windows;
 
-	let budget = pg_ram_budget(total_ram);
-	let expected_shared_buffers = budget / 4;
-	let expected_effective_cache = (budget / 4) * 3;
-	let expected_maintenance = (budget / 16).min(8 * GB);
+	let budget_res = budget_for(platform, total_ram);
+	let budget = (budget_res.ram_kib * 1024) as i64;
+	let expected_shared_buffers =
+		(pgtune::expected_shared_buffers_kib(&budget_res, platform, pg_major) * 1024) as i64;
+	let expected_effective_cache =
+		(pgtune::expected_effective_cache_kib(&budget_res) * 1024) as i64;
+	let expected_maintenance =
+		(pgtune::expected_maintenance_kib(&budget_res, platform, pg_major) * 1024) as i64;
 
 	// shared_buffers — the single most important GUC, and the clearest tell of
 	// an untuned instance. Over-allocation risks starving the OS cache and the
 	// co-hosted workloads (OOM); gross under-allocation means it was never
-	// tuned for this box. Either way it's a fail.
+	// tuned for this box. Either way it's a fail. The expected value already
+	// accounts for the smaller budget Windows tunes to, so no platform carve-out
+	// is needed here.
 	if s.shared_buffers > total_ram / 2 {
 		fails.push(Finding {
 			severity: Severity::Fail,
@@ -134,22 +140,20 @@ fn assess(s: &Settings, total_ram: i64, is_windows: bool) -> Vec<Finding> {
 			),
 		});
 	} else if off_by_over_2x(s.shared_buffers, expected_shared_buffers) {
-		let below = s.shared_buffers < expected_shared_buffers;
-		// Windows keeps shared_buffers low by design, so don't flag a low value
-		// there as long as it clears the floor; a genuinely tiny value still trips.
-		let windows_low_ok = is_windows && below && s.shared_buffers >= WIN_MIN_SHARED_BUFFERS;
-		if !windows_low_ok {
-			let how = if below { "below" } else { "above" };
-			fails.push(Finding {
-				severity: Severity::Fail,
-				message: format!(
-					"shared_buffers {} far {how} expected ~{} for {} RAM — postgres looks untuned",
-					human_bytes(s.shared_buffers),
-					human_bytes(expected_shared_buffers),
-					human_bytes(total_ram),
-				),
-			});
-		}
+		let how = if s.shared_buffers < expected_shared_buffers {
+			"below"
+		} else {
+			"above"
+		};
+		fails.push(Finding {
+			severity: Severity::Fail,
+			message: format!(
+				"shared_buffers {} far {how} expected ~{} for {} RAM — postgres looks untuned",
+				human_bytes(s.shared_buffers),
+				human_bytes(expected_shared_buffers),
+				human_bytes(total_ram),
+			),
+		});
 	}
 
 	// work_mem is per-sort-node, so a busy server can hold many multiples of it
@@ -248,7 +252,8 @@ const SETTINGS_QUERY: &str = "
 		current_setting('max_connections')::bigint             AS max_connections,
 		current_setting('random_page_cost')::float8            AS random_page_cost,
 		current_setting('effective_io_concurrency')::bigint    AS effective_io_concurrency,
-		pg_size_bytes(current_setting('max_wal_size'))         AS max_wal_size
+		pg_size_bytes(current_setting('max_wal_size'))         AS max_wal_size,
+		current_setting('server_version_num')::bigint          AS server_version_num
 ";
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -282,6 +287,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		random_page_cost: row.try_get("random_page_cost").unwrap_or(0.0),
 		effective_io_concurrency: row.try_get("effective_io_concurrency").unwrap_or(0),
 		max_wal_size: row.try_get("max_wal_size").unwrap_or(0),
+		server_version_num: row.try_get("server_version_num").unwrap_or(0),
 	};
 
 	let sys = System::new_with_specifics(
@@ -296,7 +302,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 
-	let findings = assess(&settings, total_ram, cfg!(target_os = "windows"));
+	let pg_major = (settings.server_version_num / 10000).max(0) as u32;
+	let findings = assess(&settings, total_ram, Platform::current(), pg_major);
 
 	let summary = match findings.len() {
 		0 => "appears tuned".to_string(),
@@ -317,12 +324,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Check::pass("pg_tuning", summary)
 	};
 
-	let budget = pg_ram_budget(total_ram);
+	let budget_res = budget_for(Platform::current(), total_ram);
+	let budget = (budget_res.ram_kib * 1024) as i64;
+	let expected_shared =
+		(pgtune::expected_shared_buffers_kib(&budget_res, Platform::current(), pg_major) * 1024)
+			as i64;
 	check
 		.with_detail("total_ram_bytes", total_ram)
 		.with_detail("pg_ram_budget_bytes", budget)
 		.with_detail("shared_buffers_bytes", settings.shared_buffers)
-		.with_detail("shared_buffers_expected_bytes", budget / 4)
+		.with_detail("shared_buffers_expected_bytes", expected_shared)
 		.with_detail("effective_cache_size_bytes", settings.effective_cache_size)
 		.with_detail("maintenance_work_mem_bytes", settings.maintenance_work_mem)
 		.with_detail("work_mem_bytes", settings.work_mem)
@@ -345,7 +356,7 @@ mod tests {
 	/// 7GB, effective_cache_size = 21GB, etc.
 	fn tuned_32gb() -> (Settings, i64) {
 		let total = 32 * GB;
-		let budget = pg_ram_budget(total);
+		let budget = (budget_for(Platform::Linux, total).ram_kib * 1024) as i64;
 		(
 			Settings {
 				shared_buffers: budget / 4,
@@ -356,6 +367,7 @@ mod tests {
 				random_page_cost: 1.1,
 				effective_io_concurrency: 200,
 				max_wal_size: 8 * GB,
+				server_version_num: 160000,
 			},
 			total,
 		)
@@ -364,7 +376,7 @@ mod tests {
 	#[test]
 	fn tuned_instance_has_no_findings() {
 		let (s, total) = tuned_32gb();
-		assert!(assess(&s, total, false).is_empty());
+		assert!(assess(&s, total, Platform::Linux, 16).is_empty());
 	}
 
 	#[test]
@@ -381,8 +393,9 @@ mod tests {
 			random_page_cost: 4.0,
 			effective_io_concurrency: 1,
 			max_wal_size: GB,
+			server_version_num: 160000,
 		};
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(findings.iter().any(|f| f.severity == Severity::Fail));
 		assert!(
 			findings[0].message.contains("shared_buffers"),
@@ -395,7 +408,7 @@ mod tests {
 		let total = 16 * GB;
 		let (mut s, _) = tuned_32gb();
 		s.shared_buffers = 10 * GB; // > half of 16GB
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			findings
 				.iter()
@@ -409,7 +422,7 @@ mod tests {
 		// 512MB × 100 connections = 50GB, well over the 28GB budget.
 		s.work_mem = 512 * MB;
 		s.max_connections = 100;
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			findings
 				.iter()
@@ -424,7 +437,7 @@ mod tests {
 		let total = 32 * GB;
 		let mut s = tuned_32gb().0;
 		s.shared_buffers = 3 * GB;
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			findings
 				.iter()
@@ -437,7 +450,7 @@ mod tests {
 		let (mut s, total) = tuned_32gb();
 		s.random_page_cost = 4.0;
 		s.effective_io_concurrency = 1;
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(!findings.is_empty());
 		assert!(findings.iter().all(|f| f.severity == Severity::Warn));
 		assert!(
@@ -459,7 +472,7 @@ mod tests {
 		let total = 32 * GB;
 		let mut s = tuned_32gb().0;
 		s.shared_buffers = 512 * MB;
-		let findings = assess(&s, total, true);
+		let findings = assess(&s, total, Platform::Windows, 16);
 		assert!(
 			!findings
 				.iter()
@@ -474,7 +487,7 @@ mod tests {
 		let total = 32 * GB;
 		let mut s = tuned_32gb().0;
 		s.shared_buffers = 512 * MB;
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			findings
 				.iter()
@@ -488,7 +501,7 @@ mod tests {
 		let total = 32 * GB;
 		let mut s = tuned_32gb().0;
 		s.shared_buffers = 128 * MB;
-		let findings = assess(&s, total, true);
+		let findings = assess(&s, total, Platform::Windows, 16);
 		assert!(
 			findings
 				.iter()
@@ -502,7 +515,7 @@ mod tests {
 		let total = 16 * GB;
 		let mut s = tuned_32gb().0;
 		s.shared_buffers = 10 * GB;
-		let findings = assess(&s, total, true);
+		let findings = assess(&s, total, Platform::Windows, 16);
 		assert!(
 			findings
 				.iter()
@@ -514,7 +527,7 @@ mod tests {
 	fn effective_io_concurrency_not_flagged_on_windows() {
 		let (mut s, total) = tuned_32gb();
 		s.effective_io_concurrency = 0;
-		let findings = assess(&s, total, true);
+		let findings = assess(&s, total, Platform::Windows, 16);
 		assert!(
 			!findings
 				.iter()
@@ -526,7 +539,7 @@ mod tests {
 	fn default_wal_size_warns() {
 		let (mut s, total) = tuned_32gb();
 		s.max_wal_size = GB;
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			findings
 				.iter()
@@ -548,8 +561,9 @@ mod tests {
 			random_page_cost: 1.1,
 			effective_io_concurrency: 200,
 			max_wal_size: 8 * GB,
+			server_version_num: 160000,
 		};
-		let findings = assess(&s, total, false);
+		let findings = assess(&s, total, Platform::Linux, 16);
 		assert!(
 			!findings
 				.iter()

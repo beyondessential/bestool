@@ -127,6 +127,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-find",
 	"tamanu-lifecycle",
 	"tamanu-logs",
+	"tamanu-pgtune",
 	"tamanu-psql",
 	"tamanu-sync",
 	"tamanu-tags",
@@ -158,6 +159,9 @@ tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
 tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
 tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
+# Windows-only PostgreSQL tuning. Reuses the lifecycle restart to bounce the
+# Tamanu workloads, and drives the postgres Windows service directly.
+tamanu-pgtune = ["__tamanu", "tamanu-config", "tamanu-lifecycle", "dep:bestool-postgres", "dep:windows-service"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 # Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
