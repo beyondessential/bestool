@@ -1,13 +1,22 @@
-# Spec rules
+# Spec and plan rules
 
-Specs live in `.workhorse/specs/<area>/<name>.md`.
-Each carries an `id` in its frontmatter (e.g. `BAK`, `S3P`) and is cross-referenced by linking the file under that id, e.g. `[BAK](backup.md)`.
+Specs live in `.workhorse/specs/<area>/<name>.md`; plans live in `.workhorse/plans/`.
+
+For the spec file format, the frontmatter `id`, code-to-spec traceability, the fold/create/split decision, and when a change warrants a spec update, follow `.agents/docs/spec-format.md` and the Workhorse skills.
+This file records only the bestool house conventions that sit on top of that.
 
 A spec is the durable description of **what** the system requires.
 It is read by someone deciding whether the implementation is correct, or re-implementing the feature from scratch — not as a narrative of how the code works or how it came to be.
 
-Specs are written in markdown prose with each sentence on its own line and no hard-wrapping.
+## House style
+
+Specs are written in markdown prose with each sentence on its own line and no hard-wrapping, rather than the checkbox acceptance-criteria style shown in `spec-format.md`.
 This balances ease of writing and diff parseability.
+
+## Cross-references
+
+Specs reference each other with markdown links under the target's id, e.g. `[BAK](backup.md)`.
+Code references the spec it implements with an inline `// spec: BAK` comment, as described in `spec-format.md`.
 
 ## What, not how
 
@@ -31,6 +40,12 @@ This balances ease of writing and diff parseability.
 - Don't scaffold or label: no "Strategy A/B", "Phase N", or plan tags in spec prose.
   Describe the mechanism directly.
 
-## Workflow
+## Plans and the unplan lifecycle
 
-- When adding or changing a feature, or fixing a bug: update the spec in `.workhorse/specs` first, then implement, then add tests.
+A plan captures the design and outstanding work for a feature while it is being built.
+Plans are point-in-time working documents: open questions, options, and trade-offs are welcome, unlike in specs.
+
+- A plan is added in a `plan:` commit and lives in `.workhorse/plans/` until its work is implemented.
+- Once the work has shipped, the plan is deleted in an `unplan:` commit.
+  If the feature has durable behaviour worth recording, fold it into a spec under `.workhorse/specs/` in that same commit, then delete the plan.
+- A plan that documents a genuinely undecided question may stay until the decision is made.
