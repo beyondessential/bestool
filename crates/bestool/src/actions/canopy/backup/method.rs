@@ -83,6 +83,12 @@ pub struct PostgresqlConfig {
 	/// Force a snapshot strategy instead of auto-detecting (for testing).
 	#[serde(default)]
 	pub strategy: Option<String>,
+	/// Override where the `pg_basebackup` full copy is staged. When set it's used
+	/// verbatim (and the run fails early if it lacks room); when unset the roomiest
+	/// suitable disk is chosen automatically. Ignored by the snapshot backends,
+	/// which capture in place.
+	#[serde(default)]
+	pub staging_dir: Option<PathBuf>,
 	/// Override the service controlled around a restore. On Windows this is the
 	/// service name (defaults to the EDB installer's `postgresql-x64-<version>`);
 	/// ignored on Unix, where the systemd unit is derived from version + cluster.

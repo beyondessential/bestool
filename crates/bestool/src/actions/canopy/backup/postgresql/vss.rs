@@ -96,12 +96,29 @@ fn delete_script(expose_target: &str) -> String {
 
 /// Take the shadow copy and expose it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
-pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Shadow)> {
+pub async fn prepare(
+	resolved: &ResolvedCluster,
+	backup_type: &str,
+	need: Option<u64>,
+) -> Result<(PathBuf, Shadow)> {
 	let root = backup_root(&resolved.data_dir).to_string_lossy().into_owned();
 	let volume = volume_of(&root)?.to_owned();
 	let rel = relative_to_volume(&root, &volume).to_owned();
 	let expose_target = expose_target_dir(&volume, backup_type);
 	let metadata = std::env::temp_dir().join(format!("bestool-vss-{}.cab", std::process::id()));
+
+	// The shadow's copy-on-write area lives on the source volume; if it's nearly
+	// full the shadow gets dropped mid-backup, so refuse up front.
+	let required = super::space::vss_required_free(need);
+	if let Some(free) = super::space::available(Path::new(&root))
+		&& free < required
+	{
+		bail!(
+			"volume {volume} has only {} free — a VSS shadow of this cluster needs at least {}; free space on {volume} first",
+			super::space::fmt_bytes(free),
+			super::space::fmt_bytes(required),
+		);
+	}
 
 	// Sweep a shadow left exposed here by a crashed run before re-creating.
 	reap_stale(&expose_target).await;
