@@ -67,6 +67,11 @@ pub async fn prepare(
 	#[cfg(unix)]
 	make_writable_by_postgres(&root).await?;
 
+	// Guard against a second stream into the same stable dir: if the destination
+	// has reappeared since we cleared the staging root, another pg_basebackup is
+	// already writing there (an orphan from a daemon that exited mid-run).
+	ensure_dest_clear(&dest).await?;
+
 	info!(dest = %dest.display(), "streaming pg_basebackup");
 	let mut cmd = super::pg_command(&super::postgres_bin("pg_basebackup", &resolved.data_dir));
 	cmd.args(basebackup_args(&dest));
@@ -90,6 +95,23 @@ pub async fn prepare(
 	#[cfg(unix)]
 	make_readable_by_kopia(&root).await;
 	Ok((dest, root))
+}
+
+/// Refuse to stream when the destination already exists right before the run: it
+/// means another pg_basebackup is writing into the shared stable dir (an orphan
+/// left by a daemon that exited mid-run). Two streams into one target collide
+/// mid-extraction (`could not create directory ...: File exists`) and corrupt both
+/// copies, so fail with a clear cause instead of racing. If the check itself can't
+/// run, assume clear rather than block a legitimate backup.
+async fn ensure_dest_clear(dest: &Path) -> Result<()> {
+	if tokio::fs::try_exists(dest).await.unwrap_or(false) {
+		bail!(
+			"another process is already writing a base backup to {}; \
+			 refusing to start a second pg_basebackup into the same directory",
+			dest.display()
+		);
+	}
+	Ok(())
 }
 
 /// The error for a failed run: exit status plus what pg_basebackup said on
@@ -191,6 +213,17 @@ mod tests {
 				.join("16")
 				.join("main")
 		);
+	}
+
+	#[tokio::test]
+	async fn ensure_dest_clear_rejects_a_reappeared_destination() {
+		let tmp = tempfile::tempdir().unwrap();
+		let dest = tmp.path().join("12").join("main");
+		// Absent (the normal case, after the staging root was cleared): proceed.
+		assert!(ensure_dest_clear(&dest).await.is_ok());
+		// Present again just before streaming: another writer is active; refuse.
+		tokio::fs::create_dir_all(&dest).await.unwrap();
+		assert!(ensure_dest_clear(&dest).await.is_err());
 	}
 
 	#[test]
