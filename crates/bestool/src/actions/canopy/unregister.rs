@@ -6,7 +6,6 @@ use bestool_tamanu::server_info::{
 };
 use clap::Parser;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
-use tracing::warn;
 
 use crate::actions::Context;
 
@@ -58,29 +57,8 @@ pub async fn run(args: UnregisterArgs, _ctx: Context) -> Result<()> {
 		removed.push(format!("canopy registration ({})", dir.display()));
 	}
 
-	// The legacy plaintext identity files and the cached tags (new + legacy).
-	for path in [
-		standard_device_key_path(),
-		standard_server_id_path(),
-		tags_path,
-		standard_tags_path(),
-	] {
-		if remove_file(&path)? {
-			removed.push(path.display().to_string());
-		}
-	}
-
-	// The legacy DB rows, gated on the database being reachable: without them
-	// the daemon could re-seed the old key onto disk.
-	match delete_db_rows().await {
-		DbOutcome::Deleted(n) if n > 0 => {
-			removed.push(format!("{n} local_system_facts row(s) (deviceKey/metaServerId)"))
-		}
-		DbOutcome::Deleted(_) => {}
-		DbOutcome::Skipped(why) => {
-			warn!("{why}; leaving any deviceKey/metaServerId DB rows in place")
-		}
-	}
+	// The legacy plaintext identity files, cached tags, and DB rows.
+	removed.extend(super::clear_legacy_identity(&tags_path).await);
 
 	if removed.is_empty() {
 		println!("No canopy enrolment found; nothing to remove.");
@@ -118,68 +96,4 @@ fn confirm(dir: &Path, tags_path: &Path) -> Result<bool> {
 		line.trim().to_ascii_lowercase().as_str(),
 		"y" | "yes"
 	))
-}
-
-fn remove_file(path: &Path) -> Result<bool> {
-	match std::fs::remove_file(path) {
-		Ok(()) => Ok(true),
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-		Err(err) => Err(err)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("removing {}", path.display())),
-	}
-}
-
-/// Outcome of the gated DB-row deletion.
-enum DbOutcome {
-	/// Connected and issued the delete; carries the number of rows removed.
-	Deleted(u64),
-	/// The database wasn't reachable (or couldn't be located); the reason is
-	/// surfaced to the operator so they know the rows were left alone.
-	Skipped(String),
-}
-
-async fn delete_db_rows() -> DbOutcome {
-	let url = match resolve_database_url().await {
-		Ok(url) => url,
-		Err(why) => return DbOutcome::Skipped(why),
-	};
-
-	let client = match bestool_postgres::pool::connect_one(&url, "bestool-canopy-unregister").await {
-		Ok(client) => client,
-		Err(err) => {
-			return DbOutcome::Skipped(format!("could not connect to the Tamanu database: {err}"));
-		}
-	};
-
-	match client
-		.execute(
-			"DELETE FROM local_system_facts WHERE key IN ('deviceKey', 'metaServerId')",
-			&[],
-		)
-		.await
-	{
-		Ok(n) => DbOutcome::Deleted(n),
-		Err(err) => DbOutcome::Skipped(format!("could not delete the DB rows: {err}")),
-	}
-}
-
-/// Resolve the Tamanu database URL from `TAMANU_DATABASE_URL` or, failing that,
-/// the discovered Tamanu install's config. Returns the reason as an error
-/// string when neither is available, for the operator-facing skip message.
-async fn resolve_database_url() -> Result<String, String> {
-	use bestool_tamanu::config::{database_url_override, load_config};
-
-	if let Some(url) = database_url_override() {
-		return Ok(url);
-	}
-
-	match bestool_tamanu::try_find_tamanu(None).await {
-		Ok(Some((_, root))) => match load_config(&root, None) {
-			Ok(config) => Ok(config.database_url()),
-			Err(err) => Err(format!("could not load Tamanu config: {err}")),
-		},
-		Ok(None) => Err("no Tamanu install found and TAMANU_DATABASE_URL not set".into()),
-		Err(err) => Err(format!("could not locate Tamanu: {err}")),
-	}
 }

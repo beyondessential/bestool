@@ -199,6 +199,108 @@ fn decode_base64(input: &str) -> Result<Vec<u8>> {
 	Err(miette!("input is not valid base64"))
 }
 
+/// Remove the *legacy* identity stores that predate the encrypted registration —
+/// the plaintext Tamanu identity files (`device-key.pem`, `server-id`), the cached
+/// tags (new + legacy), and the `deviceKey` / `metaServerId` rows in
+/// `local_system_facts` — so a stale identity can't be picked up or re-seeded.
+///
+/// Does NOT touch the encrypted registration itself: the caller owns that (it's
+/// the source of truth, written fresh by `register` or deleted by `unregister`).
+/// Best-effort — a file that won't delete or an unreachable database is warned
+/// about, not fatal. Returns a description of each thing removed, for reporting.
+#[cfg(any(feature = "canopy-register", feature = "canopy-unregister"))]
+async fn clear_legacy_identity(tags_path: &std::path::Path) -> Vec<String> {
+	use bestool_tamanu::server_info::{
+		standard_device_key_path, standard_server_id_path, standard_tags_path,
+	};
+
+	let mut removed = Vec::new();
+	for path in [
+		standard_device_key_path(),
+		standard_server_id_path(),
+		tags_path.to_path_buf(),
+		standard_tags_path(),
+	] {
+		match std::fs::remove_file(&path) {
+			Ok(()) => removed.push(path.display().to_string()),
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+			Err(err) => tracing::warn!("could not remove {}: {err}", path.display()),
+		}
+	}
+
+	match delete_identity_db_rows().await {
+		DbOutcome::Deleted(n) if n > 0 => {
+			removed.push(format!("{n} local_system_facts row(s) (deviceKey/metaServerId)"));
+		}
+		DbOutcome::Deleted(_) => {}
+		DbOutcome::Skipped(why) => {
+			tracing::warn!("{why}; leaving any deviceKey/metaServerId DB rows in place");
+		}
+	}
+
+	removed
+}
+
+/// Outcome of the gated `local_system_facts` cleanup.
+#[cfg(any(feature = "canopy-register", feature = "canopy-unregister"))]
+enum DbOutcome {
+	/// Connected and issued the delete; carries the number of rows removed.
+	Deleted(u64),
+	/// The database wasn't reachable (or couldn't be located); the reason is
+	/// surfaced so the operator knows the rows were left alone.
+	Skipped(String),
+}
+
+/// Delete the legacy `deviceKey` / `metaServerId` rows, gated on the Tamanu
+/// database being reachable — without them the daemon could re-seed the old key.
+#[cfg(any(feature = "canopy-register", feature = "canopy-unregister"))]
+async fn delete_identity_db_rows() -> DbOutcome {
+	let url = match resolve_database_url().await {
+		Ok(url) => url,
+		Err(why) => return DbOutcome::Skipped(why),
+	};
+
+	let client = match bestool_postgres::pool::connect_one(&url, "bestool-canopy-identity-cleanup").await
+	{
+		Ok(client) => client,
+		Err(err) => {
+			return DbOutcome::Skipped(format!("could not connect to the Tamanu database: {err}"));
+		}
+	};
+
+	match client
+		.execute(
+			"DELETE FROM local_system_facts WHERE key IN ('deviceKey', 'metaServerId')",
+			&[],
+		)
+		.await
+	{
+		Ok(n) => DbOutcome::Deleted(n),
+		Err(err) => DbOutcome::Skipped(format!("could not delete the DB rows: {err}")),
+	}
+}
+
+/// Resolve the Tamanu database URL from `TAMANU_DATABASE_URL` or the discovered
+/// Tamanu install's config. Returns the reason as an error string when neither is
+/// available, for the operator-facing skip message.
+#[cfg(any(feature = "canopy-register", feature = "canopy-unregister"))]
+async fn resolve_database_url() -> Result<String, String> {
+	use bestool_tamanu::config::{database_url_override, load_config};
+
+	if let Some(url) = database_url_override() {
+		return Ok(url);
+	}
+
+	match bestool_tamanu::try_find_tamanu(None).await {
+		Ok(Some((_, root))) => match load_config(&root, None) {
+			Ok(config) => Ok(config.database_url()),
+			Err(err) => Err(format!("could not load Tamanu config: {err}")),
+		},
+		Ok(None) => Err("no Tamanu install found and TAMANU_DATABASE_URL not set".into()),
+		Err(err) => Err(format!("could not locate Tamanu: {err}")),
+	}
+}
+
 #[cfg(test)]
 #[cfg(any(feature = "canopy-register", feature = "canopy-import"))]
 mod tests {
