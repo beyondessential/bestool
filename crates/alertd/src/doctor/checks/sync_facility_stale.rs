@@ -16,10 +16,15 @@ const NAME: &str = "sync_facility_stale";
 const WARN_MINUTES: f64 = 10.0;
 const FAIL_MINUTES: f64 = 30.0;
 
+// The 30-day bound keeps the jsonb expansion off the full table (millions of
+// rows on long-lived centrals). It cannot change any tier: staleness saturates
+// at FAIL past 30 minutes, so a last success older than 30 days grades the
+// same as none at all — only the reported timestamp saturates at the window.
 const SQL: &str = "WITH facility_sessions AS ( \
 		SELECT jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
 			created_at, completed_at, errors \
 		FROM sync_sessions WHERE parameters->>'isMobile' <> 'true' \
+			AND created_at > now() - interval '30 days' \
 	), active AS ( \
 		SELECT DISTINCT facility_id FROM facility_sessions \
 		WHERE created_at > now() - interval '48 hours' \
@@ -56,8 +61,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 	for row in &rows {
 		let facility_id: String = row.try_get("facility_id").unwrap_or_default();
 		let last: Option<String> = row.try_get("last_successful_sync").ok();
-		// A facility that is active but has never had a successful sync (NULL
-		// minutes) is as bad as a very stale one: treat it as a failure.
+		// A facility that is active but has no successful sync in the window
+		// (NULL minutes) is as bad as a very stale one: treat it as a failure.
 		let minutes: Option<f64> = row.try_get("minutes_since_success").ok();
 		let entry = json!({
 			"facility_id": facility_id,

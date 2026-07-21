@@ -8,17 +8,22 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::fail("sync_sessions", "no DB connection", "db_connect failed");
 	};
 
+	// The completed_at predicate lives in the outer WHERE rather than on each
+	// aggregate FILTER: Postgres can't push FILTER predicates into an index, so
+	// the filtered form seq-scans the whole table (millions of rows on
+	// long-lived centrals) while this form hits the completed_at index.
 	let query = r#"
 		SELECT
-			count(*) FILTER (WHERE completed_at IS NULL) AS active_count,
+			count(*) AS active_count,
 			count(*) FILTER (
-				WHERE completed_at IS NULL AND start_time < now() - interval '15 minutes'
+				WHERE start_time < now() - interval '15 minutes'
 			) AS stuck_warn,
 			count(*) FILTER (
-				WHERE completed_at IS NULL AND start_time < now() - interval '45 minutes'
+				WHERE start_time < now() - interval '45 minutes'
 			) AS stuck_fail,
-			min(start_time) FILTER (WHERE completed_at IS NULL) AS oldest_started_at
+			min(start_time) AS oldest_started_at
 		FROM sync_sessions
+		WHERE completed_at IS NULL
 	"#;
 
 	let row = match client.query_opt(query, &[]).await {
