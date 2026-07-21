@@ -4,7 +4,7 @@
 
 `crates/bestool/src/actions/tamanu/logs.rs:379` (`run_journalctl`) shells out to `journalctl` to tail tamanu service logs. It uses `--output=cat` to get raw MESSAGE text, pipes stdout, and applies optional client-side regex filtering for the inverted-match (`-v`) case.
 
-This works fine today. The question is whether to keep it as-is, structure the subprocess output better, or move to a library — once the systemctl side is on `zbus_systemd` (see `systemctl-via-zbus.md`), this is the only remaining subprocess for systemd interaction.
+This works fine today. The question is whether to keep it as-is, structure the subprocess output better, or move to a library — now that the systemctl side is on `zbus_systemd`, this is the only remaining subprocess for systemd interaction.
 
 bestool is GPL-3.0-or-later, so LGPL deps are fine; the decision is on engineering merits.
 

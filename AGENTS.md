@@ -1,3 +1,17 @@
+<!-- BEGIN:workhorse 0.1.0 -->
+# Workhorse framework
+
+This workspace uses [Workhorse](https://github.com/beyondessential/workhorse), a spec-driven development workbench. Workhorse ships skills (invokable prompts) and reference docs into this repo to shape how AI agents work here.
+
+- **Skills** live at `.agents/skills/` — each skill is a folder containing a `SKILL.md` with YAML frontmatter and a prompt body. `.claude/skills/` is a symlink to the same folder so Claude Code picks them up natively
+- **Reference docs** live at `.agents/docs/` — long-form guidance that skill bodies cite by path (spec format conventions and similar)
+- **Specs** live at `.workhorse/specs/` — acceptance criteria for each piece of work, organised into areas by subdirectory
+
+When picking up a task, read the skill whose folder name matches what you're being asked to do — its `SKILL.md` describes how to approach the work and which reference docs to follow.
+
+Workhorse manages this section. Run the **Pull Workhorse updates** skill to bring it, the skills, and the reference docs up to the latest release — local edits you make here are preserved through a smart merge. Edit or remove it freely.
+<!-- END:workhorse -->
+
 ## LLM Rules to follow
 - Use jj/jujutsu locally when available and enabled for the repo.
 - NEVER hardcode database credentials. Always use the environment variable or existing client.
@@ -23,5 +37,5 @@
 - Releases are automated via release-plz: pushing to `main` opens a `repo: release` PR which auto-merges and publishes to crates.io. No manual release step is needed.
 - It's very important for alertd that postgres (or anything else we're checking) IS NOT REQUIRED for the alertd daemon to start, because otherwise we CANNOT ALERT ON THE DATABASE BEING DOWN.
 - The alertd daemon is run using the exact unit file in services/bestool-alertd.service.
-- When writing or changing specs in `.workhorse/specs/`, follow the spec rules in [.workhorse/rules.md](.workhorse/rules.md).
+- When writing or changing specs in `.workhorse/specs/` or plans in `.workhorse/plans/`, follow the spec and plan rules in [.workhorse/rules.md](.workhorse/rules.md).
 <!-- end rules -->
