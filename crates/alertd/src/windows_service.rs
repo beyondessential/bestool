@@ -13,7 +13,7 @@ use std::{
 	time::Duration,
 };
 
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result, bail, miette};
 use tracing::{error, info};
 use windows_service::{
 	define_windows_service,
@@ -30,6 +30,9 @@ use windows_service::{
 use crate::DaemonConfig;
 
 const SERVICE_NAME: &str = "bestool-alertd";
+const SERVICE_DISPLAY_NAME: &str = "BES Alert Daemon";
+const SERVICE_DESCRIPTION: &str =
+	"Monitors and executes alert definitions from configuration files";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
 /// Global storage for daemon configuration.
@@ -233,15 +236,14 @@ fn run_diagnostics() {
 		}
 	}
 
-	// Check if service already exists
+	// Whether the service already exists (install reconciles it either way).
 	print!("Checking if service already exists... ");
 	match Command::new("sc").args(&["query", SERVICE_NAME]).output() {
 		Ok(output) if output.status.success() => {
-			println!("✗ Service already exists");
-			println!("  Tip: Run 'bestool alertd uninstall' first\n");
+			println!("• Already installed — its configuration will be updated");
 		}
 		_ => {
-			println!("✓ Service not found (good)");
+			println!("✓ Not yet installed — it will be created");
 		}
 	}
 
@@ -264,20 +266,20 @@ fn run_diagnostics() {
 	println!();
 }
 
-/// Get the log file path for the Windows service.
+/// The directory the service writes its (daily-rotating, JSON) logs to.
 ///
-/// Returns a path in the Windows ProgramData directory.
+/// Under `%ProgramData%\bestool` like the rest of bestool's state (backups,
+/// registration), rather than a separate `BES\bestool-alertd` tree.
 fn get_service_log_path() -> Result<std::path::PathBuf> {
 	use std::path::PathBuf;
 
-	// Use ProgramData directory for service logs (typically C:\ProgramData)
 	let log_dir = std::env::var("ProgramData")
 		.map(PathBuf::from)
-		.unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"));
+		.unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+		.join("bestool")
+		.join("logs");
 
-	let log_dir = log_dir.join("BES").join("bestool-alertd");
-
-	// Try to create the directory if it doesn't exist
+	// lloggs writes into this directory, so make sure it exists.
 	if !log_dir.exists() {
 		std::fs::create_dir_all(&log_dir).ok();
 	}
@@ -312,6 +314,8 @@ pub fn install_service() -> Result<()> {
 pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	run_diagnostics();
 
+	// CONNECT + CREATE_SERVICE covers both opening an existing service to reconcile
+	// it and creating a new one.
 	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
 	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
 		.map_err(|e| {
@@ -327,93 +331,43 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		.map_err(|e| miette!("Failed to get current executable path: {}\n\nTroubleshoot:\n  - Ensure the bestool executable is accessible\n  - Check that the path is readable and not corrupted", e))?;
 
 	let log_path = get_service_log_path()?;
-	let mut final_arguments = Vec::with_capacity(launch_arguments.len() + 2);
-	final_arguments.push(OsString::from("--log-file"));
-	final_arguments.push(OsString::from(log_path));
-	final_arguments.extend_from_slice(launch_arguments);
+	let service_info = desired_service_info(
+		service_binary_path,
+		desired_launch_arguments(&log_path, launch_arguments),
+	);
 
-	let service_info = ServiceInfo {
-		name: OsString::from("bestool-alertd"),
-		display_name: OsString::from("BES Alert Daemon"),
-		service_type: ServiceType::OWN_PROCESS,
-		start_type: ServiceStartType::AutoStart,
-		error_control: ServiceErrorControl::Normal,
-		executable_path: service_binary_path,
-		launch_arguments: final_arguments,
-		dependencies: vec![],
-		account_name: None,
-		account_password: None,
+	// Upsert: reconcile an existing service in place, or create it. Either way the
+	// end state is a service with the correct binary, arguments, and startup type.
+	let service_access = ServiceAccess::QUERY_CONFIG
+		| ServiceAccess::CHANGE_CONFIG
+		| ServiceAccess::START
+		| ServiceAccess::QUERY_STATUS;
+	let service = match service_manager.open_service(SERVICE_NAME, service_access) {
+		Ok(existing) => {
+			reconcile_service(&existing, &service_info)?;
+			existing
+		}
+		Err(err) if is_service_absent(&err) => create_service(&service_manager, &service_info)?,
+		Err(err) => {
+			let error_msg = err.to_string();
+			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+				bail!(
+					"Failed to open the existing service: {error_msg}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell."
+				);
+			}
+			bail!("Failed to open the existing service: {error_msg}");
+		}
 	};
 
-	let service = service_manager
-		.create_service(
-			&service_info,
-			ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
-		)
-		.map_err(|e| {
-			let error_msg = e.to_string();
-			if error_msg.contains("Already exists") || error_msg.contains("ERROR_SERVICE_EXISTS") {
-				miette!("Service 'bestool-alertd' already exists.\n\nTroubleshoot:\n  - To reinstall, run: bestool alertd uninstall\n  - Then run: bestool alertd install")
-			} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
-				miette!("Failed to create service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
-			} else {
-				miette!("Failed to create service: {}\n\nTroubleshoot:\n  - Restart the 'Service Control Manager' service (Services.msc)\n  - Restart Windows if the problem persists\n  - Check Windows Event Viewer > Windows Logs > System for related errors\n  - Verify the service name 'bestool-alertd' is not reserved or in-use\n  - Try running: 'sc query bestool-alertd' to check service state\n  - Try running: 'sc delete bestool-alertd' if service is marked for deletion", error_msg)
-			}
-		})?;
-
+	// Description and failure actions aren't part of ServiceInfo/change_config, so
+	// (re)apply them explicitly; both are idempotent.
 	service
-		.set_description("Monitors and executes alert definitions from configuration files")
-		.map_err(|e| miette!("Failed to set service description: {}\n\nThe service was created but configuration failed. Please try uninstalling and reinstalling.", e))?;
-
+		.set_description(SERVICE_DESCRIPTION)
+		.map_err(|e| miette!("Failed to set service description: {e}"))?;
 	apply_failure_actions(&service)?;
 
-	service
-		.start::<&OsStr>(&[])
-		.map_err(|e| {
-			let error_msg = e.to_string();
-			if error_msg.contains("marked for deletion") || error_msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE") {
-				miette!("Failed to start service: {}\n\nThe service is marked for deletion. Please restart Windows and try again.", error_msg)
-			} else {
-				miette!("Failed to start service: {}\n\nTroubleshoot:\n  - Check Windows Event Viewer under Windows Logs > System\n  - Verify the bestool executable path is correct and accessible\n  - Ensure no other service is using the same name\n  - Try starting the service manually using Services.msc", error_msg)
-			}
-		})?;
+	ensure_running(&service)?;
 
-	// Wait for the service to reach Running state
-	print!("Waiting for service to start");
-	let max_wait = Duration::from_secs(30);
-	let start = std::time::Instant::now();
-	let poll_interval = Duration::from_millis(500);
-
-	loop {
-		std::thread::sleep(poll_interval);
-		print!(".");
-		std::io::Write::flush(&mut std::io::stdout()).ok();
-
-		match service.query_status() {
-			Ok(status) => {
-				if status.current_state == ServiceState::Running {
-					println!(" ✓");
-					break;
-				}
-			}
-			Err(e) => {
-				println!();
-				return Err(miette!(
-					"Failed to query service status while waiting for startup: {}",
-					e
-				));
-			}
-		}
-
-		if start.elapsed() > max_wait {
-			println!();
-			return Err(miette!(
-				"Service failed to reach Running state within 30 seconds. Check Windows Event Viewer for details."
-			));
-		}
-	}
-
-	let log_path = get_service_log_path()?;
 	println!("\nService installed and started successfully!");
 	println!("\nTo monitor the service:");
 	println!("  • Open Services.msc and find 'BES Alert Daemon'");
@@ -427,6 +381,142 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 		"  • Or check Windows Event Viewer: Windows Logs > System (search for 'bestool-alertd')"
 	);
 	Ok(())
+}
+
+/// The launch arguments the service should run with: `--log-file <dir>` (so logs
+/// land in the standard location) followed by the daemon's own arguments.
+fn desired_launch_arguments(log_path: &std::path::Path, args: &[OsString]) -> Vec<OsString> {
+	let mut out = Vec::with_capacity(args.len() + 2);
+	out.push(OsString::from("--log-file"));
+	out.push(log_path.as_os_str().to_owned());
+	out.extend_from_slice(args);
+	out
+}
+
+/// The service configuration install should converge on.
+fn desired_service_info(
+	executable_path: std::path::PathBuf,
+	launch_arguments: Vec<OsString>,
+) -> ServiceInfo {
+	ServiceInfo {
+		name: OsString::from(SERVICE_NAME),
+		display_name: OsString::from(SERVICE_DISPLAY_NAME),
+		service_type: SERVICE_TYPE,
+		start_type: ServiceStartType::AutoStart,
+		error_control: ServiceErrorControl::Normal,
+		executable_path,
+		launch_arguments,
+		dependencies: vec![],
+		account_name: None,
+		account_password: None,
+	}
+}
+
+/// Whether an `open_service` error means the service simply isn't installed yet
+/// (so install should create it) rather than a real failure.
+fn is_service_absent(err: &windows_service::Error) -> bool {
+	let msg = err.to_string();
+	msg.contains("does not exist")
+		|| msg.contains("ERROR_SERVICE_DOES_NOT_EXIST")
+		|| msg.contains("not found")
+}
+
+/// Create the service fresh.
+fn create_service(
+	manager: &ServiceManager,
+	info: &ServiceInfo,
+) -> Result<windows_service::service::Service> {
+	let access = ServiceAccess::QUERY_CONFIG
+		| ServiceAccess::CHANGE_CONFIG
+		| ServiceAccess::START
+		| ServiceAccess::QUERY_STATUS;
+	manager.create_service(info, access).map_err(|e| {
+		let error_msg = e.to_string();
+		if error_msg.contains("marked for deletion") || error_msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE") {
+			miette!("The service is marked for deletion (a previous removal hasn't completed). Please restart Windows and try again.")
+		} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
+			miette!("Failed to create service: {error_msg}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.")
+		} else {
+			miette!("Failed to create service: {error_msg}")
+		}
+	})
+}
+
+/// Bring an existing service's configuration in line with `desired`. `change_config`
+/// is idempotent, so this always applies the correct binary path, arguments, and
+/// startup type; the pre-check just reports what's changing.
+fn reconcile_service(
+	service: &windows_service::service::Service,
+	desired: &ServiceInfo,
+) -> Result<()> {
+	if let Ok(current) = service.query_config() {
+		// `executable_path` from the SCM is the whole command line as one string;
+		// the desired command line is the exe plus its arguments.
+		let have = current.executable_path.to_string_lossy();
+		let want = desired.executable_path.to_string_lossy();
+		if !have.contains(want.as_ref()) {
+			info!("updating service binary path: {have}");
+		} else {
+			info!("reconciling existing service configuration");
+		}
+	}
+	service
+		.change_config(desired)
+		.map_err(|e| miette!("Failed to update the existing service configuration: {e}"))?;
+	Ok(())
+}
+
+/// Start the service if it isn't already running and wait for it to reach the
+/// Running state.
+fn ensure_running(service: &windows_service::service::Service) -> Result<()> {
+	if let Ok(status) = service.query_status()
+		&& status.current_state == ServiceState::Running
+	{
+		return Ok(());
+	}
+
+	if let Err(e) = service.start::<&OsStr>(&[]) {
+		let msg = e.to_string();
+		if msg.contains("already running") || msg.contains("ERROR_SERVICE_ALREADY_RUNNING") {
+			// A concurrent start won the race; the poll below confirms Running.
+		} else if msg.contains("marked for deletion")
+			|| msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE")
+		{
+			bail!(
+				"Failed to start service: the service is marked for deletion. Please restart Windows and try again."
+			);
+		} else {
+			bail!(
+				"Failed to start service: {msg}\n\nTroubleshoot:\n  - Check Windows Event Viewer under Windows Logs > System\n  - Verify the bestool executable path is correct and accessible"
+			);
+		}
+	}
+
+	print!("Waiting for service to start");
+	let max_wait = Duration::from_secs(30);
+	let start = std::time::Instant::now();
+	loop {
+		std::thread::sleep(Duration::from_millis(500));
+		print!(".");
+		std::io::Write::flush(&mut std::io::stdout()).ok();
+		match service.query_status() {
+			Ok(status) if status.current_state == ServiceState::Running => {
+				println!(" ✓");
+				return Ok(());
+			}
+			Ok(_) => {}
+			Err(e) => {
+				println!();
+				bail!("Failed to query service status while waiting for startup: {e}");
+			}
+		}
+		if start.elapsed() > max_wait {
+			println!();
+			bail!(
+				"Service failed to reach Running state within 30 seconds. Check Windows Event Viewer for details."
+			);
+		}
+	}
 }
 
 /// Uninstall the alertd Windows service.
@@ -633,4 +723,28 @@ fn apply_failure_actions(service: &windows_service::service::Service) -> Result<
 		})?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use super::*;
+
+	#[test]
+	fn launch_arguments_prepend_the_log_file_flag() {
+		let args = desired_launch_arguments(
+			Path::new(r"C:\ProgramData\bestool\logs"),
+			&[OsString::from("alertd"), OsString::from("service")],
+		);
+		assert_eq!(
+			args,
+			vec![
+				OsString::from("--log-file"),
+				OsString::from(r"C:\ProgramData\bestool\logs"),
+				OsString::from("alertd"),
+				OsString::from("service"),
+			]
+		);
+	}
 }

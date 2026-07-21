@@ -184,7 +184,7 @@ canopy = [ # enable all canopy subcommands
 	"canopy-restore",
 	"canopy-unregister",
 ]
-canopy-register = ["__canopy", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:p256"]
+canopy-register = ["__canopy", "tamanu-config", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:bestool-postgres", "dep:p256", "dep:privilege"]
 canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration", "dep:comfy-table", "dep:owo-colors"]

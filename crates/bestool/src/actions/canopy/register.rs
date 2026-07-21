@@ -162,18 +162,19 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 
 	debug!(%api_url, %server_id, "decrypted enrollment ticket");
 
-	// A fresh enrolment must use only the identity minted here — never a
-	// leftover device key or server id, which would present a stale identity to
-	// canopy and conflict with the server record being claimed. Refuse when any
-	// registration is already present; the operator clears it with
-	// `bestool canopy unregister` before enrolling afresh.
-	if super::load_registration(config.as_deref())
+	// A prior registration is fine to enrol over: we always mint a fresh identity
+	// below and only replace the old one once the new enrolment has succeeded, so a
+	// bad ticket never strands a working registration. Stash it to log the
+	// transition (canopy has no remote deregister endpoint, so the old device id
+	// can only be cleaned up locally).
+	let previous = super::load_registration(config.as_deref())
 		.await
-		.wrap_err("reading existing canopy registration")?
-		.is_some()
-	{
-		bail!(
-			"this host already has a canopy registration; run `bestool canopy unregister` to remove it before enrolling afresh"
+		.wrap_err("reading existing canopy registration")?;
+	if let Some(prev) = &previous {
+		debug!(
+			previous_server_id = ?prev.server_id,
+			previous_device_id = ?prev.device_id,
+			"a registration already exists; it will be replaced once the new one succeeds"
 		);
 	}
 
@@ -247,6 +248,17 @@ pub async fn run(args: RegisterArgs, _ctx: Context) -> Result<()> {
 	registration::store_in(&dir, &registration)
 		.await
 		.wrap_err("storing canopy registration")?;
+
+	// The new registration is stored and confirmed (complete() succeeded), so it's
+	// safe to tear down the old enrolment's leftovers. Only local cleanup exists —
+	// canopy has no remote deregister — and the encrypted registration just written
+	// is the source of truth, so this only clears the legacy identity stores that
+	// would otherwise let the daemon re-seed the old key.
+	if previous.is_some() {
+		for item in super::clear_legacy_identity(&dir.join("tags.json")).await {
+			debug!("cleared prior identity: {item}");
+		}
+	}
 
 	println!("Enrolled with Canopy.");
 	println!("  server id: {}", complete.server_id);
