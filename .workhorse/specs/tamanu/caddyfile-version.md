@@ -6,7 +6,7 @@ id: CHK-CFV
 
 The Tamanu doctor runs a check that verifies the Caddyfile on a Windows Tamanu server declares a supported configuration version. Tamanu ships its Caddyfile with a version marker on the first line, and newer Tamanu releases depend on newer Caddyfile revisions; this check surfaces servers still running an outdated Caddyfile so it can be upgraded before it breaks.
 
-The check is one of the doctor's registry of checks and follows the shared outcome model in `tamanu/doctor.md` (pass, skip, warning, fail, broken).
+It is one of the healthchecks described by `tamanu/healthchecks.md` and follows the shared outcome model in `tamanu/doctor.md` (pass, skip, warning, fail, broken).
 
 ## Applicability
 
