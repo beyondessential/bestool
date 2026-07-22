@@ -33,6 +33,7 @@ pub async fn start_server(
 	background_tasks: &[Arc<dyn BackgroundTask>],
 	control: DaemonControl,
 	backups: Option<Arc<crate::BackupRegistry>>,
+	binary_version: String,
 ) {
 	let started_at = Timestamp::now();
 	let pid = std::process::id();
@@ -42,6 +43,7 @@ pub async fn start_server(
 	let state = ServerState {
 		started_at,
 		pid,
+		binary_version,
 		internal_context,
 		watchdog_timeout,
 		task_endpoints: Arc::new(task_endpoints),

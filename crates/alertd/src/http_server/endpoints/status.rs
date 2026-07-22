@@ -11,7 +11,9 @@ pub async fn handle_status(State(state): State<Arc<ServerState>>) -> impl IntoRe
 	};
 	let status = StatusResponse {
 		name: "bestool-alertd".to_string(),
-		version: env!("CARGO_PKG_VERSION").to_string(),
+		// The bestool binary's version — what self-update targets and what operators
+		// recognise — not this crate's independent version.
+		version: state.binary_version.clone(),
 		started_at: state.started_at.to_string(),
 		pid: state.pid,
 		backups_running,
