@@ -139,7 +139,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			} else {
 				server_addr
 			};
-			bestool_alertd::commands::get_status(&addrs).await
+			bestool_alertd::commands::get_status(&addrs, Some(env!("CARGO_PKG_VERSION"))).await
 		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
