@@ -261,11 +261,11 @@ pub fn generate_device_key_pem() -> Result<String> {
 	use miette::miette;
 	use p256::{
 		SecretKey,
-		elliptic_curve::rand_core::OsRng,
+		elliptic_curve::Generate as _,
 		pkcs8::{EncodePrivateKey as _, LineEnding},
 	};
 
-	let key = SecretKey::random(&mut OsRng);
+	let key = SecretKey::generate();
 	let pem = key
 		.to_pkcs8_pem(LineEnding::LF)
 		.map_err(|e| miette!("failed to encode generated deviceKey: {e}"))?;

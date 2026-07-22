@@ -408,8 +408,8 @@ mod tests {
 	use p256::{
 		ecdsa::{VerifyingKey, signature::Verifier as _},
 		elliptic_curve::{
+			Generate as _,
 			pkcs8::{DecodePublicKey as _, EncodePrivateKey as _, LineEnding},
-			rand_core::OsRng,
 		},
 	};
 
@@ -418,7 +418,7 @@ mod tests {
 	const SAMPLE_TICKET: &str = r#"{"v":"enroll-1","api_url":"https://canopy.example","server_id":"7deb2793-0425-427e-8a19-7213946fa9be","token":"c2VjcmV0"}"#;
 
 	fn test_key_pem() -> String {
-		SecretKey::random(&mut OsRng)
+		SecretKey::generate()
 			.to_pkcs8_pem(LineEnding::LF)
 			.unwrap()
 			.to_string()
