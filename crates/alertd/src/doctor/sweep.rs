@@ -33,30 +33,72 @@ pub fn severity_ceiling(severities: &HashMap<String, CheckSeverity>, name: &str)
 		.unwrap_or(ABSENT_CHECK_SEVERITY)
 }
 
-/// The Tamanu deployment a sweep runs against, when the host has one.
+/// Environment variable holding a generic (non-Tamanu) `postgresql://` URL.
+///
+/// Consulted only when there is no Tamanu install and no
+/// [`TAMANU_DATABASE_URL`] override: the sweep still gets a database to run
+/// the generic postgres checks against, while Tamanu-specific checks skip.
+///
+/// [`TAMANU_DATABASE_URL`]: bestool_tamanu::config::DATABASE_URL_ENV
+pub const GENERIC_DATABASE_URL_ENV: &str = "DATABASE_URL";
+
+/// The [`GENERIC_DATABASE_URL_ENV`] fallback, if set to a non-empty value.
+fn generic_database_url() -> Option<String> {
+	std::env::var(GENERIC_DATABASE_URL_ENV)
+		.ok()
+		.filter(|s| !s.is_empty())
+}
+
+/// The database context a sweep runs against, when the host has one.
+///
+/// Usually a Tamanu deployment; with only a generic [`GENERIC_DATABASE_URL_ENV`]
+/// it's a bare postgres and `is_tamanu` is false.
 #[derive(Clone)]
 pub struct SweepTamanu {
 	pub version: Version,
 	pub root: PathBuf,
 	pub config: Arc<TamanuConfig>,
 	pub database_url: String,
-	/// `false` when this was synthesised from a `TAMANU_DATABASE_URL` with no
-	/// Tamanu install on the host: DB checks run, but install-dependent ones
+	/// `false` when this was synthesised from a database URL with no Tamanu
+	/// install on the host: DB checks run, but install-dependent ones
 	/// (the install metadata, local HTTP, caddy, services, kopia) skip.
 	pub has_install: bool,
+	/// `false` when the URL came from the generic [`GENERIC_DATABASE_URL_ENV`]
+	/// fallback: it points at a postgres that isn't necessarily Tamanu's, so
+	/// only the generic database checks run against it and Tamanu-specific
+	/// ones (which query Tamanu tables) skip.
+	pub is_tamanu: bool,
 }
 
-/// Resolve the Tamanu context for a sweep from an optionally-discovered install.
+/// Resolve the database context for a sweep from an optionally-discovered
+/// install.
 ///
 /// * `Some(install)` → a real install: its config is loaded and `has_install`
 ///   is true.
 /// * no install but [`TAMANU_DATABASE_URL`] set → a DB-only context synthesised
 ///   from that URL (`has_install` false) so DB checks still run against it.
-/// * neither → `None`: host-level checks only.
+/// * no install but [`GENERIC_DATABASE_URL_ENV`] set → a generic (non-Tamanu)
+///   database context (`is_tamanu` false): the generic DB checks run, all
+///   Tamanu-specific ones skip.
+/// * none of those → `None`: host-level checks only.
 ///
 /// [`TAMANU_DATABASE_URL`]: bestool_tamanu::config::DATABASE_URL_ENV
 pub fn resolve_sweep_tamanu(install: Option<(Version, PathBuf)>) -> Result<Option<SweepTamanu>> {
-	use bestool_tamanu::config::{Database, TamanuConfig, database_url_override, load_config};
+	resolve_sweep_tamanu_from(
+		install,
+		bestool_tamanu::config::database_url_override(),
+		generic_database_url(),
+	)
+}
+
+/// [`resolve_sweep_tamanu`] with the environment reads made explicit, so the
+/// resolution order is testable without mutating process-global env vars.
+fn resolve_sweep_tamanu_from(
+	install: Option<(Version, PathBuf)>,
+	tamanu_url: Option<String>,
+	generic_url: Option<String>,
+) -> Result<Option<SweepTamanu>> {
+	use bestool_tamanu::config::{Database, TamanuConfig, load_config};
 
 	match install {
 		Some((version, root)) => {
@@ -68,21 +110,25 @@ pub fn resolve_sweep_tamanu(install: Option<(Version, PathBuf)>) -> Result<Optio
 				config: Arc::new(config),
 				database_url,
 				has_install: true,
+				is_tamanu: true,
 			}))
 		}
-		None => match database_url_override() {
-			Some(url) => {
-				let db = Database::from_url(&url)?;
-				Ok(Some(SweepTamanu {
-					version: Version::parse("0.0.0").into_diagnostic()?,
-					root: PathBuf::new(),
-					config: Arc::new(TamanuConfig::from_database(db)),
-					database_url: url,
-					has_install: false,
-				}))
-			}
-			None => Ok(None),
-		},
+		None => {
+			let (url, is_tamanu) = match (tamanu_url, generic_url) {
+				(Some(url), _) => (url, true),
+				(None, Some(url)) => (url, false),
+				(None, None) => return Ok(None),
+			};
+			let db = Database::from_url(&url)?;
+			Ok(Some(SweepTamanu {
+				version: Version::parse("0.0.0").into_diagnostic()?,
+				root: PathBuf::new(),
+				config: Arc::new(TamanuConfig::from_database(db)),
+				database_url: url,
+				has_install: false,
+				is_tamanu,
+			}))
+		}
 	}
 }
 
@@ -152,17 +198,27 @@ pub async fn perform_sweep(
 					}
 				};
 
-			let kind = bestool_tamanu::detect_kind(&t.config, db.as_deref()).await;
-			debug!(?kind, "detected Tamanu server kind for doctor sweep");
+			// A generic (non-Tamanu) database has no Tamanu tables to inspect,
+			// so don't probe it for kind or version; the value is unused since
+			// every Tamanu-dependent check skips.
+			let kind = if t.is_tamanu {
+				let kind = bestool_tamanu::detect_kind(&t.config, db.as_deref()).await;
+				debug!(?kind, "detected Tamanu server kind for doctor sweep");
+				kind
+			} else {
+				bestool_tamanu::ApiServerKind::Central
+			};
 
 			// With a real install, the version is the env-file/install version.
 			// Without one (a `TAMANU_DATABASE_URL`-only host), fall back to the
 			// version Tamanu last recorded in its own DB (`currentVersion`), so
 			// version-aware checks can still run against it.
 			let tamanu_version = match (t.has_install, db.as_deref()) {
-				(false, Some(client)) => bestool_tamanu::versions::current_version(client)
-					.await
-					.unwrap_or_else(|| t.version.clone()),
+				(false, Some(client)) if t.is_tamanu => {
+					bestool_tamanu::versions::current_version(client)
+						.await
+						.unwrap_or_else(|| t.version.clone())
+				}
 				_ => t.version.clone(),
 			};
 
@@ -175,6 +231,7 @@ pub async fn perform_sweep(
 				db,
 				http_client: http_client.clone(),
 				has_install: t.has_install,
+				is_tamanu: t.is_tamanu,
 			})
 		}
 		None => None,
@@ -185,10 +242,13 @@ pub async fn perform_sweep(
 	// moved into the check context below. The server kind and (when there's a
 	// real install) its root go into the top-level status facts too.
 	let resolved_version = tamanu_ctx.as_ref().map(|c| c.tamanu_version.clone());
-	let tamanu_server_kind = tamanu_ctx.as_ref().map(|c| match c.kind {
-		bestool_tamanu::ApiServerKind::Central => "central",
-		bestool_tamanu::ApiServerKind::Facility => "facility",
-	});
+	let tamanu_server_kind = tamanu_ctx
+		.as_ref()
+		.filter(|c| c.is_tamanu)
+		.map(|c| match c.kind {
+			bestool_tamanu::ApiServerKind::Central => "central",
+			bestool_tamanu::ApiServerKind::Facility => "facility",
+		});
 	let tamanu_root = tamanu
 		.as_ref()
 		.filter(|t| t.has_install)
@@ -261,6 +321,7 @@ pub async fn perform_sweep(
 		tamanu.as_ref().map(|t| t.config.as_ref()),
 		db.as_deref(),
 		cached_pg_version,
+		tamanu.as_ref().is_none_or(|t| t.is_tamanu),
 	)
 	.await;
 	facts.tamanu_root = tamanu_root;
@@ -295,6 +356,7 @@ async fn collect_server_facts(
 	config: Option<&TamanuConfig>,
 	db: Option<&tokio_postgres::Client>,
 	cached_pg_version: Option<String>,
+	is_tamanu: bool,
 ) -> ServerFacts {
 	let mut facts = ServerFacts {
 		canonical_url: config
@@ -321,19 +383,23 @@ async fn collect_server_facts(
 		}
 	}
 
-	match client
-		.query_opt(
-			"SELECT value FROM local_system_facts WHERE key = 'currentSyncTick'",
-			&[],
-		)
-		.await
-	{
-		Ok(Some(row)) => match row.try_get::<_, String>(0) {
-			Ok(tick) => facts.current_sync_tick = Some(tick),
-			Err(err) => warn!("decoding currentSyncTick: {err}"),
-		},
-		Ok(None) => {}
-		Err(err) => warn!("querying currentSyncTick: {err}"),
+	// `local_system_facts` is a Tamanu table; a generic database has no
+	// sync tick to read.
+	if is_tamanu {
+		match client
+			.query_opt(
+				"SELECT value FROM local_system_facts WHERE key = 'currentSyncTick'",
+				&[],
+			)
+			.await
+		{
+			Ok(Some(row)) => match row.try_get::<_, String>(0) {
+				Ok(tick) => facts.current_sync_tick = Some(tick),
+				Err(err) => warn!("decoding currentSyncTick: {err}"),
+			},
+			Ok(None) => {}
+			Err(err) => warn!("querying currentSyncTick: {err}"),
+		}
 	}
 
 	facts
@@ -587,6 +653,40 @@ mod tests {
 		sweep.apply_severities(&HashMap::new());
 		assert_eq!(sweep.results[0].0.status.wire_result(), "warning");
 		assert_eq!(sweep.overall, OverallResult::Degraded);
+	}
+
+	#[test]
+	fn resolve_prefers_tamanu_url_over_generic() {
+		let resolved = resolve_sweep_tamanu_from(
+			None,
+			Some("postgresql://u@localhost/tamanu".into()),
+			Some("postgresql://u@localhost/other".into()),
+		)
+		.unwrap()
+		.unwrap();
+		assert_eq!(resolved.database_url, "postgresql://u@localhost/tamanu");
+		assert!(resolved.is_tamanu);
+		assert!(!resolved.has_install);
+	}
+
+	#[test]
+	fn resolve_falls_back_to_generic_database_url() {
+		let resolved =
+			resolve_sweep_tamanu_from(None, None, Some("postgresql://u@localhost/other".into()))
+				.unwrap()
+				.unwrap();
+		assert_eq!(resolved.database_url, "postgresql://u@localhost/other");
+		assert!(!resolved.is_tamanu);
+		assert!(!resolved.has_install);
+	}
+
+	#[test]
+	fn resolve_without_any_url_is_none() {
+		assert!(
+			resolve_sweep_tamanu_from(None, None, None)
+				.unwrap()
+				.is_none()
+		);
 	}
 
 	#[test]

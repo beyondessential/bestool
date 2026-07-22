@@ -650,13 +650,21 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	let install: Option<(Version, PathBuf)> = bestool_tamanu::try_find_tamanu(root.as_deref()).await?;
 
 	// A real install, a DB-only context synthesised from `TAMANU_DATABASE_URL`,
-	// or `None`. The daemon still runs and posts sweeps in every case; with
-	// `None`, Tamanu/DB checks are skipped, but with only a database URL the DB
-	// checks run while install-dependent ones skip.
+	// a generic (non-Tamanu) one from `DATABASE_URL`, or `None`. The daemon
+	// still runs and posts sweeps in every case; with `None`, Tamanu/DB checks
+	// are skipped; with only a database URL the DB checks run while
+	// install-dependent ones skip; and with only a generic URL just the generic
+	// DB checks run.
 	let tamanu = resolve_sweep_tamanu(install)?;
 	match &tamanu {
-		Some(t) => debug!(has_install = t.has_install, "resolved Tamanu sweep context"),
-		None => warn!("no Tamanu install and no TAMANU_DATABASE_URL; Tamanu checks will skip"),
+		Some(t) => debug!(
+			has_install = t.has_install,
+			is_tamanu = t.is_tamanu,
+			"resolved database sweep context"
+		),
+		None => warn!(
+			"no Tamanu install, no TAMANU_DATABASE_URL, and no DATABASE_URL; Tamanu and database checks will skip"
+		),
 	}
 
 	// A pool error here means postgres is down or unreachable. Don't abort
