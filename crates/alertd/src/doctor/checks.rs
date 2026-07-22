@@ -91,6 +91,10 @@ pub struct CheckContext {
 	/// but no install files to inspect). Drives whether the version comes from
 	/// the install or the DB, and whether the install root is reported.
 	pub has_install: bool,
+	/// Whether the database is a Tamanu one. `false` when the context was
+	/// synthesised from the generic `DATABASE_URL` fallback: the registry runs
+	/// only the generic database checks and skips everything Tamanu-specific.
+	pub is_tamanu: bool,
 }
 
 /// Whether the doctor is running as root (euid 0).
@@ -190,16 +194,28 @@ pub struct CheckEntry {
 
 macro_rules! entry {
 	// Tamanu-dependent check: skipped without running when the host has no
-	// Tamanu deployment.
+	// Tamanu deployment — including when the only database is a generic
+	// (non-Tamanu) one from the `DATABASE_URL` fallback.
 	($name:literal, $module:ident) => {
+		entry!(@tamanu $name, $module, true)
+	};
+	// Tamanu-dependent check rendered to the CLI but kept OFF the canopy
+	// `health[]` wire array — for checks that report a value already carried as
+	// a top-level status fact, so they're useful locally but shouldn't alert.
+	($name:literal, $module:ident, off_wire) => {
+		entry!(@tamanu $name, $module, false)
+	};
+	(@tamanu $name:literal, $module:ident, $on_wire:literal) => {
 		CheckEntry {
 			name: $name,
-			on_wire: true,
+			on_wire: $on_wire,
 			run: |ctx| {
 				Box::pin(async move {
 					match ctx.tamanu {
-						Some(tamanu) => $module::run(tamanu).await,
-						None => Check::skip(
+						Some(tamanu) if tamanu.is_tamanu => $module::run(tamanu).await,
+						// A generic (non-Tamanu) database context skips for the same
+						// reason as no context at all: there's no Tamanu here.
+						_ => Check::skip(
 							$name,
 							"no Tamanu on this host",
 							"check needs a Tamanu deployment, and this host has none",
@@ -209,21 +225,27 @@ macro_rules! entry {
 			},
 		}
 	};
-	// Tamanu-dependent check rendered to the CLI but kept OFF the canopy
-	// `health[]` wire array — for checks that report a value already carried as
-	// a top-level status fact, so they're useful locally but shouldn't alert.
-	($name:literal, $module:ident, off_wire) => {
+	// Generic database check: runs against any database context — Tamanu's or
+	// the generic `DATABASE_URL` fallback — and skips only when there is no
+	// database at all.
+	($name:literal, $module:ident, db) => {
+		entry!(@db $name, $module, true)
+	};
+	($name:literal, $module:ident, db, off_wire) => {
+		entry!(@db $name, $module, false)
+	};
+	(@db $name:literal, $module:ident, $on_wire:literal) => {
 		CheckEntry {
 			name: $name,
-			on_wire: false,
+			on_wire: $on_wire,
 			run: |ctx| {
 				Box::pin(async move {
 					match ctx.tamanu {
 						Some(tamanu) => $module::run(tamanu).await,
 						None => Check::skip(
 							$name,
-							"no Tamanu on this host",
-							"check needs a Tamanu deployment, and this host has none",
+							"no database on this host",
+							"check needs a database, and this host has neither a Tamanu deployment nor a DATABASE_URL",
 						),
 					}
 				})
@@ -252,12 +274,12 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("db_connect", db_connect),
+		entry!("db_connect", db_connect, db),
 		// Reports the postgres version, which is already the top-level `pgVersion`
 		// status fact — useful in the CLI render, but off the wire.
-		entry!("db_version", db_version, off_wire),
+		entry!("db_version", db_version, db, off_wire),
 		entry!("migrations", migrations),
-		entry!("pg_tuning", pg_tuning),
+		entry!("pg_tuning", pg_tuning, db),
 		entry!("disk_free", disk_free, host),
 		entry!("inodes", inodes, host),
 		entry!("btrfs", btrfs, host),
@@ -376,6 +398,7 @@ pub mod test_support {
 			db: Some(db),
 			http_client: reqwest::Client::new(),
 			has_install: true,
+			is_tamanu: true,
 		})
 	}
 
@@ -391,6 +414,7 @@ pub mod test_support {
 			db: None,
 			http_client: reqwest::Client::new(),
 			has_install: true,
+			is_tamanu: true,
 		}
 	}
 }
@@ -432,6 +456,7 @@ mod tests {
 				db: None,
 				http_client: reqwest::Client::new(),
 				has_install: false,
+				is_tamanu: true,
 			}),
 			http_client: reqwest::Client::new(),
 		}
@@ -471,6 +496,60 @@ mod tests {
 			"db_connect should run (and fail) with a db-only context, got {:?}",
 			check.to_wire()["result"]
 		);
+	}
+
+	/// A context synthesised from a generic `DATABASE_URL` (not Tamanu's): the
+	/// generic database checks run, everything Tamanu-specific skips.
+	fn generic_db_ctx() -> SweepContext {
+		let mut ctx = db_only_ctx();
+		ctx.tamanu.as_mut().unwrap().is_tamanu = false;
+		ctx
+	}
+
+	#[tokio::test]
+	async fn generic_db_checks_run_with_generic_context() {
+		// db_connect only needs the URL; an unreachable one must FAIL (an
+		// alert), proving the generic context isn't gated out.
+		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let check = (entry.run)(generic_db_ctx()).await;
+		assert!(
+			matches!(check.status, CheckStatus::Fail(_)),
+			"db_connect should run (and fail) with a generic-db context, got {:?}",
+			check.to_wire()["result"]
+		);
+	}
+
+	#[tokio::test]
+	async fn tamanu_checks_skip_with_generic_context() {
+		// A generic database isn't Tamanu's: checks that query Tamanu tables or
+		// inspect the deployment must skip rather than fail against it.
+		for name in [
+			"migrations",
+			"tamanu_http",
+			"tamanu_service",
+			"version_drift",
+			"sync_sessions",
+		] {
+			let entry = all().into_iter().find(|e| e.name == name).unwrap();
+			let check = (entry.run)(generic_db_ctx()).await;
+			assert!(
+				matches!(check.status, CheckStatus::Skip(_)),
+				"{name} should skip with a generic (non-Tamanu) database, got {:?}",
+				check.to_wire()["result"]
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn host_checks_run_with_generic_context() {
+		for name in ["memory", "disk_free", "uptime"] {
+			let entry = all().into_iter().find(|e| e.name == name).unwrap();
+			let check = (entry.run)(generic_db_ctx()).await;
+			assert!(
+				!matches!(check.status, CheckStatus::Skip(_)),
+				"{name} should run with a generic database context"
+			);
+		}
 	}
 
 	#[tokio::test]

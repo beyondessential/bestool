@@ -32,6 +32,8 @@ Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
 # (it varies per tamanu install), so it is not baked into this unit: the
 # deployment drops a /etc/systemd/system/bestool-alertd.service.d/*.conf
 # override with `Environment=TAMANU_DATABASE_URL=...` on the hosts that need it.
+# On hosts with a postgres but no Tamanu, `Environment=DATABASE_URL=...` runs
+# the generic (non-Tamanu) database checks against it instead.
 
 # Runs as root with a restricted capability bounding set rather than the full
 # root set. As uid 0 the kernel grants the whole bounding set into the effective

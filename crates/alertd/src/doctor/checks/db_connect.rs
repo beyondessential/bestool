@@ -77,6 +77,7 @@ mod tests {
 			db: None,
 			http_client: reqwest::Client::new(),
 			has_install: true,
+			is_tamanu: true,
 		};
 		let check = run(ctx).await;
 		assert!(
@@ -115,6 +116,7 @@ mod tests {
 			db: None,
 			http_client: reqwest::Client::new(),
 			has_install: true,
+			is_tamanu: true,
 		};
 		let check = run(ctx).await;
 		match check.status {

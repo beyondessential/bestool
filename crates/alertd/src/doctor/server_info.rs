@@ -47,7 +47,10 @@ pub struct Filesystem {
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
 	pub bestool_version: String,
-	pub tamanu_version: String,
+	/// Version of the Tamanu deployment. Absent on hosts with no Tamanu,
+	/// including hosts with only a generic (non-Tamanu) database.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_version: Option<String>,
 	/// Filesystem root of the Tamanu install, when one was found on disk.
 	/// Absent on hosts driven by `TAMANU_DATABASE_URL` alone (no install).
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -122,7 +125,11 @@ pub struct ServerFacts {
 /// provided by the caller (`env!("CARGO_PKG_VERSION")` resolved in the bestool
 /// crate) rather than evaluated here, since in this library crate it would
 /// resolve to the library's own version instead of the running binary's.
-pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFacts) -> ServerInfo {
+pub async fn gather(
+	bestool_version: &str,
+	tamanu_version: Option<String>,
+	facts: ServerFacts,
+) -> ServerInfo {
 	let disks = Disks::new_with_refreshed_list();
 	let filesystems = disks
 		.iter()
@@ -152,7 +159,7 @@ pub async fn gather(bestool_version: &str, tamanu_version: &str, facts: ServerFa
 
 	ServerInfo {
 		bestool_version: bestool_version.to_string(),
-		tamanu_version: tamanu_version.to_string(),
+		tamanu_version,
 		tamanu_root: facts.tamanu_root,
 		tamanu_server_kind: facts.tamanu_server_kind,
 		node_version: detect_node_version().await,
