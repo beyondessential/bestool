@@ -169,6 +169,35 @@ jobs:
           KOPIA_PROXY_TEST_REGION: us-east-1
         run: cargo test -p bestool-kopia --features proxy --test proxy_e2e -- --ignored --nocapture
 
+  vss-wmi:
+    name: vss / wmi e2e
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      # https://github.com/actions/cache/issues/752
+      - name: Use GNU tar
+        shell: cmd
+        run: echo C:\Program Files\Git\usr\bin>>"%GITHUB_PATH%"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install kopia
+        shell: pwsh
+        run: |
+          curl.exe -fsSL https://github.com/kopia/kopia/releases/download/v0.23.1/kopia-0.23.1-windows-x64.zip -o kopia.zip
+          Expand-Archive -Path kopia.zip -DestinationPath kopia
+          $exe = (Get-ChildItem -Path kopia -Recurse -Filter kopia.exe | Select-Object -First 1).FullName
+          "KOPIA_BIN=$exe" >> $env:GITHUB_ENV
+      # Creates a real VSS shadow via WMI and has kopia snapshot its GLOBALROOT
+      # device path — validating the VSS backend end-to-end on a real Windows host.
+      - name: WMI VSS end-to-end
+        run: cargo test -p bestool --lib wmi_shadow_roundtrip -- --ignored --nocapture
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -214,7 +243,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy]
+    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, vss-wmi]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

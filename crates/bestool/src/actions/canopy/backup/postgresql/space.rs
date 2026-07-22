@@ -24,6 +24,7 @@ const HEADROOM_FLOOR: u64 = 1024 * 1024 * 1024;
 /// Minimum free space required on the source volume before taking a VSS shadow.
 /// The shadow's copy-on-write area grows with writes during the backup, not with
 /// the database size, so this is a floor rather than a full-size reservation.
+#[cfg(windows)]
 const VSS_FLOOR: u64 = 1024 * 1024 * 1024;
 
 /// Free space required to stage a base backup whose copy is about `need` bytes.
@@ -33,6 +34,7 @@ pub fn required_free(need: u64) -> u64 {
 
 /// Free space required on the source volume for a VSS shadow of an estimated
 /// `need`-byte cluster (a tenth of it, floored at 1 GiB).
+#[cfg(windows)]
 pub fn vss_required_free(need: Option<u64>) -> u64 {
 	need.map_or(VSS_FLOOR, |n| (n / 10).max(VSS_FLOOR))
 }
@@ -284,6 +286,7 @@ mod tests {
 		assert_eq!(required_free(ten_gib), ten_gib + ten_gib / 5);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn vss_required_free_floors_at_a_gib() {
 		assert_eq!(vss_required_free(None), VSS_FLOOR);

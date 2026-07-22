@@ -14,6 +14,7 @@ mod service;
 mod space;
 pub mod strategy;
 mod sys;
+#[cfg(windows)]
 pub mod vss;
 
 use std::{
@@ -134,9 +135,15 @@ async fn snapshot_prepared(
 			let (path, snapshot) = lvm::prepare(resolved, backup_type).await?;
 			(path, Teardown::Lvm(snapshot))
 		}
+		#[cfg(windows)]
 		Strategy::Vss => {
-			let (path, shadow) = vss::prepare(resolved, backup_type, need).await?;
+			let (path, shadow) = vss::prepare(resolved, need).await?;
 			(path, Teardown::Vss(shadow))
+		}
+		#[cfg(not(windows))]
+		Strategy::Vss => {
+			let _ = need;
+			unreachable!("VSS is only detected on Windows")
 		}
 		Strategy::BaseBackup => unreachable!("basebackup is handled by the caller"),
 	};

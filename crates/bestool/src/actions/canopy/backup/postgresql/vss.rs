@@ -1,26 +1,32 @@
 //! Crash-consistent Windows VSS shadow-copy snapshot of a postgres cluster.
 //!
-//! Drives `diskshadow` to take a persistent shadow copy of the volume the data
-//! directory lives on, exposed read-only at a **stable** folder so kopia's
-//! history/dedup attribute to one source. A VSS shadow with no postgres writer
-//! is crash-consistent, so it restores by plain crash recovery — no
-//! `backup_label`, the same clean-restore property as the btrfs/LVM backends.
+//! Creates a persistent, client-accessible shadow copy of the volume the data
+//! directory lives on via WMI (`Win32_ShadowCopy.Create`), and hands kopia the
+//! shadow's `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN` device path
+//! directly — no `diskshadow` script, no mount/expose folder. `ClientAccessible`
+//! engages no writers, so the shadow is crash-consistent and restores by plain
+//! crash recovery, the same clean-restore property as the btrfs/LVM backends.
 //!
-//! VSS needs Administrator (the daemon runs as a service). `diskshadow` exists
-//! only on Windows; this is only reached when the strategy resolves to VSS
-//! (always on Windows). The `diskshadow` orchestration is verified on a real
-//! Windows host; the pure helpers (path math, script generation) are unit-tested
-//! here (they operate on strings, so the tests are platform-independent).
+//! VSS needs Administrator (the daemon runs as a service). This module is only
+//! compiled on Windows (the strategy only resolves to VSS there). The WMI
+//! orchestration is exercised end-to-end on a real Windows host by CI
+//! (`vss / wmi e2e`); the pure path helpers are unit-tested here.
 
 use std::path::{Path, PathBuf};
 
-use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
+use serde::Deserialize;
 use tracing::{info, warn};
+use wmi::{Variant, WMIConnection};
 
 use super::resolve::ResolvedCluster;
 
-/// The VSS writer/alias name used in the diskshadow script.
-const ALIAS: &str = "bestoolpg";
+/// Teardown state for a prepared shadow copy, released by [`teardown`].
+#[derive(Debug)]
+pub struct Shadow {
+	/// The shadow's `{GUID}` id, for deletion.
+	id: String,
+}
 
 /// The directory the backup captures. On the EDB layout the whole server install
 /// (`…\PostgreSQL\<version>`, carrying `bin`/`lib`/`share` beside `data`) sits one
@@ -32,15 +38,6 @@ fn backup_root(data_dir: &Path) -> &Path {
 		Some(parent) if parent.join("bin").is_dir() => parent,
 		_ => data_dir,
 	}
-}
-
-/// Teardown state for a prepared shadow copy, released by [`teardown`].
-#[derive(Debug)]
-pub struct Shadow {
-	/// The folder the shadow is exposed at (also the kopia mount root).
-	expose_target: String,
-	/// The diskshadow metadata `.cab` written for this run.
-	metadata: PathBuf,
 }
 
 /// The volume prefix of a Windows path, e.g. `C:` from `C:\Tamanu\data`.
@@ -62,65 +59,16 @@ fn relative_to_volume<'a>(data_dir: &'a str, volume: &str) -> &'a str {
 		.trim_start_matches(['\\', '/'])
 }
 
-/// The stable folder the shadow is exposed at, per backup type (on the data
-/// volume). Fixed across runs so the kopia source path is stable.
-fn expose_target_dir(volume: &str, backup_type: &str) -> String {
-	format!("{volume}\\bestool-backup-shadow\\{backup_type}")
-}
-
-/// The kopia source path within the exposed shadow.
-fn kopia_source(expose_target: &str, rel: &str) -> String {
-	format!("{expose_target}\\{rel}")
-}
-
-/// Join diskshadow script lines with CRLF.
-///
-/// diskshadow strips a trailing `\r\n` from each script line; given LF-only
-/// endings it eats the last real character of each line instead — e.g. dropping
-/// the final letter of `set context persistent`, which it then rejects (exit 3).
-/// So the script must use CRLF, with a trailing CRLF on the last line too.
-fn script(lines: &[String]) -> String {
-	let mut out = lines.join("\r\n");
-	out.push_str("\r\n");
-	out
-}
-
-/// The diskshadow script that creates and exposes the shadow.
-fn create_script(volume: &str, expose_target: &str, metadata: &str) -> String {
-	// `persistent` so the shadow outlives the diskshadow session (kopia reads it
-	// afterwards); no writer is involved, so it's crash-consistent.
-	script(&[
-		"set context persistent".to_owned(),
-		format!("set metadata \"{metadata}\""),
-		"set verbose on".to_owned(),
-		"begin backup".to_owned(),
-		format!("add volume {volume} alias {ALIAS}"),
-		"create".to_owned(),
-		format!("expose %{ALIAS}% \"{expose_target}\""),
-		"end backup".to_owned(),
-	])
-}
-
-/// The diskshadow script that deletes the shadow exposed at `expose_target`.
-fn delete_script(expose_target: &str) -> String {
-	script(&[format!("delete shadows exposed \"{expose_target}\"")])
-}
-
-/// Take the shadow copy and expose it; returns the kopia source path and the
-/// teardown state. Caller must always pass the result to [`teardown`].
-pub async fn prepare(
-	resolved: &ResolvedCluster,
-	backup_type: &str,
-	need: Option<u64>,
-) -> Result<(PathBuf, Shadow)> {
+/// Take the shadow copy; returns the kopia source path (the shadow device path
+/// plus the data dir's relative path) and the teardown state. The caller must
+/// always pass the result to [`teardown`].
+pub async fn prepare(resolved: &ResolvedCluster, need: Option<u64>) -> Result<(PathBuf, Shadow)> {
 	let root = backup_root(&resolved.data_dir).to_string_lossy().into_owned();
 	let volume = volume_of(&root)?.to_owned();
 	let rel = relative_to_volume(&root, &volume).to_owned();
-	let expose_target = expose_target_dir(&volume, backup_type);
-	let metadata = std::env::temp_dir().join(format!("bestool-vss-{}.cab", std::process::id()));
 
-	// The shadow's copy-on-write area lives on the source volume; if it's nearly
-	// full the shadow gets dropped mid-backup, so refuse up front.
+	// The shadow's copy-on-write area needs room on its storage volume; if it's
+	// nearly full the shadow gets dropped mid-backup, so refuse up front.
 	let required = super::space::vss_required_free(need);
 	if let Some(free) = super::space::available(Path::new(&root))
 		&& free < required
@@ -132,75 +80,133 @@ pub async fn prepare(
 		);
 	}
 
-	// Sweep a shadow left exposed here by a crashed run before re-creating.
-	reap_stale(&expose_target).await;
-
-	// diskshadow's `expose` needs the mount path to already exist as an empty
-	// directory — it does not create it, and fails with "The mount path must be an
-	// empty directory" otherwise. Create it (first run); reap_stale above has
-	// unexposed any shadow previously mounted here, so it's empty.
-	tokio::fs::create_dir_all(&expose_target)
+	info!(%volume, "creating VSS shadow copy via WMI");
+	// WMI/COM is thread-affine and `!Send`, so create the shadow on a blocking thread.
+	let created = tokio::task::spawn_blocking(move || create_client_accessible(&volume))
 		.await
 		.into_diagnostic()
-		.wrap_err_with(|| format!("creating the VSS expose directory {expose_target}"))?;
+		.wrap_err("joining the VSS shadow-create task")??;
 
-	info!(volume = %volume, expose_target = %expose_target, "creating VSS shadow copy");
-	run_diskshadow(&create_script(&volume, &expose_target, &metadata.to_string_lossy()))
-		.await
-		.wrap_err("creating VSS shadow copy")?;
-
-	let source = PathBuf::from(kopia_source(&expose_target, &rel));
-	Ok((
-		source,
-		Shadow {
-			expose_target,
-			metadata,
-		},
-	))
+	let source = PathBuf::from(format!("{}\\{rel}", created.device));
+	info!(shadow = %created.id, source = %source.display(), "VSS shadow ready");
+	Ok((source, Shadow { id: created.id }))
 }
 
-/// Release a prepared shadow: delete the exposed shadow copy and the metadata.
+/// Release a prepared shadow: delete the shadow copy. Best-effort — a cleanup
+/// failure is warned, not fatal (the backup itself already succeeded).
 pub async fn teardown(shadow: Shadow) -> Result<()> {
-	if let Err(err) = run_diskshadow(&delete_script(&shadow.expose_target)).await {
-		warn!("deleting VSS shadow copy failed: {err}");
+	let id = shadow.id;
+	match tokio::task::spawn_blocking(move || delete_shadow(&id)).await {
+		Ok(Ok(())) => {}
+		Ok(Err(err)) => warn!("deleting VSS shadow failed: {err}"),
+		Err(err) => warn!("VSS shadow-delete task panicked: {err}"),
 	}
-	let _ = tokio::fs::remove_file(&shadow.metadata).await;
 	Ok(())
 }
 
-/// Best-effort: delete any shadow still exposed at `expose_target`.
-async fn reap_stale(expose_target: &str) {
-	let _ = run_diskshadow(&delete_script(expose_target)).await;
+/// A freshly-created shadow: its id (for deletion) and device path (for reading).
+struct Created {
+	id: String,
+	device: String,
 }
 
-/// Run a diskshadow script (`diskshadow /s <file>`), erroring on failure.
-async fn run_diskshadow(script: &str) -> Result<()> {
-	let script_file =
-		std::env::temp_dir().join(format!("bestool-diskshadow-{}.txt", std::process::id()));
-	tokio::fs::write(&script_file, script)
-		.await
+/// Create a persistent, client-accessible (writerless, crash-consistent) shadow
+/// of `volume` (e.g. `C:`) via WMI, returning its id and `\\?\GLOBALROOT` device
+/// path. Uses the `wmi` crate, which wraps COM internally (so no `unsafe`).
+fn create_client_accessible(volume: &str) -> Result<Created> {
+	let volume = volume.trim_end_matches(['\\', '/']);
+	let con = WMIConnection::new()
 		.into_diagnostic()
-		.wrap_err("writing diskshadow script")?;
+		.wrap_err("connecting to WMI (ROOT\\CIMV2)")?;
 
-	let output = tokio::process::Command::new("diskshadow")
-		.arg("/s")
-		.arg(&script_file)
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await
+	// Win32_ShadowCopy.Create(Volume, Context); Volume needs a trailing backslash.
+	let in_params = con
+		.get_object("Win32_ShadowCopy")
 		.into_diagnostic()
-		.wrap_err("spawning diskshadow");
-	let _ = tokio::fs::remove_file(&script_file).await;
+		.wrap_err("getting the Win32_ShadowCopy class")?
+		.get_method("Create")
+		.into_diagnostic()
+		.wrap_err("getting Win32_ShadowCopy.Create")?
+		.ok_or_else(|| miette!("Win32_ShadowCopy has no Create method"))?
+		.spawn_instance()
+		.into_diagnostic()
+		.wrap_err("spawning Create in-parameters")?;
+	in_params
+		.put_property("Volume", Variant::String(format!("{volume}\\")))
+		.into_diagnostic()
+		.wrap_err("setting Volume")?;
+	in_params
+		.put_property("Context", Variant::String("ClientAccessible".to_owned()))
+		.into_diagnostic()
+		.wrap_err("setting Context")?;
 
-	let output = output?;
-	if !output.status.success() {
+	let out = con
+		.exec_method("Win32_ShadowCopy", "Create", Some(&in_params))
+		.into_diagnostic()
+		.wrap_err("calling Win32_ShadowCopy.Create")?
+		.ok_or_else(|| miette!("Create returned no output object"))?;
+
+	let return_value = as_u32(&out.get_property("ReturnValue").into_diagnostic()?);
+	if return_value != Some(0) {
 		bail!(
-			"diskshadow failed ({}): {}",
-			output.status,
-			String::from_utf8_lossy(&output.stdout).trim()
+			"Win32_ShadowCopy.Create failed with ReturnValue {return_value:?} \
+			 (see the Win32_ShadowCopy.Create docs for the meaning)"
 		);
 	}
+	let id = match out.get_property("ShadowID").into_diagnostic()? {
+		Variant::String(id) => id,
+		other => bail!("Create returned a non-string ShadowID: {other:?}"),
+	};
+	let device = device_path(&con, &id)?;
+	Ok(Created { id, device })
+}
+
+/// The `\\?\GLOBALROOT\…` device path of the shadow with `id`.
+fn device_path(con: &WMIConnection, id: &str) -> Result<String> {
+	#[derive(Deserialize)]
+	#[serde(rename = "Win32_ShadowCopy")]
+	#[serde(rename_all = "PascalCase")]
+	struct Row {
+		#[serde(rename = "ID")]
+		id: String,
+		device_object: String,
+	}
+
+	// `ID` is the `{GUID}` string; WQL string literals use single quotes.
+	let query = format!("SELECT ID, DeviceObject FROM Win32_ShadowCopy WHERE ID = '{id}'");
+	let rows: Vec<Row> = con
+		.raw_query(query)
+		.into_diagnostic()
+		.wrap_err("querying the shadow's DeviceObject")?;
+	rows.into_iter()
+		.find(|row| row.id.eq_ignore_ascii_case(id))
+		.map(|row| row.device_object)
+		.ok_or_else(|| miette!("could not find shadow {id} after creating it"))
+}
+
+/// Delete a shadow by id via `vssadmin` (Win32_ShadowCopy has no Delete method).
+fn delete_shadow(id: &str) -> Result<()> {
+	let status = std::process::Command::new("vssadmin")
+		.args(["delete", "shadows", &format!("/shadow={id}"), "/quiet"])
+		.status()
+		.into_diagnostic()
+		.wrap_err("running vssadmin delete shadows")?;
+	if !status.success() {
+		bail!("vssadmin delete shadows /shadow={id} failed ({status})");
+	}
 	Ok(())
+}
+
+/// Coerce a WMI numeric variant (Create's `ReturnValue` is a uint32) to `u32`.
+fn as_u32(value: &Variant) -> Option<u32> {
+	match value {
+		Variant::UI4(n) => Some(*n),
+		Variant::UI2(n) => Some(u32::from(*n)),
+		Variant::UI1(n) => Some(u32::from(*n)),
+		Variant::I4(n) => u32::try_from(*n).ok(),
+		Variant::I2(n) => u32::try_from(*n).ok(),
+		_ => None,
+	}
 }
 
 #[cfg(test)]
@@ -214,30 +220,6 @@ mod tests {
 		assert!(volume_of("\\\\server\\share").is_err());
 		assert_eq!(relative_to_volume("C:\\Tamanu\\data", "C:"), "Tamanu\\data");
 		assert_eq!(relative_to_volume("C:\\pg", "C:"), "pg");
-	}
-
-	#[test]
-	fn stable_expose_target_and_source() {
-		let target = expose_target_dir("C:", "tamanu-postgres");
-		assert_eq!(target, "C:\\bestool-backup-shadow\\tamanu-postgres");
-		assert_eq!(
-			kopia_source(&target, "Tamanu\\data"),
-			"C:\\bestool-backup-shadow\\tamanu-postgres\\Tamanu\\data"
-		);
-	}
-
-	#[test]
-	fn create_script_exposes_a_persistent_shadow() {
-		let script = create_script("C:", "C:\\shadow\\pg", "C:\\meta.cab");
-		// CRLF endings: diskshadow eats the last character of an LF-only line, so
-		// each command must be CRLF-terminated or its final letter is lost.
-		assert!(script.contains("set context persistent\r\n"));
-		// No LF-only line ending anywhere (that's what corrupts the command).
-		assert!(!script.replace("\r\n", "").contains('\n'));
-		assert!(script.contains("add volume C: alias bestoolpg\r\n"));
-		assert!(script.contains("expose %bestoolpg% \"C:\\shadow\\pg\"\r\n"));
-		assert!(script.contains("set metadata \"C:\\meta.cab\"\r\n"));
-		assert!(script.ends_with("end backup\r\n"));
 	}
 
 	#[test]
@@ -256,11 +238,76 @@ mod tests {
 		assert_eq!(backup_root(&bare), bare);
 	}
 
+	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI
+	/// job). Ignored by default because it needs those and isn't hermetic.
+	///
+	/// Creates a client-accessible shadow of the system drive, reads a marker back
+	/// through the shadow's `\\?\GLOBALROOT` device path, and — when `KOPIA_BIN` is
+	/// set — has kopia snapshot that device path (the real question: does Go/kopia
+	/// read the GLOBALROOT namespace). A drop guard deletes the shadow even if an
+	/// assertion panics.
 	#[test]
-	fn delete_script_targets_the_exposed_path() {
-		assert_eq!(
-			delete_script("C:\\shadow\\pg"),
-			"delete shadows exposed \"C:\\shadow\\pg\"\r\n"
-		);
+	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
+	fn wmi_shadow_roundtrip() {
+		struct ShadowGuard(String);
+		impl Drop for ShadowGuard {
+			fn drop(&mut self) {
+				let _ = delete_shadow(&self.0);
+			}
+		}
+
+		let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+		let leaf = format!("bestool-vsswmi-{}", std::process::id());
+		let dir = PathBuf::from(format!("{drive}\\{leaf}"));
+		std::fs::create_dir_all(&dir).expect("create marker dir on the system drive");
+		std::fs::write(dir.join("marker.txt"), b"vss-wmi-ok").expect("write marker");
+
+		let created = create_client_accessible(&drive).expect("create shadow via WMI");
+		let guard = ShadowGuard(created.id.clone());
+		println!("shadow {} at {}", created.id, created.device);
+
+		let shadow_dir = format!("{}\\{leaf}", created.device);
+		let content =
+			std::fs::read(format!("{shadow_dir}\\marker.txt")).expect("read marker via device path");
+		assert_eq!(content, b"vss-wmi-ok", "marker content via shadow device path");
+
+		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
+			kopia_snapshot(Path::new(&kopia), &shadow_dir);
+		} else {
+			println!("KOPIA_BIN unset; skipped the kopia snapshot check");
+		}
+
+		drop(guard);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// Create a throwaway filesystem repo and snapshot `source`, asserting success.
+	fn kopia_snapshot(kopia: &Path, source: &str) {
+		let base = std::env::temp_dir();
+		let pid = std::process::id();
+		let repo = base.join(format!("bestool-vsswmi-repo-{pid}"));
+		let config = base.join(format!("bestool-vsswmi-{pid}.config"));
+		let cache = base.join(format!("bestool-vsswmi-cache-{pid}"));
+		std::fs::create_dir_all(&repo).unwrap();
+
+		let run = |args: &[&str]| {
+			let status = std::process::Command::new(kopia)
+				.args(args)
+				.arg("--config-file")
+				.arg(&config)
+				.env("KOPIA_PASSWORD", "probe")
+				.env("KOPIA_CACHE_DIRECTORY", &cache)
+				.status()
+				.expect("run kopia");
+			assert!(status.success(), "kopia {args:?} failed ({status})");
+		};
+
+		run(&["repository", "create", "filesystem", "--path", &repo.to_string_lossy()]);
+		run(&["snapshot", "create", source]);
+		println!("kopia snapshotted {source} ok");
+
+		let _ = std::fs::remove_dir_all(&repo);
+		let _ = std::fs::remove_dir_all(&cache);
+		let _ = std::fs::remove_file(&config);
 	}
 }
