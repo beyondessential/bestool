@@ -71,7 +71,7 @@ jobs:
           # Release builds run on one-shot tags; don't persist tag-scoped
           # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.82.2
+      - uses: taiki-e/install-action@v2.82.10
         with:
           tool: cargo-auditable
 
@@ -108,7 +108,7 @@ jobs:
           tar -C staging --zstd -cf "${name}.tar.zst" .
           echo "asset=${name}.tar.zst" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/attest-build-provenance@v4.1.0
+      - uses: actions/attest-build-provenance@v4.1.1
         with:
           subject-path: ${{ steps.package.outputs.asset }}
 
@@ -149,7 +149,7 @@ jobs:
 
           dpkg-deb --build --root-owner-group "$deb_dir" "bestool-psql-${target}-${version}.deb"
 
-      - uses: actions/attest-build-provenance@v4.1.0
+      - uses: actions/attest-build-provenance@v4.1.1
         if: contains(matrix.target, 'linux-musl')
         with:
           subject-path: "bestool-psql-${{ matrix.target }}-${{ steps.version.outputs.version }}.deb"
@@ -165,7 +165,7 @@ jobs:
 
       - name: Configure AWS Credentials
         if: contains(matrix.target, 'linux-musl')
-        uses: aws-actions/configure-aws-credentials@v6.2.0
+        uses: aws-actions/configure-aws-credentials@6.2.2
         with:
           aws-region: ap-southeast-2
           role-to-assume: arn:aws:iam::143295493206:role/gha-tamanu-tools-upload
