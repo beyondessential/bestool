@@ -73,25 +73,37 @@ fn kopia_source(expose_target: &str, rel: &str) -> String {
 	format!("{expose_target}\\{rel}")
 }
 
+/// Join diskshadow script lines with CRLF.
+///
+/// diskshadow strips a trailing `\r\n` from each script line; given LF-only
+/// endings it eats the last real character of each line instead — e.g. dropping
+/// the final letter of `set context persistent`, which it then rejects (exit 3).
+/// So the script must use CRLF, with a trailing CRLF on the last line too.
+fn script(lines: &[String]) -> String {
+	let mut out = lines.join("\r\n");
+	out.push_str("\r\n");
+	out
+}
+
 /// The diskshadow script that creates and exposes the shadow.
 fn create_script(volume: &str, expose_target: &str, metadata: &str) -> String {
 	// `persistent` so the shadow outlives the diskshadow session (kopia reads it
 	// afterwards); no writer is involved, so it's crash-consistent.
-	format!(
-		"set context persistent\n\
-		 set metadata \"{metadata}\"\n\
-		 set verbose on\n\
-		 begin backup\n\
-		 add volume {volume} alias {ALIAS}\n\
-		 create\n\
-		 expose %{ALIAS}% \"{expose_target}\"\n\
-		 end backup\n"
-	)
+	script(&[
+		"set context persistent".to_owned(),
+		format!("set metadata \"{metadata}\""),
+		"set verbose on".to_owned(),
+		"begin backup".to_owned(),
+		format!("add volume {volume} alias {ALIAS}"),
+		"create".to_owned(),
+		format!("expose %{ALIAS}% \"{expose_target}\""),
+		"end backup".to_owned(),
+	])
 }
 
 /// The diskshadow script that deletes the shadow exposed at `expose_target`.
 fn delete_script(expose_target: &str) -> String {
-	format!("delete shadows exposed \"{expose_target}\"\n")
+	script(&[format!("delete shadows exposed \"{expose_target}\"")])
 }
 
 /// Take the shadow copy and expose it; returns the kopia source path and the
@@ -217,10 +229,15 @@ mod tests {
 	#[test]
 	fn create_script_exposes_a_persistent_shadow() {
 		let script = create_script("C:", "C:\\shadow\\pg", "C:\\meta.cab");
-		assert!(script.contains("set context persistent"));
-		assert!(script.contains("add volume C: alias bestoolpg"));
-		assert!(script.contains("expose %bestoolpg% \"C:\\shadow\\pg\""));
-		assert!(script.contains("set metadata \"C:\\meta.cab\""));
+		// CRLF endings: diskshadow eats the last character of an LF-only line, so
+		// each command must be CRLF-terminated or its final letter is lost.
+		assert!(script.contains("set context persistent\r\n"));
+		// No LF-only line ending anywhere (that's what corrupts the command).
+		assert!(!script.replace("\r\n", "").contains('\n'));
+		assert!(script.contains("add volume C: alias bestoolpg\r\n"));
+		assert!(script.contains("expose %bestoolpg% \"C:\\shadow\\pg\"\r\n"));
+		assert!(script.contains("set metadata \"C:\\meta.cab\"\r\n"));
+		assert!(script.ends_with("end backup\r\n"));
 	}
 
 	#[test]
@@ -243,7 +260,7 @@ mod tests {
 	fn delete_script_targets_the_exposed_path() {
 		assert_eq!(
 			delete_script("C:\\shadow\\pg"),
-			"delete shadows exposed \"C:\\shadow\\pg\"\n"
+			"delete shadows exposed \"C:\\shadow\\pg\"\r\n"
 		);
 	}
 }
