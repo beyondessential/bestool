@@ -3,8 +3,10 @@
 //! On Linux this tuning is applied by configuration management; this command is
 //! the Windows equivalent. It finds the PostgreSQL install, computes the tuning
 //! from the host's resources (via the shared pgtune module), writes it as a
-//! managed block at the end of `postgresql.conf`, and offers to restart
-//! PostgreSQL and then the Tamanu workloads.
+//! managed block at the end of `postgresql.conf`, and reloads PostgreSQL so the
+//! reloadable settings take effect immediately. Only when some settings still
+//! need a full restart does it offer to restart PostgreSQL and then the Tamanu
+//! workloads.
 //!
 //! Windows-only: the whole module is compile-gated at its declaration.
 
@@ -25,11 +27,15 @@ use crate::actions::{
 	tamanu::{TamanuArgs, find_tamanu, restart},
 };
 
-/// Tune PostgreSQL for this host and restart it (Windows only).
+/// Tune PostgreSQL for this host, reloading it and restarting it if needed
+/// (Windows only).
 ///
 /// Computes pgtune-equivalent settings for an OLTP workload on SSD storage,
 /// sized to a memory budget that leaves headroom for the co-located Tamanu
 /// workloads, and writes them as a managed block at the end of postgresql.conf.
+/// A reload applies the settings that don't need a restart immediately; if any
+/// settings still require a restart, it offers to restart PostgreSQL and the
+/// Tamanu workloads.
 ///
 /// Alias: pgtune
 #[derive(Debug, Clone, Parser)]
@@ -55,7 +61,8 @@ pub struct PgTuneArgs {
 	#[arg(long, default_value_t = 25)]
 	pub temp_file_percent: u8,
 
-	/// Compute and show the tuning without writing it or restarting anything.
+	/// Compute and show the tuning without writing it, reloading, or restarting
+	/// anything.
 	#[arg(long)]
 	pub dry_run: bool,
 
@@ -63,7 +70,8 @@ pub struct PgTuneArgs {
 	#[arg(long)]
 	pub yes: bool,
 
-	/// Write the tuning but don't restart PostgreSQL or the Tamanu workloads.
+	/// Write and reload the tuning but don't restart PostgreSQL or the Tamanu
+	/// workloads.
 	#[arg(long)]
 	pub no_restart: bool,
 }
@@ -134,9 +142,41 @@ pub async fn run(args: PgTuneArgs, ctx: Context) -> Result<()> {
 	write_atomically(&conf_path, &updated)?;
 	info!("wrote tuning to {}", conf_path.display());
 
+	// Apply everything we can without downtime first: a reload picks up every
+	// setting whose context allows it, leaving only the postmaster-context
+	// settings still needing a restart.
+	let reloaded = match reload_pg(&data_dir).await {
+		Ok(()) => {
+			info!("reloaded PostgreSQL; the reloadable settings are now in effect");
+			true
+		}
+		Err(err) => {
+			warn!(%err, "could not reload PostgreSQL; a restart is needed to apply the tuning");
+			false
+		}
+	};
+
 	if args.no_restart {
-		warn!("skipping restarts (--no-restart); restart PostgreSQL to apply");
+		warn!("skipping restarts (--no-restart); restart PostgreSQL to apply any settings that need it");
 		return Ok(());
+	}
+
+	// After a reload, PostgreSQL knows exactly which settings still need a
+	// restart; when none do, there's no reason to restart at all. If the reload
+	// didn't happen we can't tell, so fall through to the restart prompt.
+	if reloaded {
+		// pg_ctl reload only signals the postmaster; give it a moment to re-read
+		// the files before asking which settings are still pending a restart.
+		tokio::time::sleep(Duration::from_secs(1)).await;
+		let pending = pending_restart_settings(&config.database_url()).await;
+		if pending.is_empty() {
+			info!("no restart needed; every changed setting is now in effect");
+			return Ok(());
+		}
+		warn!(
+			"these settings need a full PostgreSQL restart to take effect: {}",
+			pending.join(", ")
+		);
 	}
 
 	let production = is_production().await;
@@ -145,7 +185,7 @@ pub async fn run(args: PgTuneArgs, ctx: Context) -> Result<()> {
 	if args.yes || confirm("Restart PostgreSQL now?", default_restart) {
 		restart_pg_service(pg_major).await?;
 	} else {
-		warn!("PostgreSQL not restarted; the new tuning is not yet in effect");
+		warn!("PostgreSQL not restarted; schedule a restart to apply the settings that need it");
 	}
 
 	if args.yes || confirm("Restart Tamanu workloads now?", default_restart) {
@@ -264,6 +304,69 @@ async fn detect_lz4(database_url: &str) -> bool {
 			.flatten()
 			.is_some_and(|vals| vals.iter().any(|v| v == "lz4")),
 		_ => false,
+	}
+}
+
+/// Signal a running PostgreSQL to re-read its configuration files, so every
+/// reloadable setting in the block we just wrote takes effect without a restart.
+///
+/// Uses `pg_ctl reload`, which signals the postmaster by PID and needs no
+/// database superuser — unlike `SELECT pg_reload_conf()`, which the Tamanu
+/// application role generally isn't allowed to run. `pg_ctl.exe` lives in the
+/// install's `bin` directory, alongside the `data` directory being tuned.
+async fn reload_pg(data_dir: &Path) -> Result<()> {
+	let pg_ctl = data_dir
+		.parent()
+		.map(|install| install.join("bin").join("pg_ctl.exe"))
+		.filter(|path| path.is_file())
+		.ok_or_else(|| miette::miette!("could not find pg_ctl.exe next to {}", data_dir.display()))?;
+
+	let output = tokio::process::Command::new(&pg_ctl)
+		.arg("reload")
+		.arg("-D")
+		.arg(data_dir)
+		.output()
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("running {}", pg_ctl.display()))?;
+
+	if !output.status.success() {
+		bail!(
+			"pg_ctl reload failed: {}",
+			String::from_utf8_lossy(&output.stderr).trim()
+		);
+	}
+	Ok(())
+}
+
+/// The names of settings that changed but need a full restart to take effect,
+/// as PostgreSQL itself reports them via `pg_settings.pending_restart` after a
+/// reload. Best-effort: an empty list when the server can't be reached, which
+/// reads as "nothing pending" — reasonable, since a server that's down applies
+/// everything on its next start anyway.
+async fn pending_restart_settings(database_url: &str) -> Vec<String> {
+	let client = match bestool_postgres::pool::connect_one(database_url, "bestool-pg-tune").await {
+		Ok(client) => client,
+		Err(err) => {
+			warn!(%err, "could not connect to PostgreSQL to check which settings need a restart");
+			return Vec::new();
+		}
+	};
+	match client
+		.query(
+			"SELECT name FROM pg_settings WHERE pending_restart ORDER BY name",
+			&[],
+		)
+		.await
+	{
+		Ok(rows) => rows
+			.iter()
+			.filter_map(|row| row.try_get::<_, String>("name").ok())
+			.collect(),
+		Err(err) => {
+			warn!(%err, "could not read pending_restart from pg_settings");
+			Vec::new()
+		}
 	}
 }
 
