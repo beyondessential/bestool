@@ -123,6 +123,15 @@ pub async fn prepare(
 	// Sweep a shadow left exposed here by a crashed run before re-creating.
 	reap_stale(&expose_target).await;
 
+	// diskshadow's `expose` needs the mount path to already exist as an empty
+	// directory — it does not create it, and fails with "The mount path must be an
+	// empty directory" otherwise. Create it (first run); reap_stale above has
+	// unexposed any shadow previously mounted here, so it's empty.
+	tokio::fs::create_dir_all(&expose_target)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating the VSS expose directory {expose_target}"))?;
+
 	info!(volume = %volume, expose_target = %expose_target, "creating VSS shadow copy");
 	run_diskshadow(&create_script(&volume, &expose_target, &metadata.to_string_lossy()))
 		.await

@@ -104,9 +104,13 @@ pub async fn prepare(config: &PostgresqlConfig, backup_type: &str) -> Result<Pre
 		snapshot => match snapshot_prepared(snapshot, &resolved, backup_type, need).await {
 			Ok(prepared) => Ok(prepared),
 			Err(err) => {
+				// Render the whole cause chain: `Display` shows only the outermost
+				// context ("creating VSS shadow copy"), hiding the operative reason
+				// (the diskshadow/lvs error) that says *why* the snapshot failed.
 				warn!(
 					strategy = ?snapshot,
-					"snapshot backend unavailable ({err}); falling back to pg_basebackup"
+					"snapshot backend unavailable ({}); falling back to pg_basebackup",
+					super::trim_error(&err)
 				);
 				basebackup_prepared(&resolved, backup_type, config, need).await
 			}
