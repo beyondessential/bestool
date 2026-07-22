@@ -39,6 +39,7 @@ pub(super) enum Teardown {
 	/// A thin-LVM snapshot + its mount.
 	Lvm(super::postgresql::lvm::Snapshot),
 	/// A Windows VSS shadow copy to delete.
+	#[cfg(windows)]
 	Vss(super::postgresql::vss::Shadow),
 	/// A streamed base backup directory to remove.
 	BaseBackup(PathBuf),
@@ -139,6 +140,7 @@ impl Method {
 			Teardown::Simple(cleanup) => super::simple::teardown(cleanup).await,
 			Teardown::Btrfs(mounts) => super::postgresql::btrfs::teardown(mounts).await,
 			Teardown::Lvm(snapshot) => super::postgresql::lvm::teardown(snapshot).await,
+			#[cfg(windows)]
 			Teardown::Vss(shadow) => super::postgresql::vss::teardown(shadow).await,
 			Teardown::BaseBackup(root) => super::postgresql::basebackup::teardown(root).await,
 		}
