@@ -3,7 +3,10 @@ use std::sync::Arc;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use jiff::Timestamp;
 
-use crate::{http_server::state::ServerState, metrics};
+use crate::{
+	http_server::{state::ServerState, types::HealthResponse},
+	metrics,
+};
 
 pub async fn handle_health(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
 	let last_activity = metrics::last_activity_timestamp();
@@ -25,12 +28,16 @@ pub async fn handle_health(State(state): State<Arc<ServerState>>) -> impl IntoRe
 		None => true,
 	};
 
-	let body = serde_json::json!({
-		"healthy": healthy,
-		"last_activity_secs_ago": if last_activity == 0 { None } else { Some(now.saturating_sub(last_activity)) },
-		"uptime_secs": now.saturating_sub(started_at),
-		"watchdog_timeout_secs": state.watchdog_timeout.map(|t| t.as_secs()),
-	});
+	let body = HealthResponse {
+		healthy,
+		last_activity_secs_ago: if last_activity == 0 {
+			None
+		} else {
+			Some(now.saturating_sub(last_activity))
+		},
+		uptime_secs: now.saturating_sub(started_at),
+		watchdog_timeout_secs: state.watchdog_timeout.map(|t| t.as_secs()),
+	};
 
 	let status = if healthy {
 		StatusCode::OK

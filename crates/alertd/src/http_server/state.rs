@@ -8,6 +8,9 @@ use crate::{context::InternalContext, daemon::DaemonControl, tasks::TaskEndpoint
 pub struct ServerState {
 	pub started_at: Timestamp,
 	pub pid: u32,
+	/// Version of the running `bestool` binary (not this crate's version), so
+	/// `/status` reports what self-update targets and operators recognise.
+	pub binary_version: String,
 	pub internal_context: Arc<InternalContext>,
 	pub watchdog_timeout: Option<Duration>,
 	/// Endpoint handlers exposed by registered background tasks. Keyed by

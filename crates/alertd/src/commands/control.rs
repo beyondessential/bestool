@@ -16,7 +16,7 @@ async fn reprint_status(addrs: &[std::net::SocketAddr], attempts: u32) {
 	println!();
 	for attempt in 1..=attempts {
 		tokio::time::sleep(Duration::from_secs(1)).await;
-		match super::get_status(addrs).await {
+		match super::get_status(addrs, None).await {
 			Ok(()) => return,
 			Err(err) if attempt == attempts => {
 				println!("(daemon status not available yet: {err})");

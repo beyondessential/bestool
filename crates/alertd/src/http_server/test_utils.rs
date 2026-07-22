@@ -22,6 +22,7 @@ pub async fn create_test_state() -> Arc<ServerState> {
 	Arc::new(ServerState {
 		started_at: Timestamp::now(),
 		pid: std::process::id(),
+		binary_version: "0.0.0-test".to_string(),
 		internal_context: ctx,
 		watchdog_timeout: Some(std::time::Duration::from_secs(600)),
 		task_endpoints: Arc::new(HashMap::new()),
