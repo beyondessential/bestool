@@ -1,5 +1,5 @@
 ---
-id: CFV
+id: CHK-CFV
 ---
 
 # Caddyfile version healthcheck
