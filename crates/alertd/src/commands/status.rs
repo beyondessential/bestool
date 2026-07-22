@@ -2,7 +2,7 @@ use miette::miette;
 use tracing::info;
 
 use super::try_connect_daemon;
-use crate::http_server::StatusResponse;
+use crate::http_server::{HealthResponse, StatusResponse};
 
 /// Print the daemon's status. `local_version`, when given, is the version of the
 /// `bestool` binary invoking this (not this crate's version); the daemon reports
@@ -42,7 +42,7 @@ pub async fn get_status(
 		.map_err(|e| miette!("failed to fetch health: {e}"))?;
 
 	let health_status_code = health_response.status().as_u16();
-	let health: serde_json::Value = health_response
+	let health: HealthResponse = health_response
 		.json()
 		.await
 		.map_err(|e| miette!("failed to parse health response: {e}"))?;
@@ -73,10 +73,14 @@ pub async fn get_status(
 	println!("PID:       {pid}");
 	println!("Started:   {started_at}");
 
-	let healthy = health
-		.get("healthy")
-		.and_then(|v| v.as_bool())
-		.unwrap_or(false);
+	// Destructure exhaustively (no `..`): a new HealthResponse field then fails to
+	// compile here until it's surfaced below.
+	let HealthResponse {
+		healthy,
+		last_activity_secs_ago,
+		uptime_secs,
+		watchdog_timeout_secs,
+	} = health;
 
 	if healthy {
 		println!("Health:    ok");
@@ -84,23 +88,16 @@ pub async fn get_status(
 		println!("Health:    UNHEALTHY (HTTP {health_status_code})");
 	}
 
-	if let Some(uptime) = health.get("uptime_secs").and_then(|v| v.as_i64()) {
-		println!("Uptime:    {}", format_duration(uptime));
+	println!("Uptime:    {}", format_duration(uptime_secs));
+
+	match last_activity_secs_ago {
+		Some(last) => println!("Last tick: {last}s ago"),
+		None => println!("Last tick: (none yet)"),
 	}
 
-	if let Some(last) = health
-		.get("last_activity_secs_ago")
-		.and_then(|v| v.as_i64())
-	{
-		println!("Last tick: {last}s ago");
-	} else {
-		println!("Last tick: (none yet)");
-	}
-
-	if let Some(timeout) = health.get("watchdog_timeout_secs").and_then(|v| v.as_u64()) {
-		println!("Watchdog:  {}", format_duration(timeout as i64));
-	} else {
-		println!("Watchdog:  disabled");
+	match watchdog_timeout_secs {
+		Some(timeout) => println!("Watchdog:  {}", format_duration(timeout as i64)),
+		None => println!("Watchdog:  disabled"),
 	}
 
 	if backups_configured.is_empty() {
