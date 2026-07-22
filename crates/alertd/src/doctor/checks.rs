@@ -20,6 +20,7 @@ pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_version;
 pub mod caddyfile_version;
+pub mod canopy_registration;
 pub mod certificate_notification_errors;
 pub mod db_connect;
 pub mod db_version;
@@ -282,6 +283,9 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("http_errors", http_errors, host),
 		entry!("tailscale", tailscale, host, off_wire),
 		entry!("tailscale_config", tailscale_config, host),
+		// bestool's own Canopy enrolment: runs regardless of Tamanu, and reports so
+		// Canopy sees an incomplete registration before it blocks backups.
+		entry!("canopy_registration", canopy_registration, host),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
