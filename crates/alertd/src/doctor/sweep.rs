@@ -241,7 +241,10 @@ pub async fn perform_sweep(
 	// for a database-only host), kept for the wire payload after `tamanu_ctx` is
 	// moved into the check context below. The server kind and (when there's a
 	// real install) its root go into the top-level status facts too.
-	let resolved_version = tamanu_ctx.as_ref().map(|c| c.tamanu_version.clone());
+	let resolved_version = tamanu_ctx
+		.as_ref()
+		.filter(|c| c.is_tamanu)
+		.map(|c| c.tamanu_version.clone());
 	let tamanu_server_kind = tamanu_ctx
 		.as_ref()
 		.filter(|c| c.is_tamanu)
@@ -330,13 +333,11 @@ pub async fn perform_sweep(
 	// `binary_version` is the running binary's (bestool's) version, threaded in
 	// by the caller. Evaluating `env!("CARGO_PKG_VERSION")` here would resolve
 	// to this library's version instead, which is the wrong answer for the wire
-	// payload. On hosts with no Tamanu, `0.0.0` is the agreed sentinel — canopy
-	// requires a version on every payload and request. A database-only host
-	// reports the version resolved from its DB rather than the sentinel.
-	let tamanu_version = resolved_version
-		.map(|v| v.to_string())
-		.unwrap_or_else(|| "0.0.0".into());
-	let info = server_info::gather(binary_version, &tamanu_version, facts).await;
+	// payload. On hosts with no Tamanu (including generic-database-only hosts),
+	// `tamanuVersion` is omitted from the payload entirely. A Tamanu
+	// database-only host reports the version resolved from its DB.
+	let tamanu_version = resolved_version.map(|v| v.to_string());
+	let info = server_info::gather(binary_version, tamanu_version, facts).await;
 	let info_value = serde_json::to_value(&info).into_diagnostic()?;
 
 	let overall =
@@ -497,8 +498,8 @@ mod tests {
 		};
 		assert_eq!(result_of("tamanu_http"), "skipped");
 		assert_ne!(result_of("memory"), "skipped");
-		// The 0.0.0 sentinel marks "no Tamanu" on the wire.
-		assert_eq!(sweep.payload["tamanuVersion"], "0.0.0");
+		// No Tamanu means no tamanuVersion on the wire at all.
+		assert!(sweep.payload.get("tamanuVersion").is_none());
 	}
 
 	#[test]

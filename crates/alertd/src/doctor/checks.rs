@@ -213,12 +213,9 @@ macro_rules! entry {
 				Box::pin(async move {
 					match ctx.tamanu {
 						Some(tamanu) if tamanu.is_tamanu => $module::run(tamanu).await,
-						Some(_) => Check::skip(
-							$name,
-							"no Tamanu on this host",
-							"check needs a Tamanu deployment; this host only has a generic database (DATABASE_URL)",
-						),
-						None => Check::skip(
+						// A generic (non-Tamanu) database context skips for the same
+						// reason as no context at all: there's no Tamanu here.
+						_ => Check::skip(
 							$name,
 							"no Tamanu on this host",
 							"check needs a Tamanu deployment, and this host has none",
