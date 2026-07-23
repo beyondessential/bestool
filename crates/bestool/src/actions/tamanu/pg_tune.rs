@@ -7,7 +7,9 @@
 //! checked against the server's own accepted range before anything is written,
 //! so a value PostgreSQL would reject never reaches the file — otherwise a
 //! later restart, ours or an unrelated reboot, would fail to start the server.
-//! It then reloads PostgreSQL so the reloadable settings take effect
+//! It also disables bottom-up ASLR for the PostgreSQL executables, the
+//! mitigation for the Windows "could not reattach to shared memory" startup
+//! crash. It then reloads PostgreSQL so the reloadable settings take effect
 //! immediately, and only when some settings still need a restart does it offer
 //! to restart PostgreSQL and then the Tamanu workloads.
 //!
@@ -136,6 +138,8 @@ pub async fn run(args: PgTuneArgs, ctx: Context) -> Result<()> {
 		info!("dry run: not writing {}", conf_path.display());
 		return Ok(());
 	}
+
+	ensure_bottom_up_aslr_disabled().await;
 
 	if updated == existing {
 		info!("already tuned; postgresql.conf is unchanged");
@@ -361,6 +365,42 @@ async fn reload_pg(data_dir: &Path) -> Result<()> {
 		);
 	}
 	Ok(())
+}
+
+/// Disable bottom-up ASLR for the PostgreSQL executables — the documented
+/// mitigation for the Windows "could not reattach to shared memory" startup
+/// crash, where a forked child can't map the shared memory segment at the
+/// address the postmaster used because ASLR relocated something into it.
+/// Idempotent and best-effort: a failure warns rather than aborting, since the
+/// tuning itself has already been applied.
+async fn ensure_bottom_up_aslr_disabled() {
+	// -ErrorAction Stop turns a cmdlet error into a terminating one, so a
+	// failure shows up as a non-zero exit rather than a note on stdout.
+	let script = "$ErrorActionPreference = 'Stop'; \
+		Set-ProcessMitigation -Name postgres.exe -Disable BottomUp; \
+		Set-ProcessMitigation -Name pg_ctl.exe -Disable BottomUp";
+	match run_powershell(script).await {
+		Ok(output) if output.status.success() => {
+			info!("disabled bottom-up ASLR for postgres.exe and pg_ctl.exe");
+		}
+		Ok(output) => warn!(
+			"could not disable bottom-up ASLR for PostgreSQL (see the runbook): {}",
+			String::from_utf8_lossy(&output.stderr).trim()
+		),
+		Err(err) => {
+			warn!(%err, "could not run Set-ProcessMitigation to disable bottom-up ASLR (see the runbook)");
+		}
+	}
+}
+
+/// Run a PowerShell one-liner and capture its output.
+async fn run_powershell(script: &str) -> Result<std::process::Output> {
+	tokio::process::Command::new("powershell")
+		.args(["-NoProfile", "-NonInteractive", "-Command", script])
+		.output()
+		.await
+		.into_diagnostic()
+		.wrap_err("running powershell")
 }
 
 /// The names of settings that changed but need a full restart to take effect,
