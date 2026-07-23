@@ -3,10 +3,13 @@
 //! On Linux this tuning is applied by configuration management; this command is
 //! the Windows equivalent. It finds the PostgreSQL install, computes the tuning
 //! from the host's resources (via the shared pgtune module), writes it as a
-//! managed block at the end of `postgresql.conf`, and reloads PostgreSQL so the
-//! reloadable settings take effect immediately. Only when some settings still
-//! need a full restart does it offer to restart PostgreSQL and then the Tamanu
-//! workloads.
+//! managed block at the end of `postgresql.conf`. Every computed value is
+//! checked against the server's own accepted range before anything is written,
+//! so a value PostgreSQL would reject never reaches the file — otherwise a
+//! later restart, ours or an unrelated reboot, would fail to start the server.
+//! It then reloads PostgreSQL so the reloadable settings take effect
+//! immediately, and only when some settings still need a restart does it offer
+//! to restart PostgreSQL and then the Tamanu workloads.
 //!
 //! Windows-only: the whole module is compile-gated at its declaration.
 
@@ -20,7 +23,7 @@ use miette::{IntoDiagnostic as _, Result, WrapErr as _, bail};
 use sysinfo::{Disks, MemoryRefreshKind, RefreshKind, System};
 use tracing::{info, warn};
 
-use bestool_postgres::pgtune::{self, HostResources, Platform, TuneInputs, conf_block};
+use bestool_postgres::pgtune::{self, HostResources, Platform, Setting, TuneInputs, conf_block};
 
 use crate::actions::{
 	Context,
@@ -139,6 +142,27 @@ pub async fn run(args: PgTuneArgs, ctx: Context) -> Result<()> {
 		return Ok(());
 	}
 
+	let db_url = config.database_url();
+
+	// Validate every computed value against the server's own accepted domain
+	// before writing anything: a value PostgreSQL would reject must never reach
+	// postgresql.conf, or a later restart — ours or an unrelated reboot — would
+	// stop the server from starting. If we can't check (server unreachable),
+	// don't write: better left untuned than a config we can't vouch for.
+	match validate_settings(&db_url, &settings).await {
+		Ok(problems) if problems.is_empty() => {
+			info!("validated the tuning against PostgreSQL's accepted ranges");
+		}
+		Ok(problems) => bail!(
+			"PostgreSQL would reject the computed tuning, so nothing was written: {}",
+			problems.join("; ")
+		),
+		Err(err) => {
+			return Err(err)
+				.wrap_err("could not validate the tuning against PostgreSQL, so nothing was written");
+		}
+	}
+
 	write_atomically(&conf_path, &updated)?;
 	info!("wrote tuning to {}", conf_path.display());
 
@@ -168,7 +192,7 @@ pub async fn run(args: PgTuneArgs, ctx: Context) -> Result<()> {
 		// pg_ctl reload only signals the postmaster; give it a moment to re-read
 		// the files before asking which settings are still pending a restart.
 		tokio::time::sleep(Duration::from_secs(1)).await;
-		let pending = pending_restart_settings(&config.database_url()).await;
+		let pending = pending_restart_settings(&db_url).await;
 		if pending.is_empty() {
 			info!("no restart needed; every changed setting is now in effect");
 			return Ok(());
@@ -368,6 +392,173 @@ async fn pending_restart_settings(database_url: &str) -> Vec<String> {
 			Vec::new()
 		}
 	}
+}
+
+/// Confirm PostgreSQL will accept every computed setting, by checking each value
+/// against the server's own declared type, range, and allowed values in
+/// `pg_settings` — the same domain the config-file loader enforces at startup.
+/// Returns a human-readable reason for each value that fails; an empty list
+/// means all are in bounds.
+///
+/// Reads only `pg_settings`, so it needs no superuser and works as the Tamanu
+/// application role. Errors (rather than returning problems) when the server
+/// can't be reached, so the caller can decline to write a config it couldn't
+/// vouch for.
+async fn validate_settings(database_url: &str, settings: &[Setting]) -> Result<Vec<String>> {
+	let client = bestool_postgres::pool::connect_one(database_url, "bestool-pg-tune")
+		.await
+		.wrap_err("connecting to PostgreSQL to validate the tuning")?;
+
+	let mut problems = Vec::new();
+	for setting in settings {
+		let row = client
+			.query_opt(
+				"SELECT vartype, unit, min_val, max_val, enumvals FROM pg_settings WHERE name = $1",
+				&[&setting.key],
+			)
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("querying pg_settings for {}", setting.key))?;
+
+		let Some(row) = row else {
+			problems.push(format!("{}: unrecognised parameter", setting.key));
+			continue;
+		};
+
+		let vartype: String = row.get("vartype");
+		let unit: Option<String> = row.get("unit");
+		let min_val: Option<String> = row.get("min_val");
+		let max_val: Option<String> = row.get("max_val");
+		let enumvals: Option<Vec<String>> = row.get("enumvals");
+
+		if let Err(why) = check_value(
+			&vartype,
+			unit.as_deref(),
+			min_val.as_deref(),
+			max_val.as_deref(),
+			enumvals.as_deref(),
+			&setting.value,
+		) {
+			problems.push(format!("{} = {}: {why}", setting.key, setting.value));
+		}
+	}
+	Ok(problems)
+}
+
+/// Whether `value` is acceptable for a parameter described by this `pg_settings`
+/// metadata, mirroring the checks PostgreSQL runs when it loads a value from
+/// postgresql.conf. Returns the reason on failure.
+fn check_value(
+	vartype: &str,
+	unit: Option<&str>,
+	min_val: Option<&str>,
+	max_val: Option<&str>,
+	enumvals: Option<&[String]>,
+	value: &str,
+) -> Result<(), String> {
+	match vartype {
+		"bool" => parse_bool(value).map(|_| ()).ok_or_else(|| "not a boolean".into()),
+		"enum" => {
+			let allowed = enumvals.unwrap_or_default();
+			if allowed.iter().any(|v| v.eq_ignore_ascii_case(value.trim())) {
+				Ok(())
+			} else {
+				Err(format!("not one of: {}", allowed.join(", ")))
+			}
+		}
+		"integer" => match normalise_number(value, unit) {
+			Some(n) => check_range(n, min_val, max_val),
+			None => Err("not a valid amount".into()),
+		},
+		"real" => match value.trim().parse::<f64>() {
+			Ok(n) => check_range(n, min_val, max_val),
+			Err(_) => Err("not a number".into()),
+		},
+		// The tuner emits no string parameters; leave anything else to PostgreSQL.
+		_ => Ok(()),
+	}
+}
+
+/// A numeric value expressed in `unit`, so it can be compared with the
+/// `pg_settings` min_val/max_val (which are in that unit). Handles unitless
+/// numbers and the memory units the tuner emits (`kB`/`MB`/`GB`); returns `None`
+/// for anything it can't confidently convert.
+fn normalise_number(value: &str, unit: Option<&str>) -> Option<f64> {
+	match unit.map(str::trim).filter(|u| !u.is_empty()) {
+		None => value.trim().parse().ok(),
+		Some(unit) => {
+			let per_unit = memory_unit_bytes(unit)?;
+			let bytes = parse_memory_bytes(value)?;
+			Some(bytes as f64 / per_unit as f64)
+		}
+	}
+}
+
+/// Whether `n` sits within the optional bounds parsed from `pg_settings`.
+fn check_range(n: f64, min_val: Option<&str>, max_val: Option<&str>) -> Result<(), String> {
+	if let Some(min) = min_val.and_then(|m| m.trim().parse::<f64>().ok())
+		&& n < min
+	{
+		return Err(format!("below the minimum of {min}"));
+	}
+	if let Some(max) = max_val.and_then(|m| m.trim().parse::<f64>().ok())
+		&& n > max
+	{
+		return Err(format!("above the maximum of {max}"));
+	}
+	Ok(())
+}
+
+/// Parse a PostgreSQL boolean literal.
+fn parse_bool(value: &str) -> Option<bool> {
+	match value.trim().to_ascii_lowercase().as_str() {
+		"on" | "true" | "yes" | "1" => Some(true),
+		"off" | "false" | "no" | "0" => Some(false),
+		_ => None,
+	}
+}
+
+/// Parse a memory quantity like `4GB`, `64MB`, or `512kB` into bytes, matching
+/// PostgreSQL's binary (1024-based) memory units.
+fn parse_memory_bytes(value: &str) -> Option<u64> {
+	let value = value.trim();
+	let (digits, factor) = if let Some(n) = value.strip_suffix("TB") {
+		(n, 1024u64.pow(4))
+	} else if let Some(n) = value.strip_suffix("GB") {
+		(n, 1024u64.pow(3))
+	} else if let Some(n) = value.strip_suffix("MB") {
+		(n, 1024u64.pow(2))
+	} else if let Some(n) = value.strip_suffix("kB") {
+		(n, 1024)
+	} else if let Some(n) = value.strip_suffix('B') {
+		(n, 1)
+	} else {
+		return None;
+	};
+	digits.trim().parse::<u64>().ok().map(|n| n * factor)
+}
+
+/// Bytes per unit for a `pg_settings` memory `unit` such as `8kB`, `kB`, or `MB`
+/// (an optional leading multiplier and a memory suffix). `None` for non-memory
+/// units, which the tuner never emits.
+fn memory_unit_bytes(unit: &str) -> Option<u64> {
+	let unit = unit.trim();
+	let split = unit.find(|c: char| !c.is_ascii_digit()).unwrap_or(unit.len());
+	let (multiplier, suffix) = unit.split_at(split);
+	let multiplier: u64 = if multiplier.is_empty() {
+		1
+	} else {
+		multiplier.parse().ok()?
+	};
+	let base = match suffix {
+		"B" => 1,
+		"kB" => 1024,
+		"MB" => 1024u64.pow(2),
+		"GB" => 1024u64.pow(3),
+		"TB" => 1024u64.pow(4),
+		_ => return None,
+	};
+	Some(multiplier * base)
 }
 
 /// Whether this host is production, from its Tailscale device name containing
@@ -579,6 +770,36 @@ mod tests {
 	fn no_install_errors() {
 		let tmp = tempfile::tempdir().unwrap();
 		assert!(pick_data_dir(tmp.path()).is_err());
+	}
+
+	#[test]
+	fn parses_memory_quantities_and_units() {
+		assert_eq!(parse_memory_bytes("4GB"), Some(4 * 1024 * 1024 * 1024));
+		assert_eq!(parse_memory_bytes("64MB"), Some(64 * 1024 * 1024));
+		assert_eq!(parse_memory_bytes("512kB"), Some(512 * 1024));
+		assert_eq!(parse_memory_bytes("nonsense"), None);
+
+		assert_eq!(memory_unit_bytes("8kB"), Some(8 * 1024));
+		assert_eq!(memory_unit_bytes("kB"), Some(1024));
+		assert_eq!(memory_unit_bytes("MB"), Some(1024 * 1024));
+		assert_eq!(memory_unit_bytes("ms"), None);
+	}
+
+	#[test]
+	fn checks_values_against_metadata() {
+		// A memory value inside shared_buffers' range (unit is 8kB blocks).
+		assert!(check_value("integer", Some("8kB"), Some("16"), Some("1073741823"), None, "4GB").is_ok());
+		// Below the minimum.
+		assert!(check_value("integer", Some("8kB"), Some("16"), Some("1073741823"), None, "64kB").is_err());
+		// A unitless integer above its maximum.
+		assert!(check_value("integer", Some(""), Some("1"), Some("262143"), None, "999999").is_err());
+		// Enum membership is case-insensitive.
+		let huge = ["off".to_string(), "on".to_string(), "try".to_string()];
+		assert!(check_value("enum", None, None, None, Some(&huge), "try").is_ok());
+		assert!(check_value("enum", None, None, None, Some(&huge), "maybe").is_err());
+		// Reals are range-checked too.
+		assert!(check_value("real", Some(""), Some("0"), Some("1"), None, "0.9").is_ok());
+		assert!(check_value("real", Some(""), Some("0"), Some("1"), None, "1.5").is_err());
 	}
 
 	#[test]
