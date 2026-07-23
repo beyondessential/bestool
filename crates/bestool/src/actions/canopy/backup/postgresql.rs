@@ -137,7 +137,7 @@ async fn snapshot_prepared(
 		}
 		#[cfg(windows)]
 		Strategy::Vss => {
-			let (path, shadow) = vss::prepare(resolved, need).await?;
+			let (path, shadow) = vss::prepare(resolved, backup_type, need).await?;
 			(path, Teardown::Vss(shadow))
 		}
 		#[cfg(not(windows))]

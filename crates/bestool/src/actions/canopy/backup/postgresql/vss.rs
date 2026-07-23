@@ -1,15 +1,21 @@
 //! Crash-consistent Windows VSS shadow-copy snapshot of a postgres cluster.
 //!
 //! Creates a persistent, client-accessible shadow copy of the volume the data
-//! directory lives on via WMI (`Win32_ShadowCopy.Create`), and hands kopia the
-//! shadow's `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN` device path
-//! directly — no `diskshadow` script, no mount/expose folder. `ClientAccessible`
-//! engages no writers, so the shadow is crash-consistent and restores by plain
-//! crash recovery, the same clean-restore property as the btrfs/LVM backends.
+//! directory lives on via WMI (`Win32_ShadowCopy.Create`), then mounts it at a
+//! **stable** per-backup-type folder (`<vol>\bestool-backup-shadow\<type>`) via a
+//! directory junction and hands kopia that path — no `diskshadow` script.
+//! `ClientAccessible` engages no writers, so the shadow is crash-consistent and
+//! restores by plain crash recovery, the same clean-restore property as the
+//! btrfs/LVM backends.
+//!
+//! The junction keeps the kopia source path fixed across runs even though each
+//! shadow's raw device path (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN`)
+//! changes. That stability is what lets kopia's per-source cache skip unchanged
+//! files instead of re-reading the whole cluster every run.
 //!
 //! VSS needs Administrator (the daemon runs as a service). This module is only
-//! compiled on Windows (the strategy only resolves to VSS there). The WMI
-//! orchestration is exercised end-to-end on a real Windows host by CI
+//! compiled on Windows (the strategy only resolves to VSS there). The WMI +
+//! junction orchestration is exercised end-to-end on a real Windows host by CI
 //! (`vss / wmi e2e`); the pure path helpers are unit-tested here.
 
 use std::path::{Path, PathBuf};
@@ -26,6 +32,8 @@ use super::resolve::ResolvedCluster;
 pub struct Shadow {
 	/// The shadow's `{GUID}` id, for deletion.
 	id: String,
+	/// The junction mounting the shadow, to unmount on teardown.
+	junction: PathBuf,
 }
 
 /// The directory the backup captures. On the EDB layout the whole server install
@@ -59,13 +67,30 @@ fn relative_to_volume<'a>(data_dir: &'a str, volume: &str) -> &'a str {
 		.trim_start_matches(['\\', '/'])
 }
 
-/// Take the shadow copy; returns the kopia source path (the shadow device path
-/// plus the data dir's relative path) and the teardown state. The caller must
-/// always pass the result to [`teardown`].
-pub async fn prepare(resolved: &ResolvedCluster, need: Option<u64>) -> Result<(PathBuf, Shadow)> {
+/// The stable folder the shadow is mounted at, per backup type (on the data
+/// volume). Fixed across runs — matching the pre-WMI diskshadow layout — so the
+/// kopia source path is stable and kopia's incremental cache keeps working.
+fn expose_target_dir(volume: &str, backup_type: &str) -> String {
+	format!("{volume}\\bestool-backup-shadow\\{backup_type}")
+}
+
+/// The kopia source path within the mounted shadow.
+fn kopia_source(expose_target: &str, rel: &str) -> String {
+	format!("{expose_target}\\{rel}")
+}
+
+/// Take the shadow copy and mount it at the stable folder; returns the kopia
+/// source path and the teardown state. The caller must always pass the result to
+/// [`teardown`].
+pub async fn prepare(
+	resolved: &ResolvedCluster,
+	backup_type: &str,
+	need: Option<u64>,
+) -> Result<(PathBuf, Shadow)> {
 	let root = backup_root(&resolved.data_dir).to_string_lossy().into_owned();
 	let volume = volume_of(&root)?.to_owned();
 	let rel = relative_to_volume(&root, &volume).to_owned();
+	let expose_target = expose_target_dir(&volume, backup_type);
 
 	// The shadow's copy-on-write area needs room on its storage volume; if it's
 	// nearly full the shadow gets dropped mid-backup, so refuse up front.
@@ -80,28 +105,66 @@ pub async fn prepare(resolved: &ResolvedCluster, need: Option<u64>) -> Result<(P
 		);
 	}
 
-	info!(%volume, "creating VSS shadow copy via WMI");
-	// WMI/COM is thread-affine and `!Send`, so create the shadow on a blocking thread.
-	let created = tokio::task::spawn_blocking(move || create_client_accessible(&volume))
-		.await
-		.into_diagnostic()
-		.wrap_err("joining the VSS shadow-create task")??;
+	info!(%volume, %expose_target, "creating VSS shadow copy via WMI");
+	// WMI/COM is thread-affine and `!Send`, and the junction is blocking fs work,
+	// so do the create + mount on a blocking thread.
+	let junction = PathBuf::from(&expose_target);
+	let shadow_id = tokio::task::spawn_blocking({
+		let junction = junction.clone();
+		move || -> Result<String> {
+			let created = create_client_accessible(&volume)?;
+			if let Err(err) = mount_shadow(&created.device, &junction) {
+				// Don't leak the shadow if the mount fails.
+				let _ = delete_shadow(&created.id);
+				return Err(err);
+			}
+			Ok(created.id)
+		}
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the VSS shadow task")??;
 
-	let source = PathBuf::from(format!("{}\\{rel}", created.device));
-	info!(shadow = %created.id, source = %source.display(), "VSS shadow ready");
-	Ok((source, Shadow { id: created.id }))
+	let source = PathBuf::from(kopia_source(&expose_target, &rel));
+	info!(shadow = %shadow_id, source = %source.display(), "VSS shadow ready");
+	Ok((source, Shadow { id: shadow_id, junction }))
 }
 
-/// Release a prepared shadow: delete the shadow copy. Best-effort — a cleanup
-/// failure is warned, not fatal (the backup itself already succeeded).
+/// Release a prepared shadow: unmount the junction and delete the shadow copy.
+/// Best-effort — a cleanup failure is warned, not fatal (the backup itself
+/// already succeeded).
 pub async fn teardown(shadow: Shadow) -> Result<()> {
-	let id = shadow.id;
-	match tokio::task::spawn_blocking(move || delete_shadow(&id)).await {
+	let Shadow { id, junction } = shadow;
+	match tokio::task::spawn_blocking(move || {
+		// Remove the mount point (the junction, not the shadow contents), then the
+		// shadow itself.
+		let _ = std::fs::remove_dir(&junction);
+		delete_shadow(&id)
+	})
+	.await
+	{
 		Ok(Ok(())) => {}
 		Ok(Err(err)) => warn!("deleting VSS shadow failed: {err}"),
 		Err(err) => warn!("VSS shadow-delete task panicked: {err}"),
 	}
 	Ok(())
+}
+
+/// Mount a shadow's device path at `junction` (a directory junction), creating
+/// the parent and clearing any stale mount left by a crashed run first —
+/// `junction::create` needs the link path not to exist yet.
+fn mount_shadow(device: &str, junction: &Path) -> Result<()> {
+	if let Some(parent) = junction.parent() {
+		std::fs::create_dir_all(parent)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("creating {}", parent.display()))?;
+	}
+	// A leftover junction/dir here makes `junction::create` fail; remove it. On a
+	// junction this unmounts (doesn't touch the shadow); best-effort.
+	let _ = std::fs::remove_dir(junction);
+	junction::create(device, junction)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("junctioning {} to {device}", junction.display()))
 }
 
 /// A freshly-created shadow: its id (for deletion) and device path (for reading).
@@ -241,18 +304,24 @@ mod tests {
 	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI
 	/// job). Ignored by default because it needs those and isn't hermetic.
 	///
-	/// Creates a client-accessible shadow of the system drive, reads a marker back
-	/// through the shadow's `\\?\GLOBALROOT` device path, and — when `KOPIA_BIN` is
-	/// set — has kopia snapshot that device path (the real question: does Go/kopia
-	/// read the GLOBALROOT namespace). A drop guard deletes the shadow even if an
-	/// assertion panics.
+	/// Exercises the production path: create a client-accessible shadow of the
+	/// system drive, **mount it via a junction** at a stable folder, read a marker
+	/// back through the junction, and — when `KOPIA_BIN` is set — have kopia
+	/// snapshot the junction path (the real questions: does a junction to a
+	/// `\\?\GLOBALROOT` shadow work, and does Go/kopia read through it). A drop
+	/// guard unmounts the junction and deletes the shadow even if an assertion
+	/// panics.
 	#[test]
 	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
 	fn wmi_shadow_roundtrip() {
-		struct ShadowGuard(String);
-		impl Drop for ShadowGuard {
+		struct Guard {
+			id: String,
+			junction: PathBuf,
+		}
+		impl Drop for Guard {
 			fn drop(&mut self) {
-				let _ = delete_shadow(&self.0);
+				let _ = std::fs::remove_dir(&self.junction);
+				let _ = delete_shadow(&self.id);
 			}
 		}
 
@@ -263,16 +332,21 @@ mod tests {
 		std::fs::write(dir.join("marker.txt"), b"vss-wmi-ok").expect("write marker");
 
 		let created = create_client_accessible(&drive).expect("create shadow via WMI");
-		let guard = ShadowGuard(created.id.clone());
-		println!("shadow {} at {}", created.id, created.device);
+		let mount = PathBuf::from(format!("{drive}\\bestool-vsswmi-mount-{}", std::process::id()));
+		mount_shadow(&created.device, &mount).expect("mount shadow via junction");
+		let guard = Guard {
+			id: created.id.clone(),
+			junction: mount.clone(),
+		};
+		println!("shadow {} at {} mounted at {}", created.id, created.device, mount.display());
 
-		let shadow_dir = format!("{}\\{leaf}", created.device);
-		let content =
-			std::fs::read(format!("{shadow_dir}\\marker.txt")).expect("read marker via device path");
-		assert_eq!(content, b"vss-wmi-ok", "marker content via shadow device path");
+		// Read the marker back through the junction (not the raw device path).
+		let via = mount.join(&leaf).join("marker.txt");
+		let content = std::fs::read(&via).expect("read marker through the junction");
+		assert_eq!(content, b"vss-wmi-ok", "marker content via the junction");
 
 		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
-			kopia_snapshot(Path::new(&kopia), &shadow_dir);
+			kopia_snapshot(Path::new(&kopia), &mount.join(&leaf).to_string_lossy());
 		} else {
 			println!("KOPIA_BIN unset; skipped the kopia snapshot check");
 		}
