@@ -256,6 +256,61 @@ const SETTINGS_QUERY: &str = "
 		current_setting('server_version_num')::bigint          AS server_version_num
 ";
 
+/// On Windows, warn when bottom-up ASLR is still enabled for the PostgreSQL
+/// executables — the missing "could not reattach to shared memory" mitigation
+/// that `bestool tamanu pg-tune` applies. Warn-only, and silent when the state
+/// can't be read, so a health sweep never alarms on a guess. A no-op elsewhere.
+#[cfg(windows)]
+async fn bottom_up_aslr_findings() -> Vec<Finding> {
+	let exes = ["postgres.exe", "pg_ctl.exe"];
+	let script = exes
+		.iter()
+		.map(|exe| format!("(Get-ProcessMitigation -Name '{exe}').Aslr.BottomUp"))
+		.collect::<Vec<_>>()
+		.join("; ");
+
+	let output = match tokio::process::Command::new("powershell")
+		.args(["-NoProfile", "-NonInteractive", "-Command", &script])
+		.output()
+		.await
+	{
+		Ok(output) if output.status.success() => output,
+		_ => return Vec::new(),
+	};
+
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	stdout
+		.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.zip(exes)
+		.filter(|&(line, _)| parse_bottom_up(line) == Some(false))
+		.map(|(_, exe)| Finding {
+			severity: Severity::Warn,
+			message: format!(
+				"bottom-up ASLR is still enabled for {exe} — risks the \"could not reattach to shared memory\" crash on start; disable it (bestool tamanu pg-tune does)"
+			),
+		})
+		.collect()
+}
+
+#[cfg(not(windows))]
+async fn bottom_up_aslr_findings() -> Vec<Finding> {
+	Vec::new()
+}
+
+/// Map the `Aslr.BottomUp` value Get-ProcessMitigation prints (`ON`/`OFF`/
+/// `NOTSET`) to whether the mitigation is disabled (`OFF`). `None` for anything
+/// unexpected, so the caller stays quiet rather than warning on a guess.
+#[cfg(windows)]
+fn parse_bottom_up(value: &str) -> Option<bool> {
+	match value.trim().to_ascii_uppercase().as_str() {
+		"OFF" => Some(true),
+		"ON" | "NOTSET" => Some(false),
+		_ => None,
+	}
+}
+
 pub async fn run(ctx: CheckContext) -> Check {
 	if !is_local(ctx.config.db.host.as_deref()) {
 		return Check::skip(
@@ -303,7 +358,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	let pg_major = (settings.server_version_num / 10000).max(0) as u32;
-	let findings = assess(&settings, total_ram, Platform::current(), pg_major);
+	let mut findings = assess(&settings, total_ram, Platform::current(), pg_major);
+	findings.extend(bottom_up_aslr_findings().await);
 
 	let summary = match findings.len() {
 		0 => "appears tuned".to_string(),
@@ -590,6 +646,16 @@ mod tests {
 			check.status.wire_result(),
 			check.status.reason().unwrap_or_default(),
 		);
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn parses_bottom_up_aslr_state() {
+		assert_eq!(parse_bottom_up("OFF"), Some(true));
+		assert_eq!(parse_bottom_up("off\r\n"), Some(true));
+		assert_eq!(parse_bottom_up("ON"), Some(false));
+		assert_eq!(parse_bottom_up("NOTSET"), Some(false));
+		assert_eq!(parse_bottom_up("wat"), None);
 	}
 
 	#[test]
