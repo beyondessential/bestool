@@ -18,6 +18,7 @@ pub mod util;
 pub mod billing_tags;
 pub mod btrfs;
 pub mod caddy_certs;
+pub mod caddy_resolvers;
 pub mod caddy_version;
 pub mod caddyfile_version;
 pub mod canopy_registration;
@@ -298,6 +299,7 @@ pub fn all() -> Vec<CheckEntry> {
 		// `TAMANU_DATABASE_URL`-only host.
 		entry!("caddy_version", caddy_version, host),
 		entry!("caddy_certs", caddy_certs, host),
+		entry!("caddy_resolvers", caddy_resolvers, host),
 		// Tamanu-dependent: reads the Tamanu Caddyfile's version marker and needs
 		// the deployment's version to grade an outdated one. Windows-only and
 		// self-skips when caddy isn't present.
