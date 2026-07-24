@@ -13,7 +13,7 @@ use bestool_canopy::CanopyClient;
 use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
-use super::heal::HealOutcome;
+use super::heal::{self, HealAction, HealFn};
 
 pub mod util;
 
@@ -207,8 +207,18 @@ pub struct CheckEntry {
 	pub on_wire: bool,
 	pub run: fn(SweepContext) -> futures::future::BoxFuture<'static, Check>,
 	/// Optional self-heal action, run in the background by the daemon while the
-	/// check is not passing. See [`crate::doctor::heal`].
-	pub heal: Option<fn(SweepContext) -> futures::future::BoxFuture<'static, HealOutcome>>,
+	/// check is failing. See [`crate::doctor::heal`].
+	pub heal: Option<HealAction>,
+}
+
+impl CheckEntry {
+	/// Attach a self-heal action, run at most once per `min_interval` while the
+	/// check is failing. The `run` closure boxes the check module's `heal`
+	/// future, e.g. `|ctx| Box::pin(fhir_jobs::heal(ctx))`.
+	fn with_heal(mut self, run: HealFn, min_interval: std::time::Duration) -> Self {
+		self.heal = Some(HealAction { run, min_interval });
+		self
+	}
 }
 
 macro_rules! entry {
@@ -290,16 +300,6 @@ macro_rules! entry {
 			heal: None,
 		}
 	};
-	// Host-level check that also declares a background self-heal action: the
-	// module exposes a `heal(ctx)` alongside `run(ctx)`.
-	($name:literal, $module:ident, host, heal) => {
-		CheckEntry {
-			name: $name,
-			on_wire: true,
-			run: |ctx| Box::pin($module::run(ctx)),
-			heal: Some(|ctx| Box::pin($module::heal(ctx))),
-		}
-	};
 }
 
 /// Registry of every check the doctor knows how to run.
@@ -341,7 +341,10 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("tailscale_config", tailscale_config, host),
 		// bestool's own Canopy enrolment: runs regardless of Tamanu, and reports so
 		// Canopy sees an incomplete registration before it blocks backups.
-		entry!("canopy_registration", canopy_registration, host, heal),
+		entry!("canopy_registration", canopy_registration, host).with_heal(
+			|ctx| Box::pin(canopy_registration::heal(ctx)),
+			heal::DEFAULT_MIN_INTERVAL,
+		),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
@@ -361,7 +364,12 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("sync_sessions", sync_sessions),
 		// Config-derived: the FHIR API and worker toggles must agree.
 		entry!("fhir_config", fhir_config),
-		entry!("fhir_jobs", fhir_jobs),
+		// Restart the FHIR workers when the backlog check fails, capped at one
+		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
+		entry!("fhir_jobs", fhir_jobs).with_heal(
+			|ctx| Box::pin(fhir_jobs::heal(ctx)),
+			std::time::Duration::from_secs(60 * 60),
+		),
 		entry!(
 			"certificate_notification_errors",
 			certificate_notification_errors
