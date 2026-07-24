@@ -19,7 +19,7 @@ use serde_json::Value;
 use bestool_tamanu::server_info::load_cached_tags;
 
 use super::SweepContext;
-use crate::doctor::{check::Check, server_info::fetch_imds_tags};
+use crate::doctor::{Stat, check::Check, server_info::fetch_imds_tags};
 
 const CHECK_NAME: &str = "billing_tags";
 const BILLING_PREFIX: &str = "billing.";
@@ -145,6 +145,14 @@ impl Reconciliation {
 		check
 			.with_detail("missing", missing_detail)
 			.with_detail("mismatched", mismatched_detail)
+			.with_stat(
+				Stat::gauge("missing", self.missing.len() as f64)
+					.help("Billing tags missing from IMDS"),
+			)
+			.with_stat(
+				Stat::gauge("mismatched", self.mismatched.len() as f64)
+					.help("Billing tags disagreeing with canopy"),
+			)
 	}
 }
 

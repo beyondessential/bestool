@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio_postgres::{Client as PgClient, types::ToSql};
 
 use super::query_error_check;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 /// Rows reported in `details` are capped here; one extra row is fetched to
@@ -97,8 +98,12 @@ pub async fn tiered_rows_check(
 				set.rows.len()
 			};
 			let count = set.count();
+			// Emit the count as a metric on every tier, including pass; the query
+			// caps at REPORT_CAP+1, so the gauge saturates at 101.
+			let count_stat =
+				Stat::gauge("count", n as f64).help("Matching error rows (capped at 101)");
 			if n < warn_min {
-				return Check::pass(name, summary_pass.to_string());
+				return Check::pass(name, summary_pass.to_string()).with_stat(count_stat);
 			}
 			let summary = format!("{summary_prefix}{count}");
 			let reason = format!("{count} matching row(s)");
@@ -111,6 +116,7 @@ pub async fn tiered_rows_check(
 				.with_detail("rows", Value::Array(set.rows))
 				.with_detail("truncated", set.truncated)
 				.with_detail("count", count)
+				.with_stat(count_stat)
 		}
 		Err(err) => query_error_check(name, &err),
 	}

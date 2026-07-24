@@ -28,11 +28,28 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	// `pg_tables` for a missing schema simply yields 0 rows, so only the
-	// `sync_sessions` lookup can hit an undefined table.
+	// `sync_sessions` lookup can hit an undefined table. The `sizes` aggregate
+	// yields one row (NULL percentiles when the schema is empty), so this stays a
+	// single-row query.
 	let query = "
 		SELECT
 			(SELECT count(*) FROM pg_tables WHERE schemaname = 'sync_snapshots') AS table_count,
-			(SELECT count(*) FROM sync_sessions WHERE start_time > now() - interval '24 hours') AS sessions_24h
+			(SELECT count(*) FROM sync_sessions WHERE start_time > now() - interval '24 hours') AS sessions_24h,
+			sizes.p50,
+			sizes.p99,
+			sizes.total_bytes
+		FROM (
+			SELECT
+				percentile_cont(0.5) WITHIN GROUP (ORDER BY sz) AS p50,
+				percentile_cont(0.99) WITHIN GROUP (ORDER BY sz) AS p99,
+				coalesce(sum(sz), 0)::double precision AS total_bytes
+			FROM (
+				SELECT pg_total_relation_size(c.oid)::double precision AS sz
+				FROM pg_class c
+				JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname = 'sync_snapshots' AND c.relkind = 'r'
+			) t
+		) sizes
 	";
 
 	let row = match client.query_one(query, &[]).await {
@@ -49,6 +66,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let tables: i64 = row.try_get("table_count").unwrap_or(0);
 	let sessions: i64 = row.try_get("sessions_24h").unwrap_or(0);
+	// NULL when the schema is empty.
+	let p50: Option<f64> = row.try_get("p50").unwrap_or(None);
+	let p99: Option<f64> = row.try_get("p99").unwrap_or(None);
+	let total_bytes: Option<f64> = row.try_get("total_bytes").unwrap_or(None);
 
 	let summary = format!("{tables} snapshot table(s), {sessions} sync session(s)/24h");
 	let check = match classify(tables, sessions) {
@@ -56,13 +77,33 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Verdict::Warn(reason) => Check::warning(NAME, summary, reason),
 		Verdict::Fail(reason) => Check::fail(NAME, summary, reason),
 	};
-	check
+	let mut check = check
 		.with_detail("table_count", tables)
 		.with_detail("sessions_24h", sessions)
 		.with_stat(Stat::gauge("table_count", tables as f64).help("Leftover sync-snapshot tables"))
 		.with_stat(
 			Stat::gauge("sessions_24h", sessions as f64).help("Sync sessions in the last 24h"),
-		)
+		);
+	if let Some(p50) = p50 {
+		check = check.with_stat(
+			Stat::gauge("table_size_bytes", p50)
+				.label("quantile", "0.5")
+				.help("Snapshot-table size percentiles"),
+		);
+	}
+	if let Some(p99) = p99 {
+		check = check.with_stat(
+			Stat::gauge("table_size_bytes", p99)
+				.label("quantile", "0.99")
+				.help("Snapshot-table size percentiles"),
+		);
+	}
+	if let Some(total) = total_bytes {
+		check = check.with_stat(
+			Stat::gauge("total_size_bytes", total).help("Total size of all snapshot tables"),
+		);
+	}
+	check
 }
 
 enum Verdict {
