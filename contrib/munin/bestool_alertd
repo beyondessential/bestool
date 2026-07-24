@@ -1,0 +1,51 @@
+#!/bin/sh
+# Munin plugin for bestool-alertd: harvests the daemon's /metrics endpoint,
+# which serves munin-native output when asked with `Accept: text/x-munin`.
+#
+# Configuration (optional), in /etc/munin/plugin-conf.d/:
+#   [bestool_alertd]
+#   env.url http://[::1]:8271
+#
+# Activate by symlinking into /etc/munin/plugins/ and reloading munin-node. The
+# bestool deb does this automatically when munin-node is installed.
+
+set -eu
+
+accept='Accept: text/x-munin'
+
+# The daemon binds only the first loopback address it can (default [::1]:8271,
+# then 127.0.0.1:8271), so try IPv6 loopback first and fall back to IPv4 —
+# mirroring the daemon's own ordering. env.url pins a single base and skips the
+# probe.
+if [ -n "${url:-}" ]; then
+	bases="$url"
+else
+	bases="http://[::1]:8271 http://127.0.0.1:8271"
+fi
+
+# Fetch $1 (a path) from the first base that answers; print its body.
+fetch() {
+	for base in $bases; do
+		if body=$(curl -fsS -H "$accept" "$base$1" 2>/dev/null); then
+			printf '%s\n' "$body"
+			return 0
+		fi
+	done
+	return 1
+}
+
+case "${1:-}" in
+	autoconf)
+		if fetch /metrics >/dev/null 2>&1; then
+			echo yes
+		else
+			echo "no (bestool-alertd not reachable)"
+		fi
+		;;
+	config)
+		fetch "/metrics?config"
+		;;
+	*)
+		fetch /metrics
+		;;
+esac
