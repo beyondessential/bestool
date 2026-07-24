@@ -17,6 +17,7 @@ use bestool_tamanu::{
 };
 
 use super::CheckContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -162,11 +163,22 @@ fn evaluate_drift(
 		Check::pass("version_drift", summary)
 			.with_detail("expected", expected_summary)
 			.with_detail("instances", Value::Array(rows))
+			.with_stat(
+				Stat::gauge("running", total_running as f64).help("Expected containers running"),
+			)
+			.with_stat(Stat::gauge("drifted", 0.0).help("Containers on a stale version"))
 	} else {
+		let drifted_n = drifted.len();
 		let summary = format!("{} container(s) on a stale version", drifted.len());
 		Check::fail("version_drift", summary, drifted.join("; "))
 			.with_detail("expected", expected_summary)
 			.with_detail("instances", Value::Array(rows))
+			.with_stat(
+				Stat::gauge("running", total_running as f64).help("Expected containers running"),
+			)
+			.with_stat(
+				Stat::gauge("drifted", drifted_n as f64).help("Containers on a stale version"),
+			)
 	}
 }
 

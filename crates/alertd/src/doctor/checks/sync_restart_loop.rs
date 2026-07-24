@@ -7,6 +7,7 @@
 use serde_json::{Value, json};
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
@@ -52,9 +53,12 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	if warn.is_empty() && fail.is_empty() {
-		return Check::pass(NAME, "no sync restart loops");
+		return Check::pass(NAME, "no sync restart loops")
+			.with_stat(Stat::gauge("fail", 0.0).help("Facilities past the fail restart rate"))
+			.with_stat(Stat::gauge("warn", 0.0).help("Facilities past the warn restart rate"));
 	}
 
+	let (fail_n, warn_n) = (fail.len(), warn.len());
 	let summary = format!(
 		"sync restart loops: {} over {FAIL_RESTARTS}/hr, {} over {WARN_RESTARTS}/hr",
 		fail.len(),
@@ -66,6 +70,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Check::fail(NAME, summary, "facilities in sync restart loop")
 	};
 	check
+		.with_stat(Stat::gauge("fail", fail_n as f64).help("Facilities past the fail restart rate"))
+		.with_stat(Stat::gauge("warn", warn_n as f64).help("Facilities past the warn restart rate"))
 		.with_detail("fail", Value::Array(fail))
 		.with_detail("warn", Value::Array(warn))
 }
