@@ -8,6 +8,7 @@
 use serde_json::{Value, json};
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
@@ -77,9 +78,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	if warn.is_empty() && fail.is_empty() {
-		return Check::pass(NAME, "all facilities syncing");
+		return Check::pass(NAME, "all facilities syncing")
+			.with_stat(
+				Stat::gauge("fail", 0.0).help("Facilities past the fail staleness threshold"),
+			)
+			.with_stat(
+				Stat::gauge("warn", 0.0).help("Facilities past the warn staleness threshold"),
+			);
 	}
 
+	let (fail_n, warn_n) = (fail.len(), warn.len());
 	let summary = format!(
 		"stale sync: {} over {}m, {} over {}m",
 		fail.len(),
@@ -93,6 +101,12 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Check::fail(NAME, summary, "facility sync stale")
 	};
 	check
+		.with_stat(
+			Stat::gauge("fail", fail_n as f64).help("Facilities past the fail staleness threshold"),
+		)
+		.with_stat(
+			Stat::gauge("warn", warn_n as f64).help("Facilities past the warn staleness threshold"),
+		)
 		.with_detail("fail", Value::Array(fail))
 		.with_detail("warn", Value::Array(warn))
 }

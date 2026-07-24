@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::{CheckContext, fmt_chain};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const PING_URL: &str = "http://localhost/api/public/ping";
@@ -48,4 +49,5 @@ pub async fn run(ctx: CheckContext) -> Check {
 	check
 		.with_detail("url", PING_URL)
 		.with_detail("latency_ms", latency_ms)
+		.with_stat(Stat::gauge("latency_ms", latency_ms as f64).help("Ping response latency"))
 }
