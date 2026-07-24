@@ -57,7 +57,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	let version = parse_caddyfile_version(contents.lines().next().unwrap_or_default());
-	let strict_from = Version::parse(TAMANU_STRICT_FROM).expect("TAMANU_STRICT_FROM is valid semver");
+	let strict_from =
+		Version::parse(TAMANU_STRICT_FROM).expect("TAMANU_STRICT_FROM is valid semver");
 	let check = build_check(version, &ctx.tamanu_version, &strict_from);
 	match version {
 		Some(v) => check.with_detail("caddyfile_version", v),
@@ -171,8 +172,14 @@ mod tests {
 
 	#[test]
 	fn current_version_passes() {
-		assert_eq!(status(&build_check(Some(9), &v("2.50.0"), &strict())), "pass");
-		assert_eq!(status(&build_check(Some(9), &v("2.30.0"), &strict())), "pass");
+		assert_eq!(
+			status(&build_check(Some(9), &v("2.50.0"), &strict())),
+			"pass"
+		);
+		assert_eq!(
+			status(&build_check(Some(9), &v("2.30.0"), &strict())),
+			"pass"
+		);
 		assert_eq!(
 			status(&build_check(Some(10), &v("2.30.0"), &strict())),
 			"pass"
@@ -181,9 +188,15 @@ mod tests {
 
 	#[test]
 	fn outdated_fails_on_new_tamanu() {
-		assert_eq!(status(&build_check(Some(8), &v("2.50.0"), &strict())), "fail");
+		assert_eq!(
+			status(&build_check(Some(8), &v("2.50.0"), &strict())),
+			"fail"
+		);
 		// The 2.46.0 boundary itself is strict.
-		assert_eq!(status(&build_check(Some(8), &v("2.46.0"), &strict())), "fail");
+		assert_eq!(
+			status(&build_check(Some(8), &v("2.46.0"), &strict())),
+			"fail"
+		);
 	}
 
 	#[test]

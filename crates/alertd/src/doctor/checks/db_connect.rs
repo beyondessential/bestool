@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use super::{CheckContext, fmt_db_error};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 /// Connect latency above which the DB is treated as degraded.
@@ -46,6 +47,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.with_detail("db_host", host)
 		.with_detail("db_name", name)
 		.with_detail("latency_ms", latency_ms)
+		.with_stat(Stat::gauge("latency_ms", latency_ms as f64).help("Postgres connect latency"))
 }
 
 #[cfg(test)]

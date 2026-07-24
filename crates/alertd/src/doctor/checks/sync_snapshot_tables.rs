@@ -10,6 +10,7 @@
 use bestool_tamanu::ApiServerKind;
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const NAME: &str = "sync_snapshot_tables";
@@ -58,6 +59,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 	check
 		.with_detail("table_count", tables)
 		.with_detail("sessions_24h", sessions)
+		.with_stat(Stat::gauge("table_count", tables as f64).help("Leftover sync-snapshot tables"))
+		.with_stat(
+			Stat::gauge("sessions_24h", sessions as f64).help("Sync sessions in the last 24h"),
+		)
 }
 
 enum Verdict {

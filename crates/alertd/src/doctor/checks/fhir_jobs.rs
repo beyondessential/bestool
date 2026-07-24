@@ -10,6 +10,7 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const WARN_DEPTH: i64 = 200;
@@ -53,7 +54,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let active: i64 = row.try_get("active_depth").unwrap_or(0);
 	let oldest_active: Option<Timestamp> = row.try_get("oldest_active").ok();
 
-	let by_status_value = match client
+	let (by_status_value, by_status_counts) = match client
 		.query(
 			"SELECT status, count(*)::bigint AS n FROM fhir.jobs GROUP BY status",
 			&[],
@@ -62,14 +63,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 	{
 		Ok(rows) => {
 			let mut by: Map<String, Value> = Map::new();
+			let mut counts: Vec<(String, i64)> = Vec::new();
 			for row in rows {
 				let status: String = row.try_get("status").unwrap_or_default();
 				let n: i64 = row.try_get("n").unwrap_or(0);
-				by.insert(status, Value::from(n));
+				by.insert(status.clone(), Value::from(n));
+				counts.push((status, n));
 			}
-			Value::Object(by)
+			(Value::Object(by), counts)
 		}
-		Err(_) => Value::Object(Map::new()),
+		Err(_) => (Value::Object(Map::new()), Vec::new()),
 	};
 
 	let oldest_age_secs = oldest_active
@@ -103,11 +106,23 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let mut check = check
 		.with_detail("active_depth", active)
-		.with_detail("by_status", by_status_value);
+		.with_detail("by_status", by_status_value)
+		.with_stat(
+			Stat::gauge("active_depth", active as f64).help("Active FHIR jobs (not Errored)"),
+		)
+		.with_stats(by_status_counts.into_iter().map(|(status, n)| {
+			Stat::gauge("jobs", n as f64)
+				.label("status", status)
+				.help("FHIR jobs by status")
+		}));
 	if let Some(ts) = oldest_active {
 		check = check
 			.with_detail("oldest_active", ts.to_string())
-			.with_detail("oldest_active_age_secs", oldest_age_secs);
+			.with_detail("oldest_active_age_secs", oldest_age_secs)
+			.with_stat(
+				Stat::gauge("oldest_active_age_secs", oldest_age_secs as f64)
+					.help("Age of the oldest active FHIR job"),
+			);
 	}
 	check
 }

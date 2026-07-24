@@ -161,6 +161,7 @@ pub async fn run_with_shutdown(
 		let server_addrs = daemon_config.server_addrs.clone();
 		let watchdog_timeout = daemon_config.watchdog_timeout;
 		let backups = daemon_config.backups.clone();
+		let metrics = daemon_config.metrics.clone();
 		let binary_version = daemon_config.binary_version.clone();
 		tokio::spawn(async move {
 			http_server::start_server(
@@ -170,6 +171,7 @@ pub async fn run_with_shutdown(
 				&background_tasks_for_server,
 				control,
 				backups,
+				metrics,
 				binary_version,
 			)
 			.await;

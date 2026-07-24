@@ -82,6 +82,11 @@ pub struct DaemonConfig {
 	/// daemon's status so an operator can see what's backing up right now.
 	pub backups: Option<Arc<BackupRegistry>>,
 
+	/// Handle to the doctor task's latest sweep, set when a doctor task is
+	/// registered. Feeds the `/metrics` endpoint the per-check declared stats
+	/// and the status census.
+	pub metrics: Option<crate::doctor::DoctorMetricsHandle>,
+
 	/// Version of the running `bestool` binary, shown in the systemd status line.
 	///
 	/// Distinct from this crate's own [`VERSION`]: `bestool` and `bestool-alertd`
@@ -124,6 +129,7 @@ impl DaemonConfig {
 			watchdog_timeout: Some(Duration::from_secs(10 * 60)),
 			background_tasks: Vec::new(),
 			backups: None,
+			metrics: None,
 			// Fallback only; the binary sets its own version via
 			// `with_binary_version`. This crate's version differs from bestool's.
 			binary_version: VERSION.to_string(),
@@ -144,6 +150,12 @@ impl DaemonConfig {
 	/// Attach the backup registry, so the daemon's status can list in-flight runs.
 	pub fn with_backups(mut self, registry: Arc<BackupRegistry>) -> Self {
 		self.backups = Some(registry);
+		self
+	}
+
+	/// Attach the doctor metrics handle, so `/metrics` can serve per-check stats.
+	pub fn with_metrics_handle(mut self, metrics: crate::doctor::DoctorMetricsHandle) -> Self {
+		self.metrics = Some(metrics);
 		self
 	}
 

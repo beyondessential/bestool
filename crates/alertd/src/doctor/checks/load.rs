@@ -1,6 +1,7 @@
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::{Check, CheckStatus};
 
 /// Multiplier on the logical core count above which the 5-minute load average
@@ -54,6 +55,10 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		.with_detail("five_min", load.five)
 		.with_detail("fifteen_min", load.fifteen)
 		.with_detail("cores", cores)
+		.with_stat(Stat::gauge("one_min", load.one).help("1-minute load average"))
+		.with_stat(Stat::gauge("five_min", load.five).help("5-minute load average"))
+		.with_stat(Stat::gauge("fifteen_min", load.fifteen).help("15-minute load average"))
+		.with_stat(Stat::gauge("cores", cores as f64).help("Logical CPU cores"))
 }
 
 /// Tier the 5-minute load average against the logical core count.

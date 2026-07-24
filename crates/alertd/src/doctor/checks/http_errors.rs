@@ -30,6 +30,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
 use super::{SweepContext, fmt_chain};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
@@ -200,7 +201,10 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		)
 		.with_detail("total_requests", 0u64)
 		.with_detail("window_seconds", window.as_secs())
-		.with_detail("baseline_source", source_label);
+		.with_detail("baseline_source", source_label)
+		.with_stat(Stat::gauge("requests", 0.0).help("Requests in the window"))
+		.with_stat(Stat::gauge("server_errors", 0.0).help("5xx responses in the window"))
+		.with_stat(Stat::gauge("window_seconds", window.as_secs() as f64));
 	}
 
 	let pct = ((errored as f64 / total as f64) * 100.0).round();
@@ -236,6 +240,15 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		.with_detail("window_seconds", window.as_secs())
 		.with_detail("baseline_source", source_label)
 		.with_detail("by_code", Value::Object(by_code))
+		.with_stat(Stat::gauge("requests", total as f64).help("Requests in the window"))
+		.with_stat(Stat::gauge("server_errors", errored as f64).help("5xx responses in the window"))
+		.with_stat(Stat::gauge("server_error_rate_pct", pct).help("5xx rate, percent"))
+		.with_stat(Stat::gauge("window_seconds", window.as_secs() as f64))
+		.with_stats(deltas.iter().map(|(code, n)| {
+			Stat::gauge("requests_by_code", *n as f64)
+				.label("code", code.clone())
+				.help("Requests in the window by HTTP status code")
+		}))
 }
 
 fn duration_between(earlier: Timestamp, later: Timestamp) -> Duration {
@@ -413,6 +426,30 @@ other_metric{foo=\"bar\"} 7
 	fn ignores_unrelated_metrics() {
 		let counts = parse_status_counts("foo_bar{code=\"500\"} 99");
 		assert!(counts.is_empty());
+	}
+
+	#[test]
+	fn build_check_emits_stats() {
+		let baseline = snap(0, &[("200", 100), ("500", 0), ("502", 0)]);
+		let current = snap(60, &[("200", 190), ("500", 5), ("502", 5)]);
+		let check = build_check(&baseline, &current, BaselineSource::History);
+
+		let scalar = |name: &str| check.stats.iter().find(|s| s.name == name).map(|s| s.value);
+		// delta: 90 + 5 + 5 requests, 10 server errors
+		assert_eq!(scalar("requests"), Some(100.0));
+		assert_eq!(scalar("server_errors"), Some(10.0));
+
+		// dimensioned by-code stats carry the code label
+		let by_code: Vec<_> = check
+			.stats
+			.iter()
+			.filter(|s| s.name == "requests_by_code")
+			.collect();
+		assert!(
+			by_code
+				.iter()
+				.any(|s| { s.labels == vec![("code", "502".to_string())] && s.value == 5.0 })
+		);
 	}
 
 	#[test]

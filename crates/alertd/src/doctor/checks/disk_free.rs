@@ -4,6 +4,7 @@ use serde_json::{Map, Value, json};
 use sysinfo::Disks;
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const WARN_PCT_USED: f64 = 80.0;
@@ -45,6 +46,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 	let mut worst_pct: f64 = 0.0;
 	let mut worst_summary = String::new();
 	let mut mounts: Vec<Value> = Vec::new();
+	let mut stats: Vec<Stat> = Vec::new();
 
 	for disk in considered {
 		let total = disk.total_space();
@@ -65,8 +67,24 @@ pub async fn run(ctx: SweepContext) -> Check {
 				human_bytes(total)
 			);
 		}
+		let mount = disk.mount_point().to_string_lossy().into_owned();
+		stats.push(
+			Stat::gauge("free_bytes", free as f64)
+				.label("mount", mount.clone())
+				.help("Free disk space"),
+		);
+		stats.push(
+			Stat::gauge("total_bytes", total as f64)
+				.label("mount", mount.clone())
+				.help("Total disk space"),
+		);
+		stats.push(
+			Stat::gauge("percent_used", pct)
+				.label("mount", mount.clone())
+				.help("Disk used, percent"),
+		);
 		mounts.push(json!({
-			"mountpoint": disk.mount_point().to_string_lossy(),
+			"mountpoint": mount,
 			"free_bytes": free,
 			"total_bytes": total,
 			"percent_used": pct,
@@ -91,7 +109,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 	} else {
 		Check::pass("disk_free", worst_summary)
 	};
-	check.with_details(details)
+	check.with_details(details).with_stats(stats)
 }
 
 fn best_mount_for<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {

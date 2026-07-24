@@ -1,6 +1,7 @@
 use jiff::Timestamp;
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -29,7 +30,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let row = match client.query_opt(query, &[]).await {
 		Ok(Some(r)) => r,
 		Ok(None) => {
-			return Check::pass("sync_sessions", "no sync sessions").with_detail("active_count", 0);
+			return Check::pass("sync_sessions", "no sync sessions")
+				.with_detail("active_count", 0)
+				.with_stat(Stat::gauge("active", 0.0).help("Active sync sessions"))
+				.with_stat(Stat::gauge("stuck_15m", 0.0))
+				.with_stat(Stat::gauge("stuck_45m", 0.0));
 		}
 		Err(err) => {
 			if let Some(db) = err.as_db_error()
@@ -69,7 +74,14 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let mut check = check
 		.with_detail("active_count", active)
-		.with_detail("stuck_count", stuck_warn);
+		.with_detail("stuck_count", stuck_warn)
+		.with_stat(Stat::gauge("active", active as f64).help("Active sync sessions"))
+		.with_stat(
+			Stat::gauge("stuck_15m", stuck_warn as f64).help("Sessions running over 15 minutes"),
+		)
+		.with_stat(
+			Stat::gauge("stuck_45m", stuck_fail as f64).help("Sessions running over 45 minutes"),
+		);
 	if let Some(ts) = oldest {
 		check = check.with_detail("oldest_started_at", ts.to_string());
 	}
