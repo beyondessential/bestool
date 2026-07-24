@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const NAME: &str = "inodes";
@@ -64,6 +65,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	let mut worst_pct = 0.0_f64;
 	let mut worst: Option<String> = None;
 	let mut details = Vec::new();
+	let mut stats = Vec::new();
 	for fs in &filesystems {
 		let pct = fs.pct_used();
 		if pct > worst_pct {
@@ -77,6 +79,16 @@ pub async fn run(_ctx: SweepContext) -> Check {
 				fs.fstype,
 			));
 		}
+		stats.push(
+			Stat::gauge("percent_used", pct.round())
+				.label("mount", fs.mount.clone())
+				.help("Inodes used, percent"),
+		);
+		stats.push(
+			Stat::gauge("inodes_used", fs.used as f64)
+				.label("mount", fs.mount.clone())
+				.help("Inodes in use"),
+		);
 		details.push(json!({
 			"mountpoint": fs.mount,
 			"fstype": fs.fstype,
@@ -94,7 +106,9 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	} else {
 		Check::pass(NAME, summary)
 	};
-	check.with_detail("filesystems", Value::Array(details))
+	check
+		.with_detail("filesystems", Value::Array(details))
+		.with_stats(stats)
 }
 
 struct FsInodes {

@@ -25,6 +25,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 use serde_json::{Value, json};
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const NAME: &str = "btrfs";
@@ -69,6 +70,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 
 	let mut findings: Vec<(Sev, String)> = Vec::new();
 	let mut details: Vec<Value> = Vec::new();
+	let mut stats: Vec<Stat> = Vec::new();
 
 	for mount in &mounts {
 		let label = mount.display().to_string();
@@ -76,6 +78,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 			Ok(report) => {
 				findings.extend(report.findings);
 				details.push(report.detail);
+				stats.extend(report.stats);
 			}
 			Err(CmdErr::NotInstalled) => {
 				return Check::skip(
@@ -112,7 +115,9 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		),
 		None => Check::pass(NAME, format!("{count} btrfs filesystem(s) healthy")),
 	};
-	check.with_detail("filesystems", Value::Array(details))
+	check
+		.with_detail("filesystems", Value::Array(details))
+		.with_stats(stats)
 }
 
 /// Distinct btrfs filesystems, one mountpoint each (deduplicated by source
@@ -165,6 +170,7 @@ async fn btrfs_cmd(args: &[&str]) -> Result<String, CmdErr> {
 struct FsReport {
 	findings: Vec<(Sev, String)>,
 	detail: Value,
+	stats: Vec<Stat>,
 }
 
 async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
@@ -226,6 +232,22 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 		findings.push((Sev::Warn, format!("{label}: device errors ({listed})")));
 	}
 
+	let device_errors_total: u64 = errors.iter().map(|(_, v)| *v).sum();
+	let stats = vec![
+		Stat::gauge("device_unallocated_bytes", usage.device_unallocated as f64)
+			.label("mount", label.clone())
+			.help("Unallocated btrfs space"),
+		Stat::gauge("metadata_percent", meta_pct)
+			.label("mount", label.clone())
+			.help("btrfs metadata chunk usage, percent"),
+		Stat::gauge("subvolumes", subvols as f64)
+			.label("mount", label.clone())
+			.help("btrfs subvolumes/snapshots"),
+		Stat::gauge("device_errors", device_errors_total as f64)
+			.label("mount", label.clone())
+			.help("btrfs device error counters (sum)"),
+	];
+
 	let detail = json!({
 		"mountpoint": label,
 		"device_size": usage.device_size,
@@ -240,7 +262,11 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 			.collect::<Vec<_>>(),
 	});
 
-	Ok(FsReport { findings, detail })
+	Ok(FsReport {
+		findings,
+		detail,
+		stats,
+	})
 }
 
 fn pct(used: u64, size: u64) -> f64 {

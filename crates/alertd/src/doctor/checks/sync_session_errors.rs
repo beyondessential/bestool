@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use super::{CheckContext, util::fetch_rows};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
 
@@ -58,11 +59,17 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	if mobile.is_empty() && server.is_empty() {
-		return Check::pass(NAME, "no recent sync session errors");
+		return Check::pass(NAME, "no recent sync session errors")
+			.with_stat(Stat::gauge("mobile_errors", 0.0).help("Recent mobile sync-session errors"))
+			.with_stat(
+				Stat::gauge("server_errors", 0.0).help("Recent server sync-session errors"),
+			);
 	}
 
 	let (mobile_count, mobile_truncated) = (mobile.count(), mobile.truncated);
 	let (server_count, server_truncated) = (server.count(), server.truncated);
+	// Row vecs are capped at the report cap, so these saturate there on truncation.
+	let (mobile_n, server_n) = (mobile.rows.len(), server.rows.len());
 
 	// Truncation means well over FAIL_ERRORS rows, so saturate the total there.
 	let total = if mobile.truncated || server.truncated {
@@ -85,6 +92,12 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.with_detail("server", Value::Array(server.rows))
 		.with_detail("server_count", server_count)
 		.with_detail("server_truncated", server_truncated)
+		.with_stat(
+			Stat::gauge("mobile_errors", mobile_n as f64).help("Recent mobile sync-session errors"),
+		)
+		.with_stat(
+			Stat::gauge("server_errors", server_n as f64).help("Recent server sync-session errors"),
+		)
 }
 
 #[cfg(test)]

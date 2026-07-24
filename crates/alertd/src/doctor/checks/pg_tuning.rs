@@ -22,6 +22,7 @@ use bestool_postgres::pgtune::{self, Budget, HostResources, Platform};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const GB: i64 = 1024 * 1024 * 1024;
@@ -400,6 +401,39 @@ pub async fn run(ctx: CheckContext) -> Check {
 			settings.effective_io_concurrency,
 		)
 		.with_detail("max_wal_size_bytes", settings.max_wal_size)
+		.with_stat(Stat::gauge("total_ram_bytes", total_ram as f64).help("Host RAM"))
+		.with_stat(
+			Stat::gauge("pg_ram_budget_bytes", budget as f64).help("RAM budget for postgres"),
+		)
+		.with_stat(
+			Stat::gauge("shared_buffers_bytes", settings.shared_buffers as f64)
+				.help("shared_buffers"),
+		)
+		.with_stat(
+			Stat::gauge("shared_buffers_expected_bytes", expected_shared as f64)
+				.help("Expected shared_buffers for this host"),
+		)
+		.with_stat(
+			Stat::gauge(
+				"effective_cache_size_bytes",
+				settings.effective_cache_size as f64,
+			)
+			.help("effective_cache_size"),
+		)
+		.with_stat(
+			Stat::gauge(
+				"maintenance_work_mem_bytes",
+				settings.maintenance_work_mem as f64,
+			)
+			.help("maintenance_work_mem"),
+		)
+		.with_stat(Stat::gauge("work_mem_bytes", settings.work_mem as f64).help("work_mem"))
+		.with_stat(
+			Stat::gauge("max_connections", settings.max_connections as f64).help("max_connections"),
+		)
+		.with_stat(
+			Stat::gauge("max_wal_size_bytes", settings.max_wal_size as f64).help("max_wal_size"),
+		)
 }
 
 #[cfg(test)]
