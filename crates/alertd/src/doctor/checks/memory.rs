@@ -43,10 +43,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn emits_memory_stats() {
-		let ctx = SweepContext {
-			tamanu: None,
-			http_client: reqwest::Client::new(),
-		};
+		let ctx = SweepContext::builder()
+			.http_client(reqwest::Client::new())
+			.build();
 		let check = run(ctx).await;
 		let names: Vec<&str> = check.stats.iter().map(|s| s.name).collect();
 		assert!(names.contains(&"used_bytes"));

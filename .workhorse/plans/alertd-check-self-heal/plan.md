@@ -17,14 +17,14 @@ Key mechanisms:
 
 ## Checklist
 
-- [ ] **Registration cache is updatable.** Replace the `OnceCell` with a form `store()` can refresh; `store()`/`store` at the default dir updates the in-process cache. `load_from(dir)` still bypasses the global cache. Test: an in-process `store()` is visible to the next `load()`.
-- [ ] **Enable the `raw-requests` feature** on alertd's canopy dependency; the healer calls `/servers/self` through it (see design). No snapshot edit — the snapshot is auto-synced from live canopy.
-- [ ] **`SweepContext` → `bon` builder + `canopy` + `enable_heal`.** Add `bon` to alertd's Cargo. Add `canopy: Option<Arc<CanopyClient>>` and `enable_heal: bool` (default false). Migrate construction sites (sweep.rs, checks.rs test helpers). `perform_sweep` takes the canopy client + heal flag; daemon passes its client and enables healing, CLI/doctor and the sweep test pass none/false.
-- [ ] **Heal framework.** `HealOutcome` (Healed / Deferred / Failed). `CheckEntry.heal` optional hook + `entry!` variants to attach one. Backoff/in-flight registry in `doctor/heal.rs` with `try_begin(name)` / `finish(name, outcome)`. Sweep runner spawns the healer detached when enabled + non-pass + `try_begin`. Tests: backoff advance/ceiling/reset, in-flight guard, gate on non-pass.
-- [ ] **`canopy_registration` healer.** `heal(ctx)`: needs `ctx.canopy`; calls `servers_self()`; fills a missing `server_id`/`device_id` (leaves `device_key`/`api_url`), `store()`s, returns Healed/Deferred. Maps `401`/`409`/`412` → Deferred (logged), network/other → Failed. Register the hook. Test the merge (pure helper) and the error mapping.
-- [ ] **fmt + clippy + tests.**
-- [ ] **Test-cases file** at `.workhorse/test-cases/alertd-check-self-heal/overview.md`.
+- [x] **Registration cache is updatable.** Replace the `OnceCell` with a form `store()` can refresh; `store()`/`store` at the default dir updates the in-process cache. `load_from(dir)` still bypasses the global cache. Test: an in-process `store()` is visible to the next `load()`.
+- [x] **Enable the `raw-requests` feature** on alertd's canopy dependency; the healer calls `/servers/self` through it (see design). No snapshot edit — the snapshot is auto-synced from live canopy.
+- [x] **`SweepContext` → `bon` builder + `canopy` + `enable_heal`.** Add `bon` to alertd's Cargo. Add `canopy: Option<Arc<CanopyClient>>` and `enable_heal: bool` (default false). Migrate construction sites (sweep.rs, checks.rs test helpers). `perform_sweep` takes the canopy client + heal flag; daemon passes its client and enables healing, CLI/doctor and the sweep test pass none/false.
+- [x] **Heal framework.** `HealOutcome` (Healed / Deferred / Failed). `CheckEntry.heal` optional hook + `entry!` variants to attach one. Backoff/in-flight registry in `doctor/heal.rs` with `try_begin(name)` / `finish(name, outcome)`. Sweep runner spawns the healer detached when enabled + non-pass + `try_begin`. Tests: backoff advance/ceiling/reset, in-flight guard, gate on non-pass.
+- [x] **`canopy_registration` healer.** `heal(ctx)`: needs `ctx.canopy`; calls `servers_self()`; fills a missing `server_id`/`device_id` (leaves `device_key`/`api_url`), `store()`s, returns Healed/Deferred. Maps `401`/`409`/`412` → Deferred (logged), network/other → Failed. Register the hook. Test the merge (pure helper) and the error mapping.
+- [x] **fmt + clippy + tests.**
+- [x] **Test-cases file** at `.workhorse/test-cases/alertd-check-self-heal/overview.md`.
 
 ## Open dependency
 
-Canopy PR #396 (`GET /servers/self`) is not merged. The snapshot addition is sourced from it; if the endpoint changes before merge, re-sync the snapshot.
+Canopy PR #396 (`GET /servers/self`) is not deployed. Until it is, the healer's request returns `404` → `Deferred` (harmless). When it ships, the recovery starts working with no code change. A later cleanup could switch the raw-requests call to the generated `servers_self()` method once the endpoint is in canopy's live OpenAPI.

@@ -9,9 +9,11 @@ use std::{path::PathBuf, sync::Arc};
 use node_semver::Version;
 use tokio_postgres::Client as PgClient;
 
+use bestool_canopy::CanopyClient;
 use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
+use super::heal::HealOutcome;
 
 pub mod util;
 
@@ -61,10 +63,22 @@ pub mod version_drift;
 /// `tamanu` is `None` on hosts with no Tamanu deployment: the registry skips
 /// Tamanu-dependent checks without running them, and host-level checks run
 /// with what's left.
-#[derive(Clone)]
+///
+/// Built through its [`builder`](SweepContext::builder) so new fields don't
+/// churn every construction site; the optional fields default to absent.
+#[derive(Clone, bon::Builder)]
 pub struct SweepContext {
 	pub tamanu: Option<CheckContext>,
 	pub http_client: reqwest::Client,
+	/// Shared canopy client for checks that reach canopy during a sweep — a
+	/// self-heal action that recovers state from canopy, in particular. `None`
+	/// on a one-shot local sweep with no canopy connectivity.
+	pub canopy: Option<Arc<CanopyClient>>,
+	/// Whether the sweep may run checks' self-heal actions. Enabled by the
+	/// long-running daemon; a one-shot `doctor` invocation leaves it off so it
+	/// has no side effects on the host.
+	#[builder(default)]
+	pub enable_heal: bool,
 }
 
 /// Shared context handed to every Tamanu-dependent check.
@@ -192,6 +206,9 @@ pub struct CheckEntry {
 	/// tracks elsewhere).
 	pub on_wire: bool,
 	pub run: fn(SweepContext) -> futures::future::BoxFuture<'static, Check>,
+	/// Optional self-heal action, run in the background by the daemon while the
+	/// check is not passing. See [`crate::doctor::heal`].
+	pub heal: Option<fn(SweepContext) -> futures::future::BoxFuture<'static, HealOutcome>>,
 }
 
 macro_rules! entry {
@@ -225,6 +242,7 @@ macro_rules! entry {
 					}
 				})
 			},
+			heal: None,
 		}
 	};
 	// Generic database check: runs against any database context — Tamanu's or
@@ -252,6 +270,7 @@ macro_rules! entry {
 					}
 				})
 			},
+			heal: None,
 		}
 	};
 	// Host-level check: runs whether or not Tamanu is deployed.
@@ -260,6 +279,7 @@ macro_rules! entry {
 			name: $name,
 			on_wire: true,
 			run: |ctx| Box::pin($module::run(ctx)),
+			heal: None,
 		}
 	};
 	($name:literal, $module:ident, host, off_wire) => {
@@ -267,6 +287,17 @@ macro_rules! entry {
 			name: $name,
 			on_wire: false,
 			run: |ctx| Box::pin($module::run(ctx)),
+			heal: None,
+		}
+	};
+	// Host-level check that also declares a background self-heal action: the
+	// module exposes a `heal(ctx)` alongside `run(ctx)`.
+	($name:literal, $module:ident, host, heal) => {
+		CheckEntry {
+			name: $name,
+			on_wire: true,
+			run: |ctx| Box::pin($module::run(ctx)),
+			heal: Some(|ctx| Box::pin($module::heal(ctx))),
 		}
 	};
 }
@@ -310,7 +341,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("tailscale_config", tailscale_config, host),
 		// bestool's own Canopy enrolment: runs regardless of Tamanu, and reports so
 		// Canopy sees an incomplete registration before it blocks backups.
-		entry!("canopy_registration", canopy_registration, host),
+		entry!("canopy_registration", canopy_registration, host, heal),
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
@@ -433,10 +464,9 @@ mod tests {
 	use crate::doctor::check::CheckStatus;
 
 	fn no_tamanu_ctx() -> SweepContext {
-		SweepContext {
-			tamanu: None,
-			http_client: reqwest::Client::new(),
-		}
+		SweepContext::builder()
+			.http_client(reqwest::Client::new())
+			.build()
 	}
 
 	/// A context synthesised from a database URL alone (no install): `db` is
@@ -452,8 +482,8 @@ mod tests {
 		use node_semver::Version;
 
 		let db = Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap();
-		SweepContext {
-			tamanu: Some(super::CheckContext {
+		SweepContext::builder()
+			.tamanu(super::CheckContext {
 				tamanu_version: Version::parse("0.0.0").unwrap(),
 				tamanu_root: std::path::PathBuf::new(),
 				config: Arc::new(TamanuConfig::from_database(db)),
@@ -463,9 +493,9 @@ mod tests {
 				http_client: reqwest::Client::new(),
 				has_install: false,
 				is_tamanu: true,
-			}),
-			http_client: reqwest::Client::new(),
-		}
+			})
+			.http_client(reqwest::Client::new())
+			.build()
 	}
 
 	#[tokio::test]
