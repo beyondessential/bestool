@@ -23,3 +23,16 @@ With a registration that has no server id, the check fails, because the host can
 With a registration that has no device id, the check fails, because backups are rejected until the host is re-enrolled with `bestool canopy register`.
 With a registration that has no device key, the check warns, because the host has no mTLS identity and depends on the tailscale path to carry its authentication.
 With a server id, a device id, and a device key all present, the check passes; the API URL is not required, because a registration without one falls back to the default Canopy URL.
+
+## Recovering a missing identity
+
+A registration can be missing the server id or the device id assigned at enrolment — for instance a host carried over from older per-file state, which holds only the server id and device key.
+When the check fails for a missing server id or device id, it attempts to recover the missing identifier from Canopy as a self-heal action (see [CHK](../tamanu/healthchecks.md#self-healing)).
+
+Canopy resolves a device's identity from the authentication the device already presents — its tailnet identity or its mTLS device certificate — so a host that has lost track of its own identifiers can ask Canopy for them without knowing them first.
+The check reads them from Canopy's device self-identity endpoint, `GET /servers/self`, which returns the server id the host is enrolled as together with its own device id.
+The recovered server id and device id are written into the registration record; the device key and API URL are left untouched.
+
+Recovery is attempted only when Canopy is reachable by one of those authentication paths.
+When Canopy cannot be reached, or reports that the presented identity matches no known device, is registered but not yet attached to a server, or is attached to more than one, no identifiers are written and the check's reported outcome is unchanged.
+Once the identifiers are recovered, a later sweep reads the completed registration and the check passes without operator action or a daemon restart.
