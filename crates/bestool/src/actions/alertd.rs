@@ -229,7 +229,9 @@ fn with_daemon_tasks(
 		crate::actions::self_update::task::SelfUpdateTask::new(),
 	));
 
-	config.with_task(Arc::new(doctor))
+	config
+		.with_metrics_handle(doctor.metrics_handle())
+		.with_task(Arc::new(doctor))
 }
 
 /// The in-process backup trigger: routes each type canopy requests via

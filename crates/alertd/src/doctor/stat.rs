@@ -110,6 +110,17 @@ impl StatusCounts {
 	pub fn active(&self) -> u32 {
 		self.total() - self.skipped
 	}
+
+	/// The per-state counts in the stable order both metric formats emit.
+	pub fn by_state(&self) -> [(&'static str, u32); 5] {
+		[
+			("passing", self.passing),
+			("warning", self.warning),
+			("failing", self.failing),
+			("skipped", self.skipped),
+			("broken", self.broken),
+		]
+	}
 }
 
 /// A rendering-ready view of the latest sweep's metrics: the per-check declared
