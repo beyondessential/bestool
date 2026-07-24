@@ -8,7 +8,12 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
-use crate::doctor::{self, check::Check, progress::DoctorEvent};
+use crate::doctor::{
+	self,
+	check::{Check, CheckStatus},
+	progress::DoctorEvent,
+	stat::{MetricsSnapshot, StatusCounts},
+};
 use crate::tasks::TaskEndpointHandler;
 use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
@@ -103,6 +108,62 @@ impl DoctorTask {
 			inner: Arc::new(inner),
 		}
 	}
+
+	/// A cloneable handle the HTTP `/metrics` endpoint uses to read the latest
+	/// sweep's declared stats and status census.
+	pub fn metrics_handle(&self) -> DoctorMetricsHandle {
+		DoctorMetricsHandle {
+			inner: self.inner.clone(),
+		}
+	}
+}
+
+/// Read-only view of the doctor task's latest sweep for the metrics endpoint.
+///
+/// Capping is applied on read (via [`DoctorTaskInner::capped`]) so the status
+/// census reflects canopy's current severity ceilings, matching what the
+/// `latest` endpoint and the CLI show.
+#[derive(Clone)]
+pub struct DoctorMetricsHandle {
+	inner: Arc<DoctorTaskInner>,
+}
+
+impl DoctorMetricsHandle {
+	/// The latest sweep rendered into a [`MetricsSnapshot`], or `None` if the
+	/// daemon hasn't completed a sweep yet.
+	pub async fn snapshot(&self) -> Option<MetricsSnapshot> {
+		let latest = self.inner.latest.lock().await.clone()?;
+		let sweep = self.inner.capped(latest.sweep).await;
+
+		let counts = census(&sweep.results);
+		let stats = sweep
+			.results
+			.iter()
+			.flat_map(|(check, _)| check.stats.iter().map(|stat| (check.name, stat.clone())))
+			.collect();
+
+		Some(MetricsSnapshot {
+			computed_at: latest.computed_at,
+			stats,
+			counts,
+		})
+	}
+}
+
+/// Tally check outcomes into a [`StatusCounts`]. Expects statuses already capped
+/// to canopy's ceilings, so the census matches what operators see elsewhere.
+fn census(results: &[(Check, bool)]) -> StatusCounts {
+	let mut counts = StatusCounts::default();
+	for (check, _) in results {
+		match &check.status {
+			CheckStatus::Pass => counts.passing += 1,
+			CheckStatus::Warning(_) => counts.warning += 1,
+			CheckStatus::Fail(_) => counts.failing += 1,
+			CheckStatus::Skip(_) => counts.skipped += 1,
+			CheckStatus::Broken(_) => counts.broken += 1,
+		}
+	}
+	counts
 }
 
 impl DoctorTaskInner {
@@ -351,5 +412,46 @@ mod tests {
 		let check = Check::fail("disk_free", "1% free", "out of space");
 		let capped = cap_check(check, None);
 		assert!(matches!(capped.status, CheckStatus::Fail(_)));
+	}
+
+	#[test]
+	fn census_counts_each_status() {
+		let results = vec![
+			(Check::pass("a", ""), true),
+			(Check::pass("b", ""), true),
+			(Check::warning("c", "", "w"), true),
+			(Check::fail("d", "", "f"), true),
+			(Check::skip("e", "", "s"), true),
+			(Check::broken("g", "", "b"), true),
+		];
+		let c = census(&results);
+		assert_eq!(c.passing, 2);
+		assert_eq!(c.warning, 1);
+		assert_eq!(c.failing, 1);
+		assert_eq!(c.skipped, 1);
+		assert_eq!(c.broken, 1);
+		assert_eq!(c.total(), 6);
+		// active = ran (everything but skipped)
+		assert_eq!(c.active(), 5);
+	}
+
+	#[test]
+	fn census_reflects_severity_capping() {
+		// A fail capped to a warn ceiling must count as warning, not failing —
+		// the census tracks what operators see after capping.
+		let mut sweep = doctor::SweepResult {
+			server_id: None,
+			results: vec![(Check::fail("disk_free", "1% free", "out of space"), true)],
+			overall: doctor::check::OverallResult::Failing,
+			payload: json!({}),
+			pg_version: None,
+		};
+		let mut severities = HashMap::new();
+		severities.insert("disk_free".to_string(), CheckSeverity::Warn);
+		sweep.apply_severities(&severities);
+
+		let c = census(&sweep.results);
+		assert_eq!(c.failing, 0);
+		assert_eq!(c.warning, 1);
 	}
 }

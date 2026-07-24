@@ -38,6 +38,7 @@ pub mod ips_errors;
 pub mod load;
 pub mod memory;
 pub mod migrations;
+pub mod munin;
 pub mod patient_communication_errors;
 pub mod pg_tuning;
 pub mod report_errors;
@@ -313,6 +314,9 @@ pub fn all() -> Vec<CheckEntry> {
 		// Reports the host's LAN and best-guess WAN addresses as status facts
 		// (off the wire; carried in the top-level payload, like the timezone).
 		entry!("ips", ips, host, off_wire),
+		// Reports whether munin-node is installed as a top-level status fact
+		// (off the wire, like `ips`); not a health signal.
+		entry!("munin", munin, host, off_wire),
 		entry!("billing_tags", billing_tags, host),
 		// Tamanu-level: the config-derived FHIR expectation degrades to Unknown
 		// without config (see `services::expected`); the rest is DB/host-derived.

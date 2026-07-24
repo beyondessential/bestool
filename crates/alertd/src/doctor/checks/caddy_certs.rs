@@ -40,6 +40,7 @@ use tracing::debug;
 use x509_parser::prelude::*;
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const NAME: &str = "caddy_certs";
@@ -147,6 +148,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 	let mut details: Vec<Value> = Vec::new();
 	let mut seen: HashSet<Vec<u8>> = HashSet::new();
 
+	let mut stats: Vec<Stat> = Vec::new();
 	for (origin, cert) in &certs {
 		if !seen.insert(cert.der.clone()) {
 			continue; // same cert reached via multiple subjects/sources
@@ -191,6 +193,20 @@ pub async fn run(ctx: SweepContext) -> Check {
 			}
 		}
 
+		let cert_id = cert.sans.first().cloned().unwrap_or_else(|| origin.clone());
+		stats.push(
+			Stat::gauge("days_remaining", (days * 10.0).round() / 10.0)
+				.label("cert", cert_id.clone())
+				.help("Days until certificate expiry"),
+		);
+		if let Some(matches) = served_matches {
+			stats.push(
+				Stat::gauge("served_matches", if matches { 1.0 } else { 0.0 })
+					.label("cert", cert_id)
+					.help("Served cert matches configured cert (1/0)"),
+			);
+		}
+
 		details.push(json!({
 			"names": cert.sans,
 			"origin": origin,
@@ -213,7 +229,10 @@ pub async fn run(ctx: SweepContext) -> Check {
 		Some(Sev::Warn) => Check::warning(NAME, format!("{n} cert(s) checked"), reasons),
 		None => Check::pass(NAME, format!("{n} cert(s) valid")),
 	};
-	check.with_detail("certificates", Value::Array(details))
+	check
+		.with_detail("certificates", Value::Array(details))
+		.with_stat(Stat::gauge("count", n as f64).help("Certificates checked"))
+		.with_stats(stats)
 }
 
 /// caddy's `certificates/` store, probed at the well-known data-dir locations

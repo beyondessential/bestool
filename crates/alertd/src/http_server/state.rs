@@ -22,4 +22,7 @@ pub struct ServerState {
 	/// Backup run registry, when backups are compiled in; lets `/status` list
 	/// in-flight runs.
 	pub backups: Option<Arc<crate::BackupRegistry>>,
+	/// Handle to the doctor task's latest sweep, when a doctor task is
+	/// registered; feeds per-check stats and the status census to `/metrics`.
+	pub metrics: Option<crate::doctor::DoctorMetricsHandle>,
 }

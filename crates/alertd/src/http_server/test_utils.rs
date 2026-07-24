@@ -28,5 +28,6 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		task_endpoints: Arc::new(HashMap::new()),
 		control: crate::daemon::DaemonControl::detached(),
 		backups: None,
+		metrics: None,
 	})
 }
