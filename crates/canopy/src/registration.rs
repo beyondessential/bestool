@@ -158,11 +158,12 @@ fn legacy_device_key_path() -> PathBuf {
 	}
 }
 
-/// Process-wide cache of a successfully loaded registration, so repeated
-/// reporting reads (e.g. the doctor tick) don't re-run scrypt each time. Only
-/// populated on a hit; a fresh enrollment is picked up on the next process
-/// start.
-static CACHE: tokio::sync::OnceCell<Registration> = tokio::sync::OnceCell::const_new();
+/// Process-wide cache of the registration at the default location, so repeated
+/// reporting reads (e.g. the doctor tick) don't re-run scrypt each time. A
+/// [`store`] at the default location refreshes it, so a writer's update — the
+/// self-heal that recovers a missing identity, say — is seen by the next
+/// in-process read without waiting for a process restart.
+static CACHE: std::sync::RwLock<Option<Registration>> = std::sync::RwLock::new(None);
 
 /// Load the registration from the default location.
 ///
@@ -170,7 +171,7 @@ static CACHE: tokio::sync::OnceCell<Registration> = tokio::sync::OnceCell::const
 /// files (unless [`DIR_ENV`] is set). Returns `None` when there's nothing to
 /// load.
 pub async fn load() -> Result<Option<Registration>> {
-	if let Some(reg) = CACHE.get() {
+	if let Some(reg) = CACHE.read().expect("registration cache poisoned").as_ref() {
 		return Ok(Some(reg.clone()));
 	}
 
@@ -185,9 +186,14 @@ pub async fn load() -> Result<Option<Registration>> {
 	};
 
 	if let Some(ref reg) = reg {
-		let _ = CACHE.set(reg.clone());
+		set_cache(reg.clone());
 	}
 	Ok(reg)
+}
+
+/// Replace the process-wide cache of the default-location registration.
+fn set_cache(reg: Registration) {
+	*CACHE.write().expect("registration cache poisoned") = Some(reg);
 }
 
 /// Load the registration from a specific directory, without legacy migration.
@@ -201,8 +207,13 @@ pub async fn load_from(dir: &Path) -> Result<Option<Registration>> {
 }
 
 /// Encrypt and store the registration at the default location.
+///
+/// Refreshes the process-wide [`CACHE`] on success so an in-process reader sees
+/// the update on its next [`load`] without a restart.
 pub async fn store(reg: &Registration) -> Result<()> {
-	store_in(&default_dir(), reg).await
+	store_in(&default_dir(), reg).await?;
+	set_cache(reg.clone());
+	Ok(())
 }
 
 /// Encrypt and store the registration in a specific directory.
@@ -515,6 +526,32 @@ mod tests {
 			derive_passphrase("machine-aaaa"),
 			derive_passphrase("machine-bbbb")
 		);
+	}
+
+	#[tokio::test]
+	async fn load_reads_and_set_cache_refreshes_the_process_cache() {
+		// load() short-circuits on the process cache; set_cache (which store
+		// calls) replaces it. A refreshed value must be returned rather than
+		// frozen at the first read — that freeze would keep a healed
+		// registration invisible until the daemon restarted.
+		let first = Registration {
+			server_id: Some("s".into()),
+			..Registration::default()
+		};
+		set_cache(first.clone());
+		assert_eq!(load().await.unwrap().unwrap().device_id, None);
+
+		let second = Registration {
+			device_id: Some("d".into()),
+			..first
+		};
+		set_cache(second);
+		assert_eq!(
+			load().await.unwrap().unwrap().device_id.as_deref(),
+			Some("d")
+		);
+
+		*CACHE.write().expect("registration cache poisoned") = None;
 	}
 
 	#[tokio::test]
