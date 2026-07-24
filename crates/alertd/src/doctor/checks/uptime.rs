@@ -43,10 +43,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn emits_uptime_stat() {
-		let ctx = SweepContext {
-			tamanu: None,
-			http_client: reqwest::Client::new(),
-		};
+		let ctx = SweepContext::builder()
+			.http_client(reqwest::Client::new())
+			.build();
 		let check = run(ctx).await;
 		assert!(check.stats.iter().any(|s| s.name == "uptime_seconds"));
 	}

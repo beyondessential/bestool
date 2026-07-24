@@ -10,10 +10,14 @@
 //!
 //! spec: REG
 
-use bestool_canopy::registration::{self, Registration};
+use bestool_canopy::{
+	CanopyHttpError,
+	registration::{self, Registration},
+};
+use tracing::{debug, info, warn};
 
 use super::SweepContext;
-use crate::doctor::check::Check;
+use crate::doctor::{check::Check, heal::HealOutcome};
 
 const CHECK_NAME: &str = "canopy_registration";
 
@@ -26,6 +30,80 @@ pub async fn run(_ctx: SweepContext) -> Check {
 			err.to_string(),
 		),
 	}
+}
+
+/// Recover a missing server id or device id from Canopy and write it back into
+/// the registration, so a later sweep sees a complete enrolment and passes.
+///
+/// spec: REG#recovering-a-missing-identity
+pub async fn heal(ctx: SweepContext) -> HealOutcome {
+	let Some(canopy) = ctx.canopy.as_deref() else {
+		// No canopy connectivity to recover from on this sweep.
+		return HealOutcome::Deferred;
+	};
+
+	let reg = match registration::load().await {
+		Ok(Some(reg)) => reg,
+		// Nothing enrolled to complete: recovering a full identity from scratch
+		// is `bestool canopy register`'s job, not the healer's.
+		Ok(None) => return HealOutcome::Deferred,
+		Err(err) => {
+			warn!(%err, "canopy_registration heal: could not read the registration");
+			return HealOutcome::Failed;
+		}
+	};
+
+	if reg.server_id.is_some() && reg.device_id.is_some() {
+		// Both identifiers already present; the check fails for some other
+		// reason the healer can't address.
+		return HealOutcome::Deferred;
+	}
+
+	// `GET /servers/self` resolves the caller from its tailnet identity or mTLS
+	// certificate and returns the pair assigned at enrolment (canopy spec DID).
+	match canopy.servers_self().await {
+		Ok(identity) => {
+			let recovered = merge_identity(
+				reg,
+				&identity.server_id.to_string(),
+				&identity.device_id.to_string(),
+			);
+			match registration::store(&recovered).await {
+				Ok(()) => {
+					info!("recovered Canopy identity from GET /servers/self");
+					HealOutcome::Healed
+				}
+				Err(err) => {
+					warn!(%err, "canopy_registration heal: could not store the recovered identity");
+					HealOutcome::Failed
+				}
+			}
+		}
+		Err(err) => {
+			// A recognised HTTP status means Canopy answered but had no identity
+			// to give: unknown device, not yet attached, or attached to several.
+			// Back off and retry later.
+			if let Some(http) = err.downcast_ref::<CanopyHttpError>() {
+				debug!(status = %http.status, "canopy_registration heal: /servers/self gave no identity");
+				HealOutcome::Deferred
+			} else {
+				warn!(%err, "canopy_registration heal: /servers/self request failed");
+				HealOutcome::Failed
+			}
+		}
+	}
+}
+
+/// Fill a missing server id or device id from the recovered pair, leaving any
+/// value already present — and the device key and API URL — untouched.
+fn merge_identity(mut reg: Registration, server_id: &str, device_id: &str) -> Registration {
+	if reg.server_id.is_none() {
+		reg.server_id = Some(server_id.to_owned());
+	}
+	if reg.device_id.is_none() {
+		reg.device_id = Some(device_id.to_owned());
+	}
+	reg
 }
 
 /// Grade a loaded registration (or its absence) into a check outcome.
@@ -157,6 +235,37 @@ mod tests {
 		let check = grade(Some(&reg));
 		assert!(matches!(check.status, CheckStatus::Warning(_)));
 		assert!(check.status.reason().unwrap().contains("device key"));
+	}
+
+	#[test]
+	fn merge_fills_only_the_missing_identifier() {
+		// A registration missing just the device id: recovery fills the device
+		// id and leaves the present server id, device key, and API URL as they
+		// were.
+		let reg = Registration {
+			device_id: None,
+			..full()
+		};
+		let merged = merge_identity(reg, "recovered-server", "recovered-device");
+		assert_eq!(merged.server_id.as_deref(), Some("server-1"));
+		assert_eq!(merged.device_id.as_deref(), Some("recovered-device"));
+		assert_eq!(
+			merged.device_key.as_deref(),
+			Some("-----BEGIN PRIVATE KEY-----")
+		);
+		assert_eq!(merged.api_url.as_deref(), Some("https://canopy.example/"));
+	}
+
+	#[test]
+	fn merge_fills_a_missing_server_id() {
+		let reg = Registration {
+			server_id: None,
+			..full()
+		};
+		let merged = merge_identity(reg, "recovered-server", "recovered-device");
+		// The device id was present, so it is left; the server id is filled.
+		assert_eq!(merged.server_id.as_deref(), Some("recovered-server"));
+		assert_eq!(merged.device_id.as_deref(), Some("device-1"));
 	}
 
 	#[test]

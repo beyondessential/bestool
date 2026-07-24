@@ -661,6 +661,7 @@ dependencies = [
  "bestool-kopia",
  "bestool-postgres",
  "bestool-tamanu",
+ "bon",
  "bytes",
  "dirs",
  "duct",

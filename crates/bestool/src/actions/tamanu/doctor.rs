@@ -168,6 +168,8 @@ async fn run_local_sweep(
 			&sweep_args_skip,
 			None,
 			progress,
+			None,
+			false,
 		)
 		.await
 	});

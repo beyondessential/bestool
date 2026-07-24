@@ -171,8 +171,13 @@ impl DoctorTaskInner {
 		self: &Arc<Self>,
 		ctx: &TaskContext,
 		progress: Option<doctor::progress::ProgressSender>,
+		enable_heal: bool,
 	) -> Result<doctor::SweepResult> {
 		let cached = self.pg_version_cache.lock().await.clone();
+		// Hand checks the shared canopy client so a heal action can reach canopy;
+		// only the periodic tick enables healing, so an on-demand recompute
+		// driven by `doctor --fresh` stays side-effect-free. See
+		// [`crate::doctor::heal`].
 		let sweep = doctor::perform_sweep(
 			&self.binary_version,
 			self.tamanu.clone(),
@@ -181,6 +186,8 @@ impl DoctorTaskInner {
 			&[],
 			cached,
 			progress,
+			ctx.canopy_client.clone(),
+			enable_heal,
 		)
 		.await?;
 
@@ -215,7 +222,7 @@ impl DoctorTaskInner {
 	}
 
 	async fn tick(self: &Arc<Self>, ctx: &TaskContext) -> Result<()> {
-		let sweep = self.run_sweep(ctx, None).await?;
+		let sweep = self.run_sweep(ctx, None, true).await?;
 
 		let Some(server_id) = sweep.server_id else {
 			warn!("no metaServerId available; skipping canopy status push");
@@ -305,7 +312,7 @@ impl DoctorTaskInner {
 				}
 			});
 
-			match task_self.run_sweep(&ctx, Some(progress_tx)).await {
+			match task_self.run_sweep(&ctx, Some(progress_tx), false).await {
 				Ok(mut sweep) => {
 					if let Some(severities) = &severities {
 						sweep.apply_severities(severities);

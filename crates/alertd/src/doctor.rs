@@ -1,5 +1,6 @@
 pub mod check;
 pub mod checks;
+pub mod heal;
 pub mod progress;
 pub mod server_info;
 pub mod stat;
