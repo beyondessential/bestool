@@ -151,6 +151,12 @@ jobs:
           install -Dm644 services/bestool-alertd.service \
             "$deb_dir/usr/lib/systemd/system/bestool-alertd.service"
 
+          # Munin plugin for alertd's /metrics endpoint. Shipped into munin's
+          # available-plugins dir; the postinst activates it only when munin-node
+          # is installed, mirroring how the alertd unit ships disabled.
+          install -Dm755 contrib/munin/bestool_alertd \
+            "$deb_dir/usr/share/munin/plugins/bestool_alertd"
+
           # daemon-reload after install/upgrade/removal so systemd picks up unit
           # changes. The unit ships disabled, so nothing is enabled or started.
           cat > "$deb_dir/DEBIAN/postinst" << 'EOF'
@@ -158,6 +164,14 @@ jobs:
           set -e
           if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
+          fi
+          # Activate the munin plugin where munin-node is present; a no-op
+          # elsewhere. Present-but-inactive otherwise, like the alertd unit.
+          if [ -d /etc/munin/plugins ] && [ ! -e /etc/munin/plugins/bestool_alertd ]; then
+            ln -s /usr/share/munin/plugins/bestool_alertd /etc/munin/plugins/bestool_alertd || true
+            if [ -d /run/systemd/system ]; then
+              systemctl try-reload-or-restart munin-node || true
+            fi
           fi
           EOF
           chmod 755 "$deb_dir/DEBIAN/postinst"
@@ -167,6 +181,14 @@ jobs:
           set -e
           if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
+          fi
+          # On removal (not upgrade), drop the munin plugin symlink we created.
+          if { [ "$1" = remove ] || [ "$1" = purge ]; } \
+            && [ -L /etc/munin/plugins/bestool_alertd ]; then
+            rm -f /etc/munin/plugins/bestool_alertd || true
+            if [ -d /run/systemd/system ]; then
+              systemctl try-reload-or-restart munin-node || true
+            fi
           fi
           EOF
           chmod 755 "$deb_dir/DEBIAN/postrm"
