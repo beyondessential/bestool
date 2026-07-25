@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use axum::{
 	extract::{RawQuery, State},
-	http::{HeaderMap, StatusCode, header},
+	http::{HeaderMap, header},
 	response::IntoResponse,
 };
-use tracing::error;
 
 use crate::http_server::{ServerState, metrics_render};
 use crate::metrics;
@@ -33,36 +32,22 @@ pub async fn handle_metrics(
 		None => None,
 	};
 
+	// Ages are computed at scrape time from the last-activity/last-sweep instants
+	// and this `now`, so a scraper reads "N seconds ago" directly.
+	let now = jiff::Timestamp::now().as_second();
+	let last_activity = metrics::last_activity_timestamp();
+
 	if wants_munin {
 		// Munin's two-call protocol: `?config` asks for field metadata, a bare
 		// request for values.
 		let config = query
 			.as_deref()
 			.is_some_and(|q| q.split('&').any(|p| p == "config"));
-		let body = metrics_render::render_munin(
-			snapshot.as_ref(),
-			metrics::last_activity_timestamp(),
-			config,
-		);
+		let body = metrics_render::render_munin(snapshot.as_ref(), now, last_activity, config);
 		return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response();
 	}
 
-	// Prometheus: keep the existing registry gauge output verbatim (so existing
-	// scrapers are undisturbed), then append the sweep-derived metrics.
-	let mut body = match metrics::gather_metrics() {
-		Ok(text) => text,
-		Err(e) => {
-			error!("failed to gather metrics: {e:?}");
-			return (
-				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("Failed to gather metrics: {e}\n"),
-			)
-				.into_response();
-		}
-	};
-	if let Some(snapshot) = &snapshot {
-		body.push_str(&metrics_render::render_prometheus(snapshot));
-	}
+	let body = metrics_render::render_prometheus(snapshot.as_ref(), now, last_activity);
 	([(header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)], body).into_response()
 }
 
@@ -80,13 +65,6 @@ mod tests {
 
 	use super::*;
 	use crate::{context::InternalContext, http_server::ServerState};
-
-	/// The prometheus registry is process-global and initialises exactly once;
-	/// guard it so parallel tests don't double-init.
-	fn init_metrics_once() {
-		static INIT: std::sync::Once = std::sync::Once::new();
-		INIT.call_once(crate::metrics::init_metrics);
-	}
 
 	/// A minimal server state with no doctor metrics handle and no database —
 	/// enough to exercise the endpoint's format negotiation.
@@ -118,7 +96,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn default_is_prometheus() {
-		init_metrics_once();
 		let response = handle_metrics(State(state()), HeaderMap::new(), RawQuery(None))
 			.await
 			.into_response();
@@ -132,7 +109,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn accept_munin_selects_munin() {
-		init_metrics_once();
 		let mut headers = HeaderMap::new();
 		headers.insert(header::ACCEPT, HeaderValue::from_static(MUNIN_MEDIA_TYPE));
 		let response = handle_metrics(State(state()), headers, RawQuery(None))
@@ -146,7 +122,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn munin_config_query_is_honoured() {
-		init_metrics_once();
 		let mut headers = HeaderMap::new();
 		headers.insert(header::ACCEPT, HeaderValue::from_static(MUNIN_MEDIA_TYPE));
 		let response = handle_metrics(State(state()), headers, RawQuery(Some("config".into())))

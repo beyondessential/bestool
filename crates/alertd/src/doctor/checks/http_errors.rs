@@ -202,9 +202,16 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		.with_detail("total_requests", 0u64)
 		.with_detail("window_seconds", window.as_secs())
 		.with_detail("baseline_source", source_label)
-		.with_stat(Stat::gauge("requests", 0.0).help("Requests in the window"))
-		.with_stat(Stat::gauge("server_errors", 0.0).help("5xx responses in the window"))
-		.with_stat(Stat::gauge("window_seconds", window.as_secs() as f64));
+		.with_stat(
+			Stat::gauge("requests", 0.0)
+				.group("traffic")
+				.help("Requests in the window"),
+		)
+		.with_stat(
+			Stat::gauge("server_errors", 0.0)
+				.group("traffic")
+				.help("5xx responses in the window"),
+		);
 	}
 
 	let pct = ((errored as f64 / total as f64) * 100.0).round();
@@ -240,10 +247,17 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		.with_detail("window_seconds", window.as_secs())
 		.with_detail("baseline_source", source_label)
 		.with_detail("by_code", Value::Object(by_code))
-		.with_stat(Stat::gauge("requests", total as f64).help("Requests in the window"))
-		.with_stat(Stat::gauge("server_errors", errored as f64).help("5xx responses in the window"))
+		.with_stat(
+			Stat::gauge("requests", total as f64)
+				.group("traffic")
+				.help("Requests in the window"),
+		)
+		.with_stat(
+			Stat::gauge("server_errors", errored as f64)
+				.group("traffic")
+				.help("5xx responses in the window"),
+		)
 		.with_stat(Stat::gauge("server_error_rate_pct", pct).help("5xx rate, percent"))
-		.with_stat(Stat::gauge("window_seconds", window.as_secs() as f64))
 		.with_stats(deltas.iter().map(|(code, n)| {
 			Stat::gauge("requests_by_code", *n as f64)
 				.label("code", code.clone())

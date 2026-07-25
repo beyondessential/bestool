@@ -401,16 +401,24 @@ pub async fn run(ctx: CheckContext) -> Check {
 			settings.effective_io_concurrency,
 		)
 		.with_detail("max_wal_size_bytes", settings.max_wal_size)
-		.with_stat(Stat::gauge("total_ram_bytes", total_ram as f64).help("Host RAM"))
 		.with_stat(
-			Stat::gauge("pg_ram_budget_bytes", budget as f64).help("RAM budget for postgres"),
+			Stat::gauge("total_ram_bytes", total_ram as f64)
+				.group("bytes")
+				.help("Host RAM"),
+		)
+		.with_stat(
+			Stat::gauge("pg_ram_budget_bytes", budget as f64)
+				.group("bytes")
+				.help("RAM budget for postgres"),
 		)
 		.with_stat(
 			Stat::gauge("shared_buffers_bytes", settings.shared_buffers as f64)
+				.group("bytes")
 				.help("shared_buffers"),
 		)
 		.with_stat(
 			Stat::gauge("shared_buffers_expected_bytes", expected_shared as f64)
+				.group("bytes")
 				.help("Expected shared_buffers for this host"),
 		)
 		.with_stat(
@@ -418,6 +426,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 				"effective_cache_size_bytes",
 				settings.effective_cache_size as f64,
 			)
+			.group("bytes")
 			.help("effective_cache_size"),
 		)
 		.with_stat(
@@ -425,14 +434,21 @@ pub async fn run(ctx: CheckContext) -> Check {
 				"maintenance_work_mem_bytes",
 				settings.maintenance_work_mem as f64,
 			)
+			.group("bytes")
 			.help("maintenance_work_mem"),
 		)
-		.with_stat(Stat::gauge("work_mem_bytes", settings.work_mem as f64).help("work_mem"))
+		.with_stat(
+			Stat::gauge("work_mem_bytes", settings.work_mem as f64)
+				.group("bytes")
+				.help("work_mem"),
+		)
 		.with_stat(
 			Stat::gauge("max_connections", settings.max_connections as f64).help("max_connections"),
 		)
 		.with_stat(
-			Stat::gauge("max_wal_size_bytes", settings.max_wal_size as f64).help("max_wal_size"),
+			Stat::gauge("max_wal_size_bytes", settings.max_wal_size as f64)
+				.group("bytes")
+				.help("max_wal_size"),
 		)
 }
 

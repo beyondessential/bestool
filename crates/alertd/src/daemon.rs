@@ -85,7 +85,6 @@ pub async fn run_with_shutdown(
 	// restart can't leave a backup running to collide with the next one.
 	crate::child_confinement::confine_children();
 
-	metrics::init_metrics();
 	metrics::record_activity();
 
 	let pool = daemon_config.pg_pool.clone();

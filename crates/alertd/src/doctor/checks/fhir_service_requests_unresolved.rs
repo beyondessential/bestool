@@ -40,9 +40,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	if rows.is_empty() {
 		return Check::pass(NAME, "no unresolved FHIR service requests")
-			.with_stat(Stat::gauge("fail", 0.0).help("Requests unresolved past the fail threshold"))
 			.with_stat(
-				Stat::gauge("warn", 0.0).help("Requests unresolved past the warn threshold"),
+				Stat::gauge("fail", 0.0)
+					.group("thresholds")
+					.help("Requests unresolved past the fail threshold"),
+			)
+			.with_stat(
+				Stat::gauge("warn", 0.0)
+					.group("thresholds")
+					.help("Requests unresolved past the warn threshold"),
 			);
 	}
 
@@ -64,9 +70,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	if warn.is_empty() && fail.is_empty() {
 		return Check::pass(NAME, "no unresolved FHIR service requests")
-			.with_stat(Stat::gauge("fail", 0.0).help("Requests unresolved past the fail threshold"))
 			.with_stat(
-				Stat::gauge("warn", 0.0).help("Requests unresolved past the warn threshold"),
+				Stat::gauge("fail", 0.0)
+					.group("thresholds")
+					.help("Requests unresolved past the fail threshold"),
+			)
+			.with_stat(
+				Stat::gauge("warn", 0.0)
+					.group("thresholds")
+					.help("Requests unresolved past the warn threshold"),
 			);
 	}
 
@@ -83,10 +95,14 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 	check
 		.with_stat(
-			Stat::gauge("fail", fail_n as f64).help("Requests unresolved past the fail threshold"),
+			Stat::gauge("fail", fail_n as f64)
+				.group("thresholds")
+				.help("Requests unresolved past the fail threshold"),
 		)
 		.with_stat(
-			Stat::gauge("warn", warn_n as f64).help("Requests unresolved past the warn threshold"),
+			Stat::gauge("warn", warn_n as f64)
+				.group("thresholds")
+				.help("Requests unresolved past the warn threshold"),
 		)
 		.with_detail("fail", Value::Array(fail))
 		.with_detail("warn", Value::Array(warn))
