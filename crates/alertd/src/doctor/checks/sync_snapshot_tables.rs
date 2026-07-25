@@ -80,13 +80,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let mut check = check
 		.with_detail("table_count", tables)
 		.with_detail("sessions_24h", sessions)
-		.with_stat(Stat::gauge("table_count", tables as f64).help("Leftover sync-snapshot tables"))
-		.with_stat(
-			Stat::gauge("sessions_24h", sessions as f64).help("Sync sessions in the last 24h"),
-		);
+		.with_stat(Stat::gauge("table_count", tables as f64).help("Leftover sync-snapshot tables"));
 	if let Some(p50) = p50 {
 		check = check.with_stat(
 			Stat::gauge("table_size_bytes", p50)
+				.group("sizes")
 				.label("quantile", "0.5")
 				.help("Snapshot-table size percentiles"),
 		);
@@ -94,13 +92,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 	if let Some(p99) = p99 {
 		check = check.with_stat(
 			Stat::gauge("table_size_bytes", p99)
+				.group("sizes")
 				.label("quantile", "0.99")
 				.help("Snapshot-table size percentiles"),
 		);
 	}
 	if let Some(total) = total_bytes {
 		check = check.with_stat(
-			Stat::gauge("total_size_bytes", total).help("Total size of all snapshot tables"),
+			Stat::gauge("total_size_bytes", total)
+				.group("sizes")
+				.help("Total size of all snapshot tables"),
 		);
 	}
 	check

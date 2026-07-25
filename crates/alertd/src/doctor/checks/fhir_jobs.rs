@@ -120,7 +120,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			.with_detail("oldest_active", ts.to_string())
 			.with_detail("oldest_active_age_secs", oldest_age_secs)
 			.with_stat(
-				Stat::gauge("oldest_active_age_secs", oldest_age_secs as f64)
+				Stat::gauge("oldest_active_age_seconds", oldest_age_secs as f64)
 					.help("Age of the oldest active FHIR job"),
 			);
 	}

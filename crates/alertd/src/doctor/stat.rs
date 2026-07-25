@@ -54,6 +54,11 @@ pub struct Stat {
 	pub labels: Vec<(&'static str, String)>,
 	/// Human description: prometheus `# HELP`, munin field label.
 	pub help: Option<String>,
+	/// Munin graph group within the check: metrics sharing a group render as
+	/// fields of one graph. `None` gives the metric its own graph, named for
+	/// it. Only meaningful for munin; prometheus dimensions everything by name
+	/// and labels regardless.
+	pub group: Option<&'static str>,
 }
 
 impl Stat {
@@ -64,6 +69,7 @@ impl Stat {
 			kind: StatKind::Gauge,
 			labels: Vec::new(),
 			help: None,
+			group: None,
 		}
 	}
 
@@ -74,6 +80,7 @@ impl Stat {
 			kind: StatKind::Counter,
 			labels: Vec::new(),
 			help: None,
+			group: None,
 		}
 	}
 
@@ -86,6 +93,14 @@ impl Stat {
 
 	pub fn help(mut self, help: impl Into<String>) -> Self {
 		self.help = Some(help.into());
+		self
+	}
+
+	/// Place this metric in a named munin graph group, so metrics that share a
+	/// unit and are read together render on one graph. Metrics of different
+	/// units should stay in separate groups (the default: their own graph).
+	pub fn group(mut self, group: &'static str) -> Self {
+		self.group = Some(group);
 		self
 	}
 }
@@ -171,6 +186,15 @@ mod tests {
 	fn help_is_attached() {
 		let s = Stat::gauge("x", 1.0).help("a thing");
 		assert_eq!(s.help.as_deref(), Some("a thing"));
+	}
+
+	#[test]
+	fn group_defaults_none_and_is_attachable() {
+		assert!(Stat::gauge("x", 1.0).group.is_none());
+		assert_eq!(
+			Stat::gauge("used_bytes", 1.0).group("bytes").group,
+			Some("bytes")
+		);
 	}
 
 	#[test]

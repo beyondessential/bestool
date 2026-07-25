@@ -54,8 +54,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	if warn.is_empty() && fail.is_empty() {
 		return Check::pass(NAME, "no sync restart loops")
-			.with_stat(Stat::gauge("fail", 0.0).help("Facilities past the fail restart rate"))
-			.with_stat(Stat::gauge("warn", 0.0).help("Facilities past the warn restart rate"));
+			.with_stat(
+				Stat::gauge("fail", 0.0)
+					.group("thresholds")
+					.help("Facilities past the fail restart rate"),
+			)
+			.with_stat(
+				Stat::gauge("warn", 0.0)
+					.group("thresholds")
+					.help("Facilities past the warn restart rate"),
+			);
 	}
 
 	let (fail_n, warn_n) = (fail.len(), warn.len());
@@ -70,8 +78,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Check::fail(NAME, summary, "facilities in sync restart loop")
 	};
 	check
-		.with_stat(Stat::gauge("fail", fail_n as f64).help("Facilities past the fail restart rate"))
-		.with_stat(Stat::gauge("warn", warn_n as f64).help("Facilities past the warn restart rate"))
+		.with_stat(
+			Stat::gauge("fail", fail_n as f64)
+				.group("thresholds")
+				.help("Facilities past the fail restart rate"),
+		)
+		.with_stat(
+			Stat::gauge("warn", warn_n as f64)
+				.group("thresholds")
+				.help("Facilities past the warn restart rate"),
+		)
 		.with_detail("fail", Value::Array(fail))
 		.with_detail("warn", Value::Array(warn))
 }
