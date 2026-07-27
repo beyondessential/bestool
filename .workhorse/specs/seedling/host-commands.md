@@ -37,8 +37,12 @@ Pattern filtering is applied to the stream as it arrives, because the daemon mat
 
 ## Interactive database access
 
-The interactive database command opens a shell session through the daemon into the Tamanu application, and connects to the database from inside that session using the connection details the application itself holds.
-Running inside the application means the session reaches the database over the same path the application uses, so the command needs no database credentials of its own and the database is not exposed beyond the host.
+The interactive database command keeps its own client, and with it the read-only session, redaction, audit trail, and supervision prompt before writes that it applies on every other host.
+Handing the operator a shell into the database instead would replace all four with a bare client, on precisely the hosts where they matter most.
 
-The session is interactive: input, output, and terminal resizing are carried for the life of the session, and the session ends when the operator exits.
-The command surfaces the session's exit status as its own.
+Postgres runs as its own application and exports the directory holding its unix socket, so the command connects over that socket rather than over the network.
+A local socket connection is trusted, which is what lets the command work without holding the database's password, and the database never needs to be reachable beyond the host.
+
+Every part of that connection is discovered from the daemon: the socket's location from the exported volumes it reports, and the database and role from the Tamanu application's own parameters.
+Nothing is inferred from where the daemon happens to keep its files.
+When no application exports a socket, the command says so rather than falling back to a route that would need a password it does not have.

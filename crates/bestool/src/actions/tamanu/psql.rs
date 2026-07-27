@@ -10,10 +10,11 @@ use serde_json::Value;
 use tokio::{fs, sync::RwLock, time::timeout};
 use tracing::{debug, info, instrument, warn};
 
-use crate::actions::Context;
+use crate::actions::{Context, tamanu::on_seedling};
 use crate::download::{DownloadSource, reqwest_client};
 
 use bestool_tamanu::{
+	seedling,
 	config::{database_url_override, load_config},
 	connection_url::ConnectionUrlBuilder,
 };
@@ -317,7 +318,27 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		no_redact,
 	} = args;
 
-	let url = if let Some(url) = url {
+	// A Seedling host reaches the database over the socket postgres exports,
+	// discovered from the daemon. This keeps bestool's own client, and with it
+	// the read-only default, redaction, audit trail, and write supervision: a
+	// shell into the database container would hand over a plain psql and drop
+	// all four.
+	let seedling_url = if url.is_none() && database_url_override().is_none() {
+		match seedling::reach().await {
+			seedling::Reach::Seedling(ctl) => {
+				let app = on_seedling::app(&ctl, None).await?;
+				Some(on_seedling::database_url(&app, &ctl).await?)
+			}
+			seedling::Reach::Unreachable(why) => bail!("{why}"),
+			seedling::Reach::Host => None,
+		}
+	} else {
+		None
+	};
+
+	let url = if let Some(url) = seedling_url {
+		url
+	} else if let Some(url) = url {
 		let mut url = reqwest::Url::parse(&url).into_diagnostic()?;
 		if !url.query_pairs().any(|(key, _)| key == "sslmode") {
 			url.query_pairs_mut().append_pair("sslmode", ssl.as_str());

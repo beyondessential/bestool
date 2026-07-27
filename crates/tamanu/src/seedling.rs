@@ -111,6 +111,19 @@ pub struct Show {
 	pub faults: Vec<Value>,
 	#[serde(default)]
 	pub resources: Vec<Resource>,
+	#[serde(default)]
+	pub params: Vec<Param>,
+}
+
+/// One of an app's parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Param {
+	pub name: String,
+	/// The stored value, absent when the parameter is unset or secret.
+	#[serde(default)]
+	pub value: Option<String>,
+	#[serde(default)]
+	pub default_value: Option<String>,
 }
 
 /// One resource of an app: a deployment, job, ingress, service, or volume.
@@ -123,6 +136,17 @@ pub struct Resource {
 	pub instances: Vec<Instance>,
 	#[serde(default)]
 	pub faults: Vec<Value>,
+}
+
+/// A volume one app exports for other things to use, and where it lives on the
+/// host so a co-located tool can address its contents.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExportedVolume {
+	pub app: String,
+	pub volume_name: String,
+	pub host_path: PathBuf,
+	#[serde(default)]
+	pub description: Option<String>,
 }
 
 /// One instance of a resource.
@@ -145,6 +169,13 @@ impl Show {
 	/// services, and volumes have no update strategy to follow.
 	pub fn deployments(&self) -> impl Iterator<Item = &Resource> {
 		self.resources.iter().filter(|r| r.kind == DEPLOYMENT)
+	}
+
+	/// A parameter's effective value: what is stored, or the default it falls
+	/// back to. A secret reads as absent, since the daemon does not return one.
+	pub fn param(&self, name: &str) -> Option<&str> {
+		let param = self.params.iter().find(|p| p.name == name)?;
+		param.value.as_deref().or(param.default_value.as_deref())
 	}
 
 	/// The resources a stop acts on, which are those the daemon can later bring
@@ -222,6 +253,11 @@ impl Ctl {
 		self.output(&["apps", "stop-resource", app, kind, name])
 			.await
 			.map(drop)
+	}
+
+	/// Every volume an app exports for other things to use.
+	pub async fn exported_volumes(&self) -> Result<Vec<ExportedVolume>> {
+		serde_json::from_value(self.json(&["volumes", "exported"]).await?).into_diagnostic()
 	}
 
 	/// Roll one deployment, following the update strategy it declares.

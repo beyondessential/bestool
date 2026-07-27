@@ -8,10 +8,13 @@
 //!
 //! spec: SHC
 
-use miette::Result;
-use tracing::{info, warn};
+use miette::{Result, bail, miette};
+use tracing::{debug, info, warn};
 
 use bestool_tamanu::seedling::{App, Ctl, Show, target};
+
+/// The volume postgres exports so other apps can reach it over a unix socket.
+const SOCKET_VOLUME: &str = "socket";
 
 /// Resolve which app the commands act on.
 pub async fn app(ctl: &Ctl, named: Option<&str>) -> Result<App> {
@@ -86,6 +89,59 @@ pub async fn restart(app_info: &App, ctl: &Ctl) -> Result<()> {
 	}
 	report(ctl, app).await;
 	Ok(())
+}
+
+/// The libpq URL for reaching Tamanu's database on a Seedling host.
+///
+/// Postgres runs as its own app and exports the directory holding its unix
+/// socket, so a co-located tool connects over that socket rather than over the
+/// network. Local socket connections are trusted, which is what lets this work
+/// without handling the superuser password, and the database never has to be
+/// reachable beyond the host.
+///
+/// Everything here comes from the daemon: the socket's location from the
+/// exported-volume listing, the database and role from the Tamanu app's own
+/// parameters.
+///
+/// spec: SHC#interactive-database-access
+pub async fn database_url(app_info: &App, ctl: &Ctl) -> Result<String> {
+	let show = ctl.show(&app_info.name).await?;
+	let database = show.param("db-name").ok_or_else(|| {
+		miette!(
+			"the {} app declares no db-name parameter, so its database can't be identified",
+			app_info.name
+		)
+	})?;
+	let user = show.param("db-user").ok_or_else(|| {
+		miette!(
+			"the {} app declares no db-user parameter, so its role can't be identified",
+			app_info.name
+		)
+	})?;
+
+	let exported = ctl.exported_volumes().await?;
+	let socket = exported
+		.iter()
+		.find(|v| v.volume_name == SOCKET_VOLUME && v.host_path.is_dir())
+		.ok_or_else(|| {
+			miette!(
+				"no app exports a `{SOCKET_VOLUME}` volume, so there is no local socket to reach a database through; the postgres app provides one when it is installed"
+			)
+		})?;
+
+	// The socket directory goes in the host parameter rather than the authority,
+	// which is how libpq is told to use a socket instead of a hostname. It is
+	// carried literally, so a path holding a character that would end the
+	// parameter is refused rather than silently truncating the path.
+	let host = socket.host_path.to_string_lossy();
+	if let Some(bad) = host.chars().find(|c| "?#&= ".contains(*c) || c.is_whitespace()) {
+		bail!(
+			"the exported socket directory {} contains {bad:?}, which can't be carried in a connection URL",
+			socket.host_path.display()
+		);
+	}
+	debug!(%database, %user, path = %socket.host_path.display(), "reaching the database over Seedling's exported socket");
+	Ok(format!("postgresql://{user}@/{database}?host={host}"))
 }
 
 /// Report the app state the daemon holds, resource by resource.
