@@ -14,7 +14,9 @@ This spec covers what each of these commands does once it has resolved to the Se
 ## Lifecycle
 
 Starting Tamanu brings the application out of the stopped state through the daemon, and stopping it returns the application to that state.
-Restarting is a stop followed by a start, so an operator gets the same observable outcome as on a host without Seedling.
+
+Restarting rolls the application's deployments through the daemon, following the update strategy each deployment declares, rather than stopping the application and starting it again.
+A deployment that can keep an instance serving while another is replaced does so, matching the rolling behaviour an operator gets on a host without Seedling; stopping and restarting would drop every instance at once and lose that property.
 
 A lifecycle command reports what the daemon reports: the state the application reached, and the reason when the daemon declines or fails to reach it.
 When the application is already in the requested state, the command succeeds without change rather than treating it as an error.
