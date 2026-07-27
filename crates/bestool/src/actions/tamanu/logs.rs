@@ -177,7 +177,6 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 				args.lines,
 				args.follow,
 				grep,
-				tamanu.use_colours,
 			);
 		}
 		seedling::Reach::Unreachable(why) => bail!("{why}"),
@@ -320,7 +319,6 @@ fn run_seedling_logs(
 	lines: usize,
 	follow: bool,
 	grep: Option<GrepFilter>,
-	use_colours: bool,
 ) -> Result<()> {
 	if selection.include_caddy && !selection.all_tamanu {
 		bail!(
@@ -348,9 +346,9 @@ fn run_seedling_logs(
 	let mut cmd = Command::new(ctl.bin());
 	cmd.arg("apps").arg("logs").arg(app);
 	if let Some(resource) = resource {
-		cmd.arg("--resource").arg(resource);
+		cmd.arg(resource);
 	}
-	cmd.arg("--tail").arg(lines.to_string());
+	cmd.arg("--lines").arg(lines.to_string());
 	if follow {
 		cmd.arg("--follow");
 	}
@@ -360,6 +358,10 @@ fn run_seedling_logs(
 	let mut child = cmd.spawn().into_diagnostic()?;
 	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
 
+	// The daemon renders each entry with its timestamp, unit, and message
+	// already, so lines go out as they arrive. Reformatting them would mean
+	// taking the daemon's envelope apart to rebuild a line it has already
+	// composed.
 	let reader = BufReader::new(stdout);
 	let out_handle = std::io::stdout();
 	let mut out = out_handle.lock();
@@ -368,8 +370,7 @@ fn run_seedling_logs(
 		if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
 			continue;
 		}
-		let formatted = format_log_line(&line, use_colours);
-		if writeln!(out, "{formatted}").is_err() {
+		if writeln!(out, "{line}").is_err() {
 			break;
 		}
 	}

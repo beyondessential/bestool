@@ -31,7 +31,9 @@ It reports the state of each of the application's constituent parts where the da
 The log command streams Tamanu's logs from the daemon's log stream.
 The daemon is the source of the log data, so the command does not read container or journal files itself.
 
-The stream follows the same output shape and the same follow, filtering, and range behaviour the command offers on a host without Seedling, so an operator's habits and any scripts around it carry across unchanged.
+Following, pattern filtering, and the count of trailing lines behave as they do on a host without Seedling, so an operator's habits and any scripts around them carry across.
+The daemon composes each entry it streams from the entry's time, its unit, and the message, and those lines reach the operator as the daemon rendered them.
+Pattern filtering is applied to the stream as it arrives, because the daemon matches no pattern of its own.
 
 ## Interactive database access
 
