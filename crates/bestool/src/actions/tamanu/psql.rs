@@ -327,7 +327,7 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 		match seedling::reach().await {
 			seedling::Reach::Seedling(ctl) => {
 				let app = on_seedling::app(&ctl, None).await?;
-				Some(on_seedling::database_url(&app, &ctl).await?)
+				Some(on_seedling::database_url(&app, &ctl, username.as_deref()).await?)
 			}
 			seedling::Reach::Unreachable(why) => bail!("{why}"),
 			seedling::Reach::Host => None,

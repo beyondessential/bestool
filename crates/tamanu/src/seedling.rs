@@ -243,6 +243,13 @@ impl Ctl {
 		self.output(&["apps", "unstop", app]).await.map(drop)
 	}
 
+	/// Bring one stopped resource back to its desired state.
+	pub async fn unstop_resource(&self, app: &str, kind: &str, name: &str) -> Result<()> {
+		self.output(&["apps", "unstop-resource", app, kind, name])
+			.await
+			.map(drop)
+	}
+
 	/// Stop one resource, leaving it where [`Ctl::unstop`] can bring it back.
 	///
 	/// A stop is built from these rather than from uninstalling the app: an

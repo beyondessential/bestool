@@ -14,7 +14,7 @@ use miette::{IntoDiagnostic, Result, bail, miette};
 use owo_colors::OwoColorize;
 use regex::Regex;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, info};
 
 use bestool_tamanu::{
 	ApiServerKind,
@@ -338,10 +338,18 @@ fn run_seedling_logs(
 	follow: bool,
 	grep: Option<GrepFilter>,
 ) -> Result<()> {
-	if selection.include_caddy && !selection.all_tamanu {
-		bail!(
-			"caddy logs on a Seedling host come from the proxy the daemon manages: `seedling-ctl proxy logs`"
-		);
+	if selection.include_caddy {
+		if selection.all_tamanu {
+			// The default selection includes caddy on a host without Seedling,
+			// so say where it went rather than narrowing the tail silently.
+			info!(
+				"the proxy on a Seedling host is the daemon's; tail it with `seedling-ctl proxy logs`"
+			);
+		} else {
+			bail!(
+				"caddy logs on a Seedling host come from the proxy the daemon manages: `seedling-ctl proxy logs`"
+			);
+		}
 	}
 	if selection.include_postgres && !selection.postgres_alone() {
 		bail!(
