@@ -18,13 +18,16 @@ Starting Tamanu brings the application out of the stopped state through the daem
 Restarting rolls the application's deployments through the daemon, following the update strategy each deployment declares, rather than stopping the application and starting it again.
 A deployment that can keep an instance serving while another is replaced does so, matching the rolling behaviour an operator gets on a host without Seedling; stopping and restarting would drop every instance at once and lose that property.
 
+A lifecycle command with no names acts on the whole application.
+Names select the matching resources instead, matched the way the host path matches service names, and a name matching nothing is an error naming what is available.
+
 A lifecycle command reports what the daemon reports: the state the application reached, and the reason when the daemon declines or fails to reach it.
 When the application is already in the requested state, the command succeeds without change rather than treating it as an error.
 
 ## Status
 
 The status command reports the application state the daemon holds, so an operator sees the state of the runtime the lifecycle commands act on rather than the state of unrelated host services.
-It reports the state of each of the application's constituent parts where the daemon distinguishes them.
+It reports the state of each of the application's constituent parts where the daemon distinguishes them, and names narrow the report to the matching parts.
 
 ## Logs
 
