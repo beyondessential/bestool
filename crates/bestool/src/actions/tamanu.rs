@@ -15,6 +15,9 @@ pub mod lifecycle;
 #[cfg(feature = "tamanu-lifecycle")]
 mod probe;
 
+#[cfg(any(feature = "tamanu-lifecycle", feature = "tamanu-logs"))]
+pub mod on_seedling;
+
 /// Interact with Tamanu.
 ///
 /// Alias: t

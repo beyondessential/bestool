@@ -1,11 +1,14 @@
 use clap::Parser;
-use miette::Result;
+use miette::{Result, bail};
 
-use bestool_tamanu::services::{self, ExpectedState, Expectation, Supervisor};
+use bestool_tamanu::{
+	seedling,
+	services::{self, ExpectedState, Expectation, Supervisor},
+};
 
 use crate::actions::{
 	Context,
-	tamanu::{
+	tamanu::{on_seedling, 
 		TamanuArgs,
 		lifecycle::{self, Instance, WaitForDb},
 	},
@@ -26,6 +29,18 @@ pub struct StopArgs {
 
 pub async fn run(args: StopArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
+
+	// A Seedling host resolves before install discovery, config load, and
+	// privilege elevation below: none apply, and elevating would swap the
+	// operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(ctl) => {
+			let app = on_seedling::app(&ctl, None).await?;
+			return on_seedling::stop(&ctl, &app).await;
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
 
 	let (supervisor, expectations) =
 		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;

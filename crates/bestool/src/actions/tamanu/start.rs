@@ -9,6 +9,7 @@ use miette::{Result, WrapErr, bail};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
+	seedling,
 	pm2,
 	services::{self, ExpectedState, Expectation, Supervisor},
 	systemd,
@@ -16,7 +17,7 @@ use bestool_tamanu::{
 
 use crate::actions::{
 	Context,
-	tamanu::{
+	tamanu::{on_seedling, 
 		TamanuArgs,
 		lifecycle::{self, Instance, WaitForDb},
 		probe,
@@ -76,6 +77,18 @@ pub struct StartArgs {
 
 pub async fn run(args: StartArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
+
+	// A Seedling host resolves before install discovery, config load, and
+	// privilege elevation below: none apply, and elevating would swap the
+	// operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(ctl) => {
+			let app = on_seedling::app(&ctl, None).await?;
+			return on_seedling::start(&ctl, &app).await;
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
 
 	// `tamanu start` is invoked at boot (systemd unit ordering puts it
 	// before tamanu.target but doesn't gate on postgres readiness), so
