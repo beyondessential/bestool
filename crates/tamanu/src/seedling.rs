@@ -88,6 +88,51 @@ impl App {
 	}
 }
 
+/// What the daemon knows about one app.
+///
+/// Only the fields the commands report on are modelled; a resource's full
+/// definition and the app's parameters are left alone.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Show {
+	pub status: String,
+	/// Faults not tied to any one resource, such as script evaluation errors.
+	#[serde(default)]
+	pub faults: Vec<Value>,
+	#[serde(default)]
+	pub resources: Vec<Resource>,
+}
+
+/// One resource of an app: a deployment, job, ingress, service, or volume.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Resource {
+	pub name: String,
+	#[serde(rename = "type")]
+	pub kind: String,
+	#[serde(default)]
+	pub instances: Vec<Instance>,
+	#[serde(default)]
+	pub faults: Vec<Value>,
+}
+
+/// One instance of a resource.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Instance {
+	pub display_name: String,
+	pub lifecycle: String,
+}
+
+/// The resource type that carries a scale and an update strategy, and so is
+/// the unit a restart rolls.
+const DEPLOYMENT: &str = "deployment";
+
+impl Show {
+	/// The app's deployments, which are what a restart rolls: jobs, ingresses,
+	/// services, and volumes have no update strategy to follow.
+	pub fn deployments(&self) -> impl Iterator<Item = &Resource> {
+		self.resources.iter().filter(|r| r.kind == DEPLOYMENT)
+	}
+}
+
 impl Ctl {
 	fn install() -> Option<Self> {
 		let bin = Path::new(CTL_BIN);
@@ -135,8 +180,8 @@ impl Ctl {
 	}
 
 	/// Everything the daemon knows about one app, including its resources.
-	pub async fn show(&self, app: &str) -> Result<Value> {
-		self.json(&["apps", "show", app]).await
+	pub async fn show(&self, app: &str) -> Result<Show> {
+		serde_json::from_value(self.json(&["apps", "show", app]).await?).into_diagnostic()
 	}
 
 	/// Bring every stopped resource of an app back to its desired state.
@@ -261,6 +306,48 @@ mod tests {
 		let err = format!("{}", target(&apps, Some("nope")).unwrap_err());
 		assert!(err.contains("no app named nope"), "{err}");
 		assert!(err.contains("tamanu"), "{err}");
+	}
+
+	#[test]
+	fn show_parses_the_daemon_shape_and_picks_deployments() {
+		let show: Show = serde_json::from_value(serde_json::json!({
+			"status": "Degraded",
+			"faults": [],
+			"resources": [
+				{
+					"name": "api",
+					"type": "deployment",
+					"scale": 2,
+					"instances": [
+						{ "id": "1", "display_name": "api-1", "lifecycle": "Running" },
+						{ "id": "2", "display_name": "api-2", "lifecycle": "Terminating" },
+					],
+					"faults": [],
+					"def": { "container": { "image": "tamanu:latest" } },
+				},
+				{ "name": "migrate", "type": "job", "instances": [], "faults": [] },
+				{ "name": "web", "type": "ingress", "instances": [], "faults": [] },
+			],
+			"params": [{ "name": "version", "value": "2.60.0", "is_set": true, "secret": false }],
+		}))
+		.unwrap();
+
+		assert_eq!(show.status, "Degraded");
+		let deployments: Vec<&str> = show.deployments().map(|r| r.name.as_str()).collect();
+		assert_eq!(deployments, vec!["api"], "jobs and ingresses aren't rolled");
+
+		let api = show.deployments().next().unwrap();
+		assert_eq!(api.instances.len(), 2);
+		assert_eq!(api.instances[0].display_name, "api-1");
+		assert_eq!(api.instances[1].lifecycle, "Terminating");
+	}
+
+	#[test]
+	fn show_tolerates_an_app_with_no_resources() {
+		let show: Show =
+			serde_json::from_value(serde_json::json!({ "status": "NotInstalled" })).unwrap();
+		assert!(show.resources.is_empty());
+		assert_eq!(show.deployments().count(), 0);
 	}
 
 	#[test]
