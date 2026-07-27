@@ -125,11 +125,23 @@ pub struct Instance {
 /// the unit a restart rolls.
 const DEPLOYMENT: &str = "deployment";
 
+/// Resource kinds the daemon can stop and bring back. Services and volumes
+/// carry no lifecycle of their own to stop.
+const STOPPABLE: [&str; 3] = [DEPLOYMENT, "job", "ingress"];
+
 impl Show {
 	/// The app's deployments, which are what a restart rolls: jobs, ingresses,
 	/// services, and volumes have no update strategy to follow.
 	pub fn deployments(&self) -> impl Iterator<Item = &Resource> {
 		self.resources.iter().filter(|r| r.kind == DEPLOYMENT)
+	}
+
+	/// The resources a stop acts on, which are those the daemon can later bring
+	/// back where it left them.
+	pub fn stoppable(&self) -> impl Iterator<Item = &Resource> {
+		self.resources
+			.iter()
+			.filter(|r| STOPPABLE.contains(&r.kind.as_str()))
 	}
 }
 
@@ -187,6 +199,18 @@ impl Ctl {
 	/// Bring every stopped resource of an app back to its desired state.
 	pub async fn unstop(&self, app: &str) -> Result<()> {
 		self.output(&["apps", "unstop", app]).await.map(drop)
+	}
+
+	/// Stop one resource, leaving it where [`Ctl::unstop`] can bring it back.
+	///
+	/// A stop is built from these rather than from uninstalling the app: an
+	/// uninstalled app is recovered by installing it again, and an install takes
+	/// the parameters the app was installed with, which a stop has no business
+	/// knowing or re-supplying.
+	pub async fn stop_resource(&self, app: &str, kind: &str, name: &str) -> Result<()> {
+		self.output(&["apps", "stop-resource", app, kind, name])
+			.await
+			.map(drop)
 	}
 
 	/// Roll one deployment, following the update strategy it declares.
@@ -340,6 +364,28 @@ mod tests {
 		assert_eq!(api.instances.len(), 2);
 		assert_eq!(api.instances[0].display_name, "api-1");
 		assert_eq!(api.instances[1].lifecycle, "Terminating");
+	}
+
+	#[test]
+	fn stoppable_covers_the_kinds_with_a_lifecycle() {
+		let show: Show = serde_json::from_value(serde_json::json!({
+			"status": "Running",
+			"resources": [
+				{ "name": "api", "type": "deployment" },
+				{ "name": "migrate", "type": "job" },
+				{ "name": "web", "type": "ingress" },
+				{ "name": "api-svc", "type": "service" },
+				{ "name": "data", "type": "volume" },
+			],
+		}))
+		.unwrap();
+
+		let stoppable: Vec<&str> = show.stoppable().map(|r| r.name.as_str()).collect();
+		assert_eq!(
+			stoppable,
+			vec!["api", "migrate", "web"],
+			"services and volumes have no lifecycle to stop"
+		);
 	}
 
 	#[test]
