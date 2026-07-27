@@ -11,18 +11,28 @@
 use miette::Result;
 use tracing::{info, warn};
 
-use bestool_tamanu::seedling::{Ctl, Show, target};
+use bestool_tamanu::seedling::{App, Ctl, Show, target};
 
 /// Resolve which app the commands act on.
-pub async fn app(ctl: &Ctl, named: Option<&str>) -> Result<String> {
+pub async fn app(ctl: &Ctl, named: Option<&str>) -> Result<App> {
 	let apps = ctl.apps().await?;
-	Ok(target(&apps, named)?.name.clone())
+	Ok(target(&apps, named)?.clone())
 }
 
 /// Bring the app out of the stopped state.
 ///
 /// spec: SHC#lifecycle
-pub async fn start(ctl: &Ctl, app: &str) -> Result<()> {
+pub async fn start(app_info: &App, ctl: &Ctl) -> Result<()> {
+	let app = &app_info.name;
+	if !app_info.has_stopped_resources {
+		info!(
+			app,
+			status = %app_info.status,
+			"nothing to start: no resources are stopped"
+		);
+		return Ok(());
+	}
+
 	info!(app, "starting through the Seedling daemon");
 	ctl.unstop(app).await?;
 	report(ctl, app).await;
@@ -32,7 +42,8 @@ pub async fn start(ctl: &Ctl, app: &str) -> Result<()> {
 /// Return the app to the stopped state.
 ///
 /// spec: SHC#lifecycle
-pub async fn stop(ctl: &Ctl, app: &str) -> Result<()> {
+pub async fn stop(app_info: &App, ctl: &Ctl) -> Result<()> {
+	let app = &app_info.name;
 	let show = ctl.show(app).await?;
 	let stoppable: Vec<(String, String)> = show
 		.stoppable()
@@ -56,7 +67,8 @@ pub async fn stop(ctl: &Ctl, app: &str) -> Result<()> {
 /// declares.
 ///
 /// spec: SHC#lifecycle
-pub async fn restart(ctl: &Ctl, app: &str) -> Result<()> {
+pub async fn restart(app_info: &App, ctl: &Ctl) -> Result<()> {
+	let app = &app_info.name;
 	let show = ctl.show(app).await?;
 	let deployments: Vec<String> = show.deployments().map(|r| r.name.clone()).collect();
 
@@ -79,7 +91,8 @@ pub async fn restart(ctl: &Ctl, app: &str) -> Result<()> {
 /// Report the app state the daemon holds, resource by resource.
 ///
 /// spec: SHC#status
-pub async fn status(ctl: &Ctl, app: &str) -> Result<()> {
+pub async fn status(app_info: &App, ctl: &Ctl) -> Result<()> {
+	let app = &app_info.name;
 	let show = ctl.show(app).await?;
 	println!("{app}: {}", show.status);
 	if !show.faults.is_empty() {

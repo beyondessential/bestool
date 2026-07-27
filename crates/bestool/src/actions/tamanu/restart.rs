@@ -73,7 +73,7 @@ pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	match seedling::reach().await {
 		seedling::Reach::Seedling(ctl) => {
 			let app = on_seedling::app(&ctl, None).await?;
-			return on_seedling::restart(&ctl, &app).await;
+			return on_seedling::restart(&app, &ctl).await;
 		}
 		seedling::Reach::Unreachable(why) => bail!("{why}"),
 		seedling::Reach::Host => {}

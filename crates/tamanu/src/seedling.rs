@@ -78,6 +78,12 @@ pub struct App {
 	/// Active, uncleared faults filed against the app.
 	#[serde(default)]
 	pub fault_count: u64,
+	/// Whether any of the app's resources are stopped, which is what a start
+	/// has to undo.
+	#[serde(default)]
+	pub has_stopped_resources: bool,
+	#[serde(default)]
+	pub description: Option<String>,
 }
 
 impl App {
@@ -275,8 +281,10 @@ mod tests {
 	fn app(name: &str) -> App {
 		App {
 			name: name.into(),
-			status: "Running".into(),
+			status: "running".into(),
 			fault_count: 0,
+			has_stopped_resources: false,
+			description: None,
 		}
 	}
 
@@ -406,8 +414,10 @@ mod tests {
 		// Statuses as the daemon actually sends them: lower-cased and
 		// underscored, unlike the capitalised lifecycle on a resource instance.
 		let apps: Vec<App> = serde_json::from_value(serde_json::json!([
-			{ "name": "postgres", "status": "installing", "fault_count": 2 },
-			{ "name": "tamanu-facility", "status": "not_installed", "fault_count": 0 },
+			{ "name": "postgres", "status": "installing", "has_stopped_resources": false,
+			  "fault_count": 2, "description": "PostgreSQL database server" },
+			{ "name": "tamanu-facility", "status": "not_installed",
+			  "has_stopped_resources": true, "fault_count": 0, "description": "Tamanu facility" },
 			{ "name": "tamanu-central", "status": "running", "fault_count": 0 },
 		]))
 		.unwrap();
@@ -416,6 +426,15 @@ mod tests {
 		assert!(!apps[1].running());
 		assert!(apps[2].running());
 		assert_eq!(apps[0].fault_count, 2);
+		assert!(apps[1].has_stopped_resources);
+		assert_eq!(
+			apps[0].description.as_deref(),
+			Some("PostgreSQL database server")
+		);
+		assert!(
+			!apps[2].has_stopped_resources,
+			"an absent field defaults rather than failing the parse"
+		);
 	}
 
 	#[test]
