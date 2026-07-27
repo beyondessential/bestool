@@ -7,7 +7,7 @@ id: SEED
 Some hosts run the Seedling application orchestrator, which owns the applications on that host and exposes an operator interface for observing and controlling them.
 On such a host the Tamanu commands act through the Seedling daemon rather than through the host's service manager and container runtime.
 
-This spec holds what every Seedling-aware command shares: how a host is recognised as a Seedling host, how a command authenticates to the daemon, and how a command chooses where to act.
+This spec holds what every Seedling-aware command shares: how a host is recognised as a Seedling host, how a command reaches the daemon, and how a command chooses where to act.
 Individual commands are specified alongside: the operational commands in [SHC](host-commands.md).
 
 ## Recognising a Seedling host
