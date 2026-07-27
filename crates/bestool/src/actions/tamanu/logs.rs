@@ -34,6 +34,10 @@ use crate::actions::{
 /// alongside whatever tamanu services are matched.
 const CADDY: &str = "caddy";
 
+/// The app postgres runs as on a Seedling host, where it is a peer of the
+/// Tamanu app rather than one of its resources.
+const POSTGRES_APP: &str = "postgres";
+
 /// True when `name` is one of the recognised postgres aliases. The postgres
 /// pseudo-service accepts a small set of common spellings so operators don't
 /// have to remember an exact form.
@@ -125,6 +129,17 @@ struct Selection {
 	all_tamanu: bool,
 }
 
+impl Selection {
+	/// Whether the operator asked for postgres and nothing else, which on a
+	/// Seedling host means tailing the postgres app rather than the Tamanu one.
+	fn postgres_alone(&self) -> bool {
+		self.include_postgres
+			&& !self.include_caddy
+			&& !self.all_tamanu
+			&& self.tamanu_names.is_empty()
+	}
+}
+
 fn select(names: &[String]) -> Selection {
 	if names.is_empty() {
 		return Selection {
@@ -169,7 +184,10 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 				invert: args.invert,
 			});
 			let apps = ctl.apps().await?;
-			let app = seedling::target(&apps, None)?;
+			// On a Seedling host postgres is its own app rather than a resource
+			// of the Tamanu app, so the pseudo-service resolves to that app.
+			let named = selection.postgres_alone().then_some(POSTGRES_APP);
+			let app = seedling::target(&apps, named)?;
 			return run_seedling_logs(
 				&ctl,
 				&app.name,
@@ -325,9 +343,9 @@ fn run_seedling_logs(
 			"caddy logs on a Seedling host come from the proxy the daemon manages: `seedling-ctl proxy logs`"
 		);
 	}
-	if selection.include_postgres {
+	if selection.include_postgres && !selection.postgres_alone() {
 		bail!(
-			"postgres runs as a resource of the {app} app on a Seedling host: name the resource instead of `postgres`"
+			"postgres is its own app on a Seedling host, so it can't be tailed alongside {app}; ask for `postgres` on its own"
 		);
 	}
 
