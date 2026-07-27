@@ -12,8 +12,9 @@ Individual commands are specified alongside: the operational commands in [SHC](h
 
 ## Recognising a Seedling host
 
-A host counts as a Seedling host when the Seedling daemon's data directory is configured in the environment.
-That signal describes the host, so it is independent of whether the daemon is currently running or reachable.
+A host counts as a Seedling host when the Seedling daemon is installed on it as a service.
+Installing Seedling registers the daemon as a service and keeps its state in a fixed directory, so the presence of that service is a property of the host rather than of the daemon's current condition: a host whose daemon is stopped, broken, or mid-upgrade is still a Seedling host.
+Recognition therefore never depends on reaching the daemon, which is what lets an unreachable daemon be reported as a fault instead of being mistaken for a host that runs no Seedling.
 
 ## Acting through the operator's CLI
 
