@@ -59,6 +59,11 @@ pub struct Stat {
 	/// it. Only meaningful for munin; prometheus dimensions everything by name
 	/// and labels regardless.
 	pub group: Option<&'static str>,
+	/// Metric namespace overriding the check name in the prometheus metric name
+	/// and munin graph. `None` uses the check name. Set when the check name
+	/// would mislead — e.g. the error-rate check `http_errors` publishing its
+	/// request telemetry (which counts 2xx responses too) under `http`.
+	pub namespace: Option<&'static str>,
 }
 
 impl Stat {
@@ -70,6 +75,7 @@ impl Stat {
 			labels: Vec::new(),
 			help: None,
 			group: None,
+			namespace: None,
 		}
 	}
 
@@ -81,6 +87,7 @@ impl Stat {
 			labels: Vec::new(),
 			help: None,
 			group: None,
+			namespace: None,
 		}
 	}
 
@@ -102,6 +109,21 @@ impl Stat {
 	pub fn group(mut self, group: &'static str) -> Self {
 		self.group = Some(group);
 		self
+	}
+
+	/// Publish this metric under `namespace` instead of the check's name. See
+	/// [`Self::namespace`].
+	pub fn namespace(mut self, namespace: &'static str) -> Self {
+		self.namespace = Some(namespace);
+		self
+	}
+
+	/// The metric namespace: the override if set, else the check name.
+	pub fn namespace_or<'a>(&self, check: &'a str) -> &'a str {
+		match self.namespace {
+			Some(ns) => ns,
+			None => check,
+		}
 	}
 }
 
@@ -194,6 +216,20 @@ mod tests {
 		assert_eq!(
 			Stat::gauge("used_bytes", 1.0).group("bytes").group,
 			Some("bytes")
+		);
+	}
+
+	#[test]
+	fn namespace_defaults_to_check_and_overrides() {
+		assert_eq!(
+			Stat::gauge("x", 1.0).namespace_or("http_errors"),
+			"http_errors"
+		);
+		assert_eq!(
+			Stat::gauge("x", 1.0)
+				.namespace("http")
+				.namespace_or("http_errors"),
+			"http"
 		);
 	}
 

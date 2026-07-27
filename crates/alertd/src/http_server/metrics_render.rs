@@ -73,7 +73,25 @@ fn munin_field_label(stat: &Stat) -> String {
 
 /// The prometheus metric name for a stat within a check's namespace.
 fn prom_name(check: &str, stat: &Stat) -> String {
-	format!("{PREFIX}_{check}_{}", stat.name)
+	format!("{PREFIX}_{}_{}", stat.namespace_or(check), stat.name)
+}
+
+/// Munin axis label and optional `graph_args`, derived from the unit a metric
+/// carries in its name (the spec keeps a metric's unit in its name). A group
+/// shares a unit, so this reads the first stat's name.
+fn munin_unit(stats: &[&Stat]) -> Option<(&'static str, Option<&'static str>)> {
+	let name = stats.first()?.name;
+	if name.ends_with("_bytes") {
+		Some(("bytes", Some("--base 1024")))
+	} else if name.ends_with("_seconds") || name.ends_with("_secs") {
+		Some(("seconds", None))
+	} else if name.ends_with("_ms") {
+		Some(("milliseconds", None))
+	} else if name.ends_with("_pct") || name.ends_with("_percent") {
+		Some(("%", None))
+	} else {
+		None
+	}
 }
 
 /// Render the prometheus body: daemon liveness (as an age), and — when a sweep
@@ -249,27 +267,35 @@ pub fn render_munin(
 		std::collections::HashMap::new();
 	for (check, stat) in &snapshot.stats {
 		let check: &str = check;
-		// A metric with no explicit group forms its own graph, named for it.
+		// The metric's namespace (its own name override, else the check) prefixes
+		// the graph; a metric with no explicit group forms its own graph.
+		let namespace = stat.namespace_or(check);
 		let group = stat.group.unwrap_or(stat.name);
 		by_group
-			.entry((check, group))
+			.entry((namespace, group))
 			.or_insert_with(|| {
-				order.push((check, group));
+				order.push((namespace, group));
 				Vec::new()
 			})
 			.push(stat);
 	}
 
-	for (check, group) in order {
+	for (namespace, group) in order {
 		let _ = writeln!(
 			out,
-			"\nmultigraph {PREFIX}_{check}_{}",
+			"\nmultigraph {PREFIX}_{namespace}_{}",
 			munin_field_segment(group)
 		);
-		let stats = &by_group[&(check, group)];
+		let stats = &by_group[&(namespace, group)];
 		if config {
-			let _ = writeln!(out, "graph_title {check} {group}");
+			let _ = writeln!(out, "graph_title {namespace} {group}");
 			let _ = writeln!(out, "graph_category bestool");
+			if let Some((vlabel, args)) = munin_unit(stats) {
+				let _ = writeln!(out, "graph_vlabel {vlabel}");
+				if let Some(args) = args {
+					let _ = writeln!(out, "graph_args {args}");
+				}
+			}
 			// The metrics of one group share a description; use it as the graph's.
 			if let Some(help) = stats.iter().find_map(|s| s.help.as_deref()) {
 				let _ = writeln!(out, "graph_info {}", help.replace('\n', " "));
@@ -385,6 +411,63 @@ mod tests {
 		assert!(out.contains("jobs_queued.type GAUGE"));
 		// No values in config mode.
 		assert!(!out.contains(".value "));
+	}
+
+	#[test]
+	fn namespace_overrides_the_check_prefix() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"http_errors",
+					Stat::gauge("requests", 5.0)
+						.namespace("http")
+						.group("traffic"),
+				),
+				(
+					"http_errors",
+					Stat::gauge("requests_by_code", 2.0)
+						.namespace("http")
+						.label("code", "200"),
+				),
+			],
+		};
+		let prom = render_prometheus(Some(&s), 0, 0);
+		assert!(prom.contains("bes_alertd_http_requests 5"));
+		assert!(prom.contains("bes_alertd_http_requests_by_code{code=\"200\"} 2"));
+		assert!(!prom.contains("http_errors_requests"));
+
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("multigraph bes_alertd_http_traffic"));
+		assert!(cfg.contains("graph_title http traffic"));
+		assert!(!cfg.contains("bes_alertd_http_errors_"));
+	}
+
+	#[test]
+	fn munin_labels_axis_with_the_unit() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"sync_sessions",
+					Stat::gauge("total_duration_seconds", 3.0).group("durations"),
+				),
+				(
+					"sync_snapshot_tables",
+					Stat::gauge("table_size_bytes", 9.0)
+						.group("sizes")
+						.label("quantile", "0.5"),
+				),
+			],
+		};
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("multigraph bes_alertd_sync_sessions_durations"));
+		assert!(cfg.contains("graph_vlabel seconds"));
+		assert!(cfg.contains("multigraph bes_alertd_sync_snapshot_tables_sizes"));
+		assert!(cfg.contains("graph_vlabel bytes"));
+		assert!(cfg.contains("graph_args --base 1024"));
 	}
 
 	#[test]

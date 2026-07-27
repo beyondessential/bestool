@@ -204,11 +204,13 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		.with_detail("baseline_source", source_label)
 		.with_stat(
 			Stat::gauge("requests", 0.0)
+				.namespace("http")
 				.group("traffic")
 				.help("Requests in the window"),
 		)
 		.with_stat(
 			Stat::gauge("server_errors", 0.0)
+				.namespace("http")
 				.group("traffic")
 				.help("5xx responses in the window"),
 		);
@@ -249,17 +251,24 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		.with_detail("by_code", Value::Object(by_code))
 		.with_stat(
 			Stat::gauge("requests", total as f64)
+				.namespace("http")
 				.group("traffic")
 				.help("Requests in the window"),
 		)
 		.with_stat(
 			Stat::gauge("server_errors", errored as f64)
+				.namespace("http")
 				.group("traffic")
 				.help("5xx responses in the window"),
 		)
-		.with_stat(Stat::gauge("server_error_rate_pct", pct).help("5xx rate, percent"))
+		.with_stat(
+			Stat::gauge("server_error_rate_pct", pct)
+				.namespace("http")
+				.help("5xx rate, percent"),
+		)
 		.with_stats(deltas.iter().map(|(code, n)| {
 			Stat::gauge("requests_by_code", *n as f64)
+				.namespace("http")
 				.label("code", code.clone())
 				.help("Requests in the window by HTTP status code")
 		}))
