@@ -7,7 +7,7 @@ id: SHC
 On a Seedling host, `bestool tamanu start`, `stop`, `restart`, `status`, `logs`, and `psql` act through the Seedling daemon.
 An operator runs the same commands with the same arguments on every host; the command discovers where Tamanu actually lives and acts there.
 
-Host recognition, authentication, path selection, and application targeting are shared by every Seedling-aware command and specified in [SEED](overview.md).
+Host recognition, how a command reaches the daemon, path selection, and application targeting are shared by every Seedling-aware command and specified in [SEED](overview.md).
 This spec covers what each of these commands does once it has resolved to the Seedling path.
 `bestool tamanu doctor` gathers Seedling health checks through the same daemon, covered separately.
 

@@ -12,17 +12,16 @@ Individual commands are specified alongside: the operational commands in [SHC](h
 
 ## Recognising a Seedling host
 
-A host counts as a Seedling host when the daemon's data directory is configured in the environment and the daemon's published operator-interface identity is present there.
-The daemon writes its own interface identity into its data directory at startup, so a co-located command establishes which daemon it is talking to by reading that file rather than by probing the daemon or prompting the operator.
+A host counts as a Seedling host when the Seedling daemon's data directory is configured in the environment.
+That signal describes the host, so it is independent of whether the daemon is currently running or reachable.
 
-## Authenticating to the daemon
+## Acting through the operator's CLI
 
-A command authenticates to the daemon as a client the daemon has authorised.
-The daemon holds a set of authorised client identities, and admits an entry added to the authorisation file in its data directory.
-Because the commands run on the same host as the daemon, an operator with write access to the data directory can authorise the tooling without needing a prior authenticated session.
+A command reaches the daemon by driving `seedling-ctl`, the Seedling operator CLI, rather than by speaking the operator interface itself.
 
-A command never authorises itself.
-When the daemon has not authorised it, the command reports that it is unauthorised and identifies the client identity an operator needs to authorise, rather than granting itself access to the daemon it is asking to control.
+The operator interface authenticates both ends by pinned public key, and the CLI already holds the operator's own identity and its store of known daemon identities.
+Driving the CLI therefore carries the identity of the operator who invoked the command, and needs no separate identity of its own: an operator who can already operate the host can run these commands, and one who cannot is refused by the daemon rather than by us.
+This also keeps a command's authority equal to the authority of the person running it, so a command cannot reach a daemon its operator could not reach directly.
 
 ## Choosing where to act
 
@@ -32,8 +31,11 @@ When no Seedling is configured on the host, the command acts through the host se
 
 When Seedling is configured and its daemon answers, the command acts through the daemon.
 
-When Seedling is configured and its daemon cannot be reached, or has not authorised this client, the command reports why it cannot reach the daemon and does nothing.
-It does not fall back to the host service manager in this state: on a Seedling host the services under the host manager are not the ones the operator means, so acting on them would report success while leaving the running system untouched.
+When Seedling is configured but the daemon cannot be reached, the command reports why and does nothing.
+This covers a daemon that is down, an operator the daemon refuses, and an operator CLI that is absent from the host.
+
+It does not fall back to the host service manager in any of those states: on a Seedling host the services under the host manager are not the ones the operator means, so acting on them would report success while leaving the running system untouched.
+A Seedling host that cannot currently be reached is still a Seedling host, so the answer is an error the operator can act on rather than a quiet change of target.
 
 ## Targeting an application
 
