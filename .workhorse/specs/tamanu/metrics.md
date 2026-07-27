@@ -66,3 +66,11 @@ The phase durations share one graph.
 
 The sync-snapshot-tables check reports the p50 and p99 of the leftover snapshot tables' sizes in bytes, as two series of one percentile graph, alongside the count of tables and recent sessions.
 The total size of all snapshot tables is a separate graph: it dwarfs the percentiles, so sharing an axis would flatten their variation.
+
+## FHIR workers
+
+The FHIR-workers check ([CHK-FWK](fhir-workers.md)) reports the health of a central's FHIR materialisation workers, read from their heartbeats.
+
+It reports the count of live workers beside the count of dropped workers — those that stopped heartbeating without deregistering — as the two components of one graph.
+It reports the age in seconds of the oldest live worker's heartbeat, so an operator sees how close the least-fresh worker is to the drop window, on its own graph.
+It reports the number of jobs the live workers have completed successfully and the number they have failed, summed across the live workers as one metric dimensioned by outcome; because a worker's identity is fresh each time its process starts, these are aggregate throughput rather than a per-worker or monotonic series.

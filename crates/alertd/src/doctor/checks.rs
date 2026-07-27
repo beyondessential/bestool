@@ -33,6 +33,7 @@ pub mod fhir_config;
 pub mod fhir_job_errors;
 pub mod fhir_jobs;
 pub mod fhir_service_requests_unresolved;
+pub mod fhir_workers;
 pub mod http_errors;
 pub mod inodes;
 pub mod ips;
@@ -362,6 +363,7 @@ pub fn all() -> Vec<CheckEntry> {
 		// Config-derived: the FHIR API and worker toggles must agree.
 		entry!("fhir_config", fhir_config),
 		entry!("fhir_jobs", fhir_jobs),
+		entry!("fhir_workers", fhir_workers),
 		entry!(
 			"certificate_notification_errors",
 			certificate_notification_errors
