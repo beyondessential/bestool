@@ -8,6 +8,7 @@
 //!
 //! spec: SHC
 
+use comfy_table::{Cell, Color, ContentArrangement, Table, presets::UTF8_HORIZONTAL_ONLY};
 use miette::{Result, bail, miette};
 use tracing::{debug, info, warn};
 
@@ -30,7 +31,7 @@ pub async fn app(ctl: &Ctl, named: Option<&str>) -> Result<App> {
 /// path's `--ignore-unmatched` does. A command must never act on a broader set
 /// than the operator asked for, so an empty result after filtering is the
 /// caller's signal to do nothing.
-fn match_resources<'a>(
+pub(crate) fn match_resources<'a>(
 	resources: Vec<&'a Resource>,
 	names: &[String],
 	ignore_unmatched: bool,
@@ -228,37 +229,57 @@ pub async fn database_url(app_info: &App, ctl: &Ctl, username: Option<&str>) -> 
 /// Report the app state the daemon holds, resource by resource.
 ///
 /// spec: SHC#status
-pub async fn status(app_info: &App, ctl: &Ctl, names: &[String]) -> Result<()> {
+pub async fn status(app_info: &App, ctl: &Ctl, names: &[String], use_colours: bool) -> Result<()> {
 	let app = &app_info.name;
 	let show = ctl.show(app).await?;
 	println!("{app}: {}", show.status);
 	if !show.faults.is_empty() {
-		println!("  {} app-level fault(s)", show.faults.len());
+		println!("{} app-level fault(s)", show.faults.len());
 	}
+
+	let mut table = Table::new();
+	table
+		.load_preset(UTF8_HORIZONTAL_ONLY)
+		.set_content_arrangement(ContentArrangement::Dynamic)
+		.set_header(vec!["Resource", "Kind", "Instances", "Faults"]);
 
 	for resource in match_resources(show.resources.iter().collect(), names, false)? {
-		let faults = if resource.faults.is_empty() {
-			String::new()
+		let instances = if resource.instances.is_empty() {
+			Cell::new("-")
 		} else {
-			format!(", {} fault(s)", resource.faults.len())
+			let rendered = resource
+				.instances
+				.iter()
+				.map(|i| format!("{} {}", i.display_name, i.lifecycle))
+				.collect::<Vec<_>>()
+				.join("\n");
+			let all_live = resource
+				.instances
+				.iter()
+				.all(|i| matches!(i.lifecycle.as_str(), "Running" | "Ready"));
+			let cell = Cell::new(rendered);
+			if !use_colours {
+				cell
+			} else if all_live {
+				cell.fg(Color::Green)
+			} else {
+				cell.fg(Color::Yellow)
+			}
 		};
-
-		if resource.instances.is_empty() {
-			println!("  {} ({}){faults}", resource.name, resource.kind);
-			continue;
-		}
-
-		let instances = resource
-			.instances
-			.iter()
-			.map(|i| format!("{}={}", i.display_name, i.lifecycle))
-			.collect::<Vec<_>>()
-			.join(" ");
-		println!(
-			"  {} ({}){faults}: {instances}",
-			resource.name, resource.kind
-		);
+		let faults = if resource.faults.is_empty() {
+			Cell::new("")
+		} else {
+			let cell = Cell::new(resource.faults.len());
+			if use_colours { cell.fg(Color::Red) } else { cell }
+		};
+		table.add_row(vec![
+			Cell::new(&resource.name),
+			Cell::new(&resource.kind),
+			instances,
+			faults,
+		]);
 	}
+	println!("{table}");
 	Ok(())
 }
 

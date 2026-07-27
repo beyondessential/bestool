@@ -14,7 +14,8 @@ use miette::{IntoDiagnostic, Result, bail, miette};
 use owo_colors::OwoColorize;
 use regex::Regex;
 use serde_json::Value;
-use tracing::{debug, info};
+use tokio::io::AsyncBufReadExt;
+use tracing::debug;
 
 use bestool_tamanu::{
 	ApiServerKind,
@@ -27,7 +28,7 @@ use bestool_tamanu::{
 
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, find_tamanu, lifecycle},
+	tamanu::{TamanuArgs, find_tamanu, lifecycle, on_seedling},
 };
 
 /// The literal pseudo-service name that triggers caddy log tailing
@@ -129,16 +130,6 @@ struct Selection {
 	all_tamanu: bool,
 }
 
-impl Selection {
-	/// Whether the operator asked for postgres and nothing else, which on a
-	/// Seedling host means tailing the postgres app rather than the Tamanu one.
-	fn postgres_alone(&self) -> bool {
-		self.include_postgres
-			&& !self.include_caddy
-			&& !self.all_tamanu
-			&& self.tamanu_names.is_empty()
-	}
-}
 
 fn select(names: &[String]) -> Selection {
 	if names.is_empty() {
@@ -183,19 +174,7 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 				regex: re,
 				invert: args.invert,
 			});
-			let apps = ctl.apps().await?;
-			// On a Seedling host postgres is its own app rather than a resource
-			// of the Tamanu app, so the pseudo-service resolves to that app.
-			let named = selection.postgres_alone().then_some(POSTGRES_APP);
-			let app = seedling::target(&apps, named)?;
-			return run_seedling_logs(
-				&ctl,
-				&app.name,
-				&selection,
-				args.lines,
-				args.follow,
-				grep,
-			);
+			return run_seedling_logs(&ctl, &selection, args.lines, args.follow, grep).await;
 		}
 		seedling::Reach::Unreachable(why) => bail!("{why}"),
 		seedling::Reach::Host => {}
@@ -324,86 +303,112 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	}
 }
 
-/// Stream one Seedling app's logs from the daemon.
+/// Tail through the Seedling daemon: the Tamanu app (or its named
+/// resources), the daemon's proxy for `caddy`, and the postgres app for
+/// `postgres`, each as its own stream interleaved on stdout.
 ///
-/// The daemon offers no server-side pattern match, so `--grep` is applied to
-/// every line here rather than pushed down the way `journalctl -g` allows.
+/// The daemon composes each line with its timestamp and unit, and matches no
+/// pattern of its own, so `--grep` is applied per line here.
 ///
 /// spec: SHC#logs
-fn run_seedling_logs(
+async fn run_seedling_logs(
 	ctl: &seedling::Ctl,
-	app: &str,
 	selection: &Selection,
 	lines: usize,
 	follow: bool,
 	grep: Option<GrepFilter>,
 ) -> Result<()> {
-	if selection.include_caddy {
+	let mut streams: Vec<(String, Vec<String>)> = Vec::new();
+
+	if selection.all_tamanu || !selection.tamanu_names.is_empty() {
+		let apps = ctl.apps().await?;
+		let app = seedling::target(&apps, None)?.name.clone();
 		if selection.all_tamanu {
-			// The default selection includes caddy on a host without Seedling,
-			// so say where it went rather than narrowing the tail silently.
-			info!(
-				"the proxy on a Seedling host is the daemon's; tail it with `seedling-ctl proxy logs`"
-			);
+			streams.push((app.clone(), vec!["apps".into(), "logs".into(), app.clone()]));
 		} else {
-			bail!(
-				"caddy logs on a Seedling host come from the proxy the daemon manages: `seedling-ctl proxy logs`"
-			);
+			let resources: Vec<_> = ctl.show(&app).await?.resources;
+			let matched = on_seedling::match_resources(
+				resources.iter().collect(),
+				&selection.tamanu_names,
+				false,
+			)?;
+			for resource in matched {
+				streams.push((
+					format!("{app}/{}", resource.name),
+					vec![
+						"apps".into(),
+						"logs".into(),
+						app.clone(),
+						resource.name.clone(),
+					],
+				));
+			}
 		}
 	}
-	if selection.include_postgres && !selection.postgres_alone() {
+	if selection.include_caddy {
+		// The proxy on a Seedling host is the daemon's, not a host caddy.
+		streams.push(("proxy".into(), vec!["proxy".into(), "logs".into()]));
+	}
+	if selection.include_postgres {
+		// Postgres is its own app, a peer of the Tamanu one.
+		streams.push((
+			POSTGRES_APP.into(),
+			vec!["apps".into(), "logs".into(), POSTGRES_APP.into()],
+		));
+	}
+
+	if streams.is_empty() {
+		bail!("nothing to tail: no matched resources, caddy, or postgres included");
+	}
+
+	let mut set = tokio::task::JoinSet::new();
+	for (label, mut ctl_args) in streams {
+		ctl_args.push("--lines".into());
+		ctl_args.push(lines.to_string());
+		if follow {
+			ctl_args.push("--follow".into());
+		}
+		let mut cmd = tokio::process::Command::new(ctl.bin());
+		cmd.args(&ctl_args)
+			.stdout(Stdio::piped())
+			.kill_on_drop(true);
+		let grep = grep.clone();
+		debug!(label, ?ctl_args, "tailing through seedling-ctl");
+		set.spawn(async move {
+			let mut child = cmd.spawn().map_err(|e| format!("{label}: {e}"))?;
+			let stdout = child
+				.stdout
+				.take()
+				.ok_or_else(|| format!("{label}: no stdout pipe"))?;
+			let mut read_lines = tokio::io::BufReader::new(stdout).lines();
+			while let Ok(Some(line)) = read_lines.next_line().await {
+				if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
+					continue;
+				}
+				println!("{line}");
+			}
+			let status = child.wait().await.map_err(|e| format!("{label}: {e}"))?;
+			if status.success() {
+				Ok(())
+			} else {
+				Err(format!("{label}: seedling-ctl exited with {status}"))
+			}
+		});
+	}
+
+	let mut failures = Vec::new();
+	while let Some(joined) = set.join_next().await {
+		match joined {
+			Ok(Ok(())) => {}
+			Ok(Err(failure)) => failures.push(failure),
+			Err(join_err) => failures.push(join_err.to_string()),
+		}
+	}
+	if !failures.is_empty() {
 		bail!(
-			"postgres is its own app on a Seedling host, so it can't be tailed alongside {app}; ask for `postgres` on its own"
+			"cannot reach the Seedling daemon: {}",
+			failures.join("; ")
 		);
-	}
-
-	// The daemon filters by one resource at a time, and telling which resource
-	// a line came from in order to filter here would mean parsing the JSON
-	// stream, so several names at once is refused rather than silently
-	// tailing the wrong subset.
-	let resource = match selection.tamanu_names.as_slice() {
-		[] => None,
-		[only] => Some(only.as_str()),
-		[first, ..] => bail!(
-			"on a Seedling host the daemon tails one resource at a time; pass a single name (e.g. {first})"
-		),
-	};
-
-	let mut cmd = Command::new(ctl.bin());
-	cmd.arg("apps").arg("logs").arg(app);
-	if let Some(resource) = resource {
-		cmd.arg(resource);
-	}
-	cmd.arg("--lines").arg(lines.to_string());
-	if follow {
-		cmd.arg("--follow");
-	}
-	cmd.stdout(Stdio::piped());
-
-	debug!(app, ?resource, follow, "tailing Seedling app logs");
-	let mut child = cmd.spawn().into_diagnostic()?;
-	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
-
-	// The daemon renders each entry with its timestamp, unit, and message
-	// already, so lines go out as they arrive. Reformatting them would mean
-	// taking the daemon's envelope apart to rebuild a line it has already
-	// composed.
-	let reader = BufReader::new(stdout);
-	let out_handle = std::io::stdout();
-	let mut out = out_handle.lock();
-	for line in reader.lines() {
-		let Ok(line) = line else { break };
-		if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
-			continue;
-		}
-		if writeln!(out, "{line}").is_err() {
-			break;
-		}
-	}
-
-	let status = child.wait().into_diagnostic()?;
-	if !status.success() {
-		bail!("cannot reach the Seedling daemon: `seedling-ctl apps logs` exited with {status}");
 	}
 	Ok(())
 }

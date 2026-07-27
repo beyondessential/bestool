@@ -28,12 +28,16 @@ It reports the state of each of the application's constituent parts where the da
 
 ## Logs
 
-The log command streams Tamanu's logs from the daemon's log stream.
+The log command streams logs from the daemon.
 The daemon is the source of the log data, so the command does not read container or journal files itself.
+
+With no names, the tail covers the Tamanu application and the proxy that fronts it, matching what the default covers on a host without Seedling.
+A name selects the matching resources of the Tamanu application, each tailed as its own stream and interleaved.
+The `caddy` pseudo-service tails the daemon's proxy, and `postgres` tails the postgres application, which runs as a peer of the Tamanu one; either combines with resource names.
 
 Following, pattern filtering, and the count of trailing lines behave as they do on a host without Seedling, so an operator's habits and any scripts around them carry across.
 The daemon composes each entry it streams from the entry's time, its unit, and the message, and those lines reach the operator as the daemon rendered them.
-Pattern filtering is applied to the stream as it arrives, because the daemon matches no pattern of its own.
+Pattern filtering is applied to the streams as they arrive, because the daemon matches no pattern of its own.
 
 ## Interactive database access
 
