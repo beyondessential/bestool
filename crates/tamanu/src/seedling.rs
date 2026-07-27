@@ -83,8 +83,13 @@ pub struct App {
 impl App {
 	/// Whether the app is in a steady state with everything at its desired
 	/// lifecycle state.
+	///
+	/// An app's status arrives lower-cased and underscored (`not_installed`)
+	/// while a resource instance's lifecycle arrives capitalised (`Running`),
+	/// so this compares without regard to case rather than picking one of the
+	/// two spellings and being wrong about the other.
 	pub fn running(&self) -> bool {
-		self.status == "Running"
+		self.status.eq_ignore_ascii_case("running")
 	}
 }
 
@@ -398,14 +403,29 @@ mod tests {
 
 	#[test]
 	fn app_list_parses_the_daemon_shape() {
+		// Statuses as the daemon actually sends them: lower-cased and
+		// underscored, unlike the capitalised lifecycle on a resource instance.
 		let apps: Vec<App> = serde_json::from_value(serde_json::json!([
-			{ "name": "tamanu", "status": "Running", "fault_count": 0 },
-			{ "name": "caddy", "status": "Degraded", "fault_count": 2 },
+			{ "name": "postgres", "status": "installing", "fault_count": 2 },
+			{ "name": "tamanu-facility", "status": "not_installed", "fault_count": 0 },
+			{ "name": "tamanu-central", "status": "running", "fault_count": 0 },
 		]))
 		.unwrap();
-		assert_eq!(apps.len(), 2);
-		assert!(apps[0].running());
+		assert_eq!(apps.len(), 3);
+		assert!(!apps[0].running());
 		assert!(!apps[1].running());
-		assert_eq!(apps[1].fault_count, 2);
+		assert!(apps[2].running());
+		assert_eq!(apps[0].fault_count, 2);
+	}
+
+	#[test]
+	fn running_ignores_the_casing_difference() {
+		let mut app = app("tamanu");
+		app.status = "running".into();
+		assert!(app.running(), "the daemon lower-cases an app's status");
+		app.status = "Running".into();
+		assert!(app.running(), "an instance lifecycle is capitalised");
+		app.status = "degraded".into();
+		assert!(!app.running());
 	}
 }
