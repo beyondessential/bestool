@@ -96,6 +96,12 @@ impl Ctl {
 		})
 	}
 
+	/// The CLI itself, for callers that need to build their own invocation
+	/// (a blocking command, or one that hands over the terminal).
+	pub fn bin(&self) -> &Path {
+		&self.bin
+	}
+
 	/// A command ready to spawn, for callers that stream output or hand the
 	/// terminal over rather than collecting a result.
 	pub fn command(&self, args: &[&str]) -> Command {

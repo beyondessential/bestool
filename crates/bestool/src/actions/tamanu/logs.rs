@@ -20,6 +20,7 @@ use bestool_tamanu::{
 	ApiServerKind,
 	config::load_config,
 	pm2::{self, LogSource},
+	seedling,
 	server_info::query_patient_portal_enabled,
 	services::{self, ExpectedState, Expectation, Instances, Supervisor},
 };
@@ -157,6 +158,32 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let selection = select(&args.names);
 
+	// On a Seedling host the logs come from the daemon, not the journal or
+	// pm2, so this resolves before any of the install discovery, config load,
+	// or privilege elevation below: none of those apply, and elevating would
+	// swap the operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(ctl) => {
+			let grep = args.grep.map(|re| GrepFilter {
+				regex: re,
+				invert: args.invert,
+			});
+			let apps = ctl.apps().await?;
+			let app = seedling::target(&apps, None)?;
+			return run_seedling_logs(
+				&ctl,
+				&app.name,
+				&selection,
+				args.lines,
+				args.follow,
+				grep,
+				tamanu.use_colours,
+			);
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
+
 	let (_, root) = find_tamanu(tamanu).await?;
 	let config = load_config(&root, None)?;
 	let kind = if config.is_facility() {
@@ -278,6 +305,80 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			tamanu.use_colours,
 		),
 	}
+}
+
+/// Stream one Seedling app's logs from the daemon.
+///
+/// The daemon offers no server-side pattern match, so `--grep` is applied to
+/// every line here rather than pushed down the way `journalctl -g` allows.
+///
+/// spec: SHC#logs
+fn run_seedling_logs(
+	ctl: &seedling::Ctl,
+	app: &str,
+	selection: &Selection,
+	lines: usize,
+	follow: bool,
+	grep: Option<GrepFilter>,
+	use_colours: bool,
+) -> Result<()> {
+	if selection.include_caddy && !selection.all_tamanu {
+		bail!(
+			"caddy logs on a Seedling host come from the proxy the daemon manages: `seedling-ctl proxy logs`"
+		);
+	}
+	if selection.include_postgres {
+		bail!(
+			"postgres runs as a resource of the {app} app on a Seedling host: name the resource instead of `postgres`"
+		);
+	}
+
+	// The daemon filters by one resource at a time, and telling which resource
+	// a line came from in order to filter here would mean parsing the JSON
+	// stream, so several names at once is refused rather than silently
+	// tailing the wrong subset.
+	let resource = match selection.tamanu_names.as_slice() {
+		[] => None,
+		[only] => Some(only.as_str()),
+		[first, ..] => bail!(
+			"on a Seedling host the daemon tails one resource at a time; pass a single name (e.g. {first})"
+		),
+	};
+
+	let mut cmd = Command::new(ctl.bin());
+	cmd.arg("apps").arg("logs").arg(app);
+	if let Some(resource) = resource {
+		cmd.arg("--resource").arg(resource);
+	}
+	cmd.arg("--tail").arg(lines.to_string());
+	if follow {
+		cmd.arg("--follow");
+	}
+	cmd.stdout(Stdio::piped());
+
+	debug!(app, ?resource, follow, "tailing Seedling app logs");
+	let mut child = cmd.spawn().into_diagnostic()?;
+	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
+
+	let reader = BufReader::new(stdout);
+	let out_handle = std::io::stdout();
+	let mut out = out_handle.lock();
+	for line in reader.lines() {
+		let Ok(line) = line else { break };
+		if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
+			continue;
+		}
+		let formatted = format_log_line(&line, use_colours);
+		if writeln!(out, "{formatted}").is_err() {
+			break;
+		}
+	}
+
+	let status = child.wait().into_diagnostic()?;
+	if !status.success() {
+		bail!("cannot reach the Seedling daemon: `seedling-ctl apps logs` exited with {status}");
+	}
+	Ok(())
 }
 
 /// A compiled regex paired with an inversion flag, so the rest of the code
