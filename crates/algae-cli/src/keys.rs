@@ -281,6 +281,7 @@ fn parse_id_as_identity(id: &str) -> Result<Box<dyn Identity>> {
 			.into_diagnostic()
 			.wrap_err("parsing keys from identity")?
 			.pop()
+			.map(|identity| identity as _)
 			.ok_or_else(|| miette!("no identity available"))
 	}
 }
