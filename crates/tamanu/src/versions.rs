@@ -141,14 +141,7 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 	// elevate via `sudo -n` rather than letting podman run rootless and see
 	// nothing or error; the alertd daemon already runs as root and invokes it
 	// directly. `-n` never blocks on a password prompt.
-	let mut command = if is_root() {
-		tokio::process::Command::new("podman")
-	} else {
-		let mut c = tokio::process::Command::new("sudo");
-		c.arg("-n").arg("podman");
-		c
-	};
-	let result = command
+	let result = podman_command()
 		.args([
 			"ps",
 			"--format",
@@ -203,6 +196,72 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 #[cfg(target_os = "linux")]
 fn is_root() -> bool {
 	rustix::process::geteuid().is_root()
+}
+
+/// A `podman` command, elevated via `sudo -n` when this process isn't root.
+///
+/// The deployment runs rootful podman, so the containers are only visible to
+/// root. When we're not root (an interactive `tamanu status` / `doctor`), we
+/// elevate rather than letting podman run rootless and see nothing; the alertd
+/// daemon already runs as root and invokes podman directly. `-n` never blocks
+/// on a password prompt.
+#[cfg(target_os = "linux")]
+fn podman_command() -> tokio::process::Command {
+	if is_root() {
+		tokio::process::Command::new("podman")
+	} else {
+		let mut command = tokio::process::Command::new("sudo");
+		command.arg("-n").arg("podman");
+		command
+	}
+}
+
+/// The Node.js version the running Tamanu server executes under, read from a
+/// running server container.
+///
+/// The container carries its own runtime, so this is the only place the true
+/// running version can be observed on a containerised host. Returns `None`
+/// when no Tamanu server container is running or it can't be reached.
+// spec: NODE
+#[cfg(target_os = "linux")]
+pub async fn container_node_version() -> Option<String> {
+	let container = running_tamanu_container().await?;
+	let output = podman_command()
+		.args(["exec", &container, "node", "--version"])
+		.output()
+		.await
+		.ok()?;
+	if !output.status.success() {
+		debug!(status = %output.status, %container, "node --version in container failed");
+		return None;
+	}
+	crate::server_info::parse_node_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The name of a running Tamanu server container, if one is up.
+#[cfg(target_os = "linux")]
+async fn running_tamanu_container() -> Option<String> {
+	let output = podman_command()
+		.args(["ps", "--format", "{{.Names}}"])
+		.output()
+		.await
+		.ok()?;
+	if !output.status.success() {
+		debug!(status = %output.status, "podman ps failed");
+		return None;
+	}
+	String::from_utf8_lossy(&output.stdout)
+		.lines()
+		.map(str::trim)
+		.find(|name| is_tamanu_server_container(name))
+		.map(str::to_string)
+}
+
+/// Whether a container name is a Tamanu server (central or facility).
+#[cfg(target_os = "linux")]
+fn is_tamanu_server_container(name: &str) -> bool {
+	name.strip_prefix("tamanu-")
+		.is_some_and(|rest| rest.starts_with("central-") || rest.starts_with("facility-"))
 }
 
 /// Parse a version string leniently, tolerating a leading `v` (image tags and
@@ -366,6 +425,17 @@ pub fn expected_for_supervisor(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn tamanu_server_container_names() {
+		assert!(is_tamanu_server_container("tamanu-central-api"));
+		assert!(is_tamanu_server_container("tamanu-facility-tasks"));
+		assert!(!is_tamanu_server_container("tamanu-frontend-a"));
+		assert!(!is_tamanu_server_container("tamanu-web"));
+		assert!(!is_tamanu_server_container("postgres"));
+		assert!(!is_tamanu_server_container("central-api"));
+	}
 
 	#[test]
 	fn parse_env_file_picks_known_keys() {

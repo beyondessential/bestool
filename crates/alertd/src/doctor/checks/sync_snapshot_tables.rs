@@ -98,10 +98,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 	if let Some(total) = total_bytes {
+		// Its own graph, not the `sizes` group: the total dwarfs the p50/p99
+		// percentiles and would flatten their variation on a shared axis.
 		check = check.with_stat(
-			Stat::gauge("total_size_bytes", total)
-				.group("sizes")
-				.help("Total size of all snapshot tables"),
+			Stat::gauge("total_size_bytes", total).help("Total size of all snapshot tables"),
 		);
 	}
 	check

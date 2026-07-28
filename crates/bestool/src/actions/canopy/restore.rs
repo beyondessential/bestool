@@ -26,7 +26,8 @@ use uuid::Uuid;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
-	run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir, trim_error,
+	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir,
+	trim_error,
 };
 use crate::actions::Context;
 
@@ -77,15 +78,11 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	let reg = load_registration(args.config.as_deref())
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
-	let device_key = reg
-		.device_key
-		.clone()
-		.ok_or_else(|| miette!("registration has no device key"))?;
 	let server_id = reg
 		.server_id
 		.clone()
 		.ok_or_else(|| miette!("registration has no server id"))?;
-	let client = build_client(base_url_of(&reg)?, &device_key).await?;
+	let client = build_client(base_url_of(&reg)?, reg.device_key.as_deref()).await?;
 
 	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Ready(target) => target,
@@ -134,9 +131,24 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		"restoring snapshot",
 	);
 
+	// Sample the restore's S3 traffic to Canopy while it runs, so a long download
+	// shows progress. A restore has no engine cell and no freeze moment: the bytes
+	// received are the "is it moving" signal.
+	let reporter = ProgressReporter::spawn(
+		client.clone(),
+		run_id,
+		args.backup_type.clone(),
+		BackupPurpose::Restore,
+		proxy.traffic_handle(),
+		None,
+	);
+
 	// Perform the restore, capturing the outcome so it can be reported to canopy
 	// whether it succeeds or fails.
 	let outcome = run_restore(&kopia, &s3env, snapshot, &def, &args).await;
+
+	// Stop sampling before the final report.
+	reporter.stop().await;
 
 	// Report to canopy so the restore shows up in the fleet table. The restore's
 	// own outcome is what the command returns; a reporting failure is only warned.

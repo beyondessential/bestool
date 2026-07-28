@@ -79,6 +79,34 @@ pub struct TrafficStats {
 	pub received_payload: u64,
 }
 
+/// A cheaply-cloneable handle to a proxy's live traffic counters, so a run can
+/// sample the running tallies concurrently while the proxy keeps serving. The
+/// counters are lock-free and monotonic, so a mid-run read is always safe.
+#[derive(Clone)]
+pub struct TrafficHandle(Arc<Traffic>);
+
+impl TrafficHandle {
+	/// A point-in-time read of the counters so far.
+	pub fn get(&self) -> TrafficStats {
+		self.0.snapshot()
+	}
+
+	/// Build a handle with preset totals, for tests in downstream crates that
+	/// can't reach the crate-private counters.
+	#[doc(hidden)]
+	pub fn for_test(
+		sent_raw: u64,
+		sent_payload: u64,
+		received_raw: u64,
+		received_payload: u64,
+	) -> Self {
+		let traffic = Traffic::default();
+		traffic.add_sent(sent_raw, sent_payload);
+		traffic.add_received(received_raw, received_payload);
+		Self(Arc::new(traffic))
+	}
+}
+
 /// A live set of S3 credentials.
 #[derive(Clone)]
 pub struct Credentials {
@@ -146,6 +174,12 @@ impl RunningProxy {
 	/// Bytes sent to and received from upstream S3 over this proxy's lifetime.
 	pub fn traffic(&self) -> TrafficStats {
 		self.traffic.snapshot()
+	}
+
+	/// A cloneable handle to this proxy's live traffic counters, for sampling
+	/// the tallies from another task while the run is in flight.
+	pub fn traffic_handle(&self) -> TrafficHandle {
+		TrafficHandle(self.traffic.clone())
 	}
 
 	/// Stop serving.

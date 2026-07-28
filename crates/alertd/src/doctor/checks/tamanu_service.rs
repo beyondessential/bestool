@@ -13,11 +13,7 @@ use super::CheckContext;
 use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let supervisor = if cfg!(target_os = "linux") {
-		Supervisor::Systemd
-	} else if cfg!(target_os = "windows") {
-		Supervisor::Pm2
-	} else {
+	let Some(supervisor) = Supervisor::current() else {
 		return Check::skip(
 			"tamanu_service",
 			"service check skipped on this platform",

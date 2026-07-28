@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_server_id};
 
 use crate::doctor::{
-	check::{Check, CheckStatus, OverallResult},
+	check::{Check, OverallResult},
 	checks::{self, CheckContext, SweepContext},
 	heal,
 	progress::{DoctorEvent, ProgressSender},
@@ -303,8 +303,8 @@ pub async fn perform_sweep(
 		let idx = *idx;
 		let name = entry.name;
 		// A check's heal action is spawned in the background once its result is
-		// known, when the sweep enables healing (the daemon) and the check did
-		// not pass. `spawn_if_due` applies the per-check rate-limit and the
+		// known, when the sweep enables healing (the daemon) and the check
+		// failed. `spawn_if_due` applies the per-check rate-limit and the
 		// one-attempt-in-flight guard, so this can fire on every sweep.
 		let heal = check_ctx.enable_heal.then_some(entry.heal).flatten();
 		let heal_ctx = heal.map(|_| check_ctx.clone());
@@ -312,7 +312,7 @@ pub async fn perform_sweep(
 		pending.push(async move {
 			let result = fut.await;
 			if let (Some(heal), Some(heal_ctx)) = (heal, heal_ctx)
-				&& !matches!(result.status, CheckStatus::Pass)
+				&& result.status.is_fatal()
 			{
 				heal::spawn_if_due(name, heal, heal_ctx);
 			}

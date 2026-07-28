@@ -319,11 +319,10 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
 	let service_manager = ServiceManager::local_computer(None::<&str>, manager_access)
 		.map_err(|e| {
-			let error_msg = e.to_string();
-			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
-				miette!("Failed to connect to service manager: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", error_msg)
+			if is_access_denied(&e) {
+				miette!("Failed to connect to service manager: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", describe(&e))
 			} else {
-				miette!("Failed to connect to service manager: {}\n\nTroubleshoot:\n  - Ensure you have administrator privileges\n  - Check that Windows Service Control Manager is running\n  - Try running this command in an Administrator command prompt", error_msg)
+				miette!("Failed to connect to service manager: {}\n\nTroubleshoot:\n  - Ensure you have administrator privileges\n  - Check that Windows Service Control Manager is running\n  - Try running this command in an Administrator command prompt", describe(&e))
 			}
 		})?;
 
@@ -348,14 +347,14 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 			existing
 		}
 		Err(err) if is_service_absent(&err) => create_service(&service_manager, &service_info)?,
+		Err(err) if is_access_denied(&err) => {
+			bail!(
+				"Failed to open the existing service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.",
+				describe(&err)
+			);
+		}
 		Err(err) => {
-			let error_msg = err.to_string();
-			if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
-				bail!(
-					"Failed to open the existing service: {error_msg}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell."
-				);
-			}
-			bail!("Failed to open the existing service: {error_msg}");
+			bail!("Failed to open the existing service: {}", describe(&err));
 		}
 	};
 
@@ -412,13 +411,57 @@ fn desired_service_info(
 	}
 }
 
+// Win32 error codes (winerror.h). We classify errors against these numerically,
+// because the codes are the only reliable signal — see `winapi_os_code`.
+const ERROR_ACCESS_DENIED: i32 = 5;
+const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+const ERROR_SERVICE_MARKED_FOR_DELETE: i32 = 1072;
+
+/// The underlying Win32 error code for a `windows_service::Error`, if it wraps one.
+///
+/// windows-service 0.8's `Error::Winapi` renders through `Display` as the fixed,
+/// opaque string "IO error in winapi call" — the real OS code and message live
+/// only on the wrapped `std::io::Error`, reachable through the error source chain.
+/// So every classification below must go through `raw_os_error()` rather than
+/// string-matching `to_string()`, which for the `Winapi` variant never contains
+/// the OS message (e.g. a genuinely-absent service and "access denied" both render
+/// identically as that one literal).
+fn winapi_os_code(err: &windows_service::Error) -> Option<i32> {
+	let mut source = std::error::Error::source(err);
+	while let Some(err) = source {
+		if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+			return io_err.raw_os_error();
+		}
+		source = err.source();
+	}
+	None
+}
+
+/// Render a `windows_service::Error` including the underlying OS code and message,
+/// which its own `Display` omits for the `Winapi` variant (see `winapi_os_code`).
+fn describe(err: &windows_service::Error) -> String {
+	match std::error::Error::source(err).and_then(|s| s.downcast_ref::<std::io::Error>()) {
+		Some(io_err) => format!("{err} ({io_err})"),
+		None => err.to_string(),
+	}
+}
+
 /// Whether an `open_service` error means the service simply isn't installed yet
 /// (so install should create it) rather than a real failure.
 fn is_service_absent(err: &windows_service::Error) -> bool {
+	if let Some(code) = winapi_os_code(err) {
+		return code == ERROR_SERVICE_DOES_NOT_EXIST;
+	}
+	// Fallback for non-Winapi variants, which carry a meaningful `Display`.
 	let msg = err.to_string();
 	msg.contains("does not exist")
 		|| msg.contains("ERROR_SERVICE_DOES_NOT_EXIST")
 		|| msg.contains("not found")
+}
+
+/// Whether an error is a Win32 "access denied" (i.e. not running elevated).
+fn is_access_denied(err: &windows_service::Error) -> bool {
+	winapi_os_code(err) == Some(ERROR_ACCESS_DENIED)
 }
 
 /// Create the service fresh.
@@ -431,13 +474,14 @@ fn create_service(
 		| ServiceAccess::START
 		| ServiceAccess::QUERY_STATUS;
 	manager.create_service(info, access).map_err(|e| {
-		let error_msg = e.to_string();
-		if error_msg.contains("marked for deletion") || error_msg.contains("ERROR_SERVICE_MARKED_FOR_DELETE") {
-			miette!("The service is marked for deletion (a previous removal hasn't completed). Please restart Windows and try again.")
-		} else if error_msg.contains("Access is denied") || error_msg.contains("ERROR_ACCESS_DENIED") {
-			miette!("Failed to create service: {error_msg}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.")
-		} else {
-			miette!("Failed to create service: {error_msg}")
+		match winapi_os_code(&e) {
+			Some(ERROR_SERVICE_MARKED_FOR_DELETE) => {
+				miette!("The service is marked for deletion (a previous removal hasn't completed). Run `sc.exe delete {SERVICE_NAME}`, restart Windows, then try again.")
+			}
+			Some(ERROR_ACCESS_DENIED) => {
+				miette!("Failed to create service: {}\n\nThis requires administrator privileges. Please run this command in an Administrator command prompt or PowerShell.", describe(&e))
+			}
+			_ => miette!("Failed to create service: {}", describe(&e)),
 		}
 	})
 }

@@ -20,6 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
+use jiff::Timestamp;
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -86,7 +87,7 @@ pub async fn prepare(
 	resolved: &ResolvedCluster,
 	backup_type: &str,
 	need: Option<u64>,
-) -> Result<(PathBuf, Shadow)> {
+) -> Result<(PathBuf, Timestamp, Shadow)> {
 	let root = backup_root(&resolved.data_dir).to_string_lossy().into_owned();
 	let volume = volume_of(&root)?.to_owned();
 	let rel = relative_to_volume(&root, &volume).to_owned();
@@ -109,16 +110,18 @@ pub async fn prepare(
 	// WMI/COM is thread-affine and `!Send`, and the junction is blocking fs work,
 	// so do the create + mount on a blocking thread.
 	let junction = PathBuf::from(&expose_target);
-	let shadow_id = tokio::task::spawn_blocking({
+	let (shadow_id, taken_at) = tokio::task::spawn_blocking({
 		let junction = junction.clone();
-		move || -> Result<String> {
+		move || -> Result<(String, Timestamp)> {
 			let created = create_client_accessible(&volume)?;
+			// The shadow copy now exists: this is the instant the data froze.
+			let taken_at = Timestamp::now();
 			if let Err(err) = mount_shadow(&created.device, &junction) {
 				// Don't leak the shadow if the mount fails.
 				let _ = delete_shadow(&created.id);
 				return Err(err);
 			}
-			Ok(created.id)
+			Ok((created.id, taken_at))
 		}
 	})
 	.await
@@ -127,7 +130,7 @@ pub async fn prepare(
 
 	let source = PathBuf::from(kopia_source(&expose_target, &rel));
 	info!(shadow = %shadow_id, source = %source.display(), "VSS shadow ready");
-	Ok((source, Shadow { id: shadow_id, junction }))
+	Ok((source, taken_at, Shadow { id: shadow_id, junction }))
 }
 
 /// Release a prepared shadow: unmount the junction and delete the shadow copy.

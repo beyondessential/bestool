@@ -9,16 +9,26 @@
 use std::{
 	collections::BTreeMap,
 	path::{Path, PathBuf},
+	time::{Duration, Instant},
 };
 
+use jiff::Timestamp;
 use miette::{Result, bail};
 use serde::Deserialize;
+use tracing::debug;
+
+mod holders;
 
 /// A source ready for kopia to snapshot, produced by [`Method::prepare`].
 #[derive(Debug)]
 pub struct Prepared {
 	/// The path kopia should snapshot.
 	pub path: PathBuf,
+	/// The instant the source was frozen — the point in time the backup
+	/// represents — when the method takes a point-in-time capture below kopia.
+	/// `None` for a method with no distinct freeze instant (a streamed base
+	/// backup, or a path snapshotted live).
+	pub taken_at: Option<Timestamp>,
 	/// Extra tags the method contributes (merged with the canopy-* tags and the
 	/// def's own `[tags]`).
 	pub extra_tags: BTreeMap<String, String>,
@@ -125,6 +135,8 @@ impl Method {
 				let (path, cleanup) = super::simple::prepare(&config.path, backup_type).await?;
 				Ok(Prepared {
 					path,
+					// A live view (bindfs mount or copy) has no point-in-time freeze.
+					taken_at: None,
 					extra_tags: BTreeMap::new(),
 					ignore: Vec::new(),
 					teardown: Teardown::Simple(cleanup),
@@ -220,18 +232,64 @@ pub(super) async fn replace_dir(staging: &Path, target: &Path) -> Result<()> {
 				.into_diagnostic()
 				.wrap_err_with(|| format!("removing stale {}", backup.display()))?;
 		}
-		tokio::fs::rename(target, &backup)
-			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("moving {} aside to {}", target.display(), backup.display()))?;
+		rename_when_free(target, &backup).await.wrap_err_with(|| {
+			format!(
+				"moving {} aside to {}{}",
+				target.display(),
+				backup.display(),
+				holders::describe_holders(target)
+			)
+		})?;
 	}
 	if let Some(parent) = target.parent() {
 		tokio::fs::create_dir_all(parent).await.ok();
 	}
-	tokio::fs::rename(staging, target)
+	rename_when_free(staging, target)
 		.await
-		.into_diagnostic()
 		.wrap_err_with(|| format!("moving restored data into {}", target.display()))
+}
+
+/// How long to keep retrying a rename that fails because the tree is still busy.
+/// A service that has just been told to stop lets go of its files in well under
+/// a second; past this it's a holder the operator has to clear.
+const BUSY_RETRY_FOR: Duration = Duration::from_secs(10);
+
+/// Rename `from` to `to`, riding out a tree that is busy but about to be free.
+///
+/// Windows reports a directory rename blocked by an open handle or a running
+/// image as a flat access denial, and the block is often momentary: the Service
+/// Control Manager calls a service stopped before its last child process has
+/// finished exiting, and the executables those children ran stay locked a beat
+/// longer — for a whole-install postgres restore, inside the very directory
+/// being renamed. Other errors (a missing source, a cross-device move) never
+/// clear on their own, so they return at once.
+async fn rename_when_free(from: &Path, to: &Path) -> Result<()> {
+	use miette::IntoDiagnostic as _;
+
+	let deadline = Instant::now() + BUSY_RETRY_FOR;
+	let mut backoff = Duration::from_millis(100);
+	loop {
+		match tokio::fs::rename(from, to).await {
+			Ok(()) => return Ok(()),
+			Err(err) if is_busy(&err) && Instant::now() + backoff < deadline => {
+				debug!("{} is busy ({err}); retrying in {backoff:?}", from.display());
+				tokio::time::sleep(backoff).await;
+				backoff = (backoff * 2).min(Duration::from_secs(1));
+			}
+			Err(err) => return Err(err).into_diagnostic(),
+		}
+	}
+}
+
+/// Whether a rename failed for a reason that may clear by itself: on Windows, a
+/// sharing violation or the access denial an open handle in the tree produces.
+/// Nothing on Unix, where a rename doesn't care who has the files open.
+fn is_busy(err: &std::io::Error) -> bool {
+	cfg!(windows)
+		&& matches!(
+			err.raw_os_error(),
+			Some(5 /* ERROR_ACCESS_DENIED */ | 32 /* ERROR_SHARING_VIOLATION */)
+		)
 }
 
 /// `/a/b` + `old` → `/a/b.old`.
@@ -285,6 +343,25 @@ mod tests {
 			with_extension_suffix(Path::new("/var/lib/postgresql/16/main"), "old"),
 			PathBuf::from("/var/lib/postgresql/16/main.old")
 		);
+	}
+
+	#[test]
+	fn only_windows_busy_errors_are_worth_retrying() {
+		let denied = std::io::Error::from_raw_os_error(5);
+		let missing = std::io::Error::from_raw_os_error(2);
+		assert_eq!(is_busy(&denied), cfg!(windows));
+		assert!(!is_busy(&missing));
+		assert!(!is_busy(&std::io::Error::other("no os code")));
+	}
+
+	#[tokio::test]
+	async fn a_hopeless_rename_fails_without_burning_the_retry_budget() {
+		let tmp = tempfile::tempdir().unwrap();
+		let started = Instant::now();
+		rename_when_free(&tmp.path().join("absent"), &tmp.path().join("dest"))
+			.await
+			.unwrap_err();
+		assert!(started.elapsed() < BUSY_RETRY_FOR);
 	}
 
 	#[tokio::test]

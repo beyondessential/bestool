@@ -790,6 +790,56 @@ fXLgamTYOa/w9n/Ta64fiYWmN54kEd0DgnflJDLtID321Zz6xswvK/VN
 		assert!(build_mtls_http(&test_factory(), "not a real PEM").is_err());
 	}
 
+	/// A loopback URL nothing is listening on, so a probe refuses immediately.
+	fn closed_url() -> String {
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		drop(listener);
+		format!("http://{addr}")
+	}
+
+	#[tokio::test]
+	async fn no_device_key_still_builds_over_tailscale() {
+		let (tailnet, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+		let client = CanopyClient::with_urls(
+			DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailnet.parse().unwrap(),
+			None,
+			reqwest::Client::builder,
+		)
+		.await
+		.expect("keyless build should not error")
+		.expect("a reachable tailnet is an auth path in its own right");
+		assert!(client.is_tailscale().await);
+	}
+
+	#[tokio::test]
+	async fn no_device_key_and_no_tailnet_leaves_no_auth_path() {
+		let client = CanopyClient::with_urls(
+			DEFAULT_CANOPY_URL.parse().unwrap(),
+			closed_url().parse().unwrap(),
+			None,
+			reqwest::Client::builder,
+		)
+		.await
+		.expect("keyless build should not error");
+		assert!(client.is_none());
+	}
+
+	#[tokio::test]
+	async fn device_key_carries_the_call_when_the_tailnet_is_unreachable() {
+		let client = CanopyClient::with_urls(
+			DEFAULT_CANOPY_URL.parse().unwrap(),
+			closed_url().parse().unwrap(),
+			Some(TEST_DEVICE_KEY),
+			reqwest::Client::builder,
+		)
+		.await
+		.expect("mTLS build should not error")
+		.expect("a device key is an auth path when the tailnet is out of reach");
+		assert!(!client.is_tailscale().await);
+	}
+
 	#[tokio::test]
 	async fn renew_with_mtls_state_swaps_in_fresh_client() {
 		// Construct an mTLS-state client directly (no network probe) and renew it.

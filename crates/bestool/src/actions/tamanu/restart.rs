@@ -6,7 +6,7 @@ use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
-	seedling,
+	pm2, seedling,
 	services::{self, ExpectedState, Expectation, Supervisor, parse_systemd_unit},
 	systemd,
 };
@@ -334,7 +334,7 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	match supervisor {
 		Supervisor::Systemd => systemd::restart_all(targets).await,
-		Supervisor::Pm2 => lifecycle::pm2_restart_targets(targets),
+		Supervisor::Pm2 => pm2::restart_targets(targets),
 	}
 }
 

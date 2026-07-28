@@ -31,6 +31,20 @@ pub enum Supervisor {
 	Pm2,
 }
 
+impl Supervisor {
+	/// The service supervisor this platform uses: systemd on Linux, pm2 on
+	/// Windows, and `None` where neither is supported.
+	pub fn current() -> Option<Self> {
+		if cfg!(target_os = "linux") {
+			Some(Self::Systemd)
+		} else if cfg!(target_os = "windows") {
+			Some(Self::Pm2)
+		} else {
+			None
+		}
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expectation {
 	/// Concrete service base name as the supervisor sees it.

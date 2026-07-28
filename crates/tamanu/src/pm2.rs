@@ -210,6 +210,39 @@ pub fn command() -> Command {
 	cmd
 }
 
+/// Restart a batch of pm2 processes: stop → brief pause → start.
+///
+/// `pm2 restart` has been observed to occasionally leak the previous node
+/// process — it drops out of `pm2 list` but keeps holding the TCP port, so the
+/// replacement fails to bind or runs beside the zombie. An explicit stop, a ~1s
+/// pause for the old process to release its handles, then a start avoids that.
+/// No-op for an empty slice.
+pub fn restart_targets(targets: &[String]) -> miette::Result<()> {
+	use miette::{IntoDiagnostic as _, bail};
+
+	if targets.is_empty() {
+		return Ok(());
+	}
+	let stop = command()
+		.arg("stop")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !stop.success() {
+		bail!("pm2 stop failed: exit {stop}");
+	}
+	std::thread::sleep(std::time::Duration::from_secs(1));
+	let start = command()
+		.arg("start")
+		.args(targets)
+		.status()
+		.into_diagnostic()?;
+	if !start.success() {
+		bail!("pm2 start failed: exit {start}");
+	}
+	Ok(())
+}
+
 fn probe(path: &Path) -> bool {
 	Command::new(path)
 		.arg("--version")

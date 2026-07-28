@@ -5,6 +5,7 @@ use std::{
 	collections::BTreeMap,
 	io,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+	path::Path,
 	time::Duration,
 };
 
@@ -157,12 +158,18 @@ pub async fn gather(
 	let cpu_cores = sys.cpus().len();
 	let total_memory_bytes = sys.total_memory();
 
+	let node_version = detect_node_version(
+		facts.tamanu_root.as_deref().map(Path::new),
+		tamanu_version.as_deref(),
+	)
+	.await;
+
 	ServerInfo {
 		bestool_version: bestool_version.to_string(),
 		tamanu_version,
 		tamanu_root: facts.tamanu_root,
 		tamanu_server_kind: facts.tamanu_server_kind,
-		node_version: detect_node_version().await,
+		node_version,
 		hostname: System::host_name(),
 		canonical_url: facts.canonical_url,
 		current_sync_tick: facts.current_sync_tick,
