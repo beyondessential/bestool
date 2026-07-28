@@ -73,30 +73,71 @@ fn munin_field_label(stat: &Stat) -> String {
 
 /// The prometheus metric name for a stat within a check's namespace.
 fn prom_name(check: &str, stat: &Stat) -> String {
-	format!("{PREFIX}_{check}_{}", stat.name)
+	format!("{PREFIX}_{}_{}", stat.namespace_or(check), stat.name)
 }
 
-/// Render the snapshot's prometheus body (census + per-check stats). Does not
-/// include the liveness gauge, which the caller appends from the registry to
-/// preserve its exact existing output.
-pub fn render_prometheus(snapshot: &MetricsSnapshot) -> String {
+/// Munin axis label and optional `graph_args`, derived from the unit a metric
+/// carries in its name (the spec keeps a metric's unit in its name). A group
+/// shares a unit, so this reads the first stat's name.
+fn munin_unit(stats: &[&Stat]) -> Option<(&'static str, Option<&'static str>)> {
+	let name = stats.first()?.name;
+	if name.ends_with("_bytes") {
+		Some(("bytes", Some("--base 1024")))
+	} else if name.ends_with("_seconds") || name.ends_with("_secs") {
+		Some(("seconds", None))
+	} else if name.ends_with("_ms") {
+		Some(("milliseconds", None))
+	} else if name.ends_with("_pct") || name.ends_with("_percent") {
+		Some(("%", None))
+	} else {
+		None
+	}
+}
+
+/// Render the prometheus body: daemon liveness (as an age), and — when a sweep
+/// is cached — the check census and per-check stats. `now` and `last_activity`
+/// are unix seconds; the liveness age is their difference, computed here so a
+/// scraper reads seconds-since directly.
+pub fn render_prometheus(
+	snapshot: Option<&MetricsSnapshot>,
+	now: i64,
+	last_activity: i64,
+) -> String {
 	let mut out = String::new();
 
-	out.push_str(&format!(
-		"# HELP {PREFIX}_last_sweep_unix Unix time of the last doctor sweep\n"
-	));
-	out.push_str(&format!("# TYPE {PREFIX}_last_sweep_unix gauge\n"));
-	out.push_str(&format!(
-		"{PREFIX}_last_sweep_unix {}\n",
-		snapshot.computed_at.as_second()
-	));
+	let _ = writeln!(
+		out,
+		"# HELP {PREFIX}_last_activity_age_seconds Seconds since the daemon was last active"
+	);
+	let _ = writeln!(out, "# TYPE {PREFIX}_last_activity_age_seconds gauge");
+	let _ = writeln!(
+		out,
+		"{PREFIX}_last_activity_age_seconds {}",
+		now - last_activity
+	);
 
-	out.push_str(&format!(
-		"# HELP {PREFIX}_checks Number of doctor checks by outcome\n"
-	));
-	out.push_str(&format!("# TYPE {PREFIX}_checks gauge\n"));
+	let Some(snapshot) = snapshot else {
+		return out;
+	};
+
+	let _ = writeln!(
+		out,
+		"# HELP {PREFIX}_last_sweep_age_seconds Seconds since the last doctor sweep"
+	);
+	let _ = writeln!(out, "# TYPE {PREFIX}_last_sweep_age_seconds gauge");
+	let _ = writeln!(
+		out,
+		"{PREFIX}_last_sweep_age_seconds {}",
+		now - snapshot.computed_at.as_second()
+	);
+
+	let _ = writeln!(
+		out,
+		"# HELP {PREFIX}_checks Number of doctor checks by outcome"
+	);
+	let _ = writeln!(out, "# TYPE {PREFIX}_checks gauge");
 	for (state, count) in snapshot.counts.by_state() {
-		out.push_str(&format!("{PREFIX}_checks{{state=\"{state}\"}} {count}\n"));
+		let _ = writeln!(out, "{PREFIX}_checks{{state=\"{state}\"}} {count}");
 	}
 
 	// Group per-check stats into prometheus metric families (same name = same
@@ -158,26 +199,30 @@ struct Family {
 /// graphs need a sweep (their field sets are only known from one).
 pub fn render_munin(
 	snapshot: Option<&MetricsSnapshot>,
+	now: i64,
 	last_activity: i64,
 	config: bool,
 ) -> String {
 	let mut out = String::new();
 
-	// Daemon graph: liveness and (when available) last-sweep timestamps.
-	out.push_str("multigraph bes_alertd_daemon\n");
+	// Daemon graph: how long ago the daemon was last active and last swept, as
+	// ages in seconds rather than raw timestamps (which graph as an ever-rising
+	// line). `now` and the instants are unix seconds.
+	let _ = writeln!(out, "multigraph bes_alertd_daemon");
 	if config {
-		out.push_str("graph_title alertd daemon activity\n");
-		out.push_str("graph_category bestool\n");
-		out.push_str("last_activity.label last activity (unix)\n");
-		out.push_str("last_activity.type GAUGE\n");
+		let _ = writeln!(out, "graph_title alertd daemon activity");
+		let _ = writeln!(out, "graph_category bestool");
+		let _ = writeln!(out, "graph_vlabel seconds ago");
+		let _ = writeln!(out, "last_activity.label last activity (seconds ago)");
+		let _ = writeln!(out, "last_activity.type GAUGE");
 		if snapshot.is_some() {
-			out.push_str("last_sweep.label last sweep (unix)\n");
-			out.push_str("last_sweep.type GAUGE\n");
+			let _ = writeln!(out, "last_sweep.label last sweep (seconds ago)");
+			let _ = writeln!(out, "last_sweep.type GAUGE");
 		}
 	} else {
-		let _ = writeln!(out, "last_activity.value {last_activity}");
+		let _ = writeln!(out, "last_activity.value {}", now - last_activity);
 		if let Some(s) = snapshot {
-			let _ = writeln!(out, "last_sweep.value {}", s.computed_at.as_second());
+			let _ = writeln!(out, "last_sweep.value {}", now - s.computed_at.as_second());
 		}
 	}
 
@@ -186,17 +231,22 @@ pub fn render_munin(
 	};
 
 	// Census graph.
-	out.push_str("\nmultigraph bes_alertd_checks\n");
+	let _ = writeln!(out, "\nmultigraph bes_alertd_checks");
 	if config {
-		out.push_str("graph_title Doctor checks by outcome\n");
-		out.push_str("graph_category bestool\n");
-		out.push_str("graph_vlabel checks\n");
+		let _ = writeln!(out, "graph_title Doctor checks by outcome");
+		let _ = writeln!(out, "graph_category bestool");
+		let _ = writeln!(out, "graph_vlabel checks");
+		// Stack the outcome counts as areas so the make-up reads at a glance;
+		// the total rides over them as a line rather than adding to the stack.
+		let _ = writeln!(out, "graph_args --lower-limit 0");
 		for state in STATE_NAMES {
 			let _ = writeln!(out, "{state}.label {state}");
 			let _ = writeln!(out, "{state}.type GAUGE");
+			let _ = writeln!(out, "{state}.draw AREASTACK");
 		}
-		out.push_str("total.label total\n");
-		out.push_str("total.type GAUGE\n");
+		let _ = writeln!(out, "total.label total");
+		let _ = writeln!(out, "total.type GAUGE");
+		let _ = writeln!(out, "total.draw LINE1");
 	} else {
 		for (state, count) in snapshot.counts.by_state() {
 			let _ = writeln!(out, "{state}.value {count}");
@@ -204,26 +254,52 @@ pub fn render_munin(
 		let _ = writeln!(out, "total.value {}", snapshot.counts.total());
 	}
 
-	// Per-check graphs, one multigraph per check, in first-seen order.
-	let mut order: Vec<&str> = Vec::new();
-	let mut by_check: std::collections::HashMap<&str, Vec<&Stat>> =
+	// One multigraph per (check, group), in first-seen order — a metric with no
+	// explicit group forms its own graph. A check's unrelated metrics — a count,
+	// a percentage, a duration, a per-code breakdown — would otherwise share a
+	// single graph's Y axis, which is meaningless; and metrics that differ only
+	// by name while sharing a label value (e.g. several btrfs gauges all tagged
+	// `mount=/`) would render as indistinguishable same-labelled fields. A check
+	// groups metrics that share a unit and are read together; label-dimensioned
+	// series of one metric become the fields of its graph.
+	let mut order: Vec<(&str, &str)> = Vec::new();
+	let mut by_group: std::collections::HashMap<(&str, &str), Vec<&Stat>> =
 		std::collections::HashMap::new();
 	for (check, stat) in &snapshot.stats {
-		by_check
-			.entry(check)
+		let check: &str = check;
+		// The metric's namespace (its own name override, else the check) prefixes
+		// the graph; a metric with no explicit group forms its own graph.
+		let namespace = stat.namespace_or(check);
+		let group = stat.group.unwrap_or(stat.name);
+		by_group
+			.entry((namespace, group))
 			.or_insert_with(|| {
-				order.push(check);
+				order.push((namespace, group));
 				Vec::new()
 			})
 			.push(stat);
 	}
 
-	for check in order {
-		let _ = write!(out, "\nmultigraph {PREFIX}_{check}\n");
-		let stats = &by_check[check];
+	for (namespace, group) in order {
+		let _ = writeln!(
+			out,
+			"\nmultigraph {PREFIX}_{namespace}_{}",
+			munin_field_segment(group)
+		);
+		let stats = &by_group[&(namespace, group)];
 		if config {
-			let _ = writeln!(out, "graph_title {check}");
-			out.push_str("graph_category bestool\n");
+			let _ = writeln!(out, "graph_title {namespace} {group}");
+			let _ = writeln!(out, "graph_category bestool");
+			if let Some((vlabel, args)) = munin_unit(stats) {
+				let _ = writeln!(out, "graph_vlabel {vlabel}");
+				if let Some(args) = args {
+					let _ = writeln!(out, "graph_args {args}");
+				}
+			}
+			// The metrics of one group share a description; use it as the graph's.
+			if let Some(help) = stats.iter().find_map(|s| s.help.as_deref()) {
+				let _ = writeln!(out, "graph_info {}", help.replace('\n', " "));
+			}
 			for stat in stats {
 				let field = munin_field(stat);
 				let _ = writeln!(out, "{field}.label {}", munin_field_label(stat));
@@ -276,9 +352,13 @@ mod tests {
 	}
 
 	#[test]
-	fn prometheus_census_and_families() {
-		let out = render_prometheus(&snapshot());
-		assert!(out.contains("bes_alertd_last_sweep_unix 1690000000"));
+	fn prometheus_liveness_census_and_families() {
+		// now is 50s after both the last activity and the sweep.
+		let out = render_prometheus(Some(&snapshot()), 1_690_000_050, 1_690_000_000);
+		// Liveness is reported as an age, not a raw timestamp.
+		assert!(out.contains("bes_alertd_last_activity_age_seconds 50"));
+		assert!(out.contains("bes_alertd_last_sweep_age_seconds 50"));
+		assert!(!out.contains("_unix"));
 		assert!(out.contains("bes_alertd_checks{state=\"passing\"} 30"));
 		assert!(out.contains("bes_alertd_checks{state=\"failing\"} 1"));
 		// Scalar stat.
@@ -299,10 +379,12 @@ mod tests {
 	#[test]
 	fn munin_values() {
 		let s = snapshot();
-		let out = render_munin(Some(&s), 1_690_000_100, false);
+		// now is 10s after the last activity and 100s after the sweep.
+		let out = render_munin(Some(&s), 1_690_000_100, 1_690_000_090, false);
 		assert!(out.contains("multigraph bes_alertd_daemon"));
-		assert!(out.contains("last_activity.value 1690000100"));
-		assert!(out.contains("last_sweep.value 1690000000"));
+		// Liveness values are ages, not raw timestamps.
+		assert!(out.contains("last_activity.value 10"));
+		assert!(out.contains("last_sweep.value 100"));
 		assert!(out.contains("multigraph bes_alertd_checks"));
 		assert!(out.contains("passing.value 30"));
 		assert!(out.contains("total.value 38"));
@@ -316,9 +398,12 @@ mod tests {
 	#[test]
 	fn munin_config() {
 		let s = snapshot();
-		let out = render_munin(Some(&s), 0, true);
+		let out = render_munin(Some(&s), 0, 0, true);
 		assert!(out.contains("multigraph bes_alertd_checks"));
 		assert!(out.contains("graph_title Doctor checks by outcome"));
+		// The census is a stacked area with the total overlaid as a line.
+		assert!(out.contains("passing.draw AREASTACK"));
+		assert!(out.contains("total.draw LINE1"));
 		assert!(out.contains("passing.type GAUGE"));
 		assert!(out.contains("multigraph bes_alertd_fhir_jobs"));
 		assert!(out.contains("graph_category bestool"));
@@ -329,13 +414,129 @@ mod tests {
 	}
 
 	#[test]
+	fn namespace_overrides_the_check_prefix() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"http_errors",
+					Stat::gauge("requests", 5.0)
+						.namespace("http")
+						.group("traffic"),
+				),
+				(
+					"http_errors",
+					Stat::gauge("requests_by_code", 2.0)
+						.namespace("http")
+						.label("code", "200"),
+				),
+			],
+		};
+		let prom = render_prometheus(Some(&s), 0, 0);
+		assert!(prom.contains("bes_alertd_http_requests 5"));
+		assert!(prom.contains("bes_alertd_http_requests_by_code{code=\"200\"} 2"));
+		assert!(!prom.contains("http_errors_requests"));
+
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("multigraph bes_alertd_http_traffic"));
+		assert!(cfg.contains("graph_title http traffic"));
+		assert!(!cfg.contains("bes_alertd_http_errors_"));
+	}
+
+	#[test]
+	fn munin_labels_axis_with_the_unit() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"sync_sessions",
+					Stat::gauge("total_duration_seconds", 3.0).group("durations"),
+				),
+				(
+					"sync_snapshot_tables",
+					Stat::gauge("table_size_bytes", 9.0)
+						.group("sizes")
+						.label("quantile", "0.5"),
+				),
+			],
+		};
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("multigraph bes_alertd_sync_sessions_durations"));
+		assert!(cfg.contains("graph_vlabel seconds"));
+		assert!(cfg.contains("multigraph bes_alertd_sync_snapshot_tables_sizes"));
+		assert!(cfg.contains("graph_vlabel bytes"));
+		assert!(cfg.contains("graph_args --base 1024"));
+	}
+
+	#[test]
+	fn munin_splits_a_check_into_per_name_graphs() {
+		// Two metrics of one check that share a label value must not collapse
+		// into one graph of indistinguishable fields — each metric name gets
+		// its own graph, titled distinctly.
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"btrfs",
+					Stat::gauge("device_unallocated_bytes", 1.0)
+						.label("mount", "/")
+						.help("Unallocated btrfs space"),
+				),
+				(
+					"btrfs",
+					Stat::gauge("metadata_percent", 2.0)
+						.label("mount", "/")
+						.help("btrfs metadata chunk usage, percent"),
+				),
+			],
+		};
+		let out = render_munin(Some(&s), 0, 0, true);
+		assert!(out.contains("multigraph bes_alertd_btrfs_device_unallocated_bytes"));
+		assert!(out.contains("multigraph bes_alertd_btrfs_metadata_percent"));
+		assert!(out.contains("graph_title btrfs device_unallocated_bytes"));
+		assert!(out.contains("graph_title btrfs metadata_percent"));
+	}
+
+	#[test]
+	fn munin_can_group_metrics_of_a_check() {
+		// Two metrics sharing an explicit group render as fields of one graph.
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"memory",
+					Stat::gauge("used_bytes", 1.0)
+						.group("bytes")
+						.help("Memory in use"),
+				),
+				(
+					"memory",
+					Stat::gauge("total_bytes", 2.0)
+						.group("bytes")
+						.help("Total memory"),
+				),
+			],
+		};
+		let out = render_munin(Some(&s), 0, 0, true);
+		assert!(out.contains("multigraph bes_alertd_memory_bytes"));
+		assert!(!out.contains("multigraph bes_alertd_memory_used_bytes"));
+		assert!(out.contains("used_bytes.label Memory in use"));
+		assert!(out.contains("total_bytes.label Total memory"));
+	}
+
+	#[test]
 	fn munin_without_snapshot_is_liveness_only() {
-		let values = render_munin(None, 42, false);
-		assert!(values.contains("last_activity.value 42"));
+		// now is 2s after the last activity.
+		let values = render_munin(None, 44, 42, false);
+		assert!(values.contains("last_activity.value 2"));
 		assert!(!values.contains("multigraph bes_alertd_checks"));
 		assert!(!values.contains("last_sweep"));
 
-		let config = render_munin(None, 0, true);
+		let config = render_munin(None, 0, 0, true);
 		assert!(config.contains("multigraph bes_alertd_daemon"));
 		assert!(!config.contains("last_sweep"));
 	}
@@ -348,8 +549,9 @@ mod tests {
 			stats: vec![("http_errors", Stat::counter("requests_total", 9.0))],
 		};
 		assert!(
-			render_prometheus(&s).contains("# TYPE bes_alertd_http_errors_requests_total counter")
+			render_prometheus(Some(&s), 0, 0)
+				.contains("# TYPE bes_alertd_http_errors_requests_total counter")
 		);
-		assert!(render_munin(Some(&s), 0, true).contains("requests_total.type COUNTER"));
+		assert!(render_munin(Some(&s), 0, 0, true).contains("requests_total.type COUNTER"));
 	}
 }

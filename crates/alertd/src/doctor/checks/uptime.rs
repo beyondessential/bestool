@@ -1,7 +1,6 @@
 use sysinfo::System;
 
 use super::SweepContext;
-use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 /// Below this uptime the host has rebooted recently, which may be unexpected.
@@ -19,9 +18,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	} else {
 		Check::pass("uptime", summary)
 	};
-	check
-		.with_detail("uptime_secs", secs)
-		.with_stat(Stat::gauge("uptime_seconds", secs as f64).help("Host uptime"))
+	check.with_detail("uptime_secs", secs)
 }
 
 fn humanise(secs: u64) -> String {
@@ -34,19 +31,5 @@ fn humanise(secs: u64) -> String {
 		format!("{h}h {m}m")
 	} else {
 		format!("{m}m")
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[tokio::test]
-	async fn emits_uptime_stat() {
-		let ctx = SweepContext::builder()
-			.http_client(reqwest::Client::new())
-			.build();
-		let check = run(ctx).await;
-		assert!(check.stats.iter().any(|s| s.name == "uptime_seconds"));
 	}
 }

@@ -70,11 +70,13 @@ pub async fn run(ctx: SweepContext) -> Check {
 		let mount = disk.mount_point().to_string_lossy().into_owned();
 		stats.push(
 			Stat::gauge("free_bytes", free as f64)
+				.group("bytes")
 				.label("mount", mount.clone())
 				.help("Free disk space"),
 		);
 		stats.push(
 			Stat::gauge("total_bytes", total as f64)
+				.group("bytes")
 				.label("mount", mount.clone())
 				.help("Total disk space"),
 		);

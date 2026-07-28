@@ -6,6 +6,7 @@
 use std::{
 	collections::BTreeMap,
 	path::{Path, PathBuf},
+	sync::{Mutex, OnceLock},
 };
 
 use miette::{IntoDiagnostic, Result, WrapErr as _};
@@ -401,12 +402,63 @@ pub async fn get_tailscale_info() -> (Option<String>, Option<String>) {
 	(ip, name)
 }
 
-/// Detect the host's installed Node.js version by running `node --version`.
+/// Detect the Node.js version the Tamanu server runs under.
 ///
-/// Returns `None` if node isn't on `PATH` or the command fails. The leading
-/// `v` that node prints (e.g. `v20.11.0`) is stripped, so the value is a bare
-/// version string.
-pub async fn detect_node_version() -> Option<String> {
+/// Reports the runtime Tamanu actually executes: on a containerised host, the
+/// version inside a running server container; on a host with a runtime bundled
+/// under the server root, that runtime. Falls back to the Node.js on the
+/// host's search path when neither is found, and yields `None` when no runtime
+/// can be resolved at all. `tamanu_root` is the discovered server root, used
+/// to locate a bundled runtime; pass `None` when it isn't known.
+///
+/// The Node.js version is fixed by the Tamanu version, so the resolved value
+/// is cached against `tamanu_version`: an unchanged version returns the cached
+/// value without re-probing a container or spawning node, and an upgrade (a
+/// changed version) re-probes so the report follows the new runtime. When the
+/// Tamanu version isn't known, the value is resolved afresh each time.
+// spec: NODE
+pub async fn detect_node_version(
+	tamanu_root: Option<&Path>,
+	tamanu_version: Option<&str>,
+) -> Option<String> {
+	static CACHE: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
+	let cache = CACHE.get_or_init(|| Mutex::new(None));
+	if let Some(version) = tamanu_version
+		&& let Some((cached_version, cached_node)) = cache.lock().ok().and_then(|g| g.clone())
+		&& cached_version == version
+	{
+		return Some(cached_node);
+	}
+
+	let resolved = resolve_node_version(tamanu_root).await;
+	if let Some(version) = tamanu_version
+		&& let Some(node) = &resolved
+		&& let Ok(mut guard) = cache.lock()
+	{
+		*guard = Some((version.to_string(), node.clone()));
+	}
+	resolved
+}
+
+async fn resolve_node_version(tamanu_root: Option<&Path>) -> Option<String> {
+	#[cfg(target_os = "linux")]
+	if let Some(version) = crate::versions::container_node_version().await {
+		return Some(version);
+	}
+
+	#[cfg(windows)]
+	if let Some(root) = tamanu_root
+		&& let Some(version) = windows_embedded_node_version(root).await
+	{
+		return Some(version);
+	}
+
+	let _ = tamanu_root; // consulted only by the bundled-runtime lookup above
+	host_node_version().await
+}
+
+/// Run `node --version` on the host's search path and parse the result.
+async fn host_node_version() -> Option<String> {
 	let output = tokio::process::Command::new("node")
 		.arg("--version")
 		.output()
@@ -420,9 +472,37 @@ pub async fn detect_node_version() -> Option<String> {
 	parse_node_version(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Read the version of the Node.js runtime bundled alongside a Windows Tamanu
+/// server, at `runtime\node.exe` under the server root — the runtime the
+/// process manager launches the server with.
+#[cfg(windows)]
+async fn windows_embedded_node_version(root: &Path) -> Option<String> {
+	let node = windows_embedded_node_path(root);
+	if !node.exists() {
+		return None;
+	}
+
+	let output = tokio::process::Command::new(&node)
+		.arg("--version")
+		.output()
+		.await
+		.ok()?;
+	if !output.status.success() {
+		debug!(status = %output.status, node = %node.display(), "embedded node --version failed");
+		return None;
+	}
+
+	parse_node_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(windows)]
+fn windows_embedded_node_path(root: &Path) -> PathBuf {
+	root.join("runtime").join("node.exe")
+}
+
 /// Parse the output of `node --version` (e.g. `v20.11.0\n`) into a bare version
 /// string. Returns `None` for empty/whitespace-only input.
-fn parse_node_version(raw: &str) -> Option<String> {
+pub(crate) fn parse_node_version(raw: &str) -> Option<String> {
 	let version = raw.trim().trim_start_matches('v');
 	if version.is_empty() {
 		None

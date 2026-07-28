@@ -305,6 +305,12 @@ pub fn installed_server_versions() -> Vec<String> {
 }
 
 /// The `<version>` dirs (with a `bin` subdirectory) directly under `base`, sorted.
+///
+/// Only version-shaped names count. On Windows a restore stages into
+/// `<base>\.bestool-restore.<pid>`, and a whole-install snapshot puts a full
+/// server tree — `bin` included — inside it; without the name check that staging
+/// tree reads as an installed version, and quiescing "other versions" then goes
+/// looking for a service named after it.
 fn versions_under(base: &Path) -> Vec<String> {
 	let mut out: Vec<String> = std::fs::read_dir(base)
 		.into_iter()
@@ -312,9 +318,23 @@ fn versions_under(base: &Path) -> Vec<String> {
 		.flatten()
 		.filter(|entry| entry.path().join("bin").is_dir())
 		.filter_map(|entry| entry.file_name().into_string().ok())
+		.filter(|name| is_version_name(name))
 		.collect();
 	out.sort();
 	out
+}
+
+/// Whether `name` looks like a postgres major-version directory: `18`, or `9.6`
+/// under the pre-10 scheme.
+fn is_version_name(name: &str) -> bool {
+	let mut parts = name.split('.');
+	let major = parts.next().unwrap_or_default();
+	let minor = parts.next();
+	parts.next().is_none() && is_number(major) && minor.is_none_or(is_number)
+}
+
+fn is_number(part: &str) -> bool {
+	!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Error unless server binaries for major `wanted` are installed. A data-only
@@ -552,7 +572,21 @@ mod tests {
 		std::fs::create_dir_all(tmp.path().join("18").join("bin")).unwrap();
 		// No bin: not a server install.
 		std::fs::create_dir_all(tmp.path().join("junk")).unwrap();
+		// A whole-install restore stages a full server tree — bin and all — beside
+		// the installs it's about to replace; it isn't an installed version.
+		std::fs::create_dir_all(tmp.path().join(".bestool-restore.2152").join("bin")).unwrap();
+		std::fs::create_dir_all(tmp.path().join("18.old").join("bin")).unwrap();
 		assert_eq!(versions_under(tmp.path()), vec!["16".to_owned(), "18".to_owned()]);
+	}
+
+	#[test]
+	fn version_names_are_numeric() {
+		assert!(is_version_name("18"));
+		assert!(is_version_name("9.6"));
+		assert!(!is_version_name(""));
+		assert!(!is_version_name("18.old"));
+		assert!(!is_version_name(".bestool-restore.2152"));
+		assert!(!is_version_name("pgAdmin 4"));
 	}
 
 	#[test]

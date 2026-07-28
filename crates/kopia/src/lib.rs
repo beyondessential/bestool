@@ -29,6 +29,7 @@ use jiff::{Span, Timestamp};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use serde::{Deserialize, Serialize};
 
+pub mod progress;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 

@@ -55,9 +55,21 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		.with_detail("five_min", load.five)
 		.with_detail("fifteen_min", load.fifteen)
 		.with_detail("cores", cores)
-		.with_stat(Stat::gauge("one_min", load.one).help("1-minute load average"))
-		.with_stat(Stat::gauge("five_min", load.five).help("5-minute load average"))
-		.with_stat(Stat::gauge("fifteen_min", load.fifteen).help("15-minute load average"))
+		.with_stat(
+			Stat::gauge("one_min", load.one)
+				.group("averages")
+				.help("1-minute load average"),
+		)
+		.with_stat(
+			Stat::gauge("five_min", load.five)
+				.group("averages")
+				.help("5-minute load average"),
+		)
+		.with_stat(
+			Stat::gauge("fifteen_min", load.fifteen)
+				.group("averages")
+				.help("15-minute load average"),
+		)
 		.with_stat(Stat::gauge("cores", cores as f64).help("Logical CPU cores"))
 }
 

@@ -32,8 +32,16 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		.with_detail("used_bytes", used)
 		.with_detail("total_bytes", total)
 		.with_detail("percent_used", pct)
-		.with_stat(Stat::gauge("used_bytes", used as f64).help("Memory in use"))
-		.with_stat(Stat::gauge("total_bytes", total as f64).help("Total memory"))
+		.with_stat(
+			Stat::gauge("used_bytes", used as f64)
+				.group("bytes")
+				.help("Memory in use"),
+		)
+		.with_stat(
+			Stat::gauge("total_bytes", total as f64)
+				.group("bytes")
+				.help("Total memory"),
+		)
 		.with_stat(Stat::gauge("percent_used", pct).help("Memory used, percent"))
 }
 
