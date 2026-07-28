@@ -28,7 +28,7 @@ With a server id, a device id, and a device key all present, the check passes; t
 ## Recovering a missing identity
 
 A registration can be missing the server id or the device id assigned at enrolment — for instance a host carried over from older per-file state, which holds only the server id and device key.
-When the check fails for a missing server id or device id, it attempts to recover the missing identifier from Canopy as a self-heal action (see [CHK](../tamanu/healthchecks.md#self-healing)).
+When the check warns for a missing server id or device id, it attempts to recover the missing identifier from Canopy as a self-heal action (see [CHK](../tamanu/healthchecks.md#self-healing)).
 
 Canopy resolves a device's identity from the authentication the device already presents — its tailnet identity or its mTLS device certificate — so a host that has lost track of its own identifiers can ask Canopy for them without knowing them first.
 The check reads them from Canopy's device self-identity endpoint, `GET /servers/self`, which returns the server id the host is enrolled as together with its own device id.
