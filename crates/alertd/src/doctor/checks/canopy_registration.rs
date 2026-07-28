@@ -1,13 +1,16 @@
 //! Canopy enrolment healthcheck.
 //!
-//! Grades this host's Canopy registration so an older registration format
-//! surfaces before the work that depends on it — most relevantly the backups of
-//! a deployment that has Canopy backups configured, which tag a snapshot with
-//! the device id. A missing server id or device id fails, and updating bestool
-//! usually migrates an older format to the current one; a missing device key
-//! warns (the host authenticates over the tailscale path rather than by mTLS);
-//! the API URL is not required, as a registration without one uses the default
-//! Canopy URL.
+//! Grades this host's Canopy registration so an incomplete enrolment surfaces
+//! before the work that depends on it — most relevantly the backups of a
+//! deployment that has Canopy backups configured, which tag a snapshot with the
+//! device id. A missing server id or device id fails, but the daemon recovers
+//! either automatically from Canopy using the authentication the host already
+//! presents, so no operator action is needed; a missing device key warns (the
+//! host authenticates over the tailscale path rather than by mTLS) and, as the
+//! private key never leaves the host, Canopy cannot hand it back, so Canopy
+//! backups and restores fail until it is re-provisioned with `bestool canopy
+//! register`; the API URL is not required, as a registration without one uses
+//! the default Canopy URL.
 //!
 //! spec: REG
 
@@ -126,14 +129,16 @@ fn grade(reg: Option<&Registration>) -> Check {
 	let has_device_key = reg.device_key.is_some();
 	let has_api_url = reg.api_url.is_some();
 
-	// Fatal: an older registration format that the current bestool auto-migrates.
+	// Fatal: an identifier the daemon recovers automatically from Canopy on a later sweep.
 	let mut fatal: Vec<&str> = Vec::new();
 	if !has_server_id {
-		fatal.push("no server id, so this host is on an older Canopy registration format; updating bestool usually migrates it");
+		fatal.push(
+			"no server id recorded; the daemon recovers this automatically from Canopy on a later sweep, so no operator action is needed",
+		);
 	}
 	if !has_device_id {
 		fatal.push(
-			"no device id, so this host is on an older Canopy registration format; updating bestool usually migrates it (a manual `bestool canopy register` is only needed if that doesn't resolve it), and this affects backups only where Canopy backups are configured",
+			"no device id recorded; the daemon recovers this automatically from Canopy on a later sweep, so no operator action is needed, and this affects backups only where Canopy backups are configured",
 		);
 	}
 
@@ -141,7 +146,7 @@ fn grade(reg: Option<&Registration>) -> Check {
 	let mut soft: Vec<&str> = Vec::new();
 	if !has_device_key {
 		soft.push(
-			"no device key, so this host authenticates to Canopy over the tailscale path rather than by mTLS",
+			"no device key, so this host authenticates to Canopy over the tailscale path rather than by mTLS; the private key never leaves the host, so it cannot be recovered automatically, and Canopy backups and restores fail until it is re-provisioned with `bestool canopy register`",
 		);
 	}
 
