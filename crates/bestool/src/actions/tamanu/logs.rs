@@ -13,25 +13,30 @@ use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail, miette};
 use owo_colors::OwoColorize;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::debug;
 
 use bestool_tamanu::{
 	ApiServerKind,
 	config::load_config,
 	pm2::{self, LogSource},
+	seedling,
 	server_info::query_patient_portal_enabled,
 	services::{self, ExpectedState, Expectation, Instances, Supervisor},
 };
 
 use crate::actions::{
 	Context,
-	tamanu::{TamanuArgs, find_tamanu, lifecycle},
+	tamanu::{TamanuArgs, find_tamanu, lifecycle, on_seedling},
 };
 
 /// The literal pseudo-service name that triggers caddy log tailing
 /// alongside whatever tamanu services are matched.
 const CADDY: &str = "caddy";
+
+/// The app postgres runs as on a Seedling host, where it is a peer of the
+/// Tamanu app rather than one of its resources.
+const POSTGRES_APP: &str = "postgres";
 
 /// True when `name` is one of the recognised postgres aliases. The postgres
 /// pseudo-service accepts a small set of common spellings so operators don't
@@ -124,6 +129,7 @@ struct Selection {
 	all_tamanu: bool,
 }
 
+
 fn select(names: &[String]) -> Selection {
 	if names.is_empty() {
 		return Selection {
@@ -156,6 +162,22 @@ fn select(names: &[String]) -> Selection {
 pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let selection = select(&args.names);
+
+	// On a Seedling host the logs come from the daemon, not the journal or
+	// pm2, so this resolves before any of the install discovery, config load,
+	// or privilege elevation below: none of those apply, and elevating would
+	// swap the operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(oi) => {
+			let grep = args.grep.map(|re| GrepFilter {
+				regex: re,
+				invert: args.invert,
+			});
+			return run_seedling_logs(&oi, &selection, args.lines, args.follow, grep).await;
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
 
 	let (_, root) = find_tamanu(tamanu).await?;
 	let config = load_config(&root, None)?;
@@ -278,6 +300,87 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 			tamanu.use_colours,
 		),
 	}
+}
+
+/// Tail through the Seedling daemon: the Tamanu app (or its named resources),
+/// the daemon's proxy for `caddy`, and the postgres app for `postgres`, each as
+/// its own subscription interleaved on stdout.
+///
+/// The daemon sends structured entries and matches no pattern of its own, so
+/// each entry is rendered here and `--grep` applied per line.
+///
+/// spec: SHC#logs
+async fn run_seedling_logs(
+	oi: &seedling::Oi,
+	selection: &Selection,
+	lines: usize,
+	follow: bool,
+	grep: Option<GrepFilter>,
+) -> Result<()> {
+	let mut subscriptions: Vec<Value> = Vec::new();
+
+	if selection.all_tamanu || !selection.tamanu_names.is_empty() {
+		let apps = oi.apps().await?;
+		let app = seedling::target(&apps, None)?.name.clone();
+		if selection.all_tamanu {
+			subscriptions.push(json!({ "app": app }));
+		} else {
+			let resources = oi.show(&app).await?.resources;
+			let matched = on_seedling::match_resources(
+				resources.iter().collect(),
+				&selection.tamanu_names,
+				false,
+			)?;
+			for resource in matched {
+				subscriptions.push(json!({ "app": app, "resource": resource.name }));
+			}
+		}
+	}
+	if selection.include_caddy {
+		// The proxy on a Seedling host is the daemon's own, not a host caddy.
+		subscriptions.push(json!({ "infra": "proxy" }));
+	}
+	if selection.include_postgres {
+		// Postgres is its own app, a peer of the Tamanu one.
+		subscriptions.push(json!({ "app": POSTGRES_APP }));
+	}
+
+	if subscriptions.is_empty() {
+		bail!("nothing to tail: no matched resources, caddy, or postgres included");
+	}
+
+	let mut set = tokio::task::JoinSet::new();
+	for mut params in subscriptions {
+		params["tail"] = json!(lines);
+		params["follow"] = json!(follow);
+		let stream = oi.log_stream(params.clone()).await?;
+		let grep = grep.clone();
+		debug!(%params, "subscribed to a log stream");
+		set.spawn(async move {
+			let mut stream = stream;
+			while let Some(entry) = stream.next().await? {
+				let line = format!("{} {} {}", entry.timestamp, entry.source(), entry.message);
+				if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
+					continue;
+				}
+				println!("{line}");
+			}
+			Ok::<(), miette::Report>(())
+		});
+	}
+
+	let mut failures = Vec::new();
+	while let Some(joined) = set.join_next().await {
+		match joined {
+			Ok(Ok(())) => {}
+			Ok(Err(err)) => failures.push(format!("{err}")),
+			Err(join_err) => failures.push(join_err.to_string()),
+		}
+	}
+	if !failures.is_empty() {
+		bail!("log stream failed: {}", failures.join("; "));
+	}
+	Ok(())
 }
 
 /// A compiled regex paired with an inversion flag, so the rest of the code

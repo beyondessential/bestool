@@ -159,12 +159,12 @@ tamanu-doctor = [
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
-tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
-tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
+tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege", "bestool-tamanu/seedling"]
+tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors", "bestool-tamanu/seedling"]
 # Windows-only PostgreSQL tuning. Reuses the lifecycle restart to bounce the
 # Tamanu workloads, and drives the postgres Windows service directly.
 tamanu-pgtune = ["__tamanu", "tamanu-config", "tamanu-lifecycle", "dep:bestool-postgres", "dep:windows-service"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql", "bestool-tamanu/seedling"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 # Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
 tamanu-tags = ["canopy-tags"]
