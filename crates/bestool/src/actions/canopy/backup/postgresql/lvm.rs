@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use jiff::Timestamp;
 use miette::{Result, bail, miette};
 use tracing::{info, warn};
 
@@ -56,7 +57,10 @@ fn mount_options(fstype: &str, idmap: &str) -> String {
 
 /// Take a thin snapshot and mount it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
-pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Snapshot)> {
+pub async fn prepare(
+	resolved: &ResolvedCluster,
+	backup_type: &str,
+) -> Result<(PathBuf, Timestamp, Snapshot)> {
 	let token = sys::run_token();
 	let base_mount = sys::findmnt_target(&resolved.data_dir).await?;
 	let rel = sys::relative_data_path(&resolved.data_dir, &base_mount)?;
@@ -83,6 +87,8 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 		&["--snapshot", "--name", &snapshot_lv, &format!("{vg}/{lv}")],
 	)
 	.await?;
+	// The snapshot volume now exists: this is the instant the data froze.
+	let taken_at = Timestamp::now();
 	snapshot.lv = snapshot_lv.clone();
 
 	// Thin snapshots carry the activation-skip flag; -K overrides it.
@@ -108,7 +114,7 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	.await?;
 	snapshot.kopia_mount = kopia_mount.clone();
 
-	Ok((kopia_mount.join(rel), snapshot))
+	Ok((kopia_mount.join(rel), taken_at, snapshot))
 }
 
 /// Release a prepared snapshot: unmount, deactivate, and remove the snapshot LV.

@@ -126,19 +126,19 @@ async fn snapshot_prepared(
 	backup_type: &str,
 	need: Option<u64>,
 ) -> Result<Prepared> {
-	let (path, teardown) = match strategy {
+	let (path, taken_at, teardown) = match strategy {
 		Strategy::Btrfs => {
-			let (path, mounts) = btrfs::prepare(resolved, backup_type).await?;
-			(path, Teardown::Btrfs(mounts))
+			let (path, taken_at, mounts) = btrfs::prepare(resolved, backup_type).await?;
+			(path, taken_at, Teardown::Btrfs(mounts))
 		}
 		Strategy::ThinLvm => {
-			let (path, snapshot) = lvm::prepare(resolved, backup_type).await?;
-			(path, Teardown::Lvm(snapshot))
+			let (path, taken_at, snapshot) = lvm::prepare(resolved, backup_type).await?;
+			(path, taken_at, Teardown::Lvm(snapshot))
 		}
 		#[cfg(windows)]
 		Strategy::Vss => {
-			let (path, shadow) = vss::prepare(resolved, backup_type, need).await?;
-			(path, Teardown::Vss(shadow))
+			let (path, taken_at, shadow) = vss::prepare(resolved, backup_type, need).await?;
+			(path, taken_at, Teardown::Vss(shadow))
 		}
 		#[cfg(not(windows))]
 		Strategy::Vss => {
@@ -149,6 +149,7 @@ async fn snapshot_prepared(
 	};
 	Ok(Prepared {
 		path,
+		taken_at: Some(taken_at),
 		extra_tags: metadata_tags(resolved, strategy),
 		ignore: ignore_globs(),
 		teardown,
@@ -165,6 +166,9 @@ async fn basebackup_prepared(
 	let (path, root) = basebackup::prepare(resolved, backup_type, config, need).await?;
 	Ok(Prepared {
 		path,
+		// A streamed base backup represents an interval, not a point in time, so it
+		// reports no freeze instant.
+		taken_at: None,
 		// Tagged as basebackup even on fallback — it reflects what actually ran.
 		extra_tags: metadata_tags(resolved, Strategy::BaseBackup),
 		ignore: ignore_globs(),

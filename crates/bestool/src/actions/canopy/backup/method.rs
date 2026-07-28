@@ -11,6 +11,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use jiff::Timestamp;
 use miette::{Result, bail};
 use serde::Deserialize;
 
@@ -19,6 +20,11 @@ use serde::Deserialize;
 pub struct Prepared {
 	/// The path kopia should snapshot.
 	pub path: PathBuf,
+	/// The instant the source was frozen — the point in time the backup
+	/// represents — when the method takes a point-in-time capture below kopia.
+	/// `None` for a method with no distinct freeze instant (a streamed base
+	/// backup, or a path snapshotted live).
+	pub taken_at: Option<Timestamp>,
 	/// Extra tags the method contributes (merged with the canopy-* tags and the
 	/// def's own `[tags]`).
 	pub extra_tags: BTreeMap<String, String>,
@@ -125,6 +131,8 @@ impl Method {
 				let (path, cleanup) = super::simple::prepare(&config.path, backup_type).await?;
 				Ok(Prepared {
 					path,
+					// A live view (bindfs mount or copy) has no point-in-time freeze.
+					taken_at: None,
 					extra_tags: BTreeMap::new(),
 					ignore: Vec::new(),
 					teardown: Teardown::Simple(cleanup),

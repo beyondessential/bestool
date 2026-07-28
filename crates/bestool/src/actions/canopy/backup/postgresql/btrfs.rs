@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use jiff::Timestamp;
 use miette::{Result, miette};
 use tracing::{info, warn};
 
@@ -58,7 +59,10 @@ fn toplevel_mount(token: &str) -> PathBuf {
 
 /// Take the snapshot and mount it; returns the kopia source path and the
 /// teardown state. Caller must always pass the result to [`teardown`].
-pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(PathBuf, Mounts)> {
+pub async fn prepare(
+	resolved: &ResolvedCluster,
+	backup_type: &str,
+) -> Result<(PathBuf, Timestamp, Mounts)> {
 	let token = sys::run_token();
 	let base_mount = sys::findmnt_target(&resolved.data_dir).await?;
 	let rel = sys::relative_data_path(&resolved.data_dir, &base_mount)?;
@@ -101,6 +105,8 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 		],
 	)
 	.await?;
+	// The read-only snapshot now exists: this is the instant the data froze.
+	let taken_at = Timestamp::now();
 	mounts.snapshot_path = snapshot_path.clone();
 
 	sys::mkdir(&kopia_mount).await?;
@@ -119,7 +125,7 @@ pub async fn prepare(resolved: &ResolvedCluster, backup_type: &str) -> Result<(P
 	.await?;
 	mounts.kopia_mount = kopia_mount.clone();
 
-	Ok((kopia_mount.join(rel), mounts))
+	Ok((kopia_mount.join(rel), taken_at, mounts))
 }
 
 /// Release a prepared snapshot: unmount the kopia mount, delete the snapshot

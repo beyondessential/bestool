@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use bestool_canopy::schema::{
 	BackupCapabilitiesArgs, BackupCredentialsArgs, BackupPurpose, BackupTarget, BeginArgs,
 	BeginResponse, CheckSeverity, CompleteArgs, CompleteResponse, CredentialProcessOutput,
-	ReportArgs, RunOutcome,
+	ProgressArgs, ReportArgs, RunOutcome,
 };
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
@@ -377,6 +377,7 @@ async fn backup_report_request_matches_spec() {
 			.outcome(RunOutcome::Success)
 			.bytes_uploaded(12345)
 			.snapshot_id("abc123".to_owned())
+			.snapshot_taken_at("2026-07-27T04:12:00Z".parse().unwrap())
 			.s3_sent_raw_bytes(2_000_000)
 			.s3_sent_payload_bytes(1_950_000)
 			.s3_received_raw_bytes(4096)
@@ -393,6 +394,45 @@ async fn backup_report_request_matches_spec() {
 	assert!(
 		!validator.is_valid(&invalid),
 		"spec accepted an invalid outcome; the validator is not checking refs",
+	);
+}
+
+#[tokio::test]
+#[ignore = "live canopy contract test; run by the dedicated CI job"]
+async fn backup_progress_request_matches_spec() {
+	let spec = spec().await;
+	assert_operation_exists(spec, "/backup-progress", "post");
+
+	// A representative in-flight sample: engine counters, the freeze moment, and
+	// the proxy tallies, as the reporter sends them.
+	let instance = serde_json::to_value(
+		ProgressArgs::builder()
+			.run_id("00000000-0000-0000-0000-000000000000".parse().unwrap())
+			.type_("tamanu-postgres".to_owned())
+			.purpose(BackupPurpose::Backup)
+			.bytes_hashed(1_200_000_000)
+			.bytes_uploaded(1_100_000_000)
+			.bytes_cached(100_000_000)
+			.bytes_estimated(5_000_000_000)
+			.files_done(18)
+			.snapshot_taken_at("2026-07-27T04:12:00Z".parse().unwrap())
+			.s3_sent_raw_bytes(2_000_000)
+			.s3_sent_payload_bytes(1_950_000)
+			.s3_received_raw_bytes(4096)
+			.s3_received_payload_bytes(0)
+			.extra(serde_json::Map::new())
+			.build(),
+	)
+	.unwrap();
+	assert_valid(spec, &request_schema("/backup-progress", "post"), &instance);
+
+	// Negative case: an invalid purpose must be rejected.
+	let mut invalid = instance.clone();
+	invalid["purpose"] = json!("sideways");
+	let validator = validator_at(spec, &request_schema("/backup-progress", "post"));
+	assert!(
+		!validator.is_valid(&invalid),
+		"spec accepted an invalid purpose; the validator is not checking refs",
 	);
 }
 
