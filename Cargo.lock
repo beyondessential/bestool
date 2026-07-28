@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "algae-cli"
-version = "1.1.8"
+version = "1.1.9"
 dependencies = [
  "age",
  "age-core",
@@ -598,7 +598,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bestool"
-version = "1.57.0"
+version = "1.57.1"
 dependencies = [
  "age",
  "algae-cli",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "23.2.1"
+version = "23.2.2"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-canopy"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "algae-cli",
  "base64",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.17.3"
+version = "0.17.4"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -2692,7 +2692,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54f0d287c53ffd184d04d8677f590f4ac5379785529e5e08b1c8083acdd5c198"
 dependencies = [
  "memchr",
- "thiserror 2.0.18",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -5677,7 +5677,7 @@ dependencies = [
  "proc-macro-error-attr3",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
