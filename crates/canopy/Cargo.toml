@@ -44,7 +44,7 @@ tempfile = "3.21.0"
 
 [build-dependencies]
 blake3 = "1.8.5"
-prettyplease = "0.2.37"
+prettyplease = "0.3.0"
 reqwest = { workspace = true, features = ["blocking"] }
 schemars = "0.8.22"
 serde = { version = "1.0.228", features = ["derive"] }
