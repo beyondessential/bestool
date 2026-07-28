@@ -76,9 +76,11 @@ Four endpoints back the system:
 - **Issue credentials** — given a type and a purpose (`backup` or `restore`), Canopy returns short-lived object-store credentials.
   `backup` grants write-without-delete; `restore` is downscoped read-only.
 - **Fetch target** — returns the repository target: storage kind, bucket, prefix (normally empty), region, and the repository password.
-- **Report a run** — the device posts the run's outcome (success or failure) with the client-minted run id, the type, the purpose, and, on success, the snapshot id and bytes uploaded where known.
+- **Report a run** — the device posts the run's outcome (success or failure) with the client-minted run id, the type, the purpose, and, on success, the snapshot id and bytes uploaded where known; it also reports the object-storage traffic the run moved and, when the run has one, the moment it froze the data it backed up.
+- **Report progress** — while a run is in flight, the device may post cumulative counters describing how far it has got, so Canopy shows a run advancing rather than a figureless in-progress row.
 
 When the device is not yet authorised for backups — not bound to a live server, ungrouped, or the type isn't enabled — the credentials and target endpoints report a benign "not yet authorised" state rather than an error.
+Progress reporting has no such gate: a run already under way is described whatever the group's configuration, since refusing progress would blind Canopy precisely when something is misconfigured.
 
 ## Taking a backup
 
@@ -97,6 +99,33 @@ A run:
 7. reports the outcome.
    Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing.
    A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
+
+## The moment the data froze
+
+A run reports the instant it froze the data it backs up — the point in time the backup represents — which is distinct from when the upload finished and from when Canopy received the report.
+For a large backup these moments are hours apart, so a run that reports only its finish time misdates its own data.
+
+The freeze moment is the capture's own: where the method takes a point-in-time volume snapshot below kopia, it is the instant that snapshot was taken, which is not recoverable from the repository afterwards and so only the device can report it.
+A capture with no distinct freeze instant reports none rather than an approximation: a streamed base backup represents an interval rather than a point, and a plain path snapshotted live has no consistency point at all.
+The moment is reported as early as it is known — before any transfer begins — so it is carried on the first progress report where there is one, and on the completion report regardless.
+Canopy records it once per run and the first value stands, so sending it early rather than only at the end is what keeps a long run's data correctly dated.
+
+## Reporting progress
+
+While a run is in flight the device posts progress as often as it chooses, at a cadence of its own picking within the rate Canopy accepts, clamped so a misconfiguration cannot post in a tight loop.
+Progress is best-effort telemetry: a refused or failed progress post — whatever the cause — is logged and the run carries on, never aborted, and a run that reports no progress at all is backed up and reported exactly as one that does.
+
+Each progress report carries the run id, the type and purpose, and two independent families of cumulative-since-run-start counters:
+
+- the backup engine's own work — source bytes read, bytes processed, bytes uploaded, bytes already present, the total the run expects, files done and expected, and errors hit and ignored — together with what the run is working on at that moment;
+- the object-storage traffic the run has moved — the same raw and payload, sent and received figures the completed run reports — as tallied so far.
+
+All counters are totals from the start of the run rather than per-interval deltas, so a lost or repeated report costs only resolution and never corrupts a total, and Canopy can take a run's final figure from the last progress report where the completion report omits it.
+The device omits any counter it does not measure, so that an absent figure reads as unknown rather than as a stalled zero.
+The engine's figures are as precise as the engine exposes mid-run — a coarser resolution than the exact total on the completion report — and the run's verbatim engine status line is included as opaque detail Canopy stores and shows without interpreting.
+
+Both a backup and a restore report progress this way.
+A restore reports the object-storage traffic it has moved — for a restore, dominated by the bytes downloaded — which answers whether it is progressing; a restore has no freeze moment and need not report engine counters.
 
 The repository password is a real secret and is kept reasonably protected from leakage — out of the process argument list and out of any persisted configuration, so it can't be read from a process listing or left on the device.
 The S3 credentials kopia is given need no such protection: they are dummy values, the real credentials living only in the re-signing proxy ([S3P](s3-sigv4-proxy.md)).
