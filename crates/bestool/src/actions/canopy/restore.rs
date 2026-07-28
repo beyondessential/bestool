@@ -77,15 +77,11 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	let reg = load_registration(args.config.as_deref())
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
-	let device_key = reg
-		.device_key
-		.clone()
-		.ok_or_else(|| miette!("registration has no device key"))?;
 	let server_id = reg
 		.server_id
 		.clone()
 		.ok_or_else(|| miette!("registration has no server id"))?;
-	let client = build_client(base_url_of(&reg)?, &device_key).await?;
+	let client = build_client(base_url_of(&reg)?, reg.device_key.as_deref()).await?;
 
 	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Ready(target) => target,
