@@ -410,10 +410,6 @@ async fn backup_after_start(
 	let reg = load_registration(registration_dir)
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
-	let device_key = reg
-		.device_key
-		.clone()
-		.ok_or_else(|| miette!("registration has no device key"))?;
 	let server_id = reg
 		.server_id
 		.clone()
@@ -425,7 +421,7 @@ async fn backup_after_start(
 	// omit the tag otherwise.
 	let device_id = reg.device_id.clone();
 
-	let client = build_client(base_url_of(&reg)?, &device_key).await?;
+	let client = build_client(base_url_of(&reg)?, reg.device_key.as_deref()).await?;
 
 	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Dormant => {
@@ -930,15 +926,23 @@ pub(super) fn base_url_of(reg: &Registration) -> Result<Url> {
 }
 
 /// Build a canopy client for an already-enrolled host (tailscale, then mTLS).
-pub(super) async fn build_client(base_url: Url, device_key: &str) -> Result<Arc<CanopyClient>> {
+///
+/// The device key is optional: a host on the tailnet authenticates by its
+/// tailscale identity, and only needs the key when the tailnet is out of reach.
+pub(super) async fn build_client(
+	base_url: Url,
+	device_key: Option<&str>,
+) -> Result<Arc<CanopyClient>> {
 	let tailscale_url = bestool_canopy::TAILSCALE_URL
 		.parse()
 		.into_diagnostic()
 		.wrap_err("parsing default canopy tailscale URL")?;
 	let client =
-		CanopyClient::with_urls(base_url, tailscale_url, Some(device_key), crate::http::client_builder)
+		CanopyClient::with_urls(base_url, tailscale_url, device_key, crate::http::client_builder)
 			.await?
-			.ok_or_else(|| miette!("could not build a canopy client (no auth path available)"))?;
+			.ok_or_else(|| {
+				miette!("could not build a canopy client: the tailnet is unreachable and the registration has no device key")
+			})?;
 	Ok(Arc::new(client))
 }
 
