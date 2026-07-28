@@ -1,10 +1,11 @@
 //! Canopy enrolment healthcheck.
 //!
-//! Grades this host's Canopy registration so an incomplete enrolment surfaces
-//! before the work that depends on it — most importantly before backups are
-//! enabled, since Canopy rejects a backup snapshot that carries no device id.
-//! A missing server id or device id fails; a missing device key warns (the host
-//! can still authenticate over the tailscale path, but has no mTLS fallback);
+//! Grades this host's Canopy registration so an older registration format
+//! surfaces before the work that depends on it — most relevantly the backups of
+//! a deployment that has Canopy backups configured, which tag a snapshot with
+//! the device id. A missing server id or device id fails, and updating bestool
+//! usually migrates an older format to the current one; a missing device key
+//! warns (the host authenticates over the tailscale path rather than by mTLS);
 //! the API URL is not required, as a registration without one uses the default
 //! Canopy URL.
 //!
@@ -125,29 +126,29 @@ fn grade(reg: Option<&Registration>) -> Check {
 	let has_device_key = reg.device_key.is_some();
 	let has_api_url = reg.api_url.is_some();
 
-	// Fatal: the host can't be identified to Canopy, or its backups are rejected.
+	// Fatal: an older registration format that the current bestool auto-migrates.
 	let mut fatal: Vec<&str> = Vec::new();
 	if !has_server_id {
-		fatal.push("no server id, so the host cannot identify itself to Canopy");
+		fatal.push("no server id, so this host is on an older Canopy registration format; updating bestool usually migrates it");
 	}
 	if !has_device_id {
 		fatal.push(
-			"no device id, so backups are rejected until the host is re-enrolled with `bestool canopy register`",
+			"no device id, so this host is on an older Canopy registration format; updating bestool usually migrates it (a manual `bestool canopy register` is only needed if that doesn't resolve it), and this affects backups only where Canopy backups are configured",
 		);
 	}
 
-	// Soft: works today, but a degraded enrolment worth flagging.
+	// Soft: works today, but a registration detail worth flagging.
 	let mut soft: Vec<&str> = Vec::new();
 	if !has_device_key {
 		soft.push(
-			"no device key, so the host has no mTLS identity and depends on the tailscale path for authentication",
+			"no device key, so this host authenticates to Canopy over the tailscale path rather than by mTLS",
 		);
 	}
 
 	let check = if !fatal.is_empty() {
 		Check::fail(
 			CHECK_NAME,
-			format!("{} enrolment issue(s)", fatal.len() + soft.len()),
+			format!("{} Canopy registration note(s)", fatal.len() + soft.len()),
 			fatal
 				.iter()
 				.chain(soft.iter())
@@ -158,7 +159,7 @@ fn grade(reg: Option<&Registration>) -> Check {
 	} else if !soft.is_empty() {
 		Check::warning(
 			CHECK_NAME,
-			format!("{} enrolment issue(s)", soft.len()),
+			format!("{} Canopy registration note(s)", soft.len()),
 			soft.join("; "),
 		)
 	} else {

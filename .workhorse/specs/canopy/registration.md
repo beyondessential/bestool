@@ -7,7 +7,7 @@ id: REG
 A host's Canopy enrolment is held in a single registration record: the server id it backs up as, the device mTLS key, the device id assigned at enrolment, and the Canopy API URL.
 `bestool canopy register` populates all four; a host carried over from older per-file state has only the server id and device key.
 
-A doctor healthcheck grades this registration so an operator sees an incomplete enrolment before it causes a failure downstream — most importantly before backups are enabled, since Canopy rejects a backup snapshot that is not tagged with a device id (see [BAK](backup.md)).
+A doctor healthcheck grades this registration so an operator sees an incomplete or older-format enrolment before it matters downstream — most relevantly on a deployment that has Canopy backups configured, where a snapshot is tagged with the device id (see [BAK](backup.md)).
 
 ## The registration healthcheck
 
@@ -19,9 +19,10 @@ When several of the conditions below hold at once, the check reports the most se
 ## Outcomes
 
 With no registration record on the host, the check fails: the host is not enrolled, and the reason directs the operator to run `bestool canopy register`.
-With a registration that has no server id, the check fails, because the host cannot identify itself to Canopy.
-With a registration that has no device id, the check fails, because backups are rejected until the host is re-enrolled with `bestool canopy register`.
-With a registration that has no device key, the check warns, because the host has no mTLS identity and depends on the tailscale path to carry its authentication.
+With a registration that has no server id, the check fails: the host is on an older Canopy registration format, which updating bestool usually migrates to the current format.
+With a registration that has no device id, the check fails for the same reason; updating bestool usually migrates it, and a manual `bestool canopy register` is needed only if that does not resolve it.
+This affects backups only on a deployment that has Canopy backups configured.
+With a registration that has no device key, the check warns, because the host authenticates to Canopy over the tailscale path rather than by mTLS.
 With a server id, a device id, and a device key all present, the check passes; the API URL is not required, because a registration without one falls back to the default Canopy URL.
 
 ## Recovering a missing identity
