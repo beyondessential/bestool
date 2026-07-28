@@ -3,14 +3,13 @@
 //! Grades this host's Canopy registration so an incomplete enrolment surfaces
 //! before the work that depends on it — most relevantly the backups of a
 //! deployment that has Canopy backups configured, which tag a snapshot with the
-//! device id. A missing server id or device id fails, but the daemon recovers
+//! device id. A missing server id or device id warns, but the daemon recovers
 //! either automatically from Canopy using the authentication the host already
-//! presents, so no operator action is needed; a missing device key warns (the
-//! host authenticates over the tailscale path rather than by mTLS) and, as the
-//! private key never leaves the host, Canopy cannot hand it back, so Canopy
-//! backups and restores fail until it is re-provisioned with `bestool canopy
-//! register`; the API URL is not required, as a registration without one uses
-//! the default Canopy URL.
+//! presents, so no operator action is needed; a missing device key also warns,
+//! because the host authenticates over the tailscale path rather than by mTLS,
+//! and it can be re-provisioned with `bestool canopy register` if the mTLS
+//! identity is needed; the API URL is not required, as a registration without
+//! one uses the default Canopy URL.
 //!
 //! spec: REG
 
@@ -129,39 +128,28 @@ fn grade(reg: Option<&Registration>) -> Check {
 	let has_device_key = reg.device_key.is_some();
 	let has_api_url = reg.api_url.is_some();
 
-	// Fatal: an identifier the daemon recovers automatically from Canopy on a later sweep.
-	let mut fatal: Vec<&str> = Vec::new();
+	// Warning: works today, but a registration detail worth flagging. A missing
+	// server id or device id is recovered automatically by the daemon on a later
+	// sweep; a missing device key cannot be, but the host still authenticates
+	// over the tailscale path without it.
+	let mut soft: Vec<&str> = Vec::new();
 	if !has_server_id {
-		fatal.push(
+		soft.push(
 			"no server id recorded; the daemon recovers this automatically from Canopy on a later sweep, so no operator action is needed",
 		);
 	}
 	if !has_device_id {
-		fatal.push(
+		soft.push(
 			"no device id recorded; the daemon recovers this automatically from Canopy on a later sweep, so no operator action is needed, and this affects backups only where Canopy backups are configured",
 		);
 	}
-
-	// Soft: works today, but a registration detail worth flagging.
-	let mut soft: Vec<&str> = Vec::new();
 	if !has_device_key {
 		soft.push(
-			"no device key, so this host authenticates to Canopy over the tailscale path rather than by mTLS; the private key never leaves the host, so it cannot be recovered automatically, and Canopy backups and restores fail until it is re-provisioned with `bestool canopy register`",
+			"no device key, so this host authenticates to Canopy over the tailscale path rather than by mTLS; it can be re-provisioned with `bestool canopy register` if the mTLS identity is needed",
 		);
 	}
 
-	let check = if !fatal.is_empty() {
-		Check::fail(
-			CHECK_NAME,
-			format!("{} Canopy registration note(s)", fatal.len() + soft.len()),
-			fatal
-				.iter()
-				.chain(soft.iter())
-				.copied()
-				.collect::<Vec<_>>()
-				.join("; "),
-		)
-	} else if !soft.is_empty() {
+	let check = if !soft.is_empty() {
 		Check::warning(
 			CHECK_NAME,
 			format!("{} Canopy registration note(s)", soft.len()),
@@ -210,25 +198,25 @@ mod tests {
 	}
 
 	#[test]
-	fn missing_device_id_fails() {
+	fn missing_device_id_warns() {
 		let reg = Registration {
 			device_id: None,
 			..full()
 		};
 		let check = grade(Some(&reg));
-		assert!(check.status.is_fatal());
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
 		assert!(check.status.reason().unwrap().contains("device id"));
 		assert_eq!(check.details["hasDeviceId"], false);
 	}
 
 	#[test]
-	fn missing_server_id_fails() {
+	fn missing_server_id_warns() {
 		let reg = Registration {
 			server_id: None,
 			..full()
 		};
 		let check = grade(Some(&reg));
-		assert!(check.status.is_fatal());
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
 		assert!(check.status.reason().unwrap().contains("server id"));
 	}
 
@@ -286,16 +274,16 @@ mod tests {
 	}
 
 	#[test]
-	fn most_severe_outcome_wins() {
-		// A missing device id (fatal) and device key (soft) together fail, and the
-		// fatal reason leads while the soft reason is still carried.
+	fn several_notes_are_all_carried() {
+		// A missing device id and device key together warn, and both reasons are
+		// carried in the check's reason.
 		let reg = Registration {
 			device_id: None,
 			device_key: None,
 			..full()
 		};
 		let check = grade(Some(&reg));
-		assert!(check.status.is_fatal());
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
 		let reason = check.status.reason().unwrap();
 		assert!(reason.contains("device id"));
 		assert!(reason.contains("device key"));

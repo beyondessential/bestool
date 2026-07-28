@@ -19,10 +19,10 @@ When several of the conditions below hold at once, the check reports the most se
 ## Outcomes
 
 With no registration record on the host, the check fails: the host is not enrolled, and the reason directs the operator to run `bestool canopy register`.
-With a registration that has no server id, the check fails, but the daemon recovers the identifier automatically from Canopy on a later sweep, so the reason notes that no operator action is needed.
-With a registration that has no device id, the check fails for the same reason and the same automatic recovery applies.
+With a registration that has no server id, the check warns, but the daemon recovers the identifier automatically from Canopy on a later sweep, so the reason notes that no operator action is needed.
+With a registration that has no device id, the check warns for the same reason and the same automatic recovery applies.
 This affects backups only on a deployment that has Canopy backups configured.
-With a registration that has no device key, the check warns, because the host authenticates to Canopy over the tailscale path rather than by mTLS; the private key never leaves the host, so it cannot be recovered automatically, and the reason states that Canopy backups and restores fail until the operator re-provisions it with `bestool canopy register`.
+With a registration that has no device key, the check warns, because the host authenticates to Canopy over the tailscale path rather than by mTLS; the reason notes that it can be re-provisioned with `bestool canopy register` if the mTLS identity is needed.
 With a server id, a device id, and a device key all present, the check passes; the API URL is not required, because a registration without one falls back to the default Canopy URL.
 
 ## Recovering a missing identity
