@@ -287,7 +287,7 @@ checksum = "d64a66d21a80182b35b1741997a6d2456911f54b7eb1918aa4e2382fc205268d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6656,8 +6656,9 @@ dependencies = [
 
 [[package]]
 name = "seedling-protocol"
-version = "0.4.5"
-source = "git+https://github.com/beyondessential/seedling.git?branch=fix/container-user-no-new-privileges#80d1a9c2b2823c3d5ab0337421532593190c7422"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c108f41fc3eabe2231230339745e7ba9b038ed145ab59d5dad2f15cdce5f10"
 dependencies = [
  "compact_str",
  "dirs",
