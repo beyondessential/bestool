@@ -13,8 +13,7 @@ use clap::Parser;
 use miette::{IntoDiagnostic, Result, bail, miette};
 use owo_colors::OwoColorize;
 use regex::Regex;
-use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
+use serde_json::{Value, json};
 use tracing::debug;
 
 use bestool_tamanu::{
@@ -169,12 +168,12 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	// or privilege elevation below: none of those apply, and elevating would
 	// swap the operator's CLI identity for root's.
 	match seedling::reach().await {
-		seedling::Reach::Seedling(ctl) => {
+		seedling::Reach::Seedling(oi) => {
 			let grep = args.grep.map(|re| GrepFilter {
 				regex: re,
 				invert: args.invert,
 			});
-			return run_seedling_logs(&ctl, &selection, args.lines, args.follow, grep).await;
+			return run_seedling_logs(&oi, &selection, args.lines, args.follow, grep).await;
 		}
 		seedling::Reach::Unreachable(why) => bail!("{why}"),
 		seedling::Reach::Host => {}
@@ -303,96 +302,70 @@ pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	}
 }
 
-/// Tail through the Seedling daemon: the Tamanu app (or its named
-/// resources), the daemon's proxy for `caddy`, and the postgres app for
-/// `postgres`, each as its own stream interleaved on stdout.
+/// Tail through the Seedling daemon: the Tamanu app (or its named resources),
+/// the daemon's proxy for `caddy`, and the postgres app for `postgres`, each as
+/// its own subscription interleaved on stdout.
 ///
-/// The daemon composes each line with its timestamp and unit, and matches no
-/// pattern of its own, so `--grep` is applied per line here.
+/// The daemon sends structured entries and matches no pattern of its own, so
+/// each entry is rendered here and `--grep` applied per line.
 ///
 /// spec: SHC#logs
 async fn run_seedling_logs(
-	ctl: &seedling::Ctl,
+	oi: &seedling::Oi,
 	selection: &Selection,
 	lines: usize,
 	follow: bool,
 	grep: Option<GrepFilter>,
 ) -> Result<()> {
-	let mut streams: Vec<(String, Vec<String>)> = Vec::new();
+	let mut subscriptions: Vec<Value> = Vec::new();
 
 	if selection.all_tamanu || !selection.tamanu_names.is_empty() {
-		let apps = ctl.apps().await?;
+		let apps = oi.apps().await?;
 		let app = seedling::target(&apps, None)?.name.clone();
 		if selection.all_tamanu {
-			streams.push((app.clone(), vec!["apps".into(), "logs".into(), app.clone()]));
+			subscriptions.push(json!({ "app": app }));
 		} else {
-			let resources: Vec<_> = ctl.show(&app).await?.resources;
+			let resources = oi.show(&app).await?.resources;
 			let matched = on_seedling::match_resources(
 				resources.iter().collect(),
 				&selection.tamanu_names,
 				false,
 			)?;
 			for resource in matched {
-				streams.push((
-					format!("{app}/{}", resource.name),
-					vec![
-						"apps".into(),
-						"logs".into(),
-						app.clone(),
-						resource.name.clone(),
-					],
-				));
+				subscriptions.push(json!({ "app": app, "resource": resource.name }));
 			}
 		}
 	}
 	if selection.include_caddy {
-		// The proxy on a Seedling host is the daemon's, not a host caddy.
-		streams.push(("proxy".into(), vec!["proxy".into(), "logs".into()]));
+		// The proxy on a Seedling host is the daemon's own, not a host caddy.
+		subscriptions.push(json!({ "infra": "proxy" }));
 	}
 	if selection.include_postgres {
 		// Postgres is its own app, a peer of the Tamanu one.
-		streams.push((
-			POSTGRES_APP.into(),
-			vec!["apps".into(), "logs".into(), POSTGRES_APP.into()],
-		));
+		subscriptions.push(json!({ "app": POSTGRES_APP }));
 	}
 
-	if streams.is_empty() {
+	if subscriptions.is_empty() {
 		bail!("nothing to tail: no matched resources, caddy, or postgres included");
 	}
 
 	let mut set = tokio::task::JoinSet::new();
-	for (label, mut ctl_args) in streams {
-		ctl_args.push("--lines".into());
-		ctl_args.push(lines.to_string());
-		if follow {
-			ctl_args.push("--follow".into());
-		}
-		let mut cmd = tokio::process::Command::new(ctl.bin());
-		cmd.args(&ctl_args)
-			.stdout(Stdio::piped())
-			.kill_on_drop(true);
+	for mut params in subscriptions {
+		params["tail"] = json!(lines);
+		params["follow"] = json!(follow);
+		let stream = oi.log_stream(params.clone()).await?;
 		let grep = grep.clone();
-		debug!(label, ?ctl_args, "tailing through seedling-ctl");
+		debug!(%params, "subscribed to a log stream");
 		set.spawn(async move {
-			let mut child = cmd.spawn().map_err(|e| format!("{label}: {e}"))?;
-			let stdout = child
-				.stdout
-				.take()
-				.ok_or_else(|| format!("{label}: no stdout pipe"))?;
-			let mut read_lines = tokio::io::BufReader::new(stdout).lines();
-			while let Ok(Some(line)) = read_lines.next_line().await {
+			let mut stream = stream;
+			while let Some(entry) = stream.next().await? {
+				let line = format!("{} {} {}", entry.timestamp, entry.source(), entry.message);
 				if grep.as_ref().is_some_and(|g| !g.matches(&line)) {
 					continue;
 				}
 				println!("{line}");
 			}
-			let status = child.wait().await.map_err(|e| format!("{label}: {e}"))?;
-			if status.success() {
-				Ok(())
-			} else {
-				Err(format!("{label}: seedling-ctl exited with {status}"))
-			}
+			Ok::<(), miette::Report>(())
 		});
 	}
 
@@ -400,15 +373,12 @@ async fn run_seedling_logs(
 	while let Some(joined) = set.join_next().await {
 		match joined {
 			Ok(Ok(())) => {}
-			Ok(Err(failure)) => failures.push(failure),
+			Ok(Err(err)) => failures.push(format!("{err}")),
 			Err(join_err) => failures.push(join_err.to_string()),
 		}
 	}
 	if !failures.is_empty() {
-		bail!(
-			"cannot reach the Seedling daemon: {}",
-			failures.join("; ")
-		);
+		bail!("log stream failed: {}", failures.join("; "));
 	}
 	Ok(())
 }

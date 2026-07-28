@@ -62,3 +62,9 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 incremental = false
+
+# Temporary: comes out once seedling-protocol is published to crates.io by
+# beyondessential/seedling#121. The dependency itself is already declared by
+# version, so nothing else changes when this is removed.
+[patch.crates-io]
+seedling-protocol = { git = "https://github.com/beyondessential/seedling.git", branch = "fix/container-user-no-new-privileges" }

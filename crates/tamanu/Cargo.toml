@@ -13,6 +13,7 @@ workspace = true
 
 [features]
 device-key = ["dep:p256"]
+seedling = ["dep:seedling-protocol", "dep:quinn", "dep:rustls"]
 canopy-registration = ["dep:bestool-canopy"]
 
 [dependencies]
@@ -32,6 +33,9 @@ node-semver = "2.2.0"
 p256 = { version = "0.14.0", features = ["pkcs8", "pem"], optional = true }
 percent-encoding = "2.3.1"
 regex = "1.11.2"
+quinn = { version = "0.11.11", optional = true }
+rustls = { version = "0.23.41", default-features = false, features = ["aws-lc-rs"], optional = true }
+seedling-protocol = { version = "0.4.5", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 sysinfo = { workspace = true }
