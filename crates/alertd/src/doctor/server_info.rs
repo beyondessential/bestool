@@ -94,7 +94,14 @@ pub struct ServerInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub kernel: Option<String>,
 	pub arch: String,
+	/// Whether this host is *known* to be a guest. A false here with no
+	/// `virtualisation` alongside it means detection came up empty, not that the
+	/// host is physical — the two are told apart by whether `virtualisation` is
+	/// present at all.
 	pub virtualised: bool,
+	/// The hypervisor, in `systemd-detect-virt`'s vocabulary (`microsoft`,
+	/// `amazon`, `vmware`, `kvm`, …), or `none` on bare metal. Absent when we
+	/// couldn't tell either way.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub virtualisation: Option<String>,
 	pub filesystems: Vec<Filesystem>,
@@ -141,6 +148,8 @@ pub async fn gather(
 		.collect();
 
 	let virt = detect_virtualisation().await;
+	// `None` is "couldn't tell", not "physical": it stays out of the payload's
+	// `virtualisation` field, which is how canopy distinguishes the two.
 	let virtualised = !matches!(virt.as_deref(), None | Some("none"));
 
 	let (ipv4, ipv6, nat64, instance_tags) =
