@@ -63,6 +63,7 @@ pub async fn start_server(
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.route("/health", get(handle_health))
+		.route("/seedling", get(handle_seedling))
 		.route("/reload", post(handle_reload))
 		.route("/restart", post(handle_restart))
 		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))

@@ -24,6 +24,11 @@ pub async fn handle_index() -> impl IntoResponse {
 		},
 		{
 			"method": "GET",
+			"path": "/seedling",
+			"description": "Whether this host carries a Seedling identity for bestool"
+		},
+		{
+			"method": "GET",
 			"path": "/tasks/{task}/{endpoint}",
 			"description": "Invoke an endpoint exposed by a registered background task"
 		}
