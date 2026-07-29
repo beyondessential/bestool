@@ -12,7 +12,6 @@ pub mod config;
 pub mod connection_url;
 pub mod pm2;
 pub mod roots;
-#[cfg(feature = "seedling")]
 pub mod seedling;
 pub mod server_info;
 pub mod services;
