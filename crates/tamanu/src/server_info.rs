@@ -13,6 +13,10 @@ use miette::{IntoDiagnostic, Result, WrapErr as _};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+pub use virtualisation::detect_virtualisation;
+
+mod virtualisation;
+
 /// Standard on-disk location for the Tamanu device key PEM.
 ///
 /// - Linux: `/etc/tamanu/device-key.pem`
@@ -509,23 +513,6 @@ pub(crate) fn parse_node_version(raw: &str) -> Option<String> {
 	} else {
 		Some(version.to_string())
 	}
-}
-
-/// Linux: read `systemd-detect-virt`'s output. Returns `None` if the command
-/// is unavailable. The string is whatever systemd reports (e.g. `kvm`, `lxc`,
-/// `none` for bare metal).
-pub async fn detect_virtualisation() -> Option<String> {
-	let output = tokio::process::Command::new("systemd-detect-virt")
-		.output()
-		.await
-		.ok()?;
-
-	let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-	if stdout.is_empty() {
-		return None;
-	}
-
-	Some(stdout)
 }
 
 #[cfg(test)]

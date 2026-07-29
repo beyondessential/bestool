@@ -94,7 +94,14 @@ pub struct ServerInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub kernel: Option<String>,
 	pub arch: String,
-	pub virtualised: bool,
+	/// Whether this host is a guest: `true` virtualised, `false` bare metal,
+	/// `null` when detection came up empty. Always serialised, including the
+	/// null — an absent answer is a distinct fact from a negative one, and
+	/// collapsing the two is how Windows hosts spent so long looking physical.
+	pub virtualised: Option<bool>,
+	/// The hypervisor, in `systemd-detect-virt`'s vocabulary (`microsoft`,
+	/// `amazon`, `vmware`, `kvm`, …), or `none` on bare metal. Absent when we
+	/// couldn't tell either way.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub virtualisation: Option<String>,
 	pub filesystems: Vec<Filesystem>,
@@ -141,7 +148,9 @@ pub async fn gather(
 		.collect();
 
 	let virt = detect_virtualisation().await;
-	let virtualised = !matches!(virt.as_deref(), None | Some("none"));
+	// No answer stays no answer: `None` here means "couldn't tell", never "bare
+	// metal".
+	let virtualised = virt.as_deref().map(|virt| virt != "none");
 
 	let (ipv4, ipv6, nat64, instance_tags) =
 		futures::join!(probe_ipv4(), probe_ipv6(), probe_nat64(), fetch_imds_tags());
