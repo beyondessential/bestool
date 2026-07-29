@@ -8,3 +8,4 @@ larg = "larg" # left arg (in parsers)
 MIGH = "MIGH" # base64 PEM data in tests
 unparseable = "unparseable" # incredibly common typo and honestly idgaf
 invokable = "invokable" # Workhorse-managed wording (AGENTS.md, skills)
+HPE = "HPE" # server vendor, as it appears in SMBIOS

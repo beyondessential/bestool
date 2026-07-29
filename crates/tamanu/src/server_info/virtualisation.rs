@@ -221,7 +221,7 @@ mod smbios {
 			for (manufacturer, product) in [
 				("Dell Inc.", "PowerEdge R740"),
 				("HPE", "ProLiant DL380 Gen10"),
-				("LENOVO", "20XW004YAU"),
+				("LENOVO", "ThinkSystem SR650 V3"),
 				("Supermicro", "X11DPi-N"),
 				("ASUSTeK COMPUTER INC.", "PRIME B550M-A"),
 			] {
