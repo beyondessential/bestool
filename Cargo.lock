@@ -881,7 +881,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "windows-registry",
  "zbus_systemd",
 ]
 

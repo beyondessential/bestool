@@ -94,11 +94,11 @@ pub struct ServerInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub kernel: Option<String>,
 	pub arch: String,
-	/// Whether this host is *known* to be a guest. A false here with no
-	/// `virtualisation` alongside it means detection came up empty, not that the
-	/// host is physical — the two are told apart by whether `virtualisation` is
-	/// present at all.
-	pub virtualised: bool,
+	/// Whether this host is a guest: `true` virtualised, `false` bare metal,
+	/// `null` when detection came up empty. Always serialised, including the
+	/// null — an absent answer is a distinct fact from a negative one, and
+	/// collapsing the two is how Windows hosts spent so long looking physical.
+	pub virtualised: Option<bool>,
 	/// The hypervisor, in `systemd-detect-virt`'s vocabulary (`microsoft`,
 	/// `amazon`, `vmware`, `kvm`, …), or `none` on bare metal. Absent when we
 	/// couldn't tell either way.
@@ -148,9 +148,9 @@ pub async fn gather(
 		.collect();
 
 	let virt = detect_virtualisation().await;
-	// `None` is "couldn't tell", not "physical": it stays out of the payload's
-	// `virtualisation` field, which is how canopy distinguishes the two.
-	let virtualised = !matches!(virt.as_deref(), None | Some("none"));
+	// No answer stays no answer: `None` here means "couldn't tell", never "bare
+	// metal".
+	let virtualised = virt.as_deref().map(|virt| virt != "none");
 
 	let (ipv4, ipv6, nat64, instance_tags) =
 		futures::join!(probe_ipv4(), probe_ipv6(), probe_nat64(), fetch_imds_tags());

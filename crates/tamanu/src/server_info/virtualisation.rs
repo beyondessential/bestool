@@ -2,7 +2,7 @@
 //!
 //! One vocabulary across platforms: the identifiers `systemd-detect-virt`
 //! prints (`kvm`, `microsoft`, `vmware`, `amazon`, `xen`, `none`, …), so canopy
-//! sees a single namespace whichever side did the detecting.
+//! sees a single namespace whichever probe answered.
 
 #[cfg(not(windows))]
 use tracing::debug;
@@ -11,26 +11,26 @@ use tracing::debug;
 ///
 /// - `Some("none")` — bare metal.
 /// - `Some(other)` — the hypervisor, in `systemd-detect-virt`'s vocabulary.
-/// - `None` — nothing to go on. **Not** the same as bare metal: it means the
-///   detection itself came up empty (no `systemd-detect-virt` on a non-systemd
-///   Linux, unreadable SMBIOS on Windows, a platform we have no probe for), and
-///   callers must keep the two apart rather than reporting a host we know
-///   nothing about as physical.
+/// - `None` — nothing to go on. **Not** the same as bare metal: it means every
+///   probe came up empty, and callers must keep the two apart rather than
+///   reporting a host we know nothing about as physical.
 ///
-/// The two platforms read different sources, so one host can be named slightly
-/// differently on each: Linux reads CPUID via systemd and reports the
-/// accelerator (`kvm`), while Windows reads SMBIOS and reports the emulator
-/// that wrote it (`qemu`). Both are true of the same Proxmox guest.
+/// `systemd-detect-virt` goes first where it exists, because it sees things
+/// SMBIOS cannot: it reads CPUID as well as DMI, and it recognises containers
+/// (`lxc`, `docker`, `podman`, `systemd-nspawn`), which have no firmware of
+/// their own to name them. SMBIOS is the fallback that covers Windows, macOS,
+/// and Linux hosts without systemd.
+///
+/// The two sources can name one host slightly differently: CPUID gives the
+/// accelerator (`kvm`) where SMBIOS gives the emulator that wrote it (`qemu`).
+/// Both are true of the same Proxmox guest.
 pub async fn detect_virtualisation() -> Option<String> {
-	#[cfg(windows)]
-	{
-		windows::detect().map(str::to_owned)
+	#[cfg(not(windows))]
+	if let Some(virt) = systemd_detect_virt().await {
+		return Some(virt);
 	}
 
-	#[cfg(not(windows))]
-	{
-		systemd_detect_virt().await
-	}
+	smbios::detect().map(str::to_owned)
 }
 
 /// Read `systemd-detect-virt`'s output. Returns `None` if the command is
@@ -54,44 +54,55 @@ async fn systemd_detect_virt() -> Option<String> {
 	Some(stdout)
 }
 
-/// Naming a hypervisor from the SMBIOS strings the firmware handed the OS.
+/// Naming a hypervisor from the SMBIOS system-information strings the firmware
+/// handed the OS. On a VM the hypervisor is what populates them, and it names
+/// itself.
 ///
-/// Only Windows detection reads these, but the matching itself is pure and
-/// platform-independent, so it's compiled (and tested) everywhere.
-#[cfg(any(windows, test))]
+/// `sysinfo::Product` reads these for us on every platform — the SMBIOS table
+/// via `GetSystemFirmwareTable` on Windows, `/sys/devices/virtual/dmi/id` on
+/// Linux, IOKit on macOS — so this needs no per-platform code, no COM, no WMI
+/// service and no elevation.
 mod smbios {
-	/// The SMBIOS system-information strings detection matches against. On a VM
-	/// the hypervisor is what populates them, and it names itself.
+	use sysinfo::Product;
+	use tracing::debug;
+
+	/// The strings detection matches against, named after the
+	/// [`Product`] accessors they come from.
 	#[derive(Debug, Default)]
-	pub(super) struct SystemInformation {
-		pub system_manufacturer: Option<String>,
-		pub system_product_name: Option<String>,
-		pub system_family: Option<String>,
-		pub bios_vendor: Option<String>,
-		pub bios_version: Option<String>,
+	struct SystemInformation {
+		vendor_name: Option<String>,
+		name: Option<String>,
+		family: Option<String>,
+		version: Option<String>,
 	}
 
 	impl SystemInformation {
+		fn read() -> Self {
+			// Blank strings are as good as absent, and firmware writes plenty
+			// of them ("To Be Filled By O.E.M.", " ", "").
+			let value = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+			Self {
+				vendor_name: value(Product::vendor_name()),
+				name: value(Product::name()),
+				family: value(Product::family()),
+				version: value(Product::version()),
+			}
+		}
+
 		/// Every string joined and lowercased, for substring matching.
 		fn haystack(&self) -> String {
-			[
-				&self.system_manufacturer,
-				&self.system_product_name,
-				&self.system_family,
-				&self.bios_vendor,
-				&self.bios_version,
-			]
-			.iter()
-			.filter_map(|field| field.as_deref())
-			.map(str::to_lowercase)
-			.collect::<Vec<_>>()
-			.join("\n")
+			[&self.vendor_name, &self.name, &self.family, &self.version]
+				.iter()
+				.filter_map(|field| field.as_deref())
+				.map(str::to_lowercase)
+				.collect::<Vec<_>>()
+				.join("\n")
 		}
 
 		/// Whether SMBIOS told us anything at all. When it didn't we can't
 		/// conclude "bare metal" — we've simply learned nothing.
-		pub fn is_populated(&self) -> bool {
-			self.system_manufacturer.is_some() || self.system_product_name.is_some()
+		fn is_populated(&self) -> bool {
+			self.vendor_name.is_some() || self.name.is_some()
 		}
 
 		fn field_is(field: &Option<String>, expected: &str) -> bool {
@@ -128,14 +139,46 @@ mod smbios {
 		("xen", "xen"),
 	];
 
+	/// Detect the hypervisor from SMBIOS.
+	///
+	/// CPUID is deliberately not consulted as a backstop, even though it's the
+	/// more general probe, because on Windows it can't tell guest from host:
+	/// the hypervisor-present bit and the `Microsoft Hv` vendor leaf are set on
+	/// *physical* hosts running the Hyper-V root partition too — which is any
+	/// host with Hyper-V, WSL2, Windows Sandbox or virtualisation-based
+	/// security enabled, the last of which Windows turns on by default on much
+	/// modern hardware. Separating the two then needs the `CreatePartitions`
+	/// privilege bit out of leaf 0x40000003, and reaching CPUID at all needs
+	/// `unsafe` or a crate wrapping it. SMBIOS has neither problem: a Hyper-V
+	/// host reports its real OEM (Dell, HPE, Lenovo…) while a guest reports
+	/// Microsoft. Where CPUID is worth having, `systemd-detect-virt` has
+	/// already read it before we get here.
+	pub(super) fn detect() -> Option<&'static str> {
+		let info = SystemInformation::read();
+		debug!(?info, "SMBIOS system information");
+
+		if let Some(id) = identify(&info) {
+			return Some(id);
+		}
+
+		// SMBIOS named a manufacturer we have no signature for. Like systemd's
+		// own DMI table this can be fooled by an unlisted hypervisor, so the
+		// strings are logged above for diagnosis.
+		if info.is_populated() {
+			Some("none")
+		} else {
+			debug!("SMBIOS system information is empty; virtualisation is unknown");
+			None
+		}
+	}
+
 	/// Identify the hypervisor from SMBIOS strings, or `None` if none matches.
-	pub(super) fn identify(info: &SystemInformation) -> Option<&'static str> {
-		// Hyper-V (and Azure, which is Hyper-V) is matched on manufacturer
-		// *and* product together, not by substring: Microsoft ships physical
-		// hardware too, and a Surface reports the same manufacturer string a
-		// VM does.
-		if SystemInformation::field_is(&info.system_manufacturer, "microsoft corporation")
-			&& SystemInformation::field_is(&info.system_product_name, "virtual machine")
+	fn identify(info: &SystemInformation) -> Option<&'static str> {
+		// Hyper-V (and Azure, which is Hyper-V) is matched on vendor *and*
+		// product together, not by substring: Microsoft ships physical hardware
+		// too, and a Surface reports the same vendor string a VM does.
+		if SystemInformation::field_is(&info.vendor_name, "microsoft corporation")
+			&& SystemInformation::field_is(&info.name, "virtual machine")
 		{
 			return Some("microsoft");
 		}
@@ -150,12 +193,12 @@ mod smbios {
 	mod tests {
 		use super::*;
 
-		/// Build a `SystemInformation` from `(manufacturer, product)`, the two
-		/// fields every real host populates.
-		fn smbios(manufacturer: &str, product: &str) -> SystemInformation {
+		/// Build a `SystemInformation` from `(vendor, product)`, the two fields
+		/// every real host populates.
+		fn smbios(vendor: &str, product: &str) -> SystemInformation {
 			SystemInformation {
-				system_manufacturer: Some(manufacturer.to_owned()),
-				system_product_name: Some(product.to_owned()),
+				vendor_name: Some(vendor.to_owned()),
+				name: Some(product.to_owned()),
 				..Default::default()
 			}
 		}
@@ -173,7 +216,7 @@ mod smbios {
 		#[test]
 		fn microsoft_physical_hardware_is_not_a_vm() {
 			// The reason Hyper-V is matched on both fields: Microsoft's own
-			// hardware shares the manufacturer string with its VMs.
+			// hardware shares the vendor string with its VMs.
 			assert_eq!(
 				identify(&smbios("Microsoft Corporation", "Surface Laptop 5")),
 				None,
@@ -182,7 +225,7 @@ mod smbios {
 
 		#[test]
 		fn identifies_common_hypervisors() {
-			for (manufacturer, product, expected) in [
+			for (vendor, product, expected) in [
 				("VMware, Inc.", "VMware7,1", "vmware"),
 				("VMware, Inc.", "VMware Virtual Platform", "vmware"),
 				("innotek GmbH", "VirtualBox", "oracle"),
@@ -201,9 +244,9 @@ mod smbios {
 				("Alibaba Cloud", "Alibaba Cloud ECS", "kvm"),
 			] {
 				assert_eq!(
-					identify(&smbios(manufacturer, product)),
+					identify(&smbios(vendor, product)),
 					Some(expected),
-					"{manufacturer} / {product}",
+					"{vendor} / {product}",
 				);
 			}
 		}
@@ -218,7 +261,7 @@ mod smbios {
 
 		#[test]
 		fn identifies_physical_oems_as_not_virtualised() {
-			for (manufacturer, product) in [
+			for (vendor, product) in [
 				("Dell Inc.", "PowerEdge R740"),
 				("HPE", "ProLiant DL380 Gen10"),
 				("LENOVO", "ThinkSystem SR650 V3"),
@@ -226,9 +269,9 @@ mod smbios {
 				("ASUSTeK COMPUTER INC.", "PRIME B550M-A"),
 			] {
 				assert_eq!(
-					identify(&smbios(manufacturer, product)),
+					identify(&smbios(vendor, product)),
 					None,
-					"{manufacturer} / {product}",
+					"{vendor} / {product}",
 				);
 			}
 		}
@@ -246,12 +289,11 @@ mod smbios {
 		}
 
 		#[test]
-		fn matches_bios_fields_when_the_system_fields_are_generic() {
+		fn matches_the_version_field_when_the_others_are_generic() {
 			// Hyper-V generation 2 guests carry the hypervisor's name in the
-			// BIOS strings rather than the system ones.
+			// system version string.
 			let info = SystemInformation {
-				bios_vendor: Some("Microsoft Corporation".to_owned()),
-				bios_version: Some("Hyper-V UEFI Release v4.1".to_owned()),
+				version: Some("Hyper-V UEFI Release v4.1".to_owned()),
 				..Default::default()
 			};
 			assert_eq!(identify(&info), Some("microsoft"));
@@ -268,91 +310,13 @@ mod smbios {
 		}
 
 		#[test]
-		fn blank_manufacturer_does_not_match() {
+		fn blank_vendor_does_not_match() {
 			// Blank values are filtered at read time, so this shape can't come
-			// from the registry — but the field comparison must reject it too.
+			// out of `read` — but the field comparison must reject it too.
 			assert!(!SystemInformation::field_is(
 				&Some("   ".to_owned()),
 				"microsoft corporation"
 			));
 		}
-	}
-}
-
-/// Windows has no `systemd-detect-virt`, so read what the firmware told the
-/// kernel instead.
-#[cfg(windows)]
-mod windows {
-	use tracing::debug;
-	use windows_registry::LOCAL_MACHINE;
-
-	use super::smbios::{SystemInformation, identify};
-
-	/// SMBIOS system-information strings, as the kernel exposes them. Reading
-	/// these needs no COM, no WMI service and no elevation — unlike
-	/// `Win32_ComputerSystem`, which wants all three from a service context.
-	const SYSTEM_INFORMATION: &str = r"SYSTEM\CurrentControlSet\Control\SystemInformation";
-
-	/// Written by the Hyper-V guest integration services, so present only
-	/// inside a Hyper-V guest — and, crucially, *absent* on the root partition
-	/// (the Hyper-V host itself).
-	const HYPERV_GUEST_PARAMETERS: &str = r"SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters";
-
-	/// Detect the hypervisor from the registry.
-	///
-	/// CPUID is deliberately not consulted, even though it's the more general
-	/// probe. On Windows the hypervisor-present bit and the `Microsoft Hv`
-	/// vendor leaf are also set on *physical* hosts running the Hyper-V root
-	/// partition — which is any host with Hyper-V, WSL2, Windows Sandbox or
-	/// virtualisation-based security enabled, the last of which Windows turns
-	/// on by default on much modern hardware. Telling root partition from guest
-	/// then needs the `CreatePartitions` privilege bit out of CPUID leaf
-	/// 0x40000003, and CPUID at all needs `unsafe` or a crate wrapping it.
-	/// SMBIOS has neither problem: a Hyper-V host reports its real OEM (Dell,
-	/// HPE, Lenovo…) while a guest reports Microsoft.
-	pub fn detect() -> Option<&'static str> {
-		let info = read_system_information();
-		debug!(?info, "SMBIOS system information");
-
-		if let Some(id) = identify(&info) {
-			return Some(id);
-		}
-
-		// A guest whose SMBIOS was masked (Hyper-V can be told to present the
-		// host's own firmware strings) still carries the guest key.
-		if hyperv_guest_marker_present() {
-			return Some("microsoft");
-		}
-
-		// SMBIOS named a manufacturer we don't recognise as a hypervisor. Like
-		// systemd's own DMI table this can be fooled by a hypervisor we have no
-		// signature for, so the strings are logged above for diagnosis.
-		if info.is_populated() {
-			Some("none")
-		} else {
-			debug!("SMBIOS system information is empty; virtualisation is unknown");
-			None
-		}
-	}
-
-	fn read_system_information() -> SystemInformation {
-		let Ok(key) = LOCAL_MACHINE.open(SYSTEM_INFORMATION).inspect_err(
-			|err| debug!(%err, key = SYSTEM_INFORMATION, "could not open registry key"),
-		) else {
-			return SystemInformation::default();
-		};
-
-		let value = |name: &str| key.get_string(name).ok().filter(|s| !s.trim().is_empty());
-		SystemInformation {
-			system_manufacturer: value("SystemManufacturer"),
-			system_product_name: value("SystemProductName"),
-			system_family: value("SystemFamily"),
-			bios_vendor: value("BIOSVendor"),
-			bios_version: value("BIOSVersion"),
-		}
-	}
-
-	fn hyperv_guest_marker_present() -> bool {
-		LOCAL_MACHINE.open(HYPERV_GUEST_PARAMETERS).is_ok()
 	}
 }
