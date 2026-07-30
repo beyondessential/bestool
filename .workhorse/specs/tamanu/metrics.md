@@ -44,9 +44,12 @@ A check declares typed metrics. Each metric carries:
 A metric's unit lives in its name by convention — `_seconds`, `_bytes`, `_ms` — and a metric that measures a duration or a size always names its unit, so no metric reads as a bare unitless number when it is really a quantity.
 In munin a graph labels its axis with the unit read from its metrics' names, and a byte graph scales in powers of 1024, so an operator reads seconds, bytes, or a percentage off the axis directly.
 
-A check that measures a flow of events publishes the underlying cumulative total as a counter, named `_total`, rather than a count over whatever window the check itself uses to reach its verdict.
+A check that measures a flow of events publishes a cumulative total as a counter, named `_total`, rather than a count over whatever window the check itself uses to reach its verdict.
 A scrape then derives the rate over its own interval, and a reader interprets the number without needing to know the check's window.
-A check whose window is worth reporting reports it to Canopy as a fact, not as a metric.
+
+Where the source already keeps a cumulative total, the check publishes that, and reports its own window to Canopy as a fact rather than as a metric.
+Where the source can only be sampled a window at a time, the daemon accumulates the sampled windows into a running total, which starts again from zero when the daemon restarts.
+Where neither is available cheaply, the metric keeps its window and names it in its description, so the span a number covers stays on the metrics surface.
 
 Metrics are named under their check by default, but a check whose name would misrepresent its telemetry may declare a namespace that replaces the check name in the metric's name.
 The error-rate `http_errors` check publishes its request telemetry — which counts successful responses too — under `http`, so a reader isn't misled into thinking a request count is an error count.
