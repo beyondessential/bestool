@@ -722,13 +722,16 @@ name = "bestool-canopy"
 version = "0.7.7"
 dependencies = [
  "algae-cli",
+ "async-trait",
  "base64",
  "blake3",
  "bon",
+ "bytes",
  "flate2",
  "futures",
  "getrandom 0.4.3",
  "hickory-resolver",
+ "http",
  "jiff",
  "machine-uid",
  "miette",

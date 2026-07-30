@@ -5,6 +5,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod backup;
 mod client;
 pub mod registration;
+mod reqwest_transport;
+#[cfg(test)]
+mod test_support;
+mod transport;
 
 /// Wire types generated at build time from canopy's OpenAPI document.
 ///
@@ -51,12 +55,15 @@ pub mod schema {
 	include!(concat!(env!("OUT_DIR"), "/canopy_schema.rs"));
 }
 
+pub use async_trait::async_trait;
 pub use backup::{ContainerCreds, TargetOutcome};
-pub use client::{
-	CERT_RENEW_AFTER, CanopyClient, CanopyHttpError, ClientBuilderFactory, DEFAULT_CANOPY_URL,
-	TAILSCALE_URL, device_identity, tailscale_client,
+pub use client::{CanopyClient, CanopyHttpError};
+pub use reqwest_transport::{
+	CERT_RENEW_AFTER, ClientBuilderFactory, DEFAULT_CANOPY_URL, ReqwestTransport, TAILSCALE_URL,
+	device_identity, tailscale_client,
 };
-pub use reqwest;
+pub use transport::{CanopyRequest, CanopyResponse, CanopyTransport};
+pub use {bytes, http, reqwest};
 
 /// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
 #[derive(Clone)]
