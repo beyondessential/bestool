@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
 
 use bestool_canopy::{CanopyClient, schema::CheckSeverity};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -69,6 +73,16 @@ pub struct SweepTamanu {
 	/// only the generic database checks run against it and Tamanu-specific
 	/// ones (which query Tamanu tables) skip.
 	pub is_tamanu: bool,
+}
+
+/// Discover the host's Tamanu install and resolve the sweep's database context
+/// from it, honouring an explicit `root` override.
+///
+/// Cheap enough to redo before every sweep, which is what the daemon does: an
+/// in-place upgrade changes the version, the install root, and the config, and
+/// only re-running discovery picks that up.
+pub async fn discover_sweep_tamanu(root: Option<&Path>) -> Result<Option<SweepTamanu>> {
+	resolve_sweep_tamanu(bestool_tamanu::try_find_tamanu(root).await?)
 }
 
 /// Resolve the database context for a sweep from an optionally-discovered
