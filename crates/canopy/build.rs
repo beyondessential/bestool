@@ -7,12 +7,12 @@
 //! handed to typify, which emits the wire types; the result is written to
 //! `OUT_DIR` and `include!`d by the crate.
 //!
-//! A failed fetch is a **hard error** by default, rather than a silent fall back
-//! to a possibly-stale snapshot: `cargo:warning` is hidden for dependencies, so
-//! silently falling back would let a downstream build ship stale types with no
-//! signal. The committed snapshot is used only where a live fetch is impossible
-//! by design — docs.rs builds (which set `DOCS_RS`) and builds that explicitly
-//! opt in with `CANOPY_OPENAPI_OFFLINE`.
+//! A failed fetch is a **hard error**: `cargo:warning` is hidden for
+//! dependencies, so falling back to the snapshot on its own would let a
+//! downstream build ship stale types with no signal. Two things select the
+//! committed snapshot instead, and both do so before any fetch is attempted:
+//! docs.rs builds (which set `DOCS_RS` and have no network) and builds that ask
+//! for it with `CANOPY_OPENAPI_OFFLINE`.
 
 use std::{env, fs, path::Path, time::Duration};
 
@@ -27,7 +27,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// docs.rs sets this in its (network-less) build environment.
 const DOCS_RS_ENV: &str = "DOCS_RS";
-/// Explicit opt-in to the committed snapshot for offline / sealed builds.
+/// Selects the committed snapshot: offline and sealed builds, and builds that
+/// want a client for schema canopy has merged but not yet deployed.
 const OFFLINE_ENV: &str = "CANOPY_OPENAPI_OFFLINE";
 
 fn main() {
@@ -36,10 +37,10 @@ fn main() {
 	println!("cargo:rerun-if-env-changed={DOCS_RS_ENV}");
 	println!("cargo:rerun-if-env-changed={OFFLINE_ENV}");
 
-	// Offline is a forced choice, not merely a fallback: the env exists to build
-	// against the committed snapshot, which may be deliberately *ahead* of the
-	// deployed canopy (a client for fields that have merged but not shipped).
-	let (spec_text, source) = if snapshot_allowed() {
+	// The snapshot is chosen up front rather than after a failed fetch, because it
+	// can be deliberately *ahead* of the deployed canopy: a client for fields that
+	// have merged but not shipped.
+	let (spec_text, source) = if use_snapshot() {
 		(
 			fs::read_to_string(SNAPSHOT).expect("reading canopy OpenAPI snapshot"),
 			Source::Snapshot,
@@ -49,9 +50,9 @@ fn main() {
 			Ok(text) => (text, Source::Live),
 			Err(err) => panic!(
 				"canopy OpenAPI live fetch from {SPEC_URL} failed: {err}\n\
-			 The generated schema tracks canopy live, so this build cannot proceed with a \
-			 possibly-stale snapshot. Fix connectivity to canopy, or set {OFFLINE_ENV}=1 to \
-			 build against the committed {SNAPSHOT} instead."
+				 The generated schema tracks canopy live, so this build cannot proceed with a \
+				 possibly-stale snapshot. Fix connectivity to canopy, or set {OFFLINE_ENV}=1 to \
+				 build against the committed {SNAPSHOT} instead."
 			),
 		}
 	};
@@ -63,6 +64,15 @@ fn main() {
 		.and_then(Value::as_object)
 		.expect("canopy OpenAPI document has no components.schemas")
 		.clone();
+
+	// The document is whatever canopy serves (or the snapshot holds), so tests
+	// naming a schema that has not reached the deployment yet would fail to
+	// compile. Gating them on the schema's presence keeps a build against either
+	// one honest.
+	println!("cargo::rustc-check-cfg=cfg(canopy_migration_testing)");
+	if schemas.contains_key("MigrationArgs") {
+		println!("cargo::rustc-cfg=canopy_migration_testing");
+	}
 
 	let root = serde_json::json!({
 		"$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -117,8 +127,9 @@ fn provenance(spec_text: &str, source: Source) -> String {
 		),
 		Source::Snapshot => (
 			"snapshot",
-			"read from the committed `openapi.snapshot.json` because the live spec was \
-			 unavailable (an offline or docs.rs build), so these types may lag canopy"
+			"read from the committed `openapi.snapshot.json` (a docs.rs build, or one that \
+			 asked for the snapshot), so these types may differ from deployed canopy in \
+			 either direction"
 				.to_owned(),
 		),
 	};
@@ -437,9 +448,9 @@ fn rewrite_types(generated: &str) -> String {
 	generated
 }
 
-/// Whether a failed live fetch may fall back to the committed snapshot: only on
-/// docs.rs or when an offline build is explicitly requested.
-fn snapshot_allowed() -> bool {
+/// Whether to build from the committed snapshot rather than fetching: on docs.rs,
+/// or when a build asks for it.
+fn use_snapshot() -> bool {
 	env::var_os(DOCS_RS_ENV).is_some() || env::var_os(OFFLINE_ENV).is_some()
 }
 
