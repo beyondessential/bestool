@@ -1,7 +1,5 @@
 //! Report requests that errored within the lookback window.
 
-use jiff::{Timestamp, ToSpan};
-
 use super::{CheckContext, util::tiered_rows_check};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
@@ -25,14 +23,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let since = Timestamp::now() - LOOKBACK_HOURS.hours();
 	tiered_rows_check(
 		client,
 		"report_errors",
 		"no recent report errors",
 		"report errors: ",
 		SQL,
-		&[&since],
+		LOOKBACK_HOURS,
 		1,
 		10,
 	)

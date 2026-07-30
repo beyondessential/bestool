@@ -23,6 +23,12 @@ const NAME: &str = "fhir_workers";
 /// Live and dropped counts read against Tamanu's own liveness window
 /// (`fhir.worker.assumeDroppedAfter`, 10-minute fallback), plus the oldest live
 /// heartbeat's age and the live workers' job counters summed from `metadata`.
+///
+/// Each worker's job counters run from the moment its process started, so the
+/// sum over live workers only climbs while the same workers stay up and drops
+/// when one churns out of the live set. Published as a counter, that drop reads
+/// as the reset it is, and a scrape sees materialisation throughput rather than
+/// a lifetime tally that sawtooths.
 const SQL: &str = "\
 	SELECT
 		count(*) FILTER (WHERE alive) AS live,
@@ -104,13 +110,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 				.help("FHIR workers with a stale heartbeat"),
 		)
 		.with_stat(
-			Stat::gauge("jobs", jobs_success)
+			Stat::counter("jobs_total", jobs_success)
 				.label("result", "success")
+				.group("jobs")
 				.help("Jobs processed by live workers, by outcome"),
 		)
 		.with_stat(
-			Stat::gauge("jobs", jobs_failure)
+			Stat::counter("jobs_total", jobs_failure)
 				.label("result", "failure")
+				.group("jobs")
 				.help("Jobs processed by live workers, by outcome"),
 		);
 	if let Some(age) = oldest_age {

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use jiff::{Timestamp, ToSpan};
 use serde_json::Value;
 use tokio_postgres::{Client as PgClient, types::ToSql};
 
@@ -20,30 +21,35 @@ const REPORT_CAP: usize = 100;
 const FETCH_CAP: usize = REPORT_CAP + 1;
 
 /// Wrap the check's SQL so Postgres hands back one JSONB column (`row`) per
-/// matching row, capped at [`FETCH_CAP`].
+/// matching row, capped at [`FETCH_CAP`], plus the exact number of matches.
+///
+/// `count(*) OVER ()` is evaluated across the whole subquery result before
+/// `LIMIT` truncates it, so the count stays exact however many rows matched —
+/// and it costs one query rather than a second round trip.
 fn wrap(sql: &str) -> String {
-	format!("SELECT to_jsonb(sub) AS row FROM ( {sql} ) sub LIMIT {FETCH_CAP}")
+	format!(
+		"SELECT to_jsonb(sub) AS row, count(*) OVER () AS total FROM ( {sql} ) sub LIMIT {FETCH_CAP}"
+	)
 }
 
-/// Outcome of running one wrapped query: the rows (capped at
-/// [`REPORT_CAP`]) and whether more existed than were reported.
+/// Outcome of running one wrapped query: the rows (capped at [`REPORT_CAP`]),
+/// whether more matched than were reported, and how many matched in total.
 pub struct RowSet {
 	pub rows: Vec<Value>,
+	/// Whether more rows matched than [`REPORT_CAP`] carries.
 	pub truncated: bool,
+	/// Every matching row, counted regardless of the report cap.
+	pub total: u64,
 }
 
 impl RowSet {
 	pub fn is_empty(&self) -> bool {
-		self.rows.is_empty()
+		self.total == 0
 	}
 
-	/// Number to report: the exact count, or `"100+"` when truncated.
+	/// Number to report.
 	pub fn count(&self) -> Value {
-		if self.truncated {
-			Value::from(format!("{REPORT_CAP}+"))
-		} else {
-			Value::from(self.rows.len())
-		}
+		Value::from(self.total)
 	}
 }
 
@@ -57,12 +63,20 @@ pub async fn fetch_rows(
 	let wrapped = wrap(sql);
 	let raw = client.query(&wrapped, params).await?;
 	let truncated = raw.len() > REPORT_CAP;
+	// Every row carries the same window-function total; no rows means no matches.
+	let total = raw
+		.first()
+		.map_or(0, |r| r.get::<_, i64>("total").max(0) as u64);
 	let rows = raw
 		.into_iter()
 		.take(REPORT_CAP)
 		.map(|r| r.get::<_, Value>("row"))
 		.collect();
-	Ok(RowSet { rows, truncated })
+	Ok(RowSet {
+		rows,
+		truncated,
+		total,
+	})
 }
 
 /// Run a single wrapped query and tier the outcome on the number of
@@ -72,8 +86,9 @@ pub async fn fetch_rows(
 /// `summary_pass` is the headline shown when nothing crosses `warn_min`;
 /// `summary_prefix` is prepended to the count for the WARN/FAIL summary.
 ///
-/// Rows are capped at [`REPORT_CAP`] (reported as `"100+"`), which is enough to
-/// distinguish the small WARN/FAIL boundaries the error-stream checks use.
+/// The query's `$1` is bound to the start of the lookback window. Reported rows
+/// are capped at [`REPORT_CAP`], but the count the verdict and the metric use is
+/// exact.
 #[expect(
 	clippy::too_many_arguments,
 	reason = "shared query helper; each parameter is a distinct knob the call sites set"
@@ -84,24 +99,20 @@ pub async fn tiered_rows_check(
 	summary_pass: &str,
 	summary_prefix: &str,
 	sql: &str,
-	params: &[&(dyn ToSql + Sync)],
+	lookback_hours: i64,
 	warn_min: usize,
 	fail_min: usize,
 ) -> Check {
-	match fetch_rows(client, sql, params).await {
+	let since = Timestamp::now() - lookback_hours.hours();
+	match fetch_rows(client, sql, &[&since]).await {
 		Ok(set) => {
-			// `truncated` means there were more than REPORT_CAP rows, which is
-			// well past any realistic fail_min, so treat it as the cap.
-			let n = if set.truncated {
-				REPORT_CAP + 1
-			} else {
-				set.rows.len()
-			};
+			let n = set.total as usize;
 			let count = set.count();
-			// Emit the count as a metric on every tier, including pass; the query
-			// caps at REPORT_CAP+1, so the gauge saturates at 101.
-			let count_stat =
-				Stat::gauge("count", n as f64).help("Matching error rows (capped at 101)");
+			// Emit the count as a metric on every tier, including pass. The window
+			// it covers goes in the description: it's the same every sweep, but a
+			// bare row count says nothing about what span produced it.
+			let count_stat = Stat::gauge("count", set.total as f64)
+				.help(format!("Error rows in the last {lookback_hours}h"));
 			if n < warn_min {
 				return Check::pass(name, summary_pass.to_string()).with_stat(count_stat);
 			}
@@ -143,5 +154,35 @@ mod tests {
 		assert_eq!(tier(9, 1, 10), "warning");
 		assert_eq!(tier(10, 1, 10), "fail");
 		assert_eq!(tier(100, 1, 10), "fail");
+	}
+
+	#[test]
+	fn wrap_counts_outside_the_row_cap() {
+		// The window function is evaluated across the subquery before LIMIT, so
+		// the count survives truncation of the rows that get reported.
+		let sql = super::wrap("SELECT 1");
+		assert!(sql.contains("count(*) OVER () AS total"));
+		assert!(sql.ends_with(&format!("LIMIT {}", super::FETCH_CAP)));
+	}
+
+	#[test]
+	fn a_truncated_row_set_still_counts_exactly() {
+		let set = super::RowSet {
+			rows: vec![serde_json::Value::from(1); super::REPORT_CAP],
+			truncated: true,
+			total: 4321,
+		};
+		assert_eq!(set.count(), serde_json::Value::from(4321u64));
+		assert!(!set.is_empty());
+	}
+
+	#[test]
+	fn a_row_set_with_no_matches_is_empty() {
+		let set = super::RowSet {
+			rows: Vec::new(),
+			truncated: false,
+			total: 0,
+		};
+		assert!(set.is_empty());
 	}
 }
