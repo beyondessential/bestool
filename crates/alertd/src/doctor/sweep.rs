@@ -1,6 +1,10 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
 
-use bestool_canopy::schema::CheckSeverity;
+use bestool_canopy::{CanopyClient, schema::CheckSeverity};
 use futures::stream::{FuturesUnordered, StreamExt};
 use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
@@ -12,6 +16,7 @@ use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_server_id}
 use crate::doctor::{
 	check::{Check, OverallResult},
 	checks::{self, CheckContext, SweepContext},
+	heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
 };
@@ -68,6 +73,16 @@ pub struct SweepTamanu {
 	/// only the generic database checks run against it and Tamanu-specific
 	/// ones (which query Tamanu tables) skip.
 	pub is_tamanu: bool,
+}
+
+/// Discover the host's Tamanu install and resolve the sweep's database context
+/// from it, honouring an explicit `root` override.
+///
+/// Cheap enough to redo before every sweep, which is what the daemon does: an
+/// in-place upgrade changes the version, the install root, and the config, and
+/// only re-running discovery picks that up.
+pub async fn discover_sweep_tamanu(root: Option<&Path>) -> Result<Option<SweepTamanu>> {
+	resolve_sweep_tamanu(bestool_tamanu::try_find_tamanu(root).await?)
 }
 
 /// Resolve the database context for a sweep from an optionally-discovered
@@ -171,6 +186,10 @@ impl SweepResult {
 	}
 }
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "a sweep's inputs; grouping them into a params struct is a separate refactor"
+)]
 pub async fn perform_sweep(
 	binary_version: &str,
 	tamanu: Option<SweepTamanu>,
@@ -179,6 +198,8 @@ pub async fn perform_sweep(
 	skip_names: &[String],
 	cached_pg_version: Option<String>,
 	progress: Option<ProgressSender>,
+	canopy: Option<Arc<CanopyClient>>,
+	enable_heal: bool,
 ) -> Result<SweepResult> {
 	let tamanu_ctx = match &tamanu {
 		Some(t) => {
@@ -257,10 +278,12 @@ pub async fn perform_sweep(
 		.filter(|t| t.has_install)
 		.map(|t| t.root.display().to_string());
 
-	let check_ctx = SweepContext {
-		tamanu: tamanu_ctx,
-		http_client,
-	};
+	let check_ctx = SweepContext::builder()
+		.maybe_tamanu(tamanu_ctx)
+		.http_client(http_client)
+		.maybe_canopy(canopy)
+		.enable_heal(enable_heal)
+		.build();
 
 	let registry = checks::all();
 	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
@@ -292,9 +315,21 @@ pub async fn perform_sweep(
 		let ctx = check_ctx.clone();
 		let on_wire = entry.on_wire;
 		let idx = *idx;
+		let name = entry.name;
+		// A check's heal action is spawned in the background once its result is
+		// known, when the sweep enables healing (the daemon) and the check
+		// failed. `spawn_if_due` applies the per-check rate-limit and the
+		// one-attempt-in-flight guard, so this can fire on every sweep.
+		let heal = check_ctx.enable_heal.then_some(entry.heal).flatten();
+		let heal_ctx = heal.map(|_| check_ctx.clone());
 		let fut = (entry.run)(ctx);
 		pending.push(async move {
 			let result = fut.await;
+			if let (Some(heal), Some(heal_ctx)) = (heal, heal_ctx)
+				&& result.status.is_fatal()
+			{
+				heal::spawn_if_due(name, heal, heal_ctx);
+			}
 			(idx, on_wire, result)
 		});
 	}
@@ -483,6 +518,8 @@ mod tests {
 			&[],
 			None,
 			None,
+			None,
+			false,
 		)
 		.await
 		.unwrap();

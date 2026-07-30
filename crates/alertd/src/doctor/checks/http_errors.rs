@@ -30,6 +30,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
 use super::{SweepContext, fmt_chain};
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
@@ -194,13 +195,16 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 	};
 
 	if total == 0 {
-		return Check::pass(
-			"http_errors",
-			format!("no requests in last {window_label} ({source_label})"),
-		)
-		.with_detail("total_requests", 0u64)
-		.with_detail("window_seconds", window.as_secs())
-		.with_detail("baseline_source", source_label);
+		return with_traffic_stats(
+			Check::pass(
+				"http_errors",
+				format!("no requests in last {window_label} ({source_label})"),
+			)
+			.with_detail("total_requests", 0u64)
+			.with_detail("window_seconds", window.as_secs())
+			.with_detail("baseline_source", source_label),
+			&current.counts,
+		);
 	}
 
 	let pct = ((errored as f64 / total as f64) * 100.0).round();
@@ -229,13 +233,57 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 		by_code.insert(code.clone(), Value::from(*n));
 	}
 
+	with_traffic_stats(
+		check
+			.with_detail("total_requests", total)
+			.with_detail("server_error_requests", errored)
+			.with_detail("server_error_rate_pct", pct)
+			.with_detail("window_seconds", window.as_secs())
+			.with_detail("baseline_source", source_label)
+			.with_detail("by_code", Value::Object(by_code)),
+		&current.counts,
+	)
+	.with_stat(
+		Stat::gauge("server_error_rate_pct", pct)
+			.namespace("http")
+			.help("5xx rate, percent"),
+	)
+}
+
+/// Attach Caddy's cumulative request counters to a check.
+///
+/// The verdict above comes from a delta over a window whose length varies with
+/// what history is on disk, but a metric that carried that window would be
+/// uninterpretable without it. So the published metrics are the raw cumulative
+/// totals and a scrape derives its own rate over its own interval; the window
+/// stays a fact reported to canopy.
+fn with_traffic_stats(check: Check, counts: &BTreeMap<String, u64>) -> Check {
+	let total: u64 = counts.values().sum();
+	let errored: u64 = counts
+		.iter()
+		.filter(|(code, _)| code.starts_with('5'))
+		.map(|(_, n)| n)
+		.sum();
+
 	check
-		.with_detail("total_requests", total)
-		.with_detail("server_error_requests", errored)
-		.with_detail("server_error_rate_pct", pct)
-		.with_detail("window_seconds", window.as_secs())
-		.with_detail("baseline_source", source_label)
-		.with_detail("by_code", Value::Object(by_code))
+		.with_stat(
+			Stat::counter("requests_total", total as f64)
+				.namespace("http")
+				.group("traffic")
+				.help("Requests served"),
+		)
+		.with_stat(
+			Stat::counter("server_errors_total", errored as f64)
+				.namespace("http")
+				.group("traffic")
+				.help("5xx responses"),
+		)
+		.with_stats(counts.iter().map(|(code, n)| {
+			Stat::counter("requests_by_code_total", *n as f64)
+				.namespace("http")
+				.label("code", code.clone())
+				.help("Requests served by HTTP status code")
+		}))
 }
 
 fn duration_between(earlier: Timestamp, later: Timestamp) -> Duration {
@@ -413,6 +461,56 @@ other_metric{foo=\"bar\"} 7
 	fn ignores_unrelated_metrics() {
 		let counts = parse_status_counts("foo_bar{code=\"500\"} 99");
 		assert!(counts.is_empty());
+	}
+
+	#[test]
+	fn build_check_emits_cumulative_counters() {
+		use crate::doctor::StatKind;
+
+		let baseline = snap(0, &[("200", 100), ("500", 0), ("502", 0)]);
+		let current = snap(60, &[("200", 190), ("500", 5), ("502", 5)]);
+		let check = build_check(&baseline, &current, BaselineSource::History);
+
+		let stat = |name: &str| check.stats.iter().find(|s| s.name == name).expect(name);
+		// The window delta is 90 + 5 + 5 requests; the metrics are Caddy's totals.
+		assert_eq!(stat("requests_total").value, 200.0);
+		assert_eq!(stat("server_errors_total").value, 10.0);
+		assert_eq!(stat("requests_total").kind, StatKind::Counter);
+		assert_eq!(stat("server_errors_total").kind, StatKind::Counter);
+
+		// the verdict's own number stays a percentage over the window
+		assert_eq!(stat("server_error_rate_pct").value, 10.0);
+
+		// dimensioned by-code stats carry the code label, and are cumulative too
+		let by_code: Vec<_> = check
+			.stats
+			.iter()
+			.filter(|s| s.name == "requests_by_code_total")
+			.collect();
+		assert!(
+			by_code
+				.iter()
+				.any(|s| { s.labels == vec![("code", "200".to_string())] && s.value == 190.0 })
+		);
+		assert!(by_code.iter().all(|s| s.kind == StatKind::Counter));
+	}
+
+	#[test]
+	fn quiet_window_still_publishes_totals() {
+		// A window with no traffic doesn't reset Caddy's counters, so the totals
+		// keep reporting where they are rather than dropping to zero.
+		let counts: &[(&str, u64)] = &[("200", 4200), ("502", 7)];
+		let check = build_check(
+			&snap(0, counts),
+			&snap(600, counts),
+			BaselineSource::History,
+		);
+
+		let scalar = |name: &str| check.stats.iter().find(|s| s.name == name).map(|s| s.value);
+		assert_eq!(scalar("requests_total"), Some(4207.0));
+		assert_eq!(scalar("server_errors_total"), Some(7.0));
+		// with no requests in the window there is no error rate to report
+		assert_eq!(scalar("server_error_rate_pct"), None);
 	}
 
 	#[test]

@@ -7,6 +7,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use bestool_tamanu::{
+	seedling,
 	services::{self, ExpectedState, Expectation, Supervisor},
 	systemd,
 	versions::{self, ExpectedVersions, VersionStatus},
@@ -14,7 +15,7 @@ use bestool_tamanu::{
 
 use crate::actions::{
 	Context,
-	tamanu::{
+	tamanu::{on_seedling, 
 		TamanuArgs, find_tamanu,
 		lifecycle::{self, Instance, WaitForDb},
 	},
@@ -51,6 +52,18 @@ pub struct StatusArgs {
 
 pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
+
+	// A Seedling host resolves before install discovery, config load, and
+	// privilege elevation below: none apply, and elevating would swap the
+	// operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(ctl) => {
+			let app = on_seedling::app(&ctl, None).await?;
+			return on_seedling::status(&app, &ctl, &args.names, tamanu.use_colours).await;
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
 	let use_colours = tamanu.use_colours;
 
 	let (supervisor, expectations) =

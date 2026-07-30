@@ -1,59 +1,22 @@
-//! Prometheus metrics for the alertd daemon.
+//! Daemon liveness tracking.
 //!
-//! Tracks the following metrics:
-//! - `bes_alertd_last_activity_unix`: Unix timestamp of the last activity (gauge)
+//! Records the wall-clock second of the last activity so `/health` and the
+//! watchdog can tell how stale the daemon is, and so `/metrics` can report the
+//! age at scrape time. The `/metrics` renderer computes the age from this and
+//! the scrape time; nothing exposes the raw timestamp as a metric.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use jiff::Timestamp;
-use miette::{IntoDiagnostic, Result};
-use prometheus::{Encoder, IntGauge, Registry, TextEncoder};
 
-static REGISTRY: OnceLock<Registry> = OnceLock::new();
-static LAST_ACTIVITY_GAUGE: OnceLock<IntGauge> = OnceLock::new();
 static LAST_ACTIVITY: AtomicI64 = AtomicI64::new(0);
 
-pub fn init_metrics() {
-	let registry = Registry::new();
-
-	let last_activity_gauge = IntGauge::new(
-		"bes_alertd_last_activity_unix",
-		"Unix timestamp of the last activity",
-	)
-	.expect("failed to create last_activity_gauge metric");
-
-	registry
-		.register(Box::new(last_activity_gauge.clone()))
-		.expect("failed to register last_activity_gauge metric");
-
-	REGISTRY.set(registry).expect("metrics already initialized");
-	LAST_ACTIVITY_GAUGE
-		.set(last_activity_gauge)
-		.expect("metrics already initialized");
-}
-
+/// Record that the daemon did something just now.
 pub fn record_activity() {
-	let now = Timestamp::now().as_second();
-	LAST_ACTIVITY.store(now, Ordering::Relaxed);
-	if let Some(metric) = LAST_ACTIVITY_GAUGE.get() {
-		metric.set(now);
-	}
+	LAST_ACTIVITY.store(Timestamp::now().as_second(), Ordering::Relaxed);
 }
 
+/// The unix second of the last recorded activity (`0` before the first).
 pub fn last_activity_timestamp() -> i64 {
 	LAST_ACTIVITY.load(Ordering::Relaxed)
-}
-
-pub fn gather_metrics() -> Result<String> {
-	let registry = REGISTRY
-		.get()
-		.ok_or_else(|| miette::miette!("metrics not initialized"))?;
-	let metric_families = registry.gather();
-	let encoder = TextEncoder::new();
-	let mut buffer = Vec::new();
-	encoder
-		.encode(&metric_families, &mut buffer)
-		.into_diagnostic()?;
-	String::from_utf8(buffer).into_diagnostic()
 }

@@ -13,6 +13,7 @@
 pub mod config;
 pub mod method;
 pub mod postgresql;
+pub(super) mod progress;
 pub mod provider;
 mod simple;
 
@@ -409,10 +410,6 @@ async fn backup_after_start(
 	let reg = load_registration(registration_dir)
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
-	let device_key = reg
-		.device_key
-		.clone()
-		.ok_or_else(|| miette!("registration has no device key"))?;
 	let server_id = reg
 		.server_id
 		.clone()
@@ -424,7 +421,7 @@ async fn backup_after_start(
 	// omit the tag otherwise.
 	let device_id = reg.device_id.clone();
 
-	let client = build_client(base_url_of(&reg)?, &device_key).await?;
+	let client = build_client(base_url_of(&reg)?, reg.device_key.as_deref()).await?;
 
 	let target = match TargetOutcome::from_result(client.backup_target().await)? {
 		TargetOutcome::Dormant => {
@@ -457,6 +454,20 @@ async fn backup_after_start(
 		endpoint: proxy.endpoint(),
 		password: target.repo_password.0.clone(),
 	};
+
+	// Sample this run's progress to Canopy while it's in flight: the kopia engine
+	// counters (via the cell the snapshot phase keeps current) and the proxy's S3
+	// tallies. Best-effort — the reporter never fails the run.
+	let cell = Arc::new(progress::ProgressCell::default());
+	let reporter = progress::ProgressReporter::spawn(
+		client.clone(),
+		run_uuid,
+		backup_type.to_owned(),
+		BackupPurpose::Backup,
+		proxy.traffic_handle(),
+		Some(cell.clone()),
+	);
+
 	let outcome =
 		run_kopia_backup(
 			def,
@@ -466,8 +477,12 @@ async fn backup_after_start(
 			device_id.as_deref(),
 			run_id,
 			progress,
+			&cell,
 		)
 		.await;
+
+	// Stop sampling before the final report, so nothing posts after teardown.
+	reporter.stop().await;
 	emit(progress, BackupEvent::Phase("report"));
 
 	// The proxy saw every S3 request this run made (success or failure), so its
@@ -490,6 +505,10 @@ async fn backup_after_start(
 	let s3_sent_payload_bytes = Some(to_i64(traffic.sent_payload));
 	let s3_received_raw_bytes = Some(to_i64(traffic.received_raw));
 	let s3_received_payload_bytes = Some(to_i64(traffic.received_payload));
+	// The freeze instant, recorded by the method during prepare. Reported on both
+	// outcomes (prepare may succeed and the snapshot then fail); Canopy records it
+	// write-once, so a value already sent on a progress sample still stands.
+	let snapshot_taken_at = cell.taken_at();
 	let report = match &outcome {
 		Ok(snapshot) => ReportArgs::builder()
 			.run_id(run_uuid)
@@ -498,6 +517,7 @@ async fn backup_after_start(
 			.outcome(RunOutcome::Success)
 			.maybe_bytes_uploaded(snapshot.bytes_uploaded)
 			.maybe_snapshot_id(snapshot.id.clone())
+			.maybe_snapshot_taken_at(snapshot_taken_at)
 			.maybe_s3_sent_raw_bytes(s3_sent_raw_bytes)
 			.maybe_s3_sent_payload_bytes(s3_sent_payload_bytes)
 			.maybe_s3_received_raw_bytes(s3_received_raw_bytes)
@@ -509,6 +529,7 @@ async fn backup_after_start(
 			.purpose(BackupPurpose::Backup)
 			.outcome(RunOutcome::Failure)
 			.error(trim_error(err))
+			.maybe_snapshot_taken_at(snapshot_taken_at)
 			.maybe_s3_sent_raw_bytes(s3_sent_raw_bytes)
 			.maybe_s3_sent_payload_bytes(s3_sent_payload_bytes)
 			.maybe_s3_received_raw_bytes(s3_received_raw_bytes)
@@ -547,6 +568,10 @@ async fn backup_after_start(
 ///
 /// Wraps the method's `prepare`/`cleanup` in the def's `pre`/`post` hooks, and
 /// always runs cleanup + post even when the snapshot fails.
+#[expect(
+	clippy::too_many_arguments,
+	reason = "one run's inputs plus its two progress channels; bundling them buys nothing"
+)]
 async fn run_kopia_backup(
 	def: &BackupDef,
 	target: &bestool_canopy::schema::BackupTarget,
@@ -555,11 +580,17 @@ async fn run_kopia_backup(
 	device_id: Option<&str>,
 	run_id: &str,
 	progress: &Option<BackupProgress>,
+	cell: &Arc<progress::ProgressCell>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
 	emit(progress, BackupEvent::Phase("prepare"));
 	let prepared = def.method.prepare(&def.r#type).await?;
+	// Record the freeze instant (where the method has one) so the reporter and the
+	// final report can carry it.
+	if let Some(taken_at) = prepared.taken_at {
+		cell.set_taken_at(taken_at);
+	}
 	let source_path = prepared.path.clone();
 	let tags = assemble_tags(&def.tags, &prepared.extra_tags, device_id, run_id, &def.r#type);
 
@@ -577,6 +608,7 @@ async fn run_kopia_backup(
 		&tags,
 		&prepared.ignore,
 		progress,
+		cell,
 	)
 	.await;
 
@@ -590,6 +622,10 @@ async fn run_kopia_backup(
 }
 
 /// Connect to the repo and create the snapshot.
+#[expect(
+	clippy::too_many_arguments,
+	reason = "the snapshot inputs plus its two progress channels; bundling them buys nothing"
+)]
 async fn snapshot(
 	target: &bestool_canopy::schema::BackupTarget,
 	conn: &RepoConn,
@@ -598,6 +634,7 @@ async fn snapshot(
 	tags: &BTreeMap<String, String>,
 	ignore: &[String],
 	progress: &Option<BackupProgress>,
+	cell: &Arc<progress::ProgressCell>,
 ) -> Result<SnapshotResult> {
 	let kopia = find_kopia_binary(None).ok_or_else(|| miette!("could not find the kopia binary"))?;
 
@@ -638,15 +675,11 @@ async fn snapshot(
 	let mut create =
 		build_kopia_command_with_s3(&kopia, &s3env, RunAs::KopiaUser).map_err(|e| miette!("{e}"))?;
 	// Force kopia's progress output (it stays silent on a non-TTY otherwise) and
-	// stream it, but only when someone's watching — a local run discards stderr.
-	let stdout = if progress.is_some() {
-		create.arg("--progress");
-		args_snapshot_create(&mut create, source_path, tags);
-		run_kopia_streaming(create, "snapshot create", progress).await?
-	} else {
-		args_snapshot_create(&mut create, source_path, tags);
-		run_kopia(create, "snapshot create").await?
-	};
+	// stream it: the parsed counters feed the Canopy progress reporter, and the
+	// raw lines the local CLI display, on every run.
+	create.arg("--progress");
+	args_snapshot_create(&mut create, source_path, tags);
+	let stdout = run_kopia_streaming(create, "snapshot create", progress, cell).await?;
 	Ok(parse_snapshot_output(&stdout))
 }
 
@@ -703,6 +736,7 @@ async fn run_kopia_streaming(
 	cmd: std::process::Command,
 	what: &str,
 	progress: &Option<BackupProgress>,
+	cell: &Arc<progress::ProgressCell>,
 ) -> Result<String> {
 	use std::process::Stdio;
 
@@ -721,6 +755,7 @@ async fn run_kopia_streaming(
 	// line with carriage returns), forwarding progress lines and keeping the lot
 	// for an error message.
 	let progress = progress.clone();
+	let cell = cell.clone();
 	let stderr_task = tokio::spawn(async move {
 		let mut captured = String::new();
 		let mut buf = [0u8; 4096];
@@ -734,13 +769,13 @@ async fn run_kopia_streaming(
 			}
 			for &byte in &buf[..n] {
 				if byte == b'\r' || byte == b'\n' {
-					flush_progress_segment(&mut segment, &mut captured, &progress, &mut last_log);
+					flush_progress_segment(&mut segment, &mut captured, &progress, &cell, &mut last_log);
 				} else {
 					segment.push(byte);
 				}
 			}
 		}
-		flush_progress_segment(&mut segment, &mut captured, &progress, &mut last_log);
+		flush_progress_segment(&mut segment, &mut captured, &progress, &cell, &mut last_log);
 		captured
 	});
 
@@ -771,6 +806,7 @@ fn flush_progress_segment(
 	segment: &mut Vec<u8>,
 	captured: &mut String,
 	progress: &Option<BackupProgress>,
+	cell: &progress::ProgressCell,
 	last_log: &mut Option<Instant>,
 ) {
 	if segment.is_empty() {
@@ -784,8 +820,13 @@ fn flush_progress_segment(
 	captured.push_str(&line);
 	captured.push('\n');
 	// kopia's progress line carries these counters; other stderr lines (e.g.
-	// maintenance) aren't progress and aren't forwarded.
+	// maintenance) aren't progress and aren't forwarded. A parseable line also
+	// updates the cell the Canopy reporter samples — gated separately so a format
+	// drift that defeats the parser still leaves the local display working.
 	if line.contains("hashing") || line.contains("hashed") || line.contains("uploaded") {
+		if let Some(parsed) = bestool_kopia::progress::parse_progress(&line) {
+			cell.set_kopia(line.clone(), parsed);
+		}
 		let now = Instant::now();
 		if last_log.is_none_or(|prev| now.duration_since(prev) >= PROGRESS_LOG_INTERVAL) {
 			info!(progress = %line, "kopia upload progress");
@@ -885,15 +926,23 @@ pub(super) fn base_url_of(reg: &Registration) -> Result<Url> {
 }
 
 /// Build a canopy client for an already-enrolled host (tailscale, then mTLS).
-pub(super) async fn build_client(base_url: Url, device_key: &str) -> Result<Arc<CanopyClient>> {
+///
+/// The device key is optional: a host on the tailnet authenticates by its
+/// tailscale identity, and only needs the key when the tailnet is out of reach.
+pub(super) async fn build_client(
+	base_url: Url,
+	device_key: Option<&str>,
+) -> Result<Arc<CanopyClient>> {
 	let tailscale_url = bestool_canopy::TAILSCALE_URL
 		.parse()
 		.into_diagnostic()
 		.wrap_err("parsing default canopy tailscale URL")?;
 	let client =
-		CanopyClient::with_urls(base_url, tailscale_url, Some(device_key), crate::http::client_builder)
+		CanopyClient::with_urls(base_url, tailscale_url, device_key, crate::http::client_builder)
 			.await?
-			.ok_or_else(|| miette!("could not build a canopy client (no auth path available)"))?;
+			.ok_or_else(|| {
+				miette!("could not build a canopy client: the tailnet is unreachable and the registration has no device key")
+			})?;
 	Ok(Arc::new(client))
 }
 
@@ -1026,15 +1075,17 @@ mod tests {
 	fn flush_forwards_only_progress_lines() {
 		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 		let progress = Some(tx);
+		let cell = progress::ProgressCell::default();
 		let mut captured = String::new();
 		let mut last_log = None;
 
-		// A kopia progress update is forwarded…
-		let mut seg = b" * 8 hashing, 8 hashed (800 MB), uploaded 800 MB, 100%".to_vec();
-		flush_progress_segment(&mut seg, &mut captured, &progress, &mut last_log);
+		// A kopia progress update is forwarded and updates the cell…
+		let mut seg =
+			b" * 8 hashing, 8 hashed (800 MB), 0 cached (0 B), uploaded 800 MB, estimating...".to_vec();
+		flush_progress_segment(&mut seg, &mut captured, &progress, &cell, &mut last_log);
 		// …an ordinary stderr line (e.g. maintenance) is not.
 		let mut seg = b"Finished full maintenance.".to_vec();
-		flush_progress_segment(&mut seg, &mut captured, &progress, &mut last_log);
+		flush_progress_segment(&mut seg, &mut captured, &progress, &cell, &mut last_log);
 
 		drop(progress);
 		let mut events = Vec::new();
@@ -1045,6 +1096,8 @@ mod tests {
 		assert!(matches!(&events[0], BackupEvent::Progress(line) if line.contains("uploaded")));
 		// Both lines are retained for error context.
 		assert!(captured.contains("Finished full maintenance."));
+		// The progress line's counters reached the cell.
+		assert_eq!(cell.taken_at(), None);
 	}
 
 	#[test]

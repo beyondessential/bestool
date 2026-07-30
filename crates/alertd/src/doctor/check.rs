@@ -1,6 +1,8 @@
 use bestool_canopy::schema::CheckSeverity;
 use serde_json::{Map, Value, json};
 
+use crate::doctor::stat::Stat;
+
 /// Outcome of a single healthcheck.
 ///
 /// Serialised on the wire as the per-check `result` field, a proper sum type
@@ -104,6 +106,10 @@ pub struct Check {
 	/// for instance) that belongs with server facts, not with
 	/// diagnostics.
 	pub payload_extras: Map<String, Value>,
+	/// Typed numeric metrics this check declares for the alertd `/metrics`
+	/// endpoint. Independent of `details`: the same number may be attached to
+	/// both. Never posted to canopy; rendered to munin/prometheus text only.
+	pub stats: Vec<Stat>,
 }
 
 impl Check {
@@ -114,6 +120,7 @@ impl Check {
 			summary: summary.into(),
 			details: Map::new(),
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		}
 	}
 
@@ -127,6 +134,7 @@ impl Check {
 			summary: summary.into(),
 			details: Map::new(),
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		}
 	}
 
@@ -141,6 +149,7 @@ impl Check {
 			summary: summary.into(),
 			details: Map::new(),
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		}
 	}
 
@@ -151,6 +160,7 @@ impl Check {
 			summary: summary.into(),
 			details: Map::new(),
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		}
 	}
 
@@ -167,6 +177,7 @@ impl Check {
 			summary: summary.into(),
 			details: Map::new(),
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		}
 	}
 
@@ -185,6 +196,19 @@ impl Check {
 	/// entry. See [`Self::payload_extras`].
 	pub fn with_payload_extra(mut self, key: &str, value: impl Into<Value>) -> Self {
 		self.payload_extras.insert(key.to_string(), value.into());
+		self
+	}
+
+	/// Declare a numeric metric for the alertd `/metrics` endpoint. See
+	/// [`Self::stats`] and [`Stat`].
+	pub fn with_stat(mut self, stat: Stat) -> Self {
+		self.stats.push(stat);
+		self
+	}
+
+	/// Declare several metrics at once. See [`Self::with_stat`].
+	pub fn with_stats(mut self, stats: impl IntoIterator<Item = Stat>) -> Self {
+		self.stats.extend(stats);
 		self
 	}
 
@@ -269,6 +293,7 @@ impl Check {
 			summary,
 			details,
 			payload_extras: Map::new(),
+			stats: Vec::new(),
 		})
 	}
 }

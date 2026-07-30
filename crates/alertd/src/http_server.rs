@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod endpoints;
+mod metrics_render;
 mod state;
 #[cfg(test)]
 mod test_utils;
@@ -26,6 +27,10 @@ pub use endpoints::*;
 pub use state::ServerState;
 pub use types::*;
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "daemon wiring; each shared resource is threaded in explicitly"
+)]
 pub async fn start_server(
 	internal_context: Arc<InternalContext>,
 	addrs: Vec<std::net::SocketAddr>,
@@ -33,6 +38,7 @@ pub async fn start_server(
 	background_tasks: &[Arc<dyn BackgroundTask>],
 	control: DaemonControl,
 	backups: Option<Arc<crate::BackupRegistry>>,
+	metrics: Option<crate::doctor::DoctorMetricsHandle>,
 	binary_version: String,
 ) {
 	let started_at = Timestamp::now();
@@ -49,6 +55,7 @@ pub async fn start_server(
 		task_endpoints: Arc::new(task_endpoints),
 		control,
 		backups,
+		metrics,
 	};
 
 	let app = Router::new()
@@ -56,6 +63,7 @@ pub async fn start_server(
 		.route("/metrics", get(handle_metrics))
 		.route("/status", get(handle_status))
 		.route("/health", get(handle_health))
+		.route("/seedling", get(handle_seedling))
 		.route("/reload", post(handle_reload))
 		.route("/restart", post(handle_restart))
 		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))

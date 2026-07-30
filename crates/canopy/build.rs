@@ -157,9 +157,12 @@ struct Endpoint {
 }
 
 /// Generate an `impl crate::CanopyClient` block with one method per OpenAPI
-/// operation, routing through the client's shared transport (`call_json` /
+/// operation, routing through the client's shared call plumbing (`call_json` /
 /// `call_empty`). Method names come from the path; where a path is served by
 /// more than one verb the verb is prefixed to disambiguate.
+///
+/// The block is generic over the client's transport, so every endpoint is
+/// available whichever [`CanopyTransport`](crate::CanopyTransport) is underneath.
 fn generate_client_methods(spec: &Value) -> String {
 	let paths = spec
 		.get("paths")
@@ -213,7 +216,7 @@ fn generate_client_methods(spec: &Value) -> String {
 
 	endpoints.sort_by(|a, b| (&a.path, &a.verb).cmp(&(&b.path, &b.verb)));
 
-	let mut out = String::from("impl crate::CanopyClient {\n");
+	let mut out = String::from("impl<T: crate::CanopyTransport> crate::CanopyClient<T> {\n");
 	for ep in &endpoints {
 		let method_name = if collides.contains(&ep.name) {
 			format!("{}_{}", ep.verb, ep.name)

@@ -3,8 +3,6 @@
 //! Distinct from `fhir_jobs`, which measures live queue depth: this surfaces
 //! individual jobs that errored recently.
 
-use jiff::{Timestamp, ToSpan};
-
 use super::{CheckContext, util::tiered_rows_check};
 use crate::doctor::check::Check;
 use bestool_tamanu::ApiServerKind;
@@ -28,14 +26,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let since = Timestamp::now() - LOOKBACK_HOURS.hours();
 	tiered_rows_check(
 		client,
 		"fhir_job_errors",
 		"no recent FHIR job errors",
 		"FHIR job errors: ",
 		SQL,
-		&[&since],
+		LOOKBACK_HOURS,
 		1,
 		10,
 	)

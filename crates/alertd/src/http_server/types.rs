@@ -16,6 +16,16 @@ pub struct StatusResponse {
 	pub backups_configured: Vec<String>,
 }
 
+/// The `/seedling` response: what a co-located tool needs to know about this
+/// host's Seedling access.
+#[derive(Serialize, Deserialize)]
+pub struct SeedlingResponse {
+	/// Whether the host carries a Seedling identity for bestool, which a
+	/// privileged process can use to reach the daemon. Never the identity
+	/// itself: a tool asks this to learn that elevating will get it one.
+	pub host_identity: bool,
+}
+
 /// The `/health` response: the watchdog's view of the daemon's liveness.
 #[derive(Serialize, Deserialize)]
 pub struct HealthResponse {

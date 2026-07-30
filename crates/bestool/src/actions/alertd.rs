@@ -195,15 +195,6 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	}
 }
 
-/// Build the doctor task, wiring the canopy backup trigger when backups are
-/// compiled in.
-fn doctor_task(
-	version: String,
-	tamanu: Option<bestool_alertd::doctor::SweepTamanu>,
-) -> DoctorTask {
-	DoctorTask::new(version, tamanu)
-}
-
 /// Register the daemon's tasks. When backups are compiled in, this creates the
 /// backup registry once and shares it: the doctor task's canopy-trigger dispatch
 /// and the `backup` task (its `run`/`running` endpoints) drive the same runs.
@@ -229,7 +220,9 @@ fn with_daemon_tasks(
 		crate::actions::self_update::task::SelfUpdateTask::new(),
 	));
 
-	config.with_task(Arc::new(doctor))
+	config
+		.with_metrics_handle(doctor.metrics_handle())
+		.with_task(Arc::new(doctor))
 }
 
 /// The in-process backup trigger: routes each type canopy requests via
@@ -625,12 +618,9 @@ mod backup {
 /// Tamanu-dependent check skipped.
 #[cfg(feature = "alertd-tamanu")]
 async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
-	use std::path::PathBuf;
-
-	use node_semver::Version;
 	use tracing::debug;
 
-	use bestool_alertd::doctor::resolve_sweep_tamanu;
+	use bestool_alertd::doctor::discover_sweep_tamanu;
 	use bestool_tamanu::server_info::fetch_device_key;
 
 	let DaemonArgs {
@@ -647,7 +637,6 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	let root = ctx
 		.get::<crate::actions::tamanu::TamanuArgs>()
 		.and_then(|t| t.root.clone());
-	let install: Option<(Version, PathBuf)> = bestool_tamanu::try_find_tamanu(root.as_deref()).await?;
 
 	// A real install, a DB-only context synthesised from `TAMANU_DATABASE_URL`,
 	// a generic (non-Tamanu) one from `DATABASE_URL`, or `None`. The daemon
@@ -655,7 +644,12 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	// are skipped; with only a database URL the DB checks run while
 	// install-dependent ones skip; and with only a generic URL just the generic
 	// DB checks run.
-	let tamanu = resolve_sweep_tamanu(install)?;
+	//
+	// This is the startup resolution, which the database pool below is built
+	// from. The doctor task re-runs it before every sweep (see
+	// `with_tamanu_discovery`), so an upgrade doesn't need a daemon restart to
+	// show up.
+	let tamanu = discover_sweep_tamanu(root.as_deref()).await?;
 	match &tamanu {
 		Some(t) => debug!(
 			has_install = t.has_install,
@@ -698,7 +692,8 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog);
-	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), tamanu);
+	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), tamanu)
+		.with_tamanu_discovery(root);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 
 	if let Some(pem) = device_key_pem {
@@ -744,7 +739,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
-	let doctor = doctor_task(env!("CARGO_PKG_VERSION").to_string(), None);
+	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), None);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);

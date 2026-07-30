@@ -168,6 +168,8 @@ async fn run_local_sweep(
 			&sweep_args_skip,
 			None,
 			progress,
+			None,
+			false,
 		)
 		.await
 	});
@@ -452,6 +454,7 @@ fn results_from_wire(payload: &Value) -> Vec<(Check, bool)> {
 					summary: String::new(),
 					details: serde_json::Map::new(),
 					payload_extras: serde_json::Map::new(),
+					stats: Vec::new(),
 				},
 				true,
 			))

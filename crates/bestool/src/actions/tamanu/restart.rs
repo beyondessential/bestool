@@ -1,18 +1,19 @@
 use std::{collections::HashSet, time::Duration};
 
 use clap::Parser;
-use miette::Result;
+use miette::{Result, bail};
 use reqwest::{Client, Url};
 use tracing::{debug, info, warn};
 
 use bestool_tamanu::{
+	pm2, seedling,
 	services::{self, ExpectedState, Expectation, Supervisor, parse_systemd_unit},
 	systemd,
 };
 
 use crate::actions::{
 	Context,
-	tamanu::{
+	tamanu::{on_seedling, 
 		TamanuArgs,
 		lifecycle::{self, Instance, WaitForDb},
 		probe,
@@ -65,6 +66,18 @@ pub struct RestartArgs {
 
 pub async fn run(args: RestartArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
+
+	// A Seedling host resolves before install discovery, config load, and
+	// privilege elevation below: none apply, and elevating would swap the
+	// operator's CLI identity for root's.
+	match seedling::reach().await {
+		seedling::Reach::Seedling(ctl) => {
+			let app = on_seedling::app(&ctl, None).await?;
+			return on_seedling::restart(&app, &ctl, &args.names, args.ignore_unmatched).await;
+		}
+		seedling::Reach::Unreachable(why) => bail!("{why}"),
+		seedling::Reach::Host => {}
+	}
 
 	let (supervisor, expectations) =
 		lifecycle::config_and_expectations(tamanu, WaitForDb::No).await?;
@@ -321,7 +334,7 @@ fn partition(supervisor: Supervisor, groups: &[(&Expectation, Vec<Instance>)]) -
 async fn bulk_restart(supervisor: Supervisor, targets: &[String]) -> Result<()> {
 	match supervisor {
 		Supervisor::Systemd => systemd::restart_all(targets).await,
-		Supervisor::Pm2 => lifecycle::pm2_restart_targets(targets),
+		Supervisor::Pm2 => pm2::restart_targets(targets),
 	}
 }
 

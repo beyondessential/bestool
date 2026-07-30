@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use bestool_canopy::schema::CheckSeverity;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
@@ -8,7 +8,12 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
-use crate::doctor::{self, check::Check, progress::DoctorEvent};
+use crate::doctor::{
+	self,
+	check::{Check, CheckStatus},
+	progress::DoctorEvent,
+	stat::{MetricsSnapshot, StatusCounts},
+};
 use crate::tasks::TaskEndpointHandler;
 use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
@@ -46,11 +51,25 @@ pub struct DoctorTask {
 	inner: Arc<DoctorTaskInner>,
 }
 
+/// Where a sweep's Tamanu context comes from.
+enum TamanuSource {
+	/// Whatever was handed to [`DoctorTask::new`], for the lifetime of the
+	/// daemon. This build has no Tamanu integration wired up, so there's nothing
+	/// to discover.
+	Fixed,
+	/// Re-discovered before every sweep from `root` (the `--root` override, when
+	/// one was given), so an in-place upgrade lands without a daemon restart.
+	Discover { root: Option<PathBuf> },
+}
+
 struct DoctorTaskInner {
 	binary_version: String,
-	/// `None` on hosts with no Tamanu deployment: sweeps still run (and post),
-	/// with all Tamanu-dependent checks skipped.
-	tamanu: Option<doctor::SweepTamanu>,
+	/// Tamanu context for the next sweep, refreshed by
+	/// [`DoctorTaskInner::resolve_tamanu`] when discovery is enabled. `None` on
+	/// hosts with no Tamanu deployment: sweeps still run (and post), with all
+	/// Tamanu-dependent checks skipped.
+	tamanu: Mutex<Option<doctor::SweepTamanu>>,
+	tamanu_source: TamanuSource,
 	/// `SELECT version()` result, populated on the first tick that succeeds in
 	/// reaching the database. Stable for the lifetime of the PG instance, so we
 	/// reuse it across ticks instead of re-querying every minute.
@@ -83,12 +102,27 @@ impl DoctorTask {
 		Self {
 			inner: Arc::new(DoctorTaskInner {
 				binary_version,
-				tamanu,
+				tamanu: Mutex::new(tamanu),
+				tamanu_source: TamanuSource::Fixed,
 				pg_version_cache: Mutex::new(None),
 				latest: Mutex::new(None),
 				check_severities: Mutex::new(None),
 				backup_dispatch: None,
 			}),
+		}
+	}
+
+	/// Re-discover the Tamanu install before every sweep instead of reusing the
+	/// context passed to [`DoctorTask::new`], with `root` as the `--root`
+	/// override.
+	///
+	/// Call right after [`DoctorTask::new`] (before the task is shared).
+	pub fn with_tamanu_discovery(self, root: Option<PathBuf>) -> Self {
+		let mut inner =
+			Arc::try_unwrap(self.inner).unwrap_or_else(|_| panic!("DoctorTask already shared"));
+		inner.tamanu_source = TamanuSource::Discover { root };
+		Self {
+			inner: Arc::new(inner),
 		}
 	}
 
@@ -103,23 +137,123 @@ impl DoctorTask {
 			inner: Arc::new(inner),
 		}
 	}
+
+	/// A cloneable handle the HTTP `/metrics` endpoint uses to read the latest
+	/// sweep's declared stats and status census.
+	pub fn metrics_handle(&self) -> DoctorMetricsHandle {
+		DoctorMetricsHandle {
+			inner: self.inner.clone(),
+		}
+	}
+}
+
+/// Read-only view of the doctor task's latest sweep for the metrics endpoint.
+///
+/// Capping is applied on read (via [`DoctorTaskInner::capped`]) so the status
+/// census reflects canopy's current severity ceilings, matching what the
+/// `latest` endpoint and the CLI show.
+#[derive(Clone)]
+pub struct DoctorMetricsHandle {
+	inner: Arc<DoctorTaskInner>,
+}
+
+impl DoctorMetricsHandle {
+	/// The latest sweep rendered into a [`MetricsSnapshot`], or `None` if the
+	/// daemon hasn't completed a sweep yet.
+	pub async fn snapshot(&self) -> Option<MetricsSnapshot> {
+		let latest = self.inner.latest.lock().await.clone()?;
+		let sweep = self.inner.capped(latest.sweep).await;
+
+		let counts = census(&sweep.results);
+		let stats = sweep
+			.results
+			.iter()
+			.flat_map(|(check, _)| check.stats.iter().map(|stat| (check.name, stat.clone())))
+			.collect();
+
+		Some(MetricsSnapshot {
+			computed_at: latest.computed_at,
+			stats,
+			counts,
+		})
+	}
+}
+
+/// Tally check outcomes into a [`StatusCounts`]. Expects statuses already capped
+/// to canopy's ceilings, so the census matches what operators see elsewhere.
+fn census(results: &[(Check, bool)]) -> StatusCounts {
+	let mut counts = StatusCounts::default();
+	for (check, _) in results {
+		match &check.status {
+			CheckStatus::Pass => counts.passing += 1,
+			CheckStatus::Warning(_) => counts.warning += 1,
+			CheckStatus::Fail(_) => counts.failing += 1,
+			CheckStatus::Skip(_) => counts.skipped += 1,
+			CheckStatus::Broken(_) => counts.broken += 1,
+		}
+	}
+	counts
 }
 
 impl DoctorTaskInner {
+	/// The Tamanu context to sweep against.
+	///
+	/// A Tamanu upgrade replaces the version, the install root and the config
+	/// under a running daemon. Resolving once at startup would pin us to the
+	/// pre-upgrade snapshot for the life of the process: the status payload would
+	/// keep reporting the old `tamanuVersion` and `tamanuRoot`, and every
+	/// version-aware check would compare against a stale baseline. So re-discover
+	/// per sweep, keeping the last good answer when discovery errors — a
+	/// transient failure shouldn't blank out every Tamanu check.
+	async fn resolve_tamanu(&self) -> Option<doctor::SweepTamanu> {
+		let TamanuSource::Discover { root } = &self.tamanu_source else {
+			return self.tamanu.lock().await.clone();
+		};
+
+		self.apply_discovery(doctor::discover_sweep_tamanu(root.as_deref()).await)
+			.await
+	}
+
+	/// Fold a discovery attempt into the stored context and return what the sweep
+	/// should use. `Ok(None)` is recorded as-is: Tamanu really is gone from this
+	/// host, and continuing to report the install we last saw would be a lie.
+	async fn apply_discovery(
+		&self,
+		discovered: Result<Option<doctor::SweepTamanu>>,
+	) -> Option<doctor::SweepTamanu> {
+		let mut guard = self.tamanu.lock().await;
+		match discovered {
+			Ok(resolved) => *guard = resolved,
+			Err(err) => warn!(
+				%err,
+				"could not resolve the Tamanu install; sweeping against the last known context"
+			),
+		}
+		guard.clone()
+	}
+
 	async fn run_sweep(
 		self: &Arc<Self>,
 		ctx: &TaskContext,
 		progress: Option<doctor::progress::ProgressSender>,
+		enable_heal: bool,
 	) -> Result<doctor::SweepResult> {
 		let cached = self.pg_version_cache.lock().await.clone();
+		let tamanu = self.resolve_tamanu().await;
+		// Hand checks the shared canopy client so a heal action can reach canopy;
+		// only the periodic tick enables healing, so an on-demand recompute
+		// driven by `doctor --fresh` stays side-effect-free. See
+		// [`crate::doctor::heal`].
 		let sweep = doctor::perform_sweep(
 			&self.binary_version,
-			self.tamanu.clone(),
+			tamanu,
 			ctx.http_client.clone(),
 			&[],
 			&[],
 			cached,
 			progress,
+			ctx.canopy_client.clone(),
+			enable_heal,
 		)
 		.await?;
 
@@ -154,7 +288,7 @@ impl DoctorTaskInner {
 	}
 
 	async fn tick(self: &Arc<Self>, ctx: &TaskContext) -> Result<()> {
-		let sweep = self.run_sweep(ctx, None).await?;
+		let sweep = self.run_sweep(ctx, None, true).await?;
 
 		let Some(server_id) = sweep.server_id else {
 			warn!("no metaServerId available; skipping canopy status push");
@@ -244,7 +378,7 @@ impl DoctorTaskInner {
 				}
 			});
 
-			match task_self.run_sweep(&ctx, Some(progress_tx)).await {
+			match task_self.run_sweep(&ctx, Some(progress_tx), false).await {
 				Ok(mut sweep) => {
 					if let Some(severities) = &severities {
 						sweep.apply_severities(severities);
@@ -322,8 +456,87 @@ impl BackgroundTask for DoctorTask {
 
 #[cfg(test)]
 mod tests {
+	use node_semver::Version;
+
+	use bestool_tamanu::config::{Database, TamanuConfig};
+
 	use super::*;
 	use crate::doctor::check::CheckStatus;
+
+	const DB_URL: &str = "postgres://u:p@localhost/tamanu";
+
+	fn sweep_tamanu(version: &str) -> doctor::SweepTamanu {
+		doctor::SweepTamanu {
+			version: Version::parse(version).unwrap(),
+			root: PathBuf::from("/opt/tamanu"),
+			config: Arc::new(TamanuConfig::from_database(
+				Database::from_url(DB_URL).unwrap(),
+			)),
+			database_url: DB_URL.into(),
+			has_install: true,
+			is_tamanu: true,
+		}
+	}
+
+	fn inner(tamanu: Option<doctor::SweepTamanu>, tamanu_source: TamanuSource) -> DoctorTaskInner {
+		DoctorTaskInner {
+			binary_version: "0.0.0-test".into(),
+			tamanu: Mutex::new(tamanu),
+			tamanu_source,
+			pg_version_cache: Mutex::new(None),
+			latest: Mutex::new(None),
+			check_severities: Mutex::new(None),
+			backup_dispatch: None,
+		}
+	}
+
+	#[tokio::test]
+	async fn discovery_replaces_the_previous_tamanu_context() {
+		// The upgrade case: the daemon started on 2.54.0 and Tamanu has since been
+		// upgraded in place. The sweep must run against the version now on disk,
+		// and the new context must stick for subsequent sweeps too.
+		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let resolved = inner
+			.apply_discovery(Ok(Some(sweep_tamanu("2.55.0"))))
+			.await
+			.expect("a context");
+		assert_eq!(resolved.version, Version::parse("2.55.0").unwrap());
+		assert_eq!(
+			inner.tamanu.lock().await.as_ref().unwrap().version,
+			Version::parse("2.55.0").unwrap()
+		);
+	}
+
+	#[tokio::test]
+	async fn discovery_failure_keeps_the_last_known_context() {
+		// Discovery can fail transiently (an unreadable root, a config that won't
+		// parse mid-write). Falling back to `None` would skip every Tamanu check;
+		// the last known install is the better answer.
+		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let resolved = inner
+			.apply_discovery(Err(miette!("no tamanu discovered")))
+			.await
+			.expect("the last known context");
+		assert_eq!(resolved.version, Version::parse("2.54.0").unwrap());
+	}
+
+	#[tokio::test]
+	async fn discovery_clears_the_context_when_tamanu_is_gone() {
+		// A successful discovery that finds nothing is a fact, not a failure:
+		// Tamanu is no longer on this host, so stop reporting the install.
+		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		assert!(inner.apply_discovery(Ok(None)).await.is_none());
+		assert!(inner.tamanu.lock().await.is_none());
+	}
+
+	#[tokio::test]
+	async fn fixed_source_reuses_the_context_it_was_given() {
+		// Builds with no Tamanu integration wired up have nothing to discover, so
+		// `resolve_tamanu` must not go looking for an install.
+		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let resolved = inner.resolve_tamanu().await.expect("a context");
+		assert_eq!(resolved.version, Version::parse("2.54.0").unwrap());
+	}
 
 	#[test]
 	fn cap_check_applies_ceiling_when_present() {
@@ -351,5 +564,46 @@ mod tests {
 		let check = Check::fail("disk_free", "1% free", "out of space");
 		let capped = cap_check(check, None);
 		assert!(matches!(capped.status, CheckStatus::Fail(_)));
+	}
+
+	#[test]
+	fn census_counts_each_status() {
+		let results = vec![
+			(Check::pass("a", ""), true),
+			(Check::pass("b", ""), true),
+			(Check::warning("c", "", "w"), true),
+			(Check::fail("d", "", "f"), true),
+			(Check::skip("e", "", "s"), true),
+			(Check::broken("g", "", "b"), true),
+		];
+		let c = census(&results);
+		assert_eq!(c.passing, 2);
+		assert_eq!(c.warning, 1);
+		assert_eq!(c.failing, 1);
+		assert_eq!(c.skipped, 1);
+		assert_eq!(c.broken, 1);
+		assert_eq!(c.total(), 6);
+		// active = ran (everything but skipped)
+		assert_eq!(c.active(), 5);
+	}
+
+	#[test]
+	fn census_reflects_severity_capping() {
+		// A fail capped to a warn ceiling must count as warning, not failing —
+		// the census tracks what operators see after capping.
+		let mut sweep = doctor::SweepResult {
+			server_id: None,
+			results: vec![(Check::fail("disk_free", "1% free", "out of space"), true)],
+			overall: doctor::check::OverallResult::Failing,
+			payload: json!({}),
+			pg_version: None,
+		};
+		let mut severities = HashMap::new();
+		severities.insert("disk_free".to_string(), CheckSeverity::Warn);
+		sweep.apply_severities(&severities);
+
+		let c = census(&sweep.results);
+		assert_eq!(c.failing, 0);
+		assert_eq!(c.warning, 1);
 	}
 }

@@ -5,6 +5,7 @@
 //! treat the lookup as not tracked and pass.
 
 use super::{CheckContext, query_error_check};
+use crate::doctor::Stat;
 use crate::doctor::check::{Check, CheckStatus};
 use bestool_tamanu::ApiServerKind;
 
@@ -53,7 +54,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		_ => Check::pass(NAME, "lookup table up to date"),
 	};
 
-	let mut check = check.with_detail("age_seconds", age_seconds);
+	let mut check = check.with_detail("age_seconds", age_seconds).with_stat(
+		Stat::gauge("age_seconds", age_seconds as f64)
+			.help("Seconds since the lookup table last updated"),
+	);
 	if let Some(tick) = last_sync_tick {
 		check = check.with_detail("last_sync_tick", tick);
 	}

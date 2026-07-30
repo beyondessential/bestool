@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.53.0"
+version = "1.57.6"
 edition = "2024"
 default-run = "bestool"
 
@@ -17,14 +17,14 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.1.7", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.1.9", path = "../algae-cli", optional = true }
 axum = { version = "0.8.9", optional = true }
-bestool-alertd = { version = "20.1.0", path = "../alertd", default-features = false, optional = true }
-bestool-canopy = { version = "0.7.2", path = "../canopy", optional = true }
-bestool-kopia = { version = "0.5.0", path = "../kopia", optional = true }
+bestool-alertd = { version = "25.0.1", path = "../alertd", default-features = false, optional = true }
+bestool-canopy = { version = "0.7.8", path = "../canopy", optional = true }
+bestool-kopia = { version = "0.5.1", path = "../kopia", optional = true }
 bestool-postgres = { version = "1.1.0", path = "../postgres", optional = true }
-bestool-psql = { version = "1.7.6", path = "../psql", default-features = false, optional = true }
-bestool-tamanu = { version = "0.16.6", path = "../tamanu", default-features = false, optional = true }
+bestool-psql = { version = "1.7.7", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.18.1", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
@@ -86,6 +86,7 @@ zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runti
 zip = { version = "8.6.0", optional = true, default-features = false, features = ["time"] }
 
 [target.'cfg(windows)'.dependencies]
+junction = "2.0.0"
 tauri-winrt-notification = { version = "0.7.2", optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.2.0", optional = true }
@@ -158,12 +159,12 @@ tamanu-doctor = [
 tamanu-url = ["__tamanu", "tamanu-config", "dep:percent-encoding"]
 tamanu-download = ["__tamanu", "download"]
 tamanu-find = ["__tamanu"]
-tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege"]
-tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors"]
+tamanu-lifecycle = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:comfy-table", "dep:owo-colors", "dep:privilege", "bestool-tamanu/seedling"]
+tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-colors", "bestool-tamanu/seedling"]
 # Windows-only PostgreSQL tuning. Reuses the lifecycle restart to bounce the
 # Tamanu workloads, and drives the postgres Windows service directly.
 tamanu-pgtune = ["__tamanu", "tamanu-config", "tamanu-lifecycle", "dep:bestool-postgres", "dep:windows-service"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql", "bestool-tamanu/seedling"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 # Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
 tamanu-tags = ["canopy-tags"]
@@ -220,7 +221,7 @@ walg = []
 notify = ["dep:notify"]
 
 [dev-dependencies]
-age = { version = "0.11.3", features = ["async"] }
+age = { version = "0.12.1", features = ["async"] }
 jsonschema = { version = "0.46.5", default-features = false }
 minisign = "0.9.1"
 trycmd = "1.2.0"

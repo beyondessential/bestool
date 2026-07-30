@@ -17,7 +17,7 @@ use std::{
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use tracing::info;
 
-use super::{super::method::PostgresqlConfig, resolve::ResolvedCluster};
+use super::{super::method::PostgresqlConfig, resolve::ResolvedCluster, sys};
 
 /// Where this run's base backup is streamed to (and what kopia snapshots). Nests
 /// `<version>/<cluster>` under the chosen staging root, matching the btrfs
@@ -61,6 +61,12 @@ pub async fn prepare(
 			.into_diagnostic()
 			.wrap_err_with(|| format!("creating {}", parent.display()))?;
 	}
+
+	// The staging root's own parents stay root-owned, and the daemon's restrictive
+	// umask leaves them group-only: neither the postgres user streaming the backup
+	// nor the kopia user reading it afterwards can then descend to the staging
+	// root. Widen them, as the snapshot strategies do for their mountpoints.
+	make_parents_traversable(&root).await?;
 
 	// pg_basebackup runs as the postgres user (peer auth) and creates its own
 	// output dir, so the root-owned staging must be writable by postgres first.
@@ -149,6 +155,25 @@ async fn remove_staging(root: &Path) -> Result<()> {
 		.wrap_err_with(|| format!("removing base backup at {}", root.display()))
 }
 
+/// The directories above the staging root that we own and may widen:
+/// `<base>/bestool/backup-source` and `<base>/bestool` — for the default root
+/// that's `/var/lib/bestool/backup-source` and the daemon's StateDirectory. The
+/// base itself is the operator's (a configured staging dir, or `/var/lib`), so
+/// it's left alone.
+fn parents_to_widen(root: &Path) -> Vec<&Path> {
+	[root.parent(), root.parent().and_then(Path::parent)]
+		.into_iter()
+		.flatten()
+		.collect()
+}
+
+async fn make_parents_traversable(root: &Path) -> Result<()> {
+	for dir in parents_to_widen(root) {
+		sys::make_traversable(dir).await?;
+	}
+	Ok(())
+}
+
 /// Hand the (root-created) staging to the postgres user so pg_basebackup, which
 /// runs as postgres, can create its output dir and write into it. Required —
 /// without it the stream fails to create its target.
@@ -222,6 +247,44 @@ mod tests {
 		// Present again just before streaming: another writer is active; refuse.
 		tokio::fs::create_dir_all(&dest).await.unwrap();
 		assert!(ensure_dest_clear(&dest).await.is_err());
+	}
+
+	#[test]
+	fn parents_to_widen_covers_the_dirs_we_create() {
+		let root = Path::new("/var/lib/bestool/backup-source/tamanu-postgres");
+		assert_eq!(
+			parents_to_widen(root),
+			vec![
+				Path::new("/var/lib/bestool/backup-source"),
+				Path::new("/var/lib/bestool"),
+			]
+		);
+	}
+
+	#[test]
+	fn parents_to_widen_stops_at_the_filesystem_root() {
+		assert_eq!(parents_to_widen(Path::new("/")), Vec::<&Path>::new());
+		assert_eq!(parents_to_widen(Path::new("/staging")), vec![Path::new("/")]);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn make_parents_traversable_widens_group_only_parents() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let tmp = tempfile::tempdir().unwrap();
+		let root = tmp.path().join("bestool/backup-source/tamanu-postgres");
+		std::fs::create_dir_all(&root).unwrap();
+		for dir in parents_to_widen(&root) {
+			std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o770)).unwrap();
+		}
+
+		make_parents_traversable(&root).await.unwrap();
+
+		for dir in parents_to_widen(&root) {
+			let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+			assert_eq!(mode, 0o755, "{} should be traversable", dir.display());
+		}
 	}
 
 	#[test]

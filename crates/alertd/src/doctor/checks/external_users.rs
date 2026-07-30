@@ -43,6 +43,7 @@ use tokio::task::spawn_blocking;
 use tracing::{debug, trace, warn};
 
 use super::SweepContext;
+use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 /// Sessions older than this trigger a check warning (degrades doctor's
@@ -112,7 +113,8 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	if users.is_empty() {
 		return Check::pass("external_users", "no interactive users connected")
 			.with_detail("count", 0)
-			.with_detail("users", Value::Array(Vec::new()));
+			.with_detail("users", Value::Array(Vec::new()))
+			.with_stat(Stat::gauge("count", 0.0).help("Interactive users connected"));
 	}
 
 	let oldest_age = users
@@ -145,6 +147,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	check
 		.with_detail("count", users.len())
 		.with_detail("users", user_details)
+		.with_stat(Stat::gauge("count", users.len() as f64).help("Interactive users connected"))
 }
 
 fn user_to_json(u: &ExternalUser) -> Value {
