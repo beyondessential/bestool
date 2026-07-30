@@ -3,6 +3,12 @@
 //!
 //! The window is a tight `updated_at > now() - interval '1 minute'`; the sweep
 //! runs every 60s, so this still catches each error once.
+//!
+//! Each query returns one row per session. The facility list rides along as the
+//! `facilityIds` array rather than being expanded into a row per facility: a
+//! set-returning function in the target list cross-joins, which would count a
+//! session spanning several facilities once per facility, and would drop a
+//! session whose `parameters` carry no `facilityIds` at all.
 
 use serde_json::Value;
 
@@ -16,7 +22,7 @@ const NAME: &str = "sync_session_errors";
 const FAIL_ERRORS: usize = 10;
 
 const MOBILE_SQL: &str = "SELECT id, errors::text, \
-	jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
+	parameters->'facilityIds' AS facility_ids, \
 	created_at::text AS created, (completed_at - created_at)::text AS duration \
 	FROM sync_sessions \
 	WHERE updated_at > now() - interval '1 minute' \
@@ -27,7 +33,7 @@ const MOBILE_SQL: &str = "SELECT id, errors::text, \
 	ORDER BY created_at DESC";
 
 const SERVER_SQL: &str = "SELECT id, errors::text, \
-	jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
+	parameters->'facilityIds' AS facility_ids, \
 	created_at::text AS created, (completed_at - created_at)::text AS duration \
 	FROM sync_sessions \
 	WHERE updated_at > now() - interval '1 minute' \
@@ -36,6 +42,24 @@ const SERVER_SQL: &str = "SELECT id, errors::text, \
 	AND errors <> ARRAY['could not serialize access due to concurrent update'] \
 	AND NOT (cardinality(errors) = 1 AND errors[1] LIKE '%snapshot-for-pushing%') \
 	ORDER BY created_at DESC";
+
+/// Errored sessions the verdict tiers on.
+///
+/// A truncated row set means there were more sessions than the report cap, well
+/// past [`FAIL_ERRORS`], so the total saturates there rather than reporting the
+/// cap as if it were the real figure.
+fn error_total(
+	mobile_n: usize,
+	mobile_truncated: bool,
+	server_n: usize,
+	server_truncated: bool,
+) -> usize {
+	if mobile_truncated || server_truncated {
+		FAIL_ERRORS
+	} else {
+		mobile_n + server_n
+	}
+}
 
 pub async fn run(ctx: CheckContext) -> Check {
 	if ctx.kind != ApiServerKind::Central {
@@ -71,12 +95,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// Row vecs are capped at the report cap, so these saturate there on truncation.
 	let (mobile_n, server_n) = (mobile.rows.len(), server.rows.len());
 
-	// Truncation means well over FAIL_ERRORS rows, so saturate the total there.
-	let total = if mobile.truncated || server.truncated {
-		FAIL_ERRORS
-	} else {
-		mobile.rows.len() + server.rows.len()
-	};
+	let total = error_total(mobile_n, mobile_truncated, server_n, server_truncated);
 
 	let summary = format!("sync session errors: {mobile_count} mobile, {server_count} server");
 	let reason = "recent sync session error(s)";
@@ -102,7 +121,31 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 #[cfg(test)]
 mod tests {
+	use super::{FAIL_ERRORS, MOBILE_SQL, SERVER_SQL, error_total};
 	use crate::doctor::checks::test_support::{central_ctx, facility_ctx};
+
+	#[test]
+	fn queries_return_one_row_per_session() {
+		// Expanding facilityIds in the target list cross-joins, so a session
+		// would be counted once per facility and a session carrying no
+		// facilityIds would not appear at all.
+		for sql in [MOBILE_SQL, SERVER_SQL] {
+			assert!(!sql.contains("jsonb_array_elements"));
+			assert!(sql.contains("parameters->'facilityIds' AS facility_ids"));
+		}
+	}
+
+	#[test]
+	fn error_total_sums_both_streams() {
+		assert_eq!(error_total(0, false, 0, false), 0);
+		assert_eq!(error_total(3, false, 4, false), 7);
+	}
+
+	#[test]
+	fn error_total_saturates_when_either_stream_truncates() {
+		assert_eq!(error_total(100, true, 0, false), FAIL_ERRORS);
+		assert_eq!(error_total(0, false, 100, true), FAIL_ERRORS);
+	}
 
 	#[tokio::test]
 	async fn runs_against_central() {
