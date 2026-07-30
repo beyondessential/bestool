@@ -8,7 +8,7 @@
 
 use std::fmt::Write as _;
 
-use crate::doctor::{MetricsSnapshot, Stat};
+use crate::doctor::{MetricsSnapshot, Stat, StatKind};
 
 /// Common prefix for every metric this daemon exposes.
 const PREFIX: &str = "bes_alertd";
@@ -79,6 +79,10 @@ fn prom_name(check: &str, stat: &Stat) -> String {
 /// Munin axis label and optional `graph_args`, derived from the unit a metric
 /// carries in its name (the spec keeps a metric's unit in its name). A group
 /// shares a unit, so this reads the first stat's name.
+///
+/// A group of counters falls through to a rate: munin plots a counter as its
+/// per-period derivative, so `${graph_period}` — which munin expands to
+/// `second` unless a graph says otherwise — is what the axis actually shows.
 fn munin_unit(stats: &[&Stat]) -> Option<(&'static str, Option<&'static str>)> {
 	let name = stats.first()?.name;
 	if name.ends_with("_bytes") {
@@ -89,6 +93,8 @@ fn munin_unit(stats: &[&Stat]) -> Option<(&'static str, Option<&'static str>)> {
 		Some(("milliseconds", None))
 	} else if name.ends_with("_pct") || name.ends_with("_percent") {
 		Some(("%", None))
+	} else if stats.iter().all(|s| s.kind == StatKind::Counter) {
+		Some(("per ${graph_period}", None))
 	} else {
 		None
 	}
@@ -421,21 +427,21 @@ mod tests {
 			stats: vec![
 				(
 					"http_errors",
-					Stat::gauge("requests", 5.0)
+					Stat::counter("requests_total", 5.0)
 						.namespace("http")
 						.group("traffic"),
 				),
 				(
 					"http_errors",
-					Stat::gauge("requests_by_code", 2.0)
+					Stat::counter("requests_by_code_total", 2.0)
 						.namespace("http")
 						.label("code", "200"),
 				),
 			],
 		};
 		let prom = render_prometheus(Some(&s), 0, 0);
-		assert!(prom.contains("bes_alertd_http_requests 5"));
-		assert!(prom.contains("bes_alertd_http_requests_by_code{code=\"200\"} 2"));
+		assert!(prom.contains("bes_alertd_http_requests_total 5"));
+		assert!(prom.contains("bes_alertd_http_requests_by_code_total{code=\"200\"} 2"));
 		assert!(!prom.contains("http_errors_requests"));
 
 		let cfg = render_munin(Some(&s), 0, 0, true);
@@ -468,6 +474,36 @@ mod tests {
 		assert!(cfg.contains("multigraph bes_alertd_sync_snapshot_tables_sizes"));
 		assert!(cfg.contains("graph_vlabel bytes"));
 		assert!(cfg.contains("graph_args --base 1024"));
+	}
+
+	#[test]
+	fn munin_labels_a_counter_graph_as_a_rate() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![
+				(
+					"http_errors",
+					Stat::counter("requests_total", 5.0)
+						.namespace("http")
+						.group("traffic"),
+				),
+				(
+					"http_errors",
+					Stat::counter("server_errors_total", 1.0)
+						.namespace("http")
+						.group("traffic"),
+				),
+				(
+					"http_errors",
+					Stat::gauge("server_error_rate_pct", 20.0).namespace("http"),
+				),
+			],
+		};
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("graph_vlabel per ${graph_period}"));
+		// a gauge group keeps the unit read from its name
+		assert!(cfg.contains("graph_vlabel %"));
 	}
 
 	#[test]
