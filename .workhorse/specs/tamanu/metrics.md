@@ -35,7 +35,7 @@ A check declares typed metrics. Each metric carries:
 
 - a name in `snake_case` that is a valid prometheus name and munin field;
 - a value;
-- a kind — a gauge that rises and falls, or a counter that only increases;
+- a kind — a gauge that rises and falls, or a counter that only increases until whatever produces it restarts;
 - optional labels: dimensions with a fixed key and a per-series value, such as a mount point, an HTTP status code, or a percentile;
 - a human description;
 - an optional group (see below);
@@ -62,6 +62,9 @@ Metrics of different units are never placed in the same graph, so no graph mixes
 The label-dimensioned series of a single metric — one per mount, per status code, per percentile — are the fields of that metric's graph.
 
 Munin plots a counter as a rate, so a graph whose metrics are all counters labels its axis per graph period, and an operator reads events per second off the axis rather than a cumulative total that would climb off the top of the graph.
+
+A counter reaches munin as a derived field floored at zero rather than as a munin counter, because munin's counter type reads any decrease as a hardware counter wrapping and corrects for it: the reset that follows a restart of whatever produces the metric would graph as an astronomical spike, and the graph's automatic scale would stay wrecked for as long as it is retained.
+Floored derivation instead reads a reset as the gap in knowledge it is.
 
 ## Sync session durations
 

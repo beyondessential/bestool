@@ -310,6 +310,9 @@ pub fn render_munin(
 				let field = munin_field(stat);
 				let _ = writeln!(out, "{field}.label {}", munin_field_label(stat));
 				let _ = writeln!(out, "{field}.type {}", stat.kind.munin());
+				if let Some(min) = stat.kind.munin_min() {
+					let _ = writeln!(out, "{field}.min {min}");
+				}
 				if let Some(help) = &stat.help {
 					let _ = writeln!(out, "{field}.info {}", help.replace('\n', " "));
 				}
@@ -588,6 +591,18 @@ mod tests {
 			render_prometheus(Some(&s), 0, 0)
 				.contains("# TYPE bes_alertd_http_errors_requests_total counter")
 		);
-		assert!(render_munin(Some(&s), 0, 0, true).contains("requests_total.type COUNTER"));
+		let cfg = render_munin(Some(&s), 0, 0, true);
+		assert!(cfg.contains("requests_total.type DERIVE"));
+		assert!(cfg.contains("requests_total.min 0"));
+	}
+
+	#[test]
+	fn a_gauge_declares_no_min() {
+		let s = MetricsSnapshot {
+			computed_at: jiff::Timestamp::from_second(0).unwrap(),
+			counts: StatusCounts::default(),
+			stats: vec![("load", Stat::gauge("one_min", 0.5))],
+		};
+		assert!(!render_munin(Some(&s), 0, 0, true).contains(".min"));
 	}
 }
