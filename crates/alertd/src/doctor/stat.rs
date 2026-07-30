@@ -14,8 +14,8 @@ use jiff::Timestamp;
 pub enum StatKind {
 	/// A value that can rise and fall (prometheus gauge, munin `GAUGE`).
 	Gauge,
-	/// A monotonically increasing cumulative total (prometheus counter, munin
-	/// `COUNTER`).
+	/// A cumulative total that only increases until whatever produces it
+	/// restarts (prometheus counter, munin `DERIVE` floored at zero).
 	Counter,
 }
 
@@ -29,10 +29,26 @@ impl StatKind {
 	}
 
 	/// The munin field `.type` token.
+	///
+	/// A counter renders as `DERIVE`, not `COUNTER`: rrdtool's `COUNTER` reads a
+	/// value below its predecessor as hardware counter wrap and corrects for it
+	/// against 32- then 64-bit bounds, turning the reset that follows a Caddy or
+	/// worker restart into an astronomical rate spike that wrecks the graph's
+	/// autoscale for as long as the RRA keeps it. `DERIVE` takes the plain
+	/// difference, so paired with a zero floor (see [`Self::munin_min`]) a reset
+	/// reads as the gap it is.
 	pub fn munin(self) -> &'static str {
 		match self {
 			StatKind::Gauge => "GAUGE",
-			StatKind::Counter => "COUNTER",
+			StatKind::Counter => "DERIVE",
+		}
+	}
+
+	/// The munin field `.min`, where the kind needs one.
+	pub fn munin_min(self) -> Option<&'static str> {
+		match self {
+			StatKind::Gauge => None,
+			StatKind::Counter => Some("0"),
 		}
 	}
 }
@@ -238,6 +254,15 @@ mod tests {
 		assert_eq!(StatKind::Gauge.prometheus(), "gauge");
 		assert_eq!(StatKind::Counter.prometheus(), "counter");
 		assert_eq!(StatKind::Gauge.munin(), "GAUGE");
-		assert_eq!(StatKind::Counter.munin(), "COUNTER");
+		// DERIVE, not COUNTER: rrdtool reads a COUNTER's decrease as hardware
+		// wrap and fabricates an enormous rate for the interval.
+		assert_eq!(StatKind::Counter.munin(), "DERIVE");
+	}
+
+	#[test]
+	fn a_counter_is_floored_at_zero() {
+		// Without the floor a DERIVE would graph the negative jump a reset makes.
+		assert_eq!(StatKind::Counter.munin_min(), Some("0"));
+		assert_eq!(StatKind::Gauge.munin_min(), None);
 	}
 }

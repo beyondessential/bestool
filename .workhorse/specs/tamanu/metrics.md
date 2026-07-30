@@ -35,7 +35,7 @@ A check declares typed metrics. Each metric carries:
 
 - a name in `snake_case` that is a valid prometheus name and munin field;
 - a value;
-- a kind — a gauge that rises and falls, or a counter that only increases;
+- a kind — a gauge that rises and falls, or a counter that only increases until whatever produces it restarts;
 - optional labels: dimensions with a fixed key and a per-series value, such as a mount point, an HTTP status code, or a percentile;
 - a human description;
 - an optional group (see below);
@@ -43,6 +43,13 @@ A check declares typed metrics. Each metric carries:
 
 A metric's unit lives in its name by convention — `_seconds`, `_bytes`, `_ms` — and a metric that measures a duration or a size always names its unit, so no metric reads as a bare unitless number when it is really a quantity.
 In munin a graph labels its axis with the unit read from its metrics' names, and a byte graph scales in powers of 1024, so an operator reads seconds, bytes, or a percentage off the axis directly.
+
+A check that measures a flow of events publishes a cumulative total as a counter, named `_total`, rather than a count over whatever window the check itself uses to reach its verdict.
+A scrape then derives the rate over its own interval, and a reader interprets the number without needing to know the check's window.
+
+Where the source already keeps a cumulative total, the check publishes that, and reports its own window to Canopy as a fact rather than as a metric.
+Where the source can only be sampled a window at a time, the daemon accumulates the sampled windows into a running total, which starts again from zero when the daemon restarts.
+Where neither is available cheaply, the metric keeps its window and names it in its description, so the span a number covers stays on the metrics surface.
 
 Metrics are named under their check by default, but a check whose name would misrepresent its telemetry may declare a namespace that replaces the check name in the metric's name.
 The error-rate `http_errors` check publishes its request telemetry — which counts successful responses too — under `http`, so a reader isn't misled into thinking a request count is an error count.
@@ -56,6 +63,11 @@ There is one graph per group; a metric with no explicit group forms its own grap
 Metrics that share a unit and a comparable scale and are read together — a warn tier beside its fail tier, used beside total — declare a shared group and share a graph.
 Metrics of different units are never placed in the same graph, so no graph mixes scales on one axis; and a total that dwarfs the components it sums stays on its own graph, so the components' variation isn't flattened against it.
 The label-dimensioned series of a single metric — one per mount, per status code, per percentile — are the fields of that metric's graph.
+
+Munin plots a counter as a rate, so a graph whose metrics are all counters labels its axis per graph period, and an operator reads events per second off the axis rather than a cumulative total that would climb off the top of the graph.
+
+A counter reaches munin as a derived field floored at zero rather than as a munin counter, because munin's counter type reads any decrease as a hardware counter wrapping and corrects for it: the reset that follows a restart of whatever produces the metric would graph as an astronomical spike, and the graph's automatic scale would stay wrecked for as long as it is retained.
+Floored derivation instead reads a reset as the gap in knowledge it is.
 
 ## Sync session durations
 
