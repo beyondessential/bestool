@@ -36,23 +36,24 @@ fn main() {
 	println!("cargo:rerun-if-env-changed={DOCS_RS_ENV}");
 	println!("cargo:rerun-if-env-changed={OFFLINE_ENV}");
 
-	let (spec_text, source) = match fetch_live() {
-		Ok(text) => (text, Source::Live),
-		Err(err) if snapshot_allowed() => {
-			println!(
-				"cargo:warning=canopy OpenAPI live fetch failed ({err}); using committed snapshot"
-			);
-			(
-				fs::read_to_string(SNAPSHOT).expect("reading canopy OpenAPI snapshot"),
-				Source::Snapshot,
-			)
-		}
-		Err(err) => panic!(
-			"canopy OpenAPI live fetch from {SPEC_URL} failed: {err}\n\
+	// Offline is a forced choice, not merely a fallback: the env exists to build
+	// against the committed snapshot, which may be deliberately *ahead* of the
+	// deployed canopy (a client for fields that have merged but not shipped).
+	let (spec_text, source) = if snapshot_allowed() {
+		(
+			fs::read_to_string(SNAPSHOT).expect("reading canopy OpenAPI snapshot"),
+			Source::Snapshot,
+		)
+	} else {
+		match fetch_live() {
+			Ok(text) => (text, Source::Live),
+			Err(err) => panic!(
+				"canopy OpenAPI live fetch from {SPEC_URL} failed: {err}\n\
 			 The generated schema tracks canopy live, so this build cannot proceed with a \
 			 possibly-stale snapshot. Fix connectivity to canopy, or set {OFFLINE_ENV}=1 to \
 			 build against the committed {SNAPSHOT} instead."
-		),
+			),
+		}
 	};
 
 	let spec: Value = serde_json::from_str(&spec_text).expect("parsing canopy OpenAPI document");
