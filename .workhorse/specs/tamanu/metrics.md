@@ -73,4 +73,17 @@ The FHIR-workers check ([CHK-FWK](fhir-workers.md)) reports the health of a cent
 
 It reports the count of live workers beside the count of dropped workers — those that stopped heartbeating without deregistering — as the two components of one graph.
 It reports the age in seconds of the oldest live worker's heartbeat, so an operator sees how close the least-fresh worker is to the drop window, on its own graph.
-It reports the number of jobs the live workers have completed successfully and the number they have failed, summed across the live workers as one metric dimensioned by outcome; because a worker's identity is fresh each time its process starts, these are aggregate throughput rather than a per-worker or monotonic series.
+It reports the number of jobs the live workers have completed successfully and the number they have failed, summed across the live workers as one counter dimensioned by outcome, on one graph.
+A worker's counters run from the start of its process, so the sum only climbs while the same workers stay up and falls when one churns out of the live set; as a counter that fall reads as the reset it is, and an operator sees materialisation throughput rather than a lifetime tally that sawtooths.
+
+## Sync session errors
+
+The sync-session-errors check reads a one-minute window, which is what its verdict needs but far less than a scrape covers: a scrape reads only the latest sweep, so at munin's five-minute interval four minutes in five would go unseen.
+No index spans the sessions table for errored rows, so there is no cumulative total to read cheaply either.
+The daemon therefore accumulates each sweep's window into a running total per stream — mobile and server — published as one counter dimensioned by stream, the two sharing a graph.
+The totals start again from zero when the daemon restarts.
+
+## Error-stream row counts
+
+The error-stream checks report how many rows matched in their lookback window, counted exactly in the same query that fetches the rows to report, so the reported rows stay capped while the count they are counted from does not saturate.
+The metric's description names the window it covers, because a bare row count says nothing about the span that produced it.

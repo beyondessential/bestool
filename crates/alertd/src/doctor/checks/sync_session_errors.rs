@@ -4,11 +4,18 @@
 //! The window is a tight `updated_at > now() - interval '1 minute'`; the sweep
 //! runs every 60s, so this still catches each error once.
 //!
+//! That window suits a verdict but not a graph: a scrape reads only the latest
+//! sweep, so at munin's five-minute interval four minutes in five would never be
+//! seen. The published metric is therefore a running total the daemon
+//! accumulates a window at a time, which a scrape derives its own rate from.
+//!
 //! Each query returns one row per session. The facility list rides along as the
 //! `facilityIds` array rather than being expanded into a row per facility: a
 //! set-returning function in the target list cross-joins, which would count a
 //! session spanning several facilities once per facility, and would drop a
 //! session whose `parameters` carry no `facilityIds` at all.
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
@@ -43,22 +50,37 @@ const SERVER_SQL: &str = "SELECT id, errors::text, \
 	AND NOT (cardinality(errors) = 1 AND errors[1] LIKE '%snapshot-for-pushing%') \
 	ORDER BY created_at DESC";
 
-/// Errored sessions the verdict tiers on.
+/// Errors seen since this process started, one stream each.
 ///
-/// A truncated row set means there were more sessions than the report cap, well
-/// past [`FAIL_ERRORS`], so the total saturates there rather than reporting the
-/// cap as if it were the real figure.
-fn error_total(
-	mobile_n: usize,
-	mobile_truncated: bool,
-	server_n: usize,
-	server_truncated: bool,
-) -> usize {
-	if mobile_truncated || server_truncated {
-		FAIL_ERRORS
-	} else {
-		mobile_n + server_n
-	}
+/// Postgres can only be asked what happened in a window; there is no cheap
+/// cumulative total to read, since no index covers `errors IS NOT NULL` across
+/// the whole of `sync_sessions`. So the daemon does the accumulating: each
+/// sweep's window is added to a running total that a scrape derives its own rate
+/// from.
+static MOBILE_SEEN: AtomicU64 = AtomicU64::new(0);
+static SERVER_SEEN: AtomicU64 = AtomicU64::new(0);
+
+/// Add this sweep's count to a running total and read the total back.
+fn accumulate(seen: &AtomicU64, found: u64) -> u64 {
+	seen.fetch_add(found, Ordering::Relaxed) + found
+}
+
+/// Attach the running totals, which stand independent of the verdict: a sweep
+/// that finds nothing still reports every error counted before it.
+fn with_error_counters(check: Check, mobile_seen: u64, server_seen: u64) -> Check {
+	check
+		.with_stat(
+			Stat::counter("errors_total", mobile_seen as f64)
+				.label("stream", "mobile")
+				.group("errors")
+				.help("Sync-session errors seen"),
+		)
+		.with_stat(
+			Stat::counter("errors_total", server_seen as f64)
+				.label("stream", "server")
+				.group("errors")
+				.help("Sync-session errors seen"),
+		)
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
@@ -82,20 +104,20 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Err(err) => return super::query_error_check(NAME, &err),
 	};
 
+	let mobile_seen = accumulate(&MOBILE_SEEN, mobile.total);
+	let server_seen = accumulate(&SERVER_SEEN, server.total);
+
 	if mobile.is_empty() && server.is_empty() {
-		return Check::pass(NAME, "no recent sync session errors")
-			.with_stat(Stat::gauge("mobile_errors", 0.0).help("Recent mobile sync-session errors"))
-			.with_stat(
-				Stat::gauge("server_errors", 0.0).help("Recent server sync-session errors"),
-			);
+		return with_error_counters(
+			Check::pass(NAME, "no recent sync session errors"),
+			mobile_seen,
+			server_seen,
+		);
 	}
 
 	let (mobile_count, mobile_truncated) = (mobile.count(), mobile.truncated);
 	let (server_count, server_truncated) = (server.count(), server.truncated);
-	// Row vecs are capped at the report cap, so these saturate there on truncation.
-	let (mobile_n, server_n) = (mobile.rows.len(), server.rows.len());
-
-	let total = error_total(mobile_n, mobile_truncated, server_n, server_truncated);
+	let total = (mobile.total + server.total) as usize;
 
 	let summary = format!("sync session errors: {mobile_count} mobile, {server_count} server");
 	let reason = "recent sync session error(s)";
@@ -104,24 +126,24 @@ pub async fn run(ctx: CheckContext) -> Check {
 	} else {
 		Check::warning(NAME, summary, reason)
 	};
-	check
-		.with_detail("mobile", Value::Array(mobile.rows))
-		.with_detail("mobile_count", mobile_count)
-		.with_detail("mobile_truncated", mobile_truncated)
-		.with_detail("server", Value::Array(server.rows))
-		.with_detail("server_count", server_count)
-		.with_detail("server_truncated", server_truncated)
-		.with_stat(
-			Stat::gauge("mobile_errors", mobile_n as f64).help("Recent mobile sync-session errors"),
-		)
-		.with_stat(
-			Stat::gauge("server_errors", server_n as f64).help("Recent server sync-session errors"),
-		)
+	with_error_counters(
+		check
+			.with_detail("mobile", Value::Array(mobile.rows))
+			.with_detail("mobile_count", mobile_count)
+			.with_detail("mobile_truncated", mobile_truncated)
+			.with_detail("server", Value::Array(server.rows))
+			.with_detail("server_count", server_count)
+			.with_detail("server_truncated", server_truncated),
+		mobile_seen,
+		server_seen,
+	)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{FAIL_ERRORS, MOBILE_SQL, SERVER_SQL, error_total};
+	use std::sync::atomic::AtomicU64;
+
+	use super::{MOBILE_SQL, SERVER_SQL, accumulate};
 	use crate::doctor::checks::test_support::{central_ctx, facility_ctx};
 
 	#[test]
@@ -136,15 +158,12 @@ mod tests {
 	}
 
 	#[test]
-	fn error_total_sums_both_streams() {
-		assert_eq!(error_total(0, false, 0, false), 0);
-		assert_eq!(error_total(3, false, 4, false), 7);
-	}
-
-	#[test]
-	fn error_total_saturates_when_either_stream_truncates() {
-		assert_eq!(error_total(100, true, 0, false), FAIL_ERRORS);
-		assert_eq!(error_total(0, false, 100, true), FAIL_ERRORS);
+	fn accumulate_sums_successive_windows() {
+		let seen = AtomicU64::new(0);
+		assert_eq!(accumulate(&seen, 3), 3);
+		assert_eq!(accumulate(&seen, 4), 7);
+		// a quiet window leaves the total where it was
+		assert_eq!(accumulate(&seen, 0), 7);
 	}
 
 	#[tokio::test]
