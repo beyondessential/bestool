@@ -3,14 +3,19 @@
 //! Tamanu's FHIR workers register a row in `fhir.job_workers` and update its
 //! `updated_at` on a periodic heartbeat; job grabbing, completion, and
 //! stuck-job reclamation all gate on that heartbeat being within
-//! `fhir.worker.assumeDroppedAfter` (default 10 minutes). A worker that stops
-//! heartbeating stalls materialisation even while its service process looks up,
-//! which neither `tamanu_service` (process up) nor `fhir_jobs` (backlog) catches.
+//! `fhir.worker.assumeDroppedAfter` (default 10 minutes). Workers that have all
+//! stopped heartbeating stall materialisation even while their service processes
+//! look up, which neither `tamanu_service` (process up) nor `fhir_jobs`
+//! (backlog) catches.
 //!
 //! A live worker is one whose row isn't soft-deleted and whose heartbeat is
 //! within the window; a dropped worker is one that isn't soft-deleted but whose
 //! heartbeat has gone stale — it crashed or was killed without deregistering. A
 //! gracefully stopped worker has `deleted_at` set and counts as neither.
+//!
+//! Dropped workers don't enter the verdict: their grabbed jobs return to the
+//! pool for a live worker to take, and their rows sit there until the deployment
+//! prunes the table, so an operator has no way to act on them.
 
 use bestool_tamanu::ApiServerKind;
 
@@ -86,28 +91,18 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let jobs_failure: f64 = row.try_get("jobs_failure").unwrap_or(0.0);
 
 	let summary = format!("{live} live, {dropped} dropped");
-	let check = match classify(live, dropped) {
+	let check = match classify(live) {
 		Verdict::Fail => Check::fail(NAME, summary, "no live FHIR worker is heartbeating"),
-		Verdict::Warn => Check::warning(
-			NAME,
-			summary,
-			format!("{dropped} worker(s) stopped heartbeating without deregistering"),
-		),
 		Verdict::Pass => Check::pass(NAME, summary),
 	};
 
 	let mut check = check
 		.with_detail("live", live)
 		.with_detail("dropped", dropped)
+		.with_stat(Stat::gauge("live", live as f64).help("Live FHIR workers"))
 		.with_stat(
-			Stat::gauge("live", live as f64)
-				.group("workers")
-				.help("Live FHIR workers"),
-		)
-		.with_stat(
-			Stat::gauge("dropped", dropped as f64)
-				.group("workers")
-				.help("FHIR workers with a stale heartbeat"),
+			Stat::counter("dropped_total", dropped as f64)
+				.help("FHIR workers that stopped heartbeating without deregistering"),
 		)
 		.with_stat(
 			Stat::counter("jobs_total", jobs_success)
@@ -132,17 +127,13 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 enum Verdict {
 	Pass,
-	Warn,
 	Fail,
 }
 
-/// Grade worker liveness: no live worker fails, a dropped (crashed) worker
-/// warns, otherwise pass.
-fn classify(live: i64, dropped: i64) -> Verdict {
+/// Grade worker liveness: no live worker fails, otherwise pass.
+fn classify(live: i64) -> Verdict {
 	if live == 0 {
 		Verdict::Fail
-	} else if dropped > 0 {
-		Verdict::Warn
 	} else {
 		Verdict::Pass
 	}
@@ -154,30 +145,22 @@ mod tests {
 	use crate::doctor::check::CheckStatus;
 	use crate::doctor::checks::test_support::{central_ctx, facility_ctx};
 
-	fn verdict(live: i64, dropped: i64) -> &'static str {
-		match classify(live, dropped) {
+	fn verdict(live: i64) -> &'static str {
+		match classify(live) {
 			Verdict::Pass => "pass",
-			Verdict::Warn => "warn",
 			Verdict::Fail => "fail",
 		}
 	}
 
 	#[test]
 	fn no_live_worker_fails() {
-		assert_eq!(verdict(0, 0), "fail");
-		assert_eq!(verdict(0, 2), "fail");
+		assert_eq!(verdict(0), "fail");
 	}
 
 	#[test]
-	fn dropped_worker_warns_when_some_are_live() {
-		assert_eq!(verdict(1, 1), "warn");
-		assert_eq!(verdict(2, 3), "warn");
-	}
-
-	#[test]
-	fn all_live_passes() {
-		assert_eq!(verdict(1, 0), "pass");
-		assert_eq!(verdict(2, 0), "pass");
+	fn a_live_worker_passes() {
+		assert_eq!(verdict(1), "pass");
+		assert_eq!(verdict(2), "pass");
 	}
 
 	#[tokio::test]
@@ -193,11 +176,11 @@ mod tests {
 		};
 		let check = super::run(ctx).await;
 		assert_eq!(check.name, "fhir_workers");
-		// Enabled or not, the outcome is a real grade or a skip — never a panic.
+		// Enabled or not, the outcome is a real grade or a skip — never a panic,
+		// and never a warning: liveness is pass-or-fail.
 		assert!(matches!(
 			check.status,
 			CheckStatus::Pass
-				| CheckStatus::Warning(_)
 				| CheckStatus::Fail(_)
 				| CheckStatus::Skip(_)
 				| CheckStatus::Broken(_)

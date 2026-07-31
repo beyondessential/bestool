@@ -29,12 +29,14 @@ A worker's liveness is read the same way Tamanu itself reads it: a worker is liv
 
 The window is read from the setting so it tracks the deployment rather than a value baked into the check.
 
+A dropped worker is not itself a fault: the jobs it had grabbed return to the pool for a live worker to take, so materialisation carries on without it.
+Its row lingers until the deployment prunes the table, which is not something an operator can bring about from the outside, so the presence of dropped workers is reported as telemetry and does not enter the verdict.
+
 ## Outcomes
 
 For a central server with the FHIR worker enabled:
 
 - [ ] The check fails when no worker is live.
-- [ ] The check warns when at least one worker is live but one or more dropped workers are present.
-- [ ] The check passes when at least one worker is live and no dropped workers are present.
+- [ ] The check passes when at least one worker is live, whatever the number of dropped workers.
 
 A count of live workers cannot be asserted against a fixed expectation: the number of worker rows is emergent from deployment topology (a running server registers a `refresh` and a `resolver` worker, multiplied by however many server processes run), so the check grades the presence of liveness, not a specific worker count.
