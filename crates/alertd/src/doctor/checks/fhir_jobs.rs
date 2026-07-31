@@ -1,7 +1,7 @@
 //! FHIR job queue depth.
 //!
 //! Tamanu's `fhir.jobs` table is both queue and audit log: rows in status
-//! `Errored` intentionally stick around forever (they record past failures),
+//! `Errored` outlive the work they describe, as the record of a past failure,
 //! so the count of those is not a signal of current health. What we care
 //! about is the *active queue* — rows that workers haven't yet drained:
 //! `Queued`, `Grabbed`, `Started`.
