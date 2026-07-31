@@ -43,6 +43,7 @@ pub mod memory;
 pub mod migrations;
 pub mod munin;
 pub mod patient_communication_errors;
+pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod sync_facility_stale;
@@ -314,6 +315,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("db_version", db_version, db, off_wire),
 		entry!("migrations", migrations),
 		entry!("pg_tuning", pg_tuning, db),
+		entry!("pg_checksums", pg_checksums, db),
 		entry!("disk_free", disk_free, host),
 		entry!("inodes", inodes, host),
 		entry!("btrfs", btrfs, host),
