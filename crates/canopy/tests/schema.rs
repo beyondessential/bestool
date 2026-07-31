@@ -5,7 +5,8 @@
 
 use bestool_canopy::schema::{
 	BackupPurpose, BackupTarget, BeginArgs, BeginResponse, CompleteArgs, CompleteResponse,
-	CredentialProcessOutput, ReportArgs, RunOutcome,
+	CredentialProcessOutput, MigrationArgs, MigrationTimingArgs, ReportArgs, RunOutcome,
+	VerificationArgs, WorklistEntry,
 };
 
 #[test]
@@ -124,4 +125,100 @@ fn backup_target_repo_password_is_redacted() {
 	let debug = format!("{target:?}");
 	assert!(!debug.contains("hunter2"), "{debug}");
 	assert!(debug.contains("<redacted>"), "{debug}");
+}
+
+#[test]
+fn worklist_entry_carries_a_migration_target() {
+	let entry: WorklistEntry = serde_json::from_value(serde_json::json!({
+		"replica_id": "6f8a2b1c-0000-4000-8000-000000000000",
+		"group_id": "6f8a2b1c-0000-4000-8000-000000000001",
+		"server_id": "6f8a2b1c-0000-4000-8000-000000000002",
+		"type": "tamanu-postgres",
+		"intent": "migrate",
+		"name": "fiji",
+		"params": {},
+		"storage": "s3",
+		"bucket": "backups",
+		"prefix": "",
+		"region": "ap-southeast-2",
+		"target_version": "2.62.0",
+		"target_version_id": "6f8a2b1c-0000-4000-8000-000000000003",
+	}))
+	.unwrap();
+	assert_eq!(entry.target_version.as_deref(), Some("2.62.0"));
+	assert_eq!(
+		entry.target_version_id.map(|id| id.to_string()).as_deref(),
+		Some("6f8a2b1c-0000-4000-8000-000000000003")
+	);
+
+	// Every other intent leaves them absent rather than empty.
+	let entry: WorklistEntry = serde_json::from_value(serde_json::json!({
+		"replica_id": "6f8a2b1c-0000-4000-8000-000000000000",
+		"group_id": "6f8a2b1c-0000-4000-8000-000000000001",
+		"server_id": "6f8a2b1c-0000-4000-8000-000000000002",
+		"type": "tamanu-postgres",
+		"intent": "check",
+		"name": "fiji",
+		"params": {},
+		"storage": "s3",
+		"bucket": "backups",
+		"prefix": "",
+		"region": "ap-southeast-2",
+	}))
+	.unwrap();
+	assert!(entry.target_version.is_none());
+	assert!(entry.target_version_id.is_none());
+}
+
+#[test]
+fn verification_args_carry_a_migration_result() {
+	let migration = MigrationArgs::builder()
+		.target_version_id("6f8a2b1c-0000-4000-8000-000000000003".parse().unwrap())
+		.total_elapsed_seconds(412)
+		.data_bytes_before(1_000)
+		.data_bytes_after(1_200)
+		.timings(vec![
+			MigrationTimingArgs::builder()
+				.name("1721000000-addFoo.js".to_owned())
+				.elapsed_seconds(400)
+				.build(),
+		])
+		.build();
+
+	let report = VerificationArgs::builder()
+		.group("6f8a2b1c-0000-4000-8000-000000000001".parse().unwrap())
+		.server_id("6f8a2b1c-0000-4000-8000-000000000002".parse().unwrap())
+		.type_("tamanu-postgres".to_owned())
+		.intent("migrate".to_owned())
+		.outcome("success".to_owned())
+		.replica_healthy(true)
+		.observed_at("2026-07-30T13:00:00Z".to_owned())
+		.migration(migration)
+		.build();
+
+	let wire = serde_json::to_value(&report).unwrap();
+	assert_eq!(wire["migration"]["total_elapsed_seconds"], 412);
+	assert_eq!(wire["migration"]["timings"][0]["elapsed_seconds"], 400);
+	// No failure means the field is absent, which is what canopy reads as a pass.
+	assert!(wire["migration"].get("failed_migration").is_none());
+}
+
+#[test]
+fn verification_args_omit_the_migration_for_other_intents() {
+	let report = VerificationArgs::builder()
+		.group("6f8a2b1c-0000-4000-8000-000000000001".parse().unwrap())
+		.server_id("6f8a2b1c-0000-4000-8000-000000000002".parse().unwrap())
+		.type_("tamanu-postgres".to_owned())
+		.intent("check".to_owned())
+		.outcome("success".to_owned())
+		.replica_healthy(true)
+		.observed_at("2026-07-30T13:00:00Z".to_owned())
+		.build();
+
+	assert!(
+		serde_json::to_value(&report)
+			.unwrap()
+			.get("migration")
+			.is_none()
+	);
 }
