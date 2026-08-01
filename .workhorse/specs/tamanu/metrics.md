@@ -83,7 +83,8 @@ The total size of all snapshot tables is a separate graph: it dwarfs the percent
 
 The FHIR-workers check ([CHK-FWK](fhir-workers.md)) reports the health of a central's FHIR materialisation workers, read from their heartbeats.
 
-It reports the count of live workers beside the count of dropped workers — those that stopped heartbeating without deregistering — as the two components of one graph.
+It reports the count of live workers on its own graph.
+It reports the count of dropped workers — those that stopped heartbeating without deregistering — separately and as a counter: those rows accumulate until the deployment prunes them, so what the number carries is the rate at which workers drop, and the fall when the table is pruned reads as the reset it is.
 It reports the age in seconds of the oldest live worker's heartbeat, so an operator sees how close the least-fresh worker is to the drop window, on its own graph.
 It reports the number of jobs the live workers have completed successfully and the number they have failed, summed across the live workers as one counter dimensioned by outcome, on one graph.
 A worker's counters run from the start of its process, so the sum only climbs while the same workers stay up and falls when one churns out of the live set; as a counter that fall reads as the reset it is, and an operator sees materialisation throughput rather than a lifetime tally that sawtooths.

@@ -10,7 +10,7 @@ It is one of the doctor's healthchecks; see [CHK](healthchecks.md) for the frame
 ## Grading
 
 The check measures the pending queue: the number of FHIR jobs not yet worked through, and the age of the oldest such job.
-Jobs that have errored are excluded from both measures — they are a permanent record of past failures, not pending work, and are graded by the separate FHIR job-errors check.
+Jobs that have errored are excluded from both measures — they are a record of past failures, not pending work, and are graded by the separate FHIR job-errors check.
 
 The check fails when the pending queue is deep or its oldest job is old, warns at lower thresholds, and passes otherwise.
 It skips on a facility server, which runs no FHIR workers, and skips when the deployment has no FHIR jobs table.
