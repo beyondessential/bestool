@@ -20,7 +20,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
@@ -43,7 +43,7 @@ jobs:
           else
             echo "::warning::canopy OpenAPI refresh failed; publishing the committed snapshot"
           fi
-      - uses: MarcoIeni/release-plz-action@v0.5.130
+      - uses: MarcoIeni/release-plz-action@v0.5.131
         with:
           command: release
         env:
@@ -59,7 +59,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
@@ -68,7 +68,7 @@ jobs:
           rustup toolchain install --profile minimal --no-self-update stable
           rustup default stable
       - id: release-plz-pr
-        uses: MarcoIeni/release-plz-action@v0.5.130
+        uses: MarcoIeni/release-plz-action@v0.5.131
         with:
           command: release-pr
         env:
