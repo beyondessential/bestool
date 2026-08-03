@@ -222,7 +222,7 @@ notify = ["dep:notify"]
 
 [dev-dependencies]
 age = { version = "0.12.1", features = ["async"] }
-jsonschema = { version = "0.46.5", default-features = false }
+jsonschema = { version = "0.49.1", default-features = false }
 minisign = "0.9.1"
 trycmd = "1.2.0"
 
