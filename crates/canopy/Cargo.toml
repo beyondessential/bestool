@@ -1,6 +1,6 @@
 [package]
 name = "bestool-canopy"
-version = "0.7.8"
+version = "0.7.9"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -18,7 +18,7 @@ raw-requests = []
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.1.9", path = "../algae-cli" }
+algae-cli = { version = "1.1.10", path = "../algae-cli" }
 async-trait = "0.1.89"
 base64 = "0.23.0"
 blake3 = "1.8.5"
