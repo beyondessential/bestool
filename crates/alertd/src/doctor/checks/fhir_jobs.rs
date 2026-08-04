@@ -19,6 +19,7 @@ use bestool_tamanu::{
 };
 use tracing::{info, warn};
 
+use super::util::humanise_age;
 use super::{CheckContext, SweepContext, query_error_check};
 use crate::doctor::Stat;
 use crate::doctor::check::Check;
@@ -205,19 +206,6 @@ fn fhir_worker_targets(
 			Supervisor::Pm2 => vec![e.name.to_string()],
 		})
 		.collect()
-}
-
-fn humanise_age(secs: i64) -> String {
-	let secs = secs.max(0) as u64;
-	if secs < 60 {
-		format!("{secs}s")
-	} else if secs < 3600 {
-		format!("{}m", secs / 60)
-	} else if secs < 86400 {
-		format!("{}h", secs / 3600)
-	} else {
-		format!("{}d", secs / 86400)
-	}
 }
 
 #[cfg(test)]

@@ -32,6 +32,7 @@ pub mod external_users;
 pub mod fhir_config;
 pub mod fhir_job_errors;
 pub mod fhir_jobs;
+pub mod fhir_materialisation;
 pub mod fhir_service_requests_unresolved;
 pub mod fhir_workers;
 pub mod http_errors;
@@ -391,6 +392,10 @@ pub fn all() -> Vec<CheckEntry> {
 			"fhir_service_requests_unresolved",
 			fhir_service_requests_unresolved
 		),
+		// Measures the outcome of materialisation rather than its queue: upstream
+		// records that never became FHIR resources, which every other fhir_* check
+		// reads as green.
+		entry!("fhir_materialisation", fhir_materialisation),
 	]
 }
 

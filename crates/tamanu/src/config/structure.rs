@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use url::Url;
@@ -83,6 +83,16 @@ impl TamanuConfig {
 
 	pub fn fhir_worker_enabled(&self) -> bool {
 		self.integrations.fhir.worker.enabled
+	}
+
+	/// Per-resource FHIR materialisation flags as configured, keyed by resource
+	/// name. Empty on a Tamanu that keeps them in settings instead.
+	pub fn fhir_resource_materialisation_enabled(&self) -> &BTreeMap<String, bool> {
+		&self
+			.integrations
+			.fhir
+			.worker
+			.resource_materialisation_enabled
 	}
 
 	/// Build the base URL for the facility sync sub-process's API
@@ -222,6 +232,14 @@ pub struct Fhir {
 #[serde(default, rename_all = "camelCase")]
 pub struct FhirWorker {
 	pub enabled: bool,
+	/// Per-resource materialisation flags, keyed by FHIR resource name
+	/// (`ServiceRequest`, `MediciReport`, …).
+	///
+	/// Tamanu 2.60 moved these to the `fhir.worker.resourceMaterialisationEnabled`
+	/// setting, backfilling them from here on upgrade, and dropped the block from
+	/// its packaged config. Earlier versions carry the full set of flags here, so
+	/// this is empty exactly when the setting is the place to read them.
+	pub resource_materialisation_enabled: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -381,6 +399,33 @@ mod tests {
 	#[test]
 	fn fhir_worker_disabled_when_integrations_missing() {
 		assert!(!parse(base()).fhir_worker_enabled());
+	}
+
+	#[test]
+	fn fhir_resource_materialisation_reads_config_flags() {
+		// Where Tamanu before 2.60 keeps the per-resource flags.
+		let mut json = base();
+		json["integrations"] = serde_json::json!({
+			"fhir": { "worker": { "resourceMaterialisationEnabled": {
+				"Patient": true,
+				"ServiceRequest": false,
+			}}},
+		});
+		let config = parse(json);
+		let flags = config.fhir_resource_materialisation_enabled();
+		assert_eq!(flags.get("Patient"), Some(&true));
+		assert_eq!(flags.get("ServiceRequest"), Some(&false));
+		assert_eq!(flags.get("Specimen"), None);
+	}
+
+	#[test]
+	fn fhir_resource_materialisation_empty_when_absent() {
+		// Tamanu 2.60 and later dropped the block; the setting carries it instead.
+		assert!(
+			parse(base())
+				.fhir_resource_materialisation_enabled()
+				.is_empty()
+		);
 	}
 
 	#[test]
