@@ -39,7 +39,7 @@ A name selects the matching resources of the Tamanu application, each tailed as 
 The `caddy` pseudo-service tails the daemon's proxy, and `postgres` tails the postgres application, which runs as a peer of the Tamanu one; either combines with resource names.
 Each stream is a separate subscription to the daemon, and their entries interleave as they arrive.
 
-Following, pattern filtering, and the count of trailing lines behave as they do on a host without Seedling, so an operator's habits and any scripts around them carry across.
+Following, pattern filtering, and the count of trailing lines behave as they do on a host without Seedling ([LOG](../tamanu/logs.md)), so an operator's habits and any scripts around them carry across.
 Each entry the daemon streams carries the time it was logged, the unit that emitted it, and the message, and the command renders those into a line itself.
 Pattern filtering is applied to the streams as they arrive, because the daemon matches no pattern of its own.
 
