@@ -47,7 +47,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Configure toolchain
         run: |
@@ -79,7 +79,7 @@ jobs:
           # Release builds run on one-shot tags; don't persist tag-scoped
           # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.83.2
+      - uses: taiki-e/install-action@v2.84.0
         with:
           tool: cargo-auditable,rsign2
 
