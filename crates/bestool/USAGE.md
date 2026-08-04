@@ -1970,11 +1970,19 @@ on systemd and `tamanu-api` on pm2. Multiple names combine: `tamanu
 logs api fhir` tails both. With no names at all, every expected-Up
 tamanu service is tailed alongside caddy.
 
-The literal name `caddy` is recognised as a pseudo-service that
-tails caddy: from `journalctl -u caddy.service` on Linux, and from
-`.log` files under `C:\Caddy\logs` (or `C:\Caddy`) on Windows. Caddy
-emits JSON-per-line logs; bestool detects these and applies
-opportunistic syntax highlighting per line.
+The literal name `caddy` is recognised as a pseudo-service that tails
+caddy. Its output is split in two, so on Linux both halves are read
+and interleaved: access entries from the `.log` files under
+`/var/log/caddy`, and its runtime events (reloads, certificate
+renewals, upstream failures) from `journalctl -u caddy.service`. A
+host whose caddy logs access entries to its standard output has them
+in the journal instead, and has no files to read. On Windows they come
+from the `.log` files under `C:\Caddy\logs` (or `C:\Caddy`).
+
+Caddy emits JSON-per-line logs; bestool detects these and applies
+opportunistic syntax highlighting per line. It also rewrites their
+`ts` field, which caddy stamps as a bare count of seconds since the
+Unix epoch, into an RFC 3339 timestamp in UTC.
 
 `postgres` is likewise a recognised pseudo-service, fuzzily matched
 so any of `postgres`, `postgresql`, `postgre`, `pg`, `psql` or

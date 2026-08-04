@@ -10,6 +10,7 @@ use std::{
 };
 
 use clap::Parser;
+use jiff::Timestamp;
 use miette::{IntoDiagnostic, Result, bail, miette};
 use owo_colors::OwoColorize;
 use regex::Regex;
@@ -37,6 +38,17 @@ const CADDY: &str = "caddy";
 /// The app postgres runs as on a Seedling host, where it is a peer of the
 /// Tamanu app rather than one of its resources.
 const POSTGRES_APP: &str = "postgres";
+
+/// Label for postgres-sourced file lines, matching its directory and unit naming
+/// rather than the `postgres` pseudo-service spelling.
+const POSTGRES_LABEL: &str = "postgresql";
+
+/// Linux: caddy's access log files. Its unit creates this directory on every
+/// start, so its existence says nothing about whether anything writes there.
+const CADDY_LOG_DIR: &str = "/var/log/caddy";
+
+/// Linux: postgres's log files, written alongside its journal entries.
+const POSTGRES_LOG_DIR: &str = "/var/log/postgresql";
 
 /// True when `name` is one of the recognised postgres aliases. The postgres
 /// pseudo-service accepts a small set of common spellings so operators don't
@@ -72,11 +84,19 @@ struct TailSource {
 /// logs api fhir` tails both. With no names at all, every expected-Up
 /// tamanu service is tailed alongside caddy.
 ///
-/// The literal name `caddy` is recognised as a pseudo-service that
-/// tails caddy: from `journalctl -u caddy.service` on Linux, and from
-/// `.log` files under `C:\Caddy\logs` (or `C:\Caddy`) on Windows. Caddy
-/// emits JSON-per-line logs; bestool detects these and applies
-/// opportunistic syntax highlighting per line.
+/// The literal name `caddy` is recognised as a pseudo-service that tails
+/// caddy. Its output is split in two, so on Linux both halves are read
+/// and interleaved: access entries from the `.log` files under
+/// `/var/log/caddy`, and its runtime events (reloads, certificate
+/// renewals, upstream failures) from `journalctl -u caddy.service`. A
+/// host whose caddy logs access entries to its standard output has them
+/// in the journal instead, and has no files to read. On Windows they come
+/// from the `.log` files under `C:\Caddy\logs` (or `C:\Caddy`).
+///
+/// Caddy emits JSON-per-line logs; bestool detects these and applies
+/// opportunistic syntax highlighting per line. It also rewrites their
+/// `ts` field, which caddy stamps as a bare count of seconds since the
+/// Unix epoch, into an RFC 3339 timestamp in UTC.
 ///
 /// `postgres` is likewise a recognised pseudo-service, fuzzily matched
 /// so any of `postgres`, `postgresql`, `postgre`, `pg`, `psql` or
@@ -159,6 +179,7 @@ fn select(names: &[String]) -> Selection {
 	}
 }
 
+/// spec: LOG
 pub async fn run(args: LogsArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 	let selection = select(&args.names);
@@ -406,7 +427,7 @@ fn caddy_tail_sources_windows() -> Result<Vec<TailSource>> {
 	Ok(files
 		.into_iter()
 		.map(|path| TailSource {
-			prefix: caddy_prefix(&path),
+			prefix: dir_prefix(&path, CADDY),
 			path,
 			formatter: format_log_line,
 		})
@@ -438,28 +459,29 @@ fn caddy_log_files_windows() -> Result<Vec<PathBuf>> {
 	)
 }
 
-fn caddy_prefix(path: &Path) -> String {
-	let name = path
-		.file_name()
-		.and_then(|s| s.to_str())
-		.unwrap_or("caddy");
-	format!("[{name}]")
+/// Label a tailed file by its source and file name, so interleaved lines from
+/// several files stay attributable.
+fn dir_prefix(path: &Path, label: &str) -> String {
+	let name = path.file_name().and_then(|s| s.to_str()).unwrap_or(label);
+	format!("[{label}/{name}]")
 }
 
-fn postgres_prefix(path: &Path) -> String {
-	let name = path
-		.file_name()
-		.and_then(|s| s.to_str())
-		.unwrap_or("postgres");
-	format!("[postgresql/{name}]")
-}
-
-/// Linux: Postgres logs are written to files under `/var/log/postgresql`
-/// (in addition to journald). Returns every `*.log` under that directory,
-/// or an empty vec if the directory is absent.
-fn postgres_log_files_linux() -> Vec<PathBuf> {
-	const DIR: &str = "/var/log/postgresql";
-	let Ok(entries) = std::fs::read_dir(DIR) else {
+/// Every `*.log` directly under `dir`, sorted, or an empty vec if the directory
+/// is absent or unreadable.
+///
+/// Only the live files are returned. Rotated ones are excluded by the extension
+/// filter: caddy gzips its rolled files to `<name>-<timestamp>.log.gz`, and
+/// logrotate's postgres files land as `.log.1` or `.log.gz`.
+///
+/// Nothing here assumes a particular file name. Caddy's log file is whatever the
+/// Caddyfile points it at — `access.log` on Linux, `caddy.log` and `server.log`
+/// on Windows — so every `.log` in the directory is taken.
+///
+/// An empty result is the signal that a location holds no logs, which is not the
+/// same as the directory being absent — caddy's unit creates `/var/log/caddy` on
+/// every start whether or not anything is configured to write there.
+fn log_files_in(dir: &Path) -> Vec<PathBuf> {
+	let Ok(entries) = std::fs::read_dir(dir) else {
 		return Vec::new();
 	};
 	let mut files: Vec<PathBuf> = entries
@@ -483,7 +505,7 @@ fn postgres_tail_sources_windows() -> Result<Vec<TailSource>> {
 	Ok(files
 		.into_iter()
 		.map(|path| TailSource {
-			prefix: postgres_prefix(&path),
+			prefix: dir_prefix(&path, POSTGRES_LABEL),
 			path,
 			formatter: format_log_line,
 		})
@@ -519,22 +541,105 @@ fn postgres_log_files_windows() -> Vec<PathBuf> {
 	files
 }
 
-/// If `line` looks like a JSON object, format it with colored tokens; else
-/// return it as-is. `color = false` always returns the line unchanged.
-fn format_log_line(line: &str, color: bool) -> String {
-	if !color {
-		return line.to_string();
+/// Linux: the on-disk log files to tail alongside the journal, for whichever
+/// pseudo-services were selected.
+///
+/// Empty when the selected services write nothing to disk, which is both the
+/// pre-file-logging fleet vintage and any host whose proxy still logs to its
+/// standard output — those keep the plain single-journal path.
+/// spec: LOG#log-sources
+fn linux_file_sources(include_caddy: bool, include_postgres: bool) -> Vec<TailSource> {
+	let mut sources = Vec::new();
+	let mut extend = |dir: &str, label: &str| {
+		sources.extend(log_files_in(Path::new(dir)).into_iter().map(|path| {
+			TailSource {
+				prefix: dir_prefix(&path, label),
+				path,
+				formatter: format_log_line,
+			}
+		}));
+	};
+	if include_caddy {
+		extend(CADDY_LOG_DIR, CADDY);
 	}
+	if include_postgres {
+		extend(POSTGRES_LOG_DIR, POSTGRES_LABEL);
+	}
+	debug!(count = sources.len(), "found log files to tail");
+	sources
+}
+
+/// Render one log line: rewrite an epoch `ts` into something readable, then
+/// optionally colour the JSON.
+///
+/// A line that isn't a JSON object passes through untouched, as does a JSON
+/// object needing neither treatment — in that case the original bytes are
+/// returned rather than a re-serialisation of them.
+fn format_log_line(line: &str, color: bool) -> String {
 	let trimmed = line.trim_start();
 	if !trimmed.starts_with('{') {
 		return line.to_string();
 	}
-	let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+	let Ok(mut value) = serde_json::from_str::<Value>(trimmed) else {
 		return line.to_string();
 	};
-	let mut out = String::new();
-	write_colored_json(&value, &mut out);
-	out
+
+	let rewritten = humanise_ts(&mut value);
+
+	if color {
+		let mut out = String::new();
+		write_colored_json(&value, &mut out);
+		out
+	} else if rewritten {
+		value.to_string()
+	} else {
+		line.to_string()
+	}
+}
+
+/// Bounds on a `ts` we'll treat as seconds since the Unix epoch: 2001 through
+/// 2286. A number outside them is something other than a timestamp — a counter
+/// or an id on some other service's line — and is left alone.
+const TS_EPOCH_MIN: f64 = 1_000_000_000.0;
+const TS_EPOCH_MAX: f64 = 10_000_000_000.0;
+
+/// Rewrite a log object's `ts` from epoch seconds to RFC 3339 in UTC, reporting
+/// whether it changed anything.
+///
+/// Caddy stamps entries with a float count of seconds since the epoch, which is
+/// unreadable at a glance. Only a *numeric* `ts` is rewritten, so a deployment
+/// configured to emit formatted timestamps directly is left alone and this
+/// retires itself without a version check.
+///
+/// The float carries roughly microsecond resolution at present-day magnitudes (a
+/// double's ~16 significant digits against a 10-digit seconds part), so the
+/// result stops at microseconds rather than padding out precision the source
+/// never had.
+/// spec: LOG#timestamps
+fn humanise_ts(value: &mut Value) -> bool {
+	let Some(obj) = value.as_object_mut() else {
+		return false;
+	};
+	let Some(ts) = obj.get("ts").and_then(Value::as_f64) else {
+		return false;
+	};
+	if !(TS_EPOCH_MIN..TS_EPOCH_MAX).contains(&ts) {
+		return false;
+	}
+	let Some(formatted) = epoch_seconds_to_rfc3339(ts) else {
+		return false;
+	};
+	obj.insert("ts".into(), Value::String(formatted));
+	true
+}
+
+fn epoch_seconds_to_rfc3339(ts: f64) -> Option<String> {
+	// Round to whole microseconds before converting, so a value a hair under a
+	// microsecond boundary doesn't truncate downwards.
+	let micros = (ts * 1_000_000.0).round();
+	Timestamp::from_microsecond(micros as i64)
+		.ok()
+		.map(|stamp| format!("{stamp:.6}"))
 }
 
 fn write_colored_json(v: &Value, out: &mut String) {
@@ -585,12 +690,14 @@ fn write_colored_json(v: &Value, out: &mut String) {
 /// highlighter (which is opportunistic — non-JSON lines pass through
 /// unchanged).
 ///
-/// Postgres on Linux logs to journald (units matching `postgresql*`) AND to
-/// files under `/var/log/postgresql`. When such files exist we tail them
-/// concurrently with the journalctl stream, interleaving both into the
-/// shared `tail_one` channel so the combined output stays in order of
-/// arrival. With no postgres files present this behaves exactly as a plain
-/// journalctl call.
+/// Caddy and postgres each split their output between the journal and files on
+/// disk, so both are read from both places. Caddy's access entries go to
+/// `/var/log/caddy` while its runtime events (reloads, certificate renewals,
+/// upstream failures) stay in its journal unit; postgres writes to
+/// `/var/log/postgresql` as well as journald. When such files exist we tail them
+/// concurrently with the journalctl stream, interleaving both into the shared
+/// `tail_one` channel so the combined output stays in order of arrival. With no
+/// files present this behaves exactly as a plain journalctl call.
 fn run_journalctl(
 	matches: &[&Expectation],
 	include_caddy: bool,
@@ -600,11 +707,7 @@ fn run_journalctl(
 	grep: Option<GrepFilter>,
 	use_colours: bool,
 ) -> Result<()> {
-	let postgres_files = if include_postgres {
-		postgres_log_files_linux()
-	} else {
-		Vec::new()
-	};
+	let file_sources = linux_file_sources(include_caddy, include_postgres);
 
 	if matches.is_empty() && !include_caddy && !include_postgres {
 		bail!("nothing to tail: no matched services, caddy, or postgres included");
@@ -638,9 +741,9 @@ fn run_journalctl(
 	let mut child = cmd.spawn().into_diagnostic()?;
 	let stdout = child.stdout.take().ok_or_else(|| miette!("no stdout pipe"))?;
 
-	// No postgres files: keep the original single-stream path, writing
-	// directly to stdout without the channel machinery.
-	if postgres_files.is_empty() {
+	// No files to interleave: keep the single-stream path, writing directly to
+	// stdout without the channel machinery.
+	if file_sources.is_empty() {
 		let reader = BufReader::new(stdout);
 		let out_handle = std::io::stdout();
 		let mut out = out_handle.lock();
@@ -661,8 +764,8 @@ fn run_journalctl(
 		return Ok(());
 	}
 
-	// Postgres files present: fan the journalctl stream and each file tail
-	// into a shared channel so their lines interleave on stdout.
+	// Files present: fan the journalctl stream and each file tail into a shared
+	// channel so their lines interleave on stdout.
 	let (tx, rx) = channel::<String>();
 
 	let journal_grep = grep.clone();
@@ -681,12 +784,7 @@ fn run_journalctl(
 		}
 	});
 
-	for path in postgres_files {
-		let source = TailSource {
-			prefix: postgres_prefix(&path),
-			path,
-			formatter: format_log_line,
-		};
+	for source in file_sources {
 		let tx = tx.clone();
 		let grep = grep.clone();
 		thread::spawn(move || tail_one(source, lines, follow, grep.as_ref(), use_colours, tx));
@@ -902,6 +1000,55 @@ fn read_last_n_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
 	Ok(lines[start..].iter().map(|s| s.to_string()).collect())
 }
 
+/// Everything a follow needs to render and emit a line, apart from the file
+/// being read and how far into it we've got.
+struct Follower<'a> {
+	prefix: &'a str,
+	grep: Option<&'a GrepFilter>,
+	formatter: LineFormatter,
+	use_colours: bool,
+	tx: &'a Sender<String>,
+}
+
+impl Follower<'_> {
+	/// Read whatever `file` holds beyond `pos`, emit the complete lines found,
+	/// and advance `pos`. Returns false once the receiver has hung up.
+	fn pump(&self, file: &mut File, pos: &mut u64, leftover: &mut String) -> bool {
+		let end = match file.metadata() {
+			Ok(m) => m.len(),
+			Err(_) => return true,
+		};
+		if end <= *pos {
+			return true;
+		}
+		// Cap how much we pull in one pass: consuming a whole freshly-rotated
+		// file in a single read would otherwise allocate hundreds of MB at once,
+		// the same class of OOM as `read_last_n_lines` used to hit.
+		const MAX_PER_PASS: u64 = 4 * 1024 * 1024;
+		let to_read = (end - *pos).min(MAX_PER_PASS) as usize;
+		let mut buf = vec![0u8; to_read];
+		if file.seek(SeekFrom::Start(*pos)).is_err() || file.read_exact(&mut buf).is_err() {
+			return true;
+		}
+		*pos += to_read as u64;
+		leftover.push_str(&String::from_utf8_lossy(&buf));
+
+		while let Some(idx) = leftover.find('\n') {
+			let line: String = leftover.drain(..=idx).collect();
+			let line = line.trim_end_matches('\n').trim_end_matches('\r');
+			if self.grep.is_some_and(|g| !g.matches(line)) {
+				continue;
+			}
+			let formatted = (self.formatter)(line, self.use_colours);
+			if self.tx.send(format!("{} {formatted}\n", self.prefix)).is_err() {
+				return false;
+			}
+		}
+		true
+	}
+}
+
+/// spec: LOG#options
 fn follow_file(
 	path: &Path,
 	prefix: &str,
@@ -910,6 +1057,14 @@ fn follow_file(
 	use_colours: bool,
 	tx: &Sender<String>,
 ) {
+	let follower = Follower {
+		prefix,
+		grep,
+		formatter,
+		use_colours,
+		tx,
+	};
+
 	let mut file = match File::open(path) {
 		Ok(f) => f,
 		Err(_) => return,
@@ -919,43 +1074,39 @@ fn follow_file(
 
 	loop {
 		thread::sleep(Duration::from_millis(500));
-		let size = match file.metadata() {
+
+		// Stat the path, not the handle we hold. Rotation renames the live file
+		// away and creates a fresh one in its place, so the handle would go on
+		// naming a file that never grows again — a follow watching it would fall
+		// permanently silent with no error, and could never see the size *drop*
+		// that signals a replacement. The path always names the live file.
+		let live_size = match std::fs::metadata(path) {
 			Ok(m) => m.len(),
 			Err(_) => continue,
 		};
-		if size < pos {
-			// Truncated/rotated; start over.
-			pos = 0;
-			leftover.clear();
-			let _ = file.seek(SeekFrom::Start(0));
-			continue;
-		}
-		if size == pos {
-			continue;
-		}
-		// Cap how much we pull in one iteration. After a rotation reset
-		// (`size < pos` above) the next tick can otherwise allocate hundreds
-		// of MB at once trying to consume the whole new file in a single
-		// read — same class of OOM as `read_last_n_lines` used to hit.
-		const MAX_PER_ITER: u64 = 4 * 1024 * 1024;
-		let to_read = (size - pos).min(MAX_PER_ITER) as usize;
-		let mut buf = vec![0u8; to_read];
-		if file.seek(SeekFrom::Start(pos)).is_err() || file.read_exact(&mut buf).is_err() {
-			continue;
-		}
-		pos += to_read as u64;
-		let chunk = String::from_utf8_lossy(&buf);
-		leftover.push_str(&chunk);
-		while let Some(idx) = leftover.find('\n') {
-			let line: String = leftover.drain(..=idx).collect();
-			let line = line.trim_end_matches('\n').trim_end_matches('\r');
-			if grep.is_some_and(|g| !g.matches(line)) {
-				continue;
-			}
-			let formatted = formatter(line, use_colours);
-			if tx.send(format!("{prefix} {formatted}\n")).is_err() {
+
+		if live_size < pos {
+			// Replaced or emptied. Finish reading the handle we still hold so
+			// entries written just before the rotation aren't lost, then follow
+			// the replacement from its start. A trailing partial line belongs to
+			// the old file and would corrupt the new file's first line, so the
+			// carry-over buffer is dropped with it.
+			if !follower.pump(&mut file, &mut pos, &mut leftover) {
 				return;
 			}
+			file = match File::open(path) {
+				Ok(f) => f,
+				Err(_) => continue,
+			};
+			pos = 0;
+			leftover.clear();
+			continue;
+		}
+		if live_size == pos {
+			continue;
+		}
+		if !follower.pump(&mut file, &mut pos, &mut leftover) {
+			return;
 		}
 	}
 }
@@ -1069,10 +1220,53 @@ mod tests {
 	}
 
 	#[test]
-	fn postgres_prefix_uses_filename() {
-		let mut p = PathBuf::from("/var/log/postgresql");
+	fn dir_prefix_labels_with_source_and_filename() {
+		let mut p = PathBuf::from(POSTGRES_LOG_DIR);
 		p.push("postgresql-16-main.log");
-		assert_eq!(postgres_prefix(&p), "[postgresql/postgresql-16-main.log]");
+		assert_eq!(
+			dir_prefix(&p, POSTGRES_LABEL),
+			"[postgresql/postgresql-16-main.log]"
+		);
+
+		let mut c = PathBuf::from(CADDY_LOG_DIR);
+		c.push("access.log");
+		assert_eq!(dir_prefix(&c, CADDY), "[caddy/access.log]");
+	}
+
+	#[test]
+	fn log_files_in_returns_sorted_live_logs_only() {
+		let tmp = tempfile::tempdir().unwrap();
+		for name in [
+			"access.log",
+			"other.log",
+			// caddy gzips its rolled files, logrotate leaves numbered ones
+			"access-2026-08-04T09-34-07.660-size.log.gz",
+			"postgresql-16-main.log.1",
+			"notes.txt",
+		] {
+			std::fs::write(tmp.path().join(name), "x\n").unwrap();
+		}
+		std::fs::create_dir(tmp.path().join("subdir.log")).unwrap();
+
+		let found: Vec<String> = log_files_in(tmp.path())
+			.iter()
+			.map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+			.collect();
+		assert_eq!(found, vec!["access.log", "other.log"]);
+	}
+
+	#[test]
+	fn log_files_in_absent_dir_is_empty() {
+		let tmp = tempfile::tempdir().unwrap();
+		assert!(log_files_in(&tmp.path().join("nope")).is_empty());
+	}
+
+	#[test]
+	fn log_files_in_present_but_empty_dir_is_empty() {
+		// caddy's unit creates /var/log/caddy on every start, so an empty
+		// directory must not be mistaken for "access entries live here".
+		let tmp = tempfile::tempdir().unwrap();
+		assert!(log_files_in(tmp.path()).is_empty());
 	}
 
 	#[test]
@@ -1291,11 +1485,166 @@ mod tests {
 		assert_eq!(format_log_line(line, true), line);
 	}
 
+	/// A real caddy access entry, verbatim from caddy 2.11.4 with its default
+	/// encoder. Note `ts` is the second key, not the first: reserialising must
+	/// not reorder it.
+	const CADDY_ACCESS: &str = r#"{"level":"info","ts":1785835518.192638,"logger":"http.log.access.log0","msg":"handled request","request":{"remote_ip":"::1","method":"GET","host":"localhost","uri":"/hello"},"duration":0.000054859,"size":2,"status":200}"#;
+
 	#[test]
-	fn caddy_prefix_uses_filename() {
-		let mut p = PathBuf::from("logs");
-		p.push("access.log");
-		assert_eq!(caddy_prefix(&p), "[access.log]");
+	fn epoch_ts_becomes_rfc3339_in_utc_with_microseconds() {
+		assert_eq!(
+			epoch_seconds_to_rfc3339(1785835518.192638).unwrap(),
+			"2026-08-04T09:25:18.192638Z"
+		);
+	}
+
+	#[test]
+	fn caddy_access_line_gets_a_readable_ts() {
+		let out = format_log_line(CADDY_ACCESS, false);
+		assert!(
+			out.contains(r#""ts":"2026-08-04T09:25:18.192638Z""#),
+			"got: {out}"
+		);
+		assert!(!out.contains("1785835518"), "epoch left behind in: {out}");
+	}
+
+	#[test]
+	fn rewriting_ts_preserves_every_other_field_and_their_order() {
+		let out = format_log_line(CADDY_ACCESS, false);
+		let keys = |s: &str| {
+			serde_json::from_str::<Value>(s)
+				.unwrap()
+				.as_object()
+				.unwrap()
+				.keys()
+				.cloned()
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(keys(CADDY_ACCESS), keys(&out));
+
+		// everything but ts survives untouched
+		let before = serde_json::from_str::<Value>(CADDY_ACCESS).unwrap();
+		let after = serde_json::from_str::<Value>(&out).unwrap();
+		for (key, value) in before.as_object().unwrap() {
+			if key == "ts" {
+				continue;
+			}
+			assert_eq!(after.get(key), Some(value), "field {key} changed");
+		}
+	}
+
+	#[test]
+	fn already_formatted_ts_is_left_alone() {
+		// What caddy emits under `time_format rfc3339_nano`. The rewrite has to
+		// retire itself here without needing to know the deployment's config.
+		let line = r#"{"level":"info","ts":"2026-08-04T09:25:18.279840514Z","msg":"handled request"}"#;
+		assert_eq!(format_log_line(line, false), line);
+	}
+
+	#[test]
+	fn numeric_ts_outside_epoch_range_is_left_alone() {
+		// Some other service's `ts` that isn't a timestamp at all.
+		for line in [
+			r#"{"ts":42,"msg":"a counter"}"#,
+			r#"{"ts":0,"msg":"zero"}"#,
+			r#"{"ts":-1785835518.1,"msg":"negative"}"#,
+			r#"{"ts":99999999999999.0,"msg":"far future"}"#,
+		] {
+			assert_eq!(format_log_line(line, false), line, "line: {line}");
+		}
+	}
+
+	#[test]
+	fn line_without_ts_passes_through_byte_identical() {
+		let line = r#"{"level":"info","msg":"no timestamp here"}"#;
+		assert_eq!(format_log_line(line, false), line);
+	}
+
+	#[test]
+	fn ts_is_rewritten_under_colour_too() {
+		let out = format_log_line(CADDY_ACCESS, true);
+		assert!(out.contains("2026-08-04T09:25:18.192638Z"), "got: {out}");
+		assert!(out.contains("\u{1b}["), "expected ANSI escapes in: {out}");
+	}
+
+	/// Spawn a follow on `path` and hand back the channel it writes to.
+	fn spawn_follow(path: &Path) -> std::sync::mpsc::Receiver<String> {
+		let (tx, rx) = std::sync::mpsc::channel::<String>();
+		let path = path.to_path_buf();
+		thread::spawn(move || {
+			follow_file(&path, "[caddy/access.log]", None, plain_line, false, &tx)
+		});
+		rx
+	}
+
+	/// `follow_file` ticks every 500ms, so give each expected line several ticks
+	/// before calling it lost.
+	fn next_line(rx: &std::sync::mpsc::Receiver<String>) -> String {
+		rx.recv_timeout(Duration::from_secs(10))
+			.expect("expected a line within 10s")
+			.trim_end()
+			.to_string()
+	}
+
+	#[test]
+	fn follow_survives_a_file_being_rotated_away() {
+		// Caddy's roller renames the live file and creates a fresh one in its
+		// place, so a follow holding the old handle would go permanently silent.
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("access.log");
+		std::fs::write(&path, "pre-existing content not part of the tail\n").unwrap();
+
+		let rx = spawn_follow(&path);
+		// Let the follow open the file and seek to its end.
+		thread::sleep(Duration::from_millis(800));
+
+		{
+			let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+			writeln!(f, "before-roll").unwrap();
+		}
+		assert!(next_line(&rx).ends_with("before-roll"));
+
+		// Roll: rename away, then a fresh file at the same path.
+		std::fs::rename(&path, tmp.path().join("access-2026-08-04T09-34-07.log")).unwrap();
+		std::fs::write(&path, "after-roll\n").unwrap();
+
+		assert!(next_line(&rx).ends_with("after-roll"));
+	}
+
+	#[test]
+	fn follow_drains_the_old_file_before_moving_to_its_replacement() {
+		// Lines written just before a roll must not be lost to it, whether or
+		// not a tick happened to read them first.
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("access.log");
+		std::fs::write(&path, "pre-existing content not part of the tail\n").unwrap();
+
+		let rx = spawn_follow(&path);
+		thread::sleep(Duration::from_millis(800));
+
+		{
+			let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+			writeln!(f, "last-before-roll").unwrap();
+		}
+		// Roll immediately, without giving the follow a tick to read that line.
+		std::fs::rename(&path, tmp.path().join("access-rolled.log")).unwrap();
+		std::fs::write(&path, "first-after-roll\n").unwrap();
+
+		assert!(next_line(&rx).ends_with("last-before-roll"));
+		assert!(next_line(&rx).ends_with("first-after-roll"));
+	}
+
+	#[test]
+	fn follow_survives_a_file_being_emptied_in_place() {
+		let tmp = tempfile::tempdir().unwrap();
+		let path = tmp.path().join("access.log");
+		std::fs::write(&path, "pre-existing content not part of the tail\n").unwrap();
+
+		let rx = spawn_follow(&path);
+		thread::sleep(Duration::from_millis(800));
+
+		std::fs::write(&path, "after-truncate\n").unwrap();
+		assert!(next_line(&rx).ends_with("after-truncate"));
 	}
 
 	#[test]
