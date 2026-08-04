@@ -29,7 +29,7 @@ binstalk-downloader = { version = "0.13.38", optional = true, features = ["hicko
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
-base64 = { version = "0.22.1", optional = true }
+base64 = { version = "0.23.0", optional = true }
 clap = { workspace = true, features = ["env", "unicode", "string"] }
 clap_complete = { version = "4.6.3", optional = true }
 clap-markdown = "0.1.5"
