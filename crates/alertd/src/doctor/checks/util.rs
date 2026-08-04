@@ -15,6 +15,22 @@ use super::query_error_check;
 use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
+/// Render an age in seconds as a single coarse unit, for a check summary an
+/// operator reads at a glance. Rounds down, and a negative age (a clock that
+/// stepped backwards between the row's timestamp and `now()`) reads as `0s`.
+pub fn humanise_age(secs: i64) -> String {
+	let secs = secs.max(0) as u64;
+	if secs < 60 {
+		format!("{secs}s")
+	} else if secs < 3600 {
+		format!("{}m", secs / 60)
+	} else if secs < 86400 {
+		format!("{}h", secs / 3600)
+	} else {
+		format!("{}d", secs / 86400)
+	}
+}
+
 /// Rows reported in `details` are capped here; one extra row is fetched to
 /// detect truncation.
 const REPORT_CAP: usize = 100;
