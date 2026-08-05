@@ -123,9 +123,23 @@ pub fn parse_image_tag(image: &str) -> Option<&str> {
 	if tag.is_empty() { None } else { Some(tag) }
 }
 
+/// The version a running container reports, preferring the image's
+/// `org.opencontainers.image.version` label over its tag.
+///
+/// A deployment pinned to a commit runs an image tagged `sha-<commit>`, which
+/// carries no version; the label does, so a SHA-pinned deployment is still
+/// discoverable.
+pub fn version_of_running_image<'a>(image: &'a str, label: &'a str) -> Option<&'a str> {
+	let label = label.trim();
+	if !label.is_empty() && label != "<no value>" {
+		return Some(label);
+	}
+	parse_image_tag(image)
+}
+
 /// Returns a map from systemd unit name (e.g. `tamanu-central-api@1.service`)
-/// to the running container's image tag. Containers without an image tag, or
-/// not labelled as systemd-managed, are skipped.
+/// to the running container's version. Containers whose version can't be read,
+/// or that aren't labelled as systemd-managed, are skipped.
 ///
 /// `Ok(map)` means podman answered — an empty map then genuinely means "no
 /// tamanu containers are running". `Err(reason)` means we couldn't ask at all:
@@ -145,7 +159,7 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 		.args([
 			"ps",
 			"--format",
-			"{{.Labels.PODMAN_SYSTEMD_UNIT}}\t{{.Image}}",
+			"{{.Labels.PODMAN_SYSTEMD_UNIT}}\t{{.Image}}\t{{index .Labels \"org.opencontainers.image.version\"}}",
 		])
 		.output()
 		.await;
@@ -168,7 +182,8 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 
 	let mut out = HashMap::new();
 	for line in output.lines() {
-		let Some((unit, image)) = line.split_once('\t') else {
+		let mut fields = line.split('\t');
+		let (Some(unit), Some(image)) = (fields.next(), fields.next()) else {
 			continue;
 		};
 		let unit = unit.trim();
@@ -176,11 +191,15 @@ pub async fn running_versions_linux() -> Result<HashMap<String, String>, String>
 		if unit.is_empty() || image.is_empty() {
 			continue;
 		}
-		let Some(tag) = parse_image_tag(image) else {
-			warn!(unit, image, "container image carries no parseable tag");
+		let Some(version) = version_of_running_image(image, fields.next().unwrap_or_default())
+		else {
+			warn!(
+				unit,
+				image, "container image carries no version label or tag"
+			);
 			continue;
 		};
-		out.insert(unit.to_string(), tag.to_string());
+		out.insert(unit.to_string(), version.to_string());
 	}
 	Ok(out)
 }
@@ -519,6 +538,43 @@ TAMANU_VERSION = v2.10.0
 		assert_eq!(
 			parse_image_tag("ghcr.io/beyondessential/tamanu-central:v2.10.0"),
 			Some("v2.10.0")
+		);
+	}
+
+	#[test]
+	fn version_of_running_image_prefers_label() {
+		// a commit-pinned deployment: the tag carries no version, the label does
+		assert_eq!(
+			version_of_running_image(
+				"ghcr.io/beyondessential/tamanu-facility:sha-fe5fc00c",
+				"2.62.0"
+			),
+			Some("2.62.0")
+		);
+		// the label wins over a versioned tag too, both being the same build
+		assert_eq!(
+			version_of_running_image("ghcr.io/beyondessential/tamanu-central:v2.10.0", "2.10.0"),
+			Some("2.10.0")
+		);
+	}
+
+	#[test]
+	fn version_of_running_image_falls_back_to_tag() {
+		// images built before the label existed, and podman's empty-label rendering
+		assert_eq!(
+			version_of_running_image("ghcr.io/beyondessential/tamanu-central:v2.10.0", ""),
+			Some("v2.10.0")
+		);
+		assert_eq!(
+			version_of_running_image(
+				"ghcr.io/beyondessential/tamanu-central:v2.10.0",
+				"<no value>"
+			),
+			Some("v2.10.0")
+		);
+		assert_eq!(
+			version_of_running_image("ghcr.io/beyondessential/tamanu-central", ""),
+			None
 		);
 	}
 
