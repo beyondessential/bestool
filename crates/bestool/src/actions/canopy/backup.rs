@@ -446,6 +446,8 @@ enum RunEnd {
 /// and returns `Ok(())` without reporting. Otherwise each run in the chain
 /// reports its outcome to Canopy once kopia has started. An idle or failed run
 /// chains nothing.
+///
+/// spec: BAK#follower-backups
 pub async fn run_backup(
 	backup_type: &str,
 	registration_dir: Option<&Path>,

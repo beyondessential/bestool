@@ -460,6 +460,8 @@ async fn copy_capture(source: &std::path::Path, staging: &std::path::Path) -> Re
 
 /// Plan the follower restores: for each def that (transitively) follows the
 /// restored type, the snapshot paired with its leader's.
+///
+/// spec: BAK#restore
 async fn plan_followers(
 	dir: &Path,
 	backup_type: &str,
@@ -488,6 +490,8 @@ async fn plan_followers(
 /// snapshot of that type from the same source host taken at or after the
 /// leader. A later one is a safe superset of what the leader's data
 /// references; an earlier one is not, and is never selected.
+///
+/// spec: BAK#restore
 fn select_paired<'a>(
 	snapshots: &'a [Snapshot],
 	leader: &Snapshot,
