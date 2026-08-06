@@ -479,8 +479,19 @@ pub fn args_repository_connect_s3(
 }
 
 /// Push `snapshot create --json` args, with each tag as `key:value`.
-pub fn args_snapshot_create(cmd: &mut Command, path: &Path, tags: &BTreeMap<String, String>) {
+///
+/// The description rides on the snapshot manifest and, unlike tags, is echoed
+/// back by `snapshot list`, so it's what restore-side selection can key on.
+pub fn args_snapshot_create(
+	cmd: &mut Command,
+	path: &Path,
+	tags: &BTreeMap<String, String>,
+	description: &str,
+) {
 	cmd.args(["snapshot", "create", "--json"]);
+	if !description.is_empty() {
+		cmd.arg("--description").arg(description);
+	}
 	for (key, value) in tags {
 		cmd.arg("--tags").arg(format!("{key}:{value}"));
 	}
@@ -1082,13 +1093,15 @@ mod tests {
 		let mut tags = BTreeMap::new();
 		tags.insert("canopy-run".to_owned(), "run-uuid".to_owned());
 		tags.insert("canopy-device".to_owned(), "device-uuid".to_owned());
-		args_snapshot_create(&mut cmd, Path::new("/data/pg"), &tags);
+		args_snapshot_create(&mut cmd, Path::new("/data/pg"), &tags, "tamanu-postgres");
 		assert_eq!(
 			args_of(&cmd),
 			vec![
 				"snapshot",
 				"create",
 				"--json",
+				"--description",
+				"tamanu-postgres",
 				// BTreeMap iterates sorted: canopy-device before canopy-run.
 				"--tags",
 				"canopy-device:device-uuid",
@@ -1096,6 +1109,16 @@ mod tests {
 				"canopy-run:run-uuid",
 				"/data/pg",
 			]
+		);
+	}
+
+	#[test]
+	fn snapshot_create_args_omit_empty_description() {
+		let mut cmd = Command::new("kopia");
+		args_snapshot_create(&mut cmd, Path::new("/data/pg"), &BTreeMap::new(), "");
+		assert_eq!(
+			args_of(&cmd),
+			vec!["snapshot", "create", "--json", "/data/pg"]
 		);
 	}
 

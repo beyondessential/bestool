@@ -122,6 +122,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-artifacts",
 	"tamanu-backup",
 	"tamanu-backup-configs",
+	"tamanu-blob-root",
 	"tamanu-config",
 	"tamanu-url",
 	"tamanu-doctor",
@@ -142,6 +143,9 @@ alertd-tamanu = ["alertd", "tamanu-config", "dep:bestool-postgres", "bestool-tam
 tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:target-tuples"]
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
+# Print the blob store root, resolved from Tamanu's `blobStorage.root` setting
+# in the database, for blob store backup defs to use as their `path_command`.
+tamanu-blob-root = ["__tamanu", "tamanu-config", "dep:bestool-postgres"]
 tamanu-config = ["__tamanu"]
 tamanu-doctor = [
 	"__tamanu",
