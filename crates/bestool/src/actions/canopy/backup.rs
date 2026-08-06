@@ -159,7 +159,11 @@ async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonErro
 			if std::mem::take(&mut on_progress_line) {
 				eprintln!();
 			}
-			if let Some(outcome) = render_daemon_event(backup_type, &event) {
+			// A chained run streams a terminal event per backup; a later
+			// follower's success must not mask an earlier failure.
+			if let Some(outcome) = render_daemon_event(backup_type, &event)
+				&& !matches!(terminal, Some(Err(_)))
+			{
 				terminal = Some(outcome);
 			}
 		}
@@ -379,7 +383,8 @@ enum RunEnd {
 /// On a dormant target (the device isn't authorised for backups yet) this logs
 /// and returns `Ok(())` without reporting. Otherwise each run in the chain
 /// reports its outcome to Canopy once kopia has started. An idle or failed run
-/// chains nothing.
+/// chains nothing, but doesn't stop runs already queued behind it; the first
+/// failure is returned once the chain is drained.
 ///
 /// spec: BAK#follower-backups
 pub async fn run_backup(
@@ -395,6 +400,7 @@ pub async fn run_backup(
 	let mut visited = std::collections::BTreeSet::from([backup_type.to_owned()]);
 	let mut queue = std::collections::VecDeque::from([backup_type.to_owned()]);
 	let mut lead_type = true;
+	let mut first_error = None;
 	while let Some(current) = queue.pop_front() {
 		if !lead_type {
 			info!(backup_type = %current, "continuing into follower backup");
@@ -402,7 +408,13 @@ pub async fn run_backup(
 		}
 		lead_type = false;
 
-		let end = run_one(&current, registration_dir, backups_dir, &progress).await?;
+		let end = match run_one(&current, registration_dir, backups_dir, &progress).await {
+			Ok(end) => end,
+			Err(err) => {
+				first_error.get_or_insert(err);
+				continue;
+			}
+		};
 		if !matches!(end, RunEnd::Completed) {
 			continue;
 		}
@@ -412,7 +424,10 @@ pub async fn run_backup(
 			}
 		}
 	}
-	Ok(())
+	match first_error {
+		Some(err) => Err(err),
+		None => Ok(()),
+	}
 }
 
 /// Drive one backup run end-to-end.
