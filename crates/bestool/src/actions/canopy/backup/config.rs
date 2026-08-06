@@ -30,6 +30,9 @@ pub struct Hook {
 pub struct BackupDef {
 	/// The Canopy backup-type name (label only).
 	pub r#type: String,
+	/// A type this def follows: after a successful run of that type, this def
+	/// runs too, so a pair like database-then-blob-store stays ordered.
+	pub after: Option<String>,
 	/// Extra kopia tags merged with the canopy-* tags.
 	pub tags: BTreeMap<String, String>,
 	/// Commands run before the method prepares (sequential, fail-fast).
@@ -46,6 +49,8 @@ pub struct BackupDef {
 struct RawDef {
 	r#type: String,
 	#[serde(default)]
+	after: Option<String>,
+	#[serde(default)]
 	tags: BTreeMap<String, String>,
 	#[serde(default)]
 	pre: Vec<Hook>,
@@ -60,7 +65,10 @@ struct RawDef {
 impl RawDef {
 	fn into_def(self) -> Result<BackupDef> {
 		let method = match (self.simple, self.postgresql) {
-			(Some(simple), None) => Method::Simple(simple),
+			(Some(simple), None) => {
+				simple.validate(&self.r#type)?;
+				Method::Simple(simple)
+			}
 			(None, Some(postgresql)) => Method::Postgresql(postgresql),
 			(None, None) => bail!(
 				"backup def '{}' has no method table; add exactly one of [simple] or [postgresql]",
@@ -71,8 +79,12 @@ impl RawDef {
 				self.r#type
 			),
 		};
+		if self.after.as_deref() == Some(self.r#type.as_str()) {
+			bail!("backup def '{}' declares itself as its own `after`", self.r#type);
+		}
 		Ok(BackupDef {
 			r#type: self.r#type,
+			after: self.after,
 			tags: self.tags,
 			pre: self.pre,
 			post: self.post,
@@ -156,6 +168,15 @@ pub async fn find_def(dir: &Path, backup_type: &str) -> Result<Option<BackupDef>
 		.find(|d| d.r#type == backup_type))
 }
 
+/// The defs that declare `after = backup_type`, in type order.
+pub async fn followers_of(dir: &Path, backup_type: &str) -> Result<Vec<BackupDef>> {
+	Ok(load_dir(dir)
+		.await?
+		.into_iter()
+		.filter(|d| d.after.as_deref() == Some(backup_type))
+		.collect())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -208,6 +229,106 @@ mod tests {
 		assert_eq!(def.method.name(), "postgresql");
 		assert!(def.pre.is_empty());
 		assert!(def.tags.is_empty());
+	}
+
+	#[test]
+	fn parses_after_and_path_command() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-blobs"
+			after = "tamanu-postgres"
+			[simple]
+			path_command = ["bestool", "tamanu", "blob-root"]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.r#type, "tamanu-blobs");
+		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
+		assert_eq!(def.method.name(), "simple");
+	}
+
+	#[test]
+	fn after_defaults_to_none() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-postgres"
+			[postgresql]
+			cluster = "main"
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.after, None);
+	}
+
+	#[test]
+	fn rejects_self_after() {
+		let err = parse_def(
+			r#"
+			type = "loop"
+			after = "loop"
+			[simple]
+			path = "/a"
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("its own"));
+	}
+
+	#[test]
+	fn rejects_simple_with_both_path_forms() {
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			path = "/a"
+			path_command = ["resolve-path"]
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("exactly one"));
+	}
+
+	#[test]
+	fn rejects_simple_with_no_path_form() {
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("neither"));
+	}
+
+	#[tokio::test]
+	async fn followers_of_selects_by_after_in_type_order() {
+		let dir = std::env::temp_dir().join(format!("bestool-followers-{}", std::process::id()));
+		tokio::fs::create_dir_all(&dir).await.unwrap();
+		tokio::fs::write(
+			dir.join("pg.toml"),
+			"type = \"tamanu-postgres\"\n[postgresql]\ncluster = \"main\"\n",
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(
+			dir.join("blobs.toml"),
+			"type = \"tamanu-blobs\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/blobs\"\n",
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(
+			dir.join("assets.toml"),
+			"type = \"assets\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/assets\"\n",
+		)
+		.await
+		.unwrap();
+
+		let followers = followers_of(&dir, "tamanu-postgres").await.unwrap();
+		let types: Vec<&str> = followers.iter().map(|d| d.r#type.as_str()).collect();
+		assert_eq!(types, vec!["assets", "tamanu-blobs"]);
+		assert!(followers_of(&dir, "tamanu-blobs").await.unwrap().is_empty());
+
+		tokio::fs::remove_dir_all(&dir).await.ok();
 	}
 
 	#[test]
