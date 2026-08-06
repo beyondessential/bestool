@@ -169,6 +169,8 @@ pub async fn find_def(dir: &Path, backup_type: &str) -> Result<Option<BackupDef>
 }
 
 /// The defs that declare `after = backup_type`, in type order.
+///
+/// spec: BAK#follower-backups
 pub async fn followers_of(dir: &Path, backup_type: &str) -> Result<Vec<BackupDef>> {
 	Ok(load_dir(dir)
 		.await?

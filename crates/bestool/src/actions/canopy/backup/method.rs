@@ -89,6 +89,8 @@ impl SimpleConfig {
 	}
 
 	/// The path to snapshot or restore: the fixed one, or the command's output.
+	///
+	/// spec: BAK#methods
 	pub async fn resolve_path(&self) -> Result<PathBuf> {
 		use miette::{Context as _, IntoDiagnostic as _};
 
