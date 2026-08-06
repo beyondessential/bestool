@@ -151,6 +151,18 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	} else {
 		plan_followers(&dir, &args.backup_type, snapshot, &snapshots).await?
 	};
+	if args.target.is_some() && !followed.is_empty() {
+		bail!(
+			"--target redirects only '{}', but its followers ({}) would still restore over \
+			 their live paths; pass --no-followers and restore them separately if needed",
+			args.backup_type,
+			followed
+				.iter()
+				.map(|(follower_def, _)| follower_def.r#type.as_str())
+				.collect::<Vec<_>>()
+				.join(", "),
+		);
+	}
 	for (follower_def, follower_snapshot) in &followed {
 		info!(
 			backup_type = %follower_def.r#type,
