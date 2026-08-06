@@ -11,8 +11,8 @@ Canopy owns scheduling, retention, maintenance, inspection, and alerting; the de
 ## Backup definitions
 
 A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup).
-A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
-A definition with no method table, or with more than one, is a load error.
+A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
+A definition with no method table, or with more than one, is a load error, as is a definition naming itself in `after`.
 The `type` is the only identity that matters to Canopy; the filename is informational.
 
 Backups are generic: a definition names a method and a target, and `type` is just a label.
@@ -22,6 +22,7 @@ A `tamanu-postgres` backup is a definition that selects the `postgresql` method;
 
 ```toml
 type = "tamanu-postgres"          # required — the Canopy backup-type label
+after = "other-type"              # optional — run after that type's backups, restore with it
 
 [tags]                            # optional — extra kopia tags (string to string)
 component = "database"
@@ -43,7 +44,8 @@ There must be exactly one method table.
 
 ```toml
 [simple]                          # snapshot a path as-is
-path = "/var/lib/example"         # required
+path = "/var/lib/example"         # exactly one of path / path_command
+# path_command = ["bestool", "tamanu", "blob-root"]   # resolve the path by command instead
 ```
 
 #### PostgreSQL
@@ -60,7 +62,10 @@ socket = "/var/run/postgresql"    # optional — override the unix socket direct
 
 ## Methods
 
-The `simple` method hands kopia a configured path verbatim; it contributes no extra tags and needs no preparation or cleanup.
+The `simple` method hands kopia a path verbatim; it contributes no extra tags and needs no preparation or cleanup.
+The path is either fixed (`path`) or resolved on every run by an argv-style command (`path_command`) whose output must be a single line naming an absolute path; a failed or malformed resolution fails the run.
+Run-time resolution serves a source whose location lives outside the definition and can move under it (the Tamanu blob store root is a database-backed setting an administrator can change, printed by `bestool tamanu blob-root`), so the capture follows the live location instead of a hardcoded path silently going stale.
+At restore, the same resolution names the destination, so a store restored after its database lands where the freshly restored database expects it.
 
 The `postgresql` method takes a crash-consistent physical copy of a postgres cluster, described under "The postgresql method" below.
 
@@ -101,6 +106,17 @@ A run:
 7. reports the outcome.
    Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing.
    A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
+
+## Follower backups
+
+A definition may declare `after = "<type>"`, making it a follower of that type.
+When a run of the followed type completes a backup successfully, the driver then runs each of its followers, sequentially in type order, before returning; following is transitive, and each type in a chain runs at most once however the definitions are arranged.
+A run that failed, was skipped because its type was already running, or exited dormant runs no followers.
+A follower is otherwise an ordinary definition: it registers as a capability, may be scheduled by Canopy or run manually on its own, and reports its runs like any other type.
+
+Following is for a capture that must be a superset of what another capture references.
+The Tamanu blob store definition follows the database definition, so every blob the database capture references is already stored when the store capture begins; blobs are immutable and never removed while referenced, so the store capture can only hold more, never less, than the database capture needs.
+A follower run triggered on its own (by schedule or by hand) is still safe on these terms, being a superset for every earlier capture of the followed type; what only the chain provides is a store capture promptly after each database capture.
 
 ## The moment the data froze
 
@@ -146,6 +162,7 @@ kopia's snapshot source host is set to the server id, so a backup's source is at
 The source path is stable across runs for a given backup type, so kopia's snapshot history, deduplication, and retention attribute to one source.
 
 Every snapshot is tagged with the device id, the run id, and the backup type, plus any tags the definition or the method contribute; the canopy-owned tags take precedence so a definition cannot override them.
+Every snapshot also carries its backup type as its kopia description, which, unlike the tags, the repository listing echoes back; restore-side follower pairing keys on it.
 
 ## Registration and triggering by the daemon
 
@@ -199,6 +216,13 @@ It resolves the definition, fetches restore-purpose (read-only) credentials, con
 A restore can equally take its source from a capture held on the device, described in [HOLD](held-captures.md), in which case nothing is fetched or downloaded and the method's restore is otherwise identical.
 Selection is by id across the whole repository — not scoped to the server issuing the restore — so a replacement host can restore a backup taken by the server it succeeds.
 It restores the snapshot into a staging area on the same filesystem as the target so the final move is atomic, then hands off to the method.
+
+Restoring a type also restores its followers, so a cycle like database-and-blob-store comes back as a consistent pair.
+A follower's snapshot is selected rather than named: the earliest snapshot of the follower's type, from the same source host as the chosen snapshot, taken at or after it.
+At-or-after is the safety rule: a later follower snapshot is a superset of what the restored data references, an earlier one may not be, and is never selected; when none exists at or after, the restore refuses.
+The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower whose target is resolved by `path_command` resolves it against data its leader has just restored.
+`--no-followers` restores the named type alone; restoring a follower's type explicitly by snapshot id remains the operator's manual path around a refusal.
+Follower snapshots are recognised by the backup type carried in the snapshot description; one without a description is recognised by the type-keyed source path, where the platform provides one.
 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.
