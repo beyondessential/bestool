@@ -222,6 +222,7 @@ A follower's snapshot is selected rather than named: the earliest snapshot of th
 At-or-after is the safety rule: a later follower snapshot is a superset of what the restored data references, an earlier one may not be, and is never selected; when none exists at or after, the restore refuses.
 The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower whose target is resolved by `path_command` resolves it against data its leader has just restored.
 `--no-followers` restores the named type alone; restoring a follower's type explicitly by snapshot id remains the operator's manual path around a refusal.
+`--target` redirects only the named type's destination while followers would still restore over their live paths, so combining it with planned followers is refused; pass `--no-followers` alongside it.
 Follower snapshots are recognised by the backup type carried in the snapshot description; one without a description is recognised by the type-keyed source path, where the platform provides one.
 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
