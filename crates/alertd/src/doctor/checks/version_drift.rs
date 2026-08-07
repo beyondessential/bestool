@@ -261,6 +261,28 @@ mod tests {
 	}
 
 	#[test]
+	fn bare_image_tags_are_not_drift() {
+		// `/etc/tamanu/env` spells the version `v2.54.7` while the containers
+		// are tagged `2.54.7`; every unit is on the right version.
+		let exps = [
+			exp("tamanu-facility-api", Instances::NumericAtLeast(2)),
+			exp("tamanu-frontend", Instances::Named(&["a", "b"])),
+		];
+		let running = HashMap::from([
+			(
+				"tamanu-facility-api@1.service".to_string(),
+				"2.54.7".to_string(),
+			),
+			(
+				"tamanu-frontend@a.service".to_string(),
+				"2.54.12".to_string(),
+			),
+		]);
+		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps);
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
 	fn unexpected_unit_is_not_drift() {
 		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
 		let running =
