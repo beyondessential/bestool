@@ -389,11 +389,26 @@ impl VersionStatus {
 }
 
 /// Classify an `(actual, expected)` pair.
+///
+/// The two sides come from sources that spell versions differently: the env
+/// file carries `v2.54.7` while container image tags are often bare `2.54.7`.
+/// Compare the parsed versions so the spelling doesn't read as drift, falling
+/// back to the literal strings for tags that aren't versions at all (`latest`,
+/// a branch name).
 pub fn classify(actual: Option<&str>, expected: Option<&str>) -> VersionStatus {
-	match (actual, expected) {
-		(Some(a), Some(e)) if a == e => VersionStatus::Match,
-		(Some(_), Some(_)) => VersionStatus::Mismatch,
-		_ => VersionStatus::Unknown,
+	let (Some(actual), Some(expected)) = (actual, expected) else {
+		return VersionStatus::Unknown;
+	};
+
+	let same = match (parse_version_loose(actual), parse_version_loose(expected)) {
+		(Some(a), Some(e)) => a == e,
+		_ => actual == expected,
+	};
+
+	if same {
+		VersionStatus::Match
+	} else {
+		VersionStatus::Mismatch
 	}
 }
 
@@ -648,5 +663,35 @@ TAMANU_VERSION = v2.10.0
 		assert_eq!(classify(None, Some("v2.10.0")), VersionStatus::Unknown);
 		assert_eq!(classify(Some("v2.10.0"), None), VersionStatus::Unknown);
 		assert_eq!(classify(None, None), VersionStatus::Unknown);
+	}
+
+	#[test]
+	fn classify_ignores_the_v_prefix() {
+		// The env file writes `v2.54.7`, the image tag is often bare `2.54.7`:
+		// the same version spelled two ways, not drift.
+		assert_eq!(
+			classify(Some("2.54.7"), Some("v2.54.7")),
+			VersionStatus::Match
+		);
+		assert_eq!(
+			classify(Some("v2.54.7"), Some("2.54.7")),
+			VersionStatus::Match
+		);
+		assert_eq!(
+			classify(Some("2.54.7"), Some("v2.54.12")),
+			VersionStatus::Mismatch
+		);
+	}
+
+	#[test]
+	fn classify_compares_unparseable_tags_as_strings() {
+		assert_eq!(
+			classify(Some("latest"), Some("latest")),
+			VersionStatus::Match
+		);
+		assert_eq!(
+			classify(Some("latest"), Some("v2.54.7")),
+			VersionStatus::Mismatch
+		);
 	}
 }
