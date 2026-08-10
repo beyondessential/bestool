@@ -26,6 +26,7 @@ use std::{
 	ffi::OsString,
 	path::{Path, PathBuf},
 	process::Command,
+	sync::atomic::{AtomicBool, Ordering},
 };
 
 use serde::Deserialize;
@@ -36,6 +37,50 @@ use tracing::debug;
 /// Environment variable override for the pm2 CLI to invoke. If set, this is
 /// tried first ahead of any auto-discovery.
 const PM2_COMMAND_ENV: &str = "BESTOOL_PM2_COMMAND";
+
+/// Whether pm2 invocations should break out of the calling process's Windows job
+/// object. See [`allow_job_breakaway`].
+static JOB_BREAKAWAY: AtomicBool = AtomicBool::new(false);
+
+/// Opt every subsequent pm2 invocation out of the caller's Windows job object.
+///
+/// A host that confines its children to its own lifetime (the alertd daemon puts
+/// itself in a kill-on-close job so backup helpers can't outlive it) must not
+/// capture pm2: the CLI is connect-or-launch, so a `pm2 jlist` that can't reach
+/// the God daemon starts one, and a daemon launched inside that job dies — with
+/// every Tamanu process it supervises — the moment the host exits.
+///
+/// Off by default, and deliberately opt-in: `CREATE_BREAKAWAY_FROM_JOB` fails the
+/// spawn outright inside a job that lacks `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so it
+/// is only safe for a caller that set that limit on a job of its own. Callers
+/// outside any job (the `bestool tamanu` CLI) leave it alone.
+pub fn allow_job_breakaway() {
+	JOB_BREAKAWAY.store(true, Ordering::Relaxed);
+}
+
+/// `CreateProcess` flag that starts the child outside the parent's job object.
+#[cfg(windows)]
+const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+/// Build a command for a pm2 executable, breaking out of the caller's job object
+/// when the host opted in via [`allow_job_breakaway`].
+fn pm2_command(program: impl AsRef<Path>) -> Command {
+	let mut cmd = Command::new(program.as_ref());
+	apply_job_breakaway(&mut cmd);
+	cmd
+}
+
+#[cfg(windows)]
+fn apply_job_breakaway(cmd: &mut Command) {
+	use std::os::windows::process::CommandExt as _;
+
+	if JOB_BREAKAWAY.load(Ordering::Relaxed) {
+		cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB);
+	}
+}
+
+#[cfg(not(windows))]
+fn apply_job_breakaway(_cmd: &mut Command) {}
 
 #[derive(Clone, Debug)]
 pub struct PmProc {
@@ -88,7 +133,7 @@ struct Pm2Invocation {
 
 impl Pm2Invocation {
 	fn command(&self) -> Command {
-		let mut cmd = Command::new(&self.program);
+		let mut cmd = pm2_command(&self.program);
 		cmd.args(&self.prefix_args);
 		cmd
 	}
@@ -205,7 +250,7 @@ pub fn invocation() -> (PathBuf, Vec<PathBuf>) {
 
 pub fn command() -> Command {
 	let (program, prefix_args) = invocation();
-	let mut cmd = Command::new(program);
+	let mut cmd = pm2_command(program);
 	cmd.args(prefix_args);
 	cmd
 }
@@ -244,7 +289,7 @@ pub fn restart_targets(targets: &[String]) -> miette::Result<()> {
 }
 
 fn probe(path: &Path) -> bool {
-	Command::new(path)
+	pm2_command(path)
 		.arg("--version")
 		.output()
 		.map(|o| o.status.success())

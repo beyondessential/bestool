@@ -8,6 +8,15 @@
 //! stable staging dir, and the run the restarted daemon starts collides with it
 //! (`could not create directory ...: File exists`). A job object with
 //! kill-on-close makes every child die when the daemon process does.
+//!
+//! Job membership is inherited by every descendant, and can't be shaken off by
+//! exiting the intermediate parent, so the job also captures processes the doctor
+//! merely probes. That is wrong for pm2: its CLI is connect-or-launch, so a
+//! `pm2 jlist` that can't reach the God daemon starts one inside the job, and
+//! from then on every Tamanu service that daemon supervises dies whenever alertd
+//! exits — a clean stop, a crash, a watchdog trip, or a self-update restart. The
+//! job therefore permits breakaway, and the pm2 module opts its own invocations
+//! out (see [`bestool_tamanu::pm2::allow_job_breakaway`]).
 
 /// Confine every process the daemon spawns to the daemon's own lifetime, so none
 /// outlive it. A no-op on platforms where the service manager already guarantees
@@ -25,6 +34,10 @@ mod imp {
 	pub fn confine() {
 		let mut info = ExtendedLimitInfo::new();
 		info.limit_kill_on_job_close();
+		// Without this, the CREATE_BREAKAWAY_FROM_JOB the pm2 module needs fails
+		// the spawn outright with ERROR_ACCESS_DENIED. Only pm2 uses it; every
+		// other child stays confined.
+		info.limit_breakaway_ok();
 
 		let job = match Job::create_with_limit_info(&info) {
 			Ok(job) => job,
@@ -49,6 +62,11 @@ mod imp {
 		// the kill, so it must outlive every backup. `into_handle` yields the raw
 		// handle without running `Drop` (which would close it here and now).
 		let _ = job.into_handle();
+
+		// Only now that we're actually in a job that permits breakaway is it safe
+		// for pm2 to ask for it.
+		bestool_tamanu::pm2::allow_job_breakaway();
+
 		info!("confined child processes to the daemon's lifetime");
 	}
 }
