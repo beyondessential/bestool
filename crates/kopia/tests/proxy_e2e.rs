@@ -161,7 +161,10 @@ fn kopia_command(kopia: &str, work: &Path) -> Command {
 	cmd.env("HOME", work)
 		.env("KOPIA_CONFIG_PATH", work.join("repository.config"))
 		.env("KOPIA_PASSWORD", "spikepass123")
-		.env("KOPIA_CHECK_FOR_UPDATES", "false");
+		.env("KOPIA_CHECK_FOR_UPDATES", "false")
+		// The password is in the environment already; persisting it reaches for
+		// the OS keyring, which a macOS run can't satisfy unattended.
+		.env("KOPIA_PERSIST_CREDENTIALS_ON_CONNECT", "false");
 	for key in [
 		"AWS_ACCESS_KEY_ID",
 		"AWS_SECRET_ACCESS_KEY",
