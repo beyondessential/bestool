@@ -6785,9 +6785,9 @@ dependencies = [
 
 [[package]]
 name = "seedling-protocol"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c108f41fc3eabe2231230339745e7ba9b038ed145ab59d5dad2f15cdce5f10"
+checksum = "143a149490e12f6c57fe002dabecdaeefdaa8c4cf51f1f94021d532d161d1158"
 dependencies = [
  "compact_str 0.9.1",
  "dirs",
