@@ -593,7 +593,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bestool"
-version = "1.58.2"
+version = "1.58.3"
 dependencies = [
  "age",
  "algae-cli",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "25.2.3"
+version = "25.2.4"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
