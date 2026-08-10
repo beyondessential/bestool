@@ -480,8 +480,8 @@ pub fn args_repository_connect_s3(
 
 /// Push `snapshot create --json` args, with each tag as `key:value`.
 ///
-/// The description rides on the snapshot manifest and, unlike tags, is echoed
-/// back by `snapshot list`, so it's what restore-side selection can key on.
+/// The description carries the backup type, so a snapshot is legible as one in
+/// `kopia snapshot list` output without reading its tags.
 pub fn args_snapshot_create(
 	cmd: &mut Command,
 	path: &Path,
@@ -573,6 +573,17 @@ impl Snapshot {
 			.as_ref()
 			.and_then(|r| r.summary.as_ref())
 			.map(|s| s.total_size)
+	}
+
+	/// The value of a tag set at `snapshot create`.
+	///
+	/// `snapshot list` spells user tag keys with a `tag:` prefix, so a lookup
+	/// has to accept both.
+	pub fn tag(&self, key: &str) -> Option<&str> {
+		self.tags
+			.get(key)
+			.or_else(|| self.tags.get(&format!("tag:{key}")))
+			.map(String::as_str)
 	}
 }
 
@@ -1209,6 +1220,26 @@ mod tests {
 			tags: BTreeMap::new(),
 			root_entry: None,
 		}
+	}
+
+	#[test]
+	fn tag_lookup_accepts_both_spellings() {
+		let now = Timestamp::from_second(10_000_000).unwrap();
+		let mut listed = snapshot("a", "host-1", "/data", now);
+		listed
+			.tags
+			.insert("tag:canopy-type".into(), "tamanu-blobs".into());
+		assert_eq!(listed.tag("canopy-type"), Some("tamanu-blobs"));
+
+		let mut bare = snapshot("b", "host-1", "/data", now);
+		bare.tags
+			.insert("canopy-type".into(), "tamanu-blobs".into());
+		assert_eq!(bare.tag("canopy-type"), Some("tamanu-blobs"));
+
+		assert_eq!(
+			snapshot("c", "host-1", "/data", now).tag("canopy-type"),
+			None
+		);
 	}
 
 	#[test]

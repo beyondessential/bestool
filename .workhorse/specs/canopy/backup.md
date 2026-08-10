@@ -162,7 +162,7 @@ kopia's snapshot source host is set to the server id, so a backup's source is at
 The source path is stable across runs for a given backup type, so kopia's snapshot history, deduplication, and retention attribute to one source.
 
 Every snapshot is tagged with the device id, the run id, and the backup type, plus any tags the definition or the method contribute; the canopy-owned tags take precedence so a definition cannot override them.
-Every snapshot also carries its backup type as its kopia description, which, unlike the tags, the repository listing echoes back; restore-side follower pairing keys on it.
+Every snapshot also carries its backup type as its description, so a repository listing identifies each snapshot without its tags being read.
 
 ## Registration and triggering by the daemon
 
@@ -223,7 +223,7 @@ At-or-after is the safety rule: a later follower snapshot is a superset of what 
 The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower whose target is resolved by `path_command` resolves it against data its leader has just restored.
 `--no-followers` restores the named type alone; restoring a follower's type explicitly by snapshot id remains the operator's manual path around a refusal.
 `--target` redirects only the named type's destination while followers would still restore over their live paths, so combining it with planned followers is refused; pass `--no-followers` alongside it.
-Follower snapshots are recognised by the backup type carried in the snapshot description; one without a description is recognised by the type-keyed source path, where the platform provides one.
+Follower snapshots are recognised by the backup type they carry, as a tag or as their description.
 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.

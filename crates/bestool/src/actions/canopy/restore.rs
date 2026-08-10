@@ -536,16 +536,11 @@ fn select_paired<'a>(
 		})
 }
 
-/// Whether a snapshot is a capture of `backup_type`: its description carries
-/// the type (set at create since followers exist), or its source is the
-/// type-keyed view path the simple method exposes on Linux. Tags would be the
-/// natural signal but don't round-trip through `kopia snapshot list`.
+/// Whether a snapshot is a capture of `backup_type`: the `canopy-type` tag
+/// every canopy backup carries, or the description, which only snapshots taken
+/// since followers existed have.
 fn is_of_type(snapshot: &Snapshot, backup_type: &str) -> bool {
-	if snapshot.description == backup_type {
-		return true;
-	}
-	let path = snapshot.source.path.replace('\\', "/");
-	path.ends_with(&format!("backup-source/{backup_type}"))
+	snapshot.tag("canopy-type") == Some(backup_type) || snapshot.description == backup_type
 }
 
 /// Error unless the volume backing `staging` has room for `needed` bytes (plus a
@@ -849,17 +844,15 @@ mod tests {
 	}
 
 	#[test]
-	fn classifies_by_view_path_when_description_is_absent() {
-		let mut snapshot = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
-		snapshot.source.path = "/var/cache/bestool/backup-source/tamanu-blobs".into();
-		assert!(is_of_type(&snapshot, "tamanu-blobs"));
-		assert!(!is_of_type(&snapshot, "tamanu-postgres"));
+	fn classifies_by_tag_when_description_is_absent() {
+		let mut tagged = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
+		tagged
+			.tags
+			.insert("tag:canopy-type".into(), "tamanu-blobs".into());
+		assert!(is_of_type(&tagged, "tamanu-blobs"));
+		assert!(!is_of_type(&tagged, "tamanu-postgres"));
 
-		let mut windows = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
-		windows.source.path = r"C:\ProgramData\bestool\backup-source\tamanu-blobs".into();
-		assert!(is_of_type(&windows, "tamanu-blobs"));
-
-		let in_place = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
-		assert!(!is_of_type(&in_place, "tamanu-blobs"));
+		let untyped = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
+		assert!(!is_of_type(&untyped, "tamanu-blobs"));
 	}
 }

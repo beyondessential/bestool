@@ -907,8 +907,6 @@ async fn snapshot(
 	// stream it: the parsed counters feed the Canopy progress reporter, and the
 	// raw lines the local CLI display, on every run.
 	create.arg("--progress");
-	// The type as the description: tags don't come back from `snapshot list`,
-	// and restore-side pairing selects follower snapshots by it.
 	args_snapshot_create(&mut create, source_path, tags, backup_type);
 	let stdout = run_kopia_streaming(create, "snapshot create", progress, cell).await?;
 	Ok(parse_snapshot_output(&stdout))
