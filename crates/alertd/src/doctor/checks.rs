@@ -18,6 +18,8 @@ use super::heal::{self, HealAction, HealFn};
 pub mod util;
 
 pub mod billing_tags;
+pub mod blob_antivirus;
+pub mod blob_integrity;
 pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_resolvers;
@@ -396,6 +398,10 @@ pub fn all() -> Vec<CheckEntry> {
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
 		entry!("fhir_materialisation", fhir_materialisation),
+		// Both run on facility as well as central: every server that stores blobs
+		// scrubs its own, and the quarantine record propagates to all of them.
+		entry!("blob_integrity", blob_integrity),
+		entry!("blob_antivirus", blob_antivirus),
 	]
 }
 
