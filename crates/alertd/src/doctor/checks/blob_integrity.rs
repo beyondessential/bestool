@@ -14,6 +14,12 @@
 //!
 //! A store nothing verifies looks healthy right up until someone needs a file,
 //! so a scrub that has stamped nothing for hours is a WARN of its own.
+//!
+//! Dropping a faulty facility cache copy is what makes it self-correcting, and it
+//! takes the registry row with it, so those faults are counted in
+//! `local_system_facts` rather than left in `blobs`. The counter never resets, so
+//! it says how many and how recently, never how many in a window: the gauge is
+//! what carries the trend, and the verdict below is a coarse backstop over it.
 
 use tokio_postgres::error::SqlState;
 
@@ -35,6 +41,21 @@ const MANY_AT_ONCE: i64 = 10;
 /// How long the store may go unverified before the scrub reads as stopped. It
 /// runs hourly on central and on facilities, so this is six missed passes.
 const STALE_SCRUB_SECS: i64 = 6 * 60 * 60;
+
+/// How recently a cache drop must have happened to read as still going on. The
+/// scrub covers the store over many hourly passes, so a day is wide enough that
+/// a genuinely failing disk does not fall between two sweeps of this check.
+const RECENT_DROP_SECS: i64 = 24 * 60 * 60;
+
+/// Read separately from the blob registry: the rows these count are gone, which
+/// is the whole reason the count exists. Both are null on a server that has never
+/// dropped one, and on any Tamanu predating the counter.
+const CACHE_DROPS_SQL: &str = "\
+	SELECT \
+	(SELECT value::bigint FROM local_system_facts \
+	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped, \
+	extract(epoch FROM now() - (SELECT value::timestamp FROM local_system_facts \
+	 WHERE key = 'blobCacheFaultAt' AND deleted_at IS NULL))::bigint AS dropped_since";
 
 const SQL: &str = "\
 	SELECT count(*) AS blobs, \
@@ -80,6 +101,18 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let (durable_faulty, replica_faulty) =
 		split_faults(ctx.kind, corrupt, absent, outbox_faulty, cache_faulty);
 
+	// A failure here is not worth losing the registry verdict over: the counter is
+	// a supplement to it, and its absence is the normal state.
+	let drops = client.query_one(CACHE_DROPS_SQL, &[]).await.ok();
+	let dropped: Option<i64> = drops
+		.as_ref()
+		.and_then(|r| r.try_get("dropped").ok())
+		.flatten();
+	let dropped_since: Option<i64> = drops
+		.as_ref()
+		.and_then(|r| r.try_get("dropped_since").ok())
+		.flatten();
+
 	let summary = if blobs == 0 {
 		"blob store empty".to_string()
 	} else if corrupt + absent == 0 {
@@ -88,7 +121,14 @@ pub async fn run(ctx: CheckContext) -> Check {
 		format!("{blobs} blobs: {corrupt} corrupt, {absent} absent")
 	};
 
-	let check = match classify(durable_faulty, replica_faulty, blobs, scrub_idle_secs) {
+	let check = match classify(
+		durable_faulty,
+		replica_faulty,
+		blobs,
+		scrub_idle_secs,
+		dropped,
+		dropped_since,
+	) {
 		Verdict::Pass => Check::pass(NAME, summary),
 		Verdict::Warn(reason) => Check::warning(NAME, summary, reason),
 		Verdict::Fail(reason) => Check::fail(NAME, summary, reason),
@@ -116,6 +156,18 @@ pub async fn run(ctx: CheckContext) -> Check {
 			Stat::gauge("never_scrubbed", never_scrubbed as f64)
 				.help("Blobs the scrub has not yet verified once"),
 		);
+	if let Some(total) = dropped {
+		check = check.with_detail("cache_blobs_dropped", total).with_stat(
+			Stat::gauge("cache_blobs_dropped", total as f64)
+				.group("faults")
+				.help(
+					"Cache blobs dropped for failing verification, lifetime; each refetches on demand",
+				),
+		);
+	}
+	if let Some(since) = dropped_since {
+		check = check.with_detail("cache_drop_age_seconds", since);
+	}
 	if let Some(idle) = scrub_idle_secs {
 		check = check.with_detail("scrub_idle_seconds", idle).with_stat(
 			Stat::gauge("scrub_idle_seconds", idle as f64).help(
@@ -160,12 +212,22 @@ fn split_faults(
 /// `scrub_idle_secs` is the age of the newest scrub stamp, falling back to the
 /// age of the oldest blob where nothing has been stamped at all, so a store
 /// filled minutes ago does not read as unscrubbed before its first pass is due.
+///
+/// `dropped` is the facility's lifetime count of cache copies dropped for failing
+/// verification and `dropped_since` how long ago the last one went. Both are
+/// needed: the count alone would warn forever about a bad sector from a year ago,
+/// and recency alone would warn for a day about a single one.
 fn classify(
 	durable_faulty: i64,
 	replica_faulty: i64,
 	blobs: i64,
 	scrub_idle_secs: Option<i64>,
+	dropped: Option<i64>,
+	dropped_since: Option<i64>,
 ) -> Verdict {
+	let dropping = dropped.unwrap_or(0) >= MANY_AT_ONCE
+		&& dropped_since.is_some_and(|secs| secs <= RECENT_DROP_SECS);
+
 	if durable_faulty > 0 {
 		Verdict::Fail(format!(
 			"{durable_faulty} blob(s) that must be durably present here are corrupt or absent"
@@ -177,6 +239,11 @@ fn classify(
 	} else if replica_faulty > 0 {
 		Verdict::Warn(format!(
 			"{replica_faulty} faulty cache blob(s), which should clear by refetching from central"
+		))
+	} else if dropping {
+		let total = dropped.unwrap_or(0);
+		Verdict::Warn(format!(
+			"{total} cache blobs dropped for failing verification, the last one recently; each refetched, but a run of them reads as the storage failing"
 		))
 	} else if blobs > 0 && scrub_idle_secs.is_some_and(|secs| secs > STALE_SCRUB_SECS) {
 		let idle = humanise_age(scrub_idle_secs.unwrap_or(0));
@@ -199,7 +266,18 @@ mod tests {
 	}
 
 	fn grade(durable: i64, replica: i64, blobs: i64, idle: Option<i64>) -> &'static str {
-		match classify(durable, replica, blobs, idle) {
+		grade_drops(durable, replica, blobs, idle, None, None)
+	}
+
+	fn grade_drops(
+		durable: i64,
+		replica: i64,
+		blobs: i64,
+		idle: Option<i64>,
+		dropped: Option<i64>,
+		dropped_since: Option<i64>,
+	) -> &'static str {
+		match classify(durable, replica, blobs, idle, dropped, dropped_since) {
 			Verdict::Pass => "pass",
 			Verdict::Warn(_) => "warn",
 			Verdict::Fail(_) => "fail",
@@ -225,6 +303,32 @@ mod tests {
 	#[test]
 	fn many_faulty_replicas_at_once_fail() {
 		assert_eq!(verdict(0, 10), "fail");
+	}
+
+	#[test]
+	fn a_run_of_recent_cache_drops_warns() {
+		assert_eq!(grade_drops(0, 0, 100, Some(0), Some(10), Some(60)), "warn");
+	}
+
+	#[test]
+	fn cache_drops_need_both_a_run_and_recency() {
+		// One bad sector the refetch already corrected.
+		assert_eq!(grade_drops(0, 0, 100, Some(0), Some(1), Some(60)), "pass");
+		// A run, but nothing since; the disk was replaced or the run was one-off.
+		assert_eq!(
+			grade_drops(0, 0, 100, Some(0), Some(40), Some(RECENT_DROP_SECS + 1)),
+			"pass"
+		);
+	}
+
+	#[test]
+	fn a_store_that_has_never_dropped_one_passes() {
+		assert_eq!(grade_drops(0, 0, 100, Some(0), None, None), "pass");
+	}
+
+	#[test]
+	fn a_durable_fault_outranks_a_cache_drop_run() {
+		assert_eq!(grade_drops(1, 0, 100, Some(0), Some(50), Some(60)), "fail");
 	}
 
 	#[test]
