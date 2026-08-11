@@ -18,6 +18,7 @@ use super::heal::{self, HealAction, HealFn};
 pub mod util;
 
 pub mod billing_tags;
+pub mod blob_correction_rate;
 pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_resolvers;
@@ -396,6 +397,9 @@ pub fn all() -> Vec<CheckEntry> {
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
 		entry!("fhir_materialisation", fhir_materialisation),
+		// Runs on facility as well as central: both hold durable blobs, and the
+		// failing media this reads is the server's own.
+		entry!("blob_correction_rate", blob_correction_rate),
 	]
 }
 
