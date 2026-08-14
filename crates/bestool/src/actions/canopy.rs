@@ -38,6 +38,8 @@ super::subcommands! {
 	tags => Tags(TagsArgs),
 	#[cfg(feature = "canopy-backup")]
 	backup => Backup(BackupArgs),
+	#[cfg(feature = "canopy-backup")]
+	hold => Hold(HoldArgs),
 	#[cfg(feature = "canopy-restore")]
 	restore => Restore(RestoreArgs),
 	#[cfg(feature = "canopy-restore")]

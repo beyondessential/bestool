@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use miette::{Context as _, IntoDiagnostic as _, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -211,6 +211,32 @@ pub async fn remove_record(id: &str) -> Result<()> {
 	}
 }
 
+/// Whether the capture a hold names is still there.
+///
+/// A hold whose capture has gone is the failure worth catching: the operator
+/// believes a rollback point exists when it does not, and nothing about the
+/// record itself gives that away.
+pub async fn capture_present(capture: &HeldCapture) -> bool {
+	match capture {
+		HeldCapture::Btrfs { snapshot_path, .. } => snapshot_path.exists(),
+		HeldCapture::Lvm { vg, lv, .. } => super::postgresql::lvm::held_present(vg, lv).await,
+		HeldCapture::Vss { shadow_id, junction } => vss_present(shadow_id, junction).await,
+		HeldCapture::BaseBackup { root } => root.exists(),
+	}
+}
+
+#[cfg(windows)]
+async fn vss_present(shadow_id: &str, _junction: &Path) -> bool {
+	super::postgresql::vss::held_present(shadow_id).await
+}
+
+/// Off Windows the shadow itself can't be queried, so the mount is the only
+/// evidence available — enough to list a record without claiming more.
+#[cfg(not(windows))]
+async fn vss_present(_shadow_id: &str, junction: &Path) -> bool {
+	junction.exists()
+}
+
 /// Release a held capture: undo the promotion and free the underlying snapshot,
 /// logical volume, shadow copy, or staged tree.
 ///
@@ -237,7 +263,7 @@ async fn release_vss(shadow_id: &str, junction: &Path) -> Result<()> {
 
 #[cfg(not(windows))]
 async fn release_vss(shadow_id: &str, _junction: &Path) -> Result<()> {
-	bail!("hold {shadow_id} holds a Windows shadow copy, which only Windows can release")
+	miette::bail!("hold {shadow_id} holds a Windows shadow copy, which only Windows can release")
 }
 
 #[cfg(test)]

@@ -64,5 +64,6 @@ It reads only local data, so it runs without repository access and at local copy
 The capture is copied into the restore staging area, and the method's restore then proceeds exactly as it does for a snapshot fetched from the repository.
 Restoring by copy rather than by moving the capture into place is what lets the hold outlive the restore, so a restore that fails partway can be attempted again from the same rollback point.
 
-Because the staged copy and the previous data the restore sets aside are held at the same time, a restore from a hold needs room for both.
-The device checks for that room before it begins copying and refuses up front, naming what is needed and what is free, rather than failing partway through a restore an operator is depending on.
+Staging is a whole second copy of the captured data, so a restore from a hold needs free space for one copy of the capture.
+The data it displaces is set aside on the same filesystem rather than copied, and so costs no further room.
+The device checks for that space before it begins copying and refuses up front, naming what is needed and what is free, rather than failing partway through a restore an operator is depending on.

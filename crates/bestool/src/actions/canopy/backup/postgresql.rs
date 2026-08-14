@@ -11,7 +11,7 @@ pub mod btrfs;
 pub mod lvm;
 pub mod resolve;
 mod service;
-mod space;
+pub mod space;
 pub mod strategy;
 mod sys;
 #[cfg(windows)]

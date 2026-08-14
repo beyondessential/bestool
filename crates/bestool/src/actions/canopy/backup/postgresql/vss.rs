@@ -211,6 +211,24 @@ pub async fn hold(shadow: Shadow, id: &str, source: &Path) -> Result<(PathBuf, H
 	))
 }
 
+/// Whether the shadow copy behind a held capture still exists.
+///
+/// Worth asking, and asking often: a shadow has no pin. The copy-on-write store
+/// it lives in is bounded and shared with every other shadow on the volume, so
+/// writes to that volume during a long hold can push VSS into deleting the
+/// oldest shadows to make room — including this one, without warning.
+pub async fn held_present(shadow_id: &str) -> bool {
+	let shadow_id = shadow_id.to_owned();
+	tokio::task::spawn_blocking(move || {
+		WMIConnection::new()
+			.ok()
+			.and_then(|con| device_path(&con, &shadow_id).ok())
+			.is_some()
+	})
+	.await
+	.unwrap_or(false)
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {

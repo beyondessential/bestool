@@ -227,6 +227,11 @@ pub async fn hold(snapshot: Snapshot, id: &str, source: &Path) -> Result<(PathBu
 	Ok((held_mount.join(rel), capture))
 }
 
+/// Whether a held capture's snapshot volume still exists.
+pub async fn held_present(vg: &str, lv: &str) -> bool {
+	sys::run_ok("lvs", &[&format!("{vg}/{lv}")]).await.is_ok()
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 pub async fn release_held(vg: &str, lv: &str, mount: &Path) -> Result<()> {
@@ -258,6 +263,28 @@ async fn reap_stale(vg: &str, kopia_mount: &std::path::Path) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The reaper removes every LV carrying [`SNAPSHOT_INFIX`], at the start of
+	/// every run of any type, so a held capture that matched would be destroyed by
+	/// the next backup.
+	#[test]
+	fn held_lv_names_are_outside_the_reapers_glob() {
+		let name = held_snapshot_name("tamanu-postgres-20260814T054412Z");
+		assert!(!name.starts_with(SNAPSHOT_INFIX), "{name} would be reaped");
+		assert!(name.starts_with(HELD_INFIX));
+	}
+
+	/// LVM accepts a restricted character set for volume names, so a backup type
+	/// carrying anything else still has to yield a usable name.
+	#[test]
+	fn held_lv_names_are_valid_lvm_names() {
+		let name = held_snapshot_name("odd type/name:v2-20260814T054412Z");
+		assert!(
+			name.chars()
+				.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '.' | '-')),
+			"{name} is not a valid LVM volume name"
+		);
+	}
 
 	#[test]
 	fn parses_vg_lv_from_padded_output() {

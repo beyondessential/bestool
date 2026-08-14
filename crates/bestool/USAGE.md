@@ -19,6 +19,10 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy import`↴](#bestool-canopy-import)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
+* [`bestool canopy hold`↴](#bestool-canopy-hold)
+* [`bestool canopy hold keep`↴](#bestool-canopy-hold-keep)
+* [`bestool canopy hold list`↴](#bestool-canopy-hold-list)
+* [`bestool canopy hold drop`↴](#bestool-canopy-hold-drop)
 * [`bestool canopy restore`↴](#bestool-canopy-restore)
 * [`bestool canopy kopia`↴](#bestool-canopy-kopia)
 * [`bestool canopy unregister`↴](#bestool-canopy-unregister)
@@ -305,6 +309,7 @@ Interact with Canopy
 * `import` — Import a canopy registration exported from another machine
 * `tags` — Fetch this device's tags from canopy.
 * `backup` — Run a configured backup, driving kopia and reporting to Canopy
+* `hold` — Manage captures held on this device as local rollback points
 * `restore` — Restore a backup from Canopy's repository
 * `kopia` — Run a kopia command against Canopy's repository
 * `unregister` — Erase this machine's canopy enrolment from every place it's stored
@@ -421,6 +426,64 @@ Run a configured backup, driving kopia and reporting to Canopy
 * `--no-daemon` — Run the backup in this process instead of delegating to the alertd daemon.
 
    By default, when the daemon is running, the backup is run by it and its progress is streamed here; this forces a local run.
+* `--hold` — Keep the capture on this device after the run, as a local rollback point.
+
+   The run is otherwise an ordinary backup. Restoring from the kept capture costs a local copy instead of a full download, which is what makes it useful across an upgrade window that outlasts the upload.
+
+   A kept capture is released only by `bestool canopy hold drop`.
+* `--no-upload` — Take the capture and stop there, without a repository.
+
+   Fetches no credentials, contacts no repository, and reports no run; the definition's pre/post hooks and the capture itself are as they would be for an uploading run. Runs in this process, since it needs no daemon.
+
+
+
+## `bestool canopy hold`
+
+Manage captures held on this device as local rollback points
+
+**Usage:** `bestool canopy hold <COMMAND>`
+
+###### **Subcommands:**
+
+* `keep` — Tell a backup that is already running to keep its capture
+* `list` — List the captures held on this device
+* `drop` — Release a held capture and forget it
+
+
+
+## `bestool canopy hold keep`
+
+Tell a backup that is already running to keep its capture.
+
+Takes effect when the run finishes; the transfer in progress is not interrupted or restarted, so a run that has already spent hours uploading keeps that work and leaves a local rollback point behind as well.
+
+Only reaches a run hosted by the alertd daemon.
+
+**Usage:** `bestool canopy hold keep --type <TYPE>`
+
+###### **Options:**
+
+* `--type <TYPE>` — The backup type whose running backup should keep its capture
+
+
+
+## `bestool canopy hold list`
+
+List the captures held on this device
+
+**Usage:** `bestool canopy hold list`
+
+
+
+## `bestool canopy hold drop`
+
+Release a held capture and forget it
+
+**Usage:** `bestool canopy hold drop <ID>`
+
+###### **Arguments:**
+
+* `<ID>` — The hold to release, as shown by `bestool canopy hold list`
 
 
 
@@ -428,7 +491,7 @@ Run a configured backup, driving kopia and reporting to Canopy
 
 Restore a backup from Canopy's repository
 
-**Usage:** `bestool canopy restore [OPTIONS] <TYPE> <ID>`
+**Usage:** `bestool canopy restore [OPTIONS] <TYPE> [ID]`
 
 ###### **Arguments:**
 
@@ -437,6 +500,11 @@ Restore a backup from Canopy's repository
 
 ###### **Options:**
 
+* `--from-hold <HOLD>` — Restore from a capture held on this device instead of from the repository.
+
+   Reads only local data, so it needs no credentials and downloads nothing. The held capture is left in place, so a restore that fails partway can be attempted again from the same rollback point.
+
+   Takes a hold id, as shown by `bestool canopy hold list`.
 * `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
 * `--config <DIR>` — Override the registration directory
