@@ -9,16 +9,25 @@
 //! to `pg_basebackup`). The privileged `lvcreate`/`mount` steps are verified
 //! on-host; the pure helpers (parsing, mount options) are unit-tested.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use miette::{Result, bail, miette};
+use miette::{Context as _, Result, bail, miette};
 use tracing::{info, warn};
 
-use super::{resolve::ResolvedCluster, sys};
+use super::{
+	super::hold::{HeldCapture, release},
+	resolve::ResolvedCluster,
+	sys,
+};
 
 /// Infix marking our ephemeral snapshot LVs, so the reaper never matches a live LV.
 const SNAPSHOT_INFIX: &str = "bestool-kopia-";
+
+/// Infix marking a snapshot LV promoted to a hold. Deliberately not
+/// [`SNAPSHOT_INFIX`]: the reaper removes every LV carrying that one, so a held
+/// capture left under it would be destroyed by the next run of any type.
+const HELD_INFIX: &str = "bestool-held-";
 
 /// Teardown state for a prepared thin-LVM snapshot, released by [`teardown`].
 #[derive(Debug)]
@@ -29,6 +38,10 @@ pub struct Snapshot {
 	lv: String,
 	/// The stable read-only mount kopia reads from.
 	kopia_mount: PathBuf,
+	/// The filesystem type, for mounting the capture again elsewhere.
+	fstype: String,
+	/// The postgres-to-kopia id map the kopia mount was made with.
+	idmap: String,
 }
 
 fn snapshot_name(token: &str) -> String {
@@ -79,6 +92,8 @@ pub async fn prepare(
 		vg: vg.clone(),
 		lv: String::new(),
 		kopia_mount: PathBuf::new(),
+		fstype: fstype.clone(),
+		idmap: map.clone(),
 	};
 
 	info!(vg = %vg, lv = %snapshot_lv, "creating thin-LVM snapshot");
@@ -132,6 +147,99 @@ pub async fn teardown(snapshot: Snapshot) -> Result<()> {
 			.inspect_err(|err| warn!("{err}"));
 	}
 	Ok(())
+}
+
+/// Name for a snapshot LV promoted to a hold. LVM accepts a restricted character
+/// set for volume names, so anything outside it becomes a hyphen; the hold's
+/// record carries the exact name, so the mapping only has to be valid, not
+/// reversible.
+fn held_snapshot_name(id: &str) -> String {
+	let sanitised: String = id
+		.chars()
+		.map(|c| if c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '.' | '-') { c } else { '-' })
+		.collect();
+	format!("{HELD_INFIX}{sanitised}")
+}
+
+/// Promote this run's capture to a held one.
+///
+/// The snapshot LV is renamed out of the reaper's namespace and remounted at the
+/// hold's own path, and the run's stable per-type mount is handed back. Returns
+/// the path the held capture is readable at, and what it takes to release it.
+pub async fn hold(snapshot: Snapshot, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+	let rel = source
+		.strip_prefix(&snapshot.kopia_mount)
+		.map_err(|_| {
+			miette!(
+				"{} is not under the capture's mount {}",
+				source.display(),
+				snapshot.kopia_mount.display()
+			)
+		})?
+		.to_path_buf();
+	if snapshot.lv.is_empty() {
+		bail!("the capture has no snapshot volume to hold");
+	}
+
+	let held_lv = held_snapshot_name(id);
+	let held_mount = super::super::hold::hold_source_dir(id);
+
+	// Free the per-type mount first: it belongs to the next run, and the capture
+	// is about to be reachable at the hold's own path instead.
+	sys::umount(&snapshot.kopia_mount).await;
+	sys::rmdir(&snapshot.kopia_mount).await;
+
+	sys::run_ok(
+		"lvrename",
+		&[&snapshot.vg, &snapshot.lv, &held_lv],
+	)
+	.await
+	.wrap_err_with(|| format!("renaming {}/{} to {held_lv}", snapshot.vg, snapshot.lv))?;
+	info!(hold = %id, vg = %snapshot.vg, lv = %held_lv, "held thin-LVM snapshot");
+
+	let capture = HeldCapture::Lvm {
+		vg: snapshot.vg.clone(),
+		lv: held_lv.clone(),
+		mount: held_mount.clone(),
+	};
+
+	sys::mkdir(&held_mount).await?;
+	if let Some(parent) = held_mount.parent() {
+		sys::make_traversable(parent).await?;
+	}
+	if let Err(err) = sys::run_ok(
+		"mount",
+		&[
+			&format!("/dev/{}/{held_lv}", snapshot.vg),
+			sys::path(&held_mount),
+			"-o",
+			&mount_options(&snapshot.fstype, &snapshot.idmap),
+		],
+	)
+	.await
+	{
+		// The capture itself survived the rename, so release what we can name and
+		// report the failure rather than stranding an LV nothing records.
+		let _ = release(&capture).await;
+		return Err(err).wrap_err("mounting the held snapshot");
+	}
+
+	Ok((held_mount.join(rel), capture))
+}
+
+/// Release a capture that was promoted to a hold: the same teardown, rebuilt from
+/// the hold's record rather than from the run that took it.
+pub async fn release_held(vg: &str, lv: &str, mount: &Path) -> Result<()> {
+	teardown(Snapshot {
+		vg: vg.to_owned(),
+		lv: lv.to_owned(),
+		kopia_mount: mount.to_path_buf(),
+		// Releasing only unmounts and removes; nothing is mounted again, so the
+		// details a remount would need aren't carried in the hold's record.
+		fstype: String::new(),
+		idmap: String::new(),
+	})
+	.await
 }
 
 /// Sweep leftover `bestool-kopia-*` snapshot LVs from a crashed run.

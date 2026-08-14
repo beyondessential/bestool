@@ -11,6 +11,7 @@
 //! code.
 
 pub mod config;
+pub mod hold;
 pub mod method;
 pub mod postgresql;
 pub(super) mod progress;

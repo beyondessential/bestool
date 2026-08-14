@@ -26,7 +26,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 use wmi::{Variant, WMIConnection};
 
-use super::resolve::ResolvedCluster;
+use super::{super::hold::HeldCapture, resolve::ResolvedCluster};
 
 /// Teardown state for a prepared shadow copy, released by [`teardown`].
 #[derive(Debug)]
@@ -151,6 +151,74 @@ pub async fn teardown(shadow: Shadow) -> Result<()> {
 		Err(err) => warn!("VSS shadow-delete task panicked: {err}"),
 	}
 	Ok(())
+}
+
+/// The folder a held shadow is mounted at. On the capture's own volume, since a
+/// junction can't cross volumes, and keyed by hold so two holds of one backup
+/// type coexist and neither collides with [`expose_target_dir`].
+fn held_expose_target_dir(volume: &str, id: &str) -> String {
+	format!("{volume}\\bestool-backup-shadow\\held\\{id}")
+}
+
+/// Promote this run's capture to a held one.
+///
+/// The shadow is persistent already — it survives this process and the machine
+/// rebooting — so holding it is a matter of where it is reachable from: the run's
+/// junction is the next run's to reuse and gets cleared by it, so the shadow is
+/// junctioned at the hold's own folder and the run's junction handed back.
+/// Returns the path the held capture is readable at, and what it takes to release
+/// it.
+pub async fn hold(shadow: Shadow, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+	let rel = source
+		.strip_prefix(&shadow.junction)
+		.map_err(|_| {
+			miette!(
+				"{} is not under the capture's mount {}",
+				source.display(),
+				shadow.junction.display()
+			)
+		})?
+		.to_path_buf();
+
+	let run_junction = shadow.junction.to_string_lossy().into_owned();
+	let volume = volume_of(&run_junction)?.to_owned();
+	let held_junction = PathBuf::from(held_expose_target_dir(&volume, id));
+
+	let shadow_id = shadow.id.clone();
+	let junction = held_junction.clone();
+	tokio::task::spawn_blocking(move || -> Result<()> {
+		let con = WMIConnection::new()
+			.into_diagnostic()
+			.wrap_err("connecting to WMI (ROOT\\CIMV2)")?;
+		let device = device_path(&con, &shadow_id)?;
+		mount_shadow(&device, &junction)
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the shadow-hold task")??;
+
+	// Hand the run's junction back now the shadow is reachable at the hold's own
+	// folder. This unmounts a junction; it never touches the shadow's contents.
+	let _ = std::fs::remove_dir(&shadow.junction);
+
+	info!(hold = %id, shadow = %shadow.id, junction = %held_junction.display(), "held VSS shadow copy");
+	Ok((
+		held_junction.join(rel),
+		HeldCapture::Vss {
+			shadow_id: shadow.id,
+			junction: held_junction,
+		},
+	))
+}
+
+/// Release a capture that was promoted to a hold: the same teardown, rebuilt from
+/// the hold's record rather than from the run that took it.
+pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {
+	teardown(Shadow {
+		id: shadow_id.to_owned(),
+		junction: junction.to_path_buf(),
+	})
+	.await
 }
 
 /// Mount a shadow's device path at `junction` (a directory junction), creating
@@ -278,6 +346,28 @@ fn as_u32(value: &Variant) -> Option<u32> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The run's junction is cleared by the next run of that type, so a hold must
+	/// not sit on it — and two holds of one type must not sit on each other.
+	#[test]
+	fn held_junctions_are_keyed_by_hold_and_clear_of_the_run_path() {
+		let run = expose_target_dir("C:", "tamanu-postgres");
+		let held = held_expose_target_dir("C:", "tamanu-postgres-20260814T054412Z");
+		let other = held_expose_target_dir("C:", "tamanu-postgres-20260814T060000Z");
+
+		assert_ne!(run, held);
+		assert_ne!(held, other);
+		// A hold sits below the run path's parent, not inside the run path itself,
+		// so clearing the run's junction can't take a hold with it.
+		assert!(!held.starts_with(&format!("{run}\\")));
+		assert!(held.starts_with("C:\\bestool-backup-shadow\\held\\"));
+	}
+
+	#[test]
+	fn held_junctions_stay_on_the_captures_volume() {
+		// A junction can't cross volumes, so a shadow of D: is exposed on D:.
+		assert!(held_expose_target_dir("D:", "x").starts_with("D:\\"));
+	}
 
 	#[test]
 	fn volume_and_relative_path() {

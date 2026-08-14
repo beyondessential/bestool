@@ -146,6 +146,51 @@ impl Method {
 		}
 	}
 
+	/// Whether this method's capture can be retained as a rollback point.
+	///
+	/// The simple method prepares a live view of a path rather than a
+	/// point-in-time copy — which is why it reports no freeze instant — so there
+	/// is nothing to retain that would still describe a moment later. Checked
+	/// before a run starts, so a definition that can't be held says so before it
+	/// captures anything.
+	pub fn supports_hold(&self) -> bool {
+		match self {
+			Method::Simple(_) => false,
+			Method::Postgresql(_) => true,
+		}
+	}
+
+	/// Retain the prepared capture instead of releasing it.
+	///
+	/// Promotes the capture out of the run-owned names and paths the next run of
+	/// this type reuses and reaps, and returns the path it is readable at
+	/// afterwards together with what it takes to release it.
+	pub(super) async fn hold(
+		&self,
+		prepared: Prepared,
+		id: &str,
+	) -> Result<(PathBuf, super::hold::HeldCapture)> {
+		let source = prepared.path;
+		match prepared.teardown {
+			// Unreachable via the commands, which check `supports_hold` before
+			// capturing anything; releasing here keeps that a refusal rather than a
+			// leak if it ever is reached.
+			Teardown::Simple(cleanup) => {
+				super::simple::teardown(cleanup).await?;
+				bail!(
+					"the simple method captures a live view of {}, not a point in time, \
+					 so it cannot be held as a rollback point",
+					source.display()
+				)
+			}
+			Teardown::Btrfs(mounts) => super::postgresql::btrfs::hold(mounts, id, &source).await,
+			Teardown::Lvm(snapshot) => super::postgresql::lvm::hold(snapshot, id, &source).await,
+			#[cfg(windows)]
+			Teardown::Vss(shadow) => super::postgresql::vss::hold(shadow, id, &source).await,
+			Teardown::BaseBackup(root) => super::postgresql::basebackup::hold(root, id, &source).await,
+		}
+	}
+
 	/// Release whatever `prepare` set up (snapshot, mount, staging dir).
 	pub async fn cleanup(&self, prepared: Prepared) -> Result<()> {
 		match prepared.teardown {

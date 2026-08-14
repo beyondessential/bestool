@@ -14,10 +14,14 @@ use std::{
 	process::Stdio,
 };
 
-use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use tracing::info;
 
-use super::{super::method::PostgresqlConfig, resolve::ResolvedCluster, sys};
+use super::{
+	super::{hold::HeldCapture, method::PostgresqlConfig},
+	resolve::ResolvedCluster,
+	sys,
+};
 
 /// Where this run's base backup is streamed to (and what kopia snapshots). Nests
 /// `<version>/<cluster>` under the chosen staging root, matching the btrfs
@@ -134,6 +138,46 @@ fn failure_message(status: impl std::fmt::Display, stderr: &str) -> String {
 /// Remove the streamed base backup (a full copy; reclaim the space).
 pub async fn teardown(root: PathBuf) -> Result<()> {
 	remove_staging(&root).await
+}
+
+/// Promote this run's capture to a held one.
+///
+/// A base backup is already a self-contained copy on disk, so holding it is a
+/// move out of the staging path the next run of this type reuses (and clears)
+/// into the hold's own. Returns the path the held capture is readable at, and
+/// what it takes to release it.
+pub async fn hold(root: PathBuf, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+	let rel = source
+		.strip_prefix(&root)
+		.map_err(|_| {
+			miette!(
+				"{} is not under the capture's staging root {}",
+				source.display(),
+				root.display()
+			)
+		})?
+		.to_path_buf();
+
+	let held_root = super::super::hold::hold_source_dir(id);
+	if let Some(parent) = held_root.parent() {
+		tokio::fs::create_dir_all(parent)
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("creating {}", parent.display()))?;
+	}
+	tokio::fs::rename(&root, &held_root)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| {
+			format!(
+				"moving the base backup from {} to {}",
+				root.display(),
+				held_root.display()
+			)
+		})?;
+
+	info!(hold = %id, root = %held_root.display(), "held base backup");
+	Ok((held_root.join(rel), HeldCapture::BaseBackup { root: held_root }))
 }
 
 /// Delete a staging tree the daemon had handed to postgres/kopia. Reclaim
