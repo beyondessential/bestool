@@ -47,6 +47,7 @@ pub mod patient_communication_errors;
 pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
+pub mod reporting_roles;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -315,6 +316,7 @@ pub fn all() -> Vec<CheckEntry> {
 		// status fact — useful in the CLI render, but off the wire.
 		entry!("db_version", db_version, db, off_wire),
 		entry!("migrations", migrations),
+		entry!("reporting_roles", reporting_roles),
 		entry!("pg_tuning", pg_tuning, db),
 		entry!("pg_checksums", pg_checksums, db),
 		entry!("disk_free", disk_free, host),
