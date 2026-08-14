@@ -11,6 +11,7 @@
 //! code.
 
 pub mod config;
+pub mod hold;
 pub mod method;
 pub mod postgresql;
 pub(super) mod progress;
@@ -20,7 +21,10 @@ mod simple;
 use std::{
 	collections::BTreeMap,
 	path::Path,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	time::{Duration, Instant},
 };
 
@@ -70,6 +74,24 @@ pub struct BackupArgs {
 	/// progress is streamed here; this forces a local run.
 	#[arg(long)]
 	pub no_daemon: bool,
+
+	/// Keep the capture on this device after the run, as a local rollback point.
+	///
+	/// The run is otherwise an ordinary backup. Restoring from the kept capture
+	/// costs a local copy instead of a full download, which is what makes it
+	/// useful across an upgrade window that outlasts the upload.
+	///
+	/// A kept capture is released only by `bestool canopy hold drop`.
+	#[arg(long)]
+	pub hold: bool,
+
+	/// Take the capture and stop there, without a repository.
+	///
+	/// Fetches no credentials, contacts no repository, and reports no run; the
+	/// definition's pre/post hooks and the capture itself are as they would be for
+	/// an uploading run. Runs in this process, since it needs no daemon.
+	#[arg(long, requires = "hold")]
+	pub no_upload: bool,
 }
 
 pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
@@ -79,14 +101,26 @@ pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
 			args.config.as_deref(),
 			args.backups_dir.as_deref(),
 			None,
+			Arc::new(AtomicBool::new(args.hold)),
 		)
 	};
+
+	// A capture-only run has nothing for the daemon to host — no credentials, no
+	// transfer, no reporting — so it runs here. It still takes the per-type lock,
+	// so it can't capture alongside a run the daemon is already driving.
+	if args.no_upload {
+		return capture_only(
+			&args.backup_type,
+			args.backups_dir.as_deref(),
+		)
+		.await;
+	}
 
 	if args.no_daemon {
 		return run_local().await;
 	}
 
-	match run_via_daemon(&args.backup_type).await {
+	match run_via_daemon(&args.backup_type, args.hold).await {
 		Ok(()) => Ok(()),
 		Err(DaemonError::Failed(message)) => bail!("backup failed: {message}"),
 		Err(DaemonError::Unreachable(err)) => {
@@ -97,7 +131,7 @@ pub async fn run(args: BackupArgs, _ctx: Context) -> Result<()> {
 }
 
 /// Why a delegated run didn't yield a clean success.
-enum DaemonError {
+pub(super) enum DaemonError {
 	/// The daemon couldn't be reached (or doesn't expose the endpoint); the
 	/// caller should run locally.
 	Unreachable(String),
@@ -111,16 +145,48 @@ enum DaemonError {
 /// daemon's `default_server_addrs`.
 const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
 
+/// Tell the daemon's in-flight run of `backup_type` to keep its capture.
+///
+/// Reports whether there was a run to tell — a type with nothing in flight is a
+/// plain "no", not a failure, since the operator's next move depends on which it
+/// is.
+pub(super) async fn request_daemon_hold(backup_type: &str) -> std::result::Result<bool, DaemonError> {
+	let mut response = None;
+	let mut last_err = String::from("no daemon address to try");
+	for base in DAEMON_BASES {
+		let url = format!("{base}/tasks/backup/hold?type={backup_type}");
+		match crate::http::client().get(&url).send().await {
+			Ok(resp) => {
+				response = Some(resp);
+				break;
+			}
+			Err(err) => last_err = err.to_string(),
+		}
+	}
+	let response = response.ok_or(DaemonError::Unreachable(last_err))?;
+	if !response.status().is_success() {
+		return Err(DaemonError::Unreachable(format!(
+			"alertd returned {}",
+			response.status()
+		)));
+	}
+	let body: serde_json::Value = response
+		.json()
+		.await
+		.map_err(|err| DaemonError::Failed(err.to_string()))?;
+	Ok(body.get("held").and_then(serde_json::Value::as_bool).unwrap_or(false))
+}
+
 /// Ask the running daemon to run the backup (starting a run or attaching to one
 /// already in flight) and render its streamed status. Returns `Unreachable` if
 /// the daemon isn't there, so the caller can fall back to a local run.
-async fn run_via_daemon(backup_type: &str) -> std::result::Result<(), DaemonError> {
+async fn run_via_daemon(backup_type: &str, hold: bool) -> std::result::Result<(), DaemonError> {
 	use futures::StreamExt as _;
 
 	let mut response = None;
 	let mut last_err = String::from("no daemon address to try");
 	for base in DAEMON_BASES {
-		let url = format!("{base}/tasks/backup/run?type={backup_type}");
+		let url = format!("{base}/tasks/backup/run?type={backup_type}&hold={hold}");
 		match crate::http::client().get(&url).send().await {
 			Ok(resp) => {
 				response = Some(resp);
@@ -366,6 +432,7 @@ pub async fn run_backup(
 	registration_dir: Option<&Path>,
 	backups_dir: Option<&Path>,
 	progress: Option<BackupProgress>,
+	hold: Arc<AtomicBool>,
 ) -> Result<()> {
 	let run_id = Uuid::new_v4().to_string();
 
@@ -386,10 +453,27 @@ pub async fn run_backup(
 		info!(backup_type, "a backup of this type is already running; skipping");
 		return Ok(());
 	};
+	// A capture that can't be held is refused before anything is captured, so the
+	// operator finds out from the flag rather than from a run that took a snapshot
+	// and then couldn't keep it.
+	if hold.load(Ordering::Relaxed) && !def.method.supports_hold() {
+		bail!(
+			"the {} method cannot hold a capture (backup type '{backup_type}')",
+			def.method.name()
+		);
+	}
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
 	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
 
-	let result = backup_after_start(&def, backup_type, &run_id, registration_dir, &progress).await;
+	let result = backup_after_start(
+		&def,
+		backup_type,
+		&run_id,
+		registration_dir,
+		&progress,
+		&hold,
+	)
+	.await;
 	if let Err(err) = &result {
 		error!(backup_type, %run_id, "backup failed: {}", trim_error(err));
 	}
@@ -406,6 +490,7 @@ async fn backup_after_start(
 	run_id: &str,
 	registration_dir: Option<&Path>,
 	progress: &Option<BackupProgress>,
+	hold: &Arc<AtomicBool>,
 ) -> Result<()> {
 	let reg = load_registration(registration_dir)
 		.await?
@@ -478,6 +563,7 @@ async fn backup_after_start(
 			run_id,
 			progress,
 			&cell,
+			hold,
 		)
 		.await;
 
@@ -581,6 +667,7 @@ async fn run_kopia_backup(
 	run_id: &str,
 	progress: &Option<BackupProgress>,
 	cell: &Arc<progress::ProgressCell>,
+	hold: &Arc<AtomicBool>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
@@ -612,13 +699,90 @@ async fn run_kopia_backup(
 	)
 	.await;
 
-	// Cleanup and post-hooks run regardless of the snapshot outcome.
-	let cleanup = def.method.cleanup(prepared).await;
+	// Cleanup and post-hooks run regardless of the snapshot outcome — except that
+	// a run told to hold keeps its capture instead of releasing it. The
+	// instruction is read here rather than at the start because it can arrive at
+	// any point up to now, from an operator who decided mid-transfer that they
+	// want a local rollback point.
+	let cleanup = if hold.load(Ordering::Relaxed) {
+		hold_capture(def, prepared, result.is_ok()).await.map(|_| ())
+	} else {
+		def.method.cleanup(prepared).await
+	};
 	run_hooks(&def.post, false).await.ok();
 
 	let snapshot = result?;
 	cleanup?;
 	Ok(snapshot)
+}
+
+/// Retain this run's capture and record it, so it outlives the process as a
+/// local rollback point.
+async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: bool) -> Result<hold::HoldRecord> {
+	let taken_at = prepared.taken_at;
+	let held_at = jiff::Timestamp::now();
+	// A capture with no freeze instant (a streamed base backup represents an
+	// interval, not a point) is named for when it was kept instead, and records
+	// no freeze rather than passing that off as one.
+	let id = hold::mint_id(&def.r#type, taken_at.unwrap_or(held_at));
+
+	let (source, capture) = def
+		.method
+		.hold(prepared, &id)
+		.await
+		.wrap_err("holding the capture")?;
+
+	let record = hold::HoldRecord {
+		id,
+		backup_type: def.r#type.clone(),
+		taken_at,
+		held_at,
+		source,
+		uploaded,
+		capture,
+	};
+	hold::save(&record).await?;
+	info!(
+		hold = %record.id,
+		source = %record.source.display(),
+		backend = record.capture.backend(),
+		"capture held; release it with `bestool canopy hold drop`"
+	);
+	Ok(record)
+}
+
+/// Take a capture and keep it, without a repository: no credentials, no
+/// transfer, no report. The definition's hooks and the capture itself are as
+/// they are for an uploading run, so the result is the same artefact.
+async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<()> {
+	let dir = backups_dir
+		.map(|d| d.to_path_buf())
+		.unwrap_or_else(config::backups_dir);
+	let def = config::find_def(&dir, backup_type)
+		.await?
+		.ok_or_else(|| miette!("no backup def for type '{backup_type}' in {}", dir.display()))?;
+
+	// The same per-type lock an uploading run takes, so a capture-only run can't
+	// start alongside one the daemon is already driving.
+	let Some(_lock) = try_acquire_lock(&lock_path(backup_type)).await? else {
+		info!(backup_type, "a backup of this type is already running; skipping");
+		return Ok(());
+	};
+	if !def.method.supports_hold() {
+		bail!(
+			"the {} method cannot hold a capture (backup type '{backup_type}')",
+			def.method.name()
+		);
+	}
+
+	info!(backup_type, method = def.method.name(), "capturing without uploading");
+	run_hooks(&def.pre, true).await?;
+	let held = match def.method.prepare(backup_type).await {
+		Ok(prepared) => hold_capture(&def, prepared, false).await.map(|_| ()),
+		Err(err) => Err(err),
+	};
+	run_hooks(&def.post, false).await.ok();
+	held
 }
 
 /// Connect to the repo and create the snapshot.

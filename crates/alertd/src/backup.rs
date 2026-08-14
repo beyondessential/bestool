@@ -18,7 +18,14 @@
 //! The actual backup driver lives in the bestool binary; it's injected here as a
 //! [`BackupRunner`] so this crate carries no backup logic of its own.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+	collections::HashMap,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	time::Duration,
+};
 
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
@@ -35,8 +42,16 @@ use crate::{
 /// and resolving when the run finishes. Injected by the binary that owns the
 /// backup driver. The runner must emit a terminal `done`/`error` event before it
 /// returns, so attached clients always see an end.
+///
+/// The hold switch is shared with the running driver rather than passed by
+/// value, so an instruction that arrives after the run started still reaches it:
+/// the driver reads the switch when it finishes with its capture, not when it
+/// takes one.
 pub type BackupRunner = Arc<
-	dyn Fn(String, mpsc::UnboundedSender<Value>) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+	dyn Fn(String, mpsc::UnboundedSender<Value>, Arc<AtomicBool>) -> BoxFuture<'static, ()>
+		+ Send
+		+ Sync
+		+ 'static,
 >;
 
 const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -52,6 +67,9 @@ struct RunHandle {
 	/// Most recent status event, replayed to a late attacher so it isn't blank.
 	latest: Mutex<Value>,
 	events: broadcast::Sender<Value>,
+	/// Whether this run should keep its capture. Kept here for the run's whole
+	/// duration so it can be set while the run is under way.
+	hold: Arc<AtomicBool>,
 }
 
 /// One in-flight backup, for the daemon's status.
@@ -107,10 +125,20 @@ impl BackupRegistry {
 
 	/// Start a run for `backup_type`, or attach to the one already in flight.
 	/// Returns a stream of JSON status events ending with the terminal event.
-	pub async fn ensure_run(self: &Arc<Self>, backup_type: String) -> BoxStream<'static, Value> {
+	pub async fn ensure_run(
+		self: &Arc<Self>,
+		backup_type: String,
+		hold: bool,
+	) -> BoxStream<'static, Value> {
 		let mut running = self.running.lock().await;
 
 		if let Some(handle) = running.get(&backup_type) {
+			// Attaching with a hold asked for sets it on the run already going —
+			// the same instruction `hold` carries, arriving by another door. The
+			// switch is never cleared this way: a hold is released deliberately.
+			if hold {
+				handle.hold.store(true, Ordering::Relaxed);
+			}
 			let attached = json!({
 				"event": "attached",
 				"runId": *handle.run_id.lock().await,
@@ -121,17 +149,19 @@ impl BackupRegistry {
 		}
 
 		let (events, receiver) = broadcast::channel(BROADCAST_CAPACITY);
+		let hold = Arc::new(AtomicBool::new(hold));
 		let handle = Arc::new(RunHandle {
 			started_at: Timestamp::now(),
 			run_id: Mutex::new(None),
 			latest: Mutex::new(json!({ "event": "starting" })),
 			events: events.clone(),
+			hold: hold.clone(),
 		});
 		running.insert(backup_type.clone(), handle.clone());
 		drop(running);
 
 		let (sink, run_rx) = mpsc::unbounded_channel::<Value>();
-		let runner = (self.runner)(backup_type.clone(), sink);
+		let runner = (self.runner)(backup_type.clone(), sink, hold);
 		let registry = self.clone();
 		tokio::spawn(async move {
 			// Wait for the daemon-wide run slot: only one backup runs at a time,
@@ -192,6 +222,22 @@ impl BackupRegistry {
 		// `events` drops here, closing subscribers after the terminal event.
 	}
 
+	/// Tell the in-flight run of `backup_type` to keep its capture, reporting
+	/// whether there was one to tell.
+	///
+	/// This is what keeping the switch on the handle buys: a transfer that has
+	/// already run for hours is not interrupted or restarted, and the run reads
+	/// the switch when it finishes with its capture.
+	pub async fn request_hold(&self, backup_type: &str) -> bool {
+		match self.running.lock().await.get(backup_type) {
+			Some(handle) => {
+				handle.hold.store(true, Ordering::Relaxed);
+				true
+			}
+			None => false,
+		}
+	}
+
 	/// In-flight runs, for the status endpoint.
 	pub async fn running(&self) -> Vec<RunningBackup> {
 		let map = self.running.lock().await;
@@ -222,9 +268,10 @@ fn subscription(
 	}
 }
 
-/// Exposes `GET /tasks/backup/run?type=X` (start-or-attach, streaming status)
-/// and `GET /tasks/backup/running` (in-flight runs). Holds no periodic work; the
-/// registry drives runs on demand.
+/// Exposes `GET /tasks/backup/run?type=X[&hold=true]` (start-or-attach,
+/// streaming status), `GET /tasks/backup/running` (in-flight runs), and `GET
+/// /tasks/backup/hold?type=X` (tell the in-flight run to keep its capture).
+/// Holds no periodic work; the registry drives runs on demand.
 pub struct BackupTask {
 	registry: Arc<BackupRegistry>,
 }
@@ -262,7 +309,31 @@ impl BackgroundTask for BackupTask {
 							message: "missing ?type= query parameter".into(),
 						};
 					};
-					TaskEndpointResponse::JsonLines(registry.ensure_run(backup_type).await)
+					let hold = ctx
+						.query
+						.get("hold")
+						.is_some_and(|v| v == "true" || v == "1");
+					TaskEndpointResponse::JsonLines(registry.ensure_run(backup_type, hold).await)
+				})
+			})
+		};
+
+		let hold_handler: TaskEndpointHandler = {
+			let registry = self.registry.clone();
+			Arc::new(move |ctx| {
+				let registry = registry.clone();
+				Box::pin(async move {
+					let Some(backup_type) = ctx.query.get("type").cloned() else {
+						return TaskEndpointResponse::Error {
+							status: 400,
+							message: "missing ?type= query parameter".into(),
+						};
+					};
+					let held = registry.request_hold(&backup_type).await;
+					TaskEndpointResponse::Json(json!({
+						"type": backup_type,
+						"held": held,
+					}))
 				})
 			})
 		};
@@ -285,6 +356,10 @@ impl BackgroundTask for BackupTask {
 			TaskEndpoint {
 				name: "running",
 				handler: running_handler,
+			},
+			TaskEndpoint {
+				name: "hold",
+				handler: hold_handler,
 			},
 		]
 	}
@@ -311,7 +386,7 @@ mod tests {
 		let gate = Arc::new(Notify::new());
 		let runner: BackupRunner = {
 			let gate = gate.clone();
-			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>| {
+			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>, _hold| {
 				let gate = gate.clone();
 				Box::pin(async move {
 					let _ = sink.send(json!({ "event": "started", "runId": "r1" }));
@@ -322,7 +397,7 @@ mod tests {
 		};
 		let registry = BackupRegistry::new(runner);
 
-		let mut starter = registry.ensure_run("pg".into()).await;
+		let mut starter = registry.ensure_run("pg".into(), false).await;
 		// The run queues for the daemon-wide slot (free here, so instantly) before
 		// the runner emits its first event.
 		assert_eq!(event(&starter.next().await.unwrap()), "queued");
@@ -330,7 +405,7 @@ mod tests {
 
 		// A second request for the same type attaches rather than starting a
 		// second run.
-		let mut attacher = registry.ensure_run("pg".into()).await;
+		let mut attacher = registry.ensure_run("pg".into(), false).await;
 		assert_eq!(event(&attacher.next().await.unwrap()), "attached");
 		assert_eq!(registry.running().await.len(), 1);
 
@@ -353,7 +428,7 @@ mod tests {
 		let runner: BackupRunner = {
 			let concurrent = concurrent.clone();
 			let max_seen = max_seen.clone();
-			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>| {
+			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>, _hold| {
 				let concurrent = concurrent.clone();
 				let max_seen = max_seen.clone();
 				Box::pin(async move {
@@ -369,9 +444,10 @@ mod tests {
 		// No quiet period so the test stays fast; serialisation is the slot, not it.
 		let registry = BackupRegistry::with_quiet_period(runner, Duration::ZERO);
 
-		let streams =
-			futures::future::join_all(["a", "b", "c"].map(|t| registry.ensure_run(t.to_owned())))
-				.await;
+		let streams = futures::future::join_all(
+			["a", "b", "c"].map(|t| registry.ensure_run(t.to_owned(), false)),
+		)
+		.await;
 		for mut stream in streams {
 			while stream.next().await.is_some() {}
 		}
@@ -381,5 +457,62 @@ mod tests {
 			1,
 			"backups of distinct types must not overlap"
 		);
+	}
+
+	/// The point of the feature: an instruction arriving after the run started is
+	/// seen by that run, without interrupting what it is doing.
+	#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+	async fn holding_reaches_a_run_already_in_flight() {
+		let gate = Arc::new(Notify::new());
+		// What the run observed when it finished with its capture.
+		let observed = Arc::new(Mutex::new(None::<bool>));
+		let runner: BackupRunner = {
+			let gate = gate.clone();
+			let observed = observed.clone();
+			Arc::new(move |_type, sink: mpsc::UnboundedSender<Value>, hold| {
+				let gate = gate.clone();
+				let observed = observed.clone();
+				Box::pin(async move {
+					let _ = sink.send(json!({ "event": "started", "runId": "r1" }));
+					gate.notified().await;
+					// Read at the end, as the driver reads it at cleanup.
+					*observed.lock().await = Some(hold.load(Ordering::Relaxed));
+					let _ = sink.send(json!({ "event": "done", "success": true }));
+				})
+			})
+		};
+		let registry = BackupRegistry::with_quiet_period(runner, Duration::ZERO);
+
+		// The run starts without a hold…
+		let mut stream = registry.ensure_run("pg".into(), false).await;
+		while let Some(value) = stream.next().await {
+			if event(&value) == "started" {
+				break;
+			}
+		}
+
+		// …and is told to keep its capture while it is still going.
+		assert!(
+			registry.request_hold("pg").await,
+			"the run should be reachable"
+		);
+
+		gate.notify_waiters();
+		while stream.next().await.is_some() {}
+		assert_eq!(
+			*observed.lock().await,
+			Some(true),
+			"the run should have seen the hold requested mid-flight"
+		);
+	}
+
+	/// Nothing in flight is a plain "no run to tell", not an error: the caller
+	/// reports it to the operator, who has to reach for another option.
+	#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+	async fn holding_an_idle_type_reports_no_run() {
+		let runner: BackupRunner =
+			Arc::new(move |_type, _sink: mpsc::UnboundedSender<Value>, _hold| Box::pin(async {}));
+		let registry = BackupRegistry::with_quiet_period(runner, Duration::ZERO);
+		assert!(!registry.request_hold("pg").await);
 	}
 }

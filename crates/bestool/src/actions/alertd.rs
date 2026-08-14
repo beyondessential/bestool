@@ -239,7 +239,10 @@ fn backup_dispatch(
 		for backup_type in types {
 			let registry = registry.clone();
 			tokio::spawn(async move {
-				let mut stream = registry.ensure_run(backup_type).await;
+				// Canopy-scheduled runs never hold: a rollback point is an operator's
+		// deliberate choice, and one taken on every scheduled run would accumulate
+		// on the device with nobody expecting it.
+		let mut stream = registry.ensure_run(backup_type, false).await;
 				while stream.next().await.is_some() {}
 			});
 		}
@@ -278,12 +281,14 @@ fn backup_runner() -> bestool_alertd::BackupRunner {
 
 	Arc::new(
 		move |backup_type: String,
-		      out: mpsc::UnboundedSender<Value>|
+		      out: mpsc::UnboundedSender<Value>,
+		      hold: std::sync::Arc<std::sync::atomic::AtomicBool>|
 		      -> futures::future::BoxFuture<'static, ()> {
 			Box::pin(async move {
 				let (tx, mut rx) = mpsc::unbounded_channel::<BackupEvent>();
-				let run =
-					tokio::spawn(async move { run_backup(&backup_type, None, None, Some(tx)).await });
+				let run = tokio::spawn(async move {
+					run_backup(&backup_type, None, None, Some(tx), hold).await
+				});
 
 				let mut terminal = false;
 				while let Some(event) = rx.recv().await {

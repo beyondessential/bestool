@@ -25,8 +25,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::backup::{
-	base_url_of, build_client, config, connect_repo, load_registration, method::RestoreOpts,
-	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir,
+	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
+	postgresql::space, progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
+	transient_config_dir,
 	trim_error,
 };
 use crate::actions::Context;
@@ -39,8 +40,18 @@ pub struct RestoreArgs {
 	pub backup_type: String,
 
 	/// The snapshot id to restore (a prefix is accepted).
-	#[arg(value_name = "ID")]
-	pub id: String,
+	#[arg(value_name = "ID", required_unless_present = "from_hold")]
+	pub id: Option<String>,
+
+	/// Restore from a capture held on this device instead of from the repository.
+	///
+	/// Reads only local data, so it needs no credentials and downloads nothing.
+	/// The held capture is left in place, so a restore that fails partway can be
+	/// attempted again from the same rollback point.
+	///
+	/// Takes a hold id, as shown by `bestool canopy hold list`.
+	#[arg(long, value_name = "HOLD", conflicts_with = "id")]
+	pub from_hold: Option<String>,
 
 	/// Override the destination (the simple method's path); postgresql always
 	/// targets its configured cluster.
@@ -74,6 +85,13 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 				dir.display()
 			)
 		})?;
+
+	// A restore from a hold reads only local data: no registration, no
+	// credentials, no repository, and nothing to report to Canopy, which has no
+	// part in a hold's lifecycle.
+	if let Some(hold_id) = args.from_hold.clone() {
+		return restore_from_hold(&hold_id, &def, &args).await;
+	}
 
 	let reg = load_registration(args.config.as_deref())
 		.await?
@@ -124,7 +142,13 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 
 	// Select the snapshot to restore.
 	let snapshots = list_snapshots(&kopia, &s3env).await?;
-	let snapshot = select_snapshot(&snapshots, &args.id)?;
+	// Guaranteed present: the argument is required unless `--from-hold` is given,
+	// and that path returned above.
+	let wanted = args
+		.id
+		.as_deref()
+		.ok_or_else(|| miette!("no snapshot id given"))?;
+	let snapshot = select_snapshot(&snapshots, wanted)?;
 	info!(
 		id = %snapshot.id,
 		taken = ?snapshot.end_time.or(snapshot.start_time),
@@ -212,6 +236,109 @@ async fn run_restore(
 		clobber,
 	};
 	def.method.restore(&staging, &opts).await
+}
+
+/// Restore from a capture held on this device.
+///
+/// The capture is copied into the same staging area a downloaded snapshot lands
+/// in, and the method's restore then proceeds exactly as it does for one — so
+/// there is one restore path, not two. Copying rather than moving the capture
+/// into place is what lets the hold outlive the restore.
+async fn restore_from_hold(
+	hold_id: &str,
+	def: &config::BackupDef,
+	args: &RestoreArgs,
+) -> Result<()> {
+	let record = hold::load(hold_id).await?;
+	if record.backup_type != args.backup_type {
+		bail!(
+			"hold {hold_id} holds a '{}' capture, not '{}'",
+			record.backup_type,
+			args.backup_type
+		);
+	}
+	if !hold::capture_present(&record.capture).await {
+		bail!(
+			"the capture behind hold {hold_id} is gone, so it is not a rollback point; \
+			 drop it with `bestool canopy hold drop {hold_id}` and restore from the repository"
+		);
+	}
+	info!(
+		hold = %hold_id,
+		source = %record.source.display(),
+		frozen = ?record.taken_at,
+		"restoring from a held capture",
+	);
+
+	let staging = def
+		.method
+		.staging_dir(args.target.as_deref(), std::process::id());
+	if staging.exists() {
+		tokio::fs::remove_dir_all(&staging).await.ok();
+	}
+
+	// The staged copy is the only new allocation the restore makes — the tree it
+	// displaces is renamed aside on the same filesystem, not copied — but it is a
+	// whole second copy of the cluster, so check for it before starting rather
+	// than failing partway through a restore an operator is depending on.
+	let needed = i64::try_from(space::dir_size(&record.source).await).ok();
+	ensure_free_space(&staging, needed).await?;
+
+	copy_capture(&record.source, &staging).await?;
+
+	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type)?;
+	let opts = RestoreOpts {
+		target: args.target.clone(),
+		clobber,
+	};
+	def.method.restore(&staging, &opts).await
+}
+
+/// Copy the held capture's tree into `staging`, preserving what the restore
+/// needs. The capture is read-only (a volume snapshot) and stays untouched.
+#[cfg(unix)]
+async fn copy_capture(source: &std::path::Path, staging: &std::path::Path) -> Result<()> {
+	tokio::fs::create_dir_all(staging)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating {}", staging.display()))?;
+	let mut from = source.as_os_str().to_owned();
+	from.push("/.");
+	let status = tokio::process::Command::new("cp")
+		.arg("-a")
+		.arg(&from)
+		.arg(staging)
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err("spawning cp")?;
+	if !status.success() {
+		bail!("copying the held capture into {} failed ({status})", staging.display());
+	}
+	Ok(())
+}
+
+#[cfg(windows)]
+async fn copy_capture(source: &std::path::Path, staging: &std::path::Path) -> Result<()> {
+	let status = tokio::process::Command::new("robocopy")
+		.arg(source)
+		.arg(staging)
+		// Mirror the tree with its ACLs, without retrying on a locked file: the
+		// capture is a frozen read-only snapshot, so a file that can't be read
+		// once won't become readable by waiting.
+		.args(["/E", "/COPYALL", "/DCOPY:DAT", "/R:0", "/W:0", "/NFL", "/NDL", "/NP"])
+		.stdin(std::process::Stdio::null())
+		.status()
+		.await
+		.into_diagnostic()
+		.wrap_err("spawning robocopy")?;
+	// robocopy reports what it did in the exit code: below 8 is success (files
+	// copied, extras present, and so on); 8 and above is a genuine failure.
+	if status.code().is_none_or(|code| code >= 8) {
+		bail!("copying the held capture into {} failed ({status})", staging.display());
+	}
+	Ok(())
 }
 
 /// Error unless the volume backing `staging` has room for `needed` bytes (plus a

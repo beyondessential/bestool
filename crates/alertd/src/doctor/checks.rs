@@ -35,6 +35,7 @@ pub mod fhir_jobs;
 pub mod fhir_materialisation;
 pub mod fhir_service_requests_unresolved;
 pub mod fhir_workers;
+pub mod held_captures;
 pub mod http_errors;
 pub mod inodes;
 pub mod ips;
@@ -322,6 +323,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("disk_free", disk_free, host),
 		entry!("inodes", inodes, host),
 		entry!("btrfs", btrfs, host),
+		entry!("held_captures", held_captures, host),
 		entry!("memory", memory, host),
 		entry!("load", load, host),
 		// Uptime is already the top-level `uptimeSecs` status fact; the soft

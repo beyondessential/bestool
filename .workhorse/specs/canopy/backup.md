@@ -96,7 +96,8 @@ A run:
    This lets a server image ship backup wiring unconditionally and simply wait until an operator authorises the group;
 4. starts a loopback re-signing proxy for kopia (below) and connects kopia to the repository through it, reconnecting if the target changed so a server-side bucket change is picked up;
 5. runs the `pre` hooks, prepares the method's source, applies an ignore policy for any method-supplied transient files, and takes the kopia snapshot;
-6. cleans up and runs the `post` hooks;
+6. cleans up and runs the `post` hooks.
+   A run asked to hold retains its capture at this point instead of releasing it, as described in [HOLD](held-captures.md);
 7. reports the outcome.
    Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing.
    A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
@@ -195,6 +196,7 @@ The superuser connection already carries the replication privilege.
 `bestool canopy restore <type> <id>` is the operator-facing restore.
 The backup type selects the definition, method, and credential scope; the snapshot to restore is named explicitly by id.
 It resolves the definition, fetches restore-purpose (read-only) credentials, connects to the repository, and selects the snapshot whose id matches.
+A restore can equally take its source from a capture held on the device, described in [HOLD](held-captures.md), in which case nothing is fetched or downloaded and the method's restore is otherwise identical.
 Selection is by id across the whole repository — not scoped to the server issuing the restore — so a replacement host can restore a backup taken by the server it succeeds.
 It restores the snapshot into a staging area on the same filesystem as the target so the final move is atomic, then hands off to the method.
 
