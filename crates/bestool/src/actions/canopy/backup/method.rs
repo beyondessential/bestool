@@ -204,20 +204,26 @@ impl Method {
 	}
 
 	/// A staging directory for the restore, colocated with the eventual target's
-	/// filesystem so the final move is an atomic rename. Falls back to the temp
-	/// dir if the target can't be resolved.
+	/// filesystem so the final move is an atomic rename.
+	///
+	/// The postgresql method always yields a parent on the data filesystem (see
+	/// [`restore_staging_parent`]). The simple method derives it from the target's
+	/// parent and only falls back to the temp dir when the target has no parent (a
+	/// bare relative path) — an edge that doesn't arise for the postgres restore
+	/// that motivated the cross-device guard.
+	///
+	/// [`restore_staging_parent`]: super::postgresql::resolve::restore_staging_parent
 	pub fn staging_dir(&self, target_override: Option<&Path>, pid: u32) -> PathBuf {
 		let parent = match self {
 			Method::Simple(config) => target_override
 				.map(Path::to_path_buf)
 				.unwrap_or_else(|| config.path.clone())
 				.parent()
-				.map(Path::to_path_buf),
+				.map(Path::to_path_buf)
+				.unwrap_or_else(std::env::temp_dir),
 			Method::Postgresql(config) => super::postgresql::resolve::restore_staging_parent(config),
 		};
-		parent
-			.unwrap_or_else(std::env::temp_dir)
-			.join(format!(".bestool-restore.{pid}"))
+		parent.join(format!(".bestool-restore.{pid}"))
 	}
 
 	/// Lay a restored snapshot (in `staging`) back down. Method-specific: the
@@ -306,8 +312,8 @@ const BUSY_RETRY_FOR: Duration = Duration::from_secs(10);
 /// Control Manager calls a service stopped before its last child process has
 /// finished exiting, and the executables those children ran stay locked a beat
 /// longer — for a whole-install postgres restore, inside the very directory
-/// being renamed. Other errors (a missing source, a cross-device move) never
-/// clear on their own, so they return at once.
+/// being renamed. A cross-device move never clears on its own, so it fails at
+/// once with the fix (relocate staging); any other error returns immediately.
 async fn rename_when_free(from: &Path, to: &Path) -> Result<()> {
 	use miette::IntoDiagnostic as _;
 
@@ -320,6 +326,19 @@ async fn rename_when_free(from: &Path, to: &Path) -> Result<()> {
 				debug!("{} is busy ({err}); retrying in {backoff:?}", from.display());
 				tokio::time::sleep(backoff).await;
 				backoff = (backoff * 2).min(Duration::from_secs(1));
+			}
+			// A cross-device move can never succeed by retrying: staging and target
+			// are on different filesystems. Fail with the fix rather than let the
+			// caller's retry loop spin on an unclearable error forever.
+			Err(err) if is_cross_device(&err) => {
+				bail!(
+					"cannot move {} to {}: they are on different filesystems, so the \
+					 swap can't be an atomic rename. Set `staging_dir` in the backup \
+					 def to a path on the same filesystem as {}, then retry.",
+					from.display(),
+					to.display(),
+					to.display(),
+				);
 			}
 			Err(err) => return Err(err).into_diagnostic(),
 		}
@@ -335,6 +354,18 @@ fn is_busy(err: &std::io::Error) -> bool {
 			err.raw_os_error(),
 			Some(5 /* ERROR_ACCESS_DENIED */ | 32 /* ERROR_SHARING_VIOLATION */)
 		)
+}
+
+/// Whether a rename failed because source and destination are on different
+/// filesystems (`EXDEV` on Unix, `ERROR_NOT_SAME_DEVICE` on Windows). This never
+/// clears on its own — the staging dir has to be relocated onto the target's
+/// filesystem — so the caller stops rather than retries.
+fn is_cross_device(err: &std::io::Error) -> bool {
+	#[cfg(windows)]
+	const CODE: i32 = 17; // ERROR_NOT_SAME_DEVICE
+	#[cfg(not(windows))]
+	const CODE: i32 = 18; // EXDEV
+	err.raw_os_error() == Some(CODE)
 }
 
 /// `/a/b` + `old` → `/a/b.old`.
@@ -397,6 +428,26 @@ mod tests {
 		assert_eq!(is_busy(&denied), cfg!(windows));
 		assert!(!is_busy(&missing));
 		assert!(!is_busy(&std::io::Error::other("no os code")));
+	}
+
+	#[test]
+	fn cross_device_is_recognised_and_distinct_from_busy() {
+		// The platform's cross-device code (EXDEV=18 on Unix, ERROR_NOT_SAME_DEVICE=17
+		// on Windows) is detected; the other platform's code is not.
+		#[cfg(not(windows))]
+		let (same_dev, other_dev) = (18, 17);
+		#[cfg(windows)]
+		let (same_dev, other_dev) = (17, 18);
+		assert!(is_cross_device(&std::io::Error::from_raw_os_error(same_dev)));
+		assert!(!is_cross_device(&std::io::Error::from_raw_os_error(other_dev)));
+
+		// A cross-device failure is never treated as busy — the two branches must not
+		// overlap, so the Windows busy-retry keeps handling only 5/32.
+		let xdev = std::io::Error::from_raw_os_error(same_dev);
+		assert!(!(is_busy(&xdev) && is_cross_device(&xdev)));
+		for busy in [5, 32] {
+			assert!(!is_cross_device(&std::io::Error::from_raw_os_error(busy)));
+		}
 	}
 
 	#[tokio::test]
