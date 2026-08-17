@@ -28,6 +28,16 @@ Otherwise it downloads the target artifact, verifies its signature, and replaces
 
 On a package-managed install (the Linux deb) the command refuses to act unless forced, directing the operator to the package manager.
 
+## Update-available notice on other commands
+
+When bestool runs any command other than `self-update`, it makes a best-effort check for a newer published version and, if one exists, prints a notice suggesting `bestool self-update`.
+On a package-managed install the check is skipped, since updates come from the package manager.
+
+The check is informational and never delays or blocks the command: it runs alongside the command, which proceeds regardless of how long the check takes or whether it succeeds.
+A host that is offline, off the tailnet, or on the wrong tailnet therefore costs the command nothing, even while the check waits out its own network timeouts.
+A short-lived command finishes before the check does and simply omits the notice; a long-running one surfaces it once the check completes.
+The check resolves its endpoint the same way the download path does, including the tailscale proxy route.
+
 ## Delegation to the running daemon
 
 On Windows, when the alert service is running, `bestool self-update` asks the daemon to perform the update rather than swapping the binary itself.
