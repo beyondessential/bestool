@@ -101,12 +101,20 @@ subcommands! {
 pub async fn run_with_update_check(args: Args) -> Result<()> {
 	let action = args.action.clone();
 
+	// The update check is informational, so it runs alongside the command rather
+	// than gating it. A slow or unreachable check (offline, off the tailnet, or
+	// on the wrong tailnet) costs the command nothing: a short-lived command
+	// exits before the check finishes and just skips the notice, while a
+	// long-running one still surfaces it once the check completes.
 	#[cfg(all(feature = "download", feature = "self-update"))]
 	if !matches!(action, Action::SelfUpdate(_))
 		&& !crate::actions::self_update::is_package_manager_install()
-		&& let Err(err) = crate::download::check_for_update().await
 	{
-		debug!("Failed to check for updates: {}", err);
+		tokio::spawn(async {
+			if let Err(err) = crate::download::check_for_update().await {
+				debug!("Failed to check for updates: {}", err);
+			}
+		});
 	}
 
 	run(args, Context::new()).await

@@ -11,19 +11,11 @@ use hickory_resolver::{
 	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
 	net::runtime::TokioRuntimeProvider,
 };
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result};
 use tokio::{net::TcpStream, time::timeout};
 use tracing::{debug, info, instrument};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Upper bound on the best-effort update check that runs before other commands.
-///
-/// The check is informational only, so it must never hold up the command the
-/// user actually ran. A reachable endpoint answers well within this; the bound
-/// is what makes an unreachable one (offline, off-tailnet, wrong tailnet) fail
-/// fast instead of stalling the command.
-const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn reqwest_client() -> Result<reqwest::Client> {
 	let mut builder = crate::http::client_builder();
@@ -208,38 +200,9 @@ pub async fn fetch_latest_version() -> Result<String> {
 	Ok(latest)
 }
 
-/// Fetch the published latest version straight from the public endpoint,
-/// without the tailscale proxy discovery that [`fetch_latest_version`] does for
-/// the download path.
-///
-/// The informational update check runs on every command, so it takes the
-/// direct route and stays fast rather than probing for a proxy that may not be
-/// there. Off-tailnet or on the wrong tailnet, that probing is what made the
-/// check stall for tens of seconds.
-async fn fetch_latest_version_direct() -> Result<String> {
-	let url = DownloadSource::Tools
-		.host()
-		.join("/bestool/latest-version.txt")
-		.into_diagnostic()?;
-	debug!(?url, "Fetching latest bestool version (direct)");
-
-	let response = crate::http::client()
-		.get(url.as_str())
-		.send()
-		.await
-		.into_diagnostic()?
-		.error_for_status()
-		.into_diagnostic()?;
-
-	let body = response.text().await.into_diagnostic()?;
-	Ok(body.trim().to_owned())
-}
-
 pub async fn check_for_update() -> Result<()> {
 	let current_version = env!("CARGO_PKG_VERSION");
-	let latest_version = timeout(UPDATE_CHECK_TIMEOUT, fetch_latest_version_direct())
-		.await
-		.map_err(|_| miette!("update check timed out"))??;
+	let latest_version = fetch_latest_version().await?;
 	debug!(
 		current = current_version,
 		latest = %latest_version,
