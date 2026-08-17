@@ -132,10 +132,6 @@ fn resolve_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster>
 /// Unlike [`resolve`], the directory need not exist yet (a fresh host): an
 /// explicit `data_dir` or `version` fully determines the path. With neither, it
 /// falls back to [`resolve`] (restoring over an already-present cluster).
-pub fn resolve_target(config: &PostgresqlConfig) -> Result<ResolvedCluster> {
-	resolve_target_in(config, &postgres_base())
-}
-
 fn resolve_target_in(config: &PostgresqlConfig, base: &Path) -> Result<ResolvedCluster> {
 	if let Some(data_dir) = &config.data_dir {
 		let version = config
@@ -364,19 +360,47 @@ fn ensure_version_present(wanted: &str, installed: &[String]) -> Result<()> {
 /// same filesystem so the swap is a rename. On Windows that's the `PostgreSQL`
 /// base (so the whole `PostgreSQL\<version>` install can be replaced); elsewhere
 /// the data dir's parent.
-pub fn restore_staging_parent(config: &PostgresqlConfig) -> Option<PathBuf> {
-	let target = resolve_target(config).ok()?;
+///
+/// An explicit `staging_dir` in the def wins (the same escape hatch a backup
+/// uses). Otherwise the parent is derived from the resolved target. Resolution
+/// can fail — an ambiguous multi-version base, or a fresh host with neither
+/// `version` nor `data_dir` set — and then it falls back to the postgres base,
+/// which is on the data filesystem. It never falls back to the system temp dir:
+/// that is often a different mount, which would make the final swap a
+/// cross-device move (`EXDEV`) that no retry can clear.
+pub fn restore_staging_parent(config: &PostgresqlConfig) -> PathBuf {
+	restore_staging_parent_in(config, &postgres_base())
+}
+
+fn restore_staging_parent_in(config: &PostgresqlConfig, base: &Path) -> PathBuf {
+	if let Some(dir) = &config.staging_dir {
+		return dir.clone();
+	}
+	match resolve_target_in(config, base) {
+		Ok(target) => staging_parent_of(&target.data_dir, base),
+		Err(_) => base.to_path_buf(),
+	}
+}
+
+/// The staging parent for a resolved data dir: the install root on Windows (so a
+/// whole-install snapshot can replace `PostgreSQL\<version>`), the data dir's
+/// parent elsewhere. Falls back to the postgres base if the path has no suitable
+/// ancestor, keeping staging on the data filesystem.
+fn staging_parent_of(data_dir: &Path, base: &Path) -> PathBuf {
 	#[cfg(windows)]
 	{
-		target
-			.data_dir
+		data_dir
 			.parent()
 			.and_then(Path::parent)
 			.map(Path::to_path_buf)
+			.unwrap_or_else(|| base.to_path_buf())
 	}
 	#[cfg(not(windows))]
 	{
-		target.data_dir.parent().map(Path::to_path_buf)
+		data_dir
+			.parent()
+			.map(Path::to_path_buf)
+			.unwrap_or_else(|| base.to_path_buf())
 	}
 }
 
@@ -597,5 +621,45 @@ mod tests {
 		let msg = format!("{err}");
 		assert!(msg.contains("PostgreSQL 17"));
 		assert!(msg.contains("found 16, 18"));
+	}
+
+	#[test]
+	fn staging_parent_falls_back_to_base_not_temp_when_ambiguous() {
+		// Two versioned clusters under the base and no `version`/`data_dir` set:
+		// resolution is ambiguous. The staging parent must still land under the
+		// base (the data filesystem), never the system temp dir — the regression
+		// that made the final swap a cross-device move.
+		let tmp = tempfile::tempdir().unwrap();
+		make_cluster(tmp.path(), "16", "main");
+		make_cluster(tmp.path(), "18", "main");
+		let cfg = config("main", None, None);
+		assert!(resolve_target_in(&cfg, tmp.path()).is_err());
+		assert_eq!(restore_staging_parent_in(&cfg, tmp.path()), tmp.path());
+	}
+
+	#[test]
+	fn staging_parent_uses_resolved_target_parent() {
+		let tmp = tempfile::tempdir().unwrap();
+		make_cluster(tmp.path(), "18", "main");
+		let cfg = config("main", Some("18"), None);
+		let parent = restore_staging_parent_in(&cfg, tmp.path());
+		// Unix stages beside the data dir (`<base>/18`); Windows one level up so the
+		// whole install can be replaced (here the injected base, `<base>`).
+		#[cfg(not(windows))]
+		assert_eq!(parent, tmp.path().join("18"));
+		#[cfg(windows)]
+		assert_eq!(parent, tmp.path());
+	}
+
+	#[test]
+	fn staging_dir_override_wins() {
+		let tmp = tempfile::tempdir().unwrap();
+		make_cluster(tmp.path(), "18", "main");
+		let mut cfg = config("main", Some("18"), None);
+		cfg.staging_dir = Some(PathBuf::from("/mnt/big/staging"));
+		assert_eq!(
+			restore_staging_parent_in(&cfg, tmp.path()),
+			PathBuf::from("/mnt/big/staging")
+		);
 	}
 }
