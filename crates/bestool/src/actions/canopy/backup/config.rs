@@ -39,6 +39,9 @@ pub struct BackupDef {
 	pub pre: Vec<Hook>,
 	/// Commands run after cleanup (best-effort, always).
 	pub post: Vec<Hook>,
+	/// Commands run before this def's restore lays its data down (sequential,
+	/// fail-fast), to quiesce whatever holds the data being replaced.
+	pub pre_restore: Vec<Hook>,
 	/// Commands run after this def's restore lays its data down (sequential,
 	/// fail-fast), for data a service only reads when it starts.
 	pub post_restore: Vec<Hook>,
@@ -59,6 +62,8 @@ struct RawDef {
 	pre: Vec<Hook>,
 	#[serde(default)]
 	post: Vec<Hook>,
+	#[serde(default)]
+	pre_restore: Vec<Hook>,
 	#[serde(default)]
 	post_restore: Vec<Hook>,
 	#[serde(default)]
@@ -93,6 +98,7 @@ impl RawDef {
 			tags: self.tags,
 			pre: self.pre,
 			post: self.post,
+			pre_restore: self.pre_restore,
 			post_restore: self.post_restore,
 			method,
 		})
@@ -256,26 +262,37 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_post_restore_hooks() {
+	fn parses_restore_hooks() {
 		let def = parse_def(
 			r#"
 			type = "tamanu-secrets"
 			[simple]
 			path = "/var/lib/containers/storage/secrets"
+			[[pre_restore]]
+			command = ["/usr/bin/systemctl", "stop", "tamanu-central"]
 			[[post_restore]]
-			command = ["/usr/bin/systemctl", "restart", "tamanu-central"]
+			command = ["/usr/bin/systemctl", "start", "tamanu-central"]
 			"#,
 		)
 		.unwrap();
-		assert_eq!(def.post_restore.len(), 1);
 		assert_eq!(
-			def.post_restore[0].command,
-			vec!["/usr/bin/systemctl", "restart", "tamanu-central"]
+			def.pre_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec!["/usr/bin/systemctl", "stop", "tamanu-central"]]
+		);
+		assert_eq!(
+			def.post_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec!["/usr/bin/systemctl", "start", "tamanu-central"]]
 		);
 	}
 
 	#[test]
-	fn post_restore_defaults_to_empty() {
+	fn restore_hooks_default_to_empty() {
 		let def = parse_def(
 			r#"
 			type = "tamanu-postgres"
@@ -284,6 +301,7 @@ mod tests {
 			"#,
 		)
 		.unwrap();
+		assert!(def.pre_restore.is_empty());
 		assert!(def.post_restore.is_empty());
 	}
 
