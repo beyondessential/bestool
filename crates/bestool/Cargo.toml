@@ -123,6 +123,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-backup",
 	"tamanu-backup-configs",
 	"tamanu-config",
+	"tamanu-config-key-path",
 	"tamanu-url",
 	"tamanu-doctor",
 	"tamanu-download",
@@ -143,6 +144,9 @@ tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:ta
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 tamanu-config = ["__tamanu"]
+# Print the config key file path, for a backup def to capture the key that
+# decrypts local_system_secrets alongside the database.
+tamanu-config-key-path = ["__tamanu", "tamanu-config"]
 tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",

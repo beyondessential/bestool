@@ -73,6 +73,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
 * [`bestool tamanu config`↴](#bestool-tamanu-config)
+* [`bestool tamanu config-key-path`↴](#bestool-tamanu-config-key-path)
 * [`bestool tamanu db-url`↴](#bestool-tamanu-db-url)
 * [`bestool tamanu doctor`↴](#bestool-tamanu-doctor)
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
@@ -1529,6 +1530,7 @@ Alias: t
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
 * `config` — Find and print the current Tamanu config
+* `config-key-path` — Print the path to the Tamanu config key file
 * `db-url` — Generate a DATABASE_URL connection string
 * `doctor` — Gather server info + healthchecks for a Tamanu install
 * `download` — Download Tamanu artifacts
@@ -1921,6 +1923,24 @@ Alias: c
 * `-n`, `--or-null` — Print null if key not found
 * `-k`, `--key <KEY>` — Path to a subkey
 * `-r`, `--raw` — If the value is a string, print it directly (without quotes)
+
+
+
+## `bestool tamanu config-key-path`
+
+Print the path to the Tamanu config key file.
+
+The key encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password. A database restored onto a host holding a different key reads none of them, so a backup def names this command as its `path_command` to capture the key with the database it belongs to.
+
+Installs that mount the key from outside the filesystem — a container taking it as a podman secret — have no path to print, and back up podman's secret store instead.
+
+**Usage:** `bestool tamanu config-key-path [OPTIONS]`
+
+###### **Options:**
+
+* `-p`, `--package <PACKAGE>` — Package to read the config for (central-server or facility-server).
+
+   Detected from the config when not given.
 
 
 

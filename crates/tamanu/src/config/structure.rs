@@ -37,6 +37,10 @@ pub struct TamanuConfig {
 	/// `sync` block. Only configured on facility servers — central servers have
 	/// no sync target, so its presence is a reliable "is this a facility" signal.
 	pub sync: Option<Sync>,
+	/// `crypto` block, holding the key file that encrypts `local_system_secrets`.
+	/// Absent where the key is mounted from outside the filesystem (a container's
+	/// podman secret), which the config names by env var instead.
+	pub crypto: Option<Crypto>,
 }
 
 impl TamanuConfig {
@@ -168,6 +172,7 @@ impl TamanuConfig {
 			country_time_zone: None,
 			integrations: Integrations::default(),
 			sync: None,
+			crypto: None,
 		}
 	}
 }
@@ -182,6 +187,15 @@ impl TamanuConfig {
 #[serde(default, rename_all = "camelCase")]
 pub struct Integrations {
 	pub fhir: Fhir,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Crypto {
+	/// Path to the AES key encrypting every `local_system_secrets` value, the
+	/// settings PSK among them. Relative paths resolve against the server package
+	/// directory, as they do for the server itself.
+	pub key_file: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

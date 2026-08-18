@@ -62,6 +62,8 @@ super::subcommands! {
 	#[cfg(feature = "tamanu-config")]
 	#[clap(alias = "c")]
 	config => Config(ConfigArgs),
+	#[cfg(feature = "tamanu-config-key-path")]
+	config_key_path => ConfigKeyPath(ConfigKeyPathArgs),
 	#[cfg(feature = "tamanu-url")]
 	#[clap(aliases = ["db", "u", "url"])]
 	db_url => DbUrl(DbUrlArgs),
