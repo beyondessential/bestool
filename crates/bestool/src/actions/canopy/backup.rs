@@ -16,6 +16,7 @@ pub mod method;
 pub mod postgresql;
 pub(super) mod progress;
 pub mod provider;
+mod secret_key;
 mod simple;
 
 use std::{

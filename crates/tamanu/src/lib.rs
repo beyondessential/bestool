@@ -12,6 +12,7 @@ pub mod config;
 pub mod connection_url;
 pub mod pm2;
 pub mod roots;
+pub mod secret_key;
 pub mod seedling;
 pub mod server_info;
 pub mod services;

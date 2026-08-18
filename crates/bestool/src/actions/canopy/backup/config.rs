@@ -13,7 +13,7 @@ use std::{
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use serde::Deserialize;
 
-use super::method::{Method, PostgresqlConfig, SimpleConfig};
+use super::method::{Method, PostgresqlConfig, SimpleConfig, TamanuSecretKeyConfig};
 
 /// Environment variable overriding the backups config directory.
 pub const BACKUPS_DIR_ENV: &str = "BESTOOL_BACKUPS_DIR";
@@ -55,19 +55,24 @@ struct RawDef {
 	simple: Option<SimpleConfig>,
 	#[serde(default)]
 	postgresql: Option<PostgresqlConfig>,
+	#[serde(default)]
+	tamanu_secret_key: Option<TamanuSecretKeyConfig>,
 }
 
 impl RawDef {
 	fn into_def(self) -> Result<BackupDef> {
-		let method = match (self.simple, self.postgresql) {
-			(Some(simple), None) => Method::Simple(simple),
-			(None, Some(postgresql)) => Method::Postgresql(postgresql),
-			(None, None) => bail!(
-				"backup def '{}' has no method table; add exactly one of [simple] or [postgresql]",
+		let method = match (self.simple, self.postgresql, self.tamanu_secret_key) {
+			(Some(simple), None, None) => Method::Simple(simple),
+			(None, Some(postgresql), None) => Method::Postgresql(postgresql),
+			(None, None, Some(secret_key)) => Method::TamanuSecretKey(secret_key),
+			(None, None, None) => bail!(
+				"backup def '{}' has no method table; add exactly one of [simple], [postgresql] \
+				 or [tamanu_secret_key]",
 				self.r#type
 			),
-			(Some(_), Some(_)) => bail!(
-				"backup def '{}' has both [simple] and [postgresql]; exactly one is allowed",
+			_ => bail!(
+				"backup def '{}' has more than one method table; exactly one of [simple], \
+				 [postgresql] or [tamanu_secret_key] is allowed",
 				self.r#type
 			),
 		};
@@ -211,6 +216,24 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_a_bare_tamanu_secret_key_def() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secret-key"
+			[tamanu_secret_key]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.method.name(), "tamanu_secret_key");
+		let Method::TamanuSecretKey(config) = &def.method else {
+			panic!("expected the secret-key method");
+		};
+		assert!(config.path.is_none());
+		assert!(config.package.is_none());
+		assert!(config.root.is_none());
+	}
+
+	#[test]
 	fn rejects_two_method_tables() {
 		let err = parse_def(
 			r#"
@@ -219,6 +242,17 @@ mod tests {
 			path = "/a"
 			[postgresql]
 			cluster = "main"
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("exactly one"));
+
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			path = "/a"
+			[tamanu_secret_key]
 			"#,
 		)
 		.unwrap_err();

@@ -1530,7 +1530,7 @@ Alias: t
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
 * `config` — Find and print the current Tamanu config
-* `config-key-path` — Print the path to the Tamanu config key file
+* `config-key-path` — Print where this host keeps the Tamanu config key
 * `db-url` — Generate a DATABASE_URL connection string
 * `doctor` — Gather server info + healthchecks for a Tamanu install
 * `download` — Download Tamanu artifacts
@@ -1928,11 +1928,11 @@ Alias: c
 
 ## `bestool tamanu config-key-path`
 
-Print the path to the Tamanu config key file.
+Print where this host keeps the Tamanu config key.
 
-The key encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password. A database restored onto a host holding a different key reads none of them, so a backup def names this command as its `path_command` to capture the key with the database it belongs to.
+The key encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password. A database restored onto a host holding a different key reads none of them.
 
-Installs that mount the key from outside the filesystem — a container taking it as a podman secret — have no path to print, and back up podman's secret store instead.
+A bare-metal or Windows install prints its `crypto.keyFile`. A containerised install takes the key as a podman secret and has no server-side path, so it prints podman's secret store instead. Backing either up is the `[tamanu_secret_key]` backup method's job; this is for reading by hand.
 
 **Usage:** `bestool tamanu config-key-path [OPTIONS]`
 

@@ -11,7 +11,7 @@ Canopy owns scheduling, retention, maintenance, inspection, and alerting; the de
 ## Backup definitions
 
 A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup).
-A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
+A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]`, `[postgresql]` or `[tamanu_secret_key]` — selecting a built-in method.
 A definition with no method table, or with more than one, is a load error.
 The `type` is the only identity that matters to Canopy; the filename is informational.
 
@@ -58,11 +58,23 @@ port = 5432                       # optional — override the port used to issue
 socket = "/var/run/postgresql"    # optional — override the unix socket directory
 ```
 
+#### Tamanu secret key
+
+```toml
+[tamanu_secret_key]               # capture the key that decrypts local_system_secrets
+
+path = "/etc/tamanu/tamanu.key"   # optional — override the resolved location
+package = "central-server"        # optional — which server's config names the key
+root = "/opt/tamanu"              # optional — override the discovered install root
+```
+
 ## Methods
 
 The `simple` method hands kopia a configured path verbatim; it contributes no extra tags and needs no preparation or cleanup.
 
 The `postgresql` method takes a crash-consistent physical copy of a postgres cluster, described under "The postgresql method" below.
+
+The `tamanu_secret_key` method captures the key that decrypts `local_system_secrets`, described under "The tamanu_secret_key method" below.
 
 A method exposes a `prepare` step that produces the path kopia snapshots (plus any method-supplied tags) and a `cleanup` step that releases whatever `prepare` set up; the driver runs the definition's `pre` hooks before `prepare` and its `post` hooks after `cleanup`, and `cleanup`/`post` always run even when the snapshot fails.
 
@@ -191,6 +203,25 @@ Data spread across volumes that can't be frozen together falls back to the base 
 The base-backup fallback streams over the replication protocol, so the cluster must allow replication: `wal_level` at least `replica` and `max_wal_senders` above zero (both defaults), and a local replication entry for the superuser in the host-based auth configuration.
 The superuser connection already carries the replication privilege.
 
+## The tamanu_secret_key method
+
+The key at `crypto.keyFile` encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password.
+A database restored onto a host holding a different key reads none of them, so the key has to be captured with the database it belongs to.
+
+Where the key lives is a property of the install, not of the definition, so the method resolves it rather than having an operator name a path per host.
+A bare-metal or Windows install points `crypto.keyFile` at a file, relative paths resolving against the server package directory as they do for the server itself.
+A containerised install takes the key as a podman secret and has no server-side path, so podman's secret store is captured whole instead — the store holds every secret on the host, and podman owns its layout.
+The file has to exist to be chosen, because a containerised install still carries the server's own default `crypto.keyFile` in its config while the key itself only exists as a secret; the store is the fallback, so a host that should have a key file and hasn't is an error rather than a silent capture of the wrong thing.
+
+What lands in the repository is normalised: a directory holding either the one key file or the store tree, under a fixed name per shape.
+The name is the only record of which shape was captured, so a restore can tell what it holds without a manifest to version.
+
+The capture is a copy taken before kopia reads it, which is what makes it a point in time; a key is a few hundred bytes and the store little more, so copying is cheaper than holding a consistent view for the length of a snapshot.
+It is not offered as a rollback point: re-capturing a key costs nothing, so there is nothing a hold would buy.
+
+A restore lays the captured shape back where this host keeps it, keeping any key it displaces beside it.
+Restoring one shape onto a host that wants the other is refused rather than converted: turning a Windows key file into a podman secret is a real transformation, and a half-right one leaves a server that starts and reads none of its secrets.
+
 ## Restore
 
 `bestool canopy restore <type> <id>` is the operator-facing restore.
@@ -203,6 +234,7 @@ It restores the snapshot into a staging area on the same filesystem as the targe
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.
 The `simple` method's restore lays the files back at its path or a given target.
+The `tamanu_secret_key` method's restore lays the key back where this host keeps it, described below.
 
 Restore refuses to overwrite existing data by default.
 To proceed an operator passes an explicit confirmation flag (for non-interactive use) or answers an interactive double confirmation; with neither, over occupied data, it refuses.
