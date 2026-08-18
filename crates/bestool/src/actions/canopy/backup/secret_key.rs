@@ -27,11 +27,6 @@ const KEY_FILE_ENTRY: &str = "config-key";
 /// The captured podman secret store, in the normalised tree.
 const PODMAN_STORE_ENTRY: &str = "podman-secrets";
 
-/// Where the normalised tree is built before kopia reads it. Root-owned and
-/// world-traversable, so the kopia user can reach the view made inside it.
-#[cfg(target_os = "linux")]
-const STAGE_PARENT: &str = "/var/cache/bestool";
-
 /// Find the key on this host.
 pub(super) async fn location(config: &super::method::TamanuSecretKeyConfig) -> Result<SecretKeyLocation> {
 	if let Some(path) = &config.path {
@@ -51,13 +46,17 @@ pub(super) fn classify_target(path: &Path) -> SecretKeyLocation {
 	}
 }
 
-/// Build the normalised tree for `location` and return it.
+/// Build the normalised tree for `location` under `parent` and return it.
 ///
 /// The tree is a copy, so it is a point in time: the key is a few hundred bytes
 /// and the secret store little more, which is what makes copying it up front
 /// cheaper than holding a consistent view of it for the length of a snapshot.
-pub(super) async fn stage(location: &SecretKeyLocation, backup_type: &str) -> Result<PathBuf> {
-	let staged = stage_parent().join(format!(".bestool-secret-key.{backup_type}"));
+pub(super) async fn stage(
+	location: &SecretKeyLocation,
+	backup_type: &str,
+	parent: &Path,
+) -> Result<PathBuf> {
+	let staged = parent.join(format!("secret-key.{backup_type}"));
 	if staged.exists() {
 		tokio::fs::remove_dir_all(&staged).await.ok();
 	}
@@ -82,16 +81,20 @@ pub(super) async fn stage(location: &SecretKeyLocation, backup_type: &str) -> Re
 	Ok(staged)
 }
 
-/// The directory the normalised tree is built in.
-fn stage_parent() -> PathBuf {
-	#[cfg(target_os = "linux")]
-	{
-		PathBuf::from(STAGE_PARENT)
-	}
-	#[cfg(not(target_os = "linux"))]
-	{
-		std::env::temp_dir()
-	}
+/// Where the normalised tree is built before kopia reads it: the daemon's
+/// CacheDirectory, the same place the simple method exposes its view, so root
+/// can create it and the kopia user can still reach inside it.
+#[cfg(target_os = "linux")]
+pub(super) fn stage_parent() -> PathBuf {
+	dirs::cache_dir()
+		.unwrap_or_else(|| PathBuf::from("/var/cache"))
+		.join("bestool")
+		.join("backup-staging")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn stage_parent() -> PathBuf {
+	std::env::temp_dir()
 }
 
 /// Lay a restored tree back down where this host wants it.
@@ -275,14 +278,17 @@ mod tests {
 		let key = tmp.path().join("tamanu.key");
 		std::fs::write(&key, "secret").unwrap();
 
-		let staged = stage(&SecretKeyLocation::KeyFile(key), "test-key-file")
-			.await
-			.unwrap();
+		let staged = stage(
+			&SecretKeyLocation::KeyFile(key),
+			"test-key-file",
+			tmp.path(),
+		)
+		.await
+		.unwrap();
 		assert_eq!(
 			std::fs::read_to_string(staged.join(KEY_FILE_ENTRY)).unwrap(),
 			"secret"
 		);
-		std::fs::remove_dir_all(&staged).unwrap();
 	}
 
 	#[tokio::test]

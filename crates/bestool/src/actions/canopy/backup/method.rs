@@ -174,7 +174,12 @@ impl Method {
 			Method::Postgresql(config) => super::postgresql::prepare(config, backup_type).await,
 			Method::TamanuSecretKey(config) => {
 				let location = super::secret_key::location(config).await?;
-				let staged = super::secret_key::stage(&location, backup_type).await?;
+				let staged = super::secret_key::stage(
+					&location,
+					backup_type,
+					&super::secret_key::stage_parent(),
+				)
+				.await?;
 				let (path, view) = super::simple::prepare(&staged, backup_type).await?;
 				Ok(Prepared {
 					path,
