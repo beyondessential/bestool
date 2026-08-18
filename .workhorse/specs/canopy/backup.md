@@ -11,7 +11,7 @@ Canopy owns scheduling, retention, maintenance, inspection, and alerting; the de
 ## Backup definitions
 
 A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup).
-A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
+A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]`, `[[post]]` and `[[post_restore]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
 A definition with no method table, or with more than one, is a load error, as is a definition naming itself in `after`.
 The `type` is the only identity that matters to Canopy; the filename is informational.
 
@@ -32,6 +32,9 @@ command = ["/usr/bin/systemctl", "stop", "example"]
 
 [[post]]                          # optional, ordered — run after cleanup
 command = ["/usr/bin/systemctl", "start", "example"]
+
+[[post_restore]]                  # optional, ordered — run after this def's restore
+command = ["/usr/bin/systemctl", "restart", "example"]
 ```
 
 A hook is a table with a `command` array, run argv-style (no shell).
@@ -228,6 +231,13 @@ Follower snapshots are recognised by the backup type they carry, as a tag or as 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.
 The `simple` method's restore lays the files back at its path or a given target.
+
+### Restore hooks
+
+A definition's `[[post_restore]]` hooks run after its own restore has laid the data down, in order, argv-style, and a failing one fails the restore run.
+They exist for data a service only reads at start: restoring the files is not enough where the process holding them has to be restarted to see them, and the method itself has no way to know which service that is.
+Each definition's hooks are its own, so in a restored cycle a follower's hooks run after the follower's data lands, not after its leader's.
+A hook failure leaves the restored data in place — it is a report that the service did not come back, not a reason to undo the restore.
 
 Restore refuses to overwrite existing data by default.
 To proceed an operator passes an explicit confirmation flag (for non-interactive use) or answers an interactive double confirmation; with neither, over occupied data, it refuses.

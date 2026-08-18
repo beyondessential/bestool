@@ -39,6 +39,9 @@ pub struct BackupDef {
 	pub pre: Vec<Hook>,
 	/// Commands run after cleanup (best-effort, always).
 	pub post: Vec<Hook>,
+	/// Commands run after this def's restore lays its data down (sequential,
+	/// fail-fast), for data a service only reads when it starts.
+	pub post_restore: Vec<Hook>,
 	/// The selected method.
 	pub method: Method,
 }
@@ -56,6 +59,8 @@ struct RawDef {
 	pre: Vec<Hook>,
 	#[serde(default)]
 	post: Vec<Hook>,
+	#[serde(default)]
+	post_restore: Vec<Hook>,
 	#[serde(default)]
 	simple: Option<SimpleConfig>,
 	#[serde(default)]
@@ -88,6 +93,7 @@ impl RawDef {
 			tags: self.tags,
 			pre: self.pre,
 			post: self.post,
+			post_restore: self.post_restore,
 			method,
 		})
 	}
@@ -247,6 +253,38 @@ mod tests {
 		assert_eq!(def.r#type, "tamanu-blobs");
 		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
 		assert_eq!(def.method.name(), "simple");
+	}
+
+	#[test]
+	fn parses_post_restore_hooks() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secrets"
+			[simple]
+			path = "/var/lib/containers/storage/secrets"
+			[[post_restore]]
+			command = ["/usr/bin/systemctl", "restart", "tamanu-central"]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.post_restore.len(), 1);
+		assert_eq!(
+			def.post_restore[0].command,
+			vec!["/usr/bin/systemctl", "restart", "tamanu-central"]
+		);
+	}
+
+	#[test]
+	fn post_restore_defaults_to_empty() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-postgres"
+			[postgresql]
+			cluster = "main"
+			"#,
+		)
+		.unwrap();
+		assert!(def.post_restore.is_empty());
 	}
 
 	#[test]
