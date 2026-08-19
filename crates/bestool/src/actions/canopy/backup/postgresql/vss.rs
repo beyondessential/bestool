@@ -431,6 +431,88 @@ mod tests {
 	}
 
 	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI
+	/// job), for a follower reading its source out of its leader's capture.
+	///
+	/// Two directories stand in for a leader's cluster and a follower's store on
+	/// one volume. The shadow is taken, then the follower's live directory is
+	/// rewritten, and the capture must still read what was there when it froze.
+	/// That is the property the sharing exists for: a follower reading live would
+	/// see the rewrite and describe a different moment to its leader.
+	///
+	/// spec: BAK#sharing-a-whole-volume-capture
+	#[test]
+	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
+	fn a_shared_capture_reads_the_bytes_from_when_it_froze() {
+		struct Guard {
+			id: String,
+			junction: PathBuf,
+		}
+		impl Drop for Guard {
+			fn drop(&mut self) {
+				let _ = std::fs::remove_dir(&self.junction);
+				let _ = delete_shadow(&self.id);
+			}
+		}
+
+		let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+		let pid = std::process::id();
+		let follower_leaf = format!("bestool-follower-{pid}");
+		let follower = PathBuf::from(format!("{drive}\\{follower_leaf}"));
+		std::fs::create_dir_all(&follower).expect("create the follower's dir on the system drive");
+		std::fs::write(follower.join("blob.txt"), b"at-freeze").expect("write the follower's data");
+
+		let created = create_client_accessible(&drive).expect("create shadow via WMI");
+		let taken_at = Timestamp::now();
+		let junction = PathBuf::from(format!("{drive}\\bestool-shared-mount-{pid}"));
+		mount_shadow(&created.device, &junction).expect("mount shadow via junction");
+		let guard = Guard {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+
+		// Everything past here is what the driver does for a follower.
+		let shadow = Shadow {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
+		assert!(
+			capture.volume.eq_ignore_ascii_case(&drive),
+			"capture covers {} not {drive}",
+			capture.volume
+		);
+
+		// The follower's data changes after the freeze, as it would while the
+		// leader's upload runs.
+		std::fs::write(follower.join("blob.txt"), b"after-freeze").expect("rewrite live");
+
+		let frozen = capture
+			.contains(&follower)
+			.expect("the follower's source is on the captured volume");
+		println!("follower live at {} reads from {}", follower.display(), frozen.display());
+		let content = std::fs::read(frozen.join("blob.txt")).expect("read the follower's data as frozen");
+		assert_eq!(
+			content, b"at-freeze",
+			"the capture served live bytes, so leader and follower describe different moments"
+		);
+		// And the live path really did move on, so the assertion above wasn't
+		// passing because the rewrite silently failed.
+		assert_eq!(
+			std::fs::read(follower.join("blob.txt")).unwrap(),
+			b"after-freeze"
+		);
+
+		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
+			kopia_snapshot(Path::new(&kopia), &frozen.to_string_lossy());
+		} else {
+			println!("KOPIA_BIN unset; skipped the kopia snapshot check");
+		}
+
+		drop(guard);
+		let _ = std::fs::remove_dir_all(&follower);
+	}
+
+	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI
 	/// job). Ignored by default because it needs those and isn't hermetic.
 	///
 	/// Exercises the production path: create a client-accessible shadow of the
