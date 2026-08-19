@@ -363,7 +363,22 @@ async fn run_restore(
 		target: target_override.map(Path::to_path_buf),
 		clobber,
 	};
-	def.method.restore(&staging, &opts).await
+	lay_down(def, &staging, &opts).await
+}
+
+/// Run the def's pre-restore hooks, hand the staged tree to the method, then run
+/// its post-restore hooks.
+///
+/// Both sides fail the run. A failed pre-restore hook means whatever holds the
+/// data has not let go of it, so the data is not laid down at all; a failed
+/// post-restore hook leaves the data in place and reports that what depends on
+/// it has not come back.
+///
+/// spec: BAK#restore-hooks
+async fn lay_down(def: &config::BackupDef, staging: &Path, opts: &RestoreOpts) -> Result<()> {
+	super::backup::run_hooks(&def.pre_restore, true).await?;
+	def.method.restore(staging, opts).await?;
+	super::backup::run_hooks(&def.post_restore, true).await
 }
 
 /// Restore from a capture held on this device.
@@ -420,7 +435,7 @@ async fn restore_from_hold(
 		target: args.target.clone(),
 		clobber,
 	};
-	def.method.restore(&staging, &opts).await
+	lay_down(def, &staging, &opts).await
 }
 
 /// Copy the held capture's tree into `staging`, preserving what the restore

@@ -1067,7 +1067,7 @@ fn flush_progress_segment(
 
 /// Run a sequence of hooks. `fail_fast` aborts on the first failure (pre-hooks);
 /// otherwise failures are logged and the rest still run (post-hooks).
-async fn run_hooks(hooks: &[Hook], fail_fast: bool) -> Result<()> {
+pub(super) async fn run_hooks(hooks: &[Hook], fail_fast: bool) -> Result<()> {
 	for hook in hooks {
 		if let Err(err) = run_hook(hook).await {
 			if fail_fast {
