@@ -26,7 +26,10 @@ use serde::Deserialize;
 use tracing::{info, warn};
 use wmi::{Variant, WMIConnection};
 
-use super::{super::hold::HeldCapture, resolve::ResolvedCluster};
+use super::{
+	super::{hold::HeldCapture, method::VolumeCapture},
+	resolve::ResolvedCluster,
+};
 
 /// Teardown state for a prepared shadow copy, released by [`teardown`].
 #[derive(Debug)]
@@ -131,6 +134,21 @@ pub async fn prepare(
 	let source = PathBuf::from(kopia_source(&expose_target, &rel));
 	info!(shadow = %shadow_id, source = %source.display(), "VSS shadow ready");
 	Ok((source, taken_at, Shadow { id: shadow_id, junction }))
+}
+
+/// Expose a prepared shadow as a whole-volume capture.
+///
+/// A shadow copy is of the entire volume and the junction mounts its root, so
+/// every path on that volume is inside it, frozen at the same instant. That is
+/// what lets a follower on the same volume read from here instead of taking a
+/// second shadow of data already captured.
+pub fn volume_capture(shadow: &Shadow, taken_at: Timestamp) -> Option<VolumeCapture> {
+	let junction = shadow.junction.to_str()?;
+	Some(VolumeCapture {
+		volume: volume_of(junction).ok()?.to_owned(),
+		root: shadow.junction.clone(),
+		taken_at,
+	})
 }
 
 /// Release a prepared shadow: unmount the junction and delete the shadow copy.

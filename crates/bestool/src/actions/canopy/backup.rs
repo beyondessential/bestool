@@ -468,6 +468,9 @@ pub async fn run_backup(
 	let mut queue = std::collections::VecDeque::from([backup_type.to_owned()]);
 	let mut lead_type = true;
 	let mut first_error = None;
+	// Carries a leader's whole-volume capture into the runs queued behind it, and
+	// is released when the chain drains however the chain ends.
+	let mut shared: Option<SharedCapture> = None;
 	while let Some(current) = queue.pop_front() {
 		if !lead_type {
 			info!(backup_type = %current, "continuing into follower backup");
@@ -475,7 +478,16 @@ pub async fn run_backup(
 		}
 		lead_type = false;
 
-		let end = match run_one(&current, registration_dir, backups_dir, &progress, &hold).await {
+		let end = match run_one(
+			&current,
+			registration_dir,
+			backups_dir,
+			&progress,
+			&hold,
+			&mut shared,
+		)
+		.await
+		{
 			Ok(end) => end,
 			Err(err) => {
 				first_error.get_or_insert(err);
@@ -491,6 +503,7 @@ pub async fn run_backup(
 			}
 		}
 	}
+	release_shared(shared.take()).await;
 	match first_error {
 		Some(err) => Err(err),
 		None => Ok(()),
@@ -504,6 +517,7 @@ async fn run_one(
 	backups_dir: Option<&Path>,
 	progress: &Option<BackupProgress>,
 	hold: &Arc<AtomicBool>,
+	shared: &mut Option<SharedCapture>,
 ) -> Result<RunEnd> {
 	let run_id = Uuid::new_v4().to_string();
 
@@ -536,7 +550,8 @@ async fn run_one(
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
 	emit(progress, BackupEvent::Started { run_id: run_id.clone() });
 
-	let result = backup_after_start(&def, backup_type, &run_id, registration_dir, progress, hold).await;
+	let result =
+		backup_after_start(&def, backup_type, &run_id, registration_dir, progress, hold, shared).await;
 	if let Err(err) = &result {
 		error!(backup_type, %run_id, "backup failed: {}", trim_error(err));
 	}
@@ -554,6 +569,7 @@ async fn backup_after_start(
 	registration_dir: Option<&Path>,
 	progress: &Option<BackupProgress>,
 	hold: &Arc<AtomicBool>,
+	shared: &mut Option<SharedCapture>,
 ) -> Result<RunEnd> {
 	let reg = load_registration(registration_dir)
 		.await?
@@ -627,6 +643,7 @@ async fn backup_after_start(
 			progress,
 			&cell,
 			hold,
+			shared,
 		)
 		.await;
 
@@ -731,11 +748,15 @@ async fn run_kopia_backup(
 	progress: &Option<BackupProgress>,
 	cell: &Arc<progress::ProgressCell>,
 	hold: &Arc<AtomicBool>,
+	shared: &mut Option<SharedCapture>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
 	emit(progress, BackupEvent::Phase("prepare"));
-	let prepared = def.method.prepare(&def.r#type).await?;
+	// Cloned rather than borrowed so the capture can be replaced below without
+	// holding a read of it across the whole run.
+	let within = shared.as_ref().map(|kept| kept.volume.clone());
+	let prepared = def.method.prepare(&def.r#type, within.as_ref()).await?;
 	// Record the freeze instant (where the method has one) so the reporter and the
 	// final report can carry it.
 	if let Some(taken_at) = prepared.taken_at {
@@ -770,6 +791,17 @@ async fn run_kopia_backup(
 	// want a local rollback point.
 	let cleanup = if hold.load(Ordering::Relaxed) {
 		hold_capture(def, prepared, result.is_ok()).await.map(|_| ())
+	} else if let Some(volume) = prepared.volume.clone() {
+		// A whole-volume capture outlives its own run: the followers queued behind
+		// it read their sources out of it rather than snapshotting the same disk
+		// again. Released once the chain drains.
+		release_shared(shared.replace(SharedCapture {
+			def: def.clone(),
+			prepared,
+			volume,
+		}))
+		.await;
+		Ok(())
 	} else {
 		def.method.cleanup(prepared).await
 	};
@@ -778,6 +810,29 @@ async fn run_kopia_backup(
 	let snapshot = result?;
 	cleanup?;
 	Ok(snapshot)
+}
+
+/// A leader's whole-volume capture, kept past its own run so followers whose
+/// sources sit on that volume read from it instead of taking a second snapshot
+/// of data it already froze.
+///
+/// spec: BAK#sharing-a-whole-volume-capture
+struct SharedCapture {
+	def: BackupDef,
+	prepared: method::Prepared,
+	volume: method::VolumeCapture,
+}
+
+/// Release a kept capture. Best-effort: the runs that used it have finished and
+/// reported, so failing to tear it down is a leak to warn about, not an error to
+/// fail anything with.
+async fn release_shared(kept: Option<SharedCapture>) {
+	let Some(SharedCapture { def, prepared, .. }) = kept else {
+		return;
+	};
+	if let Err(err) = def.method.cleanup(prepared).await {
+		warn!(backup_type = %def.r#type, "releasing the shared capture failed: {}", trim_error(&err));
+	}
 }
 
 /// Retain this run's capture and record it, so it outlives the process as a
@@ -841,7 +896,7 @@ async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<(
 
 	info!(backup_type, method = def.method.name(), "capturing without uploading");
 	run_hooks(&def.pre, true).await?;
-	let held = match def.method.prepare(backup_type).await {
+	let held = match def.method.prepare(backup_type, None).await {
 		Ok(prepared) => hold_capture(&def, prepared, false).await.map(|_| ()),
 		Err(err) => Err(err),
 	};

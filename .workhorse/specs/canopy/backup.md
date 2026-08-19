@@ -124,6 +124,19 @@ Following is for a capture that must be a superset of what another capture refer
 The Tamanu blob store definition follows the database definition, so every blob the database capture references is already stored when the store capture begins; blobs are immutable and never removed while referenced, so the store capture can only hold more, never less, than the database capture needs.
 A follower run triggered on its own (by schedule or by hand) is still safe on these terms, being a superset for every earlier capture of the followed type; what only the chain provides is a store capture promptly after each database capture.
 
+### Sharing a whole-volume capture
+
+Where a leader's capture covers a whole volume rather than just its own source, a follower whose source is on that volume is read out of the leader's capture instead of live.
+Only a backend that snapshots the entire volume qualifies: a Windows VSS shadow copy does, where btrfs and thin-LVM snapshot a subvolume or logical volume and a base backup copies a directory, so nothing else on the disk is inside any of those.
+The volume is matched as the path spells it, case-insensitively; a source on any other volume was never frozen by that capture and is read live as before.
+
+This is one snapshot where there were two, and it is also the only way the pair describes a single instant: a follower reading live captures the store as it is minutes later, after its leader's data froze.
+Such a follower therefore reports its leader's freeze instant as its own, being what its data actually describes.
+
+The capture is released once the whole chain has drained, rather than at the end of the run that took it, since that is the point after which nothing can still be reading from it.
+Releasing it is best-effort: every run that used it has finished and reported by then, so a teardown failure is a leak to warn about rather than an outcome to fail.
+A run told to hold its capture keeps it as a rollback point instead, and shares nothing.
+
 ## The moment the data froze
 
 A run reports the instant it froze the data it backs up — the point in time the backup represents — which is distinct from when the upload finished and from when Canopy received the report.
