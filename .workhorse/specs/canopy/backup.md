@@ -150,13 +150,18 @@ Every snapshot is tagged with the device id, the run id, and the backup type, pl
 ## Local cache
 
 kopia keeps a local cache of repository data next to its configuration, and a device is a working server whose disk is sized for the data it serves, not for a backup tool's scratch space.
-So the cache is bounded on every connection to the repository, rather than left at whatever the tool defaults to: a total budget is set, overridable per host, and the driver applies it whenever it connects, so a host connected under an earlier budget is corrected by its next run without being touched.
+So the cache is bounded on every connection to the repository, rather than left at whatever the tool defaults to.
+The bound is a share of the volume the cache lives on, so the same rule suits a small appliance and a large server: a connection that takes backups may use 5% of that volume, and one that restores may use 20%.
+A restore is an attended operation whose whole job is reading data back, so it is worth the disk; a backup runs behind a live workload and is not.
+A host that cannot determine its volume's size, or whose share would be too small for the cache to be worth keeping, gets a fixed modest budget instead.
+The share can be overridden with an absolute size per host.
 
-The budget is divided between the cached copies of backed-up file data and of repository metadata, and how it divides depends on what the connection is for.
+The budget is divided between the cached copies of backed-up file data and of repository metadata, and how it divides also depends on what the connection is for.
 A device taking backups never reads file data back out of the repository — restores are an operator action and the repository's upkeep is Canopy's — so a backup connection gives most of its budget to metadata, which is what lets an unchanged file be recognised from the previous snapshot without being read and hashed again.
 A restore connection reverses the split.
 
-The bound is on the caches whose size can be set, so a device's total cache use is the budget plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
+The driver applies the bound whenever it connects, so a host connected under an earlier rule is corrected by its next run without being touched.
+The bound is on the caches whose size can be set, so a device's total cache use is its budget plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
 
 ## Registration and triggering by the daemon
 
