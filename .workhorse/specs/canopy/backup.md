@@ -183,6 +183,23 @@ The source path is stable across runs for a given backup type, so kopia's snapsh
 Every snapshot is tagged with the device id, the run id, and the backup type, plus any tags the definition or the method contribute; the canopy-owned tags take precedence so a definition cannot override them.
 Every snapshot also carries its backup type as its description, so a repository listing identifies each snapshot without its tags being read.
 
+## Local cache
+
+kopia keeps a local cache of repository data next to its configuration, and a device is a working server whose disk is sized for the data it serves, not for a backup tool's scratch space.
+So the cache is bounded on every connection to the repository, rather than left at whatever the tool defaults to.
+The bound is a share of the volume the cache lives on, so the same rule suits a small appliance and a large server: a connection that takes backups may use 5% of that volume, and one that restores may use 20%.
+A restore is an attended operation whose whole job is reading data back, so it is worth the disk; a backup runs behind a live workload and is not.
+Whatever that share works out to, the cache never takes more than half the space free on the volume, so a backup cannot be what fills a disk that is already nearly full.
+A host whose share would be too small for the cache to be worth keeping gets a modest fixed budget instead, unless the free-space limit is what made it small; a host that cannot measure its volume at all gets that fixed budget too.
+The share can be overridden with an absolute size per host.
+
+The budget is divided between the cached copies of backed-up file data and of repository metadata, and how it divides also depends on what the connection is for.
+A device taking backups never reads file data back out of the repository — restores are an operator action and the repository's upkeep is Canopy's — so a backup connection gives most of its budget to metadata, which is what lets an unchanged file be recognised from the previous snapshot without being read and hashed again.
+A restore connection reverses the split.
+
+The driver applies the bound whenever it connects, so a host connected under an earlier rule is corrected by its next run without being touched.
+The bound is on the caches whose size can be set, so a device's total cache use is its budget plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
+
 ## Registration and triggering by the daemon
 
 When run under the bestool-alertd daemon, the device registers its capabilities — the types of every definition in the backups directory — with Canopy at startup, again on reload, and periodically as a safety net.

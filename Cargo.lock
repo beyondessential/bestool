@@ -593,7 +593,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bestool"
-version = "1.59.2"
+version = "1.60.0"
 dependencies = [
  "age",
  "algae-cli",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "26.0.0"
+version = "26.0.1"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -748,11 +748,12 @@ dependencies = [
 
 [[package]]
 name = "bestool-kopia"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "bytes",
  "clap",
  "dialoguer",
+ "fs4",
  "hex",
  "hmac 0.13.0",
  "http-body-util",

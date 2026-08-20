@@ -20,7 +20,7 @@ use bestool_canopy::{
 	schema::{BackupPurpose, BackupTarget, ReportArgs, RunOutcome},
 };
 use bestool_kopia::{
-	RunAs, S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore,
+	CacheProfile, RunAs, S3KopiaEnv, Snapshot, args_snapshot_list, args_snapshot_restore,
 	build_kopia_command_with_s3, find_kopia_binary, proxy::TrafficStats,
 };
 use clap::Parser;
@@ -150,6 +150,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		&proxy.endpoint(),
 		&server_id,
 		RunAs::CurrentUser,
+		CacheProfile::Restore,
 	)
 	.await?;
 
@@ -277,6 +278,7 @@ async fn restore_follower(
 		&proxy.endpoint(),
 		server_id,
 		RunAs::CurrentUser,
+		CacheProfile::Restore,
 	)
 	.await?;
 

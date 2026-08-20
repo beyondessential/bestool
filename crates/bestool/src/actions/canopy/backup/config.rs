@@ -12,11 +12,37 @@ use std::{
 
 use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use serde::Deserialize;
+use tracing::warn;
 
 use super::method::{Method, PostgresqlConfig, SimpleConfig};
 
 /// Environment variable overriding the backups config directory.
 pub const BACKUPS_DIR_ENV: &str = "BESTOOL_BACKUPS_DIR";
+
+/// Environment variable overriding kopia's cache budget, in megabytes.
+///
+/// An absolute size, so it replaces the share-of-the-volume sizing rather than
+/// capping it, for a host whose disk is shared or sized unusually.
+pub const CACHE_BUDGET_ENV: &str = "BESTOOL_KOPIA_CACHE_MB";
+
+/// The cache budget override, if the environment carries a usable one.
+pub fn cache_budget_override() -> Option<u64> {
+	let raw = std::env::var(CACHE_BUDGET_ENV).ok()?;
+	let parsed = parse_cache_budget(&raw);
+	if parsed.is_none() {
+		warn!(
+			value = %raw,
+			"ignoring {CACHE_BUDGET_ENV}: not a positive whole number of megabytes"
+		);
+	}
+	parsed
+}
+
+/// Parse a cache budget in megabytes; `None` for anything not a positive whole
+/// number, so a typo falls back to the default sizing rather than to nothing.
+fn parse_cache_budget(raw: &str) -> Option<u64> {
+	raw.trim().parse::<u64>().ok().filter(|mb| *mb > 0)
+}
 
 /// A single pre/post command hook.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -452,5 +478,24 @@ mod tests {
 		assert!(find_def(&dir, "nope").await.unwrap().is_none());
 
 		tokio::fs::remove_dir_all(&dir).await.ok();
+	}
+}
+
+#[cfg(test)]
+mod cache_budget_tests {
+	use super::*;
+
+	#[test]
+	fn parses_a_plain_megabyte_count() {
+		assert_eq!(parse_cache_budget("2048"), Some(2048));
+		assert_eq!(parse_cache_budget(" 2048 "), Some(2048));
+	}
+
+	#[test]
+	fn rejects_values_that_would_disable_the_cache_or_confuse_kopia() {
+		assert_eq!(parse_cache_budget("0"), None);
+		assert_eq!(parse_cache_budget("-1"), None);
+		assert_eq!(parse_cache_budget("2GB"), None);
+		assert_eq!(parse_cache_budget(""), None);
 	}
 }
