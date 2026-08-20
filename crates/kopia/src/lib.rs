@@ -500,11 +500,24 @@ pub const RESTORE_CACHE_PERCENT: u64 = 20;
 /// Budget used when the volume's size can't be determined.
 pub const FALLBACK_CACHE_BUDGET_MB: u64 = 4096;
 
+/// Share of the volume's *free* space the cache may take, whatever the
+/// share-of-capacity works out to.
+///
+/// A percentage of capacity is the wrong bound on a volume that is nearly full:
+/// the hosts most at risk of running out of disk are exactly the ones where 5%
+/// of capacity is a large fraction of what's left. This caps the budget so the
+/// cache can never take more than half of the room remaining.
+pub const FREE_SPACE_PERCENT: u64 = 50;
+
 /// Floor on the whole budget, so a small volume doesn't leave kopia with a
-/// cache too small to be worth keeping.
+/// cache too small to be worth keeping. Applied before the free-space cap,
+/// which overrides it: a volume with nothing left gets a small cache, not a
+/// cache that fills it.
 pub const MIN_CACHE_BUDGET_MB: u64 = 512;
 
 /// Floor for either cache's hard limit, so a small budget can't starve one.
+/// Never more than half the budget, so it can't quietly inflate a budget the
+/// free-space cap deliberately made small.
 const MIN_CACHE_MB: u64 = 128;
 
 impl CacheProfile {
@@ -529,9 +542,11 @@ impl CacheProfile {
 impl CacheLimits {
 	/// Split `total_mb` across the two sizeable caches according to `profile`.
 	pub fn new(total_mb: u64, profile: CacheProfile) -> Self {
-		let total_mb = total_mb.max(MIN_CACHE_BUDGET_MB);
-		let content_hard_mb = (total_mb * profile.content_percent() / 100).max(MIN_CACHE_MB);
-		let metadata_hard_mb = total_mb.saturating_sub(content_hard_mb).max(MIN_CACHE_MB);
+		let per_cache_floor = MIN_CACHE_MB.min(total_mb / 2);
+		let content_hard_mb = (total_mb * profile.content_percent() / 100).max(per_cache_floor);
+		let metadata_hard_mb = total_mb
+			.saturating_sub(content_hard_mb)
+			.max(per_cache_floor);
 		Self {
 			content_soft_mb: soft_of(content_hard_mb),
 			content_hard_mb,
@@ -540,11 +555,13 @@ impl CacheLimits {
 		}
 	}
 
-	/// The profile's share of a cache volume of `volume_mb`, or
-	/// [`FALLBACK_CACHE_BUDGET_MB`] when the volume's size isn't known.
-	pub fn for_volume(volume_mb: Option<u64>, profile: CacheProfile) -> Self {
-		let budget = match volume_mb {
-			Some(mb) => mb * profile.percent_of_volume() / 100,
+	/// The profile's share of the cache volume, capped at half of what is free
+	/// on it, or [`FALLBACK_CACHE_BUDGET_MB`] when the volume can't be measured.
+	pub fn for_volume(space: Option<VolumeSpace>, profile: CacheProfile) -> Self {
+		let budget = match space {
+			Some(space) => (space.total_mb * profile.percent_of_volume() / 100)
+				.max(MIN_CACHE_BUDGET_MB)
+				.min(space.free_mb * FREE_SPACE_PERCENT / 100),
 			None => FALLBACK_CACHE_BUDGET_MB,
 		};
 		Self::new(budget, profile)
@@ -557,27 +574,37 @@ impl CacheLimits {
 		if let Some(mb) = override_mb {
 			return Self::new(mb, profile);
 		}
-		let volume = cache_volume_mb();
-		if volume.is_none() {
-			debug!("could not size the kopia cache volume; using the fallback budget");
+		let space = cache_volume_space();
+		if space.is_none() {
+			debug!("could not measure the kopia cache volume; using the fallback budget");
 		}
-		Self::for_volume(volume, profile)
+		Self::for_volume(space, profile)
 	}
 }
 
-/// Size, in megabytes, of the volume kopia's cache lives on.
+/// Capacity and free space, in megabytes, of the volume kopia's cache lives on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeSpace {
+	pub total_mb: u64,
+	pub free_mb: u64,
+}
+
+/// Measure the volume kopia's cache lives on.
 ///
 /// The cache directory itself may not exist yet (a host that has never run a
 /// backup), so this walks up to the nearest existing ancestor, which is on the
 /// same volume in every layout we create.
-fn cache_volume_mb() -> Option<u64> {
+fn cache_volume_space() -> Option<VolumeSpace> {
 	let mut dir = cache_home()?;
 	loop {
 		if dir.exists() {
-			return match fs4::total_space(&dir) {
-				Ok(bytes) => Some(bytes / 1_000_000),
-				Err(err) => {
-					debug!(path = %dir.display(), error = %err, "sizing the kopia cache volume");
+			return match (fs4::total_space(&dir), fs4::available_space(&dir)) {
+				(Ok(total), Ok(free)) => Some(VolumeSpace {
+					total_mb: total / 1_000_000,
+					free_mb: free / 1_000_000,
+				}),
+				(Err(err), _) | (_, Err(err)) => {
+					debug!(path = %dir.display(), error = %err, "measuring the kopia cache volume");
 					None
 				}
 			};
@@ -1153,20 +1180,50 @@ mod tests {
 		assert!(limits.content_hard_mb + limits.metadata_hard_mb <= 4096);
 	}
 
-	/// The 130 GB server that prompted the limits: 5% to back up, 20% to restore.
+	/// The 130 GB server that prompted the limits: 5% to back up, 20% to
+	/// restore, on a volume with room to spare.
 	#[test]
 	fn budgets_are_a_share_of_the_cache_volume() {
-		let volume_mb = 130_000;
-		let push = CacheLimits::for_volume(Some(volume_mb), CacheProfile::Push);
+		let roomy = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 100_000,
+		};
+		let push = CacheLimits::for_volume(Some(roomy), CacheProfile::Push);
 		assert_eq!(push.content_hard_mb + push.metadata_hard_mb, 6500);
-		let restore = CacheLimits::for_volume(Some(volume_mb), CacheProfile::Restore);
+		let restore = CacheLimits::for_volume(Some(roomy), CacheProfile::Restore);
 		assert_eq!(restore.content_hard_mb + restore.metadata_hard_mb, 26_000);
 		// A restore gets more room overall, and much more of it for file data.
 		assert!(restore.content_hard_mb > 4 * push.content_hard_mb);
 	}
 
 	#[test]
-	fn an_unsizeable_volume_falls_back_to_a_fixed_budget() {
+	fn a_nearly_full_volume_caps_the_budget_at_half_of_what_is_left() {
+		// Same 130 GB volume with 8 GB free: the share of capacity would be
+		// 6.5 GB, nearly everything that remains.
+		let tight = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 8_000,
+		};
+		let push = CacheLimits::for_volume(Some(tight), CacheProfile::Push);
+		assert_eq!(push.content_hard_mb + push.metadata_hard_mb, 4_000);
+		let restore = CacheLimits::for_volume(Some(tight), CacheProfile::Restore);
+		assert_eq!(restore.content_hard_mb + restore.metadata_hard_mb, 4_000);
+	}
+
+	#[test]
+	fn a_volume_with_almost_nothing_left_gets_a_small_cache_not_the_floor() {
+		// The floor would ask for 512 MB; only 300 MB is free, so the cache
+		// takes half of that rather than most of what remains.
+		let full = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 300,
+		};
+		let limits = CacheLimits::for_volume(Some(full), CacheProfile::Push);
+		assert_eq!(limits.content_hard_mb + limits.metadata_hard_mb, 150);
+	}
+
+	#[test]
+	fn an_unmeasurable_volume_falls_back_to_a_fixed_budget() {
 		let limits = CacheLimits::for_volume(None, CacheProfile::Push);
 		assert_eq!(
 			limits.content_hard_mb + limits.metadata_hard_mb,
@@ -1176,8 +1233,13 @@ mod tests {
 
 	#[test]
 	fn a_small_volume_still_leaves_both_caches_usable() {
-		// 5% of a 4 GB volume is under the floor, so the floor applies.
-		let limits = CacheLimits::for_volume(Some(4096), CacheProfile::Push);
+		// 5% of a 4 GB volume is under the floor, and there's room for the
+		// floor, so the floor applies.
+		let small = VolumeSpace {
+			total_mb: 4096,
+			free_mb: 3000,
+		};
+		let limits = CacheLimits::for_volume(Some(small), CacheProfile::Push);
 		assert_eq!(
 			limits.content_hard_mb + limits.metadata_hard_mb,
 			MIN_CACHE_BUDGET_MB

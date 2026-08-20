@@ -153,7 +153,8 @@ kopia keeps a local cache of repository data next to its configuration, and a de
 So the cache is bounded on every connection to the repository, rather than left at whatever the tool defaults to.
 The bound is a share of the volume the cache lives on, so the same rule suits a small appliance and a large server: a connection that takes backups may use 5% of that volume, and one that restores may use 20%.
 A restore is an attended operation whose whole job is reading data back, so it is worth the disk; a backup runs behind a live workload and is not.
-A host that cannot determine its volume's size, or whose share would be too small for the cache to be worth keeping, gets a fixed modest budget instead.
+Whatever that share works out to, the cache never takes more than half the space free on the volume, so a backup cannot be what fills a disk that is already nearly full.
+A host whose share would be too small for the cache to be worth keeping gets a modest fixed budget instead, unless the free-space limit is what made it small; a host that cannot measure its volume at all gets that fixed budget too.
 The share can be overridden with an absolute size per host.
 
 The budget is divided between the cached copies of backed-up file data and of repository metadata, and how it divides also depends on what the connection is for.
