@@ -446,6 +446,18 @@ pub fn build_kopia_command_with_s3(
 pub const PROXY_DUMMY_ACCESS_KEY: &str = "bestool-proxy-dummy-access-key";
 pub const PROXY_DUMMY_SECRET_KEY: &str = "bestool-proxy-dummy-secret-key";
 
+/// Cache caps written into the local repository config at connect, in MB.
+///
+/// These hosts mostly write backups, where the content cache buys little, and
+/// without a hard limit kopia lets it grow to roughly the size of the data
+/// being backed up — enough to fill a small hospital-server disk. Connect runs
+/// before every operation, so existing oversized caches get swept down to
+/// these limits on the next run.
+pub const CONTENT_CACHE_SIZE_MB: u32 = 1024;
+pub const CONTENT_CACHE_LIMIT_MB: u32 = 2048;
+pub const METADATA_CACHE_SIZE_MB: u32 = 1024;
+pub const METADATA_CACHE_LIMIT_MB: u32 = 2048;
+
 /// Push `repository connect s3` args for the canopy-managed repo, reached
 /// through the loopback re-signing proxy at `endpoint` (TLS disabled on that
 /// leg) with dummy credentials.
@@ -475,7 +487,15 @@ pub fn args_repository_connect_s3(
 		.arg("--override-username")
 		.arg(username)
 		.arg("--override-hostname")
-		.arg(hostname);
+		.arg(hostname)
+		.arg("--content-cache-size-mb")
+		.arg(CONTENT_CACHE_SIZE_MB.to_string())
+		.arg("--content-cache-size-limit-mb")
+		.arg(CONTENT_CACHE_LIMIT_MB.to_string())
+		.arg("--metadata-cache-size-mb")
+		.arg(METADATA_CACHE_SIZE_MB.to_string())
+		.arg("--metadata-cache-size-limit-mb")
+		.arg(METADATA_CACHE_LIMIT_MB.to_string());
 }
 
 /// Push `snapshot create --json` args, with each tag as `key:value`.
@@ -1072,6 +1092,14 @@ mod tests {
 				"canopy",
 				"--override-hostname",
 				"server-id-123",
+				"--content-cache-size-mb",
+				"1024",
+				"--content-cache-size-limit-mb",
+				"2048",
+				"--metadata-cache-size-mb",
+				"1024",
+				"--metadata-cache-size-limit-mb",
+				"2048",
 			]
 		);
 	}
