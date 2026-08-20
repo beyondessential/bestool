@@ -16,9 +16,10 @@ use crate::actions::{
 /// of them.
 ///
 /// A bare-metal or Windows install prints its `crypto.keyFile`. A containerised
-/// install takes the key as a podman secret and has no server-side path, so it
-/// prints podman's secret store instead. Backing either up is the
-/// `[tamanu_secret_key]` backup method's job; this is for reading by hand.
+/// install holds the key as a podman secret with no server-side path, so it
+/// prints the secret's name instead (as `podman secret <name>`). Backing either
+/// up is the `[tamanu_secret_key]` backup method's job; this is for reading by
+/// hand.
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigKeyPathArgs {
 	/// Package to read the config for (central-server or facility-server).
@@ -30,6 +31,6 @@ pub struct ConfigKeyPathArgs {
 
 pub async fn run(args: ConfigKeyPathArgs, ctx: Context) -> Result<()> {
 	let (_, root) = find_tamanu(ctx.require::<TamanuArgs>()).await?;
-	println!("{}", locate(&root, args.package.as_deref()).await?.path().display());
+	println!("{}", locate(&root, args.package.as_deref()).await?);
 	Ok(())
 }

@@ -76,8 +76,7 @@ pub struct SimpleConfig {
 /// normal case.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TamanuSecretKeyConfig {
-	/// Override the resolved location. A directory is taken as a secret store, a
-	/// file (or an absent path) as a key file.
+	/// Override the resolved location with a key file path.
 	#[serde(default)]
 	pub path: Option<PathBuf>,
 	/// Package whose config names the key (central-server or facility-server);
@@ -285,14 +284,17 @@ impl Method {
 				.map(Path::to_path_buf)
 				.unwrap_or_else(std::env::temp_dir),
 			Method::TamanuSecretKey(config) => {
-				// Colocated with the key itself, so laying it back is a rename: for the
-				// file shape that is its config directory, for the store its parent.
-				let location = super::secret_key::location(config).await?;
-				location
-					.path()
-					.parent()
-					.map(Path::to_path_buf)
-					.unwrap_or_else(std::env::temp_dir)
+				// A key file is laid back by rename, so stage beside it; a podman
+				// secret is piped in, so anywhere works.
+				match super::secret_key::location(config).await? {
+					bestool_tamanu::secret_key::SecretKeyLocation::KeyFile(path) => path
+						.parent()
+						.map(Path::to_path_buf)
+						.unwrap_or_else(std::env::temp_dir),
+					bestool_tamanu::secret_key::SecretKeyLocation::PodmanSecret(_) => {
+						std::env::temp_dir()
+					}
+				}
 			}
 			Method::Postgresql(config) => super::postgresql::resolve::restore_staging_parent(config),
 		};
@@ -312,7 +314,7 @@ impl Method {
 			Method::Postgresql(config) => super::postgresql::restore(config, staging, opts).await,
 			Method::TamanuSecretKey(config) => {
 				let location = match &opts.target {
-					Some(target) => super::secret_key::classify_target(target),
+					Some(target) => super::secret_key::classify_target(target)?,
 					None => super::secret_key::location(config).await?,
 				};
 				super::secret_key::lay_down(staging, &location, opts.clobber).await

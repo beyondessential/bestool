@@ -210,17 +210,18 @@ A database restored onto a host holding a different key reads none of them, so t
 
 Where the key lives is a property of the install, not of the definition, so the method resolves it rather than having an operator name a path per host.
 A bare-metal or Windows install points `crypto.keyFile` at a file, relative paths resolving against the server package directory as they do for the server itself.
-A containerised install takes the key as a podman secret and has no server-side path, so podman's secret store is captured whole instead — the store holds every secret on the host, and podman owns its layout.
-The file has to exist to be chosen, because a containerised install still carries the server's own default `crypto.keyFile` in its config while the key itself only exists as a secret; the store is the fallback, so a host that should have a key file and hasn't is an error rather than a silent capture of the wrong thing.
+A containerised install holds the key as a podman secret, mounted into the containers at the `/run/secrets` path its `crypto.keyFile` names; the path's basename names the secret, and the value is read and written through podman.
+Only the one secret is touched: the host's secret store also holds values that belong to the host rather than to the database, and none of those should travel with a backup.
+The file has to exist to be chosen, so a `crypto.keyFile` that names neither an existing file nor a `/run/secrets` path is an error rather than a silent capture of the wrong thing.
 
-What lands in the repository is normalised: a directory holding either the one key file or the store tree, under a fixed name per shape.
-The name is the only record of which shape was captured, so a restore can tell what it holds without a manifest to version.
+What lands in the repository is the key value itself, one file under a fixed name, whatever shape the host held it in.
+The value is all the database needs, which is what lets a capture taken from one shape restore onto an install of the other.
 
-The capture is a copy taken before kopia reads it, which is what makes it a point in time; a key is a few hundred bytes and the store little more, so copying is cheaper than holding a consistent view for the length of a snapshot.
+The capture is a copy taken before kopia reads it, which is what makes it a point in time; a key is a few hundred bytes, so copying is cheaper than holding a consistent view for the length of a snapshot.
 It is not offered as a rollback point: re-capturing a key costs nothing, so there is nothing a hold would buy.
 
-A restore lays the captured shape back where this host keeps it, keeping any key it displaces beside it.
-Restoring one shape onto a host that wants the other is refused rather than converted: turning a Windows key file into a podman secret is a real transformation, and a half-right one leaves a server that starts and reads none of its secrets.
+A restore writes the value back in whatever shape this host keeps its key, converting freely between shapes: onto the key file path by an atomic rename, or into the podman secret through podman, picked up when the containers next start.
+Either way the key it displaces is kept beside it, as `<name>.old` next to a key file or as a `.old`-suffixed secret in podman.
 
 ## Restore
 

@@ -2,14 +2,13 @@
 //!
 //! The key that decrypts `local_system_secrets` is held differently depending
 //! on how the server is installed: a bare-metal or Windows install points
-//! `crypto.keyFile` at a file, a containerised one takes it as a podman secret
-//! and has no server-side path. The method resolves which, so a definition does
-//! not have to name a platform.
+//! `crypto.keyFile` at a file, a containerised one holds it as a podman secret.
+//! The method resolves which, so a definition does not have to name a platform.
 //!
-//! What lands in the repository is normalised: a directory holding either
-//! `KEY_FILE_ENTRY` (the one file) or `PODMAN_STORE_ENTRY` (the store tree).
-//! The entry name is the only record of which shape was captured, so a restore
-//! can tell what it is holding without a manifest to version.
+//! What lands in the repository is the key value itself: a directory holding
+//! the one file `KEY_FILE_ENTRY`, whatever shape the host held it in. The value
+//! is all the database needs, which is what lets a capture taken from one shape
+//! restore onto the other.
 
 use std::path::{Path, PathBuf};
 
@@ -18,39 +17,41 @@ use tracing::{debug, info};
 
 use bestool_tamanu::{
 	find_tamanu,
-	secret_key::{SecretKeyLocation, locate},
+	secret_key::{
+		SecretKeyLocation, locate, podman_secret_exists, read_podman_secret, write_podman_secret,
+	},
 };
 
-/// The captured key file, in the normalised tree.
+/// The captured key, in the staged tree.
 const KEY_FILE_ENTRY: &str = "config-key";
 
-/// The captured podman secret store, in the normalised tree.
-const PODMAN_STORE_ENTRY: &str = "podman-secrets";
-
 /// Find the key on this host.
-pub(super) async fn location(config: &super::method::TamanuSecretKeyConfig) -> Result<SecretKeyLocation> {
+pub(super) async fn location(
+	config: &super::method::TamanuSecretKeyConfig,
+) -> Result<SecretKeyLocation> {
 	if let Some(path) = &config.path {
-		return Ok(classify_target(path));
+		return classify_target(path);
 	}
 	let (_, root) = find_tamanu(config.root.as_deref()).await?;
 	locate(&root, config.package.as_deref()).await
 }
 
-/// An operator-given path says where, not which shape; a directory is the store,
-/// a file (or one not written yet) is a key file.
-pub(super) fn classify_target(path: &Path) -> SecretKeyLocation {
+/// An operator-given path names the key file to read or write.
+pub(super) fn classify_target(path: &Path) -> Result<SecretKeyLocation> {
 	if path.is_dir() {
-		SecretKeyLocation::PodmanSecrets(path.to_path_buf())
-	} else {
-		SecretKeyLocation::KeyFile(path.to_path_buf())
+		bail!(
+			"{} is a directory; the capture is a single key value, so name the key file itself",
+			path.display()
+		);
 	}
+	Ok(SecretKeyLocation::KeyFile(path.to_path_buf()))
 }
 
-/// Build the normalised tree for `location` under `parent` and return it.
+/// Build the staged tree for `location` under `parent` and return it.
 ///
-/// The tree is a copy, so it is a point in time: the key is a few hundred bytes
-/// and the secret store little more, which is what makes copying it up front
-/// cheaper than holding a consistent view of it for the length of a snapshot.
+/// The tree is a copy, so it is a point in time: the key is a few hundred
+/// bytes, which is what makes copying it up front cheaper than holding a
+/// consistent view of it for the length of a snapshot.
 pub(super) async fn stage(
 	location: &SecretKeyLocation,
 	backup_type: &str,
@@ -65,23 +66,34 @@ pub(super) async fn stage(
 		.into_diagnostic()
 		.wrap_err_with(|| format!("creating {}", staged.display()))?;
 
+	let into = staged.join(KEY_FILE_ENTRY);
 	match location {
 		SecretKeyLocation::KeyFile(key) => {
-			let into = staged.join(KEY_FILE_ENTRY);
 			tokio::fs::copy(key, &into)
 				.await
 				.into_diagnostic()
 				.wrap_err_with(|| format!("copying {} to {}", key.display(), into.display()))?;
 		}
-		SecretKeyLocation::PodmanSecrets(store) => {
-			copy_tree(store, &staged.join(PODMAN_STORE_ENTRY)).await?;
+		SecretKeyLocation::PodmanSecret(name) => {
+			let value = read_podman_secret(name).await?;
+			tokio::fs::write(&into, &value)
+				.await
+				.into_diagnostic()
+				.wrap_err_with(|| format!("writing {}", into.display()))?;
+			#[cfg(unix)]
+			{
+				use std::os::unix::fs::PermissionsExt as _;
+				tokio::fs::set_permissions(&into, std::fs::Permissions::from_mode(0o600))
+					.await
+					.into_diagnostic()?;
+			}
 		}
 	}
-	debug!(location = ?location, staged = %staged.display(), "staged the tamanu secret key");
+	debug!(location = %location, staged = %staged.display(), "staged the tamanu secret key");
 	Ok(staged)
 }
 
-/// Where the normalised tree is built before kopia reads it: the daemon's
+/// Where the staged tree is built before kopia reads it: the daemon's
 /// CacheDirectory, the same place the simple method exposes its view, so root
 /// can create it and the kopia user can still reach inside it.
 #[cfg(target_os = "linux")]
@@ -97,63 +109,31 @@ pub(super) fn stage_parent() -> PathBuf {
 	std::env::temp_dir()
 }
 
-/// Lay a restored tree back down where this host wants it.
+/// Write a restored key value back in whatever shape this host keeps its key.
 ///
-/// Restoring a shape onto a host that wants the other is refused rather than
-/// guessed at: converting a Windows key file into a podman secret (or either
-/// into whatever Seedling ends up holding) is a real transformation, and a
-/// half-right one leaves a server that starts and reads none of its secrets.
+/// The capture is the value, so either shape can receive it: a key file is
+/// swapped in by rename, a podman secret is recreated through podman. Either
+/// way the key it displaces is kept beside it, as `<name>.old`.
 pub(super) async fn lay_down(
 	staging: &Path,
 	location: &SecretKeyLocation,
 	clobber: bool,
 ) -> Result<()> {
-	let captured = captured_shape(staging)?;
-	match (&captured, location) {
-		(Captured::KeyFile(from), SecretKeyLocation::KeyFile(to)) => {
-			place_file(from, to, clobber).await
-		}
-		(Captured::PodmanSecrets(from), SecretKeyLocation::PodmanSecrets(to)) => {
-			super::method::ensure_not_clobbering(to, clobber)?;
-			super::method::replace_dir(from, to).await
-		}
-		_ => bail!(
-			"the capture holds a {}, but this host keeps its key as a {} at {}; \
-			 converting between the two is not implemented, so restore the key by hand",
-			captured.shape(),
-			location.shape(),
-			location.path().display()
-		),
+	let captured = staged_key(staging)?;
+	match location {
+		SecretKeyLocation::KeyFile(to) => place_file(&captured, to, clobber).await,
+		SecretKeyLocation::PodmanSecret(name) => place_secret(&captured, name, clobber).await,
 	}
 }
 
-/// Which shape a restored tree holds.
-enum Captured {
-	KeyFile(PathBuf),
-	PodmanSecrets(PathBuf),
-}
-
-impl Captured {
-	fn shape(&self) -> &'static str {
-		match self {
-			Self::KeyFile(_) => "key file",
-			Self::PodmanSecrets(_) => "podman secret store",
-		}
-	}
-}
-
-/// Read the shape out of a restored tree by which entry it carries.
-fn captured_shape(staging: &Path) -> Result<Captured> {
+/// The captured key inside a restored tree.
+fn staged_key(staging: &Path) -> Result<PathBuf> {
 	let key = staging.join(KEY_FILE_ENTRY);
 	if key.is_file() {
-		return Ok(Captured::KeyFile(key));
-	}
-	let store = staging.join(PODMAN_STORE_ENTRY);
-	if store.is_dir() {
-		return Ok(Captured::PodmanSecrets(store));
+		return Ok(key);
 	}
 	bail!(
-		"the restored tree at {} holds neither {KEY_FILE_ENTRY} nor {PODMAN_STORE_ENTRY}, \
+		"the restored tree at {} does not hold {KEY_FILE_ENTRY}, \
 		 so it is not a tamanu_secret_key capture",
 		staging.display()
 	)
@@ -187,39 +167,27 @@ async fn place_file(from: &Path, to: &Path, clobber: bool) -> Result<()> {
 	Ok(())
 }
 
-/// Copy a tree, preserving ownership and modes: podman reads its store back and
-/// a secret with the wrong mode is a secret the server cannot use.
-async fn copy_tree(source: &Path, into: &Path) -> Result<()> {
-	#[cfg(unix)]
-	{
-		tokio::fs::create_dir_all(into)
-			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("creating {}", into.display()))?;
-
-		let mut from = source.as_os_str().to_owned();
-		from.push("/.");
-		let status = tokio::process::Command::new("cp")
-			.arg("-a")
-			.arg(&from)
-			.arg(into)
-			.status()
-			.await
-			.into_diagnostic()
-			.wrap_err("running cp -a")?;
-		if !status.success() {
-			bail!("copying {} into {} failed: {status}", source.display(), into.display());
+/// Recreate a podman secret from a restored key, keeping any existing value as
+/// a `<name>.old` secret.
+async fn place_secret(from: &Path, name: &str, clobber: bool) -> Result<()> {
+	let value = tokio::fs::read(from)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("reading the restored key at {}", from.display()))?;
+	if podman_secret_exists(name).await? {
+		if !clobber {
+			bail!(
+				"podman secret {name} already holds a key; refusing to overwrite without \
+				 confirmation (pass --clobber-existing-data-yes-i-am-sure, or confirm \
+				 interactively)"
+			);
 		}
-		Ok(())
+		let displaced = read_podman_secret(name).await?;
+		write_podman_secret(&format!("{name}.old"), &displaced).await?;
 	}
-	#[cfg(not(unix))]
-	{
-		let _ = into;
-		bail!(
-			"a podman secret store ({}) is a Linux shape and cannot be captured here",
-			source.display()
-		)
-	}
+	write_podman_secret(name, &value).await?;
+	info!(secret = name, "restored the tamanu config key");
+	Ok(())
 }
 
 #[cfg(test)]
@@ -227,49 +195,36 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn a_target_is_classified_by_what_is_there() {
+	fn a_target_names_a_key_file_never_a_directory() {
 		let tmp = tempfile::tempdir().unwrap();
 		let dir = tmp.path().join("secrets");
 		std::fs::create_dir_all(&dir).unwrap();
 		let file = tmp.path().join("tamanu.key");
 		std::fs::write(&file, "k").unwrap();
 
+		assert!(classify_target(&dir).is_err());
 		assert!(matches!(
-			classify_target(&dir),
-			SecretKeyLocation::PodmanSecrets(_)
-		));
-		assert!(matches!(
-			classify_target(&file),
+			classify_target(&file).unwrap(),
 			SecretKeyLocation::KeyFile(_)
 		));
-		// An absent path is a key file that isn't written yet, not a store.
+		// An absent path is a key file that isn't written yet.
 		assert!(matches!(
-			classify_target(&tmp.path().join("absent")),
+			classify_target(&tmp.path().join("absent")).unwrap(),
 			SecretKeyLocation::KeyFile(_)
 		));
 	}
 
 	#[test]
-	fn the_captured_shape_is_read_from_the_entry_name() {
+	fn a_restored_tree_must_hold_the_key_entry() {
 		let tmp = tempfile::tempdir().unwrap();
-		let key_capture = tmp.path().join("as-file");
-		std::fs::create_dir_all(&key_capture).unwrap();
-		std::fs::write(key_capture.join(KEY_FILE_ENTRY), "k").unwrap();
-		assert!(matches!(
-			captured_shape(&key_capture).unwrap(),
-			Captured::KeyFile(_)
-		));
+		let capture = tmp.path().join("capture");
+		std::fs::create_dir_all(&capture).unwrap();
+		std::fs::write(capture.join(KEY_FILE_ENTRY), "k").unwrap();
+		assert!(staged_key(&capture).is_ok());
 
-		let store_capture = tmp.path().join("as-store");
-		std::fs::create_dir_all(store_capture.join(PODMAN_STORE_ENTRY)).unwrap();
-		assert!(matches!(
-			captured_shape(&store_capture).unwrap(),
-			Captured::PodmanSecrets(_)
-		));
-
-		let neither = tmp.path().join("empty");
-		std::fs::create_dir_all(&neither).unwrap();
-		assert!(captured_shape(&neither).is_err());
+		let empty = tmp.path().join("empty");
+		std::fs::create_dir_all(&empty).unwrap();
+		assert!(staged_key(&empty).is_err());
 	}
 
 	#[tokio::test]
@@ -313,24 +268,5 @@ mod tests {
 				.unwrap(),
 			"old"
 		);
-	}
-
-	#[tokio::test]
-	async fn a_shape_mismatch_is_refused_rather_than_guessed() {
-		let tmp = tempfile::tempdir().unwrap();
-		let staging = tmp.path().join("staging");
-		std::fs::create_dir_all(&staging).unwrap();
-		std::fs::write(staging.join(KEY_FILE_ENTRY), "k").unwrap();
-
-		let err = lay_down(
-			&staging,
-			&SecretKeyLocation::PodmanSecrets(tmp.path().join("secrets")),
-			true,
-		)
-		.await
-		.unwrap_err();
-		let err = format!("{err}");
-		assert!(err.contains("not implemented"), "{err}");
-		assert!(err.contains("podman secret store"), "{err}");
 	}
 }
