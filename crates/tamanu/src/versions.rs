@@ -289,6 +289,15 @@ pub fn parse_version_loose(s: &str) -> Option<Version> {
 	Version::parse(s.trim().trim_start_matches('v')).ok()
 }
 
+/// Whether `actual` is an older version than `expected`. `None` when either
+/// side doesn't parse as a version — callers must not treat that as older.
+pub fn is_older(actual: &str, expected: &str) -> Option<bool> {
+	match (parse_version_loose(actual), parse_version_loose(expected)) {
+		(Some(a), Some(e)) => Some(a < e),
+		_ => None,
+	}
+}
+
 /// Pick the running server version out of a unit→tag map (as returned by
 /// [`running_versions_linux`]).
 ///

@@ -15,6 +15,7 @@ pub mod roots;
 pub mod seedling;
 pub mod server_info;
 pub mod services;
+pub mod upgrade_marker;
 pub mod versions;
 
 pub mod systemd;

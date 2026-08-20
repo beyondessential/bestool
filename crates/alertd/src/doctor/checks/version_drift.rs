@@ -13,6 +13,7 @@ use bestool_tamanu::{
 	services::{
 		Expectation, Supervisor, expected, parse_systemd_unit, systemd_patient_portal_instanced,
 	},
+	upgrade_marker::{self, UpgradeMarker},
 	versions::{self, ExpectedVersions},
 };
 
@@ -88,7 +89,12 @@ pub async fn run(ctx: CheckContext) -> Check {
 		patient_portal_instanced,
 	);
 
-	evaluate_drift(&running, &expected_versions, &expectations)
+	evaluate_drift(
+		&running,
+		&expected_versions,
+		&expectations,
+		upgrade_marker::read().as_ref(),
+	)
 }
 
 /// Broken result for when `podman ps` couldn't be read at all. The check itself
@@ -109,13 +115,21 @@ fn unreadable_check(reason: &str) -> Check {
 /// deployment is configured for, given an already-read `running` map. An empty
 /// map is a genuine "nothing running" pass — distinct from the unreadable case
 /// handled by [`unreadable_check`].
+///
+/// A fresh upgrade marker downgrades drift to a warning, but only while every
+/// drifted container is *older* than expected: a container ahead of the
+/// configured version is never what a rollout produces, so it fails even
+/// mid-upgrade. A stale marker doesn't excuse anything — it fails with a note
+/// that the rollout looks stalled.
 fn evaluate_drift(
 	running: &HashMap<String, String>,
 	expected_versions: &ExpectedVersions,
 	expectations: &[Expectation],
+	marker: Option<&UpgradeMarker>,
 ) -> Check {
 	let mut rows: Vec<Value> = Vec::new();
 	let mut drifted: Vec<String> = Vec::new();
+	let mut all_drift_is_older = true;
 	let mut total_running = 0usize;
 
 	for (unit, actual) in running {
@@ -145,6 +159,9 @@ fn evaluate_drift(
 				"{unit}: expected {} but running {actual}",
 				exp_v.unwrap_or("?"),
 			));
+			if exp_v.and_then(|e| versions::is_older(actual, e)) != Some(true) {
+				all_drift_is_older = false;
+			}
 		}
 	}
 
@@ -160,26 +177,51 @@ fn evaluate_drift(
 			let tag = expected_versions.tamanu.as_deref().unwrap_or("(unknown)");
 			format!("{total_running} container(s) on expected version {tag}")
 		};
-		Check::pass("version_drift", summary)
+		return Check::pass("version_drift", summary)
 			.with_detail("expected", expected_summary)
 			.with_detail("instances", Value::Array(rows))
 			.with_stat(
 				Stat::gauge("running", total_running as f64).help("Expected containers running"),
 			)
-			.with_stat(Stat::gauge("drifted", 0.0).help("Containers on a stale version"))
-	} else {
-		let drifted_n = drifted.len();
-		let summary = format!("{} container(s) on a stale version", drifted.len());
-		Check::fail("version_drift", summary, drifted.join("; "))
-			.with_detail("expected", expected_summary)
-			.with_detail("instances", Value::Array(rows))
+			.with_stat(Stat::gauge("drifted", 0.0).help("Containers on a stale version"));
+	}
+
+	let drifted_n = drifted.len();
+	let stats = |check: Check| {
+		check
+			.with_detail("expected", expected_summary.clone())
+			.with_detail("instances", Value::Array(rows.clone()))
 			.with_stat(
 				Stat::gauge("running", total_running as f64).help("Expected containers running"),
 			)
 			.with_stat(
 				Stat::gauge("drifted", drifted_n as f64).help("Containers on a stale version"),
 			)
+	};
+
+	if let Some(marker @ UpgradeMarker::Fresh { .. }) = marker
+		&& all_drift_is_older
+	{
+		let target = marker.target().unwrap_or("a new version");
+		return stats(Check::warning(
+			"version_drift",
+			format!("rolling upgrade to {target} in progress"),
+			format!(
+				"{drifted_n} container(s) not yet rolled: {}",
+				drifted.join("; ")
+			),
+		));
 	}
+
+	let summary = format!("{drifted_n} container(s) on a stale version");
+	let mut detail = drifted.join("; ");
+	if let Some(UpgradeMarker::Stale { age, .. }) = marker {
+		detail.push_str(&format!(
+			"; an upgrade marker is present but {} minutes old — the rollout may have stalled",
+			age.as_secs() / 60
+		));
+	}
+	stats(Check::fail("version_drift", summary, detail))
 }
 
 #[cfg(test)]
@@ -218,7 +260,7 @@ mod tests {
 	fn empty_running_is_pass() {
 		// podman answered with nothing running — genuinely fine, distinct from blind.
 		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
-		let check = evaluate_drift(&HashMap::new(), &ev("v2.54.7", None), &exps);
+		let check = evaluate_drift(&HashMap::new(), &ev("v2.54.7", None), &exps, None);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 
@@ -235,7 +277,7 @@ mod tests {
 				"v2.54.7".to_string(),
 			),
 		]);
-		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps);
+		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps, None);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 
@@ -251,7 +293,7 @@ mod tests {
 			"tamanu-frontend@a.service".to_string(),
 			"v2.54.7".to_string(),
 		)]);
-		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps);
+		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps, None);
 		match &check.status {
 			CheckStatus::Fail(reason) => {
 				assert!(reason.contains("tamanu-frontend@a"), "{reason}")
@@ -278,7 +320,7 @@ mod tests {
 				"2.54.12".to_string(),
 			),
 		]);
-		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps);
+		let check = evaluate_drift(&running, &ev("v2.54.7", Some("v2.54.12")), &exps, None);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 
@@ -287,7 +329,77 @@ mod tests {
 		let exps = [exp("tamanu-central-api", Instances::NumericAtLeast(2))];
 		let running =
 			HashMap::from([("tamanu-orphan@1.service".to_string(), "v1.0.0".to_string())]);
-		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps);
+		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps, None);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	#[test]
+	fn a_fresh_marker_downgrades_older_drift_to_warning() {
+		let exps = [exp("tamanu-frontend", Instances::Named(&["a", "b"]))];
+		let running = HashMap::from([(
+			"tamanu-frontend@a.service".to_string(),
+			"v2.54.7".to_string(),
+		)]);
+		let marker = UpgradeMarker::Fresh {
+			target: Some("v2.54.12".into()),
+		};
+		let check = evaluate_drift(
+			&running,
+			&ev("v2.54.7", Some("v2.54.12")),
+			&exps,
+			Some(&marker),
+		);
+		match &check.status {
+			CheckStatus::Warning(reason) => {
+				assert!(reason.contains("v2.54.12"), "{reason}");
+			}
+			other => panic!("expected warning, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn a_fresh_marker_does_not_excuse_a_newer_container() {
+		// Ahead of the configured version is a rollback gone wrong or a bad
+		// tag, never something a rollout produces.
+		let exps = [exp("tamanu-frontend", Instances::Named(&["a", "b"]))];
+		let running = HashMap::from([(
+			"tamanu-frontend@a.service".to_string(),
+			"v2.55.0".to_string(),
+		)]);
+		let marker = UpgradeMarker::Fresh {
+			target: Some("v2.54.12".into()),
+		};
+		let check = evaluate_drift(
+			&running,
+			&ev("v2.54.7", Some("v2.54.12")),
+			&exps,
+			Some(&marker),
+		);
+		assert!(matches!(check.status, CheckStatus::Fail(_)), "{check:?}");
+	}
+
+	#[test]
+	fn a_stale_marker_fails_and_names_the_stall() {
+		let exps = [exp("tamanu-frontend", Instances::Named(&["a", "b"]))];
+		let running = HashMap::from([(
+			"tamanu-frontend@a.service".to_string(),
+			"v2.54.7".to_string(),
+		)]);
+		let marker = UpgradeMarker::Stale {
+			target: Some("v2.54.12".into()),
+			age: std::time::Duration::from_secs(2 * 60 * 60),
+		};
+		let check = evaluate_drift(
+			&running,
+			&ev("v2.54.7", Some("v2.54.12")),
+			&exps,
+			Some(&marker),
+		);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("stalled"), "{reason}");
+			}
+			other => panic!("expected fail, got {other:?}"),
+		}
 	}
 }

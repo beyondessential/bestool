@@ -9,7 +9,7 @@ use tracing::warn;
 use bestool_tamanu::{
 	seedling,
 	services::{self, ExpectedState, Expectation, Supervisor},
-	systemd,
+	systemd, upgrade_marker,
 	versions::{self, ExpectedVersions, VersionStatus},
 };
 
@@ -119,6 +119,7 @@ pub async fn run(args: StatusArgs, ctx: Context) -> Result<()> {
 		expected: expected_versions,
 		running: running_versions,
 		install: install_version.to_string(),
+		upgrading: upgrade_marker::read().is_some_and(|marker| marker.is_fresh()),
 	};
 
 	if args.json {
@@ -159,6 +160,9 @@ struct VersionProbe {
 	/// Install-root version, used as the actual version for every pm2
 	/// instance (pm2 has no per-process version concept).
 	install: String,
+	/// A fresh upgrade marker is present: drift behind the expected version
+	/// is a rollout under way, not a fault.
+	upgrading: bool,
 }
 
 impl VersionProbe {
@@ -185,6 +189,22 @@ impl VersionProbe {
 			self.actual_for(instance).as_deref(),
 			self.expected_for(expectation.name),
 		)
+	}
+
+	/// Whether the upgrade marker excuses this instance's mismatch. Only drift
+	/// *behind* the expected version is what a rollout produces; anything else
+	/// stays a fault even mid-upgrade.
+	fn upgrading_for(&self, expectation: &Expectation, instance: &Instance) -> bool {
+		self.upgrading
+			&& match (
+				self.actual_for(instance),
+				self.expected_for(expectation.name),
+			) {
+				(Some(actual), Some(expected)) => {
+					versions::is_older(&actual, expected) == Some(true)
+				}
+				_ => false,
+			}
 	}
 }
 
@@ -300,7 +320,9 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)], probe: &VersionProbe) 
 					.map(|i| {
 						let actual = probe.actual_for(i);
 						let version_status = probe.classify(exp, i);
-						if version_status.is_mismatch() {
+						let upgrading =
+							version_status.is_mismatch() && probe.upgrading_for(exp, i);
+						if version_status.is_mismatch() && !upgrading {
 							any_short = true;
 						}
 						InstanceReport {
@@ -310,6 +332,7 @@ fn build_report(groups: &[(&Expectation, Vec<Instance>)], probe: &VersionProbe) 
 							running: i.running,
 							version_actual: actual,
 							version_status: match version_status {
+								VersionStatus::Mismatch if upgrading => "upgrading",
 								VersionStatus::Match => "match",
 								VersionStatus::Mismatch => "mismatch",
 								VersionStatus::Unknown => "unknown",
@@ -583,14 +606,21 @@ fn version_cell(
 	use_colours: bool,
 ) -> (Cell, bool) {
 	let expected = probe.expected_for(exp.name);
-	let per_instance: Vec<(&Instance, Option<String>, VersionStatus)> = instances
+	let per_instance: Vec<(&Instance, Option<String>, VersionStatus, bool)> = instances
 		.iter()
-		.map(|i| (i, probe.actual_for(i), probe.classify(exp, i)))
+		.map(|i| {
+			let status = probe.classify(exp, i);
+			let upgrading = status.is_mismatch() && probe.upgrading_for(exp, i);
+			(i, probe.actual_for(i), status, upgrading)
+		})
 		.collect();
 
 	let any_drift = per_instance
 		.iter()
-		.any(|(_, _, status)| status.is_mismatch());
+		.any(|(_, _, status, upgrading)| status.is_mismatch() && !upgrading);
+	let any_upgrading = per_instance
+		.iter()
+		.any(|(_, _, _, upgrading)| *upgrading);
 
 	if instances.is_empty() {
 		// `Down` expectations with no instances — version column has nothing
@@ -602,12 +632,13 @@ fn version_cell(
 		Some(v) => v.to_string(),
 		None => "?".to_string(),
 	};
-	let show_details = instances.len() > 1 || any_drift;
+	let show_details = instances.len() > 1 || any_drift || any_upgrading;
 	let mut lines = vec![summary];
 	if show_details {
-		for (inst, actual, status) in &per_instance {
+		for (inst, actual, status, upgrading) in &per_instance {
 			let actual_str = actual.as_deref().unwrap_or("?");
 			let suffix = match status {
+				VersionStatus::Mismatch if *upgrading => "upgrading",
 				VersionStatus::Match => "ok",
 				VersionStatus::Mismatch => "drift",
 				VersionStatus::Unknown => "unknown",
@@ -622,7 +653,7 @@ fn version_cell(
 			Color::Red
 		} else if per_instance
 			.iter()
-			.all(|(_, _, status)| matches!(status, VersionStatus::Match))
+			.all(|(_, _, status, _)| matches!(status, VersionStatus::Match))
 		{
 			Color::Green
 		} else {
@@ -677,6 +708,7 @@ mod tests {
 			expected: ExpectedVersions::default(),
 			running: HashMap::new(),
 			install: String::new(),
+			upgrading: false,
 		}
 	}
 
@@ -692,6 +724,7 @@ mod tests {
 				.map(|(k, v)| (k.to_string(), v.to_string()))
 				.collect(),
 			install: expected.into(),
+			upgrading: false,
 		}
 	}
 
@@ -857,6 +890,54 @@ mod tests {
 		assert!(rendered.contains("v2.9.5"));
 		assert!(rendered.contains("drift"));
 	}
+	#[test]
+	fn a_fresh_upgrade_marker_downgrades_older_drift() {
+		let exp = up_exp();
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![
+				inst("tamanu-frontend", Some("a"), true),
+				inst("tamanu-frontend", Some("b"), true),
+			],
+		)];
+		let mut probe = probe_with(
+			"v2.10.0",
+			&[
+				("tamanu-frontend@a.service", "v2.10.0"),
+				("tamanu-frontend@b.service", "v2.9.5"),
+			],
+		);
+		probe.upgrading = true;
+
+		let report = build_report(&groups, &probe);
+		assert!(!report.any_short, "mid-rollout drift must not bail");
+		assert_eq!(
+			report.expectations[0].instances[1].version_status,
+			"upgrading"
+		);
+
+		let (table, any_short) = render_table(&groups, &probe, false);
+		assert!(!any_short);
+		assert!(table.to_string().contains("(upgrading)"));
+	}
+
+	#[test]
+	fn an_upgrade_marker_does_not_excuse_a_newer_instance() {
+		// A container ahead of the configured version is a rollback gone
+		// wrong or a bad tag, never a rollout — it stays drift.
+		let exp = up_exp();
+		let groups: Vec<(&Expectation, Vec<Instance>)> = vec![(
+			&exp,
+			vec![inst("tamanu-frontend", Some("a"), true)],
+		)];
+		let mut probe = probe_with("v2.10.0", &[("tamanu-frontend@a.service", "v2.11.0")]);
+		probe.upgrading = true;
+
+		let report = build_report(&groups, &probe);
+		assert!(report.any_short);
+		assert_eq!(report.expectations[0].instances[0].version_status, "mismatch");
+	}
+
 
 	#[test]
 	fn version_match_doesnt_fail() {
