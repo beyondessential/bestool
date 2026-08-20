@@ -483,10 +483,6 @@ pub struct CacheLimits {
 	pub metadata_hard_mb: u64,
 }
 
-/// Environment variable overriding the cache budget, in megabytes. Absolute,
-/// so it wins over the share-of-the-volume sizing below.
-pub const CACHE_BUDGET_ENV: &str = "BESTOOL_KOPIA_CACHE_MB";
-
 /// Share of the cache volume a push-only connection may use.
 ///
 /// A device's caches earn their keep by making the next snapshot cheap, not by
@@ -554,14 +550,11 @@ impl CacheLimits {
 		Self::new(budget, profile)
 	}
 
-	/// The budget for `profile`: the absolute override from [`CACHE_BUDGET_ENV`]
-	/// if set, else the profile's share of the volume kopia caches on.
-	pub fn resolve(profile: CacheProfile) -> Self {
-		if let Some(mb) = std::env::var(CACHE_BUDGET_ENV)
-			.ok()
-			.and_then(|v| v.trim().parse::<u64>().ok())
-			.filter(|v| *v > 0)
-		{
+	/// The budget for `profile`: `override_mb` if the caller has one (an
+	/// absolute size, so it wins over the share), else the profile's share of
+	/// the volume kopia caches on.
+	pub fn resolve(profile: CacheProfile, override_mb: Option<u64>) -> Self {
+		if let Some(mb) = override_mb {
 			return Self::new(mb, profile);
 		}
 		let volume = cache_volume_mb();

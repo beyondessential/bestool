@@ -420,7 +420,7 @@ pub(super) async fn connect_repo(
 			endpoint,
 			username: "canopy",
 			hostname: server_id,
-			cache: CacheLimits::resolve(cache),
+			cache: CacheLimits::resolve(cache, config::cache_budget_override()),
 		},
 	);
 	run_kopia(connect, "repository connect").await?;
