@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use bestool_canopy::{TargetOutcome, schema::BackupPurpose};
 use bestool_kopia::{
-	RunAs, S3KopiaEnv, build_kopia_command_with_s3, find_kopia_binary,
+	CacheProfile, RunAs, S3KopiaEnv, build_kopia_command_with_s3, find_kopia_binary,
 };
 use clap::{Parser, ValueEnum};
 use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
@@ -111,6 +111,7 @@ pub async fn run(args: KopiaArgs, _ctx: Context) -> Result<()> {
 		&proxy.endpoint(),
 		&server_id,
 		RunAs::CurrentUser,
+		CacheProfile::Restore,
 	)
 	.await?;
 

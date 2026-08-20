@@ -34,7 +34,8 @@ use bestool_canopy::{
 	schema::{BackupPurpose, ReportArgs, RunOutcome},
 };
 use bestool_kopia::{
-	RunAs, S3KopiaEnv, args_policy_set_ignores, args_repository_connect_s3, args_snapshot_create,
+	CacheLimits, CacheProfile, RunAs, S3Connection, S3KopiaEnv, args_policy_set_ignores,
+	args_repository_connect_s3, args_snapshot_create,
 	build_kopia_command_with_s3, find_kopia_binary,
 	proxy::{self, RunningProxy, S3ProxyConfig},
 };
@@ -407,16 +408,20 @@ pub(super) async fn connect_repo(
 	endpoint: &str,
 	server_id: &str,
 	run_as: RunAs,
+	cache: CacheProfile,
 ) -> Result<()> {
 	let mut connect = build_kopia_command_with_s3(kopia, s3env, run_as).map_err(|e| miette!("{e}"))?;
 	args_repository_connect_s3(
 		&mut connect,
-		&target.bucket,
-		&target.prefix,
-		&target.region,
-		endpoint,
-		"canopy",
-		server_id,
+		&S3Connection {
+			bucket: &target.bucket,
+			prefix: &target.prefix,
+			region: &target.region,
+			endpoint,
+			username: "canopy",
+			hostname: server_id,
+			cache: CacheLimits::resolve(cache, config::cache_budget_override()),
+		},
 	);
 	run_kopia(connect, "repository connect").await?;
 	Ok(())
@@ -827,7 +832,16 @@ async fn snapshot(
 		config_path: &config_path,
 	};
 
-	connect_repo(&kopia, &s3env, target, &conn.endpoint, server_id, RunAs::KopiaUser).await?;
+	connect_repo(
+		&kopia,
+		&s3env,
+		target,
+		&conn.endpoint,
+		server_id,
+		RunAs::KopiaUser,
+		CacheProfile::Push,
+	)
+	.await?;
 
 	if !ignore.is_empty() {
 		let mut policy =

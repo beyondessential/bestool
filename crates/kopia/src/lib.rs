@@ -28,6 +28,7 @@ use std::{
 use jiff::{Span, Timestamp};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 pub mod progress;
 #[cfg(feature = "proxy")]
@@ -439,6 +440,217 @@ pub fn build_kopia_command_with_s3(
 	Ok(cmd)
 }
 
+/// What a connection is for, which decides how the cache budget is split.
+///
+/// spec: BAK#local-cache
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheProfile {
+	/// Push-only: takes snapshots, never reads data back.
+	///
+	/// The data-content cache is only written through on upload and never read
+	/// (restores and repository maintenance are the readers, and a device does
+	/// neither), so it gets the smaller share. The metadata cache is what makes
+	/// an incremental snapshot cheap — it holds the previous snapshot's
+	/// directory entries, which is what lets unchanged files be reused without
+	/// being read and hashed again — so it gets the bulk.
+	Push,
+	/// Reads data back out of the repository, so data contents dominate.
+	Restore,
+}
+
+/// Bounds on kopia's on-disk cache.
+///
+/// kopia has no single "total cache size" knob: sizes are set per cache, and
+/// each has a soft limit (only swept once an entry is older than a minimum age,
+/// so it is routinely overshot) and a hard limit (swept regardless of age, and
+/// unset by default). Leaving the hard limits unset is how a cache with 5 GB
+/// soft limits reaches tens of gigabytes.
+///
+/// So a budget is expressed here as one number and split into per-cache soft
+/// and hard limits by [`CacheProfile`]. The hard limits are what actually bound
+/// the disk; the soft limits sit below them so ordinary sweeping keeps the cache
+/// off the hard limit in steady state.
+///
+/// The budget covers the two caches kopia can size — data contents and metadata.
+/// The index, blob-list and own-writes caches take no size limit from kopia at
+/// all, so total on-disk use is the budget plus those; they are small next to
+/// the content cache but not nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheLimits {
+	pub content_soft_mb: u64,
+	pub content_hard_mb: u64,
+	pub metadata_soft_mb: u64,
+	pub metadata_hard_mb: u64,
+}
+
+/// Share of the cache volume a push-only connection may use.
+///
+/// A device's caches earn their keep by making the next snapshot cheap, not by
+/// being large, and the host's disk is sized for the data it serves rather than
+/// for a backup tool's scratch space.
+pub const PUSH_CACHE_PERCENT: u64 = 5;
+
+/// Share of the cache volume a restore connection may use.
+///
+/// A restore reads file data back, so caching it is worth real disk — and a
+/// restore is a deliberate, attended operation rather than something running
+/// behind a live workload.
+pub const RESTORE_CACHE_PERCENT: u64 = 20;
+
+/// Budget used when the volume's size can't be determined.
+pub const FALLBACK_CACHE_BUDGET_MB: u64 = 4096;
+
+/// Share of the volume's *free* space the cache may take, whatever the
+/// share-of-capacity works out to.
+///
+/// A percentage of capacity is the wrong bound on a volume that is nearly full:
+/// the hosts most at risk of running out of disk are exactly the ones where 5%
+/// of capacity is a large fraction of what's left. This caps the budget so the
+/// cache can never take more than half of the room remaining.
+pub const FREE_SPACE_PERCENT: u64 = 50;
+
+/// Floor on the whole budget, so a small volume doesn't leave kopia with a
+/// cache too small to be worth keeping. Applied before the free-space cap,
+/// which overrides it: a volume with nothing left gets a small cache, not a
+/// cache that fills it.
+pub const MIN_CACHE_BUDGET_MB: u64 = 512;
+
+/// Floor for either cache's hard limit, so a small budget can't starve one.
+/// Never more than half the budget, so it can't quietly inflate a budget the
+/// free-space cap deliberately made small.
+const MIN_CACHE_MB: u64 = 128;
+
+impl CacheProfile {
+	/// Share of the cache volume this profile may use, as a percentage.
+	pub fn percent_of_volume(self) -> u64 {
+		match self {
+			Self::Push => PUSH_CACHE_PERCENT,
+			Self::Restore => RESTORE_CACHE_PERCENT,
+		}
+	}
+
+	/// How the budget divides between data contents and metadata, as the
+	/// data-contents percentage.
+	fn content_percent(self) -> u64 {
+		match self {
+			Self::Push => 20,
+			Self::Restore => 80,
+		}
+	}
+}
+
+impl CacheLimits {
+	/// Split `total_mb` across the two sizeable caches according to `profile`.
+	pub fn new(total_mb: u64, profile: CacheProfile) -> Self {
+		let per_cache_floor = MIN_CACHE_MB.min(total_mb / 2);
+		let content_hard_mb = (total_mb * profile.content_percent() / 100).max(per_cache_floor);
+		let metadata_hard_mb = total_mb
+			.saturating_sub(content_hard_mb)
+			.max(per_cache_floor);
+		Self {
+			content_soft_mb: soft_of(content_hard_mb),
+			content_hard_mb,
+			metadata_soft_mb: soft_of(metadata_hard_mb),
+			metadata_hard_mb,
+		}
+	}
+
+	/// The profile's share of the cache volume, capped at half of what is free
+	/// on it, or [`FALLBACK_CACHE_BUDGET_MB`] when the volume can't be measured.
+	pub fn for_volume(space: Option<VolumeSpace>, profile: CacheProfile) -> Self {
+		let budget = match space {
+			Some(space) => (space.total_mb * profile.percent_of_volume() / 100)
+				.max(MIN_CACHE_BUDGET_MB)
+				.min(space.free_mb * FREE_SPACE_PERCENT / 100),
+			None => FALLBACK_CACHE_BUDGET_MB,
+		};
+		Self::new(budget, profile)
+	}
+
+	/// The budget for `profile`: `override_mb` if the caller has one (an
+	/// absolute size, so it wins over the share), else the profile's share of
+	/// the volume kopia caches on.
+	pub fn resolve(profile: CacheProfile, override_mb: Option<u64>) -> Self {
+		if let Some(mb) = override_mb {
+			return Self::new(mb, profile);
+		}
+		let space = cache_volume_space();
+		if space.is_none() {
+			debug!("could not measure the kopia cache volume; using the fallback budget");
+		}
+		Self::for_volume(space, profile)
+	}
+}
+
+/// Capacity and free space, in megabytes, of the volume kopia's cache lives on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeSpace {
+	pub total_mb: u64,
+	pub free_mb: u64,
+}
+
+/// Measure the volume kopia's cache lives on.
+///
+/// The cache directory itself may not exist yet (a host that has never run a
+/// backup), so this walks up to the nearest existing ancestor, which is on the
+/// same volume in every layout we create.
+fn cache_volume_space() -> Option<VolumeSpace> {
+	let mut dir = cache_home()?;
+	loop {
+		if dir.exists() {
+			return match (fs4::total_space(&dir), fs4::available_space(&dir)) {
+				(Ok(total), Ok(free)) => Some(VolumeSpace {
+					total_mb: total / 1_000_000,
+					free_mb: free / 1_000_000,
+				}),
+				(Err(err), _) | (_, Err(err)) => {
+					debug!(path = %dir.display(), error = %err, "measuring the kopia cache volume");
+					None
+				}
+			};
+		}
+		if !dir.pop() {
+			return None;
+		}
+	}
+}
+
+/// The directory kopia derives its cache location from — the kopia user's home
+/// where we pin it, and the platform's per-user cache root otherwise.
+#[cfg(unix)]
+fn cache_home() -> Option<PathBuf> {
+	let system = PathBuf::from(LINUX_KOPIA_HOME);
+	if system.exists() {
+		return Some(system);
+	}
+	std::env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(windows)]
+fn cache_home() -> Option<PathBuf> {
+	std::env::var_os("LOCALAPPDATA")
+		.or_else(|| std::env::var_os("USERPROFILE"))
+		.map(PathBuf::from)
+}
+
+/// Sweep at 80% of the hard limit, so the hard limit is the backstop rather
+/// than the working size.
+fn soft_of(hard_mb: u64) -> u64 {
+	(hard_mb * 80 / 100).max(1)
+}
+
+/// Push the cache-sizing args accepted by `repository connect` and `cache set`.
+pub fn args_cache_limits(cmd: &mut Command, limits: &CacheLimits) {
+	cmd.arg("--content-cache-size-mb")
+		.arg(limits.content_soft_mb.to_string())
+		.arg("--content-cache-size-limit-mb")
+		.arg(limits.content_hard_mb.to_string())
+		.arg("--metadata-cache-size-mb")
+		.arg(limits.metadata_soft_mb.to_string())
+		.arg("--metadata-cache-size-limit-mb")
+		.arg(limits.metadata_hard_mb.to_string());
+}
+
 /// Dummy S3 credentials kopia carries. Meaningless on their own — the loopback
 /// re-signing proxy discards them and re-signs every request with live
 /// credentials — but kopia's minio-go backend requires non-empty keys at parse
@@ -446,36 +658,46 @@ pub fn build_kopia_command_with_s3(
 pub const PROXY_DUMMY_ACCESS_KEY: &str = "bestool-proxy-dummy-access-key";
 pub const PROXY_DUMMY_SECRET_KEY: &str = "bestool-proxy-dummy-secret-key";
 
+/// Where and as whom to connect to the canopy-managed repo.
+pub struct S3Connection<'a> {
+	pub bucket: &'a str,
+	pub prefix: &'a str,
+	pub region: &'a str,
+	/// The loopback re-signing proxy kopia talks to instead of S3 directly.
+	pub endpoint: &'a str,
+	pub username: &'a str,
+	/// kopia's source host, which attributes snapshots to the backup subject.
+	pub hostname: &'a str,
+	pub cache: CacheLimits,
+}
+
 /// Push `repository connect s3` args for the canopy-managed repo, reached
-/// through the loopback re-signing proxy at `endpoint` (TLS disabled on that
-/// leg) with dummy credentials.
-pub fn args_repository_connect_s3(
-	cmd: &mut Command,
-	bucket: &str,
-	prefix: &str,
-	region: &str,
-	endpoint: &str,
-	username: &str,
-	hostname: &str,
-) {
+/// through the loopback re-signing proxy (TLS disabled on that leg) with dummy
+/// credentials.
+///
+/// The cache limits are re-applied on every connect, so a host that was
+/// connected before they existed — or with a different budget — is corrected
+/// by its next run rather than needing to be touched.
+pub fn args_repository_connect_s3(cmd: &mut Command, conn: &S3Connection<'_>) {
 	cmd.args(["repository", "connect", "s3"])
 		.arg("--bucket")
-		.arg(bucket)
+		.arg(conn.bucket)
 		.arg("--prefix")
-		.arg(prefix)
+		.arg(conn.prefix)
 		.arg("--region")
-		.arg(region)
+		.arg(conn.region)
 		.arg("--endpoint")
-		.arg(endpoint)
+		.arg(conn.endpoint)
 		.arg("--disable-tls")
 		.arg("--access-key")
 		.arg(PROXY_DUMMY_ACCESS_KEY)
 		.arg("--secret-access-key")
 		.arg(PROXY_DUMMY_SECRET_KEY)
 		.arg("--override-username")
-		.arg(username)
+		.arg(conn.username)
 		.arg("--override-hostname")
-		.arg(hostname);
+		.arg(conn.hostname);
+	args_cache_limits(cmd, &conn.cache);
 }
 
 /// Push `snapshot create --json` args, with each tag as `key:value`.
@@ -938,6 +1160,134 @@ mod tests {
 			.collect()
 	}
 
+	#[test]
+	fn push_profile_favours_metadata_over_data_contents() {
+		let limits = CacheLimits::new(4096, CacheProfile::Push);
+		assert_eq!(limits.content_hard_mb, 819);
+		assert_eq!(limits.metadata_hard_mb, 3277);
+		// Soft limits sit below the hard ones, so sweeping keeps the cache off
+		// the backstop in steady state.
+		assert!(limits.content_soft_mb < limits.content_hard_mb);
+		assert!(limits.metadata_soft_mb < limits.metadata_hard_mb);
+		// The two sizeable caches together stay within the budget.
+		assert!(limits.content_hard_mb + limits.metadata_hard_mb <= 4096);
+	}
+
+	#[test]
+	fn restore_profile_favours_data_contents() {
+		let limits = CacheLimits::new(4096, CacheProfile::Restore);
+		assert!(limits.content_hard_mb > limits.metadata_hard_mb);
+		assert!(limits.content_hard_mb + limits.metadata_hard_mb <= 4096);
+	}
+
+	/// The 130 GB server that prompted the limits: 5% to back up, 20% to
+	/// restore, on a volume with room to spare.
+	#[test]
+	fn budgets_are_a_share_of_the_cache_volume() {
+		let roomy = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 100_000,
+		};
+		let push = CacheLimits::for_volume(Some(roomy), CacheProfile::Push);
+		assert_eq!(push.content_hard_mb + push.metadata_hard_mb, 6500);
+		let restore = CacheLimits::for_volume(Some(roomy), CacheProfile::Restore);
+		assert_eq!(restore.content_hard_mb + restore.metadata_hard_mb, 26_000);
+		// A restore gets more room overall, and much more of it for file data.
+		assert!(restore.content_hard_mb > 4 * push.content_hard_mb);
+	}
+
+	#[test]
+	fn a_nearly_full_volume_caps_the_budget_at_half_of_what_is_left() {
+		// Same 130 GB volume with 8 GB free: the share of capacity would be
+		// 6.5 GB, nearly everything that remains.
+		let tight = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 8_000,
+		};
+		let push = CacheLimits::for_volume(Some(tight), CacheProfile::Push);
+		assert_eq!(push.content_hard_mb + push.metadata_hard_mb, 4_000);
+		let restore = CacheLimits::for_volume(Some(tight), CacheProfile::Restore);
+		assert_eq!(restore.content_hard_mb + restore.metadata_hard_mb, 4_000);
+	}
+
+	#[test]
+	fn a_volume_with_almost_nothing_left_gets_a_small_cache_not_the_floor() {
+		// The floor would ask for 512 MB; only 300 MB is free, so the cache
+		// takes half of that rather than most of what remains.
+		let full = VolumeSpace {
+			total_mb: 130_000,
+			free_mb: 300,
+		};
+		let limits = CacheLimits::for_volume(Some(full), CacheProfile::Push);
+		assert_eq!(limits.content_hard_mb + limits.metadata_hard_mb, 150);
+	}
+
+	#[test]
+	fn an_unmeasurable_volume_falls_back_to_a_fixed_budget() {
+		let limits = CacheLimits::for_volume(None, CacheProfile::Push);
+		assert_eq!(
+			limits.content_hard_mb + limits.metadata_hard_mb,
+			FALLBACK_CACHE_BUDGET_MB
+		);
+	}
+
+	#[test]
+	fn a_small_volume_still_leaves_both_caches_usable() {
+		// 5% of a 4 GB volume is under the floor, and there's room for the
+		// floor, so the floor applies.
+		let small = VolumeSpace {
+			total_mb: 4096,
+			free_mb: 3000,
+		};
+		let limits = CacheLimits::for_volume(Some(small), CacheProfile::Push);
+		assert_eq!(
+			limits.content_hard_mb + limits.metadata_hard_mb,
+			MIN_CACHE_BUDGET_MB
+		);
+		assert!(limits.content_hard_mb >= MIN_CACHE_MB);
+		assert!(limits.metadata_hard_mb >= MIN_CACHE_MB);
+		assert!(limits.content_soft_mb >= 1);
+		assert!(limits.metadata_soft_mb >= 1);
+	}
+
+	#[test]
+	fn connect_args_carry_both_soft_and_hard_limits() {
+		let mut cmd = Command::new("kopia");
+		let limits = CacheLimits::new(4096, CacheProfile::Push);
+		args_repository_connect_s3(
+			&mut cmd,
+			&S3Connection {
+				bucket: "bucket",
+				prefix: "prefix/",
+				region: "ap-southeast-2",
+				endpoint: "http://127.0.0.1:1234",
+				username: "canopy",
+				hostname: "server-id",
+				cache: limits,
+			},
+		);
+		let args = args_of(&cmd);
+		// Hard limits are the ones that actually bound the disk: without them
+		// kopia only sweeps entries past a minimum age, and overshoots.
+		for flag in [
+			"--content-cache-size-mb",
+			"--content-cache-size-limit-mb",
+			"--metadata-cache-size-mb",
+			"--metadata-cache-size-limit-mb",
+		] {
+			assert!(
+				args.contains(&flag.to_owned()),
+				"missing {flag} in {args:?}"
+			);
+		}
+		let at = |flag: &str| {
+			let i = args.iter().position(|a| a == flag).unwrap();
+			args[i + 1].clone()
+		};
+		assert_eq!(at("--content-cache-size-limit-mb"), "819");
+		assert_eq!(at("--metadata-cache-size-limit-mb"), "3277");
+	}
+
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn setpriv_elevation_runs_kopia_as_the_kopia_user() {
@@ -1042,12 +1392,15 @@ mod tests {
 		let mut cmd = Command::new("kopia");
 		args_repository_connect_s3(
 			&mut cmd,
-			"my-bucket",
-			"",
-			"ap-southeast-2",
-			"127.0.0.1:8333",
-			"canopy",
-			"server-id-123",
+			&S3Connection {
+				bucket: "my-bucket",
+				prefix: "",
+				region: "ap-southeast-2",
+				endpoint: "127.0.0.1:8333",
+				username: "canopy",
+				hostname: "server-id-123",
+				cache: CacheLimits::new(1000, CacheProfile::Push),
+			},
 		);
 		assert_eq!(
 			args_of(&cmd),
@@ -1072,6 +1425,14 @@ mod tests {
 				"canopy",
 				"--override-hostname",
 				"server-id-123",
+				"--content-cache-size-mb",
+				"160",
+				"--content-cache-size-limit-mb",
+				"200",
+				"--metadata-cache-size-mb",
+				"640",
+				"--metadata-cache-size-limit-mb",
+				"800",
 			]
 		);
 	}
