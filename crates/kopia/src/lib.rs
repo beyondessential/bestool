@@ -439,6 +439,110 @@ pub fn build_kopia_command_with_s3(
 	Ok(cmd)
 }
 
+/// What a connection is for, which decides how the cache budget is split.
+///
+/// spec: BAK#local-cache
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheProfile {
+	/// Push-only: takes snapshots, never reads data back.
+	///
+	/// The data-content cache is only written through on upload and never read
+	/// (restores and repository maintenance are the readers, and a device does
+	/// neither), so it gets the smaller share. The metadata cache is what makes
+	/// an incremental snapshot cheap — it holds the previous snapshot's
+	/// directory entries, which is what lets unchanged files be reused without
+	/// being read and hashed again — so it gets the bulk.
+	Push,
+	/// Reads data back out of the repository, so data contents dominate.
+	Restore,
+}
+
+/// Bounds on kopia's on-disk cache.
+///
+/// kopia has no single "total cache size" knob: sizes are set per cache, and
+/// each has a soft limit (only swept once an entry is older than a minimum age,
+/// so it is routinely overshot) and a hard limit (swept regardless of age, and
+/// unset by default). Leaving the hard limits unset is how a cache with 5 GB
+/// soft limits reaches tens of gigabytes.
+///
+/// So a budget is expressed here as one number and split into per-cache soft
+/// and hard limits by [`CacheProfile`]. The hard limits are what actually bound
+/// the disk; the soft limits sit below them so ordinary sweeping keeps the cache
+/// off the hard limit in steady state.
+///
+/// The budget covers the two caches kopia can size — data contents and metadata.
+/// The index, blob-list and own-writes caches take no size limit from kopia at
+/// all, so total on-disk use is the budget plus those; they are small next to
+/// the content cache but not nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheLimits {
+	pub content_soft_mb: u64,
+	pub content_hard_mb: u64,
+	pub metadata_soft_mb: u64,
+	pub metadata_hard_mb: u64,
+}
+
+/// Environment variable overriding the total cache budget, in megabytes.
+pub const CACHE_BUDGET_ENV: &str = "BESTOOL_KOPIA_CACHE_MB";
+
+/// Total cache budget, in megabytes, when nothing overrides it.
+///
+/// Well under kopia's own 5 GB + 5 GB soft defaults: a device's caches earn
+/// their keep by making the next snapshot cheap, not by being large, and the
+/// hosts this runs on are sized for the data they serve, not for a backup
+/// tool's scratch space.
+pub const DEFAULT_CACHE_BUDGET_MB: u64 = 4096;
+
+/// Floor for either cache's hard limit, so a small budget can't starve one.
+const MIN_CACHE_MB: u64 = 128;
+
+impl CacheLimits {
+	/// Split `total_mb` across the two sizeable caches according to `profile`.
+	pub fn new(total_mb: u64, profile: CacheProfile) -> Self {
+		let content_share = match profile {
+			CacheProfile::Push => 20,
+			CacheProfile::Restore => 80,
+		};
+		let content_hard_mb = (total_mb * content_share / 100).max(MIN_CACHE_MB);
+		let metadata_hard_mb = total_mb.saturating_sub(content_hard_mb).max(MIN_CACHE_MB);
+		Self {
+			content_soft_mb: soft_of(content_hard_mb),
+			content_hard_mb,
+			metadata_soft_mb: soft_of(metadata_hard_mb),
+			metadata_hard_mb,
+		}
+	}
+
+	/// The budget for `profile`, taking the total from [`CACHE_BUDGET_ENV`] and
+	/// falling back to [`DEFAULT_CACHE_BUDGET_MB`] when it is unset or unparseable.
+	pub fn from_env(profile: CacheProfile) -> Self {
+		let total = std::env::var(CACHE_BUDGET_ENV)
+			.ok()
+			.and_then(|v| v.trim().parse::<u64>().ok())
+			.filter(|v| *v > 0)
+			.unwrap_or(DEFAULT_CACHE_BUDGET_MB);
+		Self::new(total, profile)
+	}
+}
+
+/// Sweep at 80% of the hard limit, so the hard limit is the backstop rather
+/// than the working size.
+fn soft_of(hard_mb: u64) -> u64 {
+	(hard_mb * 80 / 100).max(1)
+}
+
+/// Push the cache-sizing args accepted by `repository connect` and `cache set`.
+pub fn args_cache_limits(cmd: &mut Command, limits: &CacheLimits) {
+	cmd.arg("--content-cache-size-mb")
+		.arg(limits.content_soft_mb.to_string())
+		.arg("--content-cache-size-limit-mb")
+		.arg(limits.content_hard_mb.to_string())
+		.arg("--metadata-cache-size-mb")
+		.arg(limits.metadata_soft_mb.to_string())
+		.arg("--metadata-cache-size-limit-mb")
+		.arg(limits.metadata_hard_mb.to_string());
+}
+
 /// Dummy S3 credentials kopia carries. Meaningless on their own — the loopback
 /// re-signing proxy discards them and re-signs every request with live
 /// credentials — but kopia's minio-go backend requires non-empty keys at parse
@@ -446,36 +550,46 @@ pub fn build_kopia_command_with_s3(
 pub const PROXY_DUMMY_ACCESS_KEY: &str = "bestool-proxy-dummy-access-key";
 pub const PROXY_DUMMY_SECRET_KEY: &str = "bestool-proxy-dummy-secret-key";
 
+/// Where and as whom to connect to the canopy-managed repo.
+pub struct S3Connection<'a> {
+	pub bucket: &'a str,
+	pub prefix: &'a str,
+	pub region: &'a str,
+	/// The loopback re-signing proxy kopia talks to instead of S3 directly.
+	pub endpoint: &'a str,
+	pub username: &'a str,
+	/// kopia's source host, which attributes snapshots to the backup subject.
+	pub hostname: &'a str,
+	pub cache: CacheLimits,
+}
+
 /// Push `repository connect s3` args for the canopy-managed repo, reached
-/// through the loopback re-signing proxy at `endpoint` (TLS disabled on that
-/// leg) with dummy credentials.
-pub fn args_repository_connect_s3(
-	cmd: &mut Command,
-	bucket: &str,
-	prefix: &str,
-	region: &str,
-	endpoint: &str,
-	username: &str,
-	hostname: &str,
-) {
+/// through the loopback re-signing proxy (TLS disabled on that leg) with dummy
+/// credentials.
+///
+/// The cache limits are re-applied on every connect, so a host that was
+/// connected before they existed — or with a different budget — is corrected
+/// by its next run rather than needing to be touched.
+pub fn args_repository_connect_s3(cmd: &mut Command, conn: &S3Connection<'_>) {
 	cmd.args(["repository", "connect", "s3"])
 		.arg("--bucket")
-		.arg(bucket)
+		.arg(conn.bucket)
 		.arg("--prefix")
-		.arg(prefix)
+		.arg(conn.prefix)
 		.arg("--region")
-		.arg(region)
+		.arg(conn.region)
 		.arg("--endpoint")
-		.arg(endpoint)
+		.arg(conn.endpoint)
 		.arg("--disable-tls")
 		.arg("--access-key")
 		.arg(PROXY_DUMMY_ACCESS_KEY)
 		.arg("--secret-access-key")
 		.arg(PROXY_DUMMY_SECRET_KEY)
 		.arg("--override-username")
-		.arg(username)
+		.arg(conn.username)
 		.arg("--override-hostname")
-		.arg(hostname);
+		.arg(conn.hostname);
+	args_cache_limits(cmd, &conn.cache);
 }
 
 /// Push `snapshot create --json` args, with each tag as `key:value`.
@@ -938,6 +1052,73 @@ mod tests {
 			.collect()
 	}
 
+	#[test]
+	fn push_profile_favours_metadata_over_data_contents() {
+		let limits = CacheLimits::new(4096, CacheProfile::Push);
+		assert_eq!(limits.content_hard_mb, 819);
+		assert_eq!(limits.metadata_hard_mb, 3277);
+		// Soft limits sit below the hard ones, so sweeping keeps the cache off
+		// the backstop in steady state.
+		assert!(limits.content_soft_mb < limits.content_hard_mb);
+		assert!(limits.metadata_soft_mb < limits.metadata_hard_mb);
+		// The two sizeable caches together stay within the budget.
+		assert!(limits.content_hard_mb + limits.metadata_hard_mb <= 4096);
+	}
+
+	#[test]
+	fn restore_profile_favours_data_contents() {
+		let limits = CacheLimits::new(4096, CacheProfile::Restore);
+		assert!(limits.content_hard_mb > limits.metadata_hard_mb);
+		assert!(limits.content_hard_mb + limits.metadata_hard_mb <= 4096);
+	}
+
+	#[test]
+	fn a_tiny_budget_still_leaves_both_caches_usable() {
+		let limits = CacheLimits::new(100, CacheProfile::Push);
+		assert_eq!(limits.content_hard_mb, MIN_CACHE_MB);
+		assert_eq!(limits.metadata_hard_mb, MIN_CACHE_MB);
+		assert!(limits.content_soft_mb >= 1);
+		assert!(limits.metadata_soft_mb >= 1);
+	}
+
+	#[test]
+	fn connect_args_carry_both_soft_and_hard_limits() {
+		let mut cmd = Command::new("kopia");
+		let limits = CacheLimits::new(4096, CacheProfile::Push);
+		args_repository_connect_s3(
+			&mut cmd,
+			&S3Connection {
+				bucket: "bucket",
+				prefix: "prefix/",
+				region: "ap-southeast-2",
+				endpoint: "http://127.0.0.1:1234",
+				username: "canopy",
+				hostname: "server-id",
+				cache: limits,
+			},
+		);
+		let args = args_of(&cmd);
+		// Hard limits are the ones that actually bound the disk: without them
+		// kopia only sweeps entries past a minimum age, and overshoots.
+		for flag in [
+			"--content-cache-size-mb",
+			"--content-cache-size-limit-mb",
+			"--metadata-cache-size-mb",
+			"--metadata-cache-size-limit-mb",
+		] {
+			assert!(
+				args.contains(&flag.to_owned()),
+				"missing {flag} in {args:?}"
+			);
+		}
+		let at = |flag: &str| {
+			let i = args.iter().position(|a| a == flag).unwrap();
+			args[i + 1].clone()
+		};
+		assert_eq!(at("--content-cache-size-limit-mb"), "819");
+		assert_eq!(at("--metadata-cache-size-limit-mb"), "3277");
+	}
+
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn setpriv_elevation_runs_kopia_as_the_kopia_user() {
@@ -1042,12 +1223,15 @@ mod tests {
 		let mut cmd = Command::new("kopia");
 		args_repository_connect_s3(
 			&mut cmd,
-			"my-bucket",
-			"",
-			"ap-southeast-2",
-			"127.0.0.1:8333",
-			"canopy",
-			"server-id-123",
+			&S3Connection {
+				bucket: "my-bucket",
+				prefix: "",
+				region: "ap-southeast-2",
+				endpoint: "127.0.0.1:8333",
+				username: "canopy",
+				hostname: "server-id-123",
+				cache: CacheLimits::new(1000, CacheProfile::Push),
+			},
 		);
 		assert_eq!(
 			args_of(&cmd),
@@ -1072,6 +1256,14 @@ mod tests {
 				"canopy",
 				"--override-hostname",
 				"server-id-123",
+				"--content-cache-size-mb",
+				"160",
+				"--content-cache-size-limit-mb",
+				"200",
+				"--metadata-cache-size-mb",
+				"640",
+				"--metadata-cache-size-limit-mb",
+				"800",
 			]
 		);
 	}

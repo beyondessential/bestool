@@ -147,6 +147,17 @@ The source path is stable across runs for a given backup type, so kopia's snapsh
 
 Every snapshot is tagged with the device id, the run id, and the backup type, plus any tags the definition or the method contribute; the canopy-owned tags take precedence so a definition cannot override them.
 
+## Local cache
+
+kopia keeps a local cache of repository data next to its configuration, and a device is a working server whose disk is sized for the data it serves, not for a backup tool's scratch space.
+So the cache is bounded on every connection to the repository, rather than left at whatever the tool defaults to: a total budget is set, overridable per host, and the driver applies it whenever it connects, so a host connected under an earlier budget is corrected by its next run without being touched.
+
+The budget is divided between the cached copies of backed-up file data and of repository metadata, and how it divides depends on what the connection is for.
+A device taking backups never reads file data back out of the repository — restores are an operator action and the repository's upkeep is Canopy's — so a backup connection gives most of its budget to metadata, which is what lets an unchanged file be recognised from the previous snapshot without being read and hashed again.
+A restore connection reverses the split.
+
+The bound is on the caches whose size can be set, so a device's total cache use is the budget plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
+
 ## Registration and triggering by the daemon
 
 When run under the bestool-alertd daemon, the device registers its capabilities — the types of every definition in the backups directory — with Canopy at startup, again on reload, and periodically as a safety net.
