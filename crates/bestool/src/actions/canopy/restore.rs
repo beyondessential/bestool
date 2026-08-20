@@ -213,7 +213,8 @@ async fn run_restore(
 	// Restore into a staging dir colocated with the target's filesystem.
 	let staging = def
 		.method
-		.staging_dir(args.target.as_deref(), std::process::id());
+		.staging_dir(args.target.as_deref(), std::process::id())
+		.await?;
 	if staging.exists() {
 		tokio::fs::remove_dir_all(&staging).await.ok();
 	}
@@ -273,7 +274,8 @@ async fn restore_from_hold(
 
 	let staging = def
 		.method
-		.staging_dir(args.target.as_deref(), std::process::id());
+		.staging_dir(args.target.as_deref(), std::process::id())
+		.await?;
 	if staging.exists() {
 		tokio::fs::remove_dir_all(&staging).await.ok();
 	}

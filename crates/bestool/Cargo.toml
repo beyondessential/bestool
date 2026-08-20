@@ -123,6 +123,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-backup",
 	"tamanu-backup-configs",
 	"tamanu-config",
+	"tamanu-config-key-path",
 	"tamanu-url",
 	"tamanu-doctor",
 	"tamanu-download",
@@ -143,6 +144,10 @@ tamanu-artifacts = ["__tamanu", "dep:comfy-table", "dep:detect-targets", "dep:ta
 tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:algae-cli", "dep:duct"]
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 tamanu-config = ["__tamanu"]
+# Print where this host keeps the key that decrypts local_system_secrets. The
+# `tamanu_secret_key` backup method resolves the same location; this is for
+# reading by hand.
+tamanu-config-key-path = ["__tamanu", "tamanu-config"]
 tamanu-doctor = [
 	"__tamanu",
 	"tamanu-config",
@@ -193,7 +198,7 @@ canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration"
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
 # method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
-canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
+canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
 canopy-restore = ["canopy-backup"]
 # Erase every trace of a canopy enrolment: the registration, the legacy Tamanu
 # identity files, the cached tags, and the legacy DB rows (when postgres is

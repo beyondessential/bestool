@@ -225,7 +225,7 @@ fn is_root() -> bool {
 /// daemon already runs as root and invokes podman directly. `-n` never blocks
 /// on a password prompt.
 #[cfg(target_os = "linux")]
-fn podman_command() -> tokio::process::Command {
+pub(crate) fn podman_command() -> tokio::process::Command {
 	if is_root() {
 		tokio::process::Command::new("podman")
 	} else {
