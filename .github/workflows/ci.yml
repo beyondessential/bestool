@@ -198,6 +198,11 @@ jobs:
       - name: WMI VSS end-to-end
         run: cargo test -p bestool --lib wmi_shadow_roundtrip -- --ignored --nocapture
 
+      # A follower reading its source out of the leader's shadow: the data is
+      # rewritten after the freeze, so serving live bytes fails the test.
+      - name: Shared volume capture end-to-end
+        run: cargo test -p bestool --lib a_shared_capture_reads_the_bytes_from_when_it_froze -- --ignored --nocapture
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
