@@ -44,11 +44,12 @@ pub struct Prepared {
 
 /// A frozen whole volume, readable at a path.
 ///
-/// Only a backend whose snapshot covers the entire volume produces one: VSS
-/// shadow-copies a volume, where btrfs and LVM snapshot a subvolume or logical
-/// volume, and a base backup copies a directory. It exists so a follower whose
-/// source sits on the same volume can be read out of the leader's capture
-/// instead of taking a second snapshot of data already frozen.
+/// Only VSS produces one: btrfs and LVM freeze the mount their data sits on, and
+/// a path under that mount is not necessarily inside the snapshot, which
+/// descends into neither a nested subvolume nor a filesystem mounted within. It
+/// exists so a follower whose source sits on the same volume can be read out of
+/// the leader's capture instead of taking a second snapshot of data already
+/// frozen.
 #[derive(Debug, Clone)]
 pub struct VolumeCapture {
 	/// The volume it covers, as paths on this platform spell it (e.g. `C:`).

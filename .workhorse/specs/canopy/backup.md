@@ -124,11 +124,12 @@ Following is for a capture that must be a superset of what another capture refer
 The Tamanu blob store definition follows the database definition, so every blob the database capture references is already stored when the store capture begins; blobs are immutable and never removed while referenced, so the store capture can only hold more, never less, than the database capture needs.
 A follower run triggered on its own (by schedule or by hand) is still safe on these terms, being a superset for every earlier capture of the followed type; what only the chain provides is a store capture promptly after each database capture.
 
-### Sharing a whole-volume capture
+### Sharing a capture
 
-Where a leader's capture covers a whole volume rather than just its own source, a follower whose source is on that volume is read out of the leader's capture instead of live.
-Only a backend that snapshots the entire volume qualifies: a Windows VSS shadow copy does, where btrfs and thin-LVM snapshot a subvolume or logical volume and a base backup copies a directory, so nothing else on the disk is inside any of those.
-The volume is matched as the path spells it, case-insensitively; a source on any other volume was never frozen by that capture and is read live as before.
+Where a leader's capture freezes more than its own source, a follower whose source is inside that frozen tree is read out of the leader's capture instead of live.
+A Windows VSS shadow copy freezes an entire volume, so every source on it is inside; btrfs and thin-LVM freeze the subvolume or logical volume the leader's data sits on, which holds whatever else is under the same mount; a streamed base backup copies the cluster directory alone and holds nothing besides.
+Path prefix alone does not decide it on the Linux backends: a btrfs snapshot does not descend into a nested subvolume, nor an LVM one into a filesystem mounted inside it, and a source there reads as an empty directory, so sharing turns on being on the same subvolume or mount.
+VSS is the only backend that shares a capture today, matching the volume as the path spells it, case-insensitively; a source the capture never froze is read live as before.
 
 This is one snapshot where there were two, and it is also the only way the pair describes a single instant: a follower reading live captures the store as it is minutes later, after its leader's data froze.
 Such a follower therefore reports its leader's freeze instant as its own, being what its data actually describes.

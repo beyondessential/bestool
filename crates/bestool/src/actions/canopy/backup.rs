@@ -821,7 +821,7 @@ async fn run_kopia_backup(
 /// sources sit on that volume read from it instead of taking a second snapshot
 /// of data it already froze.
 ///
-/// spec: BAK#sharing-a-whole-volume-capture
+/// spec: BAK#sharing-a-capture
 struct SharedCapture {
 	def: BackupDef,
 	prepared: method::Prepared,

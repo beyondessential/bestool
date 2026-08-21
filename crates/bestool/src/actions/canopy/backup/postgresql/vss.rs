@@ -439,7 +439,7 @@ mod tests {
 	/// That is the property the sharing exists for: a follower reading live would
 	/// see the rewrite and describe a different moment to its leader.
 	///
-	/// spec: BAK#sharing-a-whole-volume-capture
+	/// spec: BAK#sharing-a-capture
 	#[test]
 	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
 	fn a_shared_capture_reads_the_bytes_from_when_it_froze() {
