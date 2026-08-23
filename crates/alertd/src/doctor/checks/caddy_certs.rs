@@ -10,6 +10,12 @@
 //! config references; for each we also do a TLS handshake against the
 //! locally-served endpoint to confirm caddy is serving what's configured.
 //!
+//! The store holds a directory per issuer, and a renewal obtained from a
+//! different issuer than last time lands in that issuer's directory while the
+//! previous copy stays where it is. Only the newest of those is the cert caddy
+//! serves; the rest are superseded and will never be renewed, so for each set of
+//! names we grade only the cert that expires last.
+//!
 //! Two independent signals:
 //!
 //! - **Expiry** (from the on-disk cert): only evaluated once the cert is inside
@@ -27,7 +33,7 @@
 //! Skips when caddy's admin config can't be read (e.g. not a caddy host).
 
 use std::{
-	collections::{BTreeSet, HashSet},
+	collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry},
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::Duration,
@@ -110,7 +116,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 	};
 	let active = active_subjects(&config);
 
-	let mut certs: Vec<(String, DiskCert)> = Vec::new();
+	let mut managed: Vec<(String, DiskCert)> = Vec::new();
 	if let Some(dir) = certificates_dir() {
 		let mut files = Vec::new();
 		collect_crt_files(&dir, &mut files);
@@ -123,12 +129,13 @@ pub async fn run(ctx: SweepContext) -> Check {
 				continue;
 			};
 			if cert.covers_any(&active) {
-				certs.push((path.display().to_string(), cert));
+				managed.push((path.display().to_string(), cert));
 			} else {
 				debug!(path = %path.display(), "managed cert not in active config; skipping");
 			}
 		}
 	}
+	let mut certs = keep_live_certs(managed);
 	for (origin, pem) in manual_sources(&config) {
 		if let Some(cert) = parse_cert(&pem) {
 			certs.push((origin, cert));
@@ -301,6 +308,61 @@ impl DiskCert {
 			.iter()
 			.any(|san| active.iter().any(|subj| name_matches(san, subj)))
 	}
+
+	/// The set of names this cert covers, in a canonical form so that two certs
+	/// issued for the same names key alike.
+	fn name_key(&self) -> Vec<String> {
+		let mut names: Vec<String> = self
+			.sans
+			.iter()
+			.map(|san| san.trim_end_matches('.').to_ascii_lowercase())
+			.collect();
+		names.sort_unstable();
+		names.dedup();
+		names
+	}
+}
+
+/// Reduce the certs found in caddy's store to the one live cert per set of
+/// names: the one that expires last. A renewal issued by a different CA than the
+/// previous one is written to that CA's own directory, leaving the older copy in
+/// place under the CA that has been dropped, where it ages out and expires
+/// without anyone renewing it. Grading it would report an expiry failure and a
+/// mismatch against what's served for a file caddy stopped using.
+///
+/// Only applies to the store: a cert the config loads by path is one the
+/// operator maintains, and each such cert is graded on its own.
+///
+/// A cert with no DNS names can't be grouped by name, so those are kept as they
+/// are.
+fn keep_live_certs(certs: Vec<(String, DiskCert)>) -> Vec<(String, DiskCert)> {
+	let mut newest: BTreeMap<Vec<String>, (String, DiskCert)> = BTreeMap::new();
+	let mut unnamed: Vec<(String, DiskCert)> = Vec::new();
+	for (origin, cert) in certs {
+		let key = cert.name_key();
+		if key.is_empty() {
+			unnamed.push((origin, cert));
+			continue;
+		}
+		match newest.entry(key) {
+			Entry::Occupied(mut slot) => {
+				if cert.not_after > slot.get().1.not_after {
+					debug!(
+						superseded = %slot.get().0,
+						live = %origin,
+						"ignoring cert superseded by a later issuance"
+					);
+					slot.insert((origin, cert));
+				} else {
+					debug!(superseded = %origin, live = %slot.get().0, "ignoring cert superseded by a later issuance");
+				}
+			}
+			Entry::Vacant(slot) => {
+				slot.insert((origin, cert));
+			}
+		}
+	}
+	newest.into_values().chain(unnamed).collect()
 }
 
 /// Parse a leaf certificate from PEM bytes (the first cert block).
@@ -588,6 +650,72 @@ mod tests {
 		// Even if the warn threshold were raised past the renewal window, the
 		// gate keeps us quiet until caddy has had its chance to renew.
 		assert_eq!(classify_expiry(40 * D, life), Expiry::Ok);
+	}
+
+	fn disk_cert(sans: &[&str], not_after: i64, der: &[u8]) -> DiskCert {
+		DiskCert {
+			sans: sans.iter().map(|s| (*s).to_string()).collect(),
+			not_before: not_after - 90 * D,
+			not_after,
+			der: der.to_vec(),
+		}
+	}
+
+	fn origins(certs: &[(String, DiskCert)]) -> Vec<&str> {
+		certs.iter().map(|(origin, _)| origin.as_str()).collect()
+	}
+
+	#[test]
+	fn superseded_issuance_is_dropped() {
+		// A host whose renewal moved from one CA to another keeps the old CA's
+		// copy in the store, where it expires untouched. Only the live cert is
+		// graded, so the leftover reports neither an expiry nor a mismatch.
+		let live = disk_cert(&["app.example.com"], 100 * D, b"live");
+		let superseded = disk_cert(&["app.example.com"], 10 * D, b"superseded");
+		let kept = keep_live_certs(vec![
+			("store/ca-b/app.example.com.crt".into(), superseded),
+			("store/ca-a/app.example.com.crt".into(), live),
+		]);
+		assert_eq!(origins(&kept), vec!["store/ca-a/app.example.com.crt"]);
+	}
+
+	#[test]
+	fn certs_for_different_names_are_all_kept() {
+		let kept = keep_live_certs(vec![
+			("a.crt".into(), disk_cert(&["a.example.com"], 100 * D, b"a")),
+			("b.crt".into(), disk_cert(&["b.example.com"], 20 * D, b"b")),
+		]);
+		assert_eq!(origins(&kept).len(), 2);
+	}
+
+	#[test]
+	fn multi_name_certs_group_regardless_of_san_order_or_case() {
+		let live = disk_cert(&["b.example.com", "A.example.com"], 100 * D, b"live");
+		let superseded = disk_cert(&["a.example.com", "b.example.com."], 10 * D, b"old");
+		let kept = keep_live_certs(vec![
+			("old.crt".into(), superseded),
+			("live.crt".into(), live),
+		]);
+		assert_eq!(origins(&kept), vec!["live.crt"]);
+	}
+
+	#[test]
+	fn certs_with_a_differing_name_set_are_not_superseded() {
+		// Adding a name to a cert makes it a different cert, not a renewal of
+		// the narrower one, and both stay in use.
+		let both = disk_cert(&["a.example.com", "b.example.com"], 100 * D, b"both");
+		let one = disk_cert(&["a.example.com"], 10 * D, b"one");
+		let kept = keep_live_certs(vec![("one.crt".into(), one), ("both.crt".into(), both)]);
+		assert_eq!(origins(&kept).len(), 2);
+	}
+
+	#[test]
+	fn certs_without_names_are_kept() {
+		let kept = keep_live_certs(vec![
+			("x.crt".into(), disk_cert(&[], 100 * D, b"x")),
+			("y.crt".into(), disk_cert(&[], 10 * D, b"y")),
+		]);
+		assert_eq!(origins(&kept).len(), 2);
 	}
 
 	#[test]
