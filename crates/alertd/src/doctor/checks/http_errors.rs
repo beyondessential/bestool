@@ -17,6 +17,12 @@
 //!
 //! Only 5xx responses count as errors; 4xx responses are client mistakes
 //! (bad URLs, auth, etc.) and aren't worth alerting on.
+//!
+//! Caddy instruments its handlers only when its config switches metrics on, and
+//! serves `/metrics` with its process and admin series either way. So finding no
+//! request counters at all says nothing about how busy the server is, and the
+//! check reads the config to tell an idle server from an uninstrumented one,
+//! skipping rather than reporting health it never measured.
 
 use std::{
 	collections::BTreeMap,
@@ -34,6 +40,7 @@ use crate::doctor::Stat;
 use crate::doctor::check::Check;
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
+const CADDY_CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 const WARN_ERROR_PCT: f64 = 5.0;
@@ -63,6 +70,11 @@ pub async fn run(ctx: SweepContext) -> Check {
 		FetchResult::Counts(c) => c,
 		FetchResult::Skip(check) => return check,
 	};
+	if current_counts.is_empty()
+		&& let Some(check) = uninstrumented(&client).await
+	{
+		return check;
+	}
 	let current = Snapshot {
 		taken_at: Timestamp::now(),
 		counts: current_counts,
@@ -136,6 +148,65 @@ async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
 	};
 
 	FetchResult::Counts(parse_status_counts(&body))
+}
+
+/// Decide whether caddy served no requests or simply isn't counting them, for a
+/// caddy that reported no request counters at all. `Some(check)` is the skip to
+/// report when the counters are missing because nothing is producing them;
+/// `None` means caddy is instrumented and the window really was quiet.
+async fn uninstrumented(client: &reqwest::Client) -> Option<Check> {
+	let config = match client.get(CADDY_CONFIG_URL).timeout(TIMEOUT).send().await {
+		Ok(resp) if resp.status().is_success() => resp.json::<Value>().await,
+		Ok(resp) => {
+			debug!(status = %resp.status(), "caddy config endpoint refused");
+			return Some(Check::skip(
+				"http_errors",
+				"caddy metrics state unknown",
+				format!(
+					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} answered HTTP {} — whether it counts requests could not be established",
+					resp.status().as_u16()
+				),
+			));
+		}
+		Err(err) => {
+			return Some(Check::skip(
+				"http_errors",
+				"caddy metrics state unknown",
+				format!(
+					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} could not be read ({}) — whether it counts requests could not be established",
+					fmt_chain(&err)
+				),
+			));
+		}
+	};
+	match config {
+		Ok(config) if metrics_enabled_in(&config) => None,
+		Ok(_) => Some(Check::skip(
+			"http_errors",
+			"caddy metrics not switched on",
+			"caddy counts requests only when its config asks it to, so there is no error rate to grade. Add `metrics` to the Caddyfile's global options — within a `servers` block on caddy older than 2.9.",
+		)),
+		Err(err) => Some(Check::skip(
+			"http_errors",
+			"caddy metrics state unknown",
+			format!(
+				"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} did not parse ({}) — whether it counts requests could not be established",
+				fmt_chain(&err)
+			),
+		)),
+	}
+}
+
+/// Whether caddy's http app config switches request metrics on. Caddy 2.9 moved
+/// the switch onto the app itself; before that each server carried its own, and
+/// one instrumented server is enough to produce counters.
+fn metrics_enabled_in(http_app: &Value) -> bool {
+	if !http_app["metrics"].is_null() {
+		return true;
+	}
+	http_app["servers"]
+		.as_object()
+		.is_some_and(|servers| servers.values().any(|server| !server["metrics"].is_null()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +526,31 @@ other_metric{foo=\"bar\"} 7
 				("502".to_string(), 3),
 			]
 		);
+	}
+
+	#[test]
+	fn metrics_switch_read_from_the_app_or_its_servers() {
+		use serde_json::json;
+
+		// caddy 2.9 and later: the switch sits on the http app, and caddy
+		// serialises it as an empty object when it carries no sub-options.
+		assert!(metrics_enabled_in(&json!({ "metrics": {} })));
+		assert!(metrics_enabled_in(
+			&json!({ "metrics": { "per_host": true } })
+		));
+
+		// before 2.9: per server, and one instrumented server produces counters.
+		assert!(metrics_enabled_in(&json!({
+			"servers": { "srv0": { "metrics": {} }, "srv1": { "listen": [":80"] } }
+		})));
+
+		assert!(!metrics_enabled_in(&json!({
+			"servers": { "srv0": { "listen": [":443"], "routes": [] } }
+		})));
+		assert!(!metrics_enabled_in(&json!({ "servers": {} })));
+		assert!(!metrics_enabled_in(&json!({})));
+		// caddy answers with a bare null when it has no http app at all
+		assert!(!metrics_enabled_in(&Value::Null));
 	}
 
 	#[test]
