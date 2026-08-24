@@ -593,7 +593,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bestool"
-version = "1.60.2"
+version = "1.60.3"
 dependencies = [
  "age",
  "algae-cli",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.7.9"
+version = "1.7.10"
 dependencies = [
  "aegis",
  "bestool-postgres",
