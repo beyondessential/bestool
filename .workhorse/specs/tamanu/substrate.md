@@ -89,9 +89,17 @@ The service-expectation logic that decides what an application ought to be runni
 Each service's memory and processor usage are reported as metrics wherever a substrate can read them, dimensioned by duty and service.
 These are telemetry rather than a verdict: an application's resource usage is reported whether or not anything grades it.
 
-A service is graded against a ceiling only where one is declared for it — a container memory limit, a supervised unit's configured maximum, or a Kubernetes container limit.
+A service is graded against a ceiling only where one is declared for it.
+A declared ceiling is whatever bounds that service specifically: a container's memory limit, a Kubernetes container limit, or the memory bounds configured on a supervised unit.
 Where a service declares no ceiling there is no denominator to take a percentage of, so its usage is reported as a metric and the grading skips for that service.
 Usage is never graded against the machine's total, because the machine's capacity is shared with everything else on it and says nothing about whether a service is near its own limit.
+
+## Postgres tuning
+
+The tuning check grades an application's Postgres settings against the memory that Postgres may actually use.
+That figure is the Postgres service's declared ceiling wherever one exists, on the same terms as any other service's ceiling.
+Only where no ceiling is declared, and the substrate is the machine, does the check fall back to the machine's total memory — the reading that is right for a machine running one unconfined Postgres and wrong for everything else.
+With neither a ceiling nor a machine to read, there is nothing to tune against and the check skips.
 
 ## HTTP traffic and certificates
 
