@@ -84,6 +84,14 @@ This is also how a deployment shape that should no longer exist stays visible: a
 For a service, a substrate answers what version or image it is running, whether it is currently up, and its memory and processor usage.
 The service-expectation logic that decides what an application ought to be running grades against these readings, so a shortfall in running services is found the same way on every substrate.
 
+## Applications with their compute switched off
+
+An application can exist and hold its data while all of its compute is switched off, and a substrate reports that state for the application it speaks for.
+
+An application in that state has no running services and no reachable database, which is the intended condition rather than a fault.
+Checks that need a running service or a live database skip, giving that state as the reason, so an application that is deliberately switched off does not alert.
+Facts that come from the application's declared configuration rather than from anything running are reported as usual, so it remains identifiable while it sleeps.
+
 ## Resource usage per service
 
 Each service's memory and processor usage are reported as metrics wherever a substrate can read them, dimensioned by duty and service.
