@@ -115,9 +115,13 @@ A check that grades the front-end software itself, rather than the traffic throu
 
 Every check in the catalogue reports for either a machine or an application, and its subject determines what it may read.
 
-Machine checks are: filesystem capacity, inodes, btrfs device statistics, clock synchronisation, whole-machine memory, whole-machine load, machine uptime, unexpected local user accounts, the machine's addresses, whether munin-node is installed, the machine's cloud instance tags, Tailscale presence and configuration, bestool's own Canopy enrolment, and the checks that grade the HTTP front-end software itself.
+Machine checks are: filesystem capacity, inodes, btrfs device statistics, held filesystem captures, clock synchronisation, whole-machine memory, whole-machine load, machine uptime, unexpected local user accounts, the machine's addresses, whether munin-node is installed, the machine's billing tags, Tailscale presence and configuration, bestool's own Canopy enrolment, and the checks that grade the HTTP front-end software itself — its version, its resolvers, and the version marker in its configuration file.
 
-Application checks are: everything that reads the application's database, the application's own HTTP reachability and error rates, its service inventory and version drift, its certificates, and its resource usage per service.
+Held captures are a machine concern because they are filesystem-level snapshots, and because what is captured is not confined to any one application's database.
+
+Billing tags are read against the machine, not against any application on it, so a machine hosting several applications carries one set of tags rather than one per application.
+
+Application checks are: everything that reads the application's database, the application's own HTTP reachability and error rates, its service inventory and version drift, its certificates, its Postgres tuning, and its resource usage per service.
 
 A concern that exists on both sides is two checks rather than one shared check with a conditional subject.
 Filesystem capacity is a machine check reading the host's mounts, and volume capacity is an application check reading the size declared for the application's own storage; on a substrate with no machine to read, the first skips and the second still runs.
