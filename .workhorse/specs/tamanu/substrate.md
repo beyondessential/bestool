@@ -27,9 +27,9 @@ A substrate is described by what a check can ask it about, grouped by subject.
 The **system**: whether the checking process is running on the machine it reports for.
 This is the only thing checks in this group need from a substrate, because they read the machine directly rather than through it.
 
-The **workload**: which services make up this deployment, and the facts that hang off each running instance of them.
+The **workload**: which services make up this deployment, and the facts that hang off each of them.
 
-**Tamanu**: the deployment's configuration, its version, and a connection to its application database.
+**Tamanu**: the deployment's configuration, its version, whether it is a central or a facility, and a connection to its application database.
 
 **A database**: either a means of establishing a connection, or an established connection to run queries against.
 
@@ -45,26 +45,41 @@ They measure the machine rather than the deployment, which is a signal worth kee
 
 ## The workload
 
-A deployment is a set of **duties**, each with zero or more running **instances**.
-This holds on every substrate: a Linux server runs Tamanu as separate containers and cgroup-confined units, a Windows server runs it as separate supervised processes, and a Kubernetes deployment runs it as separate pods.
-An instance is one container, one supervised process, or one pod, and a duty may have several — an API duty commonly runs more than one, and a Kubernetes Postgres duty runs a primary alongside a replica where a Linux or Windows one runs a single instance.
+A deployment is served by a set of **services**, each carrying an identifier and a **duty**.
+A service is one container, one supervised process, or one pod, and several services commonly share a duty: an API duty usually runs more than one, and a Kubernetes Postgres duty runs a primary alongside a replica where a Linux or Windows one runs a single service.
+This holds on every substrate — a Linux server runs Tamanu as separate containers and cgroup-confined units, a Windows server runs it as separate supervised processes, and a Kubernetes deployment runs it as separate pods.
 
-Duties are drawn from a shared vocabulary so that every substrate names the same duty the same way: central API, facility API, central tasks, facility tasks, facility sync, frontend, central FHIR resolve, central FHIR refresh, patient portal, Postgres, and mSupply.
-A duty a substrate reports that is outside the vocabulary is carried under its own name rather than dropped, so a deployment running something the vocabulary does not yet cover is still reported in full.
-The vocabulary grows and shrinks as recognised duties change, and a substrate names duties from it rather than from the naming scheme of the supervisor underneath — a check reads a duty, never a unit name or a process name.
+A substrate answers with the list of services making up the deployment.
+Each entry's identifier is what a check passes back to ask for that service's details, so listing the workload and reading a service's facts are separate questions.
 
-A substrate answers which duties exist, how many instances each has, and what each instance is called.
-For each instance it answers what version or image it is running, and whether it is currently up.
-The service-expectation logic that decides what a deployment of a given kind ought to be running grades against these readings, so a shortfall in running instances is found the same way on every substrate.
+### The duty vocabulary
 
-## Resource usage per instance
+A duty names a product and, within it, the job that service does for that product.
+Duties are drawn from a shared vocabulary so that every substrate names the same duty the same way, and a check reads a duty rather than a unit name, a process name, or a pod name.
 
-Each instance's memory and CPU usage are reported as metrics on every substrate that can read them, dimensioned by duty and instance.
+Tamanu's duties are: API, tasks, sync, frontend, FHIR resolve, FHIR refresh, patient portal, and Postgres.
+They carry no central-or-facility distinction, because a duty's job is the same whichever kind of server runs it and which kinds run which duties changes over time.
+Whether a deployment is a central or a facility is a separate fact, answered once for the deployment rather than encoded into each duty's name.
+
+The vocabulary is organised by product so that products whose duties have nothing in common never have to share a set of names.
+Tamanu is the only product it covers, and it is shaped to admit others without their duties mapping onto Tamanu's.
+
+A service whose duty is outside the vocabulary is carried under its own name rather than dropped, so a deployment running something the vocabulary does not cover is still reported in full.
+This is also how a deployment shape that should no longer exist stays visible: a substrate reports the service it found under the name it found it by, and a check that grades such a service as forbidden finds it there without the shared vocabulary having to carry a duty nothing should be running.
+
+### Service facts
+
+For a service, a substrate answers what version or image it is running, whether it is currently up, and its memory and CPU usage.
+The service-expectation logic that decides what a deployment ought to be running grades against these readings, so a shortfall in running services is found the same way on every substrate.
+
+## Resource usage per service
+
+Each service's memory and CPU usage are reported as metrics wherever a substrate can read them, dimensioned by duty and service.
 These are telemetry rather than a verdict: a deployment's resource usage is reported whether or not anything grades it.
 
-An instance is graded against a ceiling only where one is declared for it — a container memory limit, a supervised unit's configured maximum, or a Kubernetes container limit.
-Where an instance declares no ceiling there is no denominator to take a percentage of, so its usage is reported as a metric and the grading skips for that instance.
-Usage is never graded against the machine's total, because the machine's capacity is shared with everything else on it and says nothing about whether this instance is near its own limit.
+A service is graded against a ceiling only where one is declared for it — a container memory limit, a supervised unit's configured maximum, or a Kubernetes container limit.
+Where a service declares no ceiling there is no denominator to take a percentage of, so its usage is reported as a metric and the grading skips for that service.
+Usage is never graded against the machine's total, because the machine's capacity is shared with everything else on it and says nothing about whether a service is near its own limit.
 
 ## HTTP traffic and certificates
 
