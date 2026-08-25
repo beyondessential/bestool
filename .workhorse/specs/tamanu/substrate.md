@@ -109,6 +109,20 @@ That figure is the Postgres service's declared ceiling wherever one exists, on t
 Only where no ceiling is declared, and the substrate is the machine, does the check fall back to the machine's total memory — the reading that is right for a machine running one unconfined Postgres and wrong for everything else.
 With neither a ceiling nor a machine to read, there is nothing to tune against and the check skips.
 
+## Check state
+
+A check that compares a reading against an earlier one keeps that history in check storage, which is a separate abstraction from the substrate: what a check can find out and where it may remember things are independent questions, and a process observing applications remotely supplies its own storage without having to be the thing that reads them.
+
+Check storage is scoped to the subject the check is reporting for.
+Several applications driven from one process therefore never read or write each other's history, and a check's baseline is always a baseline for the application it is grading.
+
+Each check declares whether its stored state survives its application's compute being switched off.
+A check whose readings are cumulative counters kept by processes that stop when the compute does discards its state, because those counters restart from zero on waking and a retained baseline would read the fresh counters as a reset or, worse, as a plausible delta.
+A check whose readings measure something that persists in the application's own data keeps its state, so a quantity that moved while the application slept is still visible as having moved when it wakes.
+
+A reading whose source is no longer present is an absence rather than a decrease.
+Where a substrate's readings come from several sources that come and go, history is kept per source and a source that has vanished is dropped, rather than its disappearance being graded as the quantity having fallen.
+
 ## HTTP traffic and certificates
 
 A check asks the substrate for HTTP traffic statistics for its own application rather than for a particular machine's.
