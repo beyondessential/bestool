@@ -123,6 +123,19 @@ Billing tags are read against the machine, not against any application on it, so
 
 Application checks are: everything that reads the application's database, the application's own HTTP reachability and error rates, its service inventory and version drift, its certificates, its Postgres tuning, and its resource usage per service.
 
+### Reported facts
+
+The facts reported alongside the checks split by subject on the same terms, so no fact is reported against a subject it is not about.
+
+A machine reports: its hostname, its uptime, its operating system kind, name, version and kernel, its architecture, whether it is virtualised and by what, its processor count, its total memory, its filesystems, its addresses and its IPv4, IPv6 and NAT64 reachability, its clock timezone, its billing tags, and the version of bestool running on it.
+
+An application reports: its product version, the kind of server it is, its install root where it has one on disk, its canonical URL, its current sync tick, its configured timezone, and its database's Postgres version.
+
+Because each subject reports only its own facts, a fact is absent when the subject genuinely lacks it rather than when the reading could not be attributed.
+The version of bestool is a machine fact and an application has none, which answers correctly for an application no agent is installed alongside: there is no agent there to upgrade.
+
+The machine's clock timezone and an application's configured timezone are separate facts about separate subjects, and drift between them is read by comparing the two rather than by either subject reporting the other's.
+
 A concern that exists on both sides is two checks rather than one shared check with a conditional subject.
 Filesystem capacity is a machine check reading the host's mounts, and volume capacity is an application check reading the size declared for the application's own storage; on a substrate with no machine to read, the first skips and the second still runs.
 Uptime is likewise a machine check reading how long the host has been up, and a service fact reading how long each of the application's services has been running.
