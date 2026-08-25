@@ -20,11 +20,21 @@ Two deployments running the same check therefore reach their verdicts by the sam
 Where a substrate cannot serve a reading a check needs, the check reports skipped with the reason it could not be taken.
 A skip is always for a stated reason rather than by accident of what a given substrate happens to expose.
 
+## Systems and deployments
+
+A **system** is a machine. A **deployment** is one product installed on it: its own services, its own version, its own database, its own HTTP traffic, its own certificates, and its own names on the network.
+
+A system hosts zero or more deployments, and a substrate speaks for exactly one of them.
+A machine running two is served by two substrates, one per deployment, and their readings are separate throughout — a Linux server commonly hosts a Tamanu facility deployment alongside an mSupply deployment, which share nothing but the machine.
+The same holds for two deployments of one product, so a machine running both a central and a facility is two deployments rather than one server of an ambiguous kind.
+
+A deployment carries the product it is: which duties it can have, which facts describe it, and which checks apply to it all follow from that.
+
 ## What a substrate answers for
 
 A substrate is described by what a check can ask it about, grouped by subject.
 
-The **system**: whether the checking process is running on the machine it reports for.
+The **system**: whether the checking process is running on the machine hosting the deployment it reports for.
 This is the only thing checks in this group need from a substrate, because they read the machine directly rather than through it.
 
 The **workload**: which services make up this deployment, and the facts that hang off each of them.
@@ -61,8 +71,8 @@ Tamanu's duties are: API, tasks, sync, frontend, FHIR resolve, FHIR refresh, pat
 They carry no central-or-facility distinction, because a duty's job is the same whichever kind of server runs it and which kinds run which duties changes over time.
 Whether a deployment is a central or a facility is a separate fact, answered once for the deployment rather than encoded into each duty's name.
 
-The vocabulary is organised by product so that products whose duties have nothing in common never have to share a set of names.
-Tamanu is the only product it covers, and it is shaped to admit others without their duties mapping onto Tamanu's.
+The vocabulary is organised by product, so products whose duties have nothing in common never share a set of names: an mSupply deployment's duties do not map onto Tamanu's, and neither has to accommodate the other.
+Tamanu is the only product the vocabulary covers, and it is shaped to admit others without that changing.
 
 A service whose duty is outside the vocabulary is carried under its own name rather than dropped, so a deployment running something the vocabulary does not cover is still reported in full.
 This is also how a deployment shape that should no longer exist stays visible: a substrate reports the service it found under the name it found it by, and a check that grades such a service as forbidden finds it there without the shared vocabulary having to carry a duty nothing should be running.
