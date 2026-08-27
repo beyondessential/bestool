@@ -41,7 +41,7 @@ use std::{
 
 use jiff::Timestamp;
 use serde_json::{Value, json};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::{io::AsyncWriteExt, net::TcpStream, task::spawn_blocking};
 use tracing::debug;
 use x509_parser::prelude::*;
 
@@ -116,31 +116,16 @@ pub async fn run(ctx: SweepContext) -> Check {
 	};
 	let active = active_subjects(&config);
 
-	let mut managed: Vec<(String, DiskCert)> = Vec::new();
-	if let Some(dir) = certificates_dir() {
-		let mut files = Vec::new();
-		collect_crt_files(&dir, &mut files);
-		for path in files {
-			let Ok(bytes) = std::fs::read(&path) else {
-				continue;
-			};
-			let Some(cert) = parse_cert(&bytes) else {
-				debug!(path = %path.display(), "could not parse caddy cert");
-				continue;
-			};
-			if cert.covers_any(&active) {
-				managed.push((path.display().to_string(), cert));
-			} else {
-				debug!(path = %path.display(), "managed cert not in active config; skipping");
-			}
-		}
-	}
-	let mut certs = keep_live_certs(managed);
-	for (origin, pem) in manual_sources(&config) {
-		if let Some(cert) = parse_cert(&pem) {
-			certs.push((origin, cert));
-		}
-	}
+	// Reading the on-disk cert store (a recursive directory walk plus a read per
+	// cert) and any manually-loaded cert files is blocking I/O — on Windows each
+	// read is antivirus-scanned. Run it on the blocking pool so it can't stall
+	// other checks sharing the executor.
+	let certs = spawn_blocking(move || gather_certs(&active, &config))
+		.await
+		.unwrap_or_else(|err| {
+			debug!(%err, "caddy_certs disk scan task did not complete");
+			Vec::new()
+		});
 
 	if certs.is_empty() {
 		return Check::skip(
@@ -240,6 +225,38 @@ pub async fn run(ctx: SweepContext) -> Check {
 		.with_detail("certificates", Value::Array(details))
 		.with_stat(Stat::gauge("count", n as f64).help("Certificates checked"))
 		.with_stats(stats)
+}
+
+/// Read the caddy cert store and any manually-loaded cert files from disk,
+/// reducing the store to the one live cert per set of names. All blocking I/O,
+/// so it runs under `spawn_blocking`.
+fn gather_certs(active: &BTreeSet<String>, config: &Value) -> Vec<(String, DiskCert)> {
+	let mut managed: Vec<(String, DiskCert)> = Vec::new();
+	if let Some(dir) = certificates_dir() {
+		let mut files = Vec::new();
+		collect_crt_files(&dir, &mut files);
+		for path in files {
+			let Ok(bytes) = std::fs::read(&path) else {
+				continue;
+			};
+			let Some(cert) = parse_cert(&bytes) else {
+				debug!(path = %path.display(), "could not parse caddy cert");
+				continue;
+			};
+			if cert.covers_any(active) {
+				managed.push((path.display().to_string(), cert));
+			} else {
+				debug!(path = %path.display(), "managed cert not in active config; skipping");
+			}
+		}
+	}
+	let mut certs = keep_live_certs(managed);
+	for (origin, pem) in manual_sources(config) {
+		if let Some(cert) = parse_cert(&pem) {
+			certs.push((origin, cert));
+		}
+	}
+	certs
 }
 
 /// caddy's `certificates/` store, probed at the well-known data-dir locations

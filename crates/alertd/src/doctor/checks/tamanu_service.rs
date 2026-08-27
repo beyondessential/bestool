@@ -53,18 +53,31 @@ pub async fn run(ctx: CheckContext) -> Check {
 					.with_detail("supervisor", "systemd");
 			}
 		},
-		Supervisor::Pm2 => match discover_pm2() {
-			Ok((d, source)) => {
+		// `discover_pm2` shells out to the pm2 Node CLI with a blocking
+		// `std::process::Command`, which on Windows (pm2.cmd → cmd.exe →
+		// node.exe, each antivirus-scanned) takes over a second. Run it on the
+		// blocking pool so it can't stall other checks sharing the executor and
+		// inflate their `Instant`-across-`.await` latency measurements.
+		Supervisor::Pm2 => match tokio::task::spawn_blocking(discover_pm2).await {
+			Ok(Ok((d, source))) => {
 				pm2_source = Some(source);
 				d
 			}
-			Err(err) => {
+			Ok(Err(err)) => {
 				return Check::warning(
 					"tamanu_service",
 					"pm2 status could not be queried",
 					format!(
 						"pm2 unavailable ({err}); services may be running but we can't tell from this user. Run elevated to confirm."
 					),
+				)
+				.with_detail("supervisor", "pm2");
+			}
+			Err(err) => {
+				return Check::warning(
+					"tamanu_service",
+					"pm2 status could not be queried",
+					format!("pm2 discovery task failed: {err}"),
 				)
 				.with_detail("supervisor", "pm2");
 			}

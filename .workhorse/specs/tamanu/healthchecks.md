@@ -12,6 +12,18 @@ This spec is the parent for the healthcheck catalogue: the conventions common to
 
 Every spec describing an individual healthcheck carries a frontmatter `id` of the form `CHK-<id>`, where `<id>` is a short identifier for that check (for example `CHK-CFV` for the Caddyfile version check). The shared `CHK-` prefix distinguishes healthcheck specs from other specs at a glance and groups them for code-to-spec traceability.
 
+## Concurrent execution
+
+The checks in a sweep run concurrently and independently of one another.
+A check that is slow, that waits on an unresponsive host, or that occupies its thread for an extended period delays only its own result: the other checks in the sweep continue to make progress and complete on their own schedule.
+This holds for every check regardless of what it does internally, so adding a check that consults a slow external tool cannot degrade the rest of the sweep.
+
+A duration a check reports — a connect latency, a response time — measures only the work that check performed.
+Time the sweep spends running other checks is never counted against it, so a reported duration is a usable signal about the thing being graded rather than an artefact of what else the sweep was doing.
+The same check run alone and run as part of a full sweep reports durations in the same range.
+
+A check that errors so severely that it produces no result at all is reported as broken, for that check alone, and the rest of the sweep completes and reports normally.
+
 ## Self-healing
 
 A check may declare a self-heal action: a repair the daemon attempts, while the check is failing, to recover the condition the check grades without operator action.
