@@ -99,16 +99,17 @@ pub async fn start_server(
 		addrs
 	};
 
-	let mut listener = None;
+	let mut listeners = Vec::new();
 	let mut last_error = None;
 
-	// Try each address in order until one succeeds
+	// Bind every address that will accept it, not just the first: on a host where
+	// both loopback families are available the daemon must answer on both, so a
+	// client fixed to one family can always reach it.
 	for addr in &addrs_to_try {
 		match tokio::net::TcpListener::bind(addr).await {
 			Ok(l) => {
 				info!("HTTP server listening on http://{}", addr);
-				listener = Some(l);
-				break;
+				listeners.push(l);
 			}
 			Err(e) => {
 				warn!("failed to bind HTTP server to {}: {}", addr, e);
@@ -117,27 +118,32 @@ pub async fn start_server(
 		}
 	}
 
-	let listener = match listener {
-		Some(l) => l,
-		None => {
-			if let Some(e) = last_error {
-				warn!("failed to bind HTTP server to any address: {}", e);
-			} else {
-				warn!("no addresses provided for HTTP server");
-			}
-			warn!("waiting 10 seconds before continuing without");
-			warn!("use --no-server to disable the HTTP server and this warning");
-
-			tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
-			info!("continuing without HTTP server");
-			return;
+	if listeners.is_empty() {
+		if let Some(e) = last_error {
+			warn!("failed to bind HTTP server to any address: {}", e);
+		} else {
+			warn!("no addresses provided for HTTP server");
 		}
-	};
+		warn!("waiting 10 seconds before continuing without");
+		warn!("use --no-server to disable the HTTP server and this warning");
 
-	if let Err(e) = axum::serve(listener, app).await {
-		error!("HTTP server error: {}", e);
+		tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+		info!("continuing without HTTP server");
+		return;
 	}
+
+	// Serve every bound listener concurrently; each runs until the process ends.
+	let mut servers = tokio::task::JoinSet::new();
+	for listener in listeners {
+		let app = app.clone();
+		servers.spawn(async move {
+			if let Err(e) = axum::serve(listener, app).await {
+				error!("HTTP server error: {}", e);
+			}
+		});
+	}
+	while servers.join_next().await.is_some() {}
 }
 
 fn collect_task_endpoints(
