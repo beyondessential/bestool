@@ -189,10 +189,6 @@ impl SweepResult {
 	}
 }
 
-#[expect(
-	clippy::too_many_arguments,
-	reason = "a sweep's inputs; grouping them into a params struct is a separate refactor"
-)]
 /// A single check ready to run: its registry index and wire flag, the future
 /// that produces its result, and its heal action paired with the context to run
 /// it against (when the sweep enables healing and the check has one).
@@ -205,6 +201,8 @@ struct PreparedCheck {
 }
 
 /// Drive a set of checks concurrently, each on its own task.
+///
+/// spec: CHK
 ///
 /// Spawning rather than pushing bare futures into one `FuturesUnordered` keeps
 /// the checks off a single shared driver task: a blocking call in one check
@@ -254,6 +252,10 @@ async fn run_checks_concurrently(
 	completed
 }
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "a sweep's inputs; grouping them into a params struct is a separate refactor"
+)]
 pub async fn perform_sweep(
 	binary_version: &str,
 	tamanu: Option<SweepTamanu>,
