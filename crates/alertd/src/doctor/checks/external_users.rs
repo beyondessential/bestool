@@ -104,10 +104,20 @@ pub async fn run(_ctx: SweepContext) -> Check {
 
 	let now = Timestamp::now();
 	let state_path = state_file_path();
-	let prior = state_path.as_deref().map(load_state).unwrap_or_default();
+	// Reading and writing the small presence-state file is blocking I/O; keep it
+	// off the executor so it can't stall other checks sharing the thread.
+	let prior = match state_path.clone() {
+		Some(path) => spawn_blocking(move || load_state(&path))
+			.await
+			.unwrap_or_default(),
+		None => PresenceState::default(),
+	};
 	apply_presence_state(&mut users, &prior, now);
-	if let Some(path) = &state_path {
-		save_state(path, &snapshot_state(&users));
+	if let Some(path) = state_path.clone() {
+		let state = snapshot_state(&users);
+		if let Err(err) = spawn_blocking(move || save_state(&path, &state)).await {
+			warn!(%err, "doctor external_users state task did not complete");
+		}
 	}
 
 	if users.is_empty() {

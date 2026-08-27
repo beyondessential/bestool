@@ -33,6 +33,7 @@ use std::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio::task::spawn_blocking;
 use tracing::{debug, warn};
 
 use super::{SweepContext, fmt_chain};
@@ -81,7 +82,14 @@ pub async fn run(ctx: SweepContext) -> Check {
 	};
 
 	let state = state_path();
-	let mut history = state.as_deref().map(load_history).unwrap_or_default();
+	// Reading and later writing the small history cache file is blocking I/O;
+	// keep it off the executor so it can't stall other checks sharing the thread.
+	let mut history = match state.clone() {
+		Some(path) => spawn_blocking(move || load_history(&path))
+			.await
+			.unwrap_or_default(),
+		None => Vec::new(),
+	};
 	prune_history(&mut history, current.taken_at);
 
 	let (baseline, source) = match pick_baseline(&history, &current) {
@@ -99,12 +107,12 @@ pub async fn run(ctx: SweepContext) -> Check {
 			// `current` was taken first; second was taken IN_RUN_SAMPLE later.
 			// Re-assign so `current` is the newer one for the delta math below.
 			let baseline = current.clone();
-			append_and_save(&state, &mut history, second.clone());
+			append_and_save(&state, &mut history, second.clone()).await;
 			return build_check(&baseline, &second, BaselineSource::InRunSample);
 		}
 	};
 
-	append_and_save(&state, &mut history, current.clone());
+	append_and_save(&state, &mut history, current.clone()).await;
 	build_check(&baseline, &current, source)
 }
 
@@ -406,9 +414,18 @@ fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
 	});
 }
 
-fn append_and_save(path: &Option<PathBuf>, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
+async fn append_and_save(path: &Option<PathBuf>, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
 	history.push(snapshot);
-	let Some(path) = path else { return };
+	let Some(path) = path.clone() else { return };
+	let history = history.clone();
+	if let Err(err) = spawn_blocking(move || write_history(&path, &history)).await {
+		warn!(%err, "doctor http_errors history task did not complete");
+	}
+}
+
+/// Serialise the snapshot history to `path` via a temp file and atomic rename.
+/// Blocking I/O, so it runs under `spawn_blocking`.
+fn write_history(path: &Path, history: &[Snapshot]) {
 	if let Some(parent) = path.parent()
 		&& let Err(err) = std::fs::create_dir_all(parent)
 	{
