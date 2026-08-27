@@ -140,31 +140,19 @@ pub(super) enum DaemonError {
 	Failed(String),
 }
 
-/// Loopback bases the alertd daemon may be listening on. It binds the first that
-/// is free (usually IPv6 `[::1]`), so a client fixed to one family can miss it;
-/// we try both, in the daemon's own default order. Kept in step with the
-/// daemon's `default_server_addrs`.
-const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
-
 /// Tell the daemon's in-flight run of `backup_type` to keep its capture.
 ///
 /// Reports whether there was a run to tell — a type with nothing in flight is a
 /// plain "no", not a failure, since the operator's next move depends on which it
 /// is.
 pub(super) async fn request_daemon_hold(backup_type: &str) -> std::result::Result<bool, DaemonError> {
-	let mut response = None;
-	let mut last_err = String::from("no daemon address to try");
-	for base in DAEMON_BASES {
-		let url = format!("{base}/tasks/backup/hold?type={backup_type}");
-		match crate::http::client().get(&url).send().await {
-			Ok(resp) => {
-				response = Some(resp);
-				break;
-			}
-			Err(err) => last_err = err.to_string(),
-		}
-	}
-	let response = response.ok_or(DaemonError::Unreachable(last_err))?;
+	let response = crate::http::daemon_get(
+		&crate::http::client(),
+		&format!("/tasks/backup/hold?type={backup_type}"),
+		|r| r,
+	)
+	.await
+	.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
 	if !response.status().is_success() {
 		return Err(DaemonError::Unreachable(format!(
 			"alertd returned {}",
@@ -184,19 +172,13 @@ pub(super) async fn request_daemon_hold(backup_type: &str) -> std::result::Resul
 async fn run_via_daemon(backup_type: &str, hold: bool) -> std::result::Result<(), DaemonError> {
 	use futures::StreamExt as _;
 
-	let mut response = None;
-	let mut last_err = String::from("no daemon address to try");
-	for base in DAEMON_BASES {
-		let url = format!("{base}/tasks/backup/run?type={backup_type}&hold={hold}");
-		match crate::http::client().get(&url).send().await {
-			Ok(resp) => {
-				response = Some(resp);
-				break;
-			}
-			Err(err) => last_err = err.to_string(),
-		}
-	}
-	let response = response.ok_or(DaemonError::Unreachable(last_err))?;
+	let response = crate::http::daemon_get(
+		&crate::http::client(),
+		&format!("/tasks/backup/run?type={backup_type}&hold={hold}"),
+		|r| r,
+	)
+	.await
+	.map_err(|err| DaemonError::Unreachable(err.to_string()))?;
 	if !response.status().is_success() {
 		return Err(DaemonError::Unreachable(format!(
 			"alertd returned {}",
