@@ -24,7 +24,7 @@ const FAIL_MINUTES: f64 = 30.0;
 const SQL: &str = "WITH facility_sessions AS ( \
 		SELECT jsonb_array_elements_text(parameters->'facilityIds') AS facility_id, \
 			created_at, completed_at, errors \
-		FROM sync_sessions WHERE parameters->>'isMobile' <> 'true' \
+		FROM sync_sessions WHERE parameters->>'isMobile' IS DISTINCT FROM 'true' \
 			AND created_at > now() - interval '30 days' \
 	), active AS ( \
 		SELECT DISTINCT facility_id FROM facility_sessions \
