@@ -72,6 +72,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
+* [`bestool tamanu blob-root`↴](#bestool-tamanu-blob-root)
 * [`bestool tamanu config`↴](#bestool-tamanu-config)
 * [`bestool tamanu db-url`↴](#bestool-tamanu-db-url)
 * [`bestool tamanu doctor`↴](#bestool-tamanu-doctor)
@@ -1531,6 +1532,7 @@ Alias: t
 * `artifacts` — List available artifacts for a Tamanu version
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
+* `blob-root` — Print the Tamanu blob store root
 * `config` — Find and print the current Tamanu config
 * `db-url` — Generate a DATABASE_URL connection string
 * `doctor` — Gather server info + healthchecks for a Tamanu install
@@ -1904,6 +1906,22 @@ If `--key` or `--key-file` is provided, the backup file will be encrypted. Note 
 * `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
 
    This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
+
+
+
+## `bestool tamanu blob-root`
+
+Print the Tamanu blob store root.
+
+The root is Tamanu's `blobStorage.root` setting (database-backed and editable in the admin panel, so no config file carries it), resolved against the server package directory when not absolute. A blob store backup def names this command as its `path_command`, so every capture and restore follows the live setting instead of a hardcoded path going stale.
+
+**Usage:** `bestool tamanu blob-root [OPTIONS]`
+
+###### **Options:**
+
+* `-p`, `--package <PACKAGE>` — Package to read the setting for (central-server or facility-server).
+
+   Detected from the config and database when not given.
 
 
 

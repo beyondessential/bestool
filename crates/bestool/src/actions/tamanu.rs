@@ -59,6 +59,8 @@ super::subcommands! {
 	backup => Backup(BackupArgs),
 	#[cfg(feature = "tamanu-backup-configs")]
 	backup_configs => BackupConfigs(BackupConfigsArgs),
+	#[cfg(feature = "tamanu-blob-root")]
+	blob_root => BlobRoot(BlobRootArgs),
 	#[cfg(feature = "tamanu-config")]
 	#[clap(alias = "c")]
 	config => Config(ConfigArgs),

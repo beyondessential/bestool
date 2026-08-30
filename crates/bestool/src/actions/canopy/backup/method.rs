@@ -103,10 +103,78 @@ pub(super) enum Teardown {
 }
 
 /// `[simple]` method: snapshot a path verbatim.
+///
+/// The path is either fixed (`path`) or resolved on every run by a command
+/// (`path_command`), for sources whose location lives outside the def, e.g.
+/// the Tamanu blob store root, a database-backed setting an administrator can
+/// move (`bestool tamanu blob-root` prints it). Exactly one of the two.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SimpleConfig {
 	/// The path kopia snapshots.
-	pub path: PathBuf,
+	#[serde(default)]
+	pub path: Option<PathBuf>,
+	/// A command (argv-style, no shell) whose output is the absolute path to
+	/// snapshot and restore.
+	#[serde(default)]
+	pub path_command: Option<Vec<String>>,
+}
+
+impl SimpleConfig {
+	/// Enforce exactly one of `path` / `path_command` at def load.
+	pub fn validate(&self, backup_type: &str) -> Result<()> {
+		match (&self.path, &self.path_command) {
+			(Some(_), None) => Ok(()),
+			(None, Some(command)) if !command.is_empty() => Ok(()),
+			(None, Some(_)) => bail!("backup def '{backup_type}' has an empty [simple] path_command"),
+			(None, None) => bail!(
+				"backup def '{backup_type}' has a [simple] table with neither path nor path_command"
+			),
+			(Some(_), Some(_)) => bail!(
+				"backup def '{backup_type}' has both [simple] path and path_command; exactly one is allowed"
+			),
+		}
+	}
+
+	/// The path to snapshot or restore: the fixed one, or the command's output.
+	///
+	/// spec: BAK#methods
+	pub async fn resolve_path(&self) -> Result<PathBuf> {
+		use miette::{Context as _, IntoDiagnostic as _};
+
+		if let Some(path) = &self.path {
+			return Ok(path.clone());
+		}
+		let command = self
+			.path_command
+			.as_ref()
+			.expect("validated: path or path_command is set");
+		let (program, args) = command
+			.split_first()
+			.expect("validated: path_command is not empty");
+		let output = tokio::process::Command::new(program)
+			.args(args)
+			.output()
+			.await
+			.into_diagnostic()
+			.wrap_err_with(|| format!("running path_command {program}"))?;
+		if !output.status.success() {
+			bail!(
+				"path_command {program} exited with {}: {}",
+				output.status,
+				String::from_utf8_lossy(&output.stderr).trim()
+			);
+		}
+		let stdout = String::from_utf8_lossy(&output.stdout);
+		let path = stdout.trim();
+		if path.is_empty() || path.lines().count() != 1 {
+			bail!("path_command {program} must output exactly one line, got: {path:?}");
+		}
+		let path = PathBuf::from(path);
+		if !path.is_absolute() {
+			bail!("path_command {program} must output an absolute path, got {}", path.display());
+		}
+		Ok(path)
+	}
 }
 
 /// `[postgresql]` method: physical, crash-consistent cluster snapshot.
@@ -183,7 +251,7 @@ impl Method {
 	pub async fn prepare(&self, backup_type: &str, within: Option<&VolumeCapture>) -> Result<Prepared> {
 		match self {
 			Method::Simple(config) => {
-				let live = config.path.clone();
+				let live = config.resolve_path().await?;
 				let frozen = within.and_then(|capture| capture.contains(&live));
 				if let (Some(source), Some(capture)) = (&frozen, within) {
 					info!(
@@ -289,7 +357,7 @@ impl Method {
 			Method::Simple(config) => {
 				let target = match target_override {
 					Some(target) => target.to_path_buf(),
-					None => config.path.clone(),
+					None => config.resolve_path().await?,
 				};
 				target
 					.parent()
@@ -309,7 +377,7 @@ impl Method {
 			Method::Simple(config) => {
 				let target = match &opts.target {
 					Some(target) => target.clone(),
-					None => config.path.clone(),
+					None => config.resolve_path().await?,
 				};
 				ensure_not_clobbering(&target, opts.clobber)?;
 				replace_dir(staging, &target).await
@@ -465,7 +533,8 @@ mod tests {
 	#[tokio::test]
 	async fn simple_prepare_returns_its_path_and_no_tags() {
 		let method = Method::Simple(SimpleConfig {
-			path: PathBuf::from("/data/custom"),
+			path: Some(PathBuf::from("/data/custom")),
+			path_command: None,
 		});
 		let prepared = method.prepare("custom", None).await.unwrap();
 		assert_eq!(prepared.path, PathBuf::from("/data/custom"));
@@ -514,6 +583,83 @@ mod tests {
 	#[test]
 	fn the_volume_root_itself_maps_to_the_shadow_root() {
 		assert_eq!(c_volume().contains(Path::new(r"C:\")), Some(c_volume().root));
+	}
+
+	#[test]
+	fn simple_config_requires_exactly_one_path_form() {
+		let fixed = SimpleConfig {
+			path: Some(PathBuf::from("/data")),
+			path_command: None,
+		};
+		assert!(fixed.validate("t").is_ok());
+
+		let resolved = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), "/data".into()]),
+		};
+		assert!(resolved.validate("t").is_ok());
+
+		let neither = SimpleConfig {
+			path: None,
+			path_command: None,
+		};
+		assert!(format!("{}", neither.validate("t").unwrap_err()).contains("neither"));
+
+		let both = SimpleConfig {
+			path: Some(PathBuf::from("/data")),
+			path_command: Some(vec!["/bin/echo".into()]),
+		};
+		assert!(format!("{}", both.validate("t").unwrap_err()).contains("exactly one"));
+
+		let empty = SimpleConfig {
+			path: None,
+			path_command: Some(vec![]),
+		};
+		assert!(format!("{}", empty.validate("t").unwrap_err()).contains("empty"));
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn path_command_resolves_trimmed_absolute_output() {
+		let config = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), "/var/lib/tamanu/blobs".into()]),
+		};
+		assert_eq!(
+			config.resolve_path().await.unwrap(),
+			PathBuf::from("/var/lib/tamanu/blobs")
+		);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn path_command_rejects_relative_and_multiline_output() {
+		let relative = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), "data/blobs".into()]),
+		};
+		assert!(
+			format!("{}", relative.resolve_path().await.unwrap_err()).contains("absolute")
+		);
+
+		let multiline = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), "/a\n/b".into()]),
+		};
+		assert!(
+			format!("{}", multiline.resolve_path().await.unwrap_err())
+				.contains("exactly one line")
+		);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn path_command_failure_is_an_error() {
+		let failing = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 3".into()]),
+		};
+		assert!(format!("{}", failing.resolve_path().await.unwrap_err()).contains("exited"));
 	}
 
 	#[test]

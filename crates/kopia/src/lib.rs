@@ -1589,13 +1589,13 @@ mod tests {
 		let mut listed = snapshot("a", "host-1", "/data", now);
 		listed
 			.tags
-			.insert("tag:canopy-type".into(), "tamanu-secrets".into());
-		assert_eq!(listed.tag("canopy-type"), Some("tamanu-secrets"));
+			.insert("tag:canopy-type".into(), "tamanu-blobs".into());
+		assert_eq!(listed.tag("canopy-type"), Some("tamanu-blobs"));
 
 		let mut bare = snapshot("b", "host-1", "/data", now);
 		bare.tags
-			.insert("canopy-type".into(), "tamanu-secrets".into());
-		assert_eq!(bare.tag("canopy-type"), Some("tamanu-secrets"));
+			.insert("canopy-type".into(), "tamanu-blobs".into());
+		assert_eq!(bare.tag("canopy-type"), Some("tamanu-blobs"));
 
 		assert_eq!(
 			snapshot("c", "host-1", "/data", now).tag("canopy-type"),
