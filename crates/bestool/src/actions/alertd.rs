@@ -266,6 +266,9 @@ fn backup_runner() -> bestool_alertd::BackupRunner {
 			BackupEvent::Started { run_id } => json!({"event": "started", "runId": run_id}),
 			BackupEvent::Phase(phase) => json!({"event": "phase", "phase": phase}),
 			BackupEvent::Progress(status) => json!({"event": "progress", "status": status}),
+			BackupEvent::Follower { backup_type } => {
+				json!({"event": "follower", "type": backup_type})
+			}
 			BackupEvent::Done {
 				snapshot_id,
 				bytes_uploaded,

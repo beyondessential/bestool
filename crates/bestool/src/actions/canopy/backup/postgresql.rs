@@ -126,19 +126,23 @@ async fn snapshot_prepared(
 	backup_type: &str,
 	need: Option<u64>,
 ) -> Result<Prepared> {
-	let (path, taken_at, teardown) = match strategy {
+	// `volume` is set only where the capture covers the whole volume: btrfs and
+	// LVM snapshot a subvolume or logical volume, so nothing else on the disk is
+	// inside theirs.
+	let (path, taken_at, teardown, volume) = match strategy {
 		Strategy::Btrfs => {
 			let (path, taken_at, mounts) = btrfs::prepare(resolved, backup_type).await?;
-			(path, taken_at, Teardown::Btrfs(mounts))
+			(path, taken_at, Teardown::Btrfs(mounts), None)
 		}
 		Strategy::ThinLvm => {
 			let (path, taken_at, snapshot) = lvm::prepare(resolved, backup_type).await?;
-			(path, taken_at, Teardown::Lvm(snapshot))
+			(path, taken_at, Teardown::Lvm(snapshot), None)
 		}
 		#[cfg(windows)]
 		Strategy::Vss => {
 			let (path, taken_at, shadow) = vss::prepare(resolved, backup_type, need).await?;
-			(path, taken_at, Teardown::Vss(shadow))
+			let volume = vss::volume_capture(&shadow, taken_at);
+			(path, taken_at, Teardown::Vss(shadow), volume)
 		}
 		#[cfg(not(windows))]
 		Strategy::Vss => {
@@ -153,6 +157,7 @@ async fn snapshot_prepared(
 		extra_tags: metadata_tags(resolved, strategy),
 		ignore: ignore_globs(),
 		teardown,
+		volume,
 	})
 }
 
@@ -173,6 +178,8 @@ async fn basebackup_prepared(
 		extra_tags: metadata_tags(resolved, Strategy::BaseBackup),
 		ignore: ignore_globs(),
 		teardown: Teardown::BaseBackup(root),
+		// A copy of one directory, so nothing else on the disk is in it.
+		volume: None,
 	})
 }
 

@@ -507,6 +507,9 @@ Restore a backup from Canopy's repository
    Takes a hold id, as shown by `bestool canopy hold list`.
 * `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
+* `--no-followers` — Restore only the named type, skipping the defs that follow it.
+
+   By default, restoring a type also restores each def that declares `after` on it, from the earliest snapshot of that def's type taken at or after the one being restored, never an earlier one, which could lack content the restored data references.
 * `--config <DIR>` — Override the registration directory
 * `--backups-dir <DIR>` — Override the backups definition directory
 

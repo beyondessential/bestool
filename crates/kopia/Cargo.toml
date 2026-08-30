@@ -50,4 +50,5 @@ whoami = "2.1.2"
 winnow = "1.0.3"
 
 [dev-dependencies]
+serde_json = "1.0.143"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }

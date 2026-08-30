@@ -15,7 +15,7 @@ use std::{
 use jiff::Timestamp;
 use miette::{Result, bail};
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, info};
 
 mod holders;
 
@@ -37,6 +37,53 @@ pub struct Prepared {
 	pub ignore: Vec<String>,
 	/// Method-specific teardown, run by [`Method::cleanup`].
 	pub(super) teardown: Teardown,
+	/// Set when the capture froze a whole volume rather than just this source, so
+	/// anything else on that volume can be read from it at the same instant.
+	pub volume: Option<VolumeCapture>,
+}
+
+/// A frozen whole volume, readable at a path.
+///
+/// Only VSS produces one: btrfs and LVM freeze the mount their data sits on, and
+/// a path under that mount is not necessarily inside the snapshot, which
+/// descends into neither a nested subvolume nor a filesystem mounted within. It
+/// exists so a follower whose source sits on the same volume can be read out of
+/// the leader's capture instead of taking a second snapshot of data already
+/// frozen.
+#[derive(Debug, Clone)]
+pub struct VolumeCapture {
+	/// The volume it covers, as paths on this platform spell it (e.g. `C:`).
+	pub volume: String,
+	/// Where the volume's root is readable as of the freeze.
+	pub root: PathBuf,
+	/// The instant the volume froze.
+	pub taken_at: Timestamp,
+}
+
+impl VolumeCapture {
+	/// Where `path` is readable inside this capture, or `None` if it is on
+	/// another volume and so isn't in here at all.
+	///
+	/// The volume is matched case-insensitively: `c:\data` and `C:\data` are the
+	/// same place to Windows, and a def spells its path however its author typed
+	/// it.
+	/// Joined as a Windows path rather than with [`Path::join`], which uses the
+	/// host's separator: only VSS produces one of these, so the result is always
+	/// consumed on Windows even when the code is built elsewhere.
+	pub fn contains(&self, path: &Path) -> Option<PathBuf> {
+		let path = path.to_str()?;
+		let (head, rest) = path.split_at_checked(self.volume.len())?;
+		if !head.eq_ignore_ascii_case(&self.volume) {
+			return None;
+		}
+		let rest = rest.trim_start_matches(['\\', '/']);
+		let root = self.root.to_str()?.trim_end_matches('\\');
+		Some(PathBuf::from(if rest.is_empty() {
+			root.to_owned()
+		} else {
+			format!("{root}\\{rest}")
+		}))
+	}
 }
 
 /// What [`Method::cleanup`] has to undo for a prepared source.
@@ -129,10 +176,33 @@ impl Method {
 
 	/// Produce the source kopia will snapshot. `backup_type` is the def's label,
 	/// used by methods that key stable paths on it (e.g. btrfs mount points).
-	pub async fn prepare(&self, backup_type: &str) -> Result<Prepared> {
+	/// `within` is a leader's still-live whole-volume capture, when the run is a
+	/// follower of one. A source that sits on that volume is read out of it
+	/// rather than live, which is both one snapshot instead of two and the only
+	/// way the pair describes the same instant.
+	pub async fn prepare(&self, backup_type: &str, within: Option<&VolumeCapture>) -> Result<Prepared> {
 		match self {
 			Method::Simple(config) => {
-				let (path, cleanup) = super::simple::prepare(&config.path, backup_type).await?;
+				let live = config.path.clone();
+				let frozen = within.and_then(|capture| capture.contains(&live));
+				if let (Some(source), Some(capture)) = (&frozen, within) {
+					info!(
+						live = %live.display(),
+						source = %source.display(),
+						"reading this source from the leader's volume capture"
+					);
+					let (path, cleanup) = super::simple::prepare(source, backup_type).await?;
+					return Ok(Prepared {
+						path,
+						taken_at: Some(capture.taken_at),
+						extra_tags: BTreeMap::new(),
+						ignore: Vec::new(),
+						teardown: Teardown::Simple(cleanup),
+						// The capture is the leader's; this run neither owns nor extends it.
+						volume: None,
+					});
+				}
+				let (path, cleanup) = super::simple::prepare(&live, backup_type).await?;
 				Ok(Prepared {
 					path,
 					// A live view (bindfs mount or copy) has no point-in-time freeze.
@@ -140,6 +210,7 @@ impl Method {
 					extra_tags: BTreeMap::new(),
 					ignore: Vec::new(),
 					teardown: Teardown::Simple(cleanup),
+					volume: None,
 				})
 			}
 			Method::Postgresql(config) => super::postgresql::prepare(config, backup_type).await,
@@ -213,17 +284,21 @@ impl Method {
 	/// that motivated the cross-device guard.
 	///
 	/// [`restore_staging_parent`]: super::postgresql::resolve::restore_staging_parent
-	pub fn staging_dir(&self, target_override: Option<&Path>, pid: u32) -> PathBuf {
+	pub async fn staging_dir(&self, target_override: Option<&Path>, pid: u32) -> Result<PathBuf> {
 		let parent = match self {
-			Method::Simple(config) => target_override
-				.map(Path::to_path_buf)
-				.unwrap_or_else(|| config.path.clone())
-				.parent()
-				.map(Path::to_path_buf)
-				.unwrap_or_else(std::env::temp_dir),
+			Method::Simple(config) => {
+				let target = match target_override {
+					Some(target) => target.to_path_buf(),
+					None => config.path.clone(),
+				};
+				target
+					.parent()
+					.map(Path::to_path_buf)
+					.unwrap_or_else(std::env::temp_dir)
+			}
 			Method::Postgresql(config) => super::postgresql::resolve::restore_staging_parent(config),
 		};
-		parent.join(format!(".bestool-restore.{pid}"))
+		Ok(parent.join(format!(".bestool-restore.{pid}")))
 	}
 
 	/// Lay a restored snapshot (in `staging`) back down. Method-specific: the
@@ -232,7 +307,10 @@ impl Method {
 	pub async fn restore(&self, staging: &Path, opts: &RestoreOpts) -> Result<()> {
 		match self {
 			Method::Simple(config) => {
-				let target = opts.target.clone().unwrap_or_else(|| config.path.clone());
+				let target = match &opts.target {
+					Some(target) => target.clone(),
+					None => config.path.clone(),
+				};
 				ensure_not_clobbering(&target, opts.clobber)?;
 				replace_dir(staging, &target).await
 			}
@@ -389,11 +467,53 @@ mod tests {
 		let method = Method::Simple(SimpleConfig {
 			path: PathBuf::from("/data/custom"),
 		});
-		let prepared = method.prepare("custom").await.unwrap();
+		let prepared = method.prepare("custom", None).await.unwrap();
 		assert_eq!(prepared.path, PathBuf::from("/data/custom"));
 		assert!(prepared.extra_tags.is_empty());
 		assert!(prepared.ignore.is_empty());
 		method.cleanup(prepared).await.unwrap();
+	}
+
+	fn c_volume() -> VolumeCapture {
+		VolumeCapture {
+			volume: "C:".into(),
+			root: PathBuf::from(r"C:\bestool-backup-shadow\tamanu-postgres"),
+			taken_at: Timestamp::UNIX_EPOCH,
+		}
+	}
+
+	#[test]
+	fn a_path_on_the_captured_volume_maps_into_the_shadow() {
+		assert_eq!(
+			c_volume().contains(Path::new(r"C:\Tamanu\blobs")),
+			Some(PathBuf::from(
+				r"C:\bestool-backup-shadow\tamanu-postgres\Tamanu\blobs"
+			))
+		);
+	}
+
+	#[test]
+	fn the_volume_matches_whatever_case_the_def_spells_it() {
+		assert_eq!(
+			c_volume().contains(Path::new(r"c:\Tamanu\blobs")),
+			c_volume().contains(Path::new(r"C:\Tamanu\blobs"))
+		);
+	}
+
+	#[test]
+	fn a_path_on_another_volume_is_not_in_the_capture() {
+		// The whole point of the check: D: was never frozen, so reading it out of
+		// C:'s shadow would silently snapshot the wrong bytes.
+		assert!(c_volume().contains(Path::new(r"D:\Tamanu\blobs")).is_none());
+		// A near-miss on the prefix is still another volume.
+		assert!(c_volume().contains(Path::new(r"CC:\blobs")).is_none());
+		// And a unix path shares no volume notion with a Windows capture at all.
+		assert!(c_volume().contains(Path::new("/var/lib/tamanu/blobs")).is_none());
+	}
+
+	#[test]
+	fn the_volume_root_itself_maps_to_the_shadow_root() {
+		assert_eq!(c_volume().contains(Path::new(r"C:\")), Some(c_volume().root));
 	}
 
 	#[test]
