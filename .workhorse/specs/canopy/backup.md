@@ -50,7 +50,8 @@ There must be exactly one method table.
 
 ```toml
 [simple]                          # snapshot a path as-is
-path = "/var/lib/example"
+path = "/var/lib/example"         # exactly one of path / path_command
+# path_command = ["bestool", "tamanu", "blob-root"]   # resolve the path by command instead
 ```
 
 #### PostgreSQL
@@ -68,6 +69,9 @@ socket = "/var/run/postgresql"    # optional — override the unix socket direct
 ## Methods
 
 The `simple` method hands kopia a path verbatim; it contributes no extra tags and needs no preparation or cleanup.
+The path is either fixed (`path`) or resolved on every run by an argv-style command (`path_command`) whose output must be a single line naming an absolute path; a failed or malformed resolution fails the run.
+Run-time resolution serves a source whose location lives outside the definition and can move under it (the Tamanu blob store root is a database-backed setting an administrator can change, printed by `bestool tamanu blob-root`), so the capture follows the live location instead of a hardcoded path silently going stale.
+At restore, the same resolution names the destination, so a store restored after its database lands where the freshly restored database expects it.
 
 The `postgresql` method takes a crash-consistent physical copy of a postgres cluster, described under "The postgresql method" below.
 
@@ -117,7 +121,7 @@ A run that failed, was skipped because its type was already running, or exited d
 A follower is otherwise an ordinary definition: it registers as a capability, may be scheduled by Canopy or run manually on its own, and reports its runs like any other type.
 
 Following is for a capture that must be a superset of what another capture references.
-A definition that captures data the leader's rows point at follows the leader, so whatever the leader references is already stored when the follower's capture begins.
+The Tamanu blob store definition follows the database definition, so every blob the database capture references is already stored when the store capture begins; blobs are immutable and never removed while referenced, so the store capture can only hold more, never less, than the database capture needs.
 A follower run triggered on its own (by schedule or by hand) is still safe on these terms, being a superset for every earlier capture of the followed type; what only the chain provides is a store capture promptly after each database capture.
 
 ### Sharing a capture
@@ -250,10 +254,10 @@ A restore can equally take its source from a capture held on the device, describ
 Selection is by id across the whole repository — not scoped to the server issuing the restore — so a replacement host can restore a backup taken by the server it succeeds.
 It restores the snapshot into a staging area on the same filesystem as the target so the final move is atomic, then hands off to the method.
 
-Restoring a type also restores its followers, so a leader and the data it references come back as a consistent pair.
+Restoring a type also restores its followers, so a cycle like database-and-blob-store comes back as a consistent pair.
 A follower's snapshot is selected rather than named: the earliest snapshot of the follower's type, from the same source host as the chosen snapshot, taken at or after it.
 At-or-after is the safety rule: a later follower snapshot is a superset of what the restored data references, an earlier one may not be, and is never selected; when none exists at or after, the restore refuses.
-The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower lands against data its leader has just restored.
+The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower whose target is resolved by `path_command` resolves it against data its leader has just restored.
 `--no-followers` restores the named type alone; restoring a follower's type explicitly by snapshot id remains the operator's manual path around a refusal.
 `--target` redirects only the named type's destination while followers would still restore over their live paths, so combining it with planned followers is refused; pass `--no-followers` alongside it.
 Follower snapshots are recognised by the backup type they carry, as a tag or as their description.

@@ -228,7 +228,8 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	outcome?;
 
 	// The followers, each a full restore session of its own, after the type they
-	// follow, so a follower's data lands against the leader restored just above.
+	// follow: a store def resolving its target through `path_command` reads the
+	// database restored just above.
 	for (follower_def, follower_snapshot) in &followed {
 		restore_follower(
 			&client,
@@ -798,12 +799,12 @@ mod tests {
 	fn pairs_earliest_follower_at_or_after_leader() {
 		let leader = typed_snap("db1", "srv", "tamanu-postgres", Some("2026-08-01T03:00:00Z"));
 		let snaps = vec![
-			typed_snap("blob-early", "srv", "tamanu-secrets", Some("2026-08-01T02:00:00Z")),
-			typed_snap("blob-next", "srv", "tamanu-secrets", Some("2026-08-01T03:10:00Z")),
-			typed_snap("blob-later", "srv", "tamanu-secrets", Some("2026-08-02T03:10:00Z")),
+			typed_snap("blob-early", "srv", "tamanu-blobs", Some("2026-08-01T02:00:00Z")),
+			typed_snap("blob-next", "srv", "tamanu-blobs", Some("2026-08-01T03:10:00Z")),
+			typed_snap("blob-later", "srv", "tamanu-blobs", Some("2026-08-02T03:10:00Z")),
 			leader.clone(),
 		];
-		let paired = select_paired(&snaps, &leader, "tamanu-secrets").unwrap();
+		let paired = select_paired(&snaps, &leader, "tamanu-blobs").unwrap();
 		assert_eq!(paired.id, "blob-next");
 	}
 
@@ -811,11 +812,11 @@ mod tests {
 	fn pairs_at_identical_start_time() {
 		let leader = typed_snap("db1", "srv", "tamanu-postgres", Some("2026-08-01T03:00:00Z"));
 		let snaps = vec![
-			typed_snap("blob-same", "srv", "tamanu-secrets", Some("2026-08-01T03:00:00Z")),
+			typed_snap("blob-same", "srv", "tamanu-blobs", Some("2026-08-01T03:00:00Z")),
 			leader.clone(),
 		];
 		assert_eq!(
-			select_paired(&snaps, &leader, "tamanu-secrets").unwrap().id,
+			select_paired(&snaps, &leader, "tamanu-blobs").unwrap().id,
 			"blob-same"
 		);
 	}
@@ -826,10 +827,10 @@ mod tests {
 		// database references, so it is never selected.
 		let leader = typed_snap("db1", "srv", "tamanu-postgres", Some("2026-08-01T03:00:00Z"));
 		let snaps = vec![
-			typed_snap("blob-early", "srv", "tamanu-secrets", Some("2026-08-01T02:00:00Z")),
+			typed_snap("blob-early", "srv", "tamanu-blobs", Some("2026-08-01T02:00:00Z")),
 			leader.clone(),
 		];
-		let err = select_paired(&snaps, &leader, "tamanu-secrets")
+		let err = select_paired(&snaps, &leader, "tamanu-blobs")
 			.unwrap_err()
 			.to_string();
 		assert!(err.contains("at or after"));
@@ -842,21 +843,21 @@ mod tests {
 		// snapshots and other types on this server must not pair.
 		let leader = typed_snap("db1", "srv", "tamanu-postgres", Some("2026-08-01T03:00:00Z"));
 		let snaps = vec![
-			typed_snap("blob-elsewhere", "other-srv", "tamanu-secrets", Some("2026-08-01T03:10:00Z")),
+			typed_snap("blob-elsewhere", "other-srv", "tamanu-blobs", Some("2026-08-01T03:10:00Z")),
 			typed_snap("db2", "srv", "tamanu-postgres", Some("2026-08-01T03:10:00Z")),
 			leader.clone(),
 		];
-		assert!(select_paired(&snaps, &leader, "tamanu-secrets").is_err());
+		assert!(select_paired(&snaps, &leader, "tamanu-blobs").is_err());
 	}
 
 	#[test]
 	fn refuses_pairing_without_a_leader_start_time() {
 		let leader = typed_snap("db1", "srv", "tamanu-postgres", None);
 		let snaps = vec![
-			typed_snap("blob", "srv", "tamanu-secrets", Some("2026-08-01T03:10:00Z")),
+			typed_snap("blob", "srv", "tamanu-blobs", Some("2026-08-01T03:10:00Z")),
 			leader.clone(),
 		];
-		assert!(select_paired(&snaps, &leader, "tamanu-secrets").is_err());
+		assert!(select_paired(&snaps, &leader, "tamanu-blobs").is_err());
 	}
 
 	#[test]
@@ -864,11 +865,11 @@ mod tests {
 		let mut tagged = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
 		tagged
 			.tags
-			.insert("tag:canopy-type".into(), "tamanu-secrets".into());
-		assert!(is_of_type(&tagged, "tamanu-secrets"));
+			.insert("tag:canopy-type".into(), "tamanu-blobs".into());
+		assert!(is_of_type(&tagged, "tamanu-blobs"));
 		assert!(!is_of_type(&tagged, "tamanu-postgres"));
 
 		let untyped = typed_snap("blob", "srv", "", Some("2026-08-01T03:10:00Z"));
-		assert!(!is_of_type(&untyped, "tamanu-secrets"));
+		assert!(!is_of_type(&untyped, "tamanu-blobs"));
 	}
 }
