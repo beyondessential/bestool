@@ -203,6 +203,11 @@ jobs:
       - name: Shared volume capture end-to-end
         run: cargo test -p bestool --lib a_shared_capture_reads_the_bytes_from_when_it_froze -- --ignored --nocapture
 
+      # A secret-key follower of a VSS leader: its staged copy is made after the
+      # freeze, so reading through the leader's capture would serve the old key.
+      - name: Secret key follower end-to-end
+        run: cargo test -p bestool --lib a_secret_key_follower_reads_its_key_live -- --ignored --nocapture
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
