@@ -291,6 +291,36 @@ mod tests {
 		assert!(config.root.is_none());
 	}
 
+	/// The def ops ships for a containerised host: the secret-key method as a
+	/// follower of the database, with the restart its containers need to pick the
+	/// key up.
+	#[test]
+	fn parses_a_secret_key_follower() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secrets"
+			after = "tamanu-postgres"
+			[tamanu_secret_key]
+			[[post_restore]]
+			command = ["/usr/bin/systemctl", "restart", "tamanu-central.service"]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
+		assert_eq!(def.method.name(), "tamanu_secret_key");
+		assert_eq!(
+			def.post_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec![
+				"/usr/bin/systemctl",
+				"restart",
+				"tamanu-central.service"
+			]]
+		);
+	}
+
 	#[test]
 	fn parses_after() {
 		let def = parse_def(
