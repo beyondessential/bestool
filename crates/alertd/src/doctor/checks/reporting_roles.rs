@@ -6,7 +6,8 @@
 //! created also needs ADMIN on that role.
 //!
 //! Without either, `initReporting` throws, the server logs it and carries on
-//! with reporting switched off. Nothing else says so: database-defined reports
+//! with reporting switched off. Roles absent while the grants are right means
+//! startup never got as far as creating them, which is a warning here. Nothing else says so: database-defined reports
 //! error, the DB Schema dropdown vanishes, and report imports fail with an
 //! unrelated-looking validation message. Catching it here means a deployment
 //! that will break on upgrade is visible before someone runs the upgrade.
@@ -20,6 +21,8 @@ const NAME: &str = "reporting_roles";
 
 /// The release where Tamanu took ownership of the reporting roles.
 const OWNS_ROLES_FROM: (u64, u64) = (2, 60);
+
+const EXPECTED_ROLES: i64 = 2;
 
 const SQL: &str = "SELECT \
 	r.rolcreaterole AS has_createrole, \
@@ -105,26 +108,37 @@ struct RoleState {
 }
 
 fn verdict(state: &RoleState) -> Check {
-	if state.is_superuser {
-		return Check::pass(NAME, "reporting roles manageable");
+	if !state.is_superuser {
+		if !state.has_createrole {
+			return Check::fail(
+				NAME,
+				"cannot provision reporting roles",
+				"the Tamanu database role has no CREATEROLE, so initReporting fails at startup and \
+				 reporting is silently unavailable. Fix with: ALTER ROLE <tamanu_db_user> WITH CREATEROLE;",
+			);
+		}
+
+		if state.administrable < state.present {
+			return Check::fail(
+				NAME,
+				"reporting roles not administrable",
+				"the reporting roles exist but were created by someone else, and on Postgres 16+ \
+				 altering them needs ADMIN. initReporting fails at startup and reporting is silently \
+				 unavailable. Fix with: GRANT tamanu_reporting, tamanu_raw TO <tamanu_db_user> WITH ADMIN OPTION;",
+			);
+		}
 	}
 
-	if !state.has_createrole {
-		return Check::fail(
+	if state.present < EXPECTED_ROLES {
+		return Check::warning(
 			NAME,
-			"cannot provision reporting roles",
-			"the Tamanu database role has no CREATEROLE, so initReporting fails at startup and \
-			 reporting is silently unavailable. Fix with: ALTER ROLE <tamanu_db_user> WITH CREATEROLE;",
-		);
-	}
-
-	if state.administrable < state.present {
-		return Check::fail(
-			NAME,
-			"reporting roles not administrable",
-			"the reporting roles exist but were created by someone else, and on Postgres 16+ \
-			 altering them needs ADMIN. initReporting fails at startup and reporting is silently \
-			 unavailable. Fix with: GRANT tamanu_reporting, tamanu_raw TO <tamanu_db_user> WITH ADMIN OPTION;",
+			"reporting roles not provisioned",
+			format!(
+				"{} of {EXPECTED_ROLES} reporting roles exist, so reporting is unavailable. The \
+				 Tamanu role can manage them, so startup never reached the point of creating them: \
+				 check the server log for 'initReporting failed'.",
+				state.present
+			),
 		);
 	}
 
@@ -191,10 +205,43 @@ mod tests {
 		let check = verdict(&RoleState {
 			has_createrole: false,
 			is_superuser: true,
-			present: 0,
+			present: 2,
 			administrable: 0,
 		});
 		assert!(matches!(check.status, CheckStatus::Pass));
+	}
+
+	#[test]
+	fn absent_roles_warn() {
+		let check = verdict(&RoleState {
+			has_createrole: true,
+			is_superuser: false,
+			present: 0,
+			administrable: 0,
+		});
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
+	}
+
+	#[test]
+	fn half_provisioned_roles_warn() {
+		let check = verdict(&RoleState {
+			has_createrole: true,
+			is_superuser: false,
+			present: 1,
+			administrable: 1,
+		});
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
+	}
+
+	#[test]
+	fn absent_roles_warn_for_a_superuser_too() {
+		let check = verdict(&RoleState {
+			has_createrole: false,
+			is_superuser: true,
+			present: 0,
+			administrable: 0,
+		});
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
 	}
 
 	#[test]
@@ -217,17 +264,6 @@ mod tests {
 			administrable: 0,
 		});
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
-	}
-
-	#[test]
-	fn createrole_with_no_roles_yet_passes() {
-		let check = verdict(&RoleState {
-			has_createrole: true,
-			is_superuser: false,
-			present: 0,
-			administrable: 0,
-		});
-		assert!(matches!(check.status, CheckStatus::Pass));
 	}
 
 	#[test]
@@ -263,7 +299,7 @@ mod tests {
 		assert_eq!(check.details["role"], serde_json::json!(role));
 		assert!(matches!(
 			check.status,
-			CheckStatus::Pass | CheckStatus::Fail(_)
+			CheckStatus::Pass | CheckStatus::Warning(_) | CheckStatus::Fail(_)
 		));
 	}
 
