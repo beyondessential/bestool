@@ -30,7 +30,7 @@ const SQL: &str = "SELECT \
 		JOIN pg_roles t ON t.oid = m.roleid \
 		WHERE t.rolname IN ('tamanu_reporting', 'tamanu_raw') \
 		AND m.member = r.oid AND m.admin_option) AS roles_administrable \
-	FROM pg_roles r WHERE r.rolname = current_user";
+	FROM pg_roles r WHERE r.rolname = $1";
 
 pub async fn run(ctx: CheckContext) -> Check {
 	if is_unknown_version(&ctx.tamanu_version) {
@@ -57,13 +57,24 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let row = match client.query_opt(SQL, &[]).await {
+	// Tamanu's own db role, not the one alertd connects as: alertd reads the
+	// cluster as an unprivileged monitoring role that owns none of this.
+	let role = ctx.config.db.username.clone();
+	if role.is_empty() {
+		return Check::skip(
+			NAME,
+			"Tamanu database role unknown",
+			"the config carries no db username, so the check can't tell which role to inspect",
+		);
+	}
+
+	let row = match client.query_opt(SQL, &[&role]).await {
 		Ok(Some(row)) => row,
 		Ok(None) => {
 			return Check::broken(
 				NAME,
-				"connected role not in pg_roles",
-				"current_user has no pg_roles row, which should not be possible",
+				"Tamanu database role not in pg_roles",
+				format!("the configured db role {role:?} has no pg_roles row"),
 			);
 		}
 		Err(err) => return query_error_check(NAME, &err),
@@ -77,6 +88,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	};
 
 	verdict(&state)
+		.with_detail("role", role)
 		.with_detail("has_createrole", state.has_createrole)
 		.with_detail("roles_present", state.present)
 		.with_detail("roles_administrable", state.administrable)
@@ -129,12 +141,41 @@ fn owns_reporting_roles(version: &Version) -> bool {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
+	use bestool_tamanu::config::TamanuConfig;
+
 	use super::*;
 	use crate::doctor::check::CheckStatus;
 	use crate::doctor::checks::test_support::central_ctx;
 
 	fn version(s: &str) -> Version {
 		Version::parse(s).unwrap()
+	}
+
+	fn config_with_role(role: &str) -> TamanuConfig {
+		serde_json::from_value(serde_json::json!({
+			"db": { "name": "tamanu-central", "username": role, "password": "p" },
+		}))
+		.expect("test config should parse")
+	}
+
+	async fn current_role(ctx: &CheckContext) -> String {
+		ctx.db
+			.as_ref()
+			.unwrap()
+			.query_one("SELECT current_user::text", &[])
+			.await
+			.unwrap()
+			.get(0)
+	}
+
+	#[test]
+	fn sql_inspects_a_bound_role() {
+		// alertd connects as its own unprivileged role, so resolving the role
+		// from the connection would report that one's privileges instead.
+		assert!(SQL.contains("$1"));
+		assert!(!SQL.contains("current_user"));
 	}
 
 	#[test]
@@ -215,11 +256,25 @@ mod tests {
 			return;
 		};
 		ctx.tamanu_version = version("2.60.0");
+		let role = current_role(&ctx).await;
+		ctx.config = Arc::new(config_with_role(&role));
 		let check = super::run(ctx).await;
 		assert_eq!(check.name, NAME);
+		assert_eq!(check.details["role"], serde_json::json!(role));
 		assert!(matches!(
 			check.status,
 			CheckStatus::Pass | CheckStatus::Fail(_)
 		));
+	}
+
+	#[tokio::test]
+	async fn reports_broken_when_the_configured_role_is_absent() {
+		let Some(mut ctx) = central_ctx().await else {
+			return;
+		};
+		ctx.tamanu_version = version("2.60.0");
+		ctx.config = Arc::new(config_with_role("no_such_tamanu_role"));
+		let check = super::run(ctx).await;
+		assert!(matches!(check.status, CheckStatus::Broken(_)));
 	}
 }

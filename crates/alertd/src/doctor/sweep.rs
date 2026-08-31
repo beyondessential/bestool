@@ -5,7 +5,10 @@ use std::{
 };
 
 use bestool_canopy::{CanopyClient, schema::CheckSeverity};
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::{
+	future::BoxFuture,
+	stream::{FuturesUnordered, StreamExt},
+};
 use miette::{IntoDiagnostic, Result, miette};
 use node_semver::Version;
 use serde_json::{Map, Value};
@@ -186,6 +189,69 @@ impl SweepResult {
 	}
 }
 
+/// A single check ready to run: its registry index and wire flag, the future
+/// that produces its result, and its heal action paired with the context to run
+/// it against (when the sweep enables healing and the check has one).
+struct PreparedCheck {
+	idx: usize,
+	name: &'static str,
+	on_wire: bool,
+	fut: BoxFuture<'static, Check>,
+	heal: Option<(heal::HealAction, SweepContext)>,
+}
+
+/// Drive a set of checks concurrently, each on its own task.
+///
+/// spec: CHK
+///
+/// Spawning rather than pushing bare futures into one `FuturesUnordered` keeps
+/// the checks off a single shared driver task: a blocking call in one check
+/// can't stall another's in-flight future and corrupt its latency measurement
+/// (an `Instant` straddling an `.await` counts wall-clock spent unpolled). A
+/// panicking check surfaces as a `broken` result for that check alone rather
+/// than taking the whole sweep down.
+async fn run_checks_concurrently(
+	checks: Vec<PreparedCheck>,
+	progress: Option<&ProgressSender>,
+) -> Vec<(usize, Check, bool)> {
+	let mut pending = FuturesUnordered::new();
+	for PreparedCheck {
+		idx,
+		name,
+		on_wire,
+		fut,
+		heal,
+	} in checks
+	{
+		let task = tokio::spawn(async move {
+			let result = fut.await;
+			if let Some((heal, heal_ctx)) = heal
+				&& result.status.is_fatal()
+			{
+				heal::spawn_if_due(name, heal, heal_ctx);
+			}
+			result
+		});
+		pending.push(async move { (idx, name, on_wire, task.await) });
+	}
+
+	let mut completed: Vec<(usize, Check, bool)> = Vec::with_capacity(pending.len());
+	while let Some((idx, name, on_wire, joined)) = pending.next().await {
+		let check = match joined {
+			Ok(check) => check,
+			Err(err) => {
+				warn!(check = name, error = %err, "doctor check task did not complete");
+				Check::broken(name, "check did not complete", err.to_string())
+			}
+		};
+		if let Some(tx) = progress {
+			let _ = tx.send(DoctorEvent::Completed(check.clone()));
+		}
+		completed.push((idx, check, on_wire));
+	}
+	completed
+}
+
 #[expect(
 	clippy::too_many_arguments,
 	reason = "a sweep's inputs; grouping them into a params struct is a separate refactor"
@@ -310,37 +376,24 @@ pub async fn perform_sweep(
 	// Run all selected checks concurrently. Results are collated by registry
 	// index before returning, so callers see a stable order regardless of
 	// completion order. A progress channel can observe results as they land.
-	let mut pending = FuturesUnordered::new();
-	for (idx, entry) in &selected {
-		let ctx = check_ctx.clone();
-		let on_wire = entry.on_wire;
-		let idx = *idx;
-		let name = entry.name;
-		// A check's heal action is spawned in the background once its result is
-		// known, when the sweep enables healing (the daemon) and the check
-		// failed. `spawn_if_due` applies the per-check rate-limit and the
-		// one-attempt-in-flight guard, so this can fire on every sweep.
-		let heal = check_ctx.enable_heal.then_some(entry.heal).flatten();
-		let heal_ctx = heal.map(|_| check_ctx.clone());
-		let fut = (entry.run)(ctx);
-		pending.push(async move {
-			let result = fut.await;
-			if let (Some(heal), Some(heal_ctx)) = (heal, heal_ctx)
-				&& result.status.is_fatal()
-			{
-				heal::spawn_if_due(name, heal, heal_ctx);
+	let prepared: Vec<PreparedCheck> = selected
+		.iter()
+		.map(|(idx, entry)| {
+			// A check's heal action is spawned in the background once its result
+			// is known, when the sweep enables healing (the daemon) and the
+			// check failed. `spawn_if_due` applies the per-check rate-limit and
+			// the one-attempt-in-flight guard, so this can fire on every sweep.
+			let heal = check_ctx.enable_heal.then_some(entry.heal).flatten();
+			PreparedCheck {
+				idx: *idx,
+				name: entry.name,
+				on_wire: entry.on_wire,
+				fut: (entry.run)(check_ctx.clone()),
+				heal: heal.map(|h| (h, check_ctx.clone())),
 			}
-			(idx, on_wire, result)
-		});
-	}
-
-	let mut completed: Vec<(usize, Check, bool)> = Vec::with_capacity(selected.len());
-	while let Some((idx, on_wire, check)) = pending.next().await {
-		if let Some(tx) = progress.as_ref() {
-			let _ = tx.send(DoctorEvent::Completed(check.clone()));
-		}
-		completed.push((idx, check, on_wire));
-	}
+		})
+		.collect();
+	let mut completed = run_checks_concurrently(prepared, progress.as_ref()).await;
 	completed.sort_by_key(|(idx, _, _)| *idx);
 	let results: Vec<(Check, bool)> = completed.into_iter().map(|(_, c, w)| (c, w)).collect();
 
@@ -504,6 +557,71 @@ mod tests {
 	}
 	fn skip(name: &'static str) -> (Check, bool) {
 		(Check::skip(name, "not run", "reason"), true)
+	}
+
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	async fn blocking_check_does_not_inflate_a_sibling_latency() {
+		use std::time::{Duration, Instant};
+
+		// One check blocks its executor thread the way a synchronous subprocess
+		// spawn (pm2 jlist on Windows) does inside an async fn.
+		const BLOCK_MS: u64 = 500;
+		fn blocking_check(_ctx: SweepContext) -> BoxFuture<'static, Check> {
+			Box::pin(async move {
+				tokio::task::yield_now().await;
+				std::thread::sleep(Duration::from_millis(BLOCK_MS));
+				Check::pass("blocker", "blocked")
+			})
+		}
+
+		// A sibling measures its own wall-clock latency across an await, exactly
+		// as db_connect does around the connect call. With the checks driven on
+		// one shared task, the blocker stalls this future while its `Instant` is
+		// running and the reported latency balloons toward BLOCK_MS; on its own
+		// task it stays near the real 20ms.
+		fn timed_check(_ctx: SweepContext) -> BoxFuture<'static, Check> {
+			Box::pin(async move {
+				let start = Instant::now();
+				tokio::time::sleep(Duration::from_millis(20)).await;
+				let latency_ms = start.elapsed().as_millis() as u64;
+				Check::pass("timed", "ok").with_detail("latency_ms", latency_ms)
+			})
+		}
+
+		let ctx = SweepContext::builder()
+			.http_client(reqwest::Client::new())
+			.build();
+		let prepared = vec![
+			PreparedCheck {
+				idx: 0,
+				name: "blocker",
+				on_wire: true,
+				fut: blocking_check(ctx.clone()),
+				heal: None,
+			},
+			PreparedCheck {
+				idx: 1,
+				name: "timed",
+				on_wire: true,
+				fut: timed_check(ctx.clone()),
+				heal: None,
+			},
+		];
+
+		let results = run_checks_concurrently(prepared, None).await;
+		let (_, timed, _) = results
+			.iter()
+			.find(|(idx, _, _)| *idx == 1)
+			.expect("timed check result");
+		let latency = timed
+			.details
+			.get("latency_ms")
+			.and_then(Value::as_u64)
+			.expect("latency_ms detail");
+		assert!(
+			latency < BLOCK_MS / 2,
+			"timed check reported {latency}ms latency — a blocking sibling inflated it (checks are not isolated)"
+		);
 	}
 
 	#[tokio::test]

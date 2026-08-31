@@ -17,7 +17,10 @@
 
 use std::{path::Path, process::Stdio, sync::Arc};
 
-use bestool_kopia::proxy::{self, Credentials, S3ProxyConfig, StaticCredentialProvider};
+use bestool_kopia::{
+	Snapshot,
+	proxy::{self, Credentials, S3ProxyConfig, StaticCredentialProvider},
+};
 use tokio::process::Command;
 
 fn env(key: &str) -> Option<String> {
@@ -103,13 +106,26 @@ async fn full_lifecycle_through_proxy() {
 	run(vec![
 		"snapshot".into(),
 		"create".into(),
+		"--description".into(),
+		"tamanu-secrets".into(),
+		"--tags".into(),
+		"canopy-type:tamanu-secrets".into(),
 		data.to_string_lossy().into_owned(),
 	])
 	.await;
 
 	run(vec!["snapshot".into(), "list".into()]).await;
 
-	let snapshot_id = snapshot_id(&kopia, &work).await;
+	// Restore pairs a follower snapshot to its leader by these two, so a kopia
+	// that stopped echoing either would silently break paired restores.
+	let listed = snapshot_list(&kopia, &work).await;
+	let [snapshot] = &listed[..] else {
+		panic!("expected exactly one snapshot, got {}", listed.len())
+	};
+	assert_eq!(snapshot.description, "tamanu-secrets");
+	assert_eq!(snapshot.tag("canopy-type"), Some("tamanu-secrets"));
+
+	let snapshot_id = snapshot.id.clone();
 	run(vec![
 		"snapshot".into(),
 		"restore".into(),
@@ -145,7 +161,10 @@ fn kopia_command(kopia: &str, work: &Path) -> Command {
 	cmd.env("HOME", work)
 		.env("KOPIA_CONFIG_PATH", work.join("repository.config"))
 		.env("KOPIA_PASSWORD", "spikepass123")
-		.env("KOPIA_CHECK_FOR_UPDATES", "false");
+		.env("KOPIA_CHECK_FOR_UPDATES", "false")
+		// The password is in the environment already; persisting it reaches for
+		// the OS keyring, which a macOS run can't satisfy unattended.
+		.env("KOPIA_PERSIST_CREDENTIALS_ON_CONNECT", "false");
 	for key in [
 		"AWS_ACCESS_KEY_ID",
 		"AWS_SECRET_ACCESS_KEY",
@@ -171,19 +190,14 @@ async fn run_kopia(kopia: &str, work: &Path, args: &[String]) {
 	);
 }
 
-async fn snapshot_id(kopia: &str, work: &Path) -> String {
+async fn snapshot_list(kopia: &str, work: &Path) -> Vec<Snapshot> {
 	let output = kopia_command(kopia, work)
 		.args(["snapshot", "list", "--json"])
 		.stdout(Stdio::piped())
 		.output()
 		.await
 		.expect("snapshot list --json");
-	let json = String::from_utf8_lossy(&output.stdout);
-	// Avoid a serde_json dep in the test: pull the first "id" field.
-	let marker = "\"id\":";
-	let start = json.find(marker).expect("snapshot list has an id") + marker.len();
-	let rest = json[start..].trim_start().trim_start_matches('"');
-	rest.split('"').next().expect("id value").to_string()
+	serde_json::from_slice(&output.stdout).expect("snapshot list --json parses as snapshots")
 }
 
 /// Deterministic incompressible bytes (xorshift), so the pack blob is large

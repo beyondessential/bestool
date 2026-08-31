@@ -15,6 +15,7 @@
 //!   * v<9  and Tamanu <  2.46.0         → warn
 
 use node_semver::Version;
+use tokio::task::spawn_blocking;
 
 use bestool_tamanu::caddy;
 
@@ -43,15 +44,29 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	let path = caddy::caddyfile_path();
-	let contents = match std::fs::read_to_string(&path) {
-		Ok(contents) => contents,
-		Err(err) => {
+	// Reading the Caddyfile is blocking I/O; keep it off the executor so it can't
+	// stall other checks sharing the thread.
+	let read = spawn_blocking({
+		let path = path.clone();
+		move || std::fs::read_to_string(&path)
+	})
+	.await;
+	let contents = match read {
+		Ok(Ok(contents)) => contents,
+		Ok(Err(err)) => {
 			// No Caddyfile means caddy isn't present on this host — a precondition
 			// the check needs, so it skips rather than reporting on the server.
 			return Check::skip(
 				CHECK_NAME,
 				"caddy not present",
 				format!("could not read a Caddyfile at {}: {err}", path.display()),
+			);
+		}
+		Err(err) => {
+			return Check::skip(
+				CHECK_NAME,
+				"caddy not present",
+				format!("Caddyfile read task did not complete: {err}"),
 			);
 		}
 	};

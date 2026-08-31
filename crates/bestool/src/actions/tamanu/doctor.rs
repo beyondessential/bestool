@@ -82,8 +82,6 @@ pub enum SweepSource {
 	Local,
 }
 
-const DAEMON_BASE: &str = "http://127.0.0.1:8271";
-
 pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let tamanu = ctx.require::<TamanuArgs>();
 
@@ -109,7 +107,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 		match run_daemon_recompute(&http_client, &args, live_tty).await {
 			Ok(outcome) => (outcome.sweep, SweepSource::DaemonStreamed, outcome.interrupted),
 			Err(err) => {
-				debug!(%err, "daemon recompute unavailable, falling back to local");
+				warn!(%err, "alertd did not answer; ran the checks locally instead of on the daemon");
 				let outcome =
 					run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
 				(outcome.sweep, SweepSource::Local, outcome.interrupted)
@@ -242,14 +240,12 @@ async fn run_daemon_recompute(
 	args: &DoctorArgs,
 	live_tty: bool,
 ) -> Result<SweepOutcome> {
-	let url = format!("{DAEMON_BASE}/tasks/doctor/recompute");
-	let response = http
-		.get(&url)
-		.timeout(std::time::Duration::from_secs(5))
-		.send()
-		.await
-		.into_diagnostic()
-		.wrap_err("contacting local alertd")?;
+	let response = crate::http::daemon_get(http, "/tasks/doctor/recompute", |r| {
+		r.timeout(std::time::Duration::from_secs(5))
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("contacting local alertd")?;
 
 	if !response.status().is_success() {
 		return Err(miette!(
@@ -372,14 +368,12 @@ async fn drain_recompute_stream(
 
 /// Read the alertd daemon's most recent sweep over `/tasks/doctor/latest`.
 async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jiff::Timestamp)> {
-	let url = format!("{DAEMON_BASE}/tasks/doctor/latest");
-	let response = http
-		.get(&url)
-		.timeout(std::time::Duration::from_secs(3))
-		.send()
-		.await
-		.into_diagnostic()
-		.wrap_err("contacting local alertd")?;
+	let response = crate::http::daemon_get(http, "/tasks/doctor/latest", |r| {
+		r.timeout(std::time::Duration::from_secs(3))
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("contacting local alertd")?;
 
 	if !response.status().is_success() {
 		return Err(miette!(

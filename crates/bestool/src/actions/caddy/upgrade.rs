@@ -38,6 +38,28 @@ pub async fn run(args: UpgradeArgs, _ctx: Context) -> Result<()> {
 	}
 }
 
+/// Whether a `HEAD` answer warrants asking again with `GET`, rather than being
+/// read as "there's nothing at this URL".
+///
+/// A server that won't serve `HEAD` for an artefact rarely says so with a clean
+/// `405`; it might refuse, or answer as though the URL doesn't exist. So the
+/// whole set gets a second ask. `404` belongs there for that reason, and the
+/// second ask costs nothing when the artefact really is absent. A server fault
+/// says nothing about whether `HEAD` is served, so those don't qualify.
+#[cfg(any(windows, test))]
+fn head_warrants_get(status: binstalk_downloader::remote::StatusCode) -> bool {
+	use binstalk_downloader::remote::StatusCode;
+	matches!(
+		status,
+		StatusCode::BAD_REQUEST
+			| StatusCode::UNAUTHORIZED
+			| StatusCode::FORBIDDEN
+			| StatusCode::NOT_FOUND
+			| StatusCode::METHOD_NOT_ALLOWED
+			| StatusCode::GONE
+	)
+}
+
 /// Compare two version strings on their first three numeric components, so a
 /// WinSW file version like `2.12.0.0` matches a release tag like `2.12.0`.
 #[cfg(any(windows, test))]
@@ -54,7 +76,26 @@ fn same_version(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::same_version;
+	use binstalk_downloader::remote::StatusCode;
+
+	use super::{head_warrants_get, same_version};
+
+	#[test]
+	fn head_answers_that_warrant_a_second_ask_with_get() {
+		assert!(head_warrants_get(StatusCode::METHOD_NOT_ALLOWED));
+		assert!(head_warrants_get(StatusCode::NOT_FOUND));
+		assert!(head_warrants_get(StatusCode::FORBIDDEN));
+		assert!(head_warrants_get(StatusCode::GONE));
+	}
+
+	#[test]
+	fn server_faults_do_not_warrant_a_second_ask() {
+		// A fault says nothing about whether the server serves HEAD, and the
+		// artefact is no more available for having asked twice.
+		assert!(!head_warrants_get(StatusCode::INTERNAL_SERVER_ERROR));
+		assert!(!head_warrants_get(StatusCode::BAD_GATEWAY));
+		assert!(!head_warrants_get(StatusCode::SERVICE_UNAVAILABLE));
+	}
 
 	#[test]
 	fn winsw_file_version_matches_release_tag() {
@@ -82,7 +123,7 @@ mod windows {
 
 	use binstalk_downloader::{
 		download::{Download, PkgFmt},
-		remote::Url,
+		remote::{Client, Method, Url},
 	};
 	use detect_targets::get_desired_targets;
 	use miette::{IntoDiagnostic, Result, WrapErr, bail, miette};
@@ -92,7 +133,7 @@ mod windows {
 		service_manager::{ServiceManager, ServiceManagerAccess},
 	};
 
-	use super::{UpgradeArgs, same_version};
+	use super::{UpgradeArgs, head_warrants_get, same_version};
 	use crate::download::{DownloadSource, client};
 
 	/// Standard install location on Windows.
@@ -284,17 +325,12 @@ mod windows {
 		for target in detected_targets {
 			let try_url = host
 				.join(&format!(
-					"/caddy/{version}/caddy-{target}{ext}?bust={date}",
+					"/caddy/{version}/caddy-{target}{ext}",
 					ext = if target.contains("windows") { ".exe" } else { "" },
-					date = jiff::Timestamp::now(),
 				))
 				.into_diagnostic()?;
 			debug!(url = %try_url, "trying URL");
-			if client
-				.remote_gettable(try_url.clone())
-				.await
-				.into_diagnostic()?
-			{
+			if remote_exists(&client, try_url.clone()).await? {
 				url.replace(try_url);
 				break;
 			}
@@ -312,6 +348,30 @@ mod windows {
 			.await
 			.into_diagnostic()?;
 		Ok(())
+	}
+
+	/// Whether there's an artefact at `url` to download.
+	///
+	/// Asked with `HEAD`, because a `GET` probe makes the origin serve the whole
+	/// binary only for the body to be dropped — on a proxied low-bandwidth link
+	/// that costs as much as the download that follows it, and leaves the real
+	/// request queued behind a transfer of the same bytes.
+	async fn remote_exists(client: &Client, url: Url) -> Result<bool> {
+		let status = client
+			.request(Method::HEAD, url.clone())
+			.send(false)
+			.await
+			.into_diagnostic()?
+			.status();
+		if status.is_success() {
+			return Ok(true);
+		}
+		if !head_warrants_get(status) {
+			return Ok(false);
+		}
+
+		debug!(%url, %status, "asking again with GET");
+		client.remote_gettable(url).await.into_diagnostic()
 	}
 
 	/// First-time install: place the binary and a basic Caddyfile.txt, then

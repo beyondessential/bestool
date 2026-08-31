@@ -37,6 +37,35 @@ pub(crate) fn client() -> reqwest::Client {
 		.expect("failed to build bestool HTTP client")
 }
 
+/// Loopback base URLs the alertd daemon may be listening on.
+///
+/// The daemon binds every loopback address it can, but on a host where only one
+/// family is available it ends up on just that one, so a client must try both.
+/// Kept in step with alertd's `default_server_addrs`.
+pub(crate) const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
+
+/// GET `path` from the alertd daemon, trying each base in [`DAEMON_BASES`] in
+/// turn until one connects.
+///
+/// `configure` is applied to each request builder (timeouts, etc.). Returns the
+/// first response whose connection succeeded; the `Err` carries the last
+/// connection error, meaning no daemon answered on any base.
+pub(crate) async fn daemon_get(
+	client: &reqwest::Client,
+	path: &str,
+	configure: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+) -> reqwest::Result<reqwest::Response> {
+	let mut last_err = None;
+	for base in DAEMON_BASES {
+		let request = configure(client.get(format!("{base}{path}")));
+		match request.send().await {
+			Ok(response) => return Ok(response),
+			Err(err) => last_err = Some(err),
+		}
+	}
+	Err(last_err.expect("DAEMON_BASES is never empty"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

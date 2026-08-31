@@ -115,7 +115,7 @@ pub fn write_source_note<W: Write>(
 	use_colours: bool,
 ) -> io::Result<()> {
 	let line = match source {
-		SweepSource::Local => return Ok(()),
+		SweepSource::Local => "Source: computed locally on this host".to_string(),
 		SweepSource::DaemonStreamed => "Source: alertd daemon (just now, on demand)".to_string(),
 		SweepSource::DaemonCached { computed_at } => {
 			let age = humanise_age_since(*computed_at);
@@ -277,6 +277,17 @@ mod tests {
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::DaemonStreamed, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(out.contains("alertd daemon"));
+	}
+
+	#[test]
+	fn render_plain_labels_local_sweeps_as_local() {
+		let raw = vec![pass("a")];
+		let sorted = filter_and_sort(&raw, true);
+		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let mut buf = Vec::new();
+		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		assert!(out.contains("computed locally"));
 	}
 
 	#[test]
