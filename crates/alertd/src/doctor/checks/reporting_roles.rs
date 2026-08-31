@@ -6,11 +6,14 @@
 //! created also needs ADMIN on that role.
 //!
 //! Without either, `initReporting` throws, the server logs it and carries on
-//! with reporting switched off. Roles absent while the grants are right means
-//! startup never got as far as creating them, which is a warning here. Nothing else says so: database-defined reports
+//! with reporting switched off. Nothing else says so: database-defined reports
 //! error, the DB Schema dropdown vanishes, and report imports fail with an
 //! unrelated-looking validation message. Catching it here means a deployment
 //! that will break on upgrade is visible before someone runs the upgrade.
+//!
+//! Roles absent while the grants are right is that same outage one step later:
+//! the server started before the grants landed and has carried the failure
+//! ever since, with nothing to re-run the provisioning until it restarts.
 
 use node_semver::Version;
 
@@ -135,8 +138,9 @@ fn verdict(state: &RoleState) -> Check {
 			"reporting roles not provisioned",
 			format!(
 				"{} of {EXPECTED_ROLES} reporting roles exist, so reporting is unavailable. The \
-				 Tamanu role can manage them, so startup never reached the point of creating them: \
-				 check the server log for 'initReporting failed'.",
+				 Tamanu role can manage them now, so either the running server predates the grants \
+				 or initReporting failed after creating the first role. Check the server log for \
+				 'initReporting failed', then: bestool tamanu restart api",
 				state.present
 			),
 		);
