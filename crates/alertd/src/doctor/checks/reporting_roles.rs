@@ -92,6 +92,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	verdict(&state)
 		.with_detail("role", role)
 		.with_detail("has_createrole", state.has_createrole)
+		.with_detail("is_superuser", state.is_superuser)
 		.with_detail("roles_present", state.present)
 		.with_detail("roles_administrable", state.administrable)
 }
@@ -199,7 +200,7 @@ mod tests {
 	}
 
 	#[test]
-	fn superuser_passes_whatever_else_is_true() {
+	fn superuser_passes_without_createrole_or_admin() {
 		let check = verdict(&RoleState {
 			has_createrole: false,
 			is_superuser: true,
