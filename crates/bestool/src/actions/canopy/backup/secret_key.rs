@@ -194,6 +194,73 @@ async fn place_secret(from: &Path, name: &str, clobber: bool) -> Result<()> {
 mod tests {
 	use super::*;
 
+	/// A real podman round trip: every containerised install keeps the key as a
+	/// secret, and nothing else exercises that shape against podman itself.
+	///
+	/// spec: BAK#the-tamanu_secret_key-method
+	#[cfg(target_os = "linux")]
+	#[tokio::test]
+	#[ignore = "needs podman and root; run on a containerised host"]
+	async fn a_podman_secret_round_trips_through_a_capture() {
+		struct Guard(Vec<String>);
+		impl Drop for Guard {
+			fn drop(&mut self) {
+				for secret in &self.0 {
+					let _ = std::process::Command::new("podman")
+						.args(["secret", "rm", secret])
+						.status();
+				}
+			}
+		}
+
+		let name = format!("bestool-test-key-{}", std::process::id());
+		let displaced = format!("{name}.old");
+		let _guard = Guard(vec![name.clone(), displaced.clone()]);
+
+		write_podman_secret(&name, b"captured-key")
+			.await
+			.expect("create the scratch secret");
+
+		let parent = tempfile::tempdir().expect("staging parent");
+		let location = SecretKeyLocation::PodmanSecret(name.clone());
+		let staged = stage(&location, "test-secret-key", parent.path())
+			.await
+			.expect("stage the podman secret");
+
+		let entry = staged.join(KEY_FILE_ENTRY);
+		assert_eq!(
+			std::fs::read(&entry).expect("read the staged key"),
+			b"captured-key",
+			"the staged tree holds the secret's value"
+		);
+		{
+			use std::os::unix::fs::PermissionsExt as _;
+			let mode = std::fs::metadata(&entry).unwrap().permissions().mode();
+			assert_eq!(mode & 0o777, 0o600, "a staged key is readable by root alone");
+		}
+
+		// The host's key moves on after the capture: a restore puts the captured
+		// one back and keeps what it displaced.
+		write_podman_secret(&name, b"live-key")
+			.await
+			.expect("replace the live secret");
+		lay_down(&staged, &location, true)
+			.await
+			.expect("restore the captured key");
+
+		assert_eq!(
+			read_podman_secret(&name).await.expect("read the restored secret"),
+			b"captured-key"
+		);
+		assert_eq!(
+			read_podman_secret(&displaced)
+				.await
+				.expect("read the displaced secret"),
+			b"live-key",
+			"the key the restore displaced is kept beside it"
+		);
+	}
+
 	#[test]
 	fn a_target_names_a_key_file_never_a_directory() {
 		let tmp = tempfile::tempdir().unwrap();

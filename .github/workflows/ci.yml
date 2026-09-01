@@ -127,6 +127,25 @@ jobs:
           # working loopback HTTP that a bare namespace doesn't provide.
           sudo unshare --net -- bash -c "ip link set lo up && exec '$bin' doctor::"
 
+  podman-secret:
+    name: secret key / podman e2e
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A containerised install keeps the key as a podman secret, so the capture
+      # and restore both go through podman rather than the filesystem.
+      - name: Podman secret round trip
+        run: cargo test -p bestool --lib a_podman_secret_round_trips_through_a_capture -- --ignored --nocapture
+
   kopia-proxy:
     name: kopia S3 proxy / e2e
     runs-on: ubuntu-latest
@@ -253,7 +272,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, vss-wmi]
+    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
