@@ -194,6 +194,21 @@ async fn place_secret(from: &Path, name: &str, clobber: bool) -> Result<()> {
 mod tests {
 	use super::*;
 
+	/// Scratch podman secrets, removed however the test ends.
+	#[cfg(target_os = "linux")]
+	struct Scratch(Vec<String>);
+
+	#[cfg(target_os = "linux")]
+	impl Drop for Scratch {
+		fn drop(&mut self) {
+			for secret in &self.0 {
+				let _ = std::process::Command::new("podman")
+					.args(["secret", "rm", secret])
+					.status();
+			}
+		}
+	}
+
 	/// A real podman round trip: every containerised install keeps the key as a
 	/// secret, and nothing else exercises that shape against podman itself.
 	///
@@ -202,20 +217,9 @@ mod tests {
 	#[tokio::test]
 	#[ignore = "needs podman and root; run on a containerised host"]
 	async fn a_podman_secret_round_trips_through_a_capture() {
-		struct Guard(Vec<String>);
-		impl Drop for Guard {
-			fn drop(&mut self) {
-				for secret in &self.0 {
-					let _ = std::process::Command::new("podman")
-						.args(["secret", "rm", secret])
-						.status();
-				}
-			}
-		}
-
 		let name = format!("bestool-test-key-{}", std::process::id());
 		let displaced = format!("{name}.old");
-		let _guard = Guard(vec![name.clone(), displaced.clone()]);
+		let _guard = Scratch(vec![name.clone(), displaced.clone()]);
 
 		write_podman_secret(&name, b"captured-key")
 			.await
@@ -258,6 +262,44 @@ mod tests {
 				.expect("read the displaced secret"),
 			b"live-key",
 			"the key the restore displaced is kept beside it"
+		);
+	}
+
+	/// The clobber gate, on the shape where the key is a podman secret: a
+	/// restore that would displace a live key refuses until it is asked to.
+	///
+	/// spec: BAK#the-tamanu_secret_key-method
+	#[cfg(target_os = "linux")]
+	#[tokio::test]
+	#[ignore = "needs podman and root; run on a containerised host"]
+	async fn a_restore_refuses_to_displace_a_secret_without_clobber() {
+		let name = format!("bestool-test-gate-{}", std::process::id());
+		let displaced = format!("{name}.old");
+		let _guard = Scratch(vec![name.clone(), displaced.clone()]);
+
+		write_podman_secret(&name, b"live-key")
+			.await
+			.expect("create the scratch secret");
+
+		let parent = tempfile::tempdir().expect("staging parent");
+		let location = SecretKeyLocation::PodmanSecret(name.clone());
+		let staged = stage(&location, "test-secret-key", parent.path())
+			.await
+			.expect("stage the podman secret");
+
+		let refused = lay_down(&staged, &location, false).await;
+		assert!(refused.is_err(), "a live key is displaced only on request");
+
+		assert_eq!(
+			read_podman_secret(&name).await.expect("read the live secret"),
+			b"live-key",
+			"the refused restore left the live key alone"
+		);
+		assert!(
+			!podman_secret_exists(&displaced)
+				.await
+				.expect("check for a displaced secret"),
+			"a refused restore keeps nothing aside"
 		);
 	}
 
