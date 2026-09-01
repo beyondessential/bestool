@@ -144,7 +144,7 @@ jobs:
       # A containerised install keeps the key as a podman secret, so the capture
       # and restore both go through podman rather than the filesystem.
       - name: Podman secret round trip and clobber gate
-        run: cargo test -p bestool --lib secret_key::tests:: -- --ignored --nocapture
+        run: cargo test -p bestool --lib secret_key::tests -- --ignored --nocapture
 
   kopia-proxy:
     name: kopia S3 proxy / e2e
