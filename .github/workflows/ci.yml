@@ -127,6 +127,25 @@ jobs:
           # working loopback HTTP that a bare namespace doesn't provide.
           sudo unshare --net -- bash -c "ip link set lo up && exec '$bin' doctor::"
 
+  podman-secret:
+    name: secret key / podman e2e
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # A containerised install keeps the key as a podman secret, so the capture
+      # and restore both go through podman rather than the filesystem.
+      - name: Podman secret round trip and clobber gate
+        run: cargo test -p bestool --lib secret_key::tests -- --ignored --nocapture
+
   kopia-proxy:
     name: kopia S3 proxy / e2e
     runs-on: ubuntu-latest
@@ -198,6 +217,16 @@ jobs:
       - name: WMI VSS end-to-end
         run: cargo test -p bestool --lib wmi_shadow_roundtrip -- --ignored --nocapture
 
+      # A follower reading its source out of the leader's shadow: the data is
+      # rewritten after the freeze, so serving live bytes fails the test.
+      - name: Shared volume capture end-to-end
+        run: cargo test -p bestool --lib a_shared_capture_reads_the_bytes_from_when_it_froze -- --ignored --nocapture
+
+      # A secret-key follower of a VSS leader: its staged copy is made after the
+      # freeze, so reading through the leader's capture would serve the old key.
+      - name: Secret key follower end-to-end
+        run: cargo test -p bestool --lib a_secret_key_follower_reads_its_key_live -- --ignored --nocapture
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -243,7 +272,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, vss-wmi]
+    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

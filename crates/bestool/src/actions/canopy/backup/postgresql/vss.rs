@@ -26,7 +26,10 @@ use serde::Deserialize;
 use tracing::{info, warn};
 use wmi::{Variant, WMIConnection};
 
-use super::{super::hold::HeldCapture, resolve::ResolvedCluster};
+use super::{
+	super::{hold::HeldCapture, method::VolumeCapture},
+	resolve::ResolvedCluster,
+};
 
 /// Teardown state for a prepared shadow copy, released by [`teardown`].
 #[derive(Debug)]
@@ -131,6 +134,21 @@ pub async fn prepare(
 	let source = PathBuf::from(kopia_source(&expose_target, &rel));
 	info!(shadow = %shadow_id, source = %source.display(), "VSS shadow ready");
 	Ok((source, taken_at, Shadow { id: shadow_id, junction }))
+}
+
+/// Expose a prepared shadow as a whole-volume capture.
+///
+/// A shadow copy is of the entire volume and the junction mounts its root, so
+/// every path on that volume is inside it, frozen at the same instant. That is
+/// what lets a follower on the same volume read from here instead of taking a
+/// second shadow of data already captured.
+pub fn volume_capture(shadow: &Shadow, taken_at: Timestamp) -> Option<VolumeCapture> {
+	let junction = shadow.junction.to_str()?;
+	Some(VolumeCapture {
+		volume: volume_of(junction).ok()?.to_owned(),
+		root: shadow.junction.clone(),
+		taken_at,
+	})
 }
 
 /// Release a prepared shadow: unmount the junction and delete the shadow copy.
@@ -410,6 +428,172 @@ mod tests {
 		let bare = tmp.path().join("bare").join("data");
 		std::fs::create_dir_all(&bare).unwrap();
 		assert_eq!(backup_root(&bare), bare);
+	}
+
+	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI
+	/// job), for a follower reading its source out of its leader's capture.
+	///
+	/// Two directories stand in for a leader's cluster and a follower's store on
+	/// one volume. The shadow is taken, then the follower's live directory is
+	/// rewritten, and the capture must still read what was there when it froze.
+	/// That is the property the sharing exists for: a follower reading live would
+	/// see the rewrite and describe a different moment to its leader.
+	///
+	/// spec: BAK#sharing-a-capture
+	#[test]
+	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
+	fn a_shared_capture_reads_the_bytes_from_when_it_froze() {
+		struct Guard {
+			id: String,
+			junction: PathBuf,
+		}
+		impl Drop for Guard {
+			fn drop(&mut self) {
+				let _ = std::fs::remove_dir(&self.junction);
+				let _ = delete_shadow(&self.id);
+			}
+		}
+
+		let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+		let pid = std::process::id();
+		let follower_leaf = format!("bestool-follower-{pid}");
+		let follower = PathBuf::from(format!("{drive}\\{follower_leaf}"));
+		std::fs::create_dir_all(&follower).expect("create the follower's dir on the system drive");
+		std::fs::write(follower.join("blob.txt"), b"at-freeze").expect("write the follower's data");
+
+		let created = create_client_accessible(&drive).expect("create shadow via WMI");
+		let taken_at = Timestamp::now();
+		let junction = PathBuf::from(format!("{drive}\\bestool-shared-mount-{pid}"));
+		mount_shadow(&created.device, &junction).expect("mount shadow via junction");
+		let guard = Guard {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+
+		// Everything past here is what the driver does for a follower.
+		let shadow = Shadow {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
+		assert!(
+			capture.volume.eq_ignore_ascii_case(&drive),
+			"capture covers {} not {drive}",
+			capture.volume
+		);
+
+		// The follower's data changes after the freeze, as it would while the
+		// leader's upload runs.
+		std::fs::write(follower.join("blob.txt"), b"after-freeze").expect("rewrite live");
+
+		let frozen = capture
+			.contains(&follower)
+			.expect("the follower's source is on the captured volume");
+		println!("follower live at {} reads from {}", follower.display(), frozen.display());
+		let content = std::fs::read(frozen.join("blob.txt")).expect("read the follower's data as frozen");
+		assert_eq!(
+			content, b"at-freeze",
+			"the capture served live bytes, so leader and follower describe different moments"
+		);
+		// And the live path really did move on, so the assertion above wasn't
+		// passing because the rewrite silently failed.
+		assert_eq!(
+			std::fs::read(follower.join("blob.txt")).unwrap(),
+			b"after-freeze"
+		);
+
+		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
+			kopia_snapshot(Path::new(&kopia), &frozen.to_string_lossy());
+		} else {
+			println!("KOPIA_BIN unset; skipped the kopia snapshot check");
+		}
+
+		drop(guard);
+		let _ = std::fs::remove_dir_all(&follower);
+	}
+
+	/// A `tamanu_secret_key` follower of a VSS leader, on a real Windows host
+	/// (the `vss / wmi e2e` CI job).
+	///
+	/// The method stages a copy of the key rather than reading through the
+	/// leader's capture, so its capture describes the moment it copied and not
+	/// the leader's freeze. That is deliberate: a key is a few hundred bytes and
+	/// the staged copy is made after the freeze, so it can never be inside the
+	/// shadow.
+	///
+	/// spec: BAK#the-tamanu_secret_key-method
+	#[test]
+	#[ignore = "needs Windows admin + VSS; run in the `vss / wmi e2e` CI job"]
+	fn a_secret_key_follower_reads_its_key_live() {
+		use super::super::super::method::{Method, TamanuSecretKeyConfig};
+
+		struct Guard {
+			id: String,
+			junction: PathBuf,
+		}
+		impl Drop for Guard {
+			fn drop(&mut self) {
+				let _ = std::fs::remove_dir(&self.junction);
+				let _ = delete_shadow(&self.id);
+			}
+		}
+
+		let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+		let pid = std::process::id();
+		let dir = PathBuf::from(format!("{drive}\\bestool-key-{pid}"));
+		std::fs::create_dir_all(&dir).expect("create the key dir on the system drive");
+		let key = dir.join("tamanu.key");
+		std::fs::write(&key, b"at-freeze-key").expect("write the key");
+
+		let created = create_client_accessible(&drive).expect("create shadow via WMI");
+		let taken_at = Timestamp::now();
+		let junction = PathBuf::from(format!("{drive}\\bestool-key-mount-{pid}"));
+		mount_shadow(&created.device, &junction).expect("mount shadow via junction");
+		let guard = Guard {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+
+		let shadow = Shadow {
+			id: created.id.clone(),
+			junction: junction.clone(),
+		};
+		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
+
+		// The key is replaced after the freeze. A follower reading through the
+		// capture would see the old one.
+		std::fs::write(&key, b"after-freeze-key").expect("rewrite the key live");
+
+		let method = Method::TamanuSecretKey(TamanuSecretKeyConfig {
+			path: Some(key.clone()),
+			..Default::default()
+		});
+		let rt = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.expect("runtime");
+		let prepared = rt
+			.block_on(method.prepare("test-secret-key-follower", Some(&capture)))
+			.expect("prepare the secret-key capture inside a leader's capture");
+
+		let staged = std::fs::read(prepared.path.join("config-key")).expect("read the staged key");
+		assert_eq!(
+			staged, b"after-freeze-key",
+			"the method read the key out of the leader's shadow instead of live"
+		);
+		assert_ne!(
+			prepared.taken_at,
+			Some(capture.taken_at),
+			"a staged copy taken after the freeze must not claim the leader's instant"
+		);
+		assert!(
+			prepared.volume.is_none(),
+			"the secret-key method freezes nothing, so it offers no capture to share"
+		);
+
+		rt.block_on(method.cleanup(prepared)).expect("release the staged copy");
+		drop(guard);
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 
 	/// End-to-end on a real Windows host with VSS + admin (the `vss / wmi e2e` CI

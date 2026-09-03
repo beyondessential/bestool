@@ -73,6 +73,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu backup`↴](#bestool-tamanu-backup)
 * [`bestool tamanu backup-configs`↴](#bestool-tamanu-backup-configs)
 * [`bestool tamanu config`↴](#bestool-tamanu-config)
+* [`bestool tamanu config-key-path`↴](#bestool-tamanu-config-key-path)
 * [`bestool tamanu db-url`↴](#bestool-tamanu-db-url)
 * [`bestool tamanu doctor`↴](#bestool-tamanu-doctor)
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
@@ -507,6 +508,9 @@ Restore a backup from Canopy's repository
    Takes a hold id, as shown by `bestool canopy hold list`.
 * `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
+* `--no-followers` — Restore only the named type, skipping the defs that follow it.
+
+   By default, restoring a type also restores each def that declares `after` on it, from the earliest snapshot of that def's type taken at or after the one being restored, never an earlier one, which could lack content the restored data references.
 * `--config <DIR>` — Override the registration directory
 * `--backups-dir <DIR>` — Override the backups definition directory
 
@@ -1529,6 +1533,7 @@ Alias: t
 * `backup` — Backup a local Tamanu database to a single file
 * `backup-configs` — Backup local Tamanu-related config files to a zip archive
 * `config` — Find and print the current Tamanu config
+* `config-key-path` — Print where this host keeps the Tamanu config key
 * `db-url` — Generate a DATABASE_URL connection string
 * `doctor` — Gather server info + healthchecks for a Tamanu install
 * `download` — Download Tamanu artifacts
@@ -1921,6 +1926,24 @@ Alias: c
 * `-n`, `--or-null` — Print null if key not found
 * `-k`, `--key <KEY>` — Path to a subkey
 * `-r`, `--raw` — If the value is a string, print it directly (without quotes)
+
+
+
+## `bestool tamanu config-key-path`
+
+Print where this host keeps the Tamanu config key.
+
+The key encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password. A database restored onto a host holding a different key reads none of them.
+
+A bare-metal or Windows install prints its `crypto.keyFile`. A containerised install holds the key as a podman secret with no server-side path, so it prints the secret's name instead (as `podman secret <name>`). Backing either up is the `[tamanu_secret_key]` backup method's job; this is for reading by hand.
+
+**Usage:** `bestool tamanu config-key-path [OPTIONS]`
+
+###### **Options:**
+
+* `-p`, `--package <PACKAGE>` — Package to read the config for (central-server or facility-server).
+
+   Detected from the config when not given.
 
 
 

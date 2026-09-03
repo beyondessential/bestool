@@ -11,8 +11,8 @@ Canopy owns scheduling, retention, maintenance, inspection, and alerting; the de
 ## Backup definitions
 
 A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup).
-A definition carries a `type` (the Canopy-facing label), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]` and `[[post]]` command hooks, and exactly one method table — `[simple]` or `[postgresql]` — selecting a built-in method.
-A definition with no method table, or with more than one, is a load error.
+A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]`, `[[post]]`, `[[pre_restore]]` and `[[post_restore]]` command hooks, and exactly one method table — `[simple]`, `[postgresql]` or `[tamanu_secret_key]` — selecting a built-in method.
+A definition with no method table, or with more than one, is a load error, as is a definition naming itself in `after`.
 The `type` is the only identity that matters to Canopy; the filename is informational.
 
 Backups are generic: a definition names a method and a target, and `type` is just a label.
@@ -22,6 +22,7 @@ A `tamanu-postgres` backup is a definition that selects the `postgresql` method;
 
 ```toml
 type = "tamanu-postgres"          # required — the Canopy backup-type label
+after = "other-type"              # optional — run after that type's backups, restore with it
 
 [tags]                            # optional — extra kopia tags (string to string)
 component = "database"
@@ -30,6 +31,12 @@ component = "database"
 command = ["/usr/bin/systemctl", "stop", "example"]
 
 [[post]]                          # optional, ordered — run after cleanup
+command = ["/usr/bin/systemctl", "start", "example"]
+
+[[pre_restore]]                   # optional, ordered — run before this def's restore
+command = ["/usr/bin/systemctl", "stop", "example"]
+
+[[post_restore]]                  # optional, ordered — run after this def's restore
 command = ["/usr/bin/systemctl", "start", "example"]
 ```
 
@@ -43,7 +50,7 @@ There must be exactly one method table.
 
 ```toml
 [simple]                          # snapshot a path as-is
-path = "/var/lib/example"         # required
+path = "/var/lib/example"
 ```
 
 #### PostgreSQL
@@ -58,11 +65,23 @@ port = 5432                       # optional — override the port used to issue
 socket = "/var/run/postgresql"    # optional — override the unix socket directory
 ```
 
+#### Tamanu secret key
+
+```toml
+[tamanu_secret_key]               # capture the key that decrypts local_system_secrets
+
+path = "/etc/tamanu/tamanu.key"   # optional — override the resolved location
+package = "central-server"        # optional — which server's config names the key
+root = "/opt/tamanu"              # optional — override the discovered install root
+```
+
 ## Methods
 
-The `simple` method hands kopia a configured path verbatim; it contributes no extra tags and needs no preparation or cleanup.
+The `simple` method hands kopia a path verbatim; it contributes no extra tags and needs no preparation or cleanup.
 
 The `postgresql` method takes a crash-consistent physical copy of a postgres cluster, described under "The postgresql method" below.
+
+The `tamanu_secret_key` method captures the key that decrypts `local_system_secrets`, described under "The tamanu_secret_key method" below.
 
 A method exposes a `prepare` step that produces the path kopia snapshots (plus any method-supplied tags) and a `cleanup` step that releases whatever `prepare` set up; the driver runs the definition's `pre` hooks before `prepare` and its `post` hooks after `cleanup`, and `cleanup`/`post` always run even when the snapshot fails.
 
@@ -101,6 +120,32 @@ A run:
 7. reports the outcome.
    Any run that started kopia reports (success or failure); a run that exited idle at step 3 reports nothing.
    A failed report is logged and surfaced as a non-zero exit, but is not retried — Canopy's repository inspection is the backstop for a lost report.
+
+## Follower backups
+
+A definition may declare `after = "<type>"`, making it a follower of that type.
+When a run of the followed type completes a backup successfully, the driver then runs each of its followers, sequentially in type order, before returning; following is transitive, and each type in a chain runs at most once however the definitions are arranged.
+A run that failed, was skipped because its type was already running, or exited dormant runs no followers.
+A follower is otherwise an ordinary definition: it registers as a capability, may be scheduled by Canopy or run manually on its own, and reports its runs like any other type.
+
+Following is for a capture that must be a superset of what another capture references.
+A definition that captures data the leader's rows point at follows the leader, so whatever the leader references is already stored when the follower's capture begins.
+A follower run triggered on its own (by schedule or by hand) is still safe on these terms, being a superset for every earlier capture of the followed type; what only the chain provides is a store capture promptly after each database capture.
+
+### Sharing a capture
+
+Where a leader's capture freezes more than its own source, a follower whose source is inside that frozen tree is read out of the leader's capture instead of live.
+A Windows VSS shadow copy freezes an entire volume, so every source on it is inside; btrfs and thin-LVM freeze the subvolume or logical volume the leader's data sits on, which holds whatever else is under the same mount; a streamed base backup copies the cluster directory alone and holds nothing besides.
+Path prefix alone does not decide it on the Linux backends: a btrfs snapshot does not descend into a nested subvolume, nor an LVM one into a filesystem mounted inside it, and a source there reads as an empty directory, so sharing turns on being on the same subvolume or mount.
+VSS is the only backend that shares a capture today, matching the volume as the path spells it, case-insensitively; a source the capture never froze is read live as before.
+
+This is one snapshot where there were two, and it is also the only way the pair describes a single instant: a follower reading live captures the store as it is minutes later, after its leader's data froze.
+Such a follower therefore reports its leader's freeze instant as its own, being what its data actually describes.
+
+The capture is released once the whole chain has drained, rather than at the end of the run that took it, since that is the point after which nothing can still be reading from it.
+Only the first capture in a chain is kept: a follower that freezes a whole volume of its own releases it with its run, and later followers keep reading from the leader's.
+Releasing it is best-effort: every run that used it has finished and reported by then, so a teardown failure is a leak to warn about rather than an outcome to fail.
+A run told to hold its capture keeps it as a rollback point instead, and shares nothing.
 
 ## The moment the data froze
 
@@ -146,6 +191,7 @@ kopia's snapshot source host is set to the server id, so a backup's source is at
 The source path is stable across runs for a given backup type, so kopia's snapshot history, deduplication, and retention attribute to one source.
 
 Every snapshot is tagged with the device id, the run id, and the backup type, plus any tags the definition or the method contribute; the canopy-owned tags take precedence so a definition cannot override them.
+Every snapshot also carries its backup type as its description, so a repository listing identifies each snapshot without its tags being read.
 
 ## Local cache
 
@@ -208,6 +254,26 @@ Data spread across volumes that can't be frozen together falls back to the base 
 The base-backup fallback streams over the replication protocol, so the cluster must allow replication: `wal_level` at least `replica` and `max_wal_senders` above zero (both defaults), and a local replication entry for the superuser in the host-based auth configuration.
 The superuser connection already carries the replication privilege.
 
+## The tamanu_secret_key method
+
+The key at `crypto.keyFile` encrypts every value in `local_system_secrets`: the settings PSK (and so every secret setting), the device key, and a facility's sync password.
+A database restored onto a host holding a different key reads none of them, so the key has to be captured with the database it belongs to.
+
+Where the key lives is a property of the install, not of the definition, so the method resolves it rather than having an operator name a path per host.
+A bare-metal or Windows install points `crypto.keyFile` at a file, relative paths resolving against the server package directory as they do for the server itself.
+A containerised install holds the key as a podman secret, mounted into the containers at the `/run/secrets` path its `crypto.keyFile` names; the path's basename names the secret, and the value is read and written through podman.
+Only the one secret is touched: the host's secret store also holds values that belong to the host rather than to the database, and none of those should travel with a backup.
+The file has to exist to be chosen, so a `crypto.keyFile` that names neither an existing file nor a `/run/secrets` path is an error rather than a silent capture of the wrong thing.
+
+What lands in the repository is the key value itself, one file under a fixed name, whatever shape the host held it in.
+The value is all the database needs, which is what lets a capture taken from one shape restore onto an install of the other.
+
+The capture is a copy taken before kopia reads it, which is what makes it a point in time; a key is a few hundred bytes, so copying is cheaper than holding a consistent view for the length of a snapshot.
+It is not offered as a rollback point: re-capturing a key costs nothing, so there is nothing a hold would buy.
+
+A restore writes the value back in whatever shape this host keeps its key, converting freely between shapes: onto the key file path by an atomic rename, or into the podman secret through podman, picked up when the containers next start.
+Either way the key it displaces is kept beside it, as `<name>.old` next to a key file or as a `.old`-suffixed secret in podman.
+
 ## Restore
 
 `bestool canopy restore <type> <id>` is the operator-facing restore.
@@ -217,12 +283,32 @@ A restore can equally take its source from a capture held on the device, describ
 Selection is by id across the whole repository — not scoped to the server issuing the restore — so a replacement host can restore a backup taken by the server it succeeds.
 It restores the snapshot into a staging area on the same filesystem as the target so the final move is atomic, then hands off to the method.
 
+Restoring a type also restores its followers, so a leader and the data it references come back as a consistent pair.
+A follower's snapshot is selected rather than named: the earliest snapshot of the follower's type, from the same source host as the chosen snapshot, taken at or after it.
+At-or-after is the safety rule: a later follower snapshot is a superset of what the restored data references, an earlier one may not be, and is never selected; when none exists at or after, the restore refuses.
+The whole cycle is planned up front, before any data is touched, and each follower restore is then a full restore of its own, with its own credentials, run id, and report, in chain order, so a follower lands against data its leader has just restored.
+`--no-followers` restores the named type alone; restoring a follower's type explicitly by snapshot id remains the operator's manual path around a refusal.
+`--target` redirects only the named type's destination while followers would still restore over their live paths, so combining it with planned followers is refused; pass `--no-followers` alongside it.
+Follower snapshots are recognised by the backup type they carry, as a tag or as their description.
+
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.
 The `simple` method's restore lays the files back at its path or a given target.
+The `tamanu_secret_key` method's restore lays the key back where this host keeps it, described below.
+
+### Restore hooks
+
+A definition's `[[pre_restore]]` and `[[post_restore]]` hooks bracket its own restore, in order, argv-style, and a failing one on either side fails the restore run.
+They exist for data a service holds open: the method can lay files back, but it has no way to know which process has to let go of them first or be restarted afterwards to see them.
+Both run around the method, not around the download — a staging failure never stops a service.
+Each definition's hooks are its own, so in a restored cycle a follower's hooks bracket the follower's data landing, not its leader's.
+A failed `[[pre_restore]]` hook stops the restore before anything is laid down, so the existing data is untouched.
+A failed `[[post_restore]]` hook leaves the restored data in place — it is a report that the service did not come back, not a reason to undo the restore.
 
 Restore refuses to overwrite existing data by default.
 To proceed an operator passes an explicit confirmation flag (for non-interactive use) or answers an interactive double confirmation; with neither, over occupied data, it refuses.
+The interactive confirmation is asked once, before anything is downloaded, and covers the named type and every follower planned with it, so a declined follower cannot leave its leader restored alone.
+A follower that fails after its leader has restored fails the command with both named, since the pair is no longer consistent.
 Migrations, configuration sync, and version upgrades are left to the operator.
 
 Off-host restore verification is Canopy's concern, not this command's; this command's job is to produce clean backups and to restore them on demand.

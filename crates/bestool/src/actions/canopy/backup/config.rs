@@ -14,7 +14,7 @@ use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use serde::Deserialize;
 use tracing::warn;
 
-use super::method::{Method, PostgresqlConfig, SimpleConfig};
+use super::method::{Method, PostgresqlConfig, SimpleConfig, TamanuSecretKeyConfig};
 
 /// Environment variable overriding the backups config directory.
 pub const BACKUPS_DIR_ENV: &str = "BESTOOL_BACKUPS_DIR";
@@ -56,12 +56,21 @@ pub struct Hook {
 pub struct BackupDef {
 	/// The Canopy backup-type name (label only).
 	pub r#type: String,
+	/// A type this def follows: after a successful run of that type, this def
+	/// runs too, so a pair like database-then-secrets stays ordered.
+	pub after: Option<String>,
 	/// Extra kopia tags merged with the canopy-* tags.
 	pub tags: BTreeMap<String, String>,
 	/// Commands run before the method prepares (sequential, fail-fast).
 	pub pre: Vec<Hook>,
 	/// Commands run after cleanup (best-effort, always).
 	pub post: Vec<Hook>,
+	/// Commands run before this def's restore lays its data down (sequential,
+	/// fail-fast), to quiesce whatever holds the data being replaced.
+	pub pre_restore: Vec<Hook>,
+	/// Commands run after this def's restore lays its data down (sequential,
+	/// fail-fast), for data a service only reads when it starts.
+	pub post_restore: Vec<Hook>,
 	/// The selected method.
 	pub method: Method,
 }
@@ -72,36 +81,53 @@ pub struct BackupDef {
 struct RawDef {
 	r#type: String,
 	#[serde(default)]
+	after: Option<String>,
+	#[serde(default)]
 	tags: BTreeMap<String, String>,
 	#[serde(default)]
 	pre: Vec<Hook>,
 	#[serde(default)]
 	post: Vec<Hook>,
 	#[serde(default)]
+	pre_restore: Vec<Hook>,
+	#[serde(default)]
+	post_restore: Vec<Hook>,
+	#[serde(default)]
 	simple: Option<SimpleConfig>,
 	#[serde(default)]
 	postgresql: Option<PostgresqlConfig>,
+	#[serde(default)]
+	tamanu_secret_key: Option<TamanuSecretKeyConfig>,
 }
 
 impl RawDef {
 	fn into_def(self) -> Result<BackupDef> {
-		let method = match (self.simple, self.postgresql) {
-			(Some(simple), None) => Method::Simple(simple),
-			(None, Some(postgresql)) => Method::Postgresql(postgresql),
-			(None, None) => bail!(
-				"backup def '{}' has no method table; add exactly one of [simple] or [postgresql]",
+		let method = match (self.simple, self.postgresql, self.tamanu_secret_key) {
+			(Some(simple), None, None) => Method::Simple(simple),
+			(None, Some(postgresql), None) => Method::Postgresql(postgresql),
+			(None, None, Some(secret_key)) => Method::TamanuSecretKey(secret_key),
+			(None, None, None) => bail!(
+				"backup def '{}' has no method table; add exactly one of [simple], [postgresql] \
+				 or [tamanu_secret_key]",
 				self.r#type
 			),
-			(Some(_), Some(_)) => bail!(
-				"backup def '{}' has both [simple] and [postgresql]; exactly one is allowed",
+			_ => bail!(
+				"backup def '{}' has more than one method table; exactly one of [simple], \
+				 [postgresql] or [tamanu_secret_key] is allowed",
 				self.r#type
 			),
 		};
+		if self.after.as_deref() == Some(self.r#type.as_str()) {
+			bail!("backup def '{}' declares itself as its own `after`", self.r#type);
+		}
 		Ok(BackupDef {
 			r#type: self.r#type,
+			after: self.after,
 			tags: self.tags,
 			pre: self.pre,
 			post: self.post,
+			pre_restore: self.pre_restore,
+			post_restore: self.post_restore,
 			method,
 		})
 	}
@@ -182,6 +208,17 @@ pub async fn find_def(dir: &Path, backup_type: &str) -> Result<Option<BackupDef>
 		.find(|d| d.r#type == backup_type))
 }
 
+/// The defs that declare `after = backup_type`, in type order.
+///
+/// spec: BAK#follower-backups
+pub async fn followers_of(dir: &Path, backup_type: &str) -> Result<Vec<BackupDef>> {
+	Ok(load_dir(dir)
+		.await?
+		.into_iter()
+		.filter(|d| d.after.as_deref() == Some(backup_type))
+		.collect())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -237,6 +274,172 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_a_bare_tamanu_secret_key_def() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secret-key"
+			[tamanu_secret_key]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.method.name(), "tamanu_secret_key");
+		let Method::TamanuSecretKey(config) = &def.method else {
+			panic!("expected the secret-key method");
+		};
+		assert!(config.path.is_none());
+		assert!(config.package.is_none());
+		assert!(config.root.is_none());
+	}
+
+	/// The def ops ships for a containerised host: the secret-key method as a
+	/// follower of the database, with the restart its containers need to pick the
+	/// key up.
+	#[test]
+	fn parses_a_secret_key_follower() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secrets"
+			after = "tamanu-postgres"
+			[tamanu_secret_key]
+			[[post_restore]]
+			command = ["/usr/bin/systemctl", "restart", "tamanu-central.service"]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
+		assert_eq!(def.method.name(), "tamanu_secret_key");
+		assert_eq!(
+			def.post_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec![
+				"/usr/bin/systemctl",
+				"restart",
+				"tamanu-central.service"
+			]]
+		);
+	}
+
+	#[test]
+	fn parses_after() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secrets"
+			after = "tamanu-postgres"
+			[simple]
+			path = "/var/lib/containers/storage/secrets"
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.r#type, "tamanu-secrets");
+		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
+		assert_eq!(def.method.name(), "simple");
+	}
+
+	#[test]
+	fn parses_restore_hooks() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-secrets"
+			[simple]
+			path = "/var/lib/containers/storage/secrets"
+			[[pre_restore]]
+			command = ["/usr/bin/systemctl", "stop", "tamanu-central"]
+			[[post_restore]]
+			command = ["/usr/bin/systemctl", "start", "tamanu-central"]
+			"#,
+		)
+		.unwrap();
+		assert_eq!(
+			def.pre_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec!["/usr/bin/systemctl", "stop", "tamanu-central"]]
+		);
+		assert_eq!(
+			def.post_restore
+				.iter()
+				.map(|h| h.command.clone())
+				.collect::<Vec<_>>(),
+			vec![vec!["/usr/bin/systemctl", "start", "tamanu-central"]]
+		);
+	}
+
+	#[test]
+	fn restore_hooks_default_to_empty() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-postgres"
+			[postgresql]
+			cluster = "main"
+			"#,
+		)
+		.unwrap();
+		assert!(def.pre_restore.is_empty());
+		assert!(def.post_restore.is_empty());
+	}
+
+	#[test]
+	fn after_defaults_to_none() {
+		let def = parse_def(
+			r#"
+			type = "tamanu-postgres"
+			[postgresql]
+			cluster = "main"
+			"#,
+		)
+		.unwrap();
+		assert_eq!(def.after, None);
+	}
+
+	#[test]
+	fn rejects_self_after() {
+		let err = parse_def(
+			r#"
+			type = "loop"
+			after = "loop"
+			[simple]
+			path = "/a"
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("its own"));
+	}
+
+	#[tokio::test]
+	async fn followers_of_selects_by_after_in_type_order() {
+		let dir = std::env::temp_dir().join(format!("bestool-followers-{}", std::process::id()));
+		tokio::fs::create_dir_all(&dir).await.unwrap();
+		tokio::fs::write(
+			dir.join("pg.toml"),
+			"type = \"tamanu-postgres\"\n[postgresql]\ncluster = \"main\"\n",
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(
+			dir.join("secrets.toml"),
+			"type = \"tamanu-secrets\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/secrets\"\n",
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(
+			dir.join("assets.toml"),
+			"type = \"assets\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/assets\"\n",
+		)
+		.await
+		.unwrap();
+
+		let followers = followers_of(&dir, "tamanu-postgres").await.unwrap();
+		let types: Vec<&str> = followers.iter().map(|d| d.r#type.as_str()).collect();
+		assert_eq!(types, vec!["assets", "tamanu-secrets"]);
+		assert!(followers_of(&dir, "tamanu-secrets").await.unwrap().is_empty());
+
+		tokio::fs::remove_dir_all(&dir).await.ok();
+	}
+
+	#[test]
 	fn rejects_two_method_tables() {
 		let err = parse_def(
 			r#"
@@ -245,6 +448,17 @@ mod tests {
 			path = "/a"
 			[postgresql]
 			cluster = "main"
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("exactly one"));
+
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			path = "/a"
+			[tamanu_secret_key]
 			"#,
 		)
 		.unwrap_err();

@@ -16,6 +16,7 @@ pub mod method;
 pub mod postgresql;
 pub(super) mod progress;
 pub mod provider;
+mod secret_key;
 mod simple;
 
 use std::{
@@ -208,7 +209,11 @@ async fn run_via_daemon(backup_type: &str, hold: bool) -> std::result::Result<()
 			if std::mem::take(&mut on_progress_line) {
 				eprintln!();
 			}
-			if let Some(outcome) = render_daemon_event(backup_type, &event) {
+			// A chained run streams a terminal event per backup; a later
+			// follower's success must not mask an earlier failure.
+			if let Some(outcome) = render_daemon_event(backup_type, &event)
+				&& !matches!(terminal, Some(Err(_)))
+			{
 				terminal = Some(outcome);
 			}
 		}
@@ -266,6 +271,10 @@ fn render_daemon_event(
 			info!(backup_type, phase = field("phase"), "backup phase");
 			None
 		}
+		Some("follower") => {
+			info!(follower_type = field("type"), "continuing into follower backup");
+			None
+		}
 		Some("heartbeat") => None,
 		Some("done") => {
 			info!(
@@ -298,6 +307,9 @@ pub enum BackupEvent {
 	/// A live progress line from kopia during the snapshot upload (its own
 	/// human-readable status, e.g. "8 hashed (800 MB), uploaded 800 MB, 100%").
 	Progress(String),
+	/// Continuing into a follower backup (a def with `after` naming the type
+	/// that just completed).
+	Follower { backup_type: String },
 	/// The run finished successfully.
 	Done {
 		snapshot_id: Option<String>,
@@ -409,11 +421,26 @@ pub(super) async fn connect_repo(
 	Ok(())
 }
 
-/// Drive one backup run end-to-end.
+/// How a run ended, for the chaining decision: only a completed backup pulls
+/// its followers along.
+enum RunEnd {
+	/// A backup ran and reported.
+	Completed,
+	/// Nothing ran: the device isn't authorised yet, or another run of this
+	/// type already holds the lock.
+	Idle,
+}
+
+/// Drive a backup end-to-end, then any followers (defs whose `after` names the
+/// type that just completed), each a full run of its own.
 ///
 /// On a dormant target (the device isn't authorised for backups yet) this logs
-/// and returns `Ok(())` without reporting. Otherwise it always reports the
-/// outcome to Canopy once kopia has started.
+/// and returns `Ok(())` without reporting. Otherwise each run in the chain
+/// reports its outcome to Canopy once kopia has started. An idle or failed run
+/// chains nothing, but doesn't stop runs already queued behind it; the first
+/// failure is returned once the chain is drained.
+///
+/// spec: BAK#follower-backups
 pub async fn run_backup(
 	backup_type: &str,
 	registration_dir: Option<&Path>,
@@ -421,6 +448,70 @@ pub async fn run_backup(
 	progress: Option<BackupProgress>,
 	hold: Arc<AtomicBool>,
 ) -> Result<()> {
+	let dir = backups_dir
+		.map(|d| d.to_path_buf())
+		.unwrap_or_else(config::backups_dir);
+
+	let mut visited = std::collections::BTreeSet::from([backup_type.to_owned()]);
+	let mut queue = std::collections::VecDeque::from([backup_type.to_owned()]);
+	let mut lead_type = true;
+	let mut first_error = None;
+	let mut shared: Option<SharedCapture> = None;
+	while let Some(current) = queue.pop_front() {
+		if !lead_type {
+			info!(backup_type = %current, "continuing into follower backup");
+			emit(&progress, BackupEvent::Follower { backup_type: current.clone() });
+		}
+		lead_type = false;
+
+		let end = match run_one(
+			&current,
+			registration_dir,
+			backups_dir,
+			&progress,
+			&hold,
+			&mut shared,
+		)
+		.await
+		{
+			Ok(end) => end,
+			Err(err) => {
+				first_error.get_or_insert(err);
+				continue;
+			}
+		};
+		if !matches!(end, RunEnd::Completed) {
+			continue;
+		}
+		let followers = match config::followers_of(&dir, &current).await {
+			Ok(followers) => followers,
+			Err(err) => {
+				first_error.get_or_insert(err);
+				break;
+			}
+		};
+		for follower in followers {
+			if visited.insert(follower.r#type.clone()) {
+				queue.push_back(follower.r#type);
+			}
+		}
+	}
+	release_shared(shared.take()).await;
+	match first_error {
+		Some(err) => Err(err),
+		None => Ok(()),
+	}
+}
+
+/// Drive one backup run end-to-end.
+async fn run_one(
+	backup_type: &str,
+	registration_dir: Option<&Path>,
+	backups_dir: Option<&Path>,
+	progress: &Option<BackupProgress>,
+	hold: &Arc<AtomicBool>,
+	shared: &mut Option<SharedCapture>,
+) -> Result<RunEnd> {
 	let run_id = Uuid::new_v4().to_string();
 
 	// Resolve the def first: fail fast (and without touching the network) if this
@@ -438,7 +529,7 @@ pub async fn run_backup(
 	// returns (the OS releases it if we crash).
 	let Some(_lock) = try_acquire_lock(&lock_path(backup_type)).await? else {
 		info!(backup_type, "a backup of this type is already running; skipping");
-		return Ok(());
+		return Ok(RunEnd::Idle);
 	};
 	// A capture that can't be held is refused before anything is captured, so the
 	// operator finds out from the flag rather than from a run that took a snapshot
@@ -450,17 +541,10 @@ pub async fn run_backup(
 		);
 	}
 	info!(backup_type, method = def.method.name(), %run_id, "starting backup");
-	emit(&progress, BackupEvent::Started { run_id: run_id.clone() });
+	emit(progress, BackupEvent::Started { run_id: run_id.clone() });
 
-	let result = backup_after_start(
-		&def,
-		backup_type,
-		&run_id,
-		registration_dir,
-		&progress,
-		&hold,
-	)
-	.await;
+	let result =
+		backup_after_start(&def, backup_type, &run_id, registration_dir, progress, hold, shared).await;
 	if let Err(err) = &result {
 		error!(backup_type, %run_id, "backup failed: {}", trim_error(err));
 	}
@@ -478,7 +562,8 @@ async fn backup_after_start(
 	registration_dir: Option<&Path>,
 	progress: &Option<BackupProgress>,
 	hold: &Arc<AtomicBool>,
-) -> Result<()> {
+	shared: &mut Option<SharedCapture>,
+) -> Result<RunEnd> {
 	let reg = load_registration(registration_dir)
 		.await?
 		.ok_or_else(|| miette!("not registered with canopy; run `bestool canopy register` first"))?;
@@ -501,7 +586,7 @@ async fn backup_after_start(
 				backup_type,
 				"nothing to do: device not yet authorised for backups"
 			);
-			return Ok(());
+			return Ok(RunEnd::Idle);
 		}
 		TargetOutcome::Ready(target) => target,
 	};
@@ -551,6 +636,7 @@ async fn backup_after_start(
 			progress,
 			&cell,
 			hold,
+			shared,
 		)
 		.await;
 
@@ -634,7 +720,7 @@ async fn backup_after_start(
 		Err(err) => emit(progress, BackupEvent::Failed { error: trim_error(err) }),
 	}
 
-	outcome.map(|_| ())
+	outcome.map(|_| RunEnd::Completed)
 }
 
 /// Connect kopia to the repo, snapshot the prepared source, parse the result.
@@ -655,11 +741,13 @@ async fn run_kopia_backup(
 	progress: &Option<BackupProgress>,
 	cell: &Arc<progress::ProgressCell>,
 	hold: &Arc<AtomicBool>,
+	shared: &mut Option<SharedCapture>,
 ) -> Result<SnapshotResult> {
 	run_hooks(&def.pre, true).await?;
 
 	emit(progress, BackupEvent::Phase("prepare"));
-	let prepared = def.method.prepare(&def.r#type).await?;
+	let within = shared.as_ref().map(|kept| kept.volume.clone());
+	let prepared = def.method.prepare(&def.r#type, within.as_ref()).await?;
 	// Record the freeze instant (where the method has one) so the reporter and the
 	// final report can carry it.
 	if let Some(taken_at) = prepared.taken_at {
@@ -679,6 +767,7 @@ async fn run_kopia_backup(
 		conn,
 		&source_path,
 		server_id,
+		&def.r#type,
 		&tags,
 		&prepared.ignore,
 		progress,
@@ -693,6 +782,15 @@ async fn run_kopia_backup(
 	// want a local rollback point.
 	let cleanup = if hold.load(Ordering::Relaxed) {
 		hold_capture(def, prepared, result.is_ok()).await.map(|_| ())
+	} else if let Some(volume) = prepared.volume.clone()
+		&& shared.is_none()
+	{
+		*shared = Some(SharedCapture {
+			def: def.clone(),
+			prepared,
+			volume,
+		});
+		Ok(())
 	} else {
 		def.method.cleanup(prepared).await
 	};
@@ -701,6 +799,30 @@ async fn run_kopia_backup(
 	let snapshot = result?;
 	cleanup?;
 	Ok(snapshot)
+}
+
+/// A leader's whole-volume capture, kept past its own run so followers whose
+/// sources sit on that volume read from it instead of taking a second snapshot
+/// of data it already froze. Only the first capture in a chain is kept; a
+/// follower's own is released with its run.
+///
+/// spec: BAK#sharing-a-capture
+struct SharedCapture {
+	def: BackupDef,
+	prepared: method::Prepared,
+	volume: method::VolumeCapture,
+}
+
+/// Release a kept capture. Best-effort: the runs that used it have finished and
+/// reported, so failing to tear it down is a leak to warn about, not an error to
+/// fail anything with.
+async fn release_shared(kept: Option<SharedCapture>) {
+	let Some(SharedCapture { def, prepared, .. }) = kept else {
+		return;
+	};
+	if let Err(err) = def.method.cleanup(prepared).await {
+		warn!(backup_type = %def.r#type, "releasing the shared capture failed: {}", trim_error(&err));
+	}
 }
 
 /// Retain this run's capture and record it, so it outlives the process as a
@@ -764,7 +886,7 @@ async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<(
 
 	info!(backup_type, method = def.method.name(), "capturing without uploading");
 	run_hooks(&def.pre, true).await?;
-	let held = match def.method.prepare(backup_type).await {
+	let held = match def.method.prepare(backup_type, None).await {
 		Ok(prepared) => hold_capture(&def, prepared, false).await.map(|_| ()),
 		Err(err) => Err(err),
 	};
@@ -782,6 +904,7 @@ async fn snapshot(
 	conn: &RepoConn,
 	source_path: &Path,
 	server_id: &str,
+	backup_type: &str,
 	tags: &BTreeMap<String, String>,
 	ignore: &[String],
 	progress: &Option<BackupProgress>,
@@ -838,7 +961,7 @@ async fn snapshot(
 	// stream it: the parsed counters feed the Canopy progress reporter, and the
 	// raw lines the local CLI display, on every run.
 	create.arg("--progress");
-	args_snapshot_create(&mut create, source_path, tags);
+	args_snapshot_create(&mut create, source_path, tags, backup_type);
 	let stdout = run_kopia_streaming(create, "snapshot create", progress, cell).await?;
 	Ok(parse_snapshot_output(&stdout))
 }
@@ -998,7 +1121,7 @@ fn flush_progress_segment(
 
 /// Run a sequence of hooks. `fail_fast` aborts on the first failure (pre-hooks);
 /// otherwise failures are logged and the rest still run (post-hooks).
-async fn run_hooks(hooks: &[Hook], fail_fast: bool) -> Result<()> {
+pub(super) async fn run_hooks(hooks: &[Hook], fail_fast: bool) -> Result<()> {
 	for hook in hooks {
 		if let Err(err) = run_hook(hook).await {
 			if fail_fast {
