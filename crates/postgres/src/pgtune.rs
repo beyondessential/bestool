@@ -51,8 +51,14 @@ pub struct HostResources {
 /// The budgeted resources every tuning value is derived from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
-	/// Memory, in kibibytes, that PostgreSQL may size its caches against.
+	/// Memory, in kibibytes, that PostgreSQL may size its allocated caches
+	/// against (shared_buffers, work_mem, and the rest).
 	pub ram_kib: u64,
+	/// Memory, in kibibytes, the operating system and PostgreSQL together have
+	/// for caching data, used to size `effective_cache_size`. Unlike `ram_kib`
+	/// this is not subject to the Windows shared-memory ceiling, because it is a
+	/// planner hint about the whole box rather than memory PostgreSQL allocates.
+	pub cache_ram_kib: u64,
 	/// CPUs PostgreSQL may spread parallel work across.
 	pub cpus: u32,
 }
@@ -94,12 +100,23 @@ impl Setting {
 ///
 /// Windows hosts are treated as entitled to at most 4 GiB, because they
 /// co-locate more workloads and PostgreSQL for Windows does not benefit from a
-/// large shared memory area. Elsewhere the budget holds back a fixed 4 GiB on
-/// hosts with real RAM, and splits small hosts down the middle.
+/// large shared memory area. Elsewhere the budget is the whole-box cache budget.
 fn budget_ram_kib(platform: Platform, total_ram_kib: u64) -> u64 {
 	if platform.is_windows() {
 		(total_ram_kib / 2).min(4 * GIB)
-	} else if total_ram_kib >= 8 * GIB {
+	} else {
+		cache_budget_ram_kib(total_ram_kib)
+	}
+}
+
+/// The RAM available for caching data across the whole box, in kibibytes, used
+/// to size `effective_cache_size`. It holds back a fixed 4 GiB of headroom on
+/// hosts with real RAM and splits small hosts down the middle, on every
+/// platform: the Windows shared-memory ceiling does not apply, because this
+/// figure is a planner hint about the operating system and PostgreSQL together,
+/// not memory PostgreSQL allocates.
+fn cache_budget_ram_kib(total_ram_kib: u64) -> u64 {
+	if total_ram_kib >= 8 * GIB {
 		total_ram_kib - 4 * GIB
 	} else {
 		total_ram_kib / 2
@@ -123,6 +140,7 @@ fn budget_cpus(cpus: u32) -> u32 {
 pub fn budget(platform: Platform, resources: HostResources) -> Budget {
 	Budget {
 		ram_kib: budget_ram_kib(platform, resources.total_ram_kib),
+		cache_ram_kib: cache_budget_ram_kib(resources.total_ram_kib),
 		cpus: budget_cpus(resources.cpus),
 	}
 }
@@ -137,9 +155,11 @@ pub fn expected_shared_buffers_kib(budget: &Budget, platform: Platform, pg_major
 	}
 }
 
-/// Expected `effective_cache_size`, in kibibytes, for a budget.
+/// Expected `effective_cache_size`, in kibibytes, for a budget. Sized from the
+/// whole-box cache budget, so it reflects the host's real RAM rather than the
+/// capped memory budget Windows allocates against.
 pub fn expected_effective_cache_kib(budget: &Budget) -> u64 {
-	(budget.ram_kib * 3) / 4
+	(budget.cache_ram_kib * 3) / 4
 }
 
 /// Expected `maintenance_work_mem`, in kibibytes, for a budget.
@@ -373,6 +393,30 @@ mod tests {
 	}
 
 	#[test]
+	fn cache_budget_ignores_windows_ceiling() {
+		// The cache budget reserves the same 4 GiB headroom but is never capped,
+		// so effective_cache_size tracks the whole box on Windows too.
+		assert_eq!(cache_budget_ram_kib(4 * GIB), 2 * GIB);
+		assert_eq!(cache_budget_ram_kib(8 * GIB), 4 * GIB);
+		assert_eq!(cache_budget_ram_kib(16 * GIB), 12 * GIB);
+		assert_eq!(cache_budget_ram_kib(64 * GIB), 60 * GIB);
+	}
+
+	#[test]
+	fn windows_effective_cache_tracks_whole_box() {
+		// 16 GiB Windows box: memory budget stays 4 GiB, but effective_cache_size
+		// is three quarters of the 12 GiB cache budget.
+		assert_eq!(
+			get(&compute(&windows_inputs(16, 4)), "effective_cache_size"),
+			Some("9GB")
+		);
+		assert_eq!(
+			get(&compute(&windows_inputs(64, 16)), "effective_cache_size"),
+			Some("45GB")
+		);
+	}
+
+	#[test]
 	fn windows_shared_buffers_scale_with_budget() {
 		assert_eq!(
 			get(&compute(&windows_inputs(4, 2)), "shared_buffers"),
@@ -402,8 +446,8 @@ mod tests {
 	#[test]
 	fn windows_16gib_core_values() {
 		let s = compute(&windows_inputs(16, 4));
-		// budget = 4GiB
-		assert_eq!(get(&s, "effective_cache_size"), Some("3GB"));
+		// memory budget = 4GiB, cache budget = 12GiB
+		assert_eq!(get(&s, "effective_cache_size"), Some("9GB"));
 		assert_eq!(get(&s, "maintenance_work_mem"), Some("256MB"));
 		assert_eq!(get(&s, "max_wal_size"), Some("8GB"));
 		assert_eq!(get(&s, "random_page_cost"), Some("1.1"));

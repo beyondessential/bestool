@@ -21,9 +21,13 @@ All memory quantities are computed in kibibytes to avoid unit drift, then render
 
 ### Resource budget
 
-PostgreSQL on a Windows host is treated as entitled to at most 4 GiB of RAM, because these hosts co-locate the application, reverse proxy, and backup tooling.
+PostgreSQL on a Windows host is treated as entitled to at most 4 GiB of the RAM it actually allocates, because these hosts co-locate the application, reverse proxy, and backup tooling.
 The memory budget is the smaller of half the host's physical RAM and 4 GiB.
-For example, a 4 GiB host yields a 2 GiB budget, an 8 GiB host yields 4 GiB, and any host of 16 GiB or more yields 4 GiB.
+For example, a 4 GiB host yields a 2 GiB memory budget, an 8 GiB host yields 4 GiB, and any host of 16 GiB or more yields 4 GiB.
+
+`effective_cache_size` is a planner hint describing how much memory the operating system and PostgreSQL together have for caching data, not memory PostgreSQL allocates, so it is sized from a separate cache budget that the Windows ceiling does not apply to.
+The cache budget holds back a fixed 4 GiB of headroom on hosts with at least 8 GiB of RAM and is half the host's physical RAM on smaller hosts, on both Windows and Linux.
+For example, a 16 GiB host yields a 12 GiB cache budget and a 32 GiB host yields 28 GiB.
 
 The CPU budget reserves cores for the co-located workloads: 1 core maps to 1, 2 to 4 cores map to 2, 5 to 7 cores map to 4, and 8 or more cores map to the core count minus 4.
 
@@ -32,7 +36,7 @@ Every value below is derived from these budgeted figures, not the host's raw res
 ### Memory settings
 
 - `shared_buffers` is a quarter of the memory budget, capped at 512 MiB on PostgreSQL versions before 10.
-- `effective_cache_size` is three quarters of the memory budget.
+- `effective_cache_size` is three quarters of the cache budget.
 - `maintenance_work_mem` is a sixteenth of the memory budget, capped at 2 GiB less 1 MiB on PostgreSQL 17 and earlier and at 8 GiB thereafter.
 - `work_mem` is the memory budget minus `shared_buffers`, divided by three times the sum of the maximum connections and the parallelism allowance, with a floor of 4 MiB and, on PostgreSQL 17 and earlier, a ceiling of 2 GiB minus 1 MiB.
   The parallelism allowance is the CPU budget when parallelism is enabled, otherwise 8.

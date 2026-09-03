@@ -630,6 +630,33 @@ mod tests {
 	}
 
 	#[test]
+	fn windows_effective_cache_sized_from_whole_box() {
+		// A 16GB Windows box: shared_buffers is capped at the 4GB memory budget
+		// (1GB) but effective_cache_size is sized from the 12GB cache budget (9GB).
+		// The whole-box value passes; the old 4GB-ceiling value (3GB) is flagged
+		// as too low.
+		let total = 16 * GB;
+		let mut s = tuned_32gb().0;
+		s.shared_buffers = GB;
+		s.effective_cache_size = 9 * GB;
+		let findings = assess(&s, total, Platform::Windows, 16);
+		assert!(
+			!findings
+				.iter()
+				.any(|f| f.message.contains("effective_cache_size")),
+			"{findings:?}"
+		);
+
+		s.effective_cache_size = 3 * GB;
+		let findings = assess(&s, total, Platform::Windows, 16);
+		assert!(
+			findings
+				.iter()
+				.any(|f| f.message.contains("effective_cache_size"))
+		);
+	}
+
+	#[test]
 	fn effective_io_concurrency_not_flagged_on_windows() {
 		let (mut s, total) = tuned_32gb();
 		s.effective_io_concurrency = 0;
