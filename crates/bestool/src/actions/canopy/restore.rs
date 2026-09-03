@@ -176,16 +176,16 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	} else {
 		plan_followers(&dir, &args.backup_type, snapshot, &snapshots).await?
 	};
-	if args.target.is_some() && !followed.is_empty() {
+	let follower_types: Vec<&str> = followed
+		.iter()
+		.map(|(follower_def, _)| follower_def.r#type.as_str())
+		.collect();
+	if args.target.is_some() && !follower_types.is_empty() {
 		bail!(
 			"--target redirects only '{}', but its followers ({}) would still restore over \
 			 their live paths; pass --no-followers and restore them separately if needed",
 			args.backup_type,
-			followed
-				.iter()
-				.map(|(follower_def, _)| follower_def.r#type.as_str())
-				.collect::<Vec<_>>()
-				.join(", "),
+			follower_types.join(", "),
 		);
 	}
 	for (follower_def, follower_snapshot) in &followed {
@@ -196,6 +196,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			"paired follower snapshot to restore after this one",
 		);
 	}
+	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &follower_types)?;
 
 	// Sample the restore's S3 traffic to Canopy while it runs, so a long download
 	// shows progress. A restore has no engine cell and no freeze moment: the bytes
@@ -211,7 +212,7 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 
 	// Perform the restore, capturing the outcome so it can be reported to canopy
 	// whether it succeeds or fails.
-	let outcome = run_restore(&kopia, &s3env, snapshot, &def, args.target.as_deref(), args.clobber).await;
+	let outcome = run_restore(&kopia, &s3env, snapshot, &def, args.target.as_deref(), clobber).await;
 
 	// Stop sampling before the final report.
 	reporter.stop().await;
@@ -227,8 +228,6 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 	.await;
 	outcome?;
 
-	// The followers, each a full restore session of its own, after the type they
-	// follow, so a follower's data lands against the leader restored just above.
 	for (follower_def, follower_snapshot) in &followed {
 		restore_follower(
 			&client,
@@ -236,9 +235,15 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			&target,
 			follower_def,
 			follower_snapshot,
-			args.clobber,
+			clobber,
 		)
-		.await?;
+		.await
+		.wrap_err_with(|| {
+			format!(
+				"'{}' is restored but its follower '{}' is not",
+				args.backup_type, follower_def.r#type
+			)
+		})?;
 	}
 	Ok(())
 }
@@ -359,7 +364,6 @@ async fn run_restore(
 	args_snapshot_restore(&mut restore_cmd, &snapshot.id, &staging);
 	run_kopia_visible(restore_cmd, "snapshot restore").await?;
 
-	let clobber = clobber || confirm_clobber_interactively(&def.r#type)?;
 	let opts = RestoreOpts {
 		target: target_override.map(Path::to_path_buf),
 		clobber,
@@ -431,7 +435,7 @@ async fn restore_from_hold(
 
 	copy_capture(&record.source, &staging).await?;
 
-	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type)?;
+	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &[])?;
 	let opts = RestoreOpts {
 		target: args.target.clone(),
 		clobber,
@@ -664,14 +668,18 @@ fn available_snapshots_hint(snapshots: &[Snapshot]) -> String {
 
 /// Interactive double-confirmation for a destructive restore. Returns `true`
 /// only when both prompts pass. With no TTY, returns `false` (the caller then
-/// relies on the explicit flag / the clobber guard).
-fn confirm_clobber_interactively(backup_type: &str) -> Result<bool> {
+/// relies on the explicit flag / the clobber guard). One answer covers the
+/// leader and every follower restored with it.
+fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<bool> {
 	if !std::io::stdin().is_terminal() {
 		return Ok(false);
 	}
-	print!(
-		"This will OVERWRITE existing data for '{backup_type}'. Continue? [y/N] "
-	);
+	let types = std::iter::once(backup_type)
+		.chain(followers.iter().copied())
+		.map(|t| format!("'{t}'"))
+		.collect::<Vec<_>>()
+		.join(", ");
+	print!("This will OVERWRITE existing data for {types}. Continue? [y/N] ");
 	std::io::stdout().flush().ok();
 	if !read_line()?.trim().eq_ignore_ascii_case("y") {
 		return Ok(false);

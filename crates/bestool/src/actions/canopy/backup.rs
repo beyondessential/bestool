@@ -456,8 +456,6 @@ pub async fn run_backup(
 	let mut queue = std::collections::VecDeque::from([backup_type.to_owned()]);
 	let mut lead_type = true;
 	let mut first_error = None;
-	// Carries a leader's whole-volume capture into the runs queued behind it, and
-	// is released when the chain drains however the chain ends.
 	let mut shared: Option<SharedCapture> = None;
 	while let Some(current) = queue.pop_front() {
 		if !lead_type {
@@ -485,7 +483,14 @@ pub async fn run_backup(
 		if !matches!(end, RunEnd::Completed) {
 			continue;
 		}
-		for follower in config::followers_of(&dir, &current).await? {
+		let followers = match config::followers_of(&dir, &current).await {
+			Ok(followers) => followers,
+			Err(err) => {
+				first_error.get_or_insert(err);
+				break;
+			}
+		};
+		for follower in followers {
 			if visited.insert(follower.r#type.clone()) {
 				queue.push_back(follower.r#type);
 			}
@@ -741,8 +746,6 @@ async fn run_kopia_backup(
 	run_hooks(&def.pre, true).await?;
 
 	emit(progress, BackupEvent::Phase("prepare"));
-	// Cloned rather than borrowed so the capture can be replaced below without
-	// holding a read of it across the whole run.
 	let within = shared.as_ref().map(|kept| kept.volume.clone());
 	let prepared = def.method.prepare(&def.r#type, within.as_ref()).await?;
 	// Record the freeze instant (where the method has one) so the reporter and the
@@ -779,16 +782,14 @@ async fn run_kopia_backup(
 	// want a local rollback point.
 	let cleanup = if hold.load(Ordering::Relaxed) {
 		hold_capture(def, prepared, result.is_ok()).await.map(|_| ())
-	} else if let Some(volume) = prepared.volume.clone() {
-		// A whole-volume capture outlives its own run: the followers queued behind
-		// it read their sources out of it rather than snapshotting the same disk
-		// again. Released once the chain drains.
-		release_shared(shared.replace(SharedCapture {
+	} else if let Some(volume) = prepared.volume.clone()
+		&& shared.is_none()
+	{
+		*shared = Some(SharedCapture {
 			def: def.clone(),
 			prepared,
 			volume,
-		}))
-		.await;
+		});
 		Ok(())
 	} else {
 		def.method.cleanup(prepared).await
@@ -802,7 +803,8 @@ async fn run_kopia_backup(
 
 /// A leader's whole-volume capture, kept past its own run so followers whose
 /// sources sit on that volume read from it instead of taking a second snapshot
-/// of data it already froze.
+/// of data it already froze. Only the first capture in a chain is kept; a
+/// follower's own is released with its run.
 ///
 /// spec: BAK#sharing-a-capture
 struct SharedCapture {

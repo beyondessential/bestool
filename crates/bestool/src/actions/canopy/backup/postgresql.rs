@@ -126,9 +126,6 @@ async fn snapshot_prepared(
 	backup_type: &str,
 	need: Option<u64>,
 ) -> Result<Prepared> {
-	// `volume` is set only where the capture covers the whole volume: btrfs and
-	// LVM snapshot a subvolume or logical volume, so nothing else on the disk is
-	// inside theirs.
 	let (path, taken_at, teardown, volume) = match strategy {
 		Strategy::Btrfs => {
 			let (path, taken_at, mounts) = btrfs::prepare(resolved, backup_type).await?;
@@ -178,7 +175,6 @@ async fn basebackup_prepared(
 		extra_tags: metadata_tags(resolved, Strategy::BaseBackup),
 		ignore: ignore_globs(),
 		teardown: Teardown::BaseBackup(root),
-		// A copy of one directory, so nothing else on the disk is in it.
 		volume: None,
 	})
 }

@@ -226,7 +226,6 @@ impl Method {
 						extra_tags: BTreeMap::new(),
 						ignore: Vec::new(),
 						teardown: Teardown::Simple(cleanup),
-						// The capture is the leader's; this run neither owns nor extends it.
 						volume: None,
 					});
 				}
@@ -253,13 +252,10 @@ impl Method {
 				let (path, view) = super::simple::prepare(&staged, backup_type).await?;
 				Ok(Prepared {
 					path,
-					// The normalised tree is a copy, so it is a moment: the whole point
-					// of copying something this small before kopia reads it.
 					taken_at: Some(Timestamp::now()),
 					extra_tags: BTreeMap::new(),
 					ignore: Vec::new(),
 					teardown: Teardown::SecretKey { view, staged },
-					// The staged copy is this run's own; it freezes nothing else.
 					volume: None,
 				})
 			}
@@ -276,9 +272,6 @@ impl Method {
 	pub fn supports_hold(&self) -> bool {
 		match self {
 			Method::Simple(_) => false,
-			// The normalised tree is a copy taken before the snapshot, so it does
-			// describe a moment; promoting one out of the run-owned paths is work
-			// nothing asks for yet, and a key is cheap to re-capture.
 			Method::TamanuSecretKey(_) => false,
 			Method::Postgresql(_) => true,
 		}

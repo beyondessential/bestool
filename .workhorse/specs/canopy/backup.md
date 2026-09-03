@@ -143,6 +143,7 @@ This is one snapshot where there were two, and it is also the only way the pair 
 Such a follower therefore reports its leader's freeze instant as its own, being what its data actually describes.
 
 The capture is released once the whole chain has drained, rather than at the end of the run that took it, since that is the point after which nothing can still be reading from it.
+Only the first capture in a chain is kept: a follower that freezes a whole volume of its own releases it with its run, and later followers keep reading from the leader's.
 Releasing it is best-effort: every run that used it has finished and reported by then, so a teardown failure is a leak to warn about rather than an outcome to fail.
 A run told to hold its capture keeps it as a rollback point instead, and shares nothing.
 
@@ -306,6 +307,8 @@ A failed `[[post_restore]]` hook leaves the restored data in place — it is a r
 
 Restore refuses to overwrite existing data by default.
 To proceed an operator passes an explicit confirmation flag (for non-interactive use) or answers an interactive double confirmation; with neither, over occupied data, it refuses.
+The interactive confirmation is asked once, before anything is downloaded, and covers the named type and every follower planned with it, so a declined follower cannot leave its leader restored alone.
+A follower that fails after its leader has restored fails the command with both named, since the pair is no longer consistent.
 Migrations, configuration sync, and version upgrades are left to the operator.
 
 Off-host restore verification is Canopy's concern, not this command's; this command's job is to produce clean backups and to restore them on demand.
