@@ -13,10 +13,7 @@
 //!
 //! spec: REG
 
-use bestool_canopy::{
-	CanopyHttpError,
-	registration::{self, Registration},
-};
+use bestool_canopy::registration::{self, Registration};
 use tracing::{debug, info, warn};
 
 use super::SweepContext;
@@ -86,7 +83,7 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 			// A recognised HTTP status means Canopy answered but had no identity
 			// to give: unknown device, not yet attached, or attached to several.
 			// Back off and retry later.
-			if let Some(http) = err.downcast_ref::<CanopyHttpError>() {
+			if let Some(http) = err.http() {
 				debug!(status = %http.status, "canopy_registration heal: /servers/self gave no identity");
 				HealOutcome::Deferred
 			} else {

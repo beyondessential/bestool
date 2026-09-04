@@ -21,10 +21,9 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::{
-	Redacted,
-	transport::{CanopyRequest, CanopyResponse, CanopyTransport},
-};
+use bes_canopy_api::Error;
+
+use crate::{CanopyRequest, CanopyResponse, CanopyTransport, Redacted};
 
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 
@@ -129,9 +128,8 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 ///
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 ///
-/// [`CanopyClient::new`](crate::CanopyClient::new) and
-/// [`with_urls`](crate::CanopyClient::with_urls) build one of these, so callers
-/// on the default transport never need to name it.
+/// [`connect`](crate::connect) and [`connect_to`](crate::connect_to) build one
+/// of these, so callers on the default transport never need to name it.
 pub struct ReqwestTransport {
 	/// Base URL for the mTLS path (canopy's public API, from the registration's
 	/// `api_url`). Used only on the mTLS path. Fixed for the transport's lifetime.
@@ -284,19 +282,17 @@ impl ReqwestTransport {
 	///
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
 	/// same endpoint is mounted under `/public`, so this prepends it.
-	async fn endpoint_url(&self, path: &str) -> Result<(reqwest::Client, Url)> {
+	///
+	/// A join failure is reported as [`Error::transport`]: the request never
+	/// reaches canopy, which is what that variant means.
+	async fn endpoint_url(&self, path: &str) -> bes_canopy_api::Result<(reqwest::Client, Url)> {
 		let state = self.state.read().await;
 		let url = match &*state {
 			State::Tailscale(_) => self
 				.tailscale_url
 				.join(&format!("/public{path}"))
-				.into_diagnostic()
-				.wrap_err_with(|| format!("building tailscale /public{path} URL"))?,
-			State::Mtls(_) => self
-				.base_url
-				.join(path)
-				.into_diagnostic()
-				.wrap_err_with(|| format!("building {path} URL"))?,
+				.map_err(Error::transport)?,
+			State::Mtls(_) => self.base_url.join(path).map_err(Error::transport)?,
 		};
 		Ok((state.http(), url))
 	}
@@ -344,7 +340,7 @@ impl ReqwestTransport {
 		method: reqwest::Method,
 		path: &str,
 	) -> Result<reqwest::RequestBuilder> {
-		let (http, url) = self.endpoint_url(path).await?;
+		let (http, url) = self.endpoint_url(path).await.into_diagnostic()?;
 		debug!(%url, %method, "arbitrary canopy request");
 		Ok(http.request(method, url))
 	}
@@ -352,7 +348,7 @@ impl ReqwestTransport {
 
 #[async_trait::async_trait]
 impl CanopyTransport for ReqwestTransport {
-	async fn call(&self, request: CanopyRequest) -> Result<CanopyResponse> {
+	async fn call(&self, request: CanopyRequest) -> bes_canopy_api::Result<CanopyResponse> {
 		let (parts, body) = request.into_parts();
 		let path = parts.uri.to_string();
 		let (http, url) = self.endpoint_url(&path).await?;
@@ -363,20 +359,12 @@ impl CanopyTransport for ReqwestTransport {
 			req = req.body(body);
 		}
 
-		let response = req
-			.send()
-			.await
-			.into_diagnostic()
-			.wrap_err("sending canopy request")?;
+		let response = req.send().await.map_err(Error::transport)?;
 
 		let status = response.status();
 		let version = response.version();
 		let headers = response.headers().clone();
-		let body = response
-			.bytes()
-			.await
-			.into_diagnostic()
-			.wrap_err("reading canopy response body")?;
+		let body = response.bytes().await.map_err(Error::transport)?;
 
 		let mut out = http::Response::new(body);
 		*out.status_mut() = status;
@@ -683,6 +671,31 @@ mod tests {
 	use crate::test_support::{TEST_DEVICE_KEY, closed_url, serve_once, test_factory};
 
 	use super::*;
+
+	#[tokio::test]
+	async fn transport_sets_the_canopy_user_agent_on_the_wire() {
+		// A generated call over the real transport: it resolves the mTLS path and
+		// stamps the canopy user-agent, whatever binary is calling.
+		let (base, handle) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+		let client = crate::CanopyClient::new(ReqwestTransport::mtls_for_tests(&base));
+		let servers = client.servers().await.expect("GET /servers should parse");
+		assert!(servers.is_empty());
+
+		let captured = handle.join().unwrap();
+		assert!(
+			captured.request_line.starts_with("GET /servers "),
+			"unexpected request line: {}",
+			captured.request_line
+		);
+		assert!(
+			captured
+				.headers
+				.to_ascii_lowercase()
+				.contains("user-agent: bestool-canopy/"),
+			"missing canopy user-agent in:\n{}",
+			captured.headers
+		);
+	}
 
 	#[test]
 	fn build_mtls_http_from_p256_key() {

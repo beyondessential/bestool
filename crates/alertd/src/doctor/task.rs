@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
-use bestool_canopy::schema::CheckSeverity;
+use bestool_canopy::schema::{CheckSeverity, StatusPayload};
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
@@ -300,8 +300,13 @@ impl DoctorTaskInner {
 			return Ok(());
 		};
 
+		// The sweep builds the payload as a free-form JSON object; the canopy
+		// client takes the typed `StatusPayload`, whose flattened `extra` map
+		// carries the server facts alongside the reserved `health` array.
+		let payload: StatusPayload = serde_json::from_value(sweep.payload)
+			.map_err(|err| miette!("building canopy status payload: {err}"))?;
 		let response = canopy
-			.status(&server_id, &sweep.payload)
+			.status(&server_id, &payload)
 			.await
 			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
 

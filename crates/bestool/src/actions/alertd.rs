@@ -331,7 +331,7 @@ mod backup {
 	use std::{sync::Arc, time::Duration};
 
 	use futures::future::BoxFuture;
-	use miette::Result;
+	use miette::{IntoDiagnostic, Result};
 	use tokio::sync::mpsc;
 	use tracing::{info, warn};
 
@@ -376,7 +376,8 @@ mod backup {
 					.types(types.clone())
 					.build(),
 			)
-			.await?;
+			.await
+			.into_diagnostic()?;
 		info!(?types, "registered backup capabilities with canopy");
 		Ok(())
 	}

@@ -214,7 +214,7 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 			.parse()
 			.ok()?;
 		let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
-		let client = bestool_canopy::CanopyClient::with_urls(
+		let client = bestool_canopy::connect_to(
 			base_url,
 			tailscale_url,
 			Some(device_key),
@@ -226,8 +226,7 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 		let server_id = bestool_tamanu::server_info::get_or_create_server_id()
 			.await
 			.ok()?;
-		let value = client.status_check_severities(&server_id).await.ok()?;
-		serde_json::from_value(value).ok()
+		client.status_check_severities(&server_id).await.ok()
 	})
 	.await
 	.ok()

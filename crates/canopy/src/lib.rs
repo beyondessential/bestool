@@ -1,95 +1,55 @@
-use std::fmt;
-
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+//! bestool's canopy client: the published [`bes_canopy_api`] wire layer plus
+//! bestool's own HTTP transport and registration/backup helpers.
+//!
+//! The typed [`CanopyClient`], the [`CanopyTransport`] trait, the wire types in
+//! [`schema`], and the error types all come from [`bes_canopy_api`] and are
+//! re-exported here. This crate supplies the parts specific to how bestool
+//! reaches canopy:
+//!
+//! - [`ReqwestTransport`], the default [`CanopyTransport`], which picks canopy's
+//!   tailscale or mTLS auth path and routes calls accordingly;
+//! - [`connect`] and [`connect_to`], which probe for an auth path and build a
+//!   [`CanopyClient`] over one;
+//! - [`registration`], and the backup helpers [`TargetOutcome`] and
+//!   [`ContainerCreds`].
+//!
+//! The transport-shaped operations — [`is_tailscale`](ReqwestTransport::is_tailscale),
+//! [`refresh`](ReqwestTransport::refresh), [`renew`](ReqwestTransport::renew) —
+//! live on [`ReqwestTransport`]; reach them through
+//! [`CanopyClient::transport`](bes_canopy_api::CanopyClient::transport).
+//!
+//! # Wire types
+//!
+//! The types in [`schema`] are generated from canopy's OpenAPI document, which
+//! canopy builds and publishes as `bes-canopy-api`. Timestamp fields are
+//! [`jiff::Timestamp`], credential secrets are wrapped in [`Redacted`] so they
+//! stay out of `Debug` output, and each generated struct carries a builder and
+//! is `#[non_exhaustive]`. [`CanopyClient`] has one method per endpoint taking
+//! and returning these types; any non-2xx surfaces as [`CanopyHttpError`].
 
 mod backup;
-mod client;
+mod connect;
 pub mod registration;
 mod reqwest_transport;
 #[cfg(test)]
 mod test_support;
-mod transport;
 
-/// Wire types generated at build time from canopy's OpenAPI document.
-///
-/// These are the canonical request and response types for canopy's API, and the
-/// ones to reach for first. The build script fetches the live spec and
-/// regenerates them, so they track canopy as it evolves and nothing here is
-/// hand-maintained or committed. Each type carries the schema's own description
-/// as rustdoc. (A failed fetch fails the build rather than silently using the
-/// committed snapshot, which is reserved for docs.rs and explicit offline
-/// builds — see the build script.)
-///
-/// Naming follows canopy's schema: request bodies are `…Args` (e.g.
-/// [`BackupCredentialsArgs`], [`ReportArgs`], [`BackupCapabilitiesArgs`]), and
-/// credentials come back as [`CredentialProcessOutput`].
-///
-/// The generated source is rewritten in two ways the raw JSON Schema can't
-/// express (see the build script): timestamp fields are [`jiff::Timestamp`]
-/// rather than strings, and credential secrets (`secret_access_key`,
-/// `session_token`, `repo_password`) are wrapped in [`Redacted`] so they never
-/// surface in `Debug` output or logs — read them through the inner value.
-///
-/// [`CanopyClient`] has one generated method per endpoint (also emitted from the
-/// spec into this module — e.g. `backup_credentials`, `restore_worklist`,
-/// `tags`), taking and returning these types; that's how you call canopy. The
-/// method name is the path (`/backup-credentials` → `backup_credentials`), verb-
-/// prefixed only where a path is served by several verbs. `backup_target`'s
-/// dormant-device case is read from its result via [`TargetOutcome::from_result`];
-/// any non-2xx surfaces as [`CanopyHttpError`]. The generic
-/// `get`/`request`/`request_json` escape hatch is behind the off-by-default
-/// `raw-requests` feature — reach for it only for something the generated methods
-/// don't cover.
-///
-/// To check these types are current, [`schema::OPENAPI_BLAKE3`] is the blake3
-/// digest of the OpenAPI document they were generated from (compare it against
-/// `curl -fsS https://meta.tamanu.app/api/openapi.json | b3sum`), and
-/// [`schema::OPENAPI_SOURCE`] records whether that document was fetched live or
-/// read from the committed snapshot.
-///
-/// [`BackupCredentialsArgs`]: schema::BackupCredentialsArgs
-/// [`ReportArgs`]: schema::ReportArgs
-/// [`BackupCapabilitiesArgs`]: schema::BackupCapabilitiesArgs
-/// [`CredentialProcessOutput`]: schema::CredentialProcessOutput
-pub mod schema {
-	include!(concat!(env!("OUT_DIR"), "/canopy_schema.rs"));
-}
+pub use bes_canopy_api::{
+	CanopyHttpError, CanopyRequest, CanopyResponse, CanopyTransport, Error, Redacted, async_trait,
+	bytes, http, schema,
+};
 
-pub use async_trait::async_trait;
 pub use backup::{ContainerCreds, TargetOutcome};
-pub use client::{CanopyClient, CanopyHttpError};
+pub use connect::{connect, connect_to};
+pub use reqwest;
 pub use reqwest_transport::{
 	CERT_RENEW_AFTER, ClientBuilderFactory, DEFAULT_CANOPY_URL, ReqwestTransport, TAILSCALE_URL,
 	device_identity, tailscale_client,
 };
-pub use transport::{CanopyRequest, CanopyResponse, CanopyTransport};
-pub use {bytes, http, reqwest};
 
-/// Wraps a sensitive value so its `Debug` output doesn't leak the contents.
-#[derive(Clone)]
-pub struct Redacted<T>(pub T);
-
-impl<T> fmt::Debug for Redacted<T> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str("<redacted>")
-	}
-}
-
-impl<T> std::ops::Deref for Redacted<T> {
-	type Target = T;
-	fn deref(&self) -> &T {
-		&self.0
-	}
-}
-
-impl<T: Serialize> Serialize for Redacted<T> {
-	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-		self.0.serialize(serializer)
-	}
-}
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Redacted<T> {
-	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		T::deserialize(deserializer).map(Redacted)
-	}
-}
+/// The typed canopy client, defaulting to bestool's [`ReqwestTransport`].
+///
+/// [`bes_canopy_api::CanopyClient`] takes its transport as a required type
+/// parameter; this alias restores the default so the common case — a client
+/// built by [`connect`] or [`connect_to`] — never has to name it.
+pub type CanopyClient<T = ReqwestTransport> = bes_canopy_api::CanopyClient<T>;

@@ -7,14 +7,13 @@
 //! [`GET /backup-target`](crate::CanopyClient::backup_target) that folds the
 //! dormant device state into an enum.
 
+use http::StatusCode;
 use jiff::Timestamp;
-use miette::Result;
-use reqwest::StatusCode;
+use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 
 use crate::{
 	Redacted,
-	client::CanopyHttpError,
 	schema::{BackupTarget, CredentialProcessOutput},
 };
 
@@ -54,18 +53,18 @@ impl TargetOutcome {
 	/// a `412`/`409` (the device isn't yet authorised for backups) becomes
 	/// [`Dormant`](Self::Dormant), a target becomes [`Ready`](Self::Ready), and
 	/// any other error propagates.
-	pub fn from_result(result: Result<BackupTarget>) -> Result<Self> {
+	pub fn from_result(result: bes_canopy_api::Result<BackupTarget>) -> Result<Self> {
 		match result {
 			Ok(target) => Ok(Self::Ready(target)),
-			Err(report) => match report.downcast_ref::<CanopyHttpError>() {
-				Some(err)
-					if err.status == StatusCode::PRECONDITION_FAILED
-						|| err.status == StatusCode::CONFLICT =>
-				{
-					Ok(Self::Dormant)
-				}
-				_ => Err(report),
-			},
+			Err(err)
+				if matches!(
+					err.status(),
+					Some(StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT)
+				) =>
+			{
+				Ok(Self::Dormant)
+			}
+			Err(err) => Err(err).into_diagnostic(),
 		}
 	}
 }
