@@ -32,7 +32,15 @@ A machine is identified by the identity its agent enrolled with, which the agent
 That identity belongs to the machine, so a machine hosting several applications has one of them rather than one per application.
 
 An application is identified by its type together with a key the reporter chooses.
-The key is stable across pushes and unique among the applications on its machine; what it is derived from is the reporter's own business, so an application observed remotely is identified without anything being written to a disk it does not have.
+The key separates an application from the others on its own machine and carries no meaning beyond it, so an application is correlated from its machine and its key together rather than from the key alone.
+Two applications on different machines may share a key without being confused for one another.
+
+An agent installed on a machine uses a fixed key for the application it reports there.
+A process driving sweeps for applications it observes from elsewhere supplies each key itself, because it is what knows how to tell those applications apart.
+
+A key is stable across pushes: it names the same application every time the reporter pushes.
+A key that appears under a different type reports that one application has stopped being reported and another has started, so a key is not reused for an application of another type.
+
 Nothing mints an identifier per application, and a sweep never creates an identity for a subject it does not own.
 
 ## Graded logic stays in the check
