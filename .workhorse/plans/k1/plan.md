@@ -41,9 +41,17 @@ Sending `machine` is what opts a push into the split format; a push without it i
 Under the split it is the *machine's* identity, which is the correct thing for it to be: minted once by the agent on the box it is enrolled for.
 It needs renaming to match, and both call sites need to stop treating it as an application's identity.
 
+## The application key
+
+The key only has to separate applications within one machine — canopy correlates on machine plus key, and mints its own internal application id — so there is nothing for it to encode and no need to derive it from anything.
+
+bestool on Windows and Linux uses a static key for the Tamanu application it reports.
+Two Tamanu applications on one host is not a shape that is run today, and if it lands it needs deliberate adaptation across the board, of which bestool is one part; a derived key would not save that work.
+
+The substrate API takes the key from its caller instead, so a process driving many applications supplies each one's. For Kubernetes that is expected to be built from the namespace, the role, and an id, but that belongs to the relay rather than here.
+
 ## Open
 
-- **What bestool derives an application key from.** It has to be stable across pushes and unique among the applications on its machine. The install root, the configured canonical URL, and the supervisor's unit prefix are all candidates; none is obviously right for an install that moves or is reconfigured. Undecided.
 - **Whether `bestool-canopy` re-exports `bes-canopy-api`'s client or wraps it.** Re-export is less code; a wrapper keeps the option of adding bestool-side behaviour without touching call sites.
 
 ## Build steps
