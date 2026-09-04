@@ -20,10 +20,20 @@ A machine hosts zero or more applications, and the two are reported separately r
 A machine commonly hosts a Tamanu facility application alongside an mSupply application, which share nothing but the machine.
 The same holds for two applications of one product, so a machine running both a central and a facility hosts two applications rather than one server of an ambiguous kind.
 
-An application carries the product it is: which duties it can have, which facts describe it, and which checks apply to it all follow from that.
+An application carries a **type**: the software it is and the role it plays, together, as a slug such as `tamanu-central`.
+Which duties it can have, which facts describe it, and which checks apply to it all follow from its type.
 
 A substrate speaks for exactly one subject — a machine, or a single application.
 A machine hosting two applications is covered by three subjects: the machine, and each application separately.
+
+### Identifying a subject
+
+A machine is identified by the identity its agent enrolled with, which the agent mints once and keeps.
+That identity belongs to the machine, so a machine hosting several applications has one of them rather than one per application.
+
+An application is identified by its type together with a key the reporter chooses.
+The key is stable across pushes and unique among the applications on its machine; what it is derived from is the reporter's own business, so an application observed remotely is identified without anything being written to a disk it does not have.
+Nothing mints an identifier per application, and a sweep never creates an identity for a subject it does not own.
 
 ## Graded logic stays in the check
 
@@ -43,7 +53,7 @@ This is the only thing machine checks need from a substrate, because they read t
 
 The **workload**: which services make up this application, and the facts that hang off each of them.
 
-**Tamanu**: the application's configuration, its version, whether it is a central or a facility, and a connection to its database.
+**Tamanu**: the application's configuration, its version, its type, and a connection to its database.
 
 **A database**: either a means of establishing a connection, or an established connection to run queries against.
 
@@ -71,7 +81,7 @@ Duties are drawn from a shared vocabulary so that every substrate names the same
 
 Tamanu's duties are: API, tasks, sync, frontend, FHIR resolve, FHIR refresh, patient portal, and Postgres.
 They carry no central-or-facility distinction, because a duty's job is the same whichever kind of server runs it and which kinds run which duties changes over time.
-Whether an application is a central or a facility is a separate fact, answered once for the application rather than encoded into each duty's name.
+The role an application plays is carried by its type, so it is stated once for the application rather than encoded into each duty's name.
 
 The vocabulary is organised by product, so products whose duties have nothing in common never share a set of names: an mSupply application's duties do not map onto Tamanu's, and neither has to accommodate the other.
 Tamanu is the only product the vocabulary covers, and it is shaped to admit others without that changing.
@@ -147,11 +157,14 @@ Application checks are: everything that reads the application's database, the ap
 
 ### Reported facts
 
+A sweep reports each subject the same way: that subject's checks, and its detail.
+A machine and each application on it are described alike, so one shape serves both grains and a reader does not have to unpick which subject a check or a fact was really about.
+
 The facts reported alongside the checks split by subject on the same terms, so no fact is reported against a subject it is not about.
 
 A machine reports: its hostname, its uptime, its operating system kind, name, version and kernel, its architecture, whether it is virtualised and by what, its processor count, its total memory, its filesystems, its addresses and its IPv4, IPv6 and NAT64 reachability, its clock timezone, its billing tags, and the version of bestool running on it.
 
-An application reports: its product version, the kind of server it is, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, its configured timezone, and its database's Postgres version.
+An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, its configured timezone, and its database's Postgres version.
 
 Because each subject reports only its own facts, a fact is absent when the subject genuinely lacks it rather than when the reading could not be attributed.
 The version of bestool is a machine fact and an application has none, which answers correctly for an application no agent is installed alongside: there is no agent there to upgrade.
