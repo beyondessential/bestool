@@ -10,7 +10,7 @@
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use bestool_canopy::{CanopyClient, registration};
+use bestool_canopy::{connect, registration};
 use clap::Parser;
 use comfy_table::{Row, Table, presets::NOTHING};
 use miette::{IntoDiagnostic, Result, WrapErr, bail, miette};
@@ -121,18 +121,22 @@ enum Source {
 
 async fn fetch_online() -> Result<BTreeMap<String, String>> {
 	let device_key = bestool_tamanu::server_info::fetch_device_key().await;
-	let canopy = CanopyClient::new(device_key.as_deref(), crate::http::client_builder)
+	let canopy = connect(device_key.as_deref(), crate::http::client_builder)
 		.await?
 		.ok_or_else(|| miette!("no canopy auth path: no tailscale, no device key"))?;
 
 	debug!(
-		via = if canopy.is_tailscale().await { "tailscale" } else { "mtls" },
+		via = if canopy.transport().is_tailscale().await { "tailscale" } else { "mtls" },
 		"fetching tags"
 	);
 
 	// Returns the merged server+group tag map. An error (including a non-2xx)
 	// propagates to the caller, which falls back to the cache.
-	let tags = canopy.tags().await.wrap_err("GET /tags via canopy")?;
+	let tags = canopy
+		.tags()
+		.await
+		.into_diagnostic()
+		.wrap_err("GET /tags via canopy")?;
 	Ok(tags.0.into_iter().collect())
 }
 

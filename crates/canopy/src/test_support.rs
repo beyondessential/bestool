@@ -25,7 +25,6 @@ pub(crate) fn closed_url() -> String {
 pub(crate) struct Captured {
 	pub(crate) request_line: String,
 	pub(crate) headers: String,
-	pub(crate) body: Vec<u8>,
 }
 
 /// Bind a loopback socket and answer exactly one HTTP request with
@@ -63,13 +62,14 @@ pub(crate) fn serve_once(response: &'static str) -> (String, std::thread::JoinHa
 			})
 			.unwrap_or(0);
 
-		let mut body = buf[header_end..].to_vec();
-		while body.len() < content_length {
+		// Drain the request body so the client's send completes before we reply.
+		let mut drained = buf[header_end..].len();
+		while drained < content_length {
 			let n = stream.read(&mut chunk).unwrap();
 			if n == 0 {
 				break;
 			}
-			body.extend_from_slice(&chunk[..n]);
+			drained += n;
 		}
 
 		stream.write_all(response.as_bytes()).unwrap();
@@ -81,7 +81,6 @@ pub(crate) fn serve_once(response: &'static str) -> (String, std::thread::JoinHa
 		Captured {
 			request_line,
 			headers,
-			body,
 		}
 	});
 	(base, handle)

@@ -30,7 +30,7 @@ use std::{
 };
 
 use bestool_canopy::{
-	CanopyClient, DEFAULT_CANOPY_URL, TargetOutcome,
+	CanopyClient, DEFAULT_CANOPY_URL, TargetOutcome, connect_to,
 	registration::Registration,
 	schema::{BackupPurpose, ReportArgs, RunOutcome},
 };
@@ -698,6 +698,7 @@ async fn backup_after_start(
 	client
 		.backup_report(&report)
 		.await
+		.into_diagnostic()
 		.wrap_err("reporting backup outcome to canopy")?;
 
 	match &outcome {
@@ -1221,7 +1222,7 @@ pub(super) async fn build_client(
 		.into_diagnostic()
 		.wrap_err("parsing default canopy tailscale URL")?;
 	let client =
-		CanopyClient::with_urls(base_url, tailscale_url, device_key, crate::http::client_builder)
+		connect_to(base_url, tailscale_url, device_key, crate::http::client_builder)
 			.await?
 			.ok_or_else(|| {
 				miette!("could not build a canopy client: the tailnet is unreachable and the registration has no device key")

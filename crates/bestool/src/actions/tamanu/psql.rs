@@ -1,6 +1,6 @@
 use std::{collections::{BTreeMap, HashSet}, path::PathBuf, sync::Arc, time::Duration};
 
-use bestool_canopy::CanopyClient;
+use bestool_canopy::{CanopyClient, connect};
 use bestool_psql::column_extractor::ColumnRef;
 use bestool_psql::SnippetLookupProvider;
 use clap::{Parser, ValueEnum};
@@ -132,12 +132,20 @@ impl AsyncSnippetProvider {
 
 		if let Some(canopy) = &self.canopy {
 			match canopy.bestool_snippets().await {
-				Ok(value) => match serde_json::from_value::<BTreeMap<String, Snippet>>(value) {
-					Ok(snippets) => return Ok(snippets),
-					Err(err) => {
-						debug!("decoding canopy snippets failed ({err:#}); falling back to direct")
-					}
-				},
+				Ok(snippets) => {
+					return Ok(snippets
+						.into_iter()
+						.map(|(name, snippet)| {
+							(
+								name,
+								Snippet {
+									sql: snippet.sql,
+									description: snippet.description,
+								},
+							)
+						})
+						.collect());
+				}
 				Err(err) => {
 					debug!("canopy snippets fetch failed ({err:#}); falling back to direct");
 				}
@@ -436,11 +444,11 @@ pub async fn run(args: PsqlArgs, ctx: Context) -> Result<()> {
 
 	let canopy = if version.is_some() {
 		let device_key = bestool_tamanu::server_info::fetch_device_key().await;
-		match CanopyClient::new(device_key.as_deref(), crate::http::client_builder)
+		match connect(device_key.as_deref(), crate::http::client_builder)
 		.await
 		{
 			Ok(Some(client)) => {
-				if client.is_tailscale().await {
+				if client.transport().is_tailscale().await {
 					debug!("canopy ready via tailscale for snippet fetch");
 				} else {
 					debug!("canopy ready via mTLS for snippet fetch");

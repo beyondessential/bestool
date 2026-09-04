@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
 use crate::{
-	DaemonConfig, LogError, canopy::CanopyClient, context::InternalContext, http_server, metrics,
+	DaemonConfig, LogError, canopy::connect, context::InternalContext, http_server, metrics,
 	tasks::TaskContext,
 };
 
@@ -89,14 +89,14 @@ pub async fn run_with_shutdown(
 
 	let pool = daemon_config.pg_pool.clone();
 
-	let canopy_client = match CanopyClient::new(
+	let canopy_client = match connect(
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
 		crate::http_builder,
 	)
 	.await
 	{
 		Ok(Some(client)) => {
-			if client.is_tailscale().await {
+			if client.transport().is_tailscale().await {
 				info!("canopy client ready via tailscale");
 			} else {
 				info!("canopy client ready via mTLS");
@@ -108,9 +108,9 @@ pub async fn run_with_shutdown(
 				interval.tick().await; // skip the immediate first tick
 				loop {
 					interval.tick().await;
-					if !renew.is_tailscale().await {
+					if !renew.transport().is_tailscale().await {
 						info!("renewing canopy mTLS certificate");
-						if let Err(err) = renew.renew().await {
+						if let Err(err) = renew.transport().renew().await {
 							error!("failed to renew canopy cert: {}", LogError(&err));
 						}
 					}
@@ -297,7 +297,7 @@ pub async fn run_with_shutdown(
 	#[cfg(unix)]
 	{
 		let canopy = match &ctx.canopy_client {
-			Some(client) if client.is_tailscale().await => "canopy via tailscale",
+			Some(client) if client.transport().is_tailscale().await => "canopy via tailscale",
 			Some(_) => "canopy via mTLS",
 			None => "canopy not connected",
 		};

@@ -179,8 +179,16 @@ pub async fn write_podman_secret(name: &str, value: &[u8]) -> Result<()> {
 	use miette::{Context as _, IntoDiagnostic as _};
 	use tokio::io::AsyncWriteExt as _;
 
+	// Clear any existing secret of this name first, rather than asking podman to
+	// `--replace`: on podman 4.9 that flag fails with "no secret data with ID"
+	// when the name is not already taken, which is the usual case here
+	// (containers/podman#21952). A removal that finds nothing is the expected
+	// path, so its outcome is deliberately not checked; a podman that cannot run
+	// at all surfaces on the create below.
+	let _ = run_podman(&["secret", "rm", name]).await;
+
 	let mut child = crate::versions::podman_command()
-		.args(["secret", "create", "--replace", name, "-"])
+		.args(["secret", "create", name, "-"])
 		.stdin(Stdio::piped())
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
