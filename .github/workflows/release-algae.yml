@@ -74,17 +74,17 @@ jobs:
           # Release builds run on one-shot tags; don't persist tag-scoped
           # caches PRs can't reuse and that crowd out CI's under the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.84.0
+      - uses: taiki-e/install-action@v2.86.2
         with:
           tool: cargo-auditable
 
       - run: cargo auditable build --profile dist --target ${{ matrix.target }} -p algae-cli
 
-      - uses: actions/attest-build-provenance@v4.1.1
+      - uses: actions/attest-build-provenance@v4.2.2
         if: runner.os != 'Windows'
         with:
           subject-path: target/*/dist/algae
-      - uses: actions/attest-build-provenance@v4.1.1
+      - uses: actions/attest-build-provenance@v4.2.2
         if: runner.os == 'Windows'
         with:
           subject-path: target/*/dist/algae.exe
@@ -142,7 +142,7 @@ jobs:
             *.deb
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@6.2.2
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           aws-region: ap-southeast-2
           role-to-assume: arn:aws:iam::143295493206:role/gha-tamanu-tools-upload
