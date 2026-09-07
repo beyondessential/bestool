@@ -14,7 +14,8 @@
 
 use std::sync::Arc;
 
-use bestool_canopy::CanopyClient;
+use bestool_canopy::{CanopyClient, reqwest::Url};
+use miette::IntoDiagnostic as _;
 
 use super::SweepContext;
 use crate::doctor::{check::Check, heal::HealOutcome};
@@ -161,6 +162,42 @@ async fn offered_schema(
 		}))
 }
 
+/// Fetch the bytes of the schema canopy offers.
+///
+/// Canopy holds a group-scoped artifact itself and serves it only to a caller
+/// it is offered to, so the fetch has to carry the device credential the ask
+/// carried. An unauthenticated GET of the same URL is answered as a missing
+/// artifact, not as a refusal.
+async fn fetch_offered(
+	canopy: &Arc<CanopyClient>,
+	offered: &Offered,
+) -> Result<String, miette::Report> {
+	let path = offered_path(&offered.download_url)?;
+
+	canopy
+		.transport()
+		.get(&format!("/public{path}"), &path)
+		.await?
+		.error_for_status()
+		.into_diagnostic()?
+		.text()
+		.await
+		.into_diagnostic()
+}
+
+/// The path to ask the transport for, taken from the URL canopy offered.
+///
+/// The transport addresses canopy by path so that it reaches whichever of the
+/// two endpoints holds the credential, and over tailscale the public API is
+/// mounted a level down, so the origin canopy names in the offer is dropped.
+fn offered_path(download_url: &str) -> Result<String, miette::Report> {
+	let url = Url::parse(download_url).into_diagnostic()?;
+	Ok(match url.query() {
+		Some(query) => format!("{}?{query}", url.path()),
+		None => url.path().to_owned(),
+	})
+}
+
 /// Apply the schema canopy offers.
 ///
 /// Applying is the one thing on this host that writes to Tamanu's database, so
@@ -183,20 +220,8 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 		}
 	};
 
-	let sql = match tamanu
-		.http_client
-		.get(&offered.download_url)
-		.send()
-		.await
-		.and_then(|r| r.error_for_status())
-	{
-		Ok(response) => match response.text().await {
-			Ok(sql) => sql,
-			Err(err) => {
-				tracing::warn!("reading the offered reporting schema failed: {err}");
-				return HealOutcome::Failed;
-			}
-		},
+	let sql = match fetch_offered(canopy, &offered).await {
+		Ok(sql) => sql,
 		Err(err) => {
 			tracing::warn!("fetching the offered reporting schema failed: {err}");
 			return HealOutcome::Failed;
@@ -252,6 +277,14 @@ mod tests {
 		assert_eq!(
 			check.payload_extras.get(VERSION_FACT),
 			Some(&serde_json::Value::from("2.59.0"))
+		);
+	}
+
+	#[test]
+	fn the_offer_s_origin_is_dropped_in_favour_of_the_transport_s() {
+		assert_eq!(
+			offered_path("https://meta.example/versions/2.60.0/artifacts/abc/download").unwrap(),
+			"/versions/2.60.0/artifacts/abc/download"
 		);
 	}
 
