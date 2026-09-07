@@ -152,7 +152,12 @@ async fn offered_schema(
 	canopy: &Arc<CanopyClient>,
 	version: &str,
 ) -> Result<Option<Offered>, bestool_canopy::Error> {
-	let artifacts = canopy.versions_artifacts(version).await?;
+	let artifacts = match canopy.versions_artifacts(version).await {
+		Ok(artifacts) => artifacts,
+		Err(err) if offers_nothing(&err) => return Ok(None),
+		Err(err) => return Err(err),
+	};
+
 	Ok(artifacts
 		.into_iter()
 		.find(|a| a.artifact_type == ARTIFACT_TYPE)
@@ -160,6 +165,18 @@ async fn offered_schema(
 			version: version.to_owned(),
 			download_url: a.download_url,
 		}))
+}
+
+/// Whether canopy's answer means it offers nothing for this version, as
+/// against the ask itself having failed.
+///
+/// Canopy answers the artifacts of a version it holds no published, ready
+/// release for with a 404, which is the ordinary case for a server on a
+/// version canopy has not published. A pair canopy has not built is canopy's
+/// own finding to raise rather than this server's fault, so it grades as
+/// nothing offered rather than as a warning against the server.
+fn offers_nothing(err: &bestool_canopy::Error) -> bool {
+	err.status() == Some(bestool_canopy::http::StatusCode::NOT_FOUND)
 }
 
 /// Fetch the bytes of the schema canopy offers.
@@ -246,6 +263,35 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 mod tests {
 	use super::*;
 	use crate::doctor::check::CheckStatus;
+
+	fn http_error(status: u16) -> bestool_canopy::Error {
+		bestool_canopy::Error::Http(bestool_canopy::CanopyHttpError {
+			status: bestool_canopy::http::StatusCode::from_u16(status).unwrap(),
+			path: "/versions/2.60.0/artifacts".to_owned(),
+			body: bestool_canopy::bytes::Bytes::new(),
+		})
+	}
+
+	/// A version canopy has not published has no artifacts of any kind, which
+	/// it answers with a 404. That is canopy owing a build, not this server
+	/// being wrong, so it must not land as a finding against the server.
+	#[test]
+	fn a_version_canopy_has_not_published_offers_nothing() {
+		assert!(offers_nothing(&http_error(404)));
+	}
+
+	/// Anything else is the ask failing, which the server does want to hear
+	/// about. Collapsing these into "nothing offered" would hide a canopy that
+	/// is refusing or broken behind a silent skip.
+	#[test]
+	fn a_canopy_that_answered_badly_is_not_an_absent_offer() {
+		for status in [401, 403, 500, 502, 503] {
+			assert!(
+				!offers_nothing(&http_error(status)),
+				"{status} is the ask failing"
+			);
+		}
+	}
 
 	#[test]
 	fn a_matching_stamp_passes() {
