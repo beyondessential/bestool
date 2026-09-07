@@ -6,42 +6,13 @@ id: SUB
 
 A substrate is what a healthcheck asks for the readings it grades.
 It identifies what the checking process has access to and what it can find out, so one check runs unchanged whether bestool is installed on the machine it reports for or is observing an application from elsewhere.
-See [CHK](healthchecks.md) for the checks themselves and [DOC](doctor.md) for the sweep that runs them.
+See [SUBJ](subjects.md) for the machines and applications a check reports for, [CHK](healthchecks.md) for the checks themselves, and [DOC](doctor.md) for the sweep that runs them.
 
 A substrate is not a proxy that every check routes through.
 It answers who the checking process is speaking for and what it can obtain on that subject's behalf; a check that needs nothing from it does not consult it.
 
-## Machines and applications
-
-A **machine** is a host: its filesystems, its clock, its memory and processors, its network identity.
-An **application** is one product installed on a machine: its own services, its own version, its own database, its own HTTP traffic, its own certificates, and its own names on the network.
-
-A machine hosts zero or more applications, and the two are reported separately rather than one standing in for the other.
-A machine commonly hosts a Tamanu facility application alongside an mSupply application, which share nothing but the machine.
-The same holds for two applications of one product, so a machine running both a central and a facility hosts two applications rather than one server of an ambiguous kind.
-
-An application carries a **type**: the software it is and the role it plays, together, as a slug such as `tamanu-central`.
-Which duties it can have, which facts describe it, and which checks apply to it all follow from its type.
-
 A substrate speaks for exactly one subject — a machine, or a single application.
 A machine hosting two applications is covered by three subjects: the machine, and each application separately.
-
-### Identifying a subject
-
-A machine is identified by the identity its agent enrolled with, which the agent mints once and keeps.
-That identity belongs to the machine, so a machine hosting several applications has one of them rather than one per application.
-
-An application is identified by its type together with a key the reporter chooses.
-The key separates an application from the others on its own machine and carries no meaning beyond it, so an application is correlated from its machine and its key together rather than from the key alone.
-Two applications on different machines may share a key without being confused for one another.
-
-An agent installed on a machine uses a fixed key for the application it reports there.
-A process driving sweeps for applications it observes from elsewhere supplies each key itself, because it is what knows how to tell those applications apart.
-
-A key is stable across pushes: it names the same application every time the reporter pushes.
-A key that appears under a different type reports that one application has stopped being reported and another has started, so a key is not reused for an application of another type.
-
-Nothing mints an identifier per application, and a sweep never creates an identity for a subject it does not own.
 
 ## Graded logic stays in the check
 
@@ -150,34 +121,3 @@ Where traffic is served by shared infrastructure, this reads that infrastructure
 TLS certificates are likewise asked for as the certificates in force for the application, whatever issues and serves them.
 
 A check that grades the front-end software itself, rather than the traffic through it, is a machine check: it reads that software directly and skips when the checking process is not on the machine.
-
-## Splitting the catalogue
-
-Every check in the catalogue reports for either a machine or an application, and its subject determines what it may read.
-
-Machine checks are: filesystem capacity, inodes, btrfs device statistics, held filesystem captures, clock synchronisation, whole-machine memory, whole-machine load, machine uptime, unexpected local user accounts, the machine's addresses, whether munin-node is installed, the machine's billing tags, Tailscale presence and configuration, bestool's own Canopy enrolment, and the checks that grade the HTTP front-end software itself — its version, its resolvers, and the version marker in its configuration file.
-
-Held captures are a machine concern because they are filesystem-level snapshots, and because what is captured is not confined to any one application's database.
-
-Billing tags are read against the machine, not against any application on it, so a machine hosting several applications carries one set of tags rather than one per application.
-
-Application checks are: everything that reads the application's database, the application's own HTTP reachability and error rates, its service inventory and version drift, its certificates, its Postgres tuning, and its resource usage per service.
-
-### Reported facts
-
-A sweep reports each subject the same way: that subject's checks, and its detail.
-A machine and each application on it are described alike, so one shape serves both grains and a reader does not have to unpick which subject a check or a fact was really about.
-
-The facts reported alongside the checks split by subject on the same terms, so no fact is reported against a subject it is not about.
-
-A machine reports: its hostname, its uptime, its operating system kind, name, version and kernel, its architecture, whether it is virtualised and by what, its processor count, its total memory, its filesystems, its addresses and its IPv4, IPv6 and NAT64 reachability, its clock timezone, its billing tags, and the version of bestool running on it.
-
-An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, its configured timezone, and its database's Postgres version.
-
-Because each subject reports only its own facts, a fact is absent when the subject genuinely lacks it rather than when the reading could not be attributed.
-The version of bestool is a machine fact and an application has none, which answers correctly for an application no agent is installed alongside: there is no agent there to upgrade.
-
-The machine's clock timezone and an application's configured timezone are separate facts reported against separate subjects.
-Drift between them is still graded wherever one sweep holds both — a machine running an application it also reports for — and neither subject reports the other's zone as its own in order to make that comparison possible.
-
-A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.

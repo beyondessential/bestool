@@ -6,7 +6,7 @@ id: SUBJ
 
 A healthcheck, and every fact reported alongside it, is about one **subject**: the machine a deployment runs on, or one application running on it.
 This spec describes what those subjects are, how each is identified, and which checks and facts belong to each.
-See [CHK](healthchecks.md) for the checks themselves, and [DOC](doctor.md) for the sweep that runs them.
+See [CHK](healthchecks.md) for the checks themselves, [SUB](substrate.md) for how a check obtains its readings for a subject, and [DOC](doctor.md) for the sweep that runs them.
 
 A **machine** is a host: its filesystems, its clock, its memory and processors, its network identity.
 An **application** is one product installed on a machine: its own services, its own version, its own database, its own HTTP traffic, its own certificates, and its own names on the network.
