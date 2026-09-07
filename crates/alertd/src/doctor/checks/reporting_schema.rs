@@ -289,7 +289,96 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::doctor::check::CheckStatus;
+	use crate::doctor::{
+		check::CheckStatus,
+		checks::test_support::{central_ctx, db_only_ctx, no_tamanu_ctx},
+	};
+
+	/// A host with no Tamanu on it has no reporting schema to be wrong about.
+	#[tokio::test]
+	async fn a_host_with_no_tamanu_skips() {
+		let check = run(no_tamanu_ctx()).await;
+		assert!(matches!(check.status, CheckStatus::Skip(_)));
+	}
+
+	/// The stamp is read from the database, so without one there is nothing to
+	/// compare against canopy's offer. It skips rather than failing: a server
+	/// whose database this sweep cannot reach is `db_connect`'s finding.
+	#[tokio::test]
+	async fn no_database_connection_skips() {
+		let check = run(db_only_ctx()).await;
+		assert!(matches!(check.status, CheckStatus::Skip(_)));
+		assert!(!check.payload_extras.contains_key(VERSION_FACT));
+	}
+
+	/// What [`STAMP_SQL`] reads back, against a real Postgres: no `reporting`
+	/// schema at all, one with no comment on it, and a stamped one. The three
+	/// readings are what the check branches on, and a query that compiles can
+	/// still return the wrong one of them.
+	///
+	/// Runs inside a transaction that is rolled back, so the database it
+	/// borrows keeps whatever it had.
+	#[tokio::test]
+	async fn the_stamp_query_reads_the_schema_comment() {
+		let Some(tamanu) = central_ctx().await else {
+			return;
+		};
+		let db = tamanu.db.as_ref().expect("central_ctx carries a db");
+
+		async fn stamp(db: &tokio_postgres::Client) -> Option<Option<String>> {
+			db.query_opt(STAMP_SQL, &[])
+				.await
+				.expect("the stamp query runs")
+				.map(|row| row.get::<_, Option<String>>("stamp"))
+		}
+
+		db.batch_execute("BEGIN; DROP SCHEMA IF EXISTS reporting CASCADE")
+			.await
+			.expect("start the transaction");
+		let absent = stamp(db).await;
+
+		db.batch_execute("CREATE SCHEMA reporting")
+			.await
+			.expect("create the schema");
+		let unstamped = stamp(db).await;
+
+		db.batch_execute("COMMENT ON SCHEMA reporting IS '2.60.0'")
+			.await
+			.expect("stamp the schema");
+		let stamped = stamp(db).await;
+
+		db.batch_execute("ROLLBACK").await.expect("roll back");
+
+		assert_eq!(absent, None, "no reporting schema is no row");
+		assert_eq!(
+			unstamped,
+			Some(None),
+			"a schema with no comment is unstamped"
+		);
+		assert_eq!(stamped, Some(Some("2.60.0".to_owned())));
+	}
+
+	/// Whether the schema a server has is the offered one is canopy's to
+	/// answer, so an unreachable canopy grades nothing rather than grading the
+	/// server against a stamp it cannot check.
+	#[tokio::test]
+	async fn an_unreachable_canopy_grades_nothing() {
+		let Some(tamanu) = central_ctx().await else {
+			return;
+		};
+		let check = run(SweepContext::builder()
+			.tamanu(tamanu)
+			.http_client(reqwest::Client::new())
+			.build())
+		.await;
+
+		assert!(
+			matches!(check.status, CheckStatus::Skip(_)),
+			"got {:?}",
+			check.to_wire()["result"]
+		);
+		assert!(check.summary.contains("canopy"), "{}", check.summary);
+	}
 
 	fn http_error(status: u16) -> bestool_canopy::Error {
 		bestool_canopy::Error::Http(bestool_canopy::CanopyHttpError {
