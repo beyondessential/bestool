@@ -13,6 +13,7 @@ bestool's part is to say which schema this server has, and to apply the one it i
 - [ ] The version a reporting schema was built for is stamped on the schema itself by the SQL that built it, so what a server has can be read from the server.
 - [ ] The stamp is read from the database rather than from anything bestool records, so a schema applied by hand reads the same as one bestool applied.
 - [ ] A server with no reporting schema at all reads as having none, which is a finding rather than an error.
+- [ ] A reporting schema carrying no stamp reads as unstamped rather than as absent. Something built it that was not this pipeline, so an operator is replacing a schema rather than applying a first one, and no version is reported for it.
 
 ## Reporting it
 
@@ -24,7 +25,7 @@ bestool's part is to say which schema this server has, and to apply the one it i
 - [ ] Canopy is asked what it offers for the version this server runs, over the authenticated connection: a schema belongs to a group, and Canopy answers for the caller's group.
 - [ ] Only a schema Canopy published for one exact version is graded against. A schema registered against a version range is ignored, since a schema follows the migrations one version applies and Canopy resolves a range artifact for every version it covers.
 - [ ] The check passes when the stamp matches what is offered.
-- [ ] It fails when they differ, and when the server has no schema at all and one is offered.
+- [ ] It fails when they differ, when the server's schema carries no stamp, and when the server has no schema at all and one is offered.
 - [ ] It skips when Canopy offers none for this version: a pair Canopy has not built is Canopy's finding to raise, not this server's fault.
 - [ ] It skips when Canopy is unreachable, still reporting the stamp. Whether a schema is the right one is Canopy's to answer, and an unreachable Canopy is not this server's failing.
 - [ ] It skips on a host with no Tamanu, and where the database is unreachable.

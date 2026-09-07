@@ -48,10 +48,13 @@ pub async fn run(ctx: SweepContext) -> Check {
 	};
 
 	let running = match db.query_opt(STAMP_SQL, &[]).await {
-		Ok(Some(row)) => row.get::<_, Option<String>>("stamp"),
+		Ok(Some(row)) => match row.get::<_, Option<String>>("stamp") {
+			Some(version) => Stamp::Version(version),
+			None => Stamp::Unstamped,
+		},
 		// No `reporting` schema at all. Not an error: a server that has never
 		// had one applied is exactly what this check exists to surface.
-		Ok(None) => None,
+		Ok(None) => Stamp::NoSchema,
 		Err(err) => {
 			return Check::broken(
 				NAME,
@@ -70,7 +73,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 				"canopy unreachable",
 				"cannot tell whether this schema is the one offered without asking canopy",
 			),
-			running.as_deref(),
+			&running,
 		);
 	};
 
@@ -83,7 +86,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 					"could not ask canopy what is offered",
 					format!("fetching the offered reporting schema failed: {err}"),
 				),
-				running.as_deref(),
+				&running,
 			);
 		}
 	};
@@ -97,29 +100,47 @@ pub async fn run(ctx: SweepContext) -> Check {
 				"none offered for this version",
 				"canopy has no reporting schema built for the version this server runs",
 			),
-			running.as_deref(),
+			&running,
 		);
 	};
 
-	with_version(
-		grade(running.as_deref(), &offered.version),
-		running.as_deref(),
-	)
+	with_version(grade(&running, &offered.version), &running)
+}
+
+/// What the server's `reporting` schema says about itself.
+///
+/// A schema with no comment on it is not the same as no schema: something built
+/// it that was not this pipeline, so the operator is replacing a schema rather
+/// than applying a first one, and whatever reports read from it are reading
+/// something nobody can name.
+#[derive(Debug, PartialEq, Eq)]
+enum Stamp {
+	NoSchema,
+	Unstamped,
+	Version(String),
 }
 
 /// What the stamp on the server says against what canopy offers.
 ///
 /// Separated from the sweep because this is the whole judgement the check
 /// makes, and it is worth being able to state it without a database.
-fn grade(running: Option<&str>, offered: &str) -> Check {
+fn grade(running: &Stamp, offered: &str) -> Check {
 	match running {
-		Some(stamp) if stamp == offered => Check::pass(NAME, format!("reporting schema {stamp}")),
-		Some(stamp) => Check::fail(
+		Stamp::Version(stamp) if stamp == offered => {
+			Check::pass(NAME, format!("reporting schema {stamp}"))
+		}
+		Stamp::Version(stamp) => Check::fail(
 			NAME,
 			format!("reporting schema {stamp}, offered {offered}"),
 			"the server's reports read from a schema built for a different version",
 		),
-		None => Check::fail(
+		Stamp::Unstamped => Check::fail(
+			NAME,
+			format!("reporting schema unstamped, offered {offered}"),
+			"the server has a reporting schema that names no version, so what its \
+			 reports read from cannot be told apart from any other build",
+		),
+		Stamp::NoSchema => Check::fail(
 			NAME,
 			"no reporting schema",
 			"canopy offers one for the version this server runs, and the server has none",
@@ -129,10 +150,12 @@ fn grade(running: Option<&str>, offered: &str) -> Check {
 
 /// Carry the stamp as a top-level status fact, so the fleet view can show which
 /// schema a server is on without reading into the check's own detail.
-fn with_version(check: Check, running: Option<&str>) -> Check {
+fn with_version(check: Check, running: &Stamp) -> Check {
 	match running {
-		Some(version) => check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version)),
-		None => check,
+		Stamp::Version(version) => {
+			check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version.as_str()))
+		}
+		Stamp::NoSchema | Stamp::Unstamped => check,
 	}
 }
 
@@ -190,7 +213,7 @@ fn is_exact_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
 /// published a schema canopy will hand to versions it was not built for.
 fn range_schema(artifact: &bestool_canopy::schema::Artifact) -> Option<&str> {
 	(artifact.artifact_type == ARTIFACT_TYPE)
-		.then(|| artifact.version_range_pattern.as_deref())
+		.then_some(artifact.version_range_pattern.as_deref())
 		.flatten()
 }
 
@@ -456,13 +479,13 @@ mod tests {
 
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(Some("2.60.0"), "2.60.0");
+		let check = grade(&Stamp::Version("2.60.0".into()), "2.60.0");
 		assert!(matches!(check.status, CheckStatus::Pass));
 	}
 
 	#[test]
 	fn a_different_stamp_fails_and_names_both() {
-		let check = grade(Some("2.59.0"), "2.60.0");
+		let check = grade(&Stamp::Version("2.59.0".into()), "2.60.0");
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 		// Both versions belong in the summary: which one the server is on is
 		// the thing an operator needs, not just that it is wrong.
@@ -472,15 +495,44 @@ mod tests {
 
 	#[test]
 	fn no_schema_at_all_fails() {
-		let check = grade(None, "2.60.0");
+		let check = grade(&Stamp::NoSchema, "2.60.0");
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
+	}
+
+	/// A `reporting` schema with no comment on it is a different finding from
+	/// having none: something built it that was not this pipeline, and the
+	/// summary has to say so or an operator reads "no reporting schema" against
+	/// a server whose reports are reading from one.
+	#[test]
+	fn an_unstamped_schema_is_not_an_absent_one() {
+		let unstamped = grade(&Stamp::Unstamped, "2.60.0");
+		let absent = grade(&Stamp::NoSchema, "2.60.0");
+
+		assert!(matches!(unstamped.status, CheckStatus::Fail(_)));
+		assert_ne!(unstamped.summary, absent.summary);
+		assert!(
+			unstamped.summary.contains("2.60.0"),
+			"{}",
+			unstamped.summary
+		);
+
+		// Neither reports a version: there is none to report, and a stale fact
+		// would read as a server sitting on a schema it no longer has.
+		assert!(
+			!with_version(unstamped, &Stamp::Unstamped)
+				.payload_extras
+				.contains_key(VERSION_FACT)
+		);
 	}
 
 	#[test]
 	fn the_stamp_is_reported_even_when_it_is_wrong() {
 		// A server on the wrong schema is exactly when knowing which one it
 		// has matters, so the fact rides along with a failure too.
-		let check = with_version(grade(Some("2.59.0"), "2.60.0"), Some("2.59.0"));
+		let check = with_version(
+			grade(&Stamp::Version("2.59.0".into()), "2.60.0"),
+			&Stamp::Version("2.59.0".into()),
+		);
 		assert_eq!(
 			check.payload_extras.get(VERSION_FACT),
 			Some(&serde_json::Value::from("2.59.0"))
@@ -497,7 +549,7 @@ mod tests {
 
 	#[test]
 	fn a_server_with_no_schema_reports_no_version() {
-		let check = with_version(grade(None, "2.60.0"), None);
+		let check = with_version(grade(&Stamp::NoSchema, "2.60.0"), &Stamp::NoSchema);
 		assert!(!check.payload_extras.contains_key(VERSION_FACT));
 	}
 }
