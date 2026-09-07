@@ -1,0 +1,36 @@
+---
+id: CHK-RSC
+---
+
+# Reporting schema
+
+A reporting schema is the set of database views a Tamanu server's reports read from.
+Part of it follows from the Tamanu version's own database schema and the rest from the group's configuration, so it is built centrally against a replica of that group's data at that version and offered back per group.
+bestool's part is to say which schema this server has, and to apply the one it is offered where they differ.
+
+## What the server has
+
+- [ ] The version a reporting schema was built for is stamped on the schema itself by the SQL that built it, so what a server has can be read from the server.
+- [ ] The stamp is read from the database rather than from anything bestool records, so a schema applied by hand reads the same as one bestool applied.
+- [ ] A server with no reporting schema at all reads as having none, which is a finding rather than an error.
+
+## Reporting it
+
+- [ ] The stamp is reported to Canopy as a top-level status fact, so which schema each server is on is answerable across the fleet without reading into a check's detail.
+- [ ] It is reported whether or not the schema matches what Canopy offers, since a server on the wrong schema is exactly when knowing which one it has matters.
+
+## Grading it
+
+- [ ] Canopy is asked what it offers for the version this server runs, over the authenticated connection: a schema belongs to a group, and Canopy answers for the caller's group.
+- [ ] The check passes when the stamp matches what is offered.
+- [ ] It fails when they differ, and when the server has no schema at all and one is offered.
+- [ ] It skips when Canopy offers none for this version: a pair Canopy has not built is Canopy's finding to raise, not this server's fault.
+- [ ] It skips when Canopy is unreachable, still reporting the stamp. Whether a schema is the right one is Canopy's to answer, and an unreachable Canopy is not this server's failing.
+- [ ] It skips on a host with no Tamanu, and where the database is unreachable.
+
+## Applying it
+
+- [ ] Applying the offered schema is the check's self-heal action, so it runs only in the long-running daemon and only while the check is failing (see [CHK](healthchecks.md)).
+- [ ] Applying is the only thing bestool does that writes to Tamanu's database. Every check stays read-only, and the interactive doctor command never applies anything.
+- [ ] The schema's own SQL replaces the schema wholesale, so applying it needs no additional reconciliation.
+- [ ] A failed apply is logged and retried under the heal backoff, and leaves the previous schema as it was.

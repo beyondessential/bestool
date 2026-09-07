@@ -49,6 +49,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod reporting_schema;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -318,6 +319,10 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("db_version", db_version, db, off_wire),
 		entry!("migrations", migrations),
 		entry!("reporting_roles", reporting_roles),
+		entry!("reporting_schema", reporting_schema, host).with_heal(
+			|ctx| Box::pin(reporting_schema::heal(ctx)),
+			heal::DEFAULT_MIN_INTERVAL,
+		),
 		entry!("pg_tuning", pg_tuning, db),
 		entry!("pg_checksums", pg_checksums, db),
 		entry!("disk_free", disk_free, host),
