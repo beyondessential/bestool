@@ -158,13 +158,40 @@ async fn offered_schema(
 		Err(err) => return Err(err),
 	};
 
+	if let Some(range) = artifacts.iter().find_map(range_schema) {
+		tracing::warn!(
+			%range,
+			"canopy offers a reporting schema registered against a range; ignoring it"
+		);
+	}
+
 	Ok(artifacts
 		.into_iter()
-		.find(|a| a.artifact_type == ARTIFACT_TYPE)
+		.find(is_exact_schema)
 		.map(|a| Offered {
 			version: version.to_owned(),
 			download_url: a.download_url,
 		}))
+}
+
+/// Whether an artifact is a reporting schema this server may grade against.
+///
+/// A schema is published for one exact version, since it follows the
+/// migrations that version applies: one built against a patch is not the
+/// schema another patch of the same minor describes. Canopy resolves a range
+/// artifact for any version it covers, so grading against one would report a
+/// server as current on a schema built for something else.
+fn is_exact_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
+	artifact.artifact_type == ARTIFACT_TYPE && artifact.version_range_pattern.is_none()
+}
+
+/// The range a reporting-schema artifact was registered against, where it was
+/// registered against one at all. Worth saying out loud: it means a build
+/// published a schema canopy will hand to versions it was not built for.
+fn range_schema(artifact: &bestool_canopy::schema::Artifact) -> Option<&str> {
+	(artifact.artifact_type == ARTIFACT_TYPE)
+		.then(|| artifact.version_range_pattern.as_deref())
+		.flatten()
 }
 
 /// Whether canopy's answer means it offers nothing for this version, as
@@ -270,6 +297,51 @@ mod tests {
 			path: "/versions/2.60.0/artifacts".to_owned(),
 			body: bestool_canopy::bytes::Bytes::new(),
 		})
+	}
+
+	fn artifact(kind: &str, range: Option<&str>) -> bestool_canopy::schema::Artifact {
+		let mut value = serde_json::json!({
+			"artifact_type": kind,
+			"download_url": "https://canopy.example/s.sql",
+			"id": "00000000-0000-0000-0000-000000000000",
+			"platform": "any",
+		});
+		if let Some(range) = range {
+			value["version_range_pattern"] = serde_json::Value::from(range);
+		}
+		serde_json::from_value(value).expect("an artifact")
+	}
+
+	/// A schema follows the migrations one version applies, so canopy publishes
+	/// it for that version alone. A range artifact is resolved for every
+	/// version it covers, so grading against one would call a server current on
+	/// a schema built for something else.
+	#[test]
+	fn only_an_exact_schema_is_graded_against() {
+		assert!(is_exact_schema(&artifact("reporting-schema", None)));
+		assert!(!is_exact_schema(&artifact(
+			"reporting-schema",
+			Some("2.60.x")
+		)));
+	}
+
+	/// Other artifact types share the version listing, and an installer is not
+	/// a schema however it was registered.
+	#[test]
+	fn another_artifact_type_is_not_a_schema() {
+		assert!(!is_exact_schema(&artifact("installer", None)));
+		assert!(range_schema(&artifact("installer", Some("2.60.x"))).is_none());
+	}
+
+	/// A range-registered schema is worth naming: it means a build published
+	/// one canopy will hand to versions it was not built for.
+	#[test]
+	fn a_range_registered_schema_is_named() {
+		assert_eq!(
+			range_schema(&artifact("reporting-schema", Some("^2.60.0"))),
+			Some("^2.60.0")
+		);
+		assert_eq!(range_schema(&artifact("reporting-schema", None)), None);
 	}
 
 	/// A version canopy has not published has no artifacts of any kind, which

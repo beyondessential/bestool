@@ -22,6 +22,7 @@ bestool's part is to say which schema this server has, and to apply the one it i
 ## Grading it
 
 - [ ] Canopy is asked what it offers for the version this server runs, over the authenticated connection: a schema belongs to a group, and Canopy answers for the caller's group.
+- [ ] Only a schema Canopy published for one exact version is graded against. A schema registered against a version range is ignored, since a schema follows the migrations one version applies and Canopy resolves a range artifact for every version it covers.
 - [ ] The check passes when the stamp matches what is offered.
 - [ ] It fails when they differ, and when the server has no schema at all and one is offered.
 - [ ] It skips when Canopy offers none for this version: a pair Canopy has not built is Canopy's finding to raise, not this server's fault.
