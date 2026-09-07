@@ -40,11 +40,19 @@ Two Tamanu applications on one host is not a shape that is run today, and if it 
 
 The substrate API takes the key from its caller instead, so a process driving many applications supplies each one's. For Kubernetes that is expected to be built from the namespace, the role, and an id, but that belongs to the relay rather than here.
 
+## Split out to A2
+
+`A2` files every check and fact against its subject and pushes the split format, which needs no substrate: the subject is a static property of each check, and on a host bestool already knows it is the machine and knows its one application.
+This card builds on that, adding the part that makes the split work when the checking process is *not* on the machine.
+
+Gone from here with it: the registry subject split, the facts split, and the machine id rename.
+`SUBJ` (`.workhorse/specs/tamanu/subjects.md`) is A2's spec; `SUB` is this card's.
+
 ## Build steps
 
 - [ ] Introduce the substrate trait and the check-storage trait, with own-system implementations
-- [ ] Split the check registry into machine and application subjects
+- [ ] Make machine checks skip when the substrate is not the machine
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling
-- [ ] Split the reported facts into the machine and application `detail` blocks
-- [ ] Rename the server id to the machine id and fix both call sites
+- [ ] Take `pg_tuning`'s denominator from the Postgres service's declared ceiling, removing A2's interim machine-memory read
+- [ ] Scope check storage per subject, retiring the fixed cache path `http_errors` and `external_users` share
