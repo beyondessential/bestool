@@ -3,13 +3,12 @@
 Design settled in the interview is written up in [SUB](../../specs/tamanu/substrate.md).
 This plan holds the technical notes and the outstanding decisions.
 
-## Blocked on Y1
+## Ground already laid by Y1
 
-`Y1` swaps `bestool-canopy` onto the `bes-canopy-api` crate and re-exports its client, transport, error and schema types.
-That work is not in this card's scope; what this card needs from it is the typed `StatusPayload` below.
+`bestool-canopy` now re-exports `bes_canopy_api`'s `schema`, transport, error and `Redacted` types, with a `CanopyClient<T = ReqwestTransport>` alias restoring the default transport parameter.
+The constructors are free functions in `connect.rs` (`connect`, `connect_to`), and `is_tailscale`, `refresh` and `renew` live on `ReqwestTransport`.
 
-Until Y1 lands, `StatusPayload` is degraded to `serde_json::Value` by the old `is_open_schema` path, so the machine and application sections would have to be hand-built as raw JSON and then deleted.
-That is the reason this card waits rather than working around it.
+So the typed `StatusPayload` this card reports through is already reachable as `bestool_canopy::schema::StatusPayload`, and `doctor/task.rs:306` already deserialises the sweep's JSON into it.
 
 ## The reporting shape
 
@@ -23,6 +22,8 @@ Sending `machine` is what opts a push into the split format; a push without it i
 `source` should be set explicitly to `alertd` rather than relying on the default attribution, since the field becomes mandatory.
 
 `GET /machines/self` returns `{ device_id, machine_id, applications: [type] }`.
+
+`build_payload` at `doctor/sweep.rs:515` is where the flat payload is assembled today, and is the seam where the machine and application sections get split apart.
 
 ## Server identity
 

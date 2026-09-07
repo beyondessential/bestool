@@ -8,7 +8,7 @@ The doctor and the alertd daemon run a shared registry of named healthchecks aga
 
 This spec is the parent for the healthcheck catalogue: the conventions common to every check, with each check that warrants its own acceptance criteria captured in a sibling spec.
 
-Which subject a check reports for — a machine or an application on it — is described in [SUBJ](subjects.md).
+Which subject a check reports for — a machine or an application on it — is described in [SUBJ](subjects.md), and how a check obtains its readings for that subject in [SUB](substrate.md).
 
 ## Spec identifiers
 
