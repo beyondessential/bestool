@@ -170,6 +170,40 @@ Each entry notes what it buys and what it costs against the workload above.
     When segment count or total size crosses a threshold, merge closed segments into one time-ordered file under a lock, applying retention at the same time.
     Turns the many-small-files cost of 2 into a bounded, occasional job that can run in the export tool or at startup.
 
+### Compression
+
+Two distinct angles: shrinking the encoding by design, and running a codec over it.
+A rough size estimate frames how much either matters: a record is the query text plus about 150 bytes of JSON metadata, and a heavy operator issuing a few hundred statements a day produces on the order of tens of megabytes a year.
+Storage volume is not the driver; compression earns its place only if retention becomes long or the log gets shipped off-box.
+
+21. **Context records instead of per-record metadata.**
+    Everything except the query and timestamp is session state that changes rarely: OS user, database user, write mode, OTS supervisor, Tailscale peers, instance uuid.
+    Write a context record when any of it changes and let query records carry only sequence, timestamp and text; readers carry the context forward.
+    This is compression by schema, needs no codec, cuts the per-record write to roughly the query text, and reads naturally as an event log.
+    Fits per-session segments exactly, since a segment starts with its context and a torn tail loses at most the last query, never the context.
+    Costs: export has to reconstruct flat entries, and a reader that starts mid-segment must first scan back to a context record.
+22. **Per-record codec compression.**
+    Records are too small for a general compressor to gain anything on its own; a trained dictionary fixes that, since the fixed vocabulary (JSON keys, SQL keywords, table names) lands in the dictionary.
+    Dictionary versioning becomes part of the format: each record names its dictionary, dictionaries are shipped with the binary or stored beside the segments, and an old dictionary must stay readable forever.
+    Zstd is the natural codec but the `zstd` crate wraps C; `ruzstd` is pure Rust with a working encoder, though its dictionary support for encoding reads as unfinished and its ratio and speed lag the original.
+    Ties back to question 1 below.
+23. **Streaming compression of a whole segment.**
+    A single compressor stream per segment shares context across every record, so repetitive queries and metadata compress well without a dictionary.
+    Flush after each record so a crash loses nothing already flushed; a truncated frame decodes cleanly up to its last complete block.
+    Fits per-session segments (one writer, one stream, never reopened for writing) and is incompatible with a shared O_APPEND file, where interleaved streams from several processes would be unreadable.
+    Costs the ability to grep or tail the live file, and framing shifts from newline-delimited to length-prefixed.
+    Pure-Rust options include `lz4_flex` frames (fast, modest ratio) and `ruzstd`; a compact JSON-lines file usually compresses several-fold under either.
+24. **Compress only at compaction.**
+    Live segments stay plain so they can be inspected and are trivially crash-safe; compaction rewrites closed segments into compressed, time-ordered files and applies retention.
+    This is the tiered-storage shape and it keeps the codec choice out of the hot write path entirely, so it can be revisited later without a format migration for live segments.
+25. **Interning query text.**
+    Repeated queries (`\d` on the same table, the same health-check select) could be stored once and referenced by hash.
+    Within a segment a streaming codec already captures this; across segments it needs a shared dictionary file and therefore coordination.
+    Not worth building on its own.
+
+Compression interacts with tamper evidence only in that the hash chain must be defined over one representation, plain or compressed, and stick to it.
+Under SQLite (5) none of the codec options apply to the store as a whole; only the query column could be dictionary-compressed per row, which is rarely worth the complexity.
+
 ### Off-box and OS-native sinks
 
 17. **Ship closed segments to a central sink** (object storage, canopy, syslog).
