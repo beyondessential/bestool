@@ -20,7 +20,7 @@ Code lives in `crates/psql/src/audit/`.
 - `multi_process.rs` holds the sync and recovery logic.
   Sync runs every 60 seconds and at shutdown: it scans the whole working history table, collects entries newer than the last synced key, opens main read-write with jittered retries, and inserts them.
   Recovery looks for `audit-orphaned-*` files and for `audit-working-*` files whose mtime is older than 60 seconds, tries an exclusive open to confirm nobody holds them, loads every entry of the file into a vector, and inserts all of them into main in one transaction.
-- `entry.rs` defines the record: query, db user, OS user, write-mode flag, OTS supervisor, Tailscale peer list, instance uuid, recall flag.
+- `entry.rs` defines the record: query, db user, OS user, write-mode flag, OTS supervisor, the active untagged Tailscale peers (hostname and login name each, typically two or three), instance uuid, recall flag.
   Records are JSON strings keyed by a microsecond Unix timestamp.
 - `index.rs` keeps a second table mapping history position to timestamp so rustyline can address history by index.
 - `history.rs` implements rustyline's history trait on top of the store: each arrow press or search step does index lookup then entry lookup, two read transactions per entry.
@@ -74,7 +74,7 @@ Retention today is intended to be a size cap with oldest-first culling, which su
 Nothing today makes the log tamper-evident.
 
 **Size.**
-Records carry a Tailscale peer list, which can be the bulk of a record.
+Record size is dominated by the query text; the Tailscale field is a handful of short hostname and login pairs, and the rest is fixed-size metadata.
 A single user's store on a developer machine is under a megabyte; server stores shared by an ops team will be larger and are the ones that matter.
 
 ## Two concerns hiding in one store
@@ -105,7 +105,7 @@ Each entry notes what it buys and what it costs against the workload above.
    The kernel serialises the seek-and-write of each append, so records from different processes do not interleave as long as each record is one write call.
    Framing is either length-prefix plus checksum, or JSON lines with a checksum field; readers skip a torn tail.
    Buys zero coordination, zero copies, crash safety by construction, and a file you can tail or grep.
-   Costs: reads are scans (fine, they are rare); retention needs rotation; the non-interleaving guarantee is practical rather than formal for records larger than a page, and Tailscale peer lists can push records past 4 KB; unreliable on network filesystems.
+   Costs: reads are scans (fine, they are rare); retention needs rotation; the non-interleaving guarantee is practical rather than formal for records larger than a page, which a long pasted query or a `\e` buffer can exceed; unreliable on network filesystems.
 2. **One file per session.**
    `audit-<uuid>.log`, written only by its own process.
    The directory is the database; readers merge segments by time.
