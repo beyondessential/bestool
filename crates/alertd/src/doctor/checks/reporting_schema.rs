@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use bestool_canopy::CanopyClient;
-use miette::IntoDiagnostic as _;
+use miette::{IntoDiagnostic as _, bail};
 
 use super::SweepContext;
 use crate::doctor::{check::Check, heal::HealOutcome};
@@ -42,6 +42,18 @@ pub async fn run(ctx: SweepContext) -> Check {
 			"a reporting schema belongs to a Tamanu server, and this host has none",
 		);
 	};
+
+	// The `host` registration this check uses runs whatever the context, so
+	// the generic `DATABASE_URL` fallback reaches here as a database that is
+	// not Tamanu's. Nothing about a reporting schema applies to it, and heal
+	// would drop and recreate a schema on it.
+	if !tamanu.is_tamanu {
+		return Check::skip(
+			NAME,
+			"no Tamanu on this host",
+			"a reporting schema belongs to a Tamanu database, and this one is not",
+		);
+	}
 
 	let Some(db) = tamanu.db.as_ref() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
@@ -124,17 +136,29 @@ enum Stamp {
 	Version(String),
 }
 
+/// Longest a stamp may be and still be a version. The comment is arbitrary
+/// text that anyone with COMMENT rights on the schema can set, and it is
+/// published to canopy as a status fact, so what is not plausibly a version is
+/// read as no stamp rather than carried.
+const MAX_STAMP_LEN: usize = 64;
+
 /// Read what the server's `reporting` schema stamped on itself.
 async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres::Error> {
 	Ok(match db.query_opt(STAMP_SQL, &[]).await? {
-		Some(row) => match row.get::<_, Option<String>>("stamp") {
-			Some(version) => Stamp::Version(version),
-			None => Stamp::Unstamped,
+		Some(row) => match row.get::<_, Option<String>>("stamp").map(stamp_of) {
+			Some(Some(version)) => Stamp::Version(version),
+			Some(None) | None => Stamp::Unstamped,
 		},
 		// No `reporting` schema at all. Not an error: a server that has never
 		// had one applied is exactly what this check exists to surface.
 		None => Stamp::NoSchema,
 	})
+}
+
+/// The version a schema comment names, where the comment is one.
+fn stamp_of(comment: String) -> Option<String> {
+	let trimmed = comment.trim();
+	(!trimmed.is_empty() && trimmed.len() <= MAX_STAMP_LEN).then(|| trimmed.to_owned())
 }
 
 /// What the stamp on the server says against what canopy offers.
@@ -252,7 +276,16 @@ fn offers_nothing(err: &bestool_canopy::Error) -> bool {
 /// raises the same finding on every server in the fleet for the length of a
 /// canopy outage.
 fn canopy_is_out(err: &bestool_canopy::Error) -> bool {
-	err.status().is_none_or(|status| status.is_server_error())
+	match err {
+		// The request never landed.
+		bestool_canopy::Error::Transport(_) => true,
+		// Anything else that carries no status — an answer that would not
+		// decode, above all — is canopy's shape having moved, which has to be
+		// visible rather than skipped past.
+		other => other
+			.status()
+			.is_some_and(|status| status.is_server_error()),
+	}
 }
 
 /// Fetch the bytes of the schema canopy offers.
@@ -267,16 +300,46 @@ async fn fetch_offered(
 ) -> Result<String, miette::Report> {
 	let path = download_path(&offered.version, &offered.id);
 
-	canopy
+	let mut response = canopy
 		.transport()
 		.get(&format!("/public{path}"), &path)
 		.await?
 		.error_for_status()
-		.into_diagnostic()?
-		.text()
-		.await
-		.into_diagnostic()
+		.into_diagnostic()?;
+
+	// A 2xx is not on its own a schema: an HTML page from something between
+	// here and canopy would be executed as SQL, and the schema's own SQL drops
+	// itself first, so a wrong body destroys what it does not replace.
+	let media_type = response
+		.headers()
+		.get(reqwest::header::CONTENT_TYPE)
+		.and_then(|v| v.to_str().ok())
+		.map(|v| v.split(';').next().unwrap_or(v).trim().to_owned())
+		.unwrap_or_default();
+	if !SCHEMA_MEDIA_TYPES.contains(&media_type.as_str()) {
+		bail!("the offered reporting schema is {media_type}, not SQL");
+	}
+
+	let mut sql = Vec::new();
+	while let Some(chunk) = response.chunk().await.into_diagnostic()? {
+		if sql.len() + chunk.len() > MAX_SCHEMA_BYTES {
+			bail!("the offered reporting schema is larger than {MAX_SCHEMA_BYTES} bytes");
+		}
+		sql.extend_from_slice(&chunk);
+	}
+	if sql.is_empty() {
+		bail!("the offered reporting schema is empty");
+	}
+
+	String::from_utf8(sql).into_diagnostic()
 }
+
+/// What a reporting schema may be served as. Canopy hands back whatever media
+/// type the registration named, and a schema is SQL text.
+const SCHEMA_MEDIA_TYPES: &[&str] = &["application/sql", "text/plain", "application/octet-stream"];
+
+/// Ceiling on a schema, matching what canopy will hold for one.
+const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
 /// The path to ask the transport for.
 ///
@@ -296,9 +359,27 @@ fn download_path(version: &str, id: &str) -> String {
 /// it lives here rather than in the check: heal runs only in the daemon, only
 /// when the check graded a failure, and behind the shared backoff.
 pub async fn heal(ctx: SweepContext) -> HealOutcome {
+	// A heal that never returns holds the attempt slot for the life of the
+	// process, so self-heal stops for this check with nothing to say so.
+	match tokio::time::timeout(HEAL_DEADLINE, apply_offered(ctx)).await {
+		Ok(outcome) => outcome,
+		Err(_) => {
+			tracing::warn!("applying the reporting schema did not finish; giving up the attempt");
+			HealOutcome::Failed
+		}
+	}
+}
+
+/// Longest one apply may take before the attempt is abandoned.
+const HEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+async fn apply_offered(ctx: SweepContext) -> HealOutcome {
 	let Some(tamanu) = ctx.tamanu.as_ref() else {
 		return HealOutcome::Deferred;
 	};
+	if !tamanu.is_tamanu {
+		return HealOutcome::Deferred;
+	}
 	let (Some(db), Some(canopy)) = (tamanu.db.as_ref(), ctx.canopy.as_ref()) else {
 		return HealOutcome::Deferred;
 	};
@@ -311,6 +392,18 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 			return HealOutcome::Failed;
 		}
 	};
+
+	// Applying drops the schema before it recreates it, so an artifact that has
+	// already been applied and did not leave the stamp it should is not applied
+	// again. Retrying it rebuilds the schema on every backoff step, forever,
+	// with reports broken through each rebuild.
+	if applied_without_stamping(&offered.id) {
+		tracing::warn!(
+			artifact = %offered.id,
+			"the offered reporting schema has already been applied without stamping its version"
+		);
+		return HealOutcome::Deferred;
+	}
 
 	let sql = match fetch_offered(canopy, &offered).await {
 		Ok(sql) => sql,
@@ -349,6 +442,7 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 				offered = %offered.version,
 				"the applied reporting schema did not stamp the offered version"
 			);
+			note_unstamped(&offered.id);
 			HealOutcome::Failed
 		}
 		Err(err) => {
@@ -358,19 +452,39 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 	}
 }
 
+/// Artifacts this process has applied that did not leave the stamp they should.
+fn unstamped() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+	static IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+		std::sync::OnceLock::new();
+	IDS.get_or_init(Default::default)
+}
+
+fn applied_without_stamping(artifact: &str) -> bool {
+	unstamped()
+		.lock()
+		.expect("unstamped registry poisoned")
+		.contains(artifact)
+}
+
+fn note_unstamped(artifact: &str) {
+	unstamped()
+		.lock()
+		.expect("unstamped registry poisoned")
+		.insert(artifact.to_owned());
+}
+
 /// A connection of the apply's own, with ceilings on it.
 ///
 /// The sweep's client is shared by every database-backed check and
 /// tokio-postgres serialises what is queued on a connection, so a whole-schema
 /// DDL batch on it holds up every other check for as long as the apply runs.
-/// The timeouts bound a batch that cannot get its locks.
+/// Opened through `connect_one` like every other database open in the project,
+/// which is what selects TLS for a URL that asks for it. The timeouts bound a
+/// batch that cannot get its locks.
 async fn apply_connection(database_url: &str) -> Result<tokio_postgres::Client, miette::Report> {
-	let (client, conn) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
-		.await
-		.into_diagnostic()?;
-	tokio::spawn(async move {
-		let _ = conn.await;
-	});
+	let client =
+		bestool_postgres::pool::connect_one(database_url, "bestool-alertd-reporting-schema")
+			.await?;
 	client
 		.batch_execute("SET statement_timeout = '5min'; SET lock_timeout = '30s'")
 		.await
@@ -617,6 +731,30 @@ mod tests {
 			download_path("2.60.0", "00000000-0000-0000-0000-000000000000"),
 			"/versions/2.60.0/artifacts/00000000-0000-0000-0000-000000000000/download"
 		);
+	}
+
+	/// The comment is arbitrary text anyone with COMMENT rights on the schema
+	/// can set, and it rides to canopy as a status fact, so what is not
+	/// plausibly a version reads as no stamp rather than being carried.
+	#[test]
+	fn a_comment_that_is_not_a_version_is_not_a_stamp() {
+		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some("2.60.0".to_owned()));
+		assert_eq!(stamp_of("   ".to_owned()), None);
+		assert_eq!(stamp_of("x".repeat(MAX_STAMP_LEN + 1)), None);
+	}
+
+	/// An answer that would not decode has no status either, and reading it as
+	/// an unreachable canopy stops the grading fleet-wide with nothing to say
+	/// the check stopped working.
+	#[test]
+	fn an_answer_that_would_not_decode_is_not_an_unreachable_canopy() {
+		assert!(!canopy_is_out(&bestool_canopy::Error::Decode {
+			path: "/versions/2.60.0/artifacts".to_owned(),
+			source: serde_json::from_str::<u8>("[]").expect_err("a decode error"),
+		}));
+		assert!(canopy_is_out(&bestool_canopy::Error::transport(
+			std::io::Error::other("no route to host")
+		)));
 	}
 
 	/// A canopy that never answered, or answered with a fault of its own, is
