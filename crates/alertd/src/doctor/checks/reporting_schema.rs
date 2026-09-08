@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bestool_canopy::CanopyClient;
 use miette::{IntoDiagnostic as _, bail};
 
-use super::SweepContext;
+use super::{SweepContext, fmt_db_error};
 use crate::doctor::{check::Check, heal::HealOutcome};
 
 const NAME: &str = "reporting_schema";
@@ -65,7 +65,10 @@ pub async fn run(ctx: SweepContext) -> Check {
 			return Check::broken(
 				NAME,
 				"could not read the reporting schema",
-				format!("reading the schema's version stamp failed: {err}"),
+				format!(
+					"reading the schema's version stamp failed: {}",
+					fmt_db_error(&err)
+				),
 			);
 		}
 	};
@@ -158,7 +161,13 @@ async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres
 /// The version a schema comment names, where the comment is one.
 fn stamp_of(comment: String) -> Option<String> {
 	let trimmed = comment.trim();
-	(!trimmed.is_empty() && trimmed.len() <= MAX_STAMP_LEN).then(|| trimmed.to_owned())
+	if trimmed.is_empty() || trimmed.len() > MAX_STAMP_LEN {
+		return None;
+	}
+
+	node_semver::Version::parse(trimmed)
+		.is_ok()
+		.then(|| trimmed.to_owned())
 }
 
 /// What the stamp on the server says against what canopy offers.
@@ -314,10 +323,16 @@ async fn fetch_offered(
 		.headers()
 		.get(reqwest::header::CONTENT_TYPE)
 		.and_then(|v| v.to_str().ok())
-		.map(|v| v.split(';').next().unwrap_or(v).trim().to_owned())
+		.map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase())
 		.unwrap_or_default();
 	if !SCHEMA_MEDIA_TYPES.contains(&media_type.as_str()) {
 		bail!("the offered reporting schema is {media_type}, not SQL");
+	}
+
+	if let Some(len) = response.content_length()
+		&& len > MAX_SCHEMA_BYTES as u64
+	{
+		bail!("the offered reporting schema is larger than {MAX_SCHEMA_BYTES} bytes");
 	}
 
 	let mut sql = Vec::new();
@@ -446,7 +461,10 @@ async fn apply_offered(ctx: SweepContext) -> HealOutcome {
 			HealOutcome::Failed
 		}
 		Err(err) => {
-			tracing::warn!("reading back the applied reporting schema's stamp failed: {err}");
+			tracing::warn!(
+				"reading back the applied reporting schema's stamp failed: {}",
+				fmt_db_error(&err)
+			);
 			HealOutcome::Failed
 		}
 	}
@@ -741,6 +759,11 @@ mod tests {
 		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some("2.60.0".to_owned()));
 		assert_eq!(stamp_of("   ".to_owned()), None);
 		assert_eq!(stamp_of("x".repeat(MAX_STAMP_LEN + 1)), None);
+		assert_eq!(stamp_of("built by hand".to_owned()), None);
+		assert_eq!(
+			stamp_of("2.60.0\n<script>alert(1)</script>".to_owned()),
+			None
+		);
 	}
 
 	/// An answer that would not decode has no status either, and reading it as
