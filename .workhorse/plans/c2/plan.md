@@ -269,12 +269,14 @@ Settled in conversation on 2026-09-08.
     Readers carry context forward; export reconstructs flat entries.
 17. **Unwritable store directory: warn once, buffer, retry.**
     Records that cannot be written are held in a bounded ring buffer in memory and flushed to a segment if the directory becomes writable during the session.
-    The bound keeps memory flat when the directory never becomes writable; the oldest buffered records are dropped first.
+    The buffer is bounded twice, by record count and by total bytes, so a pasted megabyte-sized query cannot turn a thousand-record cap into a gigabyte of memory; the oldest buffered records are dropped first when either bound is hit.
+    Defaults: 1000 records, 16 MiB.
     The same path handles a write failure that appears mid-session.
 18. **Network or synced filesystem: warn loudly, write anyway.**
     Detection is advisory; the session still records to the configured path.
 19. **Startup history is loaded up to a memory budget**, newest first across segments, stopping when the budget is reached.
-    The default budget figure is open; a few megabytes of query text is the order of magnitude.
+    Individual records above a size cutoff are skipped for recall entirely; they stay in the audit log but do not enter the live history, so one huge paste cannot consume the whole budget.
+    Defaults: 4 MiB budget, 10 KiB per-record cutoff.
 20. **Old redb files are deleted after a successful import.**
     Deletion happens only after the written segment is synced.
     Imported records keep their original timestamps; records carrying an old instance uuid are grouped into a segment per uuid, the rest into a single migration segment.
@@ -315,8 +317,6 @@ Compaction is the only step that touches files it did not create, so it runs und
 
 **Open within this shape.**
 
-- Default memory budget for startup history (decision 19).
-- Ring buffer capacity for unwritable stores (decision 17).
 - Publishing chain heads off-box is a candidate follow-up card, not part of this one.
 
 ## Segment lifecycle
