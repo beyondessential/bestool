@@ -251,6 +251,13 @@ Settled in conversation on 2026-09-08.
    Compactness lives in the compacted tier, not in the live format.
 10. **The read API is a module of bestool-psql.**
     The two CLIs and anything in bestool consume it from there.
+11. **Live segments are never compressed; compacted files use zstd.**
+    A segment is live while the process that created it is alive.
+    `ruzstd` is a side quest, not a dependency of this card: benchmark it against `zstd` on this workload, and if it matches, it is a candidate to propose upstream in cargo-binstall, where platform compatibility of the C build has also caused trouble.
+12. **Retention is on by default.**
+    Thresholds come from the organisation's data retention policy and are to be looked up.
+13. **Hash chain only, no signing.**
+    See the analysis under "Signing" below.
 
 ## What the decisions prune
 
@@ -288,9 +295,55 @@ Compaction is the only step that touches files it did not create, so it runs und
 **Open within this shape.**
 
 - Hash chain definition under JSON lines: hash the previous line's raw bytes as written, so no canonical-JSON step is needed and any reader can verify with a byte-level read.
-- Whether live segments are ever compressed (23) or only compacted ones (24).
-  Leaning: only compacted ones.
-- Codec for compacted files: `zstd` (C, already in bestool's tree) or `ruzstd` (pure Rust, weaker).
-- Where compaction runs: at session startup in a background thread, in the export tool, or both.
-- Age thresholds for compaction and retention, and whether retention is on by default at all.
-- Signing of compacted files with a per-device key, on top of the hash chain, or hash chain only.
+- Age thresholds for compaction and retention, pending the organisation's retention policy.
+- Whether to publish chain heads off-box as a later card (see "Signing").
+
+## Segment lifecycle
+
+Three states, and the transitions are one-way.
+
+- **Live.**
+  Owned by a running session, which holds an advisory lock on the file for its whole lifetime.
+  The writer never waits on this lock; it only exists so that others can test liveness without guessing from mtime.
+  Appended to by exactly one process, never read for compaction.
+- **Closed.**
+  The owning process has exited.
+  A clean exit appends an end record; a crash leaves no end record and a possibly torn last line, which readers skip.
+  The liveness test is a try-lock on the file: acquired means closed.
+  Closed segments are complete, valid, readable as-is, and may sit uncompacted indefinitely.
+- **Compacted.**
+  Closed segments past the compaction age are merged into a per-period file, time-ordered and zstd-compressed, and the sources deleted.
+  Written to a temporary name, synced, renamed into place, and only then are sources removed, so a crash mid-compaction duplicates rather than loses, and (instance uuid, sequence) keys make duplicates harmless on read.
+
+Startup history only needs the most recent recall-eligible records, so it opens segments newest-first and stops once it has enough.
+Uncompacted segment count therefore barely affects startup; compaction is about file count and disk footprint, not read latency.
+That makes it safe to run rarely and lazily.
+
+## Compaction placement
+
+| Where | Guarantees it runs | Cost to the user | Notes |
+|---|---|---|---|
+| Session startup, background thread | On any box that is used at all | Competes with the session for IO at the moment the prompt is wanted; on an incident box this is the worst possible moment | Must be throttled (only when closed-segment count or oldest closed age crosses a threshold), bounded per run, lowest IO priority, try-lock and skip |
+| Session exit | Only on clean exits | Delays exit | Abrupt terminal closes and kills never run it; weak guarantee |
+| Export tool or read API call | Only when someone audits | None to interactive users | Boxes never audited pile up segments forever; reads must merge them anyway |
+| Scheduled job (cron, Task Scheduler, systemd timer) | Reliable cadence | None | Needs deployment per box and per user, since state directories are per user; heavy for a tool that also runs on laptops |
+
+Leaning: startup background thread as the default, throttled and bounded as above, plus a compact function on the read API with a CLI subcommand over it so operators can run or schedule it explicitly on boxes where startup work is unwelcome.
+Never at exit.
+
+## Signing
+
+The question was: what does signing buy over a hash chain when the box is already compromised?
+
+- A hash chain alone detects accidental corruption and careless edits.
+  Against an adversary who can write to the directory it proves nothing: they rewrite records and recompute the chain, which is self-verifying.
+  It also cannot detect deletion of a whole segment, since segments share no state.
+- Signing with a key stored on the same box adds nothing: whoever has the box has the key.
+  An HMAC keyed on the machine id is the same thing with a world-readable key.
+- What actually resists a compromised box is either forward-secure sealing (journald's model: the sealing key evolves per epoch and old keys are destroyed, so records sealed before the compromise cannot be re-sealed; needs a verification key kept off-box and a clock) or an off-box witness.
+  Both are projects in their own right.
+- The cheap version of a witness is to publish chain heads: periodically send the latest hash of each segment somewhere the box cannot rewrite.
+  A head is a few dozen bytes, and it later proves the log was not rewritten before that point.
+  The hash chain is what makes this possible, which is the real reason to build the chain now.
+
+Verdict: hash chain now, no local signing, and publishing chain heads off-box as a candidate follow-up card once there is somewhere to publish them.
