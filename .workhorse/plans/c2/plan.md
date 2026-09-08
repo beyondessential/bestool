@@ -259,6 +259,26 @@ Settled in conversation on 2026-09-08.
     Nothing is deleted before it is 12 months old; a configuration option may lengthen it, never shorten it below the default.
 13. **Hash chain only, no signing.**
     See the analysis under "Signing" below.
+14. **Compaction runs in a throttled, bounded, low-priority background thread at session startup**, and is also exposed as a function on the read API with a CLI subcommand over it.
+    Never at session exit.
+15. **A closed segment is eligible for compaction once its month has ended.**
+    Period files are monthly and each is written exactly once.
+    Retention deletes a month file once its month ended more than 12 months ago.
+16. **Segments use context records.**
+    Session state is written once at segment start and again whenever it changes; query records carry only sequence, timestamp and text.
+    Readers carry context forward; export reconstructs flat entries.
+17. **Unwritable store directory: warn once, buffer, retry.**
+    Records that cannot be written are held in a bounded ring buffer in memory and flushed to a segment if the directory becomes writable during the session.
+    The bound keeps memory flat when the directory never becomes writable; the oldest buffered records are dropped first.
+    The same path handles a write failure that appears mid-session.
+18. **Network or synced filesystem: warn loudly, write anyway.**
+    Detection is advisory; the session still records to the configured path.
+19. **Startup history is loaded up to a memory budget**, newest first across segments, stopping when the budget is reached.
+    The default budget figure is open; a few megabytes of query text is the order of magnitude.
+20. **Old redb files are deleted after a successful import.**
+    Deletion happens only after the written segment is synced.
+    Imported records keep their original timestamps; records carrying an old instance uuid are grouped into a segment per uuid, the rest into a single migration segment.
+21. **Both export CLIs stay** as thin wrappers over the read API, and both gain compact and verify subcommands.
 
 ## What the decisions prune
 
@@ -295,12 +315,9 @@ Compaction is the only step that touches files it did not create, so it runs und
 
 **Open within this shape.**
 
-- Hash chain definition under JSON lines: hash the previous line's raw bytes as written, so no canonical-JSON step is needed and any reader can verify with a byte-level read.
-- Compaction trigger.
-  Leaning: period files are monthly, and a closed segment is compacted only once its month has ended.
-  This avoids appending to an existing compressed file (no atomic append, so a partially written frame would be a corruption risk), keeps the current month fully greppable as plain JSON lines, and bounds uncompacted files to one month of sessions.
-  Retention then deletes a month file once its month ended more than 12 months ago, so effective retention is between 12 and 13 months and never less than 12.
-- Whether to publish chain heads off-box as a later card (see "Signing").
+- Default memory budget for startup history (decision 19).
+- Ring buffer capacity for unwritable stores (decision 17).
+- Publishing chain heads off-box is a candidate follow-up card, not part of this one.
 
 ## Segment lifecycle
 
@@ -332,8 +349,7 @@ That makes it safe to run rarely and lazily.
 | Export tool or read API call | Only when someone audits | None to interactive users | Boxes never audited pile up segments forever; reads must merge them anyway |
 | Scheduled job (cron, Task Scheduler, systemd timer) | Reliable cadence | None | Needs deployment per box and per user, since state directories are per user; heavy for a tool that also runs on laptops |
 
-Leaning: startup background thread as the default, throttled and bounded as above, plus a compact function on the read API with a CLI subcommand over it so operators can run or schedule it explicitly on boxes where startup work is unwelcome.
-Never at exit.
+Decision 14 takes the first row as default plus the explicit command, and rules out exit.
 
 ## Signing
 
