@@ -34,9 +34,8 @@ Shipped targets include Linux musl and gnu, Windows msvc, and macOS, so any repl
 These are facts about the current code, listed because they shape what a replacement must fix and what it must not regress.
 
 - **Culling never runs in production.**
-  The size cap of 100 MB is enforced only inside the branch that creates a brand-new main database.
-  Once main exists it grows without bound.
-  Compaction is also a no-op in multi-process mode.
+  The size cap of 100 MB is enforced only inside the branch that creates a brand-new main database, so once main exists it grows without bound, and compaction is a no-op in multi-process mode.
+  This may well be the intended outcome (an audit log should not cull itself by size), in which case the dead code is the defect, not the behaviour.
 - **Orphan merge is the memory blow-up.**
   An orphan is a full copy of main plus that session's entries, and the merge loads all of it into memory and reinserts everything into main in a single write transaction.
   With several orphans, or a large main, this is many multiples of the main file held in memory at once.
@@ -126,12 +125,13 @@ Each entry notes what it buys and what it costs against the workload above.
    Multi-process via file locks, one writer at a time with a busy timeout, readers unblocked.
    The "few writers" caveat is about throughput contention, which does not arise at human typing rates with single-digit sessions.
    Buys indexed time-range queries, limits, ordering, and a mature story on NTFS, ext4, APFS.
-   Costs: a C dependency (bundled SQLite compiles for musl, msvc and darwin, but the psql crate currently looks pure-Rust by choice: `aegis` with the pure-rust feature, Turso rather than rusqlite); `-wal` and `-shm` sidecar files; known trouble on network filesystems.
+   Costs: a C dependency; `-wal` and `-shm` sidecar files; known trouble on network filesystems; and it would put a second SQLite implementation in the same process as Turso, which is ruled out below.
 6. **Turso.**
    Already a dependency, used for exporting query results to SQLite files.
    Pure Rust.
-   Its compatibility notes only say mixed SQLite and Turso multi-process is unsupported and say nothing about Turso-only multi-process access; MVCC is marked experimental.
-   Treat multi-process safety as unverified until checked against the Turso source or maintainers.
+   Cross-process access exists behind an option named `experimental_multiprocess_wal`.
+   As of mid-2026 a WAL lock failure on macOS is an open bug and a Windows lifetime-lock bug was fixed in July.
+   Not a foundation for a must-never-lose log on three platforms today; worth re-evaluating when the option loses its experimental label.
 7. **DuckDB.**
    Columnar, analytics-shaped, one writer or many readers but not both, large binary.
    Poor fit, as the card description already notes.
@@ -185,8 +185,9 @@ Storage volume is not the driver; compression earns its place only if retention 
 22. **Per-record codec compression.**
     Records are too small for a general compressor to gain anything on its own; a trained dictionary fixes that, since the fixed vocabulary (JSON keys, SQL keywords, table names) lands in the dictionary.
     Dictionary versioning becomes part of the format: each record names its dictionary, dictionaries are shipped with the binary or stored beside the segments, and an old dictionary must stay readable forever.
-    Zstd is the natural codec but the `zstd` crate wraps C; `ruzstd` is pure Rust with a working encoder, though its dictionary support for encoding reads as unfinished and its ratio and speed lag the original.
-    Ties back to question 1 below.
+    Zstd is the natural codec.
+    The `zstd` crate wraps C but is already in bestool's dependency tree through the self-update downloader, so it adds no new platform cost to the bestool binary, only to a standalone bestool-psql build.
+    `ruzstd` is pure Rust with a working encoder, though its dictionary support for encoding reads as unfinished and its ratio and speed lag the original.
 23. **Streaming compression of a whole segment.**
     A single compressor stream per segment shares context across every record, so repetitive queries and metadata compress well without a dictionary.
     Flush after each record so a crash loses nothing already flushed; a truncated frame decodes cleanly up to its last complete block.
@@ -222,26 +223,71 @@ Under SQLite (5) none of the codec options apply to the store as a whole; only t
 20. **A small per-user history cache file** rebuilt from the audit store when missing.
     Only worth it if startup tail reads turn out slow, which is unlikely for a few thousand records.
 
-## Constraints to settle before narrowing
+## Decisions so far
 
-Open questions, in rough order of how much each one prunes the shelf.
+Settled in conversation on 2026-09-08.
 
-1. Is a C dependency acceptable in bestool-psql, or is pure Rust a requirement?
-   This alone decides between the SQLite family and the log-file family.
-2. Should an audit log ever cull itself by size, or is retention by age (or never, with off-box shipping) the right model?
-3. Should a failed audit write be loud: warn the user, or refuse to run the statement?
-4. Is tamper evidence wanted now, later, or never?
-5. Do we need to run on network or synced filesystems (roaming profiles, NFS home directories)?
-   Both O_APPEND and SQLite WAL degrade there.
-6. Is live cross-session history visibility wanted, or is startup-time visibility enough as today?
-7. Does the export tool's interface need to stay identical, including the `--orphans` flag, which stops meaning anything under most options?
-8. Migration: existing `audit-main.redb` and any orphan files need a one-shot import into whatever replaces them.
+1. **Dependencies.**
+   C dependencies are not forbidden, but each one has to be built for Windows msvc, macOS, Linux x86-64 and ARM64, and two glibc baselines plus musl, so the bar is "worth the matrix cost", not "pure Rust".
+   bestool-psql is nominally standalone but in practice ships inside bestool, which already carries C dependencies including zstd.
+   Two SQLite implementations in one process is ruled out: Turso stays, rusqlite does not enter.
+2. **Retention is by age, never by size.**
+   The audit log does not cull itself to fit a byte budget.
+3. **Audit failures never get in the way.**
+   The tool is used during incident response, including when the filesystem itself is the incident.
+   A failed audit write warns once per session and is otherwise silent; it never refuses or delays the statement.
+4. **Tamper evidence is wanted.**
+5. **Network and synced filesystems are unsupported.**
+   Detect them and warn loudly; refusing to create the store there is acceptable.
+6. **History is a startup-time snapshot, deliberately.**
+   A user pressing up must see their own last statement, never a concurrent session's.
+   An explicit command to refresh history from the store mid-session is a possible later addition, not a requirement.
+7. **The export CLI is free to change.**
+   What matters is a stable Rust API for reading the log programmatically; the CLI is one consumer of it.
+8. **Migration is a one-shot import** of the existing redb main file and any orphan files, streamed so it cannot run out of memory.
 
-## Early leaning
+## What the decisions prune
 
-Not a decision, recorded so it can be argued with.
+- Decision 1 removes rusqlite (5) and, until its cross-process mode stops being experimental, Turso (6).
+  LMDB (8) falls to the same matrix-cost test with nothing to show for it.
+  With no database left standing, the log-file family is the remaining shelf.
+- Decision 2 removes the whole culling apparatus and makes per-period grouping attractive, since age retention becomes "delete files older than N".
+- Decision 3 rules out anything a session can block on: no shared write locks in the hot path (12, 10), no daemon (13, 14).
+  Per-session segments (2) are the only option where a writer never waits for anyone.
+  It also implies a fallback: if the store directory cannot be written at all, the session keeps its history in memory and warns once.
+- Decision 4 brings in hash-chained records (4).
+- Decision 5 adds a startup check: on Linux read the filesystem type of the store directory, on Windows check the drive type, on macOS read the mount's filesystem name.
+- Decision 6 confirms in-memory history loaded from the store tail (19) and rules out live merging.
+- Decision 7 means the audit module's public surface is the deliverable, and the two CLIs become thin wrappers over it.
+  Whether that surface lives in bestool-psql or in its own crate is open.
+- Decision 8 is straightforward with segments: iterate the redb table with its cursor and write records as they come.
 
-Per-session append-only segments (2) with records keyed by session uuid and sequence (15), a tail read into an in-memory history at startup (19), export as a time-ordered merge over segments, and compaction with retention (16) when the directory grows.
-It matches the workload exactly, has no coordination at all, every failure mode is benign, migration is a one-shot export of the redb file into a segment, and the format is greppable and shippable.
-The serious alternative is SQLite in WAL mode (5), which fits comfortably at these rates and buys indexes and a query language at the cost of a C dependency and sidecar files.
-Question 1 above decides between them.
+## Narrowed shape
+
+One remaining direction, with its internal choices still open.
+
+**Store.**
+A directory of append-only segment files, one per session, each written only by the process that created it.
+A segment opens with a context record (users, write mode, supervisor, peers, instance uuid, chain seed) and then carries query records of sequence, timestamp and text, with a context record inserted whenever session state changes (21).
+Each record carries the hash of its predecessor (4).
+Records are keyed by (instance uuid, sequence) so any set union is a valid merge (15).
+
+**Reads.**
+Startup loads the most recent recall-eligible records across segments into rustyline's in-memory history (19), bounded by count.
+Export and the Rust API read segments as a time-ordered merge.
+
+**Retention and compaction.**
+Closed segments older than a threshold are compacted into per-period files, compressed at that point (24), and periods older than the retention window are deleted.
+Compaction is the only step that touches files it did not create, so it runs under a lock and is skipped, not waited for, if the lock is held.
+
+**Open within this shape.**
+
+- Segment framing: JSON lines with a per-record hash field, or length-prefixed binary.
+  JSON lines keeps live segments greppable; binary is smaller and avoids escaping cost.
+- Whether live segments are ever compressed (23) or only compacted ones (24).
+  Leaning: only compacted ones.
+- Codec for compacted files: `zstd` (C, already in bestool's tree) or `ruzstd` (pure Rust, weaker).
+- Where compaction runs: at session startup in a background thread, in the export tool, or both.
+- Age thresholds for compaction and retention, and whether retention is on by default at all.
+- Whether the read API is a module of bestool-psql or a separate crate that bestool depends on directly.
+- Signing of compacted files with a per-device key, on top of the hash chain, or hash chain only.
