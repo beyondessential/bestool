@@ -254,8 +254,9 @@ Settled in conversation on 2026-09-08.
 11. **Live segments are never compressed; compacted files use zstd.**
     A segment is live while the process that created it is alive.
     `ruzstd` is a side quest, not a dependency of this card: benchmark it against `zstd` on this workload, and if it matches, it is a candidate to propose upstream in cargo-binstall, where platform compatibility of the C build has also caused trouble.
-12. **Retention is on by default.**
-    Thresholds come from the organisation's data retention policy and are to be looked up.
+12. **Retention is on by default, at 12 months.**
+    The organisation's data retention policy sets 12 months for security-sensitive audit logs, which this is.
+    Nothing is deleted before it is 12 months old; a configuration option may lengthen it, never shorten it below the default.
 13. **Hash chain only, no signing.**
     See the analysis under "Signing" below.
 
@@ -295,7 +296,10 @@ Compaction is the only step that touches files it did not create, so it runs und
 **Open within this shape.**
 
 - Hash chain definition under JSON lines: hash the previous line's raw bytes as written, so no canonical-JSON step is needed and any reader can verify with a byte-level read.
-- Age thresholds for compaction and retention, pending the organisation's retention policy.
+- Compaction trigger.
+  Leaning: period files are monthly, and a closed segment is compacted only once its month has ended.
+  This avoids appending to an existing compressed file (no atomic append, so a partially written frame would be a corruption risk), keeps the current month fully greppable as plain JSON lines, and bounds uncompacted files to one month of sessions.
+  Retention then deletes a month file once its month ended more than 12 months ago, so effective retention is between 12 and 13 months and never less than 12.
 - Whether to publish chain heads off-box as a later card (see "Signing").
 
 ## Segment lifecycle
