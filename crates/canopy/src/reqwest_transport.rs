@@ -14,7 +14,7 @@ use hickory_resolver::{
 	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
 	net::runtime::TokioRuntimeProvider,
 };
-use miette::{IntoDiagnostic, Result, WrapErr};
+use miette::{IntoDiagnostic, Result, WrapErr, bail};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use reqwest::Url;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -302,6 +302,9 @@ impl ReqwestTransport {
 	/// Escape hatch behind the generated endpoint methods; needs the `raw-requests`
 	/// feature. In tailscale mode the request goes to `{tailscale_url}{tailscale_path}`
 	/// (typically `/public/...`); in mTLS mode to `{base_url}{mtls_path}`.
+	///
+	/// A response redirected off the origin the request was addressed to is
+	/// refused rather than returned.
 	#[cfg(feature = "raw-requests")]
 	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
 		let (http, url) = {
@@ -322,11 +325,20 @@ impl ReqwestTransport {
 		};
 
 		debug!(%url, "GET via canopy");
-		http.get(url)
+		let response = http
+			.get(url.clone())
 			.send()
 			.await
 			.into_diagnostic()
-			.wrap_err("GET via canopy")
+			.wrap_err("GET via canopy")?;
+
+		// The device credential rides this request, so a body from another
+		// origin is not canopy's answer to it.
+		if response.url().origin() != url.origin() {
+			bail!("canopy GET {url} was answered from {}", response.url());
+		}
+
+		Ok(response)
 	}
 
 	/// Start a request to an arbitrary canopy endpoint on the current auth path.
@@ -770,6 +782,53 @@ mod tests {
 		};
 		transport.renew().await.expect("renew should be a no-op");
 		assert!(transport.is_tailscale().await);
+	}
+
+	/// A raw GET's body reaches alertd as privileged DDL and the device
+	/// credential rides the request, so a hop off canopy's origin is refused.
+	#[cfg(feature = "raw-requests")]
+	#[tokio::test]
+	async fn a_redirect_off_canopy_is_refused() {
+		let (elsewhere, _elsewhere_server) =
+			serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nDROP ALL;");
+		let redirect: &'static str = Box::leak(
+			format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}/x\r\nContent-Length: 0\r\n\r\n")
+				.into_boxed_str(),
+		);
+		let (canopy, _canopy_server) = serve_once(redirect);
+
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
+		};
+
+		let err = transport
+			.get("/public/x", "/x")
+			.await
+			.expect_err("a body from another origin is not canopy's answer");
+		assert!(err.to_string().contains("answered from"), "{err}");
+	}
+
+	#[cfg(feature = "raw-requests")]
+	#[tokio::test]
+	async fn a_get_canopy_answers_itself_comes_back() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
+		};
+
+		let response = transport
+			.get("/public/x", "/x")
+			.await
+			.expect("canopy answered");
+		assert_eq!(response.text().await.unwrap(), "SELECT 1;");
 	}
 
 	#[tokio::test]
