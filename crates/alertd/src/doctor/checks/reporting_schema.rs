@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use bestool_canopy::{CanopyClient, reqwest::Url};
+use bestool_canopy::CanopyClient;
 use miette::IntoDiagnostic as _;
 
 use super::SweepContext;
@@ -47,14 +47,8 @@ pub async fn run(ctx: SweepContext) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let running = match db.query_opt(STAMP_SQL, &[]).await {
-		Ok(Some(row)) => match row.get::<_, Option<String>>("stamp") {
-			Some(version) => Stamp::Version(version),
-			None => Stamp::Unstamped,
-		},
-		// No `reporting` schema at all. Not an error: a server that has never
-		// had one applied is exactly what this check exists to surface.
-		Ok(None) => Stamp::NoSchema,
+	let running = match read_stamp(db).await {
+		Ok(stamp) => stamp,
 		Err(err) => {
 			return Check::broken(
 				NAME,
@@ -79,6 +73,16 @@ pub async fn run(ctx: SweepContext) -> Check {
 
 	let offered = match offered_schema(canopy, &tamanu.tamanu_version.to_string()).await {
 		Ok(offered) => offered,
+		Err(err) if canopy_is_out(&err) => {
+			return with_version(
+				Check::skip(
+					NAME,
+					"canopy unreachable",
+					format!("cannot tell whether this schema is the one offered: {err}"),
+				),
+				&running,
+			);
+		}
 		Err(err) => {
 			return with_version(
 				Check::warning(
@@ -118,6 +122,19 @@ enum Stamp {
 	NoSchema,
 	Unstamped,
 	Version(String),
+}
+
+/// Read what the server's `reporting` schema stamped on itself.
+async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres::Error> {
+	Ok(match db.query_opt(STAMP_SQL, &[]).await? {
+		Some(row) => match row.get::<_, Option<String>>("stamp") {
+			Some(version) => Stamp::Version(version),
+			None => Stamp::Unstamped,
+		},
+		// No `reporting` schema at all. Not an error: a server that has never
+		// had one applied is exactly what this check exists to surface.
+		None => Stamp::NoSchema,
+	})
 }
 
 /// What the stamp on the server says against what canopy offers.
@@ -162,7 +179,7 @@ fn with_version(check: Check, running: &Stamp) -> Check {
 /// A reporting schema canopy offers, and the version it was built for.
 struct Offered {
 	version: String,
-	download_url: String,
+	id: String,
 }
 
 /// Ask canopy which reporting schema this server is offered.
@@ -193,7 +210,7 @@ async fn offered_schema(
 		.find(is_exact_schema)
 		.map(|a| Offered {
 			version: version.to_owned(),
-			download_url: a.download_url,
+			id: a.id.to_string(),
 		}))
 }
 
@@ -229,6 +246,15 @@ fn offers_nothing(err: &bestool_canopy::Error) -> bool {
 	err.status() == Some(bestool_canopy::http::StatusCode::NOT_FOUND)
 }
 
+/// Whether the ask failed for canopy's own reasons rather than this server's:
+/// the request never landed, or canopy answered with a fault of its own. There
+/// is nothing an operator on this server can do about either, and grading them
+/// raises the same finding on every server in the fleet for the length of a
+/// canopy outage.
+fn canopy_is_out(err: &bestool_canopy::Error) -> bool {
+	err.status().is_none_or(|status| status.is_server_error())
+}
+
 /// Fetch the bytes of the schema canopy offers.
 ///
 /// Canopy holds a group-scoped artifact itself and serves it only to a caller
@@ -239,7 +265,7 @@ async fn fetch_offered(
 	canopy: &Arc<CanopyClient>,
 	offered: &Offered,
 ) -> Result<String, miette::Report> {
-	let path = offered_path(&offered.download_url)?;
+	let path = download_path(&offered.version, &offered.id);
 
 	canopy
 		.transport()
@@ -252,17 +278,16 @@ async fn fetch_offered(
 		.into_diagnostic()
 }
 
-/// The path to ask the transport for, taken from the URL canopy offered.
+/// The path to ask the transport for.
 ///
 /// The transport addresses canopy by path so that it reaches whichever of the
 /// two endpoints holds the credential, and over tailscale the public API is
-/// mounted a level down, so the origin canopy names in the offer is dropped.
-fn offered_path(download_url: &str) -> Result<String, miette::Report> {
-	let url = Url::parse(download_url).into_diagnostic()?;
-	Ok(match url.query() {
-		Some(query) => format!("{}?{query}", url.path()),
-		None => url.path().to_owned(),
-	})
+/// mounted a level down. The path is built from the artifact's id rather than
+/// taken from the offer's `download_url`: a path is resolved against the
+/// transport's own base, so one carrying an authority of its own would present
+/// the device credential to whatever host named it.
+fn download_path(version: &str, id: &str) -> String {
+	format!("/versions/{version}/artifacts/{id}/download")
 }
 
 /// Apply the schema canopy offers.
@@ -295,18 +320,62 @@ pub async fn heal(ctx: SweepContext) -> HealOutcome {
 		}
 	};
 
+	let apply = match apply_connection(&tamanu.database_url).await {
+		Ok(apply) => apply,
+		Err(err) => {
+			tracing::warn!("opening a connection to apply the reporting schema failed: {err}");
+			return HealOutcome::Failed;
+		}
+	};
+
 	// The schema's own SQL drops and recreates it, so this is not additive and
 	// does not need to be made so here.
-	match db.batch_execute(&sql).await {
-		Ok(()) => {
+	if let Err(err) = apply.batch_execute(&sql).await {
+		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
+		return HealOutcome::Failed;
+	}
+
+	// A heal reported as healed clears the backoff, so an apply that leaves
+	// the schema stamped as anything else has to report a failure: otherwise
+	// the schema is dropped and rebuilt on every interval, forever.
+	match read_stamp(db).await {
+		Ok(Stamp::Version(stamp)) if stamp == offered.version => {
 			tracing::info!(version = %offered.version, "applied reporting schema");
 			HealOutcome::Healed
 		}
+		Ok(stamp) => {
+			tracing::warn!(
+				?stamp,
+				offered = %offered.version,
+				"the applied reporting schema did not stamp the offered version"
+			);
+			HealOutcome::Failed
+		}
 		Err(err) => {
-			tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
+			tracing::warn!("reading back the applied reporting schema's stamp failed: {err}");
 			HealOutcome::Failed
 		}
 	}
+}
+
+/// A connection of the apply's own, with ceilings on it.
+///
+/// The sweep's client is shared by every database-backed check and
+/// tokio-postgres serialises what is queued on a connection, so a whole-schema
+/// DDL batch on it holds up every other check for as long as the apply runs.
+/// The timeouts bound a batch that cannot get its locks.
+async fn apply_connection(database_url: &str) -> Result<tokio_postgres::Client, miette::Report> {
+	let (client, conn) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+		.await
+		.into_diagnostic()?;
+	tokio::spawn(async move {
+		let _ = conn.await;
+	});
+	client
+		.batch_execute("SET statement_timeout = '5min'; SET lock_timeout = '30s'")
+		.await
+		.into_diagnostic()?;
+	Ok(client)
 }
 
 #[cfg(test)]
@@ -539,12 +608,28 @@ mod tests {
 		);
 	}
 
+	/// The offer's `download_url` is not what is asked for. A path is resolved
+	/// against the transport's own base, so one canopy names could carry an
+	/// authority and take the device credential with it.
 	#[test]
-	fn the_offer_s_origin_is_dropped_in_favour_of_the_transport_s() {
+	fn the_download_path_is_built_from_the_artifact_s_id() {
 		assert_eq!(
-			offered_path("https://meta.example/versions/2.60.0/artifacts/abc/download").unwrap(),
-			"/versions/2.60.0/artifacts/abc/download"
+			download_path("2.60.0", "00000000-0000-0000-0000-000000000000"),
+			"/versions/2.60.0/artifacts/00000000-0000-0000-0000-000000000000/download"
 		);
+	}
+
+	/// A canopy that never answered, or answered with a fault of its own, is
+	/// not a finding against this server: it would raise the same one on every
+	/// server in the fleet.
+	#[test]
+	fn a_canopy_fault_is_not_graded_against_the_server() {
+		for status in [500, 502, 503] {
+			assert!(canopy_is_out(&http_error(status)), "{status} is canopy's");
+		}
+		for status in [401, 403, 404] {
+			assert!(!canopy_is_out(&http_error(status)), "{status} is an answer");
+		}
 	}
 
 	#[test]
