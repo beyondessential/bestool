@@ -317,7 +317,7 @@ Compaction is the only step that touches files it did not create, so it runs und
 
 **Open within this shape.**
 
-- Publishing chain heads off-box is a candidate follow-up card, not part of this one.
+- Publishing chain heads off-box is a follow-up card in the breakdown: bestool-alertd reads heads through the read API and posts them to canopy.
 
 ## Segment lifecycle
 
@@ -366,4 +366,4 @@ The question was: what does signing buy over a hash chain when the box is alread
   A head is a few dozen bytes, and it later proves the log was not rewritten before that point.
   The hash chain is what makes this possible, which is the real reason to build the chain now.
 
-Verdict: hash chain now, no local signing, and publishing chain heads off-box as a candidate follow-up card once there is somewhere to publish them.
+Verdict: hash chain now, no local signing, and publishing chain heads to canopy from bestool-alertd as a follow-up card in the breakdown.
