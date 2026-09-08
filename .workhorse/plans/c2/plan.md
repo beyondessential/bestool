@@ -245,6 +245,12 @@ Settled in conversation on 2026-09-08.
 7. **The export CLI is free to change.**
    What matters is a stable Rust API for reading the log programmatically; the CLI is one consumer of it.
 8. **Migration is a one-shot import** of the existing redb main file and any orphan files, streamed so it cannot run out of memory.
+9. **Live segments are JSON lines**, one record per line, each record carrying a format version field.
+   Greppable on a box mid-incident, and the schema can grow a field without a format bump.
+   A versioned binary framing was considered for compactness and rejected: the bytes it would save are the same bytes the codec removes at compaction (repeated keys, decimal timestamps), so it would only shrink the short-lived live tier while costing grep and a hand-maintained format.
+   Compactness lives in the compacted tier, not in the live format.
+10. **The read API is a module of bestool-psql.**
+    The two CLIs and anything in bestool consume it from there.
 
 ## What the decisions prune
 
@@ -259,7 +265,6 @@ Settled in conversation on 2026-09-08.
 - Decision 5 adds a startup check: on Linux read the filesystem type of the store directory, on Windows check the drive type, on macOS read the mount's filesystem name.
 - Decision 6 confirms in-memory history loaded from the store tail (19) and rules out live merging.
 - Decision 7 means the audit module's public surface is the deliverable, and the two CLIs become thin wrappers over it.
-  Whether that surface lives in bestool-psql or in its own crate is open.
 - Decision 8 is straightforward with segments: iterate the redb table with its cursor and write records as they come.
 
 ## Narrowed shape
@@ -282,12 +287,10 @@ Compaction is the only step that touches files it did not create, so it runs und
 
 **Open within this shape.**
 
-- Segment framing: JSON lines with a per-record hash field, or length-prefixed binary.
-  JSON lines keeps live segments greppable; binary is smaller and avoids escaping cost.
+- Hash chain definition under JSON lines: hash the previous line's raw bytes as written, so no canonical-JSON step is needed and any reader can verify with a byte-level read.
 - Whether live segments are ever compressed (23) or only compacted ones (24).
   Leaning: only compacted ones.
 - Codec for compacted files: `zstd` (C, already in bestool's tree) or `ruzstd` (pure Rust, weaker).
 - Where compaction runs: at session startup in a background thread, in the export tool, or both.
 - Age thresholds for compaction and retention, and whether retention is on by default at all.
-- Whether the read API is a module of bestool-psql or a separate crate that bestool depends on directly.
 - Signing of compacted files with a per-device key, on top of the hash chain, or hash chain only.
