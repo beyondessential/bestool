@@ -25,7 +25,7 @@ bestool-kopia = { version = "0.5.3", path = "../kopia", optional = true }
 bestool-postgres = { version = "1.2.1", path = "../postgres", optional = true }
 bestool-psql = { version = "1.7.13", path = "../psql", default-features = false, optional = true }
 bestool-tamanu = { version = "0.19.9", path = "../tamanu", default-features = false, optional = true }
-binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
+binstalk-downloader = { version = "0.13.45", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
