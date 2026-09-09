@@ -9,7 +9,7 @@ Pressing up and down, and searching backwards, walk a recall set held in memory 
 
 ## The recall set
 
-At startup the session builds its recall set from the audit log: recall-eligible query records, newest first, across all segments and period files, stopping once a memory budget is reached.
+At startup the session builds its recall set from the audit log: recall-eligible query records, newest first, across all segments and day files, stopping once a memory budget is reached.
 Individual records above a size cutoff are left out of the recall set entirely; they stay in the audit log but a single very large pasted statement never consumes the budget on its own.
 The budget and cutoff keep startup cost and memory flat no matter how busy the user has been.
 
