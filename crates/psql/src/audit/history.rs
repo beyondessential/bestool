@@ -29,6 +29,8 @@ pub struct RecallSet {
 	entries: Vec<String>,
 	/// Supervisors named in the log, newest first, for the write-mode prompt.
 	supervisors: Vec<String>,
+	/// Bytes of query text held in `entries`.
+	held: usize,
 }
 
 impl RecallSet {
@@ -84,6 +86,7 @@ impl RecallSet {
 		// operator should not see the same statement twice for it.
 		collected.dedup();
 		set.entries = collected.into_iter().map(|(_, _, query)| query).collect();
+		set.held = set.entries.iter().map(String::len).sum();
 		debug!(
 			entries = set.entries.len(),
 			supervisors = set.supervisors.len(),
@@ -94,8 +97,33 @@ impl RecallSet {
 
 	/// Add a statement the session just ran, so what an operator can recall in
 	/// the session that ran them is what a later session would recall too.
+	///
+	/// Held to the same cutoff and budget a later session would apply, so the
+	/// two really do agree: one very large pasted statement is no more recalled
+	/// here than it would be there, and a long session's recall set does not
+	/// grow past the bound that keeps its memory flat.
 	pub fn push(&mut self, query: String) {
+		if query.len() > RECALL_CUTOFF {
+			return;
+		}
+
+		self.held += query.len();
 		self.entries.push(query);
+
+		while self.held > RECALL_BUDGET && self.entries.len() > 1 {
+			let dropped = self.entries.remove(0);
+			self.held -= dropped.len();
+		}
+	}
+
+	/// Note a supervisor named this session, so the next write-mode prompt
+	/// recalls it as a later session would.
+	pub fn push_supervisor(&mut self, ots: String) {
+		if ots.is_empty() || self.supervisors.contains(&ots) {
+			return;
+		}
+		// Newest first, which is the order the prompt offers them in.
+		self.supervisors.insert(0, ots);
 	}
 
 	/// Supervisors named in the log, newest first.

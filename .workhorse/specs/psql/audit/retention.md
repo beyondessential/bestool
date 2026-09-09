@@ -33,5 +33,5 @@ Compaction is also available on demand through the audit tools ([AUD-API](tools.
 ## Retention
 
 Records are retained for twelve months, the organisation's retention period for security-sensitive audit logs.
-Retention is applied alongside compaction: a day file is deleted once its day ended longer ago than the retention period.
+Retention is applied alongside compaction: a day file is deleted once its day ended longer ago than the retention period, and so is a legacy store set aside by an import ([AUD-STO](store.md)) once the day it was set aside on ended that long ago.
 Nothing decides what to keep by how much space it takes.

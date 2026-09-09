@@ -30,6 +30,16 @@ use super::{
 /// How much of a segment is read at a time when walking it backwards.
 const REVERSE_CHUNK: usize = 64 * 1024;
 
+/// Most bytes taken as one record before the reader gives up on it.
+///
+/// A record is held whole to be parsed, so without a bound a file with no
+/// separator in it is an unbounded allocation — and behind a day file's
+/// decompression, a few compressible kilobytes on disk are enough to ask for it.
+/// The read API is pointed at stores copied off other machines, so the bound has
+/// to be here rather than assumed of the input. It sits far above any statement
+/// an operator would type or paste.
+const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+
 /// A stretch of bytes a reader could not parse as a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -95,6 +105,21 @@ impl<R: BufRead> FramedReader<R> {
 	}
 }
 
+impl<R: BufRead> FramedReader<R> {
+	/// Read up to the next separator, stopping a little past the bound so the
+	/// caller can tell that it was exceeded.
+	fn take_record(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+		let mut read = 0;
+		loop {
+			let taken = self.inner.read_until(SEPARATOR, buf)?;
+			read += taken;
+			if taken == 0 || buf.last() == Some(&SEPARATOR) || buf.len() > MAX_RECORD_BYTES {
+				return Ok(read);
+			}
+		}
+	}
+}
+
 impl<R: BufRead> Iterator for FramedReader<R> {
 	type Item = FramedItem;
 
@@ -105,7 +130,7 @@ impl<R: BufRead> Iterator for FramedReader<R> {
 
 		loop {
 			let mut buf = Vec::new();
-			let read = match self.inner.read_until(SEPARATOR, &mut buf) {
+			let read = match self.take_record(&mut buf) {
 				Ok(0) => return None,
 				Ok(read) => read,
 				Err(err) => {
@@ -117,6 +142,19 @@ impl<R: BufRead> Iterator for FramedReader<R> {
 					});
 				}
 			};
+
+			// More than one record's worth of bytes with no separator among
+			// them: skipped, and the reader picks up at the next separator, the
+			// same treatment bytes that will not parse already get.
+			if buf.len() > MAX_RECORD_BYTES {
+				let at = self.offset;
+				self.offset += read as u64;
+				self.started = true;
+				return Some(FramedItem::Skipped {
+					at,
+					bytes: buf.len(),
+				});
+			}
 
 			let at = self.offset;
 			self.offset += read as u64;
@@ -216,6 +254,17 @@ impl ReverseFramedReader {
 				self.ready.push_back(parse(record, at));
 			}
 			self.tail.truncate(index);
+		}
+
+		// The same bound as reading forwards: bytes accumulating with no separator
+		// among them are not a record anyone wrote, and holding them all to find
+		// that out is what a crafted file would ask for.
+		if self.tail.len() > MAX_RECORD_BYTES {
+			self.ready.push_back(FramedItem::Skipped {
+				at: start,
+				bytes: self.tail.len(),
+			});
+			self.tail.clear();
 		}
 
 		if self.remaining == 0 {
@@ -716,6 +765,29 @@ mod tests {
 			panic!("expected a record");
 		};
 		assert_eq!(*read, json);
+	}
+
+	#[test]
+	fn a_run_of_bytes_with_no_separator_is_skipped_rather_than_held() {
+		// What a crafted day file amounts to once decompressed: highly
+		// compressible bytes with no separator among them. Held whole it is an
+		// unbounded allocation, so it is skipped like anything else that will
+		// not parse.
+		let mut bytes = vec![b'x'; MAX_RECORD_BYTES + 1024];
+		bytes.extend_from_slice(&framed(&[record(0, "after the junk;")]));
+
+		let items = read_all(&bytes);
+		assert!(matches!(items[0], FramedItem::Skipped { .. }));
+
+		let queries: Vec<_> = items
+			.into_iter()
+			.filter_map(|i| i.into_record())
+			.filter_map(|r| match r.kind {
+				RecordKind::Query(q) => Some(q.query),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(queries, vec!["after the junk;"]);
 	}
 
 	#[test]

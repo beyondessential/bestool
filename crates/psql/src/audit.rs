@@ -110,10 +110,17 @@ impl Audit {
 	/// so the log holds what a file actually did rather than only the line that
 	/// invoked it, and they are kept out of shell history.
 	pub fn record(&mut self, query: String, source: QuerySource) {
+		let context = self.context();
+
+		// A supervisor named this session is offered at its next write-mode
+		// prompt, the same as one a later session would read out of the log.
+		if let Some(ots) = &context.ots {
+			self.recall.push_supervisor(ots.clone());
+		}
 		if source.is_recallable() {
 			self.recall.push(query.clone());
 		}
-		let context = self.context();
+
 		self.writer.query(&context, query, source);
 	}
 
@@ -182,6 +189,53 @@ mod tests {
 		assert_eq!(RecallSet::build(dir.path()).len(), 1);
 		assert!(verify(dir.path()).unwrap().holds());
 		assert_eq!(verify(dir.path()).unwrap().sessions[0].instance, instance);
+	}
+
+	#[test]
+	fn the_session_that_ran_a_statement_recalls_it_as_a_later_one_would() {
+		let dir = tempfile::tempdir().unwrap();
+		let huge = "x".repeat(history::RECALL_CUTOFF + 1);
+
+		let mut audit = Audit::open_bare(dir.path()).unwrap();
+		audit.add_entry("before;".into()).unwrap();
+		audit.add_entry(huge.clone()).unwrap();
+		audit.add_entry("after;".into()).unwrap();
+
+		// A statement over the cutoff is left out of recall here just as it is
+		// in every later session, so what an operator can reach does not depend
+		// on which session they are in.
+		let in_session: Vec<_> = (0..audit.recall.len())
+			.map(|i| audit.recall.get(i).unwrap().to_string())
+			.collect();
+		assert_eq!(in_session, vec!["before;", "after;"]);
+
+		drop(audit);
+		let later = RecallSet::build(dir.path());
+		let afterwards: Vec<_> = (0..later.len())
+			.map(|i| later.get(i).unwrap().to_string())
+			.collect();
+		assert_eq!(in_session, afterwards);
+
+		// And it is still recorded.
+		let logged: Vec<_> = Reader::open(dir.path())
+			.unwrap()
+			.entries()
+			.map(|e| e.query)
+			.collect();
+		assert!(logged.contains(&huge));
+	}
+
+	#[test]
+	fn a_supervisor_named_this_session_is_offered_at_the_next_prompt() {
+		let dir = tempfile::tempdir().unwrap();
+		let state = Arc::new(Mutex::new(ReplState::new()));
+		let mut audit = Audit::open(dir.path(), Arc::clone(&state)).unwrap();
+
+		state.lock().unwrap().write_mode = true;
+		state.lock().unwrap().ots = Some("Carol".into());
+		audit.add_entry("update patients;".into()).unwrap();
+
+		assert_eq!(audit.supervisors(), &["Carol".to_string()]);
 	}
 
 	#[test]

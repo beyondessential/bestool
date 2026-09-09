@@ -165,26 +165,55 @@ pub fn compact_directory(dir: &Path) -> Result<CompactionReport> {
 /// in the output can still be attributed.
 pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) -> Result<()> {
 	// One pass over the log. The context in force is already tracked as the read
-	// goes, so it is picked up alongside each record that enters the output
-	// rather than by reading the whole log a second time to look for it.
+	// goes, so it is picked up alongside each record rather than by reading the
+	// whole log a second time to look for it.
 	let mut reader = Reader::open_range(dir, options.range()?)?;
 	let limit = options.limit();
 
-	let mut window: VecDeque<(Stored, Option<Arc<Record>>)> = VecDeque::new();
+	// Only asking for the newest N needs anything held back, because which
+	// records those are is not known until the read ends. Everything else — no
+	// limit at all, or the oldest N — is a prefix of the stream, so it goes
+	// straight out and the first record reaches the pipe before the log has been
+	// read to its end.
+	let newest_n = limit.is_some() && !options.from_oldest;
+	if !newest_n {
+		let mut count = 0usize;
+		let mut seen: HashSet<Uuid> = HashSet::new();
+
+		while let Some(stored) = reader.next() {
+			if limit.is_some_and(|limit| count == limit) {
+				break;
+			}
+
+			// A session's context goes out the first time one of its records
+			// does, unless that record is the context itself.
+			if let Some(instance) = stored.instance
+				&& seen.insert(instance)
+				&& !matches!(stored.record.kind, RecordKind::Context(_))
+				&& let Some(context) = reader.context_record_of(instance)
+			{
+				let context = context.clone();
+				write_record(out, &context)?;
+			}
+
+			write_record(out, &stored.record)?;
+			count += 1;
+		}
+
+		return written(out.flush());
+	}
+
+	let limit = limit.expect("the newest-N case");
+	let mut window: VecDeque<(Stored, Option<Arc<Record>>)> =
+		VecDeque::with_capacity(limit.min(WINDOW_HINT));
 	while let Some(record) = reader.next() {
 		let context = record
 			.instance
 			.and_then(|instance| reader.context_record_of(instance))
 			.cloned();
 
-		if let Some(limit) = limit {
-			if options.from_oldest {
-				if window.len() == limit {
-					break;
-				}
-			} else if window.len() == limit {
-				window.pop_front();
-			}
+		if window.len() == limit {
+			window.pop_front();
 		}
 		window.push_back((record, context));
 	}
@@ -196,7 +225,7 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 		write_record(out, &record.record)?;
 	}
 
-	out.flush().into_diagnostic()
+	written(out.flush())
 }
 
 /// The context record in force at the start of the output, for each session
@@ -235,9 +264,25 @@ fn leading_contexts(window: &VecDeque<(Stored, Option<Arc<Record>>)>) -> Vec<Rec
 	found
 }
 
+/// The output went away partway through, which ends an export quietly.
+///
+/// Carried as its own error rather than recognised from the wording of one, so
+/// an unrelated failure that happens to mention a broken pipe is still reported.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("the export output closed")]
+pub struct OutputClosed;
+
+fn written(outcome: std::io::Result<()>) -> Result<()> {
+	match outcome {
+		Ok(()) => Ok(()),
+		Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Err(OutputClosed.into()),
+		Err(err) => Err(err).into_diagnostic(),
+	}
+}
+
 fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {
 	let json = record.to_json().into_diagnostic()?;
-	out.write_all(&frame(&json)).into_diagnostic()
+	written(out.write_all(&frame(&json)))
 }
 
 /// Export records to standard output.
@@ -267,10 +312,9 @@ pub fn import_if_legacy(dir: &Path) -> Result<()> {
 	Ok(())
 }
 
-/// Whether an error is a closed output pipe, which ends an export quietly.
+/// Whether an error is a closed output, which ends an export quietly.
 pub fn is_broken_pipe(err: &miette::Report) -> bool {
-	let text = format!("{err:?}");
-	text.contains("Broken pipe") || text.contains("BrokenPipe")
+	err.downcast_ref::<OutputClosed>().is_some()
 }
 
 #[cfg(test)]
@@ -566,6 +610,65 @@ mod tests {
 		let heads = chain_heads(dir.path()).unwrap();
 		assert_eq!(heads.len(), 2);
 		assert!(heads.iter().all(|(_, head)| head.len() == 64));
+	}
+
+	/// A writer that refuses everything after the first record, so a caller that
+	/// buffers the whole selection is told apart from one that streams.
+	struct OneRecord {
+		written: usize,
+	}
+
+	impl Write for OneRecord {
+		fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+			self.written += buf.len();
+			if self.written > 1 {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::BrokenPipe,
+					"enough",
+				));
+			}
+			Ok(buf.len())
+		}
+
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn an_unlimited_export_reaches_the_pipe_before_the_log_ends() {
+		let dir = tempfile::tempdir().unwrap();
+		log_of(dir.path(), 20);
+
+		// `export -n 0 | head -1` must not read and hold the whole log first.
+		let mut out = OneRecord { written: 0 };
+		let err = write_export(
+			&mut out,
+			dir.path(),
+			&QueryOptions {
+				limit: Some(0),
+				..Default::default()
+			},
+		)
+		.expect_err("the pipe closed");
+
+		assert!(is_broken_pipe(&err), "{err:?}");
+		assert!(out.written > 0, "something reached the pipe");
+	}
+
+	#[test]
+	fn a_closed_output_is_told_apart_from_an_error_that_merely_says_so() {
+		let closed: Result<()> = written(Err(std::io::Error::new(
+			std::io::ErrorKind::BrokenPipe,
+			"gone",
+		)));
+		assert!(is_broken_pipe(&closed.unwrap_err()));
+
+		let unrelated: Result<()> = written(Err(std::io::Error::other("Broken pipe")));
+		assert!(
+			!is_broken_pipe(&unrelated.unwrap_err()),
+			"the kind decides, not the wording"
+		);
 	}
 
 	#[test]

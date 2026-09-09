@@ -46,17 +46,19 @@ mod write_mode;
 mod tests;
 
 impl ReplAction {
+	/// Whether the line this action came from is recorded when it runs.
+	///
+	/// SnippetSave records its own line afterwards, and a bare `\e` is not
+	/// recorded at all: the query it produces is recorded by `handle_edit`.
+	pub(crate) fn records_line(&self) -> bool {
+		!matches!(self, ReplAction::SnippetSave { .. } | ReplAction::Edit)
+	}
+
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
 		let is_edit = matches!(self, ReplAction::Edit);
 
-		// Add to history, except for SnippetSave and Edit. Edit is excluded so
-		// the bare `\e` invocation doesn't land in history; the query it
-		// produces is recorded separately by `handle_edit`.
-		if !matches!(self, ReplAction::SnippetSave { .. } | ReplAction::Edit) {
-			let history = ctx.rl.history_mut();
-			if let Err(e) = history.add_entry(line.into()) {
-				debug!("failed to add to history: {e}");
-			}
+		if self.records_line() {
+			record_line(ctx, line);
 		}
 
 		// `\e` only reopens the previous buffer when run back-to-back; any other
@@ -124,6 +126,14 @@ impl ReplAction {
 				modifiers,
 			} => execute::handle_execute(ctx, input, sql, modifiers).await,
 		}
+	}
+}
+
+/// Record a line the operator typed, once, whatever it parses into.
+fn record_line(ctx: &mut ReplContext<'_>, line: &str) {
+	let history = ctx.rl.history_mut();
+	if let Err(e) = history.add_entry(line.into()) {
+		debug!("failed to add to history: {e}");
 	}
 }
 
@@ -328,16 +338,24 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 				let mut should_exit = false;
 				if actions.is_empty() {
 					// No actions to execute, but still add to history
-					let history = ctx.rl.history_mut();
-					if let Err(e) = history.add_entry(line.into()) {
-						debug!("failed to add to history: {e}");
-					}
+					record_line(&mut ctx, line);
 					// A buffered (incomplete) line is still a non-`\e` command,
 					// so it resets the editor-reopen chain.
 					ctx.repl_state.lock().unwrap().last_edit_content = None;
 				} else {
+					// One line, one record, however many statements it parsed
+					// into: what the operator typed is one thing, and recording
+					// it once per statement would both log and recall it several
+					// times over.
+					if actions.iter().any(|s| s.action.records_line()) {
+						record_line(&mut ctx, line);
+					}
+					if !matches!(actions.last().map(|s| &s.action), Some(ReplAction::Edit)) {
+						ctx.repl_state.lock().unwrap().last_edit_content = None;
+					}
+
 					for statement in actions {
-						if statement.action.handle(&mut ctx, line).await.is_break() {
+						if statement.action.dispatch(&mut ctx, line).await.is_break() {
 							should_exit = true;
 							break;
 						}

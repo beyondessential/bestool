@@ -10,7 +10,7 @@
 use std::{
 	collections::{HashMap, hash_map::Entry},
 	io::{BufWriter, Write as _},
-	path::Path,
+	path::{Path, PathBuf},
 };
 
 use jiff::Timestamp;
@@ -77,9 +77,15 @@ struct Session {
 /// A full legacy store held hundreds of thousands of records, and reopening the
 /// destination for each one would put that many open and close calls on the
 /// session's startup path.
+///
+/// Everything is written under a name no reader looks at, and moved into place
+/// only once every legacy file has been read right through. An import that fails
+/// partway therefore leaves nothing behind: the alternative is a half-written
+/// chain that the next attempt appends a second chain onto, which reads as
+/// permanently broken and which nothing folds away.
 #[derive(Default)]
 struct Open {
-	files: HashMap<(Uuid, jiff::civil::Date), BufWriter<std::fs::File>>,
+	files: HashMap<(Uuid, jiff::civil::Date), (PathBuf, BufWriter<std::fs::File>)>,
 }
 
 impl Open {
@@ -89,31 +95,58 @@ impl Open {
 		instance: Uuid,
 		date: jiff::civil::Date,
 	) -> Result<&mut BufWriter<std::fs::File>> {
-		Ok(match self.files.entry((instance, date)) {
+		let (_, writer) = match self.files.entry((instance, date)) {
 			Entry::Occupied(open) => open.into_mut(),
 			Entry::Vacant(slot) => {
-				let path = dir.join(paths::segment_name(date, instance));
+				let final_path = dir.join(paths::segment_name(date, instance));
+				let path = paths::part_of(&final_path);
+				// Truncating rather than appending: anything already under this
+				// name is the wreckage of an import that did not finish.
 				let file = paths::private()
 					.create(true)
-					.append(true)
+					.write(true)
+					.truncate(true)
 					.open(&path)
 					.into_diagnostic()
 					.wrap_err_with(|| format!("opening {}", path.display()))?;
-				slot.insert(BufWriter::new(file))
+				slot.insert((final_path, BufWriter::new(file)))
 			}
-		})
+		};
+		Ok(writer)
 	}
 
-	/// Get everything buffered onto disk, before the old files are set aside.
-	fn finish(self) -> Result<()> {
-		for (_, mut file) in self.files {
+	/// Get everything buffered onto disk and move it into place.
+	fn adopt(self) -> Result<()> {
+		let mut written = Vec::with_capacity(self.files.len());
+
+		for (_, (final_path, mut file)) in self.files {
 			file.flush().into_diagnostic()?;
 			file.into_inner()
 				.map_err(|err| miette!("flushing an imported audit segment: {err}"))?
 				.sync_all()
 				.into_diagnostic()?;
+			written.push(final_path);
 		}
+
+		for final_path in written {
+			let part = paths::part_of(&final_path);
+			std::fs::rename(&part, &final_path)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("moving {} into place", part.display()))?;
+		}
+
 		Ok(())
+	}
+
+	/// Throw away what was written, so a later attempt starts clean.
+	fn abandon(self) {
+		for (_, (final_path, file)) in self.files {
+			drop(file);
+			let part = paths::part_of(&final_path);
+			if let Err(err) = std::fs::remove_file(&part) {
+				debug!(?err, ?part, "could not clear an unfinished import");
+			}
+		}
 	}
 }
 
@@ -137,31 +170,33 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 	let mut open = Open::default();
 	let mut imported = 0;
 
-	let mut done = Vec::new();
+	// All of it or none of it. A legacy file that cannot be read right through
+	// leaves the whole import to be attempted again from the start, because the
+	// records it did yield are interleaved with every other file's in the same
+	// segments and cannot be adopted on their own.
 	for path in &files {
 		match import_file(dir, path, anonymous, &mut sessions, &mut open) {
-			Ok(count) => {
-				imported += count;
-				done.push(path);
+			Ok(count) => imported += count,
+			Err(err) => {
+				warn!(?err, ?path, "could not import a legacy audit file");
+				open.abandon();
+				return Ok(0);
 			}
-			// A legacy file that cannot be read must not stop the others. It is
-			// also not deleted: the read stopped partway, so the file may still
-			// hold records that never made it across, and deleting it would
-			// lose them for good. A later run tries it again.
-			Err(err) => warn!(?err, ?path, "could not import a legacy audit file"),
 		}
 	}
 
 	// The old files are set aside only after the new segments have been written
 	// and synchronised to disk.
-	open.finish()?;
 	//
 	// Set aside, not deleted: import runs from the read-only tools too, so an
 	// auditor who points `verify` at a machine's store would otherwise destroy
-	// the very files they came to examine. The suffix keeps them from being
-	// imported a second time, and leaves them there to be compared against.
-	for path in done {
-		let aside = paths::set_aside(path);
+	// the very files they came to examine. The name keeps them from being
+	// imported a second time, and leaves them there to be compared against
+	// until retention takes them like anything else.
+	open.adopt()?;
+	let today = super::writer::date_of(Timestamp::now());
+	for path in &files {
+		let aside = paths::set_aside(path, today);
 		if let Err(err) = std::fs::rename(path, &aside) {
 			warn!(
 				?err,
@@ -529,7 +564,15 @@ mod tests {
 		// A read-only tool imports too, so the originals have to survive being
 		// looked at: an auditor cannot be the one who destroys the evidence.
 		assert!(!original.exists());
-		assert!(paths::set_aside(&original).exists());
+		let today = date_of(Timestamp::now());
+		assert!(paths::set_aside(&original, today).exists());
+
+		// And they are named for the day they were set aside on, so retention
+		// takes them in their turn rather than keeping them for ever.
+		assert_eq!(
+			paths::list_set_aside(dir.path()).unwrap(),
+			vec![(paths::set_aside(&original, today), today)]
+		);
 
 		// And they are not imported a second time.
 		assert!(paths::list_legacy(dir.path()).unwrap().is_empty());

@@ -14,6 +14,7 @@ Individual records above a size cutoff are left out of the recall set entirely; 
 The budget and cutoff keep startup cost and memory flat no matter how busy the user has been.
 
 Recall-eligible statements the session runs are appended to its recall set as it goes, in the order they were run, so what an operator can recall in the session that ran them is what a later session would recall too.
+The same size cutoff and memory budget apply to them, for the same reason: what is recalled must not depend on which session is asking.
 The recall set is otherwise fixed for the life of the session: an operator who presses up sees the statement they just ran, never one that a concurrent session happened to run in the meantime.
 A new session sees everything recorded before it started, including by sessions that were live at the time.
 

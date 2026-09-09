@@ -110,8 +110,13 @@ pub struct Writer {
 	backlog_bytes: usize,
 	discarded: Option<Discarded>,
 	/// Set when a gap has been written and the context record that follows it
-	/// has not, holding the timestamp that record must take.
-	owes_context: Option<Timestamp>,
+	/// has not, holding the sequence number and timestamp that record must take.
+	///
+	/// The number is settled here rather than at the moment of writing, because
+	/// a write that fails is retried: allocating a fresh number each time would
+	/// leave the burned ones as holes that no record fills and no gap covers,
+	/// and the log would read as altered rather than incomplete.
+	owes_context: Option<(u64, Timestamp)>,
 	/// A failing store is warned about once, then fails silently.
 	warned: bool,
 }
@@ -298,12 +303,12 @@ impl Writer {
 			// rather than an old one being held back out of it. It carries the
 			// context as it stands now, which is what applies to everything
 			// after the gap anyway.
-			self.owes_context = Some(tally.to);
-		}
-
-		if let Some(ts) = self.owes_context {
 			let seq = self.next_seq;
 			self.next_seq += 1;
+			self.owes_context = Some((seq, tally.to));
+		}
+
+		if let Some((seq, ts)) = self.owes_context {
 			self.write(&Pending {
 				seq,
 				ts,
@@ -313,10 +318,16 @@ impl Writer {
 			self.owes_context = None;
 		}
 
-		while let Some(pending) = self.backlog.front().cloned() {
-			self.write(&pending)?;
-			self.backlog.pop_front();
+		// Taken off the front rather than copied off it: a record carries the
+		// whole statement text, and the write path should not double it. One
+		// that cannot be written goes back where it came from.
+		while let Some(pending) = self.backlog.pop_front() {
 			self.backlog_bytes = self.backlog_bytes.saturating_sub(pending.weight);
+			if let Err(err) = self.write(&pending) {
+				self.backlog_bytes += pending.weight;
+				self.backlog.push_front(pending);
+				return Err(err);
+			}
 		}
 
 		Ok(())
@@ -915,6 +926,26 @@ mod tests {
 		let records = read_records(&files(&store)[0]);
 		for pair in records.windows(2) {
 			assert_eq!(pair[1].prev, hash(&pair[0].to_json().unwrap()));
+		}
+	}
+
+	#[test]
+	fn a_context_record_owed_after_a_gap_keeps_its_number_across_retries() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		let mut writer = Writer::new(&store);
+		writer.owes_context = Some((42, Timestamp::now()));
+		let next_seq = writer.next_seq;
+
+		// Every attempt fails, and every attempt must owe the same number. One
+		// allocated per attempt would leave the ones before it as holes that no
+		// record fills and no gap covers, and the log would read as altered.
+		for _ in 0..3 {
+			writer.pump();
+			assert_eq!(writer.owes_context.map(|(seq, _)| seq), Some(42));
+			assert_eq!(writer.next_seq, next_seq, "no number is burned");
 		}
 	}
 

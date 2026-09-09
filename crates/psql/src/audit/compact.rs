@@ -78,9 +78,15 @@ pub fn run(dir: &Path) -> Result<CompactionReport> {
 	let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
 	let mut report = CompactionReport::default();
 
-	for date in eligible(dir, today)?.into_iter().take(DAYS_PER_RUN) {
+	// Days are tried oldest first until one is folded. A day that cannot be
+	// folded — a segment still live on it, or a file that stopped being readable
+	// — must not stand in front of every later day for ever.
+	for date in eligible(dir, today)? {
+		if report.folded.len() >= DAYS_PER_RUN {
+			break;
+		}
 		match fold(dir, date) {
-			Ok(0) => debug!(%date, "nothing folded for this day"),
+			Ok(0) => debug!(%date, "nothing folded for this day, trying the next"),
 			Ok(consumed) => report.folded.push((date, consumed)),
 			Err(err) => warn!(?err, %date, "could not fold audit segments"),
 		}
@@ -124,9 +130,12 @@ pub fn is_worthwhile(dir: &Path) -> bool {
 		return false;
 	};
 
-	let expiring = files.iter().any(|(_, kind)| {
-		matches!(kind, AuditFile::DayFile { .. }) && kind.date() < retention_cutoff(today)
-	});
+	let cutoff = retention_cutoff(today);
+	let expiring = files
+		.iter()
+		.any(|(_, kind)| matches!(kind, AuditFile::DayFile { .. }) && kind.date() < cutoff)
+		|| paths::list_set_aside(dir)
+			.is_ok_and(|found| found.iter().any(|(_, date)| *date < cutoff));
 	let foldable = files.iter().any(|(_, kind)| {
 		matches!(kind, AuditFile::Segment { .. }) && kind.date() < window_cutoff(today)
 	});
@@ -237,10 +246,18 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 	let final_path = dir.join(paths::day_file_name(date));
 
 	{
+		// Created exclusively, never truncating what is already there: the name
+		// is predictable, and in a directory whose permissions could not be
+		// narrowed a symlink left at it would otherwise have compaction
+		// overwrite whatever it points at.
+		if temp.exists() {
+			std::fs::remove_file(&temp)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("clearing {}", temp.display()))?;
+		}
 		let file = paths::private()
-			.create(true)
+			.create_new(true)
 			.write(true)
-			.truncate(true)
 			.open(&temp)
 			.into_diagnostic()
 			.wrap_err_with(|| format!("creating {}", temp.display()))?;
@@ -282,23 +299,31 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 }
 
 /// Delete day files whose day ended longer ago than the retention period.
+///
+/// Legacy files an import set aside go the same way, on the day they were set
+/// aside: they hold the same statement text as the log itself and are kept no
+/// longer than it is.
 fn expire(dir: &Path, today: Date) -> Result<Vec<Date>> {
 	let cutoff = retention_cutoff(today);
 	let mut deleted = Vec::new();
 
-	for (path, kind) in paths::list(dir)? {
-		let AuditFile::DayFile { date } = kind else {
-			continue;
-		};
+	let days = paths::list(dir)?
+		.into_iter()
+		.filter_map(|(path, kind)| match kind {
+			AuditFile::DayFile { date } => Some((path, date)),
+			AuditFile::Segment { .. } => None,
+		});
+
+	for (path, date) in days.chain(paths::list_set_aside(dir)?) {
 		if date >= cutoff {
 			continue;
 		}
 		match std::fs::remove_file(&path) {
 			Ok(()) => {
-				info!(%date, "deleted an audit day file past its retention period");
+				info!(?path, %date, "deleted audit records past their retention period");
 				deleted.push(date);
 			}
-			Err(err) => warn!(?err, ?path, "could not delete an expired audit day file"),
+			Err(err) => warn!(?err, ?path, "could not delete expired audit records"),
 		}
 	}
 
@@ -649,6 +674,63 @@ mod tests {
 			"the live session keeps its lock"
 		);
 		drop(live);
+	}
+
+	#[test]
+	fn a_day_that_cannot_be_folded_does_not_block_the_days_after_it() {
+		let dir = tempfile::tempdir().unwrap();
+		let stuck = days_ago(PLAIN_TEXT_WINDOW_DAYS + 3);
+		let later = days_ago(PLAIN_TEXT_WINDOW_DAYS + 1);
+		session_on(dir.path(), stuck, &["stuck;"]);
+		session_on(dir.path(), later, &["later;"]);
+
+		// A session idle since before the window holds the oldest day open.
+		// Trying only ever the oldest would leave every later day unfolded for
+		// as long as that session lives.
+		let held_path = paths::list(dir.path())
+			.unwrap()
+			.into_iter()
+			.find(|(_, kind)| kind.date() == stuck)
+			.map(|(path, _)| path)
+			.unwrap();
+		let held = Lock::try_segment(&held_path).unwrap().unwrap();
+
+		let report = run(dir.path()).unwrap();
+		assert_eq!(report.folded, vec![(later, 1)]);
+
+		drop(held);
+		assert_eq!(run(dir.path()).unwrap().folded, vec![(stuck, 1)]);
+	}
+
+	#[test]
+	fn a_legacy_file_set_aside_is_deleted_once_it_is_past_retention() {
+		let dir = tempfile::tempdir().unwrap();
+		let long_ago = days_ago(RETENTION_MONTHS * 31 + 10);
+
+		// What it holds is the same statement text as the log, so it is kept no
+		// longer than the log is.
+		let aside = dir
+			.path()
+			.join(format!("audit-main.redb.{long_ago}.imported"));
+		std::fs::write(&aside, b"the old store").unwrap();
+
+		assert!(is_worthwhile(dir.path()));
+		let report = run(dir.path()).unwrap();
+		assert_eq!(report.expired, vec![long_ago]);
+		assert!(!aside.exists());
+	}
+
+	#[test]
+	fn a_legacy_file_set_aside_inside_the_retention_period_is_kept() {
+		let dir = tempfile::tempdir().unwrap();
+		let recently = days_ago(1);
+		let aside = dir
+			.path()
+			.join(format!("audit-main.redb.{recently}.imported"));
+		std::fs::write(&aside, b"the old store").unwrap();
+
+		run(dir.path()).unwrap();
+		assert!(aside.exists());
 	}
 
 	#[test]

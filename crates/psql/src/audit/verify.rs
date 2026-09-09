@@ -20,13 +20,29 @@ use uuid::Uuid;
 use super::{
 	read::{Range, Reader, Skipped},
 	record::{GapRecord, Record, RecordKind},
-	writer::BACKLOG_RECORDS,
+	writer::{BACKLOG_BYTES, BACKLOG_RECORDS},
 };
+
+/// Roughly how much memory a record held for reordering costs.
+fn json_weight(record: &Record) -> usize {
+	match &record.kind {
+		RecordKind::Query(query) => query.query.len(),
+		_ => 0,
+	}
+}
 
 /// How many out-of-order records are held per session before the chain is
 /// called broken. Records only ever arrive out of order by as much as a
 /// session's own held backlog, so this is generous.
 const REORDER_LIMIT: usize = BACKLOG_RECORDS * 10;
+
+/// How many bytes of out-of-order records are held per session.
+///
+/// Statement text is bounded only by the writer's own backlog, so a count on its
+/// own is not a bound on memory: a session whose chain breaks early — the very
+/// case verification exists to diagnose — would otherwise park whole records
+/// until the log ran out, once per session in the directory.
+const REORDER_BYTES: usize = BACKLOG_BYTES;
 
 /// Where a session's chain first stopped holding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +157,8 @@ struct Chain {
 	/// were made before the gap record that precedes them, so a reader can meet
 	/// them slightly out of order.
 	pending: HashMap<String, (Record, String)>,
+	/// Bytes of JSON held in `pending`.
+	pending_bytes: usize,
 }
 
 impl Chain {
@@ -162,6 +180,7 @@ impl Chain {
 			ahead: BTreeMap::new(),
 			first_ahead: None,
 			pending: HashMap::new(),
+			pending_bytes: 0,
 		};
 		chain.consume(record, hash);
 		chain
@@ -227,16 +246,20 @@ impl Chain {
 			return;
 		}
 
-		if self.pending.len() >= REORDER_LIMIT {
+		if self.pending.len() >= REORDER_LIMIT || self.pending_bytes >= REORDER_BYTES {
 			self.note_break(&record);
 			return;
 		}
+		self.pending_bytes += hash.len() + json_weight(&record);
 		self.pending.insert(record.prev.clone(), (record, hash));
 	}
 
 	/// Take up anything that was waiting on the record just consumed.
 	fn drain(&mut self) {
 		while let Some((record, hash)) = self.pending.remove(&self.head) {
+			self.pending_bytes = self
+				.pending_bytes
+				.saturating_sub(hash.len() + json_weight(&record));
 			self.consume(&record, &hash);
 		}
 	}

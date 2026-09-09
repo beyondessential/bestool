@@ -45,14 +45,56 @@ pub const LEGACY_PREFIXES: &[&str] = &["audit-working-", "audit-orphaned-"];
 /// Suffix put on a legacy file once its records have been imported.
 ///
 /// It stops the file being imported again, and leaves the original where an
-/// auditor can still compare against it.
+/// auditor can still compare against it. The date it was set aside on goes in
+/// the name so that retention can take it in its turn: what it holds is the
+/// same statement text as the log itself, and is kept no longer.
 pub const IMPORTED_SUFFIX: &str = ".imported";
 
+/// Suffix of a segment being written by an import that has not finished.
+pub const PART_SUFFIX: &str = ".part";
+
 /// The name an imported legacy file is set aside under.
-pub fn set_aside(legacy: &Path) -> PathBuf {
+pub fn set_aside(legacy: &Path, on: Date) -> PathBuf {
 	let mut name = legacy.as_os_str().to_os_string();
-	name.push(IMPORTED_SUFFIX);
+	name.push(format!(".{on}{IMPORTED_SUFFIX}"));
 	PathBuf::from(name)
+}
+
+/// The name a segment is written under while its import is unfinished.
+pub fn part_of(segment: &Path) -> PathBuf {
+	let mut name = segment.as_os_str().to_os_string();
+	name.push(PART_SUFFIX);
+	PathBuf::from(name)
+}
+
+/// Legacy files set aside by an import, with the day each was set aside on.
+pub fn list_set_aside(dir: &Path) -> Result<Vec<(PathBuf, Date)>> {
+	let mut found = Vec::new();
+
+	let entries = match std::fs::read_dir(dir) {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+		Err(err) => return Err(err).into_diagnostic(),
+	};
+
+	for entry in entries {
+		let entry = entry.into_diagnostic()?;
+		let name = entry.file_name();
+		let Some(name) = name.to_str() else { continue };
+		let Some(rest) = name.strip_suffix(IMPORTED_SUFFIX) else {
+			continue;
+		};
+		// `<original>.<YYYY-MM-DD>`: the date is fixed-width and last.
+		let Some(date) = rest.len().checked_sub(10).and_then(|at| rest.get(at..)) else {
+			continue;
+		};
+		if let Ok(date) = date.parse() {
+			found.push((entry.path(), date));
+		}
+	}
+
+	found.sort();
+	Ok(found)
 }
 
 /// Name of the segment a session writes on a given day.
@@ -217,9 +259,18 @@ pub fn create_dir(dir: &Path) -> Result<()> {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt as _;
-		// Best effort: a directory that already existed with wider permissions
-		// is narrowed, but a failure here must not stop a session recording.
-		std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).ok();
+		// A directory that already existed with wider permissions is narrowed. A
+		// failure must not stop a session recording, but it does mean patient
+		// data is about to be written where other local users can read it, so it
+		// is said out loud rather than swallowed.
+		if let Err(err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+			tracing::warn!(?err, ?dir, "cannot narrow the audit directory");
+			eprintln!(
+				"warning: the audit directory {} could not be made private: {err}",
+				dir.display()
+			);
+			eprintln!("warning: other users of this machine may be able to read the audit log");
+		}
 	}
 
 	Ok(())
