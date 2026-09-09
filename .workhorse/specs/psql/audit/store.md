@@ -10,13 +10,14 @@ Because no two processes ever write the same file, sessions need no locks, no sh
 
 ## Segments
 
-A session writes its records into one segment per UTC day, named after the session's identity and the date it covers.
+A session writes its records into one segment per UTC day, named `audit-<date>-<session identity>.json-seq` for the date it covers.
+The date leads the name so that sorting a directory's names orders the log by time, which is how a reader reaches the newest records without opening anything, and the extension names the framing rather than claiming a format that a plain JSON-lines reader would choke on.
 A segment is created when the session first records something on that day, so a session left open over a quiet night leaves no file for it.
 Most sessions are shorter than a day and so have exactly one segment.
 Because a segment never spans a date boundary, every closed segment falls entirely within one day.
 
 The segment is a JSON text sequence: each record is one line of JSON, preceded by an ASCII record separator (`0x1E`) and followed by a newline, the framing of RFC 7464.
-A live segment can be read, tailed and searched with ordinary text tools, and parsed by anything that understands JSON lines or JSON sequences.
+A live segment can be read, tailed and searched with ordinary text tools, and parsed by anything that understands JSON sequences, `jq --seq` among them.
 Each record carries a format version so the record shape can grow without readers guessing.
 
 The separator never occurs inside a record, because JSON escapes control characters, so it marks the start of a record unambiguously.
@@ -28,7 +29,7 @@ The session never waits on this lock; it exists so that another process can tell
 
 A segment is closed once its session has rolled past it or exited.
 A clean exit appends an end record to the session's last segment.
-Rolling over to a new day does not, because the next segment's first record carries the hash of this one's last line and so shows the session continued.
+Rolling over to a new day does not, because the next segment's first record carries the hash of this one's last record and so shows the session continued.
 A crash leaves no end record and possibly a torn final record, which readers discard.
 A closed segment is complete and readable as it stands, and remains so until compaction folds it into a day file (see [AUD-RET](retention.md)).
 
@@ -57,7 +58,7 @@ The log therefore says where it is incomplete, rather than leaving a silent hole
 
 A segment, with its framing bytes left out for legibility:
 
-```jsonl
+```json
 {"v":1,"seq":0,"ts":"2026-09-08T03:14:15.926535Z","prev":"","kind":"context","sys_user":"felix","db_user":"tamanu","writemode":false,"ots":null,"tailscale":[{"device":"laptop","user":"felix@example.com"}],"instance":"7d2c…"}
 {"v":1,"seq":1,"ts":"2026-09-08T03:14:22.000481Z","prev":"9f86d0…","kind":"query","query":"select count(*) from patients;","recall":true}
 {"v":1,"seq":2,"ts":"2026-09-08T03:44:09.550118Z","prev":"e3b0c4…","kind":"gap","lost":87,"through":88,"from":"2026-09-08T03:14:30.104881Z","to":"2026-09-08T03:44:02.771290Z"}
