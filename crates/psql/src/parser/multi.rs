@@ -10,10 +10,13 @@ use super::{
 	Metacommand, QueryModifiers, SqlLexState, parse_metacommand, parse_query_modifiers,
 	strip_comment,
 };
-use crate::{input::ReplAction, repl::ReplState};
+use crate::{
+	input::{ReplAction, Statement},
+	repl::ReplState,
+};
 
 /// Parse multiple statements from input, returning completed actions and remaining buffer
-pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplAction>, String) {
+pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statement>, String) {
 	let input = input.trim();
 	if input.is_empty() {
 		return (vec![], String::new());
@@ -38,18 +41,21 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 		let start_remaining = remaining;
 
 		// Try to parse a metacommand
-		if let Ok(action) = parse_metacommand_action(&mut remaining) {
-			actions.push(action);
+		if let Ok((text, action)) = parse_metacommand_action(&mut remaining) {
+			actions.push(Statement { text, action });
 			continue;
 		}
 
 		// Reset and try to parse a query
 		remaining = start_remaining;
 		if let Ok((sql, modifiers)) = parse_query_statement(&mut remaining, state) {
-			actions.push(ReplAction::Execute {
-				input: sql.clone(),
-				sql,
-				modifiers,
+			actions.push(Statement {
+				text: sql.clone(),
+				action: ReplAction::Execute {
+					input: sql.clone(),
+					sql,
+					modifiers,
+				},
 			});
 			continue;
 		}
@@ -78,7 +84,10 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<ReplActi
 	}
 }
 
-fn parse_metacommand_action(input: &mut &str) -> Result<ReplAction, ErrMode<ContextError>> {
+/// Parse one metacommand, returning the line it was written as alongside it.
+fn parse_metacommand_action(
+	input: &mut &str,
+) -> Result<(String, ReplAction), ErrMode<ContextError>> {
 	// Must start with backslash
 	'\\'.parse_next(input)?;
 
@@ -98,7 +107,7 @@ fn parse_metacommand_action(input: &mut &str) -> Result<ReplAction, ErrMode<Cont
 	if let Some(stripped_line) = line_without_comment
 		&& let Ok(Some(metacmd)) = parse_metacommand(stripped_line)
 	{
-		return Ok(metacommand_to_action(metacmd));
+		return Ok((full_line, metacommand_to_action(metacmd)));
 	}
 
 	Err(ErrMode::Backtrack(ContextError::new()))
@@ -315,7 +324,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("select 1 + 2;", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => assert_eq!(sql, "select 1 + 2"),
 			_ => panic!("Expected Execute"),
 		}
@@ -327,7 +336,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("select 1 \\gx", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, modifiers, .. } => {
 				assert_eq!(sql, "select 1");
 				assert!(modifiers.contains(&super::super::QueryModifier::Expanded));
@@ -353,7 +362,7 @@ mod tests {
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 3);
 
-		match &actions[2] {
+		match &actions[2].action {
 			ReplAction::Result { .. } => {}
 			_ => panic!("Expected Result metacommand"),
 		}
@@ -382,7 +391,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("select 'hello;world';", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => assert_eq!(sql, "select 'hello;world'"),
 			_ => panic!("Expected Execute"),
 		}
@@ -397,7 +406,7 @@ mod tests {
 		assert_eq!(actions.len(), 3);
 
 		// Verify first query with \gx modifier
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, modifiers, .. } => {
 				assert_eq!(sql, "select 1 + 2");
 				assert!(modifiers.contains(&super::super::QueryModifier::Expanded));
@@ -406,7 +415,7 @@ mod tests {
 		}
 
 		// Verify second query with semicolon
-		match &actions[1] {
+		match &actions[1].action {
 			ReplAction::Execute { sql, modifiers, .. } => {
 				assert_eq!(sql, "select 2 + 3");
 				assert!(!modifiers.contains(&super::super::QueryModifier::Expanded));
@@ -415,7 +424,7 @@ mod tests {
 		}
 
 		// Verify metacommand
-		match &actions[2] {
+		match &actions[2].action {
 			ReplAction::Result { .. } => {}
 			_ => panic!("Expected third action to be Result metacommand"),
 		}
@@ -428,7 +437,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::ToggleExpanded => {}
 			_ => panic!("Expected ToggleExpanded"),
 		}
@@ -445,7 +454,7 @@ mod tests {
 			"Expected at least 1 action, got {}",
 			actions.len()
 		);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::ToggleExpanded => {}
 			_ => panic!("Expected ToggleExpanded as first action"),
 		}
@@ -458,7 +467,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "select 'hello; world' as msg");
 			}
@@ -495,7 +504,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("\\vars -- foo", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::LookupVar { pattern } => {
 				assert_eq!(pattern, &None);
 			}
@@ -509,7 +518,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("\\vars my* -- foo", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::LookupVar { pattern } => {
 				assert_eq!(pattern, &Some("my*".to_string()));
 			}
@@ -523,7 +532,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input("select 1 + 1; -- foo", &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "select 1 + 1");
 			}
@@ -538,7 +547,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				// The SQL will contain the comment because Postgres handles it
 				assert!(sql.contains("select 1 +"));
@@ -563,7 +572,7 @@ mod tests {
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "select '-- not a comment'");
 			}
@@ -611,7 +620,7 @@ AS $function$
 		);
 		assert_eq!(actions.len(), 1);
 		assert!(
-			matches!(&actions[0], ReplAction::Execute { .. }),
+			matches!(&actions[0].action, ReplAction::Execute { .. }),
 			"expected execute"
 		);
 	}
@@ -636,7 +645,7 @@ $$;"#;
 		);
 		assert_eq!(actions.len(), 1);
 		assert!(
-			matches!(&actions[0], ReplAction::Execute { .. }),
+			matches!(&actions[0].action, ReplAction::Execute { .. }),
 			"expected execute"
 		);
 	}
@@ -648,7 +657,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT $$hello; world$$");
 			}
@@ -663,7 +672,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(
 					sql,
@@ -681,7 +690,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(
 					sql,
@@ -699,7 +708,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(
 					sql,
@@ -717,7 +726,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT /* outer /* inner */ comment */ 2");
 			}
@@ -732,7 +741,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, r"SELECT E'hello\nworld'");
 			}
@@ -747,7 +756,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 10 - -5");
 			}
@@ -762,7 +771,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT ARRAY['a;b', 'c;d']");
 			}
@@ -777,7 +786,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(
 					sql,
@@ -795,7 +804,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 1 /* comment at end */");
 			}
@@ -810,7 +819,7 @@ $$;"#;
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT /* first */ 1 /* second; */ + /* third */ 2");
 			}
@@ -900,7 +909,7 @@ WHERE id IN (
 			remaining
 		);
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert!(sql.contains("WITH group_analysis"));
 				assert!(sql.contains("DELETE FROM logs.changes_backup"));
@@ -918,7 +927,7 @@ WHERE id IN (
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert!(sql.contains("SELECT 1 AS first"));
 				assert!(sql.contains("2 AS second"));

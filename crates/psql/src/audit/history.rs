@@ -1,95 +1,231 @@
+//! Shell history, which is a view over the audit log rather than a store.
+//!
+//! spec: AUD-HIS
+
 use std::{borrow::Cow, path::Path};
 
-use rustyline::history::{History as RustylineHistory, SearchDirection, SearchResult};
-use tracing::trace;
+use rustyline::history::{History, SearchDirection, SearchResult};
+use tracing::debug;
 
-impl RustylineHistory for super::Audit {
+use super::{
+	paths::{self, AuditFile},
+	read::{FramedItem, ReverseFramedReader, open},
+	record::{ContextRecord, Record, RecordKind},
+};
+
+/// How much query text the recall set holds, which keeps startup cost and
+/// memory flat no matter how busy the user has been.
+pub const RECALL_BUDGET: usize = 4 * 1024 * 1024;
+
+/// Statements longer than this are left out of the recall set entirely, so one
+/// very large pasted statement never consumes the budget on its own. They stay
+/// in the audit log.
+pub const RECALL_CUTOFF: usize = 10 * 1024;
+
+/// What a session recalls: the statements it can walk with up, down and search.
+#[derive(Debug, Default, Clone)]
+pub struct RecallSet {
+	/// Oldest first, which is the order rustyline indexes by.
+	entries: Vec<String>,
+	/// Supervisors named in the log, newest first, for the write-mode prompt.
+	supervisors: Vec<String>,
+}
+
+impl RecallSet {
+	/// Build the recall set by reading the log newest first.
+	///
+	/// Reading stops as soon as the budget is met, and files are opened newest
+	/// first, so how many segments the directory holds barely affects startup.
+	pub fn build(dir: &Path) -> Self {
+		let mut set = Self::default();
+		let mut budget = RECALL_BUDGET;
+		let mut seen_supervisors = std::collections::HashSet::new();
+		let mut collected: Vec<(jiff::Timestamp, String)> = Vec::new();
+
+		let Ok(files) = paths::list(dir) else {
+			return set;
+		};
+
+		for (path, kind) in files.into_iter().rev() {
+			if budget == 0 {
+				break;
+			}
+
+			for record in read_newest_first(&path, kind) {
+				match &record.kind {
+					RecordKind::Context(ContextRecord { ots: Some(ots), .. })
+						if !ots.is_empty() && seen_supervisors.insert(ots.clone()) =>
+					{
+						set.supervisors.push(ots.clone());
+					}
+					RecordKind::Query(query) if query.source.is_recallable() => {
+						if query.query.len() > RECALL_CUTOFF {
+							continue;
+						}
+						if query.query.len() > budget {
+							budget = 0;
+							break;
+						}
+						budget -= query.query.len();
+						collected.push((record.ts, query.query.clone()));
+					}
+					_ => {}
+				}
+			}
+		}
+
+		// Files are read newest first, which is what keeps startup flat, but
+		// concurrent sessions on one day live in separate files. Ordering what
+		// was collected by time puts them back into the order they were run,
+		// and the budget bounds how much there is to order.
+		collected.sort_by_key(|(ts, _)| *ts);
+		set.entries = collected.into_iter().map(|(_, query)| query).collect();
+		debug!(
+			entries = set.entries.len(),
+			supervisors = set.supervisors.len(),
+			"built recall set"
+		);
+		set
+	}
+
+	/// Add a statement the session just ran, so what an operator can recall in
+	/// the session that ran them is what a later session would recall too.
+	pub fn push(&mut self, query: String) {
+		self.entries.push(query);
+	}
+
+	/// Supervisors named in the log, newest first.
+	pub fn supervisors(&self) -> &[String] {
+		&self.supervisors
+	}
+
+	pub fn len(&self) -> usize {
+		self.entries.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
+
+	pub fn get(&self, index: usize) -> Option<&str> {
+		self.entries.get(index).map(String::as_str)
+	}
+
+	fn hits(
+		&self,
+		start: usize,
+		dir: SearchDirection,
+		matches: impl Fn(&str) -> Option<usize>,
+	) -> Option<SearchResult<'_>> {
+		if start >= self.entries.len() {
+			return None;
+		}
+
+		let range: Box<dyn Iterator<Item = usize>> = match dir {
+			SearchDirection::Forward => Box::new(start..self.entries.len()),
+			SearchDirection::Reverse => Box::new((0..=start).rev()),
+		};
+
+		for index in range {
+			let entry = &self.entries[index];
+			if let Some(pos) = matches(entry) {
+				return Some(SearchResult {
+					entry: Cow::Borrowed(entry),
+					idx: index,
+					pos,
+				});
+			}
+		}
+
+		None
+	}
+}
+
+/// A file's records, newest first.
+///
+/// A plain segment is walked backwards from its end; a day file has to be
+/// decompressed forward, so its records are collected and reversed.
+fn read_newest_first(path: &Path, kind: AuditFile) -> Vec<Record> {
+	match kind {
+		AuditFile::Segment { .. } => match ReverseFramedReader::open(path) {
+			Ok(reader) => reader.filter_map(FramedItem::into_record).collect(),
+			Err(err) => {
+				debug!(?err, ?path, "skipping unreadable audit segment");
+				Vec::new()
+			}
+		},
+		AuditFile::DayFile { .. } => match open(path, kind) {
+			Ok(reader) => {
+				let mut records: Vec<_> = reader.filter_map(FramedItem::into_record).collect();
+				records.reverse();
+				records
+			}
+			Err(err) => {
+				debug!(?err, ?path, "skipping unreadable audit day file");
+				Vec::new()
+			}
+		},
+	}
+}
+
+impl History for super::Audit {
 	fn get(
 		&self,
 		index: usize,
 		_dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
-		let timestamp = match self.hist_index_get(index as u64) {
-			Ok(Some(ts)) => ts,
-			Ok(None) => return Ok(None),
-			Err(e) => {
-				return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
-					e.to_string(),
-				)));
-			}
-		};
-
-		let entry = self.get_entry(timestamp).map_err(|e| {
-			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-		})?;
-
-		// Entry may have been deleted by another process
-		let entry = match entry {
-			Some(e) => e,
-			None => return Ok(None),
-		};
-
-		// Skip entries marked as not to be recalled in history
-		if !entry.recall {
-			return Ok(None);
-		}
-
-		Ok(Some(SearchResult {
-			entry: Cow::Owned(entry.query),
+		Ok(self.recall.get(index).map(|entry| SearchResult {
+			entry: Cow::Borrowed(entry),
 			idx: index,
 			pos: 0,
 		}))
 	}
 
 	fn add(&mut self, _line: &str) -> rustyline::Result<bool> {
-		trace!("Audit::add called and ignored");
+		// The session adds to its own recall set as it records, so that what is
+		// recalled and what is logged cannot drift apart.
 		Ok(true)
 	}
 
 	fn add_owned(&mut self, _line: String) -> rustyline::Result<bool> {
-		trace!("Audit::add_owned called and ignored");
 		Ok(true)
 	}
 
 	fn len(&self) -> usize {
-		self.hist_index_len().unwrap_or(0) as usize
+		self.recall.len()
 	}
 
 	fn is_empty(&self) -> bool {
-		self.hist_index_len().unwrap_or(0) == 0
+		self.recall.is_empty()
 	}
 
 	fn set_max_len(&mut self, _len: usize) -> rustyline::Result<()> {
-		// No-op: we don't clear audit logs through rustyline
+		// The recall set is bounded by its own memory budget.
 		Ok(())
 	}
 
 	fn ignore_dups(&mut self, _yes: bool) -> rustyline::Result<()> {
-		// No-op: we never ignore duplicates
+		// Every statement an operator ran is recalled, repeats included.
 		Ok(())
 	}
 
-	fn ignore_space(&mut self, _yes: bool) {
-		// No-op: we never ignore entries
-	}
+	fn ignore_space(&mut self, _yes: bool) {}
 
 	fn save(&mut self, _path: &Path) -> rustyline::Result<()> {
-		// No-op: already persisted to database
+		// History is the audit log, which is already written as it goes.
 		Ok(())
 	}
 
 	fn append(&mut self, _path: &Path) -> rustyline::Result<()> {
-		// No-op: already persisted to database
 		Ok(())
 	}
 
 	fn load(&mut self, _path: &Path) -> rustyline::Result<()> {
-		// No-op: loaded from database
 		Ok(())
 	}
 
 	fn clear(&mut self) -> rustyline::Result<()> {
-		// No-op: we don't clear audit logs
+		// An audit log is not something a session can clear.
 		Ok(())
 	}
 
@@ -99,60 +235,7 @@ impl RustylineHistory for super::Audit {
 		start: usize,
 		dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
-		let len = self.hist_index_len().map_err(|e| {
-			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-		})? as usize;
-
-		let range: Box<dyn Iterator<Item = usize>> = match dir {
-			SearchDirection::Forward => {
-				if start >= len {
-					return Ok(None);
-				}
-				Box::new(start..len)
-			}
-			SearchDirection::Reverse => {
-				if start >= len {
-					return Ok(None);
-				}
-				Box::new((0..=start).rev())
-			}
-		};
-
-		for idx in range {
-			let timestamp = match self.hist_index_get(idx as u64) {
-				Ok(Some(ts)) => ts,
-				Ok(None) => continue,
-				Err(e) => {
-					return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
-						e.to_string(),
-					)));
-				}
-			};
-
-			let entry = self.get_entry(timestamp).map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-			})?;
-
-			let entry = match entry {
-				Some(e) => e,
-				None => continue,
-			};
-
-			// Skip entries marked as not to be recalled in history
-			if !entry.recall {
-				continue;
-			}
-
-			if let Some(pos) = entry.query.find(term) {
-				return Ok(Some(SearchResult {
-					entry: Cow::Owned(entry.query),
-					idx,
-					pos,
-				}));
-			}
-		}
-
-		Ok(None)
+		Ok(self.recall.hits(start, dir, |entry| entry.find(term)))
 	}
 
 	fn starts_with(
@@ -161,59 +244,192 @@ impl RustylineHistory for super::Audit {
 		start: usize,
 		dir: SearchDirection,
 	) -> rustyline::Result<Option<SearchResult<'_>>> {
-		let len = self.hist_index_len().map_err(|e| {
-			rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-		})? as usize;
+		Ok(self
+			.recall
+			.hits(start, dir, |entry| entry.starts_with(term).then_some(0)))
+	}
+}
 
-		let range: Box<dyn Iterator<Item = usize>> = match dir {
-			SearchDirection::Forward => {
-				if start >= len {
-					return Ok(None);
-				}
-				Box::new(start..len)
-			}
-			SearchDirection::Reverse => {
-				if start >= len {
-					return Ok(None);
-				}
-				Box::new((0..=start).rev())
-			}
-		};
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::audit::{
+		compact,
+		record::QuerySource,
+		writer::{Context, Writer},
+	};
 
-		for idx in range {
-			let timestamp = match self.hist_index_get(idx as u64) {
-				Ok(Some(ts)) => ts,
-				Ok(None) => continue,
-				Err(e) => {
-					return Err(rustyline::error::ReadlineError::Io(std::io::Error::other(
-						e.to_string(),
-					)));
-				}
-			};
-
-			let entry = self.get_entry(timestamp).map_err(|e| {
-				rustyline::error::ReadlineError::Io(std::io::Error::other(e.to_string()))
-			})?;
-
-			let entry = match entry {
-				Some(e) => e,
-				None => continue,
-			};
-
-			// Skip entries marked as not to be recalled in history
-			if !entry.recall {
-				continue;
-			}
-
-			if entry.query.starts_with(term) {
-				return Ok(Some(SearchResult {
-					entry: Cow::Owned(entry.query),
-					idx,
-					pos: 0,
-				}));
-			}
+	fn context() -> Context {
+		Context {
+			sys_user: "felix".into(),
+			db_user: "tamanu".into(),
+			writemode: false,
+			ots: None,
 		}
+	}
 
-		Ok(None)
+	fn entries(dir: &Path) -> Vec<String> {
+		let set = RecallSet::build(dir);
+		(0..set.len())
+			.map(|i| set.get(i).unwrap().to_string())
+			.collect()
+	}
+
+	#[test]
+	fn recall_is_oldest_first_across_the_whole_log() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		for i in 0..5 {
+			writer.query(&context(), format!("select {i};"), QuerySource::Typed);
+		}
+		drop(writer);
+
+		assert_eq!(
+			entries(dir.path()),
+			vec![
+				"select 0;",
+				"select 1;",
+				"select 2;",
+				"select 3;",
+				"select 4;"
+			]
+		);
+	}
+
+	#[test]
+	fn only_statements_typed_at_the_prompt_are_recalled() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "\\i fixups.sql".into(), QuerySource::Typed);
+		writer.query(
+			&context(),
+			"update patients;".into(),
+			QuerySource::Include {
+				path: "/tmp/fixups.sql".into(),
+			},
+		);
+		writer.query(
+			&context(),
+			"select from snippet;".into(),
+			QuerySource::Snippet {
+				name: "counts".into(),
+			},
+		);
+		writer.query(&context(), "select 1;".into(), QuerySource::Typed);
+		drop(writer);
+
+		assert_eq!(
+			entries(dir.path()),
+			vec!["\\i fixups.sql", "select 1;"],
+			"the invoking line is recalled, what it expanded to is not"
+		);
+	}
+
+	#[test]
+	fn a_statement_over_the_cutoff_is_left_out_but_stays_in_the_log() {
+		let dir = tempfile::tempdir().unwrap();
+		let huge = format!("select '{}';", "x".repeat(RECALL_CUTOFF));
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "before;".into(), QuerySource::Typed);
+		writer.query(&context(), huge.clone(), QuerySource::Typed);
+		writer.query(&context(), "after;".into(), QuerySource::Typed);
+		drop(writer);
+
+		assert_eq!(entries(dir.path()), vec!["before;", "after;"]);
+
+		let logged: Vec<_> = crate::audit::read::Reader::open(dir.path())
+			.unwrap()
+			.entries()
+			.map(|e| e.query)
+			.collect();
+		assert!(logged.contains(&huge), "it is still recorded");
+	}
+
+	#[test]
+	fn the_budget_bounds_what_is_recalled() {
+		let dir = tempfile::tempdir().unwrap();
+		// Statements comfortably under the per-record cutoff, and comfortably
+		// more of them in total than the budget allows.
+		let body = "x".repeat(RECALL_CUTOFF / 2);
+		let count = 3 * RECALL_BUDGET / body.len();
+
+		let mut writer = Writer::new(dir.path());
+		for i in 0..count {
+			writer.query(&context(), format!("{i:08}{body}"), QuerySource::Typed);
+		}
+		drop(writer);
+
+		let set = RecallSet::build(dir.path());
+		let held: usize = (0..set.len()).map(|i| set.get(i).unwrap().len()).sum();
+		assert!(held <= RECALL_BUDGET, "held {held} bytes");
+		assert!(set.len() < count, "the budget cut something");
+		assert!(!set.is_empty());
+
+		// What survives the budget is the newest, which is what an operator
+		// reaches for first.
+		assert!(
+			set.get(set.len() - 1)
+				.unwrap()
+				.starts_with(&format!("{:08}", count - 1))
+		);
+	}
+
+	#[test]
+	fn recall_spans_sessions_and_day_files() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut one = Writer::new(dir.path());
+		one.query(&context(), "from one;".into(), QuerySource::Typed);
+		drop(one);
+		let mut two = Writer::new(dir.path());
+		two.query(&context(), "from two;".into(), QuerySource::Typed);
+		drop(two);
+
+		let before = entries(dir.path());
+		assert_eq!(before.len(), 2);
+
+		// Age the segments past the window and fold them, then recall again.
+		let old = jiff::Timestamp::now()
+			.to_zoned(jiff::tz::TimeZone::UTC)
+			.date()
+			.checked_sub(jiff::Span::new().days(compact::PLAIN_TEXT_WINDOW_DAYS + 1))
+			.unwrap();
+		for (path, kind) in paths::list(dir.path()).unwrap() {
+			let renamed = dir
+				.path()
+				.join(paths::segment_name(old, kind.instance().unwrap()));
+			std::fs::rename(path, renamed).unwrap();
+		}
+		compact::run(dir.path()).unwrap();
+
+		assert_eq!(entries(dir.path()), before, "a day file recalls the same");
+	}
+
+	#[test]
+	fn supervisors_are_collected_newest_first() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		for name in ["Alice", "Bob", "Alice"] {
+			writer.query(
+				&Context {
+					writemode: true,
+					ots: Some(name.into()),
+					..context()
+				},
+				format!("update as {name};"),
+				QuerySource::Typed,
+			);
+		}
+		drop(writer);
+
+		assert_eq!(
+			RecallSet::build(dir.path()).supervisors(),
+			&["Alice".to_string(), "Bob".to_string()]
+		);
+	}
+
+	#[test]
+	fn an_empty_log_recalls_nothing() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(RecallSet::build(dir.path()).is_empty());
 	}
 }

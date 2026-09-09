@@ -14,59 +14,62 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - **File naming.** The live and compacted names are specified in [AUD-STO](../../specs/psql/audit/store.md) and [AUD-RET](../../specs/psql/audit/retention.md); dates are `YYYY-MM-DD` and the session identity is the instance UUID. Legacy files to recognise on import are `audit-main.redb`, `audit-working-*.redb`, `audit-orphaned-*.redb`.
 - **Day boundary.** UTC, matching the record timestamps. A segment rolls at midnight UTC and the writer drops the previous segment's lock as it does.
 - **Codec.** The `zstd` crate, already in bestool's tree via the self-update downloader. `ruzstd` is a side quest: benchmark against `zstd` on compacted audit data and, if it holds up, propose it upstream in cargo-binstall. Not part of this card.
+- **Gap record timestamp.** A gap takes the time of the last record it covers, not the time recording resumed. The held records that survived the discards were made before it and are written behind it, so this is what keeps write order, sequence order and time order in agreement, which is in turn what lets a time-ordered export verify.
+- **Attribution.** A segment's name gives the session that wrote it, so records read from a segment are attributed outright. A day file interleaves sessions and names none, so its records are attributed by following `prev` back to a chain head, bootstrapped from the `instance` on each context record. Attribution therefore survives a record being altered or removed: the records after it are still known to belong to the session whose chain they broke.
+- **Recall ordering.** Files are read newest first for the budget, then what was collected is sorted by timestamp, so concurrent sessions on one day recall in the order they ran rather than in filename order. The budget bounds how much there is to sort.
+- **Compaction priority.** `thread-priority` sets the compaction thread to the platform minimum. IO priority is left alone: there is no obvious cross-platform crate for it, and the machines this runs on do not generally have a prioritisable IO scheduler enabled.
 - **Locks.** Advisory lock on the segment file held by its writer until it rolls to the next day or exits; advisory lock on a directory-level lock file held by compaction. Writers never take the directory lock. Use a small cross-platform crate rather than raw fcntl/LockFileEx.
 - **Tailscale sampling.** `tailscale status` is a subprocess, and the current implementation spawns it on every entry. Sample once per segment instead, at session start and each rollover, and reuse that set for the segment's later context records. The recorded set is then who was reachable when the segment opened; a session handed to someone else inside a shared tmux keeps the peers from the open until the next rollover, which is accepted.
-- **Network filesystem detection.** Linux: filesystem type of the store directory via statfs (nfs, cifs, smb, fuse variants, 9p). Windows: drive type of the path is remote. macOS: mount filesystem name via statfs. Advisory only; the session warns and continues.
 - **Startup history read order.** Open segments and day files newest-first by file, which the date in every filename gives directly, and within a file read from the end where the format allows, stopping when the budget is met. Segment count therefore barely affects startup.
 - **Compaction throttle.** Run only when at least one closed segment sits outside the plain-text window. Process at most one day per session start. Lowest IO and thread priority the platform offers.
 - **Legacy import** needs redb to read the old files, so the dependency stays for the reader only. Group by the old `instance_id` where present and by day within that; otherwise one import segment per day.
 - **Turso** stays out until its cross-process mode drops the experimental label; re-evaluate then, not before.
 - **README.** The `--audit-path` row still describes the old single-file default and needs its text corrected as part of this work.
+- **Deferred.** The network-filesystem warning is not part of this card; it is a follow-up in [the breakdown](../../breakdowns/c2/breakdown.md). The store works on a network filesystem, just without the warning.
 
 ## Checklist
 
 ### Store
 
-- [ ] Segment writer: create the day's segment on first record, take its advisory lock, write the opening context record, append query records, append the end record on clean exit.
-- [ ] Day rollover: at the first record past midnight UTC, close and unlock the current segment and open the next, carrying the chain and sequence numbers across.
-- [ ] Hash chain: compute `prev` at write time from the previous whole record's JSON text; empty only for the session's very first record.
-- [ ] Sequence numbers assigned when a record is made, not when it lands, so a discarded record leaves a hole.
-- [ ] Gap record: on resuming after discards, emit a gap taking the first discarded sequence number and carrying the count, last number and time span; then flush the surviving backlog behind it.
-- [ ] Query record source: `"source":"typed"`, or `"source":"snippet"` with the snippet name, or `"source":"include"` with the absolute path as resolved for opening. Flat fields rather than a nested object, so `source` is always a string and stays greppable. Replaces the `recall` boolean, which readers now derive.
-- [ ] Record statements run from snippets and included files at all. Expansion in `repl/snippets.rs` and `repl/include.rs` loops over `action.dispatch(...)`, which bypasses the recording in `ReplAction::handle`, so today only the invocation line is logged and the statements it runs are not. `from_snippet_or_include` is set around that loop but nothing on the path calls `add_entry`, so the not-for-recall marking has never applied to anything.
-- [ ] Context records on state change: hook write-mode toggles, supervisor changes and any other context field so a new context record is appended before the next query record.
-- [ ] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
-- [ ] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
-- [ ] Network filesystem detection at open with a loud warning.
-- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held. Map the old `recall` boolean to a source: true to `typed`, false to `unknown`. Records with no old instance id go to per-day import segments under an identity generated for the import, so the segment naming rule holds for them too.
+- [x] Segment writer: create the day's segment on first record, take its advisory lock, write the opening context record, append query records, append the end record on clean exit.
+- [x] Day rollover: at the first record past midnight UTC, close and unlock the current segment and open the next, carrying the chain and sequence numbers across.
+- [x] Hash chain: compute `prev` at write time from the previous whole record's JSON text; empty only for the session's very first record.
+- [x] Sequence numbers assigned when a record is made, not when it lands, so a discarded record leaves a hole.
+- [x] Gap record: on resuming after discards, emit a gap taking the first discarded sequence number and carrying the count, last number and time span; then flush the surviving backlog behind it.
+- [x] Query record source: `"source":"typed"`, or `"source":"snippet"` with the snippet name, or `"source":"include"` with the absolute path as resolved for opening. Flat fields rather than a nested object, so `source` is always a string and stays greppable. Replaces the `recall` boolean, which readers now derive.
+- [x] Record statements run from snippets and included files at all. Expansion in `repl/snippets.rs` and `repl/include.rs` loops over `action.dispatch(...)`, which bypasses the recording in `ReplAction::handle`, so today only the invocation line is logged and the statements it runs are not. `from_snippet_or_include` is set around that loop but nothing on the path calls `add_entry`, so the not-for-recall marking has never applied to anything.
+- [x] Context records on state change: hook write-mode toggles, supervisor changes and any other context field so a new context record is appended before the next query record.
+- [x] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
+- [x] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
+- [x] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held. Map the old `recall` boolean to a source: true to `typed`, false to `unknown`. Records with no old instance id go to per-day import segments under an identity generated for the import, so the segment naming rule holds for them too.
 
 ### Reader
 
-- [ ] Segment parser: split on `0x1E`, parse each record, and on failure report the skipped bytes and resume at the next separator rather than ending the file.
-- [ ] Day file parser: zstd wrapping the same framed records as a segment, so the same record reader runs over both.
-- [ ] Merged reader: time-ordered k-way merge across segments and day files, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window. Two surfaces over the one merge: stored records for export, and context-carried-forward flat entries for the recall set and other callers.
-- [ ] Filtered export emits the context record in force at the start of the output before the first query record.
-- [ ] Chain verification per session, following its records across segments and day files in date order, reporting the first break, the gap records and unparsable bytes passed, and treating the oldest kept record's `prev` as unverifiable; chain heads per session.
+- [x] Segment parser: split on `0x1E`, parse each record, and on failure report the skipped bytes and resume at the next separator rather than ending the file.
+- [x] Day file parser: zstd wrapping the same framed records as a segment, so the same record reader runs over both.
+- [x] Merged reader: time-ordered k-way merge across segments and day files, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window. Two surfaces over the one merge: stored records for export, and context-carried-forward flat entries for the recall set and other callers.
+- [x] Filtered export emits the context record in force at the start of the output before the first query record.
+- [x] Chain verification per session, following its records across segments and day files in date order, reporting the first break, the gap records and unparsable bytes passed, and treating the oldest kept record's `prev` as unverifiable; chain heads per session.
 
 ### Shell history
 
-- [ ] Recall set builder: newest-first across files to the memory budget, skipping records above the size cutoff and any whose source is not the prompt.
-- [ ] Replace the rustyline history implementation with an in-memory history seeded from the recall set and appended to as the session runs.
+- [x] Recall set builder: newest-first across files to the memory budget, skipping records above the size cutoff and any whose source is not the prompt.
+- [x] Replace the rustyline history implementation with an in-memory history seeded from the recall set and appended to as the session runs.
 
 ### Compaction and retention
 
-- [ ] Eligibility: closed segments (lock acquirable) whose day ended longer ago than the plain-text window.
-- [ ] Compaction: write the day file to a temporary name, sync, rename, then delete consumed segments; directory lock held throughout, skip if held.
-- [ ] Retention: delete day files whose day ended longer ago than the fixed twelve-month period.
-- [ ] Background compaction at session startup with the throttle and bound above.
+- [x] Eligibility: closed segments (lock acquirable) whose day ended longer ago than the plain-text window.
+- [x] Compaction: write the day file to a temporary name, sync, rename, then delete consumed segments; directory lock held throughout, skip if held.
+- [x] Retention: delete day files whose day ended longer ago than the fixed twelve-month period.
+- [x] Background compaction at session startup with the throttle and bound above.
 
 ### Tools
 
-- [ ] Read API surface in the audit module: open, stream entries with filters, verify, chain heads, compact.
-- [ ] Export, verify and compact commands in both `bestool-psql-audit` and `bestool audit-psql`; drop the orphan flag.
+- [x] Read API surface in the audit module: open, stream entries with filters, verify, chain heads, compact.
+- [x] Export, verify and compact commands in both `bestool-psql-audit` and `bestool audit-psql`; drop the orphan flag.
 
 ### Removal
 
-- [ ] Delete the working-copy, sync, orphan-recovery, index-table and culling code and the redb-backed history implementation.
-- [ ] Delete the plain `~/.psql_history` import (`import_psql_history`): transitional, long since served.
-- [ ] Correct the README row for `--audit-path`.
+- [x] Delete the working-copy, sync, orphan-recovery, index-table and culling code and the redb-backed history implementation.
+- [x] Delete the plain `~/.psql_history` import (`import_psql_history`): transitional, long since served.
+- [x] Correct the README row for `--audit-path`.

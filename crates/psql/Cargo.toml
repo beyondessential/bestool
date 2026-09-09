@@ -33,10 +33,11 @@ ctrlc = "3.4.4"
 dirs = "6.0.0"
 edit = "0.1.5"
 fraction = { version = "0.15", features = ["with-postgres-support"] }
+fs4 = "1.1"
 futures = { workspace = true }
 hex = "0.4.3"
 indexmap = { version = "2.14.0", features = ["serde"] }
-jiff = "0.2.28"
+jiff = { version = "0.2.28", features = ["serde"] }
 lloggs = { version = "1.1.0", optional = true }
 miette = "7.6.0"
 percent-encoding = "2.3.2"
@@ -48,12 +49,14 @@ rust_xlsxwriter = "0.98.1"
 rustyline = { version = "18.0.0", features = ["signal-hook"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+sha2 = "0.11"
 supports-unicode = "3.0.0"
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-themes", "default-syntaxes"] }
 sysinfo.workspace = true
 tempfile = "3.21.0"
 terminal-colorsaurus = "1.0.1"
 thiserror = "2.0.17"
+thread-priority = "3.1"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-postgres-rustls = "0.14.0"
@@ -63,6 +66,7 @@ turso_core = { version = "0.7.0", default-features = false }
 url = "2.5.7"
 uuid = { version = "1.23.2", features = ["v4", "serde"] }
 winnow = "1.0.3"
+zstd = "0.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
@@ -70,6 +74,7 @@ signal-hook = "0.4.4"
 
 [dev-dependencies]
 filetime = "0.2.26"
+jiff = "0.2"
 temp-env = "0.3.6"
 
 [features]

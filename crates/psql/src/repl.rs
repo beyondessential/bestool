@@ -196,7 +196,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		expanded_mode: false,
 		write_mode: false,
 		redact_mode: config.redact_mode,
-		from_snippet_or_include: false,
+		statement_source: crate::audit::QuerySource::Typed,
 		ots: None,
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
@@ -336,8 +336,8 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					// so it resets the editor-reopen chain.
 					ctx.repl_state.lock().unwrap().last_edit_content = None;
 				} else {
-					for action in actions {
-						if action.handle(&mut ctx, line).await.is_break() {
+					for statement in actions {
+						if statement.action.handle(&mut ctx, line).await.is_break() {
 							should_exit = true;
 							break;
 						}
@@ -381,6 +381,5 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		handle.abort();
 	}
 
-	rl.history_mut().compact()?;
 	Ok(())
 }

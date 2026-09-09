@@ -44,7 +44,7 @@ pub struct Args {
 	#[arg(long, default_value = "auto")]
 	pub theme: bestool_psql::Theme,
 
-	/// Path to audit database directory
+	/// Path to the audit directory
 	#[arg(long, value_name = "PATH", help = help_audit_path())]
 	pub audit_path: Option<PathBuf>,
 }
@@ -73,7 +73,7 @@ impl TlsMode {
 
 fn help_audit_path() -> String {
 	format!(
-		"Path to audit database directory (default: {})",
+		"Path to the audit directory (default: {})",
 		bestool_psql::default_audit_dir()
 	)
 }
