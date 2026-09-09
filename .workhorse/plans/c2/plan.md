@@ -7,7 +7,7 @@ The problem exploration, technique sweep and the reasoning behind each decision 
 
 Things the specs deliberately leave to the implementation, recorded here so they are chosen once.
 
-- **Defaults.** Startup recall budget 4 MiB of query text; per-record recall cutoff 10 KiB; unwritable-store backlog 1000 records and 16 MiB; plain-text window 30 days. The twelve-month retention period is fixed by the spec, not a default.
+- **Defaults.** Startup recall budget 4 MiB of query text; per-record recall cutoff 10 KiB; unwritable-store backlog 1000 records and 16 MiB. The twelve-month retention period and the thirty-day plain-text window are both fixed by the spec, not defaults.
 - **Hash.** SHA-256 over the previous record's JSON text: the bytes between its `0x1E` separator and its newline, neither of which is hashed. Framing is transport, content is hashed, which is what lets a record keep its hash through compaction and export.
 - **Framing.** RFC 7464 JSON text sequences, `0x1E` before each record and `0x0A` after. `jq --seq` reads it natively; plain `grep` still matches record content, but `^`-anchored patterns have to allow for the leading separator.
 - **File naming.** The live and compacted names are specified in [AUD-STO](../../specs/psql/audit/store.md) and [AUD-RET](../../specs/psql/audit/retention.md); dates are `YYYY-MM-DD` and the session identity is the instance UUID. Legacy files to recognise on import are `audit-main.redb`, `audit-working-*.redb`, `audit-orphaned-*.redb`.
