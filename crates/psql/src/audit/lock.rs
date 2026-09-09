@@ -1,10 +1,16 @@
-//! Advisory locks over audit files.
+//! Locks over audit files.
 //!
 //! A writer holds one on its current segment so that another process can tell a
 //! live segment from a closed one by attempting the lock, rather than inferring
 //! liveness from timestamps. Compaction holds one on a directory-level lock file.
 //!
 //! Nothing ever waits on these locks.
+//!
+//! A writer takes a *shared* lock and anything asking whether a file is live
+//! tries an *exclusive* one, which fails for as long as the writer holds its
+//! share. The two are not interchangeable: Windows byte-range locks are
+//! enforced rather than advisory, so an exclusive lock on a live segment would
+//! stop every reader, and the log is meant to be readable as it is written.
 //!
 //! spec: AUD-STO, AUD-RET
 
@@ -24,9 +30,27 @@ pub struct Lock {
 }
 
 impl Lock {
-	/// Take the lock on an already-open file, or `None` if something else holds it.
+	/// Take the file exclusively, or `None` if anything else holds it at all.
+	///
+	/// This is how a caller asks whether a file is live, and how it stops one
+	/// becoming live under it.
 	pub fn try_hold(file: File) -> Result<Option<Self>> {
-		match FileExt::try_lock(&file) {
+		Self::taken(FileExt::try_lock(&file), file)
+	}
+
+	/// Take a share of the file, or `None` if it is held exclusively.
+	///
+	/// A writer holds its segment this way: an exclusive attempt then fails, so
+	/// the file reads as live, while readers are left alone.
+	pub fn try_share(file: File) -> Result<Option<Self>> {
+		Self::taken(FileExt::try_lock_shared(&file), file)
+	}
+
+	fn taken(
+		outcome: std::result::Result<(), fs4::TryLockError>,
+		file: File,
+	) -> Result<Option<Self>> {
+		match outcome {
 			Ok(()) => Ok(Some(Self { file })),
 			Err(fs4::TryLockError::WouldBlock) => Ok(None),
 			Err(fs4::TryLockError::Error(err)) => Err(err).into_diagnostic(),
@@ -95,6 +119,30 @@ mod tests {
 
 		drop(held);
 		assert!(Lock::try_directory(dir.path()).unwrap().is_some());
+	}
+
+	#[test]
+	fn a_shared_hold_still_reads_as_taken() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("segment");
+		std::fs::write(&path, b"records").unwrap();
+
+		let file = OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(&path)
+			.unwrap();
+		let writer = Lock::try_share(file).unwrap().unwrap();
+
+		// Anything asking whether the file is live gets told that it is.
+		assert!(!is_free(&path));
+
+		// And it can still be read while the writer holds it, which is what the
+		// log promises and what Windows would otherwise prevent.
+		assert_eq!(std::fs::read(&path).unwrap(), b"records");
+
+		drop(writer);
+		assert!(is_free(&path));
 	}
 
 	#[test]

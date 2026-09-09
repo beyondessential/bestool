@@ -10,7 +10,7 @@
 use std::{
 	collections::{BTreeSet, HashSet},
 	fs::{File, OpenOptions},
-	io::Write as _,
+	io::{BufReader, Seek as _, SeekFrom, Write as _},
 	path::{Path, PathBuf},
 };
 
@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use super::{
 	lock::Lock,
 	paths::{self, AuditFile},
-	read::{FramedItem, open},
+	read::{FramedItem, FramedReader, open},
 	record::{Record, frame},
 };
 
@@ -172,7 +172,7 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 			return Ok(0);
 		};
 		match Lock::try_hold(file)? {
-			Some(lock) => held.push(lock),
+			Some(lock) => held.push((path.clone(), lock)),
 			None => {
 				debug!(%date, ?path, "a segment for this day is still live, leaving it");
 				return Ok(0);
@@ -182,7 +182,22 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 
 	let mut records: Vec<(Record, String)> = Vec::new();
 	for (path, kind) in &sources {
-		for item in open(path, *kind)? {
+		// A segment is read back through the very handle its lock was taken on.
+		// Opening a second one would be refused on Windows, where the exclusive
+		// lock just taken is enforced rather than advisory.
+		let items: Box<dyn Iterator<Item = FramedItem>> =
+			match held.iter_mut().find(|(held_path, _)| held_path == path) {
+				Some((_, lock)) => {
+					lock.file_mut()
+						.seek(SeekFrom::Start(0))
+						.into_diagnostic()
+						.wrap_err_with(|| format!("rewinding {}", path.display()))?;
+					Box::new(FramedReader::new(BufReader::new(lock.file_mut())))
+				}
+				None => open(path, *kind)?,
+			};
+
+		for item in items {
 			match item {
 				FramedItem::Record { record, json, .. } => records.push((record, json)),
 				FramedItem::Skipped { at, bytes } => {
@@ -238,13 +253,16 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 		.into_diagnostic()
 		.wrap_err_with(|| format!("renaming {} into place", temp.display()))?;
 
-	let consumed = segments.len();
-	for path in segments {
+	// Each segment's lock is released only as that segment goes, and not before
+	// the day file naming it is in place: deleting a file that is still open is
+	// refused on some platforms.
+	let consumed = held.len();
+	for (path, lock) in held {
+		drop(lock);
 		if let Err(err) = std::fs::remove_file(&path) {
 			warn!(?err, ?path, "could not delete a folded audit segment");
 		}
 	}
-	drop(held);
 
 	info!(%date, consumed, records = records.len(), "folded audit segments into a day file");
 	Ok(consumed)

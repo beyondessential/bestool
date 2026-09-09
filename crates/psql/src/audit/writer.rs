@@ -363,7 +363,10 @@ impl Writer {
 			.into_diagnostic()
 			.wrap_err_with(|| format!("opening audit segment {}", path.display()))?;
 
-		let lock = Lock::try_hold(file)?
+		// A share, not an exclusive hold: an exclusive attempt by anyone else
+		// then fails, so the segment reads as live, while readers of the log go
+		// on reading it as it is written.
+		let lock = Lock::try_share(file)?
 			.ok_or_else(|| miette!("audit segment {} is held by another writer", path.display()))?;
 
 		self.segment = Some(Segment { date, path, lock });

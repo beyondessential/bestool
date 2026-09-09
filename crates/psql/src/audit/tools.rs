@@ -6,7 +6,7 @@
 //! spec: AUD-API
 
 use std::{
-	collections::{HashSet, VecDeque},
+	collections::{HashMap, HashSet, VecDeque},
 	io::Write,
 	path::{Path, PathBuf},
 };
@@ -184,49 +184,59 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 /// The context record in force at the start of the output, for each session
 /// whose own context record did not make it into the selection.
 fn leading_contexts(dir: &Path, selected: &[Stored]) -> Result<Vec<Record>> {
-	// A session needs a leading context record when the output starts before
-	// its own first context record does. A context change later in the output
-	// does not cover the records ahead of it, so only a context record at or
-	// before a session's first selected record settles the question.
-	let mut wanted: HashSet<Uuid> = HashSet::new();
+	// A session needs a leading context record when the output starts before its
+	// own first context record does. Whichever kind of record comes first for a
+	// session settles it: a context change later in the output does not cover
+	// the records ahead of it.
+	let mut wanted: HashMap<Uuid, (Timestamp, u64)> = HashMap::new();
 	let mut covered: HashSet<Uuid> = HashSet::new();
 	for stored in selected {
 		let Some(instance) = stored.instance else {
 			continue;
 		};
+		if covered.contains(&instance) || wanted.contains_key(&instance) {
+			continue;
+		}
 		match &stored.record.kind {
 			RecordKind::Context(_) => {
 				covered.insert(instance);
 			}
-			_ if !covered.contains(&instance) => {
-				wanted.insert(instance);
+			_ => {
+				wanted.insert(instance, (stored.record.ts, stored.record.seq));
 			}
-			_ => {}
 		}
 	}
-	if wanted.is_empty() {
-		return Ok(Vec::new());
-	}
 
-	let Some(start) = selected.first().map(|stored| stored.record.ts) else {
+	let Some(stop) = wanted.values().map(|(ts, _)| *ts).max() else {
 		return Ok(Vec::new());
 	};
 
 	// Read from the beginning of the log up to where the output starts, keeping
 	// the latest context record of each session that needs one.
-	let upto = Range {
-		since: None,
-		until: Some(start),
-	};
-	let mut latest: std::collections::HashMap<Uuid, Record> = std::collections::HashMap::new();
-	for stored in Reader::open_range(dir, upto)? {
-		if stored.record.ts >= start {
-			break;
+	//
+	// Each session's own boundary is its first selected record by sequence
+	// number as well as timestamp: a clock coarse enough to give a context
+	// record and the query after it the same timestamp would otherwise put the
+	// boundary on the wrong side of the very record being looked for.
+	let mut latest: HashMap<Uuid, Record> = HashMap::new();
+	for stored in Reader::open_range(
+		dir,
+		Range {
+			since: None,
+			until: Some(stop),
+		},
+	)? {
+		let Some(instance) = stored.instance else {
+			continue;
+		};
+		let Some(boundary) = wanted.get(&instance) else {
+			continue;
+		};
+		if (stored.record.ts, stored.record.seq) >= *boundary {
+			continue;
 		}
-		if let RecordKind::Context(context) = &stored.record.kind
-			&& wanted.contains(&context.instance)
-		{
-			latest.insert(context.instance, stored.record);
+		if matches!(stored.record.kind, RecordKind::Context(_)) {
+			latest.insert(instance, stored.record);
 		}
 	}
 
@@ -454,6 +464,77 @@ mod tests {
 				entry.query
 			);
 		}
+	}
+
+	#[test]
+	fn a_leading_context_is_found_even_when_it_shares_a_timestamp() {
+		use crate::audit::record::{ContextRecord, FORMAT_VERSION, QueryRecord, RecordKind, frame};
+
+		// A clock coarse enough to give a context record and the query after it
+		// the same timestamp is what macOS hands out; the boundary between what
+		// is in the output and what precedes it has to hold there too.
+		let dir = tempfile::tempdir().unwrap();
+		let instance = uuid::Uuid::new_v4();
+		let ts: Timestamp = "2026-09-08T03:14:15Z".parse().unwrap();
+
+		let mut records = vec![Record {
+			v: FORMAT_VERSION,
+			seq: 0,
+			ts,
+			prev: String::new(),
+			kind: RecordKind::Context(ContextRecord {
+				sys_user: "felix".into(),
+				db_user: "tamanu".into(),
+				writemode: false,
+				ots: None,
+				tailscale: Vec::new(),
+				instance,
+			}),
+		}];
+		for seq in 1..4 {
+			let prev = super::super::record::hash(&records[seq as usize - 1].to_json().unwrap());
+			records.push(Record {
+				v: FORMAT_VERSION,
+				seq,
+				ts,
+				prev,
+				kind: RecordKind::Query(QueryRecord {
+					query: format!("select {seq};"),
+					source: QuerySource::Typed,
+				}),
+			});
+		}
+
+		let bytes: Vec<u8> = records
+			.iter()
+			.flat_map(|record| frame(&record.to_json().unwrap()))
+			.collect();
+		std::fs::write(
+			dir.path().join(paths::segment_name(
+				ts.to_zoned(jiff::tz::TimeZone::UTC).date(),
+				instance,
+			)),
+			bytes,
+		)
+		.unwrap();
+
+		let mut out = Vec::new();
+		write_export(
+			&mut out,
+			dir.path(),
+			&QueryOptions {
+				limit: Some(2),
+				..Default::default()
+			},
+		)
+		.unwrap();
+
+		assert!(
+			String::from_utf8(out)
+				.unwrap()
+				.contains(r#""sys_user":"felix""#),
+			"the context in force is emitted even at an identical timestamp"
+		);
 	}
 
 	#[test]
