@@ -298,7 +298,9 @@ pub async fn release_held(
 		// nothing and the caller would drop the record over a live subvolume.
 		let Some(fsdev) = fsdev else {
 			bail!(
-				"hold record has no device recorded, so {} cannot be mounted to delete {}; 				 mount the filesystem's top level there by hand and drop the hold again",
+				"hold record has no device recorded, so {} cannot be mounted to delete \
+				 {}; mount the filesystem's top level there by hand and drop the hold \
+				 again",
 				toplevel_mount.display(),
 				snapshot_path.display()
 			);
