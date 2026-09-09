@@ -393,6 +393,10 @@ pub fn database_is_local(url: &str) -> bool {
 	}
 
 	hosts.iter().all(|host| match host {
+		// A socket is on the machine that serves it, by construction. The variant
+		// only exists on platforms that have Unix sockets, so the arm is gated to
+		// match — on Windows a host list is TCP or nothing.
+		#[cfg(unix)]
 		Host::Unix(_) => true,
 		Host::Tcp(name) => host_is_local(name),
 	})
@@ -1264,10 +1268,21 @@ mod tests {
 			"postgresql://u@localhost/db",
 			"postgresql://u@127.0.0.1/db",
 			"postgresql://u@[::1]/db",
-			"postgresql:///db?host=/var/run/postgresql",
 		] {
 			assert_eq!(postgres_ref(url).key, "host-postgres-5432", "{url}");
 		}
+	}
+
+	/// A socket host is only a socket on a platform that has them: elsewhere the
+	/// connection-string parser reads the path as an ordinary TCP name, and no
+	/// such cluster could be reached anyway.
+	#[cfg(unix)]
+	#[test]
+	fn a_socket_connection_resolves_to_the_local_cluster() {
+		assert_eq!(
+			postgres_ref("postgresql:///db?host=/var/run/postgresql").key,
+			"host-postgres-5432",
+		);
 	}
 
 	#[test]
@@ -1284,6 +1299,7 @@ mod tests {
 		assert!(!app.key.starts_with("host-"));
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn a_unix_socket_is_always_local_and_carries_its_port() {
 		// The socket is named `.s.PGSQL.<port>`, so a socket connection has a

@@ -735,6 +735,9 @@ mod tests {
 		use crate::doctor::sweep::database_is_local;
 		assert!(database_is_local("postgresql:///db"));
 		assert!(database_is_local("postgresql://u@localhost/db"));
+		// A socket host is only a socket where sockets exist; elsewhere the parser
+		// reads the path as an ordinary TCP name.
+		#[cfg(unix)]
 		assert!(database_is_local(
 			"postgresql:///db?host=/var/run/postgresql"
 		));

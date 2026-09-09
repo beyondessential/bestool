@@ -74,6 +74,7 @@ actually about, and that the push carries the split format.
 - [x] A check's details, summary and reason all reach the wire entry
 - [x] `tuning` and the subject key agree about whether a cluster is local
 - [ ] A live push with a check carrying unusual detail keys is accepted by canopy
+- [x] The subject resolution compiles and its tests hold on Windows, where Unix sockets do not exist
 
 ## Severities
 
