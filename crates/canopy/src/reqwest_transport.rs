@@ -77,7 +77,7 @@ const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
 /// (`SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
 /// rebuild a client — at probe time, on mTLS cert renewal, and on reload — then
 /// layers its own concerns (its [`user_agent`], mTLS identity, DNS overrides,
-/// timeouts) on top.
+/// timeouts, and its no-redirect policy) on top.
 pub type ClientBuilderFactory = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>;
 
 /// User-agent set on every canopy request, e.g.
@@ -303,8 +303,8 @@ impl ReqwestTransport {
 	/// feature. In tailscale mode the request goes to `{tailscale_url}{tailscale_path}`
 	/// (typically `/public/...`); in mTLS mode to `{base_url}{mtls_path}`.
 	///
-	/// A response redirected off the origin the request was addressed to is
-	/// refused rather than returned.
+	/// Redirects are not followed: a redirect, or an answer from any origin but
+	/// the one addressed, is refused rather than returned.
 	#[cfg(feature = "raw-requests")]
 	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
 		let (http, url) = {
@@ -332,8 +332,11 @@ impl ReqwestTransport {
 			.into_diagnostic()
 			.wrap_err("GET via canopy")?;
 
-		// The device credential rides this request, so a body from another
-		// origin is not canopy's answer to it.
+		// The device credential rides this request, and its body reaches alertd
+		// as DDL.
+		if response.status().is_redirection() {
+			bail!("canopy GET {url} was redirected, not answered");
+		}
 		if response.url().origin() != url.origin() {
 			bail!("canopy GET {url} was answered from {}", response.url());
 		}
@@ -495,6 +498,7 @@ fn build_probe_client(
 ) -> Option<reqwest::Client> {
 	let mut builder = make_builder()
 		.user_agent(user_agent())
+		.redirect(reqwest::redirect::Policy::none())
 		.timeout(TAILSCALE_PROBE_TIMEOUT);
 	if !addrs.is_empty() {
 		builder = builder.resolve_to_addrs(host, addrs);
@@ -671,6 +675,7 @@ fn build_mtls_http(
 	make_builder()
 		.user_agent(user_agent())
 		.identity(identity)
+		.redirect(reqwest::redirect::Policy::none())
 		.use_rustls_tls()
 		.timeout(Duration::from_secs(30))
 		.build()
@@ -789,27 +794,25 @@ mod tests {
 	#[cfg(feature = "raw-requests")]
 	#[tokio::test]
 	async fn a_redirect_off_canopy_is_refused() {
-		let (elsewhere, _elsewhere_server) =
-			serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nDROP ALL;");
-		let redirect: &'static str = Box::leak(
-			format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}/x\r\nContent-Length: 0\r\n\r\n")
-				.into_boxed_str(),
+		let (canopy, _canopy_server) = serve_once(
+			"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/x\r\nContent-Length: 0\r\n\r\n",
 		);
-		let (canopy, _canopy_server) = serve_once(redirect);
 
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
 			tailscale_url: canopy.parse().unwrap(),
 			device_key: None,
 			make_builder: test_factory(),
-			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
 		};
 
 		let err = transport
 			.get("/public/x", "/x")
 			.await
-			.expect_err("a body from another origin is not canopy's answer");
-		assert!(err.to_string().contains("answered from"), "{err}");
+			.expect_err("a redirect is not canopy's answer");
+		assert!(err.to_string().contains("redirected"), "{err}");
 	}
 
 	#[cfg(feature = "raw-requests")]
@@ -821,7 +824,9 @@ mod tests {
 			tailscale_url: canopy.parse().unwrap(),
 			device_key: None,
 			make_builder: test_factory(),
-			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
 		};
 
 		let response = transport
