@@ -213,6 +213,33 @@ parameter on the status endpoint.
 - Per-scope name uniqueness is now the invariant to hold (a flat unique-name list no
   longer expresses it), so it wants asserting in a test.
 
+## Build checklist
+
+- [x] `subject.rs`: `Subject` (machine / application-of-type) and `CheckScope`, with
+      slugs and the applies-to rule
+- [x] `CheckEntry` gains `scope`; `entry!` takes category and scope explicitly at
+      every one of the 45 entries
+- [x] Drop the 13 inline central-only `kind` gates now the registry declares them
+- [x] `perform_sweep`: resolve the sweep's subjects, omit out-of-scope checks, carry
+      the subject on every result
+- [x] Scope-qualified `--check` / `--skip`, with a bare name erroring into its
+      qualified forms
+- [x] Split `ServerInfo` into machine and application detail, routing lifted
+      `payload_extras` to the right subject
+- [x] Typed `StatusPayload` from the sweep: `machine`, `applications`, `source`
+- [x] Rename to `get_or_create_machine_id`, both call sites, doc'd against
+      `/etc/machine-id`
+- [x] Per-target severity capping from the split response
+- [x] CLI render and the daemon's cached-sweep round-trip
+- [x] Tests
+- [ ] **TUI pending rows.** Rows are keyed by qualified name, but the CLI seeds them
+      from `selected_names` before the sweep resolves which application the host has,
+      so it cannot know a check's subject up front. Application checks therefore
+      never match a seeded row and their live rows stay pending until the final
+      render. `DOC` says every selected check appears as a row from the start, so
+      either the CLI resolves the application kind before starting the TUI, or the
+      TUI creates rows on demand and `DOC` changes to match.
+
 ## Open questions
 
 None outstanding: the design decisions above cover the card's scope. Two things are
@@ -225,5 +252,14 @@ a code comment so it is not read as an oversight.
 
 **The daemon's cached-sweep round-trip is a matched pair.** The daemon caches a sweep
 and the CLI parses it back, so `endpoint_latest` and `results_from_wire` change
-together. A CLI and a daemon of different versions on one host will disagree about the
-payload shape for as long as they are mismatched.
+together, and the streamed `done` event now carries `machineId` rather than
+`serverId`. A CLI and a daemon of different versions on one host will disagree about
+the payload shape for as long as they are mismatched.
+
+**A bare Postgres is reported as an application of type `postgres`.** `SUBJ` does not
+cover the generic `DATABASE_URL` host, which has a database but no Tamanu. Without an
+application subject the four generic database checks would have had nowhere to be
+filed and would have silently stopped being reported, so the Postgres is treated as
+the application it is. The type is new on the wire, and canopy creates an application
+of a type it does not hold, so this is worth confirming before it reaches a real
+deployment.

@@ -1,7 +1,7 @@
 use bestool_canopy::schema::CheckSeverity;
 use serde_json::{Map, Value, json};
 
-use crate::doctor::stat::Stat;
+use crate::doctor::{stat::Stat, subject::Subject};
 
 /// Outcome of a single healthcheck.
 ///
@@ -294,6 +294,53 @@ impl Check {
 			details,
 			payload_extras: Map::new(),
 			stats: Vec::new(),
+		})
+	}
+}
+
+/// One check's result, together with the subject it was filed against.
+///
+/// A check's name identifies it only within its subject, so the two travel
+/// together from the moment the sweep runs it: a machine `foo` and an
+/// application `foo` are different checks and must not be collated.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone)]
+pub struct CheckOutcome {
+	pub subject: Subject,
+	pub check: Check,
+	/// Whether this result belongs in the wire `health[]` for its subject.
+	pub on_wire: bool,
+}
+
+impl CheckOutcome {
+	/// `subject:name`, how this check is named and selected.
+	pub fn qualified_name(&self) -> String {
+		self.subject.qualify(self.check.name)
+	}
+
+	/// Encode for streaming over the daemon's task endpoint, carrying the
+	/// subject so the receiving CLI files the result where the sweep did rather
+	/// than guessing from the name.
+	pub fn to_streaming_json(&self) -> Value {
+		let mut obj = self.check.to_streaming_json();
+		obj["subject"] = Value::String(self.subject.slug().to_string());
+		obj
+	}
+
+	/// Decode a [`Self::to_streaming_json`] payload. Returns `None` for an
+	/// unknown check name or subject, or a malformed payload — callers drop
+	/// those events.
+	pub fn from_streaming_json(
+		value: &Value,
+		name_resolver: impl FnOnce(&str) -> Option<&'static str>,
+	) -> Option<Self> {
+		let subject = Subject::from_slug(value.get("subject")?.as_str()?)?;
+		let check = Check::from_streaming_json(value, name_resolver)?;
+		Some(Self {
+			subject,
+			check,
+			on_wire: true,
 		})
 	}
 }

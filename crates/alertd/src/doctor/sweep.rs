@@ -4,7 +4,12 @@ use std::{
 	sync::Arc,
 };
 
-use bestool_canopy::{CanopyClient, schema::CheckSeverity};
+use bestool_canopy::{
+	CanopyClient,
+	schema::{
+		ApplicationReport, CheckSeverity, HealthCheck, StatusPayload, StatusResponse, TargetReport,
+	},
+};
 use futures::{
 	future::BoxFuture,
 	stream::{FuturesUnordered, StreamExt},
@@ -14,15 +19,24 @@ use node_semver::Version;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_server_id};
+use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_machine_id};
 
 use crate::doctor::{
-	check::{Check, OverallResult},
+	check::{Check, CheckOutcome, OverallResult},
 	checks::{self, CheckContext, SweepContext},
 	heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
+	subject::{ApplicationKind, CheckScope, Subject},
 };
+
+/// The name bestool's daemon reports under.
+///
+/// Canopy attributes a push without one to `alertd` today, but the field is
+/// becoming mandatory, so it is always sent.
+///
+/// spec: SUBJ
+pub const REPORTING_SOURCE: &str = "alertd";
 
 /// Ceiling applied to a check that canopy's severity map doesn't mention.
 ///
@@ -150,12 +164,71 @@ fn resolve_sweep_tamanu_from(
 	}
 }
 
+/// Every check's severity ceiling, split by the subject it was filed against.
+///
+/// Canopy answers per target, keyed by bare check name, so a machine check and
+/// an application check sharing a name are graded separately.
+#[derive(Debug, Clone, Default)]
+pub struct SplitSeverities {
+	pub machine: HashMap<String, CheckSeverity>,
+	/// Keyed by application key, as the push named them.
+	pub applications: HashMap<String, HashMap<String, CheckSeverity>>,
+}
+
+impl SplitSeverities {
+	/// One map governing every subject alike.
+	///
+	/// For the ungrouped `status_check_severities` endpoint, which predates the
+	/// split and answers by bare check name alone: the same ceiling applies
+	/// wherever that name is filed.
+	pub fn flat(severities: HashMap<String, CheckSeverity>) -> Self {
+		Self {
+			machine: severities.clone(),
+			applications: ApplicationKind::ALL
+				.into_iter()
+				.map(|kind| (kind.key(), severities.clone()))
+				.collect(),
+		}
+	}
+
+	/// The ceilings governing `subject`, or `None` when canopy said nothing
+	/// about it — in which case every check falls to the absent-check default.
+	pub fn for_subject(&self, subject: Subject) -> Option<&HashMap<String, CheckSeverity>> {
+		match subject {
+			Subject::Machine => Some(&self.machine),
+			Subject::Application(kind) => self.applications.get(&kind.key()),
+		}
+	}
+}
+
+/// Read canopy's per-target severity ceilings out of a status response.
+///
+/// Falls back to the response's top-level map for the machine when canopy
+/// answered without a `machine` target, which is what a canopy that predates
+/// the split format returns.
+pub fn split_severities(response: &StatusResponse) -> SplitSeverities {
+	SplitSeverities {
+		machine: response
+			.machine
+			.as_ref()
+			.map(|t| t.check_severities.clone())
+			.unwrap_or_else(|| response.check_severities.clone()),
+		applications: response
+			.applications
+			.iter()
+			.flatten()
+			.map(|(key, target)| (key.clone(), target.check_severities.clone()))
+			.collect(),
+	}
+}
+
 #[derive(Clone)]
 pub struct SweepResult {
-	pub server_id: Option<String>,
-	pub results: Vec<(Check, bool)>,
+	/// This machine's Canopy identity. Not the OS `/etc/machine-id`.
+	pub machine_id: Option<String>,
+	pub results: Vec<CheckOutcome>,
 	pub overall: OverallResult,
-	pub payload: Value,
+	pub payload: StatusPayload,
 	/// `SELECT version()` result observed during this sweep, available so
 	/// callers (e.g. the daemon plugin) can cache it across ticks instead of
 	/// re-querying every minute.
@@ -163,41 +236,140 @@ pub struct SweepResult {
 }
 
 impl SweepResult {
-	/// Lower each check's status to canopy's effective-severity ceiling, then
-	/// re-derive the overall result and the wire `health[]` array to match.
+	/// Lower each check's status to canopy's effective-severity ceiling for the
+	/// subject it was filed against, then re-derive the overall result and each
+	/// target's wire `health[]` to match.
 	///
 	/// This is a display-time transform for local consumers (the `doctor` CLI):
 	/// the payload posted to canopy is always the raw one, since canopy is the
 	/// source of truth for severities and applies the mapping itself. See
 	/// [`CheckStatus::cap_to`](crate::doctor::check::CheckStatus::cap_to) for the
 	/// ceiling semantics and [`severity_ceiling`] for the absent-check default.
-	pub fn apply_severities(&mut self, severities: &HashMap<String, CheckSeverity>) {
-		for (check, _) in &mut self.results {
-			let ceiling = severity_ceiling(severities, check.name);
-			check.status = check.status.clone().cap_to(ceiling);
+	pub fn apply_severities(&mut self, severities: &SplitSeverities) {
+		let empty = HashMap::new();
+		for outcome in &mut self.results {
+			let map = severities.for_subject(outcome.subject).unwrap_or(&empty);
+			let ceiling = severity_ceiling(map, outcome.check.name);
+			outcome.check.status = outcome.check.status.clone().cap_to(ceiling);
 		}
 		self.overall = OverallResult::from_checks(
 			&self
 				.results
 				.iter()
-				.map(|(c, _)| c.clone())
+				.map(|o| o.check.clone())
 				.collect::<Vec<_>>(),
 		);
-		if let Value::Object(obj) = &mut self.payload {
-			obj.insert("health".into(), Value::Array(health_array(&self.results)));
+		refresh_wire_health(&mut self.payload, &self.results);
+	}
+}
+
+/// Rewrite each target's `health[]` from the current results, leaving every
+/// `detail` block as it was.
+fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
+	if let Some(machine) = payload.machine.as_mut() {
+		machine.health = Some(health_for(results, Subject::Machine));
+	}
+	if let Some(apps) = payload.applications.as_mut() {
+		for (key, report) in apps.iter_mut() {
+			let subject = ApplicationKind::ALL
+				.iter()
+				.copied()
+				.find(|kind| &kind.key() == key)
+				.map(Subject::Application);
+			if let Some(subject) = subject {
+				report.health = Some(health_for(results, subject));
+			}
 		}
 	}
 }
 
-/// A single check ready to run: its registry index and wire flag, the future
-/// that produces its result, and its heal action paired with the context to run
-/// it against (when the sweep enables healing and the check has one).
+/// A single check ready to run: its registry index, the subject it reports for
+/// and its wire flag, the future that produces its result, and its heal action
+/// paired with the context to run it against (when the sweep enables healing
+/// and the check has one).
 struct PreparedCheck {
 	idx: usize,
 	name: &'static str,
+	subject: Subject,
 	on_wire: bool,
 	fut: BoxFuture<'static, Check>,
 	heal: Option<(heal::HealAction, SweepContext)>,
+}
+
+/// The subject a check reports for on this sweep, or `None` when the sweep has
+/// no such subject and the check is therefore not run at all.
+///
+/// A machine is always present. An application is present only when the host
+/// has one, so on a host with no Tamanu every application check is simply
+/// absent rather than reported as skipped.
+///
+/// spec: SUBJ
+fn subject_for(scope: CheckScope, application: Option<ApplicationKind>) -> Option<Subject> {
+	if scope.admits(Subject::Machine) {
+		return Some(Subject::Machine);
+	}
+	let app = Subject::Application(application?);
+	scope.admits(app).then_some(app)
+}
+
+/// Every `subject:name` the registry can produce, in registry order.
+///
+/// Answers from the registry rather than from what this host runs, so the same
+/// invocation is an error for the same reason on every machine.
+fn known_qualified_names(registry: &[checks::CheckEntry]) -> Vec<String> {
+	registry
+		.iter()
+		.flat_map(|entry| {
+			entry
+				.scope
+				.possible_subjects()
+				.into_iter()
+				.map(|subject| subject.qualify(entry.name))
+		})
+		.collect()
+}
+
+/// Reject a selection flag that names a check bestool cannot file.
+///
+/// A bare name is an error rather than a wildcard: a name identifies a check
+/// only together with its subject. The error names the qualified forms that do
+/// exist, so an operator who types a bare name is told what to write instead.
+///
+/// spec: DOC
+fn validate_selection(registry: &[checks::CheckEntry], names: &[String], flag: &str) -> Result<()> {
+	let known = known_qualified_names(registry);
+	for name in names {
+		if !name.contains(':') {
+			let forms: Vec<String> = registry
+				.iter()
+				.filter(|entry| entry.name == name)
+				.flat_map(|entry| {
+					entry
+						.scope
+						.possible_subjects()
+						.into_iter()
+						.map(|subject| subject.qualify(entry.name))
+				})
+				.collect();
+			return Err(if forms.is_empty() {
+				miette!(
+					"unknown check `{name}` in {flag}; checks are named by subject, e.g. `machine:disk_free`"
+				)
+			} else {
+				miette!(
+					"`{name}` in {flag} needs the subject it reports for: {}",
+					forms.join(", ")
+				)
+			});
+		}
+		if !known.contains(name) {
+			return Err(miette!(
+				"unknown check `{name}` in {flag}; known checks: {}",
+				known.join(", ")
+			));
+		}
+	}
+	Ok(())
 }
 
 /// Drive a set of checks concurrently, each on its own task.
@@ -213,11 +385,12 @@ struct PreparedCheck {
 async fn run_checks_concurrently(
 	checks: Vec<PreparedCheck>,
 	progress: Option<&ProgressSender>,
-) -> Vec<(usize, Check, bool)> {
+) -> Vec<(usize, CheckOutcome)> {
 	let mut pending = FuturesUnordered::new();
 	for PreparedCheck {
 		idx,
 		name,
+		subject,
 		on_wire,
 		fut,
 		heal,
@@ -232,11 +405,11 @@ async fn run_checks_concurrently(
 			}
 			result
 		});
-		pending.push(async move { (idx, name, on_wire, task.await) });
+		pending.push(async move { (idx, name, subject, on_wire, task.await) });
 	}
 
-	let mut completed: Vec<(usize, Check, bool)> = Vec::with_capacity(pending.len());
-	while let Some((idx, name, on_wire, joined)) = pending.next().await {
+	let mut completed: Vec<(usize, CheckOutcome)> = Vec::with_capacity(pending.len());
+	while let Some((idx, name, subject, on_wire, joined)) = pending.next().await {
 		let check = match joined {
 			Ok(check) => check,
 			Err(err) => {
@@ -244,10 +417,15 @@ async fn run_checks_concurrently(
 				Check::broken(name, "check did not complete", err.to_string())
 			}
 		};
+		let outcome = CheckOutcome {
+			subject,
+			check,
+			on_wire,
+		};
 		if let Some(tx) = progress {
-			let _ = tx.send(DoctorEvent::Completed(check.clone()));
+			let _ = tx.send(DoctorEvent::Completed(outcome.clone()));
 		}
-		completed.push((idx, check, on_wire));
+		completed.push((idx, outcome));
 	}
 	completed
 }
@@ -344,6 +522,18 @@ pub async fn perform_sweep(
 		.filter(|t| t.has_install)
 		.map(|t| t.root.display().to_string());
 
+	// The one application this sweep reports for, if the host presents one. A
+	// Tamanu deployment is a `tamanu-central` or `tamanu-facility`; a host with
+	// only the generic `DATABASE_URL` has a bare Postgres, which is still an
+	// application in its own right — the generic database checks are about it.
+	let application: Option<ApplicationKind> = tamanu_ctx.as_ref().map(|c| {
+		if c.is_tamanu {
+			ApplicationKind::from(c.kind)
+		} else {
+			ApplicationKind::Postgres
+		}
+	});
+
 	let check_ctx = SweepContext::builder()
 		.maybe_tamanu(tamanu_ctx)
 		.http_client(http_client)
@@ -352,25 +542,22 @@ pub async fn perform_sweep(
 		.build();
 
 	let registry = checks::all();
-	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
-	if let Some(unknown) = selected_names.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}`; known checks: {}",
-			known.join(", ")
-		));
-	}
-	if let Some(unknown) = skip_names.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}` in --skip; known checks: {}",
-			known.join(", ")
-		));
-	}
+	validate_selection(&registry, selected_names, "--check")?;
+	validate_selection(&registry, skip_names, "--skip")?;
 
-	let selected: Vec<(usize, &checks::CheckEntry)> = registry
+	// A check whose subject this sweep has no instance of is omitted outright:
+	// it never runs, and never appears in any subject's report.
+	let selected: Vec<(usize, &checks::CheckEntry, Subject)> = registry
 		.iter()
 		.enumerate()
-		.filter(|(_, e)| selected_names.is_empty() || selected_names.iter().any(|n| n == e.name))
-		.filter(|(_, e)| !skip_names.iter().any(|n| n == e.name))
+		.filter_map(|(idx, entry)| {
+			let subject = subject_for(entry.scope, application)?;
+			let qualified = subject.qualify(entry.name);
+			(selected_names.is_empty() || selected_names.contains(&qualified))
+				.then_some(())
+				.filter(|()| !skip_names.contains(&qualified))
+				.map(|()| (idx, entry, subject))
+		})
 		.collect();
 
 	// Run all selected checks concurrently. Results are collated by registry
@@ -378,7 +565,7 @@ pub async fn perform_sweep(
 	// completion order. A progress channel can observe results as they land.
 	let prepared: Vec<PreparedCheck> = selected
 		.iter()
-		.map(|(idx, entry)| {
+		.map(|(idx, entry, subject)| {
 			// A check's heal action is spawned in the background once its result
 			// is known, when the sweep enables healing (the daemon) and the
 			// check failed. `spawn_if_due` applies the per-check rate-limit and
@@ -387,6 +574,7 @@ pub async fn perform_sweep(
 			PreparedCheck {
 				idx: *idx,
 				name: entry.name,
+				subject: *subject,
 				on_wire: entry.on_wire,
 				fut: (entry.run)(check_ctx.clone()),
 				heal: heal.map(|h| (h, check_ctx.clone())),
@@ -394,16 +582,16 @@ pub async fn perform_sweep(
 		})
 		.collect();
 	let mut completed = run_checks_concurrently(prepared, progress.as_ref()).await;
-	completed.sort_by_key(|(idx, _, _)| *idx);
-	let results: Vec<(Check, bool)> = completed.into_iter().map(|(_, c, w)| (c, w)).collect();
+	completed.sort_by_key(|(idx, _)| *idx);
+	let results: Vec<CheckOutcome> = completed.into_iter().map(|(_, o)| o).collect();
 
 	// Resolve via the file path first so a doctor sweep can still report to
 	// canopy when the DB is down — that's exactly the moment canopy most
 	// needs to hear from us.
-	let server_id = match get_or_create_server_id().await {
+	let machine_id = match get_or_create_machine_id().await {
 		Ok(id) => Some(id),
 		Err(err) => {
-			warn!("could not resolve metaServerId: {err}");
+			warn!("could not resolve machine id: {err}");
 			None
 		}
 	};
@@ -425,15 +613,19 @@ pub async fn perform_sweep(
 	// `tamanuVersion` is omitted from the payload entirely. A Tamanu
 	// database-only host reports the version resolved from its DB.
 	let tamanu_version = resolved_version.map(|v| v.to_string());
-	let info = server_info::gather(binary_version, tamanu_version, facts).await;
-	let info_value = serde_json::to_value(&info).into_diagnostic()?;
+	let (machine_info, application_info) =
+		server_info::gather(binary_version, tamanu_version, facts).await;
 
 	let overall =
-		OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
-	let payload = build_payload(&info_value, &results);
+		OverallResult::from_checks(&results.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
+	let payload = build_payload(
+		&machine_info,
+		application.map(|kind| (kind, &application_info)),
+		&results,
+	)?;
 
 	Ok(SweepResult {
-		server_id,
+		machine_id,
 		results,
 		overall,
 		payload,
@@ -494,14 +686,26 @@ async fn collect_server_facts(
 	facts
 }
 
-pub fn overall_from_payload(payload: &Value) -> OverallResult {
+/// The sweep's overall result, across every subject the payload describes.
+///
+/// A failing application makes the sweep failing just as a failing machine
+/// does: the operator is looking at one host either way.
+pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
+	let targets = || {
+		payload.machine.iter().map(|m| &m.health).chain(
+			payload
+				.applications
+				.iter()
+				.flat_map(|a| a.values())
+				.map(|a| &a.health),
+		)
+	};
 	let results = || {
-		payload
-			.get("health")
-			.and_then(Value::as_array)
-			.into_iter()
+		targets()
 			.flatten()
-			.filter_map(|c| c.get("result").and_then(Value::as_str))
+			.flatten()
+			.filter_map(|c| c.result.as_ref())
+			.map(|r| r.to_string())
 	};
 	if results().any(|r| r == "failed") {
 		OverallResult::Failing
@@ -512,51 +716,146 @@ pub fn overall_from_payload(payload: &Value) -> OverallResult {
 	}
 }
 
-fn build_payload(info: &Value, results: &[(Check, bool)]) -> Value {
-	let mut payload: Map<String, Value> = match info {
-		Value::Object(o) => o.clone(),
-		_ => Map::new(),
-	};
+/// Assemble the split status push: the machine's checks and detail, each
+/// application's checks and detail, and the name of the agent reporting.
+///
+/// The top-level `health[]` is sent empty. It is the legacy flat form, and a
+/// source that files its checks per target has none to put there; canopy reads
+/// an empty array as "this source currently reports no ungrouped checks".
+///
+/// spec: SUBJ
+fn build_payload(
+	machine_info: &server_info::MachineInfo,
+	application: Option<(ApplicationKind, &server_info::ApplicationInfo)>,
+	results: &[CheckOutcome],
+) -> Result<StatusPayload> {
+	let machine = TargetReport::builder()
+		.detail(detail_for(
+			serde_json::to_value(machine_info).into_diagnostic()?,
+			results,
+			Subject::Machine,
+		))
+		.health(health_for(results, Subject::Machine))
+		.build();
 
-	// Lift any `payload_extras` from individual checks into the top-level
-	// payload (alongside server facts like `osTimezone`). Lets a check carry
-	// bulky context-data that belongs with server facts rather than crowding
-	// its diagnostic entry in `health[]`.
-	for (check, _) in results {
-		for (k, v) in &check.payload_extras {
-			payload.insert(k.clone(), v.clone());
-		}
-	}
+	let applications = application
+		.map(|(kind, info)| -> Result<_> {
+			let subject = Subject::Application(kind);
+			let report = ApplicationReport::builder()
+				.type_(kind.type_slug().to_owned())
+				.detail(detail_for(
+					serde_json::to_value(info).into_diagnostic()?,
+					results,
+					subject,
+				))
+				.health(health_for(results, subject))
+				.build();
+			Ok(HashMap::from([(kind.key(), report)]))
+		})
+		.transpose()?;
 
-	payload.insert("health".into(), Value::Array(health_array(results)));
-
-	Value::Object(payload)
+	let mut payload = StatusPayload::builder()
+		.health(Vec::new())
+		.machine(machine)
+		.source(REPORTING_SOURCE.to_owned())
+		.build();
+	payload.applications = applications;
+	Ok(payload)
 }
 
-/// The `health[]` wire array: one entry per on-wire check, in the given order.
-fn health_array(results: &[(Check, bool)]) -> Vec<Value> {
+/// One subject's `detail`: its own facts, plus the `payload_extras` lifted from
+/// the checks filed against it.
+///
+/// An extra travels with its check's subject, so the machine's addresses land
+/// on the machine and an application's service inventory on the application.
+fn detail_for(info: Value, results: &[CheckOutcome], subject: Subject) -> Map<String, Value> {
+	let mut detail: Map<String, Value> = match info {
+		Value::Object(obj) => obj,
+		_ => Map::new(),
+	};
+	for outcome in results.iter().filter(|o| o.subject == subject) {
+		for (key, value) in &outcome.check.payload_extras {
+			detail.insert(key.clone(), value.clone());
+		}
+	}
+	detail
+}
+
+/// One subject's `health[]`: its on-wire checks, in registry order.
+fn health_for(results: &[CheckOutcome], subject: Subject) -> Vec<HealthCheck> {
 	results
 		.iter()
-		.filter(|(_, on_wire)| *on_wire)
-		.map(|(c, _)| c.to_wire())
+		.filter(|o| o.subject == subject && o.on_wire)
+		.filter_map(|o| serde_json::from_value(o.check.to_wire()).ok())
 		.collect()
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::doctor::subject::ApplicationKind;
 
-	fn pass(name: &'static str) -> (Check, bool) {
-		(Check::pass(name, "ok"), true)
+	fn outcome(subject: Subject, check: Check) -> CheckOutcome {
+		CheckOutcome {
+			subject,
+			check,
+			on_wire: true,
+		}
 	}
-	fn warn(name: &'static str) -> (Check, bool) {
-		(Check::warning(name, "deg", "reason"), true)
+
+	fn machine(check: Check) -> CheckOutcome {
+		outcome(Subject::Machine, check)
 	}
-	fn fail(name: &'static str) -> (Check, bool) {
-		(Check::fail(name, "bad", "reason"), true)
+
+	fn central(check: Check) -> CheckOutcome {
+		outcome(Subject::Application(ApplicationKind::TamanuCentral), check)
 	}
-	fn skip(name: &'static str) -> (Check, bool) {
-		(Check::skip(name, "not run", "reason"), true)
+
+	const CENTRAL_KEY: &str = "host-tamanu-central";
+
+	fn machine_info() -> server_info::MachineInfo {
+		server_info::MachineInfo {
+			bestool_version: "0.0.0-test".into(),
+			hostname: Some("box".into()),
+			os_timezone: Some("Pacific/Auckland".into()),
+			uptime_secs: 1,
+			cpu_cores: 1,
+			total_memory_bytes: 1,
+			os_kind: "linux",
+			os_name: None,
+			os_version: None,
+			kernel: None,
+			arch: "x86_64".into(),
+			virtualised: None,
+			virtualisation: None,
+			filesystems: Vec::new(),
+			ipv4: true,
+			ipv6: false,
+			nat64: false,
+			instance_tags: None,
+		}
+	}
+
+	fn application_info() -> server_info::ApplicationInfo {
+		server_info::ApplicationInfo {
+			tamanu_version: Some("2.0.0".into()),
+			tamanu_server_kind: Some("central"),
+			pg_version: Some("16.1".into()),
+			..Default::default()
+		}
+	}
+
+	fn wire_names(health: &Option<Vec<HealthCheck>>) -> Vec<String> {
+		health.iter().flatten().map(|c| c.check.clone()).collect()
+	}
+
+	fn result_of(health: &Option<Vec<HealthCheck>>, name: &str) -> Option<String> {
+		health
+			.iter()
+			.flatten()
+			.find(|c| c.check == name)
+			.and_then(|c| c.result.as_ref())
+			.map(|r| r.to_string())
 	}
 
 	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -595,6 +894,7 @@ mod tests {
 			PreparedCheck {
 				idx: 0,
 				name: "blocker",
+				subject: Subject::Machine,
 				on_wire: true,
 				fut: blocking_check(ctx.clone()),
 				heal: None,
@@ -602,6 +902,7 @@ mod tests {
 			PreparedCheck {
 				idx: 1,
 				name: "timed",
+				subject: Subject::Machine,
 				on_wire: true,
 				fut: timed_check(ctx.clone()),
 				heal: None,
@@ -609,11 +910,12 @@ mod tests {
 		];
 
 		let results = run_checks_concurrently(prepared, None).await;
-		let (_, timed, _) = results
+		let (_, timed) = results
 			.iter()
-			.find(|(idx, _, _)| *idx == 1)
+			.find(|(idx, _)| *idx == 1)
 			.expect("timed check result");
 		let latency = timed
+			.check
 			.details
 			.get("latency_ms")
 			.and_then(Value::as_u64)
@@ -625,14 +927,15 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn sweep_without_tamanu_skips_tamanu_checks_and_runs_host_checks() {
-		// Restrict to a deterministic on-wire subset: a tamanu-dependent check
-		// plus one host check with no external dependencies.
+	async fn sweep_without_tamanu_omits_application_checks() {
+		// No Tamanu means no application subject, so an application check is not
+		// run and appears nowhere — neither on the wire nor in the results. A
+		// machine check still runs.
 		let sweep = perform_sweep(
 			"0.0.0-test",
 			None,
 			reqwest::Client::new(),
-			&["tamanu_http".into(), "memory".into()],
+			&["tamanu-central:tamanu_http".into(), "machine:memory".into()],
 			&[],
 			None,
 			None,
@@ -642,173 +945,353 @@ mod tests {
 		.await
 		.unwrap();
 
-		let result_of = |name: &str| {
-			sweep.payload["health"]
-				.as_array()
-				.unwrap()
-				.iter()
-				.find(|c| c["check"] == name)
-				.unwrap_or_else(|| panic!("{name} missing from health[]"))["result"]
-				.clone()
-		};
-		assert_eq!(result_of("tamanu_http"), "skipped");
-		assert_ne!(result_of("memory"), "skipped");
-		// No Tamanu means no tamanuVersion on the wire at all.
-		assert!(sweep.payload.get("tamanuVersion").is_none());
-	}
-
-	#[test]
-	fn payload_all_pass() {
-		let results = vec![pass("a"), pass("b")];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
-		assert!(payload.get("healthy").is_none());
-		assert_eq!(payload["health"].as_array().unwrap().len(), 2);
-		assert_eq!(payload["health"][0]["result"], "passed");
-	}
-
-	#[test]
-	fn payload_per_check_results() {
-		let results = vec![pass("a"), warn("b"), fail("c")];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
-		assert_eq!(payload["health"][0]["result"], "passed");
-		assert_eq!(payload["health"][1]["result"], "warning");
-		assert_eq!(payload["health"][2]["result"], "failed");
-	}
-
-	#[test]
-	fn overall_from_payload_tiers_on_results() {
-		let mk = |results: &[&str]| {
-			serde_json::json!({
-				"health": results.iter().map(|r| serde_json::json!({"check": "x", "result": r})).collect::<Vec<_>>(),
-			})
-		};
-		assert_eq!(
-			overall_from_payload(&mk(&["passed", "skipped"])),
-			OverallResult::Healthy
+		assert!(
+			!sweep.results.iter().any(|o| o.check.name == "tamanu_http"),
+			"an application check must be absent, not skipped, when there is no application",
 		);
-		assert_eq!(
-			overall_from_payload(&mk(&["passed", "warning"])),
-			OverallResult::Degraded
-		);
-		assert_eq!(
-			overall_from_payload(&mk(&["passed", "broken"])),
-			OverallResult::Degraded
-		);
-		assert_eq!(
-			overall_from_payload(&mk(&["warning", "failed"])),
-			OverallResult::Failing
-		);
-	}
-
-	#[test]
-	fn payload_lifts_payload_extras_into_top_level() {
-		// `payload_extras` is for data a check wants alongside server facts
-		// (osTimezone etc), not in its per-check entry. The tamanu_service
-		// check uses it for raw service inventory.
-		let mut info = serde_json::Map::new();
-		info.insert("osTimezone".into(), "Pacific/Auckland".into());
-		let info_value = Value::Object(info);
-
-		let check = Check::pass("svc", "ok")
-			.with_detail("supervisor", "systemd")
-			.with_payload_extra(
-				"services",
-				serde_json::json!({"supervisor": "systemd", "expectations": []}),
-			);
-		let results = vec![(check, true)];
-		let payload = build_payload(&info_value, &results);
-
-		assert_eq!(payload["osTimezone"], "Pacific/Auckland");
-		// Lifted into the top level, alongside osTimezone.
-		assert_eq!(payload["services"]["supervisor"], "systemd");
-		// And NOT duplicated into the per-check entry.
-		assert!(payload["health"][0].get("services").is_none());
-		// But the lean per-check detail (supervisor label) is still on the
-		// `health[]` entry.
-		assert_eq!(payload["health"][0]["supervisor"], "systemd");
-	}
-
-	#[test]
-	fn off_wire_checks_skipped_in_health_array() {
-		let results = vec![
-			(Check::pass("on", "ok"), true),
-			(Check::pass("off", "ok"), false),
-		];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
-		let names: Vec<&str> = payload["health"]
-			.as_array()
-			.unwrap()
+		let memory = sweep
+			.results
 			.iter()
-			.map(|v| v["check"].as_str().unwrap())
-			.collect();
-		assert_eq!(names, vec!["on"]);
+			.find(|o| o.check.name == "memory")
+			.expect("machine check should run");
+		assert_eq!(memory.subject, Subject::Machine);
+		assert!(!memory.check.status.is_skip());
+
+		// And nothing describes an application at all.
+		assert!(sweep.payload.applications.is_none());
+		let machine = sweep.payload.machine.as_ref().expect("machine target");
+		assert!(!wire_names(&machine.health).contains(&"tamanu_http".to_string()));
 	}
 
 	#[test]
-	fn apply_severities_caps_results_overall_and_wire() {
-		let results = vec![pass("keep_pass"), fail("noisy"), fail("real")];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
+	fn subject_for_omits_application_checks_without_an_application() {
+		assert_eq!(
+			subject_for(CheckScope::Machine, None),
+			Some(Subject::Machine)
+		);
+		assert_eq!(subject_for(CheckScope::Tamanu, None), None);
+		assert_eq!(subject_for(CheckScope::Database, None), None);
+	}
+
+	#[test]
+	fn subject_for_files_a_central_check_against_the_central_application() {
+		let central = Some(ApplicationKind::TamanuCentral);
+		assert_eq!(
+			subject_for(CheckScope::Central, central),
+			Some(Subject::Application(ApplicationKind::TamanuCentral)),
+		);
+		// The same check has no subject on a facility, so it does not run there.
+		assert_eq!(
+			subject_for(CheckScope::Central, Some(ApplicationKind::TamanuFacility)),
+			None,
+		);
+	}
+
+	#[test]
+	fn generic_database_host_reports_a_postgres_application() {
+		// A bare Postgres is still an application: the generic database checks
+		// are about it, and dropping them would stop monitoring such a host.
+		let postgres = Some(ApplicationKind::Postgres);
+		assert_eq!(
+			subject_for(CheckScope::Database, postgres),
+			Some(Subject::Application(ApplicationKind::Postgres)),
+		);
+		// But a check that reads Tamanu's own tables is not filed against it.
+		assert_eq!(subject_for(CheckScope::Tamanu, postgres), None);
+	}
+
+	#[test]
+	fn bare_check_name_is_rejected_with_its_qualified_forms() {
+		let registry = checks::all();
+		let err = validate_selection(&registry, &["disk_free".into()], "--check")
+			.expect_err("a bare name must not be accepted");
+		let msg = format!("{err}");
+		assert!(msg.contains("machine:disk_free"), "{msg}");
+	}
+
+	#[test]
+	fn bare_unknown_name_says_names_are_qualified() {
+		let registry = checks::all();
+		let err = validate_selection(&registry, &["no_such_check".into()], "--check")
+			.expect_err("an unknown name must be rejected");
+		let msg = format!("{err}");
+		assert!(msg.contains("machine:disk_free"), "{msg}");
+	}
+
+	#[test]
+	fn qualified_name_for_the_wrong_subject_is_rejected() {
+		// disk_free is the machine's; there is no application form of it.
+		let registry = checks::all();
+		assert!(
+			validate_selection(&registry, &["tamanu-central:disk_free".into()], "--check").is_err()
+		);
+		assert!(validate_selection(&registry, &["machine:disk_free".into()], "--check").is_ok());
+	}
+
+	#[test]
+	fn every_name_is_unique_within_its_subject() {
+		// A name identifies a check only with its subject, so the pair must be
+		// unique even though the bare name need not be.
+		let registry = checks::all();
+		let mut seen = std::collections::HashSet::new();
+		for qualified in known_qualified_names(&registry) {
+			assert!(
+				seen.insert(qualified.clone()),
+				"duplicate check {qualified}"
+			);
+		}
+	}
+
+	#[test]
+	fn payload_splits_checks_by_subject() {
+		let results = vec![
+			machine(Check::pass("disk_free", "ok")),
+			central(Check::fail("migrations", "behind", "reason")),
+		];
+		let info = application_info();
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&results,
+		)
+		.unwrap();
+
+		let machine_target = payload.machine.as_ref().unwrap();
+		assert_eq!(wire_names(&machine_target.health), vec!["disk_free"]);
+
+		let apps = payload.applications.as_ref().unwrap();
+		let app = apps.get(CENTRAL_KEY).expect("central application");
+		assert_eq!(app.type_, "tamanu-central");
+		assert_eq!(wire_names(&app.health), vec!["migrations"]);
+	}
+
+	#[test]
+	fn an_application_reports_no_bestool_version() {
+		// The bestool version answers whether the agent on the machine needs
+		// upgrading, so it is the machine's fact and no application carries it.
+		let info = application_info();
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&[],
+		)
+		.unwrap();
+
+		let machine_detail = &payload.machine.as_ref().unwrap().detail;
+		assert!(machine_detail.contains_key("bestoolVersion"));
+		assert!(machine_detail.contains_key("hostname"));
+
+		let apps = payload.applications.as_ref().unwrap();
+		let app_detail = &apps.get(CENTRAL_KEY).unwrap().detail;
+		assert!(!app_detail.contains_key("bestoolVersion"));
+		assert!(!app_detail.contains_key("hostname"));
+		assert_eq!(app_detail.get("tamanuVersion").unwrap(), "2.0.0");
+		assert_eq!(app_detail.get("pgVersion").unwrap(), "16.1");
+	}
+
+	#[test]
+	fn the_two_timezones_land_on_their_own_subjects() {
+		// Tamanu's configured zone is the application's; the clock zone is the
+		// machine's. Neither reports the other's as its own.
+		let info = server_info::ApplicationInfo {
+			timezone: Some("Pacific/Fiji".into()),
+			..application_info()
+		};
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&[],
+		)
+		.unwrap();
+
+		let machine_detail = &payload.machine.as_ref().unwrap().detail;
+		assert_eq!(
+			machine_detail.get("osTimezone").unwrap(),
+			"Pacific/Auckland"
+		);
+		assert!(!machine_detail.contains_key("timezone"));
+
+		let apps = payload.applications.as_ref().unwrap();
+		let app_detail = &apps.get(CENTRAL_KEY).unwrap().detail;
+		assert_eq!(app_detail.get("timezone").unwrap(), "Pacific/Fiji");
+		assert!(!app_detail.contains_key("osTimezone"));
+	}
+
+	#[test]
+	fn payload_extras_follow_their_check_subject() {
+		// `payload_extras` is for data a check wants alongside its subject's
+		// facts, not in its per-check entry. It must land on the subject the
+		// check was filed against.
+		let results = vec![
+			machine(
+				Check::pass("ips", "ok")
+					.with_payload_extra("lanIps", serde_json::json!(["10.0.0.1"])),
+			),
+			central(
+				Check::pass("tamanu_service", "ok")
+					.with_payload_extra("services", serde_json::json!({"supervisor": "systemd"})),
+			),
+		];
+		let info = application_info();
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&results,
+		)
+		.unwrap();
+
+		let machine_detail = &payload.machine.as_ref().unwrap().detail;
+		assert!(machine_detail.contains_key("lanIps"));
+		assert!(!machine_detail.contains_key("services"));
+
+		let apps = payload.applications.as_ref().unwrap();
+		let app_detail = &apps.get(CENTRAL_KEY).unwrap().detail;
+		assert!(app_detail.contains_key("services"));
+		assert!(!app_detail.contains_key("lanIps"));
+	}
+
+	#[test]
+	fn payload_names_its_source_and_sends_no_flat_health() {
+		let payload = build_payload(&machine_info(), None, &[]).unwrap();
+		assert_eq!(payload.source.as_deref(), Some("alertd"));
+		assert!(payload.health.is_empty());
+		assert!(payload.applications.is_none());
+	}
+
+	#[test]
+	fn off_wire_checks_stay_out_of_their_subjects_health() {
+		let results = vec![
+			machine(Check::pass("on", "ok")),
+			CheckOutcome {
+				on_wire: false,
+				..machine(Check::pass("off", "ok"))
+			},
+		];
+		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let machine_target = payload.machine.as_ref().unwrap();
+		assert_eq!(wire_names(&machine_target.health), vec!["on"]);
+	}
+
+	#[test]
+	fn overall_reads_every_subject() {
+		// A failing application makes the sweep failing: the operator is looking
+		// at one host either way.
+		let info = application_info();
+		let results = vec![
+			machine(Check::pass("disk_free", "ok")),
+			central(Check::fail("migrations", "behind", "reason")),
+		];
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&results,
+		)
+		.unwrap();
+		assert_eq!(overall_from_payload(&payload), OverallResult::Failing);
+	}
+
+	#[test]
+	fn overall_healthy_when_every_subject_passes() {
+		let results = vec![machine(Check::pass("disk_free", "ok"))];
+		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		assert_eq!(overall_from_payload(&payload), OverallResult::Healthy);
+	}
+
+	#[test]
+	fn severities_are_applied_per_subject() {
+		// The same bare name is graded separately on each subject, which is the
+		// whole reason a check is identified by subject and name together.
+		let info = application_info();
+		let results = vec![
+			machine(Check::fail("shared", "bad", "reason")),
+			central(Check::fail("shared", "bad", "reason")),
+		];
+		let payload = build_payload(
+			&machine_info(),
+			Some((ApplicationKind::TamanuCentral, &info)),
+			&results,
+		)
+		.unwrap();
 		let mut sweep = SweepResult {
-			server_id: None,
+			machine_id: None,
 			results,
 			overall: OverallResult::Failing,
 			payload,
 			pg_version: None,
 		};
 
-		let mut severities = HashMap::new();
-		severities.insert("noisy".to_string(), CheckSeverity::Skip);
-		severities.insert("real".to_string(), CheckSeverity::Fail);
-		// `keep_pass` is absent from the map: it defaults to warn, but a pass is
-		// never raised, so it stays passing.
+		let mut severities = SplitSeverities::default();
+		severities
+			.machine
+			.insert("shared".into(), CheckSeverity::Skip);
+		severities.applications.insert(
+			CENTRAL_KEY.into(),
+			HashMap::from([("shared".to_string(), CheckSeverity::Fail)]),
+		);
 		sweep.apply_severities(&severities);
 
-		let status_of = |name: &str| {
+		let status_of = |subject: Subject| {
 			sweep
 				.results
 				.iter()
-				.find(|(c, _)| c.name == name)
-				.map(|(c, _)| c.status.wire_result())
+				.find(|o| o.subject == subject)
+				.map(|o| o.check.status.wire_result())
 				.unwrap()
 		};
-		assert_eq!(status_of("keep_pass"), "passed");
-		assert_eq!(status_of("noisy"), "skipped");
-		assert_eq!(status_of("real"), "failed");
+		assert_eq!(status_of(Subject::Machine), "skipped");
+		assert_eq!(
+			status_of(Subject::Application(ApplicationKind::TamanuCentral)),
+			"failed"
+		);
 
-		// Overall is re-derived from the capped statuses: the only fatal check
-		// left is `real`, so we're still failing; silence `real` too and it drops.
+		// Only the application's failure survives, so the sweep still fails.
 		assert_eq!(sweep.overall, OverallResult::Failing);
 
-		// The wire health array tracks the capped statuses.
-		let wire_result = |name: &str| {
-			sweep.payload["health"]
-				.as_array()
-				.unwrap()
-				.iter()
-				.find(|c| c["check"] == name)
-				.unwrap()["result"]
-				.clone()
-		};
-		assert_eq!(wire_result("noisy"), "skipped");
-		assert_eq!(wire_result("real"), "failed");
+		// And each target's wire health tracks its own capped status.
+		let machine_target = sweep.payload.machine.as_ref().unwrap();
+		assert_eq!(
+			result_of(&machine_target.health, "shared").unwrap(),
+			"skipped"
+		);
+		let apps = sweep.payload.applications.as_ref().unwrap();
+		assert_eq!(
+			result_of(&apps.get(CENTRAL_KEY).unwrap().health, "shared").unwrap(),
+			"failed"
+		);
 	}
 
 	#[test]
 	fn apply_severities_absent_check_defaults_to_warn() {
 		// A check canopy hasn't heard of yet is capped at warn, so a computed
 		// failure is shown as a warning rather than promoted or left fatal.
-		let results = vec![fail("brand_new")];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
+		let results = vec![machine(Check::fail("brand_new", "bad", "reason"))];
+		let payload = build_payload(&machine_info(), None, &results).unwrap();
 		let mut sweep = SweepResult {
-			server_id: None,
+			machine_id: None,
 			results,
 			overall: OverallResult::Failing,
 			payload,
 			pg_version: None,
 		};
-		sweep.apply_severities(&HashMap::new());
-		assert_eq!(sweep.results[0].0.status.wire_result(), "warning");
+		sweep.apply_severities(&SplitSeverities::default());
+		assert_eq!(sweep.results[0].check.status.wire_result(), "warning");
 		assert_eq!(sweep.overall, OverallResult::Degraded);
+	}
+
+	#[test]
+	fn flat_severities_govern_every_subject() {
+		// The ungrouped endpoint answers by bare name alone, so its map applies
+		// wherever that name is filed.
+		let flat =
+			SplitSeverities::flat(HashMap::from([("shared".to_string(), CheckSeverity::Skip)]));
+		for subject in [
+			Subject::Machine,
+			Subject::Application(ApplicationKind::TamanuCentral),
+			Subject::Application(ApplicationKind::Postgres),
+		] {
+			let map = flat.for_subject(subject).expect("a map for every subject");
+			assert_eq!(map.get("shared"), Some(&CheckSeverity::Skip));
+		}
 	}
 
 	#[test]
@@ -849,8 +1332,12 @@ mod tests {
 	fn payload_skip_result_on_wire() {
 		// The whole point of distinguishing Skip from Fail/Warning is that
 		// "we don't know" shouldn't fire alerts downstream of the wire format.
-		let results = vec![pass("a"), skip("b")];
-		let payload = build_payload(&Value::Object(Default::default()), &results);
-		assert_eq!(payload["health"][1]["result"], "skipped");
+		let results = vec![
+			machine(Check::pass("a", "ok")),
+			machine(Check::skip("b", "not run", "reason")),
+		];
+		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let machine_target = payload.machine.as_ref().unwrap();
+		assert_eq!(result_of(&machine_target.health, "b").unwrap(), "skipped");
 	}
 }

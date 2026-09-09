@@ -1,4 +1,4 @@
-use bestool_alertd::doctor::check::{Check, CheckStatus};
+use bestool_alertd::doctor::check::{CheckOutcome, CheckStatus};
 
 /// Severity order key for grouping completed checks: lower value = less severe,
 /// renders nearer the top of the list and further from the result line.
@@ -25,20 +25,25 @@ pub fn keep_in_replay(status: &CheckStatus, show_all: bool) -> bool {
 	)
 }
 
-/// Sort `results` into severity-grouped, alphabetical-within-group order.
-pub fn sort_grouped(results: &mut [(Check, bool)]) {
+/// Sort `results` into severity-grouped order, alphabetical by qualified name
+/// within each group.
+///
+/// The qualified name is the sort key because a bare name no longer identifies
+/// a check: sorting by it alone would interleave a machine check with an
+/// application check of the same name.
+pub fn sort_grouped(results: &mut [CheckOutcome]) {
 	results.sort_by(|a, b| {
-		severity_key(&a.0.status)
-			.cmp(&severity_key(&b.0.status))
-			.then_with(|| a.0.name.cmp(b.0.name))
+		severity_key(&a.check.status)
+			.cmp(&severity_key(&b.check.status))
+			.then_with(|| a.qualified_name().cmp(&b.qualified_name()))
 	});
 }
 
 /// Filter `results` for the replay by the `show_all` flag, leaving them sorted.
-pub fn filter_and_sort(results: &[(Check, bool)], show_all: bool) -> Vec<(Check, bool)> {
-	let mut out: Vec<(Check, bool)> = results
+pub fn filter_and_sort(results: &[CheckOutcome], show_all: bool) -> Vec<CheckOutcome> {
+	let mut out: Vec<CheckOutcome> = results
 		.iter()
-		.filter(|(c, _)| keep_in_replay(&c.status, show_all))
+		.filter(|o| keep_in_replay(&o.check.status, show_all))
 		.cloned()
 		.collect();
 	sort_grouped(&mut out);
@@ -47,22 +52,31 @@ pub fn filter_and_sort(results: &[(Check, bool)], show_all: bool) -> Vec<(Check,
 
 #[cfg(test)]
 mod tests {
+	use bestool_alertd::doctor::{check::Check, subject::Subject};
+
 	use super::*;
 
-	fn pass(name: &'static str) -> (Check, bool) {
-		(Check::pass(name, "ok"), true)
+	fn on(check: Check) -> CheckOutcome {
+		CheckOutcome {
+			subject: Subject::Machine,
+			check,
+			on_wire: true,
+		}
 	}
-	fn warn(name: &'static str) -> (Check, bool) {
-		(Check::warning(name, "deg", "reason"), true)
+	fn pass(name: &'static str) -> CheckOutcome {
+		on(Check::pass(name, "ok"))
 	}
-	fn broken(name: &'static str) -> (Check, bool) {
-		(Check::broken(name, "broke", "reason"), true)
+	fn warn(name: &'static str) -> CheckOutcome {
+		on(Check::warning(name, "deg", "reason"))
 	}
-	fn fail(name: &'static str) -> (Check, bool) {
-		(Check::fail(name, "bad", "reason"), true)
+	fn broken(name: &'static str) -> CheckOutcome {
+		on(Check::broken(name, "broke", "reason"))
 	}
-	fn skip(name: &'static str) -> (Check, bool) {
-		(Check::skip(name, "not run", "reason"), true)
+	fn fail(name: &'static str) -> CheckOutcome {
+		on(Check::fail(name, "bad", "reason"))
+	}
+	fn skip(name: &'static str) -> CheckOutcome {
+		on(Check::skip(name, "not run", "reason"))
 	}
 
 	#[test]
@@ -95,7 +109,7 @@ mod tests {
 			warn("yak"),
 		];
 		sort_grouped(&mut results);
-		let names: Vec<&str> = results.iter().map(|(c, _)| c.name).collect();
+		let names: Vec<&str> = results.iter().map(|o| o.check.name).collect();
 		assert_eq!(
 			names,
 			vec!["charlie", "delta", "gamma", "alpha", "yak", "beta", "apple", "zebra"]
@@ -131,7 +145,7 @@ mod tests {
 			pass("f"),
 		];
 		let out = filter_and_sort(&input, false);
-		let names: Vec<&str> = out.iter().map(|(c, _)| c.name).collect();
+		let names: Vec<&str> = out.iter().map(|o| o.check.name).collect();
 		assert_eq!(names, vec!["b", "e", "d"]);
 	}
 }

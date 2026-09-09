@@ -22,7 +22,6 @@ use serde_json::Value;
 use super::{CheckContext, util::fetch_rows};
 use crate::doctor::Stat;
 use crate::doctor::check::Check;
-use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "sync_session_errors";
 
@@ -84,13 +83,6 @@ fn with_error_counters(check: Check, mobile_seen: u64, server_seen: u64) -> Chec
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	let Some(client) = ctx.db.as_ref() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

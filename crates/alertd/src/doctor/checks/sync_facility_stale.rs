@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 use super::{CheckContext, query_error_check};
 use crate::doctor::Stat;
 use crate::doctor::check::Check;
-use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "sync_facility_stale";
 
@@ -41,13 +40,6 @@ const SQL: &str = "WITH facility_sessions AS ( \
 	ORDER BY minutes_since_success DESC NULLS FIRST";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	let Some(client) = ctx.db.as_ref() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

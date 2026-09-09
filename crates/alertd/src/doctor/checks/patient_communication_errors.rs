@@ -2,7 +2,6 @@
 
 use super::{CheckContext, util::tiered_rows_check};
 use crate::doctor::check::Check;
-use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "patient_communication_errors";
 const SQL: &str = "SELECT * FROM patient_communications \
@@ -12,13 +11,6 @@ const SQL: &str = "SELECT * FROM patient_communications \
 const LOOKBACK_HOURS: i64 = 1;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	let Some(client) = ctx.db.as_ref() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

@@ -17,7 +17,7 @@ use miette::{IntoDiagnostic, Result};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use bestool_alertd::doctor::{
-	check::{Check, CheckStatus},
+	check::{Check, CheckOutcome, CheckStatus},
 	progress::DoctorEvent,
 };
 
@@ -32,16 +32,18 @@ const TICK: Duration = Duration::from_millis(80);
 #[derive(Clone)]
 enum RowState {
 	Running,
-	Completed(Check),
+	Completed(CheckOutcome),
 }
 
 struct TuiRow {
-	name: &'static str,
+	/// The check's qualified `subject:name`, which is what identifies it: two
+	/// subjects may hold a check of the same bare name.
+	name: String,
 	state: RowState,
 }
 
 pub struct TuiOutcome {
-	pub results: Vec<(Check, bool)>,
+	pub results: Vec<CheckOutcome>,
 	pub interrupted: bool,
 }
 
@@ -133,7 +135,7 @@ impl Drop for TerminalGuard {
 /// thread pool, which is sized independently of the CPU count, so it can
 /// never contend with the async worker pool.
 pub fn run_tui(
-	selected_names: Vec<&'static str>,
+	selected_names: Vec<String>,
 	source: SweepSource,
 	mut progress_rx: UnboundedReceiver<DoctorEvent>,
 ) -> Result<TuiOutcome> {
@@ -187,10 +189,10 @@ pub fn run_tui(
 
 	drop(guard);
 
-	let results: Vec<(Check, bool)> = rows
+	let results: Vec<CheckOutcome> = rows
 		.into_iter()
 		.filter_map(|row| match row.state {
-			RowState::Completed(check) => Some((check, true)),
+			RowState::Completed(outcome) => Some(outcome),
 			RowState::Running => None,
 		})
 		.collect();
@@ -204,9 +206,10 @@ pub fn run_tui(
 fn drain_progress(rx: &mut UnboundedReceiver<DoctorEvent>, rows: &mut [TuiRow]) {
 	while let Ok(evt) = rx.try_recv() {
 		match evt {
-			DoctorEvent::Completed(check) => {
-				if let Some(row) = rows.iter_mut().find(|r| r.name == check.name) {
-					row.state = RowState::Completed(check);
+			DoctorEvent::Completed(outcome) => {
+				let name = outcome.qualified_name();
+				if let Some(row) = rows.iter_mut().find(|r| r.name == name) {
+					row.state = RowState::Completed(outcome);
 				}
 			}
 		}
@@ -336,18 +339,18 @@ fn build_rows(rows: &[TuiRow], spinner: usize) -> Vec<StyledLine> {
 		.iter()
 		.filter(|row| match &row.state {
 			RowState::Running => true,
-			RowState::Completed(check) => !matches!(check.status, CheckStatus::Skip(_)),
+			RowState::Completed(o) => !matches!(o.check.status, CheckStatus::Skip(_)),
 		})
 		.collect();
-	ordered.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)).then_with(|| a.name.cmp(b.name)));
+	ordered.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)).then_with(|| a.name.cmp(&b.name)));
 
 	let mut lines = Vec::with_capacity(ordered.len());
 	for row in ordered {
 		match &row.state {
-			RowState::Running => lines.push(row_line_running(row.name, name_width, spinner)),
+			RowState::Running => lines.push(row_line_running(&row.name, name_width, spinner)),
 			RowState::Completed(check) => {
 				lines.push(row_line_completed(check, name_width));
-				if let Some(reason) = reason_for(check) {
+				if let Some(reason) = reason_for(&check.check) {
 					lines.push(reason_line(reason, name_width));
 				}
 			}
@@ -359,7 +362,7 @@ fn build_rows(rows: &[TuiRow], spinner: usize) -> Vec<StyledLine> {
 fn sort_key(row: &TuiRow) -> u8 {
 	match &row.state {
 		RowState::Running => 0,
-		RowState::Completed(check) => 1 + order::severity_key(&check.status),
+		RowState::Completed(o) => 1 + order::severity_key(&o.check.status),
 	}
 }
 
@@ -377,14 +380,16 @@ fn row_line_running(name: &str, name_width: usize, spinner: usize) -> StyledLine
 	]
 }
 
-fn row_line_completed(check: &Check, name_width: usize) -> StyledLine {
+fn row_line_completed(outcome: &CheckOutcome, name_width: usize) -> StyledLine {
+	let check = &outcome.check;
+	let name = outcome.qualified_name();
 	let (tag, color) = tag_for(check);
-	let pad = " ".repeat(name_width.saturating_sub(check.name.len()));
+	let pad = " ".repeat(name_width.saturating_sub(name.len()));
 	vec![
 		plain("  "),
 		bold_fg(format!("{tag:<4}"), color),
 		plain("    "),
-		plain(check.name.to_string()),
+		plain(name),
 		plain(pad),
 		plain("   "),
 		plain(check.summary.clone()),
@@ -446,7 +451,27 @@ fn footer_line(
 
 #[cfg(test)]
 mod tests {
+	use bestool_alertd::doctor::subject::Subject;
+
 	use super::*;
+
+	fn done(check: Check) -> TuiRow {
+		TuiRow {
+			name: Subject::Machine.qualify(check.name),
+			state: RowState::Completed(CheckOutcome {
+				subject: Subject::Machine,
+				check,
+				on_wire: true,
+			}),
+		}
+	}
+
+	fn running(name: &str) -> TuiRow {
+		TuiRow {
+			name: Subject::Machine.qualify(name),
+			state: RowState::Running,
+		}
+	}
 
 	fn line_text(line: &StyledLine) -> String {
 		line.iter().map(|s| s.text.as_str()).collect()
@@ -455,26 +480,11 @@ mod tests {
 	#[test]
 	fn build_rows_orders_running_then_pass_warn_broken_fail() {
 		let rows = vec![
-			TuiRow {
-				name: "z-fail",
-				state: RowState::Completed(Check::fail("z-fail", "bad", "r")),
-			},
-			TuiRow {
-				name: "a-pass",
-				state: RowState::Completed(Check::pass("a-pass", "ok")),
-			},
-			TuiRow {
-				name: "m-warn",
-				state: RowState::Completed(Check::warning("m-warn", "deg", "r")),
-			},
-			TuiRow {
-				name: "k-run",
-				state: RowState::Running,
-			},
-			TuiRow {
-				name: "c-broken",
-				state: RowState::Completed(Check::broken("c-broken", "broke", "r")),
-			},
+			done(Check::fail("z-fail", "bad", "r")),
+			done(Check::pass("a-pass", "ok")),
+			done(Check::warning("m-warn", "deg", "r")),
+			running("k-run"),
+			done(Check::broken("c-broken", "broke", "r")),
 		];
 		let lines = build_rows(&rows, 0);
 		let joined: Vec<String> = lines.iter().map(line_text).collect();
@@ -493,22 +503,10 @@ mod tests {
 	#[test]
 	fn build_rows_drops_completed_skip_but_keeps_pass_and_running() {
 		let rows = vec![
-			TuiRow {
-				name: "a-pass",
-				state: RowState::Completed(Check::pass("a-pass", "ok")),
-			},
-			TuiRow {
-				name: "b-skip",
-				state: RowState::Completed(Check::skip("b-skip", "n/a", "r")),
-			},
-			TuiRow {
-				name: "c-warn",
-				state: RowState::Completed(Check::warning("c-warn", "deg", "r")),
-			},
-			TuiRow {
-				name: "d-run",
-				state: RowState::Running,
-			},
+			done(Check::pass("a-pass", "ok")),
+			done(Check::skip("b-skip", "n/a", "r")),
+			done(Check::warning("c-warn", "deg", "r")),
+			running("d-run"),
 		];
 		let lines = build_rows(&rows, 0);
 		let joined: Vec<String> = lines.iter().map(line_text).collect();
@@ -521,18 +519,9 @@ mod tests {
 	#[test]
 	fn footer_counts_completed_against_total() {
 		let rows = vec![
-			TuiRow {
-				name: "a",
-				state: RowState::Completed(Check::pass("a", "ok")),
-			},
-			TuiRow {
-				name: "b",
-				state: RowState::Completed(Check::warning("b", "deg", "r")),
-			},
-			TuiRow {
-				name: "c",
-				state: RowState::Running,
-			},
+			done(Check::pass("a", "ok")),
+			done(Check::warning("b", "deg", "r")),
+			running("c"),
 		];
 		let line = footer_line(&rows, 3, 0, false, &Scroll::default());
 		assert!(line_text(&line).contains("2 / 3 complete"));
@@ -540,20 +529,14 @@ mod tests {
 
 	#[test]
 	fn footer_shows_finalising_when_all_done() {
-		let rows = vec![TuiRow {
-			name: "a",
-			state: RowState::Completed(Check::pass("a", "ok")),
-		}];
+		let rows = vec![done(Check::pass("a", "ok"))];
 		let line = footer_line(&rows, 1, 0, true, &Scroll::default());
 		assert!(line_text(&line).contains("finalising"));
 	}
 
 	#[test]
 	fn footer_shows_scroll_hint_only_when_scrollable() {
-		let rows = vec![TuiRow {
-			name: "a",
-			state: RowState::Running,
-		}];
+		let rows = vec![running("a")];
 		let none = footer_line(&rows, 1, 0, false, &Scroll::default());
 		assert!(!line_text(&none).contains("scroll"));
 

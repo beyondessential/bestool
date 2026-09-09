@@ -38,48 +38,27 @@ pub struct Filesystem {
 	pub fs_type: String,
 }
 
-/// Top-level fields of the canopy `/status/{server_id}` payload.
+/// The machine's own facts: the box, its operating system, its hardware, its
+/// network identity, and the agent reporting on it.
 ///
 /// Field names match (and extend) the previous `SendStatusToMetaServer` shape
-/// in Tamanu's `packages/shared/src/tasks/SendStatusToMetaServer.js`. Existing
-/// keys (`currentSyncTick`, `timezone`, `pgVersion`) keep their camelCase
-/// names so downstream parsing of historic rows stays compatible.
+/// in Tamanu's `packages/shared/src/tasks/SendStatusToMetaServer.js`, so
+/// downstream parsing of historic rows stays compatible.
+///
+/// spec: SUBJ
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServerInfo {
+pub struct MachineInfo {
+	/// The version of bestool running on this machine. A machine fact: it
+	/// answers whether the agent here needs upgrading, and an application with
+	/// no agent alongside it has none.
 	pub bestool_version: String,
-	/// Version of the Tamanu deployment. Absent on hosts with no Tamanu,
-	/// including hosts with only a generic (non-Tamanu) database.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub tamanu_version: Option<String>,
-	/// Filesystem root of the Tamanu install, when one was found on disk.
-	/// Absent on hosts driven by `TAMANU_DATABASE_URL` alone (no install).
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub tamanu_root: Option<String>,
-	/// Whether this server is a `central` or `facility`, when known.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub tamanu_server_kind: Option<&'static str>,
-	/// Host's installed Node.js version (bare, no leading `v`), if node is on
-	/// `PATH`. Omitted when node isn't installed or can't be queried.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub node_version: Option<String>,
 	pub hostname: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub canonical_url: Option<String>,
-
-	// Carried over from the JS SendStatusToMetaServer payload.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub current_sync_tick: Option<String>,
-	/// Effective timezone in use by Tamanu (from `primaryTimeZone` /
-	/// `countryTimeZone` config). Distinct from the host OS's clock zone.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub timezone: Option<String>,
-	/// OS-level system timezone, reported separately so operators can spot
-	/// drift between the host clock zone and Tamanu's configured zone.
+	/// OS-level system timezone. Distinct from an application's configured
+	/// zone, which is reported against the application; drift between the two
+	/// is still gradable wherever one sweep holds both.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub os_timezone: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub pg_version: Option<String>,
 
 	pub uptime_secs: u64,
 	/// Logical CPU count (what load average is relative to, i.e. `nproc`).
@@ -115,6 +94,44 @@ pub struct ServerInfo {
 	pub instance_tags: Option<BTreeMap<String, String>>,
 }
 
+/// One application's own facts.
+///
+/// Every field is about the application rather than the box under it, so an
+/// application reports no `bestoolVersion`, no hostname, and none of the
+/// machine's hardware.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationInfo {
+	/// Version of the deployment. Absent when it could not be resolved from
+	/// either the install or the database.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_version: Option<String>,
+	/// Whether this application is a `central` or `facility`, when known.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_server_kind: Option<&'static str>,
+	/// Filesystem root of the install, when one was found on disk. Absent on
+	/// hosts driven by `TAMANU_DATABASE_URL` alone (no install).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tamanu_root: Option<String>,
+	/// Version of the Node.js runtime the application executes under (bare, no
+	/// leading `v`). Omitted when no runtime could be resolved.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub node_version: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub canonical_url: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub current_sync_tick: Option<String>,
+	/// Effective timezone in use by the application (from `primaryTimeZone` /
+	/// `countryTimeZone` config).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub timezone: Option<String>,
+	/// Postgres version of the application's own database.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pg_version: Option<String>,
+}
+
 /// Optional inputs sourced from the Tamanu DB / config that aren't trivially
 /// available at gather time. Doctor populates these from its own DB connection.
 #[derive(Debug, Clone, Default)]
@@ -127,17 +144,25 @@ pub struct ServerFacts {
 	pub tamanu_server_kind: Option<&'static str>,
 }
 
-/// Build the status-payload `ServerInfo` block.
+/// Build the machine's and the application's fact blocks.
+///
+/// The two are gathered together because one pass over the host answers both,
+/// but nothing crosses between them: each field lands on the subject it is
+/// actually about, so a fact is absent when its subject genuinely lacks it.
+/// The application block is meaningful only when the host has an application;
+/// on a machine with none the caller discards it.
 ///
 /// `bestool_version` is the version of the *calling* binary — it must be
 /// provided by the caller (`env!("CARGO_PKG_VERSION")` resolved in the bestool
 /// crate) rather than evaluated here, since in this library crate it would
 /// resolve to the library's own version instead of the running binary's.
+///
+/// spec: SUBJ
 pub async fn gather(
 	bestool_version: &str,
 	tamanu_version: Option<String>,
 	facts: ServerFacts,
-) -> ServerInfo {
+) -> (MachineInfo, ApplicationInfo) {
 	let disks = Disks::new_with_refreshed_list();
 	let filesystems = disks
 		.iter()
@@ -173,18 +198,21 @@ pub async fn gather(
 	)
 	.await;
 
-	ServerInfo {
-		bestool_version: bestool_version.to_string(),
+	let application = ApplicationInfo {
 		tamanu_version,
-		tamanu_root: facts.tamanu_root,
 		tamanu_server_kind: facts.tamanu_server_kind,
+		tamanu_root: facts.tamanu_root,
 		node_version,
-		hostname: System::host_name(),
 		canonical_url: facts.canonical_url,
 		current_sync_tick: facts.current_sync_tick,
 		timezone: facts.timezone,
-		os_timezone,
 		pg_version: facts.pg_version,
+	};
+
+	let machine = MachineInfo {
+		bestool_version: bestool_version.to_string(),
+		hostname: System::host_name(),
+		os_timezone,
 		uptime_secs: System::uptime(),
 		cpu_cores,
 		total_memory_bytes,
@@ -208,7 +236,9 @@ pub async fn gather(
 		ipv6,
 		nat64,
 		instance_tags,
-	}
+	};
+
+	(machine, application)
 }
 
 /// Read EC2 instance tags via IMDSv2.

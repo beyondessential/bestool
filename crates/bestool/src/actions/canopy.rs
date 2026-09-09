@@ -213,13 +213,13 @@ fn decode_base64(input: &str) -> Result<Vec<u8>> {
 #[cfg(any(feature = "canopy-register", feature = "canopy-unregister"))]
 async fn clear_legacy_identity(tags_path: &std::path::Path) -> Vec<String> {
 	use bestool_tamanu::server_info::{
-		standard_device_key_path, standard_server_id_path, standard_tags_path,
+		standard_device_key_path, standard_machine_id_path, standard_tags_path,
 	};
 
 	let mut removed = Vec::new();
 	for path in [
 		standard_device_key_path(),
-		standard_server_id_path(),
+		standard_machine_id_path(),
 		tags_path.to_path_buf(),
 		standard_tags_path(),
 	] {
