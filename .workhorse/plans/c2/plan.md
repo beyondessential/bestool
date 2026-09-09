@@ -1,7 +1,8 @@
 # Audit store redesign: implementation plan
 
 The design is specified in `.workhorse/specs/psql/audit/`: [AUD](../../specs/psql/audit/overview.md), [AUD-STO](../../specs/psql/audit/store.md), [AUD-HIS](../../specs/psql/audit/history.md), [AUD-RET](../../specs/psql/audit/retention.md), [AUD-API](../../specs/psql/audit/tools.md).
-The problem exploration, technique sweep and the reasoning behind each decision are in this file's git history up to commit `adeed998`.
+The problem exploration and technique sweep are in this file's git history up to commit `adeed998`.
+The design settled after that: per-session-day segments, framing, gap records and query sources were worked out on the card and their reasoning is carried in the specs themselves.
 
 ## Implementation notes
 
@@ -29,6 +30,7 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - [ ] Segment writer: create the day's segment on first record, take its advisory lock, write the opening context record, append query records, append the end record on clean exit.
 - [ ] Day rollover: at the first record past midnight UTC, close and unlock the current segment and open the next, carrying the chain and sequence numbers across.
 - [ ] Hash chain: compute `prev` at write time from the previous whole record's JSON text; empty only for the session's very first record.
+- [ ] Sequence numbers assigned when a record is made, not when it lands, so a discarded record leaves a hole.
 - [ ] Gap record: on resuming after discards, emit a gap taking the first discarded sequence number and carrying the count, last number and time span; then flush the surviving backlog behind it.
 - [ ] Query record source: `"source":"typed"`, or `"source":"snippet"` with the snippet name, or `"source":"include"` with the absolute path as resolved for opening. Flat fields rather than a nested object, so `source` is always a string and stays greppable. Replaces the `recall` boolean, which readers now derive.
 - [ ] Record statements run from snippets and included files at all. Expansion in `repl/snippets.rs` and `repl/include.rs` loops over `action.dispatch(...)`, which bypasses the recording in `ReplAction::handle`, so today only the invocation line is logged and the statements it runs are not. `from_snippet_or_include` is set around that loop but nothing on the path calls `add_entry`, so the not-for-recall marking has never applied to anything.
@@ -36,19 +38,19 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - [ ] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
 - [ ] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
 - [ ] Network filesystem detection at open with a loud warning.
-- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held. Map the old `recall` boolean to a source: true to `typed`, false to `unknown`.
+- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held. Map the old `recall` boolean to a source: true to `typed`, false to `unknown`. Records with no old instance id go to per-day import segments under an identity generated for the import, so the segment naming rule holds for them too.
 
 ### Reader
 
 - [ ] Segment parser: split on `0x1E`, parse each record, and on failure report the skipped bytes and resume at the next separator rather than ending the file.
-- [ ] Day file parser: zstd-compressed JSON lines.
+- [ ] Day file parser: zstd wrapping the same framed records as a segment, so the same record reader runs over both.
 - [ ] Merged reader: time-ordered k-way merge across segments and day files, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window. Two surfaces over the one merge: stored records for export, and context-carried-forward flat entries for the recall set and other callers.
 - [ ] Filtered export emits the context record in force at the start of the output before the first query record.
-- [ ] Chain verification per session, following its records across segments and day files in date order, reporting the first break and treating the oldest kept record's `prev` as unverifiable; chain heads per session.
+- [ ] Chain verification per session, following its records across segments and day files in date order, reporting the first break, the gap records and unparsable bytes passed, and treating the oldest kept record's `prev` as unverifiable; chain heads per session.
 
 ### Shell history
 
-- [ ] Recall set builder: newest-first across files to the memory budget, skipping records above the size cutoff and records marked not for recall.
+- [ ] Recall set builder: newest-first across files to the memory budget, skipping records above the size cutoff and any whose source is not the prompt.
 - [ ] Replace the rustyline history implementation with an in-memory history seeded from the recall set and appended to as the session runs.
 
 ### Compaction and retention
