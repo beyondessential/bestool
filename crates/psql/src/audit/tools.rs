@@ -9,6 +9,7 @@ use std::{
 	collections::{HashMap, HashSet, VecDeque},
 	io::Write,
 	path::{Path, PathBuf},
+	sync::Arc,
 };
 
 use jiff::Timestamp;
@@ -163,18 +164,35 @@ pub fn compact_directory(dir: &Path) -> Result<CompactionReport> {
 /// of it is emitted first for each session that appears, so every query record
 /// in the output can still be attributed.
 pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) -> Result<()> {
-	let selected = stored(dir, options)?;
+	// One pass over the log. The context in force is already tracked as the read
+	// goes, so it is picked up alongside each record that enters the output
+	// rather than by reading the whole log a second time to look for it.
+	let mut reader = Reader::open_range(dir, options.range()?)?;
+	let limit = options.limit();
 
-	let range = options.range()?;
-	let narrowed = range.since.is_some() || range.until.is_some() || options.limit().is_some();
+	let mut window: VecDeque<(Stored, Option<Arc<Record>>)> = VecDeque::new();
+	while let Some(record) = reader.next() {
+		let context = record
+			.instance
+			.and_then(|instance| reader.context_record_of(instance))
+			.cloned();
 
-	if narrowed {
-		for record in leading_contexts(dir, &selected)? {
-			write_record(out, &record)?;
+		if let Some(limit) = limit {
+			if options.from_oldest {
+				if window.len() == limit {
+					break;
+				}
+			} else if window.len() == limit {
+				window.pop_front();
+			}
 		}
+		window.push_back((record, context));
 	}
 
-	for record in &selected {
+	for record in leading_contexts(&window) {
+		write_record(out, &record)?;
+	}
+	for (record, _) in &window {
 		write_record(out, &record.record)?;
 	}
 
@@ -182,15 +200,15 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 }
 
 /// The context record in force at the start of the output, for each session
-/// whose own context record did not make it into the selection.
-fn leading_contexts(dir: &Path, selected: &[Stored]) -> Result<Vec<Record>> {
-	// A session needs a leading context record when the output starts before its
-	// own first context record does. Whichever kind of record comes first for a
-	// session settles it: a context change later in the output does not cover
-	// the records ahead of it.
-	let mut wanted: HashMap<Uuid, (Timestamp, u64)> = HashMap::new();
+/// whose own context record did not make it into it.
+///
+/// Whichever kind of record comes first for a session settles it: a context
+/// change later in the output does not cover the records ahead of it.
+fn leading_contexts(window: &VecDeque<(Stored, Option<Arc<Record>>)>) -> Vec<Record> {
+	let mut wanted: HashMap<Uuid, Arc<Record>> = HashMap::new();
 	let mut covered: HashSet<Uuid> = HashSet::new();
-	for stored in selected {
+
+	for (stored, context) in window {
 		let Some(instance) = stored.instance else {
 			continue;
 		};
@@ -202,47 +220,19 @@ fn leading_contexts(dir: &Path, selected: &[Stored]) -> Result<Vec<Record>> {
 				covered.insert(instance);
 			}
 			_ => {
-				wanted.insert(instance, (stored.record.ts, stored.record.seq));
+				if let Some(context) = context {
+					wanted.insert(instance, context.clone());
+				}
 			}
 		}
 	}
 
-	let Some(stop) = wanted.values().map(|(ts, _)| *ts).max() else {
-		return Ok(Vec::new());
-	};
-
-	// Read from the beginning of the log up to where the output starts, keeping
-	// the latest context record of each session that needs one.
-	//
-	// Each session's own boundary is its first selected record by sequence
-	// number as well as timestamp: a clock coarse enough to give a context
-	// record and the query after it the same timestamp would otherwise put the
-	// boundary on the wrong side of the very record being looked for.
-	let mut latest: HashMap<Uuid, Record> = HashMap::new();
-	for stored in Reader::open_range(
-		dir,
-		Range {
-			since: None,
-			until: Some(stop),
-		},
-	)? {
-		let Some(instance) = stored.instance else {
-			continue;
-		};
-		let Some(boundary) = wanted.get(&instance) else {
-			continue;
-		};
-		if (stored.record.ts, stored.record.seq) >= *boundary {
-			continue;
-		}
-		if matches!(stored.record.kind, RecordKind::Context(_)) {
-			latest.insert(instance, stored.record);
-		}
-	}
-
-	let mut found: Vec<Record> = latest.into_values().collect();
+	let mut found: Vec<Record> = wanted
+		.into_values()
+		.map(|record| (*record).clone())
+		.collect();
 	found.sort_by_key(|record| (record.ts, record.seq));
-	Ok(found)
+	found
 }
 
 fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {

@@ -93,4 +93,5 @@ Import streams records from the old files rather than loading them whole, so it 
 Imported records keep their original timestamps.
 Their query records take the source the old store implies: typed where it held the record eligible for recall, and unknown where it did not, since the old store recorded that a statement was not typed without recording what ran it.
 Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day, under a session identity made for the import, so that every segment in the directory is named the same way.
-The old files are deleted only after the new segments have been written and synchronised to disk.
+The old files are set aside, under a name that will not be imported again, only after the new segments have been written and synchronised to disk.
+They are set aside rather than deleted because import runs from the read-only tools too, and an auditor examining a machine must not be the one who destroys what they came to examine.

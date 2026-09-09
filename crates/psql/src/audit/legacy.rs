@@ -7,10 +7,14 @@
 //!
 //! spec: AUD-STO
 
-use std::{collections::HashMap, fs::OpenOptions, io::Write as _, path::Path};
+use std::{
+	collections::{HashMap, hash_map::Entry},
+	io::{BufWriter, Write as _},
+	path::Path,
+};
 
 use jiff::Timestamp;
-use miette::{IntoDiagnostic as _, Result, WrapErr as _};
+use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
 use redb::{Database, ReadableDatabase as _, ReadableTable as _, TableDefinition};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -68,6 +72,51 @@ struct Session {
 	context: Option<(jiff::civil::Date, ContextRecord)>,
 }
 
+/// The segments being written, kept open across records.
+///
+/// A full legacy store held hundreds of thousands of records, and reopening the
+/// destination for each one would put that many open and close calls on the
+/// session's startup path.
+#[derive(Default)]
+struct Open {
+	files: HashMap<(Uuid, jiff::civil::Date), BufWriter<std::fs::File>>,
+}
+
+impl Open {
+	fn writer(
+		&mut self,
+		dir: &Path,
+		instance: Uuid,
+		date: jiff::civil::Date,
+	) -> Result<&mut BufWriter<std::fs::File>> {
+		Ok(match self.files.entry((instance, date)) {
+			Entry::Occupied(open) => open.into_mut(),
+			Entry::Vacant(slot) => {
+				let path = dir.join(paths::segment_name(date, instance));
+				let file = paths::private()
+					.create(true)
+					.append(true)
+					.open(&path)
+					.into_diagnostic()
+					.wrap_err_with(|| format!("opening {}", path.display()))?;
+				slot.insert(BufWriter::new(file))
+			}
+		})
+	}
+
+	/// Get everything buffered onto disk, before the old files are set aside.
+	fn finish(self) -> Result<()> {
+		for (_, mut file) in self.files {
+			file.flush().into_diagnostic()?;
+			file.into_inner()
+				.map_err(|err| miette!("flushing an imported audit segment: {err}"))?
+				.sync_all()
+				.into_diagnostic()?;
+		}
+		Ok(())
+	}
+}
+
 /// Import any legacy store in `dir`.
 ///
 /// Runs under the directory lock, which the caller already holds; a process that
@@ -85,11 +134,12 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 	// that every segment in the directory is named the same way.
 	let anonymous = Uuid::new_v4();
 	let mut sessions: HashMap<Uuid, Session> = HashMap::new();
+	let mut open = Open::default();
 	let mut imported = 0;
 
 	let mut done = Vec::new();
 	for path in &files {
-		match import_file(dir, path, anonymous, &mut sessions) {
+		match import_file(dir, path, anonymous, &mut sessions, &mut open) {
 			Ok(count) => {
 				imported += count;
 				done.push(path);
@@ -102,15 +152,21 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 		}
 	}
 
-	// The old files go only after the new segments have been written and
-	// synchronised to disk.
-	sync_dir(dir)?;
+	// The old files are set aside only after the new segments have been written
+	// and synchronised to disk.
+	open.finish()?;
+	//
+	// Set aside, not deleted: import runs from the read-only tools too, so an
+	// auditor who points `verify` at a machine's store would otherwise destroy
+	// the very files they came to examine. The suffix keeps them from being
+	// imported a second time, and leaves them there to be compared against.
 	for path in done {
-		if let Err(err) = std::fs::remove_file(path) {
+		let aside = paths::set_aside(path);
+		if let Err(err) = std::fs::rename(path, &aside) {
 			warn!(
 				?err,
 				?path,
-				"could not delete an imported legacy audit file"
+				"could not set an imported legacy audit file aside"
 			);
 		}
 	}
@@ -128,6 +184,7 @@ fn import_file(
 	path: &Path,
 	anonymous: Uuid,
 	sessions: &mut HashMap<Uuid, Session>,
+	open: &mut Open,
 ) -> Result<usize> {
 	let db = Database::open(path)
 		.into_diagnostic()
@@ -166,7 +223,7 @@ fn import_file(
 		};
 
 		let instance = entry.instance_id.unwrap_or(anonymous);
-		write_entry(dir, sessions, instance, ts, entry)?;
+		write_entry(dir, sessions, open, instance, ts, entry)?;
 		imported += 1;
 	}
 
@@ -176,6 +233,7 @@ fn import_file(
 fn write_entry(
 	dir: &Path,
 	sessions: &mut HashMap<Uuid, Session>,
+	open: &mut Open,
 	instance: Uuid,
 	ts: Timestamp,
 	entry: LegacyEntry,
@@ -196,23 +254,17 @@ fn write_entry(
 		instance,
 	};
 
-	let path = dir.join(paths::segment_name(date, instance));
-	let mut file = OpenOptions::new()
-		.create(true)
-		.append(true)
-		.open(&path)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("opening {}", path.display()))?;
+	let file = open.writer(dir, instance, date)?;
 
 	// The first record of every segment is a context record, and a new one goes
 	// in whenever the state it carries changes.
 	if session.context.as_ref() != Some(&(date, context.clone())) {
 		session.context = Some((date, context.clone()));
-		append(&mut file, session, ts, RecordKind::Context(context))?;
+		append(file, session, ts, RecordKind::Context(context))?;
 	}
 
 	append(
-		&mut file,
+		file,
 		session,
 		ts,
 		RecordKind::Query(QueryRecord {
@@ -231,7 +283,7 @@ fn write_entry(
 }
 
 fn append(
-	file: &mut std::fs::File,
+	file: &mut BufWriter<std::fs::File>,
 	session: &mut Session,
 	ts: Timestamp,
 	kind: RecordKind,
@@ -248,21 +300,6 @@ fn append(
 	let json = record.to_json().into_diagnostic()?;
 	file.write_all(&frame(&json)).into_diagnostic()?;
 	session.prev = hash(&json);
-	Ok(())
-}
-
-fn sync_dir(dir: &Path) -> Result<()> {
-	for (path, _) in paths::list(dir)? {
-		if let Ok(file) = std::fs::File::open(&path)
-			&& let Err(err) = file.sync_all()
-		{
-			warn!(
-				?err,
-				?path,
-				"could not synchronise an imported audit segment"
-			);
-		}
-	}
 	Ok(())
 }
 
@@ -474,6 +511,30 @@ mod tests {
 
 		let report = verify(dir.path()).unwrap();
 		assert!(report.holds(), "{:?}", report.sessions);
+	}
+
+	#[test]
+	fn an_imported_legacy_file_is_set_aside_rather_than_deleted() {
+		let dir = tempfile::tempdir().unwrap();
+		let original = dir.path().join("audit-main.redb");
+		legacy_store(
+			&original,
+			&[(at("2026-01-01", 1), entry("select 1;", None, true))],
+		);
+
+		let lock = Lock::try_directory(dir.path()).unwrap().unwrap();
+		import(dir.path(), &lock).unwrap();
+		drop(lock);
+
+		// A read-only tool imports too, so the originals have to survive being
+		// looked at: an auditor cannot be the one who destroys the evidence.
+		assert!(!original.exists());
+		assert!(paths::set_aside(&original).exists());
+
+		// And they are not imported a second time.
+		assert!(paths::list_legacy(dir.path()).unwrap().is_empty());
+		let lock = Lock::try_directory(dir.path()).unwrap().unwrap();
+		assert_eq!(import(dir.path(), &lock).unwrap(), 0);
 	}
 
 	#[test]

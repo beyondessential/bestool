@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use jiff::civil::Date;
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result, WrapErr as _, miette};
 use uuid::Uuid;
 
 /// Extension of a plain segment: the framing, not a format a JSON-lines reader
@@ -41,6 +41,19 @@ pub const LEGACY_NAMES: &[&str] = &["audit-main.redb", "history.redb"];
 
 /// Legacy working and orphaned copy prefixes, recognised on import.
 pub const LEGACY_PREFIXES: &[&str] = &["audit-working-", "audit-orphaned-"];
+
+/// Suffix put on a legacy file once its records have been imported.
+///
+/// It stops the file being imported again, and leaves the original where an
+/// auditor can still compare against it.
+pub const IMPORTED_SUFFIX: &str = ".imported";
+
+/// The name an imported legacy file is set aside under.
+pub fn set_aside(legacy: &Path) -> PathBuf {
+	let mut name = legacy.as_os_str().to_os_string();
+	name.push(IMPORTED_SUFFIX);
+	PathBuf::from(name)
+}
 
 /// Name of the segment a session writes on a given day.
 pub fn segment_name(date: Date, instance: Uuid) -> String {
@@ -186,8 +199,43 @@ pub fn list_legacy(dir: &Path) -> Result<Vec<PathBuf>> {
 /// The per-user state directory the log defaults to.
 pub fn default_dir() -> Result<PathBuf> {
 	let dir = platform_default_dir()?;
-	std::fs::create_dir_all(&dir).into_diagnostic()?;
+	create_dir(&dir)?;
 	Ok(dir)
+}
+
+/// Create the audit directory, readable by its owner alone.
+///
+/// The directory belongs to one operating-system user, and what it holds is the
+/// full text of every statement run against the database, which for a clinical
+/// deployment means patient data in plain, greppable JSON. Other local users
+/// have no business reading it.
+pub fn create_dir(dir: &Path) -> Result<()> {
+	std::fs::create_dir_all(dir)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating audit directory {}", dir.display()))?;
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt as _;
+		// Best effort: a directory that already existed with wider permissions
+		// is narrowed, but a failure here must not stop a session recording.
+		std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).ok();
+	}
+
+	Ok(())
+}
+
+/// Open options for a file in the audit directory, readable by its owner alone.
+pub fn private() -> std::fs::OpenOptions {
+	let mut options = std::fs::OpenOptions::new();
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt as _;
+		options.mode(0o600);
+	}
+
+	options
 }
 
 /// The default directory for help text, which must not fail.

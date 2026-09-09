@@ -5,12 +5,7 @@
 //!
 //! spec: AUD, AUD-STO
 
-use std::{
-	collections::VecDeque,
-	fs::{File, OpenOptions},
-	io::Write as _,
-	path::PathBuf,
-};
+use std::{collections::VecDeque, fs::File, io::Write as _, path::PathBuf};
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
@@ -114,6 +109,9 @@ pub struct Writer {
 	backlog: VecDeque<Pending>,
 	backlog_bytes: usize,
 	discarded: Option<Discarded>,
+	/// Set when a gap has been written and the context record that follows it
+	/// has not, holding the timestamp that record must take.
+	owes_context: Option<Timestamp>,
 	/// A failing store is warned about once, then fails silently.
 	warned: bool,
 }
@@ -134,6 +132,7 @@ impl Writer {
 			backlog: VecDeque::new(),
 			backlog_bytes: 0,
 			discarded: None,
+			owes_context: None,
 			warned: false,
 		}
 	}
@@ -237,10 +236,10 @@ impl Writer {
 	/// Drop the oldest held records once either bound is reached, tallying them
 	/// so a gap record can account for them when recording resumes.
 	///
-	/// The newest context record held is never the one dropped. Everything after
-	/// it is attributed by it, so losing it would leave a whole stretch of the
-	/// log saying nothing about who ran it, and would leave the segment opening
-	/// with something other than a context record.
+	/// Dropping is strictly oldest first, so what is lost is always one unbroken
+	/// run of sequence numbers and one gap record describes it exactly. Holding
+	/// a record back out of the middle of that run would make it two runs, which
+	/// is what a single gap cannot say.
 	fn trim(&mut self) {
 		while self.backlog.len() > BACKLOG_RECORDS || self.backlog_bytes > BACKLOG_BYTES {
 			// One record over the byte bound on its own has nothing older to
@@ -250,16 +249,13 @@ impl Writer {
 				break;
 			}
 
-			let Some(dropped) = self.backlog.remove(self.oldest_droppable()) else {
+			let Some(dropped) = self.backlog.pop_front() else {
 				break;
 			};
 			self.backlog_bytes = self.backlog_bytes.saturating_sub(dropped.weight);
 
 			match &mut self.discarded {
 				Some(tally) => {
-					// Pinning the newest context record means drops are not
-					// strictly oldest first, so the span is tracked both ways.
-					tally.first_seq = tally.first_seq.min(dropped.seq);
 					tally.last_seq = tally.last_seq.max(dropped.seq);
 					tally.count += 1;
 					tally.from = tally.from.min(dropped.ts);
@@ -278,34 +274,13 @@ impl Writer {
 		}
 	}
 
-	/// The oldest held record that is not the newest context record.
-	fn oldest_droppable(&self) -> usize {
-		let pinned = self
-			.backlog
-			.iter()
-			.rposition(|held| matches!(held.kind, RecordKind::Context(_)));
-
-		match pinned {
-			// Skipping the pinned record keeps the drop order otherwise oldest
-			// first, so the numbering a gap covers stays contiguous.
-			Some(0) => 1,
-			_ => 0,
-		}
-	}
-
 	/// Write out everything held, oldest first, behind a gap record if any were
 	/// lost since the last successful write.
 	fn flush(&mut self) -> Result<()> {
 		// The gap takes the first of the sequence numbers it covers, so the
-		// numbering in a segment stays in order, and the time of the last record
-		// it covers, so it sorts before the held records that survived. Write
-		// order, sequence order and time order therefore agree, which is what
-		// lets a time-ordered export verify.
+		// numbering stays in order, and the time of the last record it covers, so
+		// it sorts before the held records that survived it.
 		if let Some(tally) = self.discarded.clone() {
-			// Anything held that was made before the loss belongs ahead of the
-			// gap: the pinned context record is normally exactly this.
-			self.write_front_while(|pending| pending.seq < tally.first_seq)?;
-
 			self.write(&Pending {
 				seq: tally.first_seq,
 				ts: tally.to,
@@ -318,21 +293,32 @@ impl Writer {
 				weight: 0,
 			})?;
 			self.discarded = None;
+			// The context record that stood at the head of the log may well have
+			// been among the records lost, so a fresh one goes in behind the gap
+			// rather than an old one being held back out of it. It carries the
+			// context as it stands now, which is what applies to everything
+			// after the gap anyway.
+			self.owes_context = Some(tally.to);
 		}
 
-		self.write_front_while(|_| true)
-	}
+		if let Some(ts) = self.owes_context {
+			let seq = self.next_seq;
+			self.next_seq += 1;
+			self.write(&Pending {
+				seq,
+				ts,
+				kind: self.context_record(),
+				weight: 0,
+			})?;
+			self.owes_context = None;
+		}
 
-	/// Write held records from the front for as long as they qualify.
-	fn write_front_while(&mut self, mut take: impl FnMut(&Pending) -> bool) -> Result<()> {
 		while let Some(pending) = self.backlog.front().cloned() {
-			if !take(&pending) {
-				break;
-			}
 			self.write(&pending)?;
 			self.backlog.pop_front();
 			self.backlog_bytes = self.backlog_bytes.saturating_sub(pending.weight);
 		}
+
 		Ok(())
 	}
 
@@ -374,15 +360,13 @@ impl Writer {
 		// compaction that day is closed.
 		self.segment = None;
 
-		std::fs::create_dir_all(&self.dir)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("creating audit directory {}", self.dir.display()))?;
+		paths::create_dir(&self.dir)?;
 
 		let path = self.dir.join(paths::segment_name(date, self.instance));
 		let lock = Lock::try_segment(&path)?
 			.ok_or_else(|| miette!("audit segment {} is held by another writer", path.display()))?;
 
-		let file = OpenOptions::new()
+		let file = paths::private()
 			.create(true)
 			.append(true)
 			.read(true)
@@ -727,6 +711,29 @@ mod tests {
 		);
 	}
 
+	#[cfg(unix)]
+	#[test]
+	fn the_log_is_readable_by_its_owner_alone() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		let mut writer = Writer::new(&store);
+		writer.query(&context(), "select 1;".into(), QuerySource::Typed);
+
+		// The log holds the full text of every statement run, which for a
+		// clinical deployment is patient data. Other local users have no
+		// business reading it.
+		let mode =
+			|path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+		assert_eq!(mode(&store), 0o700, "the directory");
+
+		let segment = files(&store)[0].clone();
+		assert_eq!(mode(&segment), 0o600, "a segment");
+		assert_eq!(mode(&paths::lock_of(&segment)), 0o600, "a lock file");
+		drop(writer);
+	}
+
 	#[test]
 	fn a_session_that_records_nothing_leaves_no_segment() {
 		let dir = tempfile::tempdir().unwrap();
@@ -769,10 +776,10 @@ mod tests {
 		assert_eq!(gap.through, gap_seq + gap.lost - 1);
 		assert!(gap.from <= gap.to);
 
-		// The pinned context record leads, the gap follows it, and the surviving
+		// The gap leads, a fresh context record follows it, and the surviving
 		// backlog comes behind that in the order those records were made.
-		assert!(matches!(records[0].kind, RecordKind::Context(_)));
-		assert_eq!(records[1].seq, gap_seq);
+		assert_eq!(records[0].seq, gap_seq);
+		assert!(matches!(records[1].kind, RecordKind::Context(_)));
 		let survivors = queries(&records);
 		assert_eq!(survivors.last().unwrap(), "after;");
 		let mut sorted = survivors.clone();
@@ -804,15 +811,20 @@ mod tests {
 
 		let records = read_records(&files(&store)[0]);
 
-		// The context record is what says who ran everything after it, so it is
-		// never the thing a full backlog throws away.
-		assert!(
-			matches!(records[0].kind, RecordKind::Context(_)),
-			"the segment still opens with a context record"
-		);
-		assert_eq!(records[0].seq, 0);
+		// The context record is what says who ran the records after it, so one
+		// always stands ahead of them even when the original was lost.
+		let first_context = records
+			.iter()
+			.position(|r| matches!(r.kind, RecordKind::Context(_)))
+			.expect("a context record");
+		let first_query = records
+			.iter()
+			.position(|r| matches!(r.kind, RecordKind::Query(_)))
+			.expect("a query record");
+		assert!(first_context < first_query);
 
-		// The gap follows it, covering the numbers that were lost.
+		// The gap leads, and says exactly which numbers went: one unbroken run,
+		// so its count and its range agree.
 		let (gap_seq, gap) = records
 			.iter()
 			.find_map(|r| match &r.kind {
@@ -820,15 +832,49 @@ mod tests {
 				_ => None,
 			})
 			.unwrap();
-		assert_eq!(gap_seq, 1, "the gap takes the first number it covers");
+		assert_eq!(gap_seq, 0, "the gap takes the first number it covers");
 		assert_eq!(gap.through, gap_seq + gap.lost - 1);
+	}
 
-		// Sequence numbers only ever go up, so a time-ordered read is also a
-		// chain-ordered one.
-		let seqs: Vec<_> = records.iter().map(|r| r.seq).collect();
-		let mut sorted = seqs.clone();
-		sorted.sort_unstable();
-		assert_eq!(seqs, sorted);
+	#[test]
+	fn a_context_change_during_an_outage_still_verifies() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		let supervised = Context {
+			writemode: true,
+			ots: Some("Carol".into()),
+			..context()
+		};
+
+		let mut writer = Writer::new(&store);
+		for i in 0..5 {
+			writer.query(&context(), format!("before {i};"), QuerySource::Typed);
+		}
+		// The context changes early on, and the outage then runs long enough to
+		// drop well past the point it changed at.
+		for i in 0..(BACKLOG_RECORDS * 3) {
+			writer.query(&supervised, format!("after {i};"), QuerySource::Typed);
+		}
+		std::fs::remove_file(&store).unwrap();
+		writer.query(&supervised, "resumed;".into(), QuerySource::Typed);
+		drop(writer);
+
+		// An incomplete log is not an altered one, however the context moved
+		// about while it was incomplete.
+		let report = super::super::verify::verify(&store).unwrap();
+		assert!(
+			report.sessions[0].holds(),
+			"{:?}",
+			report.sessions[0].broken_at
+		);
+
+		// And what survived is attributed to the context that was in force.
+		for entry in super::super::read::Reader::open(&store).unwrap().entries() {
+			assert!(entry.writemode, "{} lost its context", entry.query);
+			assert_eq!(entry.ots.as_deref(), Some("Carol"));
+		}
 	}
 
 	#[test]

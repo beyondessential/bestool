@@ -62,7 +62,7 @@ impl Audit {
 		// Opening never stands between an operator and their prompt: a store
 		// that cannot be read yet still gives a session that runs, and the
 		// writer keeps trying as it goes.
-		if let Err(err) = std::fs::create_dir_all(dir) {
+		if let Err(err) = paths::create_dir(dir) {
 			warn!(?err, ?dir, "cannot prepare the audit directory");
 		}
 

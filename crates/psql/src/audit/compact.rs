@@ -9,7 +9,6 @@
 
 use std::{
 	collections::{BTreeSet, HashSet},
-	fs::File,
 	io::Write as _,
 	path::{Path, PathBuf},
 };
@@ -238,7 +237,11 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 	let final_path = dir.join(paths::day_file_name(date));
 
 	{
-		let file = File::create(&temp)
+		let file = paths::private()
+			.create(true)
+			.write(true)
+			.truncate(true)
+			.open(&temp)
 			.into_diagnostic()
 			.wrap_err_with(|| format!("creating {}", temp.display()))?;
 		let mut encoder = zstd::Encoder::new(file, LEVEL).into_diagnostic()?;

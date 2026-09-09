@@ -7,7 +7,11 @@
 //!
 //! spec: AUD-STO, AUD-API
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::{
+	collections::{BTreeMap, HashMap},
+	fmt,
+	path::Path,
+};
 
 use jiff::Timestamp;
 use miette::Result;
@@ -98,8 +102,13 @@ impl VerifyReport {
 	///
 	/// Gap records and unparsable bytes are reported but do not fail a log: they
 	/// say where it is incomplete, which is not the same as altered.
+	///
+	/// A record belonging to no session in the log does fail it. Every segment
+	/// names its session, and every day file carries a context record for each
+	/// session in it, so a record that cannot be tied to one has been put there
+	/// by something other than a session writing its own segment.
 	pub fn holds(&self) -> bool {
-		self.sessions.iter().all(ChainReport::holds)
+		self.unattributed == 0 && self.sessions.iter().all(ChainReport::holds)
 	}
 
 	/// The current chain head of every session.
@@ -115,10 +124,18 @@ impl VerifyReport {
 struct Chain {
 	records: u64,
 	head: String,
-	next_seq: u64,
 	broken_at: Option<Break>,
 	gaps: Vec<(u64, GapRecord)>,
 	truncated_start: bool,
+	/// Every sequence number below this is accounted for, by a record or by a
+	/// gap covering it.
+	covered_to: u64,
+	/// Runs of sequence numbers accounted for above `covered_to`, keyed by the
+	/// number each run starts at.
+	ahead: BTreeMap<u64, u64>,
+	/// The earliest record met whose number sat above a hole, kept so the hole
+	/// can be reported against something.
+	first_ahead: Option<(u64, Timestamp)>,
 	/// Records whose predecessor has not been seen yet, keyed by the hash they
 	/// chain onto. A held backlog is written in sequence order but its records
 	/// were made before the gap record that precedes them, so a reader can meet
@@ -136,10 +153,14 @@ impl Chain {
 		let mut chain = Self {
 			records: 0,
 			head: String::new(),
-			next_seq: record.seq,
 			broken_at: None,
 			gaps: Vec::new(),
 			truncated_start,
+			// Where retention has removed the earlier records, the numbering
+			// starts from the oldest one kept rather than from zero.
+			covered_to: record.seq,
+			ahead: BTreeMap::new(),
+			first_ahead: None,
 			pending: HashMap::new(),
 		};
 		chain.consume(record, hash);
@@ -149,28 +170,54 @@ impl Chain {
 	fn consume(&mut self, record: &Record, hash: &str) {
 		self.records += 1;
 
-		if record.seq != self.next_seq && self.broken_at.is_none() {
-			self.broken_at = Some(Break {
-				seq: record.seq,
-				ts: record.ts,
-				reason: BreakReason::Missing {
-					expected: self.next_seq,
-				},
-			});
-		}
+		// What this record accounts for. A gap accounts for every number through
+		// the one it names; the number comes out of the file, so it is whatever
+		// the file says. Verification runs over logs that may have been tampered
+		// with and must report on them rather than fall over.
+		let through = match &record.kind {
+			RecordKind::Gap(gap) => {
+				self.gaps.push((record.seq, gap.clone()));
+				gap.through.max(record.seq)
+			}
+			_ => record.seq,
+		};
 
-		if let RecordKind::Gap(gap) = &record.kind {
-			self.gaps.push((record.seq, gap.clone()));
-			// A gap accounts for every number through the one it names. The
-			// number comes out of the file, so it is whatever the file says:
-			// verification runs over logs that may have been tampered with, and
-			// must report on them rather than fall over.
-			self.next_seq = gap.through.max(record.seq).saturating_add(1);
-		} else {
-			self.next_seq = record.seq.saturating_add(1);
-		}
-
+		self.account(record.seq, through, record.ts);
 		self.head = hash.to_owned();
+	}
+
+	/// Note that the numbers `from..=through` are accounted for.
+	///
+	/// Numbering is checked by coverage rather than by each record following on
+	/// from the last, because a record can legitimately arrive out of numbering
+	/// order: the context record behind a gap takes a fresh number but the
+	/// timestamp of the gap, so it is read before the held records it precedes.
+	fn account(&mut self, from: u64, through: u64, ts: Timestamp) {
+		if through < self.covered_to {
+			// Already accounted for, which a gap's range can cover.
+			return;
+		}
+
+		if from > self.covered_to {
+			if self.first_ahead.is_none() {
+				self.first_ahead = Some((from, ts));
+			}
+			if self.ahead.len() < REORDER_LIMIT {
+				let end = self.ahead.entry(from).or_insert(through);
+				*end = (*end).max(through);
+			}
+		} else {
+			self.covered_to = through.saturating_add(1);
+		}
+
+		// Take up any run that now follows on.
+		while let Some((&start, &end)) = self.ahead.range(..=self.covered_to).next_back() {
+			self.ahead.remove(&start);
+			self.covered_to = self.covered_to.max(end.saturating_add(1));
+		}
+		if self.ahead.is_empty() {
+			self.first_ahead = None;
+		}
 	}
 
 	fn offer(&mut self, record: Record, hash: String) {
@@ -208,8 +255,21 @@ impl Chain {
 		self.records += 1;
 	}
 
-	/// Anything still waiting once the log runs out never found its predecessor.
+	/// Anything still waiting once the log runs out never found its predecessor,
+	/// and any number still unaccounted for is a hole in the numbering.
 	fn finish(mut self, instance: Uuid) -> ChainReport {
+		if let Some((seq, ts)) = self.first_ahead
+			&& self.broken_at.is_none()
+		{
+			self.broken_at = Some(Break {
+				seq,
+				ts,
+				reason: BreakReason::Missing {
+					expected: self.covered_to,
+				},
+			});
+		}
+
 		if !self.pending.is_empty() {
 			let orphan = self
 				.pending
@@ -513,6 +573,44 @@ mod tests {
 
 		let report = verify(dir.path()).unwrap();
 		assert!(!report.sessions.is_empty());
+	}
+
+	#[test]
+	fn a_record_belonging_to_no_session_fails_the_log() {
+		let dir = tempfile::tempdir().unwrap();
+		let instance = write_session(dir.path(), 3);
+		let path = segment_of(dir.path(), instance);
+
+		// Splice a record into a day file, where nothing names the session it
+		// claims to extend. In a segment the filename would give it away.
+		let records = crate::audit::writer::read_records(&path);
+		let spliced = Record {
+			v: crate::audit::record::FORMAT_VERSION,
+			seq: 99,
+			ts: Timestamp::now(),
+			prev: "0".repeat(64),
+			kind: RecordKind::Query(crate::audit::record::QueryRecord {
+				query: "spliced;".into(),
+				source: QuerySource::Typed,
+			}),
+		};
+
+		let day = dir.path().join(crate::audit::paths::day_file_name(
+			crate::audit::writer::date_of(records[0].ts),
+		));
+		let mut bytes = Vec::new();
+		for record in records.iter().chain(std::iter::once(&spliced)) {
+			bytes.extend_from_slice(&frame(&record.to_json().unwrap()));
+		}
+		std::fs::write(&day, zstd::encode_all(&bytes[..], 3).unwrap()).unwrap();
+		std::fs::remove_file(&path).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert_eq!(report.unattributed, 1);
+		assert!(
+			!report.holds(),
+			"a record no session wrote cannot pass as one that was"
+		);
 	}
 
 	#[test]

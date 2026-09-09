@@ -2,7 +2,7 @@
 //!
 //! spec: AUD-HIS
 
-use std::{borrow::Cow, path::Path};
+use std::{borrow::Cow, collections::VecDeque, path::Path};
 
 use rustyline::history::{History, SearchDirection, SearchResult};
 use tracing::debug;
@@ -51,7 +51,7 @@ impl RecallSet {
 				break;
 			}
 
-			for record in read_newest_first(&path, kind) {
+			for record in newest_first(&path, kind, budget) {
 				match &record.kind {
 					RecordKind::Context(ContextRecord { ots: Some(ots), .. })
 						if !ots.is_empty() && seen_supervisors.insert(ots.clone()) =>
@@ -145,31 +145,70 @@ impl RecallSet {
 	}
 }
 
-/// A file's records, newest first.
+/// A file's records, newest first, holding no more than the budget needs.
 ///
-/// A plain segment is walked backwards from its end; a day file has to be
-/// decompressed forward, so its records are collected and reversed.
-fn read_newest_first(path: &Path, kind: AuditFile) -> Vec<Record> {
+/// A plain segment is walked backwards from its end, so a reader that has met
+/// its budget stops without the rest of the file ever being touched. A day file
+/// has to be decompressed forward, so its records cannot be reached from the end
+/// — but only the newest of them can matter, so the pass keeps a tail bounded by
+/// the same budget and lets everything ahead of it go.
+fn newest_first(path: &Path, kind: AuditFile, budget: usize) -> Box<dyn Iterator<Item = Record>> {
 	match kind {
 		AuditFile::Segment { .. } => match ReverseFramedReader::open(path) {
-			Ok(reader) => reader.filter_map(FramedItem::into_record).collect(),
+			Ok(reader) => Box::new(reader.filter_map(FramedItem::into_record)),
 			Err(err) => {
 				debug!(?err, ?path, "skipping unreadable audit segment");
-				Vec::new()
+				Box::new(std::iter::empty())
 			}
 		},
 		AuditFile::DayFile { .. } => match open(path, kind) {
-			Ok(reader) => {
-				let mut records: Vec<_> = reader.filter_map(FramedItem::into_record).collect();
-				records.reverse();
-				records
-			}
+			Ok(reader) => Box::new(bounded_tail(reader, budget).into_iter().rev()),
 			Err(err) => {
 				debug!(?err, ?path, "skipping unreadable audit day file");
-				Vec::new()
+				Box::new(std::iter::empty())
 			}
 		},
 	}
+}
+
+/// The last records of a forward pass, bounded by how much text the caller can
+/// still take.
+///
+/// Returned in file order, so the caller reverses to get newest first. Context
+/// records are kept whatever else goes, since a supervisor named anywhere in the
+/// file is wanted and a name costs nothing against a budget measured in query
+/// text; they are put where reversing brings them out first, ahead of any point
+/// the caller might stop at.
+fn bounded_tail(reader: impl Iterator<Item = FramedItem>, budget: usize) -> Vec<Record> {
+	let mut contexts = Vec::new();
+	let mut tail: VecDeque<Record> = VecDeque::new();
+	let mut held = 0usize;
+
+	for record in reader.filter_map(FramedItem::into_record) {
+		match &record.kind {
+			RecordKind::Context(_) => contexts.push(record),
+			RecordKind::Query(query)
+				if query.source.is_recallable() && query.query.len() <= RECALL_CUTOFF =>
+			{
+				held += query.query.len();
+				tail.push_back(record);
+
+				while held > budget && tail.len() > 1 {
+					let Some(dropped) = tail.pop_front() else {
+						break;
+					};
+					if let RecordKind::Query(query) = &dropped.kind {
+						held -= query.query.len();
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+
+	let mut kept: Vec<Record> = tail.into();
+	kept.append(&mut contexts);
+	kept
 }
 
 impl History for super::Audit {
@@ -456,6 +495,44 @@ mod tests {
 		assert_eq!(
 			RecallSet::build(dir.path()).supervisors(),
 			&["Alice".to_string(), "Bob".to_string()]
+		);
+	}
+
+	#[test]
+	fn a_day_file_far_larger_than_the_budget_still_recalls_the_newest() {
+		let dir = tempfile::tempdir().unwrap();
+		let body = "x".repeat(RECALL_CUTOFF / 2);
+		let count = 4 * RECALL_BUDGET / body.len();
+
+		let mut writer = Writer::new(dir.path());
+		for i in 0..count {
+			writer.query(&context(), format!("{i:08}{body}"), QuerySource::Typed);
+		}
+		drop(writer);
+
+		// Fold it, so the whole lot has to be read forward out of one file.
+		let old = jiff::Timestamp::now()
+			.to_zoned(jiff::tz::TimeZone::UTC)
+			.date()
+			.checked_sub(jiff::Span::new().days(compact::PLAIN_TEXT_WINDOW_DAYS + 1))
+			.unwrap();
+		let (path, kind) = paths::list(dir.path()).unwrap().pop().unwrap();
+		std::fs::rename(
+			path,
+			dir.path()
+				.join(paths::segment_name(old, kind.instance().unwrap())),
+		)
+		.unwrap();
+		compact::run(dir.path()).unwrap();
+
+		let set = RecallSet::build(dir.path());
+		let held: usize = (0..set.len()).map(|i| set.get(i).unwrap().len()).sum();
+		assert!(held <= RECALL_BUDGET, "held {held} bytes");
+		assert!(
+			set.get(set.len() - 1)
+				.unwrap()
+				.starts_with(&format!("{:08}", count - 1)),
+			"the newest statement is still what an operator reaches first"
 		);
 	}
 

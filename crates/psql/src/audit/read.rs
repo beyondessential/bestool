@@ -13,6 +13,7 @@ use std::{
 	fs::File,
 	io::{BufRead, BufReader, Read, Seek, SeekFrom},
 	path::{Path, PathBuf},
+	sync::Arc,
 };
 
 use jiff::Timestamp;
@@ -310,7 +311,7 @@ pub struct Entry {
 struct Threads {
 	/// Hash of each session's current chain head.
 	head: HashMap<String, Uuid>,
-	context: HashMap<Uuid, ContextRecord>,
+	context: HashMap<Uuid, Arc<Record>>,
 }
 
 impl Threads {
@@ -329,8 +330,8 @@ impl Threads {
 		}
 		if let Some(instance) = instance {
 			self.head.insert(hash.to_owned(), instance);
-			if let RecordKind::Context(context) = &record.kind {
-				self.context.insert(instance, context.clone());
+			if matches!(record.kind, RecordKind::Context(_)) {
+				self.context.insert(instance, Arc::new(record.clone()));
 			}
 		}
 
@@ -369,8 +370,6 @@ struct Source {
 	/// file interleaves several sessions and so names none.
 	instance: Option<Uuid>,
 	head: Option<(Record, String)>,
-	/// Whether the file stopped being readable partway through.
-	failed: bool,
 }
 
 impl Source {
@@ -386,7 +385,6 @@ impl Source {
 				}),
 				Some(FramedItem::Failed { at, error }) => {
 					debug!(origin = ?self.origin, at, %error, "audit file stopped being readable");
-					self.failed = true;
 				}
 			}
 		}
@@ -395,6 +393,8 @@ impl Source {
 
 /// Reads a whole audit directory as one time-ordered stream of records.
 pub struct Reader {
+	/// Files not yet opened, newest day last, so they can be popped in order.
+	waiting: Vec<(PathBuf, AuditFile)>,
 	sources: Vec<Source>,
 	queue: BinaryHeap<Reverse<(Timestamp, u64, usize)>>,
 	threads: Threads,
@@ -414,27 +414,17 @@ impl Reader {
 	}
 
 	pub fn open_range(dir: &Path, range: Range) -> Result<Self> {
-		let mut sources = Vec::new();
-		for (path, kind) in paths::list(dir)? {
-			if !range.could_hold(kind) {
-				continue;
-			}
-			match open(&path, kind) {
-				Ok(iter) => sources.push(Source {
-					iter,
-					origin: path,
-					instance: kind.instance(),
-					head: None,
-					failed: false,
-				}),
-				// One unreadable file must not stop the rest of the log being
-				// read: an auditor gets what survives, and hears about the rest.
-				Err(err) => debug!(?err, ?path, "skipping unreadable audit file"),
-			}
-		}
+		// Oldest day last, so the newest is at the bottom of the stack and days
+		// come off it in order.
+		let mut waiting: Vec<(PathBuf, AuditFile)> = paths::list(dir)?
+			.into_iter()
+			.filter(|(_, kind)| range.could_hold(*kind))
+			.collect();
+		waiting.reverse();
 
 		let mut reader = Self {
-			sources,
+			waiting,
+			sources: Vec::new(),
 			queue: BinaryHeap::new(),
 			threads: Threads::default(),
 			skipped: Vec::new(),
@@ -442,12 +432,47 @@ impl Reader {
 			at: None,
 			seen: HashSet::new(),
 		};
-
-		for index in 0..reader.sources.len() {
-			reader.advance(index);
-		}
-
+		reader.open_next_day();
 		Ok(reader)
+	}
+
+	/// Open the files covering the next day that has any.
+	///
+	/// Only one day is open at a time. Every record in a file dated D falls on
+	/// day D — no segment spans a date boundary and a day file holds one day —
+	/// so a day can be merged to completion before the next is opened. At the
+	/// twelve-month retention period that is the difference between a handful of
+	/// open files and a year of them, each day file carrying a decompression
+	/// context of its own.
+	fn open_next_day(&mut self) {
+		let Some((_, next)) = self.waiting.last() else {
+			return;
+		};
+		let date = next.date();
+
+		while let Some((path, kind)) = self.waiting.last() {
+			if kind.date() != date {
+				break;
+			}
+			let (path, kind) = (path.clone(), *kind);
+			self.waiting.pop();
+
+			match open(&path, kind) {
+				Ok(iter) => {
+					let index = self.sources.len();
+					self.sources.push(Source {
+						iter,
+						origin: path,
+						instance: kind.instance(),
+						head: None,
+					});
+					self.advance(index);
+				}
+				// One unreadable file must not stop the rest of the log being
+				// read: an auditor gets what survives, and hears about the rest.
+				Err(err) => debug!(?err, ?path, "skipping unreadable audit file"),
+			}
+		}
 	}
 
 	fn advance(&mut self, index: usize) {
@@ -465,17 +490,19 @@ impl Reader {
 		&self.skipped
 	}
 
-	/// Files that stopped being readable partway through, so what was read from
-	/// them is not known to be all they hold.
-	pub fn unreadable(&self) -> impl Iterator<Item = &Path> {
-		self.sources
-			.iter()
-			.filter(|source| source.failed)
-			.map(|source| source.origin.as_path())
-	}
-
 	/// The context in force for a session at the point the read has reached.
 	pub fn context_of(&self, instance: Uuid) -> Option<&ContextRecord> {
+		self.context_record_of(instance).map(|record| {
+			let RecordKind::Context(context) = &record.kind else {
+				unreachable!("only context records are kept as context")
+			};
+			context
+		})
+	}
+
+	/// The context record in force for a session at the point the read has
+	/// reached, whole, so a caller can write it out as it stands.
+	pub fn context_record_of(&self, instance: Uuid) -> Option<&Arc<Record>> {
 		self.threads.context.get(&instance)
 	}
 
@@ -490,6 +517,17 @@ impl Iterator for Reader {
 
 	fn next(&mut self) -> Option<Stored> {
 		loop {
+			if self.queue.is_empty() {
+				if self.waiting.is_empty() {
+					return None;
+				}
+				// The day just finished; the next one can be opened now, and the
+				// files behind it closed.
+				self.sources.clear();
+				self.open_next_day();
+				continue;
+			}
+
 			let Reverse((ts, _, index)) = self.queue.pop()?;
 			let (record, json) = self.sources[index].head.take()?;
 			self.advance(index);

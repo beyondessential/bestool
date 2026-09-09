@@ -15,10 +15,7 @@
 //!
 //! spec: AUD-STO, AUD-RET
 
-use std::{
-	fs::{File, OpenOptions},
-	path::Path,
-};
+use std::{fs::File, path::Path};
 
 use fs4::FileExt;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
@@ -49,7 +46,7 @@ impl Lock {
 	}
 
 	fn at(path: &Path) -> Result<Option<Self>> {
-		let file = OpenOptions::new()
+		let file = super::paths::private()
 			.create(true)
 			.read(true)
 			.write(true)
@@ -86,6 +83,7 @@ pub fn is_free(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::fs::OpenOptions;
 
 	#[test]
 	fn a_held_lock_excludes_a_second_holder() {
