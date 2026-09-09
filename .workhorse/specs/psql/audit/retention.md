@@ -14,8 +14,8 @@ A day file holds every record from the segments covering that UTC day, ordered b
 Records inside a day file are the same records, with the same fields, framing and hash chain as they had in their segments; compaction changes their container, not their content, and decompressing a day file gives back the bytes it folded.
 Verifying a session's chain follows its records through the day files that hold them, in the same way as through its segments (see [AUD-STO](store.md)).
 
-Segments are left uncompacted for thirty days after the day they cover, the plain-text window, so a month of the log can always be read and searched with ordinary text tools without decompressing anything.
-A day's segments become eligible for compaction once that day ended longer ago than the window.
+Segments are left uncompacted for fifteen days after the day they cover, the plain-text window, so the last fortnight of the log can always be read and searched with ordinary text tools without decompressing anything.
+A day's segments become eligible for compaction once that day ended longer ago than the window, and are folded when compaction next runs, so the fifteenth day back stays plain until something gets to it.
 
 Because the window is a span of days rather than a calendar boundary, the stretch of the log held in plain text is the same on every date, and each day file is written exactly once.
 
