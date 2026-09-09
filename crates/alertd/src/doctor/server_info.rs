@@ -98,7 +98,7 @@ pub struct MachineInfo {
 ///
 /// Named for the product it describes rather than for applications in general:
 /// every field here is Tamanu's, so another application type reporting them
-/// would be the mis-attribution `SUBJ` exists to prevent.
+/// would be the misattribution `SUBJ` exists to prevent.
 ///
 /// Every field is about the application rather than the box under it, so it
 /// reports no `bestoolVersion`, no hostname, and none of the machine's hardware.

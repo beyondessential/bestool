@@ -219,7 +219,7 @@ The four database checks grade the Postgres server, not the Tamanu that uses it:
 `pg_checksums` reads a property fixed at `initdb` time, `pg_tuning` grades the
 instance against the machine's RAM, `db_version` is the server's version, and
 `db_connect` is its reachability. Filing them against Tamanu was the
-mis-attribution `SUBJ` exists to prevent. "Tamanu as seen through its database"
+misattribution `SUBJ` exists to prevent. "Tamanu as seen through its database"
 and "the health of Postgres itself" are different questions about different
 things, so Postgres is an application in its own right — on every machine that
 runs one, not only on a machine with no Tamanu.
