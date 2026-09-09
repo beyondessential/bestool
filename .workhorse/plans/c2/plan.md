@@ -27,7 +27,7 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - **Legacy import** needs redb to read the old files, so the dependency stays for the reader only. Group by the old `instance_id` where present and by day within that; otherwise one import segment per day.
 - **Turso** stays out until its cross-process mode drops the experimental label; re-evaluate then, not before.
 - **README.** The `--audit-path` row still describes the old single-file default and needs its text corrected as part of this work.
-- **Deferred.** The network-filesystem warning is not part of this card; it is a follow-up in [the breakdown](../../breakdowns/c2/breakdown.md). The store works on a network filesystem, just without the warning.
+- **Deferred.** Two things are follow-ups in [the breakdown](../../breakdowns/c2/breakdown.md) rather than part of this card. The network-filesystem warning: the store works on one, just without the warning. And streaming compaction's fold (card D2): it buffers a day rather than merging the sources into the encoder, which is correct and bounded by one day rather than by the size of the log.
 
 ## Checklist
 
