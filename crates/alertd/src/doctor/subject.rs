@@ -7,16 +7,20 @@ use bestool_tamanu::ApiServerKind;
 /// An application a sweep can report for.
 ///
 /// The wire type is an open set, so this enumerates only what bestool itself
-/// reports from a host: its one Tamanu deployment, or — on a host with no
-/// Tamanu but a plain `DATABASE_URL` — the Postgres that URL points at.
+/// reports from a host: its Tamanu deployment, and the Postgres installation
+/// under it. A machine commonly has both, and they are reported separately —
+/// "Tamanu as seen through its database" and "the health of Postgres itself"
+/// are different questions about different things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApplicationKind {
 	TamanuCentral,
 	TamanuFacility,
-	/// A Postgres reached through the generic `DATABASE_URL` fallback, with no
-	/// Tamanu on the host. The generic database checks are about it, so it is
-	/// an application in its own right rather than a nameless database hanging
-	/// off the machine.
+	/// The Postgres installation on this machine.
+	///
+	/// Its own application, not a part of whatever uses it: the checks that
+	/// grade a cluster's tuning, its checksums, its version and its
+	/// reachability are about the server itself, and hold whether one Tamanu
+	/// uses it, several do, or none does.
 	Postgres,
 }
 
@@ -34,28 +38,62 @@ impl ApplicationKind {
 		}
 	}
 
-	/// The key this application is reported under.
-	///
-	/// An agent on a machine reports one application per type, so the type is
-	/// enough to tell them apart, and prefixing it keeps the key legible on the
-	/// wire. The `host-` prefix is what the substrate will supply once it can
-	/// drive sweeps for applications elsewhere.
-	pub fn key(self) -> String {
-		format!("host-{}", self.type_slug())
-	}
-
-	/// Whether this application has a database the generic database checks can
-	/// run against. Every kind does today; stated rather than assumed so a
-	/// database-less application added later does not silently inherit them.
-	pub fn has_database(self) -> bool {
-		match self {
-			Self::TamanuCentral | Self::TamanuFacility | Self::Postgres => true,
-		}
-	}
-
 	/// Whether this application is a Tamanu deployment.
 	pub fn is_tamanu(self) -> bool {
 		matches!(self, Self::TamanuCentral | Self::TamanuFacility)
+	}
+}
+
+/// One application instance: what it is, and which one of its kind.
+///
+/// A machine runs at most one Tamanu of each role but may run several Postgres
+/// clusters, so a kind alone does not identify an application and the key
+/// travels with it.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ApplicationRef {
+	pub kind: ApplicationKind,
+	/// The key this instance is reported under, unique on its machine and
+	/// stable across pushes.
+	pub key: String,
+}
+
+impl ApplicationRef {
+	/// The single Tamanu of this role on the machine.
+	///
+	/// One per role, so the type is enough to tell them apart, and the `host-`
+	/// prefix keeps the key legible on the wire.
+	pub fn tamanu(kind: ApplicationKind) -> Self {
+		Self {
+			kind,
+			key: format!("host-{}", kind.type_slug()),
+		}
+	}
+
+	/// A Postgres cluster running on this machine, identified by the port it
+	/// answers on.
+	///
+	/// The port, never the version: an in-place major upgrade must not read as
+	/// one application stopping and another starting. It is also the one
+	/// identifier every connection form carries, a Unix socket being named
+	/// `.s.PGSQL.<port>`.
+	pub fn local_postgres(port: u16) -> Self {
+		Self {
+			kind: ApplicationKind::Postgres,
+			key: format!("host-postgres-{port}"),
+		}
+	}
+
+	/// A Postgres cluster reached at an address that is not this machine.
+	///
+	/// Keyed apart from the local form so the `host-` prefix never claims the
+	/// machine hosts something it does not.
+	pub fn remote_postgres(host: &str, port: u16) -> Self {
+		Self {
+			kind: ApplicationKind::Postgres,
+			key: format!("remote-{host}-{port}"),
+		}
 	}
 }
 
@@ -69,18 +107,23 @@ impl From<ApiServerKind> for ApplicationKind {
 }
 
 /// One thing a sweep reports for: the machine, or an application on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Subject {
 	Machine,
-	Application(ApplicationKind),
+	Application(ApplicationRef),
 }
 
 impl Subject {
 	/// How this subject is written when qualifying a check name.
-	pub fn slug(self) -> &'static str {
+	///
+	/// The application's *type*, not its key: selection names a check on a kind
+	/// of subject, so `postgres:connect` reaches that check on every cluster
+	/// rather than needing one invocation per port. Which instance a result came
+	/// from is carried by its key, not by its name.
+	pub fn slug(&self) -> &'static str {
 		match self {
 			Self::Machine => "machine",
-			Self::Application(kind) => kind.type_slug(),
+			Self::Application(app) => app.kind.type_slug(),
 		}
 	}
 
@@ -88,20 +131,24 @@ impl Subject {
 	///
 	/// A name identifies a check only together with its subject, so the two are
 	/// never written apart.
-	pub fn qualify(self, name: &str) -> String {
+	pub fn qualify(&self, name: &str) -> String {
 		format!("{}:{name}", self.slug())
 	}
 
-	/// The subject a [`Self::slug`] names, or `None` for one bestool does not
-	/// report.
-	pub fn from_slug(slug: &str) -> Option<Self> {
-		if slug == "machine" {
-			return Some(Self::Machine);
+	/// The application key this subject reports under, if it is an application.
+	pub fn key(&self) -> Option<&str> {
+		match self {
+			Self::Machine => None,
+			Self::Application(app) => Some(&app.key),
 		}
-		ApplicationKind::ALL
-			.into_iter()
-			.find(|kind| kind.type_slug() == slug)
-			.map(Self::Application)
+	}
+
+	/// The application kind this subject is, if it is an application.
+	pub fn kind(&self) -> Option<ApplicationKind> {
+		match self {
+			Self::Machine => None,
+			Self::Application(app) => Some(app.kind),
+		}
 	}
 }
 
@@ -114,8 +161,8 @@ impl Subject {
 pub enum CheckScope {
 	/// The machine itself.
 	Machine,
-	/// Any application with a database, a bare Postgres included.
-	Database,
+	/// The machine's Postgres installation.
+	Postgres,
 	/// Any Tamanu deployment, central or facility.
 	Tamanu,
 	/// Tamanu central only.
@@ -129,38 +176,45 @@ impl CheckScope {
 	///
 	/// A check that does not is absent from that subject's report rather than
 	/// reported for it as skipped.
-	pub fn admits(self, subject: Subject) -> bool {
-		match (self, subject) {
-			(Self::Machine, Subject::Machine) => true,
-			(Self::Machine, Subject::Application(_)) | (_, Subject::Machine) => false,
-			(Self::Database, Subject::Application(kind)) => kind.has_database(),
-			(Self::Tamanu, Subject::Application(kind)) => kind.is_tamanu(),
-			(Self::Central, Subject::Application(kind)) => kind == ApplicationKind::TamanuCentral,
-			(Self::Facility, Subject::Application(kind)) => kind == ApplicationKind::TamanuFacility,
+	pub fn admits(self, subject: &Subject) -> bool {
+		let Some(kind) = subject.kind() else {
+			return self == Self::Machine;
+		};
+		match self {
+			Self::Machine => false,
+			Self::Postgres => kind == ApplicationKind::Postgres,
+			Self::Tamanu => kind.is_tamanu(),
+			Self::Central => kind == ApplicationKind::TamanuCentral,
+			Self::Facility => kind == ApplicationKind::TamanuFacility,
 		}
 	}
 
-	/// Every subject a check of this scope could ever report for.
-	///
-	/// Drives name validation, which answers from the registry rather than from
-	/// what this host happens to run, so the same invocation is an error for the
-	/// same reason everywhere.
-	pub fn possible_subjects(self) -> Vec<Subject> {
+	/// Every application kind a check of this scope could report for. Empty for
+	/// a machine check.
+	pub fn possible_kinds(self) -> Vec<ApplicationKind> {
 		match self {
-			Self::Machine => vec![Subject::Machine],
-			Self::Database => vec![
-				Subject::Application(ApplicationKind::TamanuCentral),
-				Subject::Application(ApplicationKind::TamanuFacility),
-				Subject::Application(ApplicationKind::Postgres),
-			],
+			Self::Machine => Vec::new(),
+			Self::Postgres => vec![ApplicationKind::Postgres],
 			Self::Tamanu => vec![
-				Subject::Application(ApplicationKind::TamanuCentral),
-				Subject::Application(ApplicationKind::TamanuFacility),
+				ApplicationKind::TamanuCentral,
+				ApplicationKind::TamanuFacility,
 			],
-			Self::Central => vec![Subject::Application(ApplicationKind::TamanuCentral)],
-			Self::Facility => vec![Subject::Application(ApplicationKind::TamanuFacility)],
+			Self::Central => vec![ApplicationKind::TamanuCentral],
+			Self::Facility => vec![ApplicationKind::TamanuFacility],
 		}
 	}
+
+	/// Every `subject:name` slug a check of this scope could be selected by.
+	pub fn possible_slugs(self) -> Vec<&'static str> {
+		if self == Self::Machine {
+			return vec!["machine"];
+		}
+		self.possible_kinds()
+			.into_iter()
+			.map(ApplicationKind::type_slug)
+			.collect()
+	}
+
 }
 
 #[cfg(test)]
@@ -182,7 +236,7 @@ mod tests {
 	#[test]
 	fn application_scopes_never_admit_the_machine() {
 		for scope in [
-			CheckScope::Database,
+			CheckScope::Postgres,
 			CheckScope::Tamanu,
 			CheckScope::Central,
 			CheckScope::Facility,
@@ -195,12 +249,15 @@ mod tests {
 	}
 
 	#[test]
-	fn tamanu_scope_excludes_a_bare_postgres() {
-		// The generic-database host has no Tamanu, so a check that reads Tamanu's
-		// tables must not be filed against the Postgres standing in for it.
+	fn postgres_and_tamanu_scopes_do_not_overlap() {
+		// A check grading the Postgres server is not about the Tamanu that uses
+		// it, and a check reading Tamanu's tables is not about the server.
 		let postgres = Subject::Application(ApplicationKind::Postgres);
+		let central = Subject::Application(ApplicationKind::TamanuCentral);
+		assert!(CheckScope::Postgres.admits(postgres));
+		assert!(!CheckScope::Postgres.admits(central));
 		assert!(!CheckScope::Tamanu.admits(postgres));
-		assert!(CheckScope::Database.admits(postgres));
+		assert!(CheckScope::Tamanu.admits(central));
 	}
 
 	#[test]
@@ -223,7 +280,7 @@ mod tests {
 		];
 		for scope in [
 			CheckScope::Machine,
-			CheckScope::Database,
+			CheckScope::Postgres,
 			CheckScope::Tamanu,
 			CheckScope::Central,
 			CheckScope::Facility,

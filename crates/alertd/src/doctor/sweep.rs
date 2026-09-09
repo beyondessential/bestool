@@ -300,16 +300,57 @@ struct PreparedCheck {
 /// no such subject and the check is therefore not run at all.
 ///
 /// A machine is always present. An application is present only when the host
-/// has one, so on a host with no Tamanu every application check is simply
-/// absent rather than reported as skipped.
+/// has one, so on a host with no Tamanu every Tamanu check is simply absent
+/// rather than reported as skipped, and likewise for Postgres.
 ///
 /// spec: SUBJ
-fn subject_for(scope: CheckScope, application: Option<ApplicationKind>) -> Option<Subject> {
+fn subject_for(scope: CheckScope, applications: &[ApplicationKind]) -> Option<Subject> {
 	if scope.admits(Subject::Machine) {
 		return Some(Subject::Machine);
 	}
-	let app = Subject::Application(application?);
-	scope.admits(app).then_some(app)
+	applications
+		.iter()
+		.map(|kind| Subject::Application(*kind))
+		.find(|subject| scope.admits(*subject))
+}
+
+/// Whether a database connection string points at this machine.
+///
+/// A Postgres is only this machine's application when it actually runs here: a
+/// deployment pointed at a database on another box hosts no Postgres, and
+/// grading that server's tuning against this machine's memory would be wrong
+/// rather than merely imprecise.
+///
+/// Parsed with the same connection-string parser used to open the connection,
+/// so every form that connects — Unix sockets, host lists, percent-encoded
+/// credentials — is judged the way it will actually be reached.
+///
+/// spec: SUBJ
+fn database_is_local(url: &str) -> bool {
+	use tokio_postgres::config::Host;
+
+	let Ok(config) = url.parse::<tokio_postgres::Config>() else {
+		// Unparseable means the sweep cannot connect either, so there is nothing
+		// here to call a local application.
+		return false;
+	};
+
+	let hosts = config.get_hosts();
+	if hosts.is_empty() {
+		// No host at all is libpq's default of a local socket.
+		return true;
+	}
+
+	hosts.iter().all(|host| match host {
+		Host::Unix(_) => true,
+		Host::Tcp(name) => {
+			name.is_empty()
+				|| name.eq_ignore_ascii_case("localhost")
+				|| name
+					.parse::<std::net::IpAddr>()
+					.is_ok_and(|ip| ip.is_loopback())
+		}
+	})
 }
 
 /// Every `subject:name` the registry can produce, in registry order.
@@ -522,17 +563,21 @@ pub async fn perform_sweep(
 		.filter(|t| t.has_install)
 		.map(|t| t.root.display().to_string());
 
-	// The one application this sweep reports for, if the host presents one. A
-	// Tamanu deployment is a `tamanu-central` or `tamanu-facility`; a host with
-	// only the generic `DATABASE_URL` has a bare Postgres, which is still an
-	// application in its own right — the generic database checks are about it.
-	let application: Option<ApplicationKind> = tamanu_ctx.as_ref().map(|c| {
-		if c.is_tamanu {
-			ApplicationKind::from(c.kind)
-		} else {
-			ApplicationKind::Postgres
+	// The applications this sweep reports for. A Tamanu deployment is one; the
+	// Postgres under it is another, reported whenever it runs on this machine —
+	// whether a Tamanu uses it or the host has nothing but a `DATABASE_URL`.
+	// A deployment pointed at a remote database contributes no Postgres here.
+	let mut applications: Vec<ApplicationKind> = Vec::new();
+	if let Some(ctx) = tamanu_ctx.as_ref() {
+		if ctx.is_tamanu {
+			applications.push(ApplicationKind::from(ctx.kind));
 		}
-	});
+		if database_is_local(&ctx.database_url) {
+			applications.push(ApplicationKind::Postgres);
+		} else {
+			debug!("database is not on this machine; reporting no postgres application");
+		}
+	}
 
 	let check_ctx = SweepContext::builder()
 		.maybe_tamanu(tamanu_ctx)
@@ -551,7 +596,7 @@ pub async fn perform_sweep(
 		.iter()
 		.enumerate()
 		.filter_map(|(idx, entry)| {
-			let subject = subject_for(entry.scope, application)?;
+			let subject = subject_for(entry.scope, &applications)?;
 			let qualified = subject.qualify(entry.name);
 			(selected_names.is_empty() || selected_names.contains(&qualified))
 				.then_some(())
@@ -613,16 +658,25 @@ pub async fn perform_sweep(
 	// `tamanuVersion` is omitted from the payload entirely. A Tamanu
 	// database-only host reports the version resolved from its DB.
 	let tamanu_version = resolved_version.map(|v| v.to_string());
-	let (machine_info, application_info) =
+	let (machine_info, application_info, postgres_info) =
 		server_info::gather(binary_version, tamanu_version, facts).await;
+
+	// Each application's detail comes from its own fact block, so no application
+	// carries a fact belonging to another.
+	let application_details: Vec<(ApplicationKind, Value)> = applications
+		.iter()
+		.map(|kind| -> Result<_> {
+			let info = match kind {
+				ApplicationKind::Postgres => serde_json::to_value(&postgres_info),
+				_ => serde_json::to_value(&application_info),
+			};
+			Ok((*kind, info.into_diagnostic()?))
+		})
+		.collect::<Result<_>>()?;
 
 	let overall =
 		OverallResult::from_checks(&results.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
-	let payload = build_payload(
-		&machine_info,
-		application.map(|kind| (kind, &application_info)),
-		&results,
-	)?;
+	let payload = build_payload(&machine_info, &application_details, &results)?;
 
 	Ok(SweepResult {
 		machine_id,
@@ -726,7 +780,7 @@ pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
 /// spec: SUBJ
 fn build_payload(
 	machine_info: &server_info::MachineInfo,
-	application: Option<(ApplicationKind, &server_info::ApplicationInfo)>,
+	applications: &[(ApplicationKind, Value)],
 	results: &[CheckOutcome],
 ) -> Result<StatusPayload> {
 	let machine = TargetReport::builder()
@@ -738,28 +792,25 @@ fn build_payload(
 		.health(health_for(results, Subject::Machine))
 		.build();
 
-	let applications = application
-		.map(|(kind, info)| -> Result<_> {
-			let subject = Subject::Application(kind);
+	let reports: HashMap<String, ApplicationReport> = applications
+		.iter()
+		.map(|(kind, info)| {
+			let subject = Subject::Application(*kind);
 			let report = ApplicationReport::builder()
 				.type_(kind.type_slug().to_owned())
-				.detail(detail_for(
-					serde_json::to_value(info).into_diagnostic()?,
-					results,
-					subject,
-				))
+				.detail(detail_for(info.clone(), results, subject))
 				.health(health_for(results, subject))
 				.build();
-			Ok(HashMap::from([(kind.key(), report)]))
+			(kind.key(), report)
 		})
-		.transpose()?;
+		.collect();
 
 	let mut payload = StatusPayload::builder()
 		.health(Vec::new())
 		.machine(machine)
 		.source(REPORTING_SOURCE.to_owned())
 		.build();
-	payload.applications = applications;
+	payload.applications = (!reports.is_empty()).then_some(reports);
 	Ok(payload)
 }
 

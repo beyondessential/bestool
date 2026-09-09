@@ -127,7 +127,17 @@ pub struct ApplicationInfo {
 	/// `countryTimeZone` config).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub timezone: Option<String>,
-	/// Postgres version of the application's own database.
+}
+
+/// The Postgres installation's own facts.
+///
+/// The server's version is its own, not that of whatever connects to it, so it
+/// is reported here rather than against each application using the database.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub pg_version: Option<String>,
 }
@@ -144,7 +154,7 @@ pub struct ServerFacts {
 	pub tamanu_server_kind: Option<&'static str>,
 }
 
-/// Build the machine's and the application's fact blocks.
+/// Build the machine's, the application's, and Postgres's fact blocks.
 ///
 /// The two are gathered together because one pass over the host answers both,
 /// but nothing crosses between them: each field lands on the subject it is
@@ -162,7 +172,7 @@ pub async fn gather(
 	bestool_version: &str,
 	tamanu_version: Option<String>,
 	facts: ServerFacts,
-) -> (MachineInfo, ApplicationInfo) {
+) -> (MachineInfo, ApplicationInfo, PostgresInfo) {
 	let disks = Disks::new_with_refreshed_list();
 	let filesystems = disks
 		.iter()
@@ -206,6 +216,9 @@ pub async fn gather(
 		canonical_url: facts.canonical_url,
 		current_sync_tick: facts.current_sync_tick,
 		timezone: facts.timezone,
+	};
+
+	let postgres = PostgresInfo {
 		pg_version: facts.pg_version,
 	};
 
@@ -238,7 +251,7 @@ pub async fn gather(
 		instance_tags,
 	};
 
-	(machine, application)
+	(machine, application, postgres)
 }
 
 /// Read EC2 instance tags via IMDSv2.

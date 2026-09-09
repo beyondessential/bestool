@@ -266,7 +266,7 @@ macro_rules! entry {
 	};
 
 	(@scope machine) => { CheckScope::Machine };
-	(@scope database) => { CheckScope::Database };
+	(@scope postgres) => { CheckScope::Postgres };
 	(@scope tamanu_app) => { CheckScope::Tamanu };
 	(@scope central) => { CheckScope::Central };
 	(@scope facility) => { CheckScope::Facility };
@@ -314,17 +314,17 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("db_connect", db_connect, db, database),
+		entry!("db_connect", db_connect, db, postgres),
 		// Reports the postgres version, which is already the application's
 		// `pgVersion` fact — useful in the CLI render, but off the wire.
-		entry!("db_version", db_version, db, database, off_wire),
+		entry!("db_version", db_version, db, postgres, off_wire),
 		entry!("migrations", migrations, tamanu, tamanu_app),
 		entry!("reporting_roles", reporting_roles, tamanu, tamanu_app),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
-		entry!("pg_tuning", pg_tuning, db, database),
-		entry!("pg_checksums", pg_checksums, db, database),
+		entry!("pg_tuning", pg_tuning, db, postgres),
+		entry!("pg_checksums", pg_checksums, db, postgres),
 		entry!("disk_free", disk_free, host, machine),
 		entry!("inodes", inodes, host, machine),
 		entry!("btrfs", btrfs, host, machine),
