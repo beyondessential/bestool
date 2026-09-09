@@ -179,7 +179,7 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 		write_record(out, &record)?;
 	}
 	for (record, _) in &window {
-		write_record(out, &record.record)?;
+		write_json(out, &record.json)?;
 	}
 
 	written(out.flush())
@@ -239,7 +239,14 @@ fn written(outcome: std::io::Result<()>) -> Result<()> {
 
 fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {
 	let json = record.to_json().into_diagnostic()?;
-	written(out.write_all(&frame(&json)))
+	write_json(out, &json)
+}
+
+/// Write a record whose JSON text is already in hand, as it was read.
+///
+/// Serialising it again would produce the same bytes and cost the work twice.
+fn write_json(out: &mut impl Write, json: &str) -> Result<()> {
+	written(out.write_all(&frame(json)))
 }
 
 /// Export records to standard output.
@@ -251,7 +258,9 @@ pub fn export_audit_entries(options: ExportOptions) -> Result<()> {
 	// a session would.
 	import_if_legacy(&dir)?;
 
-	let mut out = std::io::stdout().lock();
+	// Buffered: standard output flushes on every newline, and every record ends
+	// in one, so writing straight to it costs a write call per record.
+	let mut out = std::io::BufWriter::new(std::io::stdout().lock());
 	write_export(&mut out, &dir, &options.query_options)
 }
 

@@ -84,10 +84,19 @@ pub fn list_set_aside(dir: &Path) -> Result<Vec<(PathBuf, Date)>> {
 		let Some(rest) = name.strip_suffix(IMPORTED_SUFFIX) else {
 			continue;
 		};
-		// `<original>.<YYYY-MM-DD>`: the date is fixed-width and last.
-		let Some(date) = rest.len().checked_sub(10).and_then(|at| rest.get(at..)) else {
+		// `<original>.<YYYY-MM-DD>`: the date is fixed-width and last, and what
+		// precedes it has to be a legacy store's name. Retention deletes these,
+		// so an operator's own file that happens to end this way is not one.
+		let Some(at) = rest.len().checked_sub(11) else {
 			continue;
 		};
+		let (stem, dated) = rest.split_at(at);
+		let Some(date) = dated.strip_prefix('.') else {
+			continue;
+		};
+		if !is_legacy(stem) {
+			continue;
+		}
 		if let Ok(date) = date.parse() {
 			found.push((entry.path(), date));
 		}
@@ -211,8 +220,15 @@ pub fn list(dir: &Path) -> Result<Vec<(PathBuf, AuditFile)>> {
 	}
 
 	// Day files sort after the segments they may supersede, so a reader that
-	// meets a duplicated record has already seen the segment's copy.
-	found.sort_by_key(|(path, kind)| (kind.date(), kind.instance().is_none(), path.clone()));
+	// meets a duplicated record has already seen the segment's copy. Compared
+	// rather than keyed, so the path is not cloned once per comparison.
+	found.sort_by(|(left, left_kind), (right, right_kind)| {
+		(left_kind.date(), left_kind.instance().is_none(), left).cmp(&(
+			right_kind.date(),
+			right_kind.instance().is_none(),
+			right,
+		))
+	});
 	Ok(found)
 }
 
@@ -251,7 +267,18 @@ pub fn default_dir() -> Result<PathBuf> {
 /// full text of every statement run against the database, which for a clinical
 /// deployment means patient data in plain, greppable JSON. Other local users
 /// have no business reading it.
+///
+/// A directory that already exists is left as its owner set it. `--audit-path`
+/// is operator-supplied and this runs on every segment open, so narrowing one
+/// that was already there would quietly strip access from a directory this code
+/// does not own — it says so instead, and records there anyway, because a
+/// degraded log is better than none.
 pub fn create_dir(dir: &Path) -> Result<()> {
+	if dir.is_dir() {
+		warn_if_shared(dir);
+		return Ok(());
+	}
+
 	// Created private, rather than created and then narrowed: between the two
 	// another local user could open a directory that is about to hold patient
 	// data and keep reading it afterwards.
@@ -269,24 +296,38 @@ pub fn create_dir(dir: &Path) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err_with(|| format!("creating audit directory {}", dir.display()))?;
 
+	warn_if_shared(dir);
+	Ok(())
+}
+
+/// Say so, loudly, when the audit directory can be read by anyone else.
+fn warn_if_shared(dir: &Path) {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt as _;
-		// A directory that already existed with wider permissions is narrowed
-		// too. A failure must not stop a session recording, but it does mean
-		// patient data is about to be written where other local users can read
-		// it, so it is said out loud rather than swallowed.
-		if let Err(err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
-			tracing::warn!(?err, ?dir, "cannot narrow the audit directory");
-			eprintln!(
-				"warning: the audit directory {} could not be made private: {err}",
-				dir.display()
-			);
-			eprintln!("warning: other users of this machine may be able to read the audit log");
+
+		let Ok(metadata) = std::fs::metadata(dir) else {
+			return;
+		};
+		let mode = metadata.permissions().mode() & 0o777;
+		if mode & 0o077 == 0 {
+			return;
 		}
+
+		tracing::warn!(
+			?dir,
+			mode = format!("{mode:o}"),
+			"audit directory is not private"
+		);
+		eprintln!(
+			"warning: the audit directory {} can be read by other users of this machine (mode {mode:o})",
+			dir.display()
+		);
+		eprintln!("warning: it holds the full text of every statement this session runs");
 	}
 
-	Ok(())
+	#[cfg(not(unix))]
+	let _ = dir;
 }
 
 /// Open options for a file in the audit directory, readable by its owner alone.
@@ -432,6 +473,28 @@ mod tests {
 		for name in ["audit-2026-09-08.json-seq.zst", "notes.redb.txt"] {
 			assert!(!is_legacy(name), "{name} should not be legacy");
 		}
+	}
+
+	#[test]
+	fn only_a_legacy_name_reads_as_set_aside() {
+		let dir = tempfile::tempdir().unwrap();
+		for name in [
+			"audit-main.redb.2026-09-09.imported",
+			"notes.txt.2026-09-09.imported",
+			"audit-main.redb.not-a-date.imported",
+			"audit-main.redb",
+		] {
+			std::fs::write(dir.path().join(name), b"").unwrap();
+		}
+
+		// Retention deletes these, so an operator's own file that happens to be
+		// named this way is not one of them.
+		let found = list_set_aside(dir.path()).unwrap();
+		assert_eq!(found.len(), 1);
+		assert_eq!(
+			found[0].0.file_name().unwrap(),
+			"audit-main.redb.2026-09-09.imported"
+		);
 	}
 
 	#[test]

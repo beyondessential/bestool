@@ -152,6 +152,16 @@ pub fn run_audit_cli(args: AuditArgs) -> Result<bool> {
 				)
 				.ok();
 			}
+			for unreadable in &report.unreadable {
+				writeln!(
+					out,
+					"{} stopped being readable at byte {}: {} — what the rest of it holds is unknown",
+					unreadable.file.display(),
+					unreadable.at,
+					unreadable.error
+				)
+				.ok();
+			}
 			for renamed in &report.renamed {
 				writeln!(
 					out,

@@ -58,6 +58,17 @@ pub struct Renamed {
 	pub records: Uuid,
 }
 
+/// A file that stopped being readable partway through.
+///
+/// What was read from it is not known to be all it holds, so anything reporting
+/// on the log has to say so rather than treat it as a file that ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreadable {
+	pub file: PathBuf,
+	pub at: u64,
+	pub error: String,
+}
+
 /// A stretch of bytes a reader could not parse as a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -124,15 +135,39 @@ impl<R: BufRead> FramedReader<R> {
 }
 
 impl<R: BufRead> FramedReader<R> {
-	/// Read up to the next separator, stopping a little past the bound so the
-	/// caller can tell that it was exceeded.
+	/// Read up to the next separator, or up to one byte past the bound.
+	///
+	/// The limit is on the reader, not a length checked afterwards: a plain
+	/// `read_until` takes everything up to the separator in one call, so a stream
+	/// with none in it is already buffered whole by the time any check could
+	/// look at it. Behind a day file's decompression that is a few compressible
+	/// kilobytes asking for gigabytes.
 	fn take_record(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
-		let mut read = 0;
+		let limit = MAX_RECORD_BYTES as u64 + 1;
+		self.inner.by_ref().take(limit).read_until(SEPARATOR, buf)
+	}
+
+	/// Read forward to the next separator without keeping any of it.
+	///
+	/// Used once a run of bytes has gone past the bound: the reader picks up at
+	/// the next record rather than giving up on the rest of the file, and holds
+	/// only a chunk at a time while it looks.
+	fn drain_to_separator(&mut self) -> std::io::Result<u64> {
+		const CHUNK: u64 = 64 * 1024;
+		let mut skipped = 0;
+		let mut scratch = Vec::with_capacity(CHUNK as usize);
+
 		loop {
-			let taken = self.inner.read_until(SEPARATOR, buf)?;
-			read += taken;
-			if taken == 0 || buf.last() == Some(&SEPARATOR) || buf.len() > MAX_RECORD_BYTES {
-				return Ok(read);
+			scratch.clear();
+			let taken = self
+				.inner
+				.by_ref()
+				.take(CHUNK)
+				.read_until(SEPARATOR, &mut scratch)?;
+			skipped += taken as u64;
+
+			if taken == 0 || scratch.last() == Some(&SEPARATOR) {
+				return Ok(skipped);
 			}
 		}
 	}
@@ -161,16 +196,26 @@ impl<R: BufRead> Iterator for FramedReader<R> {
 				}
 			};
 
-			// More than one record's worth of bytes with no separator among
-			// them: skipped, and the reader picks up at the next separator, the
-			// same treatment bytes that will not parse already get.
+			// More bytes than a record may be, with no separator among them:
+			// skipped, and the reader picks up at the next separator, the same
+			// treatment bytes that will not parse already get.
 			if buf.len() > MAX_RECORD_BYTES {
 				let at = self.offset;
-				self.offset += read as u64;
+				let mut bytes = read as u64;
+
+				match self.drain_to_separator() {
+					Ok(further) => bytes += further,
+					Err(err) => {
+						debug!(?err, "reading past an oversized audit record");
+						self.failed = true;
+					}
+				}
+
+				self.offset += bytes;
 				self.started = true;
 				return Some(FramedItem::Skipped {
 					at,
-					bytes: buf.len(),
+					bytes: bytes as usize,
 				});
 			}
 
@@ -224,7 +269,15 @@ fn parse(buf: Vec<u8>, at: u64) -> FramedItem {
 pub struct ReverseFramedReader {
 	file: File,
 	remaining: u64,
-	tail: Vec<u8>,
+	/// Bytes read but not yet given out, held back to front: the front is the
+	/// last byte of the file. Reversed so that reading further back is an
+	/// append rather than a prepend — prepending copies everything already
+	/// held, which for a record spanning many chunks is quadratic.
+	back: VecDeque<u8>,
+	/// Bytes already given out, counted from the end of the file.
+	given: u64,
+	/// The file's length, for turning a position in `back` into an offset.
+	length: u64,
 	ready: VecDeque<FramedItem>,
 	done: bool,
 }
@@ -235,10 +288,13 @@ impl ReverseFramedReader {
 			.into_diagnostic()
 			.wrap_err_with(|| format!("opening {}", path.display()))?;
 		let remaining = file.metadata().into_diagnostic()?.len();
+		let length = remaining;
 		Ok(Self {
 			file,
 			remaining,
-			tail: Vec::new(),
+			back: VecDeque::new(),
+			given: 0,
+			length,
 			ready: VecDeque::new(),
 			done: false,
 		})
@@ -257,43 +313,49 @@ impl ReverseFramedReader {
 		self.file.read_exact(&mut chunk).into_diagnostic()?;
 		self.remaining = start;
 
-		chunk.append(&mut self.tail);
-		self.tail = chunk;
+		// Appended in reverse, so the front of `back` stays the last byte of the
+		// file and nothing already held is copied.
+		self.back.extend(chunk.iter().rev());
 
-		while let Some(index) = self.tail.iter().rposition(|byte| *byte == SEPARATOR) {
-			let mut record = self.tail.split_off(index);
-			// `split_off` leaves the separator at the head of the tail piece.
-			record.remove(0);
+		// The last separator in the file is the first one from this end.
+		while let Some(index) = self.back.iter().position(|byte| *byte == SEPARATOR) {
+			let mut record: Vec<u8> = self.back.drain(..index).collect();
+			self.back.pop_front();
+			record.reverse();
+
+			self.given += index as u64 + 1;
+			let at = self.length - self.given + 1;
+
 			if record.last() == Some(&TERMINATOR) {
 				record.pop();
 			}
 			if !record.is_empty() {
-				let at = start + index as u64;
 				self.ready.push_back(parse(record, at));
 			}
-			self.tail.truncate(index);
 		}
 
 		// The same bound as reading forwards: bytes accumulating with no separator
 		// among them are not a record anyone wrote, and holding them all to find
 		// that out is what a crafted file would ask for.
-		if self.tail.len() > MAX_RECORD_BYTES {
+		if self.back.len() > MAX_RECORD_BYTES {
+			let bytes = self.back.len();
+			self.given += bytes as u64;
 			self.ready.push_back(FramedItem::Skipped {
-				at: start,
-				bytes: self.tail.len(),
+				at: self.length - self.given,
+				bytes,
 			});
-			self.tail.clear();
+			self.back.clear();
 		}
 
 		if self.remaining == 0 {
 			self.done = true;
 			// Bytes before the first separator are not a record.
-			if !self.tail.is_empty() {
+			if !self.back.is_empty() {
 				self.ready.push_back(FramedItem::Skipped {
 					at: 0,
-					bytes: self.tail.len(),
+					bytes: self.back.len(),
 				});
-				self.tail.clear();
+				self.back.clear();
 			}
 		}
 
@@ -377,6 +439,14 @@ pub struct Entry {
 	pub tailscale: Vec<TailscalePeer>,
 }
 
+/// How many chain heads are remembered at once.
+///
+/// A well-formed chain keeps one per session: extending it removes the head it
+/// followed. Records carrying garbage `prev` values remove nothing, so without a
+/// bound the map grows with the file rather than with the number of sessions.
+/// Forgetting the oldest only costs a record falling back to its file's name.
+const HEADS_REMEMBERED: usize = 4096;
+
 /// Attributes records to the sessions that wrote them.
 ///
 /// Only context records name their session. Every other record is attributed by
@@ -386,6 +456,8 @@ pub struct Entry {
 struct Threads {
 	/// Hash of each session's current chain head.
 	head: HashMap<String, Uuid>,
+	/// The order heads were remembered in, so the oldest can be forgotten.
+	remembered: VecDeque<String>,
 	context: HashMap<Uuid, Arc<Record>>,
 }
 
@@ -429,7 +501,14 @@ impl Threads {
 			self.head.remove(&record.prev);
 		}
 		if let Some(instance) = instance {
-			self.head.insert(hash.to_owned(), instance);
+			if self.head.insert(hash.to_owned(), instance).is_none() {
+				self.remembered.push_back(hash.to_owned());
+				while self.remembered.len() > HEADS_REMEMBERED {
+					if let Some(oldest) = self.remembered.pop_front() {
+						self.head.remove(&oldest);
+					}
+				}
+			}
 			if matches!(record.kind, RecordKind::Context(_)) {
 				self.context.insert(instance, Arc::new(record.clone()));
 			}
@@ -470,10 +549,13 @@ struct Source {
 	/// file interleaves several sessions and so names none.
 	instance: Option<Uuid>,
 	head: Option<(Record, String)>,
+	/// How many records have come out of this file, which is the order they
+	/// were written in.
+	read: u64,
 }
 
 impl Source {
-	fn fill(&mut self, skipped: &mut Vec<Skipped>) {
+	fn fill(&mut self, skipped: &mut Vec<Skipped>, unreadable: &mut Vec<Unreadable>) {
 		while self.head.is_none() {
 			match self.iter.next() {
 				None => break,
@@ -483,8 +565,16 @@ impl Source {
 					at,
 					bytes,
 				}),
+				// Not the end of a file, so not passed over quietly: what the
+				// rest of it holds is unknown, and anything reporting on the
+				// log has to say that rather than call it whole.
 				Some(FramedItem::Failed { at, error }) => {
 					debug!(origin = ?self.origin, at, %error, "audit file stopped being readable");
+					unreadable.push(Unreadable {
+						file: self.origin.clone(),
+						at,
+						error,
+					});
 				}
 			}
 		}
@@ -497,6 +587,8 @@ pub struct Reader {
 	waiting: Vec<(PathBuf, AuditFile)>,
 	/// Segments whose name disagrees with the session recorded inside them.
 	renamed: Vec<Renamed>,
+	/// Files that stopped being readable partway through.
+	unreadable: Vec<Unreadable>,
 	sources: Vec<Source>,
 	queue: BinaryHeap<Reverse<(Timestamp, u64, usize)>>,
 	threads: Threads,
@@ -527,6 +619,7 @@ impl Reader {
 		let mut reader = Self {
 			waiting,
 			renamed: Vec::new(),
+			unreadable: Vec::new(),
 			sources: Vec::new(),
 			queue: BinaryHeap::new(),
 			threads: Threads::default(),
@@ -568,6 +661,7 @@ impl Reader {
 						origin: path,
 						instance: kind.instance(),
 						head: None,
+						read: 0,
 					});
 					self.advance(index);
 				}
@@ -580,11 +674,21 @@ impl Reader {
 
 	fn advance(&mut self, index: usize) {
 		let mut skipped = std::mem::take(&mut self.skipped);
-		self.sources[index].fill(&mut skipped);
+		let mut unreadable = std::mem::take(&mut self.unreadable);
+		self.sources[index].fill(&mut skipped, &mut unreadable);
 		self.skipped = skipped;
+		self.unreadable = unreadable;
 
 		if let Some((record, _)) = &self.sources[index].head {
-			self.queue.push(Reverse((record.ts, record.seq, index)));
+			// Ties on timestamp are broken by the order the records came out of
+			// their file, which within one session is the order they were
+			// written and so the order they chain in. Breaking by sequence
+			// number instead put a record ahead of the context record meant to
+			// cover it, whenever a coarse clock gave the two the same instant.
+			let ts = record.ts;
+			let read = self.sources[index].read;
+			self.sources[index].read += 1;
+			self.queue.push(Reverse((ts, read, index)));
 		}
 	}
 
@@ -596,6 +700,11 @@ impl Reader {
 	/// Segments whose name disagrees with the session recorded inside them.
 	pub fn renamed(&self) -> &[Renamed] {
 		&self.renamed
+	}
+
+	/// Files that stopped being readable partway through.
+	pub fn unreadable(&self) -> &[Unreadable] {
+		&self.unreadable
 	}
 
 	/// The context in force for a session at the point the read has reached.
@@ -831,6 +940,24 @@ mod tests {
 			panic!("expected a record");
 		};
 		assert_eq!(*read, json);
+	}
+
+	#[test]
+	fn no_more_than_a_record_is_ever_buffered() {
+		// The bound has to be on the read itself. A length checked afterwards is
+		// checked once the whole run is already in memory, which behind a day
+		// file's decompression is a few compressible kilobytes asking for
+		// gigabytes.
+		let endless = std::io::repeat(b'x');
+		let mut reader = FramedReader::new(BufReader::new(endless));
+
+		let mut buf = Vec::new();
+		reader.take_record(&mut buf).unwrap();
+		assert!(
+			buf.len() <= MAX_RECORD_BYTES + 1,
+			"buffered {} bytes",
+			buf.len()
+		);
 	}
 
 	#[test]

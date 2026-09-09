@@ -30,5 +30,6 @@ A closed output pipe ends the export quietly.
 
 The verify command checks every session's chain across the segments and day files that hold it, and exits non-zero if any chain does not hold.
 It reports gap records and unparsable bytes wherever it meets them, so an incomplete log is told apart from an altered one.
+A file that stops being readable partway through is neither: what the rest of it holds is unknown, so the command says so and exits non-zero rather than reporting the chains it carried as whole.
 
 The compact command runs compaction and retention once and reports what it folded and what it deleted.

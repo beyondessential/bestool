@@ -72,8 +72,12 @@ pub fn run(dir: &Path) -> Result<CompactionReport> {
 	};
 
 	// A store still in the old single-file format is brought across first, so
-	// what it held takes part in compaction like anything else.
-	super::legacy::import(dir, &lock)?;
+	// what it held takes part in compaction like anything else. An import that
+	// cannot be done does not stop the rest: giving up here would leave folding
+	// and the retention deletion undone for as long as the import kept failing.
+	if let Err(err) = super::legacy::import(dir, &lock) {
+		warn!(?err, "could not import the legacy audit store");
+	}
 
 	let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
 	let mut report = CompactionReport::default();
@@ -234,7 +238,11 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 	// framing and hash chain as they had in their segments: only the container
 	// changes. Copies left by an earlier interrupted run are byte-identical, so
 	// folding them together is exact.
-	records.sort_by_key(|(record, _)| (record.ts, record.seq));
+	// Sorted by timestamp alone, and stably, so records sharing an instant keep
+	// the order they were read in — which within one session is the order they
+	// were written. Sorting by sequence number as well would reorder them, and a
+	// coarse clock makes shared instants ordinary rather than rare.
+	records.sort_by_key(|(record, _)| record.ts);
 	let mut seen = HashSet::new();
 	records.retain(|(_, json)| seen.insert(super::record::hash(json)));
 

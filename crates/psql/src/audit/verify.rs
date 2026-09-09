@@ -18,7 +18,7 @@ use miette::Result;
 use uuid::Uuid;
 
 use super::{
-	read::{Range, Reader, Renamed, Skipped},
+	read::{Range, Reader, Renamed, Skipped, Unreadable},
 	record::{GapRecord, Record, RecordKind},
 	writer::{BACKLOG_BYTES, BACKLOG_RECORDS},
 };
@@ -107,6 +107,8 @@ pub struct VerifyReport {
 	pub unattributed: u64,
 	/// Segments whose name disagrees with the session recorded inside them.
 	pub renamed: Vec<Renamed>,
+	/// Files that stopped being readable partway through.
+	pub unreadable: Vec<Unreadable>,
 }
 
 impl VerifyReport {
@@ -123,9 +125,13 @@ impl VerifyReport {
 	/// So does a segment whose name disagrees with the session its own records
 	/// name: the name is outside the hash chain and the record is inside it, so
 	/// the file has been renamed since it was written.
+	/// A file that stopped being readable partway through fails it too. What the
+	/// rest of it held is unknown, so the chains it carried cannot be said to
+	/// hold: a truncated or corrupted log must not report as a whole one.
 	pub fn holds(&self) -> bool {
 		self.unattributed == 0
 			&& self.renamed.is_empty()
+			&& self.unreadable.is_empty()
 			&& self.sessions.iter().all(ChainReport::holds)
 	}
 
@@ -261,6 +267,14 @@ impl Chain {
 		}
 
 		if self.pending.len() >= REORDER_LIMIT {
+			self.note_break(&record);
+			return 0;
+		}
+
+		// Two records cannot both follow the same one. Keeping the first and
+		// reporting the second is what says so; overwriting would drop a record
+		// from the count and from the report entirely.
+		if self.pending.contains_key(&record.prev) {
 			self.note_break(&record);
 			return 0;
 		}
@@ -421,6 +435,7 @@ pub fn verify_range(dir: &Path, range: Range) -> Result<VerifyReport> {
 
 	let skipped = reader.skipped().to_vec();
 	let renamed = reader.renamed().to_vec();
+	let unreadable = reader.unreadable().to_vec();
 	let sessions = order
 		.into_iter()
 		.filter_map(|instance| chains.remove(&instance).map(|chain| chain.finish(instance)))
@@ -431,6 +446,7 @@ pub fn verify_range(dir: &Path, range: Range) -> Result<VerifyReport> {
 		skipped,
 		unattributed,
 		renamed,
+		unreadable,
 	})
 }
 
@@ -781,6 +797,47 @@ mod tests {
 
 		let report = verify(dir.path()).unwrap();
 		assert!(!report.holds(), "a chain that cannot hold is reported");
+	}
+
+	#[test]
+	fn a_file_that_stops_being_readable_fails_the_log() {
+		let dir = tempfile::tempdir().unwrap();
+		write_session(dir.path(), 3);
+
+		// A day file truncated partway through decompression: what the rest of
+		// it held is unknown, so the chains it carried cannot be called whole.
+		let truncated = dir.path().join(crate::audit::paths::day_file_name(
+			"2026-09-08".parse().unwrap(),
+		));
+		let mut bytes = zstd::encode_all(&b"\x1e{\"v\":1}\n"[..], 3).unwrap();
+		bytes.truncate(bytes.len() / 2);
+		std::fs::write(&truncated, bytes).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert_eq!(report.unreadable.len(), 1);
+		assert!(
+			!report.holds(),
+			"a log that could not be read through is not a log that holds"
+		);
+	}
+
+	#[test]
+	fn two_records_claiming_the_same_predecessor_are_both_counted() {
+		let dir = tempfile::tempdir().unwrap();
+		let instance = write_session(dir.path(), 3);
+		let path = segment_of(dir.path(), instance);
+
+		// A second record chaining onto the same one cannot be: keeping only
+		// the first and saying nothing would drop the other from the report.
+		let records = crate::audit::writer::read_records(&path);
+		let mut forged = records[2].clone();
+		forged.seq += 100;
+		let mut bytes = std::fs::read(&path).unwrap();
+		bytes.extend_from_slice(&frame(&forged.to_json().unwrap()));
+		std::fs::write(&path, bytes).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert!(!report.holds());
 	}
 
 	#[test]
