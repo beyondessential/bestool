@@ -19,7 +19,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bestool_tamanu::ApiServerKind;
 use serde_json::{Map, Value, json};
 use tokio_postgres::{Client as PgClient, error::SqlState};
 
@@ -193,13 +192,6 @@ const SETTINGS_SQL: &str = "\
 	WHERE (key = $1 OR key LIKE $1 || '.%') AND deleted_at IS NULL";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	if !ctx.config.fhir_worker_enabled() {
 		return Check::skip(
 			NAME,

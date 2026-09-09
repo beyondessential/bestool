@@ -5,6 +5,7 @@ use tokio::fs;
 use tracing::debug;
 
 use super::state::ReplContext;
+use crate::audit::QuerySource;
 
 pub async fn get_snippet(ctx: &mut ReplContext<'_>, name: &str) -> Option<String> {
 	let file_path = {
@@ -39,9 +40,12 @@ pub async fn handle_run_snippet(
 		Some(content) => {
 			use crate::input::handle_input;
 
-			let saved_vars: Vec<(String, Option<String>)> = {
+			let (saved_vars, outer_source) = {
 				let mut state = ctx.repl_state.lock().unwrap();
-				state.from_snippet_or_include = true;
+				let outer_source = std::mem::replace(
+					&mut state.statement_source,
+					QuerySource::Snippet { name: name.clone() },
+				);
 				let saved: Vec<(String, Option<String>)> = vars
 					.iter()
 					.map(|(name, _)| (name.clone(), state.vars.get(name).cloned()))
@@ -50,7 +54,7 @@ pub async fn handle_run_snippet(
 				for (name, value) in &vars {
 					state.vars.insert(name.clone(), value.clone());
 				}
-				saved
+				(saved, outer_source)
 			};
 
 			let (remaining, mut actions) =
@@ -64,10 +68,15 @@ pub async fn handle_run_snippet(
 			}
 
 			let mut result = ControlFlow::Continue(());
-			for action in actions {
+			for statement in actions {
+				// What a snippet runs is recorded like anything else, so the log
+				// holds what the snippet actually did rather than only the line
+				// that invoked it.
+				super::include::record(ctx, statement.text);
+
 				// Boxed because a snippet may itself run another snippet/include,
 				// making dispatch indirectly recursive.
-				result = Box::pin(action.dispatch(ctx, "")).await;
+				result = Box::pin(statement.action.dispatch(ctx, "")).await;
 				if result.is_break() {
 					break;
 				}
@@ -75,7 +84,7 @@ pub async fn handle_run_snippet(
 
 			{
 				let mut state = ctx.repl_state.lock().unwrap();
-				state.from_snippet_or_include = false;
+				state.statement_source = outer_source;
 				for (name, original_value) in saved_vars {
 					match original_value {
 						Some(value) => state.vars.insert(name, value),

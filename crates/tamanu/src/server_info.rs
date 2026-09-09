@@ -33,15 +33,19 @@ pub fn standard_device_key_path() -> PathBuf {
 	}
 }
 
-/// Standard on-disk location for the Tamanu meta-server ID.
+/// Standard on-disk location for this machine's Canopy identity.
 ///
 /// - Linux: `/etc/tamanu/server-id`
 /// - Windows: `C:\Tamanu\server-id`
 /// - Other platforms: same as Linux.
 ///
+/// The file keeps its `server-id` name: it is written by provisioning and read
+/// by installs older than this rename, so the path is a compatibility surface
+/// rather than something to keep in step with the code.
+///
 /// Like the device key, the canopy registration is the preferred source and
 /// this file is the fallback.
-pub fn standard_server_id_path() -> PathBuf {
+pub fn standard_machine_id_path() -> PathBuf {
 	if cfg!(windows) {
 		PathBuf::from(r"C:\Tamanu\server-id")
 	} else {
@@ -158,25 +162,36 @@ fn save_cached_tags_at(path: &Path, tags: &BTreeMap<String, String>) -> Result<(
 		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))
 }
 
-/// Resolve the `metaServerId` for this Tamanu server.
+/// Resolve this machine's Canopy identity.
+///
+/// This is the machine's identity in Canopy, **not** the operating system's
+/// `/etc/machine-id`. The two are unrelated: the OS one is read separately via
+/// the `machine-uid` crate for canopy registration, and confusing them would
+/// hand Canopy the wrong identifier for the box.
+///
+/// The identity belongs to the machine rather than to anything running on it,
+/// so a machine hosting several applications has one of these and each
+/// application has none.
 ///
 /// Resolution order:
 /// 1. The canopy registration's `server_id`, when present.
-/// 2. [`standard_server_id_path`], when present.
+/// 2. [`standard_machine_id_path`], when present.
 /// 3. Otherwise mint a fresh UUIDv4 and persist it to the file path.
 ///
 /// Works without a DB connection throughout, so callers like the doctor daemon
 /// can report status to canopy even when postgres is down (which is precisely
 /// when canopy most needs to hear from us). Returns an error only when a fresh
 /// ID must be minted but the file can't be written.
-pub async fn get_or_create_server_id() -> Result<String> {
-	get_or_create_server_id_at(&standard_server_id_path()).await
+///
+/// spec: SUBJ
+pub async fn get_or_create_machine_id() -> Result<String> {
+	get_or_create_machine_id_at(&standard_machine_id_path()).await
 }
 
-/// Test-shimmed core of [`get_or_create_server_id`] — same contract, with
+/// Test-shimmed core of [`get_or_create_machine_id`] — same contract, with
 /// the file path injected so unit tests can drive it without touching
 /// `/etc/tamanu`.
-async fn get_or_create_server_id_at(path: &Path) -> Result<String> {
+async fn get_or_create_machine_id_at(path: &Path) -> Result<String> {
 	#[cfg(feature = "canopy-registration")]
 	if let Some(reg) = load_registration().await
 		&& let Some(id) = reg.server_id
@@ -184,45 +199,45 @@ async fn get_or_create_server_id_at(path: &Path) -> Result<String> {
 		return Ok(id);
 	}
 
-	if let Some(id) = read_server_id_file(path) {
+	if let Some(id) = read_machine_id_file(path) {
 		return Ok(id);
 	}
 
 	let id = Uuid::new_v4().to_string();
-	info!(server_id = %id, "generating new metaServerId");
-	write_server_id_file(path, &id)
+	info!(machine_id = %id, "generating new machine id");
+	write_machine_id_file(path, &id)
 		.into_diagnostic()
-		.wrap_err_with(|| format!("persisting new metaServerId to {}", path.display()))?;
+		.wrap_err_with(|| format!("persisting new machine id to {}", path.display()))?;
 	Ok(id)
 }
 
-fn read_server_id_file(path: &Path) -> Option<String> {
+fn read_machine_id_file(path: &Path) -> Option<String> {
 	match std::fs::read_to_string(path) {
 		Ok(s) => {
 			let trimmed = s.trim();
 			if trimmed.is_empty() {
-				warn!(path = %path.display(), "server-id file is empty; ignoring");
+				warn!(path = %path.display(), "machine id file is empty; ignoring");
 				return None;
 			}
 			if Uuid::parse_str(trimmed).is_err() {
 				warn!(
 					path = %path.display(),
-					"server-id file does not contain a UUID; ignoring",
+					"machine id file does not contain a UUID; ignoring",
 				);
 				return None;
 			}
-			debug!(path = %path.display(), server_id = trimmed, "loaded metaServerId from standard path");
+			debug!(path = %path.display(), machine_id = trimmed, "loaded machine id from standard path");
 			Some(trimmed.to_string())
 		}
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
 		Err(err) => {
-			debug!(path = %path.display(), %err, "could not read server-id file");
+			debug!(path = %path.display(), %err, "could not read machine id file");
 			None
 		}
 	}
 }
 
-fn write_server_id_file(path: &Path, id: &str) -> std::io::Result<()> {
+fn write_machine_id_file(path: &Path, id: &str) -> std::io::Result<()> {
 	use std::io::Write as _;
 
 	if let Some(parent) = path.parent()
@@ -520,7 +535,7 @@ mod tests {
 	use super::*;
 
 	#[tokio::test]
-	async fn server_id_resolves_from_file() {
+	async fn machine_id_resolves_from_file() {
 		// On a provisioned host the standard file path holds the id; resolution
 		// reads it straight back without minting a new one.
 		let dir = tempfile::tempdir().unwrap();
@@ -528,36 +543,36 @@ mod tests {
 		let cached = uuid::Uuid::new_v4().to_string();
 		std::fs::write(&path, &cached).unwrap();
 
-		let id = get_or_create_server_id_at(&path).await.unwrap();
+		let id = get_or_create_machine_id_at(&path).await.unwrap();
 		assert_eq!(id, cached);
 	}
 
 	#[tokio::test]
-	async fn server_id_mints_and_persists_when_absent() {
+	async fn machine_id_mints_and_persists_when_absent() {
 		// Brand-new host with no file: mint a fresh UUID and write it to the
 		// file so the next run reads the same id back.
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("server-id");
 
-		let id = get_or_create_server_id_at(&path).await.unwrap();
+		let id = get_or_create_machine_id_at(&path).await.unwrap();
 		uuid::Uuid::parse_str(&id).expect("minted id should be a UUID");
-		assert_eq!(read_server_id_file(&path).as_deref(), Some(id.as_str()));
+		assert_eq!(read_machine_id_file(&path).as_deref(), Some(id.as_str()));
 
-		let again = get_or_create_server_id_at(&path).await.unwrap();
+		let again = get_or_create_machine_id_at(&path).await.unwrap();
 		assert_eq!(again, id, "resolution must be stable across runs");
 	}
 
 	#[tokio::test]
-	async fn server_id_errors_when_file_unwritable() {
+	async fn machine_id_errors_when_file_unwritable() {
 		// No file and nowhere to write one (missing parent dir) — must surface
 		// as an error rather than silently losing the minted id.
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("nope").join("server-id");
-		let err = get_or_create_server_id_at(&path)
+		let err = get_or_create_machine_id_at(&path)
 			.await
 			.expect_err("unwritable path → must error");
 		let msg = format!("{err}");
-		assert!(msg.contains("metaServerId"), "{msg}");
+		assert!(msg.contains("machine id"), "{msg}");
 	}
 
 	#[test]
@@ -690,35 +705,35 @@ mod tests {
 	}
 
 	#[test]
-	fn read_server_id_file_returns_none_for_missing() {
+	fn read_machine_id_file_returns_none_for_missing() {
 		let dir = tempfile::tempdir().unwrap();
-		assert!(read_server_id_file(&dir.path().join("missing")).is_none());
+		assert!(read_machine_id_file(&dir.path().join("missing")).is_none());
 	}
 
 	#[test]
-	fn read_server_id_file_returns_uuid() {
+	fn read_machine_id_file_returns_uuid() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("server-id");
 		let id = "7deb2793-0425-427e-8a19-7213946fa9be";
 		std::fs::write(&path, format!("{id}\n")).unwrap();
-		assert_eq!(read_server_id_file(&path).as_deref(), Some(id));
+		assert_eq!(read_machine_id_file(&path).as_deref(), Some(id));
 	}
 
 	#[test]
-	fn read_server_id_file_rejects_non_uuid() {
+	fn read_machine_id_file_rejects_non_uuid() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("server-id");
 		std::fs::write(&path, "not-a-uuid\n").unwrap();
-		assert!(read_server_id_file(&path).is_none());
+		assert!(read_machine_id_file(&path).is_none());
 	}
 
 	#[test]
-	fn write_server_id_file_roundtrips() {
+	fn write_machine_id_file_roundtrips() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("server-id");
 		let id = Uuid::new_v4().to_string();
-		write_server_id_file(&path, &id).unwrap();
-		assert_eq!(read_server_id_file(&path).as_deref(), Some(id.as_str()));
+		write_machine_id_file(&path, &id).unwrap();
+		assert_eq!(read_machine_id_file(&path).as_deref(), Some(id.as_str()));
 
 		#[cfg(unix)]
 		{

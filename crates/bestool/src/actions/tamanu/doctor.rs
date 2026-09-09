@@ -4,7 +4,7 @@ use std::{
 	time::Duration,
 };
 
-use bestool_canopy::schema::CheckSeverity;
+use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, StatusPayload};
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde_json::Value;
@@ -13,11 +13,12 @@ use tracing::{debug, warn};
 
 use bestool_alertd::doctor::{
 	SweepResult, SweepTamanu,
-	check::{Check, CheckStatus, OverallResult},
-	checks,
-	overall_from_payload, perform_sweep,
+	check::{Check, CheckOutcome, CheckStatus, OverallResult},
+	checks, overall_from_payload, perform_sweep,
 	progress::ProgressSender,
 	resolve_sweep_tamanu,
+	subject::{ApplicationKind, ApplicationRef, Subject},
+	sweep::{SplitSeverities, validate_selection},
 };
 
 use super::{TamanuArgs, try_find_tamanu};
@@ -147,8 +148,8 @@ async fn run_local_sweep(
 	args: &DoctorArgs,
 	live_tty: bool,
 ) -> Result<SweepOutcome> {
-	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::Local);
+	validate_check_selection(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::Local);
 
 	// Fetch canopy's effective-severity ceilings concurrently with the checks.
 	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
@@ -178,7 +179,7 @@ async fn run_local_sweep(
 			sweep_handle.abort();
 			severities_handle.abort();
 			let mut synthetic = synthetic_sweep(outcome.results);
-			synthetic.payload = serde_json::Value::Object(Default::default());
+			synthetic.payload = empty_payload();
 			return Ok(SweepOutcome {
 				sweep: synthetic,
 				interrupted: true,
@@ -192,7 +193,7 @@ async fn run_local_sweep(
 	let mut sweep = sweep_handle.await.into_diagnostic()??;
 	// Apply the mapping once it's back (the checks may well have finished first).
 	if let Some(severities) = severities_handle.await.ok().flatten() {
-		sweep.apply_severities(&severities);
+		sweep.apply_severities(&SplitSeverities::flat(severities));
 	}
 	Ok(SweepOutcome { sweep, interrupted })
 }
@@ -223,10 +224,10 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 		.await
 		.ok()??;
 
-		let server_id = bestool_tamanu::server_info::get_or_create_server_id()
+		let machine_id = bestool_tamanu::server_info::get_or_create_machine_id()
 			.await
 			.ok()?;
-		client.status_check_severities(&server_id).await.ok()
+		client.status_check_severities(&machine_id).await.ok()
 	})
 	.await
 	.ok()
@@ -253,8 +254,8 @@ async fn run_daemon_recompute(
 		));
 	}
 
-	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::DaemonStreamed);
+	validate_check_selection(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::DaemonStreamed);
 
 	let stream_handle = tokio::spawn(drain_recompute_stream(response, progress));
 
@@ -276,7 +277,7 @@ async fn run_daemon_recompute(
 	let overall = overall_from_payload(&streamed.payload);
 	Ok(SweepOutcome {
 		sweep: SweepResult {
-			server_id: streamed.server_id,
+			machine_id: streamed.machine_id,
 			results: streamed.results,
 			overall,
 			payload: streamed.payload,
@@ -287,9 +288,9 @@ async fn run_daemon_recompute(
 }
 
 struct StreamedSweep {
-	payload: Value,
-	server_id: Option<String>,
-	results: Vec<(Check, bool)>,
+	payload: StatusPayload,
+	machine_id: Option<String>,
+	results: Vec<CheckOutcome>,
 }
 
 async fn drain_recompute_stream(
@@ -304,9 +305,9 @@ async fn drain_recompute_stream(
 
 	let mut stream = response.bytes_stream();
 	let mut buffer = Vec::<u8>::new();
-	let mut final_payload: Option<Value> = None;
-	let mut server_id: Option<String> = None;
-	let mut results: Vec<(Check, bool)> = Vec::new();
+	let mut final_payload: Option<StatusPayload> = None;
+	let mut machine_id: Option<String> = None;
+	let mut results: Vec<CheckOutcome> = Vec::new();
 
 	while let Some(chunk) = stream.next().await {
 		let chunk = chunk
@@ -327,20 +328,45 @@ async fn drain_recompute_stream(
 				}
 			};
 			match value.get("event").and_then(Value::as_str) {
+				// The daemon resolved the applications; pass its plan through so the
+				// live display shows the same checks pending from the start.
+				Some("planned") => {
+					if let Some(tx) = progress.as_ref()
+						&& let Some(checks) = value.get("checks").and_then(Value::as_array)
+					{
+						let names = checks
+							.iter()
+							.filter_map(Value::as_str)
+							.map(str::to_string)
+							.collect();
+						let _ = tx.send(DoctorEvent::Planned(names));
+					}
+				}
 				Some("check") => {
 					if let Some(check_json) = value.get("check")
-						&& let Some(check) = Check::from_streaming_json(check_json, resolve_name)
+						&& let Some(outcome) =
+							CheckOutcome::from_streaming_json(check_json, resolve_name)
 					{
 						if let Some(tx) = progress.as_ref() {
-							let _ = tx.send(DoctorEvent::Completed(check.clone()));
+							let _ = tx.send(DoctorEvent::Completed(outcome.clone()));
 						}
-						results.push((check, true));
+						results.push(outcome);
 					}
 				}
 				Some("done") => {
-					final_payload = value.get("payload").cloned();
-					server_id = value
-						.get("serverId")
+					// A payload that will not decode is a real failure, not a missing
+					// done event, and must say which it is.
+					let raw = value
+						.get("payload")
+						.cloned()
+						.ok_or_else(|| miette!("alertd recompute done event carried no payload"))?;
+					final_payload = Some(
+						serde_json::from_value(raw)
+							.into_diagnostic()
+							.wrap_err("decoding the alertd recompute payload")?,
+					);
+					machine_id = value
+						.get("machineId")
 						.and_then(Value::as_str)
 						.map(str::to_string);
 				}
@@ -360,7 +386,7 @@ async fn drain_recompute_stream(
 		.ok_or_else(|| miette!("alertd recompute stream ended without a done event"))?;
 	Ok(StreamedSweep {
 		payload,
-		server_id,
+		machine_id,
 		results,
 	})
 }
@@ -394,12 +420,17 @@ async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jif
 		.into_diagnostic()
 		.wrap_err("parsing computedAt timestamp")?;
 
-	let inner = payload
+	let inner: StatusPayload = payload
 		.get("payload")
 		.cloned()
-		.ok_or_else(|| miette!("alertd latest payload missing payload"))?;
-	let server_id = payload
-		.get("serverId")
+		.ok_or_else(|| miette!("alertd latest payload missing payload"))
+		.and_then(|p| {
+			serde_json::from_value(p)
+				.into_diagnostic()
+				.wrap_err("decoding alertd latest status payload")
+		})?;
+	let machine_id = payload
+		.get("machineId")
 		.and_then(Value::as_str)
 		.map(str::to_string);
 
@@ -407,7 +438,7 @@ async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jif
 	let results = results_from_wire(&inner);
 	Ok((
 		SweepResult {
-			server_id,
+			machine_id,
 			results,
 			overall,
 			payload: inner,
@@ -421,38 +452,81 @@ async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jif
 /// path can render the check list and accurate result-line counts. The wire
 /// format drops summaries and reasons, so reconstructed entries have empty
 /// strings for those fields.
-fn results_from_wire(payload: &Value) -> Vec<(Check, bool)> {
-	let Some(health) = payload.get("health").and_then(Value::as_array) else {
-		return Vec::new();
-	};
+///
+/// Every grain is read: the machine's checks, each application's, and the
+/// ungrouped array, each tagged with the subject it was filed against so the
+/// render can tell two same-named checks apart.
+fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 	let registry = checks::all();
-	health
-		.iter()
-		.filter_map(|entry| {
-			let name = entry.get("check").and_then(Value::as_str)?;
-			let result = entry.get("result").and_then(Value::as_str)?;
-			let name_static = registry.iter().find(|e| e.name == name)?.name;
-			let status = match result {
-				"passed" => CheckStatus::Pass,
-				"skipped" => CheckStatus::Skip(String::new()),
-				"warning" => CheckStatus::Warning(String::new()),
-				"failed" => CheckStatus::Fail(String::new()),
-				"broken" => CheckStatus::Broken(String::new()),
-				_ => return None,
+	let names: HashMap<&str, &'static str> = registry.iter().map(|e| (e.name, e.name)).collect();
+
+	let mut targets: Vec<(Subject, &Vec<HealthCheck>)> = Vec::new();
+
+	// A daemon that predates the split describes no targets and puts every check
+	// in the ungrouped array. Those are read against the machine: which subject
+	// each belonged to is exactly what that daemon did not say, and the machine
+	// is the grain an operator reads such a sweep at. A sweep of this vintage
+	// sends the array empty, so this contributes nothing to one.
+	if !payload.health.is_empty() {
+		targets.push((Subject::Machine, &payload.health));
+	}
+	if let Some(machine) = payload.machine.as_ref()
+		&& let Some(health) = machine.health.as_ref()
+	{
+		targets.push((Subject::Machine, health));
+	}
+	for (key, report) in payload.applications.iter().flatten() {
+		// The type slug the push used is the application's own, so the kind is
+		// read back from it. The wire type is an open set, so a target of a type
+		// this build does not know — an mSupply application, or a newer one from
+		// a mismatched daemon — is left out rather than rendered as some other
+		// kind's.
+		let Some(kind) = ApplicationKind::ALL
+			.into_iter()
+			.find(|kind| kind.type_slug() == report.type_)
+		else {
+			continue;
+		};
+		if let Some(health) = report.health.as_ref() {
+			let app = ApplicationRef {
+				kind,
+				key: key.clone(),
 			};
-			Some((
-				Check {
-					name: name_static,
+			targets.push((Subject::Application(app), health));
+		}
+	}
+
+	let mut results = Vec::new();
+	for (subject, health) in targets {
+		for entry in health {
+			let Some(name) = names.get(entry.check.as_str()).copied() else {
+				continue;
+			};
+			let Some(result) = entry.result.as_ref() else {
+				continue;
+			};
+			let status = match result {
+				CheckResult::Passed => CheckStatus::Pass,
+				CheckResult::Skipped => CheckStatus::Skip(String::new()),
+				CheckResult::Warning => CheckStatus::Warning(String::new()),
+				CheckResult::Failed => CheckStatus::Fail(String::new()),
+				CheckResult::Broken => CheckStatus::Broken(String::new()),
+			};
+			results.push(CheckOutcome {
+				subject: subject.clone(),
+				check: Check {
+					name,
 					status,
 					summary: String::new(),
 					details: serde_json::Map::new(),
 					payload_extras: serde_json::Map::new(),
 					stats: Vec::new(),
 				},
-				true,
-			))
-		})
-		.collect()
+				on_wire: true,
+			});
+		}
+	}
+	results
 }
 
 /// Whether the terminal honours ANSI escape sequences, which the live TUI and
@@ -477,7 +551,6 @@ fn ansi_supported() -> bool {
 /// or JSON), no TUI is spawned and the sweep simply runs silently.
 fn setup_progress(
 	live_tty: bool,
-	selected_names: &[&'static str],
 	source: SweepSource,
 ) -> (
 	Option<ProgressSender>,
@@ -487,44 +560,42 @@ fn setup_progress(
 		return (None, None);
 	}
 	let (tx, rx) = mpsc::unbounded_channel();
-	let names = selected_names.to_vec();
-	let handle = tokio::task::spawn_blocking(move || tui::run_tui(names, source, rx));
+	let handle = tokio::task::spawn_blocking(move || tui::run_tui(source, rx));
 	(Some(tx), Some(handle))
 }
 
-fn synthetic_sweep(results: Vec<(Check, bool)>) -> SweepResult {
+fn synthetic_sweep(results: Vec<CheckOutcome>) -> SweepResult {
 	let overall =
-		OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		OverallResult::from_checks(&results.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 	SweepResult {
-		server_id: None,
+		machine_id: None,
 		results,
 		overall,
-		payload: Value::Object(Default::default()),
+		payload: empty_payload(),
 		pg_version: None,
 	}
 }
 
-fn selected_names(only: &[String], skip: &[String]) -> Result<Vec<&'static str>> {
+/// A payload describing no subjects, for the paths that carry results without
+/// ever having built a push: an interrupted sweep, and the TUI's own result
+/// collection.
+fn empty_payload() -> StatusPayload {
+	StatusPayload::builder().health(Vec::new()).build()
+}
+
+/// Reject a bad `--check` or `--skip` before the terminal is taken over, using
+/// the same validation the sweep applies.
+///
+/// One contract, so a name the sweep would run is never rejected here first, and
+/// a bare name is refused identically by both. Which checks actually run is the
+/// sweep's to decide and announce, since only it knows what applications the
+/// host has.
+///
+/// spec: DOC
+fn validate_check_selection(only: &[String], skip: &[String]) -> Result<()> {
 	let registry = checks::all();
-	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
-	if let Some(unknown) = only.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}`; known checks: {}",
-			known.join(", ")
-		));
-	}
-	if let Some(unknown) = skip.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}` in --skip; known checks: {}",
-			known.join(", ")
-		));
-	}
-	Ok(registry
-		.iter()
-		.filter(|e| only.is_empty() || only.iter().any(|n| n == e.name))
-		.filter(|e| !skip.iter().any(|n| n == e.name))
-		.map(|e| e.name)
-		.collect())
+	validate_selection(&registry, only, "--check")?;
+	validate_selection(&registry, skip, "--skip")
 }
 
 fn emit_output(
@@ -538,7 +609,10 @@ fn emit_output(
 
 	if args.json {
 		let mut wrapped = serde_json::Map::new();
-		wrapped.insert("wire".into(), sweep.payload.clone());
+		wrapped.insert(
+			"wire".into(),
+			serde_json::to_value(&sweep.payload).into_diagnostic()?,
+		);
 		match source {
 			SweepSource::Local => {
 				wrapped.insert("source".into(), Value::String("local".into()));
@@ -567,44 +641,41 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn selected_names_default_returns_full_registry() {
-		let names = selected_names(&[], &[]).unwrap();
-		let registry: Vec<&str> = checks::all().iter().map(|e| e.name).collect();
-		assert_eq!(names, registry);
+	fn no_selection_flags_is_accepted() {
+		assert!(validate_check_selection(&[], &[]).is_ok());
 	}
 
 	#[test]
-	fn selected_names_only_filters_to_listed() {
-		let names = selected_names(&["db_connect".into(), "memory".into()], &[]).unwrap();
-		assert_eq!(names, vec!["db_connect", "memory"]);
+	fn the_cli_accepts_a_qualified_name_the_sweep_accepts() {
+		// One contract: a name the sweep would run must not be rejected here
+		// first, and a bare name must be rejected the same way in both.
+		assert!(validate_check_selection(&["postgres:connect".into()], &[]).is_ok());
+		assert!(validate_check_selection(&["machine:memory".into()], &[]).is_ok());
+		let err = validate_check_selection(&["connect".into()], &[]).unwrap_err();
+		assert!(format!("{err}").contains("postgres:connect"));
 	}
 
 	#[test]
-	fn selected_names_skip_excludes_listed() {
-		let names = selected_names(&[], &["tailscale".into()]).unwrap();
-		assert!(!names.contains(&"tailscale"));
-		assert!(names.contains(&"db_connect"));
+	fn skip_rejects_a_bare_name_on_the_same_terms_as_check() {
+		let err = validate_check_selection(&[], &["memory".into()]).unwrap_err();
+		let msg = format!("{err}");
+		assert!(msg.contains("--skip"), "{msg}");
+		assert!(msg.contains("machine:memory"), "{msg}");
 	}
 
 	#[test]
-	fn selected_names_only_and_skip_compose() {
-		let names = selected_names(
-			&["db_connect".into(), "memory".into(), "tailscale".into()],
-			&["tailscale".into()],
-		)
-		.unwrap();
-		assert_eq!(names, vec!["db_connect", "memory"]);
-	}
-
-	#[test]
-	fn selected_names_unknown_skip_is_error() {
-		let err = selected_names(&[], &["does_not_exist".into()]).unwrap_err();
+	fn unknown_skip_is_error() {
+		let err = validate_check_selection(&[], &["does_not_exist".into()]).unwrap_err();
 		assert!(format!("{err}").contains("does_not_exist"));
 	}
 
 	#[test]
 	fn synthetic_sweep_marks_overall_from_results() {
-		let results = vec![(Check::fail("a", "bad", "r"), true)];
+		let results = vec![CheckOutcome {
+			subject: Subject::Machine,
+			check: Check::fail("a", "bad", "r"),
+			on_wire: true,
+		}];
 		let sweep = synthetic_sweep(results);
 		assert_eq!(sweep.overall, OverallResult::Failing);
 	}
@@ -632,23 +703,85 @@ mod tests {
 
 	#[test]
 	fn results_from_wire_reconstructs_per_check_entries() {
-		let registry = checks::all();
-		let known = registry[0].name;
-		let payload = serde_json::json!({
-			"health": [
-				{ "check": known, "result": "passed" },
-				{ "check": "unknown_check_name", "result": "failed" },
-			]
-		});
+		let payload: StatusPayload = serde_json::from_value(serde_json::json!({
+			"health": [],
+			"machine": {
+				"detail": {},
+				"health": [
+					{ "check": "disk_free", "result": "passed" },
+					{ "check": "unknown_check_name", "result": "failed" },
+				],
+			},
+		}))
+		.unwrap();
 		let results = results_from_wire(&payload);
 		assert_eq!(results.len(), 1);
-		assert_eq!(results[0].0.name, known);
-		assert!(matches!(results[0].0.status, CheckStatus::Pass));
+		assert_eq!(results[0].check.name, "disk_free");
+		assert_eq!(results[0].subject, Subject::Machine);
+		assert!(matches!(results[0].check.status, CheckStatus::Pass));
 	}
 
 	#[test]
-	fn results_from_wire_empty_when_no_health_array() {
-		let payload = serde_json::json!({});
+	fn results_from_wire_reads_both_grains() {
+		// The cached path renders the machine's checks and the application's, and
+		// must keep them apart even when a name appears under both.
+		let payload: StatusPayload = serde_json::from_value(serde_json::json!({
+			"health": [],
+			"machine": {
+				"detail": {},
+				"health": [{ "check": "disk_free", "result": "passed" }],
+			},
+			"applications": {
+				"host-tamanu-central": {
+					"type": "tamanu-central",
+					"detail": {},
+					"health": [{ "check": "migrations", "result": "failed" }],
+				},
+			},
+		}))
+		.unwrap();
+		let results = results_from_wire(&payload);
+		assert_eq!(results.len(), 2);
+
+		let subject_of = |name: &str| {
+			results
+				.iter()
+				.find(|o| o.check.name == name)
+				.map(|o| o.subject.clone())
+				.unwrap()
+		};
+		assert_eq!(subject_of("disk_free"), Subject::Machine);
+		assert_eq!(
+			subject_of("migrations"),
+			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral))
+		);
+	}
+
+	#[test]
+	fn a_pre_split_payload_is_read_rather_than_called_healthy() {
+		// A daemon that predates the split describes no targets and puts every
+		// check in the ungrouped array. Reading only the targets would render
+		// such a sweep healthy however much of it had failed.
+		let payload: StatusPayload = serde_json::from_value(serde_json::json!({
+			"health": [
+				{ "check": "disk_free", "result": "failed" },
+				{ "check": "memory", "result": "passed" },
+			],
+		}))
+		.unwrap();
+
+		assert_eq!(
+			bestool_alertd::doctor::overall_from_payload(&payload),
+			OverallResult::Failing,
+		);
+		let results = results_from_wire(&payload);
+		assert_eq!(results.len(), 2);
+		assert!(results.iter().all(|o| o.subject == Subject::Machine));
+	}
+
+	#[test]
+	fn results_from_wire_empty_when_no_targets() {
+		let payload = empty_payload();
 		assert!(results_from_wire(&payload).is_empty());
 	}
 }

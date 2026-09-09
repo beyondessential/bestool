@@ -1,17 +1,19 @@
 ---
 name: draft-prd
-description: "Draft or refine the project's PRD from the description and conversation"
-label: "Draft PRD"
+description: "Interview me about this project to develop the PRD"
+label: "PRD interview"
+category: plan
 surface: project
-jockey-hint: "Top pill on the project surface when the PRD is empty. Demote once the PRD has substantive content unless the user signals a fresh draft pass."
-workhorse-version: 0.1.0
+workhorse-version: 0.4.0
 ---
 
-## Your task: Draft PRD
+## Your task: PRD interview
 
 Produce or refine the project's PRD at `.workhorse/projects/{hash}-{slug}/prd.md`. The agent already knows the project's hash and slug from the workspace context.
 
-This is the PRD-level equivalent of card-level **Implement this** — go straight to drafting from the project description and conversation history. Do not start by asking questions; produce a sensible structure even when no conversation has yet occurred.
+Work as an interview that writes as it goes, rather than a single drafting pass. Draft first and ask second: produce a sensible structure from the project description and conversation history straight away, so the user has something concrete to react to, then interview them to develop it.
+
+Do not open with a list of questions. Once a draft exists, ask about the parts of it you are least sure of, one or two at a time, and fold each answer back into the PRD as it arrives.
 
 ### Default scaffolding
 
@@ -46,8 +48,8 @@ You are working on the **project surface**, not a card workspace. Edits in this 
 
 - `.workhorse/projects/{hash}-{slug}/prd.md`
 - `.workhorse/projects/{hash}-{slug}/mockups/`
-- `.workhorse/projects/{hash}-{slug}/card-plan.md`
+- `.workhorse/projects/{hash}-{slug}/breakdown.md`
 
-Do **not** edit specs, per-card plans, test cases, card working docs, or any code. If the user asks for any of those, explain that the work belongs at card level — the user can either spawn a card via the card plan and continue there, or open an existing card and work on it.
+Do **not** edit specs, per-card plans, test cases, card working docs, or any code. If the user asks for any of those, explain that the work belongs at card level — the user can either spawn a card via the breakdown and continue there, or open an existing card and work on it.
 
 You may **read** anything from the workspace's main branch for context.

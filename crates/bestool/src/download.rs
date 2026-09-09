@@ -39,7 +39,8 @@ pub async fn reqwest_client() -> Result<reqwest::Client> {
 }
 
 pub async fn client() -> Result<Client> {
-	let mut builder = Client::default_builder(crate::http::user_agent(), None, &mut iter::empty());
+	let mut builder =
+		Client::default_builder(crate::http::user_agent(), None, false, &mut iter::empty());
 	for source in [
 		DownloadSource::Tools,
 		DownloadSource::Servers,

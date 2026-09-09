@@ -11,6 +11,9 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd reload`↴](#bestool-alertd-reload)
 * [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
+* [`bestool audit-psql export`↴](#bestool-audit-psql-export)
+* [`bestool audit-psql verify`↴](#bestool-audit-psql-verify)
+* [`bestool audit-psql compact`↴](#bestool-audit-psql-compact)
 * [`bestool caddy`↴](#bestool-caddy)
 * [`bestool caddy upgrade`↴](#bestool-caddy-upgrade)
 * [`bestool canopy`↴](#bestool-canopy)
@@ -98,7 +101,7 @@ Didn't expect this much output? Use the short '-h' flag to get short help.
 ###### **Subcommands:**
 
 * `alertd` — Run the healthcheck daemon
-* `audit-psql` — Export audit database entries as JSON
+* `audit-psql` — Read and maintain the bestool-psql audit log
 * `caddy` — Manage Caddy
 * `canopy` — Interact with Canopy
 * `crypto` — Cryptographic operations
@@ -247,20 +250,52 @@ Asks the daemon to exit so the service manager restarts it — e.g. to pick up a
 
 ## `bestool audit-psql`
 
-Export audit database entries as JSON
+Read and maintain the bestool-psql audit log
 
-**Usage:** `bestool audit-psql [OPTIONS]`
+**Usage:** `bestool audit-psql [OPTIONS] [COMMAND]`
+
+###### **Subcommands:**
+
+* `export` — Write records to standard output, in the shape and framing they have in the store
+* `verify` — Check every session's hash chain, and exit non-zero if any does not hold
+* `compact` — Fold closed segments into day files and delete days past retention
 
 ###### **Options:**
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
-* `-n`, `--limit <LIMIT>` — Number of entries to return (0 = unlimited)
+* `--audit-path <PATH>` — Path to the audit directory (default: ~/.local/state/bestool-psql)
+
+
+
+## `bestool audit-psql export`
+
+Write records to standard output, in the shape and framing they have in the store
+
+**Usage:** `bestool audit-psql export [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--limit <LIMIT>` — Number of records to return (0 = unlimited)
 
   Default value: `100`
-* `--first` — Read from oldest entries instead of newest
-* `--since <SINCE>` — Filter entries after this date
-* `--until <UNTIL>` — Filter entries before this date
-* `--orphans` — Discover and read orphan databases instead of main database
+* `--first` — Take the oldest records rather than the newest
+* `--since <SINCE>` — Only records at or after this time
+* `--until <UNTIL>` — Only records at or before this time
+
+
+
+## `bestool audit-psql verify`
+
+Check every session's hash chain, and exit non-zero if any does not hold
+
+**Usage:** `bestool audit-psql verify`
+
+
+
+## `bestool audit-psql compact`
+
+Fold closed segments into day files and delete days past retention
+
+**Usage:** `bestool audit-psql compact`
 
 
 
@@ -2154,7 +2189,7 @@ Aliases: p, pg, sql
   - `auto`:
     Auto-detect terminal theme
 
-* `--audit-path <PATH>` — Path to audit database directory (default: ~/.local/state/bestool-psql)
+* `--audit-path <PATH>` — Path to the audit directory (default: ~/.local/state/bestool-psql)
 * `--no-redact` — Don't redact data
 
    This will also skip loading redactions.

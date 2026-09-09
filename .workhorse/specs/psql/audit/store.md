@@ -1,0 +1,104 @@
+---
+id: AUD-STO
+---
+
+# Audit store
+
+The audit log is a directory of append-only segment files.
+Each segment is written by exactly one session, the one that created it, and by nothing else for as long as that session holds it open.
+Because no two processes ever write the same file, sessions need no locks, no shared state, and no reconciliation: the log as a whole is the union of its files, and any union of records is a valid log.
+
+## Segments
+
+A session writes its records into one segment per UTC day, named `audit-<date>-<session identity>.json-seq` for the date it covers.
+The date leads the name so that sorting a directory's names orders the log by time, which is how a reader reaches the newest records without opening anything, and the extension names the framing rather than claiming a format that a plain JSON-lines reader would choke on.
+A segment is created when the session first records something on that day, so a session left open over a quiet night leaves no file for it.
+Most sessions are shorter than a day and so have exactly one segment.
+Because a segment never spans a date boundary, every closed segment falls entirely within one day.
+
+The segment is a JSON text sequence: each record is one line of JSON, preceded by an ASCII record separator (`0x1E`) and followed by a newline, the framing of RFC 7464.
+A live segment can be read, tailed and searched with ordinary text tools, and parsed by anything that understands JSON sequences, `jq --seq` among them.
+Each record carries a format version so the record shape can grow without readers guessing.
+
+The separator never occurs inside a record, because JSON escapes control characters, so it marks the start of a record unambiguously.
+A reader that meets bytes it cannot parse as a record skips to the next separator, reports what it skipped, and carries on with the records after it.
+Damage is therefore confined to the record it lands in: a half-written record cannot swallow the records that follow it, and cannot be mistaken for the end of the file.
+
+The writing session holds an advisory lock on its current segment, and releases it when it rolls over to the next day, so a lock that can be acquired always means nothing is writing that file.
+The session never waits on this lock; it exists so that another process can tell a live segment from a closed one by attempting the lock, rather than inferring liveness from timestamps.
+
+A segment is closed once its session has rolled past it or exited.
+A clean exit appends an end record to the session's last segment.
+Rolling over to a new day does not, because the next segment's first record carries the hash of this one's last record and so shows the session continued.
+A crash leaves no end record and possibly a torn final record, which readers discard.
+A closed segment is complete and readable as it stands, and remains so until compaction folds it into a day file (see [AUD-RET](retention.md)).
+
+## Records
+
+Every record has the format version, its sequence number within the session, its timestamp, and the hash of the record before it.
+Records are keyed across the whole log by the pair of session identity and sequence number, which cannot collide between sessions and does not depend on clocks agreeing.
+A sequence number is assigned when a record is made rather than when it reaches disk, so a record that is never written leaves a hole in the numbering.
+
+Four record kinds exist.
+
+A **context** record carries the session state that applies to all following query records: operating-system user, database user, write mode, over-the-shoulder supervisor, Tailscale peers, and session identity.
+The first record of every segment is a context record, and a new context record is appended whenever any of that state changes, such as write mode being enabled or a supervisor being named.
+
+The Tailscale peers are the exception: they are sampled once when a segment opens, at session start and again at each rollover, and every context record in that segment carries the set sampled then.
+The whole set of active peers is recorded because which one of them owns the session cannot be determined, and it stands as who was reachable when the segment opened.
+
+A **query** record carries the statement text and where the statement came from: typed at the prompt, a named snippet, or an included file, named by the absolute path as it was resolved to be opened.
+Where a snippet includes a file, or an included file runs a snippet, the source is the innermost one, the thing that produced the statement directly; the invocations that led there are recorded in their own right and sit before it in time order.
+Shell recall follows from the source rather than being recorded separately (see [AUD-HIS](history.md)).
+Everything else about a query record is found by carrying forward the most recent context record before it.
+
+An **end** record marks a clean session exit.
+
+A **gap** record stands in for records that were made but never written, because the in-memory backlog had to discard them (see [AUD](overview.md)).
+It carries how many records were lost, the last sequence number they held, and the span of time they covered, and it takes the first of the sequence numbers it covers so the numbering in a segment stays in order.
+The log therefore says where it is incomplete, rather than leaving a silent hole that reads as tampering.
+
+A segment, with its framing bytes left out for legibility:
+
+```json
+{"v":1,"seq":0,"ts":"2026-09-08T03:14:15.926535Z","prev":"","kind":"context","sys_user":"felix","db_user":"tamanu","writemode":false,"ots":null,"tailscale":[{"device":"laptop","user":"felix@example.com"}],"instance":"7d2c…"}
+{"v":1,"seq":1,"ts":"2026-09-08T03:14:22.000481Z","prev":"9f86d0…","kind":"query","query":"select count(*) from patients;","source":"typed"}
+{"v":1,"seq":2,"ts":"2026-09-08T03:44:09.550118Z","prev":"e3b0c4…","kind":"gap","lost":87,"through":88,"from":"2026-09-08T03:14:30.104881Z","to":"2026-09-08T03:44:02.771290Z"}
+{"v":1,"seq":89,"ts":"2026-09-08T03:44:09.551002Z","prev":"5f2b81…","kind":"query","query":"\\i /home/felix/fixups.sql","source":"typed"}
+{"v":1,"seq":90,"ts":"2026-09-08T03:44:09.662377Z","prev":"c14e77…","kind":"query","query":"update patients set updated_at = now() where id = 42;","source":"include","path":"/home/felix/fixups.sql"}
+{"v":1,"seq":91,"ts":"2026-09-08T03:45:01.114202Z","prev":"a1d4f0…","kind":"end"}
+```
+
+## Tamper evidence
+
+Each record's `prev` field is the SHA-256 hash of the previous record's JSON text: the bytes between its separator and its newline, exactly as written, so verification is a byte-level read that needs no canonical re-encoding.
+The framing bytes are outside the hash, so a record hashes identically wherever it is held, and a record whose trailing newline did not survive a crash still hashes as itself.
+`prev` names the previous record rather than the previous bytes on disk: it is fixed when the record is written, and bytes that no reader can parse as a record take no part in the chain.
+
+The chain runs for the life of the session rather than the life of a file: only the first record a session ever writes has an empty `prev`, and the first record of each later segment carries the hash of the last record of the segment before it.
+A session verifies when, reading its segments in date order, every record's `prev` matches the hash of the record before it, and the sequence numbers are contiguous from zero with gap records accounting for any numbers missing.
+Verification reports the first record at which the chain breaks, along with every gap record and every stretch of unparsable bytes it passed.
+Removing a whole segment therefore breaks the chain of the session it belonged to, rather than passing unnoticed, and so does altering or truncating a record in place.
+A half-written record left behind by a failed write does not, because the record that follows it chains onto the last record that was written whole.
+
+Where retention has already deleted a session's earlier records, verification starts from the oldest records kept and reports their `prev` as unverifiable rather than broken.
+
+A record is attributed to the session written into it, or failing that to the chain it extends, and only failing both to the session its file is named for.
+The name is not covered by the hash, so a segment whose name disagrees with the session its own records name has been renamed since it was written, and verification says so rather than taking the name for it.
+
+The chain shows that a session's records have not been edited, reordered or removed since they were written, nor moved from one session to another.
+
+## Legacy stores
+
+A directory containing a store in the earlier single-file database format, including any working-copy or orphaned files that format left behind, is imported into segments the first time any process opens it, session or tool alike, so an auditor reading a machine that has not run a session since sees what a session would.
+Import runs under the same directory lock as compaction ([AUD-RET](retention.md)); a process that cannot take the lock reads what is already there and leaves the import to whoever holds it.
+Import streams records from the old files rather than loading them whole, so what it holds is one key per record taken across rather than the records themselves.
+It holds those because the old format made a copy of the whole store to write to, so the same record is in the main file and in every copy taken after it, and a statement that ran once is in the log once.
+Imported records keep their original timestamps.
+Their query records take the source the old store implies: typed where it held the record eligible for recall, and unknown where it did not, since the old store recorded that a statement was not typed without recording what ran it.
+Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day, under a session identity made for the import, so that every segment in the directory is named the same way.
+Import is all or nothing: a file that cannot be read right through leaves the directory as it was, and the whole import is attempted again later, because the records one file yields are interleaved with every other file's in the same segments and cannot be taken up on their own.
+
+The old files are set aside, named for the day they were set aside on, only after the new segments have been written and synchronised to disk.
+They are set aside rather than deleted because import runs from the read-only tools too, and an auditor examining a machine must not be the one who destroys what they came to examine.
+What they hold is the same statement text as the log, so they are kept no longer than it is: retention takes them on their day like a day file (see [AUD-RET](retention.md)).

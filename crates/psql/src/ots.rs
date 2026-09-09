@@ -3,13 +3,15 @@ use rustyline::{
 	Config, Editor,
 	history::{History as HistoryTrait, MemHistory},
 };
-use tracing::debug;
 
 use crate::audit::Audit;
 
-/// Prompt for OTS value with rustyline and history from previous OTS values
+/// Prompt for an over-the-shoulder supervisor, recalling the ones named before.
+///
+/// The names come from the context records the session already read to build
+/// its recall set, so naming a supervisor never waits on the store.
 pub fn prompt_for_ots(audit: &Audit) -> Result<String> {
-	let ots_history = load_ots_history(audit)?;
+	let ots_history = audit.supervisors();
 
 	let mut rl: Editor<(), MemHistory> = Editor::with_history(
 		Config::builder()
@@ -46,23 +48,4 @@ pub fn prompt_for_ots(audit: &Audit) -> Result<String> {
 			}
 		}
 	}
-}
-
-/// Load unique OTS values from the audit database
-fn load_ots_history(audit: &Audit) -> Result<Vec<String>> {
-	let entries = audit.list()?;
-
-	let mut ots_values = Vec::new();
-	let mut seen = std::collections::HashSet::new();
-	for (_timestamp, entry) in entries.into_iter().rev() {
-		if let Some(ots) = entry.ots
-			&& !ots.is_empty()
-			&& seen.insert(ots.clone())
-		{
-			ots_values.push(ots);
-		}
-	}
-
-	debug!(count = ots_values.len(), "loaded OTS history");
-	Ok(ots_values)
 }

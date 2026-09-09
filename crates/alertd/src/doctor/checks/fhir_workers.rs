@@ -17,8 +17,6 @@
 //! pool for a live worker to take, and their rows sit there until the deployment
 //! prunes the table, so an operator has no way to act on them.
 
-use bestool_tamanu::ApiServerKind;
-
 use super::{CheckContext, query_error_check};
 use crate::doctor::Stat;
 use crate::doctor::check::Check;
@@ -53,13 +51,6 @@ const SQL: &str = "\
 	) t";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	if !ctx.config.fhir_worker_enabled() {
 		return Check::skip(
 			NAME,
@@ -68,7 +59,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 	let Some(client) = ctx.db.as_ref() else {
-		return Check::fail(NAME, "no DB connection", "db_connect failed");
+		return Check::fail(
+			NAME,
+			"no DB connection",
+			"postgres:connect reports the outage",
+		);
 	};
 
 	let row = match client.query_one(SQL, &[]).await {

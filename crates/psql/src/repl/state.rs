@@ -9,7 +9,7 @@ use rustyline::Editor;
 use tokio::{fs::File, sync::Mutex as TokioMutex};
 
 use crate::{
-	Config, audit::Audit, completer::SqlCompleter, result_store::ResultStore,
+	Config, audit::Audit, audit::QuerySource, completer::SqlCompleter, result_store::ResultStore,
 	schema_cache::SchemaCacheManager, snippets::Snippets,
 };
 
@@ -29,7 +29,11 @@ pub struct ReplState {
 	pub snippets: Snippets,
 	pub transaction_state: TransactionState,
 	pub result_store: ResultStore,
-	pub from_snippet_or_include: bool,
+	/// Where the statements being run now come from: typed at the prompt, or
+	/// expanded by the snippet or included file currently running. Nested
+	/// expansion saves and restores this, so it always names the innermost
+	/// thing, which is what produced the statement directly.
+	pub statement_source: QuerySource,
 	pub initial_content: Option<String>,
 	/// Buffer the last `\e` invocation produced, kept only while `\e`s run
 	/// back-to-back. A repeated `\e` reopens it so you can keep refining the
@@ -63,7 +67,7 @@ impl ReplState {
 			snippets: Snippets::empty(),
 			transaction_state: TransactionState::None,
 			result_store: ResultStore::new(),
-			from_snippet_or_include: false,
+			statement_source: QuerySource::Typed,
 			initial_content: None,
 			last_edit_content: None,
 			write_mode_active_at: None,

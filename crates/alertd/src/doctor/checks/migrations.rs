@@ -3,7 +3,11 @@ use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let Some(client) = ctx.db.as_deref() else {
-		return Check::fail("migrations", "no DB connection", "db_connect failed");
+		return Check::fail(
+			"migrations",
+			"no DB connection",
+			"postgres:connect reports the outage",
+		);
 	};
 
 	let query = r#"SELECT name FROM "SequelizeMeta" ORDER BY name DESC LIMIT 1"#;

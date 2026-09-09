@@ -1,7 +1,10 @@
-use bestool_canopy::schema::CheckSeverity;
+use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck};
 use serde_json::{Map, Value, json};
 
-use crate::doctor::stat::Stat;
+use crate::doctor::{
+	stat::Stat,
+	subject::{ApplicationKind, ApplicationRef, Subject},
+};
 
 /// Outcome of a single healthcheck.
 ///
@@ -212,6 +215,33 @@ impl Check {
 		self
 	}
 
+	/// Build the typed per-check entry for a target's `health[]`.
+	///
+	/// Constructed field by field rather than round-tripped through a `Value`:
+	/// a check whose details failed to deserialise would otherwise vanish from
+	/// the push with no error, silently ceasing to be monitored.
+	pub fn to_health_check(&self) -> HealthCheck {
+		let mut extra = self.details.clone();
+		// After the details, so the reserved keys always win.
+		extra.insert("summary".into(), self.summary.clone().into());
+		if let Some(reason) = self.status.reason() {
+			extra.insert("reason".into(), reason.into());
+		}
+
+		let mut health = HealthCheck::builder()
+			.check(self.name.to_owned())
+			.result(match self.status {
+				CheckStatus::Pass => CheckResult::Passed,
+				CheckStatus::Warning(_) => CheckResult::Warning,
+				CheckStatus::Fail(_) => CheckResult::Failed,
+				CheckStatus::Broken(_) => CheckResult::Broken,
+				CheckStatus::Skip(_) => CheckResult::Skipped,
+			})
+			.build();
+		health.extra = extra;
+		health
+	}
+
 	/// Build the per-check entry for the canopy `health[]` array.
 	pub fn to_wire(&self) -> Value {
 		let mut obj = Map::new();
@@ -298,6 +328,72 @@ impl Check {
 	}
 }
 
+/// One check's result, together with the subject it was filed against.
+///
+/// A check's name identifies it only within its subject, so the two travel
+/// together from the moment the sweep runs it: a machine `foo` and an
+/// application `foo` are different checks and must not be collated.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone)]
+pub struct CheckOutcome {
+	pub subject: Subject,
+	pub check: Check,
+	/// Whether this result belongs in the wire `health[]` for its subject.
+	pub on_wire: bool,
+}
+
+impl CheckOutcome {
+	/// `subject:name`, how this check is named and selected.
+	pub fn qualified_name(&self) -> String {
+		self.subject.qualify(self.check.name)
+	}
+
+	/// How this result is identified for display: by the instance it came from,
+	/// so two clusters' checks of one name are two rows rather than one.
+	pub fn row_id(&self) -> String {
+		self.subject.identify(self.check.name)
+	}
+
+	/// Encode for streaming over the daemon's task endpoint, carrying the
+	/// subject so the receiving CLI files the result where the sweep did rather
+	/// than guessing from the name.
+	pub fn to_streaming_json(&self) -> Value {
+		let mut obj = self.check.to_streaming_json();
+		obj["subject"] = Value::String(self.subject.slug().to_string());
+		if let Some(key) = self.subject.key() {
+			obj["subjectKey"] = Value::String(key.to_string());
+		}
+		obj
+	}
+
+	/// Decode a [`Self::to_streaming_json`] payload. Returns `None` for an
+	/// unknown check name or subject, or a malformed payload — callers drop
+	/// those events.
+	pub fn from_streaming_json(
+		value: &Value,
+		name_resolver: impl FnOnce(&str) -> Option<&'static str>,
+	) -> Option<Self> {
+		let slug = value.get("subject")?.as_str()?;
+		let subject = match value.get("subjectKey").and_then(Value::as_str) {
+			Some(key) => Subject::Application(ApplicationRef {
+				kind: ApplicationKind::ALL
+					.into_iter()
+					.find(|kind| kind.type_slug() == slug)?,
+				key: key.to_string(),
+			}),
+			None if slug == "machine" => Subject::Machine,
+			None => return None,
+		};
+		let check = Check::from_streaming_json(value, name_resolver)?;
+		Some(Self {
+			subject,
+			check,
+			on_wire: true,
+		})
+	}
+}
+
 /// Overall result of running all checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverallResult {
@@ -307,6 +403,30 @@ pub enum OverallResult {
 }
 
 impl OverallResult {
+	/// Derive the overall result from statuses alone.
+	///
+	/// Takes statuses rather than whole checks: the verdict reads nothing else,
+	/// and callers were cloning every check's details and stats into a throwaway
+	/// vector to call this.
+	pub fn from_statuses<'a>(statuses: impl IntoIterator<Item = &'a CheckStatus>) -> Self {
+		let mut failing = false;
+		let mut degraded = false;
+		for status in statuses {
+			match status {
+				CheckStatus::Fail(_) => failing = true,
+				CheckStatus::Warning(_) | CheckStatus::Broken(_) => degraded = true,
+				CheckStatus::Pass | CheckStatus::Skip(_) => {}
+			}
+		}
+		if failing {
+			Self::Failing
+		} else if degraded {
+			Self::Degraded
+		} else {
+			Self::Healthy
+		}
+	}
+
 	pub fn from_checks(checks: &[Check]) -> Self {
 		if checks.iter().any(|c| c.status.is_fatal()) {
 			OverallResult::Failing

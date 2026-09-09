@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.61.2"
+version = "1.62.1"
 edition = "2024"
 default-run = "bestool"
 
@@ -17,15 +17,15 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
-algae-cli = { version = "1.1.11", path = "../algae-cli", optional = true }
+algae-cli = { version = "1.1.12", path = "../algae-cli", optional = true }
 axum = { version = "0.8.9", optional = true }
-bestool-alertd = { version = "26.0.10", path = "../alertd", default-features = false, optional = true }
-bestool-canopy = { version = "0.7.11", path = "../canopy", optional = true }
+bestool-alertd = { version = "26.1.1", path = "../alertd", default-features = false, optional = true }
+bestool-canopy = { version = "0.7.12", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.5.3", path = "../kopia", optional = true }
 bestool-postgres = { version = "1.2.1", path = "../postgres", optional = true }
-bestool-psql = { version = "1.7.12", path = "../psql", default-features = false, optional = true }
-bestool-tamanu = { version = "0.19.8", path = "../tamanu", default-features = false, optional = true }
-binstalk-downloader = { version = "0.13.38", optional = true, features = ["hickory-dns"] }
+bestool-psql = { version = "1.7.14", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.19.10", path = "../tamanu", default-features = false, optional = true }
+binstalk-downloader = { version = "0.13.45", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
 bytes = "1.10.0"
@@ -169,7 +169,7 @@ tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-col
 # Windows-only PostgreSQL tuning. Reuses the lifecycle restart to bounce the
 # Tamanu workloads, and drives the postgres Windows service directly.
 tamanu-pgtune = ["__tamanu", "tamanu-config", "tamanu-lifecycle", "dep:bestool-postgres", "dep:windows-service"]
-tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql", "bestool-tamanu/seedling"]
+tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql", "bestool-psql/cli", "bestool-tamanu/seedling"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 # Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
 tamanu-tags = ["canopy-tags"]
