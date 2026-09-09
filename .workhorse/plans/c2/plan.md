@@ -8,7 +8,8 @@ The problem exploration, technique sweep and the reasoning behind each decision 
 Things the specs deliberately leave to the implementation, recorded here so they are chosen once.
 
 - **Defaults.** Startup recall budget 4 MiB of query text; per-record recall cutoff 10 KiB; unwritable-store backlog 1000 records and 16 MiB; plain-text window 30 days. The twelve-month retention period is fixed by the spec, not a default.
-- **Hash.** SHA-256 over the previous line's raw bytes including nothing after the newline. Pending confirmation, since the plan only said "hash" and the spec had to name one.
+- **Hash.** SHA-256 over the previous record's JSON text: the bytes between its `0x1E` separator and its newline, neither of which is hashed. Framing is transport, content is hashed, which is what lets a record keep its hash through compaction and export.
+- **Framing.** RFC 7464 JSON text sequences, `0x1E` before each record and `0x0A` after. `jq --seq` reads it natively; plain `grep` still matches record content, but `^`-anchored patterns have to allow for the leading separator.
 - **File naming.** Segments `audit-<YYYY-MM-DD>-<instance-uuid>.jsonl`; day files `audit-<YYYY-MM-DD>.jsonl.zst`. Legacy files are `audit-main.redb`, `audit-working-*.redb`, `audit-orphaned-*.redb`.
 - **Day boundary.** UTC, matching the record timestamps. A segment rolls at midnight UTC and the writer drops the previous segment's lock as it does.
 - **Codec.** The `zstd` crate, already in bestool's tree via the self-update downloader. `ruzstd` is a side quest: benchmark against `zstd` on compacted audit data and, if it holds up, propose it upstream in cargo-binstall. Not part of this card.
@@ -27,16 +28,17 @@ Things the specs deliberately leave to the implementation, recorded here so they
 
 - [ ] Segment writer: create the day's segment on first record, take its advisory lock, write the opening context record, append query records, append the end record on clean exit.
 - [ ] Day rollover: at the first record past midnight UTC, close and unlock the current segment and open the next, carrying the chain and sequence numbers across.
-- [ ] Hash chain: compute `prev` from the previous line's raw bytes; empty only for the session's very first record.
+- [ ] Hash chain: compute `prev` at write time from the previous whole record's JSON text; empty only for the session's very first record.
+- [ ] Gap record: on resuming after discards, emit a gap taking the first discarded sequence number and carrying the count, last number and time span; then flush the surviving backlog behind it.
 - [ ] Context records on state change: hook write-mode toggles, supervisor changes and any other context field so a new context record is appended before the next query record.
 - [ ] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
 - [ ] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
 - [ ] Network filesystem detection at open with a loud warning.
-- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files.
+- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held.
 
 ### Reader
 
-- [ ] Segment parser: JSON lines with format version, torn or unparsable final line ends the segment.
+- [ ] Segment parser: split on `0x1E`, parse each record, and on failure report the skipped bytes and resume at the next separator rather than ending the file.
 - [ ] Day file parser: zstd-compressed JSON lines.
 - [ ] Merged reader: time-ordered k-way merge across segments and day files, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window. Two surfaces over the one merge: stored records for export, and context-carried-forward flat entries for the recall set and other callers.
 - [ ] Filtered export emits the context record in force at the start of the output before the first query record.
@@ -62,4 +64,5 @@ Things the specs deliberately leave to the implementation, recorded here so they
 ### Removal
 
 - [ ] Delete the working-copy, sync, orphan-recovery, index-table and culling code and the redb-backed history implementation.
+- [ ] Delete the plain `~/.psql_history` import (`import_psql_history`): transitional, long since served.
 - [ ] Correct the README row for `--audit-path`.

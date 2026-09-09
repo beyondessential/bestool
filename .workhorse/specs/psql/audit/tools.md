@@ -23,11 +23,12 @@ It runs compaction and retention on demand (see [AUD-RET](retention.md)).
 `bestool-psql-audit` and `bestool audit-psql` are the same tool reached two ways.
 Both take an audit directory, defaulting to the same location the session uses.
 
-The export command writes records to standard output as JSON lines, in the shape they have in the store: like compaction, export changes their container and not their content, so an unfiltered export is the log itself, merged into time order and decompressed, and verifies as such.
+The export command writes records to standard output in the shape and framing they have in the store: like compaction, export changes their container and not their content, so an unfiltered export is the log itself, merged into time order and decompressed, and verifies as such.
 It accepts a time range, a limit, and a choice of newest or oldest first.
 When a filter narrows the output, the context record in force at the start of it is emitted first, so every query record in the output can still be attributed.
 A closed output pipe ends the export quietly.
 
-The verify command checks every session's chain across the segments and day files that hold it, reports any chain that does not hold, and exits non-zero if any fails.
+The verify command checks every session's chain across the segments and day files that hold it, and exits non-zero if any chain does not hold.
+It reports gap records and unparsable bytes wherever it meets them, so an incomplete log is told apart from an altered one.
 
 The compact command runs compaction and retention once and reports what it folded and what it deleted.

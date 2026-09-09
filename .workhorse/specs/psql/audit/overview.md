@@ -35,3 +35,5 @@ Recording is therefore best effort from the session's point of view: a statement
 When a record cannot be written, the session warns once and thereafter fails silently for the rest of the session.
 Records that could not be written are held in memory and written out as soon as a later write succeeds, in their original order.
 The in-memory backlog is bounded both by record count and by total size, so a permanently unwritable directory or a pasted megabyte-sized statement cannot grow memory without limit; when either bound is reached the oldest held records are discarded first.
+Discarded records are accounted for by a gap record written when recording resumes, so the log states how many records it lost and over what span (see [AUD-STO](store.md)).
+A write that fails part-way leaves an incomplete record behind, which readers skip and report; the records on either side of it are unaffected.

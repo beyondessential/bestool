@@ -11,7 +11,7 @@ Neither ever touches a live segment, and neither ever runs where a session could
 ## Day files
 
 A day file holds every record from the segments covering that UTC day, ordered by timestamp, compressed with zstd.
-Records inside a day file are the same records, with the same fields and the same hash chain, as they were in their segments; compaction changes their container, not their content.
+Records inside a day file are the same records, with the same fields, framing and hash chain as they had in their segments; compaction changes their container, not their content, and decompressing a day file gives back the bytes it folded.
 Verifying a session's chain follows its records through the day files that hold them, in the same way as through its segments (see [AUD-STO](store.md)).
 
 A day's segments become eligible for compaction once that day ended longer ago than the plain-text window.
