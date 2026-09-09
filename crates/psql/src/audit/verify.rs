@@ -161,10 +161,13 @@ impl Chain {
 
 		if let RecordKind::Gap(gap) = &record.kind {
 			self.gaps.push((record.seq, gap.clone()));
-			// A gap accounts for every number through the one it names.
-			self.next_seq = gap.through.max(record.seq) + 1;
+			// A gap accounts for every number through the one it names. The
+			// number comes out of the file, so it is whatever the file says:
+			// verification runs over logs that may have been tampered with, and
+			// must report on them rather than fall over.
+			self.next_seq = gap.through.max(record.seq).saturating_add(1);
 		} else {
-			self.next_seq = record.seq + 1;
+			self.next_seq = record.seq.saturating_add(1);
 		}
 
 		self.head = hash.to_owned();
@@ -491,6 +494,25 @@ mod tests {
 			report.holds(),
 			"a torn record does not break the records around it"
 		);
+	}
+
+	#[test]
+	fn a_crafted_gap_record_does_not_crash_the_verifier() {
+		let dir = tempfile::tempdir().unwrap();
+		let instance = write_session(dir.path(), 2);
+		let path = segment_of(dir.path(), instance);
+
+		// Verification is pointed at logs that may have been tampered with, so
+		// numbers out of the file must be reported on, not trusted.
+		let text = std::fs::read_to_string(&path).unwrap();
+		let crafted = format!(
+			r#"{{"v":1,"seq":1,"ts":"2026-09-08T00:00:00Z","prev":"","kind":"gap","lost":1,"through":{},"from":"2026-09-08T00:00:00Z","to":"2026-09-08T00:00:00Z"}}"#,
+			u64::MAX
+		);
+		std::fs::write(&path, format!("{text}\u{1e}{crafted}\n")).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert!(!report.sessions.is_empty());
 	}
 
 	#[test]

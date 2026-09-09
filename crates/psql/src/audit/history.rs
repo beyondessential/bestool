@@ -40,7 +40,7 @@ impl RecallSet {
 		let mut set = Self::default();
 		let mut budget = RECALL_BUDGET;
 		let mut seen_supervisors = std::collections::HashSet::new();
-		let mut collected: Vec<(jiff::Timestamp, String)> = Vec::new();
+		let mut collected: Vec<(jiff::Timestamp, u64, String)> = Vec::new();
 
 		let Ok(files) = paths::list(dir) else {
 			return set;
@@ -67,7 +67,7 @@ impl RecallSet {
 							break;
 						}
 						budget -= query.query.len();
-						collected.push((record.ts, query.query.clone()));
+						collected.push((record.ts, record.seq, query.query.clone()));
 					}
 					_ => {}
 				}
@@ -78,8 +78,12 @@ impl RecallSet {
 		// concurrent sessions on one day live in separate files. Ordering what
 		// was collected by time puts them back into the order they were run,
 		// and the budget bounds how much there is to order.
-		collected.sort_by_key(|(ts, _)| *ts);
-		set.entries = collected.into_iter().map(|(_, query)| query).collect();
+		collected.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+		// An interrupted compaction leaves a record in both a day file and the
+		// segment it was folded from. The copies are byte-identical, so an
+		// operator should not see the same statement twice for it.
+		collected.dedup();
+		set.entries = collected.into_iter().map(|(_, _, query)| query).collect();
 		debug!(
 			entries = set.entries.len(),
 			supervisors = set.supervisors.len(),
@@ -402,6 +406,34 @@ mod tests {
 		compact::run(dir.path()).unwrap();
 
 		assert_eq!(entries(dir.path()), before, "a day file recalls the same");
+	}
+
+	#[test]
+	fn duplicates_left_by_an_interrupted_fold_recall_once() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "select 1;".into(), QuerySource::Typed);
+		writer.query(&context(), "select 2;".into(), QuerySource::Typed);
+		drop(writer);
+
+		let old = jiff::Timestamp::now()
+			.to_zoned(jiff::tz::TimeZone::UTC)
+			.date()
+			.checked_sub(jiff::Span::new().days(compact::PLAIN_TEXT_WINDOW_DAYS + 1))
+			.unwrap();
+		let (path, kind) = paths::list(dir.path()).unwrap().pop().unwrap();
+		let aged = dir
+			.path()
+			.join(paths::segment_name(old, kind.instance().unwrap()));
+		std::fs::rename(&path, &aged).unwrap();
+
+		let kept = std::fs::read(&aged).unwrap();
+		compact::run(dir.path()).unwrap();
+		// Put the segment back, as an interruption between the rename and the
+		// delete would have.
+		std::fs::write(&aged, kept).unwrap();
+
+		assert_eq!(entries(dir.path()), vec!["select 1;", "select 2;"]);
 	}
 
 	#[test]

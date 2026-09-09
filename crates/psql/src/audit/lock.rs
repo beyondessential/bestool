@@ -63,8 +63,9 @@ impl Drop for Lock {
 
 /// Whether nothing is writing the file at `path`.
 ///
-/// A file that cannot be opened at all is reported as not free, so a caller
-/// leaves it alone rather than treating an unreadable file as a closed one.
+/// Answers only for the instant it is asked: anything about to act on the file
+/// takes and holds the lock itself rather than asking first.
+#[cfg(test)]
 pub fn is_free(path: &Path) -> bool {
 	let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
 		return false;

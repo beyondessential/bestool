@@ -211,6 +211,11 @@ impl Writer {
 
 	/// Drop the oldest held records once either bound is reached, tallying them
 	/// so a gap record can account for them when recording resumes.
+	///
+	/// The newest context record held is never the one dropped. Everything after
+	/// it is attributed by it, so losing it would leave a whole stretch of the
+	/// log saying nothing about who ran it, and would leave the segment opening
+	/// with something other than a context record.
 	fn trim(&mut self) {
 		while self.backlog.len() > BACKLOG_RECORDS || self.backlog_bytes > BACKLOG_BYTES {
 			// One record over the byte bound on its own has nothing older to
@@ -220,13 +225,16 @@ impl Writer {
 				break;
 			}
 
-			let Some(dropped) = self.backlog.pop_front() else {
+			let Some(dropped) = self.backlog.remove(self.oldest_droppable()) else {
 				break;
 			};
 			self.backlog_bytes = self.backlog_bytes.saturating_sub(dropped.weight);
 
 			match &mut self.discarded {
 				Some(tally) => {
+					// Pinning the newest context record means drops are not
+					// strictly oldest first, so the span is tracked both ways.
+					tally.first_seq = tally.first_seq.min(dropped.seq);
 					tally.last_seq = tally.last_seq.max(dropped.seq);
 					tally.count += 1;
 					tally.from = tally.from.min(dropped.ts);
@@ -245,16 +253,34 @@ impl Writer {
 		}
 	}
 
+	/// The oldest held record that is not the newest context record.
+	fn oldest_droppable(&self) -> usize {
+		let pinned = self
+			.backlog
+			.iter()
+			.rposition(|held| matches!(held.kind, RecordKind::Context(_)));
+
+		match pinned {
+			// Skipping the pinned record keeps the drop order otherwise oldest
+			// first, so the numbering a gap covers stays contiguous.
+			Some(0) => 1,
+			_ => 0,
+		}
+	}
+
 	/// Write out everything held, oldest first, behind a gap record if any were
 	/// lost since the last successful write.
 	fn flush(&mut self) -> Result<()> {
+		// The gap takes the first of the sequence numbers it covers, so the
+		// numbering in a segment stays in order, and the time of the last record
+		// it covers, so it sorts before the held records that survived. Write
+		// order, sequence order and time order therefore agree, which is what
+		// lets a time-ordered export verify.
 		if let Some(tally) = self.discarded.clone() {
-			// The gap takes the first of the sequence numbers it covers, so the
-			// numbering in a segment stays in order, and the time of the last
-			// record it covers, so it still sorts before the held records that
-			// survived and are about to be written behind it. Write order,
-			// sequence order and time order therefore agree, which is what lets
-			// a time-ordered export verify.
+			// Anything held that was made before the loss belongs ahead of the
+			// gap: the pinned context record is normally exactly this.
+			self.write_front_while(|pending| pending.seq < tally.first_seq)?;
+
 			self.write(&Pending {
 				seq: tally.first_seq,
 				ts: tally.to,
@@ -269,12 +295,19 @@ impl Writer {
 			self.discarded = None;
 		}
 
+		self.write_front_while(|_| true)
+	}
+
+	/// Write held records from the front for as long as they qualify.
+	fn write_front_while(&mut self, mut take: impl FnMut(&Pending) -> bool) -> Result<()> {
 		while let Some(pending) = self.backlog.front().cloned() {
+			if !take(&pending) {
+				break;
+			}
 			self.write(&pending)?;
 			self.backlog.pop_front();
 			self.backlog_bytes = self.backlog_bytes.saturating_sub(pending.weight);
 		}
-
 		Ok(())
 	}
 
@@ -671,9 +704,10 @@ mod tests {
 		assert_eq!(gap.through, gap_seq + gap.lost - 1);
 		assert!(gap.from <= gap.to);
 
-		// It is the first record in the file, and the surviving backlog follows
-		// it in the order those records were made.
-		assert_eq!(records[0].seq, gap_seq);
+		// The pinned context record leads, the gap follows it, and the surviving
+		// backlog comes behind that in the order those records were made.
+		assert!(matches!(records[0].kind, RecordKind::Context(_)));
+		assert_eq!(records[1].seq, gap_seq);
 		let survivors = queries(&records);
 		assert_eq!(survivors.last().unwrap(), "after;");
 		let mut sorted = survivors.clone();
@@ -687,6 +721,70 @@ mod tests {
 			survivors, sorted,
 			"held records flush in their original order"
 		);
+	}
+
+	#[test]
+	fn the_context_survives_a_full_backlog() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		let mut writer = Writer::new(&store);
+		for i in 0..(BACKLOG_RECORDS + 50) {
+			writer.query(&context(), format!("lost {i};"), QuerySource::Typed);
+		}
+		std::fs::remove_file(&store).unwrap();
+		writer.query(&context(), "after;".into(), QuerySource::Typed);
+		drop(writer);
+
+		let records = read_records(&files(&store)[0]);
+
+		// The context record is what says who ran everything after it, so it is
+		// never the thing a full backlog throws away.
+		assert!(
+			matches!(records[0].kind, RecordKind::Context(_)),
+			"the segment still opens with a context record"
+		);
+		assert_eq!(records[0].seq, 0);
+
+		// The gap follows it, covering the numbers that were lost.
+		let (gap_seq, gap) = records
+			.iter()
+			.find_map(|r| match &r.kind {
+				RecordKind::Gap(g) => Some((r.seq, g.clone())),
+				_ => None,
+			})
+			.unwrap();
+		assert_eq!(gap_seq, 1, "the gap takes the first number it covers");
+		assert_eq!(gap.through, gap_seq + gap.lost - 1);
+
+		// Sequence numbers only ever go up, so a time-ordered read is also a
+		// chain-ordered one.
+		let seqs: Vec<_> = records.iter().map(|r| r.seq).collect();
+		let mut sorted = seqs.clone();
+		sorted.sort_unstable();
+		assert_eq!(seqs, sorted);
+	}
+
+	#[test]
+	fn every_statement_after_a_gap_is_still_attributed() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		let mut writer = Writer::new(&store);
+		for i in 0..(BACKLOG_RECORDS + 50) {
+			writer.query(&context(), format!("lost {i};"), QuerySource::Typed);
+		}
+		std::fs::remove_file(&store).unwrap();
+		writer.query(&context(), "after;".into(), QuerySource::Typed);
+		drop(writer);
+
+		for entry in super::super::read::Reader::open(&store).unwrap().entries() {
+			assert_eq!(entry.sys_user, "felix", "{} lost its user", entry.query);
+			assert_eq!(entry.db_user, "tamanu");
+		}
+		assert!(super::super::verify::verify(&store).unwrap().holds());
 	}
 
 	#[test]

@@ -87,11 +87,17 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 	let mut sessions: HashMap<Uuid, Session> = HashMap::new();
 	let mut imported = 0;
 
+	let mut done = Vec::new();
 	for path in &files {
 		match import_file(dir, path, anonymous, &mut sessions) {
-			Ok(count) => imported += count,
-			// A legacy file that cannot be read must not stop the others, nor
-			// leave the directory permanently stuck trying.
+			Ok(count) => {
+				imported += count;
+				done.push(path);
+			}
+			// A legacy file that cannot be read must not stop the others. It is
+			// also not deleted: the read stopped partway, so the file may still
+			// hold records that never made it across, and deleting it would
+			// lose them for good. A later run tries it again.
 			Err(err) => warn!(?err, ?path, "could not import a legacy audit file"),
 		}
 	}
@@ -99,7 +105,7 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 	// The old files go only after the new segments have been written and
 	// synchronised to disk.
 	sync_dir(dir)?;
-	for path in &files {
+	for path in done {
 		if let Err(err) = std::fs::remove_file(path) {
 			warn!(
 				?err,
@@ -144,8 +150,13 @@ fn import_file(
 			continue;
 		};
 
-		// Imported records keep their original timestamps.
-		let Some(ts) = Timestamp::from_microsecond(key.value() as i64).ok() else {
+		// Imported records keep their original timestamps. The key is a count of
+		// microseconds that the old store never bounded, so one out of range is
+		// skipped rather than wrapped around into some other moment.
+		let ts = i64::try_from(key.value())
+			.ok()
+			.and_then(|micros| Timestamp::from_microsecond(micros).ok());
+		let Some(ts) = ts else {
 			warn!(
 				?path,
 				key = key.value(),

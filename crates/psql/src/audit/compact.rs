@@ -8,19 +8,19 @@
 //! spec: AUD-RET
 
 use std::{
-	collections::{BTreeMap, HashSet},
-	fs::File,
+	collections::{BTreeSet, HashSet},
+	fs::{File, OpenOptions},
 	io::Write as _,
 	path::{Path, PathBuf},
 };
 
 use jiff::{Span, Timestamp, civil::Date, tz::TimeZone};
-use miette::{IntoDiagnostic as _, Result, WrapErr as _};
+use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
 use thread_priority::{ThreadBuilderExt as _, ThreadPriority};
 use tracing::{debug, info, warn};
 
 use super::{
-	lock::{self, Lock},
+	lock::Lock,
 	paths::{self, AuditFile},
 	read::{FramedItem, open},
 	record::{Record, frame},
@@ -81,6 +81,7 @@ pub fn run(dir: &Path) -> Result<CompactionReport> {
 
 	for date in eligible(dir, today)?.into_iter().take(DAYS_PER_RUN) {
 		match fold(dir, date) {
+			Ok(0) => debug!(%date, "nothing folded for this day"),
 			Ok(consumed) => report.folded.push((date, consumed)),
 			Err(err) => warn!(?err, %date, "could not fold audit segments"),
 		}
@@ -119,30 +120,18 @@ pub fn is_worthwhile(dir: &Path) -> bool {
 /// every date.
 fn eligible(dir: &Path, today: Date) -> Result<Vec<Date>> {
 	let cutoff = window_cutoff(today);
-	let mut days = BTreeMap::new();
+	let mut days = BTreeSet::new();
 
-	for (path, kind) in paths::list(dir)? {
+	for (_, kind) in paths::list(dir)? {
 		let AuditFile::Segment { date, .. } = kind else {
 			continue;
 		};
-		if date >= cutoff {
-			continue;
+		if date < cutoff {
+			days.insert(date);
 		}
-		days.entry(date).or_insert_with(Vec::new).push(path);
 	}
 
-	// A segment whose lock cannot be taken is being written, so the day it
-	// belongs to is left alone entirely rather than folded by halves.
-	Ok(days
-		.into_iter()
-		.filter(|(date, segments)| {
-			segments.iter().all(|path| lock::is_free(path)) || {
-				debug!(%date, "a segment for this day is still live, leaving it");
-				false
-			}
-		})
-		.map(|(date, _)| date)
-		.collect())
+	Ok(days.into_iter().collect())
 }
 
 /// Fold one day's segments, and any day file already there, into a day file.
@@ -168,6 +157,29 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 		return Ok(0);
 	}
 
+	// Each segment's lock is taken and held for the whole fold, not merely
+	// tested: a session flushing held records can reopen an earlier day, so a
+	// segment that was free a moment ago can be live again by the time it would
+	// be deleted. A day whose segments cannot all be taken is left alone
+	// entirely rather than folded by halves.
+	let mut held = Vec::with_capacity(segments.len());
+	for path in &segments {
+		let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
+			debug!(
+				?path,
+				"segment cannot be opened for compaction, leaving the day"
+			);
+			return Ok(0);
+		};
+		match Lock::try_hold(file)? {
+			Some(lock) => held.push(lock),
+			None => {
+				debug!(%date, ?path, "a segment for this day is still live, leaving it");
+				return Ok(0);
+			}
+		}
+	}
+
 	let mut records: Vec<(Record, String)> = Vec::new();
 	for (path, kind) in &sources {
 		for item in open(path, *kind)? {
@@ -180,6 +192,14 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 						?path,
 						at, bytes, "dropping unparsable bytes during compaction"
 					);
+				}
+				// What was read is not known to be all the file holds, and
+				// folding would delete the original, so the day is left alone.
+				FramedItem::Failed { at, error } => {
+					return Err(miette!(
+						"{} stopped being readable at byte {at}: {error}",
+						path.display()
+					));
 				}
 			}
 		}
@@ -224,6 +244,7 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 			warn!(?err, ?path, "could not delete a folded audit segment");
 		}
 	}
+	drop(held);
 
 	info!(%date, consumed, records = records.len(), "folded audit segments into a day file");
 	Ok(consumed)
@@ -253,16 +274,22 @@ fn expire(dir: &Path, today: Date) -> Result<Vec<Date>> {
 	Ok(deleted)
 }
 
+/// Days before this are eligible for folding.
+///
+/// Both cutoffs fall back to the earliest representable date rather than to
+/// today, so arithmetic that cannot be done leaves the log alone instead of
+/// folding or deleting all of it.
 fn window_cutoff(today: Date) -> Date {
 	today
 		.checked_sub(Span::new().days(PLAIN_TEXT_WINDOW_DAYS))
-		.unwrap_or(today)
+		.unwrap_or(Date::MIN)
 }
 
+/// Day files covering a day before this have outlived the retention period.
 fn retention_cutoff(today: Date) -> Date {
 	today
 		.checked_sub(Span::new().months(RETENTION_MONTHS))
-		.unwrap_or(today)
+		.unwrap_or(Date::MIN)
 }
 
 /// Run compaction in the background, at low priority so it does not compete
@@ -476,6 +503,53 @@ mod tests {
 		run(dir.path()).unwrap();
 		assert_eq!(queries(dir.path()), expected);
 		assert_eq!(paths::list(dir.path()).unwrap().len(), 1);
+	}
+
+	#[test]
+	fn a_day_that_cannot_be_read_in_full_is_not_folded() {
+		let dir = tempfile::tempdir().unwrap();
+		let date = days_ago(PLAIN_TEXT_WINDOW_DAYS + 1);
+		session_on(dir.path(), date, &["select 1;", "select 2;"]);
+
+		// A day file that stops decompressing partway is a read that failed,
+		// not a file that ended: folding it would write back only what was read
+		// and then delete the segments the rest came from.
+		let truncated = dir.path().join(paths::day_file_name(date));
+		let mut bytes = zstd::encode_all(&b"\x1e{\"v\":1}\n"[..], 3).unwrap();
+		bytes.truncate(bytes.len() / 2);
+		std::fs::write(&truncated, bytes).unwrap();
+
+		let report = run(dir.path()).unwrap();
+		assert!(report.folded.is_empty(), "the day is left alone");
+		assert!(
+			paths::list(dir.path())
+				.unwrap()
+				.iter()
+				.any(|(_, kind)| kind.instance().is_some()),
+			"the segments the records came from are still there"
+		);
+	}
+
+	#[test]
+	fn a_live_segment_reopened_after_the_check_is_not_deleted() {
+		let dir = tempfile::tempdir().unwrap();
+		let date = days_ago(PLAIN_TEXT_WINDOW_DAYS + 1);
+		session_on(dir.path(), date, &["closed;"]);
+
+		// Hold the segment as a writer flushing held records to an earlier day
+		// would, after eligibility has already been decided.
+		let path = paths::list(dir.path()).unwrap()[0].0.clone();
+		let file = std::fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(&path)
+			.unwrap();
+		let held = Lock::try_hold(file).unwrap().unwrap();
+
+		let report = run(dir.path()).unwrap();
+		assert!(report.folded.is_empty());
+		assert!(path.exists(), "a held segment is never deleted");
+		drop(held);
 	}
 
 	#[test]

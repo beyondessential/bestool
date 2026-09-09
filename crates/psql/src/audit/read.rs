@@ -37,7 +37,8 @@ pub struct Skipped {
 	pub bytes: usize,
 }
 
-/// One item out of a framed file: a record, or bytes that were not one.
+/// One item out of a framed file: a record, bytes that were not one, or a read
+/// that could go no further.
 #[derive(Debug, Clone)]
 pub enum FramedItem {
 	Record {
@@ -49,13 +50,22 @@ pub enum FramedItem {
 		at: u64,
 		bytes: usize,
 	},
+	/// The file stopped being readable partway through.
+	///
+	/// Unlike unparsable bytes, this says nothing about what the rest of the
+	/// file holds, so a caller that is about to replace the file must not treat
+	/// it as the end of one.
+	Failed {
+		at: u64,
+		error: String,
+	},
 }
 
 impl FramedItem {
 	pub fn into_record(self) -> Option<Record> {
 		match self {
 			Self::Record { record, .. } => Some(record),
-			Self::Skipped { .. } => None,
+			Self::Skipped { .. } | Self::Failed { .. } => None,
 		}
 	}
 }
@@ -70,6 +80,7 @@ pub struct FramedReader<R> {
 	inner: R,
 	offset: u64,
 	started: bool,
+	failed: bool,
 }
 
 impl<R: BufRead> FramedReader<R> {
@@ -78,6 +89,7 @@ impl<R: BufRead> FramedReader<R> {
 			inner,
 			offset: 0,
 			started: false,
+			failed: false,
 		}
 	}
 }
@@ -86,6 +98,10 @@ impl<R: BufRead> Iterator for FramedReader<R> {
 	type Item = FramedItem;
 
 	fn next(&mut self) -> Option<FramedItem> {
+		if self.failed {
+			return None;
+		}
+
 		loop {
 			let mut buf = Vec::new();
 			let read = match self.inner.read_until(SEPARATOR, &mut buf) {
@@ -93,7 +109,11 @@ impl<R: BufRead> Iterator for FramedReader<R> {
 				Ok(read) => read,
 				Err(err) => {
 					debug!(?err, "reading audit file");
-					return None;
+					self.failed = true;
+					return Some(FramedItem::Failed {
+						at: self.offset,
+						error: err.to_string(),
+					});
 				}
 			};
 
@@ -169,7 +189,10 @@ impl ReverseFramedReader {
 
 	/// Read one chunk further back and split off whatever records it completes.
 	fn fill(&mut self) -> Result<()> {
-		let take = REVERSE_CHUNK.min(self.remaining as usize);
+		// Compared as u64 and narrowed after: the other order truncates a large
+		// length on a 32-bit target, and a chunk of zero would never make
+		// progress.
+		let take = self.remaining.min(REVERSE_CHUNK as u64) as usize;
 		let start = self.remaining - take as u64;
 
 		let mut chunk = vec![0u8; take];
@@ -223,7 +246,11 @@ impl Iterator for ReverseFramedReader {
 			}
 			if let Err(err) = self.fill() {
 				debug!(?err, "reading audit segment backwards");
-				return None;
+				self.done = true;
+				return Some(FramedItem::Failed {
+					at: self.remaining,
+					error: err.to_string(),
+				});
 			}
 		}
 	}
@@ -342,6 +369,8 @@ struct Source {
 	/// file interleaves several sessions and so names none.
 	instance: Option<Uuid>,
 	head: Option<(Record, String)>,
+	/// Whether the file stopped being readable partway through.
+	failed: bool,
 }
 
 impl Source {
@@ -355,6 +384,10 @@ impl Source {
 					at,
 					bytes,
 				}),
+				Some(FramedItem::Failed { at, error }) => {
+					debug!(origin = ?self.origin, at, %error, "audit file stopped being readable");
+					self.failed = true;
+				}
 			}
 		}
 	}
@@ -392,6 +425,7 @@ impl Reader {
 					origin: path,
 					instance: kind.instance(),
 					head: None,
+					failed: false,
 				}),
 				// One unreadable file must not stop the rest of the log being
 				// read: an auditor gets what survives, and hears about the rest.
@@ -429,6 +463,15 @@ impl Reader {
 	/// The unparsable stretches met so far.
 	pub fn skipped(&self) -> &[Skipped] {
 		&self.skipped
+	}
+
+	/// Files that stopped being readable partway through, so what was read from
+	/// them is not known to be all they hold.
+	pub fn unreadable(&self) -> impl Iterator<Item = &Path> {
+		self.sources
+			.iter()
+			.filter(|source| source.failed)
+			.map(|source| source.origin.as_path())
 	}
 
 	/// The context in force for a session at the point the read has reached.

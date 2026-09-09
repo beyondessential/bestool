@@ -24,6 +24,11 @@ use super::{
 	verify::{self, VerifyReport},
 };
 
+/// How much of a limit is allocated up front. The limit comes from the command
+/// line, so it is a request rather than a size; the window grows into it as
+/// records actually arrive.
+const WINDOW_HINT: usize = 1024;
+
 /// How the log is narrowed for a read.
 #[derive(Debug, Clone, Default)]
 pub struct QueryOptions {
@@ -95,7 +100,7 @@ pub fn stored(dir: &Path, options: &QueryOptions) -> Result<Vec<Stored>> {
 		return Ok(reader.take(limit).collect());
 	}
 
-	let mut window: VecDeque<Stored> = VecDeque::with_capacity(limit);
+	let mut window: VecDeque<Stored> = VecDeque::with_capacity(limit.min(WINDOW_HINT));
 	for record in reader {
 		if window.len() == limit {
 			window.pop_front();
@@ -118,7 +123,7 @@ pub fn entries(dir: &Path, options: &QueryOptions) -> Result<Vec<super::Entry>> 
 		return Ok(reader.take(limit).collect());
 	}
 
-	let mut window = VecDeque::with_capacity(limit);
+	let mut window = VecDeque::with_capacity(limit.min(WINDOW_HINT));
 	for entry in reader {
 		if window.len() == limit {
 			window.pop_front();
@@ -179,14 +184,24 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 /// The context record in force at the start of the output, for each session
 /// whose own context record did not make it into the selection.
 fn leading_contexts(dir: &Path, selected: &[Stored]) -> Result<Vec<Record>> {
-	let mut wanted: HashSet<Uuid> = selected
-		.iter()
-		.filter(|stored| !matches!(stored.record.kind, RecordKind::Context(_)))
-		.filter_map(|stored| stored.instance)
-		.collect();
+	// A session needs a leading context record when the output starts before
+	// its own first context record does. A context change later in the output
+	// does not cover the records ahead of it, so only a context record at or
+	// before a session's first selected record settles the question.
+	let mut wanted: HashSet<Uuid> = HashSet::new();
+	let mut covered: HashSet<Uuid> = HashSet::new();
 	for stored in selected {
-		if let RecordKind::Context(context) = &stored.record.kind {
-			wanted.remove(&context.instance);
+		let Some(instance) = stored.instance else {
+			continue;
+		};
+		match &stored.record.kind {
+			RecordKind::Context(_) => {
+				covered.insert(instance);
+			}
+			_ if !covered.contains(&instance) => {
+				wanted.insert(instance);
+			}
+			_ => {}
 		}
 	}
 	if wanted.is_empty() {
@@ -388,6 +403,57 @@ mod tests {
 		let context_at = text.find(r#""kind":"context""#).unwrap();
 		let query_at = text.find(r#""kind":"query""#).unwrap();
 		assert!(context_at < query_at);
+	}
+
+	#[test]
+	fn a_context_change_inside_the_export_does_not_cover_what_precedes_it() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "read only;".into(), QuerySource::Typed);
+		writer.query(
+			&Context {
+				writemode: true,
+				ots: Some("Carol".into()),
+				..context()
+			},
+			"write one;".into(),
+			QuerySource::Typed,
+		);
+		drop(writer);
+
+		// The selection holds a context record, but it sits after the first
+		// query, so that query still needs the one in force before the output.
+		let mut out = Vec::new();
+		write_export(
+			&mut out,
+			dir.path(),
+			&QueryOptions {
+				limit: Some(4),
+				..Default::default()
+			},
+		)
+		.unwrap();
+
+		let exported = dir.path().join("exported");
+		std::fs::create_dir(&exported).unwrap();
+		std::fs::write(
+			exported.join(paths::segment_name(
+				jiff::Timestamp::now()
+					.to_zoned(jiff::tz::TimeZone::UTC)
+					.date(),
+				verify::verify(dir.path()).unwrap().sessions[0].instance,
+			)),
+			&out,
+		)
+		.unwrap();
+
+		for entry in Reader::open(&exported).unwrap().entries() {
+			assert_eq!(
+				entry.sys_user, "felix",
+				"{} lost its user in the export",
+				entry.query
+			);
+		}
 	}
 
 	#[test]
