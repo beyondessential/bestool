@@ -17,7 +17,7 @@ use bestool_alertd::doctor::{
 	checks, overall_from_payload, perform_sweep,
 	progress::ProgressSender,
 	resolve_sweep_tamanu,
-	subject::{ApplicationKind, ApplicationRef, CheckScope, Subject},
+	subject::{ApplicationKind, ApplicationRef, Subject},
 	sweep::{SplitSeverities, validate_selection},
 };
 
@@ -148,8 +148,8 @@ async fn run_local_sweep(
 	args: &DoctorArgs,
 	live_tty: bool,
 ) -> Result<SweepOutcome> {
-	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::Local);
+	validate_check_selection(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::Local);
 
 	// Fetch canopy's effective-severity ceilings concurrently with the checks.
 	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
@@ -254,8 +254,8 @@ async fn run_daemon_recompute(
 		));
 	}
 
-	let selected_names = selected_names(&args.only, &args.skip)?;
-	let (progress, tui_handle) = setup_progress(live_tty, &selected_names, SweepSource::DaemonStreamed);
+	validate_check_selection(&args.only, &args.skip)?;
+	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::DaemonStreamed);
 
 	let stream_handle = tokio::spawn(drain_recompute_stream(response, progress));
 
@@ -515,7 +515,6 @@ fn ansi_supported() -> bool {
 /// or JSON), no TUI is spawned and the sweep simply runs silently.
 fn setup_progress(
 	live_tty: bool,
-	selected_names: &[String],
 	source: SweepSource,
 ) -> (
 	Option<ProgressSender>,
@@ -525,8 +524,7 @@ fn setup_progress(
 		return (None, None);
 	}
 	let (tx, rx) = mpsc::unbounded_channel();
-	let names: Vec<String> = selected_names.to_vec();
-	let handle = tokio::task::spawn_blocking(move || tui::run_tui(names, source, rx));
+	let handle = tokio::task::spawn_blocking(move || tui::run_tui(source, rx));
 	(Some(tx), Some(handle))
 }
 
@@ -549,28 +547,19 @@ fn empty_payload() -> StatusPayload {
 	StatusPayload::builder().health(Vec::new()).build()
 }
 
-/// The rows the live display starts with, and the same validation the sweep
-/// applies — one contract, so a name the sweep accepts is never rejected here
-/// first.
+/// Reject a bad `--check` or `--skip` before the terminal is taken over, using
+/// the same validation the sweep applies.
 ///
-/// Only machine checks are seeded: their subject is certain before the sweep
-/// resolves what applications the host has. Application rows appear as their
-/// results arrive, since which applications exist is not known until the sweep
-/// has looked.
+/// One contract, so a name the sweep would run is never rejected here first, and
+/// a bare name is refused identically by both. Which checks actually run is the
+/// sweep's to decide and announce, since only it knows what applications the
+/// host has.
 ///
 /// spec: DOC
-fn selected_names(only: &[String], skip: &[String]) -> Result<Vec<String>> {
+fn validate_check_selection(only: &[String], skip: &[String]) -> Result<()> {
 	let registry = checks::all();
 	validate_selection(&registry, only, "--check")?;
-	validate_selection(&registry, skip, "--skip")?;
-
-	Ok(registry
-		.iter()
-		.filter(|e| e.scope == CheckScope::Machine)
-		.map(|e| format!("machine:{}", e.name))
-		.filter(|qualified| only.is_empty() || only.contains(qualified))
-		.filter(|qualified| !skip.contains(qualified))
-		.collect())
+	validate_selection(&registry, skip, "--skip")
 }
 
 fn emit_output(
@@ -616,58 +605,31 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn selected_names_default_seeds_every_machine_check() {
-		// Only the machine's checks are seeded: which applications exist is not
-		// known until the sweep has looked.
-		let names = selected_names(&[], &[]).unwrap();
-		let machine: Vec<String> = checks::all()
-			.iter()
-			.filter(|e| e.scope == CheckScope::Machine)
-			.map(|e| format!("machine:{}", e.name))
-			.collect();
-		assert_eq!(names, machine);
-		assert!(names.iter().all(|n| n.starts_with("machine:")));
-	}
-
-	#[test]
-	fn selected_names_only_filters_to_listed() {
-		let names = selected_names(&["machine:memory".into()], &[]).unwrap();
-		assert_eq!(names, vec!["machine:memory"]);
-	}
-
-	#[test]
-	fn selected_names_skip_excludes_listed() {
-		let names = selected_names(&[], &["machine:tailscale".into()]).unwrap();
-		assert!(!names.contains(&"machine:tailscale".to_string()));
-		assert!(names.contains(&"machine:memory".to_string()));
-	}
-
-	#[test]
-	fn selected_names_only_and_skip_compose() {
-		let names = selected_names(
-			&[
-				"machine:memory".into(),
-				"machine:disk_free".into(),
-				"machine:tailscale".into(),
-			],
-			&["machine:tailscale".into()],
-		)
-		.unwrap();
-		assert_eq!(names, vec!["machine:disk_free", "machine:memory"]);
+	fn no_selection_flags_is_accepted() {
+		assert!(validate_check_selection(&[], &[]).is_ok());
 	}
 
 	#[test]
 	fn the_cli_accepts_a_qualified_name_the_sweep_accepts() {
 		// One contract: a name the sweep would run must not be rejected here
 		// first, and a bare name must be rejected the same way in both.
-		assert!(selected_names(&["postgres:connect".into()], &[]).is_ok());
-		let err = selected_names(&["connect".into()], &[]).unwrap_err();
+		assert!(validate_check_selection(&["postgres:connect".into()], &[]).is_ok());
+		assert!(validate_check_selection(&["machine:memory".into()], &[]).is_ok());
+		let err = validate_check_selection(&["connect".into()], &[]).unwrap_err();
 		assert!(format!("{err}").contains("postgres:connect"));
 	}
 
 	#[test]
-	fn selected_names_unknown_skip_is_error() {
-		let err = selected_names(&[], &["does_not_exist".into()]).unwrap_err();
+	fn skip_rejects_a_bare_name_on_the_same_terms_as_check() {
+		let err = validate_check_selection(&[], &["memory".into()]).unwrap_err();
+		let msg = format!("{err}");
+		assert!(msg.contains("--skip"), "{msg}");
+		assert!(msg.contains("machine:memory"), "{msg}");
+	}
+
+	#[test]
+	fn unknown_skip_is_error() {
+		let err = validate_check_selection(&[], &["does_not_exist".into()]).unwrap_err();
 		assert!(format!("{err}").contains("does_not_exist"));
 	}
 

@@ -322,6 +322,12 @@ impl CheckOutcome {
 		self.subject.qualify(self.check.name)
 	}
 
+	/// How this result is identified for display: by the instance it came from,
+	/// so two clusters' checks of one name are two rows rather than one.
+	pub fn row_id(&self) -> String {
+		self.subject.identify(self.check.name)
+	}
+
 	/// Encode for streaming over the daemon's task endpoint, carrying the
 	/// subject so the receiving CLI files the result where the sweep did rather
 	/// than guessing from the name.

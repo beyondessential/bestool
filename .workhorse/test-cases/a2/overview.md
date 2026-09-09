@@ -22,8 +22,7 @@ actually about, and that the push carries the split format.
 - [x] A bare unknown name is rejected with guidance that names are qualified (verifies spec: DOC)
 - [x] A qualified name for a subject that does not hold that check is rejected (verifies spec: DOC)
 - [x] A correctly qualified name is accepted (verifies spec: DOC)
-- [ ] `--skip` rejects a bare name on the same terms as `--check`
-- [ ] The CLI renders a check by its qualified name, so two same-named checks are distinguishable
+- [x] The CLI renders a check by its instance identity, so two same-named checks are distinguishable
 
 ## Postgres as its own application
 
@@ -42,8 +41,14 @@ actually about, and that the push carries the split format.
 ## Selection contract
 
 - [x] The CLI accepts a qualified name the sweep accepts, and rejects a bare one the same way (verifies spec: DOC)
-- [x] The live display seeds machine rows only, since applications are not known before the sweep
+- [x] `--skip` rejects a bare name on the same terms as `--check` (verifies spec: DOC)
+- [x] The sweep announces its plan before any result, so every check shows pending from the start (verifies spec: DOC)
+- [x] A planned name matches the identity of the result it will receive
+- [x] A result fills its planned row rather than adding a second one
+- [x] Two clusters' checks of one name are two rows, identified by instance
+- [x] A result outside the plan is kept rather than dropped
 - [ ] `--check postgres:connect` on a two-cluster machine runs the check on both
+- [ ] The daemon-streamed path shows pending rows from the daemon's plan on a real host
 
 ## The split payload
 

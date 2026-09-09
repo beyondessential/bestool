@@ -381,12 +381,21 @@ impl DoctorTaskInner {
 			let stream_severities = severities.clone();
 			let forwarder = tokio::spawn(async move {
 				while let Some(event) = progress_rx.recv().await {
-					let DoctorEvent::Completed(outcome) = event;
-					let outcome = cap_outcome(outcome, stream_severities.as_ref());
-					let _ = progress_forward_tx.send(json!({
-						"event": "check",
-						"check": outcome.to_streaming_json(),
-					}));
+					match event {
+						DoctorEvent::Planned(checks) => {
+							let _ = progress_forward_tx.send(json!({
+								"event": "planned",
+								"checks": checks,
+							}));
+						}
+						DoctorEvent::Completed(outcome) => {
+							let outcome = cap_outcome(outcome, stream_severities.as_ref());
+							let _ = progress_forward_tx.send(json!({
+								"event": "check",
+								"check": outcome.to_streaming_json(),
+							}));
+						}
+					}
 				}
 			});
 

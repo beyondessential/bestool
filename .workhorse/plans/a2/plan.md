@@ -295,12 +295,14 @@ machine's memory.
 - [x] Tests
 - [x] Postgres as its own application: port-keyed, local and remote, renamed checks,
       the server version moved to it
-- [ ] **TUI pending rows.** The live display now seeds machine rows only, since which
-      applications the host has is not known until the sweep has looked. Application
-      rows therefore appear as their results arrive rather than starting pending, and
-      `DOC` still says every selected check appears as a row from the start. Either
-      the CLI resolves the applications before starting the TUI, or `DOC` changes to
-      match what it can honestly do.
+- [x] **TUI pending rows.** Resolved by having the sweep announce its plan. It is the
+      only thing that knows which applications the host has, so rather than the
+      display detecting them a second time and risking a different answer, the sweep
+      sends the checks it will run — identified by instance — before the first result
+      lands. The display starts empty and fills from that, so every check shows
+      pending from the start as `DOC` requires, and the daemon forwards the same plan
+      through its stream. Rows are keyed by instance, so two clusters' `connect`
+      checks are two rows rather than one.
 
 ## Open questions
 

@@ -135,6 +135,19 @@ impl Subject {
 		format!("{}:{name}", self.slug())
 	}
 
+	/// How one result is identified for display, by *instance* rather than by
+	/// type.
+	///
+	/// Two Postgres clusters both answer to the selection name
+	/// `postgres:connect`, so the type cannot tell their results apart; the key
+	/// can. The `host-` prefix is a wire concern and is dropped here.
+	pub fn identify(&self, name: &str) -> String {
+		match self.key() {
+			None => format!("machine:{name}"),
+			Some(key) => format!("{}:{name}", key.strip_prefix("host-").unwrap_or(key)),
+		}
+	}
+
 	/// The application key this subject reports under, if it is an application.
 	pub fn key(&self) -> Option<&str> {
 		match self {

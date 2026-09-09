@@ -644,6 +644,17 @@ pub async fn perform_sweep(
 		})
 		.collect();
 
+	// Announce the plan before running anything, so a live display can show
+	// every check pending from the start. The sweep is the only thing that knows
+	// which applications the host has, having just resolved them.
+	if let Some(tx) = progress.as_ref() {
+		let planned = selected
+			.iter()
+			.map(|(_, entry, subject)| subject.identify(entry.name))
+			.collect();
+		let _ = tx.send(DoctorEvent::Planned(planned));
+	}
+
 	// Run all selected checks concurrently. Results are collated by registry
 	// index before returning, so callers see a stable order regardless of
 	// completion order. A progress channel can observe results as they land.
@@ -1084,6 +1095,45 @@ mod tests {
 		assert!(sweep.payload.applications.is_none());
 		let machine = sweep.payload.machine.as_ref().expect("machine target");
 		assert!(!wire_names(&machine.health).contains(&"tamanu_http".to_string()));
+	}
+
+	#[tokio::test]
+	async fn the_sweep_announces_its_plan_before_any_result() {
+		// The display cannot know which applications the host has, so the sweep
+		// says what it will run — and says it before the first result lands.
+		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+		perform_sweep(
+			"0.0.0-test",
+			None,
+			reqwest::Client::new(),
+			&["machine:memory".into(), "machine:load".into()],
+			&[],
+			None,
+			Some(tx),
+			None,
+			false,
+		)
+		.await
+		.unwrap();
+
+		let first = rx.try_recv().expect("an event");
+		let DoctorEvent::Planned(planned) = first else {
+			panic!("the plan must arrive before any result");
+		};
+		assert_eq!(planned, vec!["machine:memory", "machine:load"]);
+	}
+
+	#[test]
+	fn a_planned_name_matches_the_result_it_will_receive() {
+		// The plan and the results must agree on identity or rows never fill.
+		let outcome = postgres(Check::pass("connect", "ok"));
+		assert_eq!(
+			outcome.subject.identify(outcome.check.name),
+			outcome.row_id()
+		);
+		assert_eq!(outcome.row_id(), "postgres-5432:connect");
+		// And the selection name stays type-level, reaching every cluster.
+		assert_eq!(outcome.qualified_name(), "postgres:connect");
 	}
 
 	#[test]

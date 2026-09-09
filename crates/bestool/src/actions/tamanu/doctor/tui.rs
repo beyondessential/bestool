@@ -135,18 +135,13 @@ impl Drop for TerminalGuard {
 /// thread pool, which is sized independently of the CPU count, so it can
 /// never contend with the async worker pool.
 pub fn run_tui(
-	selected_names: Vec<String>,
 	source: SweepSource,
 	mut progress_rx: UnboundedReceiver<DoctorEvent>,
 ) -> Result<TuiOutcome> {
-	let total = selected_names.len();
-	let mut rows: Vec<TuiRow> = selected_names
-		.into_iter()
-		.map(|name| TuiRow {
-			name,
-			state: RowState::Running,
-		})
-		.collect();
+	// The list starts empty and fills from the sweep's plan, which arrives before
+	// any check completes. Only the sweep knows which applications the host has,
+	// so it says what it will run rather than the display guessing.
+	let mut rows: Vec<TuiRow> = Vec::new();
 	let mut spinner = 0usize;
 	let interrupted;
 	let mut scroll = Scroll::default();
@@ -160,7 +155,7 @@ pub fn run_tui(
 		draw(
 			&mut guard.stdout,
 			&rows,
-			total,
+			rows.len(),
 			&source,
 			spinner,
 			finalising,
@@ -203,13 +198,30 @@ pub fn run_tui(
 	})
 }
 
-fn drain_progress(rx: &mut UnboundedReceiver<DoctorEvent>, rows: &mut [TuiRow]) {
+fn drain_progress(rx: &mut UnboundedReceiver<DoctorEvent>, rows: &mut Vec<TuiRow>) {
 	while let Ok(evt) = rx.try_recv() {
 		match evt {
+			DoctorEvent::Planned(checks) => {
+				// The sweep has resolved which applications the host has, so every
+				// check it will run can be shown pending from here on.
+				*rows = checks
+					.into_iter()
+					.map(|name| TuiRow {
+						name,
+						state: RowState::Running,
+					})
+					.collect();
+			}
 			DoctorEvent::Completed(outcome) => {
-				let name = outcome.qualified_name();
-				if let Some(row) = rows.iter_mut().find(|r| r.name == name) {
-					row.state = RowState::Completed(outcome);
+				let name = outcome.row_id();
+				match rows.iter_mut().find(|r| r.name == name) {
+					Some(row) => row.state = RowState::Completed(outcome),
+					// A result for a check the plan did not mention: keep it rather
+					// than dropping it on the floor.
+					None => rows.push(TuiRow {
+						name,
+						state: RowState::Completed(outcome),
+					}),
 				}
 			}
 		}
@@ -451,7 +463,7 @@ fn footer_line(
 
 #[cfg(test)]
 mod tests {
-	use bestool_alertd::doctor::subject::Subject;
+	use bestool_alertd::doctor::subject::{ApplicationRef, Subject};
 
 	use super::*;
 
@@ -475,6 +487,88 @@ mod tests {
 
 	fn line_text(line: &StyledLine) -> String {
 		line.iter().map(|s| s.text.as_str()).collect()
+	}
+
+	fn drain(rows: &mut Vec<TuiRow>, events: Vec<DoctorEvent>) {
+		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+		for e in events {
+			tx.send(e).unwrap();
+		}
+		drop(tx);
+		drain_progress(&mut rx, rows);
+	}
+
+	#[test]
+	fn the_plan_seeds_every_check_pending() {
+		// The sweep resolved which applications the host has and said so, so all
+		// of its checks show pending before any of them completes.
+		let mut rows = Vec::new();
+		drain(
+			&mut rows,
+			vec![DoctorEvent::Planned(vec![
+				"machine:memory".into(),
+				"tamanu-central:migrations".into(),
+			])],
+		);
+		assert_eq!(rows.len(), 2);
+		assert!(rows.iter().all(|r| matches!(r.state, RowState::Running)));
+	}
+
+	#[test]
+	fn a_result_fills_its_planned_row_rather_than_adding_one() {
+		let mut rows = Vec::new();
+		drain(
+			&mut rows,
+			vec![
+				DoctorEvent::Planned(vec!["machine:memory".into()]),
+				DoctorEvent::Completed(CheckOutcome {
+					subject: Subject::Machine,
+					check: Check::pass("memory", "ok"),
+					on_wire: true,
+				}),
+			],
+		);
+		assert_eq!(rows.len(), 1);
+		assert!(matches!(rows[0].state, RowState::Completed(_)));
+	}
+
+	#[test]
+	fn two_clusters_of_one_name_are_two_rows() {
+		// Both answer to the selection name `postgres:connect`, so rows are
+		// identified by instance instead.
+		let outcome = |port: u16| CheckOutcome {
+			subject: Subject::Application(ApplicationRef::local_postgres(port)),
+			check: Check::pass("connect", "ok"),
+			on_wire: true,
+		};
+		let mut rows = Vec::new();
+		drain(
+			&mut rows,
+			vec![
+				DoctorEvent::Planned(vec![
+					"postgres-5432:connect".into(),
+					"postgres-5433:connect".into(),
+				]),
+				DoctorEvent::Completed(outcome(5432)),
+				DoctorEvent::Completed(outcome(5433)),
+			],
+		);
+		assert_eq!(rows.len(), 2, "one row per cluster");
+		assert!(rows.iter().all(|r| matches!(r.state, RowState::Completed(_))));
+	}
+
+	#[test]
+	fn a_result_outside_the_plan_is_kept() {
+		let mut rows = Vec::new();
+		drain(
+			&mut rows,
+			vec![DoctorEvent::Completed(CheckOutcome {
+				subject: Subject::Machine,
+				check: Check::pass("memory", "ok"),
+				on_wire: true,
+			})],
+		);
+		assert_eq!(rows.len(), 1);
 	}
 
 	#[test]
