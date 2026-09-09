@@ -54,12 +54,12 @@ pub async fn handle_edit(ctx: &mut ReplContext<'_>) -> ControlFlow<()> {
 					actions.extend(new_actions);
 				}
 
-				for action in actions {
+				for statement in actions {
 					if let ReplAction::Execute {
 						input,
 						sql,
 						modifiers,
-					} = action
+					} = statement.action
 					{
 						let flow = handle_execute(ctx, input, sql, modifiers).await;
 						if flow.is_break() {

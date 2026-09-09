@@ -5,6 +5,16 @@ use crate::{
 	repl::ReplState,
 };
 
+/// An action together with the source text that produced it.
+///
+/// The text is what the audit log records, so a statement a snippet or an
+/// included file ran is logged as it was written rather than reconstructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Statement {
+	pub text: String,
+	pub action: ReplAction,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplAction {
 	Execute {
@@ -81,7 +91,7 @@ pub(crate) fn handle_input(
 	buffer: &str,
 	new_line: &str,
 	state: &ReplState,
-) -> (String, Vec<ReplAction>) {
+) -> (String, Vec<Statement>) {
 	let mut new_buffer = buffer.to_string();
 
 	if !new_buffer.is_empty() {
@@ -93,7 +103,13 @@ pub(crate) fn handle_input(
 
 	// Handle legacy "quit" command for compatibility
 	if buffer.is_empty() && user_input.eq_ignore_ascii_case("quit") {
-		return (String::new(), vec![ReplAction::Exit]);
+		return (
+			String::new(),
+			vec![Statement {
+				text: user_input,
+				action: ReplAction::Exit,
+			}],
+		);
 	}
 
 	// Try to parse multiple statements
@@ -139,7 +155,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT * FROM users;", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute {
 				input,
 				sql,
@@ -159,7 +175,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT * FROM users\\g", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute {
 				input,
 				sql,
@@ -183,7 +199,7 @@ mod tests {
 		let (buffer2, actions2) = handle_input(&buffer1, "FROM users;", &state);
 		assert_eq!(buffer2, "");
 		assert_eq!(actions2.len(), 1);
-		match &actions2[0] {
+		match &actions2[0].action {
 			ReplAction::Execute { input, sql, .. } => {
 				assert_eq!(input, "SELECT *\nFROM users");
 				assert_eq!(sql, "SELECT *\nFROM users");
@@ -198,7 +214,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\q", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::Exit));
+		assert!(matches!(actions[0].action, ReplAction::Exit));
 	}
 
 	#[test]
@@ -207,7 +223,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "QUIT", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::Exit));
+		assert!(matches!(actions[0].action, ReplAction::Exit));
 	}
 
 	#[test]
@@ -221,7 +237,7 @@ mod tests {
 		let (buffer2, actions2) = handle_input(&buffer1, "\\q", &state);
 		assert_eq!(buffer2, "");
 		assert_eq!(actions2.len(), 1);
-		assert!(matches!(actions2[0], ReplAction::Exit));
+		assert!(matches!(actions2[0].action, ReplAction::Exit));
 	}
 
 	#[test]
@@ -230,7 +246,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\x", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::ToggleExpanded));
+		assert!(matches!(actions[0].action, ReplAction::ToggleExpanded));
 	}
 
 	#[test]
@@ -240,7 +256,7 @@ mod tests {
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
 		assert!(matches!(
-			actions[0],
+			actions[0].action,
 			ReplAction::ToggleWriteMode { ots: None }
 		));
 	}
@@ -251,7 +267,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\W bob", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::ToggleWriteMode { ots } => {
 				assert_eq!(ots.as_deref(), Some("bob"));
 			}
@@ -265,7 +281,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\R", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::ToggleRedaction));
+		assert!(matches!(actions[0].action, ReplAction::ToggleRedaction));
 	}
 
 	#[test]
@@ -283,7 +299,7 @@ mod tests {
 		let (new_buffer, actions) = handle_input(cleared_buffer, "SELECT 1;", &state);
 		assert_eq!(new_buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { input, sql, .. } => {
 				assert_eq!(input, "SELECT 1");
 				assert_eq!(sql, "SELECT 1");
@@ -313,7 +329,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "select 1+1 \\gx", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute {
 				input,
 				sql,
@@ -338,7 +354,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT 1;", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -352,7 +368,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT 1;", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(!modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -371,7 +387,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT 1\\gx", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { modifiers, .. } => {
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
 			}
@@ -393,7 +409,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\vars -- foo", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::LookupVar { pattern } => {
 				assert_eq!(pattern, &None);
 			}
@@ -407,7 +423,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "SELECT 1 + 1; -- foo", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 1 + 1");
 			}
@@ -421,7 +437,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\copy", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::Copy));
+		assert!(matches!(actions[0].action, ReplAction::Copy));
 	}
 
 	#[test]
@@ -430,7 +446,7 @@ mod tests {
 		let (buffer, actions) = handle_input("", "\\copy (select from blah) with headers", &state);
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 1);
-		assert!(matches!(actions[0], ReplAction::Copy));
+		assert!(matches!(actions[0].action, ReplAction::Copy));
 	}
 
 	#[test]
@@ -441,7 +457,7 @@ mod tests {
 		assert_eq!(buffer, "");
 		assert_eq!(actions.len(), 3);
 
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, modifiers, .. } => {
 				assert_eq!(sql, "select 1 + 2");
 				assert!(modifiers.contains(&crate::parser::QueryModifier::Expanded));
@@ -449,7 +465,7 @@ mod tests {
 			_ => panic!("Expected Execute for first action"),
 		}
 
-		match &actions[1] {
+		match &actions[1].action {
 			ReplAction::Execute { sql, modifiers, .. } => {
 				assert_eq!(sql, "select 2 + 3");
 				assert!(!modifiers.contains(&crate::parser::QueryModifier::Expanded));
@@ -457,7 +473,7 @@ mod tests {
 			_ => panic!("Expected Execute for second action"),
 		}
 
-		assert!(matches!(actions[2], ReplAction::Result { .. }));
+		assert!(matches!(actions[2].action, ReplAction::Result { .. }));
 	}
 
 	#[test]
@@ -470,7 +486,7 @@ mod tests {
 		let (buffer2, actions2) = handle_input(&buffer1, "1; -- result is 2", &state);
 		assert_eq!(buffer2, "");
 		assert_eq!(actions2.len(), 1);
-		match &actions2[0] {
+		match &actions2[0].action {
 			ReplAction::Execute { sql, .. } => {
 				// The SQL contains the comment because Postgres handles it
 				assert!(sql.contains("select 1 +"));
@@ -495,7 +511,7 @@ mod tests {
 		let (buffer3, actions3) = handle_input(&buffer2, "1;", &state);
 		assert_eq!(buffer3, "");
 		assert_eq!(actions3.len(), 1);
-		match &actions3[0] {
+		match &actions3[0].action {
 			ReplAction::Execute { sql, .. } => {
 				// SQL contains the comment for Postgres to handle
 				assert!(sql.contains("select"));
@@ -524,7 +540,7 @@ mod tests {
 		// Should now have one action and no remaining
 		assert_eq!(remaining2, "");
 		assert_eq!(actions2.len(), 1);
-		match &actions2[0] {
+		match &actions2[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 1 + 1");
 			}
@@ -551,7 +567,7 @@ mod tests {
 		// Should now have one action and no remaining
 		assert_eq!(remaining2, "");
 		assert_eq!(actions2.len(), 1);
-		match &actions2[0] {
+		match &actions2[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert!(sql.contains("SELECT 1 + 1"));
 			}
@@ -578,7 +594,7 @@ mod tests {
 		// Should now have one more action and no remaining
 		assert_eq!(remaining2, "");
 		assert_eq!(actions2.len(), 1);
-		match &actions2[0] {
+		match &actions2[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 2 + 3");
 			}
@@ -618,7 +634,7 @@ mod tests {
 		// Should have one action and no remaining
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 1 + 1");
 			}
@@ -637,7 +653,7 @@ mod tests {
 		// Should have one action and no remaining
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
-		match &actions[0] {
+		match &actions[0].action {
 			ReplAction::Execute { sql, .. } => {
 				assert_eq!(sql, "SELECT 1 + 1");
 			}

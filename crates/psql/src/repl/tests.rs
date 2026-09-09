@@ -11,7 +11,7 @@ fn test_snippet_save_excluded_from_preceding_command() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
@@ -50,7 +50,7 @@ fn test_edit_invocation_excluded_from_history() {
 	// With `\e` excluded, the last history entry is the prior query, which is
 	// exactly what `handle_edit` seeds the editor buffer with.
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 	let repl_state = Arc::new(Mutex::new(ReplState::new()));
 	let mut audit = Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	audit.add_entry("SELECT 42;".into()).unwrap();
@@ -736,7 +736,7 @@ async fn test_describe_table_with_database() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(
@@ -858,7 +858,7 @@ async fn test_describe_view_with_database() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(temp_dir.path().join("test_describe_view_with_database.txt"))
@@ -975,7 +975,7 @@ async fn test_describe_index_with_database() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(
@@ -1099,7 +1099,7 @@ async fn test_describe_sequence_with_database() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(
@@ -1218,7 +1218,7 @@ async fn test_describe_function_with_database() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(
@@ -1386,7 +1386,7 @@ async fn test_multiple_statements() {
 	use tempfile::TempDir;
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 
 	let mut repl_state = ReplState::new();
 	let file = File::create_new(temp_dir.path().join("test_multiple_statements.txt"))
@@ -1501,7 +1501,7 @@ async fn test_exit_blocked_with_active_transaction() {
 		expanded_mode: false,
 		write_mode: true,
 		redact_mode: false,
-		from_snippet_or_include: false,
+		statement_source: crate::audit::QuerySource::Typed,
 		ots: Some("test".to_string()),
 		output_file: None,
 		vars: Default::default(),
@@ -1515,7 +1515,7 @@ async fn test_exit_blocked_with_active_transaction() {
 
 	// Create a dummy audit and readline editor
 	let temp_dir = tempfile::TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
 		rustyline::Editor::with_history(
@@ -1599,7 +1599,7 @@ async fn test_exit_allowed_after_commit() {
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: state,
 		result_store: crate::result_store::ResultStore::new(),
-		from_snippet_or_include: false,
+		statement_source: crate::audit::QuerySource::Typed,
 		initial_content: None,
 		last_edit_content: None,
 		write_mode_active_at: None,
@@ -1607,7 +1607,7 @@ async fn test_exit_allowed_after_commit() {
 
 	// Create a dummy audit and readline editor
 	let temp_dir = tempfile::TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
 		rustyline::Editor::with_history(
@@ -1672,7 +1672,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 		snippets: crate::snippets::Snippets::new(),
 		transaction_state: TransactionState::None,
 		result_store: crate::result_store::ResultStore::new(),
-		from_snippet_or_include: false,
+		statement_source: crate::audit::QuerySource::Typed,
 		initial_content: None,
 		last_edit_content: None,
 		write_mode_active_at: None,
@@ -1680,7 +1680,7 @@ async fn test_exit_allowed_in_readonly_mode() {
 
 	// Create a dummy audit and readline editor
 	let temp_dir = tempfile::TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 	let audit = crate::audit::Audit::open(&audit_path, Arc::clone(&repl_state)).unwrap();
 	let mut rl: rustyline::Editor<crate::completer::SqlCompleter, crate::audit::Audit> =
 		rustyline::Editor::with_history(
@@ -1978,7 +1978,7 @@ async fn test_include_runs_metacommands_before_query() {
 	let client = pool.get().await.expect("Failed to get connection");
 
 	let temp_dir = TempDir::new().unwrap();
-	let audit_path = temp_dir.path().join("history.redb");
+	let audit_path = temp_dir.path().join("audit");
 	let output_path = temp_dir.path().join("out.txt");
 	let include_path = temp_dir.path().join("snippet.sql");
 	std::fs::write(

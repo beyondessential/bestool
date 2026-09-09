@@ -46,17 +46,19 @@ mod write_mode;
 mod tests;
 
 impl ReplAction {
+	/// Whether the line this action came from is recorded when it runs.
+	///
+	/// SnippetSave records its own line afterwards, and a bare `\e` is not
+	/// recorded at all: the query it produces is recorded by `handle_edit`.
+	pub(crate) fn records_line(&self) -> bool {
+		!matches!(self, ReplAction::SnippetSave { .. } | ReplAction::Edit)
+	}
+
 	pub(crate) async fn handle(self, ctx: &mut ReplContext<'_>, line: &str) -> ControlFlow<()> {
 		let is_edit = matches!(self, ReplAction::Edit);
 
-		// Add to history, except for SnippetSave and Edit. Edit is excluded so
-		// the bare `\e` invocation doesn't land in history; the query it
-		// produces is recorded separately by `handle_edit`.
-		if !matches!(self, ReplAction::SnippetSave { .. } | ReplAction::Edit) {
-			let history = ctx.rl.history_mut();
-			if let Err(e) = history.add_entry(line.into()) {
-				debug!("failed to add to history: {e}");
-			}
+		if self.records_line() {
+			record_line(ctx, line);
 		}
 
 		// `\e` only reopens the previous buffer when run back-to-back; any other
@@ -124,6 +126,14 @@ impl ReplAction {
 				modifiers,
 			} => execute::handle_execute(ctx, input, sql, modifiers).await,
 		}
+	}
+}
+
+/// Record a line the operator typed, once, whatever it parses into.
+fn record_line(ctx: &mut ReplContext<'_>, line: &str) {
+	let history = ctx.rl.history_mut();
+	if let Err(e) = history.add_entry(line.into()) {
+		debug!("failed to add to history: {e}");
 	}
 }
 
@@ -196,7 +206,7 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		expanded_mode: false,
 		write_mode: false,
 		redact_mode: config.redact_mode,
-		from_snippet_or_include: false,
+		statement_source: crate::audit::QuerySource::Typed,
 		ots: None,
 		vars: BTreeMap::new(),
 		snippets: Snippets::new(),
@@ -328,16 +338,30 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 				let mut should_exit = false;
 				if actions.is_empty() {
 					// No actions to execute, but still add to history
-					let history = ctx.rl.history_mut();
-					if let Err(e) = history.add_entry(line.into()) {
-						debug!("failed to add to history: {e}");
-					}
+					record_line(&mut ctx, line);
 					// A buffered (incomplete) line is still a non-`\e` command,
 					// so it resets the editor-reopen chain.
 					ctx.repl_state.lock().unwrap().last_edit_content = None;
 				} else {
-					for action in actions {
-						if action.handle(&mut ctx, line).await.is_break() {
+					// One line, one record, however many statements it parsed
+					// into: what the operator typed is one thing, and recording
+					// it once per statement would both log and recall it several
+					// times over.
+					if actions.iter().any(|s| s.action.records_line()) {
+						record_line(&mut ctx, line);
+					}
+					// `\e` only reopens its previous buffer when run back to back,
+					// so only a line that is nothing but `\e` leaves the seed
+					// standing. A line that merely ends in one has run something
+					// else in between.
+					let only_edit =
+						actions.len() == 1 && matches!(actions[0].action, ReplAction::Edit);
+					if !only_edit {
+						ctx.repl_state.lock().unwrap().last_edit_content = None;
+					}
+
+					for statement in actions {
+						if statement.action.dispatch(&mut ctx, line).await.is_break() {
 							should_exit = true;
 							break;
 						}
@@ -381,6 +405,5 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 		handle.abort();
 	}
 
-	rl.history_mut().compact()?;
 	Ok(())
 }

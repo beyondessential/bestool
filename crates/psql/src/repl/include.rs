@@ -3,7 +3,13 @@ use std::{fs, ops::ControlFlow, path::Path};
 use tracing::debug;
 
 use super::state::ReplContext;
-use crate::input::handle_input;
+use crate::{audit::QuerySource, input::handle_input};
+
+/// Record a statement an expansion ran, under the source currently in force.
+pub(super) fn record(ctx: &mut ReplContext<'_>, text: String) {
+	let source = ctx.repl_state.lock().unwrap().statement_source.clone();
+	ctx.rl.history_mut().record(text, source);
+}
 
 pub async fn handle_include(
 	ctx: &mut ReplContext<'_>,
@@ -23,9 +29,19 @@ pub async fn handle_include(
 	if !content_trimmed.is_empty() {
 		debug!("read {} bytes from file '{file_path:?}'", content.len());
 
-		let saved_vars: Vec<(String, Option<String>)> = {
+		// The file is named in the log by the absolute path it was resolved to,
+		// so a record says which file actually ran, not what was typed to reach
+		// it.
+		let source = QuerySource::Include {
+			path: std::fs::canonicalize(file_path)
+				.unwrap_or_else(|_| file_path.to_path_buf())
+				.display()
+				.to_string(),
+		};
+
+		let (saved_vars, outer_source) = {
 			let mut state = ctx.repl_state.lock().unwrap();
-			state.from_snippet_or_include = true;
+			let outer_source = std::mem::replace(&mut state.statement_source, source);
 			let saved: Vec<(String, Option<String>)> = vars
 				.iter()
 				.map(|(name, _)| (name.clone(), state.vars.get(name).cloned()))
@@ -34,7 +50,7 @@ pub async fn handle_include(
 			for (name, value) in &vars {
 				state.vars.insert(name.clone(), value.clone());
 			}
-			saved
+			(saved, outer_source)
 		};
 
 		let (remaining, mut actions) = handle_input("", &content, &ctx.repl_state.lock().unwrap());
@@ -50,10 +66,15 @@ pub async fn handle_include(
 		}
 
 		let mut result = ControlFlow::Continue(());
-		for action in actions {
+		for statement in actions {
+			// What a file runs is recorded like anything else, so the log holds
+			// what the file actually did rather than only the line that
+			// included it.
+			record(ctx, statement.text);
+
 			// Boxed because an included file may itself include/run another,
 			// making dispatch indirectly recursive.
-			result = Box::pin(action.dispatch(ctx, "")).await;
+			result = Box::pin(statement.action.dispatch(ctx, "")).await;
 			if result.is_break() {
 				break;
 			}
@@ -61,7 +82,7 @@ pub async fn handle_include(
 
 		{
 			let mut state = ctx.repl_state.lock().unwrap();
-			state.from_snippet_or_include = false;
+			state.statement_source = outer_source;
 			for (name, original_value) in saved_vars {
 				match original_value {
 					Some(value) => state.vars.insert(name, value),

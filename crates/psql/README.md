@@ -9,7 +9,7 @@ syntax and behaviour.
 
 The primary features are
 - read/write modes, where a bestool-psql session will by default start in "read-only mode", which prohibits write operations;
-- audit logging, which logs all queries and user information to a local database for auditing purposes (as well as providing cross-platform history);
+- audit logging, which appends every statement and who ran it to a local append-only log for auditing purposes (as well as providing cross-platform history);
 - a simpler syntax and command set for variables;
 - snippet management.
 
@@ -32,7 +32,7 @@ The crate also exposes a library interface which embeds the tool in another CLI 
 | `CONNSTRING` | | `STRING` | required | Database name or connection string (e.g., 'mydb' or 'postgresql://user:password@localhost:5432/dbname') |
 | `--write` | `-W` | `FLAG` | false | Enable write mode for this session. By default the session is read-only. To enable writes, pass this flag. This also disables autocommit, so you need to issue a COMMIT; command whenever you perform a write (insert, update, etc), as an extra safety measure. |
 | `--theme` | | `STRING` | auto | The theme of your terminal (light, dark, or auto). 'auto' attempts to detect terminal background, defaults to 'dark' if detection fails. |
-| `--audit-path` | | `PATH` | ~/.local/state/bestool-psql/history.redb | Path to audit database |
+| `--audit-path` | | `PATH` | ~/.local/state/bestool-psql | Path to the audit directory |
 
 ## Interactive Commands
 

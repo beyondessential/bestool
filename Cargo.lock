@@ -824,6 +824,7 @@ dependencies = [
  "edit",
  "filetime",
  "fraction",
+ "fs4",
  "futures",
  "hex",
  "indexmap",
@@ -840,6 +841,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "signal-hook 0.4.4",
  "supports-unicode",
  "syntect",
@@ -848,6 +850,7 @@ dependencies = [
  "tempfile",
  "terminal-colorsaurus",
  "thiserror 2.0.20",
+ "thread-priority",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -857,6 +860,7 @@ dependencies = [
  "url",
  "uuid",
  "winnow 1.0.4",
+ "zstd",
 ]
 
 [[package]]
@@ -7589,6 +7593,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "thread-priority"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2e834949be5111506bb252643498af1514f600d9e1dceedaa42afae155b67f"
+dependencies = [
+ "bitflags 2.13.0",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows 0.62.2",
 ]
 
 [[package]]
