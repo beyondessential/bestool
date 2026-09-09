@@ -16,7 +16,7 @@ Every statement and meta-command the session executes is recorded, including one
 Each record is attributed to the operating-system user running the session and the database user the session is connected as.
 The session's write mode at the time, and the over-the-shoulder supervisor named when write mode was enabled, are recorded with it.
 The active untagged Tailscale peers, each as a device hostname and a login name, are recorded when Tailscale is present, so a session run over a remote shell can be tied to the person at the other end.
-Each record carries the identity of the session that produced it.
+Each record is attributable to the session that produced it.
 Each statement is recorded with where it came from: typed at the prompt, a named snippet, or an included file given by its absolute path.
 Statements that a snippet or an included file ran are recorded like any other, so the log holds what a file actually did rather than only the line that invoked it, and they are kept out of shell history.
 

@@ -14,7 +14,7 @@ The stream is offered two ways: the records as they are stored, which is what th
 Reading is streaming: a caller iterating a year of records never holds more than a bounded window in memory.
 The stream can be restricted to a time range and limited to the newest or oldest N entries.
 
-The API verifies hash chains, reporting per session whether the chain holds and where it first breaks (see [AUD-STO](store.md)).
+The API verifies hash chains, reporting per session whether the chain holds, where it first breaks, and the gap records and unparsable bytes it passed (see [AUD-STO](store.md)).
 It exposes the current chain head of every session, which is what an off-box witness would publish.
 It runs compaction and retention on demand (see [AUD-RET](retention.md)).
 

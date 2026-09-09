@@ -19,5 +19,5 @@ A new session sees everything recorded before it started, including by sessions 
 
 ## Recall eligibility
 
-A query record is recall-eligible when its source is the prompt, and not when the statement came from a snippet or an included file (see [AUD-STO](store.md)).
+A query record is recall-eligible when its source is the prompt, and not otherwise (see [AUD-STO](store.md)).
 What an operator recalls is therefore what they typed, including the line that invoked a snippet or a file, rather than the statements it expanded to.

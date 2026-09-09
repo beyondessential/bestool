@@ -6,7 +6,7 @@ id: AUD-STO
 
 The audit log is a directory of append-only segment files.
 Each segment is written by exactly one session, the one that created it, and by nothing else for as long as that session holds it open.
-Because no two processes ever write the same file, sessions need no locks, no shared state, and no reconciliation: the log as a whole is the union of its segments, and any union of records is a valid log.
+Because no two processes ever write the same file, sessions need no locks, no shared state, and no reconciliation: the log as a whole is the union of its files, and any union of records is a valid log.
 
 ## Segments
 
@@ -84,7 +84,6 @@ A half-written record left behind by a failed write does not, because the record
 Where retention has already deleted a session's earlier records, verification starts from the oldest records kept and reports their `prev` as unverifiable rather than broken.
 
 The chain shows that a session's records have not been edited, reordered or removed since they were written.
-It is the input to an off-box witness that would show they have not been rewritten wholesale; that witness is outside this spec.
 
 ## Legacy stores
 
@@ -93,5 +92,5 @@ Import runs under the same directory lock as compaction ([AUD-RET](retention.md)
 Import streams records from the old files rather than loading them whole, so it completes within flat memory regardless of their size.
 Imported records keep their original timestamps.
 Their query records take the source the old store implies: typed where it held the record eligible for recall, and unknown where it did not, since the old store recorded that a statement was not typed without recording what ran it.
-Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day.
+Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day, under a session identity made for the import, so that every segment in the directory is named the same way.
 The old files are deleted only after the new segments have been written and synchronised to disk.
