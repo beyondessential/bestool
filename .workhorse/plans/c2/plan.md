@@ -7,7 +7,7 @@ The problem exploration, technique sweep and the reasoning behind each decision 
 
 Things the specs deliberately leave to the implementation, recorded here so they are chosen once.
 
-- **Defaults.** Startup recall budget 4 MiB of query text; per-record recall cutoff 10 KiB; unwritable-store backlog 1000 records and 16 MiB; retention 12 months; plain-text window 30 days.
+- **Defaults.** Startup recall budget 4 MiB of query text; per-record recall cutoff 10 KiB; unwritable-store backlog 1000 records and 16 MiB; plain-text window 30 days. The twelve-month retention period is fixed by the spec, not a default.
 - **Hash.** SHA-256 over the previous line's raw bytes including nothing after the newline. Pending confirmation, since the plan only said "hash" and the spec had to name one.
 - **File naming.** Segments `audit-<YYYY-MM-DD>-<instance-uuid>.jsonl`; day files `audit-<YYYY-MM-DD>.jsonl.zst`. Legacy files are `audit-main.redb`, `audit-working-*.redb`, `audit-orphaned-*.redb`.
 - **Day boundary.** UTC, matching the record timestamps. A segment rolls at midnight UTC and the writer drops the previous segment's lock as it does.
@@ -48,14 +48,13 @@ Things the specs deliberately leave to the implementation, recorded here so they
 
 - [ ] Eligibility: closed segments (lock acquirable) whose day ended longer ago than the plain-text window.
 - [ ] Compaction: write the day file to a temporary name, sync, rename, then delete consumed segments; directory lock held throughout, skip if held.
-- [ ] Retention: delete day files whose day ended longer ago than the retention period; period configurable to longer only.
+- [ ] Retention: delete day files whose day ended longer ago than the fixed twelve-month period.
 - [ ] Background compaction at session startup with the throttle and bound above.
 
 ### Tools
 
 - [ ] Read API surface in the audit module: open, stream entries with filters, verify, chain heads, compact.
 - [ ] Export, verify and compact commands in both `bestool-psql-audit` and `bestool audit-psql`; drop the orphan flag.
-- [ ] Retention period configuration option.
 
 ### Removal
 

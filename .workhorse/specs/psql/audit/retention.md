@@ -30,7 +30,6 @@ Compaction is also available on demand through the audit tools ([AUD-API](tools.
 
 ## Retention
 
-Records are retained for at least twelve months by default, the organisation's retention period for security-sensitive audit logs.
-The retention period is configurable to longer, never to shorter than the default.
+Records are retained for twelve months, the organisation's retention period for security-sensitive audit logs.
 Retention is applied alongside compaction: a day file is deleted once its day ended longer ago than the retention period.
 Nothing decides what to keep by how much space it takes.
