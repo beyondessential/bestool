@@ -175,10 +175,10 @@ today, becomes scope-aware on the same terms.
 
 **The application key is the substrate prefix and the type: `host-tamanu-central`.**
 The prefix is the literal `host` for now and comes from the substrate once K1 lands.
-Keying this way keeps `SUBJ`'s rule that a key is never reused under a different type:
-if kind detection ever flips, the key and the type change together, so Canopy reads
-one application as having stopped and another started rather than seeing a key change
-type underneath it.
+The format is chosen to read well on the wire, where a self-describing key is far
+easier to debug than an opaque one. Nothing else rests on it: Canopy handles key and
+type correlation itself, so the key needs only to be fixed and stable, which any
+format would satisfy.
 
 **`get_or_create_server_id` becomes `get_or_create_machine_id`**, with its doc stating
 that this is the Canopy machine identity and *not* the OS `/etc/machine-id`. That
