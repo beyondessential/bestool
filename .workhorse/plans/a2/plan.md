@@ -255,10 +255,10 @@ subject now carries what the `db_` and `pg_` prefixes were doing, and Canopy's
 type-qualified catalogue reads `postgres.connect`. This adds no churn of its own
 — moving the checks to a new target already retires the old catalogue entries.
 
-## Enumeration
+## Enumeration — split out to E2
 
-Every live cluster on the machine is discovered and reported, not only the one
-the sweep holds a URL for:
+Discovering clusters the sweep holds no URL for is `E2`, not this card. What is
+wanted there, recorded here because it shaped the identity scheme above:
 
 - Debian and Ubuntu: `pg_lsclusters`, which gives version, name, port and status
   directly.
@@ -293,13 +293,14 @@ machine's memory.
 - [x] Per-target severity capping from the split response
 - [x] CLI render and the daemon's cached-sweep round-trip
 - [x] Tests
-- [ ] **TUI pending rows.** Rows are keyed by qualified name, but the CLI seeds them
-      from `selected_names` before the sweep resolves which application the host has,
-      so it cannot know a check's subject up front. Application checks therefore
-      never match a seeded row and their live rows stay pending until the final
-      render. `DOC` says every selected check appears as a row from the start, so
-      either the CLI resolves the application kind before starting the TUI, or the
-      TUI creates rows on demand and `DOC` changes to match.
+- [x] Postgres as its own application: port-keyed, local and remote, renamed checks,
+      the server version moved to it
+- [ ] **TUI pending rows.** The live display now seeds machine rows only, since which
+      applications the host has is not known until the sweep has looked. Application
+      rows therefore appear as their results arrive rather than starting pending, and
+      `DOC` still says every selected check appears as a row from the start. Either
+      the CLI resolves the applications before starting the TUI, or `DOC` changes to
+      match what it can honestly do.
 
 ## Open questions
 
