@@ -108,21 +108,122 @@ The `timezone` / `os_timezone` pair straddles the split by design: Tamanu's conf
 zone is the application's, the clock zone is the machine's, and `SUBJ` requires drift
 between them to stay gradable wherever one sweep holds both.
 
+## The two axes are genuinely different, so both stay
+
+The `entry!` macro's categories say **what inputs a check needs**, and gate whether it
+runs at all:
+
+- **`@tamanu`** (default arm, 22 checks) — needs a Tamanu deployment. Runs only when
+  the sweep has a Tamanu context *and* it is really Tamanu's; otherwise skips with
+  "no Tamanu on this host". Receives the unwrapped `CheckContext`.
+- **`db`** (4 checks) — needs any database, Tamanu's or the generic `DATABASE_URL`
+  fallback. Skips only when there is no database at all. Also receives `CheckContext`.
+- **`host`** (19 checks) — needs neither, runs unconditionally, and receives the whole
+  `SweepContext`.
+- **`off_wire`** modifies any of the three: the check renders in the CLI but stays out
+  of the wire `health[]`.
+
+Cross-tabulating category against `SUBJ`'s subject shows the axes nearly coincide but
+cross in three places, which is what proves they cannot be collapsed into one:
+
+| | machine | application |
+|---|---|---|
+| `host` | 17 | **2** (`caddy_certs`, `http_errors`) |
+| `@tamanu` | **1** (`caddyfile_version`) | 21 |
+| `db` | 0 | 4 |
+
+`caddyfile_version` is the sharpest illustration: it is a **machine** check by subject
+(it grades the front-end's configuration marker) yet it needs the **application's**
+version to decide whether that marker is outdated. Whose subject a check speaks for
+and what it must read to speak are independent, so subject and scope are added as new
+declarations and the categories keep their present job.
+
+## Decisions
+
+**The sweep is typed, and a check's identity is scoped.** A check is identified by its
+subject together with its name, not by name alone: a machine `check_a`, a
+`tamanu-central` `check_a` and a `tamanu-facility` `check_a` are three different
+checks. This is what the wire already assumes — Canopy keys `check_severities` per
+target under bare check names — so a flat name list cannot represent it. The sweep
+therefore builds the typed `StatusPayload` directly and `SweepResult.payload: Value`
+retires.
+
+**Scope is declared per check, not held in a central table.** Each registry entry
+states its subject and, for an application check, which application types it applies
+to, so a check keeps owning everything about its own function. This hoists the
+`kind` gating that 13 checks currently do inline — every one of them central-only,
+each opening `run()` with a skip when the kind is not Central. (`fhir_jobs` gates only
+its heal action, not its run, and is unaffected.)
+
+**The split response is consumed.** `apply_severities` reads the per-target
+`check_severities` the push returns — the machine's map for machine checks, each
+application's for its own — rather than one flat map. The `ABSENT_CHECK_SEVERITY`
+warn default still applies, looked up in the right target's map.
+
+**A check outside its subject's scope is omitted, not skipped.** It does not run and
+does not appear on the wire or in the render, so a facility stops reporting the 13
+central-only checks rather than reporting them as skipped. Canopy recovers a check
+that stops being reported, so no issue is left hanging. Scope decides applicability;
+`skip` keeps its existing meaning of "applicable, but could not be determined".
+
+**Check selection is always scope-qualified.** `--check` and `--skip` take
+`machine:disk_free` or `tamanu-central:migrations`; a bare name is an error rather
+than a wildcard, because a bare name cannot say which of several same-named checks is
+wanted. The error names the qualified forms that exist for what was typed, so a bare
+`--check disk_free` answers with `machine:disk_free`. Unknown-name validation, fatal
+today, becomes scope-aware on the same terms.
+
+**The application key is the substrate prefix and the type: `host-tamanu-central`.**
+The prefix is the literal `host` for now and comes from the substrate once K1 lands.
+Keying this way keeps `SUBJ`'s rule that a key is never reused under a different type:
+if kind detection ever flips, the key and the type change together, so Canopy reads
+one application as having stopped and another started rather than seeing a key change
+type underneath it.
+
+**`get_or_create_server_id` becomes `get_or_create_machine_id`**, with its doc stating
+that this is the Canopy machine identity and *not* the OS `/etc/machine-id`. That
+warning earns its place: `crates/canopy/src/registration.rs:399` already reads the OS
+machine id via the `machine-uid` crate and calls it "the host machine id", so the two
+sit in one codebase. `machine_id` is also already Canopy's wire vocabulary, so the
+rename moves toward the schema rather than away from it.
+
+The rename carries `standard_server_id_path`, the `_at` test shim, the file
+read/write helpers, and the `metaServerId` wording in the log and error messages. Two
+things deliberately keep the old name: the canopy registration file's own `server_id`
+field, which is an on-disk format bestool must keep reading, and the `server_id` path
+parameter on the status endpoint.
+
+## What the typed sweep touches
+
+- `SweepResult` — `results: Vec<(Check, bool)>` gains the subject; `payload: Value`
+  becomes the typed payload; `server_id` becomes the machine id.
+- `build_payload` — routes each check into its subject's `health[]`, and each lifted
+  `payload_extra` into its subject's `detail`: `munin`, `lanIps`, `wanIpv4`, `wanIpv6`
+  to the machine, `services` to the application.
+- `overall_from_payload` — must union the machine's health with every application's,
+  instead of reading one `health` array.
+- `apply_severities` / `severity_ceiling` — per-target lookup, as above.
+- `task.rs` — builds the payload directly instead of
+  `serde_json::from_value(sweep.payload)`, and sets `source` to `alertd`.
+- CLI render and TUI — the sort key becomes subject-then-name, and the subject has to
+  be visible wherever two scopes share a name.
+- `endpoint_latest` and the CLI's `results_from_wire` — the daemon caches a sweep and
+  the CLI parses it back out of `payload["health"]`, so both ends of that round-trip
+  learn the split shape together.
+- Per-scope name uniqueness is now the invariant to hold (a flat unique-name list no
+  longer expresses it), so it wants asserting in a test.
+
 ## Open questions
 
-1. **How each check declares subject + application scope**, and what becomes of the
-   `@tamanu` / `db` / `host` input categories. They encode a different axis (what
-   inputs a check needs) and still drive skips, so adding subject as an orthogonal
-   field is additive; folding them together is a larger refactor K1 may redo.
-2. **Where the split takes shape** — build a typed `StatusPayload` in the sweep, or
-   keep a structured `Value` and assemble at the push boundary. The first is the
-   cleaner end state but touches every payload consumer (`apply_severities`,
-   `overall_from_payload`, CLI render, `endpoint_latest`).
-3. **The static application key.** `SUBJ` requires an agent on a machine to use a
-   fixed key for the application it reports, stable across pushes, and never reused
-   under a different type. The exact string is still to choose.
-4. **The machine-id rename.** New name for `get_or_create_server_id`, applied at both
-   call sites, while still accepting a `server_id` from canopy registration files.
-5. **Severity reconciliation.** Whether A2 also consumes the per-target
-   `check_severities` from the response, or leaves that to K1 and keeps reading the
-   top-level map.
+None outstanding: the design decisions above cover the card's scope. Two things are
+known and deliberately left as they are.
+
+**`pg_tuning` reads the machine's total memory for its denominator** while being an
+application check. `SUBJ` settles it as an application check, and the reading stays
+until K1 takes the denominator from the Postgres service's declared ceiling. It wants
+a code comment so it is not read as an oversight.
+
+**The daemon's cached-sweep round-trip is a matched pair.** The daemon caches a sweep
+and the CLI parses it back, so `endpoint_latest` and `results_from_wire` change
+together. A CLI and a daemon of different versions on one host will disagree about the
+payload shape for as long as they are mismatched.
