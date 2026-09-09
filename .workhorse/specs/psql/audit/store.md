@@ -92,5 +92,6 @@ A directory containing a store in the earlier single-file database format, inclu
 Import runs under the same directory lock as compaction ([AUD-RET](retention.md)); a process that cannot take the lock reads what is already there and leaves the import to whoever holds it.
 Import streams records from the old files rather than loading them whole, so it completes within flat memory regardless of their size.
 Imported records keep their original timestamps.
+Their query records take the source the old store implies: typed where it held the record eligible for recall, and unknown where it did not, since the old store recorded that a statement was not typed without recording what ran it.
 Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day.
 The old files are deleted only after the new segments have been written and synchronised to disk.

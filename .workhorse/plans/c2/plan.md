@@ -36,7 +36,7 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - [ ] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
 - [ ] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
 - [ ] Network filesystem detection at open with a loud warning.
-- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held.
+- [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files. Runs under the directory lock, from tools as well as sessions, and is skipped when the lock is held. Map the old `recall` boolean to a source: true to `typed`, false to `unknown`.
 
 ### Reader
 
