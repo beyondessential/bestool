@@ -79,6 +79,24 @@ enum HoldCapture {
 	Unknown,
 }
 
+/// The conditions one hold meets, which are independent of each other: a hold
+/// nobody released is still costing storage whether or not its capture can be
+/// read, and is worth saying so alongside.
+#[derive(Debug, PartialEq, Eq)]
+struct Conditions {
+	gone: bool,
+	detached: bool,
+	stale: bool,
+}
+
+fn classify(present: bool, attached: bool, held_days: i32) -> Conditions {
+	Conditions {
+		gone: !present && attached,
+		detached: !present && !attached,
+		stale: held_days >= STALE_AFTER_DAYS,
+	}
+}
+
 impl HoldCapture {
 	/// Where the capture is attached, for the backends that expose one through a
 	/// mount. A base backup is a plain directory, so an unreadable one is gone
@@ -117,11 +135,14 @@ pub async fn run(_ctx: SweepContext) -> Check {
 			_ => true,
 		};
 
-		if !present && !attached {
-			detached.push(record.id.clone());
-		} else if !present {
+		let conditions = classify(present, attached, held_days);
+		if conditions.gone {
 			missing.push(format!("{} (capture gone)", record.id));
-		} else if held_days >= STALE_AFTER_DAYS {
+		}
+		if conditions.detached {
+			detached.push(record.id.clone());
+		}
+		if conditions.stale {
 			stale.push(format!("{} (held {held_days}d)", record.id));
 		}
 
@@ -145,48 +166,43 @@ pub async fn run(_ctx: SweepContext) -> Check {
 	}
 
 	let summary = format!("{} capture(s) held", records.len());
-	let check = if !missing.is_empty() {
-		Check::fail(
-			NAME,
-			summary,
-			format!(
-				"the capture behind {} is gone, so it is not a rollback point: {}",
-				if missing.len() == 1 {
-					"a hold"
-				} else {
-					"holds"
-				},
-				missing.join(", ")
-			),
-		)
-	} else if !detached.is_empty() {
-		Check::warning(
-			NAME,
-			summary,
-			format!(
-				"the capture behind {} is not mounted, so it cannot be read as a \
-				 rollback point until it is reattached; the underlying capture is \
-				 often still intact, and a reboot leaves a hold in this state: {}",
-				if detached.len() == 1 {
-					"a hold"
-				} else {
-					"holds"
-				},
-				detached.join(", ")
-			),
-		)
-	} else if !stale.is_empty() {
-		Check::warning(
-			NAME,
-			summary,
-			format!(
-				"held for over {STALE_AFTER_DAYS} days and still costing storage: {}; \
-				 release with `bestool canopy hold drop <id>`",
-				stale.join(", ")
-			),
-		)
-	} else {
-		Check::pass(NAME, summary)
+	let mut reasons: Vec<String> = Vec::new();
+	if !missing.is_empty() {
+		reasons.push(format!(
+			"the capture behind {} is gone, so it is not a rollback point: {}",
+			if missing.len() == 1 {
+				"a hold"
+			} else {
+				"holds"
+			},
+			missing.join(", ")
+		));
+	}
+	if !detached.is_empty() {
+		reasons.push(format!(
+			"the capture behind {} is not mounted, so it cannot be read as a rollback \
+			 point until it is reattached; the underlying capture is often still \
+			 intact, and a reboot leaves a hold in this state: {}",
+			if detached.len() == 1 {
+				"a hold"
+			} else {
+				"holds"
+			},
+			detached.join(", ")
+		));
+	}
+	if !stale.is_empty() {
+		reasons.push(format!(
+			"held for over {STALE_AFTER_DAYS} days and still costing storage: {}; \
+			 release with `bestool canopy hold drop <id>`",
+			stale.join(", ")
+		));
+	}
+
+	let check = match reasons.is_empty() {
+		true => Check::pass(NAME, summary),
+		false if missing.is_empty() => Check::warning(NAME, summary, reasons.join("; ")),
+		false => Check::fail(NAME, summary, reasons.join("; ")),
 	};
 
 	let check = check.with_detail("holds", Value::Array(details));
@@ -461,6 +477,52 @@ Shadow Copy Storage association
 		assert_eq!(days("2026-07-08T09:59:00Z"), 6);
 		assert_eq!(days("2026-07-08T10:00:00Z"), 7);
 		assert_eq!(days("2026-09-09T10:00:00Z"), 70);
+	}
+
+	/// Staleness is not conditional on the capture being readable. A hold that is
+	/// both detached and long forgotten has to report both, since reattaching it
+	/// and releasing it are different remedies and the second still applies.
+	#[test]
+	fn a_detached_hold_is_still_reported_as_stale() {
+		assert_eq!(
+			classify(false, false, 8),
+			Conditions {
+				gone: false,
+				detached: true,
+				stale: true,
+			}
+		);
+	}
+
+	#[test]
+	fn a_capture_is_gone_only_when_what_exposes_it_is_in_place() {
+		// Readable: nothing to report but its age.
+		assert_eq!(
+			classify(true, true, 0),
+			Conditions {
+				gone: false,
+				detached: false,
+				stale: false,
+			}
+		);
+		// Unreadable while attached: the capture really has gone.
+		assert_eq!(
+			classify(false, true, 0),
+			Conditions {
+				gone: true,
+				detached: false,
+				stale: false,
+			}
+		);
+		// Readable and long held: the cleanup case on its own.
+		assert_eq!(
+			classify(true, true, 9),
+			Conditions {
+				gone: false,
+				detached: false,
+				stale: true,
+			}
+		);
 	}
 
 	/// A held capture reported as stale has to actually reach the threshold.
