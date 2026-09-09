@@ -128,8 +128,8 @@ async fn list() -> Result<()> {
 		.count();
 	if detached > 0 {
 		warn!(
-			"{detached} of {} held captures are not mounted; reboot leaves a hold this way, \
-			 and dropping one still frees the capture behind it",
+			"{detached} of {} held captures are not mounted; dropping one still frees \
+			 the capture behind it",
 			records.len()
 		);
 	}

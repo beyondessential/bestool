@@ -282,8 +282,8 @@ pub async fn attached(path: &Path) -> bool {
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 ///
-/// The subvolume is reached through the top-level mount, which a reboot takes
-/// away. Deleting it without that mount would silently leave it on the
+/// The subvolume is reached through the top-level mount, which may no longer be
+/// there. Deleting it without that mount would silently leave it on the
 /// filesystem, holding its space with no record naming it, so the top level is
 /// mounted back first where the device is known.
 pub async fn release_held(

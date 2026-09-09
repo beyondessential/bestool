@@ -51,8 +51,8 @@ pub enum HeldCapture {
 		snapshot_path: PathBuf,
 		mount: PathBuf,
 		/// The device the subvolume lives on. Releasing reaches it through the
-		/// top-level mount, which a reboot takes away, so remounting to delete it
-		/// needs the device. Absent on records written before it was kept.
+		/// top-level mount, which may no longer be there, so remounting to delete
+		/// it needs the device. Absent on records written before it was kept.
 		#[serde(default)]
 		fsdev: String,
 	},

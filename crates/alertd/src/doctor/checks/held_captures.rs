@@ -9,9 +9,8 @@
 //!
 //! - **Held a long time** — untidy, and more expensive the longer it runs.
 //! - **Capture not mounted** — the capture is exposed by a mount, and that mount
-//!   is not there. A reboot leaves a hold in exactly this state, since nothing
-//!   re-establishes the mount at boot. The capture behind it is very often still
-//!   intact, so this is reported as its own condition with its own remedy.
+//!   is not there. The capture behind it is very often still intact, so this is
+//!   reported as its own condition with its own remedy.
 //! - **Capture gone** — the mount is in place and the rollback point still can't
 //!   be read. The operator believes they can roll back and cannot, and nothing
 //!   about the hold itself gives that away.
@@ -182,7 +181,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		reasons.push(format!(
 			"the capture behind {} is not mounted, so it cannot be read as a rollback \
 			 point until it is reattached; the underlying capture is often still \
-			 intact, and a reboot leaves a hold in this state: {}",
+			 intact: {}",
 			if detached.len() == 1 {
 				"a hold"
 			} else {
