@@ -1,7 +1,10 @@
 use bestool_canopy::schema::CheckSeverity;
 use serde_json::{Map, Value, json};
 
-use crate::doctor::{stat::Stat, subject::Subject};
+use crate::doctor::{
+	stat::Stat,
+	subject::{ApplicationKind, ApplicationRef, Subject},
+};
 
 /// Outcome of a single healthcheck.
 ///
@@ -325,6 +328,9 @@ impl CheckOutcome {
 	pub fn to_streaming_json(&self) -> Value {
 		let mut obj = self.check.to_streaming_json();
 		obj["subject"] = Value::String(self.subject.slug().to_string());
+		if let Some(key) = self.subject.key() {
+			obj["subjectKey"] = Value::String(key.to_string());
+		}
 		obj
 	}
 
@@ -335,7 +341,17 @@ impl CheckOutcome {
 		value: &Value,
 		name_resolver: impl FnOnce(&str) -> Option<&'static str>,
 	) -> Option<Self> {
-		let subject = Subject::from_slug(value.get("subject")?.as_str()?)?;
+		let slug = value.get("subject")?.as_str()?;
+		let subject = match value.get("subjectKey").and_then(Value::as_str) {
+			Some(key) => Subject::Application(ApplicationRef {
+				kind: ApplicationKind::ALL
+					.into_iter()
+					.find(|kind| kind.type_slug() == slug)?,
+				key: key.to_string(),
+			}),
+			None if slug == "machine" => Subject::Machine,
+			None => return None,
+		};
 		let check = Check::from_streaming_json(value, name_resolver)?;
 		Some(Self {
 			subject,

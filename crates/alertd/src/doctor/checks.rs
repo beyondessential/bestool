@@ -314,17 +314,17 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("db_connect", db_connect, db, postgres),
+		entry!("connect", db_connect, db, postgres),
 		// Reports the postgres version, which is already the application's
 		// `pgVersion` fact — useful in the CLI render, but off the wire.
-		entry!("db_version", db_version, db, postgres, off_wire),
+		entry!("version", db_version, db, postgres, off_wire),
 		entry!("migrations", migrations, tamanu, tamanu_app),
 		entry!("reporting_roles", reporting_roles, tamanu, tamanu_app),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
-		entry!("pg_tuning", pg_tuning, db, postgres),
-		entry!("pg_checksums", pg_checksums, db, postgres),
+		entry!("tuning", pg_tuning, db, postgres),
+		entry!("checksums", pg_checksums, db, postgres),
 		entry!("disk_free", disk_free, host, machine),
 		entry!("inodes", inodes, host, machine),
 		entry!("btrfs", btrfs, host, machine),
@@ -575,14 +575,14 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn db_connect_runs_with_db_only_context() {
-		// db_connect goes through the install gate because it only needs the URL.
+	async fn postgres_connect_runs_with_db_only_context() {
+		// `connect` goes through the install gate because it only needs the URL.
 		// An unreachable URL must FAIL (an alert), proving it wasn't skipped.
-		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let entry = all().into_iter().find(|e| e.name == "connect").unwrap();
 		let check = (entry.run)(db_only_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
-			"db_connect should run (and fail) with a db-only context, got {:?}",
+			"connect should run (and fail) with a db-only context, got {:?}",
 			check.to_wire()["result"]
 		);
 	}
@@ -597,13 +597,13 @@ mod tests {
 
 	#[tokio::test]
 	async fn generic_db_checks_run_with_generic_context() {
-		// db_connect only needs the URL; an unreachable one must FAIL (an
+		// `connect` only needs the URL; an unreachable one must FAIL (an
 		// alert), proving the generic context isn't gated out.
-		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let entry = all().into_iter().find(|e| e.name == "connect").unwrap();
 		let check = (entry.run)(generic_db_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
-			"db_connect should run (and fail) with a generic-db context, got {:?}",
+			"connect should run (and fail) with a generic-db context, got {:?}",
 			check.to_wire()["result"]
 		);
 	}
@@ -645,7 +645,7 @@ mod tests {
 	async fn tamanu_checks_skip_without_tamanu() {
 		// The registry wrapper skips Tamanu-dependent checks before they run,
 		// so on a non-Tamanu host nothing downstream alerts.
-		for name in ["db_version", "version_drift", "tamanu_http"] {
+		for name in ["version", "version_drift", "tamanu_http"] {
 			let entry = all().into_iter().find(|e| e.name == name).unwrap();
 			let check = (entry.run)(no_tamanu_ctx()).await;
 			assert!(

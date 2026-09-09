@@ -315,7 +315,7 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 pub async fn run(ctx: CheckContext) -> Check {
 	if !is_local(ctx.config.db.host.as_deref()) {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"database is not local",
 			"tuning is compared against this host's RAM, which doesn't describe a remote database",
 		);
@@ -323,7 +323,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let Some(client) = ctx.db.as_deref() else {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"no DB connection",
 			"can't read postgres settings; db_connect reports the outage",
 		);
@@ -331,7 +331,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let row = match client.query_one(SETTINGS_QUERY, &[]).await {
 		Ok(row) => row,
-		Err(err) => return query_error_check("pg_tuning", &err),
+		Err(err) => return query_error_check("tuning", &err),
 	};
 
 	let settings = Settings {
@@ -352,7 +352,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let total_ram = sys.total_memory() as i64;
 	if total_ram <= 0 {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"could not read host memory",
 			"sysinfo reported no total memory; can't derive expected tuning",
 		);
@@ -374,11 +374,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.join("; ");
 
 	let check = if findings.iter().any(|f| f.severity == Severity::Fail) {
-		Check::fail("pg_tuning", summary, reason)
+		Check::fail("tuning", summary, reason)
 	} else if !findings.is_empty() {
-		Check::warning("pg_tuning", summary, reason)
+		Check::warning("tuning", summary, reason)
 	} else {
-		Check::pass("pg_tuning", summary)
+		Check::pass("tuning", summary)
 	};
 
 	let budget_res = budget_for(Platform::current(), total_ram);

@@ -16,7 +16,7 @@
 use super::{CheckContext, query_error_check};
 use crate::doctor::{Stat, check::Check};
 
-const NAME: &str = "pg_checksums";
+const NAME: &str = "checksums";
 
 /// `pg_stat_database.checksum_failures` arrived in PostgreSQL 12; older servers
 /// keep no such counter, so the check reports the setting alone rather than

@@ -25,6 +25,26 @@ actually about, and that the push carries the split format.
 - [ ] `--skip` rejects a bare name on the same terms as `--check`
 - [ ] The CLI renders a check by its qualified name, so two same-named checks are distinguishable
 
+## Postgres as its own application
+
+- [x] The four database checks are scoped to Postgres, not Tamanu (verifies spec: SUBJ)
+- [x] Postgres and Tamanu appear as two separate applications with their own types and checks (verifies spec: SUBJ)
+- [x] The Postgres application reports the server version and the Tamanu application does not (verifies spec: SUBJ)
+- [x] A cluster is keyed by port, and two ports are two applications (verifies spec: SUBJ)
+- [x] A cluster reached over a Unix socket resolves to the same key as TCP on that port (verifies spec: SUBJ)
+- [x] A remote cluster is keyed apart and never claims the host- prefix (verifies spec: SUBJ)
+- [x] localhost, loopback, and socket connections all resolve as local (verifies spec: SUBJ)
+- [x] A registry entry runs once per admitting instance, so two clusters give two results
+- [x] Both clusters are reached by the one type-level name postgres:connect
+- [ ] A real machine with two live clusters reports both, with the right version against each
+- [ ] An in-place major upgrade leaves the key unchanged across the upgrade
+
+## Selection contract
+
+- [x] The CLI accepts a qualified name the sweep accepts, and rejects a bare one the same way (verifies spec: DOC)
+- [x] The live display seeds machine rows only, since applications are not known before the sweep
+- [ ] `--check postgres:connect` on a two-cluster machine runs the check on both
+
 ## The split payload
 
 - [x] Checks land in their own subject's `health[]` and no other (verifies spec: SUBJ)

@@ -28,16 +28,16 @@ pub async fn run(ctx: CheckContext) -> Check {
 			let summary = format!("postgres at {host}/{name} ({latency_ms}ms)");
 			if latency_ms > WARN_LATENCY_MS {
 				Check::warning(
-					"db_connect",
+					"connect",
 					summary,
 					format!("connect latency {latency_ms}ms over {WARN_LATENCY_MS}ms"),
 				)
 			} else {
-				Check::pass("db_connect", summary)
+				Check::pass("connect", summary)
 			}
 		}
 		Err(err) => Check::fail(
-			"db_connect",
+			"connect",
 			format!("failed to connect to {host}/{name}"),
 			fmt_db_error(&err),
 		),

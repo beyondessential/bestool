@@ -17,8 +17,8 @@ use bestool_alertd::doctor::{
 	checks, overall_from_payload, perform_sweep,
 	progress::ProgressSender,
 	resolve_sweep_tamanu,
-	subject::{ApplicationKind, Subject},
-	sweep::SplitSeverities,
+	subject::{ApplicationKind, ApplicationRef, CheckScope, Subject},
+	sweep::{SplitSeverities, validate_selection},
 };
 
 use super::{TamanuArgs, try_find_tamanu};
@@ -445,11 +445,20 @@ fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 		.applications
 		.iter()
 		.flatten()
-		.filter_map(|(key, report)| {
-			ApplicationKind::ALL
+		.map(|(key, report)| {
+			// The type slug the push used is the application's own, so the kind
+			// is read back from it rather than guessed from the key.
+			let kind = ApplicationKind::ALL
 				.into_iter()
-				.find(|kind| &kind.key() == key)
-				.map(|kind| (Subject::Application(kind), &report.health))
+				.find(|kind| kind.type_slug() == report.type_)
+				.unwrap_or(ApplicationKind::Postgres);
+			(
+				Subject::Application(ApplicationRef {
+					kind,
+					key: key.clone(),
+				}),
+				&report.health,
+			)
 		});
 
 	let registry = &registry;
@@ -468,7 +477,7 @@ fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 					_ => return None,
 				};
 				Some(CheckOutcome {
-					subject,
+					subject: subject.clone(),
 					check: Check {
 						name: name_static,
 						status,
@@ -506,7 +515,7 @@ fn ansi_supported() -> bool {
 /// or JSON), no TUI is spawned and the sweep simply runs silently.
 fn setup_progress(
 	live_tty: bool,
-	selected_names: &[&'static str],
+	selected_names: &[String],
 	source: SweepSource,
 ) -> (
 	Option<ProgressSender>,
@@ -516,7 +525,7 @@ fn setup_progress(
 		return (None, None);
 	}
 	let (tx, rx) = mpsc::unbounded_channel();
-	let names: Vec<String> = selected_names.iter().map(|n| (*n).to_owned()).collect();
+	let names: Vec<String> = selected_names.to_vec();
 	let handle = tokio::task::spawn_blocking(move || tui::run_tui(names, source, rx));
 	(Some(tx), Some(handle))
 }
@@ -540,26 +549,27 @@ fn empty_payload() -> StatusPayload {
 	StatusPayload::builder().health(Vec::new()).build()
 }
 
-fn selected_names(only: &[String], skip: &[String]) -> Result<Vec<&'static str>> {
+/// The rows the live display starts with, and the same validation the sweep
+/// applies — one contract, so a name the sweep accepts is never rejected here
+/// first.
+///
+/// Only machine checks are seeded: their subject is certain before the sweep
+/// resolves what applications the host has. Application rows appear as their
+/// results arrive, since which applications exist is not known until the sweep
+/// has looked.
+///
+/// spec: DOC
+fn selected_names(only: &[String], skip: &[String]) -> Result<Vec<String>> {
 	let registry = checks::all();
-	let known: Vec<&str> = registry.iter().map(|e| e.name).collect();
-	if let Some(unknown) = only.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}`; known checks: {}",
-			known.join(", ")
-		));
-	}
-	if let Some(unknown) = skip.iter().find(|n| !known.contains(&n.as_str())) {
-		return Err(miette!(
-			"unknown check name `{unknown}` in --skip; known checks: {}",
-			known.join(", ")
-		));
-	}
+	validate_selection(&registry, only, "--check")?;
+	validate_selection(&registry, skip, "--skip")?;
+
 	Ok(registry
 		.iter()
-		.filter(|e| only.is_empty() || only.iter().any(|n| n == e.name))
-		.filter(|e| !skip.iter().any(|n| n == e.name))
-		.map(|e| e.name)
+		.filter(|e| e.scope == CheckScope::Machine)
+		.map(|e| format!("machine:{}", e.name))
+		.filter(|qualified| only.is_empty() || only.contains(qualified))
+		.filter(|qualified| !skip.contains(qualified))
 		.collect())
 }
 
@@ -606,33 +616,53 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn selected_names_default_returns_full_registry() {
+	fn selected_names_default_seeds_every_machine_check() {
+		// Only the machine's checks are seeded: which applications exist is not
+		// known until the sweep has looked.
 		let names = selected_names(&[], &[]).unwrap();
-		let registry: Vec<&str> = checks::all().iter().map(|e| e.name).collect();
-		assert_eq!(names, registry);
+		let machine: Vec<String> = checks::all()
+			.iter()
+			.filter(|e| e.scope == CheckScope::Machine)
+			.map(|e| format!("machine:{}", e.name))
+			.collect();
+		assert_eq!(names, machine);
+		assert!(names.iter().all(|n| n.starts_with("machine:")));
 	}
 
 	#[test]
 	fn selected_names_only_filters_to_listed() {
-		let names = selected_names(&["db_connect".into(), "memory".into()], &[]).unwrap();
-		assert_eq!(names, vec!["db_connect", "memory"]);
+		let names = selected_names(&["machine:memory".into()], &[]).unwrap();
+		assert_eq!(names, vec!["machine:memory"]);
 	}
 
 	#[test]
 	fn selected_names_skip_excludes_listed() {
-		let names = selected_names(&[], &["tailscale".into()]).unwrap();
-		assert!(!names.contains(&"tailscale"));
-		assert!(names.contains(&"db_connect"));
+		let names = selected_names(&[], &["machine:tailscale".into()]).unwrap();
+		assert!(!names.contains(&"machine:tailscale".to_string()));
+		assert!(names.contains(&"machine:memory".to_string()));
 	}
 
 	#[test]
 	fn selected_names_only_and_skip_compose() {
 		let names = selected_names(
-			&["db_connect".into(), "memory".into(), "tailscale".into()],
-			&["tailscale".into()],
+			&[
+				"machine:memory".into(),
+				"machine:disk_free".into(),
+				"machine:tailscale".into(),
+			],
+			&["machine:tailscale".into()],
 		)
 		.unwrap();
-		assert_eq!(names, vec!["db_connect", "memory"]);
+		assert_eq!(names, vec!["machine:disk_free", "machine:memory"]);
+	}
+
+	#[test]
+	fn the_cli_accepts_a_qualified_name_the_sweep_accepts() {
+		// One contract: a name the sweep would run must not be rejected here
+		// first, and a bare name must be rejected the same way in both.
+		assert!(selected_names(&["postgres:connect".into()], &[]).is_ok());
+		let err = selected_names(&["connect".into()], &[]).unwrap_err();
+		assert!(format!("{err}").contains("postgres:connect"));
 	}
 
 	#[test]
@@ -719,13 +749,13 @@ mod tests {
 			results
 				.iter()
 				.find(|o| o.check.name == name)
-				.map(|o| o.subject)
+				.map(|o| o.subject.clone())
 				.unwrap()
 		};
 		assert_eq!(subject_of("disk_free"), Subject::Machine);
 		assert_eq!(
 			subject_of("migrations"),
-			Subject::Application(ApplicationKind::TamanuCentral)
+			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral))
 		);
 	}
 

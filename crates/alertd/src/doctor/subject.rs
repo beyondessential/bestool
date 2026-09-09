@@ -214,22 +214,24 @@ impl CheckScope {
 			.map(ApplicationKind::type_slug)
 			.collect()
 	}
-
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
+	fn app(kind: ApplicationKind) -> Subject {
+		Subject::Application(match kind {
+			ApplicationKind::Postgres => ApplicationRef::local_postgres(5432),
+			other => ApplicationRef::tamanu(other),
+		})
+	}
+
 	#[test]
 	fn machine_scope_admits_only_the_machine() {
-		assert!(CheckScope::Machine.admits(Subject::Machine));
-		for kind in [
-			ApplicationKind::TamanuCentral,
-			ApplicationKind::TamanuFacility,
-			ApplicationKind::Postgres,
-		] {
-			assert!(!CheckScope::Machine.admits(Subject::Application(kind)));
+		assert!(CheckScope::Machine.admits(&Subject::Machine));
+		for kind in ApplicationKind::ALL {
+			assert!(!CheckScope::Machine.admits(&app(kind)));
 		}
 	}
 
@@ -242,7 +244,7 @@ mod tests {
 			CheckScope::Facility,
 		] {
 			assert!(
-				!scope.admits(Subject::Machine),
+				!scope.admits(&Subject::Machine),
 				"{scope:?} admitted the machine"
 			);
 		}
@@ -252,32 +254,26 @@ mod tests {
 	fn postgres_and_tamanu_scopes_do_not_overlap() {
 		// A check grading the Postgres server is not about the Tamanu that uses
 		// it, and a check reading Tamanu's tables is not about the server.
-		let postgres = Subject::Application(ApplicationKind::Postgres);
-		let central = Subject::Application(ApplicationKind::TamanuCentral);
-		assert!(CheckScope::Postgres.admits(postgres));
-		assert!(!CheckScope::Postgres.admits(central));
-		assert!(!CheckScope::Tamanu.admits(postgres));
-		assert!(CheckScope::Tamanu.admits(central));
+		let postgres = app(ApplicationKind::Postgres);
+		let central = app(ApplicationKind::TamanuCentral);
+		assert!(CheckScope::Postgres.admits(&postgres));
+		assert!(!CheckScope::Postgres.admits(&central));
+		assert!(!CheckScope::Tamanu.admits(&postgres));
+		assert!(CheckScope::Tamanu.admits(&central));
 	}
 
 	#[test]
 	fn kind_scopes_are_mutually_exclusive() {
-		let central = Subject::Application(ApplicationKind::TamanuCentral);
-		let facility = Subject::Application(ApplicationKind::TamanuFacility);
-		assert!(CheckScope::Central.admits(central));
-		assert!(!CheckScope::Central.admits(facility));
-		assert!(CheckScope::Facility.admits(facility));
-		assert!(!CheckScope::Facility.admits(central));
+		let central = app(ApplicationKind::TamanuCentral);
+		let facility = app(ApplicationKind::TamanuFacility);
+		assert!(CheckScope::Central.admits(&central));
+		assert!(!CheckScope::Central.admits(&facility));
+		assert!(CheckScope::Facility.admits(&facility));
+		assert!(!CheckScope::Facility.admits(&central));
 	}
 
 	#[test]
-	fn possible_subjects_agree_with_admits() {
-		let every = [
-			Subject::Machine,
-			Subject::Application(ApplicationKind::TamanuCentral),
-			Subject::Application(ApplicationKind::TamanuFacility),
-			Subject::Application(ApplicationKind::Postgres),
-		];
+	fn possible_kinds_agree_with_admits() {
 		for scope in [
 			CheckScope::Machine,
 			CheckScope::Postgres,
@@ -285,29 +281,64 @@ mod tests {
 			CheckScope::Central,
 			CheckScope::Facility,
 		] {
-			let possible = scope.possible_subjects();
-			for subject in every {
+			let possible = scope.possible_kinds();
+			for kind in ApplicationKind::ALL {
 				assert_eq!(
-					possible.contains(&subject),
-					scope.admits(subject),
-					"{scope:?} disagrees with itself about {subject:?}",
+					possible.contains(&kind),
+					scope.admits(&app(kind)),
+					"{scope:?} disagrees with itself about {kind:?}",
 				);
 			}
 		}
 	}
 
 	#[test]
-	fn qualified_names_read_as_the_selection_syntax() {
+	fn qualified_names_use_the_type_not_the_key() {
+		// Selection names a check on a kind of subject, so one invocation reaches
+		// the check on every cluster rather than needing one per port.
 		assert_eq!(Subject::Machine.qualify("disk_free"), "machine:disk_free");
 		assert_eq!(
-			Subject::Application(ApplicationKind::TamanuCentral).qualify("migrations"),
+			app(ApplicationKind::TamanuCentral).qualify("migrations"),
 			"tamanu-central:migrations",
+		);
+		let a = Subject::Application(ApplicationRef::local_postgres(5432));
+		let b = Subject::Application(ApplicationRef::local_postgres(5433));
+		assert_eq!(a.qualify("connect"), b.qualify("connect"));
+		assert_ne!(a.key(), b.key());
+	}
+
+	#[test]
+	fn a_cluster_is_keyed_by_port_not_version() {
+		// An in-place major upgrade changes the version but not the port, so the
+		// key holds and canopy does not read it as a different application.
+		assert_eq!(
+			ApplicationRef::local_postgres(5432).key,
+			"host-postgres-5432"
+		);
+		assert_ne!(
+			ApplicationRef::local_postgres(5432).key,
+			ApplicationRef::local_postgres(5433).key,
 		);
 	}
 
 	#[test]
-	fn application_keys_are_prefixed_types() {
-		assert_eq!(ApplicationKind::TamanuCentral.key(), "host-tamanu-central");
-		assert_eq!(ApplicationKind::Postgres.key(), "host-postgres");
+	fn a_remote_cluster_is_keyed_apart_from_a_local_one() {
+		// The `host-` prefix must never claim the machine hosts something it
+		// does not.
+		let remote = ApplicationRef::remote_postgres("db.example.com", 5432);
+		assert_eq!(remote.key, "remote-db.example.com-5432");
+		assert_ne!(remote.key, ApplicationRef::local_postgres(5432).key);
+	}
+
+	#[test]
+	fn tamanu_keys_are_one_per_role() {
+		assert_eq!(
+			ApplicationRef::tamanu(ApplicationKind::TamanuCentral).key,
+			"host-tamanu-central"
+		);
+		assert_eq!(
+			ApplicationRef::tamanu(ApplicationKind::TamanuFacility).key,
+			"host-tamanu-facility"
+		);
 	}
 }

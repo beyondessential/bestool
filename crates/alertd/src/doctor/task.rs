@@ -34,7 +34,7 @@ fn cap_outcome(outcome: CheckOutcome, severities: Option<&SplitSeverities>) -> C
 		return outcome;
 	};
 	let empty = HashMap::new();
-	let map = split.for_subject(outcome.subject).unwrap_or(&empty);
+	let map = split.for_subject(&outcome.subject).unwrap_or(&empty);
 	let ceiling = doctor::sweep::severity_ceiling(map, outcome.check.name);
 	CheckOutcome {
 		check: Check {
@@ -470,7 +470,7 @@ impl BackgroundTask for DoctorTask {
 mod tests {
 	use bestool_canopy::schema::CheckSeverity;
 
-	use crate::doctor::subject::{ApplicationKind, Subject};
+	use crate::doctor::subject::{ApplicationKind, ApplicationRef, Subject};
 
 	use node_semver::Version;
 
@@ -584,7 +584,7 @@ mod tests {
 			.machine
 			.insert("shared".to_string(), CheckSeverity::Skip);
 		let outcome = CheckOutcome {
-			subject: Subject::Application(ApplicationKind::TamanuCentral),
+			subject: Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral)),
 			check: Check::fail("shared", "bad", "reason"),
 			on_wire: true,
 		};

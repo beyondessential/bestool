@@ -27,7 +27,7 @@ use crate::doctor::{
 	heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
-	subject::{ApplicationKind, CheckScope, Subject},
+	subject::{ApplicationKind, ApplicationRef, CheckScope, Subject},
 };
 
 /// The name bestool's daemon reports under.
@@ -173,6 +173,9 @@ pub struct SplitSeverities {
 	pub machine: HashMap<String, CheckSeverity>,
 	/// Keyed by application key, as the push named them.
 	pub applications: HashMap<String, HashMap<String, CheckSeverity>>,
+	/// Applied to any application the map does not name, for the ungrouped
+	/// endpoint that answers by bare check name alone.
+	pub fallback: Option<HashMap<String, CheckSeverity>>,
 }
 
 impl SplitSeverities {
@@ -184,19 +187,17 @@ impl SplitSeverities {
 	pub fn flat(severities: HashMap<String, CheckSeverity>) -> Self {
 		Self {
 			machine: severities.clone(),
-			applications: ApplicationKind::ALL
-				.into_iter()
-				.map(|kind| (kind.key(), severities.clone()))
-				.collect(),
+			applications: HashMap::new(),
+			fallback: Some(severities),
 		}
 	}
 
 	/// The ceilings governing `subject`, or `None` when canopy said nothing
 	/// about it — in which case every check falls to the absent-check default.
-	pub fn for_subject(&self, subject: Subject) -> Option<&HashMap<String, CheckSeverity>> {
-		match subject {
-			Subject::Machine => Some(&self.machine),
-			Subject::Application(kind) => self.applications.get(&kind.key()),
+	pub fn for_subject(&self, subject: &Subject) -> Option<&HashMap<String, CheckSeverity>> {
+		match subject.key() {
+			None => Some(&self.machine),
+			Some(key) => self.applications.get(key).or(self.fallback.as_ref()),
 		}
 	}
 }
@@ -219,6 +220,7 @@ pub fn split_severities(response: &StatusResponse) -> SplitSeverities {
 			.flatten()
 			.map(|(key, target)| (key.clone(), target.check_severities.clone()))
 			.collect(),
+		fallback: None,
 	}
 }
 
@@ -248,7 +250,7 @@ impl SweepResult {
 	pub fn apply_severities(&mut self, severities: &SplitSeverities) {
 		let empty = HashMap::new();
 		for outcome in &mut self.results {
-			let map = severities.for_subject(outcome.subject).unwrap_or(&empty);
+			let map = severities.for_subject(&outcome.subject).unwrap_or(&empty);
 			let ceiling = severity_ceiling(map, outcome.check.name);
 			outcome.check.status = outcome.check.status.clone().cap_to(ceiling);
 		}
@@ -267,18 +269,17 @@ impl SweepResult {
 /// `detail` block as it was.
 fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
 	if let Some(machine) = payload.machine.as_mut() {
-		machine.health = Some(health_for(results, Subject::Machine));
+		machine.health = Some(health_for(results, &Subject::Machine));
 	}
 	if let Some(apps) = payload.applications.as_mut() {
 		for (key, report) in apps.iter_mut() {
-			let subject = ApplicationKind::ALL
-				.iter()
-				.copied()
-				.find(|kind| &kind.key() == key)
-				.map(Subject::Application);
-			if let Some(subject) = subject {
-				report.health = Some(health_for(results, subject));
-			}
+			report.health = Some(
+				results
+					.iter()
+					.filter(|o| o.on_wire && o.subject.key() == Some(key.as_str()))
+					.filter_map(|o| serde_json::from_value(o.check.to_wire()).ok())
+					.collect(),
+			);
 		}
 	}
 }
@@ -304,14 +305,45 @@ struct PreparedCheck {
 /// rather than reported as skipped, and likewise for Postgres.
 ///
 /// spec: SUBJ
-fn subject_for(scope: CheckScope, applications: &[ApplicationKind]) -> Option<Subject> {
-	if scope.admits(Subject::Machine) {
-		return Some(Subject::Machine);
+fn subjects_for(scope: CheckScope, applications: &[ApplicationRef]) -> Vec<Subject> {
+	if scope.admits(&Subject::Machine) {
+		return vec![Subject::Machine];
 	}
 	applications
 		.iter()
-		.map(|kind| Subject::Application(*kind))
-		.find(|subject| scope.admits(*subject))
+		.cloned()
+		.map(Subject::Application)
+		.filter(|subject| scope.admits(subject))
+		.collect()
+}
+
+/// The Postgres application a connection string reaches.
+///
+/// Identified by the port it answers on, never by its version: an in-place
+/// major upgrade must not read as one application stopping and another
+/// starting. The port is the one identifier every connection form carries — a
+/// Unix socket is named `.s.PGSQL.<port>` — and libpq's 5432 default applies
+/// when the string leaves it out.
+///
+/// A cluster reached at an address that is not this machine is keyed apart, so
+/// the `host-` prefix never claims the machine hosts something it does not.
+///
+/// spec: SUBJ
+fn postgres_ref(url: &str) -> Option<ApplicationRef> {
+	use tokio_postgres::config::Host;
+
+	let config = url.parse::<tokio_postgres::Config>().ok()?;
+	let port = config.get_ports().first().copied().unwrap_or(5432);
+
+	if database_is_local(url) {
+		return Some(ApplicationRef::local_postgres(port));
+	}
+
+	let host = config.get_hosts().iter().find_map(|host| match host {
+		Host::Tcp(name) => Some(name.as_str()),
+		Host::Unix(_) => None,
+	})?;
+	Some(ApplicationRef::remote_postgres(host, port))
 }
 
 /// Whether a database connection string points at this machine.
@@ -357,15 +389,15 @@ fn database_is_local(url: &str) -> bool {
 ///
 /// Answers from the registry rather than from what this host runs, so the same
 /// invocation is an error for the same reason on every machine.
-fn known_qualified_names(registry: &[checks::CheckEntry]) -> Vec<String> {
+pub fn known_qualified_names(registry: &[checks::CheckEntry]) -> Vec<String> {
 	registry
 		.iter()
 		.flat_map(|entry| {
 			entry
 				.scope
-				.possible_subjects()
+				.possible_slugs()
 				.into_iter()
-				.map(|subject| subject.qualify(entry.name))
+				.map(|slug| format!("{slug}:{}", entry.name))
 		})
 		.collect()
 }
@@ -377,7 +409,11 @@ fn known_qualified_names(registry: &[checks::CheckEntry]) -> Vec<String> {
 /// exist, so an operator who types a bare name is told what to write instead.
 ///
 /// spec: DOC
-fn validate_selection(registry: &[checks::CheckEntry], names: &[String], flag: &str) -> Result<()> {
+pub fn validate_selection(
+	registry: &[checks::CheckEntry],
+	names: &[String],
+	flag: &str,
+) -> Result<()> {
 	let known = known_qualified_names(registry);
 	for name in names {
 		if !name.contains(':') {
@@ -387,9 +423,9 @@ fn validate_selection(registry: &[checks::CheckEntry], names: &[String], flag: &
 				.flat_map(|entry| {
 					entry
 						.scope
-						.possible_subjects()
+						.possible_slugs()
 						.into_iter()
-						.map(|subject| subject.qualify(entry.name))
+						.map(|slug| format!("{slug}:{}", entry.name))
 				})
 				.collect();
 			return Err(if forms.is_empty() {
@@ -567,15 +603,14 @@ pub async fn perform_sweep(
 	// Postgres under it is another, reported whenever it runs on this machine —
 	// whether a Tamanu uses it or the host has nothing but a `DATABASE_URL`.
 	// A deployment pointed at a remote database contributes no Postgres here.
-	let mut applications: Vec<ApplicationKind> = Vec::new();
+	let mut applications: Vec<ApplicationRef> = Vec::new();
 	if let Some(ctx) = tamanu_ctx.as_ref() {
 		if ctx.is_tamanu {
-			applications.push(ApplicationKind::from(ctx.kind));
+			applications.push(ApplicationRef::tamanu(ApplicationKind::from(ctx.kind)));
 		}
-		if database_is_local(&ctx.database_url) {
-			applications.push(ApplicationKind::Postgres);
-		} else {
-			debug!("database is not on this machine; reporting no postgres application");
+		match postgres_ref(&ctx.database_url) {
+			Some(app) => applications.push(app),
+			None => debug!("could not resolve a postgres application from the database URL"),
 		}
 	}
 
@@ -592,16 +627,20 @@ pub async fn perform_sweep(
 
 	// A check whose subject this sweep has no instance of is omitted outright:
 	// it never runs, and never appears in any subject's report.
+	// One entry runs once per subject that admits it, so a check on a machine
+	// with two Postgres clusters produces one result per cluster.
 	let selected: Vec<(usize, &checks::CheckEntry, Subject)> = registry
 		.iter()
 		.enumerate()
-		.filter_map(|(idx, entry)| {
-			let subject = subject_for(entry.scope, &applications)?;
+		.flat_map(|(idx, entry)| {
+			subjects_for(entry.scope, &applications)
+				.into_iter()
+				.map(move |subject| (idx, entry, subject))
+		})
+		.filter(|(_, entry, subject)| {
 			let qualified = subject.qualify(entry.name);
 			(selected_names.is_empty() || selected_names.contains(&qualified))
-				.then_some(())
-				.filter(|()| !skip_names.contains(&qualified))
-				.map(|()| (idx, entry, subject))
+				&& !skip_names.contains(&qualified)
 		})
 		.collect();
 
@@ -619,7 +658,7 @@ pub async fn perform_sweep(
 			PreparedCheck {
 				idx: *idx,
 				name: entry.name,
-				subject: *subject,
+				subject: subject.clone(),
 				on_wire: entry.on_wire,
 				fut: (entry.run)(check_ctx.clone()),
 				heal: heal.map(|h| (h, check_ctx.clone())),
@@ -663,14 +702,14 @@ pub async fn perform_sweep(
 
 	// Each application's detail comes from its own fact block, so no application
 	// carries a fact belonging to another.
-	let application_details: Vec<(ApplicationKind, Value)> = applications
+	let application_details: Vec<(ApplicationRef, Value)> = applications
 		.iter()
-		.map(|kind| -> Result<_> {
-			let info = match kind {
+		.map(|app| -> Result<_> {
+			let info = match app.kind {
 				ApplicationKind::Postgres => serde_json::to_value(&postgres_info),
 				_ => serde_json::to_value(&application_info),
 			};
-			Ok((*kind, info.into_diagnostic()?))
+			Ok((app.clone(), info.into_diagnostic()?))
 		})
 		.collect::<Result<_>>()?;
 
@@ -780,28 +819,28 @@ pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
 /// spec: SUBJ
 fn build_payload(
 	machine_info: &server_info::MachineInfo,
-	applications: &[(ApplicationKind, Value)],
+	applications: &[(ApplicationRef, Value)],
 	results: &[CheckOutcome],
 ) -> Result<StatusPayload> {
 	let machine = TargetReport::builder()
 		.detail(detail_for(
 			serde_json::to_value(machine_info).into_diagnostic()?,
 			results,
-			Subject::Machine,
+			&Subject::Machine,
 		))
-		.health(health_for(results, Subject::Machine))
+		.health(health_for(results, &Subject::Machine))
 		.build();
 
 	let reports: HashMap<String, ApplicationReport> = applications
 		.iter()
-		.map(|(kind, info)| {
-			let subject = Subject::Application(*kind);
+		.map(|(app, info)| {
+			let subject = Subject::Application(app.clone());
 			let report = ApplicationReport::builder()
-				.type_(kind.type_slug().to_owned())
-				.detail(detail_for(info.clone(), results, subject))
-				.health(health_for(results, subject))
+				.type_(app.kind.type_slug().to_owned())
+				.detail(detail_for(info.clone(), results, &subject))
+				.health(health_for(results, &subject))
 				.build();
-			(kind.key(), report)
+			(app.key.clone(), report)
 		})
 		.collect();
 
@@ -819,12 +858,12 @@ fn build_payload(
 ///
 /// An extra travels with its check's subject, so the machine's addresses land
 /// on the machine and an application's service inventory on the application.
-fn detail_for(info: Value, results: &[CheckOutcome], subject: Subject) -> Map<String, Value> {
+fn detail_for(info: Value, results: &[CheckOutcome], subject: &Subject) -> Map<String, Value> {
 	let mut detail: Map<String, Value> = match info {
 		Value::Object(obj) => obj,
 		_ => Map::new(),
 	};
-	for outcome in results.iter().filter(|o| o.subject == subject) {
+	for outcome in results.iter().filter(|o| &o.subject == subject) {
 		for (key, value) in &outcome.check.payload_extras {
 			detail.insert(key.clone(), value.clone());
 		}
@@ -833,10 +872,10 @@ fn detail_for(info: Value, results: &[CheckOutcome], subject: Subject) -> Map<St
 }
 
 /// One subject's `health[]`: its on-wire checks, in registry order.
-fn health_for(results: &[CheckOutcome], subject: Subject) -> Vec<HealthCheck> {
+fn health_for(results: &[CheckOutcome], subject: &Subject) -> Vec<HealthCheck> {
 	results
 		.iter()
-		.filter(|o| o.subject == subject && o.on_wire)
+		.filter(|o| &o.subject == subject && o.on_wire)
 		.filter_map(|o| serde_json::from_value(o.check.to_wire()).ok())
 		.collect()
 }
@@ -859,10 +898,38 @@ mod tests {
 	}
 
 	fn central(check: Check) -> CheckOutcome {
-		outcome(Subject::Application(ApplicationKind::TamanuCentral), check)
+		outcome(
+			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral)),
+			check,
+		)
+	}
+
+	fn postgres(check: Check) -> CheckOutcome {
+		outcome(
+			Subject::Application(ApplicationRef::local_postgres(5432)),
+			check,
+		)
 	}
 
 	const CENTRAL_KEY: &str = "host-tamanu-central";
+	const POSTGRES_KEY: &str = "host-postgres-5432";
+
+	fn details(apps: &[(ApplicationRef, Value)]) -> Vec<(ApplicationRef, Value)> {
+		apps.to_vec()
+	}
+
+	fn central_and_postgres() -> Vec<(ApplicationRef, Value)> {
+		details(&[
+			(
+				ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
+				serde_json::to_value(application_info()).unwrap(),
+			),
+			(
+				ApplicationRef::local_postgres(5432),
+				serde_json::to_value(postgres_info()).unwrap(),
+			),
+		])
+	}
 
 	fn machine_info() -> server_info::MachineInfo {
 		server_info::MachineInfo {
@@ -891,8 +958,13 @@ mod tests {
 		server_info::ApplicationInfo {
 			tamanu_version: Some("2.0.0".into()),
 			tamanu_server_kind: Some("central"),
-			pg_version: Some("16.1".into()),
 			..Default::default()
+		}
+	}
+
+	fn postgres_info() -> server_info::PostgresInfo {
+		server_info::PostgresInfo {
+			pg_version: Some("16.1".into()),
 		}
 	}
 
@@ -1015,40 +1087,103 @@ mod tests {
 	}
 
 	#[test]
-	fn subject_for_omits_application_checks_without_an_application() {
+	fn subjects_for_omits_application_checks_without_an_application() {
 		assert_eq!(
-			subject_for(CheckScope::Machine, None),
-			Some(Subject::Machine)
+			subjects_for(CheckScope::Machine, &[]),
+			vec![Subject::Machine]
 		);
-		assert_eq!(subject_for(CheckScope::Tamanu, None), None);
-		assert_eq!(subject_for(CheckScope::Database, None), None);
+		assert!(subjects_for(CheckScope::Tamanu, &[]).is_empty());
+		assert!(subjects_for(CheckScope::Postgres, &[]).is_empty());
 	}
 
 	#[test]
-	fn subject_for_files_a_central_check_against_the_central_application() {
-		let central = Some(ApplicationKind::TamanuCentral);
+	fn a_check_runs_once_per_admitting_instance() {
+		// Two clusters mean two results for one registry entry, each filed
+		// against its own application.
+		let clusters = [
+			ApplicationRef::local_postgres(5432),
+			ApplicationRef::local_postgres(5433),
+		];
+		let subjects = subjects_for(CheckScope::Postgres, &clusters);
+		assert_eq!(subjects.len(), 2);
+		let keys: Vec<&str> = subjects.iter().filter_map(|s| s.key()).collect();
+		assert_eq!(keys, vec!["host-postgres-5432", "host-postgres-5433"]);
+		// And both are selected by the one type-level name.
+		assert!(
+			subjects
+				.iter()
+				.all(|s| s.qualify("connect") == "postgres:connect")
+		);
+	}
+
+	#[test]
+	fn subjects_for_files_a_central_check_against_the_central_application() {
+		let central = [ApplicationRef::tamanu(ApplicationKind::TamanuCentral)];
 		assert_eq!(
-			subject_for(CheckScope::Central, central),
-			Some(Subject::Application(ApplicationKind::TamanuCentral)),
+			subjects_for(CheckScope::Central, &central),
+			vec![Subject::Application(ApplicationRef::tamanu(
+				ApplicationKind::TamanuCentral
+			))],
 		);
 		// The same check has no subject on a facility, so it does not run there.
-		assert_eq!(
-			subject_for(CheckScope::Central, Some(ApplicationKind::TamanuFacility)),
-			None,
-		);
+		let facility = [ApplicationRef::tamanu(ApplicationKind::TamanuFacility)];
+		assert!(subjects_for(CheckScope::Central, &facility).is_empty());
 	}
 
 	#[test]
-	fn generic_database_host_reports_a_postgres_application() {
-		// A bare Postgres is still an application: the generic database checks
-		// are about it, and dropping them would stop monitoring such a host.
-		let postgres = Some(ApplicationKind::Postgres);
-		assert_eq!(
-			subject_for(CheckScope::Database, postgres),
-			Some(Subject::Application(ApplicationKind::Postgres)),
-		);
-		// But a check that reads Tamanu's own tables is not filed against it.
-		assert_eq!(subject_for(CheckScope::Tamanu, postgres), None);
+	fn postgres_checks_are_filed_against_postgres_not_tamanu() {
+		// The four database checks grade the server, not whatever uses it.
+		let both = [
+			ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
+			ApplicationRef::local_postgres(5432),
+		];
+		let subject = subjects_for(CheckScope::Postgres, &both);
+		assert_eq!(subject.len(), 1);
+		assert_eq!(subject[0].key(), Some("host-postgres-5432"));
+
+		// And a check reading Tamanu's own tables is not filed against Postgres.
+		let tamanu = subjects_for(CheckScope::Tamanu, &both);
+		assert_eq!(tamanu.len(), 1);
+		assert_eq!(tamanu[0].key(), Some("host-tamanu-central"));
+	}
+
+	#[test]
+	fn a_local_cluster_is_resolved_from_its_connection_string() {
+		for url in [
+			"postgresql://u@localhost/db",
+			"postgresql://u@127.0.0.1/db",
+			"postgresql://u@[::1]/db",
+			"postgresql:///db?host=/var/run/postgresql",
+		] {
+			let app = postgres_ref(url).unwrap_or_else(|| panic!("{url} should resolve"));
+			assert_eq!(app.key, "host-postgres-5432", "{url}");
+		}
+	}
+
+	#[test]
+	fn a_cluster_on_another_port_is_a_different_application() {
+		let a = postgres_ref("postgresql://u@localhost:5432/db").unwrap();
+		let b = postgres_ref("postgresql://u@localhost:5433/db").unwrap();
+		assert_ne!(a.key, b.key);
+	}
+
+	#[test]
+	fn a_remote_cluster_is_not_claimed_as_this_machines() {
+		let app = postgres_ref("postgresql://u@db.example.com:5432/tamanu").unwrap();
+		assert_eq!(app.key, "remote-db.example.com-5432");
+		assert!(!app.key.starts_with("host-"));
+	}
+
+	#[test]
+	fn a_unix_socket_is_always_local_and_carries_its_port() {
+		// The socket is named `.s.PGSQL.<port>`, so a socket connection has a
+		// port and reaches the same cluster as TCP on that port.
+		assert!(database_is_local(
+			"postgresql:///db?host=/var/run/postgresql"
+		));
+		let socket = postgres_ref("postgresql:///db?host=/var/run/postgresql&port=5433").unwrap();
+		let tcp = postgres_ref("postgresql://u@localhost:5433/db").unwrap();
+		assert_eq!(socket.key, tcp.key);
 	}
 
 	#[test]
@@ -1099,13 +1234,7 @@ mod tests {
 			machine(Check::pass("disk_free", "ok")),
 			central(Check::fail("migrations", "behind", "reason")),
 		];
-		let info = application_info();
-		let payload = build_payload(
-			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
-			&results,
-		)
-		.unwrap();
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 
 		let machine_target = payload.machine.as_ref().unwrap();
 		assert_eq!(wire_names(&machine_target.health), vec!["disk_free"]);
@@ -1117,16 +1246,60 @@ mod tests {
 	}
 
 	#[test]
+	fn postgres_reports_the_server_version_and_tamanu_does_not() {
+		// The Postgres version is the server's own fact, not that of whatever
+		// connects to it.
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &[]).unwrap();
+		let apps = payload.applications.as_ref().unwrap();
+
+		let pg_detail = &apps.get(POSTGRES_KEY).unwrap().detail;
+		assert_eq!(pg_detail.get("pgVersion").unwrap(), "16.1");
+
+		let tamanu_detail = &apps.get(CENTRAL_KEY).unwrap().detail;
+		assert!(!tamanu_detail.contains_key("pgVersion"));
+		assert_eq!(tamanu_detail.get("tamanuVersion").unwrap(), "2.0.0");
+	}
+
+	#[test]
+	fn postgres_and_tamanu_are_separate_applications() {
+		let results = vec![
+			central(Check::fail("migrations", "behind", "reason")),
+			postgres(Check::pass("checksums", "on")),
+		];
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
+		let apps = payload.applications.as_ref().unwrap();
+
+		assert_eq!(apps.len(), 2);
+		assert_eq!(apps.get(POSTGRES_KEY).unwrap().type_, "postgres");
+		assert_eq!(apps.get(CENTRAL_KEY).unwrap().type_, "tamanu-central");
+		assert_eq!(
+			wire_names(&apps.get(POSTGRES_KEY).unwrap().health),
+			vec!["checksums"]
+		);
+		assert_eq!(
+			wire_names(&apps.get(CENTRAL_KEY).unwrap().health),
+			vec!["migrations"]
+		);
+	}
+
+	#[test]
+	fn the_four_postgres_checks_are_scoped_to_postgres() {
+		// They grade the server, so none of them is filed against Tamanu.
+		let registry = checks::all();
+		for name in ["connect", "version", "tuning", "checksums"] {
+			let entry = registry
+				.iter()
+				.find(|e| e.name == name)
+				.unwrap_or_else(|| panic!("{name} should be registered"));
+			assert_eq!(entry.scope, CheckScope::Postgres, "{name}");
+		}
+	}
+
+	#[test]
 	fn an_application_reports_no_bestool_version() {
 		// The bestool version answers whether the agent on the machine needs
 		// upgrading, so it is the machine's fact and no application carries it.
-		let info = application_info();
-		let payload = build_payload(
-			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
-			&[],
-		)
-		.unwrap();
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &[]).unwrap();
 
 		let machine_detail = &payload.machine.as_ref().unwrap().detail;
 		assert!(machine_detail.contains_key("bestoolVersion"));
@@ -1137,7 +1310,6 @@ mod tests {
 		assert!(!app_detail.contains_key("bestoolVersion"));
 		assert!(!app_detail.contains_key("hostname"));
 		assert_eq!(app_detail.get("tamanuVersion").unwrap(), "2.0.0");
-		assert_eq!(app_detail.get("pgVersion").unwrap(), "16.1");
 	}
 
 	#[test]
@@ -1150,7 +1322,10 @@ mod tests {
 		};
 		let payload = build_payload(
 			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
+			&details(&[(
+				ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
+				serde_json::to_value(info).unwrap(),
+			)]),
 			&[],
 		)
 		.unwrap();
@@ -1183,13 +1358,7 @@ mod tests {
 					.with_payload_extra("services", serde_json::json!({"supervisor": "systemd"})),
 			),
 		];
-		let info = application_info();
-		let payload = build_payload(
-			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
-			&results,
-		)
-		.unwrap();
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 
 		let machine_detail = &payload.machine.as_ref().unwrap().detail;
 		assert!(machine_detail.contains_key("lanIps"));
@@ -1203,7 +1372,7 @@ mod tests {
 
 	#[test]
 	fn payload_names_its_source_and_sends_no_flat_health() {
-		let payload = build_payload(&machine_info(), None, &[]).unwrap();
+		let payload = build_payload(&machine_info(), &[], &[]).unwrap();
 		assert_eq!(payload.source.as_deref(), Some("alertd"));
 		assert!(payload.health.is_empty());
 		assert!(payload.applications.is_none());
@@ -1218,7 +1387,7 @@ mod tests {
 				..machine(Check::pass("off", "ok"))
 			},
 		];
-		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let payload = build_payload(&machine_info(), &[], &results).unwrap();
 		let machine_target = payload.machine.as_ref().unwrap();
 		assert_eq!(wire_names(&machine_target.health), vec!["on"]);
 	}
@@ -1227,24 +1396,18 @@ mod tests {
 	fn overall_reads_every_subject() {
 		// A failing application makes the sweep failing: the operator is looking
 		// at one host either way.
-		let info = application_info();
 		let results = vec![
 			machine(Check::pass("disk_free", "ok")),
 			central(Check::fail("migrations", "behind", "reason")),
 		];
-		let payload = build_payload(
-			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
-			&results,
-		)
-		.unwrap();
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 		assert_eq!(overall_from_payload(&payload), OverallResult::Failing);
 	}
 
 	#[test]
 	fn overall_healthy_when_every_subject_passes() {
 		let results = vec![machine(Check::pass("disk_free", "ok"))];
-		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let payload = build_payload(&machine_info(), &[], &results).unwrap();
 		assert_eq!(overall_from_payload(&payload), OverallResult::Healthy);
 	}
 
@@ -1252,17 +1415,11 @@ mod tests {
 	fn severities_are_applied_per_subject() {
 		// The same bare name is graded separately on each subject, which is the
 		// whole reason a check is identified by subject and name together.
-		let info = application_info();
 		let results = vec![
 			machine(Check::fail("shared", "bad", "reason")),
 			central(Check::fail("shared", "bad", "reason")),
 		];
-		let payload = build_payload(
-			&machine_info(),
-			Some((ApplicationKind::TamanuCentral, &info)),
-			&results,
-		)
-		.unwrap();
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 		let mut sweep = SweepResult {
 			machine_id: None,
 			results,
@@ -1291,7 +1448,9 @@ mod tests {
 		};
 		assert_eq!(status_of(Subject::Machine), "skipped");
 		assert_eq!(
-			status_of(Subject::Application(ApplicationKind::TamanuCentral)),
+			status_of(Subject::Application(ApplicationRef::tamanu(
+				ApplicationKind::TamanuCentral
+			))),
 			"failed"
 		);
 
@@ -1316,7 +1475,7 @@ mod tests {
 		// A check canopy hasn't heard of yet is capped at warn, so a computed
 		// failure is shown as a warning rather than promoted or left fatal.
 		let results = vec![machine(Check::fail("brand_new", "bad", "reason"))];
-		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let payload = build_payload(&machine_info(), &[], &results).unwrap();
 		let mut sweep = SweepResult {
 			machine_id: None,
 			results,
@@ -1337,10 +1496,10 @@ mod tests {
 			SplitSeverities::flat(HashMap::from([("shared".to_string(), CheckSeverity::Skip)]));
 		for subject in [
 			Subject::Machine,
-			Subject::Application(ApplicationKind::TamanuCentral),
-			Subject::Application(ApplicationKind::Postgres),
+			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral)),
+			Subject::Application(ApplicationRef::local_postgres(5432)),
 		] {
-			let map = flat.for_subject(subject).expect("a map for every subject");
+			let map = flat.for_subject(&subject).expect("a map for every subject");
 			assert_eq!(map.get("shared"), Some(&CheckSeverity::Skip));
 		}
 	}
@@ -1387,7 +1546,7 @@ mod tests {
 			machine(Check::pass("a", "ok")),
 			machine(Check::skip("b", "not run", "reason")),
 		];
-		let payload = build_payload(&machine_info(), None, &results).unwrap();
+		let payload = build_payload(&machine_info(), &[], &results).unwrap();
 		let machine_target = payload.machine.as_ref().unwrap();
 		assert_eq!(result_of(&machine_target.health, "b").unwrap(), "skipped");
 	}
