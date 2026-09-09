@@ -15,7 +15,7 @@ The store format and its integrity guarantees are in [AUD-STO](store.md), shell 
 Every statement and meta-command the session executes is recorded, including ones that fail, along with the time it was run to microsecond precision.
 Each record is attributed to the operating-system user running the session and the database user the session is connected as.
 The session's write mode at the time, and the over-the-shoulder supervisor named when write mode was enabled, are recorded with it.
-The active untagged Tailscale peers at the time, each as a device hostname and a login name, are recorded when Tailscale is present, so a session run over a remote shell can be tied to the person at the other end.
+The active untagged Tailscale peers, each as a device hostname and a login name, are recorded when Tailscale is present, so a session run over a remote shell can be tied to the person at the other end.
 Each record carries the identity of the session that produced it.
 A statement that came from a snippet or an included file is recorded like any other but marked as not for recall, so it does not surface in shell history.
 

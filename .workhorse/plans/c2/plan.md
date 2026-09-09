@@ -13,6 +13,7 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - **Day boundary.** UTC, matching the record timestamps. A segment rolls at midnight UTC and the writer drops the previous segment's lock as it does.
 - **Codec.** The `zstd` crate, already in bestool's tree via the self-update downloader. `ruzstd` is a side quest: benchmark against `zstd` on compacted audit data and, if it holds up, propose it upstream in cargo-binstall. Not part of this card.
 - **Locks.** Advisory lock on the segment file held by its writer until it rolls to the next day or exits; advisory lock on a directory-level lock file held by compaction. Writers never take the directory lock. Use a small cross-platform crate rather than raw fcntl/LockFileEx.
+- **Tailscale sampling.** `tailscale status` is a subprocess, and the current implementation spawns it on every entry. Sample once per segment instead, at session start and each rollover, and reuse that set for the segment's later context records. The recorded set is then who was reachable when the segment opened; a session handed to someone else inside a shared tmux keeps the peers from the open until the next rollover, which is accepted.
 - **Network filesystem detection.** Linux: filesystem type of the store directory via statfs (nfs, cifs, smb, fuse variants, 9p). Windows: drive type of the path is remote. macOS: mount filesystem name via statfs. Advisory only; the session warns and continues.
 - **Startup history read order.** Open segments and day files newest-first by file, which the date in every filename gives directly, and within a file read from the end where the format allows, stopping when the budget is met. Segment count therefore barely affects startup.
 - **Compaction throttle.** Run only when at least one closed segment sits outside the plain-text window. Process at most one day per session start. Lowest IO and thread priority the platform offers.
@@ -28,6 +29,7 @@ Things the specs deliberately leave to the implementation, recorded here so they
 - [ ] Day rollover: at the first record past midnight UTC, close and unlock the current segment and open the next, carrying the chain and sequence numbers across.
 - [ ] Hash chain: compute `prev` from the previous line's raw bytes; empty only for the session's very first record.
 - [ ] Context records on state change: hook write-mode toggles, supervisor changes and any other context field so a new context record is appended before the next query record.
+- [ ] Sample Tailscale peers at segment open only, and carry that set onto the segment's later context records; drop the per-entry `get_active_peers` call.
 - [ ] Write-failure path: warn once, bounded backlog by count and bytes, oldest dropped first, flush in order on the next successful write.
 - [ ] Network filesystem detection at open with a loud warning.
 - [ ] Legacy import: stream the redb tables into segments grouped by old instance id, sync, then delete the old files.

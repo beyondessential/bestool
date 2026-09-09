@@ -37,6 +37,9 @@ Three record kinds exist.
 A **context** record carries the session state that applies to all following query records: operating-system user, database user, write mode, over-the-shoulder supervisor, Tailscale peers, and session identity.
 The first record of every segment is a context record, and a new context record is appended whenever any of that state changes, such as write mode being enabled or a supervisor being named.
 
+The Tailscale peers are the exception: they are sampled once when a segment opens, at session start and again at each rollover, and every context record in that segment carries the set sampled then.
+The whole set of active peers is recorded because which one of them owns the session cannot be determined, and it stands as who was reachable when the segment opened.
+
 A **query** record carries the statement text and whether the statement is eligible for shell recall.
 Everything else about a query record is found by carrying forward the most recent context record before it.
 
