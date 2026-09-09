@@ -38,7 +38,8 @@ Things the specs deliberately leave to the implementation, recorded here so they
 
 - [ ] Segment parser: JSON lines with format version, torn or unparsable final line ends the segment.
 - [ ] Day file parser: zstd-compressed JSON lines.
-- [ ] Merged reader: time-ordered k-way merge across segments and day files, context carried forward, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window.
+- [ ] Merged reader: time-ordered k-way merge across segments and day files, dedup by (instance, seq), time-range filter, newest/oldest limit, streaming with a bounded window. Two surfaces over the one merge: stored records for export, and context-carried-forward flat entries for the recall set and other callers.
+- [ ] Filtered export emits the context record in force at the start of the output before the first query record.
 - [ ] Chain verification per session, following its records across segments and day files in date order, reporting the first break and treating the oldest kept record's `prev` as unverifiable; chain heads per session.
 
 ### Shell history

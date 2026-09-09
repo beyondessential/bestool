@@ -9,7 +9,8 @@ The API is the stable surface; the command-line tools are thin wrappers over it.
 
 ## Read API
 
-The API opens an audit directory and reads it as one time-ordered stream of records across all segments and day files, with each query record's context carried forward so the caller sees flat entries.
+The API opens an audit directory and reads it as one time-ordered stream of records across all segments and day files.
+The stream is offered two ways: the records as they are stored, which is what the export command writes out, and flat entries, where each query record carries the context in force at it so a caller needs no state of its own.
 Reading is streaming: a caller iterating a year of records never holds more than a bounded window in memory.
 The stream can be restricted to a time range and limited to the newest or oldest N entries.
 
@@ -22,7 +23,9 @@ It runs compaction and retention on demand (see [AUD-RET](retention.md)).
 `bestool-psql-audit` and `bestool audit-psql` are the same tool reached two ways.
 Both take an audit directory, defaulting to the same location the session uses.
 
-The export command writes entries as JSON lines to standard output, one flat entry per line with its timestamp in RFC 3339 form, and accepts a time range, a limit, and a choice of newest or oldest first.
+The export command writes records to standard output as JSON lines, in the shape they have in the store: like compaction, export changes their container and not their content, so an unfiltered export is the log itself, merged into time order and decompressed, and verifies as such.
+It accepts a time range, a limit, and a choice of newest or oldest first.
+When a filter narrows the output, the context record in force at the start of it is emitted first, so every query record in the output can still be attributed.
 A closed output pipe ends the export quietly.
 
 The verify command checks every session's chain across the segments and day files that hold it, reports any chain that does not hold, and exits non-zero if any fails.
