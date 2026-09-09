@@ -57,6 +57,14 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout for a raw GET, which covers reading the body as well as the answer.
+///
+/// The tailscale client is the probe client, bounded to a few seconds so a
+/// wedged tailnet does not stall discovery. A raw GET fetches an artifact, so
+/// it needs a bound sized for bytes rather than for reachability, set per
+/// request so the probe's own bound is untouched.
+const RAW_GET_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Timeout for the tailscale DNS lookup (against 100.100.100.100).
 ///
 /// Bounds the lookup so a wedged tailscale DNS server can't stall discovery;
@@ -327,6 +335,7 @@ impl ReqwestTransport {
 		debug!(%url, "GET via canopy");
 		let response = http
 			.get(url.clone())
+			.timeout(RAW_GET_TIMEOUT)
 			.send()
 			.await
 			.into_diagnostic()

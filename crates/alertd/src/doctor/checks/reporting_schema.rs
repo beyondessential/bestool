@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use bestool_canopy::CanopyClient;
 use miette::{IntoDiagnostic as _, bail};
+use node_semver::Version;
 
 use super::{SweepContext, fmt_db_error};
 use crate::doctor::{check::Check, heal::HealOutcome};
@@ -86,7 +87,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 		);
 	};
 
-	let offered = match offered_schema(canopy, &tamanu.tamanu_version.to_string()).await {
+	let offered = match offered_schema(canopy, &tamanu.tamanu_version).await {
 		Ok(offered) => offered,
 		Err(err) if canopy_is_out(&err) => {
 			return with_version(
@@ -136,7 +137,7 @@ pub async fn run(ctx: SweepContext) -> Check {
 enum Stamp {
 	NoSchema,
 	Unstamped,
-	Version(String),
+	Version(Version),
 }
 
 /// Longest a stamp may be and still be a version. The comment is arbitrary
@@ -159,22 +160,24 @@ async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres
 }
 
 /// The version a schema comment names, where the comment is one.
-fn stamp_of(comment: String) -> Option<String> {
+///
+/// The parsed version is what is kept, not the text: `v2.60.0` and `2.60.0`
+/// name the same schema, and a stamp compared as text would fail a server that
+/// has exactly the right one.
+fn stamp_of(comment: String) -> Option<Version> {
 	let trimmed = comment.trim();
 	if trimmed.is_empty() || trimmed.len() > MAX_STAMP_LEN {
 		return None;
 	}
 
-	node_semver::Version::parse(trimmed)
-		.is_ok()
-		.then(|| trimmed.to_owned())
+	Version::parse(trimmed).ok()
 }
 
 /// What the stamp on the server says against what canopy offers.
 ///
 /// Separated from the sweep because this is the whole judgement the check
 /// makes, and it is worth being able to state it without a database.
-fn grade(running: &Stamp, offered: &str) -> Check {
+fn grade(running: &Stamp, offered: &Version) -> Check {
 	match running {
 		Stamp::Version(stamp) if stamp == offered => {
 			Check::pass(NAME, format!("reporting schema {stamp}"))
@@ -203,16 +206,42 @@ fn grade(running: &Stamp, offered: &str) -> Check {
 fn with_version(check: Check, running: &Stamp) -> Check {
 	match running {
 		Stamp::Version(version) => {
-			check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version.as_str()))
+			check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version.to_string()))
 		}
 		Stamp::NoSchema | Stamp::Unstamped => check,
 	}
 }
 
 /// A reporting schema canopy offers, and the version it was built for.
+#[derive(Clone)]
 struct Offered {
-	version: String,
+	version: Version,
 	id: String,
+}
+
+/// How long an answer from canopy about what is offered is reused for.
+///
+/// What canopy offers for one exact Tamanu version changes only when a build
+/// publishes a new schema, so asking every sweep is a request per server per
+/// minute for the same answer. The window bounds how long the fleet can go on
+/// grading against a schema that has just been replaced.
+const OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The last answer canopy gave, and when. Keyed by version so an upgrade asks
+/// afresh rather than grading against the schema of the version it left.
+static OFFER: std::sync::Mutex<Option<(Version, std::time::Instant, Option<Offered>)>> =
+	std::sync::Mutex::new(None);
+
+fn cached_offer(version: &Version) -> Option<Option<Offered>> {
+	let held = OFFER.lock().expect("offer cache poisoned");
+	held.as_ref().and_then(|(cached, taken, offered)| {
+		(cached == version && taken.elapsed() < OFFER_TTL).then(|| offered.clone())
+	})
+}
+
+fn cache_offer(version: &Version, offered: &Option<Offered>) {
+	*OFFER.lock().expect("offer cache poisoned") =
+		Some((version.clone(), std::time::Instant::now(), offered.clone()));
 }
 
 /// Ask canopy which reporting schema this server is offered.
@@ -223,11 +252,18 @@ struct Offered {
 /// artifacts that belong to no group.
 async fn offered_schema(
 	canopy: &Arc<CanopyClient>,
-	version: &str,
+	version: &Version,
 ) -> Result<Option<Offered>, bestool_canopy::Error> {
-	let artifacts = match canopy.versions_artifacts(version).await {
+	if let Some(offered) = cached_offer(version) {
+		return Ok(offered);
+	}
+
+	let artifacts = match canopy.versions_artifacts(&version.to_string()).await {
 		Ok(artifacts) => artifacts,
-		Err(err) if offers_nothing(&err) => return Ok(None),
+		Err(err) if offers_nothing(&err) => {
+			cache_offer(version, &None);
+			return Ok(None);
+		}
 		Err(err) => return Err(err),
 	};
 
@@ -238,13 +274,16 @@ async fn offered_schema(
 		);
 	}
 
-	Ok(artifacts
+	let offered = artifacts
 		.into_iter()
 		.find(is_exact_schema)
 		.map(|a| Offered {
-			version: version.to_owned(),
+			version: version.clone(),
 			id: a.id.to_string(),
-		}))
+		});
+
+	cache_offer(version, &offered);
+	Ok(offered)
 }
 
 /// Whether an artifact is a reporting schema this server may grade against.
@@ -307,7 +346,7 @@ async fn fetch_offered(
 	canopy: &Arc<CanopyClient>,
 	offered: &Offered,
 ) -> Result<String, miette::Report> {
-	let path = download_path(&offered.version, &offered.id);
+	let path = download_path(&offered.version.to_string(), &offered.id);
 
 	let mut response = canopy
 		.transport()
@@ -399,7 +438,7 @@ async fn apply_offered(ctx: SweepContext) -> HealOutcome {
 		return HealOutcome::Deferred;
 	};
 
-	let offered = match offered_schema(canopy, &tamanu.tamanu_version.to_string()).await {
+	let offered = match offered_schema(canopy, &tamanu.tamanu_version).await {
 		Ok(Some(offered)) => offered,
 		Ok(None) => return HealOutcome::Deferred,
 		Err(err) => {
@@ -678,15 +717,35 @@ mod tests {
 		}
 	}
 
+	fn v(version: &str) -> Version {
+		Version::parse(version).expect("a version")
+	}
+
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(&Stamp::Version("2.60.0".into()), "2.60.0");
+		let check = grade(&Stamp::Version(v("2.60.0")), &v("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Pass));
+	}
+
+	/// A stamp is compared as a version, not as text: the SQL that writes it is
+	/// not this codebase, and `v2.60.0` names the schema `2.60.0` does.
+	#[test]
+	fn a_stamp_written_differently_still_matches() {
+		for written in ["v2.60.0", "2.60.0+build7"] {
+			let stamp = stamp_of(written.to_owned()).expect("parses as a version");
+			assert!(
+				matches!(
+					grade(&Stamp::Version(stamp), &v("2.60.0")).status,
+					CheckStatus::Pass
+				),
+				"{written} names the offered schema"
+			);
+		}
 	}
 
 	#[test]
 	fn a_different_stamp_fails_and_names_both() {
-		let check = grade(&Stamp::Version("2.59.0".into()), "2.60.0");
+		let check = grade(&Stamp::Version(v("2.59.0")), &v("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 		// Both versions belong in the summary: which one the server is on is
 		// the thing an operator needs, not just that it is wrong.
@@ -696,7 +755,7 @@ mod tests {
 
 	#[test]
 	fn no_schema_at_all_fails() {
-		let check = grade(&Stamp::NoSchema, "2.60.0");
+		let check = grade(&Stamp::NoSchema, &v("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 	}
 
@@ -706,8 +765,8 @@ mod tests {
 	/// a server whose reports are reading from one.
 	#[test]
 	fn an_unstamped_schema_is_not_an_absent_one() {
-		let unstamped = grade(&Stamp::Unstamped, "2.60.0");
-		let absent = grade(&Stamp::NoSchema, "2.60.0");
+		let unstamped = grade(&Stamp::Unstamped, &v("2.60.0"));
+		let absent = grade(&Stamp::NoSchema, &v("2.60.0"));
 
 		assert!(matches!(unstamped.status, CheckStatus::Fail(_)));
 		assert_ne!(unstamped.summary, absent.summary);
@@ -731,8 +790,8 @@ mod tests {
 		// A server on the wrong schema is exactly when knowing which one it
 		// has matters, so the fact rides along with a failure too.
 		let check = with_version(
-			grade(&Stamp::Version("2.59.0".into()), "2.60.0"),
-			&Stamp::Version("2.59.0".into()),
+			grade(&Stamp::Version(v("2.59.0")), &v("2.60.0")),
+			&Stamp::Version(v("2.59.0")),
 		);
 		assert_eq!(
 			check.payload_extras.get(VERSION_FACT),
@@ -756,7 +815,7 @@ mod tests {
 	/// plausibly a version reads as no stamp rather than being carried.
 	#[test]
 	fn a_comment_that_is_not_a_version_is_not_a_stamp() {
-		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some("2.60.0".to_owned()));
+		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some(v("2.60.0")));
 		assert_eq!(stamp_of("   ".to_owned()), None);
 		assert_eq!(stamp_of("x".repeat(MAX_STAMP_LEN + 1)), None);
 		assert_eq!(stamp_of("built by hand".to_owned()), None);
@@ -795,7 +854,7 @@ mod tests {
 
 	#[test]
 	fn a_server_with_no_schema_reports_no_version() {
-		let check = with_version(grade(&Stamp::NoSchema, "2.60.0"), &Stamp::NoSchema);
+		let check = with_version(grade(&Stamp::NoSchema, &v("2.60.0")), &Stamp::NoSchema);
 		assert!(!check.payload_extras.contains_key(VERSION_FACT));
 	}
 }
