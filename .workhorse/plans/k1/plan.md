@@ -48,6 +48,25 @@ This card builds on that, adding the part that makes the split work when the che
 Gone from here with it: the registry subject split, the facts split, and the machine id rename.
 `SUBJ` (`.workhorse/specs/tamanu/subjects.md`) is A2's spec; `SUB` is this card's.
 
+## Open: is a uniform substrate the right shape?
+
+Working through A2 suggests it may not be. A2 does the whole subject split with no substrate, and does not feel like it is working around a missing abstraction.
+
+Three of the four things `SUB` has a substrate answering for are not substrates: a database connection, Tamanu's config and version, and "am I the machine" are parameters and a boolean. Only the workload grouping — duties, services, per-service facts — abstracts genuinely different acquisition. The other three restate the old `@tamanu` / `@db` / `host` categories.
+
+The suite is the bigger issue. 18 of 45 checks are machine checks and a relay assembles none of them, so 40% of the catalogue would exist only to skip, every sweep, burying the skips that mean something.
+
+The alternative: expose the checks and the shared machinery, and let a consumer assemble the suite it needs, rather than running alertd as one API with a substrate plugged into it. Under that model "not applicable to this environment" is absence from the suite and "applicable but unreadable today" stays a skip — two facts the current spec collapses into one. Canopy supports both: a source's push only opens and recovers its own checks.
+
+What this would preserve, drop, and raise:
+
+- **Preserved, and more explicitly**: the property that the two environments cannot diverge into subtly different checks, because the shared unit becomes the check itself rather than the whole sweep.
+- **Still needed**: the abstraction over how a reading that feeds a threshold is obtained. Assembly owns *which* checks run; if a consumer supplies the numbers instead of the check asking for them, two consumers can grade against different denominators. The seam narrows rather than disappears.
+- **Dropped**: the runtime "machine checks skip when not on the machine" guard, mostly — a relay that never assembles machine checks does not need it, though it stays cheap insurance against assembling one by mistake.
+- **Kept regardless**: the duty vocabulary, per-service metrics, and check storage as an injectable.
+- **To avoid**: hand-assembly by check name, which drifts as the catalogue grows. Better that the registry survives, each check declares what it requires, and a consumer filters it, so a new check propagates by default and exclusion is deliberate.
+- **Raised**: whether `bestool-alertd` splits into a checks-and-machinery library and a daemon that is one consumer of it. Larger than anything currently on this card.
+
 ## Build steps
 
 - [ ] Introduce the substrate trait and the check-storage trait, with own-system implementations
