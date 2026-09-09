@@ -4,15 +4,18 @@ id: SUB
 
 # Check substrates
 
-A substrate is what a healthcheck asks for the readings it grades.
-It identifies what the checking process has access to and what it can find out, so one check runs unchanged whether bestool is installed on the machine it reports for or is observing an application from elsewhere.
-See [SUBJ](subjects.md) for the machines and applications a check reports for, [CHK](healthchecks.md) for the checks themselves, and [DOC](doctor.md) for the sweep that runs them.
+A substrate is how a check reads the runtime of the application it reports for: what is running that application, what traffic reaches it, and what certificates stand in front of it.
+It exists so that one check works whether bestool is installed alongside an application or is observing it from elsewhere.
+See [SUBJ](subjects.md) for the subjects a check reports for, [CHK](healthchecks.md) for the checks themselves, and [DOC](doctor.md) for the sweep that runs them.
 
-A substrate is not a proxy that every check routes through.
-It answers who the checking process is speaking for and what it can obtain on that subject's behalf; a check that needs nothing from it does not consult it.
+A substrate is not a layer every check routes through.
+It covers only what genuinely differs between environments: an application's services are found through a supervisor on one machine, a container runtime on another, and a cluster's API on a third, and the same reading has to come out of all three.
 
-A substrate speaks for exactly one subject — a machine, or a single application.
-A machine hosting two applications is covered by three subjects: the machine, and each application separately.
+What a check needs that does not differ is supplied to it rather than asked for.
+A connection to a database, an application's configuration, its version and its type are parameters: they are the same kind of thing wherever the application runs, and wrapping them in an abstraction would only restate what the sweep already knows.
+
+Machine checks use no substrate at all.
+There is only ever one host to read — the one the checking process runs on — and a process with no machine to report for has no machine subject, so those checks are absent from what it reports rather than reading anything.
 
 ## Graded logic stays in the check
 
@@ -20,31 +23,11 @@ A check keeps its own graded logic: its thresholds, its outcomes, and the wordin
 Only the acquisition of a reading varies between substrates.
 Two applications running the same check therefore reach their verdicts by the same rules whatever their substrate, and cannot diverge into subtly different checks.
 
+This is why a reading that feeds a threshold is asked for rather than handed in.
+A consumer that supplied the numbers itself could grade against a different denominator than another consumer running the same check, which is the divergence the abstraction exists to prevent.
+
 Where a substrate cannot serve a reading a check that applies to its subject needs, the check reports skipped with the reason it could not be taken.
-A skip is always for a stated reason rather than by accident of what a given substrate happens to expose.
 A check that does not apply to the subject at all is absent from its report rather than skipped, as [SUBJ](subjects.md) describes, so a substrate's inability to serve a reading is never confused with a check having no business there.
-
-## What a substrate answers for
-
-A substrate is described by what a check can ask it about, grouped by subject.
-
-The **machine**: nothing. Machine checks read the host directly rather than through a substrate.
-
-The **workload**: which services make up this application, and the facts that hang off each of them.
-
-**Tamanu**: the application's configuration, its version, its type, and a connection to its database.
-
-**A database**: either a means of establishing a connection, or an established connection to run queries against.
-
-## Machine checks read the machine directly
-
-A machine check reads the host directly rather than through any abstraction, because there is no useful reading to abstract: the concerns it grades are properties of a host, and there is only ever one host to read — the one the checking process is running on.
-
-A machine check therefore needs no substrate, and no guard against being run somewhere it would report the wrong host's facts.
-A process that observes applications from elsewhere has no machine subject to report for, so machine checks are absent from what it reports rather than running and skipping.
-
-Whole-machine memory and load are machine checks.
-They measure the host rather than any application on it, which is a signal worth keeping wherever a machine runs one application and bestool runs on it directly.
 
 ## The workload
 
@@ -102,6 +85,16 @@ That figure is the declared ceiling of the service running it wherever one exist
 Only where no ceiling is declared does the check fall back to the memory of the machine hosting it — the reading that is right for a machine running one unconfined server and wrong for everything else.
 With neither a ceiling nor a hosting machine to read, there is nothing to tune against and the check skips.
 
+## HTTP traffic and certificates
+
+A check asks the substrate for HTTP traffic statistics for its own application rather than for a particular machine's.
+Where an application fronts its own traffic, this reads that front end's statistics for the whole machine.
+Where traffic is served by shared infrastructure, this reads that infrastructure's statistics and filters them to the application being reported for, so one reading serves each application behind it separately.
+
+TLS certificates are likewise asked for as the certificates in force for the application, whatever issues and serves them.
+
+A check that grades the front-end software itself, rather than the traffic through it, is a machine check and reads that software directly.
+
 ## Check state
 
 A check that compares a reading against an earlier one keeps that history in check storage, which is a separate abstraction from the substrate: what a check can find out and where it may remember things are independent questions, and a process observing applications remotely supplies its own storage without having to be the thing that reads them.
@@ -115,13 +108,3 @@ A check whose readings measure something that persists in the application's own 
 
 A reading whose source is no longer present is an absence rather than a decrease.
 Where a substrate's readings come from several sources that come and go, history is kept per source and a source that has vanished is dropped, rather than its disappearance being graded as the quantity having fallen.
-
-## HTTP traffic and certificates
-
-A check asks the substrate for HTTP traffic statistics for its own application rather than for a particular machine's.
-Where an application fronts its own traffic, this reads that front end's statistics for the whole machine.
-Where traffic is served by shared infrastructure, this reads that infrastructure's statistics and filters them to the application being reported for, so one reading serves each application behind it separately.
-
-TLS certificates are likewise asked for as the certificates in force for the application, whatever issues and serves them.
-
-A check that grades the front-end software itself, rather than the traffic through it, is a machine check: it reads that software directly and skips when the checking process is not on the machine.

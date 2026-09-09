@@ -10,6 +10,18 @@ This spec is the parent for the healthcheck catalogue: the conventions common to
 
 Which subject a check reports for — a machine or an application on it — is described in [SUBJ](subjects.md), and how a check obtains its readings for that subject in [SUB](substrate.md).
 
+## Assembling a suite
+
+The catalogue is a registry to select from, not a fixed sweep to run.
+Each check declares the subjects it reports for, and a consumer assembles the suite it needs by taking the checks the subjects in front of it admit.
+The doctor command and the alertd daemon are two such consumers, and a process that observes applications it does not host is another.
+
+Selecting this way rather than naming checks one by one means a check added to the catalogue reaches every consumer whose subjects admit it, and a consumer that should not run one says so by not presenting a subject it applies to.
+No consumer holds its own list of check names to keep in step with the registry.
+
+The checks and the machinery they are built from — the outcomes, the metrics a check declares, the storage it remembers readings in — are available to a consumer independently of the daemon that runs them on a schedule.
+A check is therefore the unit that is shared between consumers, so two environments running the same check cannot grade it differently.
+
 ## Spec identifiers
 
 Every spec describing an individual healthcheck carries a frontmatter `id` of the form `CHK-<id>`, where `<id>` is a short identifier for that check (for example `CHK-CFV` for the Caddyfile version check). The shared `CHK-` prefix distinguishes healthcheck specs from other specs at a glance and groups them for code-to-spec traceability.
