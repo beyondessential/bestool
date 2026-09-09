@@ -8,7 +8,7 @@
 //! spec: AUD-STO
 
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	io::{BufWriter, Write as _},
 	path::{Path, PathBuf},
 };
@@ -57,6 +57,25 @@ struct LegacyEntry {
 
 fn yes() -> bool {
 	true
+}
+
+/// The identity standing for records the old store did not attribute.
+///
+/// The same set of files always gives the same identity, so an interrupted
+/// import writes the same segment names when it is tried again.
+fn anonymous_identity(files: &[std::path::PathBuf]) -> Uuid {
+	use sha2::{Digest as _, Sha256};
+
+	let mut hasher = Sha256::new();
+	for path in files {
+		hasher.update(path.as_os_str().as_encoded_bytes());
+		hasher.update([0]);
+	}
+
+	let digest = hasher.finalize();
+	let mut bytes = [0u8; 16];
+	bytes.copy_from_slice(&digest[..16]);
+	Uuid::from_bytes(bytes)
 }
 
 /// One imported session's running chain.
@@ -213,7 +232,19 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 
 	// One identity stands for every record the old store did not attribute, so
 	// that every segment in the directory is named the same way.
-	let anonymous = Uuid::new_v4();
+	//
+	// Derived from the names being imported rather than made fresh, so that an
+	// attempt interrupted after some segments were moved into place writes the
+	// same names again and settles over them. A fresh identity each time would
+	// leave the ones already moved beside a second set under another name, and
+	// the same statements would be in the log twice.
+	let anonymous = anonymous_identity(&files);
+
+	// The old store kept one table keyed by microsecond timestamp, and a working
+	// copy was made by copying the whole database, so the same record is in main
+	// and in every copy taken after it. The key is that record's identity: what
+	// has already been taken across is not taken again.
+	let mut taken: HashSet<u64> = HashSet::new();
 	let mut sessions: HashMap<Uuid, Session> = HashMap::new();
 	let mut open = Open::default();
 	let mut imported = 0;
@@ -223,7 +254,7 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 	// records it did yield are interleaved with every other file's in the same
 	// segments and cannot be adopted on their own.
 	for path in &files {
-		match import_file(dir, path, anonymous, &mut sessions, &mut open) {
+		match import_file(dir, path, anonymous, &mut sessions, &mut open, &mut taken) {
 			Ok(count) => imported += count,
 			Err(err) => {
 				warn!(?err, ?path, "could not import a legacy audit file");
@@ -268,6 +299,7 @@ fn import_file(
 	anonymous: Uuid,
 	sessions: &mut HashMap<Uuid, Session>,
 	open: &mut Open,
+	taken: &mut HashSet<u64>,
 ) -> Result<usize> {
 	let db = Database::open(path)
 		.into_diagnostic()
@@ -281,6 +313,12 @@ fn import_file(
 	let mut imported = 0;
 	for row in table.iter().into_diagnostic()? {
 		let (key, value) = row.into_diagnostic()?;
+		if !taken.insert(key.value()) {
+			// Already taken across from an earlier file: main and its copies
+			// hold the same records, and a statement ran once.
+			continue;
+		}
+
 		let Ok(entry) = serde_json::from_str::<LegacyEntry>(value.value()) else {
 			warn!(
 				?path,
@@ -626,6 +664,51 @@ mod tests {
 		assert!(paths::list_legacy(dir.path()).unwrap().is_empty());
 		let lock = Lock::try_directory(dir.path()).unwrap().unwrap();
 		assert_eq!(import(dir.path(), &lock).unwrap(), 0);
+	}
+
+	#[test]
+	fn a_record_held_in_more_than_one_legacy_file_is_imported_once() {
+		let dir = tempfile::tempdir().unwrap();
+
+		// The old format made a working copy by copying the whole database, so
+		// the same records sat in main and in every copy taken after it. A
+		// statement ran once and the log must say so once.
+		let shared = [
+			(at("2026-01-01", 1), entry("select 1;", None, true)),
+			(at("2026-01-01", 2), entry("select 2;", None, true)),
+		];
+		legacy_store(&dir.path().join("audit-main.redb"), &shared);
+		let mut working = shared.to_vec();
+		working.push((at("2026-01-01", 3), entry("select 3;", None, true)));
+		legacy_store(&dir.path().join("audit-working-abc.redb"), &working);
+
+		let lock = Lock::try_directory(dir.path()).unwrap().unwrap();
+		assert_eq!(import(dir.path(), &lock).unwrap(), 3);
+		drop(lock);
+
+		let queries: Vec<_> = crate::audit::read::Reader::open(dir.path())
+			.unwrap()
+			.entries()
+			.map(|entry| entry.query)
+			.collect();
+		assert_eq!(queries, vec!["select 1;", "select 2;", "select 3;"]);
+		assert!(crate::audit::verify::verify(dir.path()).unwrap().holds());
+	}
+
+	#[test]
+	fn the_identity_for_unattributed_records_is_the_same_on_a_retry() {
+		let one = anonymous_identity(&[
+			std::path::PathBuf::from("/store/audit-main.redb"),
+			std::path::PathBuf::from("/store/audit-working-abc.redb"),
+		]);
+		let again = anonymous_identity(&[
+			std::path::PathBuf::from("/store/audit-main.redb"),
+			std::path::PathBuf::from("/store/audit-working-abc.redb"),
+		]);
+		assert_eq!(one, again, "a retry writes the same segment names");
+
+		let different = anonymous_identity(&[std::path::PathBuf::from("/store/audit-main.redb")]);
+		assert_ne!(one, different);
 	}
 
 	#[test]

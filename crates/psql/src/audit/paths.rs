@@ -252,17 +252,30 @@ pub fn default_dir() -> Result<PathBuf> {
 /// deployment means patient data in plain, greppable JSON. Other local users
 /// have no business reading it.
 pub fn create_dir(dir: &Path) -> Result<()> {
-	std::fs::create_dir_all(dir)
+	// Created private, rather than created and then narrowed: between the two
+	// another local user could open a directory that is about to hold patient
+	// data and keep reading it afterwards.
+	let mut builder = std::fs::DirBuilder::new();
+	builder.recursive(true);
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::DirBuilderExt as _;
+		builder.mode(0o700);
+	}
+
+	builder
+		.create(dir)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("creating audit directory {}", dir.display()))?;
 
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt as _;
-		// A directory that already existed with wider permissions is narrowed. A
-		// failure must not stop a session recording, but it does mean patient
-		// data is about to be written where other local users can read it, so it
-		// is said out loud rather than swallowed.
+		// A directory that already existed with wider permissions is narrowed
+		// too. A failure must not stop a session recording, but it does mean
+		// patient data is about to be written where other local users can read
+		// it, so it is said out loud rather than swallowed.
 		if let Err(err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
 			tracing::warn!(?err, ?dir, "cannot narrow the audit directory");
 			eprintln!(

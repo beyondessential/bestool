@@ -40,6 +40,11 @@ const REVERSE_CHUNK: usize = 64 * 1024;
 /// an operator would type or paste.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+/// Largest decompression window a day file may ask a reader to hold, as a power
+/// of two — 8 MiB. Compaction writes at the default level, whose window is far
+/// below this; a file declaring more was not written by compaction.
+const MAX_WINDOW_LOG: u32 = 23;
+
 /// A segment whose file name names one session and whose records name another.
 ///
 /// The name is outside the hash chain and the record inside it, so the two
@@ -330,9 +335,17 @@ pub fn open(path: &Path, kind: AuditFile) -> Result<Box<dyn Iterator<Item = Fram
 		// A day file wraps the same framed records, so the same record reader
 		// runs over both.
 		AuditFile::DayFile { .. } => {
-			let decoder = zstd::Decoder::new(file)
+			let mut decoder = zstd::Decoder::new(file)
 				.into_diagnostic()
 				.wrap_err_with(|| format!("decompressing {}", path.display()))?;
+			// A frame header declares the window the decoder must hold, and a
+			// crafted one can declare a very large window however few bytes the
+			// file actually holds. Compaction writes at the default level, whose
+			// window is far below this.
+			decoder
+				.window_log_max(MAX_WINDOW_LOG)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("bounding the window of {}", path.display()))?;
 			Box::new(FramedReader::new(BufReader::new(decoder)))
 		}
 	})

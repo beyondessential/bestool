@@ -92,7 +92,10 @@ pub fn run_audit_cli(args: AuditArgs) -> Result<bool> {
 		..Default::default()
 	})) {
 		AuditCommand::Export(args) => {
-			let mut out = std::io::stdout().lock();
+			// Buffered: standard output flushes on every newline, and every
+			// record ends in one, so writing straight to it costs a write call
+			// per record for the length of the log.
+			let mut out = std::io::BufWriter::new(std::io::stdout().lock());
 			match tools::write_export(&mut out, &dir, &args.into()) {
 				// A closed output pipe ends the export quietly.
 				Err(err) if tools::is_broken_pipe(&err) => Ok(true),

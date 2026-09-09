@@ -69,6 +69,14 @@ impl Drop for Segment {
 		// The lock goes before the file it was taken on, since a file that is
 		// still open cannot be deleted everywhere. A lock file left behind by a
 		// session that crashed is swept by compaction instead.
+		//
+		// Deleting a file a lock is taken on would in general break the mutual
+		// exclusion it stands for, since the next holder locks a different file
+		// at the same name. It does not here: a segment's name carries the
+		// session's own identity, so no other session ever locks this path, and
+		// compaction serialises against itself on the directory lock. A writer
+		// that meets a deleted lock file for an old day creates a fresh one and
+		// writes a fresh segment, which the next fold takes up.
 		drop(self.lock.take());
 		let lock_path = paths::lock_of(&self.path);
 		if let Err(err) = std::fs::remove_file(&lock_path) {
@@ -117,6 +125,9 @@ pub struct Writer {
 	/// leave the burned ones as holes that no record fills and no gap covers,
 	/// and the log would read as altered rather than incomplete.
 	owes_context: Option<(u64, Timestamp)>,
+	/// Days this session has opened a segment for, so reopening one appends
+	/// rather than creating it again.
+	opened: Vec<Date>,
 	/// A failing store is warned about once, then fails silently.
 	warned: bool,
 }
@@ -138,6 +149,7 @@ impl Writer {
 			backlog_bytes: 0,
 			discarded: None,
 			owes_context: None,
+			opened: Vec::new(),
 			warned: false,
 		}
 	}
@@ -162,6 +174,12 @@ impl Writer {
 	///
 	/// A session that never recorded anything leaves no segment behind, so it
 	/// has no end record to append either.
+	///
+	/// A session that last recorded before midnight and exits after it opens a
+	/// segment for the new day holding just a context record and this one. That
+	/// is deliberate: a record goes in the segment for the day it was made on,
+	/// and every record in a file falling on that file's own day is what lets a
+	/// reader merge a day at a time rather than holding the year open.
 	pub fn end(&mut self) {
 		if self.next_seq == 0 {
 			return;
@@ -286,6 +304,23 @@ impl Writer {
 		// numbering stays in order, and the time of the last record it covers, so
 		// it sorts before the held records that survived it.
 		if let Some(tally) = self.discarded.clone() {
+			// A gap cannot be the first record a session ever writes. Nothing
+			// names the session in it, and nothing before it names one either,
+			// so once the day is folded into a day file — where a file name no
+			// longer says whose records these are — that gap belongs to nobody
+			// and the log reads as altered. A context record goes ahead of it,
+			// timed at the start of the loss so it still sorts first.
+			if self.prev.is_empty() {
+				let seq = self.next_seq;
+				self.next_seq += 1;
+				self.write(&Pending {
+					seq,
+					ts: tally.from,
+					kind: self.context_record(),
+					weight: 0,
+				})?;
+			}
+
 			self.write(&Pending {
 				seq: tally.first_seq,
 				ts: tally.to,
@@ -386,13 +421,26 @@ impl Writer {
 		let lock = Lock::try_segment(&path)?
 			.ok_or_else(|| miette!("audit segment {} is held by another writer", path.display()))?;
 
-		let file = paths::private()
-			.create(true)
-			.append(true)
-			.read(true)
-			.open(&path)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("opening audit segment {}", path.display()))?;
+		// Created exclusively the first time this session opens the day, and
+		// appended to on reopening. A name this session has not written before
+		// is a name nothing should already exist at, so anything that does is
+		// not ours to append through.
+		let first = !self.opened.contains(&date);
+		let file = if first {
+			paths::private()
+				.create_new(true)
+				.append(true)
+				.read(true)
+				.open(&path)
+		} else {
+			paths::private().append(true).read(true).open(&path)
+		}
+		.into_diagnostic()
+		.wrap_err_with(|| format!("opening audit segment {}", path.display()))?;
+
+		if first {
+			self.opened.push(date);
+		}
 
 		self.segment = Some(Segment {
 			date,
@@ -796,10 +844,10 @@ mod tests {
 		assert_eq!(gap.through, gap_seq + gap.lost - 1);
 		assert!(gap.from <= gap.to);
 
-		// The gap leads, a fresh context record follows it, and the surviving
-		// backlog comes behind that in the order those records were made.
-		assert_eq!(records[0].seq, gap_seq);
-		assert!(matches!(records[1].kind, RecordKind::Context(_)));
+		// A context record leads, so nothing in the file wants for a session,
+		// then the gap, then the surviving backlog in the order it was made.
+		assert!(matches!(records[0].kind, RecordKind::Context(_)));
+		assert_eq!(records[1].seq, gap_seq);
 		let survivors = queries(&records);
 		assert_eq!(survivors.last().unwrap(), "after;");
 		let mut sorted = survivors.clone();
@@ -982,6 +1030,42 @@ mod tests {
 			"{:?}",
 			report.sessions[0].broken_at
 		);
+	}
+
+	#[test]
+	fn a_session_whose_first_record_is_a_gap_still_verifies_once_folded() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		// Unwritable from the moment the session started, so the first thing
+		// that reaches disk is a gap.
+		let mut writer = Writer::new(&store);
+		for i in 0..(BACKLOG_RECORDS + 20) {
+			writer.query(&context(), format!("lost {i};"), QuerySource::Typed);
+		}
+		std::fs::remove_file(&store).unwrap();
+		writer.query(&context(), "after;".into(), QuerySource::Typed);
+		let instance = writer.instance();
+		drop(writer);
+
+		// A context record leads, so the records have a session even once the
+		// file name no longer says whose they are.
+		let records = read_records(&files(&store)[0]);
+		assert!(matches!(records[0].kind, RecordKind::Context(_)));
+
+		let today = date_of(Timestamp::now());
+		let old = today.checked_sub(jiff::Span::new().days(20)).unwrap();
+		std::fs::rename(
+			store.join(paths::segment_name(today, instance)),
+			store.join(paths::segment_name(old, instance)),
+		)
+		.unwrap();
+		super::super::compact::run(&store).unwrap();
+
+		let report = super::super::verify::verify(&store).unwrap();
+		assert_eq!(report.unattributed, 0, "every record has a session");
+		assert!(report.holds(), "an incomplete log is not an altered one");
 	}
 
 	#[test]
