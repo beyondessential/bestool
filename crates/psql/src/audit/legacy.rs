@@ -8,7 +8,7 @@
 //! spec: AUD-STO
 
 use std::{
-	collections::{HashMap, hash_map::Entry},
+	collections::HashMap,
 	io::{BufWriter, Write as _},
 	path::{Path, PathBuf},
 };
@@ -76,7 +76,9 @@ struct Session {
 ///
 /// A full legacy store held hundreds of thousands of records, and reopening the
 /// destination for each one would put that many open and close calls on the
-/// session's startup path.
+/// session's startup path. A bounded set is kept open instead, because one
+/// descriptor per session-day would run past the open-file limit on a store
+/// spanning months.
 ///
 /// Everything is written under a name no reader looks at, and moved into place
 /// only once every legacy file has been read right through. An import that fails
@@ -85,8 +87,23 @@ struct Session {
 /// permanently broken and which nothing folds away.
 #[derive(Default)]
 struct Open {
-	files: HashMap<(Uuid, jiff::civil::Date), (PathBuf, BufWriter<std::fs::File>)>,
+	/// Writers open right now, most recently used last.
+	writing: Vec<(Key, PathBuf, BufWriter<std::fs::File>)>,
+	/// Every segment this import has written to, whether still open or not.
+	started: Vec<(Key, PathBuf)>,
 }
+
+type Key = (Uuid, jiff::civil::Date);
+
+/// How many segments are written to at once.
+///
+/// A legacy store spanning months with a few sessions a day covers a thousand
+/// or more session-days, and one descriptor each would run past the open-file
+/// limit long before the import finished — which, since import is all or
+/// nothing, would mean it never finished. Writers beyond this are closed and
+/// reopened as the rows call for them; the old store is keyed by timestamp, so
+/// rows arrive in time order and a handful of writers covers the days in play.
+const OPEN_AT_ONCE: usize = 32;
 
 impl Open {
 	fn writer(
@@ -95,42 +112,73 @@ impl Open {
 		instance: Uuid,
 		date: jiff::civil::Date,
 	) -> Result<&mut BufWriter<std::fs::File>> {
-		let (_, writer) = match self.files.entry((instance, date)) {
-			Entry::Occupied(open) => open.into_mut(),
-			Entry::Vacant(slot) => {
-				let final_path = dir.join(paths::segment_name(date, instance));
-				let path = paths::part_of(&final_path);
-				// Truncating rather than appending: anything already under this
-				// name is the wreckage of an import that did not finish.
-				let file = paths::private()
-					.create(true)
-					.write(true)
-					.truncate(true)
-					.open(&path)
+		let key = (instance, date);
+
+		if let Some(at) = self.writing.iter().position(|(open, _, _)| *open == key) {
+			// Most recently used goes last, so the front is what gets closed.
+			let entry = self.writing.remove(at);
+			self.writing.push(entry);
+			let (_, _, writer) = self.writing.last_mut().expect("just pushed");
+			return Ok(writer);
+		}
+
+		while self.writing.len() >= OPEN_AT_ONCE {
+			let (_, path, mut writer) = self.writing.remove(0);
+			writer
+				.flush()
+				.into_diagnostic()
+				.wrap_err_with(|| format!("writing {}", path.display()))?;
+		}
+
+		let final_path = dir.join(paths::segment_name(date, instance));
+		let path = paths::part_of(&final_path);
+		let first = !self.started.iter().any(|(open, _)| *open == key);
+
+		// Created exclusively the first time, so a symlink left at this
+		// predictable name cannot have the import write through it, and appended
+		// to on reopening. Anything already there is the wreckage of an import
+		// that did not finish, and goes first.
+		let file = if first {
+			if path.exists() {
+				std::fs::remove_file(&path)
 					.into_diagnostic()
-					.wrap_err_with(|| format!("opening {}", path.display()))?;
-				slot.insert((final_path, BufWriter::new(file)))
+					.wrap_err_with(|| format!("clearing {}", path.display()))?;
 			}
-		};
+			self.started.push((key, final_path));
+			paths::private().create_new(true).write(true).open(&path)
+		} else {
+			paths::private().append(true).open(&path)
+		}
+		.into_diagnostic()
+		.wrap_err_with(|| format!("opening {}", path.display()))?;
+
+		self.writing.push((key, path, BufWriter::new(file)));
+		let (_, _, writer) = self.writing.last_mut().expect("just pushed");
 		Ok(writer)
 	}
 
 	/// Get everything buffered onto disk and move it into place.
-	fn adopt(self) -> Result<()> {
-		let mut written = Vec::with_capacity(self.files.len());
-
-		for (_, (final_path, mut file)) in self.files {
-			file.flush().into_diagnostic()?;
-			file.into_inner()
+	fn adopt(mut self) -> Result<()> {
+		for (_, path, mut writer) in std::mem::take(&mut self.writing) {
+			writer
+				.flush()
+				.into_diagnostic()
+				.wrap_err_with(|| format!("writing {}", path.display()))?;
+			writer
+				.into_inner()
 				.map_err(|err| miette!("flushing an imported audit segment: {err}"))?
 				.sync_all()
 				.into_diagnostic()?;
-			written.push(final_path);
 		}
 
-		for final_path in written {
-			let part = paths::part_of(&final_path);
-			std::fs::rename(&part, &final_path)
+		for (_, final_path) in &self.started {
+			let part = paths::part_of(final_path);
+			// Reopened segments were synced when they were last closed; syncing
+			// the file again here covers the ones that were.
+			if let Ok(file) = std::fs::File::open(&part) {
+				file.sync_all().ok();
+			}
+			std::fs::rename(&part, final_path)
 				.into_diagnostic()
 				.wrap_err_with(|| format!("moving {} into place", part.display()))?;
 		}
@@ -139,10 +187,10 @@ impl Open {
 	}
 
 	/// Throw away what was written, so a later attempt starts clean.
-	fn abandon(self) {
-		for (_, (final_path, file)) in self.files {
-			drop(file);
-			let part = paths::part_of(&final_path);
+	fn abandon(mut self) {
+		self.writing.clear();
+		for (_, final_path) in &self.started {
+			let part = paths::part_of(final_path);
 			if let Err(err) = std::fs::remove_file(&part) {
 				debug!(?err, ?part, "could not clear an unfinished import");
 			}

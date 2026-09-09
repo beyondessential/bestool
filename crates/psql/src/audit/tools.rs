@@ -3,6 +3,12 @@
 //! The API is the stable surface; the command-line tools are thin wrappers over
 //! it.
 //!
+//! Reading is [`Reader`](super::Reader), and flat entries are
+//! [`Reader::entries`](super::Reader::entries). Both are streams and hold no
+//! more than a bounded window, which is what a caller reading a year of records
+//! needs; this module adds the operations over them that are not just a read —
+//! export, verification and compaction.
+//!
 //! spec: AUD-API
 
 use std::{
@@ -83,55 +89,6 @@ fn resolve(path: Option<PathBuf>) -> Result<PathBuf> {
 		Some(path) => Ok(path),
 		None => super::default_path(),
 	}
-}
-
-/// Read the records a filter selects, in time order, oldest first.
-///
-/// A limit is applied at whichever end the caller asked for, holding no more
-/// than that many records in memory, so a caller reading a year of records with
-/// a small limit never holds the year.
-pub fn stored(dir: &Path, options: &QueryOptions) -> Result<Vec<Stored>> {
-	let reader = Reader::open_range(dir, options.range()?)?;
-
-	let Some(limit) = options.limit() else {
-		return Ok(reader.collect());
-	};
-
-	if options.from_oldest {
-		return Ok(reader.take(limit).collect());
-	}
-
-	let mut window: VecDeque<Stored> = VecDeque::with_capacity(limit.min(WINDOW_HINT));
-	for record in reader {
-		if window.len() == limit {
-			window.pop_front();
-		}
-		window.push_back(record);
-	}
-	Ok(window.into())
-}
-
-/// Read the query records a filter selects, each carrying the context in force
-/// at it.
-pub fn entries(dir: &Path, options: &QueryOptions) -> Result<Vec<super::Entry>> {
-	let reader = Reader::open_range(dir, options.range()?)?.entries();
-
-	let Some(limit) = options.limit() else {
-		return Ok(reader.collect());
-	};
-
-	if options.from_oldest {
-		return Ok(reader.take(limit).collect());
-	}
-
-	let mut window = VecDeque::with_capacity(limit.min(WINDOW_HINT));
-	for entry in reader {
-		if window.len() == limit {
-			window.pop_front();
-		}
-		window.push_back(entry);
-	}
-	Ok(window.into())
 }
 
 /// Verify every session's chain across a directory.
@@ -344,6 +301,26 @@ mod tests {
 
 	fn queries(entries: &[super::super::Entry]) -> Vec<String> {
 		entries.iter().map(|e| e.query.clone()).collect()
+	}
+
+	/// The entries a filter selects, gathered for comparison.
+	fn entries(dir: &Path, options: &QueryOptions) -> Result<Vec<super::super::Entry>> {
+		let reader = Reader::open_range(dir, options.range()?)?.entries();
+		let Some(limit) = options.limit() else {
+			return Ok(reader.collect());
+		};
+		if options.from_oldest {
+			return Ok(reader.take(limit).collect());
+		}
+
+		let mut window: VecDeque<_> = VecDeque::new();
+		for entry in reader {
+			if window.len() == limit {
+				window.pop_front();
+			}
+			window.push_back(entry);
+		}
+		Ok(window.into())
 	}
 
 	#[test]

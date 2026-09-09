@@ -18,30 +18,24 @@ use miette::Result;
 use uuid::Uuid;
 
 use super::{
-	read::{Range, Reader, Skipped},
+	read::{Range, Reader, Renamed, Skipped},
 	record::{GapRecord, Record, RecordKind},
 	writer::{BACKLOG_BYTES, BACKLOG_RECORDS},
 };
-
-/// Roughly how much memory a record held for reordering costs.
-fn json_weight(record: &Record) -> usize {
-	match &record.kind {
-		RecordKind::Query(query) => query.query.len(),
-		_ => 0,
-	}
-}
 
 /// How many out-of-order records are held per session before the chain is
 /// called broken. Records only ever arrive out of order by as much as a
 /// session's own held backlog, so this is generous.
 const REORDER_LIMIT: usize = BACKLOG_RECORDS * 10;
 
-/// How many bytes of out-of-order records are held per session.
+/// How many bytes of out-of-order records are held across every session at once.
 ///
-/// Statement text is bounded only by the writer's own backlog, so a count on its
-/// own is not a bound on memory: a session whose chain breaks early — the very
-/// case verification exists to diagnose — would otherwise park whole records
-/// until the log ran out, once per session in the directory.
+/// A budget for the whole run, not for each chain. A directory holds one chain
+/// per session and can hold a year of them, so a per-chain bound multiplies by
+/// the number of sessions — and a broken chain is exactly what fills one, so the
+/// adversarial case is also the one that allocates. Verification is the one
+/// operation aimed at logs that may have been tampered with; running out of
+/// memory instead of reporting the break is the one thing it must not do.
 const REORDER_BYTES: usize = BACKLOG_BYTES;
 
 /// Where a session's chain first stopped holding.
@@ -111,6 +105,8 @@ pub struct VerifyReport {
 	/// Records that could not be tied to any session, because the chain they
 	/// extend is not in the log.
 	pub unattributed: u64,
+	/// Segments whose name disagrees with the session recorded inside them.
+	pub renamed: Vec<Renamed>,
 }
 
 impl VerifyReport {
@@ -123,8 +119,14 @@ impl VerifyReport {
 	/// names its session, and every day file carries a context record for each
 	/// session in it, so a record that cannot be tied to one has been put there
 	/// by something other than a session writing its own segment.
+	///
+	/// So does a segment whose name disagrees with the session its own records
+	/// name: the name is outside the hash chain and the record is inside it, so
+	/// the file has been renamed since it was written.
 	pub fn holds(&self) -> bool {
-		self.unattributed == 0 && self.sessions.iter().all(ChainReport::holds)
+		self.unattributed == 0
+			&& self.renamed.is_empty()
+			&& self.sessions.iter().all(ChainReport::holds)
 	}
 
 	/// The current chain head of every session.
@@ -133,6 +135,15 @@ impl VerifyReport {
 			.iter()
 			.map(|session| (session.instance, session.head.as_str()))
 	}
+}
+
+/// A record waiting for the one it chains onto.
+#[derive(Debug)]
+struct Held {
+	record: Record,
+	hash: String,
+	/// Bytes the record took on disk, which is what it costs to hold.
+	weight: usize,
 }
 
 /// One session's chain, as far as it has been followed.
@@ -156,8 +167,8 @@ struct Chain {
 	/// chain onto. A held backlog is written in sequence order but its records
 	/// were made before the gap record that precedes them, so a reader can meet
 	/// them slightly out of order.
-	pending: HashMap<String, (Record, String)>,
-	/// Bytes of JSON held in `pending`.
+	pending: HashMap<String, Held>,
+	/// Bytes held in `pending`, counted against the run's shared budget.
 	pending_bytes: usize,
 }
 
@@ -239,29 +250,67 @@ impl Chain {
 		}
 	}
 
-	fn offer(&mut self, record: Record, hash: String) {
+	/// Offer a record to the chain.
+	///
+	/// Returns the change in how much this chain holds, so the caller can keep a
+	/// budget across every chain at once.
+	fn offer(&mut self, record: Record, hash: String, weight: usize) -> isize {
 		if record.prev == self.head {
 			self.consume(&record, &hash);
-			self.drain();
-			return;
+			return -(self.drain() as isize);
 		}
 
-		if self.pending.len() >= REORDER_LIMIT || self.pending_bytes >= REORDER_BYTES {
+		if self.pending.len() >= REORDER_LIMIT {
 			self.note_break(&record);
-			return;
+			return 0;
 		}
-		self.pending_bytes += hash.len() + json_weight(&record);
-		self.pending.insert(record.prev.clone(), (record, hash));
+
+		// Weighed by the bytes the record took on disk, whatever its kind.
+		// Charging only statement text left a context record carrying megabytes
+		// of supervisor name costing nothing, and a budget that does not count
+		// what it holds is not a budget.
+		self.pending_bytes += weight;
+		self.pending.insert(
+			record.prev.clone(),
+			Held {
+				record,
+				hash,
+				weight,
+			},
+		);
+		weight as isize
 	}
 
-	/// Take up anything that was waiting on the record just consumed.
-	fn drain(&mut self) {
-		while let Some((record, hash)) = self.pending.remove(&self.head) {
-			self.pending_bytes = self
-				.pending_bytes
-				.saturating_sub(hash.len() + json_weight(&record));
-			self.consume(&record, &hash);
+	/// Give up the largest record held, so a run out of budget reports a break
+	/// rather than going on allocating.
+	fn relinquish(&mut self) -> usize {
+		let Some(prev) = self
+			.pending
+			.iter()
+			.max_by_key(|(_, held)| held.weight)
+			.map(|(prev, _)| prev.clone())
+		else {
+			return 0;
+		};
+		let Some(held) = self.pending.remove(&prev) else {
+			return 0;
+		};
+
+		self.pending_bytes = self.pending_bytes.saturating_sub(held.weight);
+		self.note_break(&held.record);
+		held.weight
+	}
+
+	/// Take up anything that was waiting on the record just consumed, returning
+	/// how many bytes that gave back.
+	fn drain(&mut self) -> usize {
+		let mut freed = 0;
+		while let Some(held) = self.pending.remove(&self.head) {
+			freed += held.weight;
+			self.pending_bytes = self.pending_bytes.saturating_sub(held.weight);
+			self.consume(&held.record, &held.hash);
 		}
+		freed
 	}
 
 	fn note_break(&mut self, record: &Record) {
@@ -297,8 +346,8 @@ impl Chain {
 			let orphan = self
 				.pending
 				.values()
-				.min_by_key(|(record, _)| (record.seq, record.ts))
-				.map(|(record, _)| record.clone());
+				.min_by_key(|held| (held.record.seq, held.record.ts))
+				.map(|held| held.record.clone());
 			if let Some(orphan) = orphan {
 				self.note_break(&orphan);
 			}
@@ -327,22 +376,51 @@ pub fn verify_range(dir: &Path, range: Range) -> Result<VerifyReport> {
 	let mut order: Vec<Uuid> = Vec::new();
 	let mut unattributed = 0;
 
+	// One budget for the whole run, shared across every chain.
+	let mut held_bytes = 0usize;
+
 	for stored in reader.by_ref() {
 		let Some(instance) = stored.instance else {
 			unattributed += 1;
 			continue;
 		};
 
+		let weight = stored.json.len();
 		match chains.get_mut(&instance) {
-			Some(chain) => chain.offer(stored.record, stored.hash),
+			Some(chain) => {
+				let change = chain.offer(stored.record, stored.hash, weight);
+				held_bytes = held_bytes.saturating_add_signed(change);
+			}
 			None => {
 				order.push(instance);
 				chains.insert(instance, Chain::start(&stored.record, &stored.hash));
 			}
 		}
+
+		// Over budget: the chain holding the most gives up its largest record
+		// and is reported broken, rather than the run going on allocating until
+		// it is killed and reports nothing at all.
+		while held_bytes > REORDER_BYTES {
+			let Some(worst) = chains
+				.iter_mut()
+				.max_by_key(|(_, chain)| chain.pending_bytes)
+				.map(|(instance, _)| *instance)
+			else {
+				break;
+			};
+			let Some(chain) = chains.get_mut(&worst) else {
+				break;
+			};
+			let freed = chain.relinquish();
+			if freed == 0 {
+				break;
+			}
+			held_bytes = held_bytes.saturating_sub(freed);
+		}
 	}
 
 	let skipped = reader.skipped().to_vec();
+	let renamed = reader.renamed().to_vec();
 	let sessions = order
 		.into_iter()
 		.filter_map(|instance| chains.remove(&instance).map(|chain| chain.finish(instance)))
@@ -352,6 +430,7 @@ pub fn verify_range(dir: &Path, range: Range) -> Result<VerifyReport> {
 		sessions,
 		skipped,
 		unattributed,
+		renamed,
 	})
 }
 
@@ -634,6 +713,74 @@ mod tests {
 			!report.holds(),
 			"a record no session wrote cannot pass as one that was"
 		);
+	}
+
+	#[test]
+	fn renaming_a_segment_does_not_re_attribute_what_is_in_it() {
+		let dir = tempfile::tempdir().unwrap();
+		let wrote = write_session(dir.path(), 3);
+		let path = segment_of(dir.path(), wrote);
+
+		// The file name is outside the hash chain; the session identity inside
+		// the context record is not. A move must not be able to hand one
+		// operator's statements to another session.
+		let someone_else = Uuid::new_v4();
+		let moved = dir.path().join(crate::audit::paths::segment_name(
+			crate::audit::writer::date_of(Timestamp::now()),
+			someone_else,
+		));
+		std::fs::rename(&path, &moved).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert_eq!(report.renamed.len(), 1);
+		assert_eq!(report.renamed[0].names, someone_else);
+		assert_eq!(report.renamed[0].records, wrote);
+		assert!(!report.holds(), "a rename cannot pass unremarked");
+
+		// And the records still belong to the session that wrote them.
+		assert_eq!(report.sessions[0].instance, wrote);
+	}
+
+	#[test]
+	fn a_flood_of_unchainable_records_is_reported_rather_than_held() {
+		use crate::audit::record::{ContextRecord, FORMAT_VERSION, frame};
+
+		let dir = tempfile::tempdir().unwrap();
+		let instance = Uuid::new_v4();
+
+		// Every record names the same session and chains onto nothing, so none
+		// can ever be taken up. Held whole they would be unbounded; the run has
+		// to report a break instead.
+		let big = "x".repeat(64 * 1024);
+		let mut bytes = Vec::new();
+		for seq in 0..600u64 {
+			let record = Record {
+				v: FORMAT_VERSION,
+				seq,
+				ts: Timestamp::UNIX_EPOCH + jiff::SignedDuration::from_secs(seq as i64),
+				prev: format!("{seq:064}"),
+				kind: RecordKind::Context(ContextRecord {
+					sys_user: big.clone(),
+					db_user: "tamanu".into(),
+					writemode: false,
+					ots: Some(big.clone()),
+					tailscale: Vec::new(),
+					instance,
+				}),
+			};
+			bytes.extend_from_slice(&frame(&record.to_json().unwrap()));
+		}
+		std::fs::write(
+			dir.path().join(crate::audit::paths::segment_name(
+				"2026-09-08".parse().unwrap(),
+				instance,
+			)),
+			bytes,
+		)
+		.unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert!(!report.holds(), "a chain that cannot hold is reported");
 	}
 
 	#[test]

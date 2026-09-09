@@ -83,7 +83,10 @@ A half-written record left behind by a failed write does not, because the record
 
 Where retention has already deleted a session's earlier records, verification starts from the oldest records kept and reports their `prev` as unverifiable rather than broken.
 
-The chain shows that a session's records have not been edited, reordered or removed since they were written.
+A record is attributed to the session written into it, or failing that to the chain it extends, and only failing both to the session its file is named for.
+The name is not covered by the hash, so a segment whose name disagrees with the session its own records name has been renamed since it was written, and verification says so rather than taking the name for it.
+
+The chain shows that a session's records have not been edited, reordered or removed since they were written, nor moved from one session to another.
 
 ## Legacy stores
 

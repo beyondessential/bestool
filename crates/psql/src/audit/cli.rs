@@ -149,6 +149,16 @@ pub fn run_audit_cli(args: AuditArgs) -> Result<bool> {
 				)
 				.ok();
 			}
+			for renamed in &report.renamed {
+				writeln!(
+					out,
+					"{} is named for session {} but its records were written by {}",
+					renamed.file.display(),
+					renamed.names,
+					renamed.records
+				)
+				.ok();
+			}
 			if report.unattributed > 0 {
 				writeln!(
 					out,

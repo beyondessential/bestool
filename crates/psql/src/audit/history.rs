@@ -25,8 +25,10 @@ pub const RECALL_CUTOFF: usize = 10 * 1024;
 /// What a session recalls: the statements it can walk with up, down and search.
 #[derive(Debug, Default, Clone)]
 pub struct RecallSet {
-	/// Oldest first, which is the order rustyline indexes by.
-	entries: Vec<String>,
+	/// Oldest first, which is the order rustyline indexes by. A deque because
+	/// a session past its budget evicts from the front on every statement, and
+	/// that is the interactive path.
+	entries: VecDeque<String>,
 	/// Supervisors named in the log, newest first, for the write-mode prompt.
 	supervisors: Vec<String>,
 	/// Bytes of query text held in `entries`.
@@ -108,10 +110,12 @@ impl RecallSet {
 		}
 
 		self.held += query.len();
-		self.entries.push(query);
+		self.entries.push_back(query);
 
 		while self.held > RECALL_BUDGET && self.entries.len() > 1 {
-			let dropped = self.entries.remove(0);
+			let Some(dropped) = self.entries.pop_front() else {
+				break;
+			};
 			self.held -= dropped.len();
 		}
 	}
@@ -209,12 +213,25 @@ fn newest_first(path: &Path, kind: AuditFile, budget: usize) -> Box<dyn Iterator
 /// the caller might stop at.
 fn bounded_tail(reader: impl Iterator<Item = FramedItem>, budget: usize) -> Vec<Record> {
 	let mut contexts = Vec::new();
+	let mut named = std::collections::HashSet::new();
 	let mut tail: VecDeque<Record> = VecDeque::new();
 	let mut held = 0usize;
 
 	for record in reader.filter_map(FramedItem::into_record) {
 		match &record.kind {
-			RecordKind::Context(_) => contexts.push(record),
+			// Only the supervisor name is taken from these, and one is written
+			// per segment opened and per change of write mode or user, so a busy
+			// day holds thousands. Keeping only the ones that name somebody, and
+			// only the first of each name, bounds them by how many people
+			// supervised that day.
+			RecordKind::Context(context) => {
+				if let Some(ots) = &context.ots
+					&& !ots.is_empty()
+					&& named.insert(ots.clone())
+				{
+					contexts.push(record);
+				}
+			}
 			RecordKind::Query(query)
 				if query.source.is_recallable() && query.query.len() <= RECALL_CUTOFF =>
 			{

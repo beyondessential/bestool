@@ -350,7 +350,13 @@ pub async fn run(pool: PgPool, config: Arc<Config>) -> Result<()> {
 					if actions.iter().any(|s| s.action.records_line()) {
 						record_line(&mut ctx, line);
 					}
-					if !matches!(actions.last().map(|s| &s.action), Some(ReplAction::Edit)) {
+					// `\e` only reopens its previous buffer when run back to back,
+					// so only a line that is nothing but `\e` leaves the seed
+					// standing. A line that merely ends in one has run something
+					// else in between.
+					let only_edit =
+						actions.len() == 1 && matches!(actions[0].action, ReplAction::Edit);
+					if !only_edit {
 						ctx.repl_state.lock().unwrap().last_edit_content = None;
 					}
 

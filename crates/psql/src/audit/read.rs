@@ -40,6 +40,19 @@ const REVERSE_CHUNK: usize = 64 * 1024;
 /// an operator would type or paste.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+/// A segment whose file name names one session and whose records name another.
+///
+/// The name is outside the hash chain and the record inside it, so the two
+/// disagreeing means the file was renamed after it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Renamed {
+	pub file: PathBuf,
+	/// The session the file name claims.
+	pub names: Uuid,
+	/// The session its records say wrote them.
+	pub records: Uuid,
+}
+
 /// A stretch of bytes a reader could not parse as a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -365,14 +378,39 @@ struct Threads {
 
 impl Threads {
 	/// `named` is the session the file itself names, where it names one.
-	fn attribute(&mut self, record: &Record, hash: &str, named: Option<Uuid>) -> Option<Uuid> {
+	///
+	/// Returns the session, and whether the file's name disagrees with what the
+	/// record itself says.
+	fn attribute(
+		&mut self,
+		record: &Record,
+		hash: &str,
+		named: Option<Uuid>,
+	) -> (Option<Uuid>, bool) {
 		// A segment is written by exactly one session, so its name settles the
 		// question outright: attribution does not depend on the chain, and a
 		// record whose predecessor was altered or removed is still known to
 		// belong to the session whose chain it broke.
-		let instance = named
-			.or_else(|| record.instance())
-			.or_else(|| self.head.get(&record.prev).copied());
+		// A file's name is outside the hash chain; the session identity in a
+		// context record is inside it. Where the two disagree the file has been
+		// renamed, and the record is believed over the name — silently taking
+		// the name would let a `mv` re-attribute every statement in a segment
+		// from one operator's session to another's.
+		let renamed = match (named, record.instance()) {
+			(Some(named), Some(recorded)) => named != recorded,
+			_ => false,
+		};
+
+		// In order of what is covered by the hash chain: the identity written
+		// into the record, then the chain it extends, then — only for a record
+		// whose predecessor is not in the log at all — the file's name. Taking
+		// the name first would let a rename hand one operator's statements to
+		// another session; taking it last still attributes the records after a
+		// tampered one, which is what it is there for.
+		let instance = record
+			.instance()
+			.or_else(|| self.head.get(&record.prev).copied())
+			.or(named);
 
 		if !record.prev.is_empty() {
 			self.head.remove(&record.prev);
@@ -384,7 +422,7 @@ impl Threads {
 			}
 		}
 
-		instance
+		(instance, renamed)
 	}
 }
 
@@ -444,6 +482,8 @@ impl Source {
 pub struct Reader {
 	/// Files not yet opened, newest day last, so they can be popped in order.
 	waiting: Vec<(PathBuf, AuditFile)>,
+	/// Segments whose name disagrees with the session recorded inside them.
+	renamed: Vec<Renamed>,
 	sources: Vec<Source>,
 	queue: BinaryHeap<Reverse<(Timestamp, u64, usize)>>,
 	threads: Threads,
@@ -473,6 +513,7 @@ impl Reader {
 
 		let mut reader = Self {
 			waiting,
+			renamed: Vec::new(),
 			sources: Vec::new(),
 			queue: BinaryHeap::new(),
 			threads: Threads::default(),
@@ -539,6 +580,11 @@ impl Reader {
 		&self.skipped
 	}
 
+	/// Segments whose name disagrees with the session recorded inside them.
+	pub fn renamed(&self) -> &[Renamed] {
+		&self.renamed
+	}
+
 	/// The context in force for a session at the point the read has reached.
 	pub fn context_of(&self, instance: Uuid) -> Option<&ContextRecord> {
 		self.context_record_of(instance).map(|record| {
@@ -597,7 +643,14 @@ impl Iterator for Reader {
 			// context record outside the range still names the session that the
 			// records inside it belong to.
 			let named = self.sources[index].instance;
-			let instance = self.threads.attribute(&record, &hash, named);
+			let (instance, renamed) = self.threads.attribute(&record, &hash, named);
+			if renamed {
+				self.renamed.push(Renamed {
+					file: self.sources[index].origin.clone(),
+					names: named.expect("a name to disagree with"),
+					records: instance.expect("a record that said so"),
+				});
+			}
 
 			if !self.range.holds(ts) {
 				continue;

@@ -303,9 +303,18 @@ impl Writer {
 			// rather than an old one being held back out of it. It carries the
 			// context as it stands now, which is what applies to everything
 			// after the gap anyway.
-			let seq = self.next_seq;
-			self.next_seq += 1;
-			self.owes_context = Some((seq, tally.to));
+			// An owed number that has not been written yet stands: taking a
+			// fresh one would leave the old in no record and covered by no gap,
+			// which reads as altered rather than incomplete. Only the timestamp
+			// moves on, so the record still sorts ahead of the survivors.
+			self.owes_context = Some(match self.owes_context {
+				Some((seq, _)) => (seq, tally.to),
+				None => {
+					let seq = self.next_seq;
+					self.next_seq += 1;
+					(seq, tally.to)
+				}
+			});
 		}
 
 		if let Some((seq, ts)) = self.owes_context {
@@ -947,6 +956,32 @@ mod tests {
 			assert_eq!(writer.owes_context.map(|(seq, _)| seq), Some(42));
 			assert_eq!(writer.next_seq, next_seq, "no number is burned");
 		}
+	}
+
+	#[test]
+	fn a_second_gap_does_not_take_a_fresh_number_from_the_first() {
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::write(&store, b"in the way").unwrap();
+
+		let mut writer = Writer::new(&store);
+		writer.owes_context = Some((7, Timestamp::now()));
+
+		// A further stretch of loss must not hand the owed record a new number
+		// and drop the old one: nothing would fill it and no gap would cover it.
+		for i in 0..(BACKLOG_RECORDS + 20) {
+			writer.query(&context(), format!("lost {i};"), QuerySource::Typed);
+		}
+		std::fs::remove_file(&store).unwrap();
+		writer.query(&context(), "resumed;".into(), QuerySource::Typed);
+		drop(writer);
+
+		let report = super::super::verify::verify(&store).unwrap();
+		assert!(
+			report.sessions[0].holds(),
+			"{:?}",
+			report.sessions[0].broken_at
+		);
 	}
 
 	#[test]
