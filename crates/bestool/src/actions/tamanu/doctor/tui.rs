@@ -361,7 +361,7 @@ fn build_rows(rows: &[TuiRow], spinner: usize) -> Vec<StyledLine> {
 		match &row.state {
 			RowState::Running => lines.push(row_line_running(&row.name, name_width, spinner)),
 			RowState::Completed(check) => {
-				lines.push(row_line_completed(check, name_width));
+				lines.push(row_line_completed(check, &row.name, name_width));
 				if let Some(reason) = reason_for(&check.check) {
 					lines.push(reason_line(reason, name_width));
 				}
@@ -392,11 +392,12 @@ fn row_line_running(name: &str, name_width: usize, spinner: usize) -> StyledLine
 	]
 }
 
-fn row_line_completed(outcome: &CheckOutcome, name_width: usize) -> StyledLine {
+/// `name` is the row's own, which is the instance identity it was matched and
+/// measured by — recomputing it here would allocate on every redraw and, if the
+/// two ever diverged, pad the label against a width computed for a different
+/// string.
+fn row_line_completed(outcome: &CheckOutcome, name: &str, name_width: usize) -> StyledLine {
 	let check = &outcome.check;
-	// The instance identity the row was matched by, so the label and the match
-	// cannot disagree and two clusters read apart.
-	let name = outcome.row_id();
 	let (tag, color) = tag_for(check);
 	let pad = " ".repeat(name_width.saturating_sub(name.len()));
 	vec![

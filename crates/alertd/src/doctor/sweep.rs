@@ -7,7 +7,8 @@ use std::{
 use bestool_canopy::{
 	CanopyClient,
 	schema::{
-		ApplicationReport, CheckSeverity, HealthCheck, StatusPayload, StatusResponse, TargetReport,
+		ApplicationReport, CheckResult, CheckSeverity, HealthCheck, StatusPayload, StatusResponse,
+		TargetReport,
 	},
 };
 use futures::{
@@ -820,25 +821,34 @@ async fn collect_server_facts(
 /// A failing application makes the sweep failing just as a failing machine
 /// does: the operator is looking at one host either way.
 pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
-	let targets = || {
-		payload.machine.iter().map(|m| &m.health).chain(
-			payload
-				.applications
-				.iter()
-				.flat_map(|a| a.values())
-				.map(|a| &a.health),
-		)
-	};
-	let results = || {
-		targets()
-			.flatten()
-			.flatten()
-			.filter_map(|c| c.result.as_ref())
-			.map(|r| r.to_string())
-	};
-	if results().any(|r| r == "failed") {
+	let targets = payload.machine.iter().map(|m| &m.health).chain(
+		payload
+			.applications
+			.iter()
+			.flat_map(|a| a.values())
+			.map(|a| &a.health),
+	);
+
+	// One walk, matching the typed result rather than formatting it: the payload
+	// was previously traversed twice and a string allocated per check just to
+	// compare against a literal.
+	let mut failing = false;
+	let mut degraded = false;
+	for result in targets
+		.flatten()
+		.flatten()
+		.filter_map(|c| c.result.as_ref())
+	{
+		match result {
+			CheckResult::Failed => failing = true,
+			CheckResult::Warning | CheckResult::Broken => degraded = true,
+			CheckResult::Passed | CheckResult::Skipped => {}
+		}
+	}
+
+	if failing {
 		OverallResult::Failing
-	} else if results().any(|r| r == "warning" || r == "broken") {
+	} else if degraded {
 		OverallResult::Degraded
 	} else {
 		OverallResult::Healthy
