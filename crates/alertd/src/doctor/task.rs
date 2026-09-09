@@ -1,6 +1,5 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
-use bestool_canopy::schema::{CheckSeverity, StatusPayload};
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use jiff::Timestamp;
 use miette::{Result, miette};
@@ -10,9 +9,10 @@ use tracing::warn;
 
 use crate::doctor::{
 	self,
-	check::{Check, CheckStatus},
+	check::{Check, CheckOutcome, CheckStatus},
 	progress::DoctorEvent,
 	stat::{MetricsSnapshot, StatusCounts},
+	sweep::{SplitSeverities, split_severities},
 };
 use crate::tasks::TaskEndpointHandler;
 use crate::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
@@ -29,16 +29,19 @@ pub type BackupDispatch = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 /// Apply the effective-severity ceiling to a single streamed check, if a
 /// mapping is available (a no-op otherwise). Mirrors
 /// [`doctor::SweepResult::apply_severities`] for the one-check streaming case.
-fn cap_check(check: Check, severities: Option<&HashMap<String, CheckSeverity>>) -> Check {
-	match severities {
-		Some(map) => {
-			let ceiling = doctor::sweep::severity_ceiling(map, check.name);
-			Check {
-				status: check.status.cap_to(ceiling),
-				..check
-			}
-		}
-		None => check,
+fn cap_outcome(outcome: CheckOutcome, severities: Option<&SplitSeverities>) -> CheckOutcome {
+	let Some(split) = severities else {
+		return outcome;
+	};
+	let empty = HashMap::new();
+	let map = split.for_subject(&outcome.subject).unwrap_or(&empty);
+	let ceiling = doctor::sweep::severity_ceiling(map, outcome.check.name);
+	CheckOutcome {
+		check: Check {
+			status: outcome.check.status.cap_to(ceiling),
+			..outcome.check
+		},
+		..outcome
 	}
 }
 
@@ -83,7 +86,7 @@ struct DoctorTaskInner {
 	/// sweeps this daemon serves locally (`latest` / `recompute`) so operators
 	/// see the same severities the CLI and canopy show; the payload posted to
 	/// canopy stays raw. See [`doctor::SweepResult::apply_severities`].
-	check_severities: Mutex<Option<HashMap<String, CheckSeverity>>>,
+	check_severities: Mutex<Option<SplitSeverities>>,
 	/// Runs the backup driver for the types canopy asks for via `backup_now`.
 	/// `None` when backups aren't compiled in.
 	backup_dispatch: Option<BackupDispatch>,
@@ -168,7 +171,12 @@ impl DoctorMetricsHandle {
 		let stats = sweep
 			.results
 			.iter()
-			.flat_map(|(check, _)| check.stats.iter().map(|stat| (check.name, stat.clone())))
+			.flat_map(|o| {
+				o.check
+					.stats
+					.iter()
+					.map(|stat| (o.check.name, stat.clone()))
+			})
 			.collect();
 
 		Some(MetricsSnapshot {
@@ -181,9 +189,9 @@ impl DoctorMetricsHandle {
 
 /// Tally check outcomes into a [`StatusCounts`]. Expects statuses already capped
 /// to canopy's ceilings, so the census matches what operators see elsewhere.
-fn census(results: &[(Check, bool)]) -> StatusCounts {
+fn census(results: &[CheckOutcome]) -> StatusCounts {
 	let mut counts = StatusCounts::default();
-	for (check, _) in results {
+	for CheckOutcome { check, .. } in results {
 		match &check.status {
 			CheckStatus::Pass => counts.passing += 1,
 			CheckStatus::Warning(_) => counts.warning += 1,
@@ -274,7 +282,7 @@ impl DoctorTaskInner {
 	}
 
 	/// Snapshot the severity ceilings canopy last returned, if any.
-	async fn severities_snapshot(&self) -> Option<HashMap<String, CheckSeverity>> {
+	async fn severities_snapshot(&self) -> Option<SplitSeverities> {
 		self.check_severities.lock().await.clone()
 	}
 
@@ -290,8 +298,8 @@ impl DoctorTaskInner {
 	async fn tick(self: &Arc<Self>, ctx: &TaskContext) -> Result<()> {
 		let sweep = self.run_sweep(ctx, None, true).await?;
 
-		let Some(server_id) = sweep.server_id else {
-			warn!("no metaServerId available; skipping canopy status push");
+		let Some(machine_id) = sweep.machine_id.clone() else {
+			warn!("no machine id available; skipping canopy status push");
 			return Ok(());
 		};
 
@@ -300,20 +308,19 @@ impl DoctorTaskInner {
 			return Ok(());
 		};
 
-		// The sweep builds the payload as a free-form JSON object; the canopy
-		// client takes the typed `StatusPayload`, whose flattened `extra` map
-		// carries the server facts alongside the reserved `health` array.
-		let payload: StatusPayload = serde_json::from_value(sweep.payload)
-			.map_err(|err| miette!("building canopy status payload: {err}"))?;
+		// The sweep already assembled the typed split payload: the machine's
+		// checks and detail, the application's, and the reporting source.
 		let response = canopy
-			.status(&server_id, &payload)
+			.status(&machine_id, &sweep.payload)
 			.await
 			.map_err(|err| miette!("posting doctor status to canopy: {err}"))?;
 
-		// Cache the effective-severity ceilings for the sweeps we serve locally.
-		// The payload we just posted stays raw: canopy is the source of truth and
-		// maps severities itself.
-		*self.check_severities.lock().await = Some(response.check_severities);
+		// Cache the effective-severity ceilings for the sweeps we serve locally,
+		// keeping canopy's per-target split so a machine check and an application
+		// check of the same name stay separately graded. The payload we just
+		// posted stays raw: canopy is the source of truth and maps severities
+		// itself.
+		*self.check_severities.lock().await = Some(split_severities(&response));
 
 		// Refresh the on-disk tags cache from the effective tags canopy echoes
 		// back. Checks that read tags (e.g. billing_tags) and offline `canopy
@@ -347,7 +354,7 @@ impl DoctorTaskInner {
 				let sweep = self.capped(s.sweep).await;
 				TaskEndpointResponse::Json(json!({
 					"computedAt": s.computed_at.to_string(),
-					"serverId": sweep.server_id,
+					"machineId": sweep.machine_id,
 					"payload": sweep.payload,
 				}))
 			}
@@ -374,12 +381,21 @@ impl DoctorTaskInner {
 			let stream_severities = severities.clone();
 			let forwarder = tokio::spawn(async move {
 				while let Some(event) = progress_rx.recv().await {
-					let DoctorEvent::Completed(check) = event;
-					let check = cap_check(check, stream_severities.as_ref());
-					let _ = progress_forward_tx.send(json!({
-						"event": "check",
-						"check": check.to_streaming_json(),
-					}));
+					match event {
+						DoctorEvent::Planned(checks) => {
+							let _ = progress_forward_tx.send(json!({
+								"event": "planned",
+								"checks": checks,
+							}));
+						}
+						DoctorEvent::Completed(outcome) => {
+							let outcome = cap_outcome(outcome, stream_severities.as_ref());
+							let _ = progress_forward_tx.send(json!({
+								"event": "check",
+								"check": outcome.to_streaming_json(),
+							}));
+						}
+					}
 				}
 			});
 
@@ -395,7 +411,7 @@ impl DoctorTaskInner {
 					let _ = out_tx.send(json!({
 						"event": "done",
 						"computedAt": Timestamp::now().to_string(),
-						"serverId": sweep.server_id,
+						"machineId": sweep.machine_id,
 						"payload": sweep.payload,
 					}));
 				}
@@ -461,6 +477,10 @@ impl BackgroundTask for DoctorTask {
 
 #[cfg(test)]
 mod tests {
+	use bestool_canopy::schema::CheckSeverity;
+
+	use crate::doctor::subject::{ApplicationKind, ApplicationRef, Subject};
+
 	use node_semver::Version;
 
 	use bestool_tamanu::config::{Database, TamanuConfig};
@@ -543,43 +563,71 @@ mod tests {
 		assert_eq!(resolved.version, Version::parse("2.54.0").unwrap());
 	}
 
+	fn machine(check: Check) -> CheckOutcome {
+		CheckOutcome {
+			subject: Subject::Machine,
+			check,
+			on_wire: true,
+		}
+	}
+
 	#[test]
-	fn cap_check_applies_ceiling_when_present() {
-		let mut severities = HashMap::new();
-		severities.insert("disk_free".to_string(), CheckSeverity::Warn);
-		let check = Check::fail("disk_free", "1% free", "out of space");
-		let capped = cap_check(check, Some(&severities));
-		match capped.status {
+	fn cap_outcome_applies_ceiling_when_present() {
+		let mut severities = SplitSeverities::default();
+		severities
+			.machine
+			.insert("disk_free".to_string(), CheckSeverity::Warn);
+		let outcome = machine(Check::fail("disk_free", "1% free", "out of space"));
+		let capped = cap_outcome(outcome, Some(&severities));
+		match capped.check.status {
 			CheckStatus::Warning(r) => assert_eq!(r, "out of space"),
 			other => panic!("expected Warning, got {other:?}"),
 		}
 	}
 
 	#[test]
-	fn cap_check_absent_check_defaults_to_warn() {
-		// No entry for this check: canopy's default ceiling is warn, so a fail
-		// streams as a warning.
-		let check = Check::fail("brand_new", "bad", "reason");
-		let capped = cap_check(check, Some(&HashMap::new()));
-		assert!(matches!(capped.status, CheckStatus::Warning(_)));
+	fn cap_outcome_uses_the_ceiling_for_its_own_subject() {
+		// A machine ceiling must not reach an application check of the same name.
+		let mut severities = SplitSeverities::default();
+		severities
+			.machine
+			.insert("shared".to_string(), CheckSeverity::Skip);
+		let outcome = CheckOutcome {
+			subject: Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral)),
+			check: Check::fail("shared", "bad", "reason"),
+			on_wire: true,
+		};
+		let capped = cap_outcome(outcome, Some(&severities));
+		// Canopy said nothing about this application, so the absent-check default
+		// (warn) applies rather than the machine's skip.
+		assert!(matches!(capped.check.status, CheckStatus::Warning(_)));
 	}
 
 	#[test]
-	fn cap_check_no_mapping_is_a_noop() {
-		let check = Check::fail("disk_free", "1% free", "out of space");
-		let capped = cap_check(check, None);
-		assert!(matches!(capped.status, CheckStatus::Fail(_)));
+	fn cap_outcome_absent_check_defaults_to_warn() {
+		// No entry for this check: canopy's default ceiling is warn, so a fail
+		// streams as a warning.
+		let outcome = machine(Check::fail("brand_new", "bad", "reason"));
+		let capped = cap_outcome(outcome, Some(&SplitSeverities::default()));
+		assert!(matches!(capped.check.status, CheckStatus::Warning(_)));
+	}
+
+	#[test]
+	fn cap_outcome_no_mapping_is_a_noop() {
+		let outcome = machine(Check::fail("disk_free", "1% free", "out of space"));
+		let capped = cap_outcome(outcome, None);
+		assert!(matches!(capped.check.status, CheckStatus::Fail(_)));
 	}
 
 	#[test]
 	fn census_counts_each_status() {
 		let results = vec![
-			(Check::pass("a", ""), true),
-			(Check::pass("b", ""), true),
-			(Check::warning("c", "", "w"), true),
-			(Check::fail("d", "", "f"), true),
-			(Check::skip("e", "", "s"), true),
-			(Check::broken("g", "", "b"), true),
+			machine(Check::pass("a", "")),
+			machine(Check::pass("b", "")),
+			machine(Check::warning("c", "", "w")),
+			machine(Check::fail("d", "", "f")),
+			machine(Check::skip("e", "", "s")),
+			machine(Check::broken("g", "", "b")),
 		];
 		let c = census(&results);
 		assert_eq!(c.passing, 2);
@@ -597,14 +645,18 @@ mod tests {
 		// A fail capped to a warn ceiling must count as warning, not failing —
 		// the census tracks what operators see after capping.
 		let mut sweep = doctor::SweepResult {
-			server_id: None,
-			results: vec![(Check::fail("disk_free", "1% free", "out of space"), true)],
+			machine_id: None,
+			results: vec![machine(Check::fail("disk_free", "1% free", "out of space"))],
 			overall: doctor::check::OverallResult::Failing,
-			payload: json!({}),
+			payload: bestool_canopy::schema::StatusPayload::builder()
+				.health(Vec::new())
+				.build(),
 			pg_version: None,
 		};
-		let mut severities = HashMap::new();
-		severities.insert("disk_free".to_string(), CheckSeverity::Warn);
+		let mut severities = SplitSeverities::default();
+		severities
+			.machine
+			.insert("disk_free".to_string(), CheckSeverity::Warn);
 		sweep.apply_severities(&severities);
 
 		let c = census(&sweep.results);

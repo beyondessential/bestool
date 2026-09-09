@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use owo_colors::OwoColorize;
 
-use bestool_alertd::doctor::check::{Check, CheckStatus, OverallResult};
+use bestool_alertd::doctor::check::{CheckOutcome, CheckStatus, OverallResult};
 
 use super::{SweepSource, order};
 
@@ -13,23 +13,22 @@ use super::{SweepSource, order};
 /// set regardless of what is displayed.
 pub fn render_plain<W: Write>(
 	out: &mut W,
-	results: &[(Check, bool)],
+	results: &[CheckOutcome],
 	show_all: bool,
 	overall: OverallResult,
 	source: &SweepSource,
 	use_colours: bool,
 ) -> io::Result<()> {
-	let displayed: Vec<&(Check, bool)> = results
+	// Each row's label is formatted once here and reused for the width pass and
+	// the line itself.
+	let displayed: Vec<(&CheckOutcome, String)> = results
 		.iter()
-		.filter(|(c, _)| order::keep_in_replay(&c.status, show_all))
+		.filter(|o| order::keep_in_replay(&o.check.status, show_all))
+		.map(|o| (o, o.row_id()))
 		.collect();
-	let width = displayed
-		.iter()
-		.map(|(c, _)| c.name.len())
-		.max()
-		.unwrap_or(0);
-	for (check, _) in &displayed {
-		write_check_line(out, check, width, use_colours)?;
+	let width = displayed.iter().map(|(_, name)| name.len()).max().unwrap_or(0);
+	for (outcome, name) in &displayed {
+		write_check_line(out, outcome, name, width, use_colours)?;
 	}
 	if !displayed.is_empty() {
 		writeln!(out)?;
@@ -41,10 +40,12 @@ pub fn render_plain<W: Write>(
 
 pub fn write_check_line<W: Write>(
 	out: &mut W,
-	check: &Check,
+	outcome: &CheckOutcome,
+	name: &str,
 	name_width: usize,
 	use_colours: bool,
 ) -> io::Result<()> {
+	let check = &outcome.check;
 	let tag = match &check.status {
 		CheckStatus::Pass => colour_pass(use_colours, "PASS"),
 		CheckStatus::Skip(_) => colour_skip(use_colours, "SKIP"),
@@ -55,7 +56,7 @@ pub fn write_check_line<W: Write>(
 	writeln!(
 		out,
 		"  {tag}    {name:<width$}   {summary}",
-		name = check.name,
+		name = name,
 		width = name_width,
 		summary = check.summary,
 	)?;
@@ -81,13 +82,13 @@ pub fn write_check_line<W: Write>(
 
 pub fn write_result_line<W: Write>(
 	out: &mut W,
-	results: &[(Check, bool)],
+	results: &[CheckOutcome],
 	overall: OverallResult,
 	use_colours: bool,
 ) -> io::Result<()> {
 	let (mut passes, mut warnings, mut fails, mut skips, mut brokens) =
 		(0usize, 0usize, 0usize, 0usize, 0usize);
-	for (check, _) in results {
+	for CheckOutcome { check, .. } in results {
 		match &check.status {
 			CheckStatus::Pass => passes += 1,
 			CheckStatus::Skip(_) => skips += 1,
@@ -183,30 +184,39 @@ fn colour_broken(use_colours: bool, s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+	use bestool_alertd::doctor::{check::Check, subject::Subject};
+
 	use super::*;
 	use crate::actions::tamanu::doctor::order::filter_and_sort;
 
-	fn pass(name: &'static str) -> (Check, bool) {
-		(Check::pass(name, "ok"), true)
+	fn on(check: Check) -> CheckOutcome {
+		CheckOutcome {
+			subject: Subject::Machine,
+			check,
+			on_wire: true,
+		}
 	}
-	fn warn(name: &'static str) -> (Check, bool) {
-		(Check::warning(name, "deg", "reason"), true)
+	fn pass(name: &'static str) -> CheckOutcome {
+		on(Check::pass(name, "ok"))
 	}
-	fn fail(name: &'static str) -> (Check, bool) {
-		(Check::fail(name, "bad", "reason"), true)
+	fn warn(name: &'static str) -> CheckOutcome {
+		on(Check::warning(name, "deg", "reason"))
 	}
-	fn skip(name: &'static str) -> (Check, bool) {
-		(Check::skip(name, "not run", "reason"), true)
+	fn fail(name: &'static str) -> CheckOutcome {
+		on(Check::fail(name, "bad", "reason"))
 	}
-	fn broken(name: &'static str) -> (Check, bool) {
-		(Check::broken(name, "broke", "reason"), true)
+	fn skip(name: &'static str) -> CheckOutcome {
+		on(Check::skip(name, "not run", "reason"))
+	}
+	fn broken(name: &'static str) -> CheckOutcome {
+		on(Check::broken(name, "broke", "reason"))
 	}
 
 	#[test]
 	fn render_plain_lists_results_in_severity_order() {
 		let raw = vec![fail("z-fail"), pass("a-pass"), warn("m-warn")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&sorted.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&sorted.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, true, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -223,7 +233,7 @@ mod tests {
 	fn render_plain_default_shows_just_result_line_when_clean() {
 		let raw = vec![pass("a"), pass("b"), skip("c")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&raw.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -239,7 +249,7 @@ mod tests {
 	fn render_plain_default_keeps_warn_broken_fail() {
 		let raw = vec![pass("a"), warn("b"), broken("c"), fail("d"), skip("e")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&raw.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -260,7 +270,7 @@ mod tests {
 	fn render_plain_no_server_id_header() {
 		let raw = vec![pass("a")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&raw.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, true, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -272,7 +282,7 @@ mod tests {
 	fn render_plain_includes_source_note_for_daemon_streamed() {
 		let raw = vec![pass("a")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&raw.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::DaemonStreamed, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -283,7 +293,7 @@ mod tests {
 	fn render_plain_labels_local_sweeps_as_local() {
 		let raw = vec![pass("a")];
 		let sorted = filter_and_sort(&raw, true);
-		let overall = OverallResult::from_checks(&raw.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&raw.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
@@ -293,7 +303,7 @@ mod tests {
 	#[test]
 	fn result_line_always_lists_every_count() {
 		let results = vec![broken("a"), skip("b"), pass("c")];
-		let overall = OverallResult::from_checks(&results.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>());
+		let overall = OverallResult::from_checks(&results.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
 		let mut buf = Vec::new();
 		write_result_line(&mut buf, &results, overall, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();

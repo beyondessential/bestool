@@ -14,6 +14,7 @@ use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 use super::heal::{self, HealAction, HealFn};
+use super::subject::CheckScope;
 
 pub mod util;
 
@@ -205,11 +206,19 @@ pub fn fmt_chain<E: std::error::Error + ?Sized>(err: &E) -> String {
 
 /// One check's name + runner.
 pub struct CheckEntry {
+	/// Stable identifier, unique within the check's scope rather than across the
+	/// whole registry: a machine `foo` and an application `foo` would be two
+	/// different checks.
 	pub name: &'static str,
 	/// `false` means the check is rendered to the CLI but NOT included in the
 	/// canopy `health[]` wire array (e.g. `tailscale`, which canopy already
 	/// tracks elsewhere).
 	pub on_wire: bool,
+	/// Which subjects this check reports for. A subject it does not admit never
+	/// runs it and never carries its result.
+	///
+	/// spec: SUBJ
+	pub scope: CheckScope,
 	pub run: fn(SweepContext) -> futures::future::BoxFuture<'static, Check>,
 	/// Optional self-heal action, run in the background by the daemon while the
 	/// check is failing. See [`crate::doctor::heal`].
@@ -226,84 +235,77 @@ impl CheckEntry {
 	}
 }
 
+/// Register a check: its name, module, the inputs it needs, and the subject it
+/// reports for.
+///
+/// The last two are independent axes. The category (`tamanu` / `db` / `host`)
+/// says what the check must be handed to run at all and gates it accordingly;
+/// the scope says whose reading it speaks for and decides which subject's
+/// report it lands in. They mostly agree, and where they don't the check is
+/// still filed correctly: `caddyfile_version` grades the machine's front-end
+/// configuration but needs the application's version to tell whether the marker
+/// it finds is stale.
 macro_rules! entry {
-	// Tamanu-dependent check: skipped without running when the host has no
-	// Tamanu deployment — including when the only database is a generic
-	// (non-Tamanu) one from the `DATABASE_URL` fallback.
-	($name:literal, $module:ident) => {
-		entry!(@tamanu $name, $module, true)
+	($name:literal, $module:ident, $cat:ident, $scope:ident) => {
+		entry!(@build $name, $module, $cat, $scope, true)
 	};
-	// Tamanu-dependent check rendered to the CLI but kept OFF the canopy
-	// `health[]` wire array — for checks that report a value already carried as
-	// a top-level status fact, so they're useful locally but shouldn't alert.
-	($name:literal, $module:ident, off_wire) => {
-		entry!(@tamanu $name, $module, false)
+	// Rendered to the CLI but kept OFF the canopy `health[]` wire array — for
+	// checks reporting a value already carried as a status fact, so they're
+	// useful locally but shouldn't alert.
+	($name:literal, $module:ident, $cat:ident, $scope:ident, off_wire) => {
+		entry!(@build $name, $module, $cat, $scope, false)
 	};
-	(@tamanu $name:literal, $module:ident, $on_wire:literal) => {
+	(@build $name:literal, $module:ident, $cat:ident, $scope:ident, $on_wire:literal) => {
 		CheckEntry {
 			name: $name,
 			on_wire: $on_wire,
-			run: |ctx| {
-				Box::pin(async move {
-					match ctx.tamanu {
-						Some(tamanu) if tamanu.is_tamanu => $module::run(tamanu).await,
-						// A generic (non-Tamanu) database context skips for the same
-						// reason as no context at all: there's no Tamanu here.
-						_ => Check::skip(
-							$name,
-							"no Tamanu on this host",
-							"check needs a Tamanu deployment, and this host has none",
-						),
-					}
-				})
-			},
+			scope: entry!(@scope $scope),
+			run: entry!(@run $name, $module, $cat),
 			heal: None,
 		}
 	};
-	// Generic database check: runs against any database context — Tamanu's or
-	// the generic `DATABASE_URL` fallback — and skips only when there is no
-	// database at all.
-	($name:literal, $module:ident, db) => {
-		entry!(@db $name, $module, true)
-	};
-	($name:literal, $module:ident, db, off_wire) => {
-		entry!(@db $name, $module, false)
-	};
-	(@db $name:literal, $module:ident, $on_wire:literal) => {
-		CheckEntry {
-			name: $name,
-			on_wire: $on_wire,
-			run: |ctx| {
-				Box::pin(async move {
-					match ctx.tamanu {
-						Some(tamanu) => $module::run(tamanu).await,
-						None => Check::skip(
-							$name,
-							"no database on this host",
-							"check needs a database, and this host has neither a Tamanu deployment nor a DATABASE_URL",
-						),
-					}
-				})
-			},
-			heal: None,
+
+	(@scope machine) => { CheckScope::Machine };
+	(@scope postgres) => { CheckScope::Postgres };
+	(@scope tamanu_app) => { CheckScope::Tamanu };
+	(@scope central) => { CheckScope::Central };
+	(@scope facility) => { CheckScope::Facility };
+
+	// Needs a Tamanu deployment. Scope omits these before they run wherever
+	// there is no Tamanu application, so the skip is reached only by a check
+	// filed against another subject that still wants Tamanu's context.
+	(@run $name:literal, $module:ident, tamanu) => {
+		|ctx| {
+			Box::pin(async move {
+				match ctx.tamanu {
+					Some(tamanu) if tamanu.is_tamanu => $module::run(tamanu).await,
+					_ => Check::skip(
+						$name,
+						"no Tamanu on this host",
+						"check needs a Tamanu deployment, and this host has none",
+					),
+				}
+			})
 		}
 	};
-	// Host-level check: runs whether or not Tamanu is deployed.
-	($name:literal, $module:ident, host) => {
-		CheckEntry {
-			name: $name,
-			on_wire: true,
-			run: |ctx| Box::pin($module::run(ctx)),
-			heal: None,
+	// Needs any database — Tamanu's, or the generic `DATABASE_URL` fallback.
+	(@run $name:literal, $module:ident, db) => {
+		|ctx| {
+			Box::pin(async move {
+				match ctx.tamanu {
+					Some(tamanu) => $module::run(tamanu).await,
+					None => Check::skip(
+						$name,
+						"no database on this host",
+						"check needs a database, and this host has neither a Tamanu deployment nor a DATABASE_URL",
+					),
+				}
+			})
 		}
 	};
-	($name:literal, $module:ident, host, off_wire) => {
-		CheckEntry {
-			name: $name,
-			on_wire: false,
-			run: |ctx| Box::pin($module::run(ctx)),
-			heal: None,
-		}
+	// Needs neither: runs against whatever the host presents.
+	(@run $name:literal, $module:ident, host) => {
+		|ctx| Box::pin($module::run(ctx))
 	};
 }
 
@@ -312,94 +314,124 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("db_connect", db_connect, db),
-		// Reports the postgres version, which is already the top-level `pgVersion`
-		// status fact — useful in the CLI render, but off the wire.
-		entry!("db_version", db_version, db, off_wire),
-		entry!("migrations", migrations),
-		entry!("reporting_roles", reporting_roles),
-		entry!("pg_tuning", pg_tuning, db),
-		entry!("pg_checksums", pg_checksums, db),
-		entry!("disk_free", disk_free, host),
-		entry!("inodes", inodes, host),
-		entry!("btrfs", btrfs, host),
-		entry!("held_captures", held_captures, host),
-		entry!("memory", memory, host),
-		entry!("load", load, host),
-		// Uptime is already the top-level `uptimeSecs` status fact; the soft
-		// "recently rebooted" warning is CLI-only, so keep it off the wire.
-		entry!("uptime", uptime, host, off_wire),
-		entry!("time_sync", time_sync, host),
-		// Tamanu-level: needs a reachable Tamanu DB / deployment but not the
-		// config files, so it runs against a `TAMANU_DATABASE_URL`-only host too.
-		entry!("tamanu_http", tamanu_http),
-		// Host/service probes: they inspect the running host, not the Tamanu
-		// install or config, and Skip gracefully when caddy/kopia isn't present.
-		// So they run regardless of install — including against a
-		// `TAMANU_DATABASE_URL`-only host.
-		entry!("caddy_version", caddy_version, host),
-		entry!("caddy_certs", caddy_certs, host),
-		entry!("caddy_resolvers", caddy_resolvers, host),
-		// Tamanu-dependent: reads the Tamanu Caddyfile's version marker and needs
-		// the deployment's version to grade an outdated one. Windows-only and
-		// self-skips when caddy isn't present.
-		entry!("caddyfile_version", caddyfile_version),
-		entry!("http_errors", http_errors, host),
-		entry!("tailscale", tailscale, host, off_wire),
-		entry!("tailscale_config", tailscale_config, host),
-		// bestool's own Canopy enrolment: runs regardless of Tamanu, and reports so
-		// Canopy sees an incomplete registration before it blocks backups.
-		entry!("canopy_registration", canopy_registration, host).with_heal(
+		entry!("connect", db_connect, db, postgres),
+		// Reports the postgres version, which is already the application's
+		// `pgVersion` fact — useful in the CLI render, but off the wire.
+		entry!("version", db_version, db, postgres, off_wire),
+		entry!("migrations", migrations, tamanu, tamanu_app),
+		entry!("reporting_roles", reporting_roles, tamanu, tamanu_app),
+		// An application check that still reads the machine's total memory for its
+		// denominator. Interim, and not an oversight: the substrate work replaces
+		// that reading with the Postgres service's own declared ceiling.
+		entry!("tuning", pg_tuning, db, postgres),
+		entry!("checksums", pg_checksums, db, postgres),
+		entry!("disk_free", disk_free, host, machine),
+		entry!("inodes", inodes, host, machine),
+		entry!("btrfs", btrfs, host, machine),
+		// Filesystem-level snapshots, and what they capture is not confined to any
+		// one application's database, so they are the machine's concern.
+		entry!("held_captures", held_captures, host, machine),
+		entry!("memory", memory, host, machine),
+		entry!("load", load, host, machine),
+		// Uptime is already a machine fact; the soft "recently rebooted" warning is
+		// CLI-only, so keep it off the wire.
+		entry!("uptime", uptime, host, machine, off_wire),
+		entry!("time_sync", time_sync, host, machine),
+		// Needs a reachable Tamanu DB / deployment but not the config files, so it
+		// runs against a `TAMANU_DATABASE_URL`-only host too.
+		entry!("tamanu_http", tamanu_http, tamanu, tamanu_app),
+		// The front-end software itself is the machine's: these grade what is
+		// installed on the box, not what it serves. They skip gracefully when caddy
+		// isn't present.
+		entry!("caddy_version", caddy_version, host, machine),
+		entry!("caddy_resolvers", caddy_resolvers, host, machine),
+		// The certificates, by contrast, are the application's: they are issued for
+		// the names it answers on.
+		entry!("caddy_certs", caddy_certs, host, tamanu_app),
+		// Grades the machine's Caddyfile version marker, so it reports for the
+		// machine — but it needs the deployment's version to tell whether the
+		// marker is stale, hence the Tamanu category. Windows-only, and self-skips
+		// when caddy isn't present.
+		entry!("caddyfile_version", caddyfile_version, tamanu, machine),
+		// The error rates are the application's traffic, however the front end in
+		// front of it happens to be reached.
+		entry!("http_errors", http_errors, host, tamanu_app),
+		entry!("tailscale", tailscale, host, machine, off_wire),
+		entry!("tailscale_config", tailscale_config, host, machine),
+		// bestool's own Canopy enrolment is the machine's: it reports so Canopy sees
+		// an incomplete registration before it blocks backups.
+		entry!("canopy_registration", canopy_registration, host, machine).with_heal(
 			|ctx| Box::pin(canopy_registration::heal(ctx)),
 			heal::DEFAULT_MIN_INTERVAL,
 		),
-		// Reports the host's LAN and best-guess WAN addresses as status facts
-		// (off the wire; carried in the top-level payload, like the timezone).
-		entry!("ips", ips, host, off_wire),
-		// Reports whether munin-node is installed as a top-level status fact
-		// (off the wire, like `ips`); not a health signal.
-		entry!("munin", munin, host, off_wire),
-		entry!("billing_tags", billing_tags, host),
-		// Tamanu-level: the config-derived FHIR expectation degrades to Unknown
-		// without config (see `services::expected`); the rest is DB/host-derived.
-		entry!("tamanu_service", tamanu_service),
-		// Tamanu-level: compares running container tags against the deployment's
-		// version, which is the install's env-file version when present and the
-		// DB's recorded `currentVersion` otherwise. It self-skips if neither is
-		// available.
-		entry!("version_drift", version_drift),
-		entry!("external_users", external_users, host),
-		entry!("sync_sessions", sync_sessions),
+		// Reports the machine's LAN and best-guess WAN addresses as facts (off the
+		// wire; carried in the machine's detail, like the timezone).
+		entry!("ips", ips, host, machine, off_wire),
+		// Reports whether munin-node is installed as a machine fact (off the wire,
+		// like `ips`); not a health signal.
+		entry!("munin", munin, host, machine, off_wire),
+		// Read against the machine, so a machine hosting several applications
+		// carries one set of tags rather than one per application.
+		entry!("billing_tags", billing_tags, host, machine),
+		// The config-derived FHIR expectation degrades to Unknown without config
+		// (see `services::expected`); the rest is DB/host-derived.
+		entry!("tamanu_service", tamanu_service, tamanu, tamanu_app),
+		// Compares running container tags against the deployment's version, which is
+		// the install's env-file version when present and the DB's recorded
+		// `currentVersion` otherwise. It self-skips if neither is available.
+		entry!("version_drift", version_drift, tamanu, tamanu_app),
+		entry!("external_users", external_users, host, machine),
+		entry!("sync_sessions", sync_sessions, tamanu, tamanu_app),
 		// Config-derived: the FHIR API and worker toggles must agree.
-		entry!("fhir_config", fhir_config),
+		entry!("fhir_config", fhir_config, tamanu, tamanu_app),
 		// Restart the FHIR workers when the backlog check fails, capped at one
 		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
-		entry!("fhir_jobs", fhir_jobs).with_heal(
+		// The heal is central-only even though the check itself is not.
+		entry!("fhir_jobs", fhir_jobs, tamanu, tamanu_app).with_heal(
 			|ctx| Box::pin(fhir_jobs::heal(ctx)),
 			std::time::Duration::from_secs(60 * 60),
 		),
-		entry!("fhir_workers", fhir_workers),
+		entry!("fhir_workers", fhir_workers, tamanu, central),
 		entry!(
 			"certificate_notification_errors",
-			certificate_notification_errors
+			certificate_notification_errors,
+			tamanu,
+			central
 		),
-		entry!("ips_errors", ips_errors),
-		entry!("patient_communication_errors", patient_communication_errors),
-		entry!("report_errors", report_errors),
-		entry!("fhir_job_errors", fhir_job_errors),
-		entry!("sync_session_errors", sync_session_errors),
-		entry!("sync_facility_stale", sync_facility_stale),
-		entry!("sync_snapshot_tables", sync_snapshot_tables),
-		entry!("sync_lookup", sync_lookup),
-		entry!("sync_restart_loop", sync_restart_loop),
+		entry!("ips_errors", ips_errors, tamanu, central),
+		entry!(
+			"patient_communication_errors",
+			patient_communication_errors,
+			tamanu,
+			central
+		),
+		entry!("report_errors", report_errors, tamanu, central),
+		entry!("fhir_job_errors", fhir_job_errors, tamanu, central),
+		entry!("sync_session_errors", sync_session_errors, tamanu, central),
+		entry!("sync_facility_stale", sync_facility_stale, tamanu, central),
+		entry!(
+			"sync_snapshot_tables",
+			sync_snapshot_tables,
+			tamanu,
+			central
+		),
+		entry!("sync_lookup", sync_lookup, tamanu, central),
+		entry!("sync_restart_loop", sync_restart_loop, tamanu, central),
 		entry!(
 			"fhir_service_requests_unresolved",
-			fhir_service_requests_unresolved
+			fhir_service_requests_unresolved,
+			tamanu,
+			central
 		),
 		// Measures the outcome of materialisation rather than its queue: upstream
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
-		entry!("fhir_materialisation", fhir_materialisation),
+		entry!(
+			"fhir_materialisation",
+			fhir_materialisation,
+			tamanu,
+			central
+		),
 	]
 }
 
@@ -543,14 +575,14 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn db_connect_runs_with_db_only_context() {
-		// db_connect goes through the install gate because it only needs the URL.
+	async fn postgres_connect_runs_with_db_only_context() {
+		// `connect` goes through the install gate because it only needs the URL.
 		// An unreachable URL must FAIL (an alert), proving it wasn't skipped.
-		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let entry = all().into_iter().find(|e| e.name == "connect").unwrap();
 		let check = (entry.run)(db_only_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
-			"db_connect should run (and fail) with a db-only context, got {:?}",
+			"connect should run (and fail) with a db-only context, got {:?}",
 			check.to_wire()["result"]
 		);
 	}
@@ -565,13 +597,13 @@ mod tests {
 
 	#[tokio::test]
 	async fn generic_db_checks_run_with_generic_context() {
-		// db_connect only needs the URL; an unreachable one must FAIL (an
+		// `connect` only needs the URL; an unreachable one must FAIL (an
 		// alert), proving the generic context isn't gated out.
-		let entry = all().into_iter().find(|e| e.name == "db_connect").unwrap();
+		let entry = all().into_iter().find(|e| e.name == "connect").unwrap();
 		let check = (entry.run)(generic_db_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
-			"db_connect should run (and fail) with a generic-db context, got {:?}",
+			"connect should run (and fail) with a generic-db context, got {:?}",
 			check.to_wire()["result"]
 		);
 	}
@@ -613,7 +645,7 @@ mod tests {
 	async fn tamanu_checks_skip_without_tamanu() {
 		// The registry wrapper skips Tamanu-dependent checks before they run,
 		// so on a non-Tamanu host nothing downstream alerts.
-		for name in ["db_version", "version_drift", "tamanu_http"] {
+		for name in ["version", "version_drift", "tamanu_http"] {
 			let entry = all().into_iter().find(|e| e.name == name).unwrap();
 			let check = (entry.run)(no_tamanu_ctx()).await;
 			assert!(

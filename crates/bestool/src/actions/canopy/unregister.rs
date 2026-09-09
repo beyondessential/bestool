@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use bestool_canopy::registration;
 use bestool_tamanu::server_info::{
-	standard_device_key_path, standard_server_id_path, standard_tags_path,
+	standard_device_key_path, standard_machine_id_path, standard_tags_path,
 };
 use clap::Parser;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
@@ -83,7 +83,7 @@ fn confirm(dir: &Path, tags_path: &Path) -> Result<bool> {
 	println!("This erases this host's canopy enrolment from:");
 	println!("  canopy registration ({})", dir.display());
 	println!("  {}", standard_device_key_path().display());
-	println!("  {}", standard_server_id_path().display());
+	println!("  {}", standard_machine_id_path().display());
 	println!("  {} (cached tags)", tags_path.display());
 	println!("  {} (legacy cached tags)", standard_tags_path().display());
 	println!("  deviceKey/metaServerId rows in the Tamanu database (if reachable)");

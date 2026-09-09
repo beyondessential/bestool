@@ -10,7 +10,7 @@ This spec describes how the command selects checks, where the sweep data comes f
 
 ## Checks and outcomes
 
-The command runs a fixed registry of named checks covering both host-level concerns (disk, memory, time sync, and so on) and Tamanu-specific concerns (database, HTTP, services, certificates, sync state).
+The command runs a fixed registry of named checks, each reporting for the machine (disk, memory, time sync, and so on) or for an application on it (database, HTTP, services, certificates, sync state), as [SUBJ](subjects.md) describes.
 Each check resolves to exactly one of five outcomes: pass, skip, warning, broken, or fail.
 Every check produces a one-line summary; checks with a skip, warning, broken, or fail outcome also carry a reason.
 
@@ -21,8 +21,11 @@ Skipped checks do not degrade the overall outcome.
 
 `--check NAME` restricts the sweep to the named check and is repeatable to select several.
 `--skip NAME` excludes the named check, is repeatable, and applies after `--check`.
-With no selection flags, every check in the registry runs.
-An unknown check name in either flag is a fatal error that lists the known check names.
+With no selection flags, every check that applies to one of the sweep's subjects runs.
+
+A name is qualified by the subject it reports for, written as `machine:disk_free` or `tamanu-central:migrations`, since a name identifies a check only together with its subject.
+A bare name is a fatal error that names the qualified forms the registry holds under it, so an operator who types one is told what to write instead.
+An unknown name in either flag is likewise a fatal error that lists the known checks.
 
 ## Tamanu install context
 

@@ -47,18 +47,6 @@ fn budget_for(platform: Platform, total_ram: i64) -> Budget {
 	)
 }
 
-/// Whether the database is on this same host, so the local RAM describes it.
-/// `None`, empty, the loopback names, and a Unix-socket path (leading `/`) are
-/// all local; anything else is a remote hostname.
-fn is_local(host: Option<&str>) -> bool {
-	match host {
-		None => true,
-		Some(h) => {
-			h.is_empty() || h == "localhost" || h == "127.0.0.1" || h == "::1" || h.starts_with('/')
-		}
-	}
-}
-
 /// Whether `actual` is more than a factor of two away from `expected` in either
 /// direction. Two-times is deliberately generous: it tolerates rounding and
 /// version-to-version differences in the tuning maths, and only fires on the
@@ -313,9 +301,9 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if !is_local(ctx.config.db.host.as_deref()) {
+	if !crate::doctor::sweep::database_is_local(&ctx.database_url) {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"database is not local",
 			"tuning is compared against this host's RAM, which doesn't describe a remote database",
 		);
@@ -323,15 +311,15 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 	let Some(client) = ctx.db.as_deref() else {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"no DB connection",
-			"can't read postgres settings; db_connect reports the outage",
+			"can't read postgres settings; postgres:connect reports the outage",
 		);
 	};
 
 	let row = match client.query_one(SETTINGS_QUERY, &[]).await {
 		Ok(row) => row,
-		Err(err) => return query_error_check("pg_tuning", &err),
+		Err(err) => return query_error_check("tuning", &err),
 	};
 
 	let settings = Settings {
@@ -352,7 +340,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	let total_ram = sys.total_memory() as i64;
 	if total_ram <= 0 {
 		return Check::skip(
-			"pg_tuning",
+			"tuning",
 			"could not read host memory",
 			"sysinfo reported no total memory; can't derive expected tuning",
 		);
@@ -374,11 +362,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 		.join("; ");
 
 	let check = if findings.iter().any(|f| f.severity == Severity::Fail) {
-		Check::fail("pg_tuning", summary, reason)
+		Check::fail("tuning", summary, reason)
 	} else if !findings.is_empty() {
-		Check::warning("pg_tuning", summary, reason)
+		Check::warning("tuning", summary, reason)
 	} else {
-		Check::pass("pg_tuning", summary)
+		Check::pass("tuning", summary)
 	};
 
 	let budget_res = budget_for(Platform::current(), total_ram);
@@ -736,12 +724,21 @@ mod tests {
 	}
 
 	#[test]
-	fn remote_host_is_not_local() {
-		assert!(is_local(None));
-		assert!(is_local(Some("localhost")));
-		assert!(is_local(Some("127.0.0.1")));
-		assert!(is_local(Some("/var/run/postgresql")));
-		assert!(!is_local(Some("db.internal.example")));
-		assert!(!is_local(Some("10.0.0.5")));
+	fn tuning_only_grades_a_cluster_on_this_machine() {
+		// The denominator is this machine's memory, so tuning a cluster elsewhere
+		// against it would be wrong rather than merely imprecise. Locality comes
+		// from the same helper that keys the subject, so the two cannot disagree
+		// about whether a cluster is local.
+		use crate::doctor::sweep::database_is_local;
+		assert!(database_is_local("postgresql:///db"));
+		assert!(database_is_local("postgresql://u@localhost/db"));
+		// A socket host is only a socket where sockets exist; elsewhere the parser
+		// reads the path as an ordinary TCP name.
+		#[cfg(unix)]
+		assert!(database_is_local(
+			"postgresql:///db?host=/var/run/postgresql"
+		));
+		assert!(!database_is_local("postgresql://u@db.internal.example/db"));
+		assert!(!database_is_local("postgresql://u@10.0.0.5/db"));
 	}
 }

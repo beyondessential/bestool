@@ -7,7 +7,6 @@
 use super::{CheckContext, query_error_check};
 use crate::doctor::Stat;
 use crate::doctor::check::{Check, CheckStatus};
-use bestool_tamanu::ApiServerKind;
 
 const NAME: &str = "sync_lookup";
 const SQL: &str = "SELECT value AS last_sync_tick, updated_at::text AS last_updated, \
@@ -18,13 +17,6 @@ const WARN_SECS: i64 = 2 * 60;
 const FAIL_SECS: i64 = 5 * 60;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if ctx.kind != ApiServerKind::Central {
-		return Check::skip(
-			NAME,
-			"not applicable on facility server",
-			"central-only check",
-		);
-	}
 	let Some(client) = ctx.db.as_ref() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
