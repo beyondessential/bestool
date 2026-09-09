@@ -24,7 +24,7 @@ Statements that a snippet or an included file ran are recorded like any other, s
 
 The log is a directory, given by `--audit-path` or defaulting to the per-user state directory for bestool-psql: `~/.local/state/bestool-psql` on Linux, the local application data directory on macOS and Windows.
 The directory belongs to one operating-system user; sessions run by different users write to different directories.
-Everything the session creates there is readable by that user alone, since the log holds the full text of every statement run.
+Everything the session creates there is readable by that user alone on platforms whose permissions the session can set, since the log holds the full text of every statement run.
 A directory that was already there is left with the permissions its owner gave it, because the path can be named by an operator and is not the log's to change; the session warns when it finds one others can read.
 
 The directory must be on local storage.

@@ -22,6 +22,13 @@ pub const RECALL_BUDGET: usize = 4 * 1024 * 1024;
 /// in the audit log.
 pub const RECALL_CUTOFF: usize = 10 * 1024;
 
+/// How many supervisor names a session offers at its write-mode prompt.
+///
+/// One context record is written per segment opened and per change of write
+/// mode or user, and the name in it is whatever the file says, so how many
+/// distinct ones a day holds is not this code's to assume.
+const MOST_SUPERVISORS: usize = 256;
+
 /// What a session recalls: the statements it can walk with up, down and search.
 #[derive(Debug, Default, Clone)]
 pub struct RecallSet {
@@ -227,6 +234,7 @@ fn bounded_tail(reader: impl Iterator<Item = FramedItem>, budget: usize) -> Vec<
 			RecordKind::Context(context) => {
 				if let Some(ots) = &context.ots
 					&& !ots.is_empty()
+					&& named.len() < MOST_SUPERVISORS
 					&& named.insert(ots.clone())
 				{
 					contexts.push(record);

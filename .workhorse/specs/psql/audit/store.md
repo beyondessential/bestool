@@ -92,7 +92,8 @@ The chain shows that a session's records have not been edited, reordered or remo
 
 A directory containing a store in the earlier single-file database format, including any working-copy or orphaned files that format left behind, is imported into segments the first time any process opens it, session or tool alike, so an auditor reading a machine that has not run a session since sees what a session would.
 Import runs under the same directory lock as compaction ([AUD-RET](retention.md)); a process that cannot take the lock reads what is already there and leaves the import to whoever holds it.
-Import streams records from the old files rather than loading them whole, so it completes within flat memory regardless of their size.
+Import streams records from the old files rather than loading them whole, so what it holds is one key per record taken across rather than the records themselves.
+It holds those because the old format made a copy of the whole store to write to, so the same record is in the main file and in every copy taken after it, and a statement that ran once is in the log once.
 Imported records keep their original timestamps.
 Their query records take the source the old store implies: typed where it held the record eligible for recall, and unknown where it did not, since the old store recorded that a statement was not typed without recording what ran it.
 Records that carry a session identity are grouped into segments by session and day; the rest go into an import segment per day, under a session identity made for the import, so that every segment in the directory is named the same way.

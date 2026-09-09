@@ -26,8 +26,8 @@ use uuid::Uuid;
 use super::{
 	compact::{self, CompactionReport},
 	paths,
-	read::{Range, Reader, Stored},
-	record::{Record, RecordKind, frame},
+	read::{Held, Range, Reader, Stored},
+	record::{RecordKind, frame},
 	verify::{self, VerifyReport},
 };
 
@@ -150,10 +150,10 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 				&& let Some(context) = reader.context_record_of(instance)
 			{
 				let context = context.clone();
-				write_record(out, &context)?;
+				write_json(out, &context.json)?;
 			}
 
-			write_record(out, &stored.record)?;
+			write_json(out, &stored.json)?;
 			count += 1;
 		}
 
@@ -161,7 +161,7 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 	}
 
 	let limit = limit.expect("the newest-N case");
-	let mut window: VecDeque<(Stored, Option<Arc<Record>>)> =
+	let mut window: VecDeque<(Stored, Option<Arc<Held>>)> =
 		VecDeque::with_capacity(limit.min(WINDOW_HINT));
 	while let Some(record) = reader.next() {
 		let context = record
@@ -175,8 +175,8 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 		window.push_back((record, context));
 	}
 
-	for record in leading_contexts(&window) {
-		write_record(out, &record)?;
+	for json in leading_contexts(&window) {
+		write_json(out, &json)?;
 	}
 	for (record, _) in &window {
 		write_json(out, &record.json)?;
@@ -190,8 +190,8 @@ pub fn write_export(out: &mut impl Write, dir: &Path, options: &QueryOptions) ->
 ///
 /// Whichever kind of record comes first for a session settles it: a context
 /// change later in the output does not cover the records ahead of it.
-fn leading_contexts(window: &VecDeque<(Stored, Option<Arc<Record>>)>) -> Vec<Record> {
-	let mut wanted: HashMap<Uuid, Arc<Record>> = HashMap::new();
+fn leading_contexts(window: &VecDeque<(Stored, Option<Arc<Held>>)>) -> Vec<String> {
+	let mut wanted: HashMap<Uuid, Arc<Held>> = HashMap::new();
 	let mut covered: HashSet<Uuid> = HashSet::new();
 
 	for (stored, context) in window {
@@ -213,12 +213,9 @@ fn leading_contexts(window: &VecDeque<(Stored, Option<Arc<Record>>)>) -> Vec<Rec
 		}
 	}
 
-	let mut found: Vec<Record> = wanted
-		.into_values()
-		.map(|record| (*record).clone())
-		.collect();
-	found.sort_by_key(|record| (record.ts, record.seq));
-	found
+	let mut found: Vec<Arc<Held>> = wanted.into_values().collect();
+	found.sort_by_key(|held| (held.record.ts, held.record.seq));
+	found.into_iter().map(|held| held.json.clone()).collect()
 }
 
 /// The output went away partway through, which ends an export quietly.
@@ -237,14 +234,12 @@ fn written(outcome: std::io::Result<()>) -> Result<()> {
 	}
 }
 
-fn write_record(out: &mut impl Write, record: &Record) -> Result<()> {
-	let json = record.to_json().into_diagnostic()?;
-	write_json(out, &json)
-}
-
-/// Write a record whose JSON text is already in hand, as it was read.
+/// Write a record as the bytes it was read as.
 ///
-/// Serialising it again would produce the same bytes and cost the work twice.
+/// Never re-serialised. The bytes are what the record hashes as, and a record
+/// written at a later format version carries fields this build does not keep, so
+/// a re-encoding would no longer hash as itself — and an unfiltered export is
+/// supposed to be the log, verifying as the log does.
 fn write_json(out: &mut impl Write, json: &str) -> Result<()> {
 	written(out.write_all(&frame(json)))
 }
@@ -488,7 +483,9 @@ mod tests {
 
 	#[test]
 	fn a_leading_context_is_found_even_when_it_shares_a_timestamp() {
-		use crate::audit::record::{ContextRecord, FORMAT_VERSION, QueryRecord, RecordKind, frame};
+		use crate::audit::record::{
+			ContextRecord, FORMAT_VERSION, QueryRecord, Record, RecordKind, frame,
+		};
 
 		// A clock coarse enough to give a context record and the query after it
 		// the same timestamp is what macOS hands out; the boundary between what

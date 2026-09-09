@@ -45,6 +45,22 @@ const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// below this; a file declaring more was not written by compaction.
 const MAX_WINDOW_LOG: u32 = 23;
 
+/// How many findings of one kind a read reports before it only counts them.
+///
+/// A file decides how many unparsable stretches it holds, so a report over one
+/// copied off another machine is as long as its author chose. Past this the
+/// count carries the rest: an auditor needs to know there were more, not to be
+/// handed every one.
+const MOST_REPORTED: usize = 4096;
+
+/// How many records sharing one timestamp are remembered for folding copies
+/// together.
+///
+/// Copies of a record left by an interrupted fold are byte-identical and share
+/// an instant, so a handful is all this is for. The timestamp comes out of the
+/// file, though, so how many records claim any one of them does not.
+const MOST_AT_ONE_INSTANT: usize = 4096;
+
 /// A segment whose file name names one session and whose records name another.
 ///
 /// The name is outside the hash chain and the record inside it, so the two
@@ -56,6 +72,18 @@ pub struct Renamed {
 	pub names: Uuid,
 	/// The session its records say wrote them.
 	pub records: Uuid,
+}
+
+/// A record and the bytes it was read as.
+///
+/// The bytes are kept because they are what the record hashes as. Serialising
+/// the record again gives the same bytes only for a shape this build knows: a
+/// record written at a later format version carries fields this one does not
+/// keep, so a re-encoding would not hash as itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Held {
+	pub record: Record,
+	pub json: String,
 }
 
 /// A file that stopped being readable partway through.
@@ -315,14 +343,29 @@ impl ReverseFramedReader {
 
 		// Appended in reverse, so the front of `back` stays the last byte of the
 		// file and nothing already held is copied.
+		let looked_at = self.back.len();
 		self.back.extend(chunk.iter().rev());
 
-		// The last separator in the file is the first one from this end.
-		while let Some(index) = self.back.iter().position(|byte| *byte == SEPARATOR) {
+		// The last separator in the file is the first one from this end. Only
+		// the newly appended stretch can hold one that has not been looked at,
+		// so the scan starts there: rescanning the whole of what is held on
+		// every chunk is the same quantity of work the reverse layout was
+		// chosen to avoid, just counted in comparisons rather than copies.
+		let mut from = looked_at;
+		while let Some(found) = self
+			.back
+			.iter()
+			.skip(from)
+			.position(|byte| *byte == SEPARATOR)
+		{
+			let index = from + found;
 			let mut record: Vec<u8> = self.back.drain(..index).collect();
 			self.back.pop_front();
 			record.reverse();
 
+			// Everything up to and including the separator has gone, so what is
+			// left to look at starts at the front again.
+			from = 0;
 			self.given += index as u64 + 1;
 			let at = self.length - self.given + 1;
 
@@ -458,7 +501,7 @@ struct Threads {
 	head: HashMap<String, Uuid>,
 	/// The order heads were remembered in, so the oldest can be forgotten.
 	remembered: VecDeque<String>,
-	context: HashMap<Uuid, Arc<Record>>,
+	context: HashMap<Uuid, Arc<Held>>,
 }
 
 impl Threads {
@@ -470,6 +513,7 @@ impl Threads {
 		&mut self,
 		record: &Record,
 		hash: &str,
+		json: &str,
 		named: Option<Uuid>,
 	) -> (Option<Uuid>, bool) {
 		// A segment is written by exactly one session, so its name settles the
@@ -510,7 +554,13 @@ impl Threads {
 				}
 			}
 			if matches!(record.kind, RecordKind::Context(_)) {
-				self.context.insert(instance, Arc::new(record.clone()));
+				self.context.insert(
+					instance,
+					Arc::new(Held {
+						record: record.clone(),
+						json: json.to_owned(),
+					}),
+				);
 			}
 		}
 
@@ -560,21 +610,27 @@ impl Source {
 			match self.iter.next() {
 				None => break,
 				Some(FramedItem::Record { record, json, .. }) => self.head = Some((record, json)),
-				Some(FramedItem::Skipped { at, bytes }) => skipped.push(Skipped {
-					file: self.origin.clone(),
-					at,
-					bytes,
-				}),
+				Some(FramedItem::Skipped { at, bytes }) => {
+					if skipped.len() < MOST_REPORTED {
+						skipped.push(Skipped {
+							file: self.origin.clone(),
+							at,
+							bytes,
+						});
+					}
+				}
 				// Not the end of a file, so not passed over quietly: what the
 				// rest of it holds is unknown, and anything reporting on the
 				// log has to say that rather than call it whole.
 				Some(FramedItem::Failed { at, error }) => {
 					debug!(origin = ?self.origin, at, %error, "audit file stopped being readable");
-					unreadable.push(Unreadable {
-						file: self.origin.clone(),
-						at,
-						error,
-					});
+					if unreadable.len() < MOST_REPORTED {
+						unreadable.push(Unreadable {
+							file: self.origin.clone(),
+							at,
+							error,
+						});
+					}
 				}
 			}
 		}
@@ -667,7 +723,18 @@ impl Reader {
 				}
 				// One unreadable file must not stop the rest of the log being
 				// read: an auditor gets what survives, and hears about the rest.
-				Err(err) => debug!(?err, ?path, "skipping unreadable audit file"),
+				// Heard about, not passed over — a file that will not open at
+				// all holds no less than one that stops partway.
+				Err(err) => {
+					debug!(?err, ?path, "skipping unreadable audit file");
+					if self.unreadable.len() < MOST_REPORTED {
+						self.unreadable.push(Unreadable {
+							file: path,
+							at: 0,
+							error: format!("{err}"),
+						});
+					}
+				}
 			}
 		}
 	}
@@ -709,8 +776,8 @@ impl Reader {
 
 	/// The context in force for a session at the point the read has reached.
 	pub fn context_of(&self, instance: Uuid) -> Option<&ContextRecord> {
-		self.context_record_of(instance).map(|record| {
-			let RecordKind::Context(context) = &record.kind else {
+		self.context_record_of(instance).map(|held| {
+			let RecordKind::Context(context) = &held.record.kind else {
 				unreachable!("only context records are kept as context")
 			};
 			context
@@ -719,7 +786,7 @@ impl Reader {
 
 	/// The context record in force for a session at the point the read has
 	/// reached, whole, so a caller can write it out as it stands.
-	pub fn context_record_of(&self, instance: Uuid) -> Option<&Arc<Record>> {
+	pub fn context_record_of(&self, instance: Uuid) -> Option<&Arc<Held>> {
 		self.threads.context.get(&instance)
 	}
 
@@ -757,7 +824,7 @@ impl Iterator for Reader {
 				self.at = Some(ts);
 				self.seen.clear();
 			}
-			if !self.seen.insert(hash.clone()) {
+			if self.seen.len() < MOST_AT_ONE_INSTANT && !self.seen.insert(hash.clone()) {
 				continue;
 			}
 
@@ -765,8 +832,8 @@ impl Iterator for Reader {
 			// context record outside the range still names the session that the
 			// records inside it belong to.
 			let named = self.sources[index].instance;
-			let (instance, renamed) = self.threads.attribute(&record, &hash, named);
-			if renamed {
+			let (instance, renamed) = self.threads.attribute(&record, &hash, &json, named);
+			if renamed && self.renamed.len() < MOST_REPORTED {
 				self.renamed.push(Renamed {
 					file: self.sources[index].origin.clone(),
 					names: named.expect("a name to disagree with"),

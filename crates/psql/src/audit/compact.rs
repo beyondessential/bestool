@@ -41,6 +41,15 @@ pub const DAYS_PER_RUN: usize = 1;
 /// already compresses them far down; a higher level would cost time for little.
 const LEVEL: i32 = 3;
 
+/// Most bytes of records a fold gathers before it leaves the day alone.
+///
+/// Compaction reads the same files the read API is pointed at, stores copied off
+/// other machines among them, and a crafted day file decompresses to as many
+/// individually-small valid records as its author likes. Past this the day is
+/// left unfolded rather than the session it runs under being taken down with it.
+/// Streaming the fold outright is card D2; this is the bound either way.
+const MOST_FOLDED_BYTES: usize = 512 * 1024 * 1024;
+
 /// What one run folded and deleted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactionReport {
@@ -210,10 +219,21 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 	}
 
 	let mut records: Vec<(Record, String)> = Vec::new();
+	let mut gathered = 0usize;
 	for (path, kind) in &sources {
 		for item in open(path, *kind)? {
 			match item {
-				FramedItem::Record { record, json, .. } => records.push((record, json)),
+				FramedItem::Record { record, json, .. } => {
+					gathered += json.len();
+					if gathered > MOST_FOLDED_BYTES {
+						warn!(
+							%date,
+							gathered, "this day holds more than a fold will gather, leaving it"
+						);
+						return Ok(0);
+					}
+					records.push((record, json));
+				}
 				FramedItem::Skipped { at, bytes } => {
 					// Bytes that are not a record take no part in the chain, so
 					// they are dropped rather than carried into the day file.

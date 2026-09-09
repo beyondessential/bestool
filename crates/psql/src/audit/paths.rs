@@ -87,10 +87,16 @@ pub fn list_set_aside(dir: &Path) -> Result<Vec<(PathBuf, Date)>> {
 		// `<original>.<YYYY-MM-DD>`: the date is fixed-width and last, and what
 		// precedes it has to be a legacy store's name. Retention deletes these,
 		// so an operator's own file that happens to end this way is not one.
+		// Split on a character boundary, as `classify` above already does: a
+		// stray file whose name has a multi-byte character straddling this
+		// position is a file to pass over, not one to abort on. This runs on
+		// the way to the first prompt.
 		let Some(at) = rest.len().checked_sub(11) else {
 			continue;
 		};
-		let (stem, dated) = rest.split_at(at);
+		let Some((stem, dated)) = rest.split_at_checked(at) else {
+			continue;
+		};
 		let Some(date) = dated.strip_prefix('.') else {
 			continue;
 		};
@@ -495,6 +501,19 @@ mod tests {
 			found[0].0.file_name().unwrap(),
 			"audit-main.redb.2026-09-09.imported"
 		);
+	}
+
+	#[test]
+	fn a_stray_name_is_passed_over_rather_than_panicked_on() {
+		let dir = tempfile::tempdir().unwrap();
+		// A multi-byte character straddling the position the date would start
+		// at. This runs on the way to the first prompt, so a stray file here
+		// must not be able to stop a session starting.
+		for name in ["éabcdefghij.imported", ".imported", "ú.imported"] {
+			std::fs::write(dir.path().join(name), b"").unwrap();
+		}
+
+		assert!(list_set_aside(dir.path()).unwrap().is_empty());
 	}
 
 	#[test]

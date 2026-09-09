@@ -124,6 +124,14 @@ pub fn run_audit_cli(args: AuditArgs) -> Result<bool> {
 					)
 					.ok();
 				}
+				if session.gaps_beyond > 0 {
+					writeln!(
+						out,
+						"  and {} further gap records, not listed",
+						session.gaps_beyond
+					)
+					.ok();
+				}
 				for (seq, gap) in &session.gaps {
 					writeln!(
 						out,

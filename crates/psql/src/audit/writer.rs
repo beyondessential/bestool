@@ -72,11 +72,12 @@ impl Drop for Segment {
 		//
 		// Deleting a file a lock is taken on would in general break the mutual
 		// exclusion it stands for, since the next holder locks a different file
-		// at the same name. It does not here: a segment's name carries the
-		// session's own identity, so no other session ever locks this path, and
-		// compaction serialises against itself on the directory lock. A writer
-		// that meets a deleted lock file for an old day creates a fresh one and
-		// writes a fresh segment, which the next fold takes up.
+		// at the same name. Compaction does lock this path — but only for a
+		// segment whose day ended more than a fortnight ago, and only while it
+		// holds the directory lock, which nothing else takes. This session's own
+		// segment is today's, so the two do not meet; and a writer that finds
+		// the lock file gone for an old day creates a fresh one and writes a
+		// fresh segment, which the next fold takes up.
 		drop(self.lock.take());
 		let lock_path = paths::lock_of(&self.path);
 		if let Err(err) = std::fs::remove_file(&lock_path) {
@@ -304,21 +305,16 @@ impl Writer {
 		// numbering stays in order, and the time of the last record it covers, so
 		// it sorts before the held records that survived it.
 		if let Some(tally) = self.discarded.clone() {
-			// A gap cannot be the first record a session ever writes. Nothing
-			// names the session in it, and nothing before it names one either,
+			// A gap cannot be the first record a session ever writes. Nothing in
+			// a gap names the session, and nothing before it names one either,
 			// so once the day is folded into a day file — where a file name no
 			// longer says whose records these are — that gap belongs to nobody
-			// and the log reads as altered. A context record goes ahead of it,
-			// timed at the start of the loss so it still sorts first.
-			if self.prev.is_empty() {
-				let seq = self.next_seq;
-				self.next_seq += 1;
-				self.write(&Pending {
-					seq,
-					ts: tally.from,
-					kind: self.context_record(),
-					weight: 0,
-				})?;
+			// and the log reads as altered. A context record leads in that case,
+			// timed at the start of the loss so it sorts ahead of the gap.
+			let leads = self.prev.is_empty();
+			self.owe_context(if leads { tally.from } else { tally.to });
+			if leads {
+				self.pay_context()?;
 			}
 
 			self.write(&Pending {
@@ -333,34 +329,13 @@ impl Writer {
 				weight: 0,
 			})?;
 			self.discarded = None;
-			// The context record that stood at the head of the log may well have
-			// been among the records lost, so a fresh one goes in behind the gap
-			// rather than an old one being held back out of it. It carries the
-			// context as it stands now, which is what applies to everything
-			// after the gap anyway.
-			// An owed number that has not been written yet stands: taking a
-			// fresh one would leave the old in no record and covered by no gap,
-			// which reads as altered rather than incomplete. Only the timestamp
-			// moves on, so the record still sorts ahead of the survivors.
-			self.owes_context = Some(match self.owes_context {
-				Some((seq, _)) => (seq, tally.to),
-				None => {
-					let seq = self.next_seq;
-					self.next_seq += 1;
-					(seq, tally.to)
-				}
-			});
 		}
 
-		if let Some((seq, ts)) = self.owes_context {
-			self.write(&Pending {
-				seq,
-				ts,
-				kind: self.context_record(),
-				weight: 0,
-			})?;
-			self.owes_context = None;
-		}
+		// The context record that stood at the head of the log may well have
+		// been among the records lost, so a fresh one goes in around the gap
+		// rather than an old one being held back out of it. It carries the
+		// context as it stands, which is what applies after the gap anyway.
+		self.pay_context()?;
 
 		// Taken off the front rather than copied off it: a record carries the
 		// whole statement text, and the write path should not double it. One
@@ -374,6 +349,40 @@ impl Writer {
 			}
 		}
 
+		Ok(())
+	}
+
+	/// Note that a context record is owed, settling its number the first time.
+	///
+	/// One place decides that number, so a write that fails and is retried
+	/// reuses it. A fresh one each attempt would leave the earlier numbers in no
+	/// record and covered by no gap, and the log would read as altered rather
+	/// than incomplete.
+	fn owe_context(&mut self, ts: Timestamp) {
+		self.owes_context = Some(match self.owes_context {
+			Some((seq, _)) => (seq, ts),
+			None => {
+				let seq = self.next_seq;
+				self.next_seq += 1;
+				(seq, ts)
+			}
+		});
+	}
+
+	/// Write the context record owed, if one is.
+	fn pay_context(&mut self) -> Result<()> {
+		let Some((seq, ts)) = self.owes_context else {
+			return Ok(());
+		};
+
+		let pending = Pending {
+			seq,
+			ts,
+			kind: self.context_record(),
+			weight: 0,
+		};
+		self.write(&pending)?;
+		self.owes_context = None;
 		Ok(())
 	}
 
@@ -424,8 +433,11 @@ impl Writer {
 		// Created exclusively the first time this session opens the day, and
 		// appended to on reopening. A name this session has not written before
 		// is a name nothing should already exist at, so anything that does is
-		// not ours to append through.
-		let first = !self.opened.contains(&date);
+		// not ours to append through — and a segment compaction has since folded
+		// away is gone, so opening it is a first open again rather than a reopen
+		// that fails for ever.
+		let first = !self.opened.contains(&date) || !path.exists();
+		self.opened.retain(|open| *open != date);
 		let file = if first {
 			paths::private()
 				.create_new(true)

@@ -38,6 +38,12 @@ const REORDER_LIMIT: usize = BACKLOG_RECORDS * 10;
 /// memory instead of reporting the break is the one thing it must not do.
 const REORDER_BYTES: usize = BACKLOG_BYTES;
 
+/// What a run of accounted-for numbers costs against that budget.
+const RUN_BYTES: usize = std::mem::size_of::<(u64, u64)>() * 4;
+
+/// How many gap records a session's report names before it only counts them.
+const MOST_GAPS_REPORTED: usize = 1024;
+
 /// Where a session's chain first stopped holding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Break {
@@ -75,8 +81,11 @@ pub struct ChainReport {
 	pub records: u64,
 	/// The first record at which the chain breaks.
 	pub broken_at: Option<Break>,
-	/// Every gap record passed, with the sequence number it took.
+	/// Gap records passed, with the sequence number each took. Capped, so a file
+	/// claiming a great many is counted rather than listed.
 	pub gaps: Vec<(u64, GapRecord)>,
+	/// Gap records past the ones listed.
+	pub gaps_beyond: u64,
 	/// Whether the oldest record kept could not be checked against what came
 	/// before it, because retention has deleted it.
 	pub truncated_start: bool,
@@ -159,6 +168,7 @@ struct Chain {
 	head: String,
 	broken_at: Option<Break>,
 	gaps: Vec<(u64, GapRecord)>,
+	gaps_beyond: u64,
 	truncated_start: bool,
 	/// Every sequence number below this is accounted for, by a record or by a
 	/// gap covering it.
@@ -190,6 +200,7 @@ impl Chain {
 			head: String::new(),
 			broken_at: None,
 			gaps: Vec::new(),
+			gaps_beyond: 0,
 			truncated_start,
 			// Where retention has removed the earlier records, the numbering
 			// starts from the oldest one kept rather than from zero.
@@ -212,7 +223,14 @@ impl Chain {
 		// with and must report on them rather than fall over.
 		let through = match &record.kind {
 			RecordKind::Gap(gap) => {
-				self.gaps.push((record.seq, gap.clone()));
+				// How many gap records there are is whatever the file says, so
+				// past a point they are counted rather than kept: the report
+				// says how many, not each one.
+				if self.gaps.len() < MOST_GAPS_REPORTED {
+					self.gaps.push((record.seq, gap.clone()));
+				} else {
+					self.gaps_beyond += 1;
+				}
 				gap.through.max(record.seq)
 			}
 			_ => record.seq,
@@ -238,9 +256,13 @@ impl Chain {
 			if self.first_ahead.is_none() {
 				self.first_ahead = Some((from, ts));
 			}
+			// Counted against the run's budget like anything else held: one run
+			// of numbers per chain times a year of sessions is the same trap a
+			// per-chain bound already fell into once.
 			if self.ahead.len() < REORDER_LIMIT {
 				let end = self.ahead.entry(from).or_insert(through);
 				*end = (*end).max(through);
+				self.pending_bytes += RUN_BYTES;
 			}
 		} else {
 			self.covered_to = through.saturating_add(1);
@@ -249,6 +271,7 @@ impl Chain {
 		// Take up any run that now follows on.
 		while let Some((&start, &end)) = self.ahead.range(..=self.covered_to).next_back() {
 			self.ahead.remove(&start);
+			self.pending_bytes = self.pending_bytes.saturating_sub(RUN_BYTES);
 			self.covered_to = self.covered_to.max(end.saturating_add(1));
 		}
 		if self.ahead.is_empty() {
@@ -373,6 +396,7 @@ impl Chain {
 			records: self.records,
 			broken_at: self.broken_at,
 			gaps: self.gaps,
+			gaps_beyond: self.gaps_beyond,
 			truncated_start: self.truncated_start,
 			head: self.head,
 		}
@@ -837,6 +861,23 @@ mod tests {
 		std::fs::write(&path, bytes).unwrap();
 
 		let report = verify(dir.path()).unwrap();
+		assert!(!report.holds());
+	}
+
+	#[test]
+	fn a_file_that_will_not_open_fails_the_log() {
+		let dir = tempfile::tempdir().unwrap();
+		write_session(dir.path(), 2);
+
+		// A day file that cannot be opened at all holds no less than one that
+		// stops partway, so it is reported the same way rather than passed over.
+		let unopenable = dir.path().join(crate::audit::paths::day_file_name(
+			"2026-09-08".parse().unwrap(),
+		));
+		std::fs::create_dir(&unopenable).unwrap();
+
+		let report = verify(dir.path()).unwrap();
+		assert_eq!(report.unreadable.len(), 1);
 		assert!(!report.holds());
 	}
 

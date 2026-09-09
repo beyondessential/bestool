@@ -13,3 +13,7 @@ The store must be on local storage: a network or synchronised filesystem gives n
 ## Stream compaction's fold instead of buffering a whole day · D2
 
 Compaction reads a whole day's records into memory before writing anything, holding each one twice — parsed and as its full JSON text — plus a hash of every record purely to dedup. The sources are each already ordered, so a k-way merge would stream into the zstd encoder with a bounded window, and dedup can key on session and sequence number as [AUD-RET](../../specs/psql/audit/retention.md) already specifies. Correct as it stands and bounded by one day rather than by the size of the log, so this is a scaling improvement rather than a fix.
+
+## Make the audit log private on Windows · H2
+
+The owner-only permissions the store creates its files with are set under `cfg(unix)` only, and the warning about a directory others can read is a no-op elsewhere. On Windows everything inherits whatever ACL its parent has, and nothing says so — which matters because `--audit-path` is operator-supplied and the log holds the full text of every statement run. Setting a restrictive DACL needs a crate choice, security-descriptor code that cannot be exercised from a Linux machine, and possibly relaxing the workspace's unsafe lint, so it wants deciding on its own.

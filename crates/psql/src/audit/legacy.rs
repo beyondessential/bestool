@@ -291,8 +291,12 @@ pub fn import(dir: &Path, _lock: &Lock) -> Result<usize> {
 
 /// Stream one legacy file's records into segments.
 ///
-/// Records are read one at a time rather than loaded whole, so import completes
-/// within flat memory regardless of how large the old store grew.
+/// Records are read one at a time rather than the store being loaded whole. One
+/// key per record taken across is held, though, because the same record is in
+/// the main file and in every copy taken after it and a statement that ran once
+/// belongs in the log once; that is bounded by the old store's own size limit
+/// rather than being flat. Merging the files' cursors would compare against
+/// only the last key emitted and make it so.
 fn import_file(
 	dir: &Path,
 	path: &Path,
