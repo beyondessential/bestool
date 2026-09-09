@@ -64,6 +64,17 @@ actually about, and that the push carries the split format.
 - [x] The application entry carries its type slug
 - [ ] A live push against a canopy staging instance is accepted and shows both grains
 
+## Review fixes
+
+- [x] An unsplit canopy response still governs application checks, so a failure is not masked as a warning
+- [x] A split response leaves an application canopy does not hold to the absent-check default
+- [x] An unparseable connection string still reports a cluster, so `connect` can alert
+- [x] A mixed host list names the host that is actually remote
+- [x] Every check reaches the wire even when its details would not deserialise
+- [x] A check's details, summary and reason all reach the wire entry
+- [x] `tuning` and the subject key agree about whether a cluster is local
+- [ ] A live push with a check carrying unusual detail keys is accepted by canopy
+
 ## Severities
 
 - [x] The machine's ceilings and an application's are applied separately to checks of the same bare name (verifies spec: SUBJ)

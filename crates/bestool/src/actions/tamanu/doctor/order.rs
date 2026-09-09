@@ -25,18 +25,17 @@ pub fn keep_in_replay(status: &CheckStatus, show_all: bool) -> bool {
 	)
 }
 
-/// Sort `results` into severity-grouped order, alphabetical by qualified name
-/// within each group.
+/// Sort `results` into severity-grouped order, alphabetical within each group.
 ///
-/// The qualified name is the sort key because a bare name no longer identifies
-/// a check: sorting by it alone would interleave a machine check with an
-/// application check of the same name.
+/// The instance identity is the sort key because a bare name no longer
+/// identifies a check: sorting by it alone would interleave a machine check
+/// with an application check of the same name, and two clusters' checks with
+/// each other.
 pub fn sort_grouped(results: &mut [CheckOutcome]) {
-	results.sort_by(|a, b| {
-		severity_key(&a.check.status)
-			.cmp(&severity_key(&b.check.status))
-			.then_with(|| a.qualified_name().cmp(&b.qualified_name()))
-	});
+	// Keyed by instance, so two clusters' checks of one name sort apart rather
+	// than tying. Cached because the key is a formatted string: comparing it
+	// afresh on every comparison would format it O(N log N) times.
+	results.sort_by_cached_key(|o| (severity_key(&o.check.status), o.row_id()));
 }
 
 /// Filter `results` for the replay by the `show_all` flag, leaving them sorted.

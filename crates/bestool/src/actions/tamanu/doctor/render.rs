@@ -19,17 +19,16 @@ pub fn render_plain<W: Write>(
 	source: &SweepSource,
 	use_colours: bool,
 ) -> io::Result<()> {
-	let displayed: Vec<&CheckOutcome> = results
+	// Each row's label is formatted once here and reused for the width pass and
+	// the line itself.
+	let displayed: Vec<(&CheckOutcome, String)> = results
 		.iter()
 		.filter(|o| order::keep_in_replay(&o.check.status, show_all))
+		.map(|o| (o, o.row_id()))
 		.collect();
-	let width = displayed
-		.iter()
-		.map(|o| o.qualified_name().len())
-		.max()
-		.unwrap_or(0);
-	for outcome in &displayed {
-		write_check_line(out, outcome, width, use_colours)?;
+	let width = displayed.iter().map(|(_, name)| name.len()).max().unwrap_or(0);
+	for (outcome, name) in &displayed {
+		write_check_line(out, outcome, name, width, use_colours)?;
 	}
 	if !displayed.is_empty() {
 		writeln!(out)?;
@@ -42,6 +41,7 @@ pub fn render_plain<W: Write>(
 pub fn write_check_line<W: Write>(
 	out: &mut W,
 	outcome: &CheckOutcome,
+	name: &str,
 	name_width: usize,
 	use_colours: bool,
 ) -> io::Result<()> {
@@ -56,7 +56,7 @@ pub fn write_check_line<W: Write>(
 	writeln!(
 		out,
 		"  {tag}    {name:<width$}   {summary}",
-		name = outcome.qualified_name(),
+		name = name,
 		width = name_width,
 		summary = check.summary,
 	)?;

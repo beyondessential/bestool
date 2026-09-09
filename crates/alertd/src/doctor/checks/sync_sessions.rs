@@ -6,7 +6,11 @@ use crate::doctor::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
 	let Some(client) = ctx.db.as_deref() else {
-		return Check::fail("sync_sessions", "no DB connection", "db_connect failed");
+		return Check::fail(
+			"sync_sessions",
+			"no DB connection",
+			"postgres:connect reports the outage",
+		);
 	};
 
 	// The completed_at predicate lives in the outer WHERE rather than on each

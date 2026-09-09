@@ -59,7 +59,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 	let Some(client) = ctx.db.as_ref() else {
-		return Check::fail(NAME, "no DB connection", "db_connect failed");
+		return Check::fail(
+			NAME,
+			"no DB connection",
+			"postgres:connect reports the outage",
+		);
 	};
 
 	let row = match client.query_one(SQL, &[]).await {

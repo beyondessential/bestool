@@ -445,20 +445,22 @@ fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 		.applications
 		.iter()
 		.flatten()
-		.map(|(key, report)| {
-			// The type slug the push used is the application's own, so the kind
-			// is read back from it rather than guessed from the key.
+		.filter_map(|(key, report)| {
+			// The type slug the push used is the application's own, so the kind is
+			// read back from it. The wire type is an open set, so a target of a
+			// type this build does not know — an mSupply application, or a newer
+			// one from a mismatched daemon — is left out rather than rendered as
+			// some other kind's.
 			let kind = ApplicationKind::ALL
 				.into_iter()
-				.find(|kind| kind.type_slug() == report.type_)
-				.unwrap_or(ApplicationKind::Postgres);
-			(
+				.find(|kind| kind.type_slug() == report.type_)?;
+			Some((
 				Subject::Application(ApplicationRef {
 					kind,
 					key: key.clone(),
 				}),
 				&report.health,
-			)
+			))
 		});
 
 	let registry = &registry;

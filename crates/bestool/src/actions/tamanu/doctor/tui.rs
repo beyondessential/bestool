@@ -394,7 +394,9 @@ fn row_line_running(name: &str, name_width: usize, spinner: usize) -> StyledLine
 
 fn row_line_completed(outcome: &CheckOutcome, name_width: usize) -> StyledLine {
 	let check = &outcome.check;
-	let name = outcome.qualified_name();
+	// The instance identity the row was matched by, so the label and the match
+	// cannot disagree and two clusters read apart.
+	let name = outcome.row_id();
 	let (tag, color) = tag_for(check);
 	let pad = " ".repeat(name_width.saturating_sub(name.len()));
 	vec![

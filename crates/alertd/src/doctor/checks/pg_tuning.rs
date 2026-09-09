@@ -50,15 +50,6 @@ fn budget_for(platform: Platform, total_ram: i64) -> Budget {
 /// Whether the database is on this same host, so the local RAM describes it.
 /// `None`, empty, the loopback names, and a Unix-socket path (leading `/`) are
 /// all local; anything else is a remote hostname.
-fn is_local(host: Option<&str>) -> bool {
-	match host {
-		None => true,
-		Some(h) => {
-			h.is_empty() || h == "localhost" || h == "127.0.0.1" || h == "::1" || h.starts_with('/')
-		}
-	}
-}
-
 /// Whether `actual` is more than a factor of two away from `expected` in either
 /// direction. Two-times is deliberately generous: it tolerates rounding and
 /// version-to-version differences in the tuning maths, and only fires on the
@@ -313,7 +304,7 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	if !is_local(ctx.config.db.host.as_deref()) {
+	if !crate::doctor::sweep::database_is_local(&ctx.database_url) {
 		return Check::skip(
 			"tuning",
 			"database is not local",
@@ -325,7 +316,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(
 			"tuning",
 			"no DB connection",
-			"can't read postgres settings; db_connect reports the outage",
+			"can't read postgres settings; postgres:connect reports the outage",
 		);
 	};
 
@@ -736,12 +727,18 @@ mod tests {
 	}
 
 	#[test]
-	fn remote_host_is_not_local() {
-		assert!(is_local(None));
-		assert!(is_local(Some("localhost")));
-		assert!(is_local(Some("127.0.0.1")));
-		assert!(is_local(Some("/var/run/postgresql")));
-		assert!(!is_local(Some("db.internal.example")));
-		assert!(!is_local(Some("10.0.0.5")));
+	fn tuning_only_grades_a_cluster_on_this_machine() {
+		// The denominator is this machine's memory, so tuning a cluster elsewhere
+		// against it would be wrong rather than merely imprecise. Locality comes
+		// from the same helper that keys the subject, so the two cannot disagree
+		// about whether a cluster is local.
+		use crate::doctor::sweep::database_is_local;
+		assert!(database_is_local("postgresql:///db"));
+		assert!(database_is_local("postgresql://u@localhost/db"));
+		assert!(database_is_local(
+			"postgresql:///db?host=/var/run/postgresql"
+		));
+		assert!(!database_is_local("postgresql://u@db.internal.example/db"));
+		assert!(!database_is_local("postgresql://u@10.0.0.5/db"));
 	}
 }

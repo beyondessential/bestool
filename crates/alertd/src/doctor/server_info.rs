@@ -94,16 +94,19 @@ pub struct MachineInfo {
 	pub instance_tags: Option<BTreeMap<String, String>>,
 }
 
-/// One application's own facts.
+/// A Tamanu deployment's own facts.
 ///
-/// Every field is about the application rather than the box under it, so an
-/// application reports no `bestoolVersion`, no hostname, and none of the
-/// machine's hardware.
+/// Named for the product it describes rather than for applications in general:
+/// every field here is Tamanu's, so another application type reporting them
+/// would be the mis-attribution `SUBJ` exists to prevent.
+///
+/// Every field is about the application rather than the box under it, so it
+/// reports no `bestoolVersion`, no hostname, and none of the machine's hardware.
 ///
 /// spec: SUBJ
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApplicationInfo {
+pub struct TamanuInfo {
 	/// Version of the deployment. Absent when it could not be resolved from
 	/// either the install or the database.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -154,7 +157,7 @@ pub struct ServerFacts {
 	pub tamanu_server_kind: Option<&'static str>,
 }
 
-/// Build the machine's, the application's, and Postgres's fact blocks.
+/// Build the machine's, Tamanu's, and Postgres's fact blocks.
 ///
 /// The two are gathered together because one pass over the host answers both,
 /// but nothing crosses between them: each field lands on the subject it is
@@ -172,7 +175,7 @@ pub async fn gather(
 	bestool_version: &str,
 	tamanu_version: Option<String>,
 	facts: ServerFacts,
-) -> (MachineInfo, ApplicationInfo, PostgresInfo) {
+) -> (MachineInfo, TamanuInfo, PostgresInfo) {
 	let disks = Disks::new_with_refreshed_list();
 	let filesystems = disks
 		.iter()
@@ -208,7 +211,7 @@ pub async fn gather(
 	)
 	.await;
 
-	let application = ApplicationInfo {
+	let application = TamanuInfo {
 		tamanu_version,
 		tamanu_server_kind: facts.tamanu_server_kind,
 		tamanu_root: facts.tamanu_root,

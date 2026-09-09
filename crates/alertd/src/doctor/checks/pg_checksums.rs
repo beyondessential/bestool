@@ -123,7 +123,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		return Check::skip(
 			NAME,
 			"no DB connection",
-			"can't read postgres settings; db_connect reports the outage",
+			"can't read postgres settings; postgres:connect reports the outage",
 		);
 	};
 

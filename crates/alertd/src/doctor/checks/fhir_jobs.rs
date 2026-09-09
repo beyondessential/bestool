@@ -40,7 +40,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	let Some(client) = ctx.db.as_deref() else {
-		return Check::fail("fhir_jobs", "no DB connection", "db_connect failed");
+		return Check::fail(
+			"fhir_jobs",
+			"no DB connection",
+			"postgres:connect reports the outage",
+		);
 	};
 
 	let agg_query = r#"

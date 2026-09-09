@@ -1,5 +1,5 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	path::{Path, PathBuf},
 	sync::Arc,
 };
@@ -204,9 +204,15 @@ impl SplitSeverities {
 
 /// Read canopy's per-target severity ceilings out of a status response.
 ///
-/// Falls back to the response's top-level map for the machine when canopy
-/// answered without a `machine` target, which is what a canopy that predates
-/// the split format returns.
+/// A canopy that predates the split format answers with neither a `machine` nor
+/// an `applications` target, only the ungrouped top-level map. Both grains fall
+/// back to it in that case, because the alternative is every check dropping to
+/// the absent-check ceiling and a genuine failure rendering as a warning.
+///
+/// When canopy *does* answer per target, a key it omits is an application it
+/// does not yet hold — freshly reported — and its checks are genuinely unknown
+/// to canopy, so the absent-check default is the right answer and no fallback
+/// applies.
 pub fn split_severities(response: &StatusResponse) -> SplitSeverities {
 	SplitSeverities {
 		machine: response
@@ -220,7 +226,10 @@ pub fn split_severities(response: &StatusResponse) -> SplitSeverities {
 			.flatten()
 			.map(|(key, target)| (key.clone(), target.check_severities.clone()))
 			.collect(),
-		fallback: None,
+		fallback: response
+			.applications
+			.is_none()
+			.then(|| response.check_severities.clone()),
 	}
 }
 
@@ -254,13 +263,7 @@ impl SweepResult {
 			let ceiling = severity_ceiling(map, outcome.check.name);
 			outcome.check.status = outcome.check.status.clone().cap_to(ceiling);
 		}
-		self.overall = OverallResult::from_checks(
-			&self
-				.results
-				.iter()
-				.map(|o| o.check.clone())
-				.collect::<Vec<_>>(),
-		);
+		self.overall = OverallResult::from_statuses(self.results.iter().map(|o| &o.check.status));
 		refresh_wire_health(&mut self.payload, &self.results);
 	}
 }
@@ -269,17 +272,11 @@ impl SweepResult {
 /// `detail` block as it was.
 fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
 	if let Some(machine) = payload.machine.as_mut() {
-		machine.health = Some(health_for(results, &Subject::Machine));
+		machine.health = Some(health_for(results, None));
 	}
 	if let Some(apps) = payload.applications.as_mut() {
 		for (key, report) in apps.iter_mut() {
-			report.health = Some(
-				results
-					.iter()
-					.filter(|o| o.on_wire && o.subject.key() == Some(key.as_str()))
-					.filter_map(|o| serde_json::from_value(o.check.to_wire()).ok())
-					.collect(),
-			);
+			report.health = Some(health_for(results, Some(key)));
 		}
 	}
 }
@@ -329,21 +326,43 @@ fn subjects_for(scope: CheckScope, applications: &[ApplicationRef]) -> Vec<Subje
 /// the `host-` prefix never claims the machine hosts something it does not.
 ///
 /// spec: SUBJ
-fn postgres_ref(url: &str) -> Option<ApplicationRef> {
+fn postgres_ref(url: &str) -> ApplicationRef {
 	use tokio_postgres::config::Host;
 
-	let config = url.parse::<tokio_postgres::Config>().ok()?;
+	// A string this cannot parse is one the sweep cannot connect with either, so
+	// the cluster is reported at the default port and `connect` fails loudly.
+	// Reporting nothing would drop the database's reachability check entirely,
+	// and being unable to alert on the database is the one thing alertd must
+	// never do.
+	let Ok(config) = url.parse::<tokio_postgres::Config>() else {
+		warn!("database connection string is unparseable; reporting it at the default port");
+		return ApplicationRef::local_postgres(5432);
+	};
+
 	let port = config.get_ports().first().copied().unwrap_or(5432);
+	let hosts = config.get_hosts();
 
-	if database_is_local(url) {
-		return Some(ApplicationRef::local_postgres(port));
+	// The first host that is not this machine's names the cluster. Checking for
+	// one rather than requiring every host to be remote keeps this in step with
+	// `database_is_local`, which treats a list as local only when all of it is.
+	let remote = hosts.iter().find_map(|host| match host {
+		Host::Tcp(name) if !host_is_local(name) => Some(name.as_str()),
+		_ => None,
+	});
+
+	match remote {
+		Some(host) => ApplicationRef::remote_postgres(host, port),
+		None => ApplicationRef::local_postgres(port),
 	}
+}
 
-	let host = config.get_hosts().iter().find_map(|host| match host {
-		Host::Tcp(name) => Some(name.as_str()),
-		Host::Unix(_) => None,
-	})?;
-	Some(ApplicationRef::remote_postgres(host, port))
+/// Whether a TCP host name refers to this machine.
+fn host_is_local(name: &str) -> bool {
+	name.is_empty()
+		|| name.eq_ignore_ascii_case("localhost")
+		|| name
+			.parse::<std::net::IpAddr>()
+			.is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Whether a database connection string points at this machine.
@@ -358,7 +377,7 @@ fn postgres_ref(url: &str) -> Option<ApplicationRef> {
 /// credentials — is judged the way it will actually be reached.
 ///
 /// spec: SUBJ
-fn database_is_local(url: &str) -> bool {
+pub fn database_is_local(url: &str) -> bool {
 	use tokio_postgres::config::Host;
 
 	let Ok(config) = url.parse::<tokio_postgres::Config>() else {
@@ -375,13 +394,7 @@ fn database_is_local(url: &str) -> bool {
 
 	hosts.iter().all(|host| match host {
 		Host::Unix(_) => true,
-		Host::Tcp(name) => {
-			name.is_empty()
-				|| name.eq_ignore_ascii_case("localhost")
-				|| name
-					.parse::<std::net::IpAddr>()
-					.is_ok_and(|ip| ip.is_loopback())
-		}
+		Host::Tcp(name) => host_is_local(name),
 	})
 }
 
@@ -414,7 +427,13 @@ pub fn validate_selection(
 	names: &[String],
 	flag: &str,
 ) -> Result<()> {
-	let known = known_qualified_names(registry);
+	// The default path names nothing, so building the known-name list would be
+	// pure waste — and this runs twice per sweep and twice more in the CLI.
+	if names.is_empty() {
+		return Ok(());
+	}
+
+	let known: HashSet<String> = known_qualified_names(registry).into_iter().collect();
 	for name in names {
 		if !name.contains(':') {
 			let forms: Vec<String> = registry
@@ -440,9 +459,11 @@ pub fn validate_selection(
 			});
 		}
 		if !known.contains(name) {
+			let mut sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+			sorted.sort_unstable();
 			return Err(miette!(
 				"unknown check `{name}` in {flag}; known checks: {}",
-				known.join(", ")
+				sorted.join(", ")
 			));
 		}
 	}
@@ -600,18 +621,15 @@ pub async fn perform_sweep(
 		.map(|t| t.root.display().to_string());
 
 	// The applications this sweep reports for. A Tamanu deployment is one; the
-	// Postgres under it is another, reported whenever it runs on this machine —
-	// whether a Tamanu uses it or the host has nothing but a `DATABASE_URL`.
-	// A deployment pointed at a remote database contributes no Postgres here.
+	// Postgres under it is another, whether a Tamanu uses it or the host has
+	// nothing but a `DATABASE_URL`. A cluster reached at a remote address is
+	// still reported, keyed apart so no key claims this machine hosts it.
 	let mut applications: Vec<ApplicationRef> = Vec::new();
 	if let Some(ctx) = tamanu_ctx.as_ref() {
 		if ctx.is_tamanu {
 			applications.push(ApplicationRef::tamanu(ApplicationKind::from(ctx.kind)));
 		}
-		match postgres_ref(&ctx.database_url) {
-			Some(app) => applications.push(app),
-			None => debug!("could not resolve a postgres application from the database URL"),
-		}
+		applications.push(postgres_ref(&ctx.database_url));
 	}
 
 	let check_ctx = SweepContext::builder()
@@ -708,7 +726,7 @@ pub async fn perform_sweep(
 	// `tamanuVersion` is omitted from the payload entirely. A Tamanu
 	// database-only host reports the version resolved from its DB.
 	let tamanu_version = resolved_version.map(|v| v.to_string());
-	let (machine_info, application_info, postgres_info) =
+	let (machine_info, tamanu_info, postgres_info) =
 		server_info::gather(binary_version, tamanu_version, facts).await;
 
 	// Each application's detail comes from its own fact block, so no application
@@ -716,16 +734,19 @@ pub async fn perform_sweep(
 	let application_details: Vec<(ApplicationRef, Value)> = applications
 		.iter()
 		.map(|app| -> Result<_> {
+			// Matched exhaustively: a new application kind must state which facts
+			// are its own rather than silently inheriting another's.
 			let info = match app.kind {
 				ApplicationKind::Postgres => serde_json::to_value(&postgres_info),
-				_ => serde_json::to_value(&application_info),
+				ApplicationKind::TamanuCentral | ApplicationKind::TamanuFacility => {
+					serde_json::to_value(&tamanu_info)
+				}
 			};
 			Ok((app.clone(), info.into_diagnostic()?))
 		})
 		.collect::<Result<_>>()?;
 
-	let overall =
-		OverallResult::from_checks(&results.iter().map(|o| o.check.clone()).collect::<Vec<_>>());
+	let overall = OverallResult::from_statuses(results.iter().map(|o| &o.check.status));
 	let payload = build_payload(&machine_info, &application_details, &results)?;
 
 	Ok(SweepResult {
@@ -839,7 +860,7 @@ fn build_payload(
 			results,
 			&Subject::Machine,
 		))
-		.health(health_for(results, &Subject::Machine))
+		.health(health_for(results, None))
 		.build();
 
 	let reports: HashMap<String, ApplicationReport> = applications
@@ -849,7 +870,7 @@ fn build_payload(
 			let report = ApplicationReport::builder()
 				.type_(app.kind.type_slug().to_owned())
 				.detail(detail_for(info.clone(), results, &subject))
-				.health(health_for(results, &subject))
+				.health(health_for(results, Some(&app.key)))
 				.build();
 			(app.key.clone(), report)
 		})
@@ -882,12 +903,16 @@ fn detail_for(info: Value, results: &[CheckOutcome], subject: &Subject) -> Map<S
 	detail
 }
 
-/// One subject's `health[]`: its on-wire checks, in registry order.
-fn health_for(results: &[CheckOutcome], subject: &Subject) -> Vec<HealthCheck> {
+/// One target's `health[]`: its on-wire checks, in registry order.
+///
+/// `key` is the application's, or `None` for the machine — the same identity
+/// canopy keys the target by, so the payload and a later refresh of it cannot
+/// disagree about which checks belong where.
+fn health_for(results: &[CheckOutcome], key: Option<&str>) -> Vec<HealthCheck> {
 	results
 		.iter()
-		.filter(|o| &o.subject == subject && o.on_wire)
-		.filter_map(|o| serde_json::from_value(o.check.to_wire()).ok())
+		.filter(|o| o.on_wire && o.subject.key() == key)
+		.map(|o| o.check.to_health_check())
 		.collect()
 }
 
@@ -965,8 +990,8 @@ mod tests {
 		}
 	}
 
-	fn application_info() -> server_info::ApplicationInfo {
-		server_info::ApplicationInfo {
+	fn application_info() -> server_info::TamanuInfo {
+		server_info::TamanuInfo {
 			tamanu_version: Some("2.0.0".into()),
 			tamanu_server_kind: Some("central"),
 			..Default::default()
@@ -977,6 +1002,42 @@ mod tests {
 		server_info::PostgresInfo {
 			pg_version: Some("16.1".into()),
 		}
+	}
+
+	/// A canopy status response with just the fields these tests turn on.
+	fn status_response(
+		check_severities: HashMap<String, CheckSeverity>,
+		applications: Option<HashMap<String, bestool_canopy::schema::TargetResponse>>,
+	) -> StatusResponse {
+		use bestool_canopy::schema::{Entitlements, TagMap};
+
+		let mut response = StatusResponse::builder()
+			.backup_now(Vec::new())
+			.check_severities(check_severities)
+			.names(
+				Entitlements::builder()
+					.applications(Vec::new())
+					.certificates(Vec::new())
+					.domains(Vec::new())
+					.may_manage_dns(false)
+					.may_manage_tls(false)
+					.paused(false)
+					.registered_names(Vec::new())
+					.build(),
+			)
+			.tags(TagMap(Default::default()))
+			.build();
+		response.applications = applications;
+		response
+	}
+
+	fn target_response(
+		check_severities: HashMap<String, CheckSeverity>,
+	) -> bestool_canopy::schema::TargetResponse {
+		bestool_canopy::schema::TargetResponse::builder()
+			.check_severities(check_severities)
+			.tags(bestool_canopy::schema::TagMap(Default::default()))
+			.build()
 	}
 
 	fn wire_names(health: &Option<Vec<HealthCheck>>) -> Vec<String> {
@@ -1205,21 +1266,20 @@ mod tests {
 			"postgresql://u@[::1]/db",
 			"postgresql:///db?host=/var/run/postgresql",
 		] {
-			let app = postgres_ref(url).unwrap_or_else(|| panic!("{url} should resolve"));
-			assert_eq!(app.key, "host-postgres-5432", "{url}");
+			assert_eq!(postgres_ref(url).key, "host-postgres-5432", "{url}");
 		}
 	}
 
 	#[test]
 	fn a_cluster_on_another_port_is_a_different_application() {
-		let a = postgres_ref("postgresql://u@localhost:5432/db").unwrap();
-		let b = postgres_ref("postgresql://u@localhost:5433/db").unwrap();
+		let a = postgres_ref("postgresql://u@localhost:5432/db");
+		let b = postgres_ref("postgresql://u@localhost:5433/db");
 		assert_ne!(a.key, b.key);
 	}
 
 	#[test]
 	fn a_remote_cluster_is_not_claimed_as_this_machines() {
-		let app = postgres_ref("postgresql://u@db.example.com:5432/tamanu").unwrap();
+		let app = postgres_ref("postgresql://u@db.example.com:5432/tamanu");
 		assert_eq!(app.key, "remote-db.example.com-5432");
 		assert!(!app.key.starts_with("host-"));
 	}
@@ -1231,8 +1291,8 @@ mod tests {
 		assert!(database_is_local(
 			"postgresql:///db?host=/var/run/postgresql"
 		));
-		let socket = postgres_ref("postgresql:///db?host=/var/run/postgresql&port=5433").unwrap();
-		let tcp = postgres_ref("postgresql://u@localhost:5433/db").unwrap();
+		let socket = postgres_ref("postgresql:///db?host=/var/run/postgresql&port=5433");
+		let tcp = postgres_ref("postgresql://u@localhost:5433/db");
 		assert_eq!(socket.key, tcp.key);
 	}
 
@@ -1366,7 +1426,7 @@ mod tests {
 	fn the_two_timezones_land_on_their_own_subjects() {
 		// Tamanu's configured zone is the application's; the clock zone is the
 		// machine's. Neither reports the other's as its own.
-		let info = server_info::ApplicationInfo {
+		let info = server_info::TamanuInfo {
 			timezone: Some("Pacific/Fiji".into()),
 			..application_info()
 		};
@@ -1536,6 +1596,87 @@ mod tests {
 		sweep.apply_severities(&SplitSeverities::default());
 		assert_eq!(sweep.results[0].check.status.wire_result(), "warning");
 		assert_eq!(sweep.overall, OverallResult::Degraded);
+	}
+
+	#[test]
+	fn an_unsplit_response_still_governs_application_checks() {
+		// A canopy that answers only the ungrouped map must not leave application
+		// checks ungoverned: they would all fall to the absent-check ceiling and a
+		// real failure would render as a warning.
+		let split = split_severities(&status_response(
+			HashMap::from([("connect".to_string(), CheckSeverity::Fail)]),
+			None,
+		));
+
+		let postgres = Subject::Application(ApplicationRef::local_postgres(5432));
+		let map = split
+			.for_subject(&postgres)
+			.expect("an unsplit response must still govern applications");
+		assert_eq!(map.get("connect"), Some(&CheckSeverity::Fail));
+	}
+
+	#[test]
+	fn a_split_response_leaves_an_unknown_application_to_the_default() {
+		// When canopy does answer per target, a key it omits is an application it
+		// does not yet hold, so its checks are genuinely unknown and the
+		// absent-check default is the right answer rather than the flat map.
+		let split = split_severities(&status_response(
+			HashMap::from([("connect".to_string(), CheckSeverity::Fail)]),
+			Some(HashMap::from([(
+				CENTRAL_KEY.to_string(),
+				target_response(HashMap::new()),
+			)])),
+		));
+
+		let unknown = Subject::Application(ApplicationRef::local_postgres(5432));
+		assert!(split.for_subject(&unknown).is_none());
+	}
+
+	#[test]
+	fn an_unparseable_url_still_reports_a_cluster_to_alert_on() {
+		// Reporting nothing would drop the database's reachability check, and
+		// being unable to alert on the database is the one thing alertd must never
+		// do.
+		let app = postgres_ref("this is not a connection string");
+		assert_eq!(app.kind, ApplicationKind::Postgres);
+		assert_eq!(app.key, "host-postgres-5432");
+	}
+
+	#[test]
+	fn a_mixed_host_list_names_the_host_that_is_actually_remote() {
+		// `database_is_local` calls a list local only when all of it is, so the
+		// remote name must be the one that is not local — not simply the first.
+		let app = postgres_ref("postgresql://u@localhost,db.example.com/tamanu");
+		assert_eq!(app.key, "remote-db.example.com-5432");
+	}
+
+	#[test]
+	fn every_check_reaches_the_wire_even_with_odd_details() {
+		// A check used to vanish from the push if its details would not
+		// deserialise, silently ceasing to be monitored.
+		let odd = Check::fail("connect", "down", "refused")
+			.with_detail("check", serde_json::json!({"not": "a string"}))
+			.with_detail("result", serde_json::json!(42));
+		let results = vec![postgres(odd)];
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
+
+		let apps = payload.applications.as_ref().unwrap();
+		let health = &apps.get(POSTGRES_KEY).unwrap().health;
+		assert_eq!(wire_names(health), vec!["connect"]);
+		assert_eq!(result_of(health, "connect").unwrap(), "failed");
+	}
+
+	#[test]
+	fn a_checks_details_and_reason_reach_the_wire() {
+		let check =
+			Check::warning("connect", "slow", "latency high").with_detail("latency_ms", 900);
+		let results = vec![postgres(check)];
+		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
+		let apps = payload.applications.as_ref().unwrap();
+		let entry = apps.get(POSTGRES_KEY).unwrap().health.as_ref().unwrap()[0].clone();
+		assert_eq!(entry.extra.get("latency_ms").unwrap(), 900);
+		assert_eq!(entry.extra.get("summary").unwrap(), "slow");
+		assert_eq!(entry.extra.get("reason").unwrap(), "latency high");
 	}
 
 	#[test]
