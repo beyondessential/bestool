@@ -88,10 +88,14 @@ struct Conditions {
 	stale: bool,
 }
 
-fn classify(present: bool, attached: bool, held_days: i32) -> Conditions {
+/// `attached` is `None` where nothing was probed: a readable capture, or a
+/// backend with no exposure to probe. An unreadable capture whose exposure
+/// cannot be judged is reported as detached rather than gone, since claiming a
+/// rollback point is lost is the more expensive thing to get wrong.
+fn classify(present: bool, attached: Option<bool>, held_days: i32) -> Conditions {
 	Conditions {
-		gone: !present && attached,
-		detached: !present && !attached,
+		gone: !present && attached == Some(true),
+		detached: !present && attached != Some(true),
 		stale: held_days >= STALE_AFTER_DAYS,
 	}
 }
@@ -103,8 +107,10 @@ impl HoldCapture {
 	fn exposure(&self) -> Option<&std::path::Path> {
 		match self {
 			Self::Btrfs { mount } | Self::Lvm { mount } => Some(mount),
-			Self::Vss { junction } => Some(junction),
-			Self::BaseBackup {} | Self::Unknown => None,
+			// A shadow copy is either there or it is not, and the driver grades it
+			// that way too. Reporting a lost junction as detached would have the
+			// two disagree about the same hold.
+			Self::Vss { .. } | Self::BaseBackup {} | Self::Unknown => None,
 		}
 	}
 }
@@ -130,8 +136,8 @@ pub async fn run(_ctx: SweepContext) -> Check {
 		let present = capture_readable(&record.source).await;
 		let held_days = held_days(now - record.held_at);
 		let attached = match record.capture.exposure() {
-			Some(path) if !present => is_attached(path).await,
-			_ => true,
+			Some(path) if !present => Some(is_attached(path).await),
+			_ => None,
 		};
 
 		let conditions = classify(present, attached, held_days);
@@ -155,6 +161,13 @@ pub async fn run(_ctx: SweepContext) -> Check {
 			"source": record.source.display().to_string(),
 			"capturePresent": present,
 			"captureAttached": attached,
+			"captureState": if conditions.gone {
+				"gone"
+			} else if conditions.detached {
+				"detached"
+			} else {
+				"present"
+			},
 		}));
 	}
 
@@ -273,8 +286,10 @@ fn held_days(span: jiff::Span) -> i32 {
 }
 
 /// Whether a capture's exposure path currently has something mounted on it,
-/// judged by its device differing from its parent's. A path that is not there at
-/// all is not attached either.
+/// judged by its device differing from its parent's.
+///
+/// A path that is not there at all counts as attached: nothing is going to
+/// appear at it, so the capture is gone rather than waiting to be reattached.
 #[cfg(unix)]
 async fn is_attached(path: &std::path::Path) -> bool {
 	use std::os::unix::fs::MetadataExt as _;
@@ -282,10 +297,10 @@ async fn is_attached(path: &std::path::Path) -> bool {
 	let Some(parent) = path.parent() else {
 		return true;
 	};
-	let (Ok(here), Ok(above)) = (
-		tokio::fs::metadata(path).await,
-		tokio::fs::metadata(parent).await,
-	) else {
+	let Ok(here) = tokio::fs::metadata(path).await else {
+		return true;
+	};
+	let Ok(above) = tokio::fs::metadata(parent).await else {
 		return false;
 	};
 	here.dev() != above.dev()
@@ -484,7 +499,7 @@ Shadow Copy Storage association
 	#[test]
 	fn a_detached_hold_is_still_reported_as_stale() {
 		assert_eq!(
-			classify(false, false, 8),
+			classify(false, Some(false), 8),
 			Conditions {
 				gone: false,
 				detached: true,
@@ -493,11 +508,25 @@ Shadow Copy Storage association
 		);
 	}
 
+	/// A backend with no exposure to probe cannot be called gone with confidence,
+	/// and claiming a rollback point is lost is the more expensive mistake.
+	#[test]
+	fn an_unreadable_capture_with_nothing_to_probe_is_not_called_gone() {
+		assert_eq!(
+			classify(false, None, 0),
+			Conditions {
+				gone: false,
+				detached: true,
+				stale: false,
+			}
+		);
+	}
+
 	#[test]
 	fn a_capture_is_gone_only_when_what_exposes_it_is_in_place() {
 		// Readable: nothing to report but its age.
 		assert_eq!(
-			classify(true, true, 0),
+			classify(true, None, 0),
 			Conditions {
 				gone: false,
 				detached: false,
@@ -506,7 +535,7 @@ Shadow Copy Storage association
 		);
 		// Unreadable while attached: the capture really has gone.
 		assert_eq!(
-			classify(false, true, 0),
+			classify(false, Some(true), 0),
 			Conditions {
 				gone: true,
 				detached: false,
@@ -515,7 +544,7 @@ Shadow Copy Storage association
 		);
 		// Readable and long held: the cleanup case on its own.
 		assert_eq!(
-			classify(true, true, 9),
+			classify(true, None, 9),
 			Conditions {
 				gone: false,
 				detached: false,
@@ -549,9 +578,10 @@ Shadow Copy Storage association
 			mount(r#"{ "backend": "lvm", "vg": "v", "lv": "l", "mount": "/z" }"#),
 			Some("/z".to_owned())
 		);
+		// A shadow copy is graded present-or-gone, as the driver grades it.
 		assert_eq!(
 			mount(r#"{ "backend": "vss", "shadow_id": "s", "junction": "C:\\j" }"#),
-			Some("C:\\j".to_owned())
+			None
 		);
 		// A base backup is the data itself, so there is nothing to reattach.
 		assert_eq!(mount(r#"{ "backend": "base-backup", "root": "/r" }"#), None);
@@ -584,7 +614,9 @@ Shadow Copy Storage association
 		std::fs::create_dir_all(&dir).unwrap();
 
 		assert!(!is_attached(&dir).await);
-		assert!(!is_attached(&dir.join("missing")).await);
+		// Nothing will ever appear at a path that is not there, so it counts as
+		// attached and the capture reads as gone rather than waiting to come back.
+		assert!(is_attached(&dir.join("missing")).await);
 
 		std::fs::remove_dir_all(&dir).unwrap();
 	}

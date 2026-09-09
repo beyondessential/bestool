@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use miette::{Context as _, IntoDiagnostic as _, Result, miette};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use tracing::{info, warn};
 
 use super::{
@@ -247,7 +247,7 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 		toplevel_mount: held_toplevel,
 		snapshot_path: held_snapshot,
 		mount: held_mount.clone(),
-		fsdev: mounts.fsdev.clone(),
+		fsdev: Some(mounts.fsdev.clone()),
 	};
 
 	sys::mkdir(&held_mount).await?;
@@ -290,13 +290,27 @@ pub async fn release_held(
 	toplevel_mount: &Path,
 	snapshot_path: &Path,
 	mount: &Path,
-	fsdev: &str,
+	fsdev: Option<&str>,
 ) -> Result<()> {
-	if !fsdev.is_empty() && !sys::is_mountpoint(toplevel_mount).await {
+	if !sys::is_mountpoint(toplevel_mount).await {
+		// Deleting is best-effort inside `teardown`, so reaching the subvolume has
+		// to be checked here: without the top level the delete quietly does
+		// nothing and the caller would drop the record over a live subvolume.
+		let Some(fsdev) = fsdev else {
+			bail!(
+				"hold record has no device recorded, so {} cannot be mounted to delete {}; 				 mount the filesystem's top level there by hand and drop the hold again",
+				toplevel_mount.display(),
+				snapshot_path.display()
+			);
+		};
+		if !fsdev.starts_with('/') {
+			bail!("hold record's device {fsdev:?} is not an absolute path");
+		}
+
 		sys::mkdir(toplevel_mount).await?;
 		sys::run_ok(
 			"mount",
-			&["-o", "subvolid=5", fsdev, sys::path(toplevel_mount)],
+			&["-o", "subvolid=5", "--", fsdev, sys::path(toplevel_mount)],
 		)
 		.await
 		.wrap_err_with(|| {
@@ -311,7 +325,7 @@ pub async fn release_held(
 		toplevel_mount: toplevel_mount.to_path_buf(),
 		snapshot_path: snapshot_path.to_path_buf(),
 		kopia_mount: mount.to_path_buf(),
-		fsdev: fsdev.to_owned(),
+		fsdev: fsdev.unwrap_or_default().to_owned(),
 		// Nothing is mounted for reading here, so no mapping is needed.
 		idmap: String::new(),
 	})

@@ -88,13 +88,21 @@ async fn list() -> Result<()> {
 		return Ok(());
 	}
 
+	// Probed once: each call shells out per backend, and two passes could report
+	// a different state in the table than in the summary below it.
+	let states = futures::future::join_all(
+		records
+			.iter()
+			.map(|record| hold::capture_state(&record.capture)),
+	)
+	.await;
+
 	let now = Timestamp::now();
 	println!(
 		"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  CAPTURE",
 		"ID", "BACKEND", "FROZEN", "HELD FOR", "UPLOADED"
 	);
-	for record in &records {
-		let state = hold::capture_state(&record.capture).await;
+	for (record, state) in records.iter().zip(&states) {
 		println!(
 			"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  {}",
 			record.id,
@@ -112,12 +120,6 @@ async fn list() -> Result<()> {
 		);
 	}
 
-	let states = futures::future::join_all(
-		records
-			.iter()
-			.map(|record| hold::capture_state(&record.capture)),
-	)
-	.await;
 	let gone = states
 		.iter()
 		.filter(|state| **state == hold::CaptureState::Gone)

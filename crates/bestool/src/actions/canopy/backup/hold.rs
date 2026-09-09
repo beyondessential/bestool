@@ -52,9 +52,9 @@ pub enum HeldCapture {
 		mount: PathBuf,
 		/// The device the subvolume lives on. Releasing reaches it through the
 		/// top-level mount, which may no longer be there, so remounting to delete
-		/// it needs the device. Absent on records written before it was kept.
+		/// it needs the device. `None` on records written before it was kept.
 		#[serde(default)]
-		fsdev: String,
+		fsdev: Option<String>,
 	},
 	Lvm {
 		vg: String,
@@ -238,14 +238,22 @@ pub async fn capture_state(capture: &HeldCapture) -> CaptureState {
 		HeldCapture::Btrfs {
 			toplevel_mount,
 			snapshot_path,
+			mount,
 			..
 		} => {
-			if snapshot_path.exists() {
+			if !snapshot_path.exists() {
+				if super::postgresql::btrfs::attached(toplevel_mount).await {
+					// The top level is mounted and the subvolume still isn't there.
+					CaptureState::Gone
+				} else {
+					CaptureState::Detached
+				}
+			} else if super::postgresql::btrfs::attached(mount).await {
 				CaptureState::Present
-			} else if super::postgresql::btrfs::attached(toplevel_mount).await {
-				// The top level is mounted and the subvolume still isn't there.
-				CaptureState::Gone
 			} else {
+				// The subvolume is there but nothing exposes it, and a restore reads
+				// the mount rather than the subvolume: reporting this present would
+				// lay an empty directory over the cluster.
 				CaptureState::Detached
 			}
 		}
@@ -303,7 +311,8 @@ pub async fn release(capture: &HeldCapture) -> Result<()> {
 			fsdev,
 			..
 		} => {
-			super::postgresql::btrfs::release_held(toplevel_mount, snapshot_path, mount, fsdev).await
+			super::postgresql::btrfs::release_held(toplevel_mount, snapshot_path, mount, fsdev.as_deref())
+				.await
 		}
 		HeldCapture::Lvm { vg, lv, mount } => super::postgresql::lvm::release_held(vg, lv, mount).await,
 		HeldCapture::Vss { shadow_id, junction } => release_vss(shadow_id, junction).await,
@@ -346,7 +355,7 @@ mod tests {
 				toplevel_mount: "/run/bestool-toplevel".into(),
 				snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
 				mount: "/var/lib/bestool/held-source/x".into(),
-				fsdev: "/dev/disk/by-uuid/deadbeef".into(),
+				fsdev: Some("/dev/disk/by-uuid/deadbeef".into()),
 			},
 			HeldCapture::Lvm {
 				vg: "vg0".into(),
@@ -385,13 +394,13 @@ mod tests {
 			toplevel_mount: "/run/bestool-toplevel".into(),
 			snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
 			mount: "/var/lib/bestool/held-source/x".into(),
-			fsdev: "/dev/disk/by-uuid/deadbeef".into(),
+			fsdev: Some("/dev/disk/by-uuid/deadbeef".into()),
 		});
 		let parsed = parse(&serde_json::to_vec(&original).unwrap()).unwrap();
 		let HeldCapture::Btrfs { fsdev, .. } = parsed.capture else {
 			panic!("expected a btrfs capture");
 		};
-		assert_eq!(fsdev, "/dev/disk/by-uuid/deadbeef");
+		assert_eq!(fsdev.as_deref(), Some("/dev/disk/by-uuid/deadbeef"));
 	}
 
 	/// A record written before the device was kept still has to parse: dropping
@@ -415,7 +424,7 @@ mod tests {
 		let HeldCapture::Btrfs { fsdev, .. } = parsed.capture else {
 			panic!("expected a btrfs capture");
 		};
-		assert!(fsdev.is_empty());
+		assert!(fsdev.is_none());
 	}
 
 	/// A base-backup capture has no freeze instant, and the record says so rather
