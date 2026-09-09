@@ -232,6 +232,11 @@ pub async fn held_present(vg: &str, lv: &str) -> bool {
 	sys::run_ok("lvs", &[&format!("{vg}/{lv}")]).await.is_ok()
 }
 
+/// Whether something is mounted at a path.
+pub async fn attached(path: &Path) -> bool {
+	sys::is_mountpoint(path).await
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 pub async fn release_held(vg: &str, lv: &str, mount: &Path) -> Result<()> {

@@ -247,6 +247,8 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 		toplevel_mount: held_toplevel,
 		snapshot_path: held_snapshot,
 		mount: held_mount.clone(),
+		fsdev: mounts.fsdev.clone(),
+		idmap: mounts.idmap.clone(),
 	};
 
 	sys::mkdir(&held_mount).await?;
@@ -273,16 +275,45 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 	Ok((held_mount.join(rel), capture))
 }
 
+/// Whether something is mounted at a path.
+pub async fn attached(path: &Path) -> bool {
+	sys::is_mountpoint(path).await
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
-pub async fn release_held(toplevel_mount: &Path, snapshot_path: &Path, mount: &Path) -> Result<()> {
+///
+/// The subvolume is reached through the top-level mount, which a reboot takes
+/// away. Deleting it without that mount would silently leave it on the
+/// filesystem, holding its space with no record naming it, so the top level is
+/// mounted back first where the device is known.
+pub async fn release_held(
+	toplevel_mount: &Path,
+	snapshot_path: &Path,
+	mount: &Path,
+	fsdev: &str,
+) -> Result<()> {
+	if !fsdev.is_empty() && !sys::is_mountpoint(toplevel_mount).await {
+		sys::mkdir(toplevel_mount).await?;
+		sys::run_ok(
+			"mount",
+			&["-o", "subvolid=5", fsdev, sys::path(toplevel_mount)],
+		)
+		.await
+		.wrap_err_with(|| {
+			format!(
+				"mounting {fsdev} at {} to reach the held subvolume",
+				toplevel_mount.display()
+			)
+		})?;
+	}
+
 	teardown(Mounts {
 		toplevel_mount: toplevel_mount.to_path_buf(),
 		snapshot_path: snapshot_path.to_path_buf(),
 		kopia_mount: mount.to_path_buf(),
-		// Releasing only unmounts and deletes; nothing is mounted again, so the
-		// details a remount would need aren't carried in the hold's record.
-		fsdev: String::new(),
+		fsdev: fsdev.to_owned(),
+		// Nothing is mounted for reading here, so no mapping is needed.
 		idmap: String::new(),
 	})
 	.await

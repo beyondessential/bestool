@@ -405,11 +405,17 @@ async fn restore_from_hold(
 			args.backup_type
 		);
 	}
-	if !hold::capture_present(&record.capture).await {
-		bail!(
+	match hold::capture_state(&record.capture).await {
+		hold::CaptureState::Present => {}
+		hold::CaptureState::Detached => bail!(
+			"the capture behind hold {hold_id} is not mounted, so it cannot be read; \
+			 a reboot leaves a hold in this state, and the capture behind it is often \
+			 still intact"
+		),
+		hold::CaptureState::Gone => bail!(
 			"the capture behind hold {hold_id} is gone, so it is not a rollback point; \
 			 drop it with `bestool canopy hold drop {hold_id}` and restore from the repository"
-		);
+		),
 	}
 	info!(
 		hold = %hold_id,

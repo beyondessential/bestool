@@ -50,6 +50,15 @@ pub enum HeldCapture {
 		toplevel_mount: PathBuf,
 		snapshot_path: PathBuf,
 		mount: PathBuf,
+		/// What to mount to reach the capture again. A hold's mounts do not
+		/// survive a reboot, and neither the subvolume nor its top level can be
+		/// reached without the device they live on. Absent on records written
+		/// before it was kept, which can be read but not reattached.
+		#[serde(default)]
+		fsdev: String,
+		/// The mapping that lets the kopia user read postgres-owned files.
+		#[serde(default)]
+		idmap: String,
 	},
 	Lvm {
 		vg: String,
@@ -211,19 +220,65 @@ pub async fn remove_record(id: &str) -> Result<()> {
 	}
 }
 
-/// Whether the capture a hold names is still there.
+/// What state the capture a hold names is in.
 ///
 /// A hold whose capture has gone is the failure worth catching: the operator
 /// believes a rollback point exists when it does not, and nothing about the
-/// record itself gives that away.
-pub async fn capture_present(capture: &HeldCapture) -> bool {
+/// record itself gives that away. A detached one is the recoverable case and
+/// must be told apart, since releasing it as though it were gone would forget
+/// the record and strand the capture it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureState {
+	/// Readable where the record says it is.
+	Present,
+	/// The capture is there, but what exposes it is not mounted.
+	Detached,
+	/// Nothing of the capture is left.
+	Gone,
+}
+
+pub async fn capture_state(capture: &HeldCapture) -> CaptureState {
 	match capture {
-		HeldCapture::Btrfs { snapshot_path, .. } => snapshot_path.exists(),
-		HeldCapture::Lvm { vg, lv, .. } => super::postgresql::lvm::held_present(vg, lv).await,
-		HeldCapture::Vss { shadow_id, junction } => vss_present(shadow_id, junction).await,
-		HeldCapture::BaseBackup { root } => root.exists(),
+		HeldCapture::Btrfs {
+			toplevel_mount,
+			snapshot_path,
+			..
+		} => {
+			if snapshot_path.exists() {
+				CaptureState::Present
+			} else if super::postgresql::btrfs::attached(toplevel_mount).await {
+				// The top level is mounted and the subvolume still isn't there.
+				CaptureState::Gone
+			} else {
+				CaptureState::Detached
+			}
+		}
+		HeldCapture::Lvm { vg, lv, mount } => {
+			if !super::postgresql::lvm::held_present(vg, lv).await {
+				CaptureState::Gone
+			} else if super::postgresql::lvm::attached(mount).await {
+				CaptureState::Present
+			} else {
+				CaptureState::Detached
+			}
+		}
+		HeldCapture::Vss { shadow_id, junction } => {
+			if vss_present(shadow_id, junction).await {
+				CaptureState::Present
+			} else {
+				CaptureState::Gone
+			}
+		}
+		HeldCapture::BaseBackup { root } => {
+			if root.exists() {
+				CaptureState::Present
+			} else {
+				CaptureState::Gone
+			}
+		}
 	}
 }
+
 
 #[cfg(windows)]
 async fn vss_present(shadow_id: &str, _junction: &Path) -> bool {
@@ -249,7 +304,11 @@ pub async fn release(capture: &HeldCapture) -> Result<()> {
 			toplevel_mount,
 			snapshot_path,
 			mount,
-		} => super::postgresql::btrfs::release_held(toplevel_mount, snapshot_path, mount).await,
+			fsdev,
+			..
+		} => {
+			super::postgresql::btrfs::release_held(toplevel_mount, snapshot_path, mount, fsdev).await
+		}
 		HeldCapture::Lvm { vg, lv, mount } => super::postgresql::lvm::release_held(vg, lv, mount).await,
 		HeldCapture::Vss { shadow_id, junction } => release_vss(shadow_id, junction).await,
 		HeldCapture::BaseBackup { root } => super::postgresql::basebackup::teardown(root.clone()).await,
@@ -291,6 +350,8 @@ mod tests {
 				toplevel_mount: "/run/bestool-toplevel".into(),
 				snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
 				mount: "/var/lib/bestool/held-source/x".into(),
+				fsdev: "/dev/disk/by-uuid/deadbeef".into(),
+				idmap: "u:1000:1001:1".into(),
 			},
 			HeldCapture::Lvm {
 				vg: "vg0".into(),
@@ -318,6 +379,50 @@ mod tests {
 			assert!(parsed.uploaded);
 			assert_eq!(parsed.capture.backend(), backend);
 		}
+	}
+
+	/// Releasing a btrfs hold reaches the subvolume through the top-level mount,
+	/// so the device that mount needs has to survive the round trip. Without it
+	/// the subvolume cannot be deleted and its space is never returned.
+	#[test]
+	fn a_btrfs_capture_keeps_what_it_takes_to_reach_the_subvolume() {
+		let original = record(HeldCapture::Btrfs {
+			toplevel_mount: "/run/bestool-toplevel".into(),
+			snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
+			mount: "/var/lib/bestool/held-source/x".into(),
+			fsdev: "/dev/disk/by-uuid/deadbeef".into(),
+			idmap: "u:1000:1001:1".into(),
+		});
+		let parsed = parse(&serde_json::to_vec(&original).unwrap()).unwrap();
+		let HeldCapture::Btrfs { fsdev, idmap, .. } = parsed.capture else {
+			panic!("expected a btrfs capture");
+		};
+		assert_eq!(fsdev, "/dev/disk/by-uuid/deadbeef");
+		assert_eq!(idmap, "u:1000:1001:1");
+	}
+
+	/// A record written before the device was kept still has to parse: dropping
+	/// it would leave the hold unreadable and unreleasable at once.
+	#[test]
+	fn a_btrfs_capture_without_a_device_still_parses() {
+		let json = br#"{
+			"id": "x-20260814T054412Z",
+			"backup_type": "tamanu-postgres",
+			"held_at": "2026-08-14T11:02:00Z",
+			"source": "/var/lib/bestool/held-source/x/18/main",
+			"uploaded": true,
+			"capture": {
+				"backend": "btrfs",
+				"toplevel_mount": "/run/t",
+				"snapshot_path": "/run/t/bestool-held-x",
+				"mount": "/var/lib/bestool/held-source/x"
+			}
+		}"#;
+		let parsed = parse(json).unwrap();
+		let HeldCapture::Btrfs { fsdev, .. } = parsed.capture else {
+			panic!("expected a btrfs capture");
+		};
+		assert!(fsdev.is_empty());
 	}
 
 	/// A base-backup capture has no freeze instant, and the record says so rather

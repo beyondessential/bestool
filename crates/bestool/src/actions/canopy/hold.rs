@@ -94,7 +94,7 @@ async fn list() -> Result<()> {
 		"ID", "BACKEND", "FROZEN", "HELD FOR", "UPLOADED"
 	);
 	for record in &records {
-		let present = hold::capture_present(&record.capture).await;
+		let state = hold::capture_state(&record.capture).await;
 		println!(
 			"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  {}",
 			record.id,
@@ -104,22 +104,38 @@ async fn list() -> Result<()> {
 				.map_or_else(|| "(no freeze instant)".to_owned(), |at| at.to_string()),
 			humanise(now - record.held_at),
 			if record.uploaded { "yes" } else { "no" },
-			if present { "present" } else { "MISSING" },
+			match state {
+				hold::CaptureState::Present => "present",
+				hold::CaptureState::Detached => "DETACHED",
+				hold::CaptureState::Gone => "MISSING",
+			},
 		);
 	}
 
-	let missing = futures::future::join_all(
+	let states = futures::future::join_all(
 		records
 			.iter()
-			.map(|record| hold::capture_present(&record.capture)),
+			.map(|record| hold::capture_state(&record.capture)),
 	)
-	.await
-	.into_iter()
-	.filter(|present| !present)
-	.count();
-	if missing > 0 {
+	.await;
+	let gone = states
+		.iter()
+		.filter(|state| **state == hold::CaptureState::Gone)
+		.count();
+	let detached = states
+		.iter()
+		.filter(|state| **state == hold::CaptureState::Detached)
+		.count();
+	if detached > 0 {
 		warn!(
-			"{missing} of {} held captures are gone; those holds are not rollback points",
+			"{detached} of {} held captures are not mounted; reboot leaves a hold this way, \
+			 and dropping one still frees the capture behind it",
+			records.len()
+		);
+	}
+	if gone > 0 {
+		warn!(
+			"{gone} of {} held captures are gone; those holds are not rollback points",
 			records.len()
 		);
 	}
@@ -148,16 +164,19 @@ fn humanise(span: jiff::Span) -> String {
 
 async fn drop_hold(id: &str) -> Result<()> {
 	let record = hold::load(id).await?;
-	if hold::capture_present(&record.capture).await {
-		hold::release(&record.capture).await?;
-		info!(hold = %id, backend = record.capture.backend(), "released the held capture");
-	} else {
+	// A detached capture is still there to free, so it takes the same release as
+	// a mounted one: forgetting the record instead would leave the capture on the
+	// filesystem holding its space with nothing naming it.
+	if hold::capture_state(&record.capture).await == hold::CaptureState::Gone {
 		// Dropping is what the operator asked for, and the capture is already
 		// gone; the record going with it is the outcome either way.
 		warn!(
 			hold = %id,
 			"the capture was already gone; forgetting the hold (it was not a rollback point)"
 		);
+	} else {
+		hold::release(&record.capture).await?;
+		info!(hold = %id, backend = record.capture.backend(), "released the held capture");
 	}
 	hold::remove_record(id).await?;
 	Ok(())
