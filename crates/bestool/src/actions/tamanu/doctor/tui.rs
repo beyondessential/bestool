@@ -150,7 +150,9 @@ pub fn run_tui(
 
 	loop {
 		drain_progress(&mut progress_rx, &mut rows);
-		let finalising = all_completed(&rows);
+		// Vacuously true of an empty list, which is how the display starts until
+		// the sweep's plan lands — the footer would otherwise open on "finalising".
+		let finalising = !rows.is_empty() && all_completed(&rows);
 
 		draw(
 			&mut guard.stdout,

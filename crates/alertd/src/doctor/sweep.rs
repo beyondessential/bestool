@@ -340,21 +340,37 @@ fn postgres_ref(url: &str) -> ApplicationRef {
 		return ApplicationRef::local_postgres(5432);
 	};
 
-	let port = config.get_ports().first().copied().unwrap_or(5432);
 	let hosts = config.get_hosts();
 
 	// The first host that is not this machine's names the cluster. Checking for
 	// one rather than requiring every host to be remote keeps this in step with
 	// `database_is_local`, which treats a list as local only when all of it is.
-	let remote = hosts.iter().find_map(|host| match host {
-		Host::Tcp(name) if !host_is_local(name) => Some(name.as_str()),
-		_ => None,
-	});
+	let remote = hosts
+		.iter()
+		.enumerate()
+		.find_map(|(index, host)| match host {
+			Host::Tcp(name) if !host_is_local(name) => Some((index, name.as_str())),
+			_ => None,
+		});
 
 	match remote {
-		Some(host) => ApplicationRef::remote_postgres(host, port),
-		None => ApplicationRef::local_postgres(port),
+		Some((index, host)) => ApplicationRef::remote_postgres(host, port_at(&config, index)),
+		None => ApplicationRef::local_postgres(port_at(&config, 0)),
 	}
+}
+
+/// The port serving the host at `index`.
+///
+/// A connection string carries either one port for every host or one per host,
+/// so the port must be taken at the chosen host's position rather than from the
+/// front of the list. Absent, it is libpq's 5432.
+fn port_at(config: &tokio_postgres::Config, index: usize) -> u16 {
+	let ports = config.get_ports();
+	ports
+		.get(index)
+		.or_else(|| ports.first())
+		.copied()
+		.unwrap_or(5432)
 }
 
 /// Whether a TCP host name refers to this machine.
@@ -821,22 +837,34 @@ async fn collect_server_facts(
 /// A failing application makes the sweep failing just as a failing machine
 /// does: the operator is looking at one host either way.
 pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
-	let targets = payload.machine.iter().map(|m| &m.health).chain(
-		payload
-			.applications
-			.iter()
-			.flat_map(|a| a.values())
-			.map(|a| &a.health),
-	);
+	let per_target = payload
+		.machine
+		.iter()
+		.map(|m| &m.health)
+		.chain(
+			payload
+				.applications
+				.iter()
+				.flat_map(|a| a.values())
+				.map(|a| &a.health),
+		)
+		.flatten()
+		.flatten();
 
+	// The ungrouped array is read too. A sweep of this vintage always sends it
+	// empty, but one from a daemon that predates the split puts every check
+	// there and describes no targets — and reading only the targets would call
+	// that sweep healthy however much of it had failed.
+	//
 	// One walk, matching the typed result rather than formatting it: the payload
 	// was previously traversed twice and a string allocated per check just to
 	// compare against a literal.
 	let mut failing = false;
 	let mut degraded = false;
-	for result in targets
-		.flatten()
-		.flatten()
+	for result in payload
+		.health
+		.iter()
+		.chain(per_target)
 		.filter_map(|c| c.result.as_ref())
 	{
 		match result {

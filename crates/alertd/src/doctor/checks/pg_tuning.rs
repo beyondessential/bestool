@@ -47,9 +47,6 @@ fn budget_for(platform: Platform, total_ram: i64) -> Budget {
 	)
 }
 
-/// Whether the database is on this same host, so the local RAM describes it.
-/// `None`, empty, the loopback names, and a Unix-socket path (leading `/`) are
-/// all local; anything else is a remote hostname.
 /// Whether `actual` is more than a factor of two away from `expected` in either
 /// direction. Two-times is deliberately generous: it tolerates rounding and
 /// version-to-version differences in the tuning maths, and only fires on the

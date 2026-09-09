@@ -4,7 +4,7 @@ use std::{
 	time::Duration,
 };
 
-use bestool_canopy::schema::{CheckSeverity, StatusPayload};
+use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, StatusPayload};
 use clap::Parser;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde_json::Value;
@@ -328,6 +328,20 @@ async fn drain_recompute_stream(
 				}
 			};
 			match value.get("event").and_then(Value::as_str) {
+				// The daemon resolved the applications; pass its plan through so the
+				// live display shows the same checks pending from the start.
+				Some("planned") => {
+					if let Some(tx) = progress.as_ref()
+						&& let Some(checks) = value.get("checks").and_then(Value::as_array)
+					{
+						let names = checks
+							.iter()
+							.filter_map(Value::as_str)
+							.map(str::to_string)
+							.collect();
+						let _ = tx.send(DoctorEvent::Planned(names));
+					}
+				}
 				Some("check") => {
 					if let Some(check_json) = value.get("check")
 						&& let Some(outcome) =
@@ -340,10 +354,17 @@ async fn drain_recompute_stream(
 					}
 				}
 				Some("done") => {
-					final_payload = value
+					// A payload that will not decode is a real failure, not a missing
+					// done event, and must say which it is.
+					let raw = value
 						.get("payload")
 						.cloned()
-						.and_then(|p| serde_json::from_value(p).ok());
+						.ok_or_else(|| miette!("alertd recompute done event carried no payload"))?;
+					final_payload = Some(
+						serde_json::from_value(raw)
+							.into_diagnostic()
+							.wrap_err("decoding the alertd recompute payload")?,
+					);
 					machine_id = value
 						.get("machineId")
 						.and_then(Value::as_str)
@@ -432,67 +453,80 @@ async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jif
 /// format drops summaries and reasons, so reconstructed entries have empty
 /// strings for those fields.
 ///
-/// Both grains are read: the machine's checks and every application's, each
-/// tagged with the subject it was filed against so the render can tell two
-/// same-named checks apart.
+/// Every grain is read: the machine's checks, each application's, and the
+/// ungrouped array, each tagged with the subject it was filed against so the
+/// render can tell two same-named checks apart.
 fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 	let registry = checks::all();
-	let machine = payload
-		.machine
-		.iter()
-		.map(|target| (Subject::Machine, &target.health));
-	let applications = payload
-		.applications
-		.iter()
-		.flatten()
-		.filter_map(|(key, report)| {
-			// The type slug the push used is the application's own, so the kind is
-			// read back from it. The wire type is an open set, so a target of a
-			// type this build does not know — an mSupply application, or a newer
-			// one from a mismatched daemon — is left out rather than rendered as
-			// some other kind's.
-			let kind = ApplicationKind::ALL
-				.into_iter()
-				.find(|kind| kind.type_slug() == report.type_)?;
-			Some((
-				Subject::Application(ApplicationRef {
-					kind,
-					key: key.clone(),
-				}),
-				&report.health,
-			))
-		});
+	let names: HashMap<&str, &'static str> = registry.iter().map(|e| (e.name, e.name)).collect();
 
-	let registry = &registry;
-	machine
-		.chain(applications)
-		.flat_map(move |(subject, health)| {
-			health.iter().flatten().filter_map(move |entry| {
-				let name = entry.check.as_str();
-				let name_static = registry.iter().find(|e| e.name == name)?.name;
-				let status = match entry.result.as_ref()?.to_string().as_str() {
-					"passed" => CheckStatus::Pass,
-					"skipped" => CheckStatus::Skip(String::new()),
-					"warning" => CheckStatus::Warning(String::new()),
-					"failed" => CheckStatus::Fail(String::new()),
-					"broken" => CheckStatus::Broken(String::new()),
-					_ => return None,
-				};
-				Some(CheckOutcome {
-					subject: subject.clone(),
-					check: Check {
-						name: name_static,
-						status,
-						summary: String::new(),
-						details: serde_json::Map::new(),
-						payload_extras: serde_json::Map::new(),
-						stats: Vec::new(),
-					},
-					on_wire: true,
-				})
-			})
-		})
-		.collect()
+	let mut targets: Vec<(Subject, &Vec<HealthCheck>)> = Vec::new();
+
+	// A daemon that predates the split describes no targets and puts every check
+	// in the ungrouped array. Those are read against the machine: which subject
+	// each belonged to is exactly what that daemon did not say, and the machine
+	// is the grain an operator reads such a sweep at. A sweep of this vintage
+	// sends the array empty, so this contributes nothing to one.
+	if !payload.health.is_empty() {
+		targets.push((Subject::Machine, &payload.health));
+	}
+	if let Some(machine) = payload.machine.as_ref()
+		&& let Some(health) = machine.health.as_ref()
+	{
+		targets.push((Subject::Machine, health));
+	}
+	for (key, report) in payload.applications.iter().flatten() {
+		// The type slug the push used is the application's own, so the kind is
+		// read back from it. The wire type is an open set, so a target of a type
+		// this build does not know — an mSupply application, or a newer one from
+		// a mismatched daemon — is left out rather than rendered as some other
+		// kind's.
+		let Some(kind) = ApplicationKind::ALL
+			.into_iter()
+			.find(|kind| kind.type_slug() == report.type_)
+		else {
+			continue;
+		};
+		if let Some(health) = report.health.as_ref() {
+			let app = ApplicationRef {
+				kind,
+				key: key.clone(),
+			};
+			targets.push((Subject::Application(app), health));
+		}
+	}
+
+	let mut results = Vec::new();
+	for (subject, health) in targets {
+		for entry in health {
+			let Some(name) = names.get(entry.check.as_str()).copied() else {
+				continue;
+			};
+			let Some(result) = entry.result.as_ref() else {
+				continue;
+			};
+			let status = match result {
+				CheckResult::Passed => CheckStatus::Pass,
+				CheckResult::Skipped => CheckStatus::Skip(String::new()),
+				CheckResult::Warning => CheckStatus::Warning(String::new()),
+				CheckResult::Failed => CheckStatus::Fail(String::new()),
+				CheckResult::Broken => CheckStatus::Broken(String::new()),
+			};
+			results.push(CheckOutcome {
+				subject: subject.clone(),
+				check: Check {
+					name,
+					status,
+					summary: String::new(),
+					details: serde_json::Map::new(),
+					payload_extras: serde_json::Map::new(),
+					stats: Vec::new(),
+				},
+				on_wire: true,
+			});
+		}
+	}
+	results
 }
 
 /// Whether the terminal honours ANSI escape sequences, which the live TUI and
@@ -721,6 +755,28 @@ mod tests {
 			subject_of("migrations"),
 			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral))
 		);
+	}
+
+	#[test]
+	fn a_pre_split_payload_is_read_rather_than_called_healthy() {
+		// A daemon that predates the split describes no targets and puts every
+		// check in the ungrouped array. Reading only the targets would render
+		// such a sweep healthy however much of it had failed.
+		let payload: StatusPayload = serde_json::from_value(serde_json::json!({
+			"health": [
+				{ "check": "disk_free", "result": "failed" },
+				{ "check": "memory", "result": "passed" },
+			],
+		}))
+		.unwrap();
+
+		assert_eq!(
+			bestool_alertd::doctor::overall_from_payload(&payload),
+			OverallResult::Failing,
+		);
+		let results = results_from_wire(&payload);
+		assert_eq!(results.len(), 2);
+		assert!(results.iter().all(|o| o.subject == Subject::Machine));
 	}
 
 	#[test]

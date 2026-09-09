@@ -75,6 +75,11 @@ actually about, and that the push carries the split format.
 - [x] `tuning` and the subject key agree about whether a cluster is local
 - [ ] A live push with a check carrying unusual detail keys is accepted by canopy
 - [x] The subject resolution compiles and its tests hold on Windows, where Unix sockets do not exist
+- [x] A payload from a daemon predating the split is read rather than called healthy
+- [x] The daemon-streamed path forwards the plan, so `--fresh` shows pending rows
+- [x] The live display does not open on "finalising" before the plan lands
+- [x] A multi-host string with per-host ports takes the port of the host it named
+- [x] A recompute payload that will not decode reports that, not a missing done event
 
 ## Severities
 
