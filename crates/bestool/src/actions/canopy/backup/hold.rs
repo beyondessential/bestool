@@ -50,15 +50,11 @@ pub enum HeldCapture {
 		toplevel_mount: PathBuf,
 		snapshot_path: PathBuf,
 		mount: PathBuf,
-		/// What to mount to reach the capture again. A hold's mounts do not
-		/// survive a reboot, and neither the subvolume nor its top level can be
-		/// reached without the device they live on. Absent on records written
-		/// before it was kept, which can be read but not reattached.
+		/// The device the subvolume lives on. Releasing reaches it through the
+		/// top-level mount, which a reboot takes away, so remounting to delete it
+		/// needs the device. Absent on records written before it was kept.
 		#[serde(default)]
 		fsdev: String,
-		/// The mapping that lets the kopia user read postgres-owned files.
-		#[serde(default)]
-		idmap: String,
 	},
 	Lvm {
 		vg: String,
@@ -351,7 +347,6 @@ mod tests {
 				snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
 				mount: "/var/lib/bestool/held-source/x".into(),
 				fsdev: "/dev/disk/by-uuid/deadbeef".into(),
-				idmap: "u:1000:1001:1".into(),
 			},
 			HeldCapture::Lvm {
 				vg: "vg0".into(),
@@ -391,14 +386,12 @@ mod tests {
 			snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
 			mount: "/var/lib/bestool/held-source/x".into(),
 			fsdev: "/dev/disk/by-uuid/deadbeef".into(),
-			idmap: "u:1000:1001:1".into(),
 		});
 		let parsed = parse(&serde_json::to_vec(&original).unwrap()).unwrap();
-		let HeldCapture::Btrfs { fsdev, idmap, .. } = parsed.capture else {
+		let HeldCapture::Btrfs { fsdev, .. } = parsed.capture else {
 			panic!("expected a btrfs capture");
 		};
 		assert_eq!(fsdev, "/dev/disk/by-uuid/deadbeef");
-		assert_eq!(idmap, "u:1000:1001:1");
 	}
 
 	/// A record written before the device was kept still has to parse: dropping

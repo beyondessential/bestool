@@ -248,7 +248,6 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 		snapshot_path: held_snapshot,
 		mount: held_mount.clone(),
 		fsdev: mounts.fsdev.clone(),
-		idmap: mounts.idmap.clone(),
 	};
 
 	sys::mkdir(&held_mount).await?;
