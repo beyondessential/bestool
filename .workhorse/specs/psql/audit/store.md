@@ -47,7 +47,9 @@ The first record of every segment is a context record, and a new context record 
 The Tailscale peers are the exception: they are sampled once when a segment opens, at session start and again at each rollover, and every context record in that segment carries the set sampled then.
 The whole set of active peers is recorded because which one of them owns the session cannot be determined, and it stands as who was reachable when the segment opened.
 
-A **query** record carries the statement text and whether the statement is eligible for shell recall.
+A **query** record carries the statement text and where the statement came from: typed at the prompt, a named snippet, or an included file, named by the absolute path as it was resolved to be opened.
+Where a snippet includes a file, or an included file runs a snippet, the source is the innermost one, the thing that produced the statement directly; the invocations that led there are recorded in their own right and sit before it in time order.
+Shell recall follows from the source rather than being recorded separately (see [AUD-HIS](history.md)).
 Everything else about a query record is found by carrying forward the most recent context record before it.
 
 An **end** record marks a clean session exit.
@@ -60,10 +62,11 @@ A segment, with its framing bytes left out for legibility:
 
 ```json
 {"v":1,"seq":0,"ts":"2026-09-08T03:14:15.926535Z","prev":"","kind":"context","sys_user":"felix","db_user":"tamanu","writemode":false,"ots":null,"tailscale":[{"device":"laptop","user":"felix@example.com"}],"instance":"7d2c…"}
-{"v":1,"seq":1,"ts":"2026-09-08T03:14:22.000481Z","prev":"9f86d0…","kind":"query","query":"select count(*) from patients;","recall":true}
+{"v":1,"seq":1,"ts":"2026-09-08T03:14:22.000481Z","prev":"9f86d0…","kind":"query","query":"select count(*) from patients;","source":"typed"}
 {"v":1,"seq":2,"ts":"2026-09-08T03:44:09.550118Z","prev":"e3b0c4…","kind":"gap","lost":87,"through":88,"from":"2026-09-08T03:14:30.104881Z","to":"2026-09-08T03:44:02.771290Z"}
-{"v":1,"seq":89,"ts":"2026-09-08T03:44:09.551002Z","prev":"5f2b81…","kind":"query","query":"select now();","recall":true}
-{"v":1,"seq":90,"ts":"2026-09-08T03:45:01.114202Z","prev":"a1d4f0…","kind":"end"}
+{"v":1,"seq":89,"ts":"2026-09-08T03:44:09.551002Z","prev":"5f2b81…","kind":"query","query":"\\i /home/felix/fixups.sql","source":"typed"}
+{"v":1,"seq":90,"ts":"2026-09-08T03:44:09.662377Z","prev":"c14e77…","kind":"query","query":"update patients set updated_at = now() where id = 42;","source":"include","path":"/home/felix/fixups.sql"}
+{"v":1,"seq":91,"ts":"2026-09-08T03:45:01.114202Z","prev":"a1d4f0…","kind":"end"}
 ```
 
 ## Tamper evidence
