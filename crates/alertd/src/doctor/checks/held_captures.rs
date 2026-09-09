@@ -5,12 +5,16 @@
 //! across an upgrade window, and it is also why it needs watching — a hold
 //! nobody drops keeps costing storage indefinitely.
 //!
-//! Two conditions are reported, and they are not the same problem:
+//! Three conditions are reported, and they are not the same problem:
 //!
 //! - **Held a long time** — untidy, and more expensive the longer it runs.
-//! - **Capture gone** — the record names a rollback point that no longer exists.
-//!   This is the serious one: the operator believes they can roll back and
-//!   cannot, and nothing about the hold itself gives that away.
+//! - **Capture not mounted** — the capture is exposed by a mount, and that mount
+//!   is not there. A reboot leaves a hold in exactly this state, since nothing
+//!   re-establishes the mount at boot. The capture behind it is very often still
+//!   intact, so this is reported as its own condition with its own remedy.
+//! - **Capture gone** — the mount is in place and the rollback point still can't
+//!   be read. The operator believes they can roll back and cannot, and nothing
+//!   about the hold itself gives that away.
 //!
 //! Where the platform keeps shadow copies in a bounded store shared with every
 //! other snapshot on the volume, that store's headroom is reported too, since
@@ -50,6 +54,42 @@ struct HoldRecord {
 	source: PathBuf,
 	#[serde(default)]
 	uploaded: bool,
+	#[serde(default)]
+	capture: HoldCapture,
+}
+
+/// Only what tells this check where a capture is exposed. The driver owns the
+/// full shape; a backend it does not know about still parses, and is judged by
+/// readability alone.
+#[derive(Deserialize, Default)]
+#[serde(tag = "backend", rename_all = "kebab-case")]
+enum HoldCapture {
+	Btrfs {
+		mount: PathBuf,
+	},
+	Lvm {
+		mount: PathBuf,
+	},
+	Vss {
+		junction: PathBuf,
+	},
+	BaseBackup {},
+	#[serde(other)]
+	#[default]
+	Unknown,
+}
+
+impl HoldCapture {
+	/// Where the capture is attached, for the backends that expose one through a
+	/// mount. A base backup is a plain directory, so an unreadable one is gone
+	/// rather than detached.
+	fn exposure(&self) -> Option<&std::path::Path> {
+		match self {
+			Self::Btrfs { mount } | Self::Lvm { mount } => Some(mount),
+			Self::Vss { junction } => Some(junction),
+			Self::BaseBackup {} | Self::Unknown => None,
+		}
+	}
 }
 
 pub async fn run(_ctx: SweepContext) -> Check {
@@ -65,17 +105,21 @@ pub async fn run(_ctx: SweepContext) -> Check {
 
 	let now = Timestamp::now();
 	let mut missing: Vec<String> = Vec::new();
+	let mut detached: Vec<String> = Vec::new();
 	let mut stale: Vec<String> = Vec::new();
 	let mut details: Vec<Value> = Vec::new();
 
 	for record in &records {
 		let present = capture_readable(&record.source).await;
-		let held_days = (now - record.held_at)
-			.round(jiff::SpanRound::new().largest(Unit::Day))
-			.map(|span| span.get_days())
-			.unwrap_or(0);
+		let held_days = held_days(now - record.held_at);
+		let attached = match record.capture.exposure() {
+			Some(path) if !present => is_attached(path).await,
+			_ => true,
+		};
 
-		if !present {
+		if !present && !attached {
+			detached.push(record.id.clone());
+		} else if !present {
 			missing.push(format!("{} (capture gone)", record.id));
 		} else if held_days >= STALE_AFTER_DAYS {
 			stale.push(format!("{} (held {held_days}d)", record.id));
@@ -90,6 +134,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 			"uploaded": record.uploaded,
 			"source": record.source.display().to_string(),
 			"capturePresent": present,
+			"captureAttached": attached,
 		}));
 	}
 
@@ -112,6 +157,22 @@ pub async fn run(_ctx: SweepContext) -> Check {
 					"holds"
 				},
 				missing.join(", ")
+			),
+		)
+	} else if !detached.is_empty() {
+		Check::warning(
+			NAME,
+			summary,
+			format!(
+				"the capture behind {} is not mounted, so it cannot be read as a \
+				 rollback point until it is reattached; the underlying capture is \
+				 often still intact, and a reboot leaves a hold in this state: {}",
+				if detached.len() == 1 {
+					"a hold"
+				} else {
+					"holds"
+				},
+				detached.join(", ")
 			),
 		)
 	} else if !stale.is_empty() {
@@ -173,15 +234,53 @@ async fn read_records(dir: &std::path::Path) -> Vec<HoldRecord> {
 	records
 }
 
-/// Whether the capture is still there, judged by whether its contents can be
-/// listed. Deliberately not a per-backend probe: a snapshot that has been
-/// deleted, unmounted, or lost with its volume all read the same way from here —
-/// the rollback point cannot be read, so it is not one.
+/// Whether the capture can be read, which is what makes it a rollback point.
+/// Why it cannot is a separate question: [`is_attached`] tells a capture that is
+/// merely detached from one that is gone.
 async fn capture_readable(source: &std::path::Path) -> bool {
 	tokio::fs::read_dir(source)
 		.await
 		.map(|_| true)
 		.unwrap_or(false)
+}
+
+/// Whole days a hold has been held. Elapsed time rather than calendar days, so
+/// the span is rounded against invariant 24-hour days: rounding to a calendar
+/// unit without a reference date is an error, not a zero.
+fn held_days(span: jiff::Span) -> i32 {
+	span.round(
+		jiff::SpanRound::new()
+			.largest(Unit::Day)
+			.relative(jiff::SpanRelativeTo::days_are_24_hours()),
+	)
+	.map(|rounded| rounded.get_days())
+	.unwrap_or(0)
+}
+
+/// Whether a capture's exposure path currently has something mounted on it,
+/// judged by its device differing from its parent's. A path that is not there at
+/// all is not attached either.
+#[cfg(unix)]
+async fn is_attached(path: &std::path::Path) -> bool {
+	use std::os::unix::fs::MetadataExt as _;
+
+	let Some(parent) = path.parent() else {
+		return true;
+	};
+	let (Ok(here), Ok(above)) = (
+		tokio::fs::metadata(path).await,
+		tokio::fs::metadata(parent).await,
+	) else {
+		return false;
+	};
+	here.dev() != above.dev()
+}
+
+/// A held shadow copy is reached through a junction, which is either there or
+/// not.
+#[cfg(not(unix))]
+async fn is_attached(path: &std::path::Path) -> bool {
+	tokio::fs::symlink_metadata(path).await.is_ok()
 }
 
 /// The volume shadow store's size and usage, where the platform has one.
@@ -345,6 +444,88 @@ Shadow Copy Storage association
 		assert_eq!(record.backup_type, "tamanu-postgres");
 		assert!(record.uploaded);
 		assert!(record.taken_at.is_some());
+	}
+
+	/// Rounding a span to days needs a reference for what a day is worth. Without
+	/// one it is an error, and an error swallowed here would read as a hold that
+	/// is always brand new, so the staleness condition would never be reached.
+	#[test]
+	fn a_holds_age_counts_the_days_that_have_elapsed() {
+		let held: Timestamp = "2026-07-01T10:00:00Z".parse().unwrap();
+		let days = |s: &str| {
+			let now: Timestamp = s.parse().unwrap();
+			held_days(now - held)
+		};
+
+		assert_eq!(days("2026-07-01T22:00:00Z"), 0);
+		assert_eq!(days("2026-07-08T09:59:00Z"), 6);
+		assert_eq!(days("2026-07-08T10:00:00Z"), 7);
+		assert_eq!(days("2026-09-09T10:00:00Z"), 70);
+	}
+
+	/// A held capture reported as stale has to actually reach the threshold.
+	#[test]
+	fn a_hold_past_the_threshold_reads_as_stale() {
+		let held: Timestamp = "2026-07-01T10:00:00Z".parse().unwrap();
+		let now: Timestamp = "2026-09-09T10:00:00Z".parse().unwrap();
+		assert!(held_days(now - held) >= STALE_AFTER_DAYS);
+	}
+
+	#[test]
+	fn a_capture_is_exposed_where_its_backend_attaches_it() {
+		let mount = |json: &str| {
+			serde_json::from_str::<HoldCapture>(json)
+				.unwrap()
+				.exposure()
+				.map(|path| path.display().to_string())
+		};
+
+		assert_eq!(
+			mount(r#"{ "backend": "btrfs", "mount": "/z" }"#),
+			Some("/z".to_owned())
+		);
+		assert_eq!(
+			mount(r#"{ "backend": "lvm", "vg": "v", "lv": "l", "mount": "/z" }"#),
+			Some("/z".to_owned())
+		);
+		assert_eq!(
+			mount(r#"{ "backend": "vss", "shadow_id": "s", "junction": "C:\\j" }"#),
+			Some("C:\\j".to_owned())
+		);
+		// A base backup is the data itself, so there is nothing to reattach.
+		assert_eq!(mount(r#"{ "backend": "base-backup", "root": "/r" }"#), None);
+		assert_eq!(mount(r#"{ "backend": "something-later" }"#), None);
+	}
+
+	/// A record the driver wrote before it carried a capture must still be
+	/// listed: dropping it would hide a hold rather than report it.
+	#[test]
+	fn a_record_without_a_capture_parses() {
+		let json = r#"{
+			"id": "x-20260814T054412Z",
+			"backup_type": "x",
+			"held_at": "2026-08-14T11:02:00Z",
+			"source": "/var/lib/bestool/held-source/x",
+			"uploaded": false
+		}"#;
+		let record: HoldRecord = serde_json::from_str(json).unwrap();
+		assert!(record.capture.exposure().is_none());
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_directory_with_nothing_mounted_on_it_is_not_attached() {
+		let dir = std::env::temp_dir().join(format!(
+			"bestool-held-attach-{}-{}",
+			std::process::id(),
+			Timestamp::now().as_nanosecond()
+		));
+		std::fs::create_dir_all(&dir).unwrap();
+
+		assert!(!is_attached(&dir).await);
+		assert!(!is_attached(&dir.join("missing")).await);
+
+		std::fs::remove_dir_all(&dir).unwrap();
 	}
 
 	/// A base backup has no freeze instant, and the check must still read it.

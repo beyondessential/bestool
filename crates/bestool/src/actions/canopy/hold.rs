@@ -128,8 +128,13 @@ async fn list() -> Result<()> {
 
 /// A coarse age for a listing: which day or hour it is matters, minutes do not.
 fn humanise(span: jiff::Span) -> String {
-	span.round(SpanRound::new().largest(Unit::Day).smallest(Unit::Minute))
-		.map(|rounded| {
+	span.round(
+		SpanRound::new()
+			.largest(Unit::Day)
+			.smallest(Unit::Minute)
+			.relative(jiff::SpanRelativeTo::days_are_24_hours()),
+	)
+	.map(|rounded| {
 			let days = rounded.get_days();
 			let hours = rounded.get_hours();
 			if days > 0 {
