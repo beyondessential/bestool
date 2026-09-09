@@ -213,6 +213,67 @@ parameter on the status endpoint.
 - Per-scope name uniqueness is now the invariant to hold (a flat unique-name list no
   longer expresses it), so it wants asserting in a test.
 
+## Postgres as its own application
+
+The four database checks grade the Postgres server, not the Tamanu that uses it:
+`pg_checksums` reads a property fixed at `initdb` time, `pg_tuning` grades the
+instance against the machine's RAM, `db_version` is the server's version, and
+`db_connect` is its reachability. Filing them against Tamanu was the
+mis-attribution `SUBJ` exists to prevent. "Tamanu as seen through its database"
+and "the health of Postgres itself" are different questions about different
+things, so Postgres is an application in its own right — on every machine that
+runs one, not only on a machine with no Tamanu.
+
+This also dissolves the `pg_tuning` wart rather than deferring it: a
+system-installed Postgres genuinely has the machine's RAM as its ceiling, so
+reading it stops being a cross-subject reach. K1's substrate then supplies a
+tighter ceiling wherever a container declares one.
+
+**Identity is the port, never the version.** An in-place major upgrade
+(`16-main` becoming `18-main`) must not read as one application stopping and
+another starting, so the version stays a fact and the key does not move. The
+port is the only identifier present in every connection form: a Unix socket is
+literally named `.s.PGSQL.<port>`, and libpq defaults it to 5432 when unset, so
+TCP and socket connections to one cluster agree on it. `pg_lsclusters` reports
+it too, so enumeration and URL-matching join on the same value. The cluster's
+name and version are reported as facts, so Canopy can show `main` without the
+identity depending on discovering it — which matters because the
+`<version>-<name>` scheme is Debian packaging, and on RHEL and Windows every
+cluster's directory is called `data`.
+
+Local clusters are keyed `host-postgres-<port>`; a cluster reached at a remote
+address is keyed `remote-<host>-<port>`, so the `host-` prefix never claims a
+machine hosts something it does not.
+
+**Known gap:** two clusters can share a port through different socket
+directories when one has TCP disabled, and port-only keying cannot tell them
+apart. Debian's `postgresql-common` assigns distinct ports per cluster precisely
+to prevent this, so it takes a deliberately odd setup to hit.
+
+**Checks are renamed** to `connect`, `version`, `tuning`, `checksums`: the
+subject now carries what the `db_` and `pg_` prefixes were doing, and Canopy's
+type-qualified catalogue reads `postgres.connect`. This adds no churn of its own
+— moving the checks to a new target already retires the old catalogue entries.
+
+## Enumeration
+
+Every live cluster on the machine is discovered and reported, not only the one
+the sweep holds a URL for:
+
+- Debian and Ubuntu: `pg_lsclusters`, which gives version, name, port and status
+  directly.
+- Elsewhere on Linux: `/var/lib/postgresql` or the local sockets, whichever
+  proves more reliable.
+- Windows: the equivalent enumeration.
+
+Connection URLs are gathered from the environment's `*_DATABASE_URL` variables
+as well as Tamanu's config, and matched to discovered clusters by port. A
+discovered cluster with no URL still reports: its `connect` check warns, and
+every other Postgres check skips, so an unreachable cluster is visible rather
+than silently unmonitored. A URL matching no local cluster is a remote cluster,
+reported and monitored with `tuning` skipped, since its denominator is not this
+machine's memory.
+
 ## Build checklist
 
 - [x] `subject.rs`: `Subject` (machine / application-of-type) and `CheckScope`, with
