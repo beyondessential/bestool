@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "1.61.3"
+version = "1.62.0"
 dependencies = [
  "age",
  "algae-cli",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "26.0.10"
+version = "26.1.0"
 dependencies = [
  "axum",
  "bestool-canopy",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
