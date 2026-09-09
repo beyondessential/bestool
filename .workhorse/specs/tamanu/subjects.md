@@ -49,10 +49,20 @@ Application checks are: everything that reads the application's database, the ap
 
 A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.
 
+Which checks apply to an application follows from its type, so a check written for one type is not run against another.
+A check that does not apply to a subject is absent from that subject's report rather than reported for it as skipped.
+Skipped is reserved for a check that does apply to the subject but could not be determined on this sweep, so the two are not confused for one another.
+
+A check is named within its subject, so one name may belong to a machine check and to an application check without the two being the same check.
+A name identifies a check only together with the subject it reports for.
+
 ## Reported facts
 
 A sweep reports each subject the same way: that subject's checks, and its detail.
 A machine and each application on it are described alike, so one shape serves both grains and a reader does not have to unpick which subject a check or a fact was really about.
+
+A report names the agent that produced it, so several agents reporting on one machine are told apart and each accounts only for the checks it files.
+The alertd daemon's sweep reports under the name `alertd`.
 
 The facts reported alongside the checks split by subject on the same terms, so no fact is reported against a subject it is not about.
 
