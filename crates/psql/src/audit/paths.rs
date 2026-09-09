@@ -22,6 +22,16 @@ const PREFIX: &str = "audit-";
 /// Lock file taken for the duration of compaction, retention and legacy import.
 pub const DIRECTORY_LOCK: &str = "audit.lock";
 
+/// Suffix of the file a segment's lock is taken on.
+///
+/// The lock is not taken on the segment itself. A lock over a file's own bytes
+/// is enforced rather than advisory on Windows, where an exclusive one would
+/// stop every reader of a live segment and a shared one would stop the writer's
+/// own appends. A file that holds nothing and that nobody reads has neither
+/// problem, and gives the same answer to the only question being asked: is a
+/// session writing this segment?
+pub const LOCK_EXT: &str = ".lock";
+
 /// Suffix of the temporary name a day file is written under before it is
 /// renamed into place.
 pub const TEMP_SUFFIX: &str = ".tmp";
@@ -40,6 +50,39 @@ pub fn segment_name(date: Date, instance: Uuid) -> String {
 /// Name of the day file covering a given day.
 pub fn day_file_name(date: Date) -> String {
 	format!("{PREFIX}{date}{DAY_FILE_EXT}")
+}
+
+/// The file a segment's lock is taken on.
+pub fn lock_of(segment: &Path) -> PathBuf {
+	let mut name = segment.as_os_str().to_os_string();
+	name.push(LOCK_EXT);
+	PathBuf::from(name)
+}
+
+/// Segment lock files in a directory, with the segment each belongs to.
+pub fn list_locks(dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
+	let mut found = Vec::new();
+
+	let entries = match std::fs::read_dir(dir) {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+		Err(err) => return Err(err).into_diagnostic(),
+	};
+
+	for entry in entries {
+		let entry = entry.into_diagnostic()?;
+		let name = entry.file_name();
+		let Some(name) = name.to_str() else { continue };
+		let Some(segment) = name.strip_suffix(LOCK_EXT) else {
+			continue;
+		};
+		if classify(segment).is_some_and(|kind| kind.instance().is_some()) {
+			found.push((entry.path(), dir.join(segment)));
+		}
+	}
+
+	found.sort();
+	Ok(found)
 }
 
 /// What a file in the audit directory is.
@@ -252,6 +295,7 @@ mod tests {
 	fn unrelated_names_are_not_audit_files() {
 		for name in [
 			DIRECTORY_LOCK,
+			"audit-2026-09-08-7d2c0f4e-1b3a-4c5d-8e9f-0a1b2c3d4e5f.json-seq.lock",
 			"audit-main.redb",
 			"audit-working-7d2c.redb",
 			"notes.txt",

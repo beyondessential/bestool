@@ -6,11 +6,12 @@
 //!
 //! Nothing ever waits on these locks.
 //!
-//! A writer takes a *shared* lock and anything asking whether a file is live
-//! tries an *exclusive* one, which fails for as long as the writer holds its
-//! share. The two are not interchangeable: Windows byte-range locks are
-//! enforced rather than advisory, so an exclusive lock on a live segment would
-//! stop every reader, and the log is meant to be readable as it is written.
+//! No lock is ever taken over a segment's own bytes. Windows byte-range locks
+//! are enforced rather than advisory: an exclusive one would stop every reader
+//! of a live segment, and a shared one would stop even the writer holding it
+//! from appending. Each lock is therefore taken on a file that holds nothing and
+//! that nobody reads, which answers the only question being asked — is a session
+//! writing this segment? — without standing in anyone's way.
 //!
 //! spec: AUD-STO, AUD-RET
 
@@ -30,50 +31,38 @@ pub struct Lock {
 }
 
 impl Lock {
-	/// Take the file exclusively, or `None` if anything else holds it at all.
-	///
-	/// This is how a caller asks whether a file is live, and how it stops one
-	/// becoming live under it.
+	/// Take an already-open file exclusively, or `None` if anything else holds it.
 	pub fn try_hold(file: File) -> Result<Option<Self>> {
-		Self::taken(FileExt::try_lock(&file), file)
-	}
-
-	/// Take a share of the file, or `None` if it is held exclusively.
-	///
-	/// A writer holds its segment this way: an exclusive attempt then fails, so
-	/// the file reads as live, while readers are left alone.
-	pub fn try_share(file: File) -> Result<Option<Self>> {
-		Self::taken(FileExt::try_lock_shared(&file), file)
-	}
-
-	fn taken(
-		outcome: std::result::Result<(), fs4::TryLockError>,
-		file: File,
-	) -> Result<Option<Self>> {
-		match outcome {
+		match FileExt::try_lock(&file) {
 			Ok(()) => Ok(Some(Self { file })),
 			Err(fs4::TryLockError::WouldBlock) => Ok(None),
 			Err(fs4::TryLockError::Error(err)) => Err(err).into_diagnostic(),
 		}
 	}
 
-	/// Take the lock on the directory-level lock file, creating it if needed.
-	pub fn try_directory(dir: &Path) -> Result<Option<Self>> {
-		let path = dir.join(super::paths::DIRECTORY_LOCK);
+	/// Take the lock that stands for a segment being live.
+	///
+	/// The lock is on a file beside the segment, not on the segment, so a live
+	/// segment stays readable and its writer stays able to append.
+	pub fn try_segment(segment: &Path) -> Result<Option<Self>> {
+		Self::at(&super::paths::lock_of(segment))
+	}
+
+	fn at(path: &Path) -> Result<Option<Self>> {
 		let file = OpenOptions::new()
 			.create(true)
 			.read(true)
 			.write(true)
 			.truncate(false)
-			.open(&path)
+			.open(path)
 			.into_diagnostic()
 			.wrap_err_with(|| format!("opening audit lock file {}", path.display()))?;
 		Self::try_hold(file)
 	}
 
-	/// The locked file, for a caller that appends to it.
-	pub fn file_mut(&mut self) -> &mut File {
-		&mut self.file
+	/// Take the lock on the directory-level lock file, creating it if needed.
+	pub fn try_directory(dir: &Path) -> Result<Option<Self>> {
+		Self::at(&dir.join(super::paths::DIRECTORY_LOCK))
 	}
 }
 
@@ -85,16 +74,13 @@ impl Drop for Lock {
 	}
 }
 
-/// Whether nothing is writing the file at `path`.
+/// Whether no session is writing the segment at `path`.
 ///
-/// Answers only for the instant it is asked: anything about to act on the file
-/// takes and holds the lock itself rather than asking first.
+/// Answers only for the instant it is asked: anything about to act on the
+/// segment takes and holds the lock itself rather than asking first.
 #[cfg(test)]
 pub fn is_free(path: &Path) -> bool {
-	let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
-		return false;
-	};
-	matches!(Lock::try_hold(file), Ok(Some(_)))
+	matches!(Lock::try_segment(path), Ok(Some(_)))
 }
 
 #[cfg(test)]
@@ -122,50 +108,32 @@ mod tests {
 	}
 
 	#[test]
-	fn a_shared_hold_still_reads_as_taken() {
+	fn a_held_segment_reads_as_taken_but_stays_usable() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("segment");
 		std::fs::write(&path, b"records").unwrap();
 
-		let file = OpenOptions::new()
-			.read(true)
-			.write(true)
-			.open(&path)
-			.unwrap();
-		let writer = Lock::try_share(file).unwrap().unwrap();
-
-		// Anything asking whether the file is live gets told that it is.
+		let held = Lock::try_segment(&path).unwrap().unwrap();
 		assert!(!is_free(&path));
 
-		// And it can still be read while the writer holds it, which is what the
-		// log promises and what Windows would otherwise prevent.
+		// The segment itself is never locked, so anyone can still read it and
+		// its writer can still append. Locking the segment's own bytes would
+		// prevent one or the other on Windows.
 		assert_eq!(std::fs::read(&path).unwrap(), b"records");
+		let mut appending = OpenOptions::new().append(true).open(&path).unwrap();
+		std::io::Write::write_all(&mut appending, b" more").unwrap();
+		drop(appending);
+		assert_eq!(std::fs::read(&path).unwrap(), b"records more");
 
-		drop(writer);
-		assert!(is_free(&path));
-	}
-
-	#[test]
-	fn a_free_file_reads_as_free() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("segment");
-		std::fs::write(&path, b"").unwrap();
-		assert!(is_free(&path));
-
-		let file = OpenOptions::new()
-			.read(true)
-			.write(true)
-			.open(&path)
-			.unwrap();
-		let held = Lock::try_hold(file).unwrap().unwrap();
-		assert!(!is_free(&path));
 		drop(held);
 		assert!(is_free(&path));
 	}
 
 	#[test]
-	fn a_missing_file_is_not_free() {
+	fn a_segment_nothing_holds_reads_as_free() {
 		let dir = tempfile::tempdir().unwrap();
-		assert!(!is_free(&dir.path().join("absent")));
+		let path = dir.path().join("segment");
+		std::fs::write(&path, b"").unwrap();
+		assert!(is_free(&path));
 	}
 }

@@ -5,7 +5,12 @@
 //!
 //! spec: AUD, AUD-STO
 
-use std::{collections::VecDeque, fs::OpenOptions, io::Write as _, path::PathBuf};
+use std::{
+	collections::VecDeque,
+	fs::{File, OpenOptions},
+	io::Write as _,
+	path::PathBuf,
+};
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
@@ -58,7 +63,27 @@ struct Discarded {
 struct Segment {
 	date: Date,
 	path: PathBuf,
-	lock: Lock,
+	file: File,
+	/// Held for as long as the segment is open, on a file beside it rather than
+	/// on the segment, so the segment stays readable while it is written.
+	lock: Option<Lock>,
+}
+
+impl Drop for Segment {
+	fn drop(&mut self) {
+		// The lock goes before the file it was taken on, since a file that is
+		// still open cannot be deleted everywhere. A lock file left behind by a
+		// session that crashed is swept by compaction instead.
+		drop(self.lock.take());
+		let lock_path = paths::lock_of(&self.path);
+		if let Err(err) = std::fs::remove_file(&lock_path) {
+			trace!(
+				?err,
+				?lock_path,
+				"leaving an audit segment lock file behind"
+			);
+		}
+	}
 }
 
 /// Session state carried by context records.
@@ -326,8 +351,7 @@ impl Writer {
 
 		let segment = self.segment.as_mut().expect("just opened");
 		segment
-			.lock
-			.file_mut()
+			.file
 			.write_all(&frame(&json))
 			.into_diagnostic()
 			.wrap_err_with(|| format!("appending to {}", segment.path.display()))?;
@@ -355,6 +379,9 @@ impl Writer {
 			.wrap_err_with(|| format!("creating audit directory {}", self.dir.display()))?;
 
 		let path = self.dir.join(paths::segment_name(date, self.instance));
+		let lock = Lock::try_segment(&path)?
+			.ok_or_else(|| miette!("audit segment {} is held by another writer", path.display()))?;
+
 		let file = OpenOptions::new()
 			.create(true)
 			.append(true)
@@ -363,13 +390,12 @@ impl Writer {
 			.into_diagnostic()
 			.wrap_err_with(|| format!("opening audit segment {}", path.display()))?;
 
-		// A share, not an exclusive hold: an exclusive attempt by anyone else
-		// then fails, so the segment reads as live, while readers of the log go
-		// on reading it as it is written.
-		let lock = Lock::try_share(file)?
-			.ok_or_else(|| miette!("audit segment {} is held by another writer", path.display()))?;
-
-		self.segment = Some(Segment { date, path, lock });
+		self.segment = Some(Segment {
+			date,
+			path,
+			file,
+			lock: Some(lock),
+		});
 		Ok(())
 	}
 }
@@ -663,6 +689,42 @@ mod tests {
 		assert!(!super::super::lock::is_free(&path));
 		drop(writer);
 		assert!(super::super::lock::is_free(&path));
+	}
+
+	#[test]
+	fn a_live_segment_can_be_read_and_appended_to_while_it_is_held() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "first;".into(), QuerySource::Typed);
+
+		// The lock says the segment is live without getting between the log and
+		// anyone reading it, which is what lets a starting session build its
+		// recall set from a log another session has open.
+		let path = files(dir.path())[0].clone();
+		assert!(!super::super::lock::is_free(&path));
+		assert!(!read_records(&path).is_empty());
+
+		// And the writer goes on appending to it.
+		writer.query(&context(), "second;".into(), QuerySource::Typed);
+		assert_eq!(queries(&read_records(&path)), vec!["first;", "second;"]);
+		drop(writer);
+	}
+
+	#[test]
+	fn a_segments_lock_file_goes_when_the_segment_closes() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut writer = Writer::new(dir.path());
+		writer.query(&context(), "select 1;".into(), QuerySource::Typed);
+
+		let path = files(dir.path())[0].clone();
+		assert!(paths::lock_of(&path).exists());
+
+		drop(writer);
+		assert!(!paths::lock_of(&path).exists());
+		assert!(
+			paths::list(dir.path()).unwrap().len() == 1,
+			"a lock file is not part of the log"
+		);
 	}
 
 	#[test]

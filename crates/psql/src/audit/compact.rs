@@ -9,8 +9,8 @@
 
 use std::{
 	collections::{BTreeSet, HashSet},
-	fs::{File, OpenOptions},
-	io::{BufReader, Seek as _, SeekFrom, Write as _},
+	fs::File,
+	io::Write as _,
 	path::{Path, PathBuf},
 };
 
@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use super::{
 	lock::Lock,
 	paths::{self, AuditFile},
-	read::{FramedItem, FramedReader, open},
+	read::{FramedItem, open},
 	record::{Record, frame},
 };
 
@@ -88,7 +88,31 @@ pub fn run(dir: &Path) -> Result<CompactionReport> {
 	}
 
 	report.expired = expire(dir, today)?;
+	sweep_locks(dir);
 	Ok(report)
+}
+
+/// Delete lock files whose segment is gone.
+///
+/// A session that crashed leaves its segment's lock file behind. The lock itself
+/// died with the process, so the file says nothing and is only litter.
+fn sweep_locks(dir: &Path) {
+	let Ok(locks) = paths::list_locks(dir) else {
+		return;
+	};
+
+	for (lock_path, segment) in locks {
+		if segment.exists() {
+			continue;
+		}
+		// Taken first, so a session opening that segment right now keeps its own.
+		if let Ok(Some(held)) = Lock::try_segment(&segment) {
+			drop(held);
+			if let Err(err) = std::fs::remove_file(&lock_path) {
+				debug!(?err, ?lock_path, "could not sweep an audit lock file");
+			}
+		}
+	}
 }
 
 /// Whether there is anything for compaction to do, without taking any locks.
@@ -164,14 +188,7 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 	// entirely rather than folded by halves.
 	let mut held = Vec::with_capacity(segments.len());
 	for path in &segments {
-		let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
-			debug!(
-				?path,
-				"segment cannot be opened for compaction, leaving the day"
-			);
-			return Ok(0);
-		};
-		match Lock::try_hold(file)? {
+		match Lock::try_segment(path)? {
 			Some(lock) => held.push((path.clone(), lock)),
 			None => {
 				debug!(%date, ?path, "a segment for this day is still live, leaving it");
@@ -182,22 +199,7 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 
 	let mut records: Vec<(Record, String)> = Vec::new();
 	for (path, kind) in &sources {
-		// A segment is read back through the very handle its lock was taken on.
-		// Opening a second one would be refused on Windows, where the exclusive
-		// lock just taken is enforced rather than advisory.
-		let items: Box<dyn Iterator<Item = FramedItem>> =
-			match held.iter_mut().find(|(held_path, _)| held_path == path) {
-				Some((_, lock)) => {
-					lock.file_mut()
-						.seek(SeekFrom::Start(0))
-						.into_diagnostic()
-						.wrap_err_with(|| format!("rewinding {}", path.display()))?;
-					Box::new(FramedReader::new(BufReader::new(lock.file_mut())))
-				}
-				None => open(path, *kind)?,
-			};
-
-		for item in items {
+		for item in open(path, *kind)? {
 			match item {
 				FramedItem::Record { record, json, .. } => records.push((record, json)),
 				FramedItem::Skipped { at, bytes } => {
@@ -261,6 +263,14 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 		drop(lock);
 		if let Err(err) = std::fs::remove_file(&path) {
 			warn!(?err, ?path, "could not delete a folded audit segment");
+		}
+		let lock_path = paths::lock_of(&path);
+		if let Err(err) = std::fs::remove_file(&lock_path) {
+			debug!(
+				?err,
+				?lock_path,
+				"could not delete a folded segment's lock file"
+			);
 		}
 	}
 
@@ -464,24 +474,24 @@ mod tests {
 	fn a_live_segment_keeps_its_whole_day_out_of_compaction() {
 		let dir = tempfile::tempdir().unwrap();
 		let date = days_ago(PLAIN_TEXT_WINDOW_DAYS + 1);
-		session_on(dir.path(), date, &["closed;"]);
+		session_on(dir.path(), date, &["one;"]);
+		session_on(dir.path(), date, &["two;"]);
 
-		// A session that has been idle since before the window still holds its
-		// segment open.
-		let mut live = Writer::new(dir.path());
-		live.query(&context(), "live;".into(), QuerySource::Typed);
-		let instance = live.instance();
-		let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-		// The live writer keeps the file handle, so a rename leaves it locked.
-		std::fs::rename(
-			dir.path().join(paths::segment_name(today, instance)),
-			dir.path().join(paths::segment_name(date, instance)),
-		)
-		.unwrap();
+		// A session idle since before the window still holds one of the day's
+		// segments, so the day is left alone rather than folded by halves.
+		let live = paths::list(dir.path()).unwrap()[0].0.clone();
+		let held = Lock::try_segment(&live).unwrap().unwrap();
 
 		let report = run(dir.path()).unwrap();
 		assert!(report.folded.is_empty(), "the day is left alone entirely");
-		drop(live);
+		assert_eq!(
+			paths::list(dir.path()).unwrap().len(),
+			2,
+			"and neither of its segments is consumed"
+		);
+
+		drop(held);
+		assert_eq!(run(dir.path()).unwrap().folded, vec![(date, 2)]);
 	}
 
 	#[test]
@@ -557,12 +567,7 @@ mod tests {
 		// Hold the segment as a writer flushing held records to an earlier day
 		// would, after eligibility has already been decided.
 		let path = paths::list(dir.path()).unwrap()[0].0.clone();
-		let file = std::fs::OpenOptions::new()
-			.read(true)
-			.write(true)
-			.open(&path)
-			.unwrap();
-		let held = Lock::try_hold(file).unwrap().unwrap();
+		let held = Lock::try_segment(&path).unwrap().unwrap();
 
 		let report = run(dir.path()).unwrap();
 		assert!(report.folded.is_empty());
@@ -609,6 +614,38 @@ mod tests {
 		drop(held);
 
 		assert!(!run(dir.path()).unwrap().skipped);
+	}
+
+	#[test]
+	fn a_lock_file_left_by_a_crashed_session_is_swept() {
+		let dir = tempfile::tempdir().unwrap();
+		session_on(dir.path(), days_ago(1), &["select 1;"]);
+
+		// A session killed outright leaves its lock file behind; the lock died
+		// with the process, so the file is only litter.
+		let orphan = dir
+			.path()
+			.join(paths::segment_name(days_ago(2), uuid::Uuid::new_v4()));
+		let orphan_lock = paths::lock_of(&orphan);
+		std::fs::write(&orphan_lock, b"").unwrap();
+
+		run(dir.path()).unwrap();
+		assert!(!orphan_lock.exists());
+	}
+
+	#[test]
+	fn a_lock_file_whose_segment_is_still_there_is_left_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut live = Writer::new(dir.path());
+		live.query(&context(), "select 1;".into(), QuerySource::Typed);
+
+		let path = paths::list(dir.path()).unwrap()[0].0.clone();
+		run(dir.path()).unwrap();
+		assert!(
+			paths::lock_of(&path).exists(),
+			"the live session keeps its lock"
+		);
+		drop(live);
 	}
 
 	#[test]
