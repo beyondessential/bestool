@@ -498,3 +498,128 @@ mod tests {
 		assert!(file(&reap).starts_with("bestool-btrfs-toplevel."));
 	}
 }
+
+#[cfg(test)]
+mod e2e {
+	use super::*;
+
+	/// Builds a btrfs filesystem in a file, holds a subvolume on it, takes away
+	/// everything that exposes it, and reattaches. Needs root and btrfs-progs, so
+	/// CI runs it with `--ignored` rather than the ordinary suite.
+	#[tokio::test]
+	#[ignore = "needs root and a loopback btrfs filesystem"]
+	async fn a_detached_hold_is_reattached_and_readable() {
+		let dir = std::env::temp_dir().join(format!("bestool-hold-e2e-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let image = dir.join("fs.img");
+
+		sys::run_ok("truncate", &["-s", "512M", sys::path(&image)])
+			.await
+			.unwrap();
+		sys::run_ok("mkfs.btrfs", &["-q", sys::path(&image)])
+			.await
+			.unwrap();
+		let fsdev = sys::capture("losetup", &["--find", "--show", sys::path(&image)])
+			.await
+			.unwrap()
+			.trim()
+			.to_owned();
+
+		let id = "tamanu-postgres-20260101T000000Z";
+		let toplevel = dir.join("toplevel");
+		let mount = dir.join("held-source");
+		let snapshot_path = toplevel.join(held_snapshot_name(id));
+
+		sys::mkdir(&toplevel).await.unwrap();
+		sys::run_ok(
+			"mount",
+			&["-o", "subvolid=5", "--", &fsdev, sys::path(&toplevel)],
+		)
+		.await
+		.unwrap();
+
+		// A hold is a read-only snapshot, so build one the same way.
+		let live = toplevel.join("live");
+		sys::run_ok("btrfs", &["subvolume", "create", sys::path(&live)])
+			.await
+			.unwrap();
+		std::fs::write(live.join("marker"), b"rollback point").unwrap();
+		sys::run_ok(
+			"btrfs",
+			&[
+				"subvolume",
+				"snapshot",
+				"-r",
+				sys::path(&live),
+				sys::path(&snapshot_path),
+			],
+		)
+		.await
+		.unwrap();
+
+		// Everything the daemon's namespace held goes away, as it does when the
+		// daemon restarts.
+		sys::umount(&toplevel).await;
+		assert!(!sys::is_mountpoint(&toplevel).await);
+		assert!(!sys::is_mountpoint(&mount).await);
+
+		reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect("reattaching a detached hold");
+
+		assert!(sys::is_mountpoint(&mount).await);
+		assert_eq!(
+			std::fs::read_to_string(mount.join("marker")).unwrap(),
+			"rollback point"
+		);
+
+		// Reattaching what is already attached leaves it alone.
+		reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect("reattaching is idempotent");
+		assert_eq!(
+			std::fs::read_to_string(mount.join("marker")).unwrap(),
+			"rollback point"
+		);
+
+		sys::umount(&mount).await;
+		sys::umount(&toplevel).await;
+		let _ = sys::run_ok("losetup", &["-d", &fsdev]).await;
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// A hold whose subvolume really is gone must not report itself reattached.
+	#[tokio::test]
+	#[ignore = "needs root and a loopback btrfs filesystem"]
+	async fn a_hold_whose_subvolume_is_gone_refuses() {
+		let dir = std::env::temp_dir().join(format!("bestool-hold-e2e-gone-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let image = dir.join("fs.img");
+
+		sys::run_ok("truncate", &["-s", "512M", sys::path(&image)])
+			.await
+			.unwrap();
+		sys::run_ok("mkfs.btrfs", &["-q", sys::path(&image)])
+			.await
+			.unwrap();
+		let fsdev = sys::capture("losetup", &["--find", "--show", sys::path(&image)])
+			.await
+			.unwrap()
+			.trim()
+			.to_owned();
+
+		let toplevel = dir.join("toplevel");
+		let mount = dir.join("held-source");
+		let snapshot_path = toplevel.join(held_snapshot_name("never-taken"));
+
+		let err = reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect_err("nothing to reattach");
+		assert!(err.to_string().contains("not on the filesystem"), "{err}");
+		assert!(!sys::is_mountpoint(&mount).await);
+
+		sys::umount(&toplevel).await;
+		let _ = sys::run_ok("losetup", &["-d", &fsdev]).await;
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+}
