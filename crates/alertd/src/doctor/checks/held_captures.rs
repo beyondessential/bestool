@@ -69,9 +69,7 @@ enum HoldCapture {
 	Lvm {
 		mount: PathBuf,
 	},
-	Vss {
-		junction: PathBuf,
-	},
+	Vss {},
 	BaseBackup {},
 	#[serde(other)]
 	#[default]
@@ -110,7 +108,7 @@ impl HoldCapture {
 			// A shadow copy is either there or it is not, and the driver grades it
 			// that way too. Reporting a lost junction as detached would have the
 			// two disagree about the same hold.
-			Self::Vss { .. } | Self::BaseBackup {} | Self::Unknown => None,
+			Self::Vss {} | Self::BaseBackup {} | Self::Unknown => None,
 		}
 	}
 }
