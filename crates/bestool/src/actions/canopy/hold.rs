@@ -37,6 +37,19 @@ pub enum HoldAction {
 
 	/// Release a held capture and forget it.
 	Drop(DropArgs),
+
+	/// Expose a held capture again where its record says it lives.
+	///
+	/// A hold's mount is made by the process that took it. The daemon that takes
+	/// one runs in its own mount namespace, so the mount neither outlives the
+	/// daemon nor is visible to a restore run from a shell. This puts it back.
+	Reattach(ReattachArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ReattachArgs {
+	/// The hold to expose again, as shown by `bestool canopy hold list`.
+	pub id: String,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -57,6 +70,7 @@ pub async fn run(args: HoldArgs, _ctx: Context) -> Result<()> {
 		HoldAction::Keep(args) => keep(&args.backup_type).await,
 		HoldAction::List => list().await,
 		HoldAction::Drop(args) => drop_hold(&args.id).await,
+		HoldAction::Reattach(args) => reattach(&args.id).await,
 	}
 }
 
@@ -88,13 +102,21 @@ async fn list() -> Result<()> {
 		return Ok(());
 	}
 
+	// Probed once: each call shells out per backend, and two passes could report
+	// a different state in the table than in the summary below it.
+	let states = futures::future::join_all(
+		records
+			.iter()
+			.map(|record| hold::capture_state(&record.capture)),
+	)
+	.await;
+
 	let now = Timestamp::now();
 	println!(
 		"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  CAPTURE",
 		"ID", "BACKEND", "FROZEN", "HELD FOR", "UPLOADED"
 	);
-	for record in &records {
-		let present = hold::capture_present(&record.capture).await;
+	for (record, state) in records.iter().zip(&states) {
 		println!(
 			"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  {}",
 			record.id,
@@ -104,22 +126,32 @@ async fn list() -> Result<()> {
 				.map_or_else(|| "(no freeze instant)".to_owned(), |at| at.to_string()),
 			humanise(now - record.held_at),
 			if record.uploaded { "yes" } else { "no" },
-			if present { "present" } else { "MISSING" },
+			match state {
+				hold::CaptureState::Present => "present",
+				hold::CaptureState::Detached => "DETACHED",
+				hold::CaptureState::Gone => "MISSING",
+			},
 		);
 	}
 
-	let missing = futures::future::join_all(
-		records
-			.iter()
-			.map(|record| hold::capture_present(&record.capture)),
-	)
-	.await
-	.into_iter()
-	.filter(|present| !present)
-	.count();
-	if missing > 0 {
+	let gone = states
+		.iter()
+		.filter(|state| **state == hold::CaptureState::Gone)
+		.count();
+	let detached = states
+		.iter()
+		.filter(|state| **state == hold::CaptureState::Detached)
+		.count();
+	if detached > 0 {
 		warn!(
-			"{missing} of {} held captures are gone; those holds are not rollback points",
+			"{detached} of {} held captures are not mounted; dropping one still frees \
+			 the capture behind it",
+			records.len()
+		);
+	}
+	if gone > 0 {
+		warn!(
+			"{gone} of {} held captures are gone; those holds are not rollback points",
 			records.len()
 		);
 	}
@@ -128,8 +160,13 @@ async fn list() -> Result<()> {
 
 /// A coarse age for a listing: which day or hour it is matters, minutes do not.
 fn humanise(span: jiff::Span) -> String {
-	span.round(SpanRound::new().largest(Unit::Day).smallest(Unit::Minute))
-		.map(|rounded| {
+	span.round(
+		SpanRound::new()
+			.largest(Unit::Day)
+			.smallest(Unit::Minute)
+			.relative(jiff::SpanRelativeTo::days_are_24_hours()),
+	)
+	.map(|rounded| {
 			let days = rounded.get_days();
 			let hours = rounded.get_hours();
 			if days > 0 {
@@ -141,18 +178,28 @@ fn humanise(span: jiff::Span) -> String {
 		.unwrap_or_else(|_| "unknown".to_owned())
 }
 
+async fn reattach(id: &str) -> Result<()> {
+	let record = hold::load(id).await?;
+	hold::reattach(&record.capture).await?;
+	info!(hold = %id, source = %record.source.display(), "the held capture is readable again");
+	Ok(())
+}
+
 async fn drop_hold(id: &str) -> Result<()> {
 	let record = hold::load(id).await?;
-	if hold::capture_present(&record.capture).await {
-		hold::release(&record.capture).await?;
-		info!(hold = %id, backend = record.capture.backend(), "released the held capture");
-	} else {
+	// A detached capture is still there to free, so it takes the same release as
+	// a mounted one: forgetting the record instead would leave the capture on the
+	// filesystem holding its space with nothing naming it.
+	if hold::capture_state(&record.capture).await == hold::CaptureState::Gone {
 		// Dropping is what the operator asked for, and the capture is already
 		// gone; the record going with it is the outcome either way.
 		warn!(
 			hold = %id,
 			"the capture was already gone; forgetting the hold (it was not a rollback point)"
 		);
+	} else {
+		hold::release(&record.capture).await?;
+		info!(hold = %id, backend = record.capture.backend(), "released the held capture");
 	}
 	hold::remove_record(id).await?;
 	Ok(())

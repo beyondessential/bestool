@@ -247,6 +247,27 @@ pub async fn held_present(shadow_id: &str) -> bool {
 	.unwrap_or(false)
 }
 
+/// Expose a held shadow again at the junction its record names.
+///
+/// The shadow itself outlives the machine rebooting, but the junction is a
+/// reparse point to a device path VSS can renumber, so what a record names can
+/// stop resolving while the copy behind it is perfectly intact. Rebuilt from the
+/// shadow id, which does not change.
+pub async fn reattach_held(shadow_id: &str, junction: &Path) -> Result<()> {
+	let shadow_id = shadow_id.to_owned();
+	let junction = junction.to_path_buf();
+	tokio::task::spawn_blocking(move || -> Result<()> {
+		let con = WMIConnection::new()
+			.into_diagnostic()
+			.wrap_err("connecting to WMI (ROOT\\CIMV2)")?;
+		let device = device_path(&con, &shadow_id)?;
+		mount_shadow(&device, &junction)
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the shadow-reattach task")?
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {

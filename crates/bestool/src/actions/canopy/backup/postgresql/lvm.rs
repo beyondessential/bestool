@@ -232,6 +232,69 @@ pub async fn held_present(vg: &str, lv: &str) -> bool {
 	sys::run_ok("lvs", &[&format!("{vg}/{lv}")]).await.is_ok()
 }
 
+/// Whether something is mounted at a path.
+pub async fn attached(path: &Path) -> bool {
+	sys::is_mountpoint(path).await
+}
+
+/// Mount options for exposing a held snapshot to a restore: read-only, and read
+/// as root rather than idmapped for the kopia user, since a restore is not a
+/// backup run.
+fn reattach_options(fstype: &str) -> String {
+	if fstype == "xfs" {
+		"ro,nouuid".to_owned()
+	} else {
+		"ro".to_owned()
+	}
+}
+
+/// Expose a held capture again at the path its record names.
+///
+/// The filesystem type is read off the volume rather than the record, which
+/// never carried it.
+pub async fn reattach_held(vg: &str, lv: &str, mount: &Path) -> Result<()> {
+	if !held_present(vg, lv).await {
+		bail!(
+			"the held volume {vg}/{lv} is not there, so there is nothing to mount: \
+			 this hold is not a rollback point"
+		);
+	}
+	let device = format!("/dev/{vg}/{lv}");
+
+	// Thin snapshots carry the activation-skip flag; -K overrides it. Activating
+	// what is already active is not an error.
+	sys::run_ok("lvchange", &["-ay", "-K", &format!("{vg}/{lv}")])
+		.await
+		.wrap_err_with(|| format!("activating {vg}/{lv}"))?;
+
+	if sys::is_mountpoint(mount).await {
+		return Ok(());
+	}
+
+	let fstype = sys::capture("blkid", &["-o", "value", "-s", "TYPE", &device])
+		.await
+		.wrap_err_with(|| format!("reading the filesystem type of {device}"))?
+		.trim()
+		.to_owned();
+
+	sys::mkdir(mount).await?;
+	if let Some(parent) = mount.parent() {
+		sys::make_traversable(parent).await?;
+	}
+	sys::run_ok(
+		"mount",
+		&[
+			"-o",
+			&reattach_options(&fstype),
+			"--",
+			&device,
+			sys::path(mount),
+		],
+	)
+	.await
+	.wrap_err_with(|| format!("mounting {device} at {}", mount.display()))
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 pub async fn release_held(vg: &str, lv: &str, mount: &Path) -> Result<()> {
@@ -305,6 +368,12 @@ mod tests {
 			mount_options("xfs", "u:1:2:1 g:3:4:1"),
 			"ro,nouuid,X-mount.idmap=u:1:2:1 g:3:4:1"
 		);
+	}
+
+	#[test]
+	fn reattach_is_read_only_and_only_xfs_needs_nouuid() {
+		assert_eq!(reattach_options("ext4"), "ro");
+		assert_eq!(reattach_options("xfs"), "ro,nouuid");
 	}
 
 	#[test]

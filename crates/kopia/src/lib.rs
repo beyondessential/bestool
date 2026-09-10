@@ -141,16 +141,17 @@ pub enum Elevation {
 
 /// Whether the current process's effective uid is 0. No `libc` in the tree, so
 /// ask `id -u` (the backup code resolves uids the same way).
+///
+/// A lookup that could not run is reported as such rather than as "not root":
+/// which user kopia ends up as follows from this, and guessing wrong writes the
+/// kopia user's cache as someone else.
 #[cfg(target_os = "linux")]
-fn is_root() -> bool {
-	std::process::Command::new("id")
-		.arg("-u")
-		.output()
-		.ok()
-		.filter(|o| o.status.success())
-		.and_then(|o| String::from_utf8(o.stdout).ok())
-		.map(|s| s.trim() == "0")
-		.unwrap_or(false)
+fn is_root() -> Result<bool, String> {
+	match std::process::Command::new("id").arg("-u").output() {
+		Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim() == "0"),
+		Ok(out) => Err(format!("`id -u` failed ({})", out.status)),
+		Err(err) => Err(format!("could not run `id -u`: {err}")),
+	}
 }
 
 /// Decide how to invoke kopia on Linux. We always run kopia *as the kopia user*,
@@ -182,10 +183,10 @@ pub fn linux_elevation() -> Elevation {
 	if !exists {
 		return Elevation::Direct;
 	}
-	if is_root() {
-		Elevation::SetPriv
-	} else {
-		Elevation::Sudo
+	match is_root() {
+		Ok(true) => Elevation::SetPriv,
+		Ok(false) => Elevation::Sudo,
+		Err(reason) => Elevation::Skip(reason),
 	}
 }
 
@@ -195,14 +196,23 @@ pub fn linux_elevation() -> Elevation {
 }
 
 /// Whether the kopia system user exists (via `id -u kopia`).
+///
+/// A non-zero exit means the user is absent, which is an answer. A lookup that
+/// could not run is not: reading it as absent runs kopia as whoever we are, and
+/// the daemon is root without DAC write override, so it cannot write into the
+/// kopia user's own cache.
 #[cfg(target_os = "linux")]
-fn kopia_user_exists() -> bool {
-	std::process::Command::new("id")
+fn kopia_user_exists() -> Result<bool, String> {
+	match std::process::Command::new("id")
 		.arg("-u")
 		.arg(LINUX_KOPIA_USER)
 		.output()
-		.map(|o| o.status.success())
-		.unwrap_or(false)
+	{
+		Ok(out) => Ok(out.status.success()),
+		Err(err) => Err(format!(
+			"could not look up the {LINUX_KOPIA_USER} user: {err}"
+		)),
+	}
 }
 
 /// Elevation for the canopy-managed repo. Unlike [`linux_elevation`], it keys on
@@ -215,18 +225,31 @@ fn canopy_elevation() -> Elevation {
 	let Some(user) = current_username() else {
 		return Elevation::Skip("could not determine current Unix username".into());
 	};
+	decide_canopy_elevation(&user, kopia_user_exists(), is_root())
+}
+
+/// The decision itself, from facts already gathered, so it can be tested: what
+/// this has to get right is never treating a lookup that failed as an answer.
+#[cfg(target_os = "linux")]
+fn decide_canopy_elevation(
+	user: &str,
+	kopia_user_exists: Result<bool, String>,
+	is_root: Result<bool, String>,
+) -> Elevation {
 	if user == LINUX_KOPIA_USER {
 		return Elevation::Direct;
 	}
-	if !kopia_user_exists() {
+	match kopia_user_exists {
 		// No kopia user to drop to; run as ourselves (the command still pins
 		// kopia's home to /var/lib/kopia so the cache stays writable).
-		return Elevation::Direct;
+		Ok(false) => return Elevation::Direct,
+		Err(reason) => return Elevation::Skip(reason),
+		Ok(true) => {}
 	}
-	if is_root() {
-		Elevation::SetPriv
-	} else {
-		Elevation::Sudo
+	match is_root {
+		Ok(true) => Elevation::SetPriv,
+		Ok(false) => Elevation::Sudo,
+		Err(reason) => Elevation::Skip(reason),
 	}
 }
 
@@ -1160,6 +1183,55 @@ mod cli {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "linux")]
+	mod elevation {
+		use super::super::*;
+
+		#[test]
+		fn already_the_kopia_user_runs_directly() {
+			assert_eq!(
+				decide_canopy_elevation(LINUX_KOPIA_USER, Ok(true), Ok(true)),
+				Elevation::Direct
+			);
+		}
+
+		#[test]
+		fn no_kopia_user_runs_directly() {
+			assert_eq!(
+				decide_canopy_elevation("root", Ok(false), Ok(true)),
+				Elevation::Direct
+			);
+		}
+
+		#[test]
+		fn root_drops_to_the_kopia_user_and_others_elevate() {
+			assert_eq!(
+				decide_canopy_elevation("root", Ok(true), Ok(true)),
+				Elevation::SetPriv
+			);
+			assert_eq!(
+				decide_canopy_elevation("ubuntu", Ok(true), Ok(false)),
+				Elevation::Sudo
+			);
+		}
+
+		/// The whole point. A lookup that could not run once read as "no kopia
+		/// user", which runs kopia as root; the daemon holds no DAC write
+		/// override, so it then cannot write the kopia user's own cache and every
+		/// backup fails on a permission error that names the cache, not the user.
+		#[test]
+		fn a_lookup_that_could_not_run_is_never_an_answer() {
+			assert_eq!(
+				decide_canopy_elevation("root", Err("boom".into()), Ok(true)),
+				Elevation::Skip("boom".into())
+			);
+			assert_eq!(
+				decide_canopy_elevation("root", Ok(true), Err("boom".into())),
+				Elevation::Skip("boom".into())
+			);
+		}
+	}
+
 	use jiff::ToSpan;
 
 	use super::*;
