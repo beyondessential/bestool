@@ -26,6 +26,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy hold keep`↴](#bestool-canopy-hold-keep)
 * [`bestool canopy hold list`↴](#bestool-canopy-hold-list)
 * [`bestool canopy hold drop`↴](#bestool-canopy-hold-drop)
+* [`bestool canopy hold reattach`↴](#bestool-canopy-hold-reattach)
 * [`bestool canopy restore`↴](#bestool-canopy-restore)
 * [`bestool canopy kopia`↴](#bestool-canopy-kopia)
 * [`bestool canopy unregister`↴](#bestool-canopy-unregister)
@@ -484,6 +485,7 @@ Manage captures held on this device as local rollback points
 * `keep` — Tell a backup that is already running to keep its capture
 * `list` — List the captures held on this device
 * `drop` — Release a held capture and forget it
+* `reattach` — Expose a held capture again where its record says it lives
 
 
 
@@ -520,6 +522,20 @@ Release a held capture and forget it
 ###### **Arguments:**
 
 * `<ID>` — The hold to release, as shown by `bestool canopy hold list`
+
+
+
+## `bestool canopy hold reattach`
+
+Expose a held capture again where its record says it lives
+
+A hold's mount is made by the process that took it. The daemon that takes one runs in its own mount namespace, so the mount neither outlives the daemon nor is visible to a restore run from a shell. This puts it back.
+
+**Usage:** `bestool canopy hold reattach <ID>`
+
+###### **Arguments:**
+
+* `<ID>` — The hold to expose again, as shown by `bestool canopy hold list`
 
 
 

@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use miette::{Context as _, IntoDiagnostic as _, Result};
+use miette::{Context as _, IntoDiagnostic as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -296,6 +296,36 @@ async fn vss_present(_shadow_id: &str, junction: &Path) -> bool {
 	junction.exists()
 }
 
+/// Expose a detached capture again at the path its record names.
+///
+/// A hold's mount is made by whichever process took it, and the daemon that
+/// takes one runs in its own mount namespace, so the mount is not visible to a
+/// restore run from a shell and does not outlive the daemon. Reattaching from
+/// the shell puts it where both can see it.
+pub async fn reattach(capture: &HeldCapture) -> Result<()> {
+	match capture {
+		HeldCapture::Btrfs {
+			toplevel_mount,
+			snapshot_path,
+			mount,
+			fsdev,
+		} => {
+			super::postgresql::btrfs::reattach_held(
+				toplevel_mount,
+				snapshot_path,
+				mount,
+				fsdev.as_deref(),
+			)
+			.await
+		}
+		other => bail!(
+			"reattaching a {} capture is not supported; its exposure is made by the \
+			 run that took it",
+			other.backend()
+		),
+	}
+}
+
 /// Release a held capture: undo the promotion and free the underlying snapshot,
 /// logical volume, shadow copy, or staged tree.
 ///
@@ -401,6 +431,34 @@ mod tests {
 			panic!("expected a btrfs capture");
 		};
 		assert_eq!(fsdev.as_deref(), Some("/dev/disk/by-uuid/deadbeef"));
+	}
+
+	/// Reattaching needs the device, and a record written before it was kept
+	/// cannot be mounted again. The refusal has to say so rather than report
+	/// success over a capture nothing exposed.
+	#[tokio::test]
+	async fn reattaching_without_a_device_refuses() {
+		let err = reattach(&HeldCapture::Btrfs {
+			toplevel_mount: "/run/bestool-toplevel".into(),
+			snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
+			mount: "/var/lib/bestool/held-source/x".into(),
+			fsdev: None,
+		})
+		.await
+		.expect_err("a hold with no device cannot be reattached");
+		assert!(err.to_string().contains("no device recorded"), "{err}");
+	}
+
+	/// Only the backends whose exposure is a mount this side can make. The others
+	/// have to say so rather than silently do nothing and read as reattached.
+	#[tokio::test]
+	async fn reattaching_a_backend_without_a_mount_refuses() {
+		let err = reattach(&HeldCapture::BaseBackup {
+			root: "/var/lib/bestool/held-source/x".into(),
+		})
+		.await
+		.expect_err("a base backup exposes nothing to reattach");
+		assert!(err.to_string().contains("not supported"), "{err}");
 	}
 
 	/// A record written before the device was kept still has to parse: dropping

@@ -279,6 +279,71 @@ pub async fn attached(path: &Path) -> bool {
 	sys::is_mountpoint(path).await
 }
 
+/// Expose a held capture again at the path its record names.
+///
+/// Mounted without an id map, so it is readable by root rather than by the kopia
+/// user: this reattaches a rollback point for a restore, not a source for a
+/// backup run.
+pub async fn reattach_held(
+	toplevel_mount: &Path,
+	snapshot_path: &Path,
+	mount: &Path,
+	fsdev: Option<&str>,
+) -> Result<()> {
+	let Some(fsdev) = fsdev else {
+		bail!(
+			"hold record has no device recorded, so {} cannot be mounted again; \
+			 the subvolume is still on the filesystem and can be mounted by hand",
+			mount.display()
+		);
+	};
+	if !fsdev.starts_with('/') {
+		bail!("hold record's device {fsdev:?} is not an absolute path");
+	}
+	let held_name = snapshot_path
+		.file_name()
+		.ok_or_else(|| miette!("hold record names no subvolume to mount"))?
+		.to_string_lossy()
+		.into_owned();
+
+	if !sys::is_mountpoint(toplevel_mount).await {
+		sys::mkdir(toplevel_mount).await?;
+		sys::run_ok(
+			"mount",
+			&["-o", "subvolid=5", "--", fsdev, sys::path(toplevel_mount)],
+		)
+		.await
+		.wrap_err_with(|| format!("mounting the top level at {}", toplevel_mount.display()))?;
+	}
+	if !snapshot_path.exists() {
+		bail!(
+			"the held subvolume {} is not on the filesystem, so there is nothing to \
+			 mount: this hold is not a rollback point",
+			snapshot_path.display()
+		);
+	}
+
+	if !sys::is_mountpoint(mount).await {
+		sys::mkdir(mount).await?;
+		if let Some(parent) = mount.parent() {
+			sys::make_traversable(parent).await?;
+		}
+		sys::run_ok(
+			"mount",
+			&[
+				"-o",
+				&format!("subvol={held_name}"),
+				"--",
+				fsdev,
+				sys::path(mount),
+			],
+		)
+		.await
+		.wrap_err_with(|| format!("mounting the held subvolume at {}", mount.display()))?;
+	}
+	Ok(())
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 ///

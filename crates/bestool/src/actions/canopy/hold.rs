@@ -37,6 +37,19 @@ pub enum HoldAction {
 
 	/// Release a held capture and forget it.
 	Drop(DropArgs),
+
+	/// Expose a held capture again where its record says it lives.
+	///
+	/// A hold's mount is made by the process that took it. The daemon that takes
+	/// one runs in its own mount namespace, so the mount neither outlives the
+	/// daemon nor is visible to a restore run from a shell. This puts it back.
+	Reattach(ReattachArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ReattachArgs {
+	/// The hold to expose again, as shown by `bestool canopy hold list`.
+	pub id: String,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -57,6 +70,7 @@ pub async fn run(args: HoldArgs, _ctx: Context) -> Result<()> {
 		HoldAction::Keep(args) => keep(&args.backup_type).await,
 		HoldAction::List => list().await,
 		HoldAction::Drop(args) => drop_hold(&args.id).await,
+		HoldAction::Reattach(args) => reattach(&args.id).await,
 	}
 }
 
@@ -162,6 +176,13 @@ fn humanise(span: jiff::Span) -> String {
 			}
 		})
 		.unwrap_or_else(|_| "unknown".to_owned())
+}
+
+async fn reattach(id: &str) -> Result<()> {
+	let record = hold::load(id).await?;
+	hold::reattach(&record.capture).await?;
+	info!(hold = %id, source = %record.source.display(), "the held capture is readable again");
+	Ok(())
 }
 
 async fn drop_hold(id: &str) -> Result<()> {
