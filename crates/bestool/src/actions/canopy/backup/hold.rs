@@ -475,10 +475,11 @@ mod tests {
 	/// success over a capture nothing exposed.
 	#[tokio::test]
 	async fn reattaching_without_a_device_refuses() {
+		let scratch = std::env::temp_dir().join("bestool-hold-unit");
 		let err = reattach(&HeldCapture::Btrfs {
-			toplevel_mount: "/run/bestool-toplevel".into(),
-			snapshot_path: "/run/bestool-toplevel/bestool-held-x".into(),
-			mount: "/var/lib/bestool/held-source/x".into(),
+			toplevel_mount: scratch.join("toplevel"),
+			snapshot_path: scratch.join("toplevel/bestool-held-x"),
+			mount: scratch.join("held-source/x"),
 			fsdev: None,
 		})
 		.await
@@ -498,15 +499,15 @@ mod tests {
 				junction: r"C:\bestool-backup-shadow\held\x".into(),
 			},
 			HeldCapture::Btrfs {
-				toplevel_mount: "/run/t".into(),
-				snapshot_path: "/run/t/bestool-held-x".into(),
-				mount: "/var/lib/bestool/held-source/x".into(),
+				toplevel_mount: "/nonexistent/toplevel".into(),
+				snapshot_path: "/nonexistent/toplevel/bestool-held-x".into(),
+				mount: "/nonexistent/held-source/x".into(),
 				fsdev: Some("/dev/disk/by-uuid/deadbeef".into()),
 			},
 			HeldCapture::Lvm {
 				vg: "vg0".into(),
 				lv: "bestool-held-x".into(),
-				mount: "/var/lib/bestool/held-source/x".into(),
+				mount: "/nonexistent/held-source/x".into(),
 			},
 		] {
 			assert!(
@@ -534,7 +535,7 @@ mod tests {
 	#[tokio::test]
 	async fn reattaching_a_backend_without_a_mount_refuses() {
 		let err = reattach(&HeldCapture::BaseBackup {
-			root: "/var/lib/bestool/held-source/x".into(),
+			root: std::env::temp_dir().join("bestool-hold-unit/x"),
 		})
 		.await
 		.expect_err("a base backup exposes nothing to reattach");
