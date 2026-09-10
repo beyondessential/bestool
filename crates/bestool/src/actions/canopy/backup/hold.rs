@@ -74,6 +74,18 @@ pub enum HeldCapture {
 }
 
 impl HeldCapture {
+	/// Whether the capture is reached through something separate from itself, and
+	/// so can both lose that exposure and have it put back. [`capture_state`] and
+	/// [`reattach`] both key off this: reporting a hold detached and then refusing
+	/// to reattach it would send an operator to a command that cannot work.
+	pub fn exposes_separately(&self) -> bool {
+		match self {
+			Self::Btrfs { .. } | Self::Lvm { .. } | Self::Vss { .. } => true,
+			// The capture is the directory itself, so there is nothing to put back.
+			Self::BaseBackup { .. } => false,
+		}
+	}
+
 	/// The backend's name, for diagnostics and listings.
 	pub fn backend(&self) -> &'static str {
 		match self {
@@ -308,6 +320,12 @@ async fn vss_present(_shadow_id: &str, junction: &Path) -> bool {
 /// restore run from a shell and does not outlive the daemon. Reattaching from
 /// the shell puts it where both can see it.
 pub async fn reattach(capture: &HeldCapture) -> Result<()> {
+	if !capture.exposes_separately() {
+		bail!(
+			"reattaching a {} capture is not supported; nothing exposes it separately",
+			capture.backend()
+		);
+	}
 	match capture {
 		HeldCapture::Btrfs {
 			toplevel_mount,
@@ -327,8 +345,6 @@ pub async fn reattach(capture: &HeldCapture) -> Result<()> {
 			super::postgresql::lvm::reattach_held(vg, lv, mount).await
 		}
 		HeldCapture::Vss { shadow_id, junction } => reattach_vss(shadow_id, junction).await,
-		// A base backup is the capture itself, so it never detaches and there is
-		// never an exposure to put back.
 		other => bail!(
 			"reattaching a {} capture is not supported; nothing exposes it separately",
 			other.backend()
@@ -470,11 +486,12 @@ mod tests {
 		assert!(err.to_string().contains("no device recorded"), "{err}");
 	}
 
-	/// Every state `capture_state` can report as detached has to have a remedy:
-	/// telling an operator to run a command that refuses is worse than refusing
-	/// up front. Only the backends that never detach may decline.
-	#[tokio::test]
-	async fn every_backend_that_can_detach_can_be_reattached() {
+	/// Every backend that can report detached has to have a remedy: telling an
+	/// operator to reattach something that cannot be reattached is worse than
+	/// refusing up front. Asserted on the decision rather than by calling
+	/// `reattach`, which would mount real storage.
+	#[test]
+	fn every_backend_that_can_detach_can_be_reattached() {
 		for capture in [
 			HeldCapture::Vss {
 				shadow_id: "{deadbeef-0000-0000-0000-000000000000}".into(),
@@ -492,16 +509,24 @@ mod tests {
 				mount: "/var/lib/bestool/held-source/x".into(),
 			},
 		] {
-			let backend = capture.backend();
-			// Reaching the volume needs root and real storage, so this only pins
-			// that the backend is dispatched rather than declined.
-			if let Err(err) = reattach(&capture).await {
-				assert!(
-					!err.to_string().contains("not supported"),
-					"{backend} can detach, so it must have a remedy: {err}"
-				);
-			}
+			assert!(
+				capture.exposes_separately(),
+				"{} can detach, so it must be reattachable",
+				capture.backend()
+			);
 		}
+	}
+
+	/// The capture is the directory itself, so it never detaches and there is
+	/// never an exposure to put back.
+	#[test]
+	fn a_base_backup_exposes_nothing_separately() {
+		assert!(
+			!HeldCapture::BaseBackup {
+				root: "/var/lib/bestool/held-source/x".into(),
+			}
+			.exposes_separately()
+		);
 	}
 
 	/// Only the backends whose exposure is a mount this side can make. The others

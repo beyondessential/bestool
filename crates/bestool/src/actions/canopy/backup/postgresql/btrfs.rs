@@ -59,6 +59,16 @@ pub struct Mounts {
 	idmap: String,
 }
 
+/// Mount the filesystem's top level (`subvolid=5`) at `at`, creating the
+/// directory first. Every path that has to reach a subvolume by name goes
+/// through here, so the flags cannot drift between them.
+async fn mount_toplevel(fsdev: &str, at: &Path) -> Result<()> {
+	sys::mkdir(at).await?;
+	sys::run_ok("mount", &["-o", "subvolid=5", "--", fsdev, sys::path(at)])
+		.await
+		.wrap_err_with(|| format!("mounting the top level of {fsdev} at {}", at.display()))
+}
+
 /// The stable mount path for a backup type (see [`super::stable_source_dir`]).
 fn stable_kopia_mount(backup_type: &str) -> PathBuf {
 	super::stable_source_dir(backup_type)
@@ -105,12 +115,7 @@ pub async fn prepare(
 		idmap: map.clone(),
 	};
 
-	sys::mkdir(&toplevel_mount).await?;
-	sys::run_ok(
-		"mount",
-		&["-o", "subvolid=5", &fsdev, sys::path(&toplevel_mount)],
-	)
-	.await?;
+	mount_toplevel(&fsdev, &toplevel_mount).await?;
 
 	info!(snapshot = %snapshot_path.display(), "creating read-only btrfs snapshot");
 	sys::run_ok(
@@ -211,17 +216,7 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 
 	// Mount the filesystem's top level at the hold's own path first: the rename
 	// and the remount both have to outlive the run's mounts going away.
-	sys::mkdir(&held_toplevel).await?;
-	sys::run_ok(
-		"mount",
-		&[
-			"-o",
-			"subvolid=5",
-			&mounts.fsdev,
-			sys::path(&held_toplevel),
-		],
-	)
-	.await?;
+	mount_toplevel(&mounts.fsdev, &held_toplevel).await?;
 
 	// Same filesystem, so the subvolume keeps its contents and simply stops
 	// matching the glob the reaper deletes by.
@@ -307,13 +302,7 @@ pub async fn reattach_held(
 		.into_owned();
 
 	if !sys::is_mountpoint(toplevel_mount).await {
-		sys::mkdir(toplevel_mount).await?;
-		sys::run_ok(
-			"mount",
-			&["-o", "subvolid=5", "--", fsdev, sys::path(toplevel_mount)],
-		)
-		.await
-		.wrap_err_with(|| format!("mounting the top level at {}", toplevel_mount.display()))?;
+		mount_toplevel(fsdev, toplevel_mount).await?;
 	}
 	if !snapshot_path.exists() {
 		bail!(
@@ -374,18 +363,7 @@ pub async fn release_held(
 			bail!("hold record's device {fsdev:?} is not an absolute path");
 		}
 
-		sys::mkdir(toplevel_mount).await?;
-		sys::run_ok(
-			"mount",
-			&["-o", "subvolid=5", "--", fsdev, sys::path(toplevel_mount)],
-		)
-		.await
-		.wrap_err_with(|| {
-			format!(
-				"mounting {fsdev} at {} to reach the held subvolume",
-				toplevel_mount.display()
-			)
-		})?;
+		mount_toplevel(fsdev, toplevel_mount).await?;
 	}
 
 	teardown(Mounts {
