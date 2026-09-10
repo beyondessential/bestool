@@ -318,9 +318,13 @@ pub async fn reattach(capture: &HeldCapture) -> Result<()> {
 			)
 			.await
 		}
+		HeldCapture::Lvm { vg, lv, mount } => {
+			super::postgresql::lvm::reattach_held(vg, lv, mount).await
+		}
+		// Neither reports a detached state: their exposure is the capture itself,
+		// so there is never one to put back.
 		other => bail!(
-			"reattaching a {} capture is not supported; its exposure is made by the \
-			 run that took it",
+			"reattaching a {} capture is not supported; nothing exposes it separately",
 			other.backend()
 		),
 	}
@@ -447,6 +451,36 @@ mod tests {
 		.await
 		.expect_err("a hold with no device cannot be reattached");
 		assert!(err.to_string().contains("no device recorded"), "{err}");
+	}
+
+	/// Every state `capture_state` can report as detached has to have a remedy:
+	/// telling an operator to run a command that refuses is worse than refusing
+	/// up front. Only the backends that never detach may decline.
+	#[tokio::test]
+	async fn every_backend_that_can_detach_can_be_reattached() {
+		for capture in [
+			HeldCapture::Btrfs {
+				toplevel_mount: "/run/t".into(),
+				snapshot_path: "/run/t/bestool-held-x".into(),
+				mount: "/var/lib/bestool/held-source/x".into(),
+				fsdev: Some("/dev/disk/by-uuid/deadbeef".into()),
+			},
+			HeldCapture::Lvm {
+				vg: "vg0".into(),
+				lv: "bestool-held-x".into(),
+				mount: "/var/lib/bestool/held-source/x".into(),
+			},
+		] {
+			let backend = capture.backend();
+			// Reaching the volume needs root and real storage, so this only pins
+			// that the backend is dispatched rather than declined.
+			if let Err(err) = reattach(&capture).await {
+				assert!(
+					!err.to_string().contains("not supported"),
+					"{backend} can detach, so it must have a remedy: {err}"
+				);
+			}
+		}
 	}
 
 	/// Only the backends whose exposure is a mount this side can make. The others
