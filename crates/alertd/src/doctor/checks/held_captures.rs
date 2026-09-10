@@ -105,9 +105,10 @@ impl HoldCapture {
 	fn exposure(&self) -> Option<&std::path::Path> {
 		match self {
 			Self::Btrfs { mount } | Self::Lvm { mount } => Some(mount),
-			// A shadow copy is either there or it is not, and the driver grades it
-			// that way too. Reporting a lost junction as detached would have the
-			// two disagree about the same hold.
+			// A shadow copy's junction cannot be judged from here: it is a reparse
+			// point, so it reads as present whether or not it still resolves.
+			// Leaving it unprobed reports it detached, which is the safe half of
+			// the answer, and the driver decides the rest.
 			Self::Vss {} | Self::BaseBackup {} | Self::Unknown => None,
 		}
 	}

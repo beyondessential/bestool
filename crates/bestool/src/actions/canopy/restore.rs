@@ -409,7 +409,8 @@ async fn restore_from_hold(
 		hold::CaptureState::Present => {}
 		hold::CaptureState::Detached => bail!(
 			"the capture behind hold {hold_id} is not mounted, so it cannot be read; \
-			 the capture behind it is often still intact"
+			 the capture behind it is often still intact, so expose it again with \
+			 `bestool canopy hold reattach {hold_id}` and restore from it"
 		),
 		hold::CaptureState::Gone => bail!(
 			"the capture behind hold {hold_id} is gone, so it is not a rollback point; \

@@ -146,6 +146,31 @@ jobs:
       - name: Podman secret round trip and clobber gate
         run: cargo test -p bestool --lib secret_key::tests -- --ignored --nocapture
 
+  btrfs-hold:
+    name: btrfs hold / e2e
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - run: sudo apt-get update && sudo apt-get install -y btrfs-progs
+
+      # Mounting and losetup need root, which `cargo test` is not: build first,
+      # then run the one test binary under sudo.
+      - name: Reattach a held btrfs capture
+        run: |
+          binary=$(cargo test --no-run -p bestool --lib --message-format=json \
+            | jq -r 'select(.profile.test == true) | .executable // empty' | head -n1)
+          test -n "$binary"
+          sudo "$binary" btrfs::e2e --ignored --nocapture --test-threads=1
+
   kopia-proxy:
     name: kopia S3 proxy / e2e
     runs-on: ubuntu-latest
@@ -272,7 +297,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi]
+    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi, btrfs-hold]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

@@ -59,6 +59,16 @@ pub struct Mounts {
 	idmap: String,
 }
 
+/// Mount the filesystem's top level (`subvolid=5`) at `at`, creating the
+/// directory first. Every path that has to reach a subvolume by name goes
+/// through here, so the flags cannot drift between them.
+async fn mount_toplevel(fsdev: &str, at: &Path) -> Result<()> {
+	sys::mkdir(at).await?;
+	sys::run_ok("mount", &["-o", "subvolid=5", "--", fsdev, sys::path(at)])
+		.await
+		.wrap_err_with(|| format!("mounting the top level of {fsdev} at {}", at.display()))
+}
+
 /// The stable mount path for a backup type (see [`super::stable_source_dir`]).
 fn stable_kopia_mount(backup_type: &str) -> PathBuf {
 	super::stable_source_dir(backup_type)
@@ -105,12 +115,7 @@ pub async fn prepare(
 		idmap: map.clone(),
 	};
 
-	sys::mkdir(&toplevel_mount).await?;
-	sys::run_ok(
-		"mount",
-		&["-o", "subvolid=5", &fsdev, sys::path(&toplevel_mount)],
-	)
-	.await?;
+	mount_toplevel(&fsdev, &toplevel_mount).await?;
 
 	info!(snapshot = %snapshot_path.display(), "creating read-only btrfs snapshot");
 	sys::run_ok(
@@ -211,17 +216,7 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 
 	// Mount the filesystem's top level at the hold's own path first: the rename
 	// and the remount both have to outlive the run's mounts going away.
-	sys::mkdir(&held_toplevel).await?;
-	sys::run_ok(
-		"mount",
-		&[
-			"-o",
-			"subvolid=5",
-			&mounts.fsdev,
-			sys::path(&held_toplevel),
-		],
-	)
-	.await?;
+	mount_toplevel(&mounts.fsdev, &held_toplevel).await?;
 
 	// Same filesystem, so the subvolume keeps its contents and simply stops
 	// matching the glob the reaper deletes by.
@@ -279,6 +274,65 @@ pub async fn attached(path: &Path) -> bool {
 	sys::is_mountpoint(path).await
 }
 
+/// Expose a held capture again at the path its record names.
+///
+/// Mounted without an id map, so it is readable by root rather than by the kopia
+/// user: this reattaches a rollback point for a restore, not a source for a
+/// backup run.
+pub async fn reattach_held(
+	toplevel_mount: &Path,
+	snapshot_path: &Path,
+	mount: &Path,
+	fsdev: Option<&str>,
+) -> Result<()> {
+	let Some(fsdev) = fsdev else {
+		bail!(
+			"hold record has no device recorded, so {} cannot be mounted again; \
+			 the subvolume is still on the filesystem and can be mounted by hand",
+			mount.display()
+		);
+	};
+	if !fsdev.starts_with('/') {
+		bail!("hold record's device {fsdev:?} is not an absolute path");
+	}
+	let held_name = snapshot_path
+		.file_name()
+		.ok_or_else(|| miette!("hold record names no subvolume to mount"))?
+		.to_string_lossy()
+		.into_owned();
+
+	if !sys::is_mountpoint(toplevel_mount).await {
+		mount_toplevel(fsdev, toplevel_mount).await?;
+	}
+	if !snapshot_path.exists() {
+		bail!(
+			"the held subvolume {} is not on the filesystem, so there is nothing to \
+			 mount: this hold is not a rollback point",
+			snapshot_path.display()
+		);
+	}
+
+	if !sys::is_mountpoint(mount).await {
+		sys::mkdir(mount).await?;
+		if let Some(parent) = mount.parent() {
+			sys::make_traversable(parent).await?;
+		}
+		sys::run_ok(
+			"mount",
+			&[
+				"-o",
+				&format!("subvol={held_name}"),
+				"--",
+				fsdev,
+				sys::path(mount),
+			],
+		)
+		.await
+		.wrap_err_with(|| format!("mounting the held subvolume at {}", mount.display()))?;
+	}
+	Ok(())
+}
+
 /// Release a capture that was promoted to a hold: the same teardown, rebuilt from
 /// the hold's record rather than from the run that took it.
 ///
@@ -309,18 +363,7 @@ pub async fn release_held(
 			bail!("hold record's device {fsdev:?} is not an absolute path");
 		}
 
-		sys::mkdir(toplevel_mount).await?;
-		sys::run_ok(
-			"mount",
-			&["-o", "subvolid=5", "--", fsdev, sys::path(toplevel_mount)],
-		)
-		.await
-		.wrap_err_with(|| {
-			format!(
-				"mounting {fsdev} at {} to reach the held subvolume",
-				toplevel_mount.display()
-			)
-		})?;
+		mount_toplevel(fsdev, toplevel_mount).await?;
 	}
 
 	teardown(Mounts {
@@ -431,5 +474,130 @@ mod tests {
 		assert!(file(&toplevel_mount("abc")).starts_with("bestool-btrfs-toplevel."));
 		let reap = PathBuf::from(format!("{TOPLEVEL_MOUNT_PREFIX}.reap-abc"));
 		assert!(file(&reap).starts_with("bestool-btrfs-toplevel."));
+	}
+}
+
+#[cfg(test)]
+mod e2e {
+	use super::*;
+
+	/// Builds a btrfs filesystem in a file, holds a subvolume on it, takes away
+	/// everything that exposes it, and reattaches. Needs root and btrfs-progs, so
+	/// CI runs it with `--ignored` rather than the ordinary suite.
+	#[tokio::test]
+	#[ignore = "needs root and a loopback btrfs filesystem"]
+	async fn a_detached_hold_is_reattached_and_readable() {
+		let dir = std::env::temp_dir().join(format!("bestool-hold-e2e-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let image = dir.join("fs.img");
+
+		sys::run_ok("truncate", &["-s", "512M", sys::path(&image)])
+			.await
+			.unwrap();
+		sys::run_ok("mkfs.btrfs", &["-q", sys::path(&image)])
+			.await
+			.unwrap();
+		let fsdev = sys::capture("losetup", &["--find", "--show", sys::path(&image)])
+			.await
+			.unwrap()
+			.trim()
+			.to_owned();
+
+		let id = "tamanu-postgres-20260101T000000Z";
+		let toplevel = dir.join("toplevel");
+		let mount = dir.join("held-source");
+		let snapshot_path = toplevel.join(held_snapshot_name(id));
+
+		sys::mkdir(&toplevel).await.unwrap();
+		sys::run_ok(
+			"mount",
+			&["-o", "subvolid=5", "--", &fsdev, sys::path(&toplevel)],
+		)
+		.await
+		.unwrap();
+
+		// A hold is a read-only snapshot, so build one the same way.
+		let live = toplevel.join("live");
+		sys::run_ok("btrfs", &["subvolume", "create", sys::path(&live)])
+			.await
+			.unwrap();
+		std::fs::write(live.join("marker"), b"rollback point").unwrap();
+		sys::run_ok(
+			"btrfs",
+			&[
+				"subvolume",
+				"snapshot",
+				"-r",
+				sys::path(&live),
+				sys::path(&snapshot_path),
+			],
+		)
+		.await
+		.unwrap();
+
+		// Everything the daemon's namespace held goes away, as it does when the
+		// daemon restarts.
+		sys::umount(&toplevel).await;
+		assert!(!sys::is_mountpoint(&toplevel).await);
+		assert!(!sys::is_mountpoint(&mount).await);
+
+		reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect("reattaching a detached hold");
+
+		assert!(sys::is_mountpoint(&mount).await);
+		assert_eq!(
+			std::fs::read_to_string(mount.join("marker")).unwrap(),
+			"rollback point"
+		);
+
+		// Reattaching what is already attached leaves it alone.
+		reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect("reattaching is idempotent");
+		assert_eq!(
+			std::fs::read_to_string(mount.join("marker")).unwrap(),
+			"rollback point"
+		);
+
+		sys::umount(&mount).await;
+		sys::umount(&toplevel).await;
+		let _ = sys::run_ok("losetup", &["-d", &fsdev]).await;
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// A hold whose subvolume really is gone must not report itself reattached.
+	#[tokio::test]
+	#[ignore = "needs root and a loopback btrfs filesystem"]
+	async fn a_hold_whose_subvolume_is_gone_refuses() {
+		let dir = std::env::temp_dir().join(format!("bestool-hold-e2e-gone-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let image = dir.join("fs.img");
+
+		sys::run_ok("truncate", &["-s", "512M", sys::path(&image)])
+			.await
+			.unwrap();
+		sys::run_ok("mkfs.btrfs", &["-q", sys::path(&image)])
+			.await
+			.unwrap();
+		let fsdev = sys::capture("losetup", &["--find", "--show", sys::path(&image)])
+			.await
+			.unwrap()
+			.trim()
+			.to_owned();
+
+		let toplevel = dir.join("toplevel");
+		let mount = dir.join("held-source");
+		let snapshot_path = toplevel.join(held_snapshot_name("never-taken"));
+
+		let err = reattach_held(&toplevel, &snapshot_path, &mount, Some(&fsdev))
+			.await
+			.expect_err("nothing to reattach");
+		assert!(err.to_string().contains("not on the filesystem"), "{err}");
+		assert!(!sys::is_mountpoint(&mount).await);
+
+		sys::umount(&toplevel).await;
+		let _ = sys::run_ok("losetup", &["-d", &fsdev]).await;
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 }
