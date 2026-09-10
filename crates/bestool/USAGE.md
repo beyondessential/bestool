@@ -527,7 +527,7 @@ Release a held capture and forget it
 
 ## `bestool canopy hold reattach`
 
-Expose a held capture again where its record says it lives
+Expose a held capture again where its record says it lives.
 
 A hold's mount is made by the process that took it. The daemon that takes one runs in its own mount namespace, so the mount neither outlives the daemon nor is visible to a restore run from a shell. This puts it back.
 
