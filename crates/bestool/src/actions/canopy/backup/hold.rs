@@ -267,10 +267,15 @@ pub async fn capture_state(capture: &HeldCapture) -> CaptureState {
 			}
 		}
 		HeldCapture::Vss { shadow_id, junction } => {
-			if vss_present(shadow_id, junction).await {
+			if !vss_present(shadow_id, junction).await {
+				CaptureState::Gone
+			} else if tokio::fs::read_dir(junction).await.is_ok() {
 				CaptureState::Present
 			} else {
-				CaptureState::Gone
+				// The shadow is there and the junction is not resolving. VSS can
+				// renumber the device a junction points at, so the copy behind it
+				// outlives what names it.
+				CaptureState::Detached
 			}
 		}
 		HeldCapture::BaseBackup { root } => {
@@ -321,8 +326,9 @@ pub async fn reattach(capture: &HeldCapture) -> Result<()> {
 		HeldCapture::Lvm { vg, lv, mount } => {
 			super::postgresql::lvm::reattach_held(vg, lv, mount).await
 		}
-		// Neither reports a detached state: their exposure is the capture itself,
-		// so there is never one to put back.
+		HeldCapture::Vss { shadow_id, junction } => reattach_vss(shadow_id, junction).await,
+		// A base backup is the capture itself, so it never detaches and there is
+		// never an exposure to put back.
 		other => bail!(
 			"reattaching a {} capture is not supported; nothing exposes it separately",
 			other.backend()
@@ -352,6 +358,17 @@ pub async fn release(capture: &HeldCapture) -> Result<()> {
 		HeldCapture::Vss { shadow_id, junction } => release_vss(shadow_id, junction).await,
 		HeldCapture::BaseBackup { root } => super::postgresql::basebackup::teardown(root.clone()).await,
 	}
+}
+
+#[cfg(windows)]
+async fn reattach_vss(shadow_id: &str, junction: &Path) -> Result<()> {
+	super::postgresql::vss::reattach_held(shadow_id, junction).await
+}
+
+/// Only the host that made the shadow can rebuild the junction to it.
+#[cfg(not(windows))]
+async fn reattach_vss(_shadow_id: &str, _junction: &Path) -> Result<()> {
+	bail!("a shadow copy can only be reattached on the Windows host that holds it")
 }
 
 #[cfg(windows)]
@@ -459,6 +476,10 @@ mod tests {
 	#[tokio::test]
 	async fn every_backend_that_can_detach_can_be_reattached() {
 		for capture in [
+			HeldCapture::Vss {
+				shadow_id: "{deadbeef-0000-0000-0000-000000000000}".into(),
+				junction: r"C:\bestool-backup-shadow\held\x".into(),
+			},
 			HeldCapture::Btrfs {
 				toplevel_mount: "/run/t".into(),
 				snapshot_path: "/run/t/bestool-held-x".into(),
