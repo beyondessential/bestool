@@ -70,10 +70,10 @@ mod tests {
 	/// enough to exercise the endpoint's format negotiation.
 	fn state() -> Arc<ServerState> {
 		let ctx = Arc::new(InternalContext {
-			pg_pool: None,
 			http_client: reqwest::Client::new(),
 			canopy_client: None,
 			reload: tokio::sync::watch::channel(0).1,
+			#[cfg(windows)]
 			restart: None,
 		});
 		Arc::new(ServerState {
