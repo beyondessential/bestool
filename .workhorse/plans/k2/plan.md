@@ -36,19 +36,11 @@ Test split: ~370 tests stay under `doctor/`, ~22 move (11 `http_server`, 10 `doc
 - [x] `cargo check`/`clippy`/`test` on Linux; `cargo check` for a Windows GNU target
 - [x] Confirm `tamanu doctor` still builds with `alertd` off
 
-## Surfaced by the move, not resolved here
+## Surfaced by the move
 
 Moving a library into a binary turns `pub` items into dead-code candidates, which
-surfaced three things the library boundary had been hiding:
+surfaced things the library boundary had been hiding:
 
-- `TaskContext::pg_pool` is written but never read, on either platform, and the
-  chain above it (`InternalContext`, `DaemonConfig`, the startup `create_pool`)
-  is dead with it. The sweep does not open a connection per check: it opens one
-  shared connection per sweep from the database URL (`sweep.rs`), which is what
-  the pool would replace. Wiring the pool into `perform_sweep` is a behaviour
-  change, and `bestool tamanu doctor` calls the same function with no pool, so
-  it is not this card's work. Held behind an `expect(dead_code)` until that
-  lands.
 - `RestartTrigger` and `TaskContext::restart` are live only on Windows, where the
   self-update task replaces the binary. Gated `#[cfg(windows)]` so the code
   exists only where it is used, rather than annotated as dead.
@@ -67,3 +59,32 @@ surfaced three things the library boundary had been hiding:
 - `DaemonConfig::database_url` is now `Redacted<String>`. Its own doc said
   "retained for redacted display" while the hand-written `Debug` printed the
   postgres URL, password and all. Nothing reads the field to connect.
+
+## Finishing the pool
+
+The daemon opened a connection pool at startup and threaded it through
+`DaemonConfig`, `InternalContext` and `TaskContext` — and then nothing read it.
+The sweep opened its own connection with `connect_one` every tick instead, so a
+daemon sweeping every minute paid for a fresh connect each time while the pool
+sat unused. The dead field was the visible end of an unfinished wire, so this
+card connects it rather than deleting it.
+
+`perform_sweep` now takes an optional pool. The daemon passes its own, so a
+sweep checks a connection out and returns it when the last check drops it; the
+one-shot `doctor` CLI has no pool and still opens its own via `connect_one`,
+unchanged. `CheckContext::db` holds a `SweepDb`, which is either of those and
+derefs to the same client, so checks read it through `ctx.db()` without caring
+which.
+
+What this does not change:
+
+- `db_connect` still opens its own connection to measure connect latency, which
+  is how the daemon reports the database being down. It never goes through the
+  pool, so a pool that cannot hand out a connection does not mask a DB outage.
+- A failed acquire warns and leaves `db` as `None`, so DB-dependent checks skip
+  exactly as they did when `connect_one` failed.
+- Postgres is still not required for the daemon to start: pool creation already
+  tolerated failure at startup, and with no pool the sweep falls back to
+  `connect_one`, which retries every tick until the database comes back.
+- mobc caps an acquire at 30 seconds by default, so an unreachable database
+  fails the acquire rather than stalling the sweep indefinitely.

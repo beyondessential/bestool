@@ -5,7 +5,7 @@ use crate::Stat;
 use crate::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_deref() else {
+	let Some(client) = ctx.db() else {
 		return Check::fail(
 			"sync_sessions",
 			"no DB connection",

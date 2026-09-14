@@ -83,7 +83,7 @@ fn with_error_counters(check: Check, mobile_seen: u64, server_seen: u64) -> Chec
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

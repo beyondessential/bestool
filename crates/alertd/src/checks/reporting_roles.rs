@@ -55,7 +55,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
@@ -174,8 +174,7 @@ mod tests {
 	}
 
 	async fn current_role(ctx: &CheckContext) -> String {
-		ctx.db
-			.as_ref()
+		ctx.db()
 			.unwrap()
 			.query_one("SELECT current_user::text", &[])
 			.await

@@ -34,6 +34,20 @@ the daemon's dependencies.
       with the same two postgres-dependent tests failing in an environment with
       no reachable database
 
+## The daemon's connection pool
+
+- [x] The sweep takes its shared connection from the daemon's pool when there is
+      one, so a daemon sweeping every minute stops reconnecting each tick
+- [x] `bestool tamanu doctor`, which has no pool, still opens its own connection
+- [x] A failed pool acquire leaves DB-dependent checks skipping, as a failed
+      `connect_one` did
+- [ ] With postgres down at daemon start, the daemon still starts and the sweep
+      falls back to opening its own connection each tick until it comes back
+- [ ] With postgres going down while the daemon runs, `db_connect` still reports
+      it — the check opens its own connection and never goes through the pool
+- [ ] A sweep returns its pooled connection afterwards, so the pool does not
+      leak a connection per sweep
+
 ## Behaviour preserved across the seam
 
 - [x] The outbound User-Agent stays `bestool-alertd/<alertd version>` rather

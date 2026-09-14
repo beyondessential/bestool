@@ -5,8 +5,6 @@
 //! row→JSON conversion and to bound memory, every query is wrapped so Postgres
 //! returns one JSONB column per row, capped just past the reporting limit.
 
-use std::sync::Arc;
-
 use jiff::{Timestamp, ToSpan};
 use serde_json::Value;
 use tokio_postgres::{Client as PgClient, types::ToSql};
@@ -72,7 +70,7 @@ impl RowSet {
 /// Run a wrapped query and collect its rows. The `to_jsonb` wrapping is
 /// applied here, so callers pass the check's SQL.
 pub async fn fetch_rows(
-	client: &Arc<PgClient>,
+	client: &PgClient,
 	sql: &str,
 	params: &[&(dyn ToSql + Sync)],
 ) -> Result<RowSet, tokio_postgres::Error> {
@@ -110,7 +108,7 @@ pub async fn fetch_rows(
 	reason = "shared query helper; each parameter is a distinct knob the call sites set"
 )]
 pub async fn tiered_rows_check(
-	client: &Arc<PgClient>,
+	client: &PgClient,
 	name: &'static str,
 	summary_pass: &str,
 	summary_prefix: &str,

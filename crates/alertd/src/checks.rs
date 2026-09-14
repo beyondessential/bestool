@@ -4,7 +4,7 @@
 //! sync `fn run(...) -> Check` where async is unnecessary). The `ALL` registry
 //! below ties names to runners so the dispatcher can filter by `--check`.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{ops::Deref, path::PathBuf, sync::Arc};
 
 use node_semver::Version;
 use tokio_postgres::Client as PgClient;
@@ -106,7 +106,10 @@ pub struct CheckContext {
 	/// each have to re-decide.
 	pub kind: ApiServerKind,
 	pub database_url: String,
-	pub db: Option<Arc<PgClient>>,
+	/// The sweep's shared database connection, when one could be opened. Read
+	/// it through [`CheckContext::db`], which hands out the underlying client
+	/// whichever way the connection was obtained.
+	pub db: Option<Arc<SweepDb>>,
 	pub http_client: reqwest::Client,
 	/// Whether a real Tamanu install backs this context. `false` when the
 	/// context was synthesised from a `TAMANU_DATABASE_URL` alone (DB reachable,
@@ -117,6 +120,34 @@ pub struct CheckContext {
 	/// synthesised from the generic `DATABASE_URL` fallback: the registry runs
 	/// only the generic database checks and skips everything Tamanu-specific.
 	pub is_tamanu: bool,
+}
+
+impl CheckContext {
+	/// The sweep's shared database connection, or `None` when the database
+	/// couldn't be reached — in which case DB-dependent checks skip.
+	pub fn db(&self) -> Option<&PgClient> {
+		self.db.as_deref().map(Deref::deref)
+	}
+}
+
+/// The one database connection a sweep shares between its checks.
+///
+/// The daemon takes it from its pool, so a sweep every minute doesn't pay for a
+/// fresh connect each time; a one-shot `doctor` run has no pool and opens its
+/// own. Either way the checks see the same client.
+pub enum SweepDb {
+	Pooled(bestool_postgres::pool::PgConnection),
+	Owned(PgClient),
+}
+
+impl Deref for SweepDb {
+	type Target = PgClient;
+	fn deref(&self) -> &PgClient {
+		match self {
+			Self::Pooled(conn) => conn,
+			Self::Owned(client) => client,
+		}
+	}
 }
 
 /// Whether the doctor is running as root (euid 0).
@@ -450,7 +481,7 @@ pub mod test_support {
 
 	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
-	use super::CheckContext;
+	use super::{CheckContext, SweepDb};
 
 	fn central_config() -> TamanuConfig {
 		serde_json::from_value(serde_json::json!({
@@ -467,10 +498,10 @@ pub mod test_support {
 		.expect("facility test config should parse")
 	}
 
-	async fn connect(db_name: &str) -> Option<Arc<tokio_postgres::Client>> {
+	async fn connect(db_name: &str) -> Option<Arc<SweepDb>> {
 		let url = format!("postgresql://localhost/{db_name}");
 		match bestool_postgres::pool::connect_one(&url, "bestool-alertd-test").await {
-			Ok(client) => Some(Arc::new(client)),
+			Ok(client) => Some(Arc::new(SweepDb::Owned(client))),
 			Err(_) => None,
 		}
 	}
@@ -670,7 +701,7 @@ mod tests {
 
 	async fn query_err(sql: &str) -> Option<tokio_postgres::Error> {
 		let ctx = central_ctx().await?;
-		let client = ctx.db.expect("central_ctx always has a client");
+		let client = ctx.db().expect("central_ctx always has a client");
 		Some(
 			client
 				.query(sql, &[])

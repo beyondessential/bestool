@@ -119,7 +119,7 @@ fn grade(c: &Checksums) -> Check {
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_deref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(
 			NAME,
 			"no DB connection",

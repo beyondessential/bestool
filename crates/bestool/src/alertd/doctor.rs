@@ -263,6 +263,7 @@ impl DoctorTaskInner {
 			progress,
 			ctx.canopy_client.clone(),
 			enable_heal,
+			ctx.pg_pool.clone(),
 		)
 		.await?;
 

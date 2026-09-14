@@ -199,7 +199,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			"no upstream record is expected to be materialised, so every resource would read as a total gap",
 		);
 	}
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

@@ -24,7 +24,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// Patient-portal expectation is gated on Tamanu's own `features.patientPortal`
 	// DB setting. Without a DB client (e.g. unreachable), pass `None` so the
 	// expectation surfaces as Unknown rather than a false-negative Down.
-	let patient_portal_enabled = match ctx.db.as_deref() {
+	let patient_portal_enabled = match ctx.db() {
 		Some(client) => bestool_tamanu::server_info::query_patient_portal_enabled(client).await,
 		None => None,
 	};

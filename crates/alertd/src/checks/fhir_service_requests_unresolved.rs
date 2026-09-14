@@ -21,7 +21,7 @@ const SQL: &str = "SELECT lr.display_id AS lab_request_id, \
 	ORDER BY duration_minutes DESC";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

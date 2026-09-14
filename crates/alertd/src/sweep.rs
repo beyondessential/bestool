@@ -24,7 +24,7 @@ use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_machine_id
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks::{self, CheckContext, SweepContext},
+	checks::{self, CheckContext, SweepContext, SweepDb},
 	heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
@@ -563,30 +563,48 @@ pub async fn perform_sweep(
 	progress: Option<ProgressSender>,
 	canopy: Option<Arc<CanopyClient>>,
 	enable_heal: bool,
+	pg_pool: Option<bestool_postgres::pool::PgPool>,
 ) -> Result<SweepResult> {
 	let tamanu_ctx = match &tamanu {
 		Some(t) => {
-			// Open a single connection up-front. Checks that need the DB share
+			// Take a single connection up-front. Checks that need the DB share
 			// it; the `db_connect` check separately measures the open latency
-			// for reporting. Goes through `bestool_postgres::pool::connect_one`
-			// so all DB opens in the project share one SSL fallback / auth
-			// retry / app-name path.
-			let db =
-				match bestool_postgres::pool::connect_one(&t.database_url, "bestool-tamanu-doctor")
-					.await
+			// for reporting.
+			//
+			// The daemon hands us its pool, so sweeping every minute reuses a
+			// connection instead of reconnecting each time; the connection goes
+			// back when the sweep's last check drops it. Without a pool (the
+			// one-shot `doctor` CLI) we open one for this sweep alone, via
+			// `connect_one` so all DB opens in the project share one SSL
+			// fallback / auth retry / app-name path.
+			let db = match &pg_pool {
+				Some(pool) => match pool.get().await {
+					Ok(conn) => Some(Arc::new(SweepDb::Pooled(conn))),
+					Err(err) => {
+						warn!(%err, "doctor could not take a pooled Tamanu DB connection; DB-dependent checks will skip");
+						None
+					}
+				},
+				None => match bestool_postgres::pool::connect_one(
+					&t.database_url,
+					"bestool-tamanu-doctor",
+				)
+				.await
 				{
-					Ok(client) => Some(Arc::new(client)),
+					Ok(client) => Some(Arc::new(SweepDb::Owned(client))),
 					Err(err) => {
 						warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
 						None
 					}
-				};
+				},
+			};
 
 			// A generic (non-Tamanu) database has no Tamanu tables to inspect,
 			// so don't probe it for kind or version; the value is unused since
 			// every Tamanu-dependent check skips.
 			let kind = if t.is_tamanu {
-				let kind = bestool_tamanu::detect_kind(&t.config, db.as_deref()).await;
+				let kind =
+					bestool_tamanu::detect_kind(&t.config, db.as_deref().map(|d| &**d)).await;
 				debug!(?kind, "detected Tamanu server kind for doctor sweep");
 				kind
 			} else {
@@ -597,7 +615,7 @@ pub async fn perform_sweep(
 			// Without one (a `TAMANU_DATABASE_URL`-only host), fall back to the
 			// version Tamanu last recorded in its own DB (`currentVersion`), so
 			// version-aware checks can still run against it.
-			let tamanu_version = match (t.has_install, db.as_deref()) {
+			let tamanu_version = match (t.has_install, db.as_deref().map(|d| &**d)) {
 				(false, Some(client)) if t.is_tamanu => {
 					bestool_tamanu::versions::current_version(client)
 						.await
@@ -732,7 +750,7 @@ pub async fn perform_sweep(
 
 	let mut facts = collect_server_facts(
 		tamanu.as_ref().map(|t| t.config.as_ref()),
-		db.as_deref(),
+		db.as_deref().map(|d| &**d),
 		cached_pg_version,
 		tamanu.as_ref().is_none_or(|t| t.is_tamanu),
 	)
@@ -1178,6 +1196,7 @@ mod tests {
 			None,
 			None,
 			false,
+			None,
 		)
 		.await
 		.unwrap();
@@ -1215,6 +1234,7 @@ mod tests {
 			Some(tx),
 			None,
 			false,
+			None,
 		)
 		.await
 		.unwrap();

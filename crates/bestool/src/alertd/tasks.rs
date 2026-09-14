@@ -16,9 +16,8 @@ use crate::alertd::context::InternalContext;
 pub struct TaskContext {
 	/// `None` on hosts with no Tamanu deployment (and therefore no database).
 	///
-	/// Offered to task implementors; no task reads it today, and the sweep
-	/// opens its own shared connection from the database URL.
-	#[expect(dead_code, reason = "plumbed for task implementors, none read it yet")]
+	/// The doctor task takes the sweep's shared connection from here, so
+	/// sweeping every minute doesn't reconnect each time.
 	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 	pub http_client: reqwest::Client,
 	pub canopy_client: Option<Arc<CanopyClient>>,

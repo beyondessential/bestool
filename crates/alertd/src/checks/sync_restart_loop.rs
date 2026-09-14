@@ -22,7 +22,7 @@ const SQL: &str = "SELECT jsonb_array_elements_text(parameters->'facilityIds') A
 	GROUP BY facility_id HAVING COUNT(*) >= 5 ORDER BY error_count DESC";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

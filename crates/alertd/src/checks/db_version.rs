@@ -2,7 +2,7 @@ use super::{CheckContext, query_error_check};
 use crate::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_deref() else {
+	let Some(client) = ctx.db() else {
 		return Check::fail("version", "no DB connection", "connect failed");
 	};
 

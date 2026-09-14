@@ -169,6 +169,7 @@ async fn run_local_sweep(
 			progress,
 			None,
 			false,
+			None,
 		)
 		.await
 	});

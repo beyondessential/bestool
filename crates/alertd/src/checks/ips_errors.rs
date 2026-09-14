@@ -10,7 +10,7 @@ const SQL: &str = "SELECT * FROM ips_requests WHERE status = 'Error' AND created
 const LOOKBACK_HOURS: i64 = 1;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db.as_ref() else {
+	let Some(client) = ctx.db() else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
