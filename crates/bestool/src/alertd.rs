@@ -80,6 +80,9 @@ pub struct DaemonConfig {
 	pub metrics: Option<doctor::DoctorMetricsHandle>,
 
 	/// Version of the running `bestool` binary, shown in the systemd status line.
+	///
+	/// Always this binary's own version now that the config lives in the same
+	/// crate; it was a builder setter only while the two were separate crates.
 	pub binary_version: String,
 }
 
@@ -121,12 +124,6 @@ impl DaemonConfig {
 			metrics: None,
 			binary_version: env!("CARGO_PKG_VERSION").to_string(),
 		}
-	}
-
-	/// Set the running binary's (bestool's) version for the status line.
-	pub fn with_binary_version(mut self, version: String) -> Self {
-		self.binary_version = version;
-		self
 	}
 
 	pub fn with_task(mut self, task: Arc<dyn BackgroundTask>) -> Self {

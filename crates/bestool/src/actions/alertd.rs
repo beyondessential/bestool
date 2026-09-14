@@ -697,7 +697,6 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 		pg_pool.clone(),
 		tamanu.as_ref().map(|t| t.database_url.clone()),
 	)
-	.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 	.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog);
@@ -744,7 +743,6 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alert
 		.and_then(|reg| reg.device_key);
 
 	let base = crate::alertd::DaemonConfig::new(None, None)
-		.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
