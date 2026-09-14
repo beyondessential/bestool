@@ -78,6 +78,18 @@ Dispatch currently hands every check the same context (`sweep.rs:713`), so a che
 
 `heal::spawn_if_due` keys its rate limit and its one-attempt-in-flight guard on the bare check name, which has the same shape of problem: two applications' heals for one check would share a single limit. The key becomes the qualified name.
 
+## Neighbouring cards
+
+`E2` (discover every Postgres cluster) rests on a premise this card's dispatch change is needed to make true. E2 says the machinery for several clusters "is present and tested, it just never gets handed more than one" — but a registry entry running once per subject still receives the same sweep-wide context each time, so handing it several clusters today would report one cluster's readings under every cluster's key. E2 either waits for the per-subject context or builds it itself.
+
+`M1` (DB checks serialise on one shared connection) lands in the same place. `AppCx` carries the connection for the application it was built for, so deciding whether each application gets its own connection or draws from a pool is a decision this card's context split forces rather than one M1 can settle separately.
+
+`J1` (detect and restart PM2 on Windows) overlaps the Windows substrate: "is PM2 running as a service" is exactly what a PM2 runtime has to answer before it can list any services.
+
+`N1` (per-check timing) touches the same dispatch loop, so it is cheaper landed with or right after the context split than before it.
+
+`X1` (decide bestool-canopy's role post `bes-canopy-api`) was answered by `Y1` and looks stale.
+
 ## Build steps
 
 Ordered so each step lands on its own. The crate move comes first because it decides where everything else is written, and the context split second because the substrate has nowhere to hang until it exists.
