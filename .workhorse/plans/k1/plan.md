@@ -27,7 +27,13 @@ The suite is assembled rather than fixed, which `CHK` now states. A2 built most 
 
 What survives the narrowing is the reason the abstraction exists at all: a reading that feeds a threshold is asked for rather than handed in, so two consumers running one check cannot grade against different denominators.
 
-## Crate shape: move the daemon up, leave the checks
+## Crate shape: split out to K2
+
+`K2` moves the daemon into the `bestool` binary and leaves the checks in `bestool-alertd`, and should land before this card's signature split — that split touches all 46 check modules and most of 372 tests, and relocating those files afterwards would rebase a large diff across a crate boundary.
+
+The reasoning is recorded below because it is what decided where this card's substrate trait lives.
+
+### Why that way round
 
 `CHK` requires the checks and machinery to be available independently of the daemon that schedules them. Rather than extract a new checks crate out of `bestool-alertd`, the daemon moves up into the `bestool` binary and the checks stay where they are.
 
@@ -117,9 +123,8 @@ A machine subject has no runtime at all: `MachineCx` carries no such field, beca
 
 ## Build steps
 
-Ordered so each step lands on its own. The crate move comes first because it decides where everything else is written, and the context split second because the substrate has nowhere to hang until it exists.
+Ordered so each step lands on its own, after `K2` has moved the daemon out. The context split comes first because the substrate has nowhere to hang until it exists.
 
-- [ ] Move the daemon into `bestool`: `daemon`, `http_server`, `tasks`, `backup`, `child_confinement`, `windows_service`, `context`, `metrics`, `commands` and `doctor/task.rs`, taking the major bump and flattening `doctor::checks::all()` to `checks::all()` in the same one
 - [ ] Split the check signature into machine and application arms, folding the scope and the heal into each, and build the context per subject
 - [ ] Key heal's rate limit and in-flight guard on the qualified name
 - [ ] Retire the registry's category axis and `is_tamanu`, and restate `has_install` as a property of the application rather than a per-check gate
