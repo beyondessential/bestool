@@ -78,6 +78,31 @@ Dispatch currently hands every check the same context (`sweep.rs:713`), so a che
 
 `heal::spawn_if_due` keys its rate limit and its one-attempt-in-flight guard on the bare check name, which has the same shape of problem: two applications' heals for one check would share a single limit. The key becomes the qualified name.
 
+## The substrate trait
+
+Narrow, per `SUB`: the services running an application, the traffic reaching it, and the certificates in front of it. Nothing else — a database connection, a config and a version are parameters on `AppCx`, not readings.
+
+```rust
+#[async_trait]
+pub trait Runtime: Send + Sync {
+    fn compute(&self) -> Compute;                                    // Running | SwitchedOff
+    async fn services(&self) -> Result<Vec<Service>, Unavailable>;
+    async fn service_facts(&self, id: &ServiceId) -> Result<ServiceFacts, Unavailable>;
+    async fn http_counters(&self) -> Result<TrafficCounters, Unavailable>;
+    async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable>;
+}
+```
+
+`Unavailable` carries a free-form reason string, which the check turns into its skip. A closed set of causes — not permitted, not reachable, not present — would let canopy grade a permissions problem differently from an outage, and may be worth having later; there is not enough usage yet to know which causes are real, so the string comes first and the set is derived from what actually gets written.
+
+### One runtime per application, not one per machine
+
+Each application gets its own runtime, resolved when the sweep builds its list of applications. Detection may share work across them — probing for systemd once — but the result is per-application.
+
+This is required rather than tidier. A Windows machine runs Tamanu under PM2 and Postgres as a native Windows service, so the two applications on one box genuinely have different runtimes, and a single machine-wide supervisor cannot describe both. `Supervisor::current()` picking one answer for the machine is the assumption that breaks.
+
+A machine subject has no runtime at all: `MachineCx` carries no such field, because machine checks read the host directly.
+
 ## Neighbouring cards
 
 `E2` (discover every Postgres cluster) rests on a premise this card's dispatch change is needed to make true. E2 says the machinery for several clusters "is present and tested, it just never gets handed more than one" — but a registry entry running once per subject still receives the same sweep-wide context each time, so handing it several clusters today would report one cluster's readings under every cluster's key. E2 either waits for the per-subject context or builds it itself.
