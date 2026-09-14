@@ -45,10 +45,48 @@ Moving the daemon out removes `run`, `DaemonConfig`, `BackgroundTask` and the re
 
 `CheckContext` still carries `has_install` and `is_tamanu`. `CheckScope` made the second redundant — a non-Tamanu database is a Postgres application, which `CheckScope::Tamanu` does not admit — so it can go. `has_install` remains a real distinction (an application known only through its database has no install files to read) but is a property of the application rather than a gate each check consults.
 
+## Two check signatures, and a per-subject context
+
+A check is dispatched with a context built for the one subject it reports for, rather than the sweep-wide `SweepContext` every check receives today. Machine checks and application checks take different context types, so a machine check cannot reach an application's runtime or its scoped storage — the compiler enforcing what `CheckScope` enforces at runtime now.
+
+```rust
+pub struct MachineCx { store, http, canopy }
+pub struct AppCx { app: ApplicationRef, runtime: Arc<dyn Runtime>, store, db, config, http }
+
+pub struct Runner<Cx> {
+    run: fn(Cx) -> BoxFuture<'static, Check>,
+    heal: Option<HealAction<Cx>>,
+}
+
+pub enum Run {
+    Machine(Runner<MachineCx>),
+    Application(AppScope, Runner<AppCx>),
+}
+```
+
+Heal travels inside the arm because both arms have one — `canopy_registration` is a machine check and `fhir_jobs` an application check — and a heal needs the same context its check ran with.
+
+The scope moves inside the application arm, so `CheckScope` loses its `Machine` variant and becomes `AppScope` (Postgres, Tamanu, Central, Facility). Today a check carries a scope and a runner as two independent fields, which makes a machine runner paired with `CheckScope::Postgres` representable and wrong; folding the scope into the arm makes that combination not exist.
+
+This also retires the registry's other axis. `entry!("connect", db_connect, db, postgres)` carries both a category (`db`) and a scope (`postgres`), and the category arm still gates on `is_tamanu` — the macro's own comment concedes the skip is by now nearly unreachable. With the context built per subject and its parameters already resolved, there is nothing for the category to decide.
+
+The cost is narrower than it first looks. Only dispatch and heal match on the arm; `name`, `on_wire`, selection by qualified name, progress announcement and declared stats all read `CheckEntry` fields or the resulting `Check`, and none of them change.
+
+### What the per-subject context fixes
+
+Dispatch currently hands every check the same context (`sweep.rs:713`), so a check filed against two subjects of one kind runs twice against whichever one that shared context holds. Only one Postgres application is ever discovered today, so it is not reachable — but `subjects_for` already returns one subject per cluster, and the dispatch is what would have to change for that to mean anything.
+
+`heal::spawn_if_due` keys its rate limit and its one-attempt-in-flight guard on the bare check name, which has the same shape of problem: two applications' heals for one check would share a single limit. The key becomes the qualified name.
+
 ## Build steps
 
+Ordered so each step lands on its own. The crate move comes first because it decides where everything else is written, and the context split second because the substrate has nowhere to hang until it exists.
+
+- [ ] Move the daemon into `bestool`: `daemon`, `http_server`, `tasks`, `backup`, `child_confinement`, `windows_service`, `context`, `metrics`, `commands` and `doctor/task.rs`, taking the major bump and flattening `doctor::checks::all()` to `checks::all()` in the same one
+- [ ] Split the check signature into machine and application arms, folding the scope and the heal into each, and build the context per subject
+- [ ] Key heal's rate limit and in-flight guard on the qualified name
+- [ ] Retire the registry's category axis and `is_tamanu`, and restate `has_install` as a property of the application rather than a per-check gate
 - [ ] Introduce the substrate trait and the check-storage trait, with own-system implementations
-- [ ] Retire `is_tamanu`, and restate `has_install` as a property of the application rather than a per-check gate
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling
 - [ ] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
