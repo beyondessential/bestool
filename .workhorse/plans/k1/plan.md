@@ -27,9 +27,20 @@ The suite is assembled rather than fixed, which `CHK` now states. A2 built most 
 
 What survives the narrowing is the reason the abstraction exists at all: a reading that feeds a threshold is asked for rather than handed in, so two consumers running one check cannot grade against different denominators.
 
-### Still open
+## Crate shape: move the daemon up, leave the checks
 
-Whether `bestool-alertd` splits into a checks-and-machinery library and a daemon that is one consumer of it. `CHK` states the property — the checks and the machinery are available independently of the daemon that schedules them — without settling the crate layout that delivers it. Larger than anything on this card, and worth deciding before the substrate trait is written, since it determines where that trait lives.
+`CHK` requires the checks and machinery to be available independently of the daemon that schedules them. Rather than extract a new checks crate out of `bestool-alertd`, the daemon moves up into the `bestool` binary and the checks stay where they are.
+
+The measurements favour this decisively: roughly 16,700 lines of checks and machinery would stay, against roughly 4,200 that move — `daemon`, `http_server`, `tasks`, `backup`, `child_confinement`, `windows_service`, `context`, `metrics`, `commands`, and `doctor/task.rs`. Extracting the checks would have been the large edit; moving the daemon is the small one. `bestool` is the only crate that depends on `bestool-alertd`, so nothing outside the workspace breaks.
+
+The seam is already clean. `doctor/` reaches into the rest of the crate from exactly one file — `doctor/task.rs`, for `BackgroundTask`, `TaskContext`, `TaskEndpoint` and `TaskEndpointHandler` — and that file is the scheduled-task wrapper, which is daemon-side by nature. The daemon reaches into `doctor/` only for `Stat`, `StatKind`, `MetricsSnapshot`, `StatusCounts` and `DoctorMetricsHandle`, all of it to render `/metrics`, which is the right direction for a consumer to depend on a library.
+
+Putting the daemon in the binary also puts composition where composition belongs: the daemon is the thing that wires a schedule, a server and a canopy client together, and it has exactly one consumer.
+
+Two consequences to settle while doing it:
+
+- The crate would be named for a daemon it no longer contains. Renaming it is cheapest now, before canopy's relay takes a dependency on it.
+- `doctor` as a module inside a checks crate reads redundantly from outside — `bestool_alertd::doctor::checks::all()`. Worth flattening as part of the move.
 
 ### Cleanup this enables
 
