@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use bestool_alertd::doctor::{
+use bestool_alertd::{
 	SweepResult, SweepTamanu,
 	check::{Check, CheckOutcome, CheckStatus, OverallResult},
 	checks, overall_from_payload, perform_sweep,
@@ -297,7 +297,7 @@ async fn drain_recompute_stream(
 	response: reqwest::Response,
 	progress: Option<ProgressSender>,
 ) -> Result<StreamedSweep> {
-	use bestool_alertd::doctor::progress::DoctorEvent;
+	use bestool_alertd::progress::DoctorEvent;
 	use futures::StreamExt as _;
 
 	let registry = checks::all();
@@ -771,7 +771,7 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(
-			bestool_alertd::doctor::overall_from_payload(&payload),
+			bestool_alertd::overall_from_payload(&payload),
 			OverallResult::Failing,
 		);
 		let results = results_from_wire(&payload);

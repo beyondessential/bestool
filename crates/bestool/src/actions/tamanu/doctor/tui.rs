@@ -16,7 +16,7 @@ use crossterm::{
 use miette::{IntoDiagnostic, Result};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use bestool_alertd::doctor::{
+use bestool_alertd::{
 	check::{Check, CheckOutcome, CheckStatus},
 	progress::DoctorEvent,
 };
@@ -468,7 +468,7 @@ fn footer_line(
 
 #[cfg(test)]
 mod tests {
-	use bestool_alertd::doctor::subject::{ApplicationRef, Subject};
+	use bestool_alertd::subject::{ApplicationRef, Subject};
 
 	use super::*;
 

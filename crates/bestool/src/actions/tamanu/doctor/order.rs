@@ -1,4 +1,4 @@
-use bestool_alertd::doctor::check::{CheckOutcome, CheckStatus};
+use bestool_alertd::check::{CheckOutcome, CheckStatus};
 
 /// Severity order key for grouping completed checks: lower value = less severe,
 /// renders nearer the top of the list and further from the result line.
@@ -51,7 +51,7 @@ pub fn filter_and_sort(results: &[CheckOutcome], show_all: bool) -> Vec<CheckOut
 
 #[cfg(test)]
 mod tests {
-	use bestool_alertd::doctor::{check::Check, subject::Subject};
+	use bestool_alertd::{check::Check, subject::Subject};
 
 	use super::*;
 
