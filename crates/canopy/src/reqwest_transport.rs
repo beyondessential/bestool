@@ -318,15 +318,23 @@ impl ReqwestTransport {
 		self.raw_get(tailscale_path, mtls_path).await
 	}
 
-	/// Download an artifact canopy holds, by version and artifact id.
+	/// Download an artifact canopy offers, at the URL the offer names.
 	///
-	/// Carries the device credential, which is what canopy scopes the answer by.
-	/// The path is built here rather than taken from the offer's `download_url`:
-	/// it resolves against the transport's own base, so an offer naming an
-	/// authority of its own cannot present the credential to another host.
-	pub async fn download_artifact(&self, version: &str, id: &str) -> Result<reqwest::Response> {
-		let path = format!("/versions/{version}/artifacts/{id}/download");
-		self.raw_get(&format!("/public{path}"), &path).await
+	/// The device credential rides this request and the answer is trusted, so an
+	/// offer naming any origin but canopy's is refused rather than followed.
+	/// Only the path is taken from it: which endpoint holds the credential is
+	/// the transport's to decide, and over tailscale that is not canopy's own
+	/// origin.
+	pub async fn download_artifact(&self, offered_url: &str) -> Result<reqwest::Response> {
+		let url = reqwest::Url::parse(offered_url)
+			.into_diagnostic()
+			.wrap_err("parsing the offered download URL")?;
+		if url.origin() != self.base_url.origin() {
+			bail!("the offered download URL {url} does not name canopy");
+		}
+
+		let path = url.path();
+		self.raw_get(&format!("/public{path}"), path).await
 	}
 
 	/// GET a path, routed via tailscale when available, returning the raw response.
@@ -815,6 +823,47 @@ mod tests {
 		};
 		transport.renew().await.expect("renew should be a no-op");
 		assert!(transport.is_tailscale().await);
+	}
+
+	/// The offer names where to fetch a schema and the device credential rides
+	/// the request, so an offer naming any other origin is refused before it is
+	/// followed.
+	#[tokio::test]
+	async fn a_download_url_off_canopy_is_refused() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+		let err = transport
+			.download_artifact("https://evil.example/versions/2.60.0/artifacts/a/download")
+			.await
+			.expect_err("an offer off canopy is not followed");
+		assert!(err.to_string().contains("does not name canopy"), "{err}");
+	}
+
+	/// Canopy names its own origin in the offer, but which endpoint holds the
+	/// credential is the transport's to decide, so the offer is followed for
+	/// its path.
+	#[tokio::test]
+	async fn a_download_url_on_canopy_is_followed_by_path() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let response = transport
+			.download_artifact(&format!(
+				"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download"
+			))
+			.await
+			.expect("canopy's own offer is followed");
+		assert_eq!(
+			response.url().path(),
+			"/public/versions/2.60.0/artifacts/a/download"
+		);
 	}
 
 	/// A raw GET's body reaches alertd as privileged DDL and the device

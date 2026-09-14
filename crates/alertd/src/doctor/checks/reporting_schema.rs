@@ -217,6 +217,7 @@ fn with_version(check: Check, running: &Stamp) -> Check {
 struct Offered {
 	version: Version,
 	id: String,
+	download_url: String,
 }
 
 /// How long an answer from canopy about what is offered is reused for.
@@ -270,6 +271,7 @@ async fn offered_schema(
 	let offered = artifacts.into_iter().find(is_schema).map(|a| Offered {
 		version: version.clone(),
 		id: a.id.to_string(),
+		download_url: a.download_url,
 	});
 
 	cache_offer(version, &offered);
@@ -326,7 +328,7 @@ async fn fetch_offered(
 ) -> Result<String, miette::Report> {
 	let mut response = canopy
 		.transport()
-		.download_artifact(&offered.version.to_string(), &offered.id)
+		.download_artifact(&offered.download_url)
 		.await?
 		.error_for_status()
 		.into_diagnostic()?;
