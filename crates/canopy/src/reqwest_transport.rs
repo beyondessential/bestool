@@ -315,6 +315,25 @@ impl ReqwestTransport {
 	/// the one addressed, is refused rather than returned.
 	#[cfg(feature = "raw-requests")]
 	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
+		self.raw_get(tailscale_path, mtls_path).await
+	}
+
+	/// Download an artifact canopy holds, by version and artifact id.
+	///
+	/// Carries the device credential, which is what canopy scopes the answer by.
+	/// The path is built here rather than taken from the offer's `download_url`:
+	/// it resolves against the transport's own base, so an offer naming an
+	/// authority of its own cannot present the credential to another host.
+	pub async fn download_artifact(&self, version: &str, id: &str) -> Result<reqwest::Response> {
+		let path = format!("/versions/{version}/artifacts/{id}/download");
+		self.raw_get(&format!("/public{path}"), &path).await
+	}
+
+	/// GET a path, routed via tailscale when available, returning the raw response.
+	///
+	/// Redirects are not followed: a redirect, or an answer from any origin but
+	/// the one addressed, is refused rather than returned.
+	async fn raw_get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {

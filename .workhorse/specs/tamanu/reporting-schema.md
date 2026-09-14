@@ -26,8 +26,7 @@ It is reported whether or not the schema matches what Canopy offers.
 ## Grading it
 
 Canopy is asked what it offers for the version this server runs, over the authenticated connection: a schema belongs to a group, and Canopy answers for the caller's group.
-Only a schema Canopy published for one exact version is graded against.
-A schema registered against a version range is ignored, since a schema follows the migrations one version applies and Canopy resolves a range artifact for every version it covers.
+Canopy resolves which artifact a version is offered, so the schema in its answer is the one graded against.
 
 The check passes when the stamp matches what is offered.
 It fails when they differ, when the server's schema carries no stamp, and when the server has no schema at all and one is offered.

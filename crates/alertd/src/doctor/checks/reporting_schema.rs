@@ -267,43 +267,21 @@ async fn offered_schema(
 		Err(err) => return Err(err),
 	};
 
-	if let Some(range) = artifacts.iter().find_map(range_schema) {
-		tracing::warn!(
-			%range,
-			"canopy offers a reporting schema registered against a range; ignoring it"
-		);
-	}
-
-	let offered = artifacts
-		.into_iter()
-		.find(is_exact_schema)
-		.map(|a| Offered {
-			version: version.clone(),
-			id: a.id.to_string(),
-		});
+	let offered = artifacts.into_iter().find(is_schema).map(|a| Offered {
+		version: version.clone(),
+		id: a.id.to_string(),
+	});
 
 	cache_offer(version, &offered);
 	Ok(offered)
 }
 
-/// Whether an artifact is a reporting schema this server may grade against.
+/// Whether an artifact is the reporting schema canopy offers this version.
 ///
-/// A schema is published for one exact version, since it follows the
-/// migrations that version applies: one built against a patch is not the
-/// schema another patch of the same minor describes. Canopy resolves a range
-/// artifact for any version it covers, so grading against one would report a
-/// server as current on a schema built for something else.
-fn is_exact_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
-	artifact.artifact_type == ARTIFACT_TYPE && artifact.version_range_pattern.is_none()
-}
-
-/// The range a reporting-schema artifact was registered against, where it was
-/// registered against one at all. Worth saying out loud: it means a build
-/// published a schema canopy will hand to versions it was not built for.
-fn range_schema(artifact: &bestool_canopy::schema::Artifact) -> Option<&str> {
-	(artifact.artifact_type == ARTIFACT_TYPE)
-		.then_some(artifact.version_range_pattern.as_deref())
-		.flatten()
+/// Canopy resolves a version's artifacts before answering, keeping the most
+/// specific of a type, so the schema in the answer is the one to grade against.
+fn is_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
+	artifact.artifact_type == ARTIFACT_TYPE
 }
 
 /// Whether canopy's answer means it offers nothing for this version, as
@@ -346,11 +324,9 @@ async fn fetch_offered(
 	canopy: &Arc<CanopyClient>,
 	offered: &Offered,
 ) -> Result<String, miette::Report> {
-	let path = download_path(&offered.version.to_string(), &offered.id);
-
 	let mut response = canopy
 		.transport()
-		.get(&format!("/public{path}"), &path)
+		.download_artifact(&offered.version.to_string(), &offered.id)
 		.await?
 		.error_for_status()
 		.into_diagnostic()?;
@@ -394,18 +370,6 @@ const SCHEMA_MEDIA_TYPES: &[&str] = &["application/sql", "text/plain", "applicat
 
 /// Ceiling on a schema, matching what canopy will hold for one.
 const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
-
-/// The path to ask the transport for.
-///
-/// The transport addresses canopy by path so that it reaches whichever of the
-/// two endpoints holds the credential, and over tailscale the public API is
-/// mounted a level down. The path is built from the artifact's id rather than
-/// taken from the offer's `download_url`: a path is resolved against the
-/// transport's own base, so one carrying an authority of its own would present
-/// the device credential to whatever host named it.
-fn download_path(version: &str, id: &str) -> String {
-	format!("/versions/{version}/artifacts/{id}/download")
-}
 
 /// Apply the schema canopy offers.
 ///
@@ -664,36 +628,20 @@ mod tests {
 		serde_json::from_value(value).expect("an artifact")
 	}
 
-	/// A schema follows the migrations one version applies, so canopy publishes
-	/// it for that version alone. A range artifact is resolved for every
-	/// version it covers, so grading against one would call a server current on
-	/// a schema built for something else.
+	/// Canopy resolves a version's artifacts before answering, so a schema it
+	/// hands back is graded against however it was registered.
 	#[test]
-	fn only_an_exact_schema_is_graded_against() {
-		assert!(is_exact_schema(&artifact("reporting-schema", None)));
-		assert!(!is_exact_schema(&artifact(
-			"reporting-schema",
-			Some("2.60.x")
-		)));
+	fn a_schema_is_graded_against_however_it_was_registered() {
+		assert!(is_schema(&artifact("reporting-schema", None)));
+		assert!(is_schema(&artifact("reporting-schema", Some("2.60.x"))));
 	}
 
 	/// Other artifact types share the version listing, and an installer is not
 	/// a schema however it was registered.
 	#[test]
 	fn another_artifact_type_is_not_a_schema() {
-		assert!(!is_exact_schema(&artifact("installer", None)));
-		assert!(range_schema(&artifact("installer", Some("2.60.x"))).is_none());
-	}
-
-	/// A range-registered schema is worth naming: it means a build published
-	/// one canopy will hand to versions it was not built for.
-	#[test]
-	fn a_range_registered_schema_is_named() {
-		assert_eq!(
-			range_schema(&artifact("reporting-schema", Some("^2.60.0"))),
-			Some("^2.60.0")
-		);
-		assert_eq!(range_schema(&artifact("reporting-schema", None)), None);
+		assert!(!is_schema(&artifact("installer", None)));
+		assert!(!is_schema(&artifact("installer", Some("2.60.x"))));
 	}
 
 	/// A version canopy has not published has no artifacts of any kind, which
@@ -796,17 +744,6 @@ mod tests {
 		assert_eq!(
 			check.payload_extras.get(VERSION_FACT),
 			Some(&serde_json::Value::from("2.59.0"))
-		);
-	}
-
-	/// The offer's `download_url` is not what is asked for. A path is resolved
-	/// against the transport's own base, so one canopy names could carry an
-	/// authority and take the device credential with it.
-	#[test]
-	fn the_download_path_is_built_from_the_artifact_s_id() {
-		assert_eq!(
-			download_path("2.60.0", "00000000-0000-0000-0000-000000000000"),
-			"/versions/2.60.0/artifacts/00000000-0000-0000-0000-000000000000/download"
 		);
 	}
 
