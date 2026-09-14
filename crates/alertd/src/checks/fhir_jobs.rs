@@ -39,7 +39,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::fail(
 			"fhir_jobs",
 			"no DB connection",

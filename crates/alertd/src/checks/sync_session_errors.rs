@@ -83,15 +83,15 @@ fn with_error_counters(check: Check, mobile_seen: u64, server_seen: u64) -> Chec
 }
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
-	let mobile = match fetch_rows(client, MOBILE_SQL, &[]).await {
+	let mobile = match fetch_rows(&client, MOBILE_SQL, &[]).await {
 		Ok(set) => set,
 		Err(err) => return super::query_error_check(NAME, &err),
 	};
-	let server = match fetch_rows(client, SERVER_SQL, &[]).await {
+	let server = match fetch_rows(&client, SERVER_SQL, &[]).await {
 		Ok(set) => set,
 		Err(err) => return super::query_error_check(NAME, &err),
 	};

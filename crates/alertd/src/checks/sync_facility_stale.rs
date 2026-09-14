@@ -40,7 +40,7 @@ const SQL: &str = "WITH facility_sessions AS ( \
 	ORDER BY minutes_since_success DESC NULLS FIRST";
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

@@ -41,6 +41,11 @@ the daemon's dependencies.
 - [x] `bestool tamanu doctor` builds its own pool, so it runs the same path as
       the daemon
 - [x] A failed pool acquire leaves DB-dependent checks skipping
+- [x] Each check takes its own connection, so concurrent checks do not
+      serialise their queries onto one backend
+- [x] A host with no reachable database has no pool, and DB checks skip rather
+      than waiting on an acquire that cannot succeed
+- [x] A check's connection returns to the pool when the check ends
 - [x] The endpoint tests need no database, because the state they build no
       longer carries a pool
 - [ ] With postgres down at daemon start, the daemon still starts, and the

@@ -199,7 +199,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			"no upstream record is expected to be materialised, so every resource would read as a total gap",
 		);
 	}
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
@@ -240,7 +240,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 
 		let (enabled, source) = match resolve_enablement(resource, &settings, &ctx) {
 			Some(resolved) => resolved,
-			None => match has_any_row(client, resource.table).await {
+			None => match has_any_row(&client, resource.table).await {
 				Ok(any) => (any, Source::Observed),
 				Err(err) => {
 					errored.insert(resource.name, err.to_string());
@@ -253,7 +253,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			continue;
 		}
 
-		match measure(client, resource).await {
+		match measure(&client, resource).await {
 			Ok((gap, lag_secs)) => measured.push(Measured {
 				name: resource.name,
 				source,
@@ -607,31 +607,40 @@ mod tests {
 	/// grades it: schema discovery, the stored setting winning over the absent
 	/// config flag, the gap and its age, and the resulting failure.
 	///
-	/// Runs inside a transaction that is always rolled back, so it leaves the
-	/// database as it found it. The client is this test's own connection, so the
-	/// open transaction is not visible to anything else.
+	/// Seeds a real gap, commits it, grades it, then removes it again.
+	///
+	/// The seed has to be committed: the check takes its own connection from the
+	/// pool, so rows left uncommitted on this one would be invisible to it. The
+	/// probe rows are deleted first as well as last, so a run that died before
+	/// its cleanup doesn't poison the next one, and the cleanup runs before the
+	/// assertions so a failing assertion still leaves the database as it found
+	/// it.
 	#[tokio::test]
 	async fn grades_a_seeded_gap_against_central() {
+		const CLEANUP: &str = "DELETE FROM patients WHERE id = 'fhir-materialisation-probe'; \
+			 DELETE FROM settings \
+			 WHERE key = 'fhir.worker.resourceMaterialisationEnabled.Patient';";
+
 		let Some(ctx) = central_worker_enabled().await else {
 			return;
 		};
-		let client = ctx.db.clone().expect("central_ctx carries a connection");
+		let client = ctx.db().await.expect("central_ctx carries a connection");
 
 		client
-			.batch_execute(
-				"BEGIN; \
+			.batch_execute(&format!(
+				"{CLEANUP} \
 				 INSERT INTO settings (key, value) \
 				 VALUES ('fhir.worker.resourceMaterialisationEnabled.Patient', 'true'); \
 				 INSERT INTO patients \
 				 (id, created_at, updated_at, display_id, first_name, last_name, sex) \
 				 VALUES ('fhir-materialisation-probe', now() - interval '3 hours', now(), \
-				 'FHIRMATPROBE', 'Gap', 'Probe', 'other');",
-			)
+				 'FHIRMATPROBE', 'Gap', 'Probe', 'other');"
+			))
 			.await
 			.expect("seeding the gap should succeed");
 
 		let check = super::run(ctx).await;
-		let rolled_back = client.batch_execute("ROLLBACK").await;
+		let cleaned_up = client.batch_execute(CLEANUP).await;
 
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
@@ -666,7 +675,7 @@ mod tests {
 			"the resource should be a metric label"
 		);
 
-		rolled_back.expect("rollback should succeed");
+		cleaned_up.expect("removing the seeded probe rows should succeed");
 	}
 
 	#[test]

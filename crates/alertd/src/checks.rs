@@ -4,11 +4,10 @@
 //! sync `fn run(...) -> Check` where async is unnecessary). The `ALL` registry
 //! below ties names to runners so the dispatcher can filter by `--check`.
 
-use std::{ops::Deref, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
-use bestool_postgres::pool::PgConnection;
+use bestool_postgres::pool::{PgConnection, PgPool};
 use node_semver::Version;
-use tokio_postgres::Client as PgClient;
 
 use bestool_canopy::CanopyClient;
 use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
@@ -107,9 +106,9 @@ pub struct CheckContext {
 	/// each have to re-decide.
 	pub kind: ApiServerKind,
 	pub database_url: String,
-	/// The sweep's shared database connection, taken from the pool, when one
-	/// could be had. Read it through [`CheckContext::db`].
-	pub db: Option<Arc<PgConnection>>,
+	/// The database pool this sweep's checks draw from, when the database could
+	/// be reached at all. Take a connection with [`CheckContext::db`].
+	pub pool: Option<PgPool>,
 	pub http_client: reqwest::Client,
 	/// Whether a real Tamanu install backs this context. `false` when the
 	/// context was synthesised from a `TAMANU_DATABASE_URL` alone (DB reachable,
@@ -123,10 +122,26 @@ pub struct CheckContext {
 }
 
 impl CheckContext {
-	/// The sweep's shared database connection, or `None` when the database
-	/// couldn't be reached — in which case DB-dependent checks skip.
-	pub fn db(&self) -> Option<&PgClient> {
-		self.db.as_deref().map(Deref::deref)
+	/// Take a connection for this check, or `None` when there's no database or
+	/// it can't be reached — in which case the check skips.
+	///
+	/// Each check gets its own connection so their queries run in parallel
+	/// rather than pipelining onto one backend, and gives it back when the
+	/// connection drops at the end of the check. The pool bounds how many run
+	/// at once; a check that has to wait for one simply starts later.
+	///
+	/// Logged at debug: a database the sweep can't reach is reported by the
+	/// `db_connect` check, which opens its own connection, so a warning per
+	/// check here would be noise on top of the real signal.
+	pub async fn db(&self) -> Option<PgConnection> {
+		let pool = self.pool.as_ref()?;
+		match pool.get().await {
+			Ok(conn) => Some(conn),
+			Err(err) => {
+				tracing::debug!(%err, "could not take a DB connection for this check");
+				None
+			}
+		}
 	}
 }
 
@@ -457,7 +472,7 @@ pub mod test_support {
 
 	use std::sync::Arc;
 
-	use bestool_postgres::pool::PgConnection;
+	use bestool_postgres::pool::PgPool;
 	use node_semver::Version;
 
 	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
@@ -479,27 +494,26 @@ pub mod test_support {
 		.expect("facility test config should parse")
 	}
 
-	async fn connect(db_name: &str) -> Option<Arc<PgConnection>> {
+	/// A pool for one of the local test databases, or `None` when it can't be
+	/// reached — building a pool checks that it can connect.
+	async fn connect(db_name: &str) -> Option<PgPool> {
 		let url = format!("postgresql://localhost/{db_name}");
-		let pool = bestool_postgres::pool::create_pool(&url, "bestool-alertd-test")
+		bestool_postgres::pool::create_pool(&url, "bestool-alertd-test")
 			.await
-			.ok()?;
-		// The connection holds its own handle to the pool, so it stays usable
-		// after the local binding goes.
-		pool.get().await.ok().map(Arc::new)
+			.ok()
 	}
 
 	/// A central [`CheckContext`] backed by `tamanu-central`, or `None` if that
 	/// DB can't be reached.
 	pub async fn central_ctx() -> Option<CheckContext> {
-		let db = connect("tamanu-central").await?;
+		let pool = connect("tamanu-central").await?;
 		Some(CheckContext {
 			tamanu_version: Version::parse("0.0.0").unwrap(),
 			tamanu_root: std::path::PathBuf::from("/nonexistent"),
 			config: Arc::new(central_config()),
 			kind: ApiServerKind::Central,
 			database_url: "postgresql://localhost/tamanu-central".into(),
-			db: Some(db),
+			pool: Some(pool),
 			http_client: reqwest::Client::new(),
 			has_install: true,
 			is_tamanu: true,
@@ -515,7 +529,7 @@ pub mod test_support {
 			config: Arc::new(facility_config()),
 			kind: ApiServerKind::Facility,
 			database_url: "postgresql://localhost/tamanu-facility".into(),
-			db: None,
+			pool: None,
 			http_client: reqwest::Client::new(),
 			has_install: true,
 			is_tamanu: true,
@@ -529,6 +543,44 @@ mod tests {
 
 	use super::{SweepContext, all, fmt_db_error, query_error_check, test_support::central_ctx};
 	use crate::check::CheckStatus;
+
+	/// Checks run concurrently, so each must get its own backend rather than
+	/// queueing their queries onto one shared connection. Two connections taken
+	/// at once must therefore be two different backends.
+	///
+	/// Skipped when the test database isn't reachable, like the other DB-backed
+	/// tests here.
+	#[tokio::test]
+	async fn concurrent_checks_get_their_own_connections() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+
+		let (first, second) = tokio::join!(ctx.db(), ctx.db());
+		let first = first.expect("central_ctx reached the DB, so a connection is available");
+		let second = second.expect("the pool serves more than one connection");
+
+		let pid = async |conn: &bestool_postgres::pool::PgConnection| -> i32 {
+			conn.query_one("SELECT pg_backend_pid()", &[])
+				.await
+				.expect("pg_backend_pid should answer")
+				.get(0)
+		};
+		assert_ne!(
+			pid(&first).await,
+			pid(&second).await,
+			"two checks sharing one backend would serialise their queries"
+		);
+	}
+
+	/// A host with no reachable database has no pool, and every DB-dependent
+	/// check skips rather than waiting on an acquire that cannot succeed.
+	#[tokio::test]
+	async fn no_pool_means_no_connection() {
+		let ctx = super::test_support::facility_ctx();
+		assert!(ctx.pool.is_none());
+		assert!(ctx.db().await.is_none());
+	}
 
 	fn no_tamanu_ctx() -> SweepContext {
 		SweepContext::builder()
@@ -556,7 +608,7 @@ mod tests {
 				config: Arc::new(TamanuConfig::from_database(db)),
 				kind: ApiServerKind::Central,
 				database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
-				db: None,
+				pool: None,
 				http_client: reqwest::Client::new(),
 				has_install: false,
 				is_tamanu: true,
@@ -684,7 +736,7 @@ mod tests {
 
 	async fn query_err(sql: &str) -> Option<tokio_postgres::Error> {
 		let ctx = central_ctx().await?;
-		let client = ctx.db().expect("central_ctx always has a client");
+		let client = ctx.db().await.expect("central_ctx always has a client");
 		Some(
 			client
 				.query(sql, &[])

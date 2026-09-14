@@ -17,7 +17,7 @@ const WARN_SECS: i64 = 2 * 60;
 const FAIL_SECS: i64 = 5 * 60;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 

@@ -95,11 +95,21 @@ What this does not change:
 - mobc caps an acquire at 30 seconds by default, so an unreachable database
   fails the acquire rather than stalling the sweep.
 
-Still to decide: the sweep shares one connection between all its DB checks, so
-their queries pipeline onto a single backend. Now that a pool is always present,
-each check could take its own and run properly in parallel — but that changes
-every DB check's signature and raises a sweep's peak backends from one to the
-pool's limit, so it belongs with the check-signature work rather than here.
+Each check takes its own connection, rather than sharing one. Checks already run
+concurrently, so sharing meant their queries pipelined onto a single backend and
+a sweep cost the sum of its DB work instead of the longest piece of it. A pool
+that only ever yields one connection is no pool at all, so `CheckContext` holds
+the pool and `ctx.db()` acquires per check, giving it back when the check ends.
+The pool bounds how many run at once; a check that has to wait simply starts
+later. A test holds this: two connections taken at once must report different
+backend PIDs.
+
+One test had to change with it. `grades_a_seeded_gap_against_central` seeded its
+fixture inside an uncommitted transaction and relied on the check sharing that
+connection to see it. It now commits the seed and deletes it afterwards, which
+is what a check reading through its own connection requires. It also deletes the
+probe rows before seeding, so a run that dies before its cleanup doesn't poison
+the next one.
 
 ## Second review round
 

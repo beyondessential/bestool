@@ -11,12 +11,12 @@ const SQL: &str = "SELECT * FROM report_requests \
 const LOOKBACK_HOURS: i64 = 1;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
 	tiered_rows_check(
-		client,
+		&client,
 		"report_errors",
 		"no recent report errors",
 		"report errors: ",

@@ -5,7 +5,7 @@ use crate::Stat;
 use crate::check::Check;
 
 pub async fn run(ctx: CheckContext) -> Check {
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::fail(
 			"sync_sessions",
 			"no DB connection",
@@ -85,7 +85,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// Phase durations of the most recently completed session, so operators can
 	// see how long each phase of a sync takes over time. Grading is unchanged;
 	// these are additional telemetry only.
-	let durations = last_session_phase_durations(client).await;
+	let durations = last_session_phase_durations(&client).await;
 	if let Some(s) = durations.snapshot {
 		check = check.with_stat(
 			Stat::gauge("snapshot_duration_seconds", s)

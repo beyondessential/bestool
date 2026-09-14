@@ -58,7 +58,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 			"integrations.fhir.worker.enabled is false, so no worker is expected to heartbeat",
 		);
 	}
-	let Some(client) = ctx.db() else {
+	let Some(client) = ctx.db().await else {
 		return Check::fail(
 			NAME,
 			"no DB connection",

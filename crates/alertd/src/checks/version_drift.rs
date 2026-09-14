@@ -74,8 +74,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// Only look at units that show up in our expectations registry. Hand-
 	// started or orphaned containers aren't drift; they're outside the
 	// expected set.
-	let patient_portal_enabled = match ctx.db() {
-		Some(client) => bestool_tamanu::server_info::query_patient_portal_enabled(client).await,
+	let patient_portal_enabled = match ctx.db().await {
+		Some(client) => bestool_tamanu::server_info::query_patient_portal_enabled(&client).await,
 		None => None,
 	};
 	let patient_portal_instanced =
