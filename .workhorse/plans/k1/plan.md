@@ -37,10 +37,9 @@ The seam is already clean. `doctor/` reaches into the rest of the crate from exa
 
 Putting the daemon in the binary also puts composition where composition belongs: the daemon is the thing that wires a schedule, a server and a canopy client together, and it has exactly one consumer.
 
-Two consequences to settle while doing it:
+The crate keeps the name `bestool-alertd` even though the daemon leaves it. These are published crates with version history behind them, and renaming one costs a new registry entry, a release-plz change and broken documentation links, to buy nothing but tidiness. The name records what the crate was built for, which is still what its checks are for.
 
-- The crate would be named for a daemon it no longer contains. Renaming it is cheapest now, before canopy's relay takes a dependency on it.
-- `doctor` as a module inside a checks crate reads redundantly from outside — `bestool_alertd::doctor::checks::all()`. Worth flattening as part of the move.
+Moving the daemon out removes `run`, `DaemonConfig`, `BackgroundTask` and the rest from the crate's public API, so the move is a major version bump regardless. Anything else worth changing about that surface — flattening `doctor::checks::all()` down to `checks::all()`, for one — rides along at no extra cost and should be done in the same bump rather than in a later one.
 
 ### Cleanup this enables
 
