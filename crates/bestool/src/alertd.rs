@@ -39,8 +39,10 @@ pub struct DaemonConfig {
 	/// `None` on hosts with no Tamanu deployment (and therefore no database).
 	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 
-	/// Database connection URL, retained for redacted display.
-	pub database_url: Option<String>,
+	/// Database connection URL, retained for display only; nothing reads it to
+	/// connect. Wrapped in `Redacted` because it carries the database password,
+	/// so debug-logging the config can't leak it.
+	pub database_url: Option<Redacted<String>>,
 
 	/// Tamanu device key PEM, used as the client identity for canopy.
 	///
@@ -109,7 +111,7 @@ impl DaemonConfig {
 	) -> Self {
 		Self {
 			pg_pool,
-			database_url,
+			database_url: database_url.map(Redacted),
 			device_key_pem: None,
 			no_server: false,
 			server_addrs: Vec::new(),

@@ -41,12 +41,29 @@ Test split: ~370 tests stay under `doctor/`, ~22 move (11 `http_server`, 10 `doc
 Moving a library into a binary turns `pub` items into dead-code candidates, which
 surfaced three things the library boundary had been hiding:
 
-- `TaskContext::pg_pool` is written but never read, on either platform. Every
-  check that needs the database opens its own connection from the sweep's URL.
-  Left in place behind an `expect(dead_code)` with a reason, since it is offered
-  plumbing rather than a mistake; worth deleting if no task claims it.
+- `TaskContext::pg_pool` is written but never read, on either platform, and the
+  chain above it (`InternalContext`, `DaemonConfig`, the startup `create_pool`)
+  is dead with it. The sweep does not open a connection per check: it opens one
+  shared connection per sweep from the database URL (`sweep.rs`), which is what
+  the pool would replace. Wiring the pool into `perform_sweep` is a behaviour
+  change, and `bestool tamanu doctor` calls the same function with no pool, so
+  it is not this card's work. Held behind an `expect(dead_code)` until that
+  lands.
 - `RestartTrigger` and `TaskContext::restart` are live only on Windows, where the
-  self-update task replaces the binary. Marked `cfg_attr(not(windows), expect(…))`.
+  self-update task replaces the binary. Gated `#[cfg(windows)]` so the code
+  exists only where it is used, rather than annotated as dead.
 - `windows_service::install_service` had no callers and defaulted to service args
   (`service`) that would not have worked for bestool, which passes
   `alertd service`. Deleted.
+
+## Raised in review
+
+- The `alertd` feature no longer compiled on its own: the daemon code moved into
+  `bestool`, where `bestool-postgres`, `bestool-tamanu` and `node-semver` are
+  optional deps that the feature did not enable. It built on `main` because the
+  code lived in `bestool-alertd`, which depends on them unconditionally. Fixed by
+  adding them to the feature, plus a CI job that builds this configuration, which
+  nothing else in CI covered.
+- `DaemonConfig::database_url` is now `Redacted<String>`. Its own doc said
+  "retained for redacted display" while the hand-written `Debug` printed the
+  postgres URL, password and all. Nothing reads the field to connect.
