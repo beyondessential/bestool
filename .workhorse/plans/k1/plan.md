@@ -47,17 +47,20 @@ The crate keeps the name `bestool-alertd` even though the daemon leaves it. Thes
 
 Moving the daemon out removes `run`, `DaemonConfig`, `BackgroundTask` and the rest from the crate's public API, so the move is a major version bump regardless. Anything else worth changing about that surface — flattening `doctor::checks::all()` down to `checks::all()`, for one — rides along at no extra cost and should be done in the same bump rather than in a later one.
 
-### Cleanup this enables
+## Dispatch and context: split out to L2
 
-`CheckContext` still carries `has_install` and `is_tamanu`. `CheckScope` made the second redundant — a non-Tamanu database is a Postgres application, which `CheckScope::Tamanu` does not admit — so it can go. `has_install` remains a real distinction (an application known only through its database has no install files to read) but is a property of the application rather than a gate each check consults.
+`L2` builds each check's context for the one subject it reports for and splits the signature into machine and application arms. It lands after `K2` and before this card's substrate work, which has nowhere to hang until `AppCx` exists.
 
-## Two check signatures, and a per-subject context
+The reasoning is kept here because it is what shapes where the substrate attaches.
+
+### The shape L2 lands
 
 A check is dispatched with a context built for the one subject it reports for, rather than the sweep-wide `SweepContext` every check receives today. Machine checks and application checks take different context types, so a machine check cannot reach an application's runtime or its scoped storage — the compiler enforcing what `CheckScope` enforces at runtime now.
 
 ```rust
 pub struct MachineCx { store, http, canopy }
-pub struct AppCx { app: ApplicationRef, runtime: Arc<dyn Runtime>, store, db, config, http }
+pub struct AppCx { app: ApplicationRef, store, db, config, http }
+// `runtime: Arc<dyn Runtime>` is added to AppCx by this card, not by L2.
 
 pub struct Runner<Cx> {
     run: fn(Cx) -> BoxFuture<'static, Check>,
@@ -71,6 +74,8 @@ pub enum Run {
 ```
 
 Heal travels inside the arm because both arms have one — `canopy_registration` is a machine check and `fhir_jobs` an application check — and a heal needs the same context its check ran with.
+
+`CheckContext`'s `has_install` and `is_tamanu` go with the same change. `CheckScope` made `is_tamanu` redundant — a non-Tamanu database is a Postgres application, which `CheckScope::Tamanu` does not admit — and `has_install` stays a real distinction but becomes a property of the application rather than a gate each check consults.
 
 The scope moves inside the application arm, so `CheckScope` loses its `Machine` variant and becomes `AppScope` (Postgres, Tamanu, Central, Facility). Today a check carries a scope and a runner as two independent fields, which makes a machine runner paired with `CheckScope::Postgres` representable and wrong; folding the scope into the arm makes that combination not exist.
 
@@ -123,11 +128,8 @@ A machine subject has no runtime at all: `MachineCx` carries no such field, beca
 
 ## Build steps
 
-Ordered so each step lands on its own, after `K2` has moved the daemon out. The context split comes first because the substrate has nowhere to hang until it exists.
+Ordered so each step lands on its own, after `K2` has moved the daemon out and `L2` has built the per-subject context this card's substrate hangs from.
 
-- [ ] Split the check signature into machine and application arms, folding the scope and the heal into each, and build the context per subject
-- [ ] Key heal's rate limit and in-flight guard on the qualified name
-- [ ] Retire the registry's category axis and `is_tamanu`, and restate `has_install` as a property of the application rather than a per-check gate
 - [ ] Introduce the substrate trait and the check-storage trait, with own-system implementations
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling
