@@ -122,6 +122,7 @@ alertd = [
 	"dep:bestool-tamanu",
 	"bestool-tamanu/seedling",
 	"bestool-tamanu/canopy-registration",
+	"dep:node-semver",
 	"dep:axum",
 	"dep:tower-http",
 	"dep:tokio-stream",

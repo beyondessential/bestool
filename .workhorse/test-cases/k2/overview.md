@@ -11,6 +11,9 @@ the daemon's dependencies.
 - [x] The workspace builds for a Windows GNU target with default features
 - [x] `bestool` builds with the daemon feature off (defaults minus `alertd` and
       `alertd-tamanu`), so `bestool tamanu doctor` does not require the daemon
+- [x] `bestool` builds with only the daemon feature on
+      (`--no-default-features --features alertd`), so a host with no Tamanu
+      deployment can still run the daemon
 - [x] `cargo clippy --workspace --all-targets` is clean of new warnings
 - [x] `cargo fmt` leaves the tree unchanged
 
@@ -48,3 +51,4 @@ the daemon's dependencies.
 
 - [x] The postgres-less namespace job runs the whole `bestool-alertd` lib test
       binary, rather than filtering on a module path the flatten removed
+- [x] A job builds the `alertd` feature on its own, which nothing in CI covered

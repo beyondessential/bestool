@@ -98,6 +98,26 @@ jobs:
       - name: Contract tests against live canopy
         run: cargo test -p bestool --lib canopy_contract -- --ignored
 
+  alertd-alone:
+    name: alertd / builds without Tamanu
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The daemon is meant to run on hosts with no Tamanu deployment, so the
+      # `alertd` feature has to stand on its own. It pulls several optional
+      # deps that the default build gets via `tamanu`, and nothing else in CI
+      # builds this combination.
+      - name: Check the alertd feature on its own
+        run: cargo check -p bestool --no-default-features --features alertd --all-targets
+
   alertd-no-db:
     name: alertd / graceful without postgres
     runs-on: ubuntu-24.04
@@ -297,7 +317,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi, btrfs-hold]
+    needs: [test, contract, check-docs, alertd-alone, alertd-no-db, kopia-proxy, podman-secret, vss-wmi, btrfs-hold]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
