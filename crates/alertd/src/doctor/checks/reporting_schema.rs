@@ -585,6 +585,56 @@ mod tests {
 		assert_eq!(stamped, Some(Some("2.60.0".to_owned())));
 	}
 
+	/// The offered SQL drops the schema before recreating it and goes to the
+	/// server as one batch, so a statement that fails partway leaves the schema
+	/// that was there. An artifact carrying its own `COMMIT` would end that
+	/// batch's transaction and lose the guarantee, which is why one carries none.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn a_failed_apply_leaves_the_schema_that_was_there() {
+		const PROBE: &str = "reporting_apply_probe";
+
+		let Ok(db) = bestool_postgres::pool::connect_one(
+			"postgresql://localhost/tamanu-central",
+			"bestool-alertd-test",
+		)
+		.await
+		else {
+			return;
+		};
+
+		db.batch_execute(&format!(
+			"DROP SCHEMA IF EXISTS {PROBE} CASCADE; CREATE SCHEMA {PROBE}; \
+			 COMMENT ON SCHEMA {PROBE} IS '2.59.0'"
+		))
+		.await
+		.expect("seed the schema the server already has");
+
+		let applied = db
+			.batch_execute(&format!(
+				"DROP SCHEMA {PROBE} CASCADE; CREATE SCHEMA {PROBE}; \
+				 COMMENT ON SCHEMA {PROBE} IS '2.60.0'; SELECT no_such_function()"
+			))
+			.await;
+
+		let stamp: Option<String> = db
+			.query_opt(
+				"SELECT obj_description(oid, 'pg_namespace') AS stamp \
+				 FROM pg_namespace WHERE nspname = $1",
+				&[&PROBE],
+			)
+			.await
+			.expect("read the stamp back")
+			.and_then(|row| row.get("stamp"));
+
+		db.batch_execute(&format!("DROP SCHEMA IF EXISTS {PROBE} CASCADE"))
+			.await
+			.expect("clean up");
+
+		assert!(applied.is_err(), "the batch should have failed");
+		assert_eq!(stamp.as_deref(), Some("2.59.0"));
+	}
+
 	/// Whether the schema a server has is the offered one is canopy's to
 	/// answer, so an unreachable canopy grades nothing rather than grading the
 	/// server against a stamp it cannot check.

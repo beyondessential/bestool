@@ -39,5 +39,9 @@ It skips on a host with no Tamanu, and where the database is unreachable.
 
 Applying the offered schema is the check's self-heal action, so it runs only in the long-running daemon and only while the check is failing.
 
-The schema's own SQL replaces the schema wholesale, so applying it needs no additional reconciliation.
-A failed apply is logged and retried under the heal backoff, and leaves the previous schema as it was.
+The schema's own SQL drops the schema and recreates it, and is applied as one batch, so a statement that fails partway leaves the server the schema it already had.
+That holds only while the artifact carries no transaction control of its own: a `COMMIT` part-way through ends the batch's transaction, and a later failure then leaves the server with neither the schema it had nor the one offered.
+A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`.
+
+A failed apply is logged and retried under the heal backoff.
+An artifact that applied without stamping the offered version is not applied again, since retrying it would rebuild the schema on every backoff step for as long as the offer stands.
