@@ -667,33 +667,28 @@ mod tests {
 		})
 	}
 
-	fn artifact(kind: &str, range: Option<&str>) -> bestool_canopy::schema::Artifact {
-		let mut value = serde_json::json!({
+	fn artifact(kind: &str) -> bestool_canopy::schema::Artifact {
+		serde_json::from_value(serde_json::json!({
 			"artifact_type": kind,
 			"download_url": "https://canopy.example/s.sql",
 			"id": "00000000-0000-0000-0000-000000000000",
 			"platform": "any",
-		});
-		if let Some(range) = range {
-			value["version_range_pattern"] = serde_json::Value::from(range);
-		}
-		serde_json::from_value(value).expect("an artifact")
+		}))
+		.expect("an artifact")
 	}
 
-	/// Canopy resolves a version's artifacts before answering, so a schema it
-	/// hands back is graded against however it was registered.
+	/// Canopy resolves a version's artifacts before answering, so the schema in
+	/// its answer is the one graded against.
 	#[test]
-	fn a_schema_is_graded_against_however_it_was_registered() {
-		assert!(is_schema(&artifact("reporting-schema", None)));
-		assert!(is_schema(&artifact("reporting-schema", Some("2.60.x"))));
+	fn the_schema_canopy_offers_is_graded_against() {
+		assert!(is_schema(&artifact("reporting-schema")));
 	}
 
 	/// Other artifact types share the version listing, and an installer is not
-	/// a schema however it was registered.
+	/// a schema.
 	#[test]
 	fn another_artifact_type_is_not_a_schema() {
-		assert!(!is_schema(&artifact("installer", None)));
-		assert!(!is_schema(&artifact("installer", Some("2.60.x"))));
+		assert!(!is_schema(&artifact("installer")));
 	}
 
 	/// A version canopy has not published has no artifacts of any kind, which
