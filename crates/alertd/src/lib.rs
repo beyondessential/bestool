@@ -20,16 +20,24 @@ pub use sweep::{
 /// The version of the alertd library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Base builder for alertd's outbound HTTP clients. Call sites add their own
-/// timeouts etc. Canopy sets its own User-Agent, so this one applies to alertd's
-/// other requests.
-pub fn http_builder() -> reqwest::ClientBuilder {
-	reqwest::Client::builder().user_agent(concat!("bestool-alertd/", env!("CARGO_PKG_VERSION")))
-}
+/// What alertd identifies as on outbound requests.
+///
+/// Carries this crate's version rather than the calling binary's, so the
+/// identity tracks the checks rather than whatever ships them. The daemon
+/// builds its clients with it; canopy sets its own User-Agent, so this applies
+/// to alertd's other requests.
+pub const USER_AGENT: &str = concat!("bestool-alertd/", env!("CARGO_PKG_VERSION"));
 
-/// A built [`reqwest::Client`] from [`http_builder`].
-pub fn http_client() -> reqwest::Client {
-	http_builder()
-		.build()
-		.expect("failed to build alertd HTTP client")
+#[cfg(test)]
+mod tests {
+	use super::{USER_AGENT, VERSION};
+
+	/// The daemon builds its HTTP clients from this, and it lives here rather
+	/// than in the binary so it carries the checks crate's version. Rebuilding
+	/// it from the binary's own `CARGO_PKG_VERSION` would silently change what
+	/// alertd identifies as.
+	#[test]
+	fn user_agent_carries_this_crates_version() {
+		assert_eq!(USER_AGENT, format!("bestool-alertd/{VERSION}"));
+	}
 }

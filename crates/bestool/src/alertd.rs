@@ -164,6 +164,20 @@ impl DaemonConfig {
 	}
 }
 
+/// Base builder for the daemon's outbound HTTP clients. Call sites add their
+/// own timeouts etc. Identifies as [`bestool_alertd::USER_AGENT`], which
+/// carries the checks crate's version rather than this binary's.
+pub fn http_builder() -> reqwest::ClientBuilder {
+	reqwest::Client::builder().user_agent(bestool_alertd::USER_AGENT)
+}
+
+/// A built [`reqwest::Client`] from [`http_builder`].
+pub fn http_client() -> reqwest::Client {
+	http_builder()
+		.build()
+		.expect("failed to build alertd HTTP client")
+}
+
 /// Helper to format miette errors for logging without ANSI codes
 pub(crate) struct LogError<'a>(pub &'a miette::Report);
 

@@ -94,7 +94,7 @@ pub async fn run_with_shutdown(
 
 	let canopy_client = match connect(
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
-		bestool_alertd::http_builder,
+		crate::alertd::http_builder,
 	)
 	.await
 	{
@@ -142,7 +142,7 @@ pub async fn run_with_shutdown(
 
 	let ctx = Arc::new(InternalContext {
 		pg_pool: pool,
-		http_client: bestool_alertd::http_client(),
+		http_client: crate::alertd::http_client(),
 		canopy_client,
 		reload: reload_rx,
 		#[cfg(windows)]

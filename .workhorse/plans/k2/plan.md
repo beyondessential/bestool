@@ -20,7 +20,7 @@ Test split: ~370 tests stay under `doctor/`, ~22 move (11 `http_server`, 10 `doc
 
 **Flatten.** `doctor::` is hoisted to the alertd crate root in the same major bump: consumers write `bestool_alertd::checks`, `::check`, `::sweep`, `::subject`, `::stat`, `::heal`, `::progress`, `::server_info`. The `super::` paths inside the hoisted modules survive untouched — `super` of `crate::checks` is `crate`, exactly as `super` of `crate::doctor::checks` was `crate::doctor`.
 
-**Version/UA.** `VERSION`, `http_builder`, `http_client` stay in `bestool-alertd`, so the outbound User-Agent remains `bestool-alertd/<alertd version>` rather than silently becoming bestool's version. `DaemonConfig`'s `binary_version` fallback becomes bestool's own `CARGO_PKG_VERSION`, which is what every call site already overrides it to.
+**Version/UA.** The daemon builds its own HTTP clients, but the identity string stays in `bestool-alertd` as `USER_AGENT`, so the outbound User-Agent remains `bestool-alertd/<alertd version>` rather than silently becoming bestool's. A test in the checks crate holds that. `DaemonConfig`'s `binary_version` is just bestool's own `CARGO_PKG_VERSION`, which is the only thing it was ever set to.
 
 **Versions.** Left to release-plz; the breaking change is marked in the commit message.
 
@@ -88,3 +88,20 @@ What this does not change:
   `connect_one`, which retries every tick until the database comes back.
 - mobc caps an acquire at 30 seconds by default, so an unreachable database
   fails the acquire rather than stalling the sweep indefinitely.
+
+## Second review round
+
+- The daemon's HTTP client factory was still in the checks crate, which the
+  daemon reached back across the seam for. The clients are built in
+  `crate::alertd` now; only `USER_AGENT` stays behind, because it has to carry
+  the checks crate's version rather than the binary's. A test in that crate
+  holds the two together.
+- `DaemonConfig::with_binary_version` was a setter for a value identical to the
+  default, now that both resolve `CARGO_PKG_VERSION` in the same crate. It only
+  existed while the config lived across a crate boundary. Removed, with its two
+  call sites.
+- Two comments were raised against a snapshot from before the pool was wired up,
+  and no longer hold: `TaskContext::pg_pool` is read by the doctor task, not
+  dead, and carries no annotation. The suggestion to swap `restart`'s
+  `cfg(windows)` for `expect(dead_code)` rested on matching the sibling field's
+  strategy, which no longer exists.

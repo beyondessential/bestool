@@ -22,7 +22,7 @@ pub fn default_server_addrs() -> Vec<std::net::SocketAddr> {
 pub async fn try_connect_daemon(
 	addrs: &[std::net::SocketAddr],
 ) -> miette::Result<(reqwest::Client, String)> {
-	let client = bestool_alertd::http_client();
+	let client = crate::alertd::http_client();
 	let mut last_error = None;
 
 	for addr in addrs {
