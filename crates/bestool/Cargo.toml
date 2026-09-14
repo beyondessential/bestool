@@ -116,6 +116,12 @@ download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolv
 alertd = [
 	"dep:bestool-alertd",
 	"dep:bestool-canopy",
+	# The daemon holds the caller's pool, confines its children via pm2, serves
+	# the seedling identity endpoint, and caches canopy tags after a sweep.
+	"dep:bestool-postgres",
+	"dep:bestool-tamanu",
+	"bestool-tamanu/seedling",
+	"bestool-tamanu/canopy-registration",
 	"dep:axum",
 	"dep:tower-http",
 	"dep:tokio-stream",

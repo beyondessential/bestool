@@ -59,27 +59,15 @@ impl DaemonControl {
 /// replaced the running binary (self-update) can have the daemon exit for the
 /// service manager to relaunch the new binary, via the same path as the
 /// `/restart` control.
+#[cfg(windows)]
 #[derive(Clone, Debug)]
 pub struct RestartTrigger {
-	#[cfg_attr(
-		not(windows),
-		expect(
-			dead_code,
-			reason = "only the Windows self-update task restarts the daemon"
-		)
-	)]
 	events: mpsc::Sender<DaemonEvent>,
 }
 
+#[cfg(windows)]
 impl RestartTrigger {
 	/// Ask the daemon to exit so the service manager restarts it.
-	#[cfg_attr(
-		not(windows),
-		expect(
-			dead_code,
-			reason = "only the Windows self-update task restarts the daemon"
-		)
-	)]
 	pub async fn request_restart(&self) {
 		let _ = self.events.send(DaemonEvent::Restart).await;
 	}
@@ -157,6 +145,7 @@ pub async fn run_with_shutdown(
 		http_client: bestool_alertd::http_client(),
 		canopy_client,
 		reload: reload_rx,
+		#[cfg(windows)]
 		restart: Some(RestartTrigger {
 			events: event_tx.clone(),
 		}),

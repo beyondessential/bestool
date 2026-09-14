@@ -16,6 +16,8 @@ pub struct InternalContext {
 	/// their state without a restart.
 	pub reload: watch::Receiver<u64>,
 	/// Handle to ask the daemon to restart itself. `None` in detached test
-	/// contexts. Used by the self-update task after it replaces the binary.
+	/// contexts. Used by the self-update task after it replaces the binary,
+	/// which only happens on Windows.
+	#[cfg(windows)]
 	pub restart: Option<crate::alertd::daemon::RestartTrigger>,
 }

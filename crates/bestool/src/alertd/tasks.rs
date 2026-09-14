@@ -16,8 +16,8 @@ use crate::alertd::context::InternalContext;
 pub struct TaskContext {
 	/// `None` on hosts with no Tamanu deployment (and therefore no database).
 	///
-	/// Offered to task implementors; no task reads it today, and every check
-	/// that needs the database opens its own connection from the sweep's URL.
+	/// Offered to task implementors; no task reads it today, and the sweep
+	/// opens its own shared connection from the database URL.
 	#[expect(dead_code, reason = "plumbed for task implementors, none read it yet")]
 	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 	pub http_client: reqwest::Client,
@@ -26,17 +26,9 @@ pub struct TaskContext {
 	/// `reload.changed().await` to refresh its state without a restart.
 	pub reload: tokio::sync::watch::Receiver<u64>,
 	/// Handle to ask the daemon to restart itself, for a task that has replaced
-	/// the running binary. `None` in detached test contexts.
-	///
-	/// Only the Windows self-update task replaces the binary, so nothing reads
-	/// this elsewhere.
-	#[cfg_attr(
-		not(windows),
-		expect(
-			dead_code,
-			reason = "only the Windows self-update task restarts the daemon"
-		)
-	)]
+	/// the running binary. `None` in detached test contexts. Only the Windows
+	/// self-update task replaces the binary.
+	#[cfg(windows)]
 	pub restart: Option<crate::alertd::daemon::RestartTrigger>,
 	/// Query parameters of the request, for HTTP endpoint handlers. Empty on the
 	/// periodic `run` tick.
@@ -50,6 +42,7 @@ impl TaskContext {
 			http_client: ctx.http_client.clone(),
 			canopy_client: ctx.canopy_client.clone(),
 			reload: ctx.reload.clone(),
+			#[cfg(windows)]
 			restart: ctx.restart.clone(),
 			query: BTreeMap::new(),
 		}
