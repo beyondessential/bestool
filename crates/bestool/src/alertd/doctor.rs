@@ -78,6 +78,14 @@ struct DoctorTaskInner {
 	/// reaching the database. Stable for the lifetime of the PG instance, so we
 	/// reuse it across ticks instead of re-querying every minute.
 	pg_version_cache: Mutex<Option<String>>,
+	/// The pool the sweep takes its connection from, with the URL it was built
+	/// for. Built on the first tick that reaches the database and reused after,
+	/// and rebuilt when the URL changes under an in-place upgrade.
+	///
+	/// Built here rather than taken from the daemon's config because building
+	/// one needs the database up: a daemon started while postgres is down has
+	/// no pool to be given, and must be able to make one once it recovers.
+	pg_pool: Mutex<Option<(String, bestool_postgres::pool::PgPool)>>,
 	/// Latest sweep, captured on every successful tick. Served by the `latest`
 	/// HTTP endpoint so `bestool tamanu doctor` can read what the daemon
 	/// already computed instead of re-running the checks itself.
@@ -109,6 +117,7 @@ impl DoctorTask {
 				tamanu: Mutex::new(tamanu),
 				tamanu_source: TamanuSource::Fixed,
 				pg_version_cache: Mutex::new(None),
+				pg_pool: Mutex::new(None),
 				latest: Mutex::new(None),
 				check_severities: Mutex::new(None),
 				backup_dispatch: None,
@@ -241,6 +250,31 @@ impl DoctorTaskInner {
 		guard.clone()
 	}
 
+	/// The pool for `database_url`, building it if there isn't one yet or the
+	/// URL has changed. `None` while the database is unreachable — building a
+	/// pool checks connectivity — in which case the sweep's DB checks skip and
+	/// the next tick tries again.
+	async fn pool_for(&self, database_url: &str) -> Option<bestool_postgres::pool::PgPool> {
+		let mut guard = self.pg_pool.lock().await;
+		if let Some((url, pool)) = guard.as_ref()
+			&& url == database_url
+		{
+			return Some(pool.clone());
+		}
+
+		match bestool_postgres::pool::create_pool(database_url, "bestool-alertd").await {
+			Ok(pool) => {
+				*guard = Some((database_url.to_owned(), pool.clone()));
+				Some(pool)
+			}
+			Err(err) => {
+				warn!(%err, "could not open a Tamanu DB pool; DB-dependent checks will skip");
+				*guard = None;
+				None
+			}
+		}
+	}
+
 	async fn run_sweep(
 		self: &Arc<Self>,
 		ctx: &TaskContext,
@@ -249,6 +283,10 @@ impl DoctorTaskInner {
 	) -> Result<doctor::SweepResult> {
 		let cached = self.pg_version_cache.lock().await.clone();
 		let tamanu = self.resolve_tamanu().await;
+		let pg_pool = match tamanu.as_ref() {
+			Some(t) => self.pool_for(&t.database_url).await,
+			None => None,
+		};
 		// Hand checks the shared canopy client so a heal action can reach canopy;
 		// only the periodic tick enables healing, so an on-demand recompute
 		// driven by `doctor --fresh` stays side-effect-free. See
@@ -263,7 +301,7 @@ impl DoctorTaskInner {
 			progress,
 			ctx.canopy_client.clone(),
 			enable_heal,
-			ctx.pg_pool.clone(),
+			pg_pool,
 		)
 		.await?;
 
@@ -511,6 +549,7 @@ mod tests {
 			tamanu: Mutex::new(tamanu),
 			tamanu_source,
 			pg_version_cache: Mutex::new(None),
+			pg_pool: Mutex::new(None),
 			latest: Mutex::new(None),
 			check_severities: Mutex::new(None),
 			backup_dispatch: None,

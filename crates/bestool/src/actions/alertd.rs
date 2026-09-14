@@ -670,21 +670,6 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 		),
 	}
 
-	// A pool error here means postgres is down or unreachable. Don't abort
-	// startup over it: the daemon must still run so the `db_connect` check
-	// (which connects via `database_url`, not this pool) can report it.
-	let pg_pool = match &tamanu {
-		Some(t) => match bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await
-		{
-			Ok(pool) => Some(pool),
-			Err(err) => {
-				warn!(%err, "postgres not reachable at startup; db_connect will report it");
-				None
-			}
-		},
-		None => None,
-	};
-
 	let watchdog = if no_watchdog {
 		None
 	} else {
@@ -693,11 +678,11 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 
 	let device_key_pem = fetch_device_key().await;
 
-	let base = crate::alertd::DaemonConfig::new(
-		pg_pool.clone(),
-		tamanu.as_ref().map(|t| t.database_url.clone()),
-	)
-	.with_no_server(no_server)
+	// Startup never touches the database: the doctor task opens the pool on its
+	// first sweep and reopens it when postgres comes back, so postgres being
+	// down can't hold the daemon up or leave it permanently poolless.
+	let base = crate::alertd::DaemonConfig::new(tamanu.as_ref().map(|t| t.database_url.clone()))
+		.with_no_server(no_server)
 	.with_server_addrs(server_addr)
 	.with_watchdog_timeout(watchdog);
 	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), tamanu)
@@ -742,7 +727,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alert
 		.flatten()
 		.and_then(|reg| reg.device_key);
 
-	let base = crate::alertd::DaemonConfig::new(None, None)
+	let base = crate::alertd::DaemonConfig::new(None)
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);

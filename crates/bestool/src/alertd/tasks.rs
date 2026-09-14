@@ -14,11 +14,6 @@ use crate::alertd::context::InternalContext;
 /// connection pool stays warm across tick intervals.
 #[derive(Clone)]
 pub struct TaskContext {
-	/// `None` on hosts with no Tamanu deployment (and therefore no database).
-	///
-	/// The doctor task takes the sweep's shared connection from here, so
-	/// sweeping every minute doesn't reconnect each time.
-	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
 	pub http_client: reqwest::Client,
 	pub canopy_client: Option<Arc<CanopyClient>>,
 	/// Bumped on each reload request (SIGHUP/SIGUSR1); a task can
@@ -37,7 +32,6 @@ pub struct TaskContext {
 impl TaskContext {
 	pub(crate) fn from_internal(ctx: &InternalContext) -> Self {
 		Self {
-			pg_pool: ctx.pg_pool.clone(),
 			http_client: ctx.http_client.clone(),
 			canopy_client: ctx.canopy_client.clone(),
 			reload: ctx.reload.clone(),

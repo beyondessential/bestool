@@ -30,15 +30,6 @@ pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse}
 /// Configuration for the alertd daemon
 #[derive(Clone)]
 pub struct DaemonConfig {
-	/// Database connection pool, opened by the caller.
-	///
-	/// Centralising pool creation at the caller lets `bestool alertd`
-	/// reuse the pool for one-off setup queries (kind detection, device key
-	/// lookup) instead of opening additional short-lived connections.
-	///
-	/// `None` on hosts with no Tamanu deployment (and therefore no database).
-	pub pg_pool: Option<bestool_postgres::pool::PgPool>,
-
 	/// Database connection URL, retained for display only; nothing reads it to
 	/// connect. Wrapped in `Redacted` because it carries the database password,
 	/// so debug-logging the config can't leak it.
@@ -108,12 +99,8 @@ impl fmt::Debug for DaemonConfig {
 }
 
 impl DaemonConfig {
-	pub fn new(
-		pg_pool: Option<bestool_postgres::pool::PgPool>,
-		database_url: Option<String>,
-	) -> Self {
+	pub fn new(database_url: Option<String>) -> Self {
 		Self {
-			pg_pool,
 			database_url: database_url.map(Redacted),
 			device_key_pem: None,
 			no_server: false,

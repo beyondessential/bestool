@@ -24,7 +24,7 @@ use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_machine_id
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks::{self, CheckContext, SweepContext, SweepDb},
+	checks::{self, CheckContext, SweepContext},
 	heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
@@ -568,35 +568,24 @@ pub async fn perform_sweep(
 	let tamanu_ctx = match &tamanu {
 		Some(t) => {
 			// Take a single connection up-front. Checks that need the DB share
-			// it; the `db_connect` check separately measures the open latency
-			// for reporting.
+			// it; the `db_connect` check opens its own, so it can measure
+			// connect latency and report the database being down without
+			// depending on the pool.
 			//
-			// The daemon hands us its pool, so sweeping every minute reuses a
-			// connection instead of reconnecting each time; the connection goes
-			// back when the sweep's last check drops it. Without a pool (the
-			// one-shot `doctor` CLI) we open one for this sweep alone, via
-			// `connect_one` so all DB opens in the project share one SSL
-			// fallback / auth retry / app-name path.
+			// The connection comes back to the pool when the sweep's last check
+			// drops it. The daemon reuses the pool across sweeps; a one-shot
+			// `doctor` run builds one for the run.
+			// `None` when no pool could be built at all, which is the same
+			// outcome for the checks: they skip.
 			let db = match &pg_pool {
 				Some(pool) => match pool.get().await {
-					Ok(conn) => Some(Arc::new(SweepDb::Pooled(conn))),
+					Ok(conn) => Some(Arc::new(conn)),
 					Err(err) => {
-						warn!(%err, "doctor could not take a pooled Tamanu DB connection; DB-dependent checks will skip");
+						warn!(%err, "doctor could not take a Tamanu DB connection; DB-dependent checks will skip");
 						None
 					}
 				},
-				None => match bestool_postgres::pool::connect_one(
-					&t.database_url,
-					"bestool-tamanu-doctor",
-				)
-				.await
-				{
-					Ok(client) => Some(Arc::new(SweepDb::Owned(client))),
-					Err(err) => {
-						warn!(%err, "doctor could not open Tamanu DB; DB-dependent checks will skip");
-						None
-					}
-				},
+				None => None,
 			};
 
 			// A generic (non-Tamanu) database has no Tamanu tables to inspect,

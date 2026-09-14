@@ -60,7 +60,7 @@ surfaced things the library boundary had been hiding:
   "retained for redacted display" while the hand-written `Debug` printed the
   postgres URL, password and all. Nothing reads the field to connect.
 
-## Finishing the pool
+## Mandating the pool
 
 The daemon opened a connection pool at startup and threaded it through
 `DaemonConfig`, `InternalContext` and `TaskContext` — and then nothing read it.
@@ -69,25 +69,37 @@ daemon sweeping every minute paid for a fresh connect each time while the pool
 sat unused. The dead field was the visible end of an unfinished wire, so this
 card connects it rather than deleting it.
 
-`perform_sweep` now takes an optional pool. The daemon passes its own, so a
-sweep checks a connection out and returns it when the last check drops it; the
-one-shot `doctor` CLI has no pool and still opens its own via `connect_one`,
-unchanged. `CheckContext::db` holds a `SweepDb`, which is either of those and
-derefs to the same client, so checks read it through `ctx.db()` without caring
-which.
+A sweep takes its connection from a pool, and only from a pool: the
+`connect_one` fallback is gone, so there is one way in rather than two. Both
+callers supply one — the daemon reuses a pool across sweeps, and the `doctor`
+CLI builds one for its run, which costs it nothing because `connect_one` was
+itself a `create_pool` that took one connection and threw the pool away.
+`CheckContext::db` is a pooled connection; the `SweepDb` enum that spanned the
+two ways in is gone with the second way.
+
+The pool belongs to the doctor task, not to `DaemonConfig`. Building one
+requires the database to be up, so a daemon started while postgres is down can't
+be handed one — it has to be able to build one later. The task builds its pool
+on the first sweep that reaches the database, keyed by the URL so an in-place
+upgrade rebuilds it, and retries every tick until then. That also means startup
+no longer touches the database at all.
 
 What this does not change:
 
-- `db_connect` still opens its own connection to measure connect latency, which
-  is how the daemon reports the database being down. It never goes through the
-  pool, so a pool that cannot hand out a connection does not mask a DB outage.
-- A failed acquire warns and leaves `db` as `None`, so DB-dependent checks skip
-  exactly as they did when `connect_one` failed.
-- Postgres is still not required for the daemon to start: pool creation already
-  tolerated failure at startup, and with no pool the sweep falls back to
-  `connect_one`, which retries every tick until the database comes back.
+- `db_connect` opens its own connection with `tokio_postgres::connect` to
+  measure connect latency, and never goes through the pool, so a pool that
+  cannot hand out a connection can't mask a database outage.
+- A failed acquire warns and leaves `db` as `None`, so DB-dependent checks skip.
+- Postgres is still not required for the daemon to start — more so than before,
+  since startup no longer attempts a connection.
 - mobc caps an acquire at 30 seconds by default, so an unreachable database
-  fails the acquire rather than stalling the sweep indefinitely.
+  fails the acquire rather than stalling the sweep.
+
+Still to decide: the sweep shares one connection between all its DB checks, so
+their queries pipeline onto a single backend. Now that a pool is always present,
+each check could take its own and run properly in parallel — but that changes
+every DB check's signature and raises a sweep's peak backends from one to the
+pool's limit, so it belongs with the check-signature work rather than here.
 
 ## Second review round
 

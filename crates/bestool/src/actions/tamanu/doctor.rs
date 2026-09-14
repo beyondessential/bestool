@@ -159,6 +159,18 @@ async fn run_local_sweep(
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
 	let sweep_handle = tokio::spawn(async move {
+		// The checks take their connection from a pool the same way the daemon's
+		// sweep does. `None` when there's no install to get a URL from, or when
+		// the database is unreachable — the DB checks skip either way, and
+		// `db_connect` opens its own connection to report why.
+		let pg_pool = match install.as_ref() {
+			Some(t) => bestool_postgres::pool::create_pool(&t.database_url, "bestool-tamanu-doctor")
+				.await
+				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
+				.ok(),
+			None => None,
+		};
+
 		perform_sweep(
 			env!("CARGO_PKG_VERSION"),
 			install,
@@ -169,7 +181,7 @@ async fn run_local_sweep(
 			progress,
 			None,
 			false,
-			None,
+			pg_pool,
 		)
 		.await
 	});

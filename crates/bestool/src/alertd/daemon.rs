@@ -90,8 +90,6 @@ pub async fn run_with_shutdown(
 
 	metrics::record_activity();
 
-	let pool = daemon_config.pg_pool.clone();
-
 	let canopy_client = match connect(
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
 		crate::alertd::http_builder,
@@ -141,7 +139,6 @@ pub async fn run_with_shutdown(
 	let (event_tx, mut event_rx) = mpsc::channel(100);
 
 	let ctx = Arc::new(InternalContext {
-		pg_pool: pool,
 		http_client: crate::alertd::http_client(),
 		canopy_client,
 		reload: reload_rx,

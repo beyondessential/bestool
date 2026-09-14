@@ -36,13 +36,17 @@ the daemon's dependencies.
 
 ## The daemon's connection pool
 
-- [x] The sweep takes its shared connection from the daemon's pool when there is
-      one, so a daemon sweeping every minute stops reconnecting each tick
-- [x] `bestool tamanu doctor`, which has no pool, still opens its own connection
-- [x] A failed pool acquire leaves DB-dependent checks skipping, as a failed
-      `connect_one` did
-- [ ] With postgres down at daemon start, the daemon still starts and the sweep
-      falls back to opening its own connection each tick until it comes back
+- [x] The sweep takes its connection from a pool, and only from a pool — there
+      is no `connect_one` fallback left in the sweep path
+- [x] `bestool tamanu doctor` builds its own pool, so it runs the same path as
+      the daemon
+- [x] A failed pool acquire leaves DB-dependent checks skipping
+- [x] The endpoint tests need no database, because the state they build no
+      longer carries a pool
+- [ ] With postgres down at daemon start, the daemon still starts, and the
+      doctor task builds its pool on a later tick once postgres returns
+- [ ] An in-place upgrade that changes the database URL rebuilds the pool
+      without a daemon restart
 - [ ] With postgres going down while the daemon runs, `db_connect` still reports
       it — the check opens its own connection and never goes through the pool
 - [ ] A sweep returns its pooled connection afterwards, so the pool does not

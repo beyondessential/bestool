@@ -6,13 +6,11 @@ use crate::alertd::context::InternalContext;
 
 use super::ServerState;
 
+/// A server state for the endpoint tests. The endpoints it serves report on the
+/// daemon itself — uptime, watchdog, version — and never reach the database, so
+/// this needs no connection.
 pub async fn create_test_state() -> Arc<ServerState> {
-	let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-	let pool = bestool_postgres::pool::create_pool(&db_url, "bestool-alertd-test")
-		.await
-		.unwrap();
 	let ctx = Arc::new(InternalContext {
-		pg_pool: Some(pool),
 		http_client: reqwest::Client::new(),
 		canopy_client: None,
 		reload: tokio::sync::watch::channel(0).1,
