@@ -107,7 +107,7 @@ async fn list() -> Result<()> {
 	let states = futures::future::join_all(
 		records
 			.iter()
-			.map(|record| hold::capture_state(&record.capture)),
+			.map(hold::capture_state),
 	)
 	.await;
 
@@ -121,9 +121,12 @@ async fn list() -> Result<()> {
 			"{:<40}  {:<10}  {:<21}  {:<10}  {:<8}  {}",
 			record.id,
 			record.capture.backend(),
-			record
-				.taken_at
-				.map_or_else(|| "(no freeze instant)".to_owned(), |at| at.to_string()),
+			// To the second: the column is sized for it, and an operator picking a
+			// rollback point is choosing between captures hours apart.
+			record.taken_at.map_or_else(
+				|| "(no freeze instant)".to_owned(),
+				|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+			),
 			humanise(now - record.held_at),
 			if record.uploaded { "yes" } else { "no" },
 			match state {
@@ -181,8 +184,25 @@ fn humanise(span: jiff::Span) -> String {
 async fn reattach(id: &str) -> Result<()> {
 	let record = hold::load(id).await?;
 	hold::reattach(&record.capture).await?;
-	info!(hold = %id, source = %record.source.display(), "the held capture is readable again");
-	Ok(())
+	// Putting the exposure back is not the same as the capture being readable
+	// through it, and the operator is here because something already told them it
+	// was not. Reporting success on the strength of the remount alone sends them
+	// round the same loop with nothing new to go on, so say what is true.
+	match hold::capture_state(&record).await {
+		hold::CaptureState::Present => {
+			info!(hold = %id, source = %record.source.display(), "the held capture is readable again");
+			Ok(())
+		}
+		hold::CaptureState::Detached => bail!(
+			"hold {id} was exposed again at {}, but its capture still cannot be read there; \
+			 the shadow copy or volume behind it is no longer serving the capture",
+			record.source.display()
+		),
+		hold::CaptureState::Gone => bail!(
+			"the capture behind hold {id} is gone, so exposing it again cannot bring it back; \
+			 drop it with `bestool canopy hold drop {id}`"
+		),
+	}
 }
 
 async fn drop_hold(id: &str) -> Result<()> {
@@ -190,7 +210,7 @@ async fn drop_hold(id: &str) -> Result<()> {
 	// A detached capture is still there to free, so it takes the same release as
 	// a mounted one: forgetting the record instead would leave the capture on the
 	// filesystem holding its space with nothing naming it.
-	if hold::capture_state(&record.capture).await == hold::CaptureState::Gone {
+	if hold::capture_state(&record).await == hold::CaptureState::Gone {
 		// Dropping is what the operator asked for, and the capture is already
 		// gone; the record going with it is the outcome either way.
 		warn!(

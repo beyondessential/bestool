@@ -405,7 +405,7 @@ async fn restore_from_hold(
 			args.backup_type
 		);
 	}
-	match hold::capture_state(&record.capture).await {
+	match hold::capture_state(&record).await {
 		hold::CaptureState::Present => {}
 		hold::CaptureState::Detached => bail!(
 			"the capture behind hold {hold_id} is not mounted, so it cannot be read; \

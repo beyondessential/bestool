@@ -290,9 +290,16 @@ fn mount_shadow(device: &str, junction: &Path) -> Result<()> {
 	// A leftover junction/dir here makes `junction::create` fail; remove it. On a
 	// junction this unmounts (doesn't touch the shadow); best-effort.
 	let _ = std::fs::remove_dir(junction);
-	junction::create(device, junction)
+	// The device path names the shadow's volume device; the root directory of the
+	// filesystem on it is that path with a trailing separator. Without one, paths
+	// *through* the junction still resolve — the remainder is appended before the
+	// device is parsed — but opening the junction itself opens the device, so it
+	// lists as empty however healthy the copy is, and an operator checking their
+	// rollback point is shown nothing.
+	let target = format!("{}\\", device.trim_end_matches('\\'));
+	junction::create(&target, junction)
 		.into_diagnostic()
-		.wrap_err_with(|| format!("junctioning {} to {device}", junction.display()))
+		.wrap_err_with(|| format!("junctioning {} to {target}", junction.display()))
 }
 
 /// A freshly-created shadow: its id (for deletion) and device path (for reading).
@@ -660,6 +667,22 @@ mod tests {
 		let via = mount.join(&leaf).join("marker.txt");
 		let content = std::fs::read(&via).expect("read marker through the junction");
 		assert_eq!(content, b"vss-wmi-ok", "marker content via the junction");
+
+		// And list the junction itself. A device path without a trailing separator
+		// names the volume device rather than the root directory of the filesystem
+		// on it, so a junction substituting one lists empty while every path
+		// through it still resolves — the capture reads fine and anything that
+		// judges it by its root calls it lost.
+		let top: Vec<_> = std::fs::read_dir(&mount)
+			.expect("list the junction itself")
+			.filter_map(Result::ok)
+			.map(|entry| entry.file_name())
+			.collect();
+		assert!(
+			top.iter().any(|name| name == leaf.as_str()),
+			"the junction lists {top:?}, without {leaf}: it is exposing the volume device, \
+			 not the root directory of the filesystem on it"
+		);
 
 		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
 			kopia_snapshot(Path::new(&kopia), &mount.join(&leaf).to_string_lossy());
