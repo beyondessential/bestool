@@ -780,7 +780,7 @@ name = "bestool-postgres"
 version = "1.2.2"
 dependencies = [
  "bytes",
- "fraction",
+ "fraction 0.17.0",
  "hex",
  "jiff",
  "miette",
@@ -814,7 +814,7 @@ dependencies = [
  "dirs",
  "edit",
  "filetime",
- "fraction",
+ "fraction 0.17.0",
  "fs4",
  "futures",
  "hex",
@@ -2793,10 +2793,20 @@ version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
- "byteorder",
- "bytes",
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fraction"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e246562084dde8ebbcc943b261c406ce4f68e5032ec28029a251a47d6a295500"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "num",
+ "num-bigint",
  "postgres-types",
 ]
 
@@ -4061,7 +4071,7 @@ dependencies = [
  "data-encoding",
  "email_address",
  "fancy-regex 0.19.0",
- "fraction",
+ "fraction 0.15.4",
  "getrandom 0.3.4",
  "idna",
  "itoa",
@@ -4096,7 +4106,7 @@ checksum = "7ec7637f83e510868ae6ed625f7ebfbbde4554ee8ce49854caa5126a8b9b9ecb"
 dependencies = [
  "ahash",
  "bytecount",
- "fraction",
+ "fraction 0.15.4",
  "num-cmp",
  "num-traits",
  "serde_json",
@@ -4823,9 +4833,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
