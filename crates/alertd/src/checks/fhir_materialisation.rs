@@ -267,6 +267,12 @@ pub async fn run(ctx: CheckContext) -> Check {
 		}
 	}
 
+	// Every query is done; what follows is grading. This check is the sweep's
+	// long pole — schema discovery plus up to two aggregate queries per resource
+	// — so holding a slot past the last of them would make everything still
+	// queueing wait on arithmetic.
+	drop(client);
+
 	let unmonitored = unmonitored(&discovered);
 
 	if measured.is_empty() && errored.is_empty() && unmonitored.is_empty() {
@@ -687,19 +693,20 @@ mod tests {
 		let check = super::run(ctx).await;
 
 		// Both rows are ours, so this puts the database back as it was found.
-		let cleaned_up = async {
-			client
-				.execute("DELETE FROM patients WHERE id = $1", &[&PROBE])
-				.await?;
-			client
-				.execute(
-					"DELETE FROM settings \
-					 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
-					&[&SETTING],
-				)
-				.await
-		}
-		.await;
+		// Run both regardless of each other: short-circuiting on the patient
+		// would leave the setting behind, which both changes the deployment's
+		// behaviour and blocks every later run through the guard above.
+		let patient_removed = client
+			.execute("DELETE FROM patients WHERE id = $1", &[&PROBE])
+			.await;
+		let setting_removed = client
+			.execute(
+				"DELETE FROM settings \
+				 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+				&[&SETTING],
+			)
+			.await;
+		let cleaned_up = patient_removed.and(setting_removed);
 
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
