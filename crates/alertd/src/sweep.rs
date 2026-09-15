@@ -621,7 +621,13 @@ pub async fn perform_sweep(
 				config: t.config.clone(),
 				kind,
 				database_url: t.database_url.clone(),
-				pool: pg_pool.clone(),
+				// Only when the setup connection proved the database is
+				// reachable. Handing the checks a pool that cannot serve them
+				// makes each of them wait out the acquire timeout in turn,
+				// delaying the whole sweep — including the `db_connect` failure
+				// that is the point of the daemon when postgres is down. With no
+				// pool they skip at once and the next tick tries again.
+				pool: db_reachable.then(|| pg_pool.clone()).flatten(),
 				http_client: http_client.clone(),
 				has_install: t.has_install,
 				is_tamanu: t.is_tamanu,
