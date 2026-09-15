@@ -57,7 +57,7 @@ struct Harness {
 
 impl Harness {
 	/// A cluster on a btrfs subvolume in a loopback image.
-	fn btrfs() -> Self {
+	async fn btrfs() -> Self {
 		let scratch = scratch("btrfs");
 		let image = scratch.join("fs.img");
 		run("truncate", &["-s", "6G", str(&image)]);
@@ -87,11 +87,12 @@ impl Harness {
 			scratch,
 			Storage::Btrfs { loopdev, mount: mount.clone() },
 		)
+		.await
 	}
 
 	/// A cluster on a thin logical volume, in a pool small enough that the
 	/// ballast the capture pins is a legible share of it.
-	fn thin_lvm() -> Self {
+	async fn thin_lvm() -> Self {
 		let scratch = scratch("lvm");
 		let image = scratch.join("pv.img");
 		run("truncate", &["-s", "4G", str(&image)]);
@@ -127,11 +128,12 @@ impl Harness {
 				mount: mount.clone(),
 			},
 		)
+		.await
 	}
 
 	/// A cluster on the machine's own filesystem, where no snapshot backend
 	/// applies and the capture falls to `pg_basebackup`.
-	fn base_backup() -> Self {
+	async fn base_backup() -> Self {
 		let scratch = scratch("basebackup");
 		Self::with_cluster(
 			"hold-e2e-basebackup",
@@ -140,17 +142,18 @@ impl Harness {
 			scratch.clone(),
 			Storage::BaseBackup,
 		)
+		.await
 	}
 
 	/// Put a cluster under `parent`, start it, and write the def that names it.
-	fn with_cluster(
+	async fn with_cluster(
 		backup_type: &str,
 		cluster: &str,
 		parent: &Path,
 		scratch: PathBuf,
 		storage: Storage,
 	) -> Self {
-		clear_records(backup_type);
+		clear_records(backup_type).await;
 
 		let version = installed_major();
 		let data_dir = parent.join(&version).join(cluster);
@@ -322,14 +325,14 @@ impl Drop for Harness {
 #[tokio::test]
 #[ignore = "needs root, btrfs-progs and postgres; run in the `btrfs hold / e2e` CI job"]
 async fn a_btrfs_hold_is_taken_used_and_released() {
-	lifecycle(&Harness::btrfs()).await;
+	lifecycle(&Harness::btrfs().await).await;
 }
 
 /// The whole lifecycle on a crash-consistent thin-LVM snapshot.
 #[tokio::test]
 #[ignore = "needs root, lvm2 and postgres; run in the `thin-lvm hold / e2e` CI job"]
 async fn a_thin_lvm_hold_is_taken_used_and_released() {
-	lifecycle(&Harness::thin_lvm()).await;
+	lifecycle(&Harness::thin_lvm().await).await;
 }
 
 /// The whole lifecycle on a streamed base backup: the backend with no privileged
@@ -337,7 +340,7 @@ async fn a_thin_lvm_hold_is_taken_used_and_released() {
 #[tokio::test]
 #[ignore = "needs root and postgres; run in the `base backup hold / e2e` CI job"]
 async fn a_base_backup_hold_is_taken_used_and_released() {
-	lifecycle(&Harness::base_backup()).await;
+	lifecycle(&Harness::base_backup().await).await;
 }
 
 /// The highest installed server major, resolved the way the restore's own

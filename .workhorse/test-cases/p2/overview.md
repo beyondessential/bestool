@@ -71,6 +71,9 @@ backup (`base backup hold / e2e`), VSS (`vss / wmi e2e`).
 - [x] The capture behind it is gone from the storage, not just the record: the
       subvolume off the filesystem, the logical volume off the pool, the shadow
       copy out of VSS, the staged tree off the disk (verifies spec: HOLD)
+- [x] The probe that judges the above answers "present" while the capture is
+      still held, so a probe that looked in the wrong place could not let the
+      post-drop assertion pass without reading the storage
 - [x] btrfs and thin-LVM: the space comes back. The fixture writes ballast before
       the capture and overwrites it after, so the capture pins extents the live
       data no longer shares and a drop that only forgot the record is visible as

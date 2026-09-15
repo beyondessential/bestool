@@ -30,7 +30,7 @@ use crate::actions::{
 	canopy::{
 		backup::{
 			BackupArgs,
-			hold::{CaptureState, HoldRecord, capture_state, list, load, records_dir},
+			hold::{CaptureState, HoldRecord, capture_state, list, load, records_dir, release},
 		},
 		restore::RestoreArgs,
 	},
@@ -216,6 +216,18 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	// only claim on what it froze.
 	write(&data_dir.join(BALLAST), &ballast(3));
 
+	// The probe that the drop is about to be judged by, asserted while the capture
+	// is still there. A probe that answered "gone" for the wrong reason would make
+	// the assertion after the drop pass without ever looking at the storage, and
+	// that assertion is the whole point of the step.
+	assert!(
+		backend.capture_present(&held).await,
+		"the {} probe cannot see hold {}'s capture while it is still held, so it \
+		 proves nothing about the capture being gone after the drop",
+		held.capture.backend(),
+		held.id,
+	);
+
 	// `bestool canopy hold drop`: the record, and the capture behind it.
 	let before_drop = backend.store_in_use().await;
 	hold(HoldAction::Drop(DropArgs { id: held.id.clone() }))
@@ -334,19 +346,93 @@ async fn restore_err(record: &HoldRecord, backups_dir: &Path) -> String {
 		.to_string()
 }
 
-/// Forget the hold records a backup type left behind. A lifecycle that panicked
-/// leaves one, and the next run would find two and refuse to guess which is its
-/// own. The capture behind a stranded record goes with the storage the fixture
-/// rebuilds around it; on Windows, where the storage is the machine's, the
-/// shadow copy is left for the runner to take with it.
-fn clear_records(backup_type: &str) {
-	let prefix = format!("{backup_type}-");
+/// Release and forget the holds a backup type left behind. A lifecycle that
+/// panicked leaves one, and the next run would find two and refuse to guess
+/// which is its own.
+///
+/// The capture goes first, and through the same release the drop uses: a
+/// stranded record names a subvolume, a logical volume, a shadow copy or a
+/// staged tree that nothing else will ever name again, and removing the record
+/// alone would strand it permanently — on the base-backup backend that is a
+/// whole copy of the cluster sitting on the machine's own disk.
+async fn clear_records(backup_type: &str) {
+	for id in stranded_holds(backup_type) {
+		if let Ok(record) = load(&id).await {
+			let _ = release(&record.capture).await;
+		}
+		let _ = std::fs::remove_file(records_dir().join(format!("{id}.json")));
+	}
+}
+
+/// The hold ids on the device belonging to a backup type.
+///
+/// Matched on the shape an id is minted with — the type, then a timestamp — and
+/// not on the type as a bare prefix, which one type being another's prefix would
+/// make ambiguous: `hold-e2e-vss` would otherwise claim `hold-e2e-vss-reboot`'s
+/// holds and release a capture the other test is still using.
+fn stranded_holds(backup_type: &str) -> Vec<String> {
 	let Ok(entries) = std::fs::read_dir(records_dir()) else {
-		return;
+		return Vec::new();
 	};
-	for entry in entries.flatten() {
-		if entry.file_name().to_string_lossy().starts_with(&prefix) {
-			let _ = std::fs::remove_file(entry.path());
+	entries
+		.flatten()
+		.filter_map(|entry| hold_id_of(&entry.file_name().to_string_lossy(), backup_type))
+		.collect()
+}
+
+/// The hold id a record file names, if it belongs to this backup type.
+fn hold_id_of(file_name: &str, backup_type: &str) -> Option<String> {
+	let id = file_name.strip_suffix(".json")?;
+	let stamp = id.strip_prefix(backup_type)?.strip_prefix('-')?;
+	is_stamp(stamp).then(|| id.to_owned())
+}
+
+/// Whether this is the `%Y%m%dT%H%M%SZ` instant a hold id ends with.
+fn is_stamp(text: &str) -> bool {
+	let bytes = text.as_bytes();
+	bytes.len() == 16
+		&& bytes[..8].iter().all(u8::is_ascii_digit)
+		&& bytes[8] == b'T'
+		&& bytes[9..15].iter().all(u8::is_ascii_digit)
+		&& bytes[15] == b'Z'
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::actions::canopy::backup::hold::mint_id;
+
+	/// One backup type being another's prefix must not let the shorter one claim
+	/// the longer one's holds: releasing a capture another test is still using
+	/// would strand a live shadow copy with nothing left to name it.
+	#[test]
+	fn a_type_does_not_claim_a_longer_types_holds() {
+		let at = "2026-09-15T05:37:06Z".parse().unwrap();
+		let own = format!("{}.json", mint_id("hold-e2e-vss", at));
+		let other = format!("{}.json", mint_id("hold-e2e-vss-reboot", at));
+
+		assert_eq!(
+			hold_id_of(&own, "hold-e2e-vss").as_deref(),
+			Some("hold-e2e-vss-20260915T053706Z"),
+		);
+		assert_eq!(hold_id_of(&other, "hold-e2e-vss"), None);
+		assert_eq!(
+			hold_id_of(&other, "hold-e2e-vss-reboot").as_deref(),
+			Some("hold-e2e-vss-reboot-20260915T053706Z"),
+		);
+	}
+
+	/// Anything that is not a record of this type's is left alone: the directory
+	/// is the device's, not the test's.
+	#[test]
+	fn only_this_types_record_files_match() {
+		for name in [
+			"hold-e2e-vss-20260915T053706Z",       // no extension
+			"hold-e2e-vss-notastamp.json",         // not an instant
+			"hold-e2e-vss.json",                   // no instant at all
+			"tamanu-postgres-20260915T053706Z.json", // another type entirely
+		] {
+			assert_eq!(hold_id_of(name, "hold-e2e-vss"), None, "{name}");
 		}
 	}
 }
@@ -368,9 +454,27 @@ async fn store_fell_by<B: Backend>(backend: &B, before: f64, margin: f64) -> boo
 	}
 }
 
+/// Write a file and get it onto the device before returning.
+///
+/// A capture taken underneath the filesystem — a thin-LVM snapshot, a shadow
+/// copy — holds what has reached the block device, not what is sitting in the
+/// page cache, so an unflushed marker could be missing from a capture that is
+/// otherwise perfectly good. The directory goes too: a file created since the
+/// last commit is not on the device until the entry naming it is.
 fn write(path: &Path, contents: &[u8]) {
-	std::fs::write(path, contents)
+	use std::io::Write as _;
+
+	let mut file = std::fs::File::create(path)
+		.unwrap_or_else(|err| panic!("creating {}: {err}", path.display()));
+	file.write_all(contents)
 		.unwrap_or_else(|err| panic!("writing {}: {err}", path.display()));
+	file.sync_all()
+		.unwrap_or_else(|err| panic!("flushing {}: {err}", path.display()));
+	if let Some(parent) = path.parent()
+		&& let Ok(dir) = std::fs::File::open(parent)
+	{
+		let _ = dir.sync_all();
+	}
 }
 
 /// Ballast bytes that do not compress, so a filesystem that compresses

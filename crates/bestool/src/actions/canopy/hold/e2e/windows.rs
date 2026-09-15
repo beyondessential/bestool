@@ -40,11 +40,10 @@ struct Harness {
 }
 
 impl Harness {
-	fn new(backup_type: &str) -> Self {
-		clear_records(backup_type);
+	async fn new(backup_type: &str) -> Self {
+		clear_records(backup_type).await;
 
-		let version = installed_major();
-		let data_dir = data_dir(&version);
+		let data_dir = data_dir();
 		assert!(
 			data_dir.join("PG_VERSION").is_file(),
 			"{} is not a postgres data directory; the VSS lifecycle needs the host's own \
@@ -135,7 +134,7 @@ impl Drop for Harness {
 #[tokio::test]
 #[ignore = "needs Windows admin, VSS and postgres; run in the `vss / wmi e2e` CI job"]
 async fn a_vss_hold_is_taken_used_and_released() {
-	lifecycle(&Harness::new("hold-e2e-vss")).await;
+	lifecycle(&Harness::new("hold-e2e-vss").await).await;
 }
 
 /// The state a reboot leaves a hold in, and the way back out of it.
@@ -147,7 +146,7 @@ async fn a_vss_hold_is_taken_used_and_released() {
 #[tokio::test]
 #[ignore = "needs Windows admin, VSS and postgres; run in the `vss / wmi e2e` CI job"]
 async fn a_hold_whose_junction_went_stale_is_reattached() {
-	let backend = Harness::new("hold-e2e-vss-reboot");
+	let backend = Harness::new("hold-e2e-vss-reboot").await;
 	let data_dir = backend.data_dir().to_path_buf();
 
 	write(&data_dir.join(MARKER), FROZEN);
@@ -229,7 +228,10 @@ fn installed_major() -> String {
 
 /// The host cluster's data directory. `PGDATA` where the install sets it (it is
 /// not always under the install root), else the EDB default beside the binaries.
-fn data_dir(version: &str) -> PathBuf {
+///
+/// The install layout is only consulted when `PGDATA` is unset, so a host that
+/// sets it is never held to a versioned directory existing.
+fn data_dir() -> PathBuf {
 	if let Some(pgdata) = std::env::var_os("PGDATA") {
 		return PathBuf::from(pgdata);
 	}
@@ -237,7 +239,7 @@ fn data_dir(version: &str) -> PathBuf {
 		.map(PathBuf::from)
 		.unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
 		.join("PostgreSQL")
-		.join(version)
+		.join(installed_major())
 		.join("data")
 }
 
