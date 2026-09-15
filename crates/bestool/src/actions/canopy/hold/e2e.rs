@@ -110,14 +110,28 @@ trait Backend {
 	/// space behind it.
 	async fn capture_present(&self, record: &HoldRecord) -> bool;
 
+	/// Whether this backend's store can be measured either side of a drop, and so
+	/// whether the capture needs ballast to pin.
+	///
+	/// False where the store is shared with the rest of the machine and a delta
+	/// would be noise rather than evidence. [`Backend::capture_present`] carries
+	/// the assertion alone there.
+	///
+	/// Declared separately from taking the reading so that the two cannot be
+	/// confused: a backend that does not measure and a probe that failed would
+	/// otherwise both come back as "no reading", and the second would quietly
+	/// switch off the assertion it was meant to feed.
+	fn measures_store(&self) -> bool {
+		false
+	}
+
 	/// How much of the store the capture's space comes out of is in use, in
 	/// whatever unit the backend reports it in: bytes for a filesystem, a
 	/// percentage for a thin pool. Compared only against itself either side of a
 	/// drop.
 	///
-	/// `None` where the store is shared with the rest of the machine and a delta
-	/// would be noise rather than evidence. [`Backend::capture_present`] carries
-	/// the assertion alone there.
+	/// Only ever called on a backend that measures, and a `None` from one of those
+	/// is a broken probe rather than an answer.
 	async fn store_in_use(&self) -> Option<f64> {
 		None
 	}
@@ -150,22 +164,11 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	let backup_type = backend.backup_type().to_owned();
 
 	// Only the backends that read their store have anything to pin extents for.
-	let measures_store = backend.store_in_use().await.is_some();
-	// A backend that claims a margin has to be able to read its store. Without
-	// this, a reader that quietly returned nothing — an unsupported flag, a
-	// changed output shape — would skip the ballast and the release assertion
-	// together, and the job would go green having tested neither.
-	assert!(
-		measures_store || backend.released_margin() == 0.0,
-		"the {} backend expects its store to fall by {} when a capture is released, \
-		 but cannot read that store at all",
-		backend.expected_backend(),
-		backend.released_margin(),
-	);
+	let measures_store = backend.measures_store();
 	let ballast_path = data_dir.join(BALLAST);
 	let mut pin = |seed: u64| {
 		if measures_store {
-			write(&ballast_path, &ballast(seed));
+			write_ballast(&ballast_path, seed);
 		}
 	};
 
@@ -275,7 +278,11 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	backend.quiesce_store().await;
 
 	// `bestool canopy hold drop`: the record, and the capture behind it.
-	let before_drop = backend.store_in_use().await;
+	let before_drop = if measures_store {
+		Some(read_store(backend, "before the drop").await)
+	} else {
+		None
+	};
 	hold(HoldAction::Drop(DropArgs { id: held.id.clone() }))
 		.await
 		.expect("dropping the hold");
@@ -488,6 +495,19 @@ mod tests {
 	}
 }
 
+/// A reading from a backend that measures. A backend that says it measures and
+/// then cannot read its store is broken, not quiet: treating that as "nothing to
+/// assert" would switch off the release check and pass the job having tested the
+/// one thing the ballast exists for not at all.
+async fn read_store<B: Backend>(backend: &B, when: &str) -> f64 {
+	backend.store_in_use().await.unwrap_or_else(|| {
+		panic!(
+			"the {} backend measures its store, but could not read it {when}",
+			backend.expected_backend(),
+		)
+	})
+}
+
 /// Wait for the store's usage to fall by `margin`, allowing for a backend that
 /// frees the space a beat after the command that released it returns.
 ///
@@ -503,13 +523,12 @@ async fn store_fell_by<B: Backend>(
 	let mut lowest = f64::MAX;
 	let mut last = f64::NAN;
 	loop {
-		if let Some(now) = backend.store_in_use().await {
-			readings += 1;
-			lowest = lowest.min(now);
-			last = now;
-			if before - now >= margin {
-				return Ok(());
-			}
+		let now = read_store(backend, "after the drop").await;
+		readings += 1;
+		lowest = lowest.min(now);
+		last = now;
+		if before - now >= margin {
+			return Ok(());
 		}
 		if std::time::Instant::now() >= deadline {
 			return Err(format!(
@@ -537,6 +556,12 @@ fn write(path: &Path, contents: &[u8]) {
 		.unwrap_or_else(|err| panic!("writing {}: {err}", path.display()));
 	file.sync_all()
 		.unwrap_or_else(|err| panic!("flushing {}: {err}", path.display()));
+	sync_parent(path);
+}
+
+/// Flush the directory holding `path`: a file created since the last commit is
+/// not on the device until the entry naming it is.
+fn sync_parent(path: &Path) {
 	if let Some(parent) = path.parent()
 		&& let Ok(dir) = std::fs::File::open(parent)
 	{
@@ -544,20 +569,42 @@ fn write(path: &Path, contents: &[u8]) {
 	}
 }
 
-/// Ballast bytes that do not compress, so a filesystem that compresses
+/// Write the ballast: bytes that do not compress, so a filesystem that compresses
 /// transparently still allocates what the ballast claims to. No two seeds share
-/// an extent, which is the whole point of rewriting it rather than rewriting the
-/// same bytes.
-fn ballast(seed: u64) -> Vec<u8> {
+/// an extent, which is the whole point of rewriting it rather than writing the
+/// same bytes again.
+///
+/// Generated a chunk at a time rather than built whole in memory first: the
+/// runner is already holding a postgres cluster, a loopback filesystem and a
+/// staged restore copy, and the payload is the same on disk either way.
+fn write_ballast(path: &Path, seed: u64) {
+	use std::io::Write as _;
+
+	const CHUNK: usize = 1024 * 1024;
+
 	let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-	let mut out = Vec::with_capacity(BALLAST_BYTES);
-	while out.len() < BALLAST_BYTES {
-		state ^= state << 13;
-		state ^= state >> 7;
-		state ^= state << 17;
-		out.extend_from_slice(&state.to_le_bytes());
+	let mut chunk = Vec::with_capacity(CHUNK);
+	let mut file = std::fs::File::create(path)
+		.unwrap_or_else(|err| panic!("creating {}: {err}", path.display()));
+
+	let mut written = 0;
+	while written < BALLAST_BYTES {
+		let want = CHUNK.min(BALLAST_BYTES - written);
+		chunk.clear();
+		while chunk.len() < want {
+			state ^= state << 13;
+			state ^= state >> 7;
+			state ^= state << 17;
+			chunk.extend_from_slice(&state.to_le_bytes());
+		}
+		chunk.truncate(want);
+		file.write_all(&chunk)
+			.unwrap_or_else(|err| panic!("writing {}: {err}", path.display()));
+		written += want;
 	}
-	out
+	file.sync_all()
+		.unwrap_or_else(|err| panic!("flushing {}: {err}", path.display()));
+	sync_parent(path);
 }
 
 #[cfg(unix)]

@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 use super::{
 	BALLAST, Backend, DropArgs, FROZEN, HoldAction, MARKER, ReattachArgs, assert_marker,
-	assert_state, backup, ballast, clear_records, hold, lifecycle, restore_err, sole_hold, write,
+	assert_state, backup, clear_records, hold, lifecycle, restore_err, sole_hold, write,
 };
 use crate::actions::canopy::backup::{
 	hold::{CaptureState, HeldCapture, HoldRecord},
@@ -150,7 +150,6 @@ async fn a_hold_whose_junction_went_stale_is_reattached() {
 	let data_dir = backend.data_dir().to_path_buf();
 
 	write(&data_dir.join(MARKER), FROZEN);
-	write(&data_dir.join(BALLAST), &ballast(1));
 
 	backup(backend.backup_type(), backend.backups_dir())
 		.await

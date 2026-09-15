@@ -191,11 +191,19 @@ jobs:
             | jq -r 'select(.profile.test == true) | .executable // empty' | head -n1)
           test -n "$binary"
           cp "$binary" hold-e2e-tests
+          # Debug info is most of the binary and three jobs move it. Test names
+          # and filters live in the harness's own tables, not in it; only the
+          # line numbers on a backtrace are lost, and the panics here carry
+          # their own location.
+          strip hold-e2e-tests
+          ls -l hold-e2e-tests
       - uses: actions/upload-artifact@v7
         with:
           name: hold-e2e-tests
           path: hold-e2e-tests
           retention-days: 1
+          # A stripped binary compresses poorly for the time spent on it.
+          compression-level: 1
 
   btrfs-hold:
     name: btrfs hold / e2e
@@ -213,7 +221,20 @@ jobs:
         with:
           name: hold-e2e-tests
       - name: Ready the test binary
-        run: chmod +x hold-e2e-tests
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
 
       - name: Reattach a held btrfs capture
         run: sudo ./hold-e2e-tests btrfs::e2e --ignored --nocapture --test-threads=1
@@ -222,7 +243,7 @@ jobs:
       # subvolume: take a capture-only hold, read the listing, restore from it,
       # reattach it, drop it.
       - name: The hold lifecycle on btrfs
-        run: sudo ./hold-e2e-tests hold::e2e::unix::a_btrfs --ignored --nocapture --test-threads=1
+        run: ./run-lifecycle hold::e2e::unix::a_btrfs 1
 
   lvm-hold:
     name: thin-lvm hold / e2e
@@ -240,12 +261,25 @@ jobs:
         with:
           name: hold-e2e-tests
       - name: Ready the test binary
-        run: chmod +x hold-e2e-tests
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
 
       # The pool is deliberately small, so the ballast the capture pins is a
       # legible share of it and a drop that only forgot the record is visible.
       - name: The hold lifecycle on thin-LVM
-        run: sudo ./hold-e2e-tests hold::e2e::unix::a_thin_lvm --ignored --nocapture --test-threads=1
+        run: ./run-lifecycle hold::e2e::unix::a_thin_lvm 1
 
   basebackup-hold:
     name: base backup hold / e2e
@@ -263,14 +297,27 @@ jobs:
         with:
           name: hold-e2e-tests
       - name: Ready the test binary
-        run: chmod +x hold-e2e-tests
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
 
       # No privileged storage is involved in the capture itself, but the hold's
       # record and held-source directories are system ones, so this still runs as
       # root rather than in the ordinary test job. It is also the one backend that
       # exposes nothing separately, so its reattach must refuse rather than no-op.
       - name: The hold lifecycle on a base backup
-        run: sudo ./hold-e2e-tests hold::e2e::unix::a_base_backup --ignored --nocapture --test-threads=1
+        run: ./run-lifecycle hold::e2e::unix::a_base_backup 1
 
   kopia-proxy:
     name: kopia S3 proxy / e2e
@@ -362,10 +409,13 @@ jobs:
           if (-not $service) { throw "no postgres service on this image" }
           Set-Service -Name $service.Name -StartupType Automatic
           Start-Service -Name $service.Name
+          # A non-zero native exit is an error by default in these steps, which
+          # would throw on the first attempt and defeat the point of retrying.
+          $PSNativeCommandUseErrorActionPreference = $false
           # The SCM calls the service started before the postmaster is listening,
           # so poll rather than asking once.
           foreach ($attempt in 1..30) {
-            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1
+            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 | Out-Null
             if ($LASTEXITCODE -eq 0) { exit 0 }
             Start-Sleep -Seconds 2
           }
@@ -378,7 +428,12 @@ jobs:
       # The second test covers what a reboot does to a junction, by pointing one
       # at a device number VSS has not handed out.
       - name: The hold lifecycle on VSS
-        run: cargo test -p bestool --lib hold::e2e::windows -- --ignored --nocapture --test-threads=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p bestool --lib hold::e2e::windows -- --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. 2 passed;" <<<"$out" || {
+            echo "expected both VSS lifecycle tests to run and pass"; exit 1; }
 
   clippy:
     name: Clippy

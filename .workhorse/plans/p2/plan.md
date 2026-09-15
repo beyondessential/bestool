@@ -78,7 +78,17 @@ testing a backend it does not mean to.
 ## Asserting the space is freed
 
 "Gone, not just the record" is asserted per backend against the storage itself —
-`btrfs subvolume list`, `lvs`, WMI `Win32_ShadowCopy`, directory absence.
+`lvs`, WMI `Win32_ShadowCopy`, directory absence, and on btrfs a mount of the
+filesystem's own top level.
+
+btrfs is asked by mounting subvolid 5 and looking for the subvolume directly,
+rather than by reading `btrfs subvolume list`. A held snapshot sits beside the
+cluster's subvolume rather than under it, and the listing scopes and formats its
+output according to where it is run from and which version is installed — which
+made it the wrong instrument for a question that has to have the same answer on
+every host. The probe also answers while the capture is still held, so a probe
+looking in the wrong place fails loudly instead of letting the check after the
+drop pass without reading the storage.
 
 For the free-space delta, a snapshot of a freshly-created cluster shares all its
 extents with the live data, so dropping it frees nothing measurable. The

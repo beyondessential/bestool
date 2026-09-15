@@ -147,7 +147,18 @@ impl Harness {
 			],
 		);
 		let device = format!("/dev/{vg}/pgdata");
-		run("mkfs.ext4", &["-q", &device]);
+		// Zero the inode tables now rather than letting the kernel do it in the
+		// background after the mount: those writes allocate fresh pool blocks, and
+		// they would land in the middle of the measurement the pool is here for.
+		run(
+			"mkfs.ext4",
+			&[
+				"-q",
+				"-E",
+				"lazy_itable_init=0,lazy_journal_init=0,nodiscard",
+				&device,
+			],
+		);
 
 		let mount = scratch.join("pgdata");
 		std::fs::create_dir_all(&mount).unwrap();
@@ -272,28 +283,24 @@ impl Backend for Harness {
 
 	async fn capture_present(&self, record: &HoldRecord) -> bool {
 		match (&self.storage, &record.capture) {
-			(Storage::Btrfs { mount, .. }, HeldCapture::Btrfs { snapshot_path, .. }) => {
-				let Some(name) = snapshot_path.file_name().map(|n| n.to_string_lossy().into_owned())
-				else {
+			(Storage::Btrfs { loopdev, .. }, HeldCapture::Btrfs { snapshot_path, .. }) => {
+				let Some(name) = snapshot_path.file_name().map(std::path::Path::new) else {
 					return false;
 				};
-				// Asked of the filesystem rather than at the path the record names:
-				// the hold's own top-level mount goes when the hold does. The
-				// listing reaches the whole filesystem, so the held snapshot is in
-				// it even though it sits beside the mounted subvolume rather than
-				// under it.
-				let listing = capture("btrfs", &["subvolume", "list", str(mount)]);
-				assert!(
-					!listing.is_empty(),
-					"`btrfs subvolume list {}` came back empty, which it cannot be — \
-					 the cluster's own subvolume is there. The probe is looking in the \
-					 wrong place and cannot tell a released capture from one it never \
-					 saw",
-					mount.display(),
-				);
-				listing
-					.lines()
-					.any(|line| line.split_whitespace().last() == Some(name.as_str()))
+				// Asked by mounting the filesystem's own top level and looking for
+				// the subvolume there, rather than by reading a listing. A held
+				// snapshot sits beside the cluster's subvolume rather than under it,
+				// and `btrfs subvolume list` scopes and formats its output according
+				// to where it is run from and which version is installed — so the
+				// listing is the wrong instrument for a question that has to have
+				// the same answer everywhere. The hold's own top-level mount is gone
+				// by the time this is asked, so it gets one of its own.
+				let probe = self.scratch.join("toplevel-probe");
+				std::fs::create_dir_all(&probe).expect("a mountpoint to probe from");
+				run("mount", &["-o", "subvolid=5", "--", loopdev, str(&probe)]);
+				let present = probe.join(name).is_dir();
+				try_run("umount", &[str(&probe)]);
+				present
 			}
 			(Storage::ThinLvm { .. }, HeldCapture::Lvm { vg, lv, .. }) => {
 				lvm::held_present(vg, lv).await
@@ -305,6 +312,13 @@ impl Backend for Harness {
 				capture.backend()
 			),
 		}
+	}
+
+	fn measures_store(&self) -> bool {
+		// The base backup's capture is a tree on the machine's own disk, which the
+		// rest of the machine is writing to throughout; its absence is the
+		// assertion instead.
+		!matches!(self.storage, Storage::BaseBackup)
 	}
 
 	async fn store_in_use(&self) -> Option<f64> {
@@ -465,6 +479,11 @@ fn cluster_port(version: &str, cluster: &str) -> u16 {
 /// A fresh directory for one backend's storage.
 fn scratch(backend: &str) -> PathBuf {
 	let dir = PathBuf::from(SCRATCH_BASE).join(format!("bestool-hold-e2e-{backend}"));
+	// Anything a previous run left mounted here comes off first. Removing the
+	// tree while a filesystem is still mounted inside it would delete through the
+	// mount, into storage this is not entitled to touch.
+	let under = format!("{}/", dir.display());
+	umount_all_under(|target| target == dir.to_string_lossy() || target.starts_with(&under));
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(&dir).expect("creating the scratch directory");
 	// postgres descends through it to its data directory.
@@ -475,6 +494,16 @@ fn scratch(backend: &str) -> PathBuf {
 /// Unmount everything mounted from a device the teardown is about to remove,
 /// deepest mount first so one inside another comes off before its parent.
 fn umount_all_from(matches: impl Fn(&str) -> bool) {
+	umount_all(|source, _| matches(source));
+}
+
+/// Unmount everything mounted at a path, by where it is mounted rather than what
+/// it is mounted from.
+fn umount_all_under(matches: impl Fn(&str) -> bool) {
+	umount_all(|_, target| matches(target));
+}
+
+fn umount_all(matches: impl Fn(&str, &str) -> bool) {
 	let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
 		return;
 	};
@@ -484,7 +513,7 @@ fn umount_all_from(matches: impl Fn(&str) -> bool) {
 			let mut fields = line.split_whitespace();
 			let source = fields.next()?;
 			let target = fields.next()?;
-			matches(source).then_some(target)
+			matches(source, target).then_some(target)
 		})
 		.collect();
 	targets.sort_by_key(|target| std::cmp::Reverse(target.len()));
