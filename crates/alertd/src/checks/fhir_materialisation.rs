@@ -656,16 +656,12 @@ mod tests {
 			 the row (and any '{PROBE}' patient) and run again."
 		);
 
-		client
-			.execute(
-				"INSERT INTO settings (key, value) VALUES ($1, 'true')",
-				&[&SETTING],
-			)
-			.await
-			.expect("enabling the resource should succeed");
-
-		// A row only this test creates, so removing it first clears up after a
-		// run that died before its own cleanup.
+		// The patient first and the setting last. Everything before the setting
+		// can fail without consequence — the probe is a row only this test
+		// creates, and the next run's own delete clears it — whereas a failure
+		// after the setting is written leaves materialisation switched on for
+		// the deployment's FHIR worker, which is exactly what this test is not
+		// allowed to do.
 		client
 			.execute("DELETE FROM patients WHERE id = $1", &[&PROBE])
 			.await
@@ -680,6 +676,13 @@ mod tests {
 			)
 			.await
 			.expect("seeding the gap should succeed");
+		client
+			.execute(
+				"INSERT INTO settings (key, value) VALUES ($1, 'true')",
+				&[&SETTING],
+			)
+			.await
+			.expect("enabling the resource should succeed");
 
 		let check = super::run(ctx).await;
 
