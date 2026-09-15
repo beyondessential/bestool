@@ -122,6 +122,11 @@ pub struct MachineTamanu {
 /// applications of one kind runs twice against two different contexts and
 /// reports each subject's own readings rather than one subject's twice.
 ///
+/// Every field describes the application it was built for. A Postgres cluster
+/// carries none of the Tamanu's parameters even where the sweep found the
+/// cluster through one, so a check cannot read another subject's install,
+/// configuration or version through this.
+///
 /// Each check picks the fields it needs and ignores the rest. The pool is
 /// `Option` because not every check needs the database, and `db_connect` itself
 /// runs before a connection is available.
@@ -132,22 +137,29 @@ pub struct AppCx {
 	/// The application this check reports for: its kind, and which one of that
 	/// kind.
 	pub app: ApplicationRef,
-	/// The deployment's version. For the Postgres application, the version of
-	/// the Tamanu the cluster was discovered through; no Postgres check reads
-	/// it.
+	/// The application's product version, or `0.0.0` where the sweep cannot see
+	/// one — which a Postgres cluster never can, its server version being a
+	/// fact read from the server rather than a version of the application as
+	/// installed.
 	pub version: Version,
 	/// Whether the deployment is a central or facility server. Determined once
 	/// at sweep startup from the most authoritative available signals (DB
 	/// `local_system_facts` first, then config), then shared so checks don't
 	/// each have to re-decide.
+	///
+	/// A Postgres cluster is not a Tamanu and plays no such role; the scope of
+	/// every check that reads this admits only Tamanu applications, so none
+	/// reaches the value a Postgres context carries here.
 	pub kind: ApiServerKind,
-	/// The deployment's configuration. Synthesised from the database URL alone
-	/// where there are no install files to have read it from, which
+	/// The application's configuration. For a Tamanu, the deployment's own —
+	/// synthesised from the database URL alone where there are no install files
+	/// to have read it from, which
 	/// [`installed_config`](AppCx::installed_config) is how a check tells apart.
+	/// For a Postgres cluster, one naming its own database and nothing else.
 	pub config: Arc<TamanuConfig>,
-	/// Where the application's files sit on this machine, when it has any.
-	/// `None` for an application known only through its database: there is
-	/// nothing on disk for a check to read.
+	/// Where this application's files sit on this machine, when it has any.
+	/// `None` for an application known only through its database, and for a
+	/// Postgres cluster, which has no install of its own for a check to read.
 	pub install_root: Option<PathBuf>,
 	pub database_url: String,
 	/// The database pool this application's checks draw from, when the database

@@ -308,6 +308,52 @@ fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
 /// types.
 type SpawnHeal = Box<dyn FnOnce() + Send>;
 
+/// Build the context for one application: the parameters that describe that
+/// application, and nothing describing another.
+///
+/// A Tamanu deployment carries its own version, configuration and install root.
+/// A Postgres cluster is an application in its own right rather than a part of
+/// whatever uses it, so it carries none of the Tamanu's: its configuration
+/// names its own database and nothing else, it has no install files of its own
+/// to read, and it has no product version the sweep can see from here. Filling
+/// those from the Tamanu the cluster was discovered through would file one
+/// subject's readings under another's, which is the confusion the split exists
+/// to prevent.
+///
+/// spec: SUBJ
+fn app_context(
+	app: &ApplicationRef,
+	targets: &SweepTargets,
+	tamanu: &Option<ResolvedTamanu>,
+	pool: &Option<bestool_postgres::pool::PgPool>,
+	http: &reqwest::Client,
+) -> checks::AppCx {
+	let tamanu = tamanu.as_ref().filter(|_| app.kind.is_tamanu());
+	checks::AppCx {
+		app: app.clone(),
+		version: tamanu.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone()),
+		kind: tamanu.map_or(bestool_tamanu::ApiServerKind::Central, |t| t.kind),
+		// A cluster's configuration is the database section naming it, carried
+		// so that what a check reads describes the cluster rather than a
+		// deployment that happens to use it.
+		config: match tamanu {
+			Some(_) => targets.config.clone(),
+			None => Arc::new(TamanuConfig::from_database(
+				targets.config.database().unwrap_or_else(|_| {
+					// The sweep reaches this database with this very string, so
+					// it parses; an unparseable one is reported by `connect`.
+					warn!("could not read the database section for this application's context");
+					targets.config.db.clone()
+				}),
+			)),
+		},
+		install_root: tamanu.and_then(|t| t.root.clone()),
+		database_url: targets.database_url.clone(),
+		pool: pool.clone(),
+		http: http.clone(),
+	}
+}
+
 /// The key a check's heal attempts are tracked under: the check's name together
 /// with the *instance* it reports for.
 ///
@@ -733,30 +779,14 @@ pub async fn perform_sweep(
 	//
 	// `applications` is empty unless the sweep resolved targets, so there is
 	// nothing to build a context from without them.
-	let (tamanu_ref, pool_ref, http_ref) = (&tamanu, &check_pool, &http_client);
 	let app_cxs: HashMap<ApplicationRef, checks::AppCx> = targets
 		.iter()
 		.flat_map(|targets| {
-			applications.iter().map(move |app| {
-				let cx = checks::AppCx {
-					app: app.clone(),
-					// The Postgres cluster is its own application, discovered
-					// through whatever points at it. Its deployment parameters
-					// describe the Tamanu it was found through, where there was
-					// one; no Postgres check reads them.
-					version: tamanu_ref
-						.as_ref()
-						.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone()),
-					kind: tamanu_ref
-						.as_ref()
-						.map_or(bestool_tamanu::ApiServerKind::Central, |t| t.kind),
-					config: targets.config.clone(),
-					install_root: tamanu_ref.as_ref().and_then(|t| t.root.clone()),
-					database_url: targets.database_url.clone(),
-					pool: pool_ref.clone(),
-					http: http_ref.clone(),
-				};
-				(app.clone(), cx)
+			applications.iter().map(|app| {
+				(
+					app.clone(),
+					app_context(app, targets, &tamanu, &check_pool, &http_client),
+				)
 			})
 		})
 		.collect();
@@ -1409,6 +1439,64 @@ mod tests {
 				},
 			),
 		}
+	}
+
+	/// A Postgres cluster reports for itself, so its context carries none of
+	/// the Tamanu's parameters even when the sweep found the cluster through
+	/// one. Otherwise a Postgres check grading configuration would silently
+	/// grade the Tamanu's.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn a_cluster_context_carries_none_of_the_tamanu_s_parameters() {
+		use bestool_tamanu::config::{Database, TamanuConfig};
+
+		const URL: &str = "postgresql://u@localhost/tamanu-central";
+		let targets = SweepTargets {
+			database_url: URL.into(),
+			config: Arc::new(TamanuConfig::from_database(
+				Database::from_url(URL).unwrap(),
+			)),
+			tamanu: Some(SweepTamanu {
+				version: Version::parse("2.55.0").unwrap(),
+				root: Some(PathBuf::from("/opt/tamanu")),
+			}),
+		};
+		let tamanu = Some(ResolvedTamanu {
+			version: Version::parse("2.55.0").unwrap(),
+			kind: bestool_tamanu::ApiServerKind::Central,
+			root: Some(PathBuf::from("/opt/tamanu")),
+		});
+		let http = reqwest::Client::new();
+
+		let cluster = app_context(
+			&ApplicationRef::local_postgres(5432),
+			&targets,
+			&tamanu,
+			&None,
+			&http,
+		);
+		assert!(
+			cluster.install_root.is_none(),
+			"a cluster has no install of its own, so it must not claim the Tamanu's"
+		);
+		assert!(
+			cluster.installed_config().is_none(),
+			"a cluster must not answer with configuration read for another application"
+		);
+		assert_eq!(cluster.version, Version::new(0, 0, 0));
+
+		// The Tamanu on the same host still gets its own, unchanged.
+		let deployment = app_context(
+			&ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
+			&targets,
+			&tamanu,
+			&None,
+			&http,
+		);
+		assert_eq!(deployment.install_root, Some(PathBuf::from("/opt/tamanu")));
+		assert!(deployment.installed_config().is_some());
+		assert_eq!(deployment.version, Version::parse("2.55.0").unwrap());
 	}
 
 	/// Two clusters of one kind each get their own heal attempts, so one
