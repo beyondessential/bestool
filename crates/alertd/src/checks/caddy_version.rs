@@ -19,12 +19,12 @@ use tokio::process::Command;
 
 use bestool_tamanu::caddy;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
 const CHECK_NAME: &str = "caddy_version";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let platform = match Platform::current() {
 		Some(p) => p,
 		None => {

@@ -1,10 +1,10 @@
 use jiff::Timestamp;
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::fail(
 			"sync_sessions",

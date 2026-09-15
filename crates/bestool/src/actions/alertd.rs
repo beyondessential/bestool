@@ -629,7 +629,7 @@ mod backup {
 async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd::DaemonConfig> {
 	use tracing::debug;
 
-	use bestool_alertd::discover_sweep_tamanu;
+	use bestool_alertd::discover_sweep_targets;
 	use bestool_tamanu::server_info::fetch_device_key;
 
 	let DaemonArgs {
@@ -658,12 +658,12 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 	// from. The doctor task re-runs it before every sweep (see
 	// `with_tamanu_discovery`), so an upgrade doesn't need a daemon restart to
 	// show up.
-	let tamanu = discover_sweep_tamanu(root.as_deref()).await?;
-	match &tamanu {
+	let targets = discover_sweep_targets(root.as_deref()).await?;
+	match &targets {
 		Some(t) => debug!(
-			has_install = t.has_install,
-			is_tamanu = t.is_tamanu,
-			"resolved database sweep context"
+			has_tamanu = t.tamanu.is_some(),
+			has_install = t.tamanu.as_ref().is_some_and(|t| t.root.is_some()),
+			"resolved the sweep's targets"
 		),
 		None => warn!(
 			"no Tamanu install, no TAMANU_DATABASE_URL, and no DATABASE_URL; Tamanu and database checks will skip"
@@ -685,7 +685,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
-	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), tamanu)
+	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), targets)
 		.with_tamanu_discovery(root);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 

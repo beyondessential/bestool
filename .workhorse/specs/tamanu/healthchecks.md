@@ -42,9 +42,13 @@ A successful repair takes effect in a later sweep, once the healed condition is 
 Heal attempts for a given check are rate-limited and back off on repeated failure, so a check that cannot yet be healed — because a dependency is unreachable, say — does not retry its repair on every sweep.
 A heal attempt that fails or cannot proceed is logged and retried later under the backoff schedule.
 
+The rate limit and the backoff belong to a check on one subject, since a name identifies a check only together with the subject it reports for ([SUBJ](subjects.md)).
+Two applications running the same failing check each get their own attempts, so one application's repair does not consume another's allowance or defer it behind a backoff it played no part in.
+
 Each check sets a minimum interval between its own heal attempts.
 Most checks use a short default; a check whose repair is disruptive, or whose effect on the graded condition lands only slowly, sets a longer floor.
 The minimum interval bounds every attempt, including one made straight after a successful repair, so a repair whose effect is not yet visible to the check does not trigger a second repair before the floor has elapsed.
 
-At most one heal attempt for a given check runs at a time.
+At most one heal attempt for a given check on a given subject runs at a time.
 Because attempts run in the background, one can take longer than the interval between sweeps; a sweep does not start a heal for a check whose previous attempt has not yet finished.
+A heal runs against the context its check ran with, so a repair made for one application acts on that application rather than on whichever one a shared context happened to hold.

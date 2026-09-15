@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
-use super::{CheckContext, util::fetch_rows};
+use super::{AppCx, util::fetch_rows};
 use crate::Stat;
 use crate::check::Check;
 
@@ -82,7 +82,7 @@ fn with_error_counters(check: Check, mobile_seen: u64, server_seen: u64) -> Chec
 		)
 }
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

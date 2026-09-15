@@ -13,7 +13,7 @@
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
 
@@ -22,7 +22,7 @@ const NAME: &str = "inodes";
 const WARN_PCT: f64 = 85.0;
 const FAIL_PCT: f64 = 95.0;
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	if !cfg!(target_os = "linux") {
 		return Check::skip(
 			NAME,

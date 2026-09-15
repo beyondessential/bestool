@@ -13,7 +13,7 @@
 
 use node_semver::Version;
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::check::Check;
 
 const NAME: &str = "reporting_roles";
@@ -34,8 +34,8 @@ const SQL: &str = "SELECT \
 		AND m.member = r.oid AND m.admin_option) AS roles_administrable \
 	FROM pg_roles r WHERE r.rolname = $1";
 
-pub async fn run(ctx: CheckContext) -> Check {
-	if is_unknown_version(&ctx.tamanu_version) {
+pub async fn run(ctx: AppCx) -> Check {
+	if is_unknown_version(&ctx.version) {
 		return Check::skip(
 			NAME,
 			"Tamanu version unknown",
@@ -44,7 +44,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 
-	if !owns_reporting_roles(&ctx.tamanu_version) {
+	if !owns_reporting_roles(&ctx.version) {
 		return Check::skip(
 			NAME,
 			format!(
@@ -173,7 +173,7 @@ mod tests {
 		.expect("test config should parse")
 	}
 
-	async fn current_role(ctx: &CheckContext) -> String {
+	async fn current_role(ctx: &AppCx) -> String {
 		ctx.db()
 			.await
 			.unwrap()
@@ -290,7 +290,7 @@ mod tests {
 		let Some(mut ctx) = central_ctx().await else {
 			return;
 		};
-		ctx.tamanu_version = version("2.60.0");
+		ctx.version = version("2.60.0");
 		let role = current_role(&ctx).await;
 		ctx.config = Arc::new(config_with_role(&role));
 		let check = super::run(ctx).await;
@@ -307,7 +307,7 @@ mod tests {
 		let Some(mut ctx) = central_ctx().await else {
 			return;
 		};
-		ctx.tamanu_version = version("2.60.0");
+		ctx.version = version("2.60.0");
 		ctx.config = Arc::new(config_with_role("no_such_tamanu_role"));
 		let check = super::run(ctx).await;
 		assert!(matches!(check.status, CheckStatus::Broken(_)));

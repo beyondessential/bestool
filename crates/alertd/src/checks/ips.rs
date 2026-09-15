@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sysinfo::Networks;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
 const NAME: &str = "ips";
@@ -55,9 +55,9 @@ enum Family {
 	V6,
 }
 
-pub async fn run(ctx: SweepContext) -> Check {
+pub async fn run(ctx: MachineCx) -> Check {
 	let lan = lan_addresses();
-	let wan = wan_addresses(&ctx.http_client).await;
+	let wan = wan_addresses(&ctx.http).await;
 
 	let mut check = Check::pass(NAME, summarise(&lan, &wan)).with_payload_extra(
 		"lanIps",

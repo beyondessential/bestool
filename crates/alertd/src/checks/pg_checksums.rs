@@ -13,7 +13,7 @@
 //! per-server severity ceiling lowers either to a warning, or silences it, on a
 //! deployment where the gap is accepted for now.
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::{Stat, check::Check};
 
 const NAME: &str = "checksums";
@@ -118,7 +118,7 @@ fn grade(c: &Checksums) -> Check {
 	check
 }
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(
 			NAME,

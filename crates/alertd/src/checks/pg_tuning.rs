@@ -21,7 +21,7 @@
 use bestool_postgres::pgtune::{self, Budget, HostResources, Platform};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -300,7 +300,7 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 	}
 }
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	if !crate::sweep::database_is_local(&ctx.database_url) {
 		return Check::skip(
 			"tuning",

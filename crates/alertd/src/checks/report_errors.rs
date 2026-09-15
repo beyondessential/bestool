@@ -1,6 +1,6 @@
 //! Report requests that errored within the lookback window.
 
-use super::{CheckContext, util::tiered_rows_check};
+use super::{AppCx, util::tiered_rows_check};
 use crate::check::Check;
 
 const NAME: &str = "report_errors";
@@ -10,7 +10,7 @@ const SQL: &str = "SELECT * FROM report_requests \
 // Lookback window for recent-error checks.
 const LOOKBACK_HOURS: i64 = 1;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

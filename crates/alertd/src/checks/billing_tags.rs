@@ -18,13 +18,13 @@ use serde_json::Value;
 
 use bestool_tamanu::server_info::load_cached_tags;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::{check::Check, server_info::fetch_imds_tags};
 
 const CHECK_NAME: &str = "billing_tags";
 const BILLING_PREFIX: &str = "billing.";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let canopy_tags = load_cached_tags().unwrap_or_default();
 	if !canopy_tags.keys().any(|k| is_billing(k)) {
 		return Check::skip(

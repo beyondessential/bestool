@@ -1,6 +1,6 @@
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::{Check, CheckStatus};
 
@@ -11,7 +11,7 @@ const FAIL_PER_CORE: f64 = 4.0;
 /// is treated as a warning.
 const WARN_PER_CORE: f64 = 1.5;
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	if cfg!(target_os = "windows") {
 		return Check::skip(
 			"load",

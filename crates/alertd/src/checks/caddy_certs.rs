@@ -45,7 +45,7 @@ use tokio::{io::AsyncWriteExt, net::TcpStream, task::spawn_blocking};
 use tracing::debug;
 use x509_parser::prelude::*;
 
-use super::SweepContext;
+use super::AppCx;
 use crate::Stat;
 use crate::check::Check;
 
@@ -101,13 +101,13 @@ fn classify_expiry(remaining: i64, lifetime: i64) -> Expiry {
 	}
 }
 
-pub async fn run(ctx: SweepContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	// The live admin config is the source of truth for which certs matter: the
 	// on-disk store keeps certs for sites that have since been removed, and we
 	// must not alert on those. So we read the config, then only consider managed
 	// certs whose subjects are still active, plus any certs the config loads
 	// manually.
-	let Some(config) = fetch_admin_config(&ctx.http_client).await else {
+	let Some(config) = fetch_admin_config(&ctx.http).await else {
 		return Check::skip(
 			NAME,
 			"caddy admin config unavailable",

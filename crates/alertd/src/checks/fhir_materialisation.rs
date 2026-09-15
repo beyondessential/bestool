@@ -29,7 +29,7 @@ use serde_json::{Map, Value, json};
 use tokio_postgres::{Client as PgClient, error::SqlState};
 
 use super::util::humanise_age;
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -312,7 +312,7 @@ const SETTINGS_SQL: &str = "\
 	SELECT key, value FROM settings \
 	WHERE (key = $1 OR key LIKE $1 || '.%') AND deleted_at IS NULL";
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	if !ctx.config.fhir_worker_enabled() {
 		return Check::skip(
 			NAME,
@@ -631,7 +631,7 @@ fn merge_enablement(pairs: &[(String, Value)]) -> BTreeMap<String, bool> {
 fn resolve_enablement(
 	resource: &Resource,
 	settings: &BTreeMap<String, bool>,
-	ctx: &CheckContext,
+	ctx: &AppCx,
 ) -> Option<(bool, Source)> {
 	if let Some(&enabled) = settings.get(resource.name) {
 		return Some((enabled, Source::Setting));
@@ -743,7 +743,7 @@ mod tests {
 
 	/// A central context whose FHIR worker is enabled. `None` when the local
 	/// database is unavailable, as with [`central_ctx`].
-	async fn central_worker_enabled() -> Option<CheckContext> {
+	async fn central_worker_enabled() -> Option<AppCx> {
 		let mut ctx = central_ctx().await?;
 		ctx.config = worker_config(&[]);
 		Some(ctx)
@@ -1258,7 +1258,7 @@ mod tests {
 
 	/// A context whose config carries the pre-2.60 per-resource flags. Needs no
 	/// database: enablement resolution reads config and the settings map only.
-	fn config_ctx(flags: &[(&str, bool)]) -> CheckContext {
+	fn config_ctx(flags: &[(&str, bool)]) -> AppCx {
 		let mut ctx = facility_ctx();
 		ctx.config = worker_config(flags);
 		ctx

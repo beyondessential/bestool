@@ -24,7 +24,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 
 use serde_json::{Value, json};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
 
@@ -50,7 +50,7 @@ enum Sev {
 	Fail,
 }
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	if !cfg!(target_os = "linux") {
 		return Check::skip(
 			NAME,

@@ -1,13 +1,13 @@
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
 
 const WARN_PCT_USED: f64 = 90.0;
 const FAIL_PCT_USED: f64 = 98.0;
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let sys = System::new_with_specifics(
 		RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
 	);
@@ -51,9 +51,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn emits_memory_stats() {
-		let ctx = SweepContext::builder()
-			.http_client(reqwest::Client::new())
-			.build();
+		let ctx = MachineCx::builder().http(reqwest::Client::new()).build();
 		let check = run(ctx).await;
 		let names: Vec<&str> = check.stats.iter().map(|s| s.name).collect();
 		assert!(names.contains(&"used_bytes"));

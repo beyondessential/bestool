@@ -20,12 +20,12 @@ use serde_json::Value;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
 const CHECK_NAME: &str = "tailscale_config";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	#[cfg(target_os = "linux")]
 	{
 		run_linux().await

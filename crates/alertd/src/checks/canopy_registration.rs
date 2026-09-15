@@ -16,12 +16,12 @@
 use bestool_canopy::registration::{self, Registration};
 use tracing::{debug, info, warn};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::{check::Check, heal::HealOutcome};
 
 const CHECK_NAME: &str = "canopy_registration";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	match registration::load().await {
 		Ok(reg) => grade(reg.as_ref()),
 		Err(err) => Check::broken(
@@ -36,7 +36,7 @@ pub async fn run(_ctx: SweepContext) -> Check {
 /// the registration, so a later sweep sees a complete enrolment and passes.
 ///
 /// spec: REG#recovering-a-missing-identity
-pub async fn heal(ctx: SweepContext) -> HealOutcome {
+pub async fn heal(ctx: MachineCx) -> HealOutcome {
 	let Some(canopy) = ctx.canopy.as_deref() else {
 		// No canopy connectivity to recover from on this sweep.
 		return HealOutcome::Deferred;

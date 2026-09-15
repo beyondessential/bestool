@@ -68,11 +68,11 @@ enum TamanuSource {
 
 struct DoctorTaskInner {
 	binary_version: String,
-	/// Tamanu context for the next sweep, refreshed by
-	/// [`DoctorTaskInner::resolve_tamanu`] when discovery is enabled. `None` on
-	/// hosts with no Tamanu deployment: sweeps still run (and post), with all
-	/// Tamanu-dependent checks skipped.
-	tamanu: Mutex<Option<doctor::SweepTamanu>>,
+	/// What the next sweep reports for besides the machine, refreshed by
+	/// [`DoctorTaskInner::resolve_targets`] when discovery is enabled. `None` on
+	/// hosts with neither a Tamanu deployment nor a database: sweeps still run
+	/// (and post), reporting for the machine alone.
+	targets: Mutex<Option<doctor::SweepTargets>>,
 	tamanu_source: TamanuSource,
 	/// `SELECT version()` result, populated on the first tick that succeeds in
 	/// reaching the database. Stable for the lifetime of the PG instance, so we
@@ -110,11 +110,11 @@ struct LatestSweep {
 }
 
 impl DoctorTask {
-	pub fn new(binary_version: String, tamanu: Option<doctor::SweepTamanu>) -> Self {
+	pub fn new(binary_version: String, targets: Option<doctor::SweepTargets>) -> Self {
 		Self {
 			inner: Arc::new(DoctorTaskInner {
 				binary_version,
-				tamanu: Mutex::new(tamanu),
+				targets: Mutex::new(targets),
 				tamanu_source: TamanuSource::Fixed,
 				pg_version_cache: Mutex::new(None),
 				pg_pool: Mutex::new(None),
@@ -223,12 +223,12 @@ impl DoctorTaskInner {
 	/// version-aware check would compare against a stale baseline. So re-discover
 	/// per sweep, keeping the last good answer when discovery errors — a
 	/// transient failure shouldn't blank out every Tamanu check.
-	async fn resolve_tamanu(&self) -> Option<doctor::SweepTamanu> {
+	async fn resolve_targets(&self) -> Option<doctor::SweepTargets> {
 		let TamanuSource::Discover { root } = &self.tamanu_source else {
-			return self.tamanu.lock().await.clone();
+			return self.targets.lock().await.clone();
 		};
 
-		self.apply_discovery(doctor::discover_sweep_tamanu(root.as_deref()).await)
+		self.apply_discovery(doctor::discover_sweep_targets(root.as_deref()).await)
 			.await
 	}
 
@@ -237,9 +237,9 @@ impl DoctorTaskInner {
 	/// host, and continuing to report the install we last saw would be a lie.
 	async fn apply_discovery(
 		&self,
-		discovered: Result<Option<doctor::SweepTamanu>>,
-	) -> Option<doctor::SweepTamanu> {
-		let mut guard = self.tamanu.lock().await;
+		discovered: Result<Option<doctor::SweepTargets>>,
+	) -> Option<doctor::SweepTargets> {
+		let mut guard = self.targets.lock().await;
 		match discovered {
 			Ok(resolved) => *guard = resolved,
 			Err(err) => warn!(
@@ -310,8 +310,8 @@ impl DoctorTaskInner {
 		enable_heal: bool,
 	) -> Result<doctor::SweepResult> {
 		let cached = self.pg_version_cache.lock().await.clone();
-		let tamanu = self.resolve_tamanu().await;
-		let pg_pool = match tamanu.as_ref() {
+		let targets = self.resolve_targets().await;
+		let pg_pool = match targets.as_ref() {
 			Some(t) => self.pool_for(&t.database_url).await,
 			None => None,
 		};
@@ -321,7 +321,7 @@ impl DoctorTaskInner {
 		// [`bestool_alertd::heal`].
 		let sweep = doctor::perform_sweep(
 			&self.binary_version,
-			tamanu,
+			targets,
 			ctx.http_client.clone(),
 			&[],
 			&[],
@@ -558,23 +558,36 @@ mod tests {
 
 	const DB_URL: &str = "postgres://u:p@localhost/tamanu";
 
-	fn sweep_tamanu(version: &str) -> doctor::SweepTamanu {
-		doctor::SweepTamanu {
-			version: Version::parse(version).unwrap(),
-			root: PathBuf::from("/opt/tamanu"),
+	fn sweep_targets(version: &str) -> doctor::SweepTargets {
+		doctor::SweepTargets {
+			database_url: DB_URL.into(),
 			config: Arc::new(TamanuConfig::from_database(
 				Database::from_url(DB_URL).unwrap(),
 			)),
-			database_url: DB_URL.into(),
-			has_install: true,
-			is_tamanu: true,
+			tamanu: Some(doctor::SweepTamanu {
+				version: Version::parse(version).unwrap(),
+				root: Some(PathBuf::from("/opt/tamanu")),
+			}),
 		}
 	}
 
-	fn inner(tamanu: Option<doctor::SweepTamanu>, tamanu_source: TamanuSource) -> DoctorTaskInner {
+	/// The version of the Tamanu the targets name.
+	fn tamanu_version(targets: &doctor::SweepTargets) -> Version {
+		targets
+			.tamanu
+			.as_ref()
+			.expect("these targets name a Tamanu")
+			.version
+			.clone()
+	}
+
+	fn inner(
+		targets: Option<doctor::SweepTargets>,
+		tamanu_source: TamanuSource,
+	) -> DoctorTaskInner {
 		DoctorTaskInner {
 			binary_version: "0.0.0-test".into(),
-			tamanu: Mutex::new(tamanu),
+			targets: Mutex::new(targets),
 			tamanu_source,
 			pg_version_cache: Mutex::new(None),
 			pg_pool: Mutex::new(None),
@@ -589,14 +602,14 @@ mod tests {
 		// The upgrade case: the daemon started on 2.54.0 and Tamanu has since been
 		// upgraded in place. The sweep must run against the version now on disk,
 		// and the new context must stick for subsequent sweeps too.
-		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let inner = inner(Some(sweep_targets("2.54.0")), TamanuSource::Fixed);
 		let resolved = inner
-			.apply_discovery(Ok(Some(sweep_tamanu("2.55.0"))))
+			.apply_discovery(Ok(Some(sweep_targets("2.55.0"))))
 			.await
 			.expect("a context");
-		assert_eq!(resolved.version, Version::parse("2.55.0").unwrap());
+		assert_eq!(tamanu_version(&resolved), Version::parse("2.55.0").unwrap());
 		assert_eq!(
-			inner.tamanu.lock().await.as_ref().unwrap().version,
+			tamanu_version(inner.targets.lock().await.as_ref().unwrap()),
 			Version::parse("2.55.0").unwrap()
 		);
 	}
@@ -606,30 +619,30 @@ mod tests {
 		// Discovery can fail transiently (an unreadable root, a config that won't
 		// parse mid-write). Falling back to `None` would skip every Tamanu check;
 		// the last known install is the better answer.
-		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let inner = inner(Some(sweep_targets("2.54.0")), TamanuSource::Fixed);
 		let resolved = inner
 			.apply_discovery(Err(miette!("no tamanu discovered")))
 			.await
 			.expect("the last known context");
-		assert_eq!(resolved.version, Version::parse("2.54.0").unwrap());
+		assert_eq!(tamanu_version(&resolved), Version::parse("2.54.0").unwrap());
 	}
 
 	#[tokio::test]
 	async fn discovery_clears_the_context_when_tamanu_is_gone() {
 		// A successful discovery that finds nothing is a fact, not a failure:
 		// Tamanu is no longer on this host, so stop reporting the install.
-		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
+		let inner = inner(Some(sweep_targets("2.54.0")), TamanuSource::Fixed);
 		assert!(inner.apply_discovery(Ok(None)).await.is_none());
-		assert!(inner.tamanu.lock().await.is_none());
+		assert!(inner.targets.lock().await.is_none());
 	}
 
 	#[tokio::test]
 	async fn fixed_source_reuses_the_context_it_was_given() {
 		// Builds with no Tamanu integration wired up have nothing to discover, so
-		// `resolve_tamanu` must not go looking for an install.
-		let inner = inner(Some(sweep_tamanu("2.54.0")), TamanuSource::Fixed);
-		let resolved = inner.resolve_tamanu().await.expect("a context");
-		assert_eq!(resolved.version, Version::parse("2.54.0").unwrap());
+		// `resolve_targets` must not go looking for an install.
+		let inner = inner(Some(sweep_targets("2.54.0")), TamanuSource::Fixed);
+		let resolved = inner.resolve_targets().await.expect("a context");
+		assert_eq!(tamanu_version(&resolved), Version::parse("2.54.0").unwrap());
 	}
 
 	fn machine(check: Check) -> CheckOutcome {
