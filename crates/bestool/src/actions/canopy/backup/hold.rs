@@ -245,8 +245,16 @@ pub enum CaptureState {
 	Gone,
 }
 
-pub async fn capture_state(capture: &HeldCapture) -> CaptureState {
-	match capture {
+/// Probed at the path a restore reads, not at whatever exposes it.
+///
+/// For a shadow copy the two are not interchangeable. Its junction substitutes a
+/// `\??\GLOBALROOT\Device\HarddiskVolumeShadowCopyN` device path, and enumerating
+/// the junction itself opens that device rather than the root directory of the
+/// filesystem on it, so it comes back empty however healthy the copy is. Paths
+/// *through* the junction resolve normally, which is why the capture reads fine
+/// and only the probe of its root did not.
+pub async fn capture_state(record: &HoldRecord) -> CaptureState {
+	match &record.capture {
 		HeldCapture::Btrfs {
 			toplevel_mount,
 			snapshot_path,
@@ -281,7 +289,7 @@ pub async fn capture_state(capture: &HeldCapture) -> CaptureState {
 		HeldCapture::Vss { shadow_id, junction } => {
 			if !vss_present(shadow_id, junction).await {
 				CaptureState::Gone
-			} else if tokio::fs::read_dir(junction).await.is_ok() {
+			} else if tokio::fs::read_dir(&record.source).await.is_ok() {
 				CaptureState::Present
 			} else {
 				// The shadow is there and the junction is not resolving. VSS can
@@ -564,6 +572,38 @@ mod tests {
 			panic!("expected a btrfs capture");
 		};
 		assert!(fsdev.is_none());
+	}
+
+	/// A shadow copy's junction substitutes a device path, and opening the
+	/// junction itself opens that device rather than the root directory of the
+	/// filesystem on it — so it reads empty however healthy the copy is, while
+	/// every path through it resolves. Judging a hold by its junction therefore
+	/// reports every held shadow copy detached, from the moment it is taken, with
+	/// no reattach able to clear it. The state has to be read where a restore
+	/// reads the capture.
+	///
+	/// Off Windows, where the shadow itself cannot be queried, the junction
+	/// standing in for it is what makes this expressible as a unit test; the
+	/// Windows side is covered end-to-end by `wmi_shadow_roundtrip`.
+	#[cfg(not(windows))]
+	#[tokio::test]
+	async fn a_shadow_copy_hold_is_judged_where_the_restore_reads() {
+		let scratch = tempfile::tempdir().unwrap();
+		let junction = scratch.path().join("held").join("x");
+		let source = junction.join("Program Files").join("PostgreSQL").join("12");
+		std::fs::create_dir_all(&source).unwrap();
+
+		let mut held = record(HeldCapture::Vss {
+			shadow_id: "{deadbeef-0000-0000-0000-000000000000}".into(),
+			junction: junction.clone(),
+		});
+		held.source = source;
+		assert_eq!(capture_state(&held).await, CaptureState::Present);
+
+		// The copy behind the junction stops serving the capture: what a restore
+		// reads has gone, even though the junction is still standing.
+		std::fs::remove_dir_all(junction.join("Program Files")).unwrap();
+		assert_eq!(capture_state(&held).await, CaptureState::Detached);
 	}
 
 	/// A base-backup capture has no freeze instant, and the record says so rather

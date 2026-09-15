@@ -21,8 +21,9 @@ A run retains its capture when asked to at the point it starts, or at any time w
 The instruction reaches the daemon hosting the run and takes effect when the run finishes; the transfer in progress is not interrupted, slowed, or otherwise altered, so a run that has already spent hours uploading keeps that work.
 Only a daemon-hosted run can be reached this way, and the command says so plainly when the named type has no run in flight there.
 
-`bestool canopy backup --type <type> --hold --no-upload` takes a capture and nothing else: no credentials are fetched, no repository is contacted, and no run is reported.
+`bestool canopy hold create <type>` takes a capture and nothing else: no credentials are fetched, no repository is contacted, and no run is reported.
 The definition's `pre` and `post` hooks run and the method prepares its capture exactly as it would for an uploading run, so a capture-only hold is the same artefact as a held capture from a full run.
+It offers no way to upload, which is why it exists as a command of its own: the same thing is spelled `bestool canopy backup --type <type> --hold --no-upload`, where omitting the second flag starts a transfer that an operator only wanting a rollback point did not ask for and may wait hours to be rid of.
 
 ## What a hold consists of
 
@@ -33,6 +34,21 @@ This record lives in a fixed device directory — `/var/lib/bestool/held-snapsho
 
 A held capture is exposed at a path of its own, distinct from the path a run exposes its capture at and keyed by the hold rather than by the backup type.
 A subsequent run of the same type therefore neither disturbs a hold nor is disturbed by one, and several holds of one type coexist.
+
+## Whether a capture is still there
+
+A hold is a rollback point only for as long as the capture behind it can be read, so each hold is in one of three states.
+It is present when the capture reads where the record says it is.
+It is detached when the capture is still there but nothing currently exposes it: an exposure is made by the process that made it, and does not always survive that process ending, the machine rebooting, or the platform renumbering the devices it hands out.
+It is gone when nothing of the capture is left.
+
+The state is judged by whether the capture reads where a restore would read it, not by whether whatever exposes it appears to be in place.
+An exposure can be in place and serve nothing, so judging by the exposure alone reports intact holds as lost, and an operator has no way to tell that apart from a capture that really has gone.
+
+Telling detached from gone is what makes the difference actionable.
+A detached capture is recoverable: `bestool canopy hold reattach <id>` exposes it again where its record says it lives.
+It reports the capture readable only once it can be read there, so an operator sent to it by another command is never told it worked when nothing changed.
+A gone capture is not recoverable, and the hold that names it is no longer a rollback point.
 
 ## Releasing a hold
 
@@ -60,6 +76,8 @@ The device reports this headroom and does not change it: the store is host-wide 
 
 `bestool canopy restore --type <type> --from-hold <id>` restores from a held capture instead of from the repository.
 It reads only local data, so it runs without repository access and at local copy speed; the backup type selects the definition and method as it does for a repository restore.
+
+A restore refuses a hold whose capture cannot be read, naming the state the hold is in and what to do about it, rather than laying an empty or partial tree over the data it is replacing.
 
 The capture is copied into the restore staging area, and the method's restore then proceeds exactly as it does for a snapshot fetched from the repository.
 Restoring by copy rather than by moving the capture into place is what lets the hold outlive the restore, so a restore that fails partway can be attempted again from the same rollback point.

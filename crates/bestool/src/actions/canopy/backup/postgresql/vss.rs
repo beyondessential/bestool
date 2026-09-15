@@ -278,6 +278,18 @@ pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {
 	.await
 }
 
+/// The form of a shadow's device path that names the root directory of the
+/// filesystem on it, rather than the volume device itself: exactly one trailing
+/// separator.
+///
+/// Without one, paths *beneath* the junction still resolve — the remainder is
+/// appended before the device is parsed, which is all a backup's upload or a
+/// restore's copy ever reads — but opening the junction itself opens the device,
+/// and it lists as empty or refuses however healthy the copy is.
+fn browsable_device(device: &str) -> String {
+	format!("{}\\", device.trim_end_matches(['\\', '/']))
+}
+
 /// Mount a shadow's device path at `junction` (a directory junction), creating
 /// the parent and clearing any stale mount left by a crashed run first —
 /// `junction::create` needs the link path not to exist yet.
@@ -290,9 +302,10 @@ fn mount_shadow(device: &str, junction: &Path) -> Result<()> {
 	// A leftover junction/dir here makes `junction::create` fail; remove it. On a
 	// junction this unmounts (doesn't touch the shadow); best-effort.
 	let _ = std::fs::remove_dir(junction);
-	junction::create(device, junction)
+	let target = browsable_device(device);
+	junction::create(&target, junction)
 		.into_diagnostic()
-		.wrap_err_with(|| format!("junctioning {} to {device}", junction.display()))
+		.wrap_err_with(|| format!("junctioning {} to {target}", junction.display()))
 }
 
 /// A freshly-created shadow: its id (for deletion) and device path (for reading).
@@ -424,6 +437,16 @@ mod tests {
 	fn held_junctions_stay_on_the_captures_volume() {
 		// A junction can't cross volumes, so a shadow of D: is exposed on D:.
 		assert!(held_expose_target_dir("D:", "x").starts_with("D:\\"));
+	}
+
+	#[test]
+	fn browsable_device_has_one_trailing_separator() {
+		// A bare device path cannot be listed, and a doubled separator is not the
+		// root of that device either.
+		let device = r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42";
+		assert_eq!(browsable_device(device), format!("{device}\\"));
+		assert_eq!(browsable_device(&format!("{device}\\")), format!("{device}\\"));
+		assert_eq!(browsable_device(&format!("{device}/")), format!("{device}\\"));
 	}
 
 	#[test]
@@ -660,6 +683,22 @@ mod tests {
 		let via = mount.join(&leaf).join("marker.txt");
 		let content = std::fs::read(&via).expect("read marker through the junction");
 		assert_eq!(content, b"vss-wmi-ok", "marker content via the junction");
+
+		// And list the junction itself. A device path without a trailing separator
+		// names the volume device rather than the root directory of the filesystem
+		// on it, so a junction substituting one lists empty while every path
+		// through it still resolves — the capture reads fine and anything that
+		// judges it by its root calls it lost.
+		let top: Vec<_> = std::fs::read_dir(&mount)
+			.expect("list the junction itself")
+			.filter_map(Result::ok)
+			.map(|entry| entry.file_name())
+			.collect();
+		assert!(
+			top.iter().any(|name| name == leaf.as_str()),
+			"the junction lists {top:?}, without {leaf}: it is exposing the volume device, \
+			 not the root directory of the filesystem on it"
+		);
 
 		if let Some(kopia) = std::env::var_os("KOPIA_BIN") {
 			kopia_snapshot(Path::new(&kopia), &mount.join(&leaf).to_string_lossy());
