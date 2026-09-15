@@ -68,10 +68,10 @@ enum TamanuSource {
 
 struct DoctorTaskInner {
 	binary_version: String,
-	/// Tamanu context for the next sweep, refreshed by
-	/// [`DoctorTaskInner::resolve_tamanu`] when discovery is enabled. `None` on
-	/// hosts with no Tamanu deployment: sweeps still run (and post), with all
-	/// Tamanu-dependent checks skipped.
+	/// What the next sweep reports for besides the machine, refreshed by
+	/// [`DoctorTaskInner::resolve_targets`] when discovery is enabled. `None` on
+	/// hosts with neither a Tamanu deployment nor a database: sweeps still run
+	/// (and post), reporting for the machine alone.
 	targets: Mutex<Option<doctor::SweepTargets>>,
 	tamanu_source: TamanuSource,
 	/// `SELECT version()` result, populated on the first tick that succeeds in
