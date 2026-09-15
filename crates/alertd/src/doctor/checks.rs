@@ -50,6 +50,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod reporting_schema;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -320,6 +321,12 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version, db, postgres, off_wire),
 		entry!("migrations", migrations, tamanu, tamanu_app),
 		entry!("reporting_roles", reporting_roles, tamanu, tamanu_app),
+		// Takes the whole context, not just Tamanu's: it needs canopy's client to
+		// read the offer.
+		entry!("reporting_schema", reporting_schema, host, tamanu_app).with_heal(
+			|ctx| Box::pin(reporting_schema::heal(ctx)),
+			heal::DEFAULT_MIN_INTERVAL,
+		),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
@@ -492,6 +499,36 @@ pub mod test_support {
 		})
 	}
 
+	/// A [`SweepContext`] with no Tamanu install at all.
+	pub fn no_tamanu_ctx() -> super::SweepContext {
+		super::SweepContext::builder()
+			.http_client(reqwest::Client::new())
+			.build()
+	}
+
+	/// A context synthesised from a database URL alone (no install): `db` is
+	/// `None` and the URL points at a closed port so connection attempts fail
+	/// fast.
+	pub fn db_only_ctx() -> super::SweepContext {
+		use bestool_tamanu::config::Database;
+
+		let db = Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap();
+		super::SweepContext::builder()
+			.tamanu(CheckContext {
+				tamanu_version: Version::parse("0.0.0").unwrap(),
+				tamanu_root: std::path::PathBuf::new(),
+				config: Arc::new(TamanuConfig::from_database(db)),
+				kind: ApiServerKind::Central,
+				database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
+				db: None,
+				http_client: reqwest::Client::new(),
+				has_install: false,
+				is_tamanu: true,
+			})
+			.http_client(reqwest::Client::new())
+			.build()
+	}
+
 	/// A facility [`CheckContext`] with no DB; central-only checks skip on it
 	/// before ever touching the database.
 	pub fn facility_ctx() -> CheckContext {
@@ -513,43 +550,11 @@ pub mod test_support {
 mod tests {
 	use serde_json::Value;
 
-	use super::{SweepContext, all, fmt_db_error, query_error_check, test_support::central_ctx};
+	use super::{
+		SweepContext, all, fmt_db_error, query_error_check,
+		test_support::{central_ctx, db_only_ctx, no_tamanu_ctx},
+	};
 	use crate::doctor::check::CheckStatus;
-
-	fn no_tamanu_ctx() -> SweepContext {
-		SweepContext::builder()
-			.http_client(reqwest::Client::new())
-			.build()
-	}
-
-	/// A context synthesised from a database URL alone (no install): `db` is
-	/// `None` and the URL points at a closed port so connection attempts fail
-	/// fast.
-	fn db_only_ctx() -> SweepContext {
-		use std::sync::Arc;
-
-		use bestool_tamanu::{
-			ApiServerKind,
-			config::{Database, TamanuConfig},
-		};
-		use node_semver::Version;
-
-		let db = Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap();
-		SweepContext::builder()
-			.tamanu(super::CheckContext {
-				tamanu_version: Version::parse("0.0.0").unwrap(),
-				tamanu_root: std::path::PathBuf::new(),
-				config: Arc::new(TamanuConfig::from_database(db)),
-				kind: ApiServerKind::Central,
-				database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
-				db: None,
-				http_client: reqwest::Client::new(),
-				has_install: false,
-				is_tamanu: true,
-			})
-			.http_client(reqwest::Client::new())
-			.build()
-	}
 
 	#[tokio::test]
 	async fn checks_run_with_db_only_context() {
