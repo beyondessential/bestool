@@ -609,38 +609,121 @@ mod tests {
 	///
 	/// Seeds a real gap, commits it, grades it, then removes it again.
 	///
-	/// The seed has to be committed: the check takes its own connection from the
-	/// pool, so rows left uncommitted on this one would be invisible to it. The
-	/// probe rows are deleted first as well as last, so a run that died before
-	/// its cleanup doesn't poison the next one, and the cleanup runs before the
-	/// assertions so a failing assertion still leaves the database as it found
-	/// it.
+	/// The fixture has to be committed: the check reads through its own pooled
+	/// connection, so rows left uncommitted on this one would be invisible to
+	/// it. That makes this test write for real to whichever database answers at
+	/// the central URL — on a developer or ops machine, a live Tamanu — so it
+	/// runs only when asked for by name:
+	///
+	/// ```text
+	/// BESTOOL_TEST_DESTRUCTIVE_DB=1 cargo test -p bestool-alertd grades_a_seeded_gap
+	/// ```
+	///
+	/// Everything it touches is put back: the probe patient is its own row and
+	/// is removed, and the materialisation setting is read first and restored to
+	/// whatever the deployment had, rather than deleted. Both happen before the
+	/// assertions, so a failing assertion still leaves the database as it was.
+	/// Put the database back: remove the probe patient, and return the
+	/// materialisation setting to whatever the deployment had — the prior value
+	/// if there was a row, or no row at all if the test created it.
+	async fn restore(
+		client: &bestool_postgres::pool::PgConnection,
+		setting: &str,
+		probe: &str,
+		prior: Option<serde_json::Value>,
+	) -> Result<(), tokio_postgres::Error> {
+		client
+			.execute("DELETE FROM patients WHERE id = $1", &[&probe])
+			.await?;
+		match prior {
+			Some(value) => {
+				client
+					.execute(
+						"UPDATE settings SET value = $2 \
+						 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+						&[&setting, &value],
+					)
+					.await?;
+			}
+			None => {
+				client
+					.execute(
+						"DELETE FROM settings \
+						 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+						&[&setting],
+					)
+					.await?;
+			}
+		}
+		Ok(())
+	}
+
 	#[tokio::test]
 	async fn grades_a_seeded_gap_against_central() {
-		const CLEANUP: &str = "DELETE FROM patients WHERE id = 'fhir-materialisation-probe'; \
-			 DELETE FROM settings \
-			 WHERE key = 'fhir.worker.resourceMaterialisationEnabled.Patient';";
+		/// The setting the check reads to decide the resource is enabled. A
+		/// deployment may legitimately have its own value here.
+		const SETTING: &str = "fhir.worker.resourceMaterialisationEnabled.Patient";
+		const PROBE: &str = "fhir-materialisation-probe";
+
+		if std::env::var_os("BESTOOL_TEST_DESTRUCTIVE_DB").is_none() {
+			return;
+		}
 
 		let Some(ctx) = central_worker_enabled().await else {
 			return;
 		};
 		let client = ctx.db().await.expect("central_ctx carries a connection");
 
+		// Whatever the deployment had, so it can be put back verbatim.
+		let prior: Option<serde_json::Value> = client
+			.query_opt(
+				"SELECT value FROM settings \
+				 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+				&[&SETTING],
+			)
+			.await
+			.expect("reading the current setting should succeed")
+			.map(|row| row.get(0));
+
+		if prior.is_some() {
+			client
+				.execute(
+					"UPDATE settings SET value = 'true' \
+					 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+					&[&SETTING],
+				)
+				.await
+				.expect("enabling the resource should succeed");
+		} else {
+			client
+				.execute(
+					"INSERT INTO settings (key, value) VALUES ($1, 'true')",
+					&[&SETTING],
+				)
+				.await
+				.expect("enabling the resource should succeed");
+		}
+
+		// A row only this test creates, so removing it first clears up after a
+		// run that died before its own cleanup.
 		client
-			.batch_execute(&format!(
-				"{CLEANUP} \
-				 INSERT INTO settings (key, value) \
-				 VALUES ('fhir.worker.resourceMaterialisationEnabled.Patient', 'true'); \
-				 INSERT INTO patients \
+			.execute("DELETE FROM patients WHERE id = $1", &[&PROBE])
+			.await
+			.expect("clearing any stale probe should succeed");
+		client
+			.execute(
+				"INSERT INTO patients \
 				 (id, created_at, updated_at, display_id, first_name, last_name, sex) \
-				 VALUES ('fhir-materialisation-probe', now() - interval '3 hours', now(), \
-				 'FHIRMATPROBE', 'Gap', 'Probe', 'other');"
-			))
+				 VALUES ($1, now() - interval '3 hours', now(), \
+				 'FHIRMATPROBE', 'Gap', 'Probe', 'other')",
+				&[&PROBE],
+			)
 			.await
 			.expect("seeding the gap should succeed");
 
 		let check = super::run(ctx).await;
-		let cleaned_up = client.batch_execute(CLEANUP).await;
+
+		let cleaned_up = restore(&client, SETTING, PROBE, prior).await;
 
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
@@ -675,7 +758,7 @@ mod tests {
 			"the resource should be a metric label"
 		);
 
-		cleaned_up.expect("removing the seeded probe rows should succeed");
+		cleaned_up.expect("restoring the database should succeed");
 	}
 
 	#[test]
