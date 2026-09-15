@@ -99,12 +99,15 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 	create_pool_sized(url, application_name, PoolSize::default(), Prompt::Allowed).await
 }
 
-/// How many connections a pool may open, and how many it keeps when idle.
+/// How a pool is sized and how long it waits.
 ///
-/// The default suits a caller that runs a query at a time. A caller that fans
-/// out — every doctor check querying at once, say — sizes `max_open` to its own
-/// concurrency so callers never queue behind each other, and keeps `max_idle`
-/// well below that so the footprint between bursts stays small.
+/// The default suits a caller that runs a query at a time and has a person
+/// watching. A caller that fans out sets these deliberately: `max_open` is a
+/// budget against the server's own connection limit rather than a slot per
+/// concurrent caller, `max_idle` keeps the resting footprint proportional to
+/// what the work actually leaves behind, and the two timeouts separate waiting
+/// for a free connection from waiting for one to open — a busy server and an
+/// unreachable one deserve very different patience.
 #[derive(Clone, Copy, Debug)]
 pub struct PoolSize {
 	pub max_open: u64,
@@ -117,7 +120,17 @@ pub struct PoolSize {
 	/// How long to wait for a free connection before giving up. `None` waits as
 	/// long as it takes, so a caller with more work than slots queues rather
 	/// than being told the database is unavailable when it is merely busy.
+	///
+	/// This covers opening a connection as well as waiting for one, so a caller
+	/// that wants to distinguish the two sets `connect_timeout` too.
 	pub get_timeout: Option<Duration>,
+	/// How long to wait for a connection to open. `None` leaves it to the
+	/// operating system, which can mean minutes of SYN retries when a host
+	/// drops packets rather than refusing.
+	///
+	/// A caller that is generous about queueing still wants this short: an
+	/// unreachable database should be reported quickly, not waited out.
+	pub connect_timeout: Option<Duration>,
 }
 
 impl Default for PoolSize {
@@ -128,6 +141,7 @@ impl Default for PoolSize {
 			max_idle: 10,
 			max_idle_lifetime: None,
 			get_timeout: Some(Duration::from_secs(30)),
+			connect_timeout: None,
 		}
 	}
 }
@@ -154,6 +168,9 @@ pub async fn create_pool_sized(
 	let mut config = url::parse_connection_url(url)?;
 
 	config.application_name(application_name);
+	if let Some(timeout) = size.connect_timeout {
+		config.connect_timeout(timeout);
+	}
 
 	let mut tried_ssl_fallback = false;
 

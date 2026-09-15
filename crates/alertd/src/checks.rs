@@ -149,11 +149,20 @@ pub struct CheckContext {
 /// these slots and the checks' short queries, ordinary queueing finishes in
 /// well under a second; reaching two minutes means the database has stopped
 /// answering, which is worth reporting as such.
+///
+/// **Waiting for a slot is not waiting for a host.** That deadline covers
+/// opening a connection as well as queueing for one, and a host that drops
+/// packets rather than refusing would otherwise absorb all of it on a single
+/// connect — every tick, delaying the outage report the daemon exists to make.
+/// Connecting gets its own, much shorter, bound: a healthy connect is
+/// milliseconds, so seconds are already generous, and an unreachable database
+/// fails fast while a busy one still gets the patience above.
 pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::PoolSize {
 	max_open: 8,
 	max_idle: 2,
 	max_idle_lifetime: Some(std::time::Duration::from_secs(300)),
 	get_timeout: Some(std::time::Duration::from_secs(120)),
+	connect_timeout: Some(std::time::Duration::from_secs(10)),
 };
 
 impl CheckContext {
