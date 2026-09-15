@@ -21,8 +21,9 @@ A run retains its capture when asked to at the point it starts, or at any time w
 The instruction reaches the daemon hosting the run and takes effect when the run finishes; the transfer in progress is not interrupted, slowed, or otherwise altered, so a run that has already spent hours uploading keeps that work.
 Only a daemon-hosted run can be reached this way, and the command says so plainly when the named type has no run in flight there.
 
-`bestool canopy backup --type <type> --hold --no-upload` takes a capture and nothing else: no credentials are fetched, no repository is contacted, and no run is reported.
+`bestool canopy hold create <type>` takes a capture and nothing else: no credentials are fetched, no repository is contacted, and no run is reported.
 The definition's `pre` and `post` hooks run and the method prepares its capture exactly as it would for an uploading run, so a capture-only hold is the same artefact as a held capture from a full run.
+It offers no way to upload, which is why it exists as a command of its own: the same thing is spelled `bestool canopy backup --type <type> --hold --no-upload`, where omitting the second flag starts a transfer that an operator only wanting a rollback point did not ask for and may wait hours to be rid of.
 
 ## What a hold consists of
 

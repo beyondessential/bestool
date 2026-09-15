@@ -4,6 +4,8 @@
 //! Canopy plays no part in its lifecycle. It is created by a backup asked to
 //! keep its capture, and released here.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use jiff::{SpanRound, Timestamp, Unit};
 use miette::{Result, bail};
@@ -11,7 +13,7 @@ use tracing::{info, warn};
 
 use super::{
 	super::Context,
-	backup::{DaemonError, hold, request_daemon_hold},
+	backup::{DaemonError, capture_only, hold, request_daemon_hold},
 };
 
 /// Manage captures held on this device as local rollback points.
@@ -23,6 +25,18 @@ pub struct HoldArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum HoldAction {
+	/// Take a capture and hold it, without touching the repository.
+	///
+	/// Fetches no credentials, contacts no repository, and reports no run, so it
+	/// cannot start a transfer: this is the whole point of it existing beside
+	/// `bestool canopy backup --hold --no-upload`, where forgetting the second
+	/// flag starts one.
+	///
+	/// The definition's pre/post hooks run and the method prepares its capture
+	/// exactly as it would for an uploading run, so the hold is the same artefact
+	/// either way. Release it with `bestool canopy hold drop`.
+	Create(CreateArgs),
+
 	/// Tell a backup that is already running to keep its capture.
 	///
 	/// Takes effect when the run finishes; the transfer in progress is not
@@ -47,6 +61,17 @@ pub enum HoldAction {
 }
 
 #[derive(Debug, Clone, Parser)]
+pub struct CreateArgs {
+	/// The backup type to capture, as named by a def in the backups directory.
+	#[arg(value_name = "TYPE")]
+	pub backup_type: String,
+
+	/// Override the backups definition directory.
+	#[arg(long, value_name = "DIR")]
+	pub backups_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Parser)]
 pub struct ReattachArgs {
 	/// The hold to expose again, as shown by `bestool canopy hold list`.
 	pub id: String,
@@ -67,6 +92,9 @@ pub struct DropArgs {
 
 pub async fn run(args: HoldArgs, _ctx: Context) -> Result<()> {
 	match args.action {
+		HoldAction::Create(args) => {
+			capture_only(&args.backup_type, args.backups_dir.as_deref()).await
+		}
 		HoldAction::Keep(args) => keep(&args.backup_type).await,
 		HoldAction::List => list().await,
 		HoldAction::Drop(args) => drop_hold(&args.id).await,

@@ -23,6 +23,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
 * [`bestool canopy hold`↴](#bestool-canopy-hold)
+* [`bestool canopy hold create`↴](#bestool-canopy-hold-create)
 * [`bestool canopy hold keep`↴](#bestool-canopy-hold-keep)
 * [`bestool canopy hold list`↴](#bestool-canopy-hold-list)
 * [`bestool canopy hold drop`↴](#bestool-canopy-hold-drop)
@@ -482,10 +483,31 @@ Manage captures held on this device as local rollback points
 
 ###### **Subcommands:**
 
+* `create` — Take a capture and hold it, without touching the repository
 * `keep` — Tell a backup that is already running to keep its capture
 * `list` — List the captures held on this device
 * `drop` — Release a held capture and forget it
 * `reattach` — Expose a held capture again where its record says it lives
+
+
+
+## `bestool canopy hold create`
+
+Take a capture and hold it, without touching the repository.
+
+Fetches no credentials, contacts no repository, and reports no run, so it cannot start a transfer: this is the whole point of it existing beside `bestool canopy backup --hold --no-upload`, where forgetting the second flag starts one.
+
+The definition's pre/post hooks run and the method prepares its capture exactly as it would for an uploading run, so the hold is the same artefact either way. Release it with `bestool canopy hold drop`.
+
+**Usage:** `bestool canopy hold create [OPTIONS] <TYPE>`
+
+###### **Arguments:**
+
+* `<TYPE>` — The backup type to capture, as named by a def in the backups directory
+
+###### **Options:**
+
+* `--backups-dir <DIR>` — Override the backups definition directory
 
 
 
