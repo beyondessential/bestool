@@ -607,63 +607,30 @@ mod tests {
 	/// grades it: schema discovery, the stored setting winning over the absent
 	/// config flag, the gap and its age, and the resulting failure.
 	///
-	/// Seeds a real gap, commits it, grades it, then removes it again.
-	///
-	/// The fixture has to be committed: the check reads through its own pooled
-	/// connection, so rows left uncommitted on this one would be invisible to
-	/// it. That makes this test write for real to whichever database answers at
-	/// the central URL — on a developer or ops machine, a live Tamanu — so it
-	/// runs only when asked for by name:
+	/// The fixture has to be committed, because the check reads through its own
+	/// pooled connection and would not see rows left uncommitted on this one.
+	/// That makes this test write for real to whichever database answers at the
+	/// central URL — on a developer or ops machine, a live Tamanu — so it runs
+	/// only when asked for by name:
 	///
 	/// ```text
 	/// BESTOOL_TEST_DESTRUCTIVE_DB=1 cargo test -p bestool-alertd grades_a_seeded_gap
 	/// ```
 	///
-	/// Everything it touches is put back: the probe patient is its own row and
-	/// is removed, and the materialisation setting is read first and restored to
-	/// whatever the deployment had, rather than deleted. Both happen before the
-	/// assertions, so a failing assertion still leaves the database as it was.
-	/// Put the database back: remove the probe patient, and return the
-	/// materialisation setting to whatever the deployment had — the prior value
-	/// if there was a row, or no row at all if the test created it.
-	async fn restore(
-		client: &bestool_postgres::pool::PgConnection,
-		setting: &str,
-		probe: &str,
-		prior: Option<serde_json::Value>,
-	) -> Result<(), tokio_postgres::Error> {
-		client
-			.execute("DELETE FROM patients WHERE id = $1", &[&probe])
-			.await?;
-		match prior {
-			Some(value) => {
-				client
-					.execute(
-						"UPDATE settings SET value = $2 \
-						 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
-						&[&setting, &value],
-					)
-					.await?;
-			}
-			None => {
-				client
-					.execute(
-						"DELETE FROM settings \
-						 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
-						&[&setting],
-					)
-					.await?;
-			}
-		}
-		Ok(())
-	}
-
+	/// It only ever creates and removes its own rows. It never edits a setting
+	/// the deployment already has: if one is present it declines to run, rather
+	/// than saving and restoring a value that might itself be the leftover of an
+	/// earlier run that was interrupted before it could clean up. The cleanup
+	/// runs before the assertions, so a failing assertion still leaves the
+	/// database as it found it.
 	#[tokio::test]
 	async fn grades_a_seeded_gap_against_central() {
 		/// The setting the check reads to decide the resource is enabled. A
 		/// deployment may legitimately have its own value here.
 		const SETTING: &str = "fhir.worker.resourceMaterialisationEnabled.Patient";
 		const PROBE: &str = "fhir-materialisation-probe";
+		const LIVE_SETTING: &str = "SELECT value FROM settings \
+			 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL";
 
 		if std::env::var_os("BESTOOL_TEST_DESTRUCTIVE_DB").is_none() {
 			return;
@@ -674,35 +641,28 @@ mod tests {
 		};
 		let client = ctx.db().await.expect("central_ctx carries a connection");
 
-		// Whatever the deployment had, so it can be put back verbatim.
-		let prior: Option<serde_json::Value> = client
-			.query_opt(
-				"SELECT value FROM settings \
-				 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+		// The test owns the setting for the duration or it doesn't run. A row
+		// already here is either the deployment's own configuration, which is
+		// not ours to edit, or the residue of an interrupted run, which we
+		// can't tell apart from it — so leave both alone and say so.
+		let existing = client
+			.query_opt(LIVE_SETTING, &[&SETTING])
+			.await
+			.expect("reading the current setting should succeed");
+		assert!(
+			existing.is_none(),
+			"{SETTING} is already set on this database; this test will not edit \
+			 an existing setting. If an interrupted run left it behind, remove \
+			 the row (and any '{PROBE}' patient) and run again."
+		);
+
+		client
+			.execute(
+				"INSERT INTO settings (key, value) VALUES ($1, 'true')",
 				&[&SETTING],
 			)
 			.await
-			.expect("reading the current setting should succeed")
-			.map(|row| row.get(0));
-
-		if prior.is_some() {
-			client
-				.execute(
-					"UPDATE settings SET value = 'true' \
-					 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
-					&[&SETTING],
-				)
-				.await
-				.expect("enabling the resource should succeed");
-		} else {
-			client
-				.execute(
-					"INSERT INTO settings (key, value) VALUES ($1, 'true')",
-					&[&SETTING],
-				)
-				.await
-				.expect("enabling the resource should succeed");
-		}
+			.expect("enabling the resource should succeed");
 
 		// A row only this test creates, so removing it first clears up after a
 		// run that died before its own cleanup.
@@ -723,7 +683,14 @@ mod tests {
 
 		let check = super::run(ctx).await;
 
-		let cleaned_up = restore(&client, SETTING, PROBE, prior).await;
+		// Both rows are ours, so this puts the database back as it was found.
+		let cleaned_up = client
+			.batch_execute(&format!(
+				"DELETE FROM patients WHERE id = '{PROBE}'; \
+				 DELETE FROM settings \
+				 WHERE key = '{SETTING}' AND facility_id IS NULL AND deleted_at IS NULL;"
+			))
+			.await;
 
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
