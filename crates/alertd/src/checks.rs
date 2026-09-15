@@ -123,38 +123,37 @@ pub struct CheckContext {
 
 /// How the sweep's pool is sized.
 ///
-/// Two separate concerns, which earlier versions of this conflated into one
-/// number and oscillated over.
+/// Three things have to hold at once, and earlier versions of this traded one
+/// for another by moving a single number up and down.
 ///
-/// **How many connections.** The pool points at the deployment's own database,
-/// which the application is also connecting to, so the sweep gets a small
-/// budget rather than one slot per check. Sizing it to the fan-out would burst
-/// twenty-odd backends every minute — and `bestool tamanu doctor` opens a
+/// **A small budget.** The pool points at the deployment's own database, which
+/// the application is also connecting to. Sizing it to the check fan-out would
+/// burst twenty-odd backends every minute — and `bestool tamanu doctor` opens a
 /// second pool that can overlap the daemon's — which against a cluster on the
 /// usual hundred connections, shared with Tamanu's own pools, risks the
-/// healthcheck causing the outage it exists to report.
+/// healthcheck causing the outage it exists to report. Few connections held at
+/// rest, for the same reason.
 ///
-/// **What happens when they're all busy.** Checks queue, without a deadline.
-/// A deadline here would be indistinguishable from the database being
-/// unreachable: `db()` would hand back `None`, and several checks report that
-/// as a failure — so a slow-but-live cluster, or simply more checks than slots,
-/// would raise a database-down alert on a database that is up. Waiting instead
-/// means a busy sweep takes longer, which is the right trade for something
-/// whose job is to say whether the database is healthy.
+/// **Queueing must not look like an outage.** There are more checks than slots,
+/// so checks wait; several report a missing connection as a failure. A deadline
+/// short enough for ordinary waiting to reach would turn a busy sweep into a
+/// database-down alert on a database that is up.
 ///
-/// So a failed acquire means what it says: the database could not be connected
-/// to. A sweep that cannot take a connection at all never hands the pool to the
-/// checks, so they skip immediately rather than queueing for something that
-/// will not arrive.
+/// **The sweep must finish.** Waiting forever is not the answer either: one
+/// check stuck on a lock would hold its slot, every queued check would wait
+/// behind it, and the sweep would never return — so nothing reaches canopy and
+/// the watchdog eventually restarts the daemon into the same hang. Silence is
+/// the worst outcome for something whose job is to report trouble.
 ///
-/// Idle connections live long enough to span the gap between sweeps, so a
-/// minute-by-minute daemon reuses them instead of reconnecting, and age out
-/// when it goes quiet.
+/// So the deadline is far longer than any healthy sweep and still finite. With
+/// these slots and the checks' short queries, ordinary queueing finishes in
+/// well under a second; reaching two minutes means the database has stopped
+/// answering, which is worth reporting as such.
 pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::PoolSize {
 	max_open: 8,
-	max_idle: 8,
+	max_idle: 2,
 	max_idle_lifetime: Some(std::time::Duration::from_secs(300)),
-	get_timeout: None,
+	get_timeout: Some(std::time::Duration::from_secs(120)),
 };
 
 impl CheckContext {
@@ -534,9 +533,14 @@ pub mod test_support {
 	/// reached — building a pool checks that it can connect.
 	async fn connect(db_name: &str) -> Option<PgPool> {
 		let url = format!("postgresql://localhost/{db_name}");
-		bestool_postgres::pool::create_pool(&url, "bestool-alertd-test")
-			.await
-			.ok()
+		bestool_postgres::pool::create_pool_sized(
+			&url,
+			"bestool-alertd-test",
+			super::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+		.ok()
 	}
 
 	/// A central [`CheckContext`] backed by `tamanu-central`, or `None` if that
