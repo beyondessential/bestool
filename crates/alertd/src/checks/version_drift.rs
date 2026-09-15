@@ -16,19 +16,16 @@ use bestool_tamanu::{
 	versions::{self, ExpectedVersions},
 };
 
-use super::CheckContext;
+use super::AppCx;
 use crate::Stat;
 use crate::check::Check;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	// The comparison baseline is the install's env-file version when present,
 	// else the DB's recorded `currentVersion`. If neither resolved, the version
 	// is the 0.0.0 sentinel and there's nothing to compare against — skip rather
 	// than flag every running container as drifted.
-	if ctx.tamanu_version.major == 0
-		&& ctx.tamanu_version.minor == 0
-		&& ctx.tamanu_version.patch == 0
-	{
+	if ctx.version.major == 0 && ctx.version.minor == 0 && ctx.version.patch == 0 {
 		return Check::skip(
 			"version_drift",
 			"Tamanu version unknown",
@@ -54,13 +51,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		// detect at the supervisor level.
 		return Check::pass(
 			"version_drift",
-			format!(
-				"pm2 install at v{}; no per-process drift",
-				ctx.tamanu_version
-			),
+			format!("pm2 install at v{}; no per-process drift", ctx.version),
 		)
 		.with_detail("supervisor", "pm2")
-		.with_detail("install_version", ctx.tamanu_version.to_string());
+		.with_detail("install_version", ctx.version.to_string());
 	}
 
 	let running = match versions::running_versions_linux().await {
@@ -69,7 +63,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		// the DB round-trip below — there's nothing to compare against.
 		Err(reason) => return unreadable_check(&reason),
 	};
-	let expected_versions = versions::expected_for_supervisor(supervisor, &ctx.tamanu_version);
+	let expected_versions = versions::expected_for_supervisor(supervisor, &ctx.version);
 
 	// Only look at units that show up in our expectations registry. Hand-
 	// started or orphaned containers aren't drift; they're outside the

@@ -11,20 +11,20 @@
 //! holds DB connections and server memory; wasteful but not harmful, so it only
 //! warns. Both on or both off is consistent and passes.
 
-use super::CheckContext;
+use super::AppCx;
 use crate::check::Check;
 
 const NAME: &str = "fhir_config";
 
-pub async fn run(ctx: CheckContext) -> Check {
-	if !ctx.has_install {
+pub async fn run(ctx: AppCx) -> Check {
+	let Some(config) = ctx.installed_config() else {
 		return Check::skip(
 			NAME,
 			"no Tamanu config on this host",
-			"the FHIR toggles live in the install's config, and this context was built from a database URL alone",
+			"the FHIR toggles live in the install's config, and this application is known only through its database",
 		);
-	}
-	evaluate(ctx.config.fhir_enabled(), ctx.config.fhir_worker_enabled())
+	};
+	evaluate(config.fhir_enabled(), config.fhir_worker_enabled())
 }
 
 fn evaluate(fhir_enabled: bool, worker_enabled: bool) -> Check {

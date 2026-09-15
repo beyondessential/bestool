@@ -9,10 +9,10 @@ use bestool_tamanu::{
 	systemd,
 };
 
-use super::CheckContext;
+use super::AppCx;
 use crate::check::Check;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(supervisor) = Supervisor::current() else {
 		return Check::skip(
 			"tamanu_service",
@@ -35,7 +35,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 	// (the FHIR worker) can't be known, so pass `None` and let it surface as
 	// Unknown. Everything else comes from the supervisor, the kind (DB-derived),
 	// and the patient-portal DB setting, so it runs fine.
-	let config = ctx.has_install.then(|| ctx.config.as_ref());
+	let config = ctx.installed_config();
 	let expectations = expected(
 		supervisor,
 		ctx.kind,

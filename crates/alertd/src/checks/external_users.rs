@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 use tokio::task::spawn_blocking;
 use tracing::{debug, trace, warn};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
 
@@ -70,7 +70,7 @@ struct ExternalUser {
 	connected_since: Timestamp,
 }
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let mut users = match collect_users().await {
 		Ok(CollectOutcome::Users(u)) => u,
 		Ok(CollectOutcome::Unsupported(reason)) => {

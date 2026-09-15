@@ -3,20 +3,24 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 use sysinfo::Disks;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
 
 const WARN_PCT_USED: f64 = 80.0;
 const FAIL_PCT_USED: f64 = 95.0;
 
-pub async fn run(ctx: SweepContext) -> Check {
+pub async fn run(ctx: MachineCx) -> Check {
 	let disks = Disks::new_with_refreshed_list();
 
+	// The mount Tamanu's files sit on, alongside the machine's root. A
+	// deployment known only through its database has no files here, so there is
+	// no second mount to consider.
 	let tamanu_mount = ctx
 		.tamanu
 		.as_ref()
-		.and_then(|t| best_mount_for(&disks, &t.tamanu_root));
+		.and_then(|t| t.root.as_ref())
+		.and_then(|root| best_mount_for(&disks, root));
 	let root_mount = if cfg!(windows) {
 		best_mount_for(&disks, &PathBuf::from(r"C:\"))
 	} else {

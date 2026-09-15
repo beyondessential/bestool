@@ -25,11 +25,10 @@ use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_machine_id
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks::{self, CheckContext, SweepContext},
-	heal,
+	checks, heal,
 	progress::{DoctorEvent, ProgressSender},
 	server_info::{self, ServerFacts},
-	subject::{ApplicationKind, ApplicationRef, CheckScope, Subject},
+	subject::{ApplicationKind, ApplicationRef, Subject},
 };
 
 /// The name bestool's daemon reports under.
@@ -73,25 +72,38 @@ fn generic_database_url() -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// The database context a sweep runs against, when the host has one.
+/// What a sweep found on this host beyond the machine itself.
 ///
-/// Usually a Tamanu deployment; with only a generic [`GENERIC_DATABASE_URL_ENV`]
-/// it's a bare postgres and `is_tamanu` is false.
+/// There is always a database to report a Postgres application for — that is
+/// what makes these targets exist at all — and a Tamanu deployment using it
+/// where the host has one.
+///
+/// spec: SUBJ
+#[derive(Clone)]
+pub struct SweepTargets {
+	/// The connection string the Postgres application is reached and keyed by.
+	pub database_url: String,
+	/// The configuration the sweep resolved: the deployment's own where there is
+	/// an install to read it from, otherwise one carrying nothing but the
+	/// database section synthesised from the URL.
+	pub config: Arc<TamanuConfig>,
+	/// The Tamanu deployment on this host. `None` when the URL came from the
+	/// generic [`GENERIC_DATABASE_URL_ENV`] fallback: it points at a postgres
+	/// that isn't necessarily Tamanu's, so the sweep reports a Postgres
+	/// application and no Tamanu one. Every Tamanu check is then absent by
+	/// subject rather than reported against a database it cannot read.
+	pub tamanu: Option<SweepTamanu>,
+}
+
+/// The Tamanu deployment a sweep runs against.
 #[derive(Clone)]
 pub struct SweepTamanu {
 	pub version: Version,
-	pub root: PathBuf,
-	pub config: Arc<TamanuConfig>,
-	pub database_url: String,
-	/// `false` when this was synthesised from a database URL with no Tamanu
-	/// install on the host: DB checks run, but install-dependent ones
-	/// (the install metadata, local HTTP, caddy, services, kopia) skip.
-	pub has_install: bool,
-	/// `false` when the URL came from the generic [`GENERIC_DATABASE_URL_ENV`]
-	/// fallback: it points at a postgres that isn't necessarily Tamanu's, so
-	/// only the generic database checks run against it and Tamanu-specific
-	/// ones (which query Tamanu tables) skip.
-	pub is_tamanu: bool,
+	/// Where the install's files sit, when there are any. `None` when this was
+	/// synthesised from a database URL with no install on the host: DB checks
+	/// run, but install-dependent ones (the install metadata, local HTTP,
+	/// caddy, services, kopia) have nothing on disk to read.
+	pub root: Option<PathBuf>,
 }
 
 /// Discover the host's Tamanu install and resolve the sweep's database context
@@ -100,67 +112,75 @@ pub struct SweepTamanu {
 /// Cheap enough to redo before every sweep, which is what the daemon does: an
 /// in-place upgrade changes the version, the install root, and the config, and
 /// only re-running discovery picks that up.
-pub async fn discover_sweep_tamanu(root: Option<&Path>) -> Result<Option<SweepTamanu>> {
-	resolve_sweep_tamanu(bestool_tamanu::try_find_tamanu(root).await?)
+pub async fn discover_sweep_targets(root: Option<&Path>) -> Result<Option<SweepTargets>> {
+	resolve_sweep_targets(bestool_tamanu::try_find_tamanu(root).await?)
 }
 
 /// Resolve the database context for a sweep from an optionally-discovered
 /// install.
 ///
-/// * `Some(install)` → a real install: its config is loaded and `has_install`
-///   is true.
-/// * no install but [`TAMANU_DATABASE_URL`] set → a DB-only context synthesised
-///   from that URL (`has_install` false) so DB checks still run against it.
-/// * no install but [`GENERIC_DATABASE_URL_ENV`] set → a generic (non-Tamanu)
-///   database context (`is_tamanu` false): the generic DB checks run, all
-///   Tamanu-specific ones skip.
-/// * none of those → `None`: host-level checks only.
+/// * `Some(install)` → a real install: its config is loaded and its root is
+///   recorded.
+/// * no install but [`TAMANU_DATABASE_URL`] set → a Tamanu known only through
+///   that URL (no root) so DB checks still run against it.
+/// * no install but [`GENERIC_DATABASE_URL_ENV`] set → a Postgres application
+///   and no Tamanu one: the generic DB checks run, and every Tamanu check is
+///   absent rather than reported.
+/// * none of those → `None`: machine checks only.
 ///
 /// [`TAMANU_DATABASE_URL`]: bestool_tamanu::config::DATABASE_URL_ENV
-pub fn resolve_sweep_tamanu(install: Option<(Version, PathBuf)>) -> Result<Option<SweepTamanu>> {
-	resolve_sweep_tamanu_from(
+pub fn resolve_sweep_targets(install: Option<(Version, PathBuf)>) -> Result<Option<SweepTargets>> {
+	resolve_sweep_targets_from(
 		install,
 		bestool_tamanu::config::database_url_override(),
 		generic_database_url(),
 	)
 }
 
-/// [`resolve_sweep_tamanu`] with the environment reads made explicit, so the
+/// [`resolve_sweep_targets`] with the environment reads made explicit, so the
 /// resolution order is testable without mutating process-global env vars.
-fn resolve_sweep_tamanu_from(
+fn resolve_sweep_targets_from(
 	install: Option<(Version, PathBuf)>,
 	tamanu_url: Option<String>,
 	generic_url: Option<String>,
-) -> Result<Option<SweepTamanu>> {
+) -> Result<Option<SweepTargets>> {
 	use bestool_tamanu::config::{Database, TamanuConfig, load_config};
 
 	match install {
 		Some((version, root)) => {
 			let config = load_config(&root, None)?;
 			let database_url = config.database_url();
-			Ok(Some(SweepTamanu {
-				version,
-				root,
-				config: Arc::new(config),
+			Ok(Some(SweepTargets {
 				database_url,
-				has_install: true,
-				is_tamanu: true,
+				config: Arc::new(config),
+				tamanu: Some(SweepTamanu {
+					version,
+					root: Some(root),
+				}),
 			}))
 		}
 		None => {
-			let (url, is_tamanu) = match (tamanu_url, generic_url) {
+			// A Tamanu URL names a Tamanu's own database, so there is a
+			// deployment behind it even with no install to read. The generic
+			// fallback names a postgres that is nobody's in particular, so it
+			// yields a cluster and no Tamanu.
+			let (url, behind_it_is_a_tamanu) = match (tamanu_url, generic_url) {
 				(Some(url), _) => (url, true),
 				(None, Some(url)) => (url, false),
 				(None, None) => return Ok(None),
 			};
 			let db = Database::from_url(&url)?;
-			Ok(Some(SweepTamanu {
-				version: Version::parse("0.0.0").into_diagnostic()?,
-				root: PathBuf::new(),
+			Ok(Some(SweepTargets {
 				config: Arc::new(TamanuConfig::from_database(db)),
+				tamanu: behind_it_is_a_tamanu
+					.then(|| -> Result<_> {
+						Ok(SweepTamanu {
+							version: Version::parse("0.0.0").into_diagnostic()?,
+							root: None,
+						})
+					})
+					.transpose()?,
 				database_url: url,
-				has_install: false,
-				is_tamanu,
 			}))
 		}
 	}
@@ -283,37 +303,63 @@ fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
 	}
 }
 
+/// Spawns a prepared check's heal attempt against the context the check ran
+/// with, already bound. Boxed because the two arms close over different context
+/// types.
+type SpawnHeal = Box<dyn FnOnce() + Send>;
+
+/// Bind a check's heal to the qualified name and the context the check ran
+/// with, so the dispatcher can spawn it later without knowing which arm it came
+/// from.
+fn bind_heal<Cx: Clone + Send + 'static>(
+	action: Option<heal::HealAction<Cx>>,
+	qualified: String,
+	cx: &Cx,
+) -> Option<SpawnHeal> {
+	let action = action?;
+	let cx = cx.clone();
+	Some(Box::new(move || heal::spawn_if_due(qualified, action, cx)))
+}
+
 /// A single check ready to run: its registry index, the subject it reports for
-/// and its wire flag, the future that produces its result, and its heal action
-/// paired with the context to run it against (when the sweep enables healing
-/// and the check has one).
+/// and its wire flag, the future that produces its result, and the heal attempt
+/// to spawn should it fail (when the sweep enables healing and the check has
+/// one).
 struct PreparedCheck {
 	idx: usize,
 	name: &'static str,
 	subject: Subject,
 	on_wire: bool,
 	fut: BoxFuture<'static, Check>,
-	heal: Option<(heal::HealAction, SweepContext)>,
+	heal: Option<SpawnHeal>,
 }
 
-/// The subject a check reports for on this sweep, or `None` when the sweep has
-/// no such subject and the check is therefore not run at all.
+/// The Tamanu deployment's parameters, resolved once for the sweep and shared
+/// by the machine's view of it and by the Tamanu application's own context.
+struct ResolvedTamanu {
+	version: Version,
+	kind: bestool_tamanu::ApiServerKind,
+	root: Option<PathBuf>,
+}
+
+/// The subjects a check reports for on this sweep. Empty when the sweep has no
+/// such subject and the check is therefore not run at all.
 ///
 /// A machine is always present. An application is present only when the host
 /// has one, so on a host with no Tamanu every Tamanu check is simply absent
 /// rather than reported as skipped, and likewise for Postgres.
 ///
 /// spec: SUBJ
-fn subjects_for(scope: CheckScope, applications: &[ApplicationRef]) -> Vec<Subject> {
-	if scope.admits(&Subject::Machine) {
-		return vec![Subject::Machine];
+fn subjects_for(entry: &checks::CheckEntry, applications: &[ApplicationRef]) -> Vec<Subject> {
+	match &entry.run {
+		checks::Run::Machine(_) => vec![Subject::Machine],
+		checks::Run::Application(scope, _) => applications
+			.iter()
+			.filter(|app| scope.admits(app))
+			.cloned()
+			.map(Subject::Application)
+			.collect(),
 	}
-	applications
-		.iter()
-		.cloned()
-		.map(Subject::Application)
-		.filter(|subject| scope.admits(subject))
-		.collect()
 }
 
 /// The Postgres application a connection string reaches.
@@ -429,7 +475,6 @@ pub fn known_qualified_names(registry: &[checks::CheckEntry]) -> Vec<String> {
 		.iter()
 		.flat_map(|entry| {
 			entry
-				.scope
 				.possible_slugs()
 				.into_iter()
 				.map(|slug| format!("{slug}:{}", entry.name))
@@ -463,7 +508,6 @@ pub fn validate_selection(
 				.filter(|entry| entry.name == name)
 				.flat_map(|entry| {
 					entry
-						.scope
 						.possible_slugs()
 						.into_iter()
 						.map(|slug| format!("{slug}:{}", entry.name))
@@ -518,10 +562,10 @@ async fn run_checks_concurrently(
 	{
 		let task = tokio::spawn(async move {
 			let result = fut.await;
-			if let Some((heal, heal_ctx)) = heal
+			if let Some(spawn_heal) = heal
 				&& result.status.is_fatal()
 			{
-				heal::spawn_if_due(name, heal, heal_ctx);
+				spawn_heal();
 			}
 			result
 		});
@@ -556,7 +600,7 @@ async fn run_checks_concurrently(
 )]
 pub async fn perform_sweep(
 	binary_version: &str,
-	tamanu: Option<SweepTamanu>,
+	targets: Option<SweepTargets>,
 	http_client: reqwest::Client,
 	selected_names: &[String],
 	skip_names: &[String],
@@ -589,52 +633,39 @@ pub async fn perform_sweep(
 	// later facts query knows whether to bother asking for another.
 	let db_reachable = setup_db.is_some();
 
-	let tamanu_ctx = match &tamanu {
-		Some(t) => {
-			// A generic (non-Tamanu) database has no Tamanu tables to inspect,
-			// so don't probe it for kind or version; the value is unused since
-			// every Tamanu-dependent check skips.
-			let kind = if t.is_tamanu {
-				let kind = bestool_tamanu::detect_kind(&t.config, setup_client).await;
-				debug!(?kind, "detected Tamanu server kind for doctor sweep");
-				kind
-			} else {
-				bestool_tamanu::ApiServerKind::Central
-			};
+	// The Tamanu deployment's resolved parameters, shared by the machine's view
+	// of it and by the Tamanu application's own context.
+	let tamanu = match targets.as_ref().map(|tg| (tg, tg.tamanu.as_ref())) {
+		Some((targets, Some(t))) => {
+			let kind = bestool_tamanu::detect_kind(&targets.config, setup_client).await;
+			debug!(?kind, "detected Tamanu server kind for doctor sweep");
 
 			// With a real install, the version is the env-file/install version.
 			// Without one (a `TAMANU_DATABASE_URL`-only host), fall back to the
 			// version Tamanu last recorded in its own DB (`currentVersion`), so
 			// version-aware checks can still run against it.
-			let tamanu_version = match (t.has_install, setup_client) {
-				(false, Some(client)) if t.is_tamanu => {
-					bestool_tamanu::versions::current_version(client)
-						.await
-						.unwrap_or_else(|| t.version.clone())
-				}
+			let version = match (&t.root, setup_client) {
+				(None, Some(client)) => bestool_tamanu::versions::current_version(client)
+					.await
+					.unwrap_or_else(|| t.version.clone()),
 				_ => t.version.clone(),
 			};
 
-			Some(CheckContext {
-				tamanu_version,
-				tamanu_root: t.root.clone(),
-				config: t.config.clone(),
+			Some(ResolvedTamanu {
+				version,
 				kind,
-				database_url: t.database_url.clone(),
-				// Only when the setup connection proved the database is
-				// reachable. Handing the checks a pool that cannot serve them
-				// makes each of them wait out the acquire timeout in turn,
-				// delaying the whole sweep — including the `db_connect` failure
-				// that is the point of the daemon when postgres is down. With no
-				// pool they skip at once and the next tick tries again.
-				pool: db_reachable.then(|| pg_pool.clone()).flatten(),
-				http_client: http_client.clone(),
-				has_install: t.has_install,
-				is_tamanu: t.is_tamanu,
+				root: t.root.clone(),
 			})
 		}
-		None => None,
+		_ => None,
 	};
+
+	// Only when the setup connection proved the database is reachable. Handing
+	// the checks a pool that cannot serve them makes each of them wait out the
+	// acquire timeout in turn, delaying the whole sweep — including the
+	// `db_connect` failure that is the point of the daemon when postgres is
+	// down. With no pool they skip at once and the next tick tries again.
+	let check_pool = db_reachable.then(|| pg_pool.clone()).flatten();
 
 	// The setup queries are done. Give the connection back before the checks
 	// start, so it isn't occupying a slot for the whole of the phase where they
@@ -642,43 +673,80 @@ pub async fn perform_sweep(
 	drop(setup_db);
 
 	// The version resolved above (install version, or the DB's `currentVersion`
-	// for a database-only host), kept for the wire payload after `tamanu_ctx` is
-	// moved into the check context below. The server kind and (when there's a
-	// real install) its root go into the top-level status facts too.
-	let resolved_version = tamanu_ctx
-		.as_ref()
-		.filter(|c| c.is_tamanu)
-		.map(|c| c.tamanu_version.clone());
-	let tamanu_server_kind = tamanu_ctx
-		.as_ref()
-		.filter(|c| c.is_tamanu)
-		.map(|c| match c.kind {
-			bestool_tamanu::ApiServerKind::Central => "central",
-			bestool_tamanu::ApiServerKind::Facility => "facility",
-		});
+	// for a database-only host), kept for the wire payload. The server kind and
+	// (when there's a real install) its root go into the top-level status facts
+	// too.
+	let resolved_version = tamanu.as_ref().map(|t| t.version.clone());
+	let tamanu_server_kind = tamanu.as_ref().map(|t| match t.kind {
+		bestool_tamanu::ApiServerKind::Central => "central",
+		bestool_tamanu::ApiServerKind::Facility => "facility",
+	});
 	let tamanu_root = tamanu
 		.as_ref()
-		.filter(|t| t.has_install)
-		.map(|t| t.root.display().to_string());
+		.and_then(|t| t.root.as_ref())
+		.map(|root| root.display().to_string());
 
 	// The applications this sweep reports for. A Tamanu deployment is one; the
 	// Postgres under it is another, whether a Tamanu uses it or the host has
 	// nothing but a `DATABASE_URL`. A cluster reached at a remote address is
 	// still reported, keyed apart so no key claims this machine hosts it.
 	let mut applications: Vec<ApplicationRef> = Vec::new();
-	if let Some(ctx) = tamanu_ctx.as_ref() {
-		if ctx.is_tamanu {
-			applications.push(ApplicationRef::tamanu(ApplicationKind::from(ctx.kind)));
+	if let Some(targets) = targets.as_ref() {
+		if let Some(t) = tamanu.as_ref() {
+			applications.push(ApplicationRef::tamanu(ApplicationKind::from(t.kind)));
 		}
-		applications.push(postgres_ref(&ctx.database_url));
+		applications.push(postgres_ref(&targets.database_url));
 	}
 
-	let check_ctx = SweepContext::builder()
-		.maybe_tamanu(tamanu_ctx)
-		.http_client(http_client)
+	// The machine's own context. It carries which Tamanu is installed here —
+	// a machine fact — and nothing scoped to an application.
+	let machine_cx = checks::MachineCx::builder()
+		.http(http_client.clone())
 		.maybe_canopy(canopy)
-		.enable_heal(enable_heal)
+		.maybe_tamanu(tamanu.as_ref().map(|t| checks::MachineTamanu {
+			version: t.version.clone(),
+			root: t.root.clone(),
+		}))
 		.build();
+
+	// One context per application, built for that application alone, so a check
+	// filed against two applications reports each subject's own readings rather
+	// than one subject's twice.
+	//
+	// The database connection is carried through as one shared pool, as it was
+	// before the split: whether each application gets its own is a separate
+	// question, and only becomes a live one once a host discovers more than one
+	// cluster.
+	//
+	// `applications` is empty unless the sweep resolved targets, so there is
+	// nothing to build a context from without them.
+	let (tamanu_ref, pool_ref, http_ref) = (&tamanu, &check_pool, &http_client);
+	let app_cxs: HashMap<ApplicationRef, checks::AppCx> = targets
+		.iter()
+		.flat_map(|targets| {
+			applications.iter().map(move |app| {
+				let cx = checks::AppCx {
+					app: app.clone(),
+					// The Postgres cluster is its own application, discovered
+					// through whatever points at it. Its deployment parameters
+					// describe the Tamanu it was found through, where there was
+					// one; no Postgres check reads them.
+					version: tamanu_ref
+						.as_ref()
+						.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone()),
+					kind: tamanu_ref
+						.as_ref()
+						.map_or(bestool_tamanu::ApiServerKind::Central, |t| t.kind),
+					config: targets.config.clone(),
+					install_root: tamanu_ref.as_ref().and_then(|t| t.root.clone()),
+					database_url: targets.database_url.clone(),
+					pool: pool_ref.clone(),
+					http: http_ref.clone(),
+				};
+				(app.clone(), cx)
+			})
+		})
+		.collect();
 
 	let registry = checks::all();
 	validate_selection(&registry, selected_names, "--check")?;
@@ -692,7 +760,7 @@ pub async fn perform_sweep(
 		.iter()
 		.enumerate()
 		.flat_map(|(idx, entry)| {
-			subjects_for(entry.scope, &applications)
+			subjects_for(entry, &applications)
 				.into_iter()
 				.map(move |subject| (idx, entry, subject))
 		})
@@ -720,18 +788,47 @@ pub async fn perform_sweep(
 	let prepared: Vec<PreparedCheck> = selected
 		.iter()
 		.map(|(idx, entry, subject)| {
+			// Each check is handed the context built for the subject it reports
+			// for, so a check filed against two applications of one kind reads
+			// each in turn rather than whichever one a shared context held.
+			//
 			// A check's heal action is spawned in the background once its result
 			// is known, when the sweep enables healing (the daemon) and the
 			// check failed. `spawn_if_due` applies the per-check rate-limit and
-			// the one-attempt-in-flight guard, so this can fire on every sweep.
-			let heal = check_ctx.enable_heal.then_some(entry.heal).flatten();
+			// the one-attempt-in-flight guard — both keyed on the qualified
+			// name, so two applications' heals for one check do not share them —
+			// which is why this can fire on every sweep.
+			let qualified = subject.qualify(entry.name);
+			let (fut, heal): (BoxFuture<'static, Check>, Option<SpawnHeal>) =
+				match (&entry.run, subject) {
+					(checks::Run::Machine(runner), _) => {
+						let cx = machine_cx.clone();
+						let heal = bind_heal(runner.heal.filter(|_| enable_heal), qualified, &cx);
+						((runner.run)(cx), heal)
+					}
+					(checks::Run::Application(_, runner), Subject::Application(app)) => {
+						let cx = app_cxs
+							.get(app)
+							.expect("every selected application has a context")
+							.clone();
+						let heal = bind_heal(runner.heal.filter(|_| enable_heal), qualified, &cx);
+						((runner.run)(cx), heal)
+					}
+					// `subjects_for` yields machine subjects for the machine arm
+					// and application subjects for the application arm, so the
+					// remaining pairing does not arise.
+					(checks::Run::Application(..), Subject::Machine) => unreachable!(
+						"{}: an application check was filed against the machine",
+						entry.name
+					),
+				};
 			PreparedCheck {
 				idx: *idx,
 				name: entry.name,
 				subject: subject.clone(),
 				on_wire: entry.on_wire,
-				fut: (entry.run)(check_ctx.clone()),
-				heal: heal.map(|h| (h, check_ctx.clone())),
+				fut,
+				heal,
 			}
 		})
 		.collect();
@@ -757,10 +854,10 @@ pub async fn perform_sweep(
 		_ => None,
 	};
 	let mut facts = collect_server_facts(
-		tamanu.as_ref().map(|t| t.config.as_ref()),
+		targets.as_ref().map(|t| t.config.as_ref()),
 		facts_db.as_deref(),
 		cached_pg_version,
-		tamanu.as_ref().is_none_or(|t| t.is_tamanu),
+		tamanu.is_some(),
 	)
 	.await;
 	facts.tamanu_root = tamanu_root;
@@ -809,7 +906,9 @@ async fn collect_server_facts(
 	config: Option<&TamanuConfig>,
 	db: Option<&tokio_postgres::Client>,
 	cached_pg_version: Option<String>,
-	is_tamanu: bool,
+	// Whether a Tamanu deployment sits behind this database, and so whether it
+	// has a sync tick to read.
+	tamanu_behind_the_database: bool,
 ) -> ServerFacts {
 	let mut facts = ServerFacts {
 		canonical_url: config
@@ -838,7 +937,7 @@ async fn collect_server_facts(
 
 	// `local_system_facts` is a Tamanu table; a generic database has no
 	// sync tick to read.
-	if is_tamanu {
+	if tamanu_behind_the_database {
 		match client
 			.query_opt(
 				"SELECT value FROM local_system_facts WHERE key = 'currentSyncTick'",
@@ -987,7 +1086,7 @@ fn health_for(results: &[CheckOutcome], key: Option<&str>) -> Vec<HealthCheck> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::subject::ApplicationKind;
+	use crate::subject::{AppScope, ApplicationKind};
 
 	fn outcome(subject: Subject, check: Check) -> CheckOutcome {
 		CheckOutcome {
@@ -1128,7 +1227,7 @@ mod tests {
 		// One check blocks its executor thread the way a synchronous subprocess
 		// spawn (pm2 jlist on Windows) does inside an async fn.
 		const BLOCK_MS: u64 = 500;
-		fn blocking_check(_ctx: SweepContext) -> BoxFuture<'static, Check> {
+		fn blocking_check(_ctx: checks::MachineCx) -> BoxFuture<'static, Check> {
 			Box::pin(async move {
 				tokio::task::yield_now().await;
 				std::thread::sleep(Duration::from_millis(BLOCK_MS));
@@ -1141,7 +1240,7 @@ mod tests {
 		// one shared task, the blocker stalls this future while its `Instant` is
 		// running and the reported latency balloons toward BLOCK_MS; on its own
 		// task it stays near the real 20ms.
-		fn timed_check(_ctx: SweepContext) -> BoxFuture<'static, Check> {
+		fn timed_check(_ctx: checks::MachineCx) -> BoxFuture<'static, Check> {
 			Box::pin(async move {
 				let start = Instant::now();
 				tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1150,8 +1249,8 @@ mod tests {
 			})
 		}
 
-		let ctx = SweepContext::builder()
-			.http_client(reqwest::Client::new())
+		let ctx = checks::MachineCx::builder()
+			.http(reqwest::Client::new())
 			.build();
 		let prepared = vec![
 			PreparedCheck {
@@ -1267,14 +1366,38 @@ mod tests {
 		assert_eq!(outcome.qualified_name(), "postgres:connect");
 	}
 
+	/// A stand-in registry entry filed against the machine.
+	fn machine_entry() -> checks::CheckEntry {
+		checks::CheckEntry {
+			name: "stand_in",
+			on_wire: true,
+			run: checks::Run::Machine(checks::Runner {
+				run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
+				heal: None,
+			}),
+		}
+	}
+
+	/// A stand-in registry entry filed against the applications `scope` admits.
+	fn app_entry(scope: AppScope) -> checks::CheckEntry {
+		checks::CheckEntry {
+			name: "stand_in",
+			on_wire: true,
+			run: checks::Run::Application(
+				scope,
+				checks::Runner {
+					run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
+					heal: None,
+				},
+			),
+		}
+	}
+
 	#[test]
 	fn subjects_for_omits_application_checks_without_an_application() {
-		assert_eq!(
-			subjects_for(CheckScope::Machine, &[]),
-			vec![Subject::Machine]
-		);
-		assert!(subjects_for(CheckScope::Tamanu, &[]).is_empty());
-		assert!(subjects_for(CheckScope::Postgres, &[]).is_empty());
+		assert_eq!(subjects_for(&machine_entry(), &[]), vec![Subject::Machine]);
+		assert!(subjects_for(&app_entry(AppScope::Tamanu), &[]).is_empty());
+		assert!(subjects_for(&app_entry(AppScope::Postgres), &[]).is_empty());
 	}
 
 	#[test]
@@ -1285,7 +1408,7 @@ mod tests {
 			ApplicationRef::local_postgres(5432),
 			ApplicationRef::local_postgres(5433),
 		];
-		let subjects = subjects_for(CheckScope::Postgres, &clusters);
+		let subjects = subjects_for(&app_entry(AppScope::Postgres), &clusters);
 		assert_eq!(subjects.len(), 2);
 		let keys: Vec<&str> = subjects.iter().filter_map(|s| s.key()).collect();
 		assert_eq!(keys, vec!["host-postgres-5432", "host-postgres-5433"]);
@@ -1301,14 +1424,14 @@ mod tests {
 	fn subjects_for_files_a_central_check_against_the_central_application() {
 		let central = [ApplicationRef::tamanu(ApplicationKind::TamanuCentral)];
 		assert_eq!(
-			subjects_for(CheckScope::Central, &central),
+			subjects_for(&app_entry(AppScope::Central), &central),
 			vec![Subject::Application(ApplicationRef::tamanu(
 				ApplicationKind::TamanuCentral
 			))],
 		);
 		// The same check has no subject on a facility, so it does not run there.
 		let facility = [ApplicationRef::tamanu(ApplicationKind::TamanuFacility)];
-		assert!(subjects_for(CheckScope::Central, &facility).is_empty());
+		assert!(subjects_for(&app_entry(AppScope::Central), &facility).is_empty());
 	}
 
 	#[test]
@@ -1318,12 +1441,12 @@ mod tests {
 			ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			ApplicationRef::local_postgres(5432),
 		];
-		let subject = subjects_for(CheckScope::Postgres, &both);
+		let subject = subjects_for(&app_entry(AppScope::Postgres), &both);
 		assert_eq!(subject.len(), 1);
 		assert_eq!(subject[0].key(), Some("host-postgres-5432"));
 
 		// And a check reading Tamanu's own tables is not filed against Postgres.
-		let tamanu = subjects_for(CheckScope::Tamanu, &both);
+		let tamanu = subjects_for(&app_entry(AppScope::Tamanu), &both);
 		assert_eq!(tamanu.len(), 1);
 		assert_eq!(tamanu[0].key(), Some("host-tamanu-central"));
 	}
@@ -1483,7 +1606,10 @@ mod tests {
 				.iter()
 				.find(|e| e.name == name)
 				.unwrap_or_else(|| panic!("{name} should be registered"));
-			assert_eq!(entry.scope, CheckScope::Postgres, "{name}");
+			assert!(
+				matches!(entry.run, checks::Run::Application(AppScope::Postgres, _)),
+				"{name}"
+			);
 		}
 	}
 
@@ -1779,7 +1905,7 @@ mod tests {
 
 	#[test]
 	fn resolve_prefers_tamanu_url_over_generic() {
-		let resolved = resolve_sweep_tamanu_from(
+		let resolved = resolve_sweep_targets_from(
 			None,
 			Some("postgresql://u@localhost/tamanu".into()),
 			Some("postgresql://u@localhost/other".into()),
@@ -1787,25 +1913,57 @@ mod tests {
 		.unwrap()
 		.unwrap();
 		assert_eq!(resolved.database_url, "postgresql://u@localhost/tamanu");
-		assert!(resolved.is_tamanu);
-		assert!(!resolved.has_install);
+		let tamanu = resolved.tamanu.expect("a Tamanu behind a Tamanu URL");
+		// Known only through its database, so there are no install files.
+		assert!(tamanu.root.is_none());
 	}
 
+	/// A generic database URL resolves a Postgres application and no Tamanu
+	/// one, so every Tamanu check is absent from the sweep by subject rather
+	/// than reported against a database it cannot read.
+	///
+	/// spec: SUBJ
 	#[test]
 	fn resolve_falls_back_to_generic_database_url() {
 		let resolved =
-			resolve_sweep_tamanu_from(None, None, Some("postgresql://u@localhost/other".into()))
+			resolve_sweep_targets_from(None, None, Some("postgresql://u@localhost/other".into()))
 				.unwrap()
 				.unwrap();
 		assert_eq!(resolved.database_url, "postgresql://u@localhost/other");
-		assert!(!resolved.is_tamanu);
-		assert!(!resolved.has_install);
+		assert!(
+			resolved.tamanu.is_none(),
+			"a generic database has no Tamanu behind it"
+		);
+	}
+
+	/// With no Tamanu application, a Tamanu-scoped check has no subject to run
+	/// against and is omitted outright.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn a_generic_database_runs_postgres_checks_and_no_tamanu_ones() {
+		let applications = [postgres_ref("postgresql://u@localhost/other")];
+		assert_eq!(
+			subjects_for(&app_entry(AppScope::Postgres), &applications).len(),
+			1
+		);
+		for scope in [AppScope::Tamanu, AppScope::Central, AppScope::Facility] {
+			assert!(
+				subjects_for(&app_entry(scope), &applications).is_empty(),
+				"{scope:?} has no subject on a host with no Tamanu"
+			);
+		}
+		// The machine is always a subject, so machine checks still run.
+		assert_eq!(
+			subjects_for(&machine_entry(), &applications),
+			vec![Subject::Machine]
+		);
 	}
 
 	#[test]
 	fn resolve_without_any_url_is_none() {
 		assert!(
-			resolve_sweep_tamanu_from(None, None, None)
+			resolve_sweep_targets_from(None, None, None)
 				.unwrap()
 				.is_none()
 		);

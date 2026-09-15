@@ -3,7 +3,7 @@
 //! Distinct from `fhir_jobs`, which measures live queue depth: this surfaces
 //! individual jobs that errored recently.
 
-use super::{CheckContext, util::tiered_rows_check};
+use super::{AppCx, util::tiered_rows_check};
 use crate::check::Check;
 
 const NAME: &str = "fhir_job_errors";
@@ -13,7 +13,7 @@ const SQL: &str =
 // Lookback window for recent-error checks.
 const LOOKBACK_HOURS: i64 = 1;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

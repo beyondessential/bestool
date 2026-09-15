@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -21,7 +21,7 @@ const SQL: &str = "SELECT jsonb_array_elements_text(parameters->'facilityIds') A
 	AND cardinality(errors) = 1 AND errors[1] LIKE '%snapshot-for-pushing%' \
 	GROUP BY facility_id HAVING COUNT(*) >= 5 ORDER BY error_count DESC";
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

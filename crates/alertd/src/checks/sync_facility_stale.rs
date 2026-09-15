@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use super::{CheckContext, query_error_check};
+use super::{AppCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -39,7 +39,7 @@ const SQL: &str = "WITH facility_sessions AS ( \
 	FROM active a LEFT JOIN last_success ls USING (facility_id) \
 	ORDER BY minutes_since_success DESC NULLS FIRST";
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

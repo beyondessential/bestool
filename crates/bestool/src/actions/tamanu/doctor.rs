@@ -12,11 +12,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use bestool_alertd::{
-	SweepResult, SweepTamanu,
+	SweepResult, SweepTargets,
 	check::{Check, CheckOutcome, CheckStatus, OverallResult},
 	checks, overall_from_payload, perform_sweep,
 	progress::ProgressSender,
-	resolve_sweep_tamanu,
+	resolve_sweep_targets,
 	subject::{ApplicationKind, ApplicationRef, Subject},
 	sweep::{SplitSeverities, validate_selection},
 };
@@ -93,8 +93,8 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let ansi = ansi_supported();
 	let use_colours = tamanu.use_colours && ansi;
 
-	let install = resolve_sweep_tamanu(try_find_tamanu(tamanu).await?)?;
-	if install.is_none() {
+	let targets = resolve_sweep_targets(try_find_tamanu(tamanu).await?)?;
+	if targets.is_none() {
 		warn!("no Tamanu on this host; running host-level checks only");
 	}
 	let http_client = crate::http::client();
@@ -102,7 +102,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 	let live_tty = !args.json && ansi && std::io::stdout().is_terminal();
 
 	let (sweep, source, interrupted) = if args.no_daemon {
-		let outcome = run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+		let outcome = run_local_sweep(targets.clone(), http_client.clone(), &args, live_tty).await?;
 		(outcome.sweep, SweepSource::Local, outcome.interrupted)
 	} else if args.fresh {
 		match run_daemon_recompute(&http_client, &args, live_tty).await {
@@ -110,7 +110,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 			Err(err) => {
 				warn!(%err, "alertd did not answer; ran the checks locally instead of on the daemon");
 				let outcome =
-					run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+					run_local_sweep(targets.clone(), http_client.clone(), &args, live_tty).await?;
 				(outcome.sweep, SweepSource::Local, outcome.interrupted)
 			}
 		}
@@ -120,7 +120,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 			Err(err) => {
 				debug!(%err, "daemon latest unavailable, falling back to local");
 				let outcome =
-					run_local_sweep(install.clone(), http_client.clone(), &args, live_tty).await?;
+					run_local_sweep(targets.clone(), http_client.clone(), &args, live_tty).await?;
 				(outcome.sweep, SweepSource::Local, outcome.interrupted)
 			}
 		}
@@ -143,7 +143,7 @@ struct SweepOutcome {
 }
 
 async fn run_local_sweep(
-	install: Option<SweepTamanu>,
+	targets: Option<SweepTargets>,
 	http_client: reqwest::Client,
 	args: &DoctorArgs,
 	live_tty: bool,
@@ -160,10 +160,10 @@ async fn run_local_sweep(
 	let sweep_args_skip = args.skip.clone();
 	let sweep_handle = tokio::spawn(async move {
 		// The checks take their connection from a pool the same way the daemon's
-		// sweep does. `None` when there's no install to get a URL from, or when
+		// sweep does. `None` when there's no database to get a URL from, or when
 		// the database is unreachable — the DB checks skip either way, and
 		// `db_connect` opens its own connection to report why.
-		let pg_pool = match install.as_ref() {
+		let pg_pool = match targets.as_ref() {
 			Some(t) => bestool_postgres::pool::create_pool_sized(
 				&t.database_url,
 				"bestool-tamanu-doctor",
@@ -179,7 +179,7 @@ async fn run_local_sweep(
 
 		perform_sweep(
 			env!("CARGO_PKG_VERSION"),
-			install,
+			targets,
 			http_client,
 			&sweep_args_only,
 			&sweep_args_skip,

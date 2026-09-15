@@ -11,6 +11,10 @@
 //! most one attempt for a given check runs at a time — because attempts run in
 //! the background, one can outlast the interval between sweeps.
 //!
+//! Both are keyed on the check's qualified name, so two applications' heals for
+//! one check hold their own limit and their own in-flight slot rather than
+//! sharing one.
+//!
 //! spec: CHK#self-healing
 
 use std::{
@@ -22,21 +26,29 @@ use std::{
 use futures::future::BoxFuture;
 use tracing::debug;
 
-use super::checks::SweepContext;
-
-/// A check's heal action: mirrors the check's own runner, returning what the
-/// attempt achieved rather than a graded outcome.
-pub type HealFn = fn(SweepContext) -> BoxFuture<'static, HealOutcome>;
-
 /// A check's declared heal: what to run, and the minimum interval between its
 /// attempts. The interval is a floor applied after every attempt — including
 /// one straight after a successful repair — so a repair whose effect reaches
 /// the check only slowly cannot loop into repeated repairs.
-#[derive(Clone, Copy)]
-pub struct HealAction {
-	pub run: HealFn,
+///
+/// Generic over the context the check ran with, because a heal needs that same
+/// context: a machine heal gets the machine's, an application heal gets the
+/// one application's.
+pub struct HealAction<Cx> {
+	pub run: fn(Cx) -> BoxFuture<'static, HealOutcome>,
 	pub min_interval: Duration,
 }
+
+// A declared heal is a function pointer and a duration, so it copies whatever
+// its context type does. The derives would demand `Cx: Copy` for a `Cx` that is
+// never held here.
+impl<Cx> Clone for HealAction<Cx> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<Cx> Copy for HealAction<Cx> {}
 
 /// The result of one heal attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,8 +82,8 @@ struct Attempt {
 	failures: u32,
 }
 
-fn registry() -> &'static Mutex<HashMap<&'static str, Attempt>> {
-	static STATE: OnceLock<Mutex<HashMap<&'static str, Attempt>>> = OnceLock::new();
+fn registry() -> &'static Mutex<HashMap<String, Attempt>> {
+	static STATE: OnceLock<Mutex<HashMap<String, Attempt>>> = OnceLock::new();
 	STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -86,25 +98,30 @@ fn backoff_delay(failures: u32, min_interval: Duration) -> Duration {
 		.clamp(min_interval, MAX_INTERVAL.max(min_interval))
 }
 
-/// Spawn `action` for `name` in the background if it is due and not already
-/// running. A no-op when a previous attempt is still in flight or the backoff
-/// window has not elapsed, so the caller can invoke it on every sweep.
-pub fn spawn_if_due(name: &'static str, action: HealAction, ctx: SweepContext) {
-	if !try_begin(name) {
+/// Spawn `action` for the check qualified `name` in the background if it is due
+/// and not already running. A no-op when a previous attempt is still in flight
+/// or the backoff window has not elapsed, so the caller can invoke it on every
+/// sweep.
+///
+/// `name` is the check's *qualified* name (`tamanu-central:fhir_jobs`), not its
+/// bare one: a name identifies a check only together with its subject, and two
+/// applications' heals for one check must not share a limit or a slot.
+pub fn spawn_if_due<Cx: Send + 'static>(name: String, action: HealAction<Cx>, ctx: Cx) {
+	if !try_begin(&name) {
 		return;
 	}
-	debug!(check = name, "spawning self-heal attempt");
+	debug!(check = %name, "spawning self-heal attempt");
 	tokio::spawn(async move {
 		let outcome = (action.run)(ctx).await;
-		finish(name, outcome, action.min_interval);
+		finish(&name, outcome, action.min_interval);
 	});
 }
 
 /// Reserve an attempt slot for `name`, returning whether the caller may run it.
 /// Returns false when an attempt is in flight or the backoff has not elapsed.
-fn try_begin(name: &'static str) -> bool {
+fn try_begin(name: &str) -> bool {
 	let mut map = registry().lock().expect("heal registry poisoned");
-	let attempt = map.entry(name).or_default();
+	let attempt = map.entry(name.to_owned()).or_default();
 	if attempt.in_flight {
 		return false;
 	}
@@ -121,9 +138,9 @@ fn try_begin(name: &'static str) -> bool {
 /// the failure run, anything else advances it. Either way the next attempt is
 /// held off for at least `min_interval` — a successful repair is not retried
 /// immediately, so a repair whose effect is not yet visible cannot loop.
-fn finish(name: &'static str, outcome: HealOutcome, min_interval: Duration) {
+fn finish(name: &str, outcome: HealOutcome, min_interval: Duration) {
 	let mut map = registry().lock().expect("heal registry poisoned");
-	let attempt = map.entry(name).or_default();
+	let attempt = map.entry(name.to_owned()).or_default();
 	attempt.in_flight = false;
 	attempt.failures = match outcome {
 		HealOutcome::Healed => 0,
@@ -172,6 +189,31 @@ mod tests {
 		finish(name, HealOutcome::Healed, zero);
 		assert!(try_begin(name), "with no floor the check is due again");
 		finish(name, HealOutcome::Healed, zero);
+	}
+
+	#[test]
+	fn two_applications_do_not_share_one_limit() {
+		// The same check on two applications is keyed by its qualified name, so
+		// one application's in-flight attempt and backoff say nothing about the
+		// other's.
+		let first = "tamanu-central:test_per_app";
+		let second = "tamanu-facility:test_per_app";
+		assert!(try_begin(first), "the first application's attempt is due");
+		assert!(
+			try_begin(second),
+			"the second application's attempt is its own, not the first's"
+		);
+		finish(first, HealOutcome::Deferred, DEFAULT_MIN_INTERVAL);
+		assert!(
+			!try_begin(first),
+			"the first application backed off after its own attempt"
+		);
+		finish(second, HealOutcome::Healed, Duration::ZERO);
+		assert!(
+			try_begin(second),
+			"the second application is due on its own schedule, not the first's backoff"
+		);
+		finish(second, HealOutcome::Healed, Duration::ZERO);
 	}
 
 	#[test]

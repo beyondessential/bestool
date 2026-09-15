@@ -1,13 +1,13 @@
 use std::time::Instant;
 
-use super::{CheckContext, fmt_db_error};
+use super::{AppCx, fmt_db_error};
 use crate::Stat;
 use crate::check::Check;
 
 /// Connect latency above which the DB is treated as degraded.
 const WARN_LATENCY_MS: u64 = 1000;
 
-pub async fn run(ctx: CheckContext) -> Check {
+pub async fn run(ctx: AppCx) -> Check {
 	let host = ctx
 		.config
 		.db
@@ -59,7 +59,7 @@ mod tests {
 	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 	use super::*;
-	use crate::check::CheckStatus;
+	use crate::{check::CheckStatus, subject::ApplicationRef};
 
 	/// An unreachable postgres must surface as a FAIL (an alert), never a crash
 	/// or hang — this is what lets the daemon flag a down database. Port 1 has
@@ -70,16 +70,15 @@ mod tests {
 			"db": { "name": "tamanu-central", "username": "u", "password": "p" }
 		}))
 		.unwrap();
-		let ctx = CheckContext {
-			tamanu_version: Version::parse("0.0.0").unwrap(),
-			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+		let ctx = AppCx {
+			app: ApplicationRef::local_postgres(5432),
+			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(config),
 			kind: ApiServerKind::Central,
+			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://127.0.0.1:1/tamanu-central".into(),
 			pool: None,
-			http_client: reqwest::Client::new(),
-			has_install: true,
-			is_tamanu: true,
+			http: reqwest::Client::new(),
 		};
 		let check = run(ctx).await;
 		assert!(
@@ -106,16 +105,15 @@ mod tests {
 			"db": { "name": "bestool-test-nonexistent-db", "username": "u", "password": "p" }
 		}))
 		.unwrap();
-		let ctx = CheckContext {
-			tamanu_version: Version::parse("0.0.0").unwrap(),
-			tamanu_root: std::path::PathBuf::from("/nonexistent"),
+		let ctx = AppCx {
+			app: ApplicationRef::local_postgres(5432),
+			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(config),
 			kind: ApiServerKind::Central,
+			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/bestool-test-nonexistent-db".into(),
 			pool: None,
-			http_client: reqwest::Client::new(),
-			has_install: true,
-			is_tamanu: true,
+			http: reqwest::Client::new(),
 		};
 		let check = run(ctx).await;
 		match check.status {

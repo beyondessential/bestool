@@ -13,13 +13,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
 const NAME: &str = "caddy_resolvers";
 const CADDY_DIR: &str = "/etc/caddy";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	if !cfg!(target_os = "linux") {
 		return Check::skip(
 			NAME,

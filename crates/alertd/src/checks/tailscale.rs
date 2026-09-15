@@ -1,9 +1,9 @@
 use bestool_tamanu::server_info::get_tailscale_info;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let (ip, name) = get_tailscale_info().await;
 	match (ip, name) {
 		(Some(ip), Some(name)) => Check::pass("tailscale", format!("{name} ({ip})"))

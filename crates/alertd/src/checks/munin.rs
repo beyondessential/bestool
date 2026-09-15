@@ -8,14 +8,14 @@
 #[cfg(target_os = "linux")]
 use bestool_tamanu::systemd;
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::check::Check;
 
 const NAME: &str = "munin";
 #[cfg(target_os = "linux")]
 const UNIT: &str = "munin-node.service";
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	build(detect().await)
 }
 

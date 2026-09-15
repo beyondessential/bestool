@@ -31,7 +31,7 @@ use jiff::{Timestamp, Unit};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::SweepContext;
+use super::MachineCx;
 use crate::{Stat, check::Check};
 
 const NAME: &str = "held_captures";
@@ -114,7 +114,7 @@ impl HoldCapture {
 	}
 }
 
-pub async fn run(_ctx: SweepContext) -> Check {
+pub async fn run(_ctx: MachineCx) -> Check {
 	let dir = records_dir();
 	let records = read_records(&dir).await;
 	if records.is_empty() {

@@ -11,10 +11,10 @@ pub mod subject;
 pub mod sweep;
 
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
-pub use subject::{ApplicationKind, CheckScope, Subject};
+pub use subject::{AppScope, ApplicationKind, Subject};
 pub use sweep::{
-	SweepResult, SweepTamanu, discover_sweep_tamanu, overall_from_payload, perform_sweep,
-	resolve_sweep_tamanu,
+	SweepResult, SweepTamanu, SweepTargets, discover_sweep_targets, overall_from_payload,
+	perform_sweep, resolve_sweep_targets,
 };
 
 /// The version of the alertd library
