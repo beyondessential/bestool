@@ -86,6 +86,7 @@ uuid = { version = "1.23.2", features = ["v4"] }
 walkdir = { version = "2.5.0", optional = true }
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport"], optional = true }
 zip = { version = "8.6.0", optional = true, default-features = false, features = ["time"] }
+filetime = { version = "0.2.29", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # systemd readiness/reload/status notifications (no-op when not under systemd).
@@ -222,7 +223,9 @@ canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration"
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
 # method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
 canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
-canopy-restore = ["canopy-backup"]
+# Restoring a backup, including in place from a held capture, which compares
+# the capture against the live tree (blake3) and preserves timestamps (filetime).
+canopy-restore = ["canopy-backup", "dep:blake3", "dep:filetime"]
 # Erase every trace of a canopy enrolment: the registration, the legacy Tamanu
 # identity files, the cached tags, and the legacy DB rows (when postgres is
 # reachable). Uses Tamanu config to locate the database and elevates to remove

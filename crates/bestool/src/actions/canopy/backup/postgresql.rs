@@ -14,6 +14,7 @@ mod service;
 pub mod space;
 pub mod strategy;
 mod sys;
+pub mod usn;
 #[cfg(windows)]
 pub mod vss;
 
@@ -623,5 +624,321 @@ mod tests {
 		assert_eq!(tags.get("pg-version").map(String::as_str), Some("16"));
 		assert_eq!(tags.get("pg-cluster").map(String::as_str), Some("main"));
 		assert_eq!(tags.get("pg-strategy").map(String::as_str), Some("btrfs"));
+	}
+}
+
+/// Restore a postgres cluster from a held capture without staging a copy of it.
+///
+/// The staged path needs free space for a whole second cluster, and leaves the
+/// tree it displaced behind as `<dest>.old`, so a completed restore needs about
+/// half again the cluster on the volume. Where the capture is a snapshot of that
+/// same volume, this instead writes only what diverged from it, which is hours
+/// of writes rather than the size of the database.
+///
+/// What it gives up is the atomic swap. There is no `<dest>.old` to fall back
+/// to, and while it runs the tree is neither the state it was in nor the state
+/// that was captured. A data directory in that condition is corrupt if started,
+/// so `PG_VERSION` is taken out of the way first and written back from the
+/// capture last: postgres will not start a cluster without it. The hold is
+/// untouched throughout — reads consume no copy-on-write space — so running the
+/// same command again resumes.
+///
+/// spec: HOLD#restoring-from-a-held-capture
+#[cfg(feature = "canopy-restore")]
+pub async fn restore_in_place(
+	config: &PostgresqlConfig,
+	record: &super::hold::HoldRecord,
+	capture: &Path,
+	opts: &super::method::RestoreOpts,
+) -> Result<()> {
+	use crate::actions::canopy::restore::inplace::{Interlock, Job};
+
+	// The capture stands in for the staging tree: it has the same shape, which is
+	// what lets one plan serve both paths.
+	let plan = resolve::plan_restore(capture, config)?;
+	let target = &plan.target;
+	info!(
+		cluster = %target.cluster,
+		version = %target.version,
+		dest = %plan.dest.display(),
+		whole_install = plan.whole_install,
+		hold = %record.id,
+		"restoring postgres cluster in place from a held capture",
+	);
+
+	// A tree already mid-restore is not "existing data" an operator is about to
+	// lose; it is the same restore being finished. Asking to clobber it again
+	// would make the documented recovery need a flag the first attempt did not.
+	if !Interlock::held_by(&target.data_dir).await {
+		super::method::ensure_not_clobbering_in_place(&plan.dest, opts.clobber)?;
+	}
+
+	if !plan.whole_install {
+		let major = plan.data_major.clone();
+		crate::interactive::retry("checking the installed postgres version", async || {
+			resolve::ensure_server_version_available(&major)
+		})
+		.await?;
+	}
+
+	crate::interactive::retry("stopping the postgres cluster", async || {
+		service::stop(target, config).await
+	})
+	.await?;
+	service::quiesce_other_versions(&target.version).await;
+
+	// From here the tree is being written over with no way back to what it was,
+	// so make the cluster unstartable before the first write rather than after.
+	let version_file = target.data_dir.join("PG_VERSION");
+	let parked = super::method::with_extension_suffix(&version_file, PARKED_SUFFIX);
+	let interlock = Interlock::engage(&target.data_dir, record).await?;
+	park_version_file(&version_file, &parked).await?;
+
+	let capture_data = resolve::locate_pgdata(capture)?;
+	let summary = super::super::restore::inplace::run(Job {
+		record,
+		capture: &capture_data,
+		live: &target.data_dir,
+		skip: interlock_skips(),
+	})
+	.await
+	.wrap_err_with(|| {
+		format!(
+			"the cluster at {} is part-way through a restore from hold {} and will not \
+			 start; the hold is untouched, so run the same command again to finish it",
+			target.data_dir.display(),
+			record.id,
+		)
+	})?;
+
+	// The install's own files (binaries and the like) sit outside the data dir on
+	// a whole-install capture, and diverge as rarely as they are upgraded.
+	if plan.whole_install {
+		restore_install_shell(record, capture, &plan).await?;
+	}
+
+	// Last, so the cluster becomes startable only once everything under it is the
+	// captured state.
+	sync_version_file(&capture_data, &version_file, &parked).await?;
+	interlock.release().await?;
+	info!(
+		copied = summary.copied,
+		removed = summary.removed,
+		bytes = summary.bytes,
+		from_filesystem = summary.from_filesystem,
+		"the divergence from the held capture is laid down",
+	);
+
+	let service_account = service::service_account(target, config).await;
+	crate::interactive::retry("fixing restored data permissions", async || {
+		fix_ownership(&plan.dest, service_account.as_deref()).await
+	})
+	.await?;
+
+	crate::interactive::retry_or_recover(
+		"starting the postgres cluster",
+		"reset the write-ahead log",
+		"force-reset the WAL so the cluster can start without replaying it — \
+		 destructive: can discard recent transactions or corrupt an \
+		 otherwise-healthy cluster; only sound for a backup that won't start any \
+		 other way",
+		async || {
+			// The interlock is released above, so this only ever refuses a tree some
+			// other attempt left mid-restore.
+			Interlock::ensure_clear(&target.data_dir).await?;
+			service::start(target, config).await
+		},
+		async || pg_resetwal(&target.data_dir, &target.version).await,
+	)
+	.await?;
+
+	repoint_current_symlinks(target).await;
+	verify(config, &target.data_dir, &target.version).await;
+	info!("in-place restore complete; run migrations / config sync as needed");
+	Ok(())
+}
+
+/// The suffix the pre-restore `PG_VERSION` is parked under for the duration.
+#[cfg(feature = "canopy-restore")]
+const PARKED_SUFFIX: &str = "bestool-restoring";
+
+/// The entries inside the data directory the sync must not touch.
+///
+/// `PG_VERSION` because it is written back from the capture last, so that the
+/// cluster becomes startable only once everything beneath it is the captured
+/// state. The parked copy of it and the in-flight marker because they are not
+/// part of the captured state at all — a sync that saw them would remove them as
+/// files written since the freeze, taking with them the two things keeping a
+/// part-restored cluster from being started.
+#[cfg(feature = "canopy-restore")]
+fn interlock_skips() -> Vec<PathBuf> {
+	use crate::actions::canopy::restore::inplace::Interlock;
+
+	let marker = Interlock::marker_in(Path::new(""));
+	vec![
+		PathBuf::from("PG_VERSION"),
+		PathBuf::from(format!("PG_VERSION.{PARKED_SUFFIX}")),
+		PathBuf::from(marker.file_name().expect("the marker has a file name")),
+	]
+}
+
+/// Take `PG_VERSION` out of the way, so postgres cannot start the cluster while
+/// it is being written over.
+///
+/// A parked copy already being there is the normal state of a resumed restore,
+/// and a missing original is the normal state of a resumed one too, so neither
+/// is an error. Both being absent is not: that would leave the cluster
+/// startable through the whole sync.
+#[cfg(feature = "canopy-restore")]
+async fn park_version_file(version_file: &Path, parked: &Path) -> Result<()> {
+	if tokio::fs::metadata(parked).await.is_ok() {
+		// A previous attempt parked it; keep that copy, which is the pre-restore
+		// one, and discard whatever a partial sync may have left in its place.
+		let _ = tokio::fs::remove_file(version_file).await;
+		return Ok(());
+	}
+	match tokio::fs::rename(version_file, parked).await {
+		Ok(()) => Ok(()),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+		Err(err) => Err(err)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("moving {} out of the way", version_file.display())),
+	}
+}
+
+/// Write `PG_VERSION` back from the capture, making the cluster startable, and
+/// drop the parked copy.
+#[cfg(feature = "canopy-restore")]
+async fn sync_version_file(capture_data: &Path, version_file: &Path, parked: &Path) -> Result<()> {
+	let from = capture_data.join("PG_VERSION");
+	crate::actions::canopy::restore::sync::copy_entry(&from, version_file)
+		.await
+		.wrap_err_with(|| {
+			format!(
+				"writing {} back from the capture, without which the cluster cannot start",
+				version_file.display()
+			)
+		})?;
+	let _ = tokio::fs::remove_file(parked).await;
+	Ok(())
+}
+
+/// Roll back the files a whole-install capture carries around its data
+/// directory — the binaries and their support files.
+///
+/// They are part of the captured state (the point of capturing them is that a
+/// restore brings the exact matching server), but they sit beside the data dir
+/// rather than under it, so the data dir's own sync does not reach them.
+#[cfg(feature = "canopy-restore")]
+async fn restore_install_shell(
+	record: &super::hold::HoldRecord,
+	capture: &Path,
+	plan: &resolve::RestorePlan,
+) -> Result<()> {
+	use crate::actions::canopy::restore::inplace::Job;
+
+	let capture_data = resolve::locate_pgdata(capture)?;
+	// Everything under the install root except the data directory, which the
+	// caller has already restored and must not be walked twice.
+	let data_dir_name = capture_data
+		.strip_prefix(&plan.source)
+		.ok()
+		.map(Path::to_path_buf)
+		.unwrap_or_default();
+	if data_dir_name.as_os_str().is_empty() {
+		return Ok(());
+	}
+	super::super::restore::inplace::run(Job {
+		record,
+		capture: &plan.source,
+		live: &plan.dest,
+		skip: vec![data_dir_name],
+	})
+	.await
+	.map(|_| ())
+}
+
+#[cfg(all(test, feature = "canopy-restore"))]
+mod in_place_tests {
+	use super::*;
+
+	/// All three have to be left alone, and the two that are not captured state
+	/// are the ones that keep a part-restored cluster from being started — so a
+	/// sync that removed them would undo the interlock silently.
+	#[test]
+	fn the_interlock_keeps_its_own_files_out_of_the_sync() {
+		let skips = interlock_skips();
+		assert!(skips.contains(&PathBuf::from("PG_VERSION")));
+		assert!(skips.contains(&PathBuf::from("PG_VERSION.bestool-restoring")));
+		assert!(
+			skips.iter().any(|p| p.to_string_lossy().contains("in-place-restore")),
+			"got: {skips:?}"
+		);
+	}
+
+	/// The parked copy is the *pre-restore* version file. A resumed restore must
+	/// keep it rather than park whatever a partial sync left behind, or a
+	/// half-written one would be treated as the original.
+	#[tokio::test]
+	async fn a_resumed_restore_keeps_the_copy_already_parked() {
+		let tmp = tempfile::tempdir().unwrap();
+		let version_file = tmp.path().join("PG_VERSION");
+		let parked = tmp.path().join("PG_VERSION.bestool-restoring");
+		std::fs::write(&parked, "16").unwrap();
+		std::fs::write(&version_file, "partial").unwrap();
+
+		park_version_file(&version_file, &parked).await.unwrap();
+
+		assert_eq!(std::fs::read_to_string(&parked).unwrap(), "16");
+		assert!(
+			!version_file.exists(),
+			"the cluster must stay unstartable across the resume"
+		);
+	}
+
+	#[tokio::test]
+	async fn parking_takes_the_version_file_out_of_the_way() {
+		let tmp = tempfile::tempdir().unwrap();
+		let version_file = tmp.path().join("PG_VERSION");
+		let parked = tmp.path().join("PG_VERSION.bestool-restoring");
+		std::fs::write(&version_file, "16").unwrap();
+
+		park_version_file(&version_file, &parked).await.unwrap();
+
+		assert!(!version_file.exists());
+		assert_eq!(std::fs::read_to_string(&parked).unwrap(), "16");
+	}
+
+	/// A cluster whose data directory is not there yet has nothing to park, which
+	/// is not a failure: there is likewise nothing startable.
+	#[tokio::test]
+	async fn parking_an_absent_version_file_is_not_an_error() {
+		let tmp = tempfile::tempdir().unwrap();
+		park_version_file(
+			&tmp.path().join("PG_VERSION"),
+			&tmp.path().join("PG_VERSION.bestool-restoring"),
+		)
+		.await
+		.unwrap();
+	}
+
+	/// Writing it back is what makes the cluster startable, so it is the last
+	/// thing the restore does and it drops the parked copy with it.
+	#[tokio::test]
+	async fn writing_the_version_file_back_clears_the_parked_copy() {
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&capture).unwrap();
+		std::fs::create_dir_all(&live).unwrap();
+		std::fs::write(capture.join("PG_VERSION"), "16").unwrap();
+		let version_file = live.join("PG_VERSION");
+		let parked = live.join("PG_VERSION.bestool-restoring");
+		std::fs::write(&parked, "16").unwrap();
+
+		sync_version_file(&capture, &version_file, &parked).await.unwrap();
+
+		assert_eq!(std::fs::read_to_string(&version_file).unwrap(), "16");
+		assert!(!parked.exists());
 	}
 }

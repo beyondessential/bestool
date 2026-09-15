@@ -281,12 +281,17 @@ impl Method {
 	///
 	/// Promotes the capture out of the run-owned names and paths the next run of
 	/// this type reuses and reaps, and returns the path it is readable at
-	/// afterwards together with what it takes to release it.
+	/// afterwards, what it takes to release it, and where the filesystem's own
+	/// change history stood at the freeze, where the backend keeps one.
 	pub(super) async fn hold(
 		&self,
 		prepared: Prepared,
 		id: &str,
-	) -> Result<(PathBuf, super::hold::HeldCapture)> {
+	) -> Result<(
+		PathBuf,
+		super::hold::HeldCapture,
+		Option<super::hold::DivergenceMark>,
+	)> {
 		let source = prepared.path;
 		match prepared.teardown {
 			// Unreachable via the commands, which check `supports_hold` before
@@ -311,6 +316,55 @@ impl Method {
 			#[cfg(windows)]
 			Teardown::Vss(shadow) => super::postgresql::vss::hold(shadow, id, &source).await,
 			Teardown::BaseBackup(root) => super::postgresql::basebackup::hold(root, id, &source).await,
+		}
+	}
+
+	/// Lay a held capture (at `capture`) back down over the live tree without
+	/// staging a copy of it first, writing only what diverged from it.
+	///
+	/// Every method can be restored this way. Where a method lays a whole tree
+	/// down, that tree is compared and the difference written; where it lays down
+	/// a single file, the comparison has nothing to save and the file is simply
+	/// written, which is what the staged path does anyway.
+	///
+	/// spec: HOLD#restoring-from-a-held-capture
+	#[cfg(feature = "canopy-restore")]
+	pub async fn restore_in_place(
+		&self,
+		record: &super::hold::HoldRecord,
+		capture: &Path,
+		opts: &RestoreOpts,
+	) -> Result<()> {
+		use crate::actions::canopy::restore::inplace::Job;
+
+		match self {
+			Method::Simple(config) => {
+				let target = match &opts.target {
+					Some(target) => target.clone(),
+					None => config.path.clone(),
+				};
+				ensure_not_clobbering_in_place(&target, opts.clobber)?;
+				crate::actions::canopy::restore::inplace::run(Job {
+					record,
+					capture,
+					live: &target,
+					skip: Vec::new(),
+				})
+				.await
+				.map(|_| ())
+			}
+			Method::Postgresql(config) => {
+				super::postgresql::restore_in_place(config, record, capture, opts).await
+			}
+			// A key is one small file: there is no second copy to avoid, so in place
+			// and staged are the same operation and this is the one that exists.
+			Method::TamanuSecretKey(config) => {
+				let location = match &opts.target {
+					Some(target) => super::secret_key::classify_target(target)?,
+					None => super::secret_key::location(config).await?,
+				};
+				super::secret_key::lay_down(capture, &location, opts.clobber).await
+			}
 		}
 	}
 
@@ -400,6 +454,25 @@ pub struct RestoreOpts {
 	pub target: Option<PathBuf>,
 	/// Proceed even when the destination already holds data.
 	pub clobber: bool,
+}
+
+/// Error unless an in-place restore is allowed to write over `target`.
+///
+/// An in-place restore is always over existing data — that is what makes it a
+/// rollback rather than a first restore — so an empty destination cannot stand
+/// in for consent the way it does on the staged path. The confirmation is the
+/// whole check.
+#[cfg(feature = "canopy-restore")]
+pub fn ensure_not_clobbering_in_place(target: &Path, clobber: bool) -> Result<()> {
+	if clobber {
+		return Ok(());
+	}
+	bail!(
+		"restoring in place writes over {} with no copy of it kept, so a failure \
+		 partway leaves the data neither as it was nor as it was captured; \
+		 confirm with --clobber-existing-data-yes-i-am-sure, or interactively",
+		target.display()
+	)
 }
 
 /// Error unless `target` is safe to write (absent or empty) or `clobber` is set.
@@ -525,6 +598,37 @@ pub(super) fn with_extension_suffix(path: &Path, suffix: &str) -> PathBuf {
 	name.push(".");
 	name.push(suffix);
 	path.with_file_name(name)
+}
+
+#[cfg(test)]
+mod inplace_clobber_tests {
+	use super::*;
+
+	#[test]
+	fn restoring_in_place_is_refused_without_confirmation() {
+		let tmp = tempfile::tempdir().unwrap();
+		let err = ensure_not_clobbering_in_place(tmp.path(), false)
+			.unwrap_err()
+			.to_string();
+		assert!(err.contains("no copy of it kept"), "got: {err}");
+	}
+
+	#[test]
+	fn an_empty_destination_does_not_stand_in_for_that_confirmation() {
+		// Unlike the staged path, where an empty destination means there is nothing
+		// to lose: in place, the confirmation is about keeping no copy, which an
+		// empty destination says nothing about.
+		let tmp = tempfile::tempdir().unwrap();
+		assert!(!dir_has_entries(tmp.path()));
+		assert!(ensure_not_clobbering(tmp.path(), false).is_ok());
+		assert!(ensure_not_clobbering_in_place(tmp.path(), false).is_err());
+	}
+
+	#[test]
+	fn confirmation_permits_it() {
+		let tmp = tempfile::tempdir().unwrap();
+		ensure_not_clobbering_in_place(tmp.path(), true).unwrap();
+	}
 }
 
 #[cfg(test)]
