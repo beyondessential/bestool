@@ -278,6 +278,17 @@ pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {
 	.await
 }
 
+/// A `\\?\GLOBALROOT\Device\…ShadowCopyN` device names the shadow's root
+/// directory only with a trailing separator. Without one the junction resolves
+/// every path *beneath* it — which is all a backup upload or a restore's copy
+/// ever reads — but enumerating the mount point *itself* fails with
+/// `ERROR_INVALID_PARAMETER`. `hold list`, `reattach`, and the `restore
+/// --from-hold` presence check enumerate the root, so the junction must name the
+/// browsable form or they read a live capture as detached.
+fn browsable_device(device: &str) -> String {
+	format!("{}\\", device.trim_end_matches(['\\', '/']))
+}
+
 /// Mount a shadow's device path at `junction` (a directory junction), creating
 /// the parent and clearing any stale mount left by a crashed run first —
 /// `junction::create` needs the link path not to exist yet.
@@ -290,9 +301,10 @@ fn mount_shadow(device: &str, junction: &Path) -> Result<()> {
 	// A leftover junction/dir here makes `junction::create` fail; remove it. On a
 	// junction this unmounts (doesn't touch the shadow); best-effort.
 	let _ = std::fs::remove_dir(junction);
-	junction::create(device, junction)
+	let target = browsable_device(device);
+	junction::create(&target, junction)
 		.into_diagnostic()
-		.wrap_err_with(|| format!("junctioning {} to {device}", junction.display()))
+		.wrap_err_with(|| format!("junctioning {} to {target}", junction.display()))
 }
 
 /// A freshly-created shadow: its id (for deletion) and device path (for reading).
@@ -424,6 +436,18 @@ mod tests {
 	fn held_junctions_stay_on_the_captures_volume() {
 		// A junction can't cross volumes, so a shadow of D: is exposed on D:.
 		assert!(held_expose_target_dir("D:", "x").starts_with("D:\\"));
+	}
+
+	#[test]
+	fn browsable_device_has_one_trailing_separator() {
+		// The shadow root is only enumerable with a trailing separator, and exactly
+		// one: a bare device path can't be listed, and a doubled separator is not
+		// the root of that device.
+		let device = r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42";
+		assert_eq!(browsable_device(device), format!("{device}\\"));
+		// Idempotent whatever the record already carries.
+		assert_eq!(browsable_device(&format!("{device}\\")), format!("{device}\\"));
+		assert_eq!(browsable_device(&format!("{device}/")), format!("{device}\\"));
 	}
 
 	#[test]
