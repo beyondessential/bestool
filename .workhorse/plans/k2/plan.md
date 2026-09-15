@@ -257,3 +257,36 @@ by it. The daemon now asks for a pool that never prompts. And the seeded-gap
 test wrote its setting before the probe patient, so a failure in between left
 materialisation switched on for a live deployment; the patient goes first now,
 so everything before the setting can fail harmlessly.
+
+## Seventh review round
+
+The round's critical quoted `get_timeout: None`, which round six had already
+replaced with a finite deadline, so that half was a stale read. Its reasoning
+survived the change though, and pointed at something the deadline alone does
+not fix: one deadline covers both waiting for a free connection and opening a
+new one, and nothing set a connect timeout, so a host that drops packets rather
+than refusing absorbs the whole deadline on a single connect — every tick,
+delaying the outage report the daemon exists to make.
+
+Those are different questions. A busy database deserves patience; an
+unreachable one deserves none. Connecting now has its own short bound, so it
+fails fast while queueing keeps its generosity, and the reasoning in the pool's
+doc — that a failed acquire means the database could not be connected to —
+holds within a few seconds rather than a couple of minutes.
+
+Also fixed: the seeded-gap test's cleanup chained its two deletes, so a failure
+removing the probe patient skipped the settings delete — leaving materialisation
+switched on and blocking every later run through the guard that refuses when
+the setting exists. Both run independently now. And `fhir_materialisation` held
+its connection through grading after up to two aggregate queries per resource;
+being the sweep's long pole, that slot was what everything else queued behind.
+
+Still not done, and still belonging with the check-signature work: `db()` cannot
+say *why* it has no connection, so the five checks that report a failure cannot
+tell an unusable database from a busy one. Every bound here makes that ambiguity
+improbable rather than impossible.
+
+Noted but out of scope: `db_connect` opens its own connection with no timeout of
+its own, so a packet-dropping host stalls it for the operating system's retry
+window. That predates this card and is untouched by it, but it is the check that
+carries the outage report, so it is worth its own fix.

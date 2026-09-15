@@ -58,6 +58,10 @@ the daemon's dependencies.
       finite so the sweep always finishes and always reports
 - [x] The daemon never prompts for a database password, so broken auth is
       reported rather than blocking the sweep on stdin
+- [x] Opening a connection is bounded separately from queueing for one, so an
+      unreachable host fails fast instead of absorbing the queueing deadline
+- [ ] With the database host dropping packets rather than refusing, a sweep
+      still completes and reports within its interval
 - [x] Checks hand their connection back when they stop querying, rather than
       holding a slot through grading
 - [x] The sweep's setup connection is released before the checks run
@@ -75,6 +79,8 @@ the daemon's dependencies.
       a value it did not create — verified against a seeded operator value
 - [x] It writes the setting last, so a failure while seeding cannot leave
       materialisation switched on for the deployment
+- [x] Both cleanup deletes run independently, so a failure removing the probe
+      patient cannot leave the setting behind
 - [x] The endpoint tests need no database, because the state they build no
       longer carries a pool
 - [ ] With postgres down at daemon start, the daemon still starts, and the
