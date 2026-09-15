@@ -96,9 +96,81 @@ impl PgPool {
 /// in the connection URL, the function will prompt the user to enter a password
 /// interactively. The password will be read securely without echoing to the terminal.
 pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
+	create_pool_sized(url, application_name, PoolSize::default(), Prompt::Allowed).await
+}
+
+/// How a pool is sized and how long it waits.
+///
+/// The default suits a caller that runs a query at a time and has a person
+/// watching. A caller that fans out sets these deliberately: `max_open` is a
+/// budget against the server's own connection limit rather than a slot per
+/// concurrent caller, `max_idle` keeps the resting footprint proportional to
+/// what the work actually leaves behind, and the two timeouts separate waiting
+/// for a free connection from waiting for one to open — a busy server and an
+/// unreachable one deserve very different patience.
+#[derive(Clone, Copy, Debug)]
+pub struct PoolSize {
+	pub max_open: u64,
+	pub max_idle: u64,
+	/// How long an idle connection is kept before being closed. `None` keeps
+	/// idle connections until `max_lifetime`; a caller that works in bursts
+	/// sets this long enough to span the gap between them and no longer, so
+	/// connections survive burst to burst without being held indefinitely.
+	pub max_idle_lifetime: Option<Duration>,
+	/// How long to wait for a free connection before giving up. `None` waits as
+	/// long as it takes, so a caller with more work than slots queues rather
+	/// than being told the database is unavailable when it is merely busy.
+	///
+	/// This covers opening a connection as well as waiting for one, so a caller
+	/// that wants to distinguish the two sets `connect_timeout` too.
+	pub get_timeout: Option<Duration>,
+	/// How long to wait for a connection to open. `None` leaves it to the
+	/// operating system, which can mean minutes of SYN retries when a host
+	/// drops packets rather than refusing.
+	///
+	/// A caller that is generous about queueing still wants this short: an
+	/// unreachable database should be reported quickly, not waited out.
+	pub connect_timeout: Option<Duration>,
+}
+
+impl Default for PoolSize {
+	fn default() -> Self {
+		// mobc's own defaults.
+		Self {
+			max_open: 10,
+			max_idle: 10,
+			max_idle_lifetime: None,
+			get_timeout: Some(Duration::from_secs(30)),
+			connect_timeout: None,
+		}
+	}
+}
+
+/// Whether a missing password may be asked for on the terminal.
+///
+/// Prompting suits a command a person is watching. A daemon has nobody to ask:
+/// under systemd there is no controlling terminal so the prompt errors, but run
+/// from a shell it blocks on stdin indefinitely — so an unattended caller asks
+/// for [`Prompt::Never`] and gets an error it can report instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+	Allowed,
+	Never,
+}
+
+/// [`create_pool`] with an explicit size.
+pub async fn create_pool_sized(
+	url: &str,
+	application_name: &str,
+	size: PoolSize,
+	prompt: Prompt,
+) -> Result<PgPool> {
 	let mut config = url::parse_connection_url(url)?;
 
 	config.application_name(application_name);
+	if let Some(timeout) = size.connect_timeout {
+		config.connect_timeout(timeout);
+	}
 
 	let mut tried_ssl_fallback = false;
 
@@ -111,6 +183,10 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 		debug!("Creating pool");
 		let pool = Pool::builder()
 			.max_lifetime(Some(Duration::from_secs(3600)))
+			.max_open(size.max_open)
+			.max_idle(size.max_idle)
+			.max_idle_lifetime(size.max_idle_lifetime)
+			.get_timeout(size.get_timeout)
 			.build(manager.clone());
 
 		let pool = PgPool {
@@ -149,7 +225,10 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 						or use a connection URL with sslmode=disable: \
 						postgresql://user@host/db?sslmode=disable",
 					);
-				} else if is_auth_error(&e) && config.get_password().is_none() {
+				} else if is_auth_error(&e)
+					&& config.get_password().is_none()
+					&& prompt == Prompt::Allowed
+				{
 					let password = rpassword::prompt_password("Password: ").into_diagnostic()?;
 					config.password(password);
 					// Loop will retry with the new password

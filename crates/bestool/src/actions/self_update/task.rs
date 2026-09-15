@@ -21,7 +21,7 @@ use miette::Result;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use bestool_alertd::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
+use crate::alertd::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse};
 
 use super::{UpdateOutcome, perform_update, perform_update_from_file};
 use crate::download::{fetch_latest_version, remote_is_newer};

@@ -1,0 +1,724 @@
+//! HTTP error rate over a sliding 10-minute window.
+//!
+//! Caddy's admin API at `localhost:2019` exposes `/metrics` in Prometheus text
+//! format. The relevant series is `caddy_http_request_duration_seconds_count`,
+//! labelled with the HTTP status code. Prometheus counters only grow over
+//! Caddy's lifetime, so cumulative ratios become useless very quickly: a
+//! genuine spike right now barely moves the needle against months of clean
+//! traffic.
+//!
+//! To get a rate that reflects *recent* health we snapshot the counters to
+//! disk on every doctor run, then compare against the oldest snapshot that's
+//! still within the window. With the default 1-minute cron there are normally
+//! ~10 snapshots covering the last 10 minutes; ad-hoc manual runs piggy-back
+//! on whatever the cron just wrote. If no usable historical snapshot exists
+//! (cold start, cache wiped, Caddy restarted) we fall back to a 10-second
+//! in-run sample.
+//!
+//! Only 5xx responses count as errors; 4xx responses are client mistakes
+//! (bad URLs, auth, etc.) and aren't worth alerting on.
+//!
+//! Caddy instruments its handlers only when its config switches metrics on, and
+//! serves `/metrics` with its process and admin series either way. So finding no
+//! request counters at all says nothing about how busy the server is, and the
+//! check reads the config to tell an idle server from an uninstrumented one,
+//! skipping rather than reporting health it never measured.
+
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+	time::Duration,
+};
+
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use tokio::task::spawn_blocking;
+use tracing::{debug, warn};
+
+use super::{SweepContext, fmt_chain};
+use crate::Stat;
+use crate::check::Check;
+
+const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
+const CADDY_CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
+const TIMEOUT: Duration = Duration::from_secs(3);
+
+const WARN_ERROR_PCT: f64 = 5.0;
+const FAIL_ERROR_PCT: f64 = 20.0;
+
+/// How far back we'll compare current counters against. Older snapshots are
+/// pruned.
+const WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Grace beyond `WINDOW` before a snapshot is dropped from the history file.
+const PRUNE_GRACE: Duration = Duration::from_secs(60);
+/// Shortest usable historical window. If the freshest available history is
+/// younger than this, do an in-run sample instead — a 5-second delta isn't a
+/// rate, it's noise.
+const MIN_HISTORY_AGE: Duration = Duration::from_secs(30);
+/// Sleep between the two samples when we can't use history.
+const IN_RUN_SAMPLE: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Snapshot {
+	taken_at: Timestamp,
+	counts: BTreeMap<String, u64>,
+}
+
+pub async fn run(ctx: SweepContext) -> Check {
+	let client = ctx.http_client.clone();
+	let current_counts = match fetch_counts(&client).await {
+		FetchResult::Counts(c) => c,
+		FetchResult::Skip(check) => return check,
+	};
+	if current_counts.is_empty()
+		&& let Some(check) = uninstrumented(&client).await
+	{
+		return check;
+	}
+	let current = Snapshot {
+		taken_at: Timestamp::now(),
+		counts: current_counts,
+	};
+
+	let state = state_path();
+	// Reading and later writing the small history cache file is blocking I/O;
+	// keep it off the executor so it can't stall other checks sharing the thread.
+	let mut history = match state.clone() {
+		Some(path) => spawn_blocking(move || load_history(&path))
+			.await
+			.unwrap_or_default(),
+		None => Vec::new(),
+	};
+	prune_history(&mut history, current.taken_at);
+
+	let (baseline, source) = match pick_baseline(&history, &current) {
+		Some(b) => (b.clone(), BaselineSource::History),
+		None => {
+			tokio::time::sleep(IN_RUN_SAMPLE).await;
+			let second_counts = match fetch_counts(&client).await {
+				FetchResult::Counts(c) => c,
+				FetchResult::Skip(check) => return check,
+			};
+			let second = Snapshot {
+				taken_at: Timestamp::now(),
+				counts: second_counts,
+			};
+			// `current` was taken first; second was taken IN_RUN_SAMPLE later.
+			// Re-assign so `current` is the newer one for the delta math below.
+			let baseline = current.clone();
+			append_and_save(&state, &mut history, second.clone()).await;
+			return build_check(&baseline, &second, BaselineSource::InRunSample);
+		}
+	};
+
+	append_and_save(&state, &mut history, current.clone()).await;
+	build_check(&baseline, &current, source)
+}
+
+enum FetchResult {
+	Counts(BTreeMap<String, u64>),
+	Skip(Check),
+}
+
+async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
+	let body = match client.get(CADDY_METRICS_URL).timeout(TIMEOUT).send().await {
+		Ok(resp) if resp.status().is_success() => match resp.text().await {
+			Ok(t) => t,
+			Err(err) => {
+				return FetchResult::Skip(Check::skip(
+					"http_errors",
+					"caddy /metrics body read failed",
+					fmt_chain(&err),
+				));
+			}
+		},
+		Ok(resp) => {
+			let status = resp.status().as_u16();
+			return FetchResult::Skip(Check::skip(
+				"http_errors",
+				format!("caddy /metrics returned HTTP {status}"),
+				format!(
+					"caddy is reachable but its admin /metrics endpoint isn't usable (HTTP {status}) — error rate cannot be measured"
+				),
+			));
+		}
+		Err(err) => {
+			return FetchResult::Skip(Check::skip(
+				"http_errors",
+				"caddy admin unreachable",
+				format!(
+					"could not reach caddy admin at {CADDY_METRICS_URL}: {}",
+					fmt_chain(&err)
+				),
+			));
+		}
+	};
+
+	FetchResult::Counts(parse_status_counts(&body))
+}
+
+/// Decide whether caddy served no requests or simply isn't counting them, for a
+/// caddy that reported no request counters at all. `Some(check)` is the skip to
+/// report when the counters are missing because nothing is producing them;
+/// `None` means caddy is instrumented and the window really was quiet.
+async fn uninstrumented(client: &reqwest::Client) -> Option<Check> {
+	let config = match client.get(CADDY_CONFIG_URL).timeout(TIMEOUT).send().await {
+		Ok(resp) if resp.status().is_success() => resp.json::<Value>().await,
+		Ok(resp) => {
+			debug!(status = %resp.status(), "caddy config endpoint refused");
+			return Some(Check::skip(
+				"http_errors",
+				"caddy metrics state unknown",
+				format!(
+					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} answered HTTP {} — whether it counts requests could not be established",
+					resp.status().as_u16()
+				),
+			));
+		}
+		Err(err) => {
+			return Some(Check::skip(
+				"http_errors",
+				"caddy metrics state unknown",
+				format!(
+					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} could not be read ({}) — whether it counts requests could not be established",
+					fmt_chain(&err)
+				),
+			));
+		}
+	};
+	match config {
+		Ok(config) if metrics_enabled_in(&config) => None,
+		Ok(_) => Some(Check::skip(
+			"http_errors",
+			"caddy metrics not switched on",
+			"caddy counts requests only when its config asks it to, so there is no error rate to grade. Add `metrics` to the Caddyfile's global options — within a `servers` block on caddy older than 2.9.",
+		)),
+		Err(err) => Some(Check::skip(
+			"http_errors",
+			"caddy metrics state unknown",
+			format!(
+				"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} did not parse ({}) — whether it counts requests could not be established",
+				fmt_chain(&err)
+			),
+		)),
+	}
+}
+
+/// Whether caddy's http app config switches request metrics on. Caddy 2.9 moved
+/// the switch onto the app itself; before that each server carried its own, and
+/// one instrumented server is enough to produce counters.
+fn metrics_enabled_in(http_app: &Value) -> bool {
+	if !http_app["metrics"].is_null() {
+		return true;
+	}
+	http_app["servers"]
+		.as_object()
+		.is_some_and(|servers| servers.values().any(|server| !server["metrics"].is_null()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaselineSource {
+	History,
+	InRunSample,
+}
+
+fn pick_baseline<'a>(history: &'a [Snapshot], current: &Snapshot) -> Option<&'a Snapshot> {
+	history
+		.iter()
+		.filter(|s| {
+			let age = duration_between(s.taken_at, current.taken_at);
+			age >= MIN_HISTORY_AGE && age <= WINDOW
+		})
+		// A counter going down means Caddy restarted between the snapshots and
+		// the delta would be meaningless. Skip such baselines.
+		.filter(|s| !counters_reset(&s.counts, &current.counts))
+		// Oldest still-usable snapshot gives the widest window.
+		.min_by_key(|s| s.taken_at)
+}
+
+fn counters_reset(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> bool {
+	before
+		.iter()
+		.any(|(code, b)| after.get(code).copied().unwrap_or(0) < *b)
+}
+
+fn delta_counts(
+	before: &BTreeMap<String, u64>,
+	after: &BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
+	let mut out = BTreeMap::new();
+	for (code, after_n) in after {
+		let before_n = before.get(code).copied().unwrap_or(0);
+		let d = after_n.saturating_sub(before_n);
+		if d > 0 {
+			out.insert(code.clone(), d);
+		}
+	}
+	out
+}
+
+fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) -> Check {
+	let deltas = delta_counts(&baseline.counts, &current.counts);
+	let total: u64 = deltas.values().sum();
+	let errored: u64 = deltas
+		.iter()
+		.filter(|(code, _)| code.starts_with('5'))
+		.map(|(_, n)| n)
+		.sum();
+	let window = duration_between(baseline.taken_at, current.taken_at);
+	let window_label = humanise_window(window);
+	let source_label = match source {
+		BaselineSource::History => "vs history",
+		BaselineSource::InRunSample => "live sample",
+	};
+
+	if total == 0 {
+		return with_traffic_stats(
+			Check::pass(
+				"http_errors",
+				format!("no requests in last {window_label} ({source_label})"),
+			)
+			.with_detail("total_requests", 0u64)
+			.with_detail("window_seconds", window.as_secs())
+			.with_detail("baseline_source", source_label),
+			&current.counts,
+		);
+	}
+
+	let pct = ((errored as f64 / total as f64) * 100.0).round();
+	let summary = format!(
+		"{errored}/{total} server errors ({pct:.0}%) in last {window_label} ({source_label})"
+	);
+
+	let check = if pct >= FAIL_ERROR_PCT {
+		Check::fail(
+			"http_errors",
+			summary.clone(),
+			format!("≥{FAIL_ERROR_PCT}% error rate"),
+		)
+	} else if pct >= WARN_ERROR_PCT {
+		Check::warning(
+			"http_errors",
+			summary.clone(),
+			format!("≥{WARN_ERROR_PCT}% error rate"),
+		)
+	} else {
+		Check::pass("http_errors", summary)
+	};
+
+	let mut by_code: Map<String, Value> = Map::new();
+	for (code, n) in &deltas {
+		by_code.insert(code.clone(), Value::from(*n));
+	}
+
+	with_traffic_stats(
+		check
+			.with_detail("total_requests", total)
+			.with_detail("server_error_requests", errored)
+			.with_detail("server_error_rate_pct", pct)
+			.with_detail("window_seconds", window.as_secs())
+			.with_detail("baseline_source", source_label)
+			.with_detail("by_code", Value::Object(by_code)),
+		&current.counts,
+	)
+	.with_stat(
+		Stat::gauge("server_error_rate_pct", pct)
+			.namespace("http")
+			.help("5xx rate, percent"),
+	)
+}
+
+/// Attach Caddy's cumulative request counters to a check.
+///
+/// The verdict above comes from a delta over a window whose length varies with
+/// what history is on disk, but a metric that carried that window would be
+/// uninterpretable without it. So the published metrics are the raw cumulative
+/// totals and a scrape derives its own rate over its own interval; the window
+/// stays a fact reported to canopy.
+fn with_traffic_stats(check: Check, counts: &BTreeMap<String, u64>) -> Check {
+	let total: u64 = counts.values().sum();
+	let errored: u64 = counts
+		.iter()
+		.filter(|(code, _)| code.starts_with('5'))
+		.map(|(_, n)| n)
+		.sum();
+
+	check
+		.with_stat(
+			Stat::counter("requests_total", total as f64)
+				.namespace("http")
+				.group("traffic")
+				.help("Requests served"),
+		)
+		.with_stat(
+			Stat::counter("server_errors_total", errored as f64)
+				.namespace("http")
+				.group("traffic")
+				.help("5xx responses"),
+		)
+		.with_stats(counts.iter().map(|(code, n)| {
+			Stat::counter("requests_by_code_total", *n as f64)
+				.namespace("http")
+				.label("code", code.clone())
+				.help("Requests served by HTTP status code")
+		}))
+}
+
+fn duration_between(earlier: Timestamp, later: Timestamp) -> Duration {
+	let secs = later.as_second().saturating_sub(earlier.as_second());
+	Duration::from_secs(secs.max(0) as u64)
+}
+
+fn humanise_window(d: Duration) -> String {
+	let secs = d.as_secs();
+	if secs < 60 {
+		format!("{secs}s")
+	} else {
+		let m = secs / 60;
+		let s = secs % 60;
+		if s == 0 {
+			format!("{m}m")
+		} else {
+			format!("{m}m {s}s")
+		}
+	}
+}
+
+fn state_path() -> Option<PathBuf> {
+	dirs::cache_dir().map(|d| d.join("bestool").join("doctor-http-errors.json"))
+}
+
+fn load_history(path: &Path) -> Vec<Snapshot> {
+	match std::fs::read(path) {
+		Ok(bytes) => match serde_json::from_slice::<Vec<Snapshot>>(&bytes) {
+			Ok(v) => v,
+			Err(err) => {
+				debug!(%err, ?path, "ignoring unparseable doctor http_errors history");
+				Vec::new()
+			}
+		},
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+		Err(err) => {
+			debug!(%err, ?path, "could not read doctor http_errors history");
+			Vec::new()
+		}
+	}
+}
+
+fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
+	let cutoff = WINDOW + PRUNE_GRACE;
+	history.retain(|s| {
+		let age = duration_between(s.taken_at, now);
+		age <= cutoff
+	});
+}
+
+async fn append_and_save(path: &Option<PathBuf>, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
+	history.push(snapshot);
+	let Some(path) = path.clone() else { return };
+	let history = history.clone();
+	if let Err(err) = spawn_blocking(move || write_history(&path, &history)).await {
+		warn!(%err, "doctor http_errors history task did not complete");
+	}
+}
+
+/// Serialise the snapshot history to `path` via a temp file and atomic rename.
+/// Blocking I/O, so it runs under `spawn_blocking`.
+fn write_history(path: &Path, history: &[Snapshot]) {
+	if let Some(parent) = path.parent()
+		&& let Err(err) = std::fs::create_dir_all(parent)
+	{
+		warn!(%err, ?parent, "could not create doctor http_errors cache dir");
+		return;
+	}
+	let json = match serde_json::to_vec(history) {
+		Ok(b) => b,
+		Err(err) => {
+			warn!(%err, "could not serialise doctor http_errors history");
+			return;
+		}
+	};
+	let tmp = path.with_extension("json.tmp");
+	if let Err(err) = std::fs::write(&tmp, &json) {
+		warn!(%err, ?tmp, "could not write doctor http_errors history");
+		return;
+	}
+	if let Err(err) = std::fs::rename(&tmp, path) {
+		warn!(%err, ?path, "could not rename doctor http_errors history");
+	}
+}
+
+/// Parse `caddy_http_request_duration_seconds_count{code="NNN",...} <count>` lines.
+///
+/// Caddy emits this histogram-count series labelled by `code`, `handler`,
+/// `host`, `method`, `server`. The same request is observed by every handler
+/// in the chain (encode, headers, rate_limit, reverse_proxy, …), so a naive
+/// sum across labels would multiply the real request count by the depth of
+/// the handler chain. To dedupe, we group by `(host, method, server, code)`
+/// and take the **max** across handlers: the entry-point handler must have
+/// seen every request matching that label combination, so its count is the
+/// real one. Then we sum across hosts/methods/servers per code.
+fn parse_status_counts(body: &str) -> BTreeMap<String, u64> {
+	use std::collections::HashMap;
+
+	let mut per_tuple: HashMap<(String, String, String, String), u64> = HashMap::new();
+	for line in body.lines() {
+		if line.starts_with('#') {
+			continue;
+		}
+		let Some(rest) = line.strip_prefix("caddy_http_request_duration_seconds_count") else {
+			continue;
+		};
+		let Some(labels_end) = rest.find('}') else {
+			continue;
+		};
+		let labels = &rest[..labels_end];
+		let value_part = rest[labels_end + 1..].trim();
+		let value: u64 = match value_part.split_whitespace().next() {
+			Some(v) => match v.parse::<f64>() {
+				Ok(f) => f as u64,
+				Err(_) => continue,
+			},
+			None => continue,
+		};
+		let Some(code) = extract_label(labels, "code") else {
+			continue;
+		};
+		let host = extract_label(labels, "host").unwrap_or_default();
+		let method = extract_label(labels, "method").unwrap_or_default();
+		let server = extract_label(labels, "server").unwrap_or_default();
+		let key = (host, method, server, code);
+		let entry = per_tuple.entry(key).or_insert(0);
+		*entry = (*entry).max(value);
+	}
+
+	let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+	for ((_, _, _, code), count) in per_tuple {
+		*totals.entry(code).or_insert(0) += count;
+	}
+	totals
+}
+
+fn extract_label(labels: &str, key: &str) -> Option<String> {
+	let needle = format!("{key}=\"");
+	let start = labels.find(&needle)? + needle.len();
+	let rest = &labels[start..];
+	let end = rest.find('"')?;
+	Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const SAMPLE: &str = "\
+# HELP caddy_http_request_duration_seconds Histogram of round-trip request durations.
+# TYPE caddy_http_request_duration_seconds histogram
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 9
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"rate_limit\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"200\",handler=\"reverse_proxy\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_count{code=\"404\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 12
+caddy_http_request_duration_seconds_count{code=\"502\",handler=\"reverse_proxy\",host=\"a\",method=\"POST\",server=\"srv0\"} 3
+caddy_http_request_duration_seconds_bucket{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\",le=\"0.005\"} 3
+other_metric{foo=\"bar\"} 7
+";
+
+	fn snap(secs: i64, counts: &[(&str, u64)]) -> Snapshot {
+		Snapshot {
+			taken_at: Timestamp::from_second(secs).unwrap(),
+			counts: counts.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+		}
+	}
+
+	#[test]
+	fn parses_caddy_metric_lines() {
+		let counts = parse_status_counts(SAMPLE);
+		assert_eq!(
+			counts.into_iter().collect::<Vec<_>>(),
+			vec![
+				("200".to_string(), 9),
+				("404".to_string(), 12),
+				("502".to_string(), 3),
+			]
+		);
+	}
+
+	#[test]
+	fn metrics_switch_read_from_the_app_or_its_servers() {
+		use serde_json::json;
+
+		// caddy 2.9 and later: the switch sits on the http app, and caddy
+		// serialises it as an empty object when it carries no sub-options.
+		assert!(metrics_enabled_in(&json!({ "metrics": {} })));
+		assert!(metrics_enabled_in(
+			&json!({ "metrics": { "per_host": true } })
+		));
+
+		// before 2.9: per server, and one instrumented server produces counters.
+		assert!(metrics_enabled_in(&json!({
+			"servers": { "srv0": { "metrics": {} }, "srv1": { "listen": [":80"] } }
+		})));
+
+		assert!(!metrics_enabled_in(&json!({
+			"servers": { "srv0": { "listen": [":443"], "routes": [] } }
+		})));
+		assert!(!metrics_enabled_in(&json!({ "servers": {} })));
+		assert!(!metrics_enabled_in(&json!({})));
+		// caddy answers with a bare null when it has no http app at all
+		assert!(!metrics_enabled_in(&Value::Null));
+	}
+
+	#[test]
+	fn ignores_unrelated_metrics() {
+		let counts = parse_status_counts("foo_bar{code=\"500\"} 99");
+		assert!(counts.is_empty());
+	}
+
+	#[test]
+	fn build_check_emits_cumulative_counters() {
+		use crate::StatKind;
+
+		let baseline = snap(0, &[("200", 100), ("500", 0), ("502", 0)]);
+		let current = snap(60, &[("200", 190), ("500", 5), ("502", 5)]);
+		let check = build_check(&baseline, &current, BaselineSource::History);
+
+		let stat = |name: &str| check.stats.iter().find(|s| s.name == name).expect(name);
+		// The window delta is 90 + 5 + 5 requests; the metrics are Caddy's totals.
+		assert_eq!(stat("requests_total").value, 200.0);
+		assert_eq!(stat("server_errors_total").value, 10.0);
+		assert_eq!(stat("requests_total").kind, StatKind::Counter);
+		assert_eq!(stat("server_errors_total").kind, StatKind::Counter);
+
+		// the verdict's own number stays a percentage over the window
+		assert_eq!(stat("server_error_rate_pct").value, 10.0);
+
+		// dimensioned by-code stats carry the code label, and are cumulative too
+		let by_code: Vec<_> = check
+			.stats
+			.iter()
+			.filter(|s| s.name == "requests_by_code_total")
+			.collect();
+		assert!(
+			by_code
+				.iter()
+				.any(|s| { s.labels == vec![("code", "200".to_string())] && s.value == 190.0 })
+		);
+		assert!(by_code.iter().all(|s| s.kind == StatKind::Counter));
+	}
+
+	#[test]
+	fn quiet_window_still_publishes_totals() {
+		// A window with no traffic doesn't reset Caddy's counters, so the totals
+		// keep reporting where they are rather than dropping to zero.
+		let counts: &[(&str, u64)] = &[("200", 4200), ("502", 7)];
+		let check = build_check(
+			&snap(0, counts),
+			&snap(600, counts),
+			BaselineSource::History,
+		);
+
+		let scalar = |name: &str| check.stats.iter().find(|s| s.name == name).map(|s| s.value);
+		assert_eq!(scalar("requests_total"), Some(4207.0));
+		assert_eq!(scalar("server_errors_total"), Some(7.0));
+		// with no requests in the window there is no error rate to report
+		assert_eq!(scalar("server_error_rate_pct"), None);
+	}
+
+	#[test]
+	fn label_extract_simple() {
+		assert_eq!(
+			extract_label("{code=\"200\",server=\"srv0\"}", "code"),
+			Some("200".to_string())
+		);
+	}
+
+	#[test]
+	fn delta_only_counts_growth() {
+		let before: BTreeMap<String, u64> =
+			[("200".to_string(), 10), ("500".to_string(), 2)].into();
+		let after: BTreeMap<String, u64> = [
+			("200".to_string(), 15),
+			("500".to_string(), 4),
+			("404".to_string(), 1),
+		]
+		.into();
+		let d = delta_counts(&before, &after);
+		assert_eq!(d.get("200").copied(), Some(5));
+		assert_eq!(d.get("500").copied(), Some(2));
+		assert_eq!(d.get("404").copied(), Some(1));
+	}
+
+	#[test]
+	fn reset_detected_when_any_counter_drops() {
+		let before: BTreeMap<String, u64> = [("200".to_string(), 10)].into();
+		let after_dropped: BTreeMap<String, u64> = [("200".to_string(), 5)].into();
+		assert!(counters_reset(&before, &after_dropped));
+		let after_grown: BTreeMap<String, u64> = [("200".to_string(), 11)].into();
+		assert!(!counters_reset(&before, &after_grown));
+	}
+
+	#[test]
+	fn pick_baseline_prefers_oldest_within_window() {
+		let now = Timestamp::from_second(10_000).unwrap();
+		let current = Snapshot {
+			taken_at: now,
+			counts: [("200".to_string(), 100)].into(),
+		};
+		let history = vec![
+			snap(10_000 - 700, &[("200", 10)]), // 11m40s old — too old
+			snap(10_000 - 540, &[("200", 30)]), // 9m old — usable
+			snap(10_000 - 300, &[("200", 60)]), // 5m old — usable
+			snap(10_000 - 10, &[("200", 90)]),  // 10s old — too fresh
+		];
+		let baseline = pick_baseline(&history, &current).expect("should pick one");
+		assert_eq!(baseline.taken_at.as_second(), 10_000 - 540);
+	}
+
+	#[test]
+	fn pick_baseline_skips_when_only_fresh_snapshots() {
+		let now = Timestamp::from_second(10_000).unwrap();
+		let current = Snapshot {
+			taken_at: now,
+			counts: [("200".to_string(), 100)].into(),
+		};
+		let history = vec![snap(10_000 - 5, &[("200", 95)])];
+		assert!(pick_baseline(&history, &current).is_none());
+	}
+
+	#[test]
+	fn pick_baseline_skips_resets() {
+		let now = Timestamp::from_second(10_000).unwrap();
+		let current = Snapshot {
+			taken_at: now,
+			counts: [("200".to_string(), 5)].into(),
+		};
+		let history = vec![snap(10_000 - 300, &[("200", 100)])];
+		assert!(pick_baseline(&history, &current).is_none());
+	}
+
+	#[test]
+	fn prune_drops_snapshots_outside_window_plus_grace() {
+		let now = Timestamp::from_second(10_000).unwrap();
+		let mut history = vec![
+			snap(
+				10_000 - (WINDOW + PRUNE_GRACE).as_secs() as i64 - 1,
+				&[("200", 1)],
+			),
+			snap(10_000 - WINDOW.as_secs() as i64, &[("200", 2)]),
+			snap(10_000 - 60, &[("200", 3)]),
+		];
+		prune_history(&mut history, now);
+		assert_eq!(history.len(), 2);
+		assert_eq!(history[0].counts.get("200").copied(), Some(2));
+	}
+
+	#[test]
+	fn humanise_window_formats_seconds_and_minutes() {
+		assert_eq!(humanise_window(Duration::from_secs(10)), "10s");
+		assert_eq!(humanise_window(Duration::from_secs(60)), "1m");
+		assert_eq!(humanise_window(Duration::from_secs(540)), "9m");
+		assert_eq!(humanise_window(Duration::from_secs(545)), "9m 5s");
+	}
+}

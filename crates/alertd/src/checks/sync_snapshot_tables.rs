@@ -1,0 +1,171 @@
+//! Leftover sync-snapshot tables.
+//!
+//! Central's sync builds a per-session set of tables in the `sync_snapshots`
+//! schema and drops them when the session finishes. A buildup means sessions
+//! are dying without cleaning up after themselves. There's no fixed "too many"
+//! — it scales with how much syncing the server does — so we compare the table
+//! count against the number of sync sessions in the last 24h: more tables than
+//! recent sessions (plus a 10% margin) warns; more than double fails.
+
+use super::{CheckContext, query_error_check};
+use crate::Stat;
+use crate::check::Check;
+
+const NAME: &str = "sync_snapshot_tables";
+
+pub async fn run(ctx: CheckContext) -> Check {
+	let Some(client) = ctx.db().await else {
+		return Check::skip(NAME, "no DB connection", "db unavailable");
+	};
+
+	// `pg_tables` for a missing schema simply yields 0 rows, so only the
+	// `sync_sessions` lookup can hit an undefined table. The `sizes` aggregate
+	// yields one row (NULL percentiles when the schema is empty), so this stays a
+	// single-row query.
+	let query = "
+		SELECT
+			(SELECT count(*) FROM pg_tables WHERE schemaname = 'sync_snapshots') AS table_count,
+			(SELECT count(*) FROM sync_sessions WHERE start_time > now() - interval '24 hours') AS sessions_24h,
+			sizes.p50,
+			sizes.p99,
+			sizes.total_bytes
+		FROM (
+			SELECT
+				percentile_cont(0.5) WITHIN GROUP (ORDER BY sz) AS p50,
+				percentile_cont(0.99) WITHIN GROUP (ORDER BY sz) AS p99,
+				coalesce(sum(sz), 0)::double precision AS total_bytes
+			FROM (
+				SELECT pg_total_relation_size(c.oid)::double precision AS sz
+				FROM pg_class c
+				JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname = 'sync_snapshots' AND c.relkind = 'r'
+			) t
+		) sizes
+	";
+
+	let row = match client.query_one(query, &[]).await {
+		Ok(r) => r,
+		Err(err) => {
+			if let Some(db) = err.as_db_error()
+				&& db.code() == &tokio_postgres::error::SqlState::UNDEFINED_TABLE
+			{
+				return Check::skip(NAME, "sync_sessions table not present", "table absent");
+			}
+			return query_error_check(NAME, &err);
+		}
+	};
+
+	let tables: i64 = row.try_get("table_count").unwrap_or(0);
+	let sessions: i64 = row.try_get("sessions_24h").unwrap_or(0);
+	// NULL when the schema is empty.
+	let p50: Option<f64> = row.try_get("p50").unwrap_or(None);
+	let p99: Option<f64> = row.try_get("p99").unwrap_or(None);
+	let total_bytes: Option<f64> = row.try_get("total_bytes").unwrap_or(None);
+
+	let summary = format!("{tables} snapshot table(s), {sessions} sync session(s)/24h");
+	let check = match classify(tables, sessions) {
+		Verdict::Pass => Check::pass(NAME, summary),
+		Verdict::Warn(reason) => Check::warning(NAME, summary, reason),
+		Verdict::Fail(reason) => Check::fail(NAME, summary, reason),
+	};
+	let mut check = check
+		.with_detail("table_count", tables)
+		.with_detail("sessions_24h", sessions)
+		.with_stat(Stat::gauge("table_count", tables as f64).help("Leftover sync-snapshot tables"));
+	if let Some(p50) = p50 {
+		check = check.with_stat(
+			Stat::gauge("table_size_bytes", p50)
+				.group("sizes")
+				.label("quantile", "0.5")
+				.help("Snapshot-table size percentiles"),
+		);
+	}
+	if let Some(p99) = p99 {
+		check = check.with_stat(
+			Stat::gauge("table_size_bytes", p99)
+				.group("sizes")
+				.label("quantile", "0.99")
+				.help("Snapshot-table size percentiles"),
+		);
+	}
+	if let Some(total) = total_bytes {
+		// Its own graph, not the `sizes` group: the total dwarfs the p50/p99
+		// percentiles and would flatten their variation on a shared axis.
+		check = check.with_stat(
+			Stat::gauge("total_size_bytes", total).help("Total size of all snapshot tables"),
+		);
+	}
+	check
+}
+
+enum Verdict {
+	Pass,
+	Warn(String),
+	Fail(String),
+}
+
+/// Compare the leftover snapshot-table count against recent sync activity.
+///
+/// Warn once the table count exceeds the last-24h session count plus a 10%
+/// margin; fail once it exceeds double that session count. With no recent
+/// sessions any leftover tables are a leak, so both thresholds collapse to
+/// zero and a non-empty schema fails.
+fn classify(tables: i64, sessions_24h: i64) -> Verdict {
+	let warn_at = sessions_24h as f64 * 1.1;
+	let fail_at = sessions_24h as f64 * 2.0;
+	let t = tables as f64;
+	if t > fail_at {
+		Verdict::Fail(format!(
+			"{tables} snapshot tables is more than double the {sessions_24h} sync session(s) in the last 24h"
+		))
+	} else if t > warn_at {
+		Verdict::Warn(format!(
+			"{tables} snapshot tables exceeds the {sessions_24h} sync session(s) in the last 24h plus 10%"
+		))
+	} else {
+		Verdict::Pass
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn verdict(tables: i64, sessions: i64) -> &'static str {
+		match classify(tables, sessions) {
+			Verdict::Pass => "pass",
+			Verdict::Warn(_) => "warn",
+			Verdict::Fail(_) => "fail",
+		}
+	}
+
+	#[test]
+	fn within_recent_activity_passes() {
+		assert_eq!(verdict(100, 100), "pass");
+		// Exactly +10% is the boundary and still passes.
+		assert_eq!(verdict(110, 100), "pass");
+	}
+
+	#[test]
+	fn modest_excess_warns() {
+		assert_eq!(verdict(120, 100), "warn");
+		assert_eq!(verdict(200, 100), "warn");
+	}
+
+	#[test]
+	fn more_than_double_fails() {
+		assert_eq!(verdict(201, 100), "fail");
+	}
+
+	#[test]
+	fn leftover_with_no_recent_sessions_fails() {
+		// No syncs in 24h, but snapshot tables are present — a leak.
+		assert_eq!(verdict(5, 0), "fail");
+	}
+
+	#[test]
+	fn empty_schema_always_passes() {
+		assert_eq!(verdict(0, 0), "pass");
+		assert_eq!(verdict(0, 50), "pass");
+	}
+}

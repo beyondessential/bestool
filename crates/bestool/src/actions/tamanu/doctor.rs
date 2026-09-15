@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use bestool_alertd::doctor::{
+use bestool_alertd::{
 	SweepResult, SweepTamanu,
 	check::{Check, CheckOutcome, CheckStatus, OverallResult},
 	checks, overall_from_payload, perform_sweep,
@@ -159,6 +159,24 @@ async fn run_local_sweep(
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
 	let sweep_handle = tokio::spawn(async move {
+		// The checks take their connection from a pool the same way the daemon's
+		// sweep does. `None` when there's no install to get a URL from, or when
+		// the database is unreachable — the DB checks skip either way, and
+		// `db_connect` opens its own connection to report why.
+		let pg_pool = match install.as_ref() {
+			Some(t) => bestool_postgres::pool::create_pool_sized(
+				&t.database_url,
+				"bestool-tamanu-doctor",
+				bestool_alertd::checks::POOL_SIZE,
+				// A person is watching this one.
+				bestool_postgres::pool::Prompt::Allowed,
+			)
+			.await
+				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
+				.ok(),
+			None => None,
+		};
+
 		perform_sweep(
 			env!("CARGO_PKG_VERSION"),
 			install,
@@ -169,6 +187,7 @@ async fn run_local_sweep(
 			progress,
 			None,
 			false,
+			pg_pool,
 		)
 		.await
 	});
@@ -297,7 +316,7 @@ async fn drain_recompute_stream(
 	response: reqwest::Response,
 	progress: Option<ProgressSender>,
 ) -> Result<StreamedSweep> {
-	use bestool_alertd::doctor::progress::DoctorEvent;
+	use bestool_alertd::progress::DoctorEvent;
 	use futures::StreamExt as _;
 
 	let registry = checks::all();
@@ -771,7 +790,7 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(
-			bestool_alertd::doctor::overall_from_payload(&payload),
+			bestool_alertd::overall_from_payload(&payload),
 			OverallResult::Failing,
 		);
 		let results = results_from_wire(&payload);
