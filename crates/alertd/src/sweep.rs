@@ -401,22 +401,45 @@ struct ResolvedTamanu {
 	root: Option<PathBuf>,
 }
 
-/// The subjects a check reports for on this sweep. Empty when the sweep has no
-/// such subject and the check is therefore not run at all.
+/// One run of a check: the runner to call, and the subject it reports for,
+/// resolved together out of the same registry arm.
+///
+/// Pairing them here is what stops the two disagreeing: a runner and a subject
+/// carried separately could be matched up again wrongly, and the dispatcher
+/// would need a branch for a combination that should not exist.
+enum Dispatch<'a> {
+	Machine(&'a checks::Runner<checks::MachineCx>),
+	Application(&'a checks::Runner<checks::AppCx>, ApplicationRef),
+}
+
+impl Dispatch<'_> {
+	/// The subject this run reports for.
+	fn subject(&self) -> Subject {
+		match self {
+			Self::Machine(_) => Subject::Machine,
+			Self::Application(_, app) => Subject::Application(app.clone()),
+		}
+	}
+}
+
+/// Every run a check produces on this sweep. Empty when the sweep has no
+/// subject the check reports for, so it is not run at all.
 ///
 /// A machine is always present. An application is present only when the host
 /// has one, so on a host with no Tamanu every Tamanu check is simply absent
-/// rather than reported as skipped, and likewise for Postgres.
+/// rather than reported as skipped, and likewise for Postgres. One entry runs
+/// once per application that admits it, so a check on a machine with two
+/// Postgres clusters produces one run per cluster.
 ///
 /// spec: SUBJ
-fn subjects_for(entry: &checks::CheckEntry, applications: &[ApplicationRef]) -> Vec<Subject> {
-	match &entry.run {
-		checks::Run::Machine(_) => vec![Subject::Machine],
-		checks::Run::Application(scope, _) => applications
+fn dispatches_for<'a>(run: &'a checks::Run, applications: &[ApplicationRef]) -> Vec<Dispatch<'a>> {
+	match run {
+		checks::Run::Machine(runner) => vec![Dispatch::Machine(runner)],
+		checks::Run::Application(scope, runner) => applications
 			.iter()
 			.filter(|app| scope.admits(app))
 			.cloned()
-			.map(Subject::Application)
+			.map(|app| Dispatch::Application(runner, app))
 			.collect(),
 	}
 }
@@ -797,18 +820,16 @@ pub async fn perform_sweep(
 
 	// A check whose subject this sweep has no instance of is omitted outright:
 	// it never runs, and never appears in any subject's report.
-	// One entry runs once per subject that admits it, so a check on a machine
-	// with two Postgres clusters produces one result per cluster.
-	let selected: Vec<(usize, &checks::CheckEntry, Subject)> = registry
+	let selected: Vec<(usize, &checks::CheckEntry, Dispatch<'_>)> = registry
 		.iter()
 		.enumerate()
 		.flat_map(|(idx, entry)| {
-			subjects_for(entry, &applications)
+			dispatches_for(&entry.run, &applications)
 				.into_iter()
-				.map(move |subject| (idx, entry, subject))
+				.map(move |dispatch| (idx, entry, dispatch))
 		})
-		.filter(|(_, entry, subject)| {
-			let qualified = subject.qualify(entry.name);
+		.filter(|(_, entry, dispatch)| {
+			let qualified = dispatch.subject().qualify(entry.name);
 			(selected_names.is_empty() || selected_names.contains(&qualified))
 				&& !skip_names.contains(&qualified)
 		})
@@ -820,7 +841,7 @@ pub async fn perform_sweep(
 	if let Some(tx) = progress.as_ref() {
 		let planned = selected
 			.iter()
-			.map(|(_, entry, subject)| subject.identify(entry.name))
+			.map(|(_, entry, dispatch)| dispatch.subject().identify(entry.name))
 			.collect();
 		let _ = tx.send(DoctorEvent::Planned(planned));
 	}
@@ -830,7 +851,7 @@ pub async fn perform_sweep(
 	// completion order. A progress channel can observe results as they land.
 	let prepared: Vec<PreparedCheck> = selected
 		.iter()
-		.map(|(idx, entry, subject)| {
+		.map(|(idx, entry, dispatch)| {
 			// Each check is handed the context built for the subject it reports
 			// for, so a check filed against two applications of one kind reads
 			// each in turn rather than whichever one a shared context held.
@@ -840,40 +861,27 @@ pub async fn perform_sweep(
 			// check failed. `spawn_if_due` applies the per-check rate-limit and
 			// the one-attempt-in-flight guard, which is why this can fire on
 			// every sweep.
-			//
-			// Keyed by *instance*, not by type: `qualify` renders the selection
-			// name, which reaches every cluster on purpose, so keying on it
-			// would collapse two clusters' heals onto one rate limit and one
-			// in-flight slot — whichever failed first would take the slot and
-			// the other would never be repaired.
-			let heal_key = heal_key(subject, entry.name);
-			let (fut, heal): (BoxFuture<'static, Check>, Option<SpawnHeal>) =
-				match (&entry.run, subject) {
-					(checks::Run::Machine(runner), _) => {
-						let cx = machine_cx.clone();
-						let heal = bind_heal(runner.heal.filter(|_| enable_heal), heal_key, &cx);
-						((runner.run)(cx), heal)
-					}
-					(checks::Run::Application(_, runner), Subject::Application(app)) => {
-						let cx = app_cxs
-							.get(app)
-							.expect("every selected application has a context")
-							.clone();
-						let heal = bind_heal(runner.heal.filter(|_| enable_heal), heal_key, &cx);
-						((runner.run)(cx), heal)
-					}
-					// `subjects_for` yields machine subjects for the machine arm
-					// and application subjects for the application arm, so the
-					// remaining pairing does not arise.
-					(checks::Run::Application(..), Subject::Machine) => unreachable!(
-						"{}: an application check was filed against the machine",
-						entry.name
-					),
-				};
+			let subject = dispatch.subject();
+			let key = heal_key(&subject, entry.name);
+			let (fut, heal) = match dispatch {
+				Dispatch::Machine(runner) => {
+					let cx = machine_cx.clone();
+					let heal = bind_heal(runner.heal.filter(|_| enable_heal), key, &cx);
+					((runner.run)(cx), heal)
+				}
+				Dispatch::Application(runner, app) => {
+					let cx = app_cxs
+						.get(app)
+						.expect("every application a check was dispatched for has a context")
+						.clone();
+					let heal = bind_heal(runner.heal.filter(|_| enable_heal), key, &cx);
+					((runner.run)(cx), heal)
+				}
+			};
 			PreparedCheck {
 				idx: *idx,
 				name: entry.name,
-				subject: subject.clone(),
+				subject,
 				on_wire: entry.on_wire,
 				fut,
 				heal,
@@ -1414,31 +1422,31 @@ mod tests {
 		assert_eq!(outcome.qualified_name(), "postgres:connect");
 	}
 
-	/// A stand-in registry entry filed against the machine.
-	fn machine_entry() -> checks::CheckEntry {
-		checks::CheckEntry {
-			name: "stand_in",
-			on_wire: true,
-			run: checks::Run::Machine(checks::Runner {
-				run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
-				heal: None,
-			}),
-		}
+	/// A stand-in machine arm, for resolving subjects without a real check.
+	fn machine_run() -> checks::Run {
+		checks::Run::Machine(checks::Runner {
+			run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
+			heal: None,
+		})
 	}
 
-	/// A stand-in registry entry filed against the applications `scope` admits.
-	fn app_entry(scope: AppScope) -> checks::CheckEntry {
-		checks::CheckEntry {
-			name: "stand_in",
-			on_wire: true,
-			run: checks::Run::Application(
-				scope,
-				checks::Runner {
-					run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
-					heal: None,
-				},
-			),
-		}
+	/// A stand-in application arm filed against the applications `scope` admits.
+	fn app_run(scope: AppScope) -> checks::Run {
+		checks::Run::Application(
+			scope,
+			checks::Runner {
+				run: |_| Box::pin(async { Check::pass("stand_in", "ok") }),
+				heal: None,
+			},
+		)
+	}
+
+	/// The subjects a stand-in arm reports for, in order.
+	fn subjects_for(run: &checks::Run, applications: &[ApplicationRef]) -> Vec<Subject> {
+		dispatches_for(run, applications)
+			.iter()
+			.map(Dispatch::subject)
+			.collect()
 	}
 
 	/// A Postgres cluster reports for itself, so its context carries none of
@@ -1516,9 +1524,9 @@ mod tests {
 
 	#[test]
 	fn subjects_for_omits_application_checks_without_an_application() {
-		assert_eq!(subjects_for(&machine_entry(), &[]), vec![Subject::Machine]);
-		assert!(subjects_for(&app_entry(AppScope::Tamanu), &[]).is_empty());
-		assert!(subjects_for(&app_entry(AppScope::Postgres), &[]).is_empty());
+		assert_eq!(subjects_for(&machine_run(), &[]), vec![Subject::Machine]);
+		assert!(subjects_for(&app_run(AppScope::Tamanu), &[]).is_empty());
+		assert!(subjects_for(&app_run(AppScope::Postgres), &[]).is_empty());
 	}
 
 	#[test]
@@ -1529,7 +1537,7 @@ mod tests {
 			ApplicationRef::local_postgres(5432),
 			ApplicationRef::local_postgres(5433),
 		];
-		let subjects = subjects_for(&app_entry(AppScope::Postgres), &clusters);
+		let subjects = subjects_for(&app_run(AppScope::Postgres), &clusters);
 		assert_eq!(subjects.len(), 2);
 		let keys: Vec<&str> = subjects.iter().filter_map(|s| s.key()).collect();
 		assert_eq!(keys, vec!["host-postgres-5432", "host-postgres-5433"]);
@@ -1545,14 +1553,14 @@ mod tests {
 	fn subjects_for_files_a_central_check_against_the_central_application() {
 		let central = [ApplicationRef::tamanu(ApplicationKind::TamanuCentral)];
 		assert_eq!(
-			subjects_for(&app_entry(AppScope::Central), &central),
+			subjects_for(&app_run(AppScope::Central), &central),
 			vec![Subject::Application(ApplicationRef::tamanu(
 				ApplicationKind::TamanuCentral
 			))],
 		);
 		// The same check has no subject on a facility, so it does not run there.
 		let facility = [ApplicationRef::tamanu(ApplicationKind::TamanuFacility)];
-		assert!(subjects_for(&app_entry(AppScope::Central), &facility).is_empty());
+		assert!(subjects_for(&app_run(AppScope::Central), &facility).is_empty());
 	}
 
 	#[test]
@@ -1562,12 +1570,12 @@ mod tests {
 			ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			ApplicationRef::local_postgres(5432),
 		];
-		let subject = subjects_for(&app_entry(AppScope::Postgres), &both);
+		let subject = subjects_for(&app_run(AppScope::Postgres), &both);
 		assert_eq!(subject.len(), 1);
 		assert_eq!(subject[0].key(), Some("host-postgres-5432"));
 
 		// And a check reading Tamanu's own tables is not filed against Postgres.
-		let tamanu = subjects_for(&app_entry(AppScope::Tamanu), &both);
+		let tamanu = subjects_for(&app_run(AppScope::Tamanu), &both);
 		assert_eq!(tamanu.len(), 1);
 		assert_eq!(tamanu[0].key(), Some("host-tamanu-central"));
 	}
@@ -2065,18 +2073,18 @@ mod tests {
 	fn a_generic_database_runs_postgres_checks_and_no_tamanu_ones() {
 		let applications = [postgres_ref("postgresql://u@localhost/other")];
 		assert_eq!(
-			subjects_for(&app_entry(AppScope::Postgres), &applications).len(),
+			subjects_for(&app_run(AppScope::Postgres), &applications).len(),
 			1
 		);
 		for scope in [AppScope::Tamanu, AppScope::Central, AppScope::Facility] {
 			assert!(
-				subjects_for(&app_entry(scope), &applications).is_empty(),
+				subjects_for(&app_run(scope), &applications).is_empty(),
 				"{scope:?} has no subject on a host with no Tamanu"
 			);
 		}
 		// The machine is always a subject, so machine checks still run.
 		assert_eq!(
-			subjects_for(&machine_entry(), &applications),
+			subjects_for(&machine_run(), &applications),
 			vec![Subject::Machine]
 		);
 	}
