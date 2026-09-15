@@ -18,7 +18,6 @@ pub struct MachineTamanu { version: Version, root: Option<PathBuf> }
 pub struct AppCx {
     app: ApplicationRef,
     version: Version,
-    kind: ApiServerKind,
     config: Arc<TamanuConfig>,
     install_root: Option<PathBuf>,
     database_url: String,
@@ -117,10 +116,27 @@ registry key becomes `String`.
   root made a cluster answer with another application's configuration.
 - **The heal expands inside the registry arm**, so a cross-arm heal is a type
   error where it is written rather than a startup panic.
-- `kind` is the one field with no neutral value in a shared `AppCx`. Every
-  check that reads it is Tamanu-scoped, so none reaches what a cluster carries
-  there. Splitting `AppCx` per application kind would remove the last of this,
-  but that changes the card's `Run` shape and is not in scope here.
+- **`kind` is gone as a field.** `ApiServerKind::Central` is a real answer, not
+  an "unknown", so storing it on a cluster's context left a wrong value any
+  future Postgres-scoped check could read. `AppCx::server_kind` derives the role
+  from the subject and answers `None` for an application that is not a Tamanu,
+  so the compiler flags a cluster-reachable read. `version` keeps `0.0.0`, which
+  is this crate's established unresolved-version marker and which
+  `version_drift` already treats as "nothing to compare against".
+- **A cluster's configuration comes from `database_url`**, not from
+  `TamanuConfig::database()`, which reads the environment a second time at
+  context-build time while the targets it belongs to were resolved earlier and
+  cached.
+
+## Still open
+
+`AppCx` remains one type for two application kinds. Review has now raised this
+twice — once for `install_root`/`config`, once for `kind` — and each round has
+been a fix to a field rather than to the shape. The structural answer is a
+third arm: `Run::Postgres(Runner<PgCx>)` alongside `Run::Tamanu(TamanuScope,
+Runner<TamanuCx>)`, which the scope already determines. That changes the `Run`
+and `AppScope` shapes the card specifies and that `K1` builds on, so it is a
+card-shape decision rather than a review fix.
 
 ## Notes
 

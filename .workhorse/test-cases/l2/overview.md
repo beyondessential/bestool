@@ -15,6 +15,7 @@ reports for, that the two arms are distinct, and that nothing else moved.
 
 - [x] Every check is filed under the subject `SUBJ` gives it: machine, Postgres, Tamanu, or central (verifies spec: SUBJ)
 - [x] A Postgres cluster's context carries none of the Tamanu's version, install root or configuration (verifies spec: SUBJ)
+- [x] A context reports the Tamanu role of its own subject, and a cluster reports none (verifies spec: SUBJ)
 - [x] The four database checks are filed against the Postgres application, not against whatever uses it (verifies spec: SUBJ)
 - [x] Each check's heal sits in the same arm as the check, so it is handed the context the check ran with (verifies spec: CHK#self-healing)
 - [x] The registry's qualified names are unique, so no two entries collide on one `subject:name` (verifies spec: SUBJ)
@@ -41,6 +42,7 @@ reports for, that the two arms are distinct, and that nothing else moved.
 
 - [x] The check skips on a non-Windows host (verifies spec: CHK-CFV)
 - [x] The check skips on a Windows host with no Tamanu, naming the deployment's version as what it grades against (verifies spec: CHK-CFV)
+- [x] A Windows host with a Tamanu on it passes both preconditions and is graded against that deployment's version (verifies spec: CHK-CFV)
 - [ ] The check skips when no Caddyfile is on disk (verifies spec: CHK-CFV) — needs a Windows host with caddy absent
 - [x] Marker outcomes against the Tamanu version are unchanged (verifies spec: CHK-CFV)
 
