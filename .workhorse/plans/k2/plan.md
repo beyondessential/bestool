@@ -217,3 +217,43 @@ would have each one take its own connection, so a single check could hold
 several slots at once and wait on the pool while holding part of it. That is a
 deadlock shape, and it wants the per-check connection budget thought through
 rather than a `buffer_unordered` dropped in here.
+
+## Sixth review round
+
+Round five removed the acquire deadline to stop contention being misreported as
+a database outage, and round six found what that let in: with no deadline, one
+check stuck on a lock holds its slot, every queued check waits behind it, the
+sweep never returns, nothing reaches canopy, and the watchdog restarts the
+daemon into the same hang. Silence, from the thing whose job is to report
+trouble — worse than the false alert it was trying to prevent.
+
+Three constraints, not two, and they have been traded against each other for
+several rounds by moving one number:
+
+1. The pool stays a small budget, because it points at the deployment's own
+   database.
+2. Ordinary queueing must not be reportable as an outage, because several checks
+   turn a missing connection into a failure.
+3. The sweep must finish, whatever the database is doing.
+
+A deadline far longer than any healthy sweep and still finite holds all three,
+which neither 30 seconds (fails 2) nor no deadline at all (fails 3) does. With
+eight slots and the checks' short queries, ordinary queueing finishes in well
+under a second; reaching two minutes means the database has stopped answering,
+which is worth reporting as such.
+
+The deeper fix is for `db()` to say *why* it has no connection, so the five
+checks that report a failure can tell an unusable database from a busy one.
+That changes every DB check's signature, which is the check-signature work, so
+it is noted for there rather than done here — the deadline makes the ambiguous
+case improbable rather than impossible.
+
+Also fixed: pool creation prompts for a password on the terminal when auth
+fails and the URL has none, which is the deployed shape (peer auth, no
+password). Moving pool creation into the per-tick sweep put that in the
+daemon's hot path, where `bestool alertd run` from a shell would block on
+stdin — broken database auth silencing the monitoring instead of being reported
+by it. The daemon now asks for a pool that never prompts. And the seeded-gap
+test wrote its setting before the probe patient, so a failure in between left
+materialisation switched on for a live deployment; the patient goes first now,
+so everything before the setting can fail harmlessly.

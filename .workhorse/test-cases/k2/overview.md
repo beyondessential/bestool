@@ -53,8 +53,11 @@ the daemon's dependencies.
       each waiting out an acquire that cannot succeed
 - [x] Idle connections outlive the gap between sweeps, so a minute-by-minute
       daemon reuses them rather than reconnecting
-- [x] Checks queue for a connection without a deadline, so contention or a slow
-      cluster cannot be reported as the database being down
+- [x] Checks queue for a connection far longer than a healthy sweep takes, so
+      contention is not reported as the database being down, but the wait is
+      finite so the sweep always finishes and always reports
+- [x] The daemon never prompts for a database password, so broken auth is
+      reported rather than blocking the sweep on stdin
 - [x] Checks hand their connection back when they stop querying, rather than
       holding a slot through grading
 - [x] The sweep's setup connection is released before the checks run
@@ -70,6 +73,8 @@ the daemon's dependencies.
 - [x] It removes the probe patient it created, and only that row
 - [x] It declines to run when the setting already exists, rather than editing
       a value it did not create — verified against a seeded operator value
+- [x] It writes the setting last, so a failure while seeding cannot leave
+      materialisation switched on for the deployment
 - [x] The endpoint tests need no database, because the state they build no
       longer carries a pool
 - [ ] With postgres down at daemon start, the daemon still starts, and the
