@@ -684,13 +684,19 @@ mod tests {
 		let check = super::run(ctx).await;
 
 		// Both rows are ours, so this puts the database back as it was found.
-		let cleaned_up = client
-			.batch_execute(&format!(
-				"DELETE FROM patients WHERE id = '{PROBE}'; \
-				 DELETE FROM settings \
-				 WHERE key = '{SETTING}' AND facility_id IS NULL AND deleted_at IS NULL;"
-			))
-			.await;
+		let cleaned_up = async {
+			client
+				.execute("DELETE FROM patients WHERE id = $1", &[&PROBE])
+				.await?;
+			client
+				.execute(
+					"DELETE FROM settings \
+					 WHERE key = $1 AND facility_id IS NULL AND deleted_at IS NULL",
+					&[&SETTING],
+				)
+				.await
+		}
+		.await;
 
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
