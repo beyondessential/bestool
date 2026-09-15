@@ -121,6 +121,24 @@ pub struct CheckContext {
 	pub is_tamanu: bool,
 }
 
+/// How the sweep's pool is sized.
+///
+/// Checks run concurrently and each takes its own connection, so the pool has
+/// to have a slot for every check that might want one at once — otherwise the
+/// last few queue, and an acquire that times out is indistinguishable from a
+/// database that is down, which several checks report as a failure. Sizing it
+/// to the fan-out means a failed acquire really does mean the database is
+/// unusable.
+///
+/// `max_idle` is far lower: the burst lasts as long as a sweep, and holding a
+/// backend per check open between sweeps would cost a deployment far more than
+/// the reconnections it saves.
+pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::PoolSize {
+	// The DB checks, the sweep's own setup connection, and room to spare.
+	max_open: 32,
+	max_idle: 4,
+};
+
 impl CheckContext {
 	/// Take a connection for this check, or `None` when there's no database or
 	/// it can't be reached — in which case the check skips.

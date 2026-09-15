@@ -96,6 +96,37 @@ impl PgPool {
 /// in the connection URL, the function will prompt the user to enter a password
 /// interactively. The password will be read securely without echoing to the terminal.
 pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
+	create_pool_sized(url, application_name, PoolSize::default()).await
+}
+
+/// How many connections a pool may open, and how many it keeps when idle.
+///
+/// The default suits a caller that runs a query at a time. A caller that fans
+/// out — every doctor check querying at once, say — sizes `max_open` to its own
+/// concurrency so callers never queue behind each other, and keeps `max_idle`
+/// well below that so the footprint between bursts stays small.
+#[derive(Clone, Copy, Debug)]
+pub struct PoolSize {
+	pub max_open: u64,
+	pub max_idle: u64,
+}
+
+impl Default for PoolSize {
+	fn default() -> Self {
+		// mobc's own defaults.
+		Self {
+			max_open: 10,
+			max_idle: 10,
+		}
+	}
+}
+
+/// [`create_pool`] with an explicit size.
+pub async fn create_pool_sized(
+	url: &str,
+	application_name: &str,
+	size: PoolSize,
+) -> Result<PgPool> {
 	let mut config = url::parse_connection_url(url)?;
 
 	config.application_name(application_name);
@@ -111,6 +142,8 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 		debug!("Creating pool");
 		let pool = Pool::builder()
 			.max_lifetime(Some(Duration::from_secs(3600)))
+			.max_open(size.max_open)
+			.max_idle(size.max_idle)
 			.build(manager.clone());
 
 		let pool = PgPool {

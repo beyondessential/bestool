@@ -164,8 +164,12 @@ async fn run_local_sweep(
 		// the database is unreachable — the DB checks skip either way, and
 		// `db_connect` opens its own connection to report why.
 		let pg_pool = match install.as_ref() {
-			Some(t) => bestool_postgres::pool::create_pool(&t.database_url, "bestool-tamanu-doctor")
-				.await
+			Some(t) => bestool_postgres::pool::create_pool_sized(
+				&t.database_url,
+				"bestool-tamanu-doctor",
+				bestool_alertd::checks::POOL_SIZE,
+			)
+			.await
 				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
 				.ok(),
 			None => None,
