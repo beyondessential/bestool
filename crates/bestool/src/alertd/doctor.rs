@@ -271,6 +271,10 @@ impl DoctorTaskInner {
 			database_url,
 			"bestool-alertd",
 			doctor::checks::POOL_SIZE,
+			// The daemon has no one to ask for a password. Prompting here would
+			// block the sweep on stdin when run from a shell, so broken database
+			// auth would silence the monitoring instead of being reported by it.
+			bestool_postgres::pool::Prompt::Never,
 		)
 		.await;
 

@@ -168,6 +168,8 @@ async fn run_local_sweep(
 				&t.database_url,
 				"bestool-tamanu-doctor",
 				bestool_alertd::checks::POOL_SIZE,
+				// A person is watching this one.
+				bestool_postgres::pool::Prompt::Allowed,
 			)
 			.await
 				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
