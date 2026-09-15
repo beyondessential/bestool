@@ -13,6 +13,16 @@ use super::AppCx;
 use crate::check::Check;
 
 pub async fn run(ctx: AppCx) -> Check {
+	// Which services should be up follows from the role the deployment plays,
+	// so without one there are no expectations to grade against.
+	let Some(kind) = ctx.server_kind() else {
+		return Check::skip(
+			"tamanu_service",
+			"not a Tamanu deployment",
+			"the expected services follow from the deployment's role, and this application has none",
+		);
+	};
+
 	let Some(supervisor) = Supervisor::current() else {
 		return Check::skip(
 			"tamanu_service",
@@ -38,7 +48,7 @@ pub async fn run(ctx: AppCx) -> Check {
 	let config = ctx.installed_config();
 	let expectations = expected(
 		supervisor,
-		ctx.kind,
+		kind,
 		config,
 		patient_portal_enabled,
 		patient_portal_instanced,

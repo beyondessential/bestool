@@ -154,7 +154,7 @@ pub async fn run(ctx: AppCx) -> Check {
 ///
 /// spec: CHK-FHJ#self-healing
 pub async fn heal(ctx: AppCx) -> HealOutcome {
-	if !matches!(ctx.kind, ApiServerKind::Central) {
+	if ctx.server_kind() != Some(ApiServerKind::Central) {
 		return HealOutcome::Deferred;
 	}
 	if !ctx.config.fhir_worker_enabled() {
@@ -164,7 +164,7 @@ pub async fn heal(ctx: AppCx) -> HealOutcome {
 		return HealOutcome::Deferred;
 	};
 
-	let targets = fhir_worker_targets(supervisor, ctx.kind, ctx.config.as_ref());
+	let targets = fhir_worker_targets(supervisor, ApiServerKind::Central, ctx.config.as_ref());
 	if targets.is_empty() {
 		return HealOutcome::Deferred;
 	}

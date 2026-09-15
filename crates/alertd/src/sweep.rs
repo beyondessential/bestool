@@ -21,7 +21,10 @@ use serde_json::{Map, Value};
 use tokio_postgres::Client as PgClient;
 use tracing::{debug, warn};
 
-use bestool_tamanu::{config::TamanuConfig, server_info::get_or_create_machine_id};
+use bestool_tamanu::{
+	config::{Database, TamanuConfig},
+	server_info::get_or_create_machine_id,
+};
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
@@ -329,20 +332,25 @@ fn app_context(
 	let tamanu = tamanu.as_ref().filter(|_| app.kind.is_tamanu());
 	checks::AppCx {
 		app: app.clone(),
+		// `0.0.0` is the sweep's marker for a version it could not resolve, which
+		// `version_drift` reads as "nothing to compare against". A cluster never
+		// has one: its server version is a fact read from the server, not a
+		// version of the application as installed.
 		version: tamanu.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone()),
-		kind: tamanu.map_or(bestool_tamanu::ApiServerKind::Central, |t| t.kind),
-		// A cluster's configuration is the database section naming it, carried
-		// so that what a check reads describes the cluster rather than a
-		// deployment that happens to use it.
+		// A cluster's configuration names its own database, derived from the URL
+		// the cluster is keyed and connected by so that what a check reports
+		// about it and what it connected to cannot disagree. Taking it from the
+		// deployment's config would read a second time from the environment and
+		// could answer for a different database than the pool opened.
 		config: match tamanu {
 			Some(_) => targets.config.clone(),
 			None => Arc::new(TamanuConfig::from_database(
-				targets.config.database().unwrap_or_else(|_| {
-					// The sweep reaches this database with this very string, so
-					// it parses; an unparseable one is reported by `connect`.
-					warn!("could not read the database section for this application's context");
-					targets.config.db.clone()
-				}),
+				// A URL this cannot parse is one the sweep cannot connect with
+				// either: `postgres_ref` has already warned about it and
+				// `connect` reports the failure, so the name carried here is
+				// cosmetic. Same reasoning as `postgres_ref`'s own fallback.
+				Database::from_url(&targets.database_url)
+					.unwrap_or_else(|_| targets.config.db.clone()),
 			)),
 		},
 		install_root: tamanu.and_then(|t| t.root.clone()),

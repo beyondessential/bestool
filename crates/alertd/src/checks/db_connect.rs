@@ -56,7 +56,7 @@ mod tests {
 
 	use node_semver::Version;
 
-	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+	use bestool_tamanu::config::TamanuConfig;
 
 	use super::*;
 	use crate::{check::CheckStatus, subject::ApplicationRef};
@@ -74,7 +74,6 @@ mod tests {
 			app: ApplicationRef::local_postgres(5432),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(config),
-			kind: ApiServerKind::Central,
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://127.0.0.1:1/tamanu-central".into(),
 			pool: None,
@@ -109,7 +108,6 @@ mod tests {
 			app: ApplicationRef::local_postgres(5432),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(config),
-			kind: ApiServerKind::Central,
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/bestool-test-nonexistent-db".into(),
 			pool: None,

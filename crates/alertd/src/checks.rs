@@ -18,7 +18,7 @@ use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
 
 use super::check::Check;
 use super::heal::{self, HealAction};
-use super::subject::{AppScope, ApplicationRef};
+use super::subject::{AppScope, ApplicationKind, ApplicationRef};
 
 pub mod util;
 
@@ -106,7 +106,7 @@ pub struct MachineCx {
 /// database, no application key — a machine check has no business with those.
 ///
 /// spec: SUBJ
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MachineTamanu {
 	/// The deployment's version.
 	pub version: Version,
@@ -142,15 +142,6 @@ pub struct AppCx {
 	/// fact read from the server rather than a version of the application as
 	/// installed.
 	pub version: Version,
-	/// Whether the deployment is a central or facility server. Determined once
-	/// at sweep startup from the most authoritative available signals (DB
-	/// `local_system_facts` first, then config), then shared so checks don't
-	/// each have to re-decide.
-	///
-	/// A Postgres cluster is not a Tamanu and plays no such role; the scope of
-	/// every check that reads this admits only Tamanu applications, so none
-	/// reaches the value a Postgres context carries here.
-	pub kind: ApiServerKind,
 	/// The application's configuration. For a Tamanu, the deployment's own —
 	/// synthesised from the database URL alone where there are no install files
 	/// to have read it from, which
@@ -216,6 +207,23 @@ pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::
 };
 
 impl AppCx {
+	/// Whether this application is a central or facility Tamanu, or `None` for
+	/// an application that is not a Tamanu at all.
+	///
+	/// Derived from the subject rather than stored, so it cannot describe a
+	/// different application from the one the context was built for, and a
+	/// cluster carries no role it does not have. Which role a Tamanu plays is
+	/// decided once at sweep startup from the most authoritative available
+	/// signals (DB `local_system_facts` first, then config) and reaches here
+	/// through the application it identified.
+	pub fn server_kind(&self) -> Option<ApiServerKind> {
+		match self.app.kind {
+			ApplicationKind::TamanuCentral => Some(ApiServerKind::Central),
+			ApplicationKind::TamanuFacility => Some(ApiServerKind::Facility),
+			ApplicationKind::Postgres => None,
+		}
+	}
+
 	/// The application's configuration as read from its install files, or
 	/// `None` when there are none to have read it from.
 	///
@@ -577,7 +585,7 @@ pub mod test_support {
 	use bestool_postgres::pool::PgPool;
 	use node_semver::Version;
 
-	use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+	use bestool_tamanu::config::TamanuConfig;
 
 	use super::AppCx;
 	use crate::subject::{ApplicationKind, ApplicationRef};
@@ -619,7 +627,6 @@ pub mod test_support {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(central_config()),
-			kind: ApiServerKind::Central,
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
@@ -634,7 +641,6 @@ pub mod test_support {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuFacility),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(facility_config()),
-			kind: ApiServerKind::Facility,
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
@@ -702,10 +708,7 @@ mod tests {
 	/// install root, and a URL pointing at a closed port so connection attempts
 	/// fail fast.
 	fn db_only_ctx() -> AppCx {
-		use bestool_tamanu::{
-			ApiServerKind,
-			config::{Database, TamanuConfig},
-		};
+		use bestool_tamanu::config::{Database, TamanuConfig};
 		use node_semver::Version;
 
 		use crate::subject::{ApplicationKind, ApplicationRef};
@@ -715,7 +718,6 @@ mod tests {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(TamanuConfig::from_database(db)),
-			kind: ApiServerKind::Central,
 			install_root: None,
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
@@ -833,6 +835,33 @@ mod tests {
 			);
 		}
 		assert_eq!(arm_of("fhir_workers"), Some(AppScope::Central));
+	}
+
+	/// A context describes the application it was built for, so the role it
+	/// reports comes from the subject rather than from whatever the sweep
+	/// happened to resolve alongside it. A cluster plays no Tamanu role at all.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn a_context_reports_the_role_of_its_own_subject() {
+		use bestool_tamanu::ApiServerKind;
+
+		use crate::subject::{ApplicationKind, ApplicationRef};
+
+		let central = db_only_ctx();
+		assert_eq!(central.server_kind(), Some(ApiServerKind::Central));
+
+		let facility = AppCx {
+			app: ApplicationRef::tamanu(ApplicationKind::TamanuFacility),
+			..db_only_ctx()
+		};
+		assert_eq!(facility.server_kind(), Some(ApiServerKind::Facility));
+
+		assert_eq!(
+			postgres_ctx().server_kind(),
+			None,
+			"a cluster is not a Tamanu and must not answer with a role it has not got"
+		);
 	}
 
 	/// A check is named within its subject, so the registry's names are unique

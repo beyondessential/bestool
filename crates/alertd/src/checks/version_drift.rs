@@ -21,6 +21,16 @@ use crate::Stat;
 use crate::check::Check;
 
 pub async fn run(ctx: AppCx) -> Check {
+	// The expected container set follows from the role the deployment plays, so
+	// without one there is nothing to compare what is running against.
+	let Some(kind) = ctx.server_kind() else {
+		return Check::skip(
+			"version_drift",
+			"not a Tamanu deployment",
+			"the expected containers follow from the deployment's role, and this application has none",
+		);
+	};
+
 	// The comparison baseline is the install's env-file version when present,
 	// else the DB's recorded `currentVersion`. If neither resolved, the version
 	// is the 0.0.0 sentinel and there's nothing to compare against — skip rather
@@ -76,7 +86,7 @@ pub async fn run(ctx: AppCx) -> Check {
 		matches!(supervisor, Supervisor::Systemd) && systemd_patient_portal_instanced().await;
 	let expectations = expected(
 		supervisor,
-		ctx.kind,
+		kind,
 		Some(ctx.config.as_ref()),
 		patient_portal_enabled,
 		patient_portal_instanced,
