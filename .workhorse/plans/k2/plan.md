@@ -127,3 +127,25 @@ the next one.
   dead, and carries no annotation. The suggestion to swap `restart`'s
   `cfg(windows)` for `expect(dead_code)` rested on matching the sibling field's
   strategy, which no longer exists.
+
+## Third review round
+
+All four were consequences of giving each check its own connection.
+
+- The seeded-gap test was writing for real to whichever database answered at
+  the central URL. CI has no `tamanu-central`, so the only machines it ran on
+  were developer and ops boxes with a live Tamanu, and its settings delete was
+  not probe-scoped. It restores the prior value verbatim now and is gated behind
+  `BESTOOL_TEST_DESTRUCTIVE_DB`. Verified by seeding a value, running it, and
+  confirming the value survived.
+- The pool kept mobc's default of ten connections while twenty-two checks asked
+  for one each. The overflow queued, and an acquire that timed out returned
+  `None`, which five checks report as a failed check — contention would have
+  raised a database-down alert. The pool is sized to the fan-out, so a failed
+  acquire means what it did before: the database is unusable.
+- The sweep's setup connection was held from before the checks until the facts
+  query after them, occupying a slot for the contended phase. It is handed back
+  once the setup queries are done.
+- `pool_for` held its mutex across `create_pool`, which talks to the database;
+  a concurrent `recompute` stalled behind it for the connect timeout on every
+  tick while postgres was down.

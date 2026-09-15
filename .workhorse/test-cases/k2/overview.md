@@ -46,6 +46,19 @@ the daemon's dependencies.
 - [x] A host with no reachable database has no pool, and DB checks skip rather
       than waiting on an acquire that cannot succeed
 - [x] A check's connection returns to the pool when the check ends
+- [x] The pool has a slot for every DB check, so queueing cannot turn into an
+      acquire timeout that checks report as the database being down
+- [x] The sweep's setup connection is released before the checks run
+- [ ] Building the pool does not block a concurrent `recompute` while postgres
+      is unreachable
+
+## Tests do not write to a real deployment
+
+- [x] The seeded-gap test only runs with `BESTOOL_TEST_DESTRUCTIVE_DB` set; a
+      reachable local Tamanu is not enough to trigger writes
+- [x] It restores the materialisation setting to the deployment's prior value
+      rather than deleting it, verified against a seeded value
+- [x] It removes the probe patient it created, and only that row
 - [x] The endpoint tests need no database, because the state they build no
       longer carries a pool
 - [ ] With postgres down at daemon start, the daemon still starts, and the
