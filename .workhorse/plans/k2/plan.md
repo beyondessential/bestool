@@ -149,3 +149,39 @@ All four were consequences of giving each check its own connection.
 - `pool_for` held its mutex across `create_pool`, which talks to the database;
   a concurrent `recompute` stalled behind it for the connect timeout on every
   tick while postgres was down.
+
+## Fourth review round
+
+The pool has now been through three rounds, and the reason is worth recording:
+round three flagged that checks were queueing behind a ten-connection pool, and
+the fix taken then was to size the pool up to the fan-out. That removed the
+queueing by bursting twenty-odd backends a minute at the deployment's own
+database — trading a latency problem for a capacity one, which round four
+rightly called the healthcheck being able to cause the outage it reports. The
+mistake was optimising the fan-out without a budget for connections against a
+production database.
+
+The shape it settles into:
+
+- Eight connections, and checks queue for one. Several run at a time, which is
+  the point, without the sweep ever being a meaningful share of a cluster's
+  connection limit.
+- Queueing is only safe because a database that is actually down leaves the
+  checks with no pool at all. The sweep takes a connection itself first, and
+  only passes the pool on if that worked, so checks never queue for something
+  that cannot arrive.
+- Idle connections outlive the gap between sweeps and age out when the daemon
+  goes quiet, so reuse survives tick to tick without holding backends open.
+
+Also fixed: `pool_for`'s failure branch was clearing the cache entry a
+concurrent sweep may have just written; the seeded-gap test could adopt its own
+leftover setting as the deployment's prior value and make it permanent, and now
+declines rather than editing a setting it didn't create; and `DaemonConfig`
+carried a `database_url` nothing read and a `binary_version` that is a constant.
+
+Left alone: `perform_sweep`'s nine positional parameters want a builder, which
+is a signature change better made alongside the check-signature work than
+bolted on here. The `alertd` feature enabling `bestool-tamanu` is not
+avoidable — the daemon itself uses pm2 job breakaway, the seedling endpoint and
+the tag cache — so `alertd-tamanu` narrowing to `tamanu-config` is a real
+consequence of where that code now lives, not an oversight.

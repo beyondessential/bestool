@@ -46,8 +46,13 @@ the daemon's dependencies.
 - [x] A host with no reachable database has no pool, and DB checks skip rather
       than waiting on an acquire that cannot succeed
 - [x] A check's connection returns to the pool when the check ends
-- [x] The pool has a slot for every DB check, so queueing cannot turn into an
-      acquire timeout that checks report as the database being down
+- [x] The sweep's pool is a bounded budget, so a sweep is never a meaningful
+      share of the cluster's connection limit even when `doctor` overlaps it
+- [x] Checks are handed the pool only after the sweep has taken a connection
+      from it, so an unreachable database means they skip at once instead of
+      each waiting out an acquire that cannot succeed
+- [x] Idle connections outlive the gap between sweeps, so a minute-by-minute
+      daemon reuses them rather than reconnecting
 - [x] The sweep's setup connection is released before the checks run
 - [ ] Building the pool does not block a concurrent `recompute` while postgres
       is unreachable
@@ -59,6 +64,8 @@ the daemon's dependencies.
 - [x] It restores the materialisation setting to the deployment's prior value
       rather than deleting it, verified against a seeded value
 - [x] It removes the probe patient it created, and only that row
+- [x] It declines to run when the setting already exists, rather than editing
+      a value it did not create — verified against a seeded operator value
 - [x] The endpoint tests need no database, because the state they build no
       longer carries a pool
 - [ ] With postgres down at daemon start, the daemon still starts, and the
