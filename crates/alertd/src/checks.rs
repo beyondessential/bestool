@@ -123,20 +123,28 @@ pub struct CheckContext {
 
 /// How the sweep's pool is sized.
 ///
-/// Checks run concurrently and each takes its own connection, so the pool has
-/// to have a slot for every check that might want one at once — otherwise the
-/// last few queue, and an acquire that times out is indistinguishable from a
-/// database that is down, which several checks report as a failure. Sizing it
-/// to the fan-out means a failed acquire really does mean the database is
-/// unusable.
+/// This points at the deployment's own database, which the application is also
+/// connecting to, so the sweep gets a small budget rather than one slot per
+/// check. Sizing it to the fan-out would burst twenty-odd backends every minute
+/// — and `bestool tamanu doctor` opens a second pool that can overlap with the
+/// daemon's — which against a cluster tuned to the usual hundred connections,
+/// shared with Tamanu's own pools, risks the healthcheck causing the outage it
+/// exists to report.
 ///
-/// `max_idle` is far lower: the burst lasts as long as a sweep, and holding a
-/// backend per check open between sweeps would cost a deployment far more than
-/// the reconnections it saves.
+/// So checks queue for a slot instead. They still run several at a time rather
+/// than pipelining onto one connection, and their queries are short, so the
+/// queue drains quickly. Waiting is safe here because the sweep only hands the
+/// pool to the checks once it has taken a connection itself: a database that is
+/// actually down leaves them with no pool at all, and they skip immediately
+/// rather than queueing for something that cannot arrive.
+///
+/// Idle connections live long enough to span the gap between sweeps, so a
+/// minute-by-minute daemon reuses them instead of reconnecting, and age out
+/// when it goes quiet.
 pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::PoolSize {
-	// The DB checks, the sweep's own setup connection, and room to spare.
-	max_open: 32,
-	max_idle: 4,
+	max_open: 8,
+	max_idle: 8,
+	max_idle_lifetime: Some(std::time::Duration::from_secs(300)),
 };
 
 impl CheckContext {

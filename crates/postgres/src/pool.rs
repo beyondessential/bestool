@@ -109,6 +109,11 @@ pub async fn create_pool(url: &str, application_name: &str) -> Result<PgPool> {
 pub struct PoolSize {
 	pub max_open: u64,
 	pub max_idle: u64,
+	/// How long an idle connection is kept before being closed. `None` keeps
+	/// idle connections until `max_lifetime`; a caller that works in bursts
+	/// sets this long enough to span the gap between them and no longer, so
+	/// connections survive burst to burst without being held indefinitely.
+	pub max_idle_lifetime: Option<Duration>,
 }
 
 impl Default for PoolSize {
@@ -117,6 +122,7 @@ impl Default for PoolSize {
 		Self {
 			max_open: 10,
 			max_idle: 10,
+			max_idle_lifetime: None,
 		}
 	}
 }
@@ -144,6 +150,7 @@ pub async fn create_pool_sized(
 			.max_lifetime(Some(Duration::from_secs(3600)))
 			.max_open(size.max_open)
 			.max_idle(size.max_idle)
+			.max_idle_lifetime(size.max_idle_lifetime)
 			.build(manager.clone());
 
 		let pool = PgPool {
