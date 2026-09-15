@@ -30,11 +30,6 @@ pub use tasks::{BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse}
 /// Configuration for the alertd daemon
 #[derive(Clone)]
 pub struct DaemonConfig {
-	/// Database connection URL, retained for display only; nothing reads it to
-	/// connect. Wrapped in `Redacted` because it carries the database password,
-	/// so debug-logging the config can't leak it.
-	pub database_url: Option<Redacted<String>>,
-
 	/// Tamanu device key PEM, used as the client identity for canopy.
 	///
 	/// Held only long enough to build the canopy `reqwest::Client` at startup,
@@ -69,20 +64,12 @@ pub struct DaemonConfig {
 	/// registered. Feeds the `/metrics` endpoint the per-check declared stats
 	/// and the status census.
 	pub metrics: Option<doctor::DoctorMetricsHandle>,
-
-	/// Version of the running `bestool` binary, shown in the systemd status line.
-	///
-	/// Always this binary's own version now that the config lives in the same
-	/// crate; it was a builder setter only while the two were separate crates.
-	pub binary_version: String,
 }
 
 impl fmt::Debug for DaemonConfig {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		f.debug_struct("DaemonConfig")
-			.field("database_url", &self.database_url)
 			.field("device_key_pem", &self.device_key_pem)
-			.field("binary_version", &self.binary_version)
 			.field("no_server", &self.no_server)
 			.field("server_addrs", &self.server_addrs)
 			.field("watchdog_timeout", &self.watchdog_timeout)
@@ -99,9 +86,8 @@ impl fmt::Debug for DaemonConfig {
 }
 
 impl DaemonConfig {
-	pub fn new(database_url: Option<String>) -> Self {
+	pub fn new() -> Self {
 		Self {
-			database_url: database_url.map(Redacted),
 			device_key_pem: None,
 			no_server: false,
 			server_addrs: Vec::new(),
@@ -109,7 +95,6 @@ impl DaemonConfig {
 			background_tasks: Vec::new(),
 			backups: None,
 			metrics: None,
-			binary_version: env!("CARGO_PKG_VERSION").to_string(),
 		}
 	}
 
@@ -148,6 +133,16 @@ impl DaemonConfig {
 	pub fn with_watchdog_timeout(mut self, watchdog_timeout: Option<Duration>) -> Self {
 		self.watchdog_timeout = watchdog_timeout;
 		self
+	}
+}
+
+/// The running binary's version: the daemon's status line and the sweep payload
+/// both report it, and both mean this binary rather than the checks crate.
+pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+impl Default for DaemonConfig {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 

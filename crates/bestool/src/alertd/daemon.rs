@@ -162,7 +162,7 @@ pub async fn run_with_shutdown(
 		let watchdog_timeout = daemon_config.watchdog_timeout;
 		let backups = daemon_config.backups.clone();
 		let metrics = daemon_config.metrics.clone();
-		let binary_version = daemon_config.binary_version.clone();
+		let binary_version = crate::alertd::BINARY_VERSION.to_string();
 		tokio::spawn(async move {
 			http_server::start_server(
 				ctx_for_server,
@@ -304,7 +304,7 @@ pub async fn run_with_shutdown(
 		};
 		let status = format!(
 			"monitoring; bestool {}; {canopy}",
-			daemon_config.binary_version
+			crate::alertd::BINARY_VERSION
 		);
 		let _ = sd_notify::notify(&[
 			sd_notify::NotifyState::Ready,

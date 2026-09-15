@@ -681,11 +681,11 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 	// Startup never touches the database: the doctor task opens the pool on its
 	// first sweep and reopens it when postgres comes back, so postgres being
 	// down can't hold the daemon up or leave it permanently poolless.
-	let base = crate::alertd::DaemonConfig::new(tamanu.as_ref().map(|t| t.database_url.clone()))
+	let base = crate::alertd::DaemonConfig::new()
 		.with_no_server(no_server)
-	.with_server_addrs(server_addr)
-	.with_watchdog_timeout(watchdog);
-	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), tamanu)
+		.with_server_addrs(server_addr)
+		.with_watchdog_timeout(watchdog);
+	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), tamanu)
 		.with_tamanu_discovery(root);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 
@@ -727,11 +727,11 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alert
 		.flatten()
 		.and_then(|reg| reg.device_key);
 
-	let base = crate::alertd::DaemonConfig::new(None)
+	let base = crate::alertd::DaemonConfig::new()
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
-	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), None);
+	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), None);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
