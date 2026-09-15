@@ -742,12 +742,26 @@ mod tests {
 		}
 	}
 
+	/// The reason `fhir_config` gives when there are no install files to read
+	/// its toggles from — the one check that legitimately gates on the install,
+	/// and so the summary every other check must not produce.
+	const NO_INSTALL_SUMMARY: &str = "no Tamanu config on this host";
+
 	#[tokio::test]
 	async fn checks_run_against_an_application_with_no_install() {
-		// Every Tamanu-level check and host/service probe runs against an
-		// application known only through its database: they execute and, where
-		// their target is absent on the test box, Skip for their own reason.
-		// None is gated out for lack of an install — there's no install gate.
+		// An application known only through its database gates only the checks
+		// that genuinely read install files. `fhir_config` is the one that does,
+		// and it is the positive control: without it this asserts nothing.
+		let entry = entry_of("fhir_config");
+		let check = (app_runner(&entry).run)(db_only_ctx()).await;
+		assert!(
+			matches!(check.status, CheckStatus::Skip(_)),
+			"fhir_config reads the install's config, so it skips without one"
+		);
+		assert_eq!(check.summary, NO_INSTALL_SUMMARY);
+
+		// Everything else executes and, where its target is absent on the test
+		// box, skips for its own reason rather than for want of an install.
 		for name in [
 			"tamanu_http",
 			"tamanu_service",
@@ -758,7 +772,7 @@ mod tests {
 			let entry = entry_of(name);
 			let check = (app_runner(&entry).run)(db_only_ctx()).await;
 			assert_ne!(
-				check.summary, "no Tamanu install on this host",
+				check.summary, NO_INSTALL_SUMMARY,
 				"{name} should not be install-gated"
 			);
 		}

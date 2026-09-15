@@ -172,14 +172,12 @@ fn resolve_sweep_targets_from(
 			let db = Database::from_url(&url)?;
 			Ok(Some(SweepTargets {
 				config: Arc::new(TamanuConfig::from_database(db)),
-				tamanu: behind_it_is_a_tamanu
-					.then(|| -> Result<_> {
-						Ok(SweepTamanu {
-							version: Version::parse("0.0.0").into_diagnostic()?,
-							root: None,
-						})
-					})
-					.transpose()?,
+				// No install to read a version from, and the sweep fills it in
+				// from what Tamanu last recorded in its own database.
+				tamanu: behind_it_is_a_tamanu.then(|| SweepTamanu {
+					version: Version::new(0, 0, 0),
+					root: None,
+				}),
 				database_url: url,
 			}))
 		}
