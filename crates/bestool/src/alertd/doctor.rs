@@ -290,11 +290,10 @@ impl DoctorTaskInner {
 			}
 			Err(err) => {
 				warn!(%err, "could not open a Tamanu DB pool; DB-dependent checks will skip");
-				// Only clear a cache entry for the URL we just failed on: a
-				// concurrent sweep may have cached a good pool meanwhile.
-				if guard.as_ref().is_some_and(|(url, _)| url == database_url) {
-					*guard = None;
-				}
+				// Leave the cache alone. The early return above means any entry
+				// for this URL was written after our own miss, so it is newer
+				// than this attempt — clearing it would throw away a working
+				// pool a concurrent sweep had just built.
 				None
 			}
 		}
