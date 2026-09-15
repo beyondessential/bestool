@@ -86,6 +86,24 @@ fixtures therefore write a ballast file before the capture and overwrite it
 after, so the capture pins the old extents and dropping it returns them. On
 btrfs and thin-LVM the filesystem is ours alone and the delta is assertable.
 
+The ballast has to be rewritten a third time, after the restore, and this is the
+part that is easy to get wrong — the first CI run failed on exactly it. The
+restore copies the capture back into the live tree with `cp`, and on btrfs that
+reflinks: the copy shares the capture's extents rather than allocating its own.
+The capture then pins nothing of its own, and dropping it frees nothing. That is
+the filesystem behaving correctly, not a hold failing to release, so measuring
+across it asserts the opposite of what it appears to. Rewriting the live copy
+breaks the sharing and leaves the capture the only claim on what it froze.
+Measured on a loopback filesystem: 192 MiB in use before the drop, 128 MiB after.
+
+thin-LVM never had the problem — its snapshot is block-level, so the restore's
+copy allocates fresh pool blocks and the snapshot's stay unique. That is why the
+thin-LVM job passed on the run where btrfs failed.
+
+Reclaiming is not synchronous either. btrfs unlinks a deleted subvolume at once
+but frees its extents on the cleaner thread, which took around 30 seconds for a
+capture this size, so the assertion polls rather than reading once.
+
 On VSS the store is the runner's system volume, which other processes are
 writing to throughout, so a byte delta there would be flaky; the shadow's
 absence from WMI is the assertion instead, since that is what returns its store.

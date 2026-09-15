@@ -47,8 +47,9 @@ const LIVE: &[u8] = b"the value written after the capture froze";
 /// every backend's capture without any backend needing to know about it.
 const MARKER: &str = "bestool-hold-e2e.marker";
 
-/// A file written before the capture and overwritten after it, so the capture
-/// pins extents the live data no longer shares.
+/// A file rewritten at each point the capture and the live data need to stop
+/// sharing storage, so that dropping the capture has something of its own to
+/// return.
 ///
 /// Without it a snapshot of a freshly-made cluster shares everything with the
 /// live data, dropping it frees nothing measurable, and "released the capture"
@@ -60,9 +61,13 @@ const BALLAST: &str = "bestool-hold-e2e.ballast";
 const BALLAST_BYTES: usize = 64 * 1024 * 1024;
 
 /// How long to keep asking whether a dropped capture's space has come back.
+///
 /// btrfs unlinks a deleted subvolume at once but frees its extents on the
-/// cleaner thread, so the space returns shortly after the drop does.
-const RECLAIM_WITHIN: Duration = Duration::from_secs(60);
+/// cleaner thread, which runs well after the command returns: around half a
+/// minute for a capture this size on an unloaded machine. The poll gives up
+/// early as soon as the space appears, so a generous budget costs nothing but
+/// the time a genuine failure takes to report.
+const RECLAIM_WITHIN: Duration = Duration::from_secs(120);
 
 /// What a backend's fixture supplies to the shared lifecycle.
 trait Backend {
@@ -198,6 +203,18 @@ async fn lifecycle<B: Backend>(backend: &B) {
 			.expect_err("a capture with no separate exposure cannot be reattached");
 		assert!(err.to_string().contains("not supported"), "{err}");
 	}
+
+	// Give the capture sole claim on its ballast again before measuring what
+	// dropping it returns.
+	//
+	// The restore copied the capture back into the live tree, and on a filesystem
+	// that shares extents between a file and its copy the two now hold the same
+	// blocks — so the capture pins nothing of its own, and a drop correctly frees
+	// nothing. That is the filesystem behaving properly, not a hold failing to
+	// release, and measuring across it would assert the opposite of what it looks
+	// like. Rewriting the live copy breaks the sharing, leaving the capture the
+	// only claim on what it froze.
+	write(&data_dir.join(BALLAST), &ballast(3));
 
 	// `bestool canopy hold drop`: the record, and the capture behind it.
 	let before_drop = backend.store_in_use().await;
@@ -357,8 +374,9 @@ fn write(path: &Path, contents: &[u8]) {
 }
 
 /// Ballast bytes that do not compress, so a filesystem that compresses
-/// transparently still allocates what the ballast claims to. Two different seeds
-/// share no extents, which is the whole point of writing it twice.
+/// transparently still allocates what the ballast claims to. No two seeds share
+/// an extent, which is the whole point of rewriting it rather than rewriting the
+/// same bytes.
 fn ballast(seed: u64) -> Vec<u8> {
 	let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
 	let mut out = Vec::with_capacity(BALLAST_BYTES);
