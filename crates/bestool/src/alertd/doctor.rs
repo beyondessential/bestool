@@ -254,22 +254,47 @@ impl DoctorTaskInner {
 	/// URL has changed. `None` while the database is unreachable — building a
 	/// pool checks connectivity — in which case the sweep's DB checks skip and
 	/// the next tick tries again.
+	///
+	/// The lock is only held to read the cached pool and to store a new one,
+	/// never across the connect. Building a pool talks to the database and can
+	/// sit there for the connect timeout when the host is unreachable; holding
+	/// the lock across that would stall any concurrent sweep — an on-demand
+	/// `recompute` runs independently of the tick — for the whole of it.
 	async fn pool_for(&self, database_url: &str) -> Option<bestool_postgres::pool::PgPool> {
-		let mut guard = self.pg_pool.lock().await;
-		if let Some((url, pool)) = guard.as_ref()
+		if let Some((url, pool)) = self.pg_pool.lock().await.as_ref()
 			&& url == database_url
 		{
 			return Some(pool.clone());
 		}
 
-		match bestool_postgres::pool::create_pool(database_url, "bestool-alertd").await {
+		let built = bestool_postgres::pool::create_pool_sized(
+			database_url,
+			"bestool-alertd",
+			doctor::checks::POOL_SIZE,
+		)
+		.await;
+
+		let mut guard = self.pg_pool.lock().await;
+		match built {
 			Ok(pool) => {
-				*guard = Some((database_url.to_owned(), pool.clone()));
-				Some(pool)
+				// A concurrent sweep may have built one first. Either is good,
+				// so keep whichever is already cached for this URL and let ours
+				// drop, rather than replacing a pool that has live connections.
+				match guard.as_ref() {
+					Some((url, existing)) if url == database_url => Some(existing.clone()),
+					_ => {
+						*guard = Some((database_url.to_owned(), pool.clone()));
+						Some(pool)
+					}
+				}
 			}
 			Err(err) => {
 				warn!(%err, "could not open a Tamanu DB pool; DB-dependent checks will skip");
-				*guard = None;
+				// Only clear a cache entry for the URL we just failed on: a
+				// concurrent sweep may have cached a good pool meanwhile.
+				if guard.as_ref().is_some_and(|(url, _)| url == database_url) {
+					*guard = None;
+				}
 				None
 			}
 		}
