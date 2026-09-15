@@ -309,11 +309,18 @@ impl Backend for Harness {
 
 	async fn store_in_use(&self) -> Option<f64> {
 		match &self.storage {
-			// Bytes allocated on a filesystem that is ours alone.
+			// The data extents in use, read off the allocator rather than through
+			// statvfs.
+			//
+			// btrfs reports free space net of the chunks it has allocated for
+			// metadata, and a metadata chunk is duplicated on a single device — so
+			// allocating one moves statvfs by hundreds of megabytes that no amount
+			// of freeing data brings back, and a cluster with its restored copy
+			// beside it makes enough metadata to allocate one. That swamps the
+			// ballast. `Data used` counts the extents themselves and is untouched
+			// by it.
 			Storage::Btrfs { mount, .. } => {
-				let total = fs4::total_space(mount).ok()?;
-				let free = fs4::available_space(mount).ok()?;
-				Some(total.saturating_sub(free) as f64)
+				data_used(&capture_ok("btrfs", &["filesystem", "df", "--raw", str(mount)])?)
 			}
 			// The space is in the pool, not in the filesystem on the volume: an
 			// unmounted snapshot LV holds pool blocks that `df` never sees.
@@ -327,6 +334,40 @@ impl Backend for Harness {
 			// which the rest of the machine is writing to throughout. Removing the
 			// tree *is* returning its bytes, so its absence is the assertion.
 			Storage::BaseBackup => None,
+		}
+	}
+
+	async fn quiesce_store(&self) {
+		// The cluster is the only other writer on this filesystem, and the drop's
+		// measurement is about what the drop returns, not about what postgres does
+		// alongside it. Everything the cluster had to prove it has proved by here.
+		try_run("systemctl", &["stop", &unit(&self.version, &self.cluster)]);
+		try_run("sync", &["-f", str(&self.data_dir)]);
+	}
+
+	async fn settle_store(&self) {
+		if let Storage::Btrfs { mount, .. } = &self.storage {
+			// A deleted subvolume's extents are freed by the cleaner thread well
+			// after the delete returns. This blocks until it has finished, so the
+			// measurement never races it.
+			try_run("btrfs", &["subvolume", "sync", str(mount)]);
+		}
+		try_run("sync", &["-f", str(&self.data_dir)]);
+	}
+
+	async fn store_diagnostics(&self) -> String {
+		match &self.storage {
+			Storage::Btrfs { mount, .. } => format!(
+				"btrfs filesystem df:\n{}\nbtrfs filesystem usage:\n{}\nsubvolumes:\n{}",
+				capture_ok("btrfs", &["filesystem", "df", str(mount)]).unwrap_or_default(),
+				capture_ok("btrfs", &["filesystem", "usage", str(mount)]).unwrap_or_default(),
+				capture_ok("btrfs", &["subvolume", "list", str(mount)]).unwrap_or_default(),
+			),
+			Storage::ThinLvm { vg, .. } => format!(
+				"lvs:\n{}",
+				capture_ok("lvs", &["-o", "lv_name,lv_size,data_percent", vg]).unwrap_or_default(),
+			),
+			Storage::BaseBackup => String::new(),
 		}
 	}
 
@@ -459,6 +500,18 @@ fn settle(device: String) -> String {
 	device
 }
 
+/// The `Data ... used=` byte count from `btrfs filesystem df --raw`.
+fn data_used(report: &str) -> Option<f64> {
+	report
+		.lines()
+		.find(|line| line.starts_with("Data"))?
+		.rsplit_once("used=")?
+		.1
+		.trim()
+		.parse()
+		.ok()
+}
+
 fn str(path: &Path) -> &str {
 	path.to_str().expect("an ASCII path")
 }
@@ -491,4 +544,31 @@ fn capture_ok(program: &str, args: &[&str]) -> Option<String> {
 		.status
 		.success()
 		.then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The allocator's own report, in the shape `btrfs filesystem df --raw` gives
+	/// it. Parsed rather than eyeballed because a misread here would silently make
+	/// the release assertion meaningless.
+	#[test]
+	fn data_used_is_read_off_the_allocator_report() {
+		let report = "Data, single: total=8388608, used=67108864\n\
+			System, DUP: total=8388608, used=16384\n\
+			Metadata, DUP: total=268435456, used=147456\n\
+			GlobalReserve, single: total=6029312, used=16384";
+		assert_eq!(data_used(report), Some(67108864.0));
+	}
+
+	/// Anything else is no reading at all, rather than zero — which would read as
+	/// a store that had emptied.
+	#[test]
+	fn an_unreadable_report_is_not_an_empty_store() {
+		assert_eq!(data_used(""), None);
+		assert_eq!(data_used("Metadata, DUP: total=1, used=2"), None);
+		assert_eq!(data_used("Data, single: total=8388608"), None);
+	}
 }

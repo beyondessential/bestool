@@ -102,7 +102,33 @@ thin-LVM job passed on the run where btrfs failed.
 
 Reclaiming is not synchronous either. btrfs unlinks a deleted subvolume at once
 but frees its extents on the cleaner thread, which took around 30 seconds for a
-capture this size, so the assertion polls rather than reading once.
+capture this size. `btrfs subvolume sync` blocks until that has finished, so the
+measurement waits on it rather than racing a poll against it.
+
+### What the space had to be measured with, and why
+
+The btrfs measurement went through two CI failures before it read the right
+number, and the wrong ones are worth recording because they look right.
+
+It must not be `statvfs`, which is what free space through the ordinary
+interfaces means. btrfs reports free space net of the chunks it has allocated,
+and a metadata chunk on a single device is duplicated — so allocating one moves
+the number by hundreds of megabytes that freeing data never brings back, and a
+cluster sitting beside its own restored copy makes enough metadata to allocate
+one. A 64 MiB signal does not survive that. `btrfs filesystem df --raw` reports
+the data extents themselves and is untouched by it.
+
+Ruled out along the way, each reproduced on a real loopback filesystem and each
+behaving correctly: the held-source mount pinning the subvolume past its
+deletion, a live cluster's copy-on-write churn masking the delta, and the
+cleaner being slower on a real disk than on the tmpfs the first reproductions
+accidentally ran on. None of them was it. The reproductions were themselves
+misleading, because a single large ballast file makes almost no metadata, which
+is precisely the variable that mattered.
+
+The cluster is stopped before the measurement regardless. What the drop returns
+is the claim being made, and leaving another writer on the filesystem mixes its
+allocations into it.
 
 On VSS the store is the runner's system volume, which other processes are
 writing to throughout, so a byte delta there would be flaky; the shadow's

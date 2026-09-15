@@ -127,6 +127,20 @@ trait Backend {
 	fn released_margin(&self) -> f64 {
 		0.0
 	}
+
+	/// Quieten whatever else writes to the store, so that what the drop returns is
+	/// measured against a filesystem only the drop is changing.
+	async fn quiesce_store(&self) {}
+
+	/// Wait for a store that frees asynchronously to finish doing so, so the
+	/// measurement reads a settled filesystem rather than racing it.
+	async fn settle_store(&self) {}
+
+	/// What the store says about itself, for a failure to report rather than
+	/// leaving the next reader to guess.
+	async fn store_diagnostics(&self) -> String {
+		String::new()
+	}
 }
 
 /// Take a capture-only hold, use it, and release it — the operator's sequence,
@@ -243,11 +257,20 @@ async fn lifecycle<B: Backend>(backend: &B) {
 		held.id,
 	);
 
+	// Nothing but the drop should be moving the store while the drop is measured.
+	// The cluster has already been asserted up and carrying the freeze, and on a
+	// copy-on-write filesystem every write it makes allocates afresh, so leaving it
+	// running would mix its allocations into the delta.
+	backend.quiesce_store().await;
+
 	// `bestool canopy hold drop`: the record, and the capture behind it.
 	let before_drop = backend.store_in_use().await;
 	hold(HoldAction::Drop(DropArgs { id: held.id.clone() }))
 		.await
 		.expect("dropping the hold");
+
+	// Let a backend that frees asynchronously finish before anything is read.
+	backend.settle_store().await;
 
 	assert!(
 		load(&held.id).await.is_err(),
@@ -260,14 +283,16 @@ async fn lifecycle<B: Backend>(backend: &B) {
 		held.id,
 		held.capture.backend(),
 	);
-	if let Some(before) = before_drop {
-		assert!(
-			store_fell_by(backend, before, backend.released_margin()).await,
+	if let Some(before) = before_drop
+		&& let Err(seen) = store_fell_by(backend, before, backend.released_margin()).await
+	{
+		panic!(
 			"dropping hold {} did not return the capture's space: the store was still \
-			 within {} of {before} after {}s",
+			 within {} of {before} after {}s.\n  what the store read: {seen}\n{}",
 			held.id,
 			backend.released_margin(),
 			RECLAIM_WITHIN.as_secs(),
+			backend.store_diagnostics().await,
 		);
 	}
 }
@@ -452,18 +477,34 @@ mod tests {
 	}
 }
 
-/// Whether the store's usage fell by `margin`, allowing for a backend that frees
-/// the space a beat after the command that released it returns.
-async fn store_fell_by<B: Backend>(backend: &B, before: f64, margin: f64) -> bool {
+/// Wait for the store's usage to fall by `margin`, allowing for a backend that
+/// frees the space a beat after the command that released it returns.
+///
+/// On failure, reports what it actually saw: a delta that never arrived and one
+/// that arrived too small are different problems, and so is a store that grew.
+async fn store_fell_by<B: Backend>(
+	backend: &B,
+	before: f64,
+	margin: f64,
+) -> Result<(), String> {
 	let deadline = std::time::Instant::now() + RECLAIM_WITHIN;
+	let mut readings = 0_u32;
+	let mut lowest = f64::MAX;
+	let mut last = f64::NAN;
 	loop {
-		if let Some(now) = backend.store_in_use().await
-			&& before - now >= margin
-		{
-			return true;
+		if let Some(now) = backend.store_in_use().await {
+			readings += 1;
+			lowest = lowest.min(now);
+			last = now;
+			if before - now >= margin {
+				return Ok(());
+			}
 		}
 		if std::time::Instant::now() >= deadline {
-			return false;
+			return Err(format!(
+				"{readings} readings, lowest {lowest}, last {last}, so it fell by {} at best",
+				before - lowest,
+			));
 		}
 		tokio::time::sleep(Duration::from_secs(1)).await;
 	}
