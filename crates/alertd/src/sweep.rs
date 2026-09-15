@@ -585,6 +585,10 @@ pub async fn perform_sweep(
 	};
 	let setup_client: Option<&PgClient> = setup_db.as_deref();
 
+	// Whether the setup connection worked, kept after it is handed back so the
+	// later facts query knows whether to bother asking for another.
+	let db_reachable = setup_db.is_some();
+
 	let tamanu_ctx = match &tamanu {
 		Some(t) => {
 			// A generic (non-Tamanu) database has no Tamanu tables to inspect,
@@ -625,6 +629,12 @@ pub async fn perform_sweep(
 		}
 		None => None,
 	};
+
+	// The setup queries are done. Give the connection back before the checks
+	// start, so it isn't occupying a slot for the whole of the phase where they
+	// are all asking for one.
+	drop(setup_db);
+
 	// The version resolved above (install version, or the DB's `currentVersion`
 	// for a database-only host), kept for the wire payload after `tamanu_ctx` is
 	// moved into the check context below. The server kind and (when there's a
@@ -734,9 +744,15 @@ pub async fn perform_sweep(
 		}
 	};
 
+	// The checks have finished with the pool, so take a connection again for the
+	// facts query rather than having held one for the whole sweep.
+	let facts_db = match (db_reachable, &pg_pool) {
+		(true, Some(pool)) => pool.get().await.ok(),
+		_ => None,
+	};
 	let mut facts = collect_server_facts(
 		tamanu.as_ref().map(|t| t.config.as_ref()),
-		setup_client,
+		facts_db.as_deref(),
 		cached_pg_version,
 		tamanu.as_ref().is_none_or(|t| t.is_tamanu),
 	)
