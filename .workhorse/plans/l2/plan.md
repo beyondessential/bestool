@@ -104,6 +104,23 @@ applications' heals for one check do not share a limit. The registry key becomes
 - [x] Tests updated; `test_support` yields `AppCx`
 - [x] `cargo clippy`, `cargo fmt`, tests on Linux and a Windows target
 
+## Settled in review
+
+- **The heal key is the instance form** (`postgres-5432:connect`), not
+  `Subject::qualify`'s type-level selection name. Keying on the selection name
+  collapsed two clusters onto one rate limit and one in-flight slot, which is
+  the opposite of what `CHK` requires. Derived through a named `heal_key` so a
+  regression is testable.
+- **A Postgres cluster's context carries none of the Tamanu's parameters.**
+  `install_root` is what `installed_config` keys on, so inheriting the Tamanu's
+  root made a cluster answer with another application's configuration.
+- **The heal expands inside the registry arm**, so a cross-arm heal is a type
+  error where it is written rather than a startup panic.
+- `kind` is the one field with no neutral value in a shared `AppCx`. Every
+  check that reads it is Tamanu-scoped, so none reaches what a cluster carries
+  there. Splitting `AppCx` per application kind would remove the last of this,
+  but that changes the card's `Run` shape and is not in scope here.
+
 ## Notes
 
 - The database connection is carried through as today: one shared pool, cloned

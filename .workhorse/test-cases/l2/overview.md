@@ -14,14 +14,17 @@ reports for, that the two arms are distinct, and that nothing else moved.
 ## The two arms
 
 - [x] Every check is filed under the subject `SUBJ` gives it: machine, Postgres, Tamanu, or central (verifies spec: SUBJ)
+- [x] A Postgres cluster's context carries none of the Tamanu's version, install root or configuration (verifies spec: SUBJ)
 - [x] The four database checks are filed against the Postgres application, not against whatever uses it (verifies spec: SUBJ)
 - [x] Each check's heal sits in the same arm as the check, so it is handed the context the check ran with (verifies spec: CHK#self-healing)
 - [x] The registry's qualified names are unique, so no two entries collide on one `subject:name` (verifies spec: SUBJ)
 - [ ] A machine runner paired with an application scope does not compile — enforced by `Run`'s shape rather than by a test
+- [ ] A heal written against the wrong arm's context does not compile — enforced by `entry!` expanding it inside the arm
 
 ## Heal keying
 
-- [x] Two applications' heals for one check hold their own rate limit and their own in-flight slot (verifies spec: CHK#self-healing)
+- [x] Two clusters of one kind hold their own rate limit and their own in-flight slot (verifies spec: CHK#self-healing)
+- [x] The heal key is the instance form, not the type-level selection name that reaches every cluster (verifies spec: CHK#self-healing)
 - [x] A heal attempt in flight refuses a second attempt for the same qualified name (verifies spec: CHK#self-healing)
 - [x] A deferred attempt backs off rather than retrying on the next sweep (verifies spec: CHK#self-healing)
 - [x] A successful repair still waits its minimum interval (verifies spec: CHK#self-healing)
