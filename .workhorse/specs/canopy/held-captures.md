@@ -85,3 +85,36 @@ Restoring by copy rather than by moving the capture into place is what lets the 
 Staging is a whole second copy of the captured data, so a restore from a hold needs free space for one copy of the capture.
 The data it displaces is set aside on the same filesystem rather than copied, and so costs no further room.
 The device checks for that space before it begins copying and refuses up front, naming what is needed and what is free, rather than failing partway through a restore an operator is depending on.
+Where there is not room, the refusal names restoring in place as the way through, because otherwise a rollback point that exists and is readable is simply unusable.
+
+## Restoring in place
+
+`bestool canopy restore --type <type> --from-hold <id> --in-place` lays a held capture back down over the live data without staging a copy of it first.
+It is the only way to roll back on a device whose volume cannot hold two copies of the data, which is the ordinary case for a large cluster on a single-volume host.
+Only a held capture is restored this way; a repository restore has already spent the room a staged copy needs by the time it has downloaded the snapshot.
+
+Only what has diverged from the capture is written.
+The divergence between a hold and the data it rolls back onto is the writes made since the capture froze — hours, during an upgrade window — rather than the size of the data, so the cost is proportional to that rather than to the capture.
+Copying the whole capture back over itself would be far worse than merely slow: where the capture is a snapshot of the same volume, every block written over a block the snapshot still references is copied aside into the copy-on-write store first, and a store that fills is made room in by deleting snapshots — so the source can vanish partway through a copy that has already overwritten the destination.
+
+What diverged is established without reading either side's contents wherever it can be.
+An entry present in only one of the two, or present in both at different sizes or as different kinds of thing, is settled from metadata alone.
+That leaves entries present in both at the same size, and for those the device asks the filesystem what it changed since the capture, from the record filesystems already keep of their own writes.
+Where the filesystem can answer, its answer is authoritative and no contents are read.
+Where it cannot — the capture predates the device recording a position to ask about, the record has been discarded, or the backend keeps none — the device falls back to comparing the two sides: an entry whose size and modification time both match is left as it is, and any other is compared by content.
+That fallback is weaker, because an entry that diverges without changing either is kept, so a restore says which of the two it used.
+
+Two different resources are consumed, and both are checked before anything is written.
+The filesystem holding the data must have room for the net growth: what the new and larger entries add, less what the deleted and smaller ones free.
+The copy-on-write store behind the capture must have room for everything written, which is the larger number and, where the capture is a snapshot on the same filesystem, is charged to that same free space.
+Where that store is bounded separately — a Windows shadow copy's storage area, a thin pool — its own headroom is checked and a shortfall names how to raise it.
+Where the headroom cannot be read the restore proceeds and says so, rather than refusing a rollback on a number it could not obtain.
+
+Restoring in place gives up the atomic swap.
+No copy of the displaced data is kept, and while the restore runs the data is neither the state it was in nor the state that was captured.
+Data in that condition must not be served, so the restore holds it unstartable for the duration and records in the data itself that it is mid-restore, naming the hold to finish from.
+It refuses to start the service while that record is there, and removes it only once the data is the captured state.
+
+The hold is untouched throughout, because reading a capture consumes no copy-on-write space.
+An interrupted restore is therefore resumed by running the same command again: laying the divergence down converges, so a second run finishes what the first began rather than starting over.
+A restore that finds the data already matching the capture writes nothing and says so.

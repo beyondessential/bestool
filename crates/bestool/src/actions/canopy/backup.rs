@@ -836,7 +836,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 	// no freeze rather than passing that off as one.
 	let id = hold::mint_id(&def.r#type, taken_at.unwrap_or(held_at));
 
-	let (source, capture) = def
+	let (source, capture, diverged_since) = def
 		.method
 		.hold(prepared, &id)
 		.await
@@ -850,6 +850,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 		source,
 		uploaded,
 		capture,
+		diverged_since,
 	};
 	hold::save(&record).await?;
 	info!(

@@ -18,7 +18,7 @@ use miette::{Context as _, IntoDiagnostic as _, Result, bail, miette};
 use tracing::{info, warn};
 
 use super::{
-	super::hold::{HeldCapture, release},
+	super::hold::{DivergenceMark, HeldCapture, release},
 	resolve::ResolvedCluster,
 	sys,
 };
@@ -57,6 +57,10 @@ pub struct Mounts {
 	fsdev: String,
 	/// The postgres-to-kopia id map the kopia mount was made with.
 	idmap: String,
+	/// The transaction generation the subvolume stood at when it was snapshotted,
+	/// where btrfs would say. Everything written since carries a higher one, so
+	/// this is what a later in-place restore asks the filesystem about.
+	generation: Option<u64>,
 }
 
 /// Mount the filesystem's top level (`subvolid=5`) at `at`, creating the
@@ -113,6 +117,7 @@ pub async fn prepare(
 		kopia_mount: PathBuf::new(),
 		fsdev: fsdev.clone(),
 		idmap: map.clone(),
+		generation: None,
 	};
 
 	mount_toplevel(&fsdev, &toplevel_mount).await?;
@@ -132,6 +137,9 @@ pub async fn prepare(
 	// The read-only snapshot now exists: this is the instant the data froze.
 	let taken_at = Timestamp::now();
 	mounts.snapshot_path = snapshot_path.clone();
+	// Ask now, while the snapshot is demonstrably the subvolume's state: this is
+	// the generation a later restore diffs the live subvolume against.
+	mounts.generation = generation_of(&snapshot_path).await;
 
 	sys::mkdir(&kopia_mount).await?;
 	if let Some(parent) = kopia_mount.parent() {
@@ -191,8 +199,12 @@ fn held_snapshot_name(id: &str) -> String {
 /// at the hold's own path, and the run's own mounts are released — so the next
 /// run of this type finds its stable paths free and its reaper finds nothing of
 /// ours to delete. Returns the path the held capture is readable at, and what it
-/// takes to release it.
-pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+/// takes to release it, and the generation it froze at.
+pub async fn hold(
+	mounts: Mounts,
+	id: &str,
+	source: &Path,
+) -> Result<(PathBuf, HeldCapture, Option<DivergenceMark>)> {
 	let rel = source
 		.strip_prefix(&mounts.kopia_mount)
 		.map_err(|_| {
@@ -244,6 +256,9 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 		mount: held_mount.clone(),
 		fsdev: Some(mounts.fsdev.clone()),
 	};
+	let mark = mounts
+		.generation
+		.map(|generation| DivergenceMark::BtrfsGeneration { generation });
 
 	sys::mkdir(&held_mount).await?;
 	if let Some(parent) = held_mount.parent() {
@@ -266,7 +281,33 @@ pub async fn hold(mounts: Mounts, id: &str, source: &Path) -> Result<(PathBuf, H
 		return Err(err).wrap_err("mounting the held snapshot");
 	}
 
-	Ok((held_mount.join(rel), capture))
+	Ok((held_mount.join(rel), capture, mark))
+}
+
+/// The transaction generation `subvol` stands at.
+///
+/// `find-new` with a generation no transaction has reached prints only its
+/// closing marker, which is that number. Best-effort: without it an in-place
+/// restore compares the trees itself, which is slower but no less correct.
+async fn generation_of(subvol: &Path) -> Option<u64> {
+	const UNREACHABLE_GENERATION: &str = "9223372036854775807";
+	let out = sys::capture(
+		"btrfs",
+		&["subvolume", "find-new", sys::path(subvol), UNREACHABLE_GENERATION],
+	)
+	.await
+	.inspect_err(|err| warn!("could not read the snapshot's generation: {err}"))
+	.ok()?;
+	parse_transid_marker(&out)
+}
+
+/// The generation from `find-new`'s closing `transid marker was N` line.
+fn parse_transid_marker(output: &str) -> Option<u64> {
+	output
+		.lines()
+		.rev()
+		.find_map(|line| line.trim().strip_prefix("transid marker was "))
+		.and_then(|n| n.trim().parse().ok())
 }
 
 /// Whether something is mounted at a path.
@@ -373,6 +414,8 @@ pub async fn release_held(
 		fsdev: fsdev.unwrap_or_default().to_owned(),
 		// Nothing is mounted for reading here, so no mapping is needed.
 		idmap: String::new(),
+		// Releasing a capture has no use for where its history stood.
+		generation: None,
 	})
 	.await
 }

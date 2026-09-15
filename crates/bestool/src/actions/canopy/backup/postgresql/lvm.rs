@@ -166,7 +166,11 @@ fn held_snapshot_name(id: &str) -> String {
 /// The snapshot LV is renamed out of the reaper's namespace and remounted at the
 /// hold's own path, and the run's stable per-type mount is handed back. Returns
 /// the path the held capture is readable at, and what it takes to release it.
-pub async fn hold(snapshot: Snapshot, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+pub async fn hold(
+	snapshot: Snapshot,
+	id: &str,
+	source: &Path,
+) -> Result<(PathBuf, HeldCapture, Option<super::super::hold::DivergenceMark>)> {
 	let rel = source
 		.strip_prefix(&snapshot.kopia_mount)
 		.map_err(|_| {
@@ -224,7 +228,10 @@ pub async fn hold(snapshot: Snapshot, id: &str, source: &Path) -> Result<(PathBu
 		return Err(err).wrap_err("mounting the held snapshot");
 	}
 
-	Ok((held_mount.join(rel), capture))
+	// Thin LVM keeps its change history as block mappings rather than as a
+	// position a restore could record here; `thin_delta` reads it from the two
+	// devices themselves at restore time.
+	Ok((held_mount.join(rel), capture, None))
 }
 
 /// Whether a held capture's snapshot volume still exists.
