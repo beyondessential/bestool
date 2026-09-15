@@ -49,50 +49,64 @@ enum Pace {
 	Deferred,
 }
 
-impl Pace {
+/// Everything one pace decides, stated once so a pace's whole behaviour reads
+/// in one place rather than being spread across parallel match arms that have
+/// to be kept in step by eye.
+struct Profile {
+	/// How the pace is named in the resource's reported numbers.
+	label: &'static str,
+
 	/// Upstream records older than this are out of scope: a gap that old is a
 	/// backfill concern rather than an incident, and bounding the measurement
-	/// keeps it cheap enough to run on every sweep. There is no index on
-	/// `fhir.*.upstream_id`, so each resource's join scans its FHIR table.
+	/// keeps it cheap enough to run on every sweep.
 	///
 	/// The window always outlasts [`fail_secs`](Self::fail_secs), or a gap would
 	/// leave the measurement before it could age into failing.
-	fn window(self) -> &'static str {
-		match self {
-			Pace::Prompt => "48 hours",
-			Pace::Deferred => "7 days",
-		}
-	}
+	///
+	/// It bounds the upstream side only. There is no index on
+	/// `fhir.*.upstream_id`, so the join scans the resource's FHIR table whatever
+	/// the window, and widening the window buys more upstream rows to probe with
+	/// rather than a wider scan of the unindexed side.
+	window: &'static str,
 
 	/// Age at which the gap warns, or `None` for a resource whose backlog is
 	/// expected: there is no degraded state between working and stopped.
-	fn warn_secs(self) -> Option<i64> {
-		match self {
-			Pace::Prompt => Some(15 * 60),
-			Pace::Deferred => None,
-		}
-	}
+	warn_secs: Option<i64>,
 
 	/// Age at which the gap fails.
-	fn fail_secs(self) -> i64 {
-		match self {
-			Pace::Prompt => 60 * 60,
-			Pace::Deferred => 5 * 24 * 60 * 60,
-		}
-	}
+	fail_secs: i64,
 
 	/// Whether the resource's backlog joins the check's headline count and the
 	/// oldest gap it names. A deferred backlog is expected and routinely the
 	/// largest number the check holds, so counting it there would bury the gaps
 	/// that do mean something.
-	fn in_headline(self) -> bool {
-		matches!(self, Pace::Prompt)
-	}
+	in_headline: bool,
+}
 
-	fn as_str(self) -> &'static str {
+const PROMPT: Profile = Profile {
+	label: "prompt",
+	window: "48 hours",
+	warn_secs: Some(15 * 60),
+	fail_secs: 60 * 60,
+	in_headline: true,
+};
+
+/// Five days is long enough to mean materialisation has stopped rather than
+/// merely fallen behind, and the week-long window is the smallest that lets a
+/// gap reach it with room to be observed.
+const DEFERRED: Profile = Profile {
+	label: "deferred",
+	window: "7 days",
+	warn_secs: None,
+	fail_secs: 5 * 24 * 60 * 60,
+	in_headline: false,
+};
+
+impl Pace {
+	fn profile(self) -> &'static Profile {
 		match self {
-			Pace::Prompt => "prompt",
-			Pace::Deferred => "deferred",
+			Pace::Prompt => &PROMPT,
+			Pace::Deferred => &DEFERRED,
 		}
 	}
 }
@@ -257,11 +271,12 @@ enum Grade {
 
 impl Measured {
 	fn grade(&self) -> Grade {
-		if self.lag_secs > self.pace.fail_secs() {
+		if self.lag_secs > self.pace.profile().fail_secs {
 			Grade::Fail
 		} else if self
 			.pace
-			.warn_secs()
+			.profile()
+			.warn_secs
 			.is_some_and(|warn| self.lag_secs > warn)
 		{
 			Grade::Warn
@@ -274,8 +289,8 @@ impl Measured {
 	/// `None` when it crossed neither.
 	fn crossed(&self) -> Option<i64> {
 		match self.grade() {
-			Grade::Fail => Some(self.pace.fail_secs()),
-			Grade::Warn => self.pace.warn_secs(),
+			Grade::Fail => Some(self.pace.profile().fail_secs),
+			Grade::Warn => self.pace.profile().warn_secs,
 			Grade::Clean => None,
 		}
 	}
@@ -441,8 +456,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 				"gap": m.gap,
 				"lag_seconds": m.lag_secs,
 				"enablement": m.source.as_str(),
-				"pace": m.pace.as_str(),
-				"fails_after_seconds": m.pace.fail_secs(),
+				"pace": m.pace.profile().label,
+				"fails_after_seconds": m.pace.profile().fail_secs,
 			}),
 		);
 		check = check
@@ -519,7 +534,10 @@ fn summarise(measured: &[Measured], errored: usize) -> String {
 		};
 	}
 
-	let headline: Vec<&Measured> = measured.iter().filter(|m| m.pace.in_headline()).collect();
+	let headline: Vec<&Measured> = measured
+		.iter()
+		.filter(|m| m.pace.profile().in_headline)
+		.collect();
 	let total_gap: i64 = headline.iter().map(|m| m.gap).sum();
 
 	let mut parts = Vec::new();
@@ -535,7 +553,7 @@ fn summarise(measured: &[Measured], errored: usize) -> String {
 		)),
 		None => {}
 	}
-	for m in measured.iter().filter(|m| !m.pace.in_headline()) {
+	for m in measured.iter().filter(|m| !m.pace.profile().in_headline) {
 		parts.push(if m.gap > 0 {
 			format!("{} {} behind", m.name, humanise_age(m.lag_secs))
 		} else {
@@ -672,7 +690,7 @@ fn gap_query(resource: &Resource) -> String {
 				 AND u.created_at > now() - interval '{window}'{filter}",
 				upstream = upstream.table,
 				resource = resource.table,
-				window = resource.pace.window(),
+				window = resource.pace.profile().window,
 			)
 		})
 		.collect::<Vec<_>>()
@@ -1009,11 +1027,11 @@ mod tests {
 		// never fail the check, so the deferred window has to cover its five days.
 		for pace in [Pace::Prompt, Pace::Deferred] {
 			assert!(
-				window_secs(pace.window()) > pace.fail_secs(),
+				window_secs(pace.profile().window) > pace.profile().fail_secs,
 				"the {} window of {} does not outlast its fail threshold of {}",
-				pace.as_str(),
-				pace.window(),
-				humanise_age(pace.fail_secs()),
+				pace.profile().label,
+				pace.profile().window,
+				humanise_age(pace.profile().fail_secs),
 			);
 		}
 	}
@@ -1044,7 +1062,7 @@ mod tests {
 			"MediciReport",
 			Pace::Deferred,
 			40_000,
-			Pace::Deferred.fail_secs(),
+			Pace::Deferred.profile().fail_secs,
 		);
 		assert_eq!(at_the_threshold.grade(), Grade::Clean);
 		assert_eq!(at_the_threshold.crossed(), None);
