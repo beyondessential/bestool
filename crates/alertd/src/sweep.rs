@@ -308,17 +308,30 @@ fn refresh_wire_health(payload: &mut StatusPayload, results: &[CheckOutcome]) {
 /// types.
 type SpawnHeal = Box<dyn FnOnce() + Send>;
 
-/// Bind a check's heal to the qualified name and the context the check ran
-/// with, so the dispatcher can spawn it later without knowing which arm it came
-/// from.
+/// The key a check's heal attempts are tracked under: the check's name together
+/// with the *instance* it reports for.
+///
+/// Never the selection name, which is type-level on purpose so that
+/// `--check postgres:connect` reaches every cluster. Keying attempts on it
+/// would collapse two clusters onto one rate limit and one in-flight slot, and
+/// whichever failed first would take the slot while the other went unrepaired.
+///
+/// spec: CHK#self-healing
+fn heal_key(subject: &Subject, name: &str) -> String {
+	subject.identify(name)
+}
+
+/// Bind a check's heal to the key its attempts are tracked under and the
+/// context the check ran with, so the dispatcher can spawn it later without
+/// knowing which arm it came from.
 fn bind_heal<Cx: Clone + Send + 'static>(
 	action: Option<heal::HealAction<Cx>>,
-	qualified: String,
+	key: String,
 	cx: &Cx,
 ) -> Option<SpawnHeal> {
 	let action = action?;
 	let cx = cx.clone();
-	Some(Box::new(move || heal::spawn_if_due(qualified, action, cx)))
+	Some(Box::new(move || heal::spawn_if_due(key, action, cx)))
 }
 
 /// A single check ready to run: its registry index, the subject it reports for
@@ -795,15 +808,20 @@ pub async fn perform_sweep(
 			// A check's heal action is spawned in the background once its result
 			// is known, when the sweep enables healing (the daemon) and the
 			// check failed. `spawn_if_due` applies the per-check rate-limit and
-			// the one-attempt-in-flight guard — both keyed on the qualified
-			// name, so two applications' heals for one check do not share them —
-			// which is why this can fire on every sweep.
-			let qualified = subject.qualify(entry.name);
+			// the one-attempt-in-flight guard, which is why this can fire on
+			// every sweep.
+			//
+			// Keyed by *instance*, not by type: `qualify` renders the selection
+			// name, which reaches every cluster on purpose, so keying on it
+			// would collapse two clusters' heals onto one rate limit and one
+			// in-flight slot — whichever failed first would take the slot and
+			// the other would never be repaired.
+			let heal_key = heal_key(subject, entry.name);
 			let (fut, heal): (BoxFuture<'static, Check>, Option<SpawnHeal>) =
 				match (&entry.run, subject) {
 					(checks::Run::Machine(runner), _) => {
 						let cx = machine_cx.clone();
-						let heal = bind_heal(runner.heal.filter(|_| enable_heal), qualified, &cx);
+						let heal = bind_heal(runner.heal.filter(|_| enable_heal), heal_key, &cx);
 						((runner.run)(cx), heal)
 					}
 					(checks::Run::Application(_, runner), Subject::Application(app)) => {
@@ -811,7 +829,7 @@ pub async fn perform_sweep(
 							.get(app)
 							.expect("every selected application has a context")
 							.clone();
-						let heal = bind_heal(runner.heal.filter(|_| enable_heal), qualified, &cx);
+						let heal = bind_heal(runner.heal.filter(|_| enable_heal), heal_key, &cx);
 						((runner.run)(cx), heal)
 					}
 					// `subjects_for` yields machine subjects for the machine arm
@@ -1391,6 +1409,21 @@ mod tests {
 				},
 			),
 		}
+	}
+
+	/// Two clusters of one kind each get their own heal attempts, so one
+	/// cluster's repair does not consume the other's allowance or defer it
+	/// behind a backoff it played no part in.
+	///
+	/// spec: CHK#self-healing
+	#[test]
+	fn two_clusters_heal_under_their_own_keys() {
+		let a = Subject::Application(ApplicationRef::local_postgres(5432));
+		let b = Subject::Application(ApplicationRef::local_postgres(5433));
+		// The selection name reaches both on purpose, so it cannot be the key.
+		assert_eq!(a.qualify("connect"), b.qualify("connect"));
+		assert_ne!(heal_key(&a, "connect"), heal_key(&b, "connect"));
+		assert_eq!(heal_key(&a, "connect"), "postgres-5432:connect");
 	}
 
 	#[test]

@@ -11,9 +11,9 @@
 //! most one attempt for a given check runs at a time — because attempts run in
 //! the background, one can outlast the interval between sweeps.
 //!
-//! Both are keyed on the check's qualified name, so two applications' heals for
-//! one check hold their own limit and their own in-flight slot rather than
-//! sharing one.
+//! Both are keyed on the check's name together with the *instance* it reports
+//! for, so two applications of one kind — two Postgres clusters, say — hold
+//! their own limit and their own in-flight slot rather than sharing one.
 //!
 //! spec: CHK#self-healing
 
@@ -98,22 +98,23 @@ fn backoff_delay(failures: u32, min_interval: Duration) -> Duration {
 		.clamp(min_interval, MAX_INTERVAL.max(min_interval))
 }
 
-/// Spawn `action` for the check qualified `name` in the background if it is due
-/// and not already running. A no-op when a previous attempt is still in flight
-/// or the backoff window has not elapsed, so the caller can invoke it on every
+/// Spawn `action` for the check named `key` in the background if it is due and
+/// not already running. A no-op when a previous attempt is still in flight or
+/// the backoff window has not elapsed, so the caller can invoke it on every
 /// sweep.
 ///
-/// `name` is the check's *qualified* name (`tamanu-central:fhir_jobs`), not its
-/// bare one: a name identifies a check only together with its subject, and two
-/// applications' heals for one check must not share a limit or a slot.
-pub fn spawn_if_due<Cx: Send + 'static>(name: String, action: HealAction<Cx>, ctx: Cx) {
-	if !try_begin(&name) {
+/// `key` names the check together with the instance it reports for
+/// (`postgres-5432:connect`), never the bare check name nor the type-level
+/// selection name: a name identifies a check only together with its subject,
+/// and two clusters' heals for one check must not share a limit or a slot.
+pub fn spawn_if_due<Cx: Send + 'static>(key: String, action: HealAction<Cx>, ctx: Cx) {
+	if !try_begin(&key) {
 		return;
 	}
-	debug!(check = %name, "spawning self-heal attempt");
+	debug!(check = %key, "spawning self-heal attempt");
 	tokio::spawn(async move {
 		let outcome = (action.run)(ctx).await;
-		finish(&name, outcome, action.min_interval);
+		finish(&key, outcome, action.min_interval);
 	});
 }
 
@@ -192,26 +193,27 @@ mod tests {
 	}
 
 	#[test]
-	fn two_applications_do_not_share_one_limit() {
-		// The same check on two applications is keyed by its qualified name, so
-		// one application's in-flight attempt and backoff say nothing about the
-		// other's.
-		let first = "tamanu-central:test_per_app";
-		let second = "tamanu-facility:test_per_app";
-		assert!(try_begin(first), "the first application's attempt is due");
+	fn two_instances_do_not_share_one_limit() {
+		// The same check on two clusters of one kind is keyed by instance, so
+		// one cluster's in-flight attempt and backoff say nothing about the
+		// other's. Two clusters rather than two kinds because the type-level
+		// name cannot tell clusters apart, which is the case that breaks.
+		let first = "postgres-5432:test_per_app";
+		let second = "postgres-5433:test_per_app";
+		assert!(try_begin(first), "the first cluster's attempt is due");
 		assert!(
 			try_begin(second),
-			"the second application's attempt is its own, not the first's"
+			"the second cluster's attempt is its own, not the first's"
 		);
 		finish(first, HealOutcome::Deferred, DEFAULT_MIN_INTERVAL);
 		assert!(
 			!try_begin(first),
-			"the first application backed off after its own attempt"
+			"the first cluster backed off after its own attempt"
 		);
 		finish(second, HealOutcome::Healed, Duration::ZERO);
 		assert!(
 			try_begin(second),
-			"the second application is due on its own schedule, not the first's backoff"
+			"the second cluster is due on its own schedule, not the first's backoff"
 		);
 		finish(second, HealOutcome::Healed, Duration::ZERO);
 	}
