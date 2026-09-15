@@ -151,6 +151,17 @@ async fn lifecycle<B: Backend>(backend: &B) {
 
 	// Only the backends that read their store have anything to pin extents for.
 	let measures_store = backend.store_in_use().await.is_some();
+	// A backend that claims a margin has to be able to read its store. Without
+	// this, a reader that quietly returned nothing — an unsupported flag, a
+	// changed output shape — would skip the ballast and the release assertion
+	// together, and the job would go green having tested neither.
+	assert!(
+		measures_store || backend.released_margin() == 0.0,
+		"the {} backend expects its store to fall by {} when a capture is released, \
+		 but cannot read that store at all",
+		backend.expected_backend(),
+		backend.released_margin(),
+	);
 	let ballast_path = data_dir.join(BALLAST);
 	let mut pin = |seed: u64| {
 		if measures_store {
