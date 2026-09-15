@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "1.63.0"
+version = "1.63.1"
 dependencies = [
  "age",
  "algae-cli",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "26.1.2"
+version = "27.0.0"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-postgres"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "bytes",
  "fraction",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.7.14"
+version = "1.7.15"
 dependencies = [
  "aegis",
  "bestool-postgres",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
