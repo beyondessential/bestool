@@ -96,6 +96,10 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Err(err) => return super::query_error_check(NAME, &err),
 	};
 
+	// Both queries are done; the rest is arithmetic, so hand the connection
+	// back rather than holding a slot through it.
+	drop(client);
+
 	let mobile_seen = accumulate(&MOBILE_SEEN, mobile.total);
 	let server_seen = accumulate(&SERVER_SEEN, server.total);
 

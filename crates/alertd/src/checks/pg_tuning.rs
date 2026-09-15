@@ -322,6 +322,11 @@ pub async fn run(ctx: CheckContext) -> Check {
 		Err(err) => return query_error_check("tuning", &err),
 	};
 
+	// The only query this check makes. Give the connection back before the
+	// grading below — which refreshes memory info and probes the kernel — so it
+	// isn't occupying one of the sweep's few slots while doing no DB work.
+	drop(client);
+
 	let settings = Settings {
 		shared_buffers: row.try_get("shared_buffers").unwrap_or(0),
 		effective_cache_size: row.try_get("effective_cache_size").unwrap_or(0),
