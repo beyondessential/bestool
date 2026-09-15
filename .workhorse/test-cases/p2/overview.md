@@ -82,7 +82,8 @@ backup (`base backup hold / e2e`), VSS (`vss / wmi e2e`).
       deleted shadow copy returns its store, and a removed tree returns its bytes
       — rather than by a byte delta. The VSS store is the machine's system
       volume, which the rest of the machine writes to throughout, so a delta
-      there would be noise (verifies spec: HOLD)
+      there would be noise. Neither writes the ballast, since nothing reads it
+      there (verifies spec: HOLD)
 - [ ] Dropping a hold whose capture has already gone removes the record and
       reports the capture absent, rather than failing (verifies spec: HOLD)
 

@@ -58,6 +58,12 @@ const BALLAST: &str = "bestool-hold-e2e.ballast";
 
 /// 64 MiB: comfortably above the noise in any of these stores, and small enough
 /// that every fixture's filesystem can hold several copies of it.
+///
+/// Written only by the backends that measure a space delta. On the others it
+/// would be paid for several times over for nothing — a base backup streams it
+/// through `pg_basebackup`, walks it to size the restore, and copies it again
+/// into staging, and a shadow copy grows its store by it — with no assertion
+/// anywhere that reads it.
 const BALLAST_BYTES: usize = 64 * 1024 * 1024;
 
 /// How long to keep asking whether a dropped capture's space has come back.
@@ -129,9 +135,18 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	let data_dir = backend.data_dir().to_path_buf();
 	let backup_type = backend.backup_type().to_owned();
 
+	// Only the backends that read their store have anything to pin extents for.
+	let measures_store = backend.store_in_use().await.is_some();
+	let ballast_path = data_dir.join(BALLAST);
+	let mut pin = |seed: u64| {
+		if measures_store {
+			write(&ballast_path, &ballast(seed));
+		}
+	};
+
 	// The value as it stands at the freeze, and the ballast the capture will pin.
 	write(&data_dir.join(MARKER), FROZEN);
-	write(&data_dir.join(BALLAST), &ballast(1));
+	pin(1);
 
 	// `bestool canopy backup --type X --hold --no-upload`.
 	backup(&backup_type, backend.backups_dir())
@@ -152,7 +167,7 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	// The live cluster moves on. Everything from here distinguishes the capture
 	// from the data as it now stands.
 	write(&data_dir.join(MARKER), LIVE);
-	write(&data_dir.join(BALLAST), &ballast(2));
+	pin(2);
 
 	// `bestool canopy hold list`. A hold that reports detached from the moment it
 	// is taken is not a rollback point, and is what this whole job exists to catch.
@@ -214,7 +229,7 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	// release, and measuring across it would assert the opposite of what it looks
 	// like. Rewriting the live copy breaks the sharing, leaving the capture the
 	// only claim on what it froze.
-	write(&data_dir.join(BALLAST), &ballast(3));
+	pin(3);
 
 	// The probe that the drop is about to be judged by, asserted while the capture
 	// is still there. A probe that answered "gone" for the wrong reason would make

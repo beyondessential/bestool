@@ -109,6 +109,18 @@ writing to throughout, so a byte delta there would be flaky; the shadow's
 absence from WMI is the assertion instead, since that is what returns its store.
 Recorded in the test cases as covered-by-absence rather than left unticked.
 
+The ballast is written only where it is read. On base backup it would be streamed
+through `pg_basebackup`, walked to size the restore, and copied again into
+staging; on VSS it would grow the shadow's store on the runner's system volume.
+Neither measures a delta, so neither pays for it.
+
+The thin pool's size is derived from the ballast rather than fixed, and so are
+both margins. The pool has to hold several ballast-sized allocations at once —
+what the capture pins, the live copy, the restore's staged copy, the tree it
+displaces — and an ext4 volume mounted without `discard` never hands blocks back.
+Left decoupled, raising the ballast or adding a step to the shared driver would
+fill the pool and flip the filesystem read-only instead of failing an assertion.
+
 ## Build steps
 
 - [x] `hold/e2e.rs`: the `Backend` trait and the shared `lifecycle` driver

@@ -18,7 +18,7 @@ use std::{
 
 use tempfile::TempDir;
 
-use super::{Backend, clear_records, lifecycle};
+use super::{BALLAST_BYTES, Backend, clear_records, lifecycle};
 use crate::actions::canopy::backup::{
 	hold::{HeldCapture, HoldRecord},
 	postgresql::lvm,
@@ -27,6 +27,27 @@ use crate::actions::canopy::backup::{
 /// Where the fixtures build their storage. Not the temp dir: the cluster is run
 /// by a systemd unit, and `/srv` is outside anything a unit's sandboxing hides.
 const SCRATCH_BASE: &str = "/srv";
+
+/// The thin pool, sized from the ballast rather than fixed, so the two cannot
+/// drift apart.
+///
+/// One lifecycle puts several ballast-sized allocations in the pool — the one
+/// the capture pins, the live one, the restore's staged copy, the tree it
+/// displaces — on top of the cluster and its WAL. An ext4 volume mounted without
+/// `discard` never hands blocks back, and a loopback pool does not autoextend,
+/// so a pool that is merely big enough today would fill and flip the filesystem
+/// read-only rather than fail an assertion the moment the ballast grew or the
+/// driver gained a step.
+const POOL_MIB: usize = BALLAST_BYTES / (1024 * 1024) * 32;
+
+/// The thin volume, deliberately larger than the pool backing it: the fixture is
+/// exercising a thin volume, and one that could never overcommit would not be
+/// one.
+const VOLUME_MIB: usize = POOL_MIB * 3 / 2;
+
+/// The loopback file behind the volume group: the pool plus room for its
+/// metadata and LVM's own headers.
+const IMAGE_MIB: usize = POOL_MIB * 2;
 
 /// The storage a cluster sits on, and what it takes to tear down.
 enum Storage {
@@ -95,7 +116,7 @@ impl Harness {
 	async fn thin_lvm() -> Self {
 		let scratch = scratch("lvm");
 		let image = scratch.join("pv.img");
-		run("truncate", &["-s", "4G", str(&image)]);
+		run("truncate", &["-s", &format!("{IMAGE_MIB}m"), str(&image)]);
 		let loopdev = settle(capture("losetup", &["--find", "--show", str(&image)]));
 
 		// No hyphens in the names: device-mapper doubles them in `/dev/mapper`,
@@ -104,11 +125,26 @@ impl Harness {
 		run("vgcreate", &[&vg, &loopdev]);
 		run(
 			"lvcreate",
-			&["--type", "thin-pool", "-L", "2G", "-n", "pgpool", &vg],
+			&[
+				"--type",
+				"thin-pool",
+				"-L",
+				&format!("{POOL_MIB}m"),
+				"-n",
+				"pgpool",
+				&vg,
+			],
 		);
 		run(
 			"lvcreate",
-			&["--thin", "-V", "3G", "-n", "pgdata", &format!("{vg}/pgpool")],
+			&[
+				"--thin",
+				"-V",
+				&format!("{VOLUME_MIB}m"),
+				"-n",
+				"pgdata",
+				&format!("{vg}/pgpool"),
+			],
 		);
 		let device = format!("/dev/{vg}/pgdata");
 		run("mkfs.ext4", &["-q", &device]);
@@ -237,13 +273,25 @@ impl Backend for Harness {
 	async fn capture_present(&self, record: &HoldRecord) -> bool {
 		match (&self.storage, &record.capture) {
 			(Storage::Btrfs { mount, .. }, HeldCapture::Btrfs { snapshot_path, .. }) => {
-				// The hold's own top-level mount goes with it, so ask the filesystem
-				// rather than the path the record names.
 				let Some(name) = snapshot_path.file_name().map(|n| n.to_string_lossy().into_owned())
 				else {
 					return false;
 				};
-				capture("btrfs", &["subvolume", "list", str(mount)])
+				// Asked of the filesystem rather than at the path the record names:
+				// the hold's own top-level mount goes when the hold does. The
+				// listing reaches the whole filesystem, so the held snapshot is in
+				// it even though it sits beside the mounted subvolume rather than
+				// under it.
+				let listing = capture("btrfs", &["subvolume", "list", str(mount)]);
+				assert!(
+					!listing.is_empty(),
+					"`btrfs subvolume list {}` came back empty, which it cannot be — \
+					 the cluster's own subvolume is there. The probe is looking in the \
+					 wrong place and cannot tell a released capture from one it never \
+					 saw",
+					mount.display(),
+				);
+				listing
 					.lines()
 					.any(|line| line.split_whitespace().last() == Some(name.as_str()))
 			}
@@ -283,12 +331,16 @@ impl Backend for Harness {
 	}
 
 	fn released_margin(&self) -> f64 {
+		// Half the ballast either way, which leaves room for allocation
+		// granularity and metadata moving under the measurement while still being
+		// far more than a drop that returned nothing could produce.
 		match self.storage {
-			// The ballast is 64 MiB; allow generously for allocation granularity
-			// and metadata moving under us.
-			Storage::Btrfs { .. } => 32.0 * 1024.0 * 1024.0,
-			// 64 MiB of a 2 GiB pool is a little over 3%.
-			Storage::ThinLvm { .. } => 1.0,
+			Storage::Btrfs { .. } => BALLAST_BYTES as f64 / 2.0,
+			// The pool reports a percentage, so the ballast's share of it is what
+			// half a ballast comes to.
+			Storage::ThinLvm { .. } => 100.0 / POOL_MIB as f64 * BALLAST_BYTES as f64
+				/ (1024.0 * 1024.0)
+				/ 2.0,
 			Storage::BaseBackup => 0.0,
 		}
 	}
