@@ -20,10 +20,11 @@ The age carries the grading.
 A count alone is inherently noisy, because there is always a transient nonzero count in the moments between an upstream record being written and its materialisation, so any threshold on the count either alerts constantly or is set high enough to miss a real gap.
 An age distinguishes a handful of records seconds old and materialising normally from the same handful hours old and stuck, and needs no per-deployment calibration because it is an absolute duration.
 
-Both are reported per resource, and the resource with the oldest gap is named in the check's summary.
+Both are reported per resource, and the resource with the oldest gap is named in the check's summary, except where its pace keeps it off that headline.
 
-The check considers only upstream records written within the last two days.
+The check considers only upstream records written recently: within the last two days for a resource expected to materialise promptly, and within the last week for a deferred one.
 An older gap is a backfill concern rather than an incident, and bounding the measurement keeps it cheap enough to run on every sweep.
+A resource's window always outlasts the age at which it fails, so a gap can age into failing before it leaves the measurement.
 
 Presence of the FHIR row is the whole test, and its resolution state is not consulted: a materialised but unresolved row is graded by the unresolved-service-requests check and must not be counted as a gap as well.
 Soft-deleted upstream records are excluded, so a cancelled clinical record does not read as a gap.
@@ -37,17 +38,17 @@ The relationship between a materialised resource and the upstream records it mat
 It is an arbitrary declaration in Tamanu, and `upstream_id` is polymorphic where a resource has more than one upstream, so there is no key to follow.
 The check therefore carries the relationship as known data:
 
-| FHIR resource | FHIR table | upstream table(s) | upstream records considered |
-| --- | --- | --- | --- |
-| `ServiceRequest` | `service_requests` | `lab_requests`, `imaging_requests` | all |
-| `Patient` | `patients` | `patients` | all |
-| `Practitioner` | `practitioners` | `users` | all |
-| `Organization` | `organizations` | `facilities` | all |
-| `Immunization` | `immunizations` | `administered_vaccines` | all |
-| `MedicationRequest` | `medication_requests` | `pharmacy_order_prescriptions` | all |
-| `Specimen` | `specimens` | `lab_requests` | those with a specimen attached |
-| `Encounter` | `encounters` | `encounters` | those that are not a survey response |
-| `MediciReport` | `non_fhir_medici_report` | `encounters` | those that are not a survey response |
+| FHIR resource | FHIR table | upstream table(s) | upstream records considered | pace |
+| --- | --- | --- | --- | --- |
+| `ServiceRequest` | `service_requests` | `lab_requests`, `imaging_requests` | all | prompt |
+| `Patient` | `patients` | `patients` | all | prompt |
+| `Practitioner` | `practitioners` | `users` | all | prompt |
+| `Organization` | `organizations` | `facilities` | all | prompt |
+| `Immunization` | `immunizations` | `administered_vaccines` | all | prompt |
+| `MedicationRequest` | `medication_requests` | `pharmacy_order_prescriptions` | all | prompt |
+| `Specimen` | `specimens` | `lab_requests` | those with a specimen attached | prompt |
+| `Encounter` | `encounters` | `encounters` | those that are not a survey response | prompt |
+| `MediciReport` | `non_fhir_medici_report` | `encounters` | those that are not a survey response | deferred |
 
 A resource with more than one upstream table reports one gap and one age across all of them, not one per upstream.
 
@@ -90,14 +91,35 @@ A resource whose materialisation is disabled is omitted from the measurement ent
 A resource whose upstream table does not exist on the deployment's version is likewise omitted, without being treated as a fault: it is absent by design on that version, as with a resource that has no FHIR table.
 A resource the check could not measure for any other reason is named, and the check warns, so lost coverage is visible rather than reading as an absence of gaps.
 
+## Materialisation pace
+
+Not every materialised resource is expected to keep pace with its upstream, and grading them all on one clock would mean permanently failing a deployment that is working as designed.
+Each resource therefore carries a pace, which sets the thresholds its gap is graded against, the window its measurement is bounded to, and whether its backlog joins the check's headline.
+
+A prompt resource is materialised off the upstream write and is expected to keep pace with it, so a gap persisting beyond minutes means something has gone wrong.
+Every resource but `MediciReport` is prompt.
+
+`MediciReport` is deferred.
+It is not a FHIR resource served to integrations but a single-purpose report, and it is materialised behind every prompt resource, so it runs slowly and carries a large standing backlog as a matter of course.
+
+A deferred resource differs from a prompt one in three ways.
+
+- It fails only once its oldest gap is older than five days, which is long enough to mean materialisation has stopped rather than merely fallen behind.
+- It has no warning threshold, because a backlog that is expected has no degraded state between working and stopped.
+- Its backlog is kept out of the check's headline count and the oldest gap that headline names, because that backlog is routinely the largest number the check holds and folding it in would bury the gaps that do mean something.
+  It is reported in its own right on the headline instead, and declares the same per-resource numbers as any other resource.
+
 ## Outcomes
 
-For a central server with the FHIR worker enabled and at least one resource enabled:
+For a central server with the FHIR worker enabled and at least one resource enabled, every enabled resource is graded against the thresholds of its own pace, and the check takes the worst grade any of them reaches:
 
-- [ ] The check fails when the oldest gap across all enabled resources is older than an hour.
-- [ ] The check warns when the oldest gap is older than a quarter of an hour but no older than an hour.
+- [ ] The check fails when a prompt resource's oldest gap is older than an hour.
+- [ ] The check warns when a prompt resource's oldest gap is older than a quarter of an hour but no older than an hour.
+- [ ] The check fails when a deferred resource's oldest gap is older than five days, and is unaffected by the size of that resource's backlog.
 - [ ] The check warns when the schema contains a materialised resource the check has no relationship for, whatever the measured gaps.
-- [ ] The check passes when no enabled resource has a gap, or every gap is younger than the warning threshold.
+- [ ] The check passes when no enabled resource has crossed a threshold of its own pace.
+- [ ] A non-passing grade names the resource that drove it and the threshold that resource crossed.
+  Where more than one resource has crossed a threshold, the most severe grade is named, and between equal grades the resource furthest past its own threshold in proportion to it.
 
 ## Retirement
 

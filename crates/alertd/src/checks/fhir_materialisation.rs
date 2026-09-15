@@ -15,6 +15,12 @@
 //! materialisation, so a count threshold either alerts constantly or is set high
 //! enough to miss a real gap.
 //!
+//! Each resource is graded on its own clock. Most materialise off the upstream
+//! write and are expected to keep pace with it; `MediciReport` is materialised
+//! behind all of them and carries a large standing backlog by design, so the
+//! thresholds that catch a stalled `Patient` would fail it permanently on a
+//! deployment working exactly as intended.
+//!
 //! spec: CHK-FMA
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,14 +35,81 @@ use crate::check::Check;
 
 const NAME: &str = "fhir_materialisation";
 
-const WARN_LAG_SECS: i64 = 15 * 60;
-const FAIL_LAG_SECS: i64 = 60 * 60;
+/// How promptly a resource is expected to materialise, which sets the thresholds
+/// its gap is graded against, the window its measurement is bounded to, and
+/// whether its backlog joins the check's headline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pace {
+	/// Materialised off the upstream write and expected to keep pace with it, so
+	/// a gap persisting beyond minutes is an incident.
+	Prompt,
+	/// Materialised behind every prompt resource, so a large standing backlog is
+	/// normal and only a gap old enough to mean materialisation has stopped
+	/// altogether is an incident.
+	Deferred,
+}
 
-/// Upstream records older than this are out of scope: a gap that old is a
-/// backfill concern rather than an incident, and bounding the measurement keeps
-/// it cheap enough to run on every sweep. There is no index on
-/// `fhir.*.upstream_id`, so each resource's join scans its FHIR table.
-const WINDOW: &str = "48 hours";
+/// Everything one pace decides, stated once so a pace's whole behaviour reads
+/// in one place rather than being spread across parallel match arms that have
+/// to be kept in step by eye.
+struct Profile {
+	/// How the pace is named in the resource's reported numbers.
+	label: &'static str,
+
+	/// Upstream records older than this are out of scope: a gap that old is a
+	/// backfill concern rather than an incident, and bounding the measurement
+	/// keeps it cheap enough to run on every sweep.
+	///
+	/// The window always outlasts [`fail_secs`](Self::fail_secs), or a gap would
+	/// leave the measurement before it could age into failing.
+	///
+	/// It bounds the upstream side only. There is no index on
+	/// `fhir.*.upstream_id`, so the join scans the resource's FHIR table whatever
+	/// the window, and widening the window buys more upstream rows to probe with
+	/// rather than a wider scan of the unindexed side.
+	window: &'static str,
+
+	/// Age at which the gap warns, or `None` for a resource whose backlog is
+	/// expected: there is no degraded state between working and stopped.
+	warn_secs: Option<i64>,
+
+	/// Age at which the gap fails.
+	fail_secs: i64,
+
+	/// Whether the resource's backlog joins the check's headline count and the
+	/// oldest gap it names. A deferred backlog is expected and routinely the
+	/// largest number the check holds, so counting it there would bury the gaps
+	/// that do mean something.
+	in_headline: bool,
+}
+
+const PROMPT: Profile = Profile {
+	label: "prompt",
+	window: "48 hours",
+	warn_secs: Some(15 * 60),
+	fail_secs: 60 * 60,
+	in_headline: true,
+};
+
+/// Five days is long enough to mean materialisation has stopped rather than
+/// merely fallen behind, and the week-long window is the smallest that lets a
+/// gap reach it with room to be observed.
+const DEFERRED: Profile = Profile {
+	label: "deferred",
+	window: "7 days",
+	warn_secs: None,
+	fail_secs: 5 * 24 * 60 * 60,
+	in_headline: false,
+};
+
+impl Pace {
+	fn profile(self) -> &'static Profile {
+		match self {
+			Pace::Prompt => &PROMPT,
+			Pace::Deferred => &DEFERRED,
+		}
+	}
+}
 
 /// Setting and config key under which the per-resource materialisation flags
 /// live — `fhir.worker.…` as a setting (Tamanu 2.60 and later),
@@ -61,6 +134,7 @@ struct Upstream {
 struct Resource {
 	name: &'static str,
 	table: &'static str,
+	pace: Pace,
 	upstreams: &'static [Upstream],
 }
 
@@ -68,6 +142,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "ServiceRequest",
 		table: "service_requests",
+		pace: Pace::Prompt,
 		upstreams: &[
 			Upstream {
 				table: "lab_requests",
@@ -82,6 +157,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Patient",
 		table: "patients",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "patients",
 			filter: None,
@@ -90,6 +166,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Practitioner",
 		table: "practitioners",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "users",
 			filter: None,
@@ -98,6 +175,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Organization",
 		table: "organizations",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "facilities",
 			filter: None,
@@ -106,6 +184,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Immunization",
 		table: "immunizations",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "administered_vaccines",
 			filter: None,
@@ -114,6 +193,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "MedicationRequest",
 		table: "medication_requests",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "pharmacy_order_prescriptions",
 			filter: None,
@@ -122,6 +202,7 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Specimen",
 		table: "specimens",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "lab_requests",
 			filter: Some("u.specimen_attached = true"),
@@ -130,14 +211,18 @@ const RESOURCES: &[Resource] = &[
 	Resource {
 		name: "Encounter",
 		table: "encounters",
+		pace: Pace::Prompt,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse'"),
 		}],
 	},
+	// Not a FHIR resource served to integrations but a single-purpose report,
+	// materialised behind everything else and so permanently backlogged.
 	Resource {
 		name: "MediciReport",
 		table: "non_fhir_medici_report",
+		pace: Pace::Deferred,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse'"),
@@ -170,9 +255,45 @@ impl Source {
 /// One enabled resource's measurement.
 struct Measured {
 	name: &'static str,
+	pace: Pace,
 	source: Source,
 	gap: i64,
 	lag_secs: i64,
+}
+
+/// Where one resource's oldest gap sits against that resource's own thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Grade {
+	Clean,
+	Warn,
+	Fail,
+}
+
+impl Measured {
+	fn grade(&self) -> Grade {
+		if self.lag_secs > self.pace.profile().fail_secs {
+			Grade::Fail
+		} else if self
+			.pace
+			.profile()
+			.warn_secs
+			.is_some_and(|warn| self.lag_secs > warn)
+		{
+			Grade::Warn
+		} else {
+			Grade::Clean
+		}
+	}
+
+	/// The threshold this measurement crossed, for the check's reason to name.
+	/// `None` when it crossed neither.
+	fn crossed(&self) -> Option<i64> {
+		match self.grade() {
+			Grade::Fail => Some(self.pace.profile().fail_secs),
+			Grade::Warn => self.pace.profile().warn_secs,
+			Grade::Clean => None,
+		}
+	}
 }
 
 /// The materialised resources this deployment has: tables in the `fhir` schema
@@ -256,6 +377,7 @@ pub async fn run(ctx: CheckContext) -> Check {
 		match measure(&client, resource).await {
 			Ok((gap, lag_secs)) => measured.push(Measured {
 				name: resource.name,
+				pace: resource.pace,
 				source,
 				gap,
 				lag_secs,
@@ -283,44 +405,27 @@ pub async fn run(ctx: CheckContext) -> Check {
 		);
 	}
 
-	let worst = measured.iter().max_by_key(|m| m.lag_secs);
-	let worst_lag = worst.map_or(0, |m| m.lag_secs);
-	let total_gap: i64 = measured.iter().map(|m| m.gap).sum();
+	let summary = summarise(&measured, errored.len());
 
-	let summary = match worst {
-		Some(worst) if worst.gap > 0 => format!(
-			"{} unmaterialised, oldest {} ({})",
-			total_gap,
-			humanise_age(worst.lag_secs),
-			worst.name,
-		),
-		// Nothing measured is not the same as nothing missing, so it must not
-		// read as a clean result.
-		None if !errored.is_empty() => {
-			format!("no resource measured, {} could not be read", errored.len())
+	// Thresholds differ per resource, so the reason names which one drove the
+	// grade rather than quoting a single threshold for the check as a whole.
+	let breach = breach(&measured).map(|(m, threshold)| {
+		(
+			m.grade(),
+			format!(
+				"{} unmaterialised for over {}",
+				m.name,
+				humanise_age(threshold)
+			),
+		)
+	});
+
+	let mut check = if let Some((grade, reason)) = breach {
+		if grade == Grade::Fail {
+			Check::fail(NAME, summary, reason)
+		} else {
+			Check::warning(NAME, summary, reason)
 		}
-		None => "no resource measured".to_string(),
-		Some(_) => format!("no materialisation gap across {} resources", measured.len()),
-	};
-
-	let mut check = if worst_lag > FAIL_LAG_SECS {
-		Check::fail(
-			NAME,
-			summary,
-			format!(
-				"upstream record unmaterialised for over {}",
-				humanise_age(FAIL_LAG_SECS)
-			),
-		)
-	} else if worst_lag > WARN_LAG_SECS {
-		Check::warning(
-			NAME,
-			summary,
-			format!(
-				"upstream record unmaterialised for over {}",
-				humanise_age(WARN_LAG_SECS)
-			),
-		)
 	} else if !unmonitored.is_empty() {
 		Check::warning(
 			NAME,
@@ -351,6 +456,8 @@ pub async fn run(ctx: CheckContext) -> Check {
 				"gap": m.gap,
 				"lag_seconds": m.lag_secs,
 				"enablement": m.source.as_str(),
+				"pace": m.pace.profile().label,
+				"fails_after_seconds": m.pace.profile().fail_secs,
 			}),
 		);
 		check = check
@@ -389,6 +496,72 @@ pub async fn run(ctx: CheckContext) -> Check {
 	}
 
 	check
+}
+
+/// The measurement driving the check's grade, and the threshold it crossed.
+///
+/// Only a resource past one of its own thresholds can grade the check. Between
+/// two that are, the more severe grade wins; between two of the same grade, the
+/// one furthest past its threshold in proportion to it, so an hour past an hour
+/// outranks a day past five days.
+fn breach(measured: &[Measured]) -> Option<(&Measured, i64)> {
+	measured
+		.iter()
+		.filter_map(|m| Some((m, m.crossed()?)))
+		.max_by_key(|(m, threshold)| {
+			(
+				m.grade(),
+				m.lag_secs.saturating_mul(100) / (*threshold).max(1),
+			)
+		})
+}
+
+/// The check's headline.
+///
+/// The count and the oldest gap it names are drawn from the prompt resources
+/// alone. A deferred resource's backlog is expected and routinely larger than
+/// every other number here, so folding it in would bury them; it gets its own
+/// clause instead, so its state is still on the headline without distorting the
+/// rest.
+fn summarise(measured: &[Measured], errored: usize) -> String {
+	// Nothing measured is not the same as nothing missing, so it must not read
+	// as a clean result.
+	if measured.is_empty() {
+		return if errored > 0 {
+			format!("no resource measured, {errored} could not be read")
+		} else {
+			"no resource measured".to_string()
+		};
+	}
+
+	let headline: Vec<&Measured> = measured
+		.iter()
+		.filter(|m| m.pace.profile().in_headline)
+		.collect();
+	let total_gap: i64 = headline.iter().map(|m| m.gap).sum();
+
+	let mut parts = Vec::new();
+	match headline.iter().max_by_key(|m| m.lag_secs) {
+		Some(oldest) if total_gap > 0 => parts.push(format!(
+			"{total_gap} unmaterialised, oldest {} ({})",
+			humanise_age(oldest.lag_secs),
+			oldest.name,
+		)),
+		Some(_) => parts.push(format!(
+			"no materialisation gap across {} resources",
+			headline.len()
+		)),
+		None => {}
+	}
+	for m in measured.iter().filter(|m| !m.pace.profile().in_headline) {
+		parts.push(if m.gap > 0 {
+			format!("{} {} behind", m.name, humanise_age(m.lag_secs))
+		} else {
+			format!("{} up to date", m.name)
+		});
+	}
+
+	parts.join("; ")
 }
 
 /// Materialised resources in the schema that [`RESOURCES`] has no relationship
@@ -514,9 +687,10 @@ fn gap_query(resource: &Resource) -> String {
 				"SELECT u.created_at FROM {upstream} u \
 				 LEFT JOIN fhir.{resource} r ON r.upstream_id = u.id \
 				 WHERE r.id IS NULL AND u.deleted_at IS NULL \
-				 AND u.created_at > now() - interval '{WINDOW}'{filter}",
+				 AND u.created_at > now() - interval '{window}'{filter}",
 				upstream = upstream.table,
 				resource = resource.table,
+				window = resource.pace.profile().window,
 			)
 		})
 		.collect::<Vec<_>>()
@@ -810,6 +984,172 @@ mod tests {
 		assert!(
 			gap_query(encounters).contains("AND u.encounter_type <> 'surveyResponse'"),
 			"encounter filter missing"
+		);
+	}
+
+	/// A measurement as it would come back from [`measure`], for grading and
+	/// summarising without a database.
+	fn measured(name: &'static str, pace: Pace, gap: i64, lag_secs: i64) -> Measured {
+		Measured {
+			name,
+			pace,
+			source: Source::Setting,
+			gap,
+			lag_secs,
+		}
+	}
+
+	/// A window interval literal in seconds, so the invariant that a window
+	/// outlasts its fail threshold can be asserted rather than eyeballed.
+	fn window_secs(window: &str) -> i64 {
+		let (count, unit) = window.split_once(' ').expect("window is '<count> <unit>'");
+		let count: i64 = count.parse().expect("window count should be a number");
+		match unit {
+			"hours" => count * 60 * 60,
+			"days" => count * 24 * 60 * 60,
+			other => panic!("window unit {other} is not handled here"),
+		}
+	}
+
+	#[test]
+	fn medici_report_is_the_only_deferred_resource() {
+		let deferred: Vec<_> = RESOURCES
+			.iter()
+			.filter(|r| r.pace == Pace::Deferred)
+			.map(|r| r.name)
+			.collect();
+		assert_eq!(deferred, vec!["MediciReport"]);
+	}
+
+	#[test]
+	fn every_window_outlasts_its_fail_threshold() {
+		// A gap that leaves the measurement before reaching the threshold could
+		// never fail the check, so the deferred window has to cover its five days.
+		for pace in [Pace::Prompt, Pace::Deferred] {
+			assert!(
+				window_secs(pace.profile().window) > pace.profile().fail_secs,
+				"the {} window of {} does not outlast its fail threshold of {}",
+				pace.profile().label,
+				pace.profile().window,
+				humanise_age(pace.profile().fail_secs),
+			);
+		}
+	}
+
+	#[test]
+	fn a_deferred_resource_is_graded_on_its_own_clock() {
+		// Three days behind is a stalled prompt resource many times over, and
+		// well within what a deferred one runs at by design.
+		assert_eq!(
+			measured("Patient", Pace::Prompt, 12, 3 * 86400).grade(),
+			Grade::Fail
+		);
+		assert_eq!(
+			measured("MediciReport", Pace::Deferred, 40_000, 3 * 86400).grade(),
+			Grade::Clean
+		);
+		assert_eq!(
+			measured("MediciReport", Pace::Deferred, 40_000, 6 * 86400).grade(),
+			Grade::Fail
+		);
+	}
+
+	#[test]
+	fn a_deferred_resource_never_warns() {
+		// Its backlog is expected, so there is no degraded state between working
+		// and stopped: it is clean right up to the moment it fails.
+		let at_the_threshold = measured(
+			"MediciReport",
+			Pace::Deferred,
+			40_000,
+			Pace::Deferred.profile().fail_secs,
+		);
+		assert_eq!(at_the_threshold.grade(), Grade::Clean);
+		assert_eq!(at_the_threshold.crossed(), None);
+	}
+
+	#[test]
+	fn a_deferred_backlog_does_not_grade_the_check() {
+		let all = [
+			measured("Patient", Pace::Prompt, 2, 90),
+			measured("MediciReport", Pace::Deferred, 40_000, 3 * 86400),
+		];
+		assert!(
+			breach(&all).is_none(),
+			"a backlog within the deferred clock must leave the check passing"
+		);
+	}
+
+	#[test]
+	fn a_deferred_resource_fails_once_it_has_plainly_stopped() {
+		let all = [
+			measured("Patient", Pace::Prompt, 0, 30),
+			measured("MediciReport", Pace::Deferred, 40_000, 6 * 86400),
+		];
+		let (worst, threshold) = breach(&all).expect("the stalled resource should grade");
+		assert_eq!(worst.name, "MediciReport");
+		assert_eq!(worst.grade(), Grade::Fail);
+		assert_eq!(threshold, 5 * 86400, "the reason quotes the deferred clock");
+	}
+
+	#[test]
+	fn the_worst_breach_is_the_one_furthest_past_its_own_threshold() {
+		let all = [
+			measured("Patient", Pace::Prompt, 3, 2 * 3600),
+			measured("MediciReport", Pace::Deferred, 40_000, 6 * 86400),
+		];
+		let (worst, _) = breach(&all).expect("both have crossed a threshold");
+		assert_eq!(
+			worst.name, "Patient",
+			"twice an hour outranks a day past five days"
+		);
+	}
+
+	#[test]
+	fn a_deferred_backlog_stays_out_of_the_headline_count() {
+		let summary = summarise(
+			&[
+				measured("Patient", Pace::Prompt, 2, 90),
+				measured("MediciReport", Pace::Deferred, 40_000, 3 * 86400),
+			],
+			0,
+		);
+		assert_eq!(
+			summary, "2 unmaterialised, oldest 1m (Patient); MediciReport 3d behind",
+			"the deferred backlog is reported in its own right, not added to the count"
+		);
+	}
+
+	#[test]
+	fn a_clean_deferred_resource_still_reports() {
+		let summary = summarise(
+			&[
+				measured("Patient", Pace::Prompt, 0, 0),
+				measured("MediciReport", Pace::Deferred, 0, 0),
+			],
+			0,
+		);
+		assert_eq!(
+			summary,
+			"no materialisation gap across 1 resources; MediciReport up to date"
+		);
+	}
+
+	#[test]
+	fn summary_without_measurements_does_not_read_as_clean() {
+		assert_eq!(summarise(&[], 0), "no resource measured");
+		assert_eq!(
+			summarise(&[], 2),
+			"no resource measured, 2 could not be read"
+		);
+	}
+
+	#[test]
+	fn deferred_resource_gets_the_longer_window() {
+		let medici = RESOURCES.iter().find(|r| r.name == "MediciReport").unwrap();
+		assert!(
+			gap_query(medici).contains("u.created_at > now() - interval '7 days'"),
+			"a five-day threshold needs a window that outlasts it"
 		);
 	}
 
