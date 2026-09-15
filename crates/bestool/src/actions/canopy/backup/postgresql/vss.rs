@@ -278,6 +278,18 @@ pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {
 	.await
 }
 
+/// The form of a shadow's device path that names the root directory of the
+/// filesystem on it, rather than the volume device itself: exactly one trailing
+/// separator.
+///
+/// Without one, paths *beneath* the junction still resolve — the remainder is
+/// appended before the device is parsed, which is all a backup's upload or a
+/// restore's copy ever reads — but opening the junction itself opens the device,
+/// and it lists as empty or refuses however healthy the copy is.
+fn browsable_device(device: &str) -> String {
+	format!("{}\\", device.trim_end_matches(['\\', '/']))
+}
+
 /// Mount a shadow's device path at `junction` (a directory junction), creating
 /// the parent and clearing any stale mount left by a crashed run first —
 /// `junction::create` needs the link path not to exist yet.
@@ -290,13 +302,7 @@ fn mount_shadow(device: &str, junction: &Path) -> Result<()> {
 	// A leftover junction/dir here makes `junction::create` fail; remove it. On a
 	// junction this unmounts (doesn't touch the shadow); best-effort.
 	let _ = std::fs::remove_dir(junction);
-	// The device path names the shadow's volume device; the root directory of the
-	// filesystem on it is that path with a trailing separator. Without one, paths
-	// *through* the junction still resolve — the remainder is appended before the
-	// device is parsed — but opening the junction itself opens the device, so it
-	// lists as empty however healthy the copy is, and an operator checking their
-	// rollback point is shown nothing.
-	let target = format!("{}\\", device.trim_end_matches('\\'));
+	let target = browsable_device(device);
 	junction::create(&target, junction)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("junctioning {} to {target}", junction.display()))
@@ -431,6 +437,16 @@ mod tests {
 	fn held_junctions_stay_on_the_captures_volume() {
 		// A junction can't cross volumes, so a shadow of D: is exposed on D:.
 		assert!(held_expose_target_dir("D:", "x").starts_with("D:\\"));
+	}
+
+	#[test]
+	fn browsable_device_has_one_trailing_separator() {
+		// A bare device path cannot be listed, and a doubled separator is not the
+		// root of that device either.
+		let device = r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42";
+		assert_eq!(browsable_device(device), format!("{device}\\"));
+		assert_eq!(browsable_device(&format!("{device}\\")), format!("{device}\\"));
+		assert_eq!(browsable_device(&format!("{device}/")), format!("{device}\\"));
 	}
 
 	#[test]

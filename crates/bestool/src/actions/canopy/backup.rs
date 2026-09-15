@@ -864,7 +864,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 /// Take a capture and keep it, without a repository: no credentials, no
 /// transfer, no report. The definition's hooks and the capture itself are as
 /// they are for an uploading run, so the result is the same artefact.
-async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<()> {
+pub(crate) async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<()> {
 	let dir = backups_dir
 		.map(|d| d.to_path_buf())
 		.unwrap_or_else(config::backups_dir);
