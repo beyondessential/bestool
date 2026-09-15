@@ -114,6 +114,10 @@ pub struct PoolSize {
 	/// sets this long enough to span the gap between them and no longer, so
 	/// connections survive burst to burst without being held indefinitely.
 	pub max_idle_lifetime: Option<Duration>,
+	/// How long to wait for a free connection before giving up. `None` waits as
+	/// long as it takes, so a caller with more work than slots queues rather
+	/// than being told the database is unavailable when it is merely busy.
+	pub get_timeout: Option<Duration>,
 }
 
 impl Default for PoolSize {
@@ -123,6 +127,7 @@ impl Default for PoolSize {
 			max_open: 10,
 			max_idle: 10,
 			max_idle_lifetime: None,
+			get_timeout: Some(Duration::from_secs(30)),
 		}
 	}
 }
@@ -151,6 +156,7 @@ pub async fn create_pool_sized(
 			.max_open(size.max_open)
 			.max_idle(size.max_idle)
 			.max_idle_lifetime(size.max_idle_lifetime)
+			.get_timeout(size.get_timeout)
 			.build(manager.clone());
 
 		let pool = PgPool {

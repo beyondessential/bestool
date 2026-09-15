@@ -123,20 +123,29 @@ pub struct CheckContext {
 
 /// How the sweep's pool is sized.
 ///
-/// This points at the deployment's own database, which the application is also
-/// connecting to, so the sweep gets a small budget rather than one slot per
-/// check. Sizing it to the fan-out would burst twenty-odd backends every minute
-/// — and `bestool tamanu doctor` opens a second pool that can overlap with the
-/// daemon's — which against a cluster tuned to the usual hundred connections,
-/// shared with Tamanu's own pools, risks the healthcheck causing the outage it
-/// exists to report.
+/// Two separate concerns, which earlier versions of this conflated into one
+/// number and oscillated over.
 ///
-/// So checks queue for a slot instead. They still run several at a time rather
-/// than pipelining onto one connection, and their queries are short, so the
-/// queue drains quickly. Waiting is safe here because the sweep only hands the
-/// pool to the checks once it has taken a connection itself: a database that is
-/// actually down leaves them with no pool at all, and they skip immediately
-/// rather than queueing for something that cannot arrive.
+/// **How many connections.** The pool points at the deployment's own database,
+/// which the application is also connecting to, so the sweep gets a small
+/// budget rather than one slot per check. Sizing it to the fan-out would burst
+/// twenty-odd backends every minute — and `bestool tamanu doctor` opens a
+/// second pool that can overlap the daemon's — which against a cluster on the
+/// usual hundred connections, shared with Tamanu's own pools, risks the
+/// healthcheck causing the outage it exists to report.
+///
+/// **What happens when they're all busy.** Checks queue, without a deadline.
+/// A deadline here would be indistinguishable from the database being
+/// unreachable: `db()` would hand back `None`, and several checks report that
+/// as a failure — so a slow-but-live cluster, or simply more checks than slots,
+/// would raise a database-down alert on a database that is up. Waiting instead
+/// means a busy sweep takes longer, which is the right trade for something
+/// whose job is to say whether the database is healthy.
+///
+/// So a failed acquire means what it says: the database could not be connected
+/// to. A sweep that cannot take a connection at all never hands the pool to the
+/// checks, so they skip immediately rather than queueing for something that
+/// will not arrive.
 ///
 /// Idle connections live long enough to span the gap between sweeps, so a
 /// minute-by-minute daemon reuses them instead of reconnecting, and age out
@@ -145,6 +154,7 @@ pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::
 	max_open: 8,
 	max_idle: 8,
 	max_idle_lifetime: Some(std::time::Duration::from_secs(300)),
+	get_timeout: None,
 };
 
 impl CheckContext {
