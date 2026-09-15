@@ -373,37 +373,6 @@ pub struct CheckEntry {
 }
 
 impl CheckEntry {
-	/// Attach a self-heal action to a machine check, run at most once per
-	/// `min_interval` while the check is failing. The `run` closure boxes the
-	/// check module's `heal` future, e.g.
-	/// `|ctx| Box::pin(canopy_registration::heal(ctx))`.
-	fn with_machine_heal(
-		mut self,
-		run: fn(MachineCx) -> BoxFuture<'static, heal::HealOutcome>,
-		min_interval: std::time::Duration,
-	) -> Self {
-		let Run::Machine(runner) = &mut self.run else {
-			panic!("{}: a machine heal on an application check", self.name);
-		};
-		runner.heal = Some(HealAction { run, min_interval });
-		self
-	}
-
-	/// Attach a self-heal action to an application check, run at most once per
-	/// `min_interval` while the check is failing, and per application: two
-	/// applications' heals for one check do not share a rate limit.
-	fn with_app_heal(
-		mut self,
-		run: fn(AppCx) -> BoxFuture<'static, heal::HealOutcome>,
-		min_interval: std::time::Duration,
-	) -> Self {
-		let Run::Application(_, runner) = &mut self.run else {
-			panic!("{}: an application heal on a machine check", self.name);
-		};
-		runner.heal = Some(HealAction { run, min_interval });
-		self
-	}
-
 	/// Every `subject:name` slug this check could be selected by.
 	pub fn possible_slugs(&self) -> Vec<&'static str> {
 		match &self.run {
@@ -421,40 +390,55 @@ impl CheckEntry {
 /// skipped, and one filed against a subject it does have is handed that
 /// subject's own parameters.
 macro_rules! entry {
-	($name:literal, $module:ident, $subject:ident) => {
-		entry!(@build $name, $module, $subject, true)
-	};
-	// Rendered to the CLI but kept OFF the canopy `health[]` wire array — for
-	// checks reporting a value already carried as a status fact, so they're
-	// useful locally but shouldn't alert.
-	($name:literal, $module:ident, $subject:ident, off_wire) => {
-		entry!(@build $name, $module, $subject, false)
-	};
-	(@build $name:literal, $module:ident, $subject:ident, $on_wire:literal) => {
+	($name:literal, $module:ident, $subject:ident $(, $opt:tt)*) => {
 		CheckEntry {
 			name: $name,
-			on_wire: $on_wire,
-			run: entry!(@run $module, $subject),
+			on_wire: entry!(@on_wire $($opt),*),
+			run: entry!(@run $module, $subject $(, $opt)*),
 		}
 	};
 
-	(@run $module:ident, machine) => {
+	// Rendered to the CLI but kept OFF the canopy `health[]` wire array — for
+	// checks reporting a value already carried as a status fact, so they're
+	// useful locally but shouldn't alert.
+	(@on_wire off_wire $(, $rest:tt)*) => { false };
+	(@on_wire $($rest:tt)*) => { true };
+
+	// The heal expands inside the arm its check sits in, so a heal is only ever
+	// written against the context its check runs with: a machine heal on an
+	// application check does not compile.
+	(@heal) => { None };
+	(@heal off_wire) => { None };
+	(@heal off_wire, $heal:expr, $interval:expr) => { entry!(@heal $heal, $interval) };
+	(@heal $heal:expr, $interval:expr) => {
+		Some(HealAction { run: $heal, min_interval: $interval })
+	};
+
+	(@run $module:ident, machine $(, $opt:tt)*) => {
 		Run::Machine(Runner {
 			run: |ctx| Box::pin($module::run(ctx)),
-			heal: None,
+			heal: entry!(@heal $($opt),*),
 		})
 	};
-	(@run $module:ident, postgres) => { entry!(@app $module, AppScope::Postgres) };
-	(@run $module:ident, tamanu_app) => { entry!(@app $module, AppScope::Tamanu) };
-	(@run $module:ident, central) => { entry!(@app $module, AppScope::Central) };
-	(@run $module:ident, facility) => { entry!(@app $module, AppScope::Facility) };
+	(@run $module:ident, postgres $(, $opt:tt)*) => {
+		entry!(@app $module, AppScope::Postgres $(, $opt)*)
+	};
+	(@run $module:ident, tamanu_app $(, $opt:tt)*) => {
+		entry!(@app $module, AppScope::Tamanu $(, $opt)*)
+	};
+	(@run $module:ident, central $(, $opt:tt)*) => {
+		entry!(@app $module, AppScope::Central $(, $opt)*)
+	};
+	(@run $module:ident, facility $(, $opt:tt)*) => {
+		entry!(@app $module, AppScope::Facility $(, $opt)*)
+	};
 
-	(@app $module:ident, $scope:expr) => {
+	(@app $module:ident, $scope:expr $(, $opt:tt)*) => {
 		Run::Application(
 			$scope,
 			Runner {
 				run: |ctx| Box::pin($module::run(ctx)),
-				heal: None,
+				heal: entry!(@heal $($opt),*),
 			},
 		)
 	};
@@ -511,9 +495,12 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("tailscale_config", tailscale_config, machine),
 		// bestool's own Canopy enrolment is the machine's: it reports so Canopy sees
 		// an incomplete registration before it blocks backups.
-		entry!("canopy_registration", canopy_registration, machine).with_machine_heal(
-			|ctx| Box::pin(canopy_registration::heal(ctx)),
-			heal::DEFAULT_MIN_INTERVAL,
+		entry!(
+			"canopy_registration",
+			canopy_registration,
+			machine,
+			(|ctx| Box::pin(canopy_registration::heal(ctx))),
+			(heal::DEFAULT_MIN_INTERVAL)
 		),
 		// Reports the machine's LAN and best-guess WAN addresses as facts (off the
 		// wire; carried in the machine's detail, like the timezone).
@@ -538,9 +525,12 @@ pub fn all() -> Vec<CheckEntry> {
 		// Restart the FHIR workers when the backlog check fails, capped at one
 		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
 		// The heal is central-only even though the check itself is not.
-		entry!("fhir_jobs", fhir_jobs, tamanu_app).with_app_heal(
-			|ctx| Box::pin(fhir_jobs::heal(ctx)),
-			std::time::Duration::from_secs(60 * 60),
+		entry!(
+			"fhir_jobs",
+			fhir_jobs,
+			tamanu_app,
+			(|ctx| Box::pin(fhir_jobs::heal(ctx))),
+			(std::time::Duration::from_secs(60 * 60))
 		),
 		entry!("fhir_workers", fhir_workers, central),
 		entry!(
