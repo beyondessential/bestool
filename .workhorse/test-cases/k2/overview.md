@@ -53,6 +53,10 @@ the daemon's dependencies.
       each waiting out an acquire that cannot succeed
 - [x] Idle connections outlive the gap between sweeps, so a minute-by-minute
       daemon reuses them rather than reconnecting
+- [x] Checks queue for a connection without a deadline, so contention or a slow
+      cluster cannot be reported as the database being down
+- [x] Checks hand their connection back when they stop querying, rather than
+      holding a slot through grading
 - [x] The sweep's setup connection is released before the checks run
 - [ ] Building the pool does not block a concurrent `recompute` while postgres
       is unreachable

@@ -185,3 +185,35 @@ bolted on here. The `alertd` feature enabling `bestool-tamanu` is not
 avoidable — the daemon itself uses pm2 job breakaway, the seedling endpoint and
 the tag cache — so `alertd-tamanu` narrowing to `tamanu-config` is a real
 consequence of where that code now lives, not an oversight.
+
+## Fifth review round
+
+The pool had been sized up (round three), back down (round four), and round
+five found the round-three failure again. Three rounds on one number is the
+signal that the number was never the problem.
+
+Both constraints are real and no size satisfies both: large enough that checks
+never queue means bursting twenty-odd backends a minute at a production
+database; small enough to be a safe budget means they queue. The defect was
+that queueing and unreachability were the same observable. `pool.get()` timed
+out under contention, `db()` returned `None`, and five checks report `None` as
+a failure — so a busy or slow cluster raised a database-down alert on a
+database that was up.
+
+The pool waits rather than giving up. That splits the two concerns apart: the
+size is now purely a budget question, and a failed acquire means only that the
+database could not be connected to. The cost is that a busy sweep takes longer,
+which is the right trade for something whose job is to report whether the
+database is healthy — and a sweep that cannot take a connection at all still
+hands the checks no pool, so they skip at once instead of waiting for something
+that will not arrive.
+
+Occupancy matters more once the pool is a shared budget, so `pg_tuning` and
+`sync_session_errors` hand their connection back when they stop querying rather
+than holding it through grading and arithmetic.
+
+Left alone: issuing `fhir_materialisation`'s per-resource measures concurrently
+would have each one take its own connection, so a single check could hold
+several slots at once and wait on the pool while holding part of it. That is a
+deadlock shape, and it wants the per-check connection budget thought through
+rather than a `buffer_unordered` dropped in here.
