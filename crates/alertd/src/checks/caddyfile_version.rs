@@ -23,7 +23,7 @@ use tokio::task::spawn_blocking;
 
 use bestool_tamanu::caddy;
 
-use super::MachineCx;
+use super::{MachineCx, MachineTamanu};
 use crate::check::Check;
 
 const CHECK_NAME: &str = "caddyfile_version";
@@ -36,25 +36,40 @@ const MIN_VERSION: u32 = 9;
 /// to upgrade.
 const TAMANU_STRICT_FROM: &str = "2.46.0";
 
-pub async fn run(ctx: MachineCx) -> Check {
+/// The preconditions the check needs before it can grade anything: a Windows
+/// host, with a Tamanu on it to grade the marker against. `Err` is the skip to
+/// report instead, naming which one was not met.
+///
+/// Taken as arguments rather than read here so both arms are exercised wherever
+/// the suite runs, not only on the platform that satisfies the first.
+///
+/// spec: CHK-CFV#applicability
+fn applicable(windows: bool, tamanu: Option<&MachineTamanu>) -> Result<&MachineTamanu, Check> {
 	// Windows-only: the marked Caddyfile is a Windows deployment convention, and
 	// on Linux caddy is managed through the package manager.
-	if !cfg!(windows) {
-		return Check::skip(
+	if !windows {
+		return Err(Check::skip(
 			CHECK_NAME,
 			"not a Windows host",
 			"the Caddyfile version check applies only to Windows Tamanu servers",
-		);
+		));
 	}
 
 	// Which Tamanu is on the box is what says whether the marker is stale, so
 	// without one there is nothing to grade the Caddyfile against.
-	let Some(tamanu) = ctx.tamanu.as_ref() else {
-		return Check::skip(
+	tamanu.ok_or_else(|| {
+		Check::skip(
 			CHECK_NAME,
 			"no Tamanu on this host",
 			"the Caddyfile version is graded against the deployment's version, and this host has no Tamanu",
-		);
+		)
+	})
+}
+
+pub async fn run(ctx: MachineCx) -> Check {
+	let tamanu = match applicable(cfg!(windows), ctx.tamanu.as_ref()) {
+		Ok(tamanu) => tamanu,
+		Err(skip) => return skip,
 	};
 
 	let path = caddy::caddyfile_path();
@@ -144,45 +159,51 @@ fn build_check(version: Option<u32>, tamanu_version: &Version, strict_from: &Ver
 
 #[cfg(test)]
 mod tests {
-	use super::{super::MachineTamanu, *};
+	use super::*;
 
 	fn v(s: &str) -> Version {
 		Version::parse(s).unwrap()
 	}
 
-	/// A machine context carrying the Tamanu installed on it, or none.
-	fn machine_ctx(tamanu: Option<&str>) -> MachineCx {
-		MachineCx::builder()
-			.http(reqwest::Client::new())
-			.maybe_tamanu(tamanu.map(|version| MachineTamanu {
-				version: v(version),
-				root: Some(std::path::PathBuf::from("/opt/tamanu")),
-			}))
-			.build()
+	fn installed(version: &str) -> MachineTamanu {
+		MachineTamanu {
+			version: v(version),
+			root: Some(std::path::PathBuf::from("/opt/tamanu")),
+		}
 	}
 
 	/// The check grades a Windows deployment convention, so elsewhere it says
 	/// so rather than reporting on the server.
 	///
 	/// spec: CHK-CFV#applicability
-	#[cfg(not(windows))]
-	#[tokio::test]
-	async fn skips_off_windows() {
-		let check = run(machine_ctx(Some("2.46.0"))).await;
-		assert!(matches!(check.status, crate::check::CheckStatus::Skip(_)));
-		assert_eq!(check.summary, "not a Windows host");
+	#[test]
+	fn skips_off_windows() {
+		let tamanu = installed("2.46.0");
+		let skip = applicable(false, Some(&tamanu)).expect_err("a non-Windows host skips");
+		assert!(matches!(skip.status, crate::check::CheckStatus::Skip(_)));
+		assert_eq!(skip.summary, "not a Windows host");
 	}
 
 	/// The marker is graded against the deployment's version, so with no Tamanu
 	/// on the machine there is nothing to grade it against.
 	///
 	/// spec: CHK-CFV#applicability
-	#[cfg(windows)]
-	#[tokio::test]
-	async fn skips_without_a_tamanu_on_the_machine() {
-		let check = run(machine_ctx(None)).await;
-		assert!(matches!(check.status, crate::check::CheckStatus::Skip(_)));
-		assert_eq!(check.summary, "no Tamanu on this host");
+	#[test]
+	fn skips_without_a_tamanu_on_the_machine() {
+		let skip = applicable(true, None).expect_err("a host with no Tamanu skips");
+		assert!(matches!(skip.status, crate::check::CheckStatus::Skip(_)));
+		assert_eq!(skip.summary, "no Tamanu on this host");
+	}
+
+	/// A Windows host with a Tamanu on it goes on to read the Caddyfile, and
+	/// grades the marker against that deployment's version.
+	///
+	/// spec: CHK-CFV#applicability
+	#[test]
+	fn a_windows_host_with_a_tamanu_is_graded() {
+		let tamanu = installed("2.46.0");
+		let graded = applicable(true, Some(&tamanu)).expect("both preconditions met");
+		assert_eq!(graded.version, v("2.46.0"));
 	}
 
 	fn strict() -> Version {
