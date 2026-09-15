@@ -81,9 +81,10 @@ install files to have read it from.
 ## Heal keying
 
 `heal::spawn_if_due` keys its rate limit and its one-attempt-in-flight guard on
-the qualified name (`tamanu-central:fhir_jobs`), not the bare check name, so two
-applications' heals for one check do not share a limit. The registry key becomes
-`String`.
+the check's name together with the *instance* it reports for
+(`postgres-5432:connect`), not the bare check name and not the type-level
+selection name, so two clusters' heals for one check do not share a limit. The
+registry key becomes `String`.
 
 ## Build steps
 
@@ -97,7 +98,7 @@ applications' heals for one check do not share a limit. The registry key becomes
 - [x] `disk_free` reads the install root from `MachineCx`
 - [x] `caddy_certs`, `http_errors` move from `SweepContext` to `AppCx`
 - [x] `fhir_jobs::heal` takes `AppCx`; `canopy_registration::heal` takes `MachineCx`
-- [x] `heal` keyed on the qualified name; `HealAction` generic over its context
+- [x] `heal` keyed per instance; `HealAction` generic over its context
 - [x] `SweepTargets` replaces `SweepTamanu`'s `is_tamanu`/`has_install`
 - [x] Sweep builds one `AppCx` per application and dispatches per subject
 - [x] `bestool` call sites updated
