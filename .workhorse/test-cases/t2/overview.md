@@ -14,6 +14,8 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] An empty directory in the capture comes back
 - [x] A symlink is restored as a link, not as a copy of what it points at (verifies spec: HOLD)
 - [x] An entry that changed kind between the two sides is replaced rather than written through
+- [x] A captured directory over a live symlink removes the link, never anything through it
+- [x] A captured directory over a live file does not abort the comparison
 - [x] The hold's capture is unchanged by the restore (verifies spec: HOLD)
 - [ ] The restored cluster starts and passes its verification, on each backend
 
@@ -23,14 +25,21 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] Same size and same modification time is skipped without reading — the fallback's degraded rule (verifies spec: HOLD)
 - [x] Same size, differing modification time, same contents is not copied
 - [x] Same size, differing modification time, differing contents is copied
+- [x] A named basis overrides a matching modification time, and leaves alone what it does not name
+- [x] Content comparison stops at the first differing chunk rather than reading both sides whole
+- [x] An unreadable side counts as a difference
 - [x] btrfs `find-new` output is read as the set of changed paths, re-based onto the restored tree
 - [x] btrfs `find-new` reporting nothing changed is an empty set, not an absent basis
 - [x] Paths on the subvolume but outside the restored tree are left out
+- [x] A `find-new` path containing spaces survives intact rather than being truncated
+- [x] A change journal that resolved records but none under the restored tree yields no basis
+- [ ] A btrfs mount above the live tree's own subvolume yields no basis rather than an empty one
 - [x] A recreated change journal (different id) yields no basis, whatever its numbering looks like
 - [x] A change journal wrapped past the capture yields no basis (verifies spec: HOLD)
 - [x] A position at the journal's very first record is still covered — the boundary is inclusive
 - [x] A volume that is not a drive letter yields no basis rather than a bad lookup
 - [x] `thin_delta` output is summed over every kind of difference and no sameness
+- [x] Device-mapper names are mangled, so two different pools cannot share a name
 - [ ] On a real btrfs host, the generation recorded at capture names exactly the files written since
 - [ ] On a real Windows host, the journal names exactly the files written since the shadow
 - [ ] On a real thin pool, `thin_delta` sizes the divergence against a known write volume
@@ -40,6 +49,7 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] Net growth nets removals and displacement off against what is copied
 - [x] A delta that frees more than it adds needs no room
 - [x] Where the capture shares the live filesystem, the whole written volume is charged to it, not the net
+- [x] An exact block-level divergence raises the copy-on-write bar without raising the filesystem one
 - [x] A separate copy-on-write store without room refuses and names how to raise it
 - [x] A separate store whose headroom cannot be read warns rather than refusing
 - [x] `vssadmin` shadow storage headroom is read as the cap less what is used
@@ -57,8 +67,13 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] Applying the delta twice converges
 - [x] A tree that already matches the capture is reported as no work
 - [x] Restoring in place without confirmation is refused, even onto an empty destination
+- [x] A marker naming this hold stands in for that confirmation, so a resume needs no flag
+- [x] A marker naming another hold, or naming none, is not consent
+- [x] The interlock is engaged for every method, not only postgres
 - [x] `PG_VERSION` is parked out of the way before the first write and written back from the capture last
 - [x] The parked `PG_VERSION` and the marker are kept out of the sync, which would otherwise remove them as post-freeze files
+- [x] The skips are named from the root of the tree walked, so a whole-install restore still protects them
+- [x] A data directory outside the tree being replaced is refused rather than silently unprotected
 - [x] A resumed restore keeps the pre-restore `PG_VERSION` parked rather than adopting a partial one
 - [x] Parking an absent `PG_VERSION` is not an error
 - [ ] Postgres refuses to start against a part-restored cluster on a real host

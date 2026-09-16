@@ -176,6 +176,7 @@ pub async fn changed_since(
 
 		let mut resolver = handle.path_resolver_with_cache();
 		let mut paths = BTreeSet::new();
+		let mut records = 0usize;
 		for entry in entries {
 			// A read that fails partway has produced a prefix of the changes, which
 			// is no more an answer than a wrapped journal's suffix.
@@ -192,9 +193,27 @@ pub async fn changed_since(
 			let Some(path) = resolver.resolve_path(&entry) else {
 				continue;
 			};
+			records += 1;
 			if let Ok(rel) = path.strip_prefix(&root) {
 				paths.insert(rel.to_path_buf());
 			}
+		}
+
+		// A volume-wide journal that resolved plenty of paths, none of which lands
+		// under the tree being restored, is the signature of the paths being in a
+		// different form than `root` — volume-relative against absolute, an
+		// extended-length prefix, a short name. That is indistinguishable here from
+		// "nothing under the cluster changed", and the two lead to opposite
+		// actions: one is a correct no-op, the other silently leaves the whole tree
+		// diverged. Until this path is confirmed on a real host, decline.
+		if paths.is_empty() && records > 0 {
+			warn!(
+				records,
+				root = %root.display(),
+				"{letter}'s change journal resolved paths but none under the tree being \
+				 restored, so the restore compared the trees instead",
+			);
+			return None;
 		}
 
 		debug!(

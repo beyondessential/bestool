@@ -666,10 +666,13 @@ pub async fn restore_in_place(
 		"restoring postgres cluster in place from a held capture",
 	);
 
-	// A tree already mid-restore is not "existing data" an operator is about to
-	// lose; it is the same restore being finished. Asking to clobber it again
-	// would make the documented recovery need a flag the first attempt did not.
-	if !Interlock::held_by(&target.data_dir).await {
+	// A tree left part-way through *this* restore is not "existing data" an
+	// operator is about to lose; it is the same restore being finished, and
+	// asking to clobber it again would make the documented recovery need a flag
+	// the first attempt did not. A marker naming any other hold is not that, and
+	// neither is one someone dropped into the data directory, so it stands in for
+	// consent only when it names the hold being restored.
+	if !Interlock::resumes(&target.data_dir, record).await {
 		super::method::ensure_not_clobbering_in_place(&plan.dest, opts.clobber)?;
 	}
 
@@ -694,12 +697,18 @@ pub async fn restore_in_place(
 	let interlock = Interlock::engage(&target.data_dir, record).await?;
 	park_version_file(&version_file, &parked).await?;
 
-	let capture_data = resolve::locate_pgdata(capture)?;
+	// One pass over the whole tree being replaced, which on a whole-install
+	// capture is the install directory rather than the data directory alone: its
+	// binaries are part of the captured state and must roll back with the data
+	// they match. Walking the data directory and then the shell around it
+	// separately would resolve the basis twice — a second `find-new`, or a second
+	// pass over the change journal — and gate the two halves against free space
+	// independently, which two passes can each fit without the pair fitting.
 	let summary = super::super::restore::inplace::run(Job {
 		record,
-		capture: &capture_data,
-		live: &target.data_dir,
-		skip: interlock_skips(),
+		capture: &plan.source,
+		live: &plan.dest,
+		skip: interlock_skips(&plan)?,
 	})
 	.await
 	.wrap_err_with(|| {
@@ -711,15 +720,9 @@ pub async fn restore_in_place(
 		)
 	})?;
 
-	// The install's own files (binaries and the like) sit outside the data dir on
-	// a whole-install capture, and diverge as rarely as they are upgraded.
-	if plan.whole_install {
-		restore_install_shell(record, capture, &plan).await?;
-	}
-
 	// Last, so the cluster becomes startable only once everything under it is the
 	// captured state.
-	sync_version_file(&capture_data, &version_file, &parked).await?;
+	sync_version_file(&resolve::locate_pgdata(capture)?, &version_file, &parked).await?;
 	interlock.release().await?;
 	info!(
 		copied = summary.copied,
@@ -762,7 +765,8 @@ pub async fn restore_in_place(
 #[cfg(feature = "canopy-restore")]
 const PARKED_SUFFIX: &str = "bestool-restoring";
 
-/// The entries inside the data directory the sync must not touch.
+/// The entries the sync must not touch, relative to the root of the tree being
+/// replaced.
 ///
 /// `PG_VERSION` because it is written back from the capture last, so that the
 /// cluster becomes startable only once everything beneath it is the captured
@@ -770,16 +774,25 @@ const PARKED_SUFFIX: &str = "bestool-restoring";
 /// part of the captured state at all — a sync that saw them would remove them as
 /// files written since the freeze, taking with them the two things keeping a
 /// part-restored cluster from being started.
+///
+/// All three live in the data directory, which on a whole-install restore is
+/// nested inside the tree being walked, so they are named from its root.
 #[cfg(feature = "canopy-restore")]
-fn interlock_skips() -> Vec<PathBuf> {
+fn interlock_skips(plan: &resolve::RestorePlan) -> Result<Vec<PathBuf>> {
 	use crate::actions::canopy::restore::inplace::Interlock;
 
-	let marker = Interlock::marker_in(Path::new(""));
-	vec![
-		PathBuf::from("PG_VERSION"),
-		PathBuf::from(format!("PG_VERSION.{PARKED_SUFFIX}")),
-		PathBuf::from(marker.file_name().expect("the marker has a file name")),
-	]
+	let within = plan.target.data_dir.strip_prefix(&plan.dest).map_err(|_| {
+		miette::miette!(
+			"the data directory {} is not inside the tree being restored ({})",
+			plan.target.data_dir.display(),
+			plan.dest.display(),
+		)
+	})?;
+	Ok(vec![
+		within.join("PG_VERSION"),
+		within.join(format!("PG_VERSION.{PARKED_SUFFIX}")),
+		within.join(Interlock::marker_name()),
+	])
 }
 
 /// Take `PG_VERSION` out of the way, so postgres cannot start the cluster while
@@ -811,7 +824,7 @@ async fn park_version_file(version_file: &Path, parked: &Path) -> Result<()> {
 #[cfg(feature = "canopy-restore")]
 async fn sync_version_file(capture_data: &Path, version_file: &Path, parked: &Path) -> Result<()> {
 	let from = capture_data.join("PG_VERSION");
-	crate::actions::canopy::restore::sync::copy_entry(&from, version_file)
+	crate::actions::canopy::restore::sync::copy_entry(&from, version_file, false)
 		.await
 		.wrap_err_with(|| {
 			format!(
@@ -823,57 +836,54 @@ async fn sync_version_file(capture_data: &Path, version_file: &Path, parked: &Pa
 	Ok(())
 }
 
-/// Roll back the files a whole-install capture carries around its data
-/// directory — the binaries and their support files.
-///
-/// They are part of the captured state (the point of capturing them is that a
-/// restore brings the exact matching server), but they sit beside the data dir
-/// rather than under it, so the data dir's own sync does not reach them.
-#[cfg(feature = "canopy-restore")]
-async fn restore_install_shell(
-	record: &super::hold::HoldRecord,
-	capture: &Path,
-	plan: &resolve::RestorePlan,
-) -> Result<()> {
-	use crate::actions::canopy::restore::inplace::Job;
-
-	let capture_data = resolve::locate_pgdata(capture)?;
-	// Everything under the install root except the data directory, which the
-	// caller has already restored and must not be walked twice.
-	let data_dir_name = capture_data
-		.strip_prefix(&plan.source)
-		.ok()
-		.map(Path::to_path_buf)
-		.unwrap_or_default();
-	if data_dir_name.as_os_str().is_empty() {
-		return Ok(());
-	}
-	super::super::restore::inplace::run(Job {
-		record,
-		capture: &plan.source,
-		live: &plan.dest,
-		skip: vec![data_dir_name],
-	})
-	.await
-	.map(|_| ())
-}
-
 #[cfg(all(test, feature = "canopy-restore"))]
 mod in_place_tests {
 	use super::*;
+
+	use crate::actions::canopy::restore::inplace::Interlock;
+
+	fn plan(dest: &str, data_dir: &str) -> resolve::RestorePlan {
+		resolve::RestorePlan {
+			source: PathBuf::from("/capture"),
+			dest: PathBuf::from(dest),
+			data_major: "16".into(),
+			whole_install: dest != data_dir,
+			target: resolve::ResolvedCluster {
+				version: "16".into(),
+				cluster: "main".into(),
+				data_dir: PathBuf::from(data_dir),
+			},
+		}
+	}
 
 	/// All three have to be left alone, and the two that are not captured state
 	/// are the ones that keep a part-restored cluster from being started — so a
 	/// sync that removed them would undo the interlock silently.
 	#[test]
 	fn the_interlock_keeps_its_own_files_out_of_the_sync() {
-		let skips = interlock_skips();
+		let skips = interlock_skips(&plan("/pg/16/main", "/pg/16/main")).unwrap();
 		assert!(skips.contains(&PathBuf::from("PG_VERSION")));
 		assert!(skips.contains(&PathBuf::from("PG_VERSION.bestool-restoring")));
-		assert!(
-			skips.iter().any(|p| p.to_string_lossy().contains("in-place-restore")),
-			"got: {skips:?}"
-		);
+		assert!(skips.contains(&PathBuf::from(Interlock::marker_name())));
+	}
+
+	/// A whole-install restore walks the install directory, so the data
+	/// directory's own files are a level down. Naming them from the wrong root
+	/// would let the sync remove the two that hold the cluster unstartable.
+	#[test]
+	fn the_skips_are_named_from_the_root_of_the_tree_being_walked() {
+		let skips = interlock_skips(&plan("/pg/16", "/pg/16/data")).unwrap();
+		assert!(skips.contains(&PathBuf::from("data/PG_VERSION")));
+		assert!(skips.contains(&PathBuf::from("data/PG_VERSION.bestool-restoring")));
+		assert!(skips.contains(&PathBuf::from("data").join(Interlock::marker_name())));
+	}
+
+	/// The whole scheme rests on the data directory being inside the tree being
+	/// replaced. If it is not, the interlock's files would not be skipped and the
+	/// sync would quietly remove them, so the restore refuses instead.
+	#[test]
+	fn a_data_directory_outside_the_restored_tree_is_refused() {
+		assert!(interlock_skips(&plan("/pg/16", "/elsewhere/data")).is_err());
 	}
 
 	/// The parked copy is the *pre-restore* version file. A resumed restore must

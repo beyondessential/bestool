@@ -10,8 +10,10 @@
 //! given.
 
 pub mod basis;
+#[cfg(unix)]
+pub mod blockdev;
 pub mod inplace;
-pub mod space;
+pub mod room;
 pub mod sync;
 
 use std::{
@@ -35,7 +37,7 @@ use uuid::Uuid;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
-	postgresql::space as pg_space, progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
+	postgresql::space, progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
 	transient_config_dir,
 	trim_error,
 };
@@ -471,7 +473,7 @@ async fn restore_from_hold(
 	// displaces is renamed aside on the same filesystem, not copied — but it is a
 	// whole second copy of the cluster, so check for it before starting rather
 	// than failing partway through a restore an operator is depending on.
-	let needed = i64::try_from(pg_space::dir_size(&record.source).await).ok();
+	let needed = i64::try_from(space::dir_size(&record.source).await).ok();
 	// Staging is a whole second copy of the capture. Where the volume cannot hold
 	// one, the rollback point is readable and still unusable, so the refusal has
 	// to name the way through rather than only the shortfall.
@@ -640,19 +642,11 @@ async fn ensure_free_space(staging: &std::path::Path, needed: Option<i64>) -> Re
 }
 
 /// A rough human-readable byte size (binary units), for operator-facing messages.
+///
+/// The same rendering the backup path's shortfalls use, so an operator reading a
+/// restore's refusal and a backup's sees one set of units.
 pub(crate) fn human_bytes(bytes: u64) -> String {
-	const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-	let mut value = bytes as f64;
-	let mut unit = 0;
-	while value >= 1024.0 && unit < UNITS.len() - 1 {
-		value /= 1024.0;
-		unit += 1;
-	}
-	if unit == 0 {
-		format!("{bytes} B")
-	} else {
-		format!("{value:.1} {}", UNITS[unit])
-	}
+	space::fmt_bytes(bytes)
 }
 
 async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Result<Vec<Snapshot>> {

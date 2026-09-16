@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use miette::{Result, bail};
 use tracing::info;
 
-use super::{basis, space, sync};
+use super::{basis, room, sync};
 use crate::actions::canopy::backup::hold::HoldRecord;
 
 /// One tree to roll back onto one capture.
@@ -64,69 +64,45 @@ pub async fn run(job: Job<'_>) -> Result<Summary> {
 		);
 	}
 
-	let delta = sync::compare(capture, live, &skip).await?;
+	// The basis is resolved before the walk so the walk can settle every entry as
+	// it meets it, rather than accumulating one row per same-size entry — on a
+	// tree this size that list is the largest thing in memory and it is not the
+	// delta, it is the whole cluster.
 	let basis = basis::resolve(record, live).await;
+	let from_filesystem = basis.is_named();
+	let delta = sync::compare(capture, live, &skip, basis.into_decision()).await?;
 
-	// The walk settles every structural question; the basis, or failing that a
-	// content comparison, settles the entries it could not.
-	let also_copy = if basis.is_named() {
-		delta
-			.undecided
-			.iter()
-			.filter(|(rel, _, _)| basis.names(rel))
-			.map(|(rel, _, _)| rel.clone())
-			.collect()
-	} else {
-		sync::decide_undecided(capture, live, delta.undecided.clone()).await?
-	};
+	// Where the backend can size the divergence exactly and cheaply, that is a
+	// better number than the walk's — but only for the copy-on-write store. It
+	// is a count of differing *blocks*, which says nothing about how much the
+	// tree grows, and folding it into the delta would raise the filesystem
+	// requirement too and could refuse a restore that fits.
+	let cow_bytes = basis::divergence_bytes(record, live).await;
 
-	// A same-size entry costs its own size to write, and frees nothing, so it
-	// lands on both sides of the ledger before the gate sees it.
-	let mut delta = delta;
-	for rel in &also_copy {
-		let len = capture
-			.join(rel)
-			.symlink_metadata()
-			.map(|meta| meta.len())
-			.unwrap_or(0);
-		delta.copy_bytes = delta.copy_bytes.saturating_add(len);
-		delta.displaced_bytes = delta.displaced_bytes.saturating_add(len);
-	}
+	let store = room::cow_store(record).await;
+	room::ensure_room(live, &delta, &store, cow_bytes).await?;
 
-	// Where the backend can size the divergence exactly and cheaply, that beats
-	// the walk's estimate; it can only raise the bar, never lower it.
-	if let Some(exact) = basis::divergence_bytes(record, live).await {
-		delta.copy_bytes = delta.copy_bytes.max(exact);
-	}
-
-	let store = space::cow_store(record).await;
-	space::ensure_room(live, &delta, &store).await?;
-
-	let copy: Vec<PathBuf> = delta.copy.iter().cloned().chain(also_copy).collect();
-	// Whether there is work, not whether the walk found anything to think about:
-	// a tree that already matches still has every same-size entry to consider,
-	// and reporting that as a restore would hide a no-op.
-	if copy.is_empty() && !delta.has_work() {
+	if !delta.has_work() {
 		info!("the live tree already matches the capture; nothing to write");
 		return Ok(Summary {
-			from_filesystem: basis.is_named(),
+			from_filesystem,
 			..Default::default()
 		});
 	}
 
 	info!(
-		copying = copy.len(),
+		copying = delta.copy.len(),
 		removing = delta.remove.len(),
 		bytes = delta.copy_bytes,
 		"laying the divergence down over the live tree",
 	);
-	sync::apply(capture, live, &delta, &copy).await?;
+	sync::apply(capture, live, &delta).await?;
 
 	Ok(Summary {
-		copied: copy.len(),
+		copied: delta.copy.len(),
 		removed: delta.remove.len(),
 		bytes: delta.copy_bytes,
-		from_filesystem: basis.is_named(),
+		from_filesystem,
 	})
 }
 
@@ -144,9 +120,16 @@ pub struct Interlock {
 /// the tree rather than with the host.
 const MARKER: &str = ".bestool-in-place-restore";
 
+/// The line of the marker naming the hold whose restore is in flight.
+const HOLD_LINE: &str = "hold:";
+
 impl Interlock {
-	/// The marker's path within a tree, for a caller that has to keep it out of
-	/// the sync.
+	/// The marker's file name, for a caller that has to keep it out of the sync.
+	pub fn marker_name() -> &'static str {
+		MARKER
+	}
+
+	/// The marker's path within a tree.
 	pub fn marker_in(live: &Path) -> PathBuf {
 		live.join(MARKER)
 	}
@@ -156,6 +139,21 @@ impl Interlock {
 		tokio::fs::metadata(Self::marker_in(live)).await.is_ok()
 	}
 
+	/// Whether a tree was left part-way through a restore *from this same hold*.
+	///
+	/// A caller treats that as consent already given: finishing an interrupted
+	/// restore is the documented recovery, and it should not need a confirmation
+	/// the first attempt did not. Only for the same hold, though — the marker is
+	/// an ordinary file in a directory the service account can write, so a stale
+	/// one from an unrelated restore, or one someone dropped there, must not
+	/// stand in for an operator saying yes to overwriting live data.
+	pub async fn resumes(live: &Path, record: &HoldRecord) -> bool {
+		let Ok(note) = tokio::fs::read_to_string(Self::marker_in(live)).await else {
+			return false;
+		};
+		marked_hold(&note).is_some_and(|held| held == record.id)
+	}
+
 	/// Mark the tree as mid-restore.
 	pub async fn engage(live: &Path, record: &HoldRecord) -> Result<Self> {
 		let marker = Self::marker_in(live);
@@ -163,7 +161,7 @@ impl Interlock {
 		let note = format!(
 			"This directory is part-way through an in-place restore and is NOT usable.\n\
 			 \n\
-			 hold:    {}\n\
+			 hold: {}\n\
 			 capture: {}\n\
 			 frozen:  {}\n\
 			 started: {}\n\
@@ -217,6 +215,17 @@ impl Interlock {
 		}
 		Ok(())
 	}
+}
+
+/// The hold id a marker names, if it names one.
+///
+/// The marker is written for a person to read, so this reads the one line that
+/// has to be machine-readable and ignores the prose around it.
+fn marked_hold(note: &str) -> Option<&str> {
+	note.lines()
+		.find_map(|line| line.trim().strip_prefix(HOLD_LINE))
+		.map(str::trim)
+		.filter(|id| !id.is_empty())
 }
 
 #[cfg(test)]
@@ -414,6 +423,66 @@ mod tests {
 
 		interlock.release().await.unwrap();
 		Interlock::ensure_clear(&live).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn a_marker_from_this_hold_is_a_resume() {
+		let tmp = tempfile::tempdir().unwrap();
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&live).unwrap();
+		let record = record(&live);
+
+		assert!(!Interlock::resumes(&live, &record).await, "no marker, no resume");
+		let _interlock = Interlock::engage(&live, &record).await.unwrap();
+		assert!(Interlock::resumes(&live, &record).await);
+	}
+
+	/// The marker stands in for a confirmation the operator already gave, so it
+	/// only counts for the restore they gave it for. It is an ordinary file in a
+	/// directory the service account can write, and any aborted restore leaves
+	/// one behind — treating a stale or planted marker as consent would let a
+	/// restore from any hold overwrite the live cluster unprompted.
+	#[tokio::test]
+	async fn a_marker_from_another_hold_is_not_consent() {
+		let tmp = tempfile::tempdir().unwrap();
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&live).unwrap();
+		let mine = record(&live);
+
+		let _interlock = Interlock::engage(&live, &mine).await.unwrap();
+
+		let mut other = record(&live);
+		other.id = "tamanu-postgres-20260101T000000Z".into();
+		assert!(Interlock::held_by(&live).await, "the tree is mid-restore");
+		assert!(
+			!Interlock::resumes(&live, &other).await,
+			"a marker for a different hold must not stand in for confirmation"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_marker_naming_no_hold_is_not_consent() {
+		let tmp = tempfile::tempdir().unwrap();
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&live).unwrap();
+		let record = record(&live);
+		// Anyone with write access to the data directory can leave a file here.
+		std::fs::write(Interlock::marker_in(&live), "planted by someone else
+").unwrap();
+
+		assert!(Interlock::held_by(&live).await);
+		assert!(!Interlock::resumes(&live, &record).await);
+	}
+
+	#[test]
+	fn reads_the_hold_out_of_a_marker_and_nothing_else_out_of_the_prose() {
+		let note = "This directory is part-way through an in-place restore and is NOT usable.\n\
+		            \n\
+		            hold: tamanu-postgres-20260915T052531Z\n\
+		            capture: /var/lib/bestool/held-source/x\n";
+		assert_eq!(marked_hold(note), Some("tamanu-postgres-20260915T052531Z"));
+		assert_eq!(marked_hold("no hold line here"), None);
+		assert_eq!(marked_hold("hold:   \n"), None);
 	}
 
 	#[tokio::test]

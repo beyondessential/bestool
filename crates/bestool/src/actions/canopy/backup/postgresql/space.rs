@@ -258,7 +258,7 @@ fn detected_backup_dirs() -> Vec<PathBuf> {
 }
 
 /// Format a byte count as a human-readable size (binary units).
-pub(super) fn fmt_bytes(bytes: u64) -> String {
+pub(crate) fn fmt_bytes(bytes: u64) -> String {
 	const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 	let mut value = bytes as f64;
 	let mut unit = 0;

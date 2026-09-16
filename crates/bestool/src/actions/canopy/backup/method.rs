@@ -13,7 +13,7 @@ use std::{
 };
 
 use jiff::Timestamp;
-use miette::{Result, bail};
+use miette::{Context as _, Result, bail};
 use serde::Deserialize;
 use tracing::{debug, info};
 
@@ -339,19 +339,40 @@ impl Method {
 
 		match self {
 			Method::Simple(config) => {
+				use crate::actions::canopy::restore::inplace::Interlock;
+
 				let target = match &opts.target {
 					Some(target) => target.clone(),
 					None => config.path.clone(),
 				};
-				ensure_not_clobbering_in_place(&target, opts.clobber)?;
-				crate::actions::canopy::restore::inplace::run(Job {
+				if !Interlock::resumes(&target, record).await {
+					ensure_not_clobbering_in_place(&target, opts.clobber)?;
+				}
+
+				// The same record every in-place restore leaves: part-way through, the
+				// tree is neither the state it was in nor the captured one, and that
+				// has to be legible in the tree itself rather than only in a log. What
+				// the postgres method adds on top is holding its *service* unstartable,
+				// which is its own business.
+				let interlock = Interlock::engage(&target, record).await?;
+				let laid = crate::actions::canopy::restore::inplace::run(Job {
 					record,
 					capture,
 					live: &target,
-					skip: Vec::new(),
+					skip: vec![PathBuf::from(Interlock::marker_name())],
 				})
-				.await
-				.map(|_| ())
+				.await;
+				match laid {
+					Ok(_) => interlock.release().await,
+					Err(err) => Err(err).wrap_err_with(|| {
+						format!(
+							"{} is part-way through a restore from hold {} and is not usable; \
+							 the hold is untouched, so run the same command again to finish it",
+							target.display(),
+							record.id,
+						)
+					}),
+				}
 			}
 			Method::Postgresql(config) => {
 				super::postgresql::restore_in_place(config, record, capture, opts).await

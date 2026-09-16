@@ -13,16 +13,14 @@
 
 use std::{collections::BTreeSet, path::Path};
 
-use tokio::process::Command;
 use tracing::debug;
 
-use super::Basis;
+use super::{Basis, super::blockdev};
 
 /// The paths under `live` written since `generation`.
 pub async fn changed_since(generation: u64, live: &Path) -> Basis {
-	// `find-new` works on a subvolume, and the live tree is usually a directory
-	// within one, so its answers are relative to the subvolume root and have to
-	// be re-based onto the tree being restored.
+	// `find-new` reports paths relative to a *subvolume* root, and the live tree
+	// is usually a directory inside one, so its answers have to be re-based.
 	let Some(subvol) = enclosing_subvolume(live).await else {
 		return Basis::unavailable("the live tree is not on a btrfs subvolume this can read");
 	};
@@ -30,27 +28,24 @@ pub async fn changed_since(generation: u64, live: &Path) -> Basis {
 		return Basis::unavailable("the live tree is not under the subvolume btrfs reports");
 	};
 
-	let output = Command::new("btrfs")
-		.args(["subvolume", "find-new"])
-		.arg(&subvol)
-		.arg(generation.to_string())
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await;
-	let output = match output {
-		Ok(output) if output.status.success() => output,
-		Ok(output) => {
-			return Basis::unavailable(format!(
-				"btrfs could not list what changed since generation {generation} ({})",
-				output.status
-			));
-		}
-		Err(err) => {
-			return Basis::unavailable(format!("btrfs could not be run to list what changed: {err}"));
-		}
+	let Some(output) = blockdev::capture(
+		"btrfs",
+		&[
+			"subvolume",
+			"find-new",
+			"--",
+			&subvol.to_string_lossy(),
+			&generation.to_string(),
+		],
+	)
+	.await
+	else {
+		return Basis::unavailable(format!(
+			"btrfs could not list what changed since generation {generation}"
+		));
 	};
 
-	let paths = parse_find_new(&String::from_utf8_lossy(&output.stdout), rel);
+	let paths = parse_find_new(&output, rel);
 	debug!(
 		generation,
 		subvolume = %subvol.display(),
@@ -63,35 +58,63 @@ pub async fn changed_since(generation: u64, live: &Path) -> Basis {
 	}
 }
 
-/// The subvolume `path` lives in, as btrfs reports its mount.
-async fn enclosing_subvolume(path: &Path) -> Option<std::path::PathBuf> {
-	let output = Command::new("findmnt")
-		.args(["-n", "-o", "TARGET", "--target"])
-		.arg(path)
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await
-		.ok()?;
-	if !output.status.success() {
+/// The root of the subvolume `path` lives in, but only when the mount exposes
+/// exactly that subvolume.
+///
+/// `findmnt` gives the mount point, which is not always the subvolume root: a
+/// filesystem mounted at its top level (`subvolid=5`) with the cluster in a
+/// nested subvolume has a mount point several levels above, and belonging to a
+/// different subvolume. `find-new` run against the wrong subvolume does not
+/// fail — it exits cleanly having found nothing, because the nested subvolume
+/// keeps its own tree — and an empty answer taken as authoritative leaves every
+/// diverged file in place. So the two are required to be the same subvolume, and
+/// anything else declines.
+async fn enclosing_subvolume(live: &Path) -> Option<std::path::PathBuf> {
+	let mount = std::path::PathBuf::from(blockdev::findmnt("TARGET", live).await?);
+	let (Some(at_mount), Some(at_live)) = (rootid(&mount).await, rootid(live).await) else {
+		return None;
+	};
+	if at_mount != at_live {
+		debug!(
+			mount = %mount.display(),
+			live = %live.display(),
+			at_mount,
+			at_live,
+			"the mount point is not the live tree's own subvolume, so btrfs cannot be asked",
+		);
 		return None;
 	}
-	let target = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-	(!target.is_empty()).then(|| std::path::PathBuf::from(target))
+	Some(mount)
+}
+
+/// The id of the subvolume a path belongs to.
+async fn rootid(path: &Path) -> Option<u64> {
+	blockdev::capture(
+		"btrfs",
+		&["inspect-internal", "rootid", "--", &path.to_string_lossy()],
+	)
+	.await?
+	.trim()
+	.parse()
+	.ok()
 }
 
 /// The changed paths from `find-new`'s output, re-based from the subvolume root
 /// onto the tree being restored.
 ///
-/// Each file line ends `… gen N … flags … <path>`, the path being the last
-/// whitespace-separated field and relative to the subvolume root. The closing
-/// `transid marker was N` line is not a file. Anything outside `rel` is on the
-/// subvolume but not in the tree, so it is not the restore's business.
+/// A file line is a fixed set of fields ending `flags <FLAGS> <path>`, and the
+/// path is everything after the flags — not the last whitespace-separated field,
+/// which would truncate any name containing a space to its final word and then
+/// silently drop it from an authoritative set. The closing `transid marker was
+/// N` line is not a file. Anything outside `rel` is on the subvolume but not in
+/// the tree, so it is not this restore's business.
 fn parse_find_new(output: &str, rel: &Path) -> BTreeSet<std::path::PathBuf> {
 	output
 		.lines()
 		.filter(|line| line.starts_with("inode "))
-		.filter_map(|line| line.rsplit_once(char::is_whitespace))
-		.map(|(_, path)| Path::new(path))
+		.filter_map(|line| line.split_once(" flags "))
+		.filter_map(|(_, after)| after.split_once(' '))
+		.map(|(_flags, path)| Path::new(path))
 		.filter_map(|path| path.strip_prefix(rel).ok())
 		.map(Path::to_path_buf)
 		.collect()
@@ -146,5 +169,30 @@ transid marker was 41
 		// absent basis means "go and compare".
 		let paths = parse_find_new("transid marker was 41\n", Path::new(""));
 		assert!(paths.is_empty());
+	}
+
+	/// Taking the last whitespace-separated field truncates a name with a space
+	/// in it to its final word, which then fails to re-base and drops silently
+	/// out of a set that is treated as authoritative — leaving the file diverged.
+	#[test]
+	fn a_path_containing_spaces_survives_intact() {
+		let line = "inode 260 file offset 0 len 4096 disk start 1 offset 0 gen 45 flags NONE \
+		            16/main/base/my table data\n";
+		let paths = parse_find_new(line, Path::new("16/main"));
+		assert_eq!(
+			paths.into_iter().collect::<Vec<_>>(),
+			vec![PathBuf::from("base/my table data")]
+		);
+	}
+
+	#[test]
+	fn a_path_containing_the_word_flags_is_not_cut_short() {
+		let line = "inode 261 file offset 0 len 4096 disk start 1 offset 0 gen 46 flags NONE \
+		            16/main/base/flags\n";
+		let paths = parse_find_new(line, Path::new("16/main"));
+		assert_eq!(
+			paths.into_iter().collect::<Vec<_>>(),
+			vec![PathBuf::from("base/flags")]
+		);
 	}
 }

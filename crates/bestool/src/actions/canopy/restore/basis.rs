@@ -20,6 +20,7 @@ use std::{
 
 use tracing::{info, warn};
 
+use super::sync::Decide;
 use crate::actions::canopy::backup::hold::{DivergenceMark, HoldRecord};
 
 #[cfg(unix)]
@@ -46,18 +47,20 @@ pub enum Basis {
 }
 
 impl Basis {
-	/// Whether a same-size entry at `rel` needs copying.
+	/// How the walk should settle a same-size entry.
 	///
-	/// Only meaningful for [`Basis::Named`]; the unavailable case is handled by
-	/// hashing instead and never reaches here.
-	pub fn names(&self, rel: &Path) -> bool {
+	/// The named set is only reachable through this, so there is no way to ask
+	/// whether the filesystem named a path without first establishing that it
+	/// answered at all — the question is meaningless otherwise, and a wrong
+	/// answer to it is a file left diverged.
+	pub fn into_decision(self) -> Decide {
 		match self {
-			Self::Named { paths, .. } => paths.contains(rel),
-			Self::Unavailable { .. } => true,
+			Self::Named { paths, .. } => Decide::Named(paths),
+			Self::Unavailable { .. } => Decide::Compare,
 		}
 	}
 
-	/// Whether the filesystem answered.
+	/// Whether the filesystem answered, for the operator-facing report.
 	pub fn is_named(&self) -> bool {
 		matches!(self, Self::Named { .. })
 	}

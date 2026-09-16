@@ -1,6 +1,9 @@
 //! Finding room for an in-place restore, which is not the question a staged one
 //! asks.
 //!
+//! Named for what it answers rather than for the resource, because there are two
+//! resources and the whole point is that they are different numbers.
+//!
 //! A staged restore needs free space for a whole second copy of the capture. An
 //! in-place one writes only the divergence, and what that costs depends on
 //! *where* the capture lives:
@@ -19,11 +22,16 @@
 
 use std::path::Path;
 
-use miette::{Context as _, IntoDiagnostic as _, Result, bail};
+use miette::{Result, bail};
 use tracing::{debug, info, warn};
 
 use super::{human_bytes, sync::Delta};
-use crate::actions::canopy::backup::hold::{HeldCapture, HoldRecord};
+use crate::actions::canopy::backup::{
+	hold::{HeldCapture, HoldRecord},
+	// The same question the staged path asks, so the same answer: free space on
+	// the volume backing a path that may not exist yet.
+	postgresql::space as pg_space,
+};
 
 /// Headroom over an estimate, for filesystem overhead, rounding, and the writes
 /// a stopped cluster's neighbours make while the restore runs.
@@ -73,9 +81,20 @@ pub async fn cow_store(record: &HoldRecord) -> CowStore {
 /// Refuse an in-place restore that does not fit, before anything is written.
 ///
 /// `live` is the tree being restored onto; its filesystem takes the net growth.
-pub async fn ensure_room(live: &Path, delta: &Delta, store: &CowStore) -> Result<()> {
+/// `cow_bytes`, where a backend can give one, is an exact block-level count of
+/// what diverged — a better figure than the walk's for the copy-on-write store,
+/// and meaningless for the filesystem, which cares how much the tree *grows*
+/// rather than how much is written over.
+pub async fn ensure_room(
+	live: &Path,
+	delta: &Delta,
+	store: &CowStore,
+	cow_bytes: Option<u64>,
+) -> Result<()> {
 	let growth = delta.net_growth();
-	let written = delta.written_bytes();
+	// The exact figure can only raise the bar: it counts blocks the walk may not
+	// have attributed to any one entry, never fewer.
+	let written = delta.written_bytes().max(cow_bytes.unwrap_or(0));
 	info!(
 		growth,
 		written,
@@ -92,22 +111,33 @@ pub async fn ensure_room(live: &Path, delta: &Delta, store: &CowStore) -> Result
 
 	if filesystem_need > 0 {
 		let required = with_headroom(filesystem_need);
-		let volume = nearest_existing(live);
-		let available = fs4::available_space(&volume)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("checking free space on {}", volume.display()))?;
+		let Some(available) = pg_space::available(live) else {
+			// Not knowing is not a reason to refuse a rollback an operator is
+			// depending on; the write itself reports a full filesystem plainly.
+			warn!(
+				"could not read the free space on {}; restoring in place needs about {} there",
+				live.display(),
+				human_bytes(required),
+			);
+			return check_cow_store(store, written);
+		};
 		if available < required {
 			bail!(
 				"restoring in place needs about {} free on {} but only {} is available; \
 				 free up space and retry",
 				human_bytes(required),
-				volume.display(),
+				live.display(),
 				human_bytes(available),
 			);
 		}
 		debug!(required, available, "the live filesystem has room for the divergence");
 	}
 
+	check_cow_store(store, written)
+}
+
+/// The second of the two resources: what a copy-on-write store has to absorb.
+fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 	if let CowStore::Separate {
 		name,
 		available,
@@ -139,37 +169,20 @@ pub async fn ensure_room(live: &Path, delta: &Delta, store: &CowStore) -> Result
 	Ok(())
 }
 
-/// The nearest ancestor of `path` that exists, since free space is a property of
-/// the volume rather than of a directory that may not be there yet.
-fn nearest_existing(path: &Path) -> std::path::PathBuf {
-	let mut current = Some(path);
-	while let Some(candidate) = current {
-		if candidate.exists() {
-			return candidate.to_path_buf();
-		}
-		current = candidate.parent();
-	}
-	path.to_path_buf()
-}
-
 /// The thin pool behind a held LVM capture, and what is left in it.
 #[cfg(unix)]
 async fn thin_pool_store(vg: &str, lv: &str) -> CowStore {
-	let Some(pool) = lvs_field(&format!("{vg}/{lv}"), "pool_lv", false).await else {
-		return CowStore::SameFilesystem;
-	};
-	let pool = pool.trim().to_owned();
-	if pool.is_empty() {
+	let Some(pool) = super::blockdev::lvs("pool_lv", &format!("{vg}/{lv}"), false).await else {
 		// A thick snapshot has its own fixed allocation rather than a shared pool.
 		return CowStore::SameFilesystem;
-	}
+	};
 	let qualified = format!("{vg}/{pool}");
-	let size: Option<u64> = lvs_field(&qualified, "lv_size", true)
+	let size: Option<u64> = super::blockdev::lvs("lv_size", &qualified, true)
 		.await
-		.and_then(|raw| raw.trim().parse().ok());
-	let used: Option<f64> = lvs_field(&qualified, "data_percent", false)
+		.and_then(|raw| raw.parse().ok());
+	let used: Option<f64> = super::blockdev::lvs("data_percent", &qualified, false)
 		.await
-		.and_then(|raw| raw.trim().parse().ok());
+		.and_then(|raw| raw.parse().ok());
 	let available = match (size, used) {
 		#[expect(
 			clippy::cast_precision_loss,
@@ -186,25 +199,6 @@ async fn thin_pool_store(vg: &str, lv: &str) -> CowStore {
 		available,
 		remedy: format!("extend it with `lvextend --poolmetadatasize` / `lvextend {qualified}` first"),
 	}
-}
-
-#[cfg(unix)]
-async fn lvs_field(target: &str, field: &str, bytes: bool) -> Option<String> {
-	let mut args = vec!["--noheadings", "-o", field];
-	if bytes {
-		args.extend(["--units", "b", "--nosuffix"]);
-	}
-	args.push(target);
-	let output = tokio::process::Command::new("lvs")
-		.args(&args)
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await
-		.ok()?;
-	output
-		.status
-		.success()
-		.then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The shadow storage area a held VSS capture lives in, and its headroom.
@@ -327,7 +321,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_empty_delta_needs_nothing_anywhere() {
 		let tmp = tempfile::tempdir().unwrap();
-		ensure_room(tmp.path(), &Delta::default(), &CowStore::None)
+		ensure_room(tmp.path(), &Delta::default(), &CowStore::None, None)
 			.await
 			.unwrap();
 	}
@@ -345,7 +339,7 @@ mod tests {
 			available: Some(1024),
 			remedy: "extend it first".into(),
 		};
-		let err = ensure_room(tmp.path(), &delta, &store).await.unwrap_err().to_string();
+		let err = ensure_room(tmp.path(), &delta, &store, None).await.unwrap_err().to_string();
 		assert!(err.contains("the thin pool vg0/pool"), "got: {err}");
 		assert!(err.contains("extend it first"), "got: {err}");
 	}
@@ -365,7 +359,7 @@ mod tests {
 			available: None,
 			remedy: "raise the cap".into(),
 		};
-		ensure_room(tmp.path(), &delta, &store).await.unwrap();
+		ensure_room(tmp.path(), &delta, &store, None).await.unwrap();
 	}
 
 	#[cfg(windows)]

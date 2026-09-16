@@ -6,20 +6,20 @@
 //!
 //! It is block-level, and a thin pool keeps no map from a block back to the file
 //! that owns it, so it cannot say *which* entries diverged — only how many bytes
-//! did. That is still the number the space gate wants, and it is far better than
-//! the estimate the walk arrives at, so this contributes it and leaves the
-//! entries to the walk.
+//! did. That is still the number the copy-on-write side of the space gate wants,
+//! and it is far better than the estimate the walk arrives at, so this
+//! contributes it and leaves the entries to the walk.
 //!
 //! Reading pool metadata means holding a metadata snapshot open, which needs
 //! privileges the daemon may not have and tooling that may not be installed.
-//! Every failure here is silent and returns `None`: the space gate then uses the
+//! Every failure here is silent and returns `None`: the gate then uses the
 //! walk's estimate, which is a worse number rather than a wrong answer.
 
 use std::path::Path;
 
-use tokio::process::Command;
 use tracing::debug;
 
+use super::super::blockdev;
 use crate::actions::canopy::backup::hold::{HeldCapture, HoldRecord};
 
 /// Bytes that differ between the held snapshot LV and the live LV it rolls back
@@ -29,92 +29,42 @@ pub async fn diverged_bytes(record: &HoldRecord, live: &Path) -> Option<u64> {
 		return None;
 	};
 
-	let live_source = capture(
-		"findmnt",
-		&["-n", "-o", "SOURCE", "--target", &live.to_string_lossy()],
-	)
-	.await?;
-	let live_lv = capture(
-		"lvs",
-		&["--noheadings", "-o", "lv_name", live_source.trim()],
-	)
-	.await?;
-	let pool = capture(
-		"lvs",
-		&["--noheadings", "-o", "pool_lv", &format!("{vg}/{lv}")],
-	)
-	.await?;
-	let pool = pool.trim();
+	let live_source = blockdev::findmnt("SOURCE", live).await?;
+	let live_lv = blockdev::lvs("lv_name", &live_source, false).await?;
+	let pool = blockdev::lvs("pool_lv", &format!("{vg}/{lv}"), false).await?;
 	if pool.is_empty() {
 		debug!("the held capture's LV is not in a thin pool, so its delta cannot be read");
 		return None;
 	}
 
-	let held_id = thin_id(vg, lv).await?;
-	let live_id = thin_id(vg, live_lv.trim()).await?;
-	let block_size = chunk_bytes(vg, pool).await?;
+	let held_id = blockdev::lvs("thin_id", &format!("{vg}/{lv}"), false).await?;
+	let live_id = blockdev::lvs("thin_id", &format!("{vg}/{live_lv}"), false).await?;
+	let block_size: u64 = blockdev::lvs("chunk_size", &format!("{vg}/{pool}"), true)
+		.await?
+		.parse()
+		.ok()?;
 
-	// The metadata snapshot has to be reserved for the diff and released after,
-	// or the pool carries it until something else does.
-	let metadata = format!("/dev/mapper/{}-{}_tmeta", mangle(vg), mangle(pool));
-	run_ok("dmsetup", &["message", &format!("{vg}-{pool}"), "0", "reserve_metadata_snap"]).await?;
-	let delta = capture(
+	// Both the device-mapper name and the metadata device path go through the
+	// mangling: an unmangled name is not merely unresolvable, it can name a
+	// *different* pool, and a `reserve_metadata_snap` sent to one of those is then
+	// never released.
+	let pool_dm = blockdev::dm_name(vg, &pool);
+	let metadata = format!("/dev/mapper/{pool_dm}_tmeta");
+
+	blockdev::run("dmsetup", &["message", &pool_dm, "0", "reserve_metadata_snap"]).await?;
+	let delta = blockdev::capture(
 		"thin_delta",
-		&[
-			"--snap1",
-			&held_id,
-			"--snap2",
-			&live_id,
-			"-m",
-			&metadata,
-		],
+		&["--snap1", &held_id, "--snap2", &live_id, "-m", &metadata],
 	)
 	.await;
-	let _ = run_ok(
-		"dmsetup",
-		&["message", &format!("{vg}-{pool}"), "0", "release_metadata_snap"],
-	)
-	.await;
+	// Released whatever the diff did: a metadata snapshot left reserved is carried
+	// by the pool until something else releases it.
+	let _ = blockdev::run("dmsetup", &["message", &pool_dm, "0", "release_metadata_snap"]).await;
 
 	let blocks = differing_blocks(&delta?)?;
 	let bytes = blocks.saturating_mul(block_size);
 	debug!(blocks, bytes, "thin_delta sized the divergence from the capture");
 	Some(bytes)
-}
-
-/// The thin device id of an LV within its pool.
-async fn thin_id(vg: &str, lv: &str) -> Option<String> {
-	let out = capture(
-		"lvs",
-		&["--noheadings", "-o", "thin_id", &format!("{vg}/{lv}")],
-	)
-	.await?;
-	let id = out.trim().to_owned();
-	(!id.is_empty()).then_some(id)
-}
-
-/// The pool's block size in bytes, which is what a differing block costs.
-async fn chunk_bytes(vg: &str, pool: &str) -> Option<u64> {
-	let out = capture(
-		"lvs",
-		&[
-			"--noheadings",
-			"--units",
-			"b",
-			"--nosuffix",
-			"-o",
-			"chunk_size",
-			&format!("{vg}/{pool}"),
-		],
-	)
-	.await?;
-	out.trim().parse().ok()
-}
-
-/// Device-mapper names escape hyphens by doubling them, so a VG or LV with one
-/// in its name does not resolve under its plain spelling.
-fn mangle(name: &str) -> String {
-	name.replace('-', "--")
 }
 
 /// The number of blocks `thin_delta` reports as differing.
@@ -127,12 +77,12 @@ fn differing_blocks(xml: &str) -> Option<u64> {
 	let mut saw_any = false;
 	for line in xml.lines() {
 		let line = line.trim();
-		let differing = line.starts_with("<left_only ")
-			|| line.starts_with("<right_only ")
-			|| line.starts_with("<different ");
 		if !line.starts_with('<') {
 			continue;
 		}
+		let differing = line.starts_with("<left_only ")
+			|| line.starts_with("<right_only ")
+			|| line.starts_with("<different ");
 		saw_any |= differing || line.starts_with("<same ");
 		if !differing {
 			continue;
@@ -151,25 +101,6 @@ fn attribute(line: &str, name: &str) -> Option<u64> {
 	let rest = &line[at..];
 	let end = rest.find('"')?;
 	rest[..end].parse().ok()
-}
-
-async fn capture(program: &str, args: &[&str]) -> Option<String> {
-	let output = Command::new(program)
-		.args(args)
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await
-		.inspect_err(|err| debug!("could not run {program}: {err}"))
-		.ok()?;
-	if !output.status.success() {
-		debug!("{program} exited {}", output.status);
-		return None;
-	}
-	Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-async fn run_ok(program: &str, args: &[&str]) -> Option<()> {
-	capture(program, args).await.map(|_| ())
 }
 
 #[cfg(test)]
@@ -210,11 +141,5 @@ mod tests {
 		assert_eq!(attribute(r#"<different begin="10" length="20"/>"#, "length"), Some(20));
 		assert_eq!(attribute(r#"<different begin="10" length="20"/>"#, "begin"), Some(10));
 		assert_eq!(attribute("<different/>", "length"), None);
-	}
-
-	#[test]
-	fn device_mapper_names_double_their_hyphens() {
-		assert_eq!(mangle("vg-data"), "vg--data");
-		assert_eq!(mangle("vg0"), "vg0");
 	}
 }

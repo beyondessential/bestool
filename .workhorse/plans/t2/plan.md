@@ -118,6 +118,10 @@ Not verified, and needing real storage:
 
 These belong with [P2](https://github.com/beyondessential/bestool/pull/898)'s per-backend hold lifecycle jobs, which already have the hosts.
 
+## Deliberately not done
+
+- **Concurrent copies and removals in `apply`.** Review suggested driving both loops through a bounded `buffer_unordered`. Removals cannot: they are ordered children-before-parents, and an unordered pool would try to `rmdir` a directory before its contents. Copies could, but the win is speculative on the single volume this mode exists for, where the writes are already sequential and the copy-on-write store is the bottleneck rather than the scheduler. Folding the whole per-entry operation into one `spawn_blocking` (done) removes the overhead that was actually measurable in the structure. Worth revisiting with a real host and a real delta, not before.
+
 ## Open questions
 
 - Does `thin_delta` reach the pool metadata without `reserve_metadata_snap` privileges the daemon may not hold? If not, the estimate degrades to the walk's, which is not a failure.
