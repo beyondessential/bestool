@@ -69,7 +69,7 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 	// An interval yields its first tick immediately; take it here so the first salt lasts a full
 	// period rather than being replaced the instant it is advertised.
 	rotation.tick().await;
-	let mut shutdown = std::pin::pin!(tokio::signal::ctrl_c());
+	let mut shutdown = std::pin::pin!(shutdown());
 	loop {
 		let salt = random_salt();
 		let advertised = Advertised::new(secret.handle(salt), salt);
@@ -89,12 +89,30 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 				continue;
 			}
 			result = &mut shutdown => {
-				result.into_diagnostic()?;
+				result?;
+				// Returning drops the advertisement and the GATT application, which unregisters both
+				// from BlueZ. Leaving by any other route leaves them registered against a process that
+				// is gone, and BlueZ only forgets them when it restarts.
 				tracing::info!("stopping");
 				return Ok(());
 			}
 		}
 	}
+}
+
+/// Resolve when the daemon is asked to stop, by either of the signals that mean it.
+///
+/// systemd stops a unit with `SIGTERM`, so waiting on ctrl-c alone would mean the ordinary way of
+/// stopping the daemon is the one way that skips unregistering from BlueZ.
+async fn shutdown() -> Result<()> {
+	use tokio::signal::unix::{SignalKind, signal};
+	let mut terminate = signal(SignalKind::terminate()).into_diagnostic()?;
+	let mut interrupt = signal(SignalKind::interrupt()).into_diagnostic()?;
+	tokio::select! {
+		_ = terminate.recv() => {}
+		_ = interrupt.recv() => {}
+	}
+	Ok(())
 }
 
 /// How often to check whether the client is still subscribed, while it is sending nothing.

@@ -146,11 +146,15 @@ read until its transport ended, and the transport only ended when the session dr
 waited on each other and the device stayed busy with a client that had left. The daemon now watches
 whether the client is still subscribed and ends the session when it is not.
 
-**Left as a known rough edge:** the daemon handles `ctrl_c` (SIGINT) for a clean shutdown but not
-SIGTERM, which is how systemd stops it — so `systemctl stop` kills it without unregistering its GATT
-application, and BlueZ can retain a stale registration until the next `bluetoothd` restart. It did not
-affect the working runs, but the packaged unit should either handle SIGTERM or accept that the GATT
-state is cleared when `bluetoothd` restarts.
+Fixed when the unit was packaged: **the daemon waited only on ctrl-c, and systemd stops a unit with
+`SIGTERM`**, so the ordinary way of stopping it was the one way that skipped unregistering from
+BlueZ. It now waits on both, and `systemctl stop` leaves a `stopping` line and exit status 0 rather
+than a process killed by a signal.
+
+The earlier note here said a stale registration would then persist until `bluetoothd` restarted, and
+that was overstated: BlueZ releases an advertisement and a GATT application when the owning D-Bus
+connection drops, so the controller went quiet either way. What handling the signal buys is an
+orderly teardown and an exit status that means what it says.
 
 ## The web application
 
@@ -328,6 +332,28 @@ winning over placeholder OTP, the same secret, and the same rendering
 `AHFY-TP4T-…-IDGL-2`. The chain is reproducible from the board alone; the design's central claim holds
 across a full reimage.
 
+## Standing alone, and what extracting it would take
+
+Nothing in `bestool` depends on bliti, and bliti depends on nothing in `bestool`: `bliti-core` has no
+local dependency at all, `bliti` and `bliti-web` each depend only on `bliti-core`, and no bliti source
+file so much as mentions `bestool`. The separation the crate layout set out to keep has held.
+
+What ties it to this repository is packaging rather than code, and all of it is mechanical:
+
+- Eight dependency versions inherited from the workspace (`clap`, `futures`, `miette`, `rand`,
+  `thiserror`, `tokio`, `tokio-util`, `tracing`), plus the shared `[lints]` and `exclude`. Extracting
+  means pinning those in the moved manifests.
+- `.cargo/config.toml` at the workspace root, which carries `getrandom`'s wasm backend cfg. It exists
+  only for `bliti-web` and would go with it.
+- `services/bliti.service`, which sits in the shared `services/` directory.
+- The specs, this plan, and the card breakdown under `.workhorse/`.
+- Release automation: the repository publishes through release-plz on merge to `main`, so a new
+  repository needs that set up before the crates can be released from it.
+
+So extracting is a packaging exercise, not an untangling one. Worth doing when bliti wants its own
+release cadence or its own issue tracker; there is no code reason to rush it, and staying here keeps
+one CI and one release path while the protocol is still moving.
+
 ## Milestones
 
 1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a stream layer over GATT carrying JSON, plus the web application driving all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other. Everything genuinely novel is here; what follows is operations on a pipe that already works.
@@ -370,7 +396,7 @@ backends are registered, so they slot in without disturbing the schedule.
       camera, matching, handshake, streams, and both directions. Verified end to end on an Android
       phone against the prototype, from a QR printed on paper
 - [x] A `scan` subcommand doing the client half of discovery and matching from the command line, so discovery can be exercised without a browser
-- [ ] A packaged systemd unit — must ship the peripheral-only BlueZ config (`[GATT] Client = false`) and should handle SIGTERM for a clean GATT unregister
+- [x] A packaged systemd unit (`services/bliti.service`), carrying the peripheral-only BlueZ config as a prerequisite it cannot set itself, and a daemon that stops on SIGTERM. Installed and exercised on the prototype: starts, advertises, and stops cleanly
 
 The core also compiles for `wasm32-unknown-unknown` with `--no-default-features` (verified), which is
 what lets the web application share the key schedule and handshake; a wasm consumer enables
