@@ -114,6 +114,24 @@ The stronger measure — advertising only for a window after boot, then going qu
 
 It is deferred rather than dropped because it costs nothing to add later. It is local policy — when the daemon chooses to advertise — with no bearing on the wire format, the handshake, or anything an app has to understand. The only client-side consequence is telling an operator to power-cycle a device that is not answering. So it stacks on top of the protections rather than replacing them, and taking the convenient option now forecloses nothing.
 
+#### Waking a quiet device over the air
+
+A power cycle is not the only way to open a window. A quiet device could scan for a wake beacon from the client instead, which is far more convenient than asking someone to unplug a box, and still leaves the device silent the rest of the time.
+
+**Targeted, not broadcast.** A wake anyone can send, that every device in range answers, is an open presence oracle: sweep a building and map where devices are, on demand. Rotation keeps that to "a device is here" rather than naming which — the same fleet-level leak the service UUID already gives away — but it turns a passive leak into one an attacker can probe at will.
+
+Deriving the wake signal from the sticker secret closes that. The client advertises a salt alongside `H(k3, sticker secret, salt)` — a third domain separator, the same shape as the handle — and only the device whose secret matches responds. Someone without a sticker can wake nothing. The device checks one hash per beacon it sees, against its own single secret. This is also the normal case: a client that has scanned a sticker knows which device it wants. Waking without one is a capability that only helps whoever should not have it.
+
+**What the client platforms allow** decides the encoding, and is the reason this cannot be built yet:
+
+- Android advertises service data without difficulty.
+- iOS does not. `CBPeripheralManager` accepts only a local name and service UUIDs in an advertisement — no service data, no manufacturer data. The way through is to carry the whole wake token *as* a 128-bit service UUID, which iOS advertises happily. The device then scans passively and inspects candidate UUIDs itself rather than filtering on one, since it cannot precompute a salt the client chose.
+- Web Bluetooth cannot advertise at all. It is central-only.
+
+That last point settles the sequencing. The web page is the first milestone's only client, so it can never send a wake beacon; this waits for a native app. Deferring stays free, because the wake channel is separate from the device's own advertisement and `k3` is just another constant — nothing needs reserving in the wire format now.
+
+Scanning costs more power than advertising, which is immaterial on a mains-powered Pi 5 and would want duty-cycling on anything battery-backed: a short scan every several seconds, against a client that advertises for long enough to span the gap.
+
 What continuous advertising does cost, beyond exposure: anyone in range can open connections and start handshakes that will fail. That is cheap to absorb — the handshake's key exchange is microseconds — but it shapes two choices. **There must be no lockout after repeated failures**, or someone in range could deny the device to its legitimate operator, which is a worse outcome than the attacks a lockout would prevent. And failed attempts must not be logged so freely that a passer-by can fill the disk.
 
 The wire format carries the rotation salt from the first milestone regardless, since adding it later breaks every deployed device and app.
@@ -235,7 +253,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and watching the device print it. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
 2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
 3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
-4. **A native app.** Android or iOS, once the protocol has stopped moving.
+4. **A native app.** Android or iOS, once the protocol has stopped moving. This is also the earliest point a wake beacon can exist, since Web Bluetooth cannot advertise — and therefore the earliest the device can stop advertising continuously.
 
 ## Open questions
 
