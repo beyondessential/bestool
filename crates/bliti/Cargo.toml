@@ -1,0 +1,51 @@
+[package]
+name = "bliti"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85.0"
+resolver = "2"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "QR-anchored BLE device provisioning: daemon and sticker generator"
+keywords = ["bliti", "ble", "provisioning", "bluetooth", "sticker"]
+categories = ["command-line-utilities", "embedded", "network-programming"]
+repository = "https://github.com/beyondessential/bestool"
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# On by default, and left on wherever a sticker is derived. Which board-ID sources a build can see
+# decides which one wins the precedence, so a build without this derives a different secret on a
+# board that has a TPM. Where the C library it carries is not available — cross-compiling to a board
+# with no TPM, say — the daemon refuses to derive on any board whose TPM it can see, rather than
+# quietly deriving the wrong secret.
+default = ["tpm"]
+tpm = ["bliti-core/tpm"]
+# Build libdbus from source rather than linking the system one. Needed when cross-compiling to a
+# board, where the target's dbus development files are not to hand.
+vendored-dbus = ["dbus/vendored"]
+
+[dependencies]
+bliti-core = { version = "0.0.0", path = "../bliti-core" }
+clap = { workspace = true }
+futures = { workspace = true }
+hex = "0.4.3"
+if-addrs = "0.15.0"
+miette = { workspace = true, features = ["fancy"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+rand = { workspace = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { workspace = true, features = ["compat"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", features = ["bluetoothd"] }
+# Not used directly; depended on so the vendored-dbus feature can reach bluer's copy.
+dbus = { version = "0.9.12", default-features = false }

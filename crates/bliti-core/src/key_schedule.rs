@@ -98,6 +98,11 @@ impl core::fmt::Debug for StickerSecret {
 pub struct Handle([u8; HANDLE_LEN]);
 
 impl Handle {
+	/// Wrap raw bytes as a handle, as read from an advertisement by a client.
+	pub fn from_bytes(bytes: [u8; HANDLE_LEN]) -> Self {
+		Self(bytes)
+	}
+
 	/// The raw bytes of the handle.
 	pub fn as_bytes(&self) -> &[u8; HANDLE_LEN] {
 		&self.0

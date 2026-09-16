@@ -38,9 +38,9 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Discovery
 
-- [ ] The advertisement carries the service UUID and the local name within its 31 bytes, and the scan response carries the eight-byte handle, four-byte salt and one-byte version within its own 31 (verifies spec: BLI-ADV)
-- [ ] The local name carries the first four bytes of the handle as eight hexadecimal characters, and changes when the salt rolls (verifies spec: BLI-ADV)
-- [ ] Both the QR payload and the advertisement carry the version marker (verifies spec: BLI-ADV)
+- [ ] The advertisement carries the service UUID and the local name within its 31 bytes, and the scan response carries the eight-byte handle, four-byte salt and one-byte version within its own 31 (verifies spec: BLI-ADV) — the arithmetic is tested, but BlueZ refuses this payload on a legacy-only controller; see the plan's Blocked section
+- [x] The local name carries the first four bytes of the handle as eight hexadecimal characters, and changes when the salt rolls (verifies spec: BLI-ADV)
+- [x] Both the QR payload and the advertisement carry the version marker (verifies spec: BLI-ADV)
 - [ ] A client hearing a version it does not hold reports a device present at an unsupported version, distinctly from hearing nothing at all (verifies spec: BLI-ADV)
 - [ ] Two advertisements from one device across a salt change are not linkable without the sticker secret, and a client holding the secret recognises both (verifies spec: BLI-ADV)
 - [ ] A handle collision between two devices in range is handled rather than silently picking one (verifies spec: BLI-ADV)
@@ -66,7 +66,7 @@ An unticked case is coverage still owed, not an optional extra.
 ## Channel demonstration
 
 - [ ] Addresses are reported on a device with several interfaces, with addresses of more than one family, and with none up at all
-- [ ] Loopback and link-local addresses do not appear, and each reported address carries its interface
+- [x] Loopback and link-local addresses do not appear, and each reported address carries its interface
 - [ ] An address changing while a client is connected reaches that client without it asking
 - [ ] Text sent from a client appears on the device's standard output, and in the system log once it runs as a service
 
@@ -76,7 +76,7 @@ An unticked case is coverage still owed, not an optional extra.
 - [x] A damaged sticker is replaced by reprinting the payload recovered from the code or from the rendering beneath it, with no record of what was issued consulted (verifies spec: BLI-STK)
 - [x] The QR payload contains the sticker secret and version and does not contain the board ID (verifies spec: BLI-STK)
 - [x] The human-readable rendering beneath the code reproduces the payload, and is usable when the code itself cannot be scanned (verifies spec: BLI-STK)
-- [ ] Generation is refused for a board with no usable source (verifies spec: BLI-STK)
+- [x] Generation is refused for a board with no usable source (verifies spec: BLI-STK) — and refused too where a source is present but unreadable, which would otherwise fall through to a weaker one
 
 ## End to end
 

@@ -70,6 +70,46 @@ It runs on the first start after imaging and after a board change, not on every 
 
 **BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the device image and was installed on the prototype by hand.
 
+## Blocked: the advertisement does not fit the prototype's controller
+
+The daemon advertises on a controller that supports extended advertising, and is refused by one that
+does not. The prototype is the latter, so this blocks the demo and needs a decision before the
+advertisement is settled.
+
+What BLI-ADV specifies fits exactly: flags take three bytes and a 128-bit service UUID eighteen,
+leaving ten of the advertisement's thirty-one for a local name; service data keyed by a 128-bit UUID
+takes eighteen of the scan response's thirty-one, leaving thirteen for the handle, salt and version.
+Thirty-one and thirty-one, with nothing spare. That arithmetic is right, and the tests check it.
+
+What it assumes is that the device chooses which element goes in the advertisement and which in the
+scan response. BlueZ's advertisement interface does not offer that choice: a client hands over a set
+of fields and BlueZ packs them. On the prototype it packs them all into the advertisement, which
+overflows, and registration fails with `Invalid Parameters (0x0d)` from
+`src/advertising.c:add_client_complete()`. Dropping the local name does not rescue it, because flags,
+the service UUID and the service data come to fifty-two bytes on their own — so BlueZ is not moving
+service data into the scan response at all.
+
+Measured: the prototype's UART controller reports `MaxAdvLen 31` and `MaxScnRspLen 31`, the legacy
+budgets. The x86 machine it does work on reports `251` for both, because its controller does
+extended advertising and the whole payload fits in one. That difference, not BlueZ's version, is why
+one works and the other does not; both run bluetoothd 5.85.
+
+The cost sits in the 128-bit UUID being paid twice, once as the advertised service UUID and once as
+the key of the service data: thirty-six of the sixty-two bytes. Ways out, none yet chosen, and each a
+change to a versioned wire format:
+
+- **Carry the payload as manufacturer data** rather than service data. A company identifier is two
+  bytes where a UUID key is sixteen, which brings the total to forty-eight and fits the legacy
+  budgets with room to spare. It needs a company identifier, and it is a different field from the one
+  BLI-ADV names.
+- **Advertise a 16-bit service UUID**, which needs an allocation from the SIG.
+- **Shorten what is advertised** so the whole payload fits one thirty-one-byte advertisement, which
+  means giving up either the local name or some of the handle, salt or version.
+- **Require extended advertising**, which rules out the prototype's controller and any board like it.
+
+Until this is settled the daemon is exercised on a controller with extended advertising, where it
+registers and advertises correctly.
+
 ## Milestones
 
 1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a stream layer over GATT carrying JSON, plus the web application driving all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other. Everything genuinely novel is here; what follows is operations on a pipe that already works.
@@ -102,12 +142,14 @@ backends are registered, so they slot in without disturbing the schedule.
 - [x] Framing and reassembly
 - [x] Stream layer over the framed transport: the `NoiseStream` encrypt/frame adapter (any `AsyncRead + AsyncWrite`), yamux multiplexing with a runtime-agnostic driver, and the handshake-over-transport helpers. Tested end to end over an in-memory duplex: bidirectional exchange, streams opened from each end, and one stream closing while others stay alive
 - [x] JSON message types, including the unknown-message reply that keeps the channel open
-- [ ] GATT server and characteristics via `bluer`
-- [ ] Advertisement and scan response construction within the 31-byte budgets, with salt rotation
-- [ ] Daemon tying it together, running as a systemd service; the unit sets no stream directives, so both streams reach the journal by default as in the other units here
-- [ ] Address and hostname reporting, including unsolicited sending on change
-- [ ] Text echo to standard output
+- [x] GATT server and characteristics via `bluer`, with a byte-stream adapter over the write and notify characteristics
+- [x] Advertisement and scan response construction within the 31-byte budgets, with salt rotation — the budget arithmetic is implemented and tested, but BlueZ will not pack it as specified on a legacy controller (see Blocked, above)
+- [x] Daemon tying it together, with identity establishment, the cache on disk, and sticker generation. Run on the prototype under `systemd-run`, so both streams reach the journal; a packaged unit is still to write
+- [x] Address and hostname reporting, including unsolicited sending on change
+- [x] Text echo to standard output
 - [ ] Web application: fragment reading, camera capture, scan and match, handshake, and both directions
+- [x] A `scan` subcommand doing the client half of discovery and matching from the command line, so discovery can be exercised without a browser
+- [ ] A packaged systemd unit
 
 The core also compiles for `wasm32-unknown-unknown` with `--no-default-features` (verified), which is
 what lets the web application share the key schedule and handshake; a wasm consumer enables

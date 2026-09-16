@@ -129,6 +129,16 @@ impl SmbiosSystemUuidSource {
 		let raw = match fs::read_to_string(&self.path) {
 			Ok(raw) => raw,
 			Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+			// A source that exists but cannot be read is not the same as one that is absent, and must
+			// not be treated as absent: precedence would fall through to a weaker source and derive a
+			// secret that does not match this board's sticker.
+			Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+				return Err(self.backend_message(format!(
+					"{} exists but is not readable; it is root-only, so run with privilege rather \
+					 than derive from a weaker source",
+					self.path.display()
+				)));
+			}
 			Err(err) => return Err(self.backend_message(err.to_string())),
 		};
 		let text = raw.trim();

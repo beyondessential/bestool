@@ -45,6 +45,17 @@ impl OneTimeProgrammableSource {
 			Ok(raw) if raw.is_empty() => Ok(None),
 			Ok(raw) => Ok(Some(raw)),
 			Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+			// Present but unreadable is not absent: falling through would derive the wrong secret.
+			Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+				Err(BoardIdError::Backend {
+					kind: SourceKind::OneTimeProgrammable,
+					message: format!(
+						"{} exists but is not readable; it is root-only, so run with privilege \
+						 rather than derive from a weaker source",
+						self.path.display()
+					),
+				})
+			}
 			Err(err) => Err(BoardIdError::Backend {
 				kind: SourceKind::OneTimeProgrammable,
 				message: err.to_string(),
