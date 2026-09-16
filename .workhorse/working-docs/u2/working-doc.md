@@ -52,6 +52,10 @@ Its job is to make the sticker secret *reproducible*: the same sticker can be re
 
 How much entropy each source actually carries is a question to settle against the boards we ship rather than assume. The SMBIOS UUID is 128 bits but some vendors ship a constant, a zeroed, or a MAC-derived value. Raspberry Pi serials are 64-bit on Pi 4 and 5, but on earlier boards the high half is zero and the value is effectively a 32-bit OTP word.
 
+Measured on a Dell G7 7700, the SMBIOS UUID is `4c4c4544-0042-4710-804d-b3c04f485832` and carries nothing like 128 bits. The leading four bytes are the ASCII marker `LLED`, and six of the seven characters of the service tag `3BGMHX2` appear verbatim as ASCII bytes in the remainder. The UUID is a formatting of the service tag, whose space is about 36^7, or roughly 2^36 — and less than that in practice, since service tags are not uniformly random. The worst case in the paragraph above is not hypothetical: it is the first machine we looked at.
+
+**Decided: the board ID combines every firmware identifier present rather than a single field.** On that same Dell, `board_serial` is `/3BGMHX2/CNPEC0034A0227/`, whose manufacturing code carries entropy the UUID does not; a vendor that wastes one source then does not collapse the whole space. The cost is that the set of sources and the order they are combined in become part of the derivation, fixed as firmly as the constants are — changing either orphans every sticker already printed. So the order is defined once, by source, with absent sources represented rather than skipped, so that a machine that later gains a source does not derive a different secret from the one on its sticker.
+
 ### Sticker secret
 
 The value carried in the QR code, and the only secret in the system. Derived from the board ID under a fixed constant.
