@@ -2,9 +2,9 @@
 status: draft
 ---
 
-# QR-anchored BLE device provisioning
+# improv-device: QR-anchored BLE device provisioning
 
-A companion to Improv-Wi-Fi: a headless device advertises an opaque handle over BLE, and a phone that has scanned the QR sticker on the device's enclosure — and only such a phone — can recognise it, authenticate to it, and open a two-way channel for provisioning.
+A companion to Improv-Wi-Fi, but not an Improv protocol: a headless device advertises an opaque handle over BLE, and a phone that has scanned the QR sticker on the device's enclosure — and only such a phone — can recognise it, authenticate to it, and open a two-way channel for provisioning.
 
 The sticker is the second factor. It replaces the button press or on-screen code that Improv-Wi-Fi and similar protocols use to prove physical presence, because the devices we are targeting have neither a usable button nor a screen.
 
@@ -138,6 +138,8 @@ Parameters cannot be chosen until two things are measured: the weakest board's a
 ### Handshake
 
 - **MAC challenge-response.** Each side sends a nonce; each replies with a MAC over both nonces under the sticker secret, domain-separated by direction. Mutual, replay-resistant, trivially implementable and auditable. No session key worth the name and no forward secrecy — anyone who later learns the sticker secret can decrypt a recorded session.
+Decided: **Noise with a pre-shared key**. The rest is kept as the record of what was weighed.
+
 - **Noise with a pre-shared key** (`NNpsk0` or `XXpsk0`, via `snow`). The sticker secret is the PSK. Mutual authentication from the PSK, a fresh session key and forward secrecy from the ephemeral DH, an encrypted transport falls out of it, and the pattern is well-analysed. Adding a device static key later lets a phone pin device identity across a sticker reprint.
 - **PAKE (SPAKE2+ / CPace).** What Matter does for exactly this flow. A PAKE earns its complexity by making the shared secret unguessable from a transcript no matter how small its space is, which is what lets Matter use a six-digit PIN. Here the memory-hard derivation already buys that, so the PAKE would be paying twice for one property — and Rust SPAKE2+ options are thin. Worth revisiting only if the derivation ends up cheap.
 - **BLE link-layer pairing with OOB data from the QR.** Moves the problem into the Bluetooth stack. BlueZ OOB pairing is awkward, phone support is uneven, and Web Bluetooth cannot drive pairing at all. Treating BLE as a dumb pipe and doing crypto at the application layer keeps every client viable.
@@ -165,10 +167,21 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 
 ### Crate layout
 
-- A transport-agnostic protocol core: payload encoding, key schedule, handshake, framing, RPC types. No BlueZ, no hardware, so it unit-tests on any machine and could go `no_std` later.
-- Board ID reading: Raspberry Pi and SMBIOS backends behind a trait, plus a test backend, so the whole flow runs on a developer laptop and in CI.
-- The BlueZ peripheral. `improv-wifi` already contains a working BlueZ advertisement/GATT/application layer, currently private to that crate. Either extract it into something shared or accept duplication; extraction is more work now and less drift later.
-- The bestool command itself. `iti` is Tamanu-Iti-specific and this is not, so a new top-level subcommand is probably the right home.
+Working name for the protocol and its crates: **improv-device**. It lives in this repository but stands alone — its own binary, not a `bestool` subcommand, and nothing in the `bestool` binary depends on it. That keeps the option of moving it to its own repository later without unpicking anything.
+
+Three crates:
+
+- **The BlueZ peripheral**, extracted from `improv-wifi`. That crate already carries a working advertisement, GATT, and application layer over zbus, currently private to it; generalising it so both protocols can register their own services and advertisements is the same work either way, and doing it once avoids two copies drifting. Needs a name — nothing obvious is free on crates.io.
+- **The protocol core**: board ID reading, the key schedule, the handshake, framing, and RPC types. No BlueZ and no hardware, so it unit-tests anywhere.
+- **The daemon**: the binary that ties the core to the peripheral, plus sticker generation.
+
+Board ID reading sits inside the core as backends behind a trait — Raspberry Pi, SMBIOS, and a test backend — rather than its own crate. It can move out if something else needs it.
+
+The core earns its separation from the daemon for a reason beyond tidiness: the web test page needs the same derivations and the same handshake in the browser. Compiling the core to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown` — `snow`'s pure-Rust resolver does.
+
+### Sequencing the extraction
+
+`improv-wifi` is published and running on devices today, so pulling its BlueZ layer out is a refactor of live code rather than greenfield work. Doing it as its own change first — behaviour-preserving, no new protocol in the picture, existing tests as the guard — keeps a regression there from being tangled up with a new protocol's bugs.
 
 ## Open questions
 
@@ -176,10 +189,11 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 - [ ] Which board is the weakest in scope, and how much RAM does it have? This caps the derivation's memory parameter.
 - [ ] Does the device derive its own secret (cached after first boot, memory capped by that board), or is it derived on good hardware at imaging time and installed (no cap, device cannot self-recover unaided)?
 - [ ] argon2id or scrypt, at what parameters?
-- [ ] What is this called? It needs a name before it needs a crate.
+- [ ] **improv-device** is the working name, which is fine while it stays here. Before anything is published it wants a second look: Improv Wi-Fi is someone else's protocol, and a crate called `improv-device` sitting next to our `improv-wifi` — which really is an implementation of that spec — would read as another one. This protocol has nothing to do with it.
+- [ ] A name for the extracted BlueZ peripheral crate. `bluez-peripheral` is taken on crates.io.
+- [ ] Which Noise pattern: `NNpsk0` is enough for the sticker secret alone; `XXpsk0` adds a device static key, which would let a phone pin device identity across a sticker reprint. Does that matter?
 - [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
 - [ ] Which provisioning operations are in the first milestone, and is Wi-Fi configuration one of them or does Improv-Wi-Fi keep that job?
-- [ ] Does this stay in bestool or become its own project, and does the answer change the crate layout?
 - [ ] RPC payload encoding — framing with winnow per house style, but the message bodies could be postcard, CBOR, or hand-rolled.
 
 ## Testing notes
