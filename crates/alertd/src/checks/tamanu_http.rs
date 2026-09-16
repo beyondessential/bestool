@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::{AppCx, fmt_chain};
+use super::{TamanuCx, fmt_chain};
 use crate::Stat;
 use crate::check::Check;
 
@@ -9,7 +9,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// Response latency above which a reachable endpoint is treated as degraded.
 const WARN_LATENCY_MS: u64 = 2000;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let start = Instant::now();
 	let response = ctx.http.get(PING_URL).timeout(TIMEOUT).send().await;
 	let latency_ms = start.elapsed().as_millis() as u64;

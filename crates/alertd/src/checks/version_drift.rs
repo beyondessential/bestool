@@ -16,20 +16,14 @@ use bestool_tamanu::{
 	versions::{self, ExpectedVersions},
 };
 
-use super::AppCx;
+use super::TamanuCx;
 use crate::Stat;
 use crate::check::Check;
 
-pub async fn run(ctx: AppCx) -> Check {
-	// The expected container set follows from the role the deployment plays, so
-	// without one there is nothing to compare what is running against.
-	let Some(kind) = ctx.server_kind() else {
-		return Check::skip(
-			"version_drift",
-			"not a Tamanu deployment",
-			"the expected containers follow from the deployment's role, and this application has none",
-		);
-	};
+pub async fn run(ctx: TamanuCx) -> Check {
+	// The expected container set follows from the role the deployment plays. A
+	// Tamanu context is only built for a Tamanu subject, so there is always one.
+	let kind = ctx.server_kind();
 
 	// The comparison baseline is the install's env-file version when present,
 	// else the DB's recorded `currentVersion`. If neither resolved, the version

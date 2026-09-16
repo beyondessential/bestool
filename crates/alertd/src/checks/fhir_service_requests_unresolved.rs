@@ -4,7 +4,7 @@
 //! unresolved for over an hour, tiering on the longest outstanding duration:
 //! WARN past 1h, FAIL past 6h.
 
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ const SQL: &str = "SELECT lr.display_id AS lab_request_id, \
 	WHERE fsr.resolved = FALSE AND NOW() - fsr.last_updated > INTERVAL '1 hours' \
 	ORDER BY duration_minutes DESC";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

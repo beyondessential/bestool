@@ -165,32 +165,30 @@ impl Subject {
 	}
 }
 
-/// Which applications a check reports for.
+/// Which Tamanu deployments a check reports for.
 ///
-/// Carried inside the registry's application arm rather than beside the runner,
-/// so a machine check paired with an application scope is not representable.
-/// There is no machine variant: a machine check is the other arm.
+/// Carried inside the registry's Tamanu arm rather than beside the runner, so a
+/// runner paired with a scope that cannot describe its context is not
+/// representable. There is no machine variant and no Postgres one: each of
+/// those is an arm of its own, whose subject needs no narrowing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppScope {
-	/// The machine's Postgres installation.
-	Postgres,
+pub enum TamanuScope {
 	/// Any Tamanu deployment, central or facility.
-	Tamanu,
+	Any,
 	/// Tamanu central only.
 	Central,
 	/// Tamanu facility only.
 	Facility,
 }
 
-impl AppScope {
+impl TamanuScope {
 	/// Whether a check of this scope reports for `app`.
 	///
 	/// A check that does not is absent from that application's report rather
 	/// than reported for it as skipped.
 	pub fn admits(self, app: &ApplicationRef) -> bool {
 		match self {
-			Self::Postgres => app.kind == ApplicationKind::Postgres,
-			Self::Tamanu => app.kind.is_tamanu(),
+			Self::Any => app.kind.is_tamanu(),
 			Self::Central => app.kind == ApplicationKind::TamanuCentral,
 			Self::Facility => app.kind == ApplicationKind::TamanuFacility,
 		}
@@ -199,8 +197,7 @@ impl AppScope {
 	/// Every application kind a check of this scope could report for.
 	pub fn possible_kinds(self) -> Vec<ApplicationKind> {
 		match self {
-			Self::Postgres => vec![ApplicationKind::Postgres],
-			Self::Tamanu => vec![
+			Self::Any => vec![
 				ApplicationKind::TamanuCentral,
 				ApplicationKind::TamanuFacility,
 			],
@@ -234,34 +231,36 @@ mod tests {
 	}
 
 	#[test]
-	fn postgres_and_tamanu_scopes_do_not_overlap() {
-		// A check grading the Postgres server is not about the Tamanu that uses
-		// it, and a check reading Tamanu's tables is not about the server.
+	fn no_tamanu_scope_admits_a_cluster() {
+		// A check reading Tamanu's tables is not about the server underneath it.
+		// The reverse needs no scope to say so: a Postgres check is its own arm.
 		let postgres = app_ref(ApplicationKind::Postgres);
-		let central = app_ref(ApplicationKind::TamanuCentral);
-		assert!(AppScope::Postgres.admits(&postgres));
-		assert!(!AppScope::Postgres.admits(&central));
-		assert!(!AppScope::Tamanu.admits(&postgres));
-		assert!(AppScope::Tamanu.admits(&central));
+		for scope in [
+			TamanuScope::Any,
+			TamanuScope::Central,
+			TamanuScope::Facility,
+		] {
+			assert!(!scope.admits(&postgres), "{scope:?} admitted a cluster");
+		}
+		assert!(TamanuScope::Any.admits(&app_ref(ApplicationKind::TamanuCentral)));
 	}
 
 	#[test]
 	fn kind_scopes_are_mutually_exclusive() {
 		let central = app_ref(ApplicationKind::TamanuCentral);
 		let facility = app_ref(ApplicationKind::TamanuFacility);
-		assert!(AppScope::Central.admits(&central));
-		assert!(!AppScope::Central.admits(&facility));
-		assert!(AppScope::Facility.admits(&facility));
-		assert!(!AppScope::Facility.admits(&central));
+		assert!(TamanuScope::Central.admits(&central));
+		assert!(!TamanuScope::Central.admits(&facility));
+		assert!(TamanuScope::Facility.admits(&facility));
+		assert!(!TamanuScope::Facility.admits(&central));
 	}
 
 	#[test]
 	fn possible_kinds_agree_with_admits() {
 		for scope in [
-			AppScope::Postgres,
-			AppScope::Tamanu,
-			AppScope::Central,
-			AppScope::Facility,
+			TamanuScope::Any,
+			TamanuScope::Central,
+			TamanuScope::Facility,
 		] {
 			let possible = scope.possible_kinds();
 			for kind in ApplicationKind::ALL {

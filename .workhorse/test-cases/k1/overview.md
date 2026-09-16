@@ -4,10 +4,10 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 ## The two contexts
 
-- [ ] A Postgres cluster's context carries no product version, install root or configuration, because it has no field for them (verifies spec: SUBJ)
-- [ ] A check written against a cluster's context cannot reach a Tamanu's, and the reverse — enforced by `Run`'s shape rather than by a test
-- [ ] Every registry entry is filed under the arm matching the subject `SUBJ` gives it (verifies spec: SUBJ)
-- [ ] A heal sits in the same arm as its check, so it is handed the context the check ran with (verifies spec: CHK#self-healing)
+- [x] A Postgres cluster's context carries no product version, install root or configuration, because it has no field for them (verifies spec: SUBJ)
+- [x] A check written against a cluster's context cannot reach a Tamanu's, and the reverse — enforced by `Run`'s shape rather than by a test
+- [x] Every registry entry is filed under the arm matching the subject `SUBJ` gives it (verifies spec: SUBJ)
+- [x] A heal sits in the same arm as its check, so it is handed the context the check ran with (verifies spec: CHK#self-healing)
 
 ## Reading the runtime
 

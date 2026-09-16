@@ -45,7 +45,7 @@ use tokio::{io::AsyncWriteExt, net::TcpStream, task::spawn_blocking};
 use tracing::debug;
 use x509_parser::prelude::*;
 
-use super::AppCx;
+use super::TamanuCx;
 use crate::Stat;
 use crate::check::Check;
 
@@ -101,7 +101,7 @@ fn classify_expiry(remaining: i64, lifetime: i64) -> Expiry {
 	}
 }
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	// The live admin config is the source of truth for which certs matter: the
 	// on-disk store keeps certs for sites that have since been removed, and we
 	// must not alert on those. So we read the config, then only consider managed

@@ -7,13 +7,13 @@
 //! count against the number of sync sessions in the last 24h: more tables than
 //! recent sessions (plus a 10% margin) warns; more than double fails.
 
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
 const NAME: &str = "sync_snapshot_tables";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

@@ -36,7 +36,7 @@ use serde_json::{Map, Value};
 use tokio::task::spawn_blocking;
 use tracing::{debug, warn};
 
-use super::{AppCx, fmt_chain};
+use super::{TamanuCx, fmt_chain};
 use crate::Stat;
 use crate::check::Check;
 
@@ -65,7 +65,7 @@ struct Snapshot {
 	counts: BTreeMap<String, u64>,
 }
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let client = ctx.http.clone();
 	let current_counts = match fetch_counts(&client).await {
 		FetchResult::Counts(c) => c,

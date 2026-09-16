@@ -13,7 +13,7 @@
 //! per-server severity ceiling lowers either to a warning, or silences it, on a
 //! deployment where the gap is accepted for now.
 
-use super::{AppCx, query_error_check};
+use super::{PgCx, query_error_check};
 use crate::{Stat, check::Check};
 
 const NAME: &str = "checksums";
@@ -118,7 +118,7 @@ fn grade(c: &Checksums) -> Check {
 	check
 }
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: PgCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(
 			NAME,
@@ -163,7 +163,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		check::CheckStatus,
-		checks::test_support::{central_ctx, facility_ctx},
+		checks::test_support::{cluster_ctx, unreachable_cluster_ctx},
 	};
 
 	fn state(setting: &str, failures: Option<i64>) -> Checksums {
@@ -280,7 +280,7 @@ mod tests {
 	/// is what alerts on an outage, so this one skips rather than doubling up.
 	#[tokio::test]
 	async fn no_db_skips() {
-		let check = run(facility_ctx()).await;
+		let check = run(unreachable_cluster_ctx()).await;
 		assert!(matches!(check.status, CheckStatus::Skip(_)));
 	}
 
@@ -289,7 +289,7 @@ mod tests {
 	/// we test with.
 	#[tokio::test]
 	async fn reads_the_state_from_a_live_server() {
-		let Some(ctx) = central_ctx().await else {
+		let Some(ctx) = cluster_ctx().await else {
 			return;
 		};
 		let check = run(ctx).await;

@@ -9,19 +9,14 @@ use bestool_tamanu::{
 	systemd,
 };
 
-use super::AppCx;
+use super::TamanuCx;
 use crate::check::Check;
 
-pub async fn run(ctx: AppCx) -> Check {
-	// Which services should be up follows from the role the deployment plays,
-	// so without one there are no expectations to grade against.
-	let Some(kind) = ctx.server_kind() else {
-		return Check::skip(
-			"tamanu_service",
-			"not a Tamanu deployment",
-			"the expected services follow from the deployment's role, and this application has none",
-		);
-	};
+pub async fn run(ctx: TamanuCx) -> Check {
+	// Which services should be up follows from the role the deployment plays.
+	// A Tamanu context is only built for a Tamanu subject, so there is always
+	// one to grade against.
+	let kind = ctx.server_kind();
 
 	let Some(supervisor) = Supervisor::current() else {
 		return Check::skip(

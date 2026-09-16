@@ -11,7 +11,7 @@ pub mod subject;
 pub mod sweep;
 
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
-pub use subject::{AppScope, ApplicationKind, Subject};
+pub use subject::{ApplicationKind, Subject, TamanuScope};
 pub use sweep::{
 	SweepResult, SweepTamanu, SweepTargets, discover_sweep_targets, overall_from_payload,
 	perform_sweep, resolve_sweep_targets,

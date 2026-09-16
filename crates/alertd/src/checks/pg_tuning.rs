@@ -21,7 +21,7 @@
 use bestool_postgres::pgtune::{self, Budget, HostResources, Platform};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
-use super::{AppCx, query_error_check};
+use super::{PgCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -300,7 +300,7 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 	}
 }
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: PgCx) -> Check {
 	if !crate::sweep::database_is_local(&ctx.database_url) {
 		return Check::skip(
 			"tuning",
@@ -704,9 +704,9 @@ mod tests {
 	#[tokio::test]
 	async fn settings_query_runs_against_real_postgres() {
 		use crate::check::CheckStatus;
-		use crate::checks::test_support::central_ctx;
+		use crate::checks::test_support::cluster_ctx;
 
-		let Some(ctx) = central_ctx().await else {
+		let Some(ctx) = cluster_ctx().await else {
 			return;
 		};
 		let check = run(ctx).await;

@@ -1,6 +1,6 @@
 //! Patient communications that errored within the lookback window.
 
-use super::{AppCx, util::tiered_rows_check};
+use super::{TamanuCx, util::tiered_rows_check};
 use crate::check::Check;
 
 const NAME: &str = "patient_communication_errors";
@@ -10,7 +10,7 @@ const SQL: &str = "SELECT * FROM patient_communications \
 // Lookback window for recent-error checks.
 const LOOKBACK_HOURS: i64 = 1;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

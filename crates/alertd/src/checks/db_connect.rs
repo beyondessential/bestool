@@ -1,20 +1,19 @@
 use std::time::Instant;
 
-use super::{AppCx, fmt_db_error};
+use super::{PgCx, fmt_db_error};
 use crate::Stat;
 use crate::check::Check;
 
 /// Connect latency above which the DB is treated as degraded.
 const WARN_LATENCY_MS: u64 = 1000;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: PgCx) -> Check {
 	let host = ctx
-		.config
-		.db
+		.database
 		.host
 		.clone()
 		.unwrap_or_else(|| "localhost".into());
-	let name = ctx.config.db.name.clone();
+	let name = ctx.database.name.clone();
 
 	let start = Instant::now();
 	let connect_result = tokio_postgres::connect(&ctx.database_url, tokio_postgres::NoTls).await;
@@ -52,11 +51,7 @@ pub async fn run(ctx: AppCx) -> Check {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
-
-	use node_semver::Version;
-
-	use bestool_tamanu::config::TamanuConfig;
+	use bestool_tamanu::config::Database;
 
 	use super::*;
 	use crate::{check::CheckStatus, subject::ApplicationRef};
@@ -66,18 +61,12 @@ mod tests {
 	/// nothing listening, so the connection is refused immediately.
 	#[tokio::test]
 	async fn unreachable_postgres_alerts() {
-		let config: TamanuConfig = serde_json::from_value(serde_json::json!({
-			"db": { "name": "tamanu-central", "username": "u", "password": "p" }
-		}))
-		.unwrap();
-		let ctx = AppCx {
-			app: ApplicationRef::local_postgres(5432),
-			version: Version::parse("0.0.0").unwrap(),
-			config: Arc::new(config),
-			install_root: Some(std::path::PathBuf::from("/nonexistent")),
-			database_url: "postgresql://127.0.0.1:1/tamanu-central".into(),
+		let url = "postgresql://127.0.0.1:1/tamanu-central";
+		let ctx = PgCx {
+			app: ApplicationRef::local_postgres(1),
+			database: Database::from_url(url).unwrap(),
+			database_url: url.into(),
 			pool: None,
-			http: reqwest::Client::new(),
 		};
 		let check = run(ctx).await;
 		assert!(
@@ -100,18 +89,12 @@ mod tests {
 			return;
 		}
 
-		let config: TamanuConfig = serde_json::from_value(serde_json::json!({
-			"db": { "name": "bestool-test-nonexistent-db", "username": "u", "password": "p" }
-		}))
-		.unwrap();
-		let ctx = AppCx {
+		let url = "postgresql://localhost/bestool-test-nonexistent-db";
+		let ctx = PgCx {
 			app: ApplicationRef::local_postgres(5432),
-			version: Version::parse("0.0.0").unwrap(),
-			config: Arc::new(config),
-			install_root: Some(std::path::PathBuf::from("/nonexistent")),
-			database_url: "postgresql://localhost/bestool-test-nonexistent-db".into(),
+			database: Database::from_url(url).unwrap(),
+			database_url: url.into(),
 			pool: None,
-			http: reqwest::Client::new(),
 		};
 		let check = run(ctx).await;
 		match check.status {

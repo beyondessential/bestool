@@ -142,7 +142,7 @@ A machine subject has no runtime at all: `MachineCx` carries none, because machi
 
 ## Build steps
 
-- [ ] Split `AppCx` into `PgCx` and `TamanuCx`, adding the third `Run` arm
+- [x] Split `AppCx` into `PgCx` and `TamanuCx`, adding the third `Run` arm
 - [ ] Introduce the two runtime traits and the check-storage trait, with own-system implementations resolved per application
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling

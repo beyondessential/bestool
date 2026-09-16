@@ -1,7 +1,7 @@
-use super::{AppCx, query_error_check};
+use super::{PgCx, query_error_check};
 use crate::check::Check;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: PgCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::fail("version", "no DB connection", "connect failed");
 	};
