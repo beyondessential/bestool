@@ -86,8 +86,31 @@ A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast
 
 - The derivation constant here need not be secret. Hashing is one-way, so a listener who hears the handle still cannot recover the sticker secret; a phone app can carry the constant in the clear.
 - The handle must be long enough that collisions across a site are implausible, and short enough to leave room in a 31-byte legacy advertisement. Eight bytes is a comfortable default.
+- A scanner matches by recomputing, so the cost is one fast hash per advertisement seen per sticker it holds. Fine for a phone looking for one device; an app holding a few hundred stickers is doing a few hundred hashes per advertisement, which is still cheap but is the reason this step is not memory-hard.
 - Stickers outlive software. Once a box is in the field its sticker is fixed, so a later change to the constants or the derivation parameters must not orphan it: the payload carries a version, and a device has to be able to derive and advertise under every version it still supports — which means the advertisement carries the version too, or the device advertises one handle per supported version.
-- A **static** handle makes the device passively trackable — a fixed beacon following the box around. If that matters, the handle can be rotated without a clock: advertise a short random rotation salt in the clear alongside `H(sticker secret, salt)`, and roll the salt periodically. A scanner recomputes for the observed salt; a passive observer cannot link two advertisements from the same device. This also means the BLE adapter must use resolvable private addresses, or the MAC becomes the tracker regardless.
+- A **static** handle makes the device passively trackable — a fixed beacon following the box around. See "Tracking resistance".
+
+### Tracking resistance
+
+A device that advertises is a beacon, and the question is how much a passive observer with no sticker can learn. Four things leak, and they are not independent — the weakest one sets the result, so partial measures buy nothing.
+
+**The BLE address.** If the adapter advertises from its public static address, the device is trackable outright and nothing else matters. The fix is LE Privacy: resolvable private addresses, which the controller rotates on its own. Since matching is by payload rather than by address, no peer needs to resolve them and there is no bonding to arrange. The catch is that this is adapter configuration rather than something the protocol controls, so what BlueZ and `bluer` actually expose here wants checking before it is promised.
+
+**The handle.** A fixed handle defeats address rotation by itself. Rotating it needs no clock — which matters, because a device that has never had network has no idea what time it is. Advertise a short random salt in the clear alongside `H(k2, sticker secret, salt)` and roll the salt periodically: a scanner recomputes for whatever salt it observes, and an observer without the sticker secret cannot link two advertisements. Costs a few bytes.
+
+**Rotation has to be in lockstep.** If the address rolls every fifteen minutes and the handle every hour, an observer bridges each address change using the handle, and the address rotation was wasted. Same in reverse. They should roll on the same event.
+
+**The service UUID** identifies the device as one of ours to anyone who knows to look, and it cannot be hidden: iOS can only filter a scan by service UUID, so it has to be there in the clear. This is a fleet-level fact rather than a per-device one — an observer learns "a bliti device is here", not which one. Accept it.
+
+#### Not advertising at all
+
+The strongest measure is the one the protocol's premise appears to rule out. `improv-wifi` stays silent once provisioned and only advertises on a button long-press; bliti exists precisely because these devices have no button.
+
+But a device with no button still has a power cable, and a power cycle is a physical-presence signal as good as a button press — it needs someone standing at the box. So the device could advertise for a window after boot and then go quiet, with an operator power-cycling to open a new window. Exposure collapses from continuous to a few minutes per visit, which dominates any amount of payload rotation.
+
+Against it: a box that is quiet cannot be reached by someone who has not physically visited it, so it rules out reconfiguring a deployed device remotely-ish; and some devices should not be casually power-cycled. It is also less discoverable in the field — an operator who does not know the rule finds a device that appears dead.
+
+The cheap position is to make the wire format carry the rotation salt from the start, whether or not rotation is switched on, since adding it later breaks every deployed device and app. Whether advertising is continuous or windowed, and whether address privacy is configured, can then be decided later without a format change.
 
 ### Discovery and matching
 
@@ -112,7 +135,11 @@ Verifying the device's board ID directly is not available: it cannot go in the Q
 
 Once authenticated, a two-way, ordered, reliable message channel carries a small request/response RPC.
 
-**The channel itself is the first milestone**, not any particular operation on it. Getting discovery, authentication, and a working bidirectional pipe is the hard and interesting part; the operations are comparatively ordinary once it exists. The demonstration that the channel works: the web test page sends a line of text and the device puts it on `wall`. Trivial to implement, and it proves the whole chain end to end in a way anyone can see. (`wall` writes to attached terminals, so a headless box wants the message logged as well as broadcast, or there is nothing to look at.)
+**The channel itself is the first milestone**, not any particular operation on it. Getting discovery, authentication, and a working bidirectional pipe is the hard and interesting part; the operations are comparatively ordinary once it exists.
+
+The demonstration that the channel works: the web test page sends a line of text and the device prints it. Printing to stdout rather than broadcasting to terminals keeps it visible in both places it will be watched from — a developer running the daemon over ssh sees it directly, and once it is a systemd unit the same line lands in the journal with no extra work.
+
+Messages are JSON. The volumes here are tiny, every client platform reads it without a library, and being able to watch the conversation in plain text is worth more during development than any saving a compact encoding would give.
 
 Wi-Fi configuration is where this is headed, and the reason it does not simply defer to Improv-Wi-Fi is that we want **more** than Improv's model allows — notably putting the device into access-point mode rather than only joining an existing network. Improv's RPC has no vocabulary for that. So Wi-Fi becomes an operation on this channel, and Improv-Wi-Fi keeps its own separate life for whatever still wants to speak Improv.
 
@@ -134,11 +161,9 @@ A static page using Web Bluetooth that does the scan-match-authenticate-RPC flow
 
 ### Choice of derivation function
 
-Settled in shape — memory-hard for the first step, pushed to seconds of work, fast for the second — but not in detail.
+**argon2id** for the first step: the current default recommendation, with a maintained pure-Rust implementation, and a better memory-hardness margin than scrypt's. Parameters are three-dimensional — memory, iterations, parallelism.
 
-- **argon2id** is the current default recommendation and has a maintained pure-Rust implementation. Parameters are three-dimensional: memory, iterations, parallelism.
-- **scrypt** is older and simpler to parameterise, with a worse memory-hardness margin.
-- For the fast second step, BLAKE3 keyed mode gives domain separation and a truncatable output in one primitive.
+For the fast second step, BLAKE3 keyed mode gives domain separation and a truncatable output in one primitive.
 
 Parameters want measuring on a Pi 5 before they are fixed, against the 4 GB floor and with the board's other work in mind. This belongs before anything is printed on a sticker — the constants and parameters are baked into every sticker in the field the moment one ships.
 
@@ -201,7 +226,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Milestones
 
-1. **A channel.** Board ID reading, both derivations, sticker generation, advertising the handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and seeing it on the device's `wall`. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising the handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and watching the device print it. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works. The advertisement should carry the rotation salt from this milestone even if nothing rotates yet, since adding it later breaks every deployed device.
 2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
 3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
 4. **A native app.** Android or iOS, once the protocol has stopped moving.
@@ -209,9 +234,9 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 ## Open questions
 
 - [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place. None yet; the doc sits under a provisional directory until there is one.
-- [ ] argon2id or scrypt, at what parameters? Wants measuring on a Pi 5 against the 4 GB floor.
-- [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
-- [ ] RPC payload encoding — framing with winnow per house style, but the message bodies could be postcard, CBOR, or hand-rolled.
+- [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor.
+- [ ] Does the device advertise continuously, or only for a window after boot with a power cycle as the presence signal?
+- [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it.
 
 ## Testing notes
 
