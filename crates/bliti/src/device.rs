@@ -2,11 +2,12 @@
 //!
 //! This is the only module that talks to BlueZ. Behaviour is specified in BLI-ADV and BLI-CHN.
 
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use bliti_core::{
 	CHARACTERISTIC_UUID_CLIENT_TX, CHARACTERISTIC_UUID_DEVICE_TX, SERVICE_UUID,
-	key_schedule::{RotationSalt, StickerSecret},
+	advertisement::Advertised,
+	key_schedule::{Handle, RotationSalt, StickerSecret},
 	sticker::StickerPayload,
 };
 use bluer::{
@@ -21,7 +22,6 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 
 use crate::{
 	SALT_ROTATION,
-	advertise::{ScanPayload, local_name},
 	gatt::{GattTransport, InboundSink},
 	identity, session,
 };
@@ -65,14 +65,13 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 	let mut shutdown = std::pin::pin!(tokio::signal::ctrl_c());
 	loop {
 		let salt = random_salt();
-		let handle = secret.handle(salt);
-		let name = local_name(handle);
+		let advertised = Advertised::new(secret.handle(salt), salt);
 		let _advertisement = adapter
-			.advertise(advertisement(handle, salt, &name))
+			.advertise(advertisement(advertised))
 			.await
 			.into_diagnostic()
 			.wrap_err("registering the advertisement")?;
-		tracing::info!(local_name = %name, "advertising");
+		tracing::info!(local_name = %advertised.to_local_name(), "advertising");
 
 		tokio::select! {
 			_ = rotation.tick() => continue,
@@ -85,34 +84,35 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 	}
 }
 
+/// How often to check whether the client is still subscribed, while it is sending nothing.
+const UNSUBSCRIBE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A handle rendered for a person to read in a log line.
+fn hex(handle: Handle) -> String {
+	handle
+		.as_bytes()
+		.iter()
+		.map(|b| format!("{b:02x}"))
+		.collect()
+}
+
 /// A fresh rotation salt. Advertised in the clear; what it buys is that a passive observer cannot
 /// follow a device by its handle across a change.
 fn random_salt() -> RotationSalt {
 	RotationSalt::from_bytes(rand::random())
 }
 
-/// The advertisement and its scan response.
+/// The advertisement a device registers.
 ///
-/// The service UUID goes in the advertisement rather than the scan response, because filtering a scan
-/// by service UUID is the only filtering some client platforms offer and it is applied to the
-/// advertisement. The handle, salt and version ride in service data, which lands in the scan
-/// response. Client platforms present the two to an application as one set of advertised data.
-fn advertisement(
-	handle: bliti_core::key_schedule::Handle,
-	salt: RotationSalt,
-	name: &str,
-) -> Advertisement {
-	let mut service_data = BTreeMap::new();
-	service_data.insert(
-		SERVICE_UUID,
-		ScanPayload::new(handle, salt).to_service_data(),
-	);
-
+/// The service UUID goes in the advertisement, because filtering a scan by service UUID is the only
+/// filtering some client platforms offer and it is applied to the advertisement. The handle, salt and
+/// version ride in the local name, which is the one element a host will place in the scan response,
+/// and so the only way the whole thing fits a controller that does only legacy advertising.
+fn advertisement(advertised: Advertised) -> Advertisement {
 	Advertisement {
 		advertisement_type: bluer::adv::Type::Peripheral,
 		service_uuids: [SERVICE_UUID].into_iter().collect(),
-		service_data,
-		local_name: Some(name.to_owned()),
+		local_name: Some(advertised.to_local_name()),
 		discoverable: Some(true),
 		..Default::default()
 	}
@@ -160,20 +160,40 @@ fn application(sink: &InboundSink, secret: Arc<StickerSecret>) -> Application {
 								let (transport, mut outbound) = GattTransport::open(&sink);
 
 								// Pump the device's bytes out as notifications for as long as the
-								// client is subscribed.
+								// client is subscribed, and notice when it stops being subscribed.
+								//
+								// Noticing matters: nothing else tells the device the client has gone.
+								// The session reads until its transport ends, and the transport only
+								// ends when the session drops it, so without this the two wait on each
+								// other and the device stays busy with a client that left.
+								let (left, gone) = tokio::sync::oneshot::channel();
 								let pump = tokio::spawn(async move {
-									while let Some(chunk) = outbound.next().await {
-										if notifier.notify(chunk).await.is_err() {
-											break;
+									loop {
+										tokio::select! {
+											chunk = outbound.next() => {
+												let Some(chunk) = chunk else { break };
+												if notifier.notify(chunk).await.is_err() {
+													break;
+												}
+											}
+											_ = tokio::time::sleep(UNSUBSCRIBE_POLL) => {
+												if notifier.is_stopped() {
+													break;
+												}
+											}
 										}
 									}
+									let _ = left.send(());
 								});
 
 								// A failed handshake is an ordinary outcome: anyone in range can
 								// connect and try, and the device stays reachable afterwards.
-								match session::run(transport, &secret).await {
-									Ok(()) => tracing::info!("session ended"),
-									Err(err) => tracing::info!(%err, "session ended"),
+								tokio::select! {
+									result = session::run(transport, &secret) => match result {
+										Ok(()) => tracing::info!("session ended"),
+										Err(err) => tracing::info!(%err, "session ended"),
+									},
+									_ = gone => tracing::info!("client unsubscribed; session ended"),
 								}
 								pump.abort();
 							}
@@ -230,27 +250,22 @@ pub async fn scan(
 		}
 		let device = adapter.device(address).into_diagnostic()?;
 		let name = device.name().await.ok().flatten();
-		let uuids = device.uuids().await.ok().flatten();
-		let carries_bliti = uuids
-			.as_ref()
+		let carries_bliti = device
+			.uuids()
+			.await
+			.ok()
+			.flatten()
 			.is_some_and(|uuids| uuids.contains(&SERVICE_UUID));
-		// Reporting what was heard, and not only what matched, is what makes a device that is
-		// advertising the wrong shape distinguishable from one that is not advertising at all.
 		tracing::debug!(%address, ?name, bliti = carries_bliti, "heard");
-		let Ok(Some(service_data)) = device.service_data().await else {
+
+		// A name that is not a bliti payload belongs to a device that is not one.
+		let Some(advertised) = name.as_deref().and_then(Advertised::from_local_name) else {
 			if carries_bliti {
 				println!(
-					"{address}  a bliti device advertising no service data (name {})",
+					"{address}  a bliti device whose name is not a payload ({})",
 					name.unwrap_or_else(|| "-".to_owned())
 				);
 			}
-			continue;
-		};
-		let Some(raw) = service_data.get(&SERVICE_UUID) else {
-			continue;
-		};
-		let Some(advertised) = ScanPayload::parse(raw) else {
-			tracing::warn!(%address, "bliti service data of an unexpected shape");
 			continue;
 		};
 
@@ -264,11 +279,11 @@ pub async fn scan(
 			continue;
 		}
 
-		if payload.secret().handle(advertised.salt) == advertised.handle {
+		if advertised.matches(payload.secret()) {
 			matched += 1;
 			println!(
-				"{address}  MATCHES the sticker (local name {})",
-				local_name(advertised.handle)
+				"{address}  MATCHES the sticker (handle {})",
+				hex(advertised.handle)
 			);
 		} else {
 			println!("{address}  another bliti device");

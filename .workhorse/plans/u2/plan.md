@@ -70,61 +70,55 @@ It runs on the first start after imaging and after a board change, not on every 
 
 **BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the device image and was installed on the prototype by hand.
 
-## Blocked on a decision: the advertisement does not fit the prototype's controller
+## Advertising: settled, and verified on the air
 
-The daemon advertises on a controller that supports extended advertising, and is refused by one that
-does not. The prototype is the latter, so this blocks the demo and needs a decision before the
-advertisement is settled.
+BLI-ADV now carries the payload in the local name, and the advertisement is accepted by the
+prototype's legacy-only controller. The shape is a 128-bit service UUID in the advertisement, so a
+client platform that can only filter on that still can, and the handle, salt and version as 21
+characters of unpadded base32 in the local name, which is the one element a host places in the scan
+response.
 
-What BLI-ADV specifies fits exactly: flags take three bytes and a 128-bit service UUID eighteen,
-leaving ten of the advertisement's thirty-one for a local name; service data keyed by a 128-bit UUID
-takes eighteen of the scan response's thirty-one, leaving thirteen for the handle, salt and version.
-Thirty-one and thirty-one, with nothing spare. That arithmetic is right, and the tests check it.
-
-What it assumes is that the device chooses which element goes in the advertisement and which in the
-scan response. BlueZ's advertisement interface does not offer that choice: a client hands over a set
-of fields and BlueZ packs them. On the prototype it packs them all into the advertisement, which
-overflows, and registration fails with `Invalid Parameters (0x0d)` from
-`src/advertising.c:add_client_complete()`. Dropping the local name does not rescue it, because flags,
-the service UUID and the service data come to fifty-two bytes on their own — so BlueZ is not moving
-service data into the scan response at all.
-
-Measured: the prototype's UART controller reports `MaxAdvLen 31` and `MaxScnRspLen 31`, the legacy
-budgets. The x86 machine it does work on reports `251` for both, because its controller does
-extended advertising and the whole payload fits in one. That difference, not BlueZ's version, is why
-one works and the other does not; both run bluetoothd 5.85.
-
-The cost sits in the 128-bit UUID being paid twice, once as the advertised service UUID and once as
-the key of the service data: thirty-six of the sixty-two bytes. Ways out, none yet chosen, and each a
-change to a versioned wire format:
-
-- **Carry the payload in the local name.** Measured to register on the prototype: a 128-bit service
-  UUID with a twenty-one-character local name is accepted where the same UUID with service data is
-  refused, because BlueZ does place a local name in the scan response. The service UUID stays in the
-  advertisement, so filtering by it still works, and thirteen bytes of handle, salt and version come
-  to twenty-one characters in unpadded base32, which fits. It needs no registration from anyone.
-  Confirmed on the air: with the prototype advertising and this laptop scanning in the same room, the
-  laptop heard `88:A2:9E:CB:28:E1` carrying both the bliti service UUID and the name
-  `PFLVUJIFNAXARK4M5YQAC`, which decodes to thirteen bytes — handle `79575a2505682e08`, salt
-  `ab8cee20`, version 1. The daemon had logged its computed handle as `79575a25`, so what reached the
-  air is the real derived handle for that board's sticker, on the controller that refuses service
-  data.
-- **Carry the payload as manufacturer data.** Two bytes of company identifier where a UUID key is
-  sixteen, which fits comfortably. But a company identifier comes with Bluetooth SIG membership;
-  `0xFFFF` is reserved for internal and interoperability testing and would serve the prototype, but
-  is not something to ship against.
-- **Advertise a 16-bit service UUID**, which also needs an allocation from the SIG.
-- **Drop the service UUID and keep service data**, which comes to thirty-four bytes and so needs the
-  payload cut from thirteen bytes to ten. It also takes away the one thing iOS can filter a scan on.
-- **Require extended advertising**, which rules out the prototype's controller and any board like it.
-
-Whichever is chosen, BLI-ADV needs rewriting: it specifies which element goes in the advertisement
-and which in the scan response, and BlueZ offers no way to say. Its advertisement interface carries
+Why the original design could not work: it specified which element goes in the advertisement and
+which in the scan response, and BlueZ offers no way to say. Its advertisement interface carries
 advertising data only — it reports `MaxScnRspLen` as a capability but exposes no scan response
-content — so the split the spec describes cannot be expressed, on any controller.
+content. On the prototype, flags, the service UUID and service data come to fifty-two bytes and
+registration fails with `Invalid Parameters (0x0d)`. It appeared to work on an x86 machine only
+because that controller does extended advertising and reports `MaxAdvLen 251`, so the split stopped
+mattering. Both run bluetoothd 5.85.
 
-Until this is settled the daemon is exercised on a controller with extended advertising, where it
-registers and advertises correctly.
+The payload lives in `bliti-core` rather than in the daemon, because the web application parses the
+same bytes and compiles the same crate to wasm.
+
+Verified between the prototype and a laptop in the same room: the laptop holding the prototype's
+sticker reports `MATCHES`, holding a different sticker reports `another bliti device` and then that
+nothing matched, and the payload recovered from the human-readable rendering beneath the code matches
+just as the URL does.
+
+## The channel over BLE: reached once, not yet repeatable
+
+The whole of the first milestone ran end to end on the air, once: the laptop matched the sticker,
+connected, completed the `NNpsk0` handshake, and received the device's hostname and five addresses
+across two interfaces in both families, each with the interface it belongs to, on a stream the device
+opened without being asked. The client then sent a line of text.
+
+Two things are unfinished, and both are in the daemon and its client rather than in the protocol.
+
+**The device did not print the text.** The line reached the client's side of the channel and the
+client reported sending it, but nothing appeared on the device's standard output or in its journal.
+Whether the writes drained before the client dropped the link, or the device never served the stream,
+is not yet established.
+
+**Connections after the first do not resolve services.** The client matches and connects, and then
+the host never reports the peer's attributes as resolved, so there is nothing to look through and no
+session begins — the device logs no client at all. Forgetting the device and reconnecting does not
+help, nor does restarting bluetoothd on the prototype. It worked on the first connection of the
+session and has not since, which points at host or controller state rather than at the GATT
+application, since that is unchanged from the run that worked.
+
+Fixed along the way, and worth keeping: **the device could not tell when a client went away.** The
+session read until its transport ended, and the transport only ended when the session dropped it, so
+the two waited on each other and the device stayed busy with a client that had left. The daemon now
+watches whether the client is still subscribed and ends the session when it is not.
 
 ## Milestones
 

@@ -38,11 +38,11 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Discovery
 
-- [ ] The advertisement carries the service UUID and the local name within its 31 bytes, and the scan response carries the eight-byte handle, four-byte salt and one-byte version within its own 31 (verifies spec: BLI-ADV) — the arithmetic is tested, but BlueZ refuses this payload on a legacy-only controller; see the plan's Blocked section
-- [x] The local name carries the first four bytes of the handle as eight hexadecimal characters, and changes when the salt rolls (verifies spec: BLI-ADV)
+- [x] The advertisement carries the service UUID, and the local name carries the eight-byte handle, four-byte salt and one-byte version, within the legacy budgets (verifies spec: BLI-ADV) — the budget is a compile-time assertion, and the advertisement registers and is heard on a legacy-only controller
+- [x] The local name carries the handle, salt and version as 21 characters of base32, and changes when the salt rolls (verifies spec: BLI-ADV)
 - [x] Both the QR payload and the advertisement carry the version marker (verifies spec: BLI-ADV)
 - [ ] A client hearing a version it does not hold reports a device present at an unsupported version, distinctly from hearing nothing at all (verifies spec: BLI-ADV)
-- [ ] Two advertisements from one device across a salt change are not linkable without the sticker secret, and a client holding the secret recognises both (verifies spec: BLI-ADV)
+- [x] Two advertisements from one device across a salt change are not linkable without the sticker secret, and a client holding the secret recognises both (verifies spec: BLI-ADV)
 - [ ] A handle collision between two devices in range is handled rather than silently picking one (verifies spec: BLI-ADV)
 - [ ] Repeated failed handshakes leave the device reachable by a legitimate operator, and cannot fill its storage with records of them (verifies spec: BLI-ADV)
 
@@ -65,7 +65,7 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Channel demonstration
 
-- [ ] Addresses are reported on a device with several interfaces, with addresses of more than one family, and with none up at all
+- [ ] Addresses are reported on a device with several interfaces, with addresses of more than one family, and with none up at all — the first two were seen over BLE on the prototype (five addresses across two interfaces, both families); a device with nothing up is still to try
 - [x] Loopback and link-local addresses do not appear, and each reported address carries its interface
 - [ ] An address changing while a client is connected reaches that client without it asking
 - [ ] Text sent from a client appears on the device's standard output, and in the system log once it runs as a service
@@ -81,6 +81,8 @@ An unticked case is coverage still owed, not an optional extra.
 ## End to end
 
 - [ ] The web application completes scan, match, handshake, and both directions against a real device
+- [x] A command-line client completes scan, match, handshake, and the device-to-client direction against a real device over BLE — reached once; see the plan for what is not yet repeatable
+- [ ] A command-line client reaches a device on a second and subsequent connection, rather than only the first of a session
 - [ ] A phone camera opens the sticker URL without anything installed first, and the fragment is not sent to a server
 
 ## Notes

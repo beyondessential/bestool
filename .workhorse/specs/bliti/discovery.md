@@ -9,25 +9,28 @@ A client that holds a sticker recomputes the expected handle from it and matches
 
 ## What is advertised
 
-The advertisement carries a service UUID identifying the device as speaking bliti, and a local name.
-The scan response carries service data holding the advertised handle of [BLI-KEY](key-schedule.md), the current rotation salt, and the version marker.
+The advertisement carries a service UUID identifying the device as speaking bliti.
+The local name carries the advertised handle of [BLI-KEY](key-schedule.md), the current rotation salt, and the version marker.
 
-The service UUID is a 128-bit UUID and appears in the advertisement rather than in the scan response, because filtering a scan by service UUID is the only filtering some client platforms offer and it is applied to the advertisement.
-Client platforms present the advertisement and the scan response to an application as one set of advertised data.
+The service UUID is a 128-bit UUID and appears in the advertisement rather than the scan response, because filtering a scan by service UUID is the only filtering some client platforms offer and it is applied to the advertisement.
 
-Splitting the content this way is what fits it into the budget.
-A legacy advertisement carries 31 bytes, of which the mandatory flags take three and a 128-bit service UUID takes eighteen, leaving ten.
-The scan response provides a second 31 bytes, of which service data keyed by a 128-bit UUID takes eighteen before any content, leaving thirteen.
+The payload is carried in the local name rather than in service data, because a device cannot choose where each element is placed.
+A controller that does only legacy advertising offers 31 bytes for the advertisement and 31 for the scan response, and the host decides which element goes in which.
+The mandatory flags take three bytes and a 128-bit service UUID eighteen, so 21 of the advertisement's 31 are already spent, and service data keyed by that same UUID needs 31 of its own before it will fit anywhere.
+Carrying the payload as a local name costs two bytes of element header rather than eighteen of repeated UUID, and a local name is the one element a host will place in the scan response, so the whole advertisement fits a legacy controller.
 
-The handle is eight bytes, the salt four, and the version marker one, filling those thirteen exactly.
+The payload is 13 bytes: an eight-byte handle, a four-byte salt, and a one-byte version marker.
+It is rendered as 21 characters of unpadded base32, which is what the local name holds.
 
-The local name carries the first four bytes of the handle rendered as eight hexadecimal characters, filling the ten bytes remaining in the advertisement.
-A rendering of the whole handle does not fit.
-This costs nothing, because the handle is not secret, and it gives a client platform that can only filter by name prefix something to filter on, and a human something to match by eye.
+Eight bytes of handle makes a collision between two devices at one site implausible.
+
+A client platform that can only filter by name prefix has the rendering to filter on, and the handle is not secret, so carrying it in the clear costs nothing.
 
 ## Matching
 
-A client scans, recomputes the handle from the sticker it holds together with whatever salt it observes, and compares.
+A client scans, reads the local name of each device advertising the service UUID, decodes it, recomputes the handle from the sticker it holds together with the salt it observes, and compares.
+
+A local name that is not a bliti payload belongs to a device that is not one, and is passed over.
 
 Matching is by payload rather than by device address, so a client that is never shown the peer's address can still identify the device, and a device whose address rotates is still recognised.
 
@@ -45,6 +48,7 @@ Rotating it is what stops the handle being a fixed beacon: without the salt chan
 An observer who has not scanned the sticker cannot link two advertisements across a salt change, while a client that holds the sticker recognises the device across it by recomputing.
 
 Rotating the salt means re-registering the advertisement, and a client recomputes against whatever salt it observes, so nothing a client does depends on the rotation period.
+The local name changes with the handle, so what a client filters on changes at the same time.
 
 ## Address privacy
 

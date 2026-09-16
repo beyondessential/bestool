@@ -17,6 +17,7 @@
 
 use uuid::Uuid;
 
+pub mod advertisement;
 pub mod board_id;
 pub mod channel;
 pub mod key_schedule;

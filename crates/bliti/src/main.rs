@@ -11,13 +11,14 @@ use std::{path::PathBuf, time::Duration};
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, Result, WrapErr};
 
-mod advertise;
 mod facts;
 mod gatt;
 mod identity;
 mod session;
 mod sticker;
 
+#[cfg(target_os = "linux")]
+mod client;
 #[cfg(target_os = "linux")]
 mod device;
 
@@ -68,6 +69,24 @@ enum Command {
 		#[arg(long)]
 		adapter: Option<String>,
 	},
+
+	/// Open a channel to a device and exchange the milestone's two messages.
+	Connect {
+		/// The sticker payload: a sticker URL, its fragment, or the rendering printed beneath the code.
+		sticker: String,
+
+		/// The device's address, as reported by `scan`. Found by matching the sticker when absent.
+		#[arg(long)]
+		address: Option<String>,
+
+		/// A line of text for the device to print.
+		#[arg(long, default_value = "hello from the command line")]
+		text: String,
+
+		/// Bluetooth adapter to use. Defaults to the system's first.
+		#[arg(long)]
+		adapter: Option<String>,
+	},
 }
 
 fn main() -> Result<()> {
@@ -94,6 +113,12 @@ async fn run(cli: Cli) -> Result<()> {
 			seconds,
 			adapter,
 		} => scan(&sticker, seconds, adapter.as_deref()).await,
+		Command::Connect {
+			sticker,
+			address,
+			text,
+			adapter,
+		} => connect(&sticker, address.as_deref(), &text, adapter.as_deref()).await,
 	}
 }
 
@@ -159,6 +184,27 @@ fn read_sticker(given: &str) -> Result<bliti_core::sticker::StickerPayload> {
 #[cfg(target_os = "linux")]
 async fn scan(sticker: &str, seconds: u64, adapter: Option<&str>) -> Result<()> {
 	device::scan(&read_sticker(sticker)?, seconds, adapter).await
+}
+
+#[cfg(target_os = "linux")]
+async fn connect(
+	sticker: &str,
+	address: Option<&str>,
+	text: &str,
+	adapter: Option<&str>,
+) -> Result<()> {
+	let payload = read_sticker(sticker)?;
+	let address = address
+		.map(str::parse::<bluer::Address>)
+		.transpose()
+		.into_diagnostic()
+		.wrap_err("reading the device address")?;
+	client::connect(address, payload.secret(), text, adapter).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn connect(_s: &str, _a: Option<&str>, _t: &str, _ad: Option<&str>) -> Result<()> {
+	miette::bail!("connecting runs on Linux, against BlueZ")
 }
 
 #[cfg(not(target_os = "linux"))]
