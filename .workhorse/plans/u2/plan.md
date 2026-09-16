@@ -147,7 +147,7 @@ The secret is the same value the production known-answer test pins, because that
 this board's real serial. A reimaged board that derives anything else means the chain is not
 reproducible, and every sticker already printed is in question.
 
-Two things the reimage takes with it, both already known: BlueZ userspace was installed by hand and
+Two things the reimage takes with it, both already known: ~~BlueZ userspace was installed by hand and
 will need installing again, and the binary is deployed to `/tmp`, which does not survive. The image
 it ran on was Ubuntu 26.04 LTS, kernel 7.0.0-1015-raspi, with bluez 5.85.
 
