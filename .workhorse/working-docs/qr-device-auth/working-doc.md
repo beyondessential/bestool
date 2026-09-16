@@ -68,9 +68,16 @@ With a public constant, the only thing stopping someone enumerating the board-ID
 
 A plain hash makes it cheap: 32 bits of board ID against a fast hash is minutes of GPU time, and 64 bits is not a comfortable margin either.
 
-Making the first derivation **memory-hard** — argon2id or scrypt rather than a plain hash — closes this without changing the model. The constant stays public, the derivation stays reproducible from the board alone, and nothing about the operational story moves. The cost lands where it does not hurt: stickers are generated once at manufacture, and the device derives its secret once at boot and holds it. Parameters want tuning against the slowest board we ship.
+Making the first derivation **memory-hard** — argon2id or scrypt rather than a plain hash — closes this without changing the model. The constant stays public and the derivation stays reproducible from the board alone; only the cost of doing so moves. Stickers are generated once at manufacture, so the generator can afford whatever we ask of it.
 
-The second derivation, sticker secret to advertised handle, stays a fast hash. The phone recomputes nothing there, but it compares against every advertisement it hears while scanning, and a memory-hard function in that loop would be felt.
+Parameters should be pushed hard, to seconds of work rather than milliseconds. The useful mental model is that an attacker's cost per guess scales with memory times iterations, and a GPU's parallelism is capped by its VRAM divided by the memory parameter — so memory buys more than time does, since it bounds how many guesses can run at once rather than just how long each takes.
+
+**The ceiling is the weakest device, not the generator.** The device needs the secret at runtime to compute its handle and run the handshake, so whatever we choose has to run there. Time is merely slow on a small board; memory is a hard wall, and a parameter larger than the board's RAM cannot run on it at all, ever. Two ways to buy headroom:
+
+- **Cache the derived secret on the device** after first boot. The cost is paid once per imaging rather than every boot, which makes a long derivation tolerable. Memory is still capped by the board's RAM. This keeps the device self-sufficient: the cache is an optimisation, not a source of truth, and rederiving from the board is always available. A cache that does not match the board it is on — an SD card moved between boards — is detectable and simply rederives.
+- **Derive at imaging time on good hardware** and install the result, with the device never deriving at all. This lifts the memory cap entirely. The model is unchanged, because there is still no secret key and the value is still reproducible from the board ID and the public constant by anyone with the compute — but the device can no longer recover its own secret unaided, only with a machine that can run the derivation. Recovery stays possible off-device, since the board ID is public and readable from the board.
+
+The second derivation, sticker secret to advertised handle, stays a fast hash either way. The phone compares against every advertisement it hears while scanning, and a memory-hard function in that loop would be felt.
 
 ### Advertised handle
 
@@ -120,13 +127,13 @@ A static page using Web Bluetooth that does the scan-match-authenticate-RPC flow
 
 ### Choice of derivation function
 
-Settled in shape — memory-hard for the first step, fast for the second — but not in detail.
+Settled in shape — memory-hard for the first step, pushed to seconds of work, fast for the second — but not in detail.
 
-- **argon2id** is the current default recommendation for password hashing and has a maintained pure-Rust implementation. Parameters are three-dimensional (memory, time, parallelism) and want tuning against the weakest board, since that board has to run it at every boot.
-- **scrypt** is older, simpler to parameterise, and cheaper to run on a constrained board at equivalent nominal cost — but with a worse memory-hardness margin.
+- **argon2id** is the current default recommendation and has a maintained pure-Rust implementation. Parameters are three-dimensional: memory, iterations, parallelism.
+- **scrypt** is older and simpler to parameterise, with a worse memory-hardness margin.
 - For the fast second step, BLAKE3 keyed mode gives domain separation and a truncatable output in one primitive.
 
-Caching the derived secret on disk after first boot would take the cost off the boot path entirely, at the price of introducing the per-device state the design otherwise avoids. Probably not worth it unless the boot cost measures badly.
+Parameters cannot be chosen until two things are measured: the weakest board's available RAM, which is a hard cap on the memory parameter, and how long a candidate setting actually takes there. Both belong in the first milestone, before anything is printed on a sticker — the constants and parameters are baked into every sticker in the field the moment one ships.
 
 ### Handshake
 
@@ -166,7 +173,9 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 ## Open questions
 
 - [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place. None yet; the doc sits under a provisional directory until there is one.
-- [ ] Is the first derivation memory-hard, and if so argon2id or scrypt, at what parameters?
+- [ ] Which board is the weakest in scope, and how much RAM does it have? This caps the derivation's memory parameter.
+- [ ] Does the device derive its own secret (cached after first boot, memory capped by that board), or is it derived on good hardware at imaging time and installed (no cap, device cannot self-recover unaided)?
+- [ ] argon2id or scrypt, at what parameters?
 - [ ] What is this called? It needs a name before it needs a crate.
 - [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
 - [ ] Which provisioning operations are in the first milestone, and is Wi-Fi configuration one of them or does Improv-Wi-Fi keep that job?
