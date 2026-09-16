@@ -9,7 +9,7 @@ It exists so that one check works whether bestool is installed alongside an appl
 See [SUBJ](subjects.md) for the subjects a check reports for, [CHK](healthchecks.md) for the checks themselves, and [DOC](doctor.md) for the sweep that runs them.
 
 A substrate is not a layer every check routes through.
-It covers only what genuinely differs between environments: an application's services are found through a supervisor on one machine, a container runtime on another, and a cluster's API on a third, and the same reading has to come out of all three.
+It covers only what genuinely differs between environments: an application's services are found through a supervisor and the container runtime under it on one machine, a process supervisor alone on another, and a cluster's API on a third, and the same reading has to come out of all of them.
 
 What a check needs that does not differ is supplied to it rather than asked for.
 A connection to a database, an application's configuration, its version and its type are parameters: they are the same kind of thing wherever the application runs, and wrapping them in an abstraction would only restate what the sweep already knows.
