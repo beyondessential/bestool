@@ -308,7 +308,6 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Open questions
 
-- [ ] Workhorse card identifier for this work. Until there is one the doc sits under a provisional directory, and the split has nowhere to put the plan or the test cases — specs go by area, but both of those are card-scoped.
 - [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor.
 - [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep.
 - [ ] Salt rotation period.
