@@ -98,14 +98,26 @@ The cost sits in the 128-bit UUID being paid twice, once as the advertised servi
 the key of the service data: thirty-six of the sixty-two bytes. Ways out, none yet chosen, and each a
 change to a versioned wire format:
 
-- **Carry the payload as manufacturer data** rather than service data. A company identifier is two
-  bytes where a UUID key is sixteen, which brings the total to forty-eight and fits the legacy
-  budgets with room to spare. It needs a company identifier, and it is a different field from the one
-  BLI-ADV names.
-- **Advertise a 16-bit service UUID**, which needs an allocation from the SIG.
-- **Shorten what is advertised** so the whole payload fits one thirty-one-byte advertisement, which
-  means giving up either the local name or some of the handle, salt or version.
+- **Carry the payload in the local name.** Measured to register on the prototype: a 128-bit service
+  UUID with a twenty-one-character local name is accepted where the same UUID with service data is
+  refused, because BlueZ does place a local name in the scan response. The service UUID stays in the
+  advertisement, so filtering by it still works, and thirteen bytes of handle, salt and version come
+  to twenty-one characters in unpadded base32, which fits. It needs no registration from anyone.
+  What is confirmed so far is that BlueZ accepts it; that the bytes reach the air in that shape is
+  still to check with a scanner that reads the name.
+- **Carry the payload as manufacturer data.** Two bytes of company identifier where a UUID key is
+  sixteen, which fits comfortably. But a company identifier comes with Bluetooth SIG membership;
+  `0xFFFF` is reserved for internal and interoperability testing and would serve the prototype, but
+  is not something to ship against.
+- **Advertise a 16-bit service UUID**, which also needs an allocation from the SIG.
+- **Drop the service UUID and keep service data**, which comes to thirty-four bytes and so needs the
+  payload cut from thirteen bytes to ten. It also takes away the one thing iOS can filter a scan on.
 - **Require extended advertising**, which rules out the prototype's controller and any board like it.
+
+Whichever is chosen, BLI-ADV needs rewriting: it specifies which element goes in the advertisement
+and which in the scan response, and BlueZ offers no way to say. Its advertisement interface carries
+advertising data only — it reports `MaxScnRspLen` as a capability but exposes no scan response
+content — so the split the spec describes cannot be expressed, on any controller.
 
 Until this is settled the daemon is exercised on a controller with extended advertising, where it
 registers and advertises correctly.
