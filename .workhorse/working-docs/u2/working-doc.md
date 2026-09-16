@@ -62,9 +62,11 @@ The precedence is by **kind of source, not by platform**: TPM Endorsement Key, t
 
 The corollary is the thing to be careful about. Adding a stronger source to a board that already wears a sticker changes which source wins, and so changes the secret: fitting a TPM to a deployed Pi, or burning OTP after the fact, orphans that board's sticker. A hardware change of that kind means a reprint, and the device should be able to say that is what happened rather than leaving an operator to discover it by a scan that never matches.
 
-#### The TPM on UEFI machines
+#### The TPM Endorsement Key
 
-A PC-grade box can be assumed to carry a TPM 2.0, and it holds a far better identifier than anything in SMBIOS. The Endorsement Key is generated from the Endorsement Primary Seed under a standard, published template, so it is the same key every time it is asked for. Its *name* — the hash algorithm identifier followed by the SHA-256 digest of the public area — is a compact fixed-length value carrying the full entropy of a real 2048-bit RSA public key, and it is readable without authorisation.
+A TPM 2.0 holds a far better identifier than anything in SMBIOS, and it is not only a PC-grade part: a discrete TPM over SPI puts the same source on a Raspberry Pi. The Endorsement Key is generated from the Endorsement Primary Seed under a standard, published template, so it is the same key every time it is asked for. Its *name* — the hash algorithm identifier followed by the SHA-256 digest of the public area — is a compact fixed-length value carrying the full entropy of a real 2048-bit RSA public key, and it is readable without authorisation.
+
+**The template is pinned to the TCG low-range RSA 2048 Endorsement Key.** A TPM holds several Endorsement Keys, one per algorithm, so "the Endorsement Key" is ambiguous until the algorithm is named — and naming it wrongly later changes every board ID derived under the old choice. RSA 2048 is the common denominator: it is present on the Intel firmware TPM tested here, and on both firmware families of the discrete part below. This is as load-bearing as the derivation constants, and moves for the same reasons and with the same consequences.
 
 Verified on the same Dell, against its Intel firmware TPM. Regenerating the Endorsement Key from the standard template twice produced byte-identical names, and both matched the key already persisted at the conventional endorsement handle: `000b4e511a6e9753d54b298cfa8f84bb3aa6f7f900673035b0cec2bc3f5318de126d`. So the value is derivable from the board alone rather than read from somewhere it was stored, which is the property the whole scheme rests on — and it needs no provisioning step at all, unlike the Pi OTP option below.
 
