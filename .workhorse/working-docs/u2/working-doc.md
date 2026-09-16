@@ -94,7 +94,7 @@ This is a way out of the entropy problem on the Pi side rather than a mitigation
 
 Two consequences, both about ordering and neither optional.
 
-Blank OTP reads as zeros, which is a sentinel rather than a value, so an unburnt board must fall through to the next source rather than derive 256 bits of zero. This is the same rule as refusing hardware that is not unique, applied to a source rather than a machine.
+Blank OTP reads as zeros, which is a sentinel rather than a value, so an unburnt board must fall through to the next source rather than derive 256 bits of zero. See "Sources that are not identities".
 
 And the burn has to happen before the secret is derived and the sticker printed. Burning afterwards promotes OTP above the serial the sticker was derived from, which silently orphans it — and because OTP is irreversible there is no putting it back. The board then wears a sticker that no longer matches it until someone reprints.
 
@@ -388,7 +388,6 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 - [x] Whether a board with no strong source — no TPM, no burnt OTP, only its platform serials — is shippable at all, or is refused the way non-unique hardware is. **Answered: shippable, because devices already in the field have nothing else.** The derivation is therefore sized against that case, and those boards carry a weaker guarantee that the threat model states rather than hides. See "Boards with only their serial numbers".
 - [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor. Sized for the weakest source we ship, which the answered question above fixes as the platform serials. Reference figures on a 12-core x86 desktop, argon2id with a 32-byte output at four lanes: 512 MiB costs 0.13 s at one pass and 0.30 s at three; 1 GiB costs 0.26 s and 0.60 s; 2 GiB costs 0.67 s and 1.37 s. Argon2 is memory-bandwidth bound, so a Pi 5 on LPDDR4X will be several times slower, and the figure that matters is the Pi one.
-- [ ] Which manufacturer identifiers the software TPM implementations we might meet actually report, since that is one of the three signals for refusing hardware that is not unique.
 - [x] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep. **Answered: it is not configurable through `bluer` at all, and lockstep is unavailable — the daemon has no supported way to observe the controller rolling its address.** Address privacy is a documented host requirement; the device rolls the salt and the guarantee narrows to which device rather than same device. See "Tracking resistance".
 - [x] Salt rotation period. **Answered: fifteen minutes.**
 - [x] Does `yamux` build for `wasm32-unknown-unknown`? The web page depends on it, and the answer decides between adopting it and hand-rolling the stream layer. **Answered: yes, and it is adopted.** See "Streams, and why not QUIC".
