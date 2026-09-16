@@ -185,11 +185,43 @@ Without a browser, by running the wasm through node against the prototype's live
   ephemeral keys. That is the wasm-specific risk cleared: `getrandom`'s browser backend reaches
   `snow`, and the framing and the transport pump work.
 
-In a browser, the page loads, instantiates the wasm, and runs through: headless Chrome reaches the
-Web Bluetooth check and reports its absence, which is the correct answer there.
+In a browser, driven over the DevTools protocol: the page loads, instantiates the wasm, reads the
+payload from the fragment, and renders the sticker's human rendering, which is BLI-WEB's link path
+working end to end in Chrome.
 
-What is left is the part that needs a real adapter: the chooser, GATT, notifications, and the channel
-against the device. That is a browser test on hardware, not something the test harness can reach.
+What is left is the part that needs a working adapter: the chooser, GATT, notifications, and the
+channel against the device. That is blocked on the test machine for a reason of its own, below.
+
+### The browser test is blocked by a bug in the test machine's BlueZ
+
+The channel has not been driven from a browser yet, and the reason is nothing to do with bliti.
+
+Chrome for Linux does have Web Bluetooth, behind `--enable-features=WebBluetooth`, and driving it
+over the DevTools protocol works: the page loads, the fragment is read, and the sticker renders. But
+`requestDevice` offers an empty chooser every time. Underneath, `bluetoothd` segfaults the instant a
+UUID discovery filter matches any device, and Web Bluetooth always filters.
+
+A symbolised backtrace puts the crash in BlueZ's own code: `is_filter_match` at `src/adapter.c:7218`
+calls `queue_find` with a heap address where a function pointer belongs, and jumps into it. The
+device's advertisement arrives intact — the 44 bytes are the 21-byte advertisement and the 23-byte
+scan response the kernel merged, parsed correctly into the service UUID, the flags and the name — so
+nothing about what is advertised is implicated. Chrome finds the device without trouble when asked
+with `acceptAllDevices`, which is the same discovery without the filter.
+
+Proved by a control with no bliti code in it at all: a Raspberry Pi advertising the Battery Service
+UUID through `bluetoothctl` crashes the laptop's `bluetoothd` in exactly the same way when scanned
+under a filter for that UUID. Off the air, the same filter is harmless.
+
+It is [bluez/bluez#2282](https://github.com/bluez/bluez/issues/2282), a regression in 5.87 fixed
+upstream in `48278c8`: when the parsed service list moved from a `GSList` to a `queue`, the call kept
+GLib's argument order, so `queue_find` receives the UUID string where it expects the match function
+and calls it. The laptop runs 5.87-2; 5.86 is unaffected, and the prototype's 5.85 never reaches the
+path because a device is a peripheral and does not filter a scan.
+
+So the browser test needs one of: a client machine on 5.86 or a patched 5.87, or an Android phone,
+whose Bluetooth stack is not BlueZ at all and which is the platform the application is actually aimed
+at. Android is the better test of the two, and the camera path needs it regardless, because
+`BarcodeDetector` is not implemented in Chrome for Linux.
 
 ### The chooser cannot be narrowed, and BLI-WEB says it can
 
