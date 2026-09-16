@@ -76,8 +76,6 @@ Two risks, neither settled here — and the first lands almost entirely on the f
 
 The Endorsement Primary Seed survives the ordinary clear operation, which resets the storage hierarchy, but a platform-authorised command exists to change it outright. What a given firmware does on a BIOS-level TPM reset, on disabling and re-enabling a firmware TPM, or across a firmware update, was not tested and should not be assumed. If the seed changes, the key changes, and the sticker is orphaned. A discrete TPM is far better placed here: its seed is fixed at manufacture and attested by a certificate the vendor issues against it, and there is no BIOS operation reaching in to regenerate it. The exposure is therefore concentrated on PC-grade boxes with firmware TPMs, which is also where the fallback is weakest.
 
-A virtual machine with a software TPM inherits whatever seed its image carries, so machines cloned from one image share an Endorsement Key, and would share a board ID and a sticker secret. Any golden-image workflow makes this a correctness problem rather than a theoretical one.
-
 Reading it costs a dependency. The operation needed is narrow — create a primary key under the endorsement hierarchy with the standard template, then read its name — but reaching it from Rust means either the established bindings to the TPM software stack, which carry a C library, or speaking the TPM command protocol to the resource manager directly. Either way it belongs behind the board-ID backend interface and out of the core, which has to keep building for wasm.
 
 ##### A discrete TPM on Raspberry Pi
@@ -100,13 +98,15 @@ Blank OTP reads as zeros, which is a sentinel rather than a value, so an unburnt
 
 And the burn has to happen before the secret is derived and the sticker printed. Burning afterwards promotes OTP above the serial the sticker was derived from, which silently orphans it — and because OTP is irreversible there is no putting it back. The board then wears a sticker that no longer matches it until someone reprints.
 
-#### Refusing to derive from hardware that is not unique
+#### Sources that are not identities
 
-bliti targets bare metal. Rather than keeping a record of board IDs already issued — which would reintroduce exactly the per-device state the design exists to avoid — the device refuses to derive when the hardware itself says it is not a unique physical machine.
+A source can be present and still carry no identity. A value that reads as all zeros, all ones, or a known vendor constant is a placeholder whatever its nominal width, and hashing it as though it were a value gives every board in the same position the same secret. Unburnt OTP is the ordinary case — it reads as zeros on every unprogrammed board — and a vendor that ships a constant SMBIOS UUID across a model line is the other.
 
-Three signals are available without any record. The system reports whether it is virtualised at all, and a virtual machine is refused outright, since a software TPM inherits its seed from the image it was cloned from and would hand every clone the same secret. A TPM identifies its manufacturer, and a software implementation says so. And a chosen source that reads as a sentinel — all zeros, all ones, or a known vendor constant — is not an identity, whatever its nominal width; unburnt OTP reads as zeros and must be rejected on exactly this ground rather than hashed as though it were a value.
+Such a source is skipped, and precedence falls through to the next one. That is the difference between this and a hard failure: a Pi with unburnt OTP is not broken, it simply derives from its serial instead, which is the weak-source case and a supported one.
 
-Refusing loudly is the required behaviour in all three cases. Deriving anyway would produce a sticker secret that some other machine also holds, which is worse than not provisioning at all, and silent about it.
+Reaching the end of the precedence with nothing usable is the failure, and it fails loudly rather than deriving from a placeholder.
+
+bliti targets bare metal, and detecting virtualised or cloned machines is out of scope for now. It is worth knowing why the question arises, so that the scope can be revisited deliberately rather than by surprise: a software TPM takes its seed from the image it was cloned from, so machines stamped from one golden image would share an Endorsement Key, and therefore a board ID and a sticker secret.
 
 #### Boards with only their serial numbers
 
