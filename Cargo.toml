@@ -6,6 +6,7 @@ members = [
 	"crates/bestool",
 	"crates/bliti",
 	"crates/bliti-core",
+	"crates/bliti-web",
 	"crates/canopy",
 	"crates/improv-wifi",
 	"crates/kopia",
@@ -27,7 +28,6 @@ clap = { version = "4.6.1", features = ["cargo", "derive", "wrap_help"] }
 futures = "0.3.30"
 indicatif = { version = "0.18.2", features = ["tokio"] }
 itertools = "0.15.0"
-lloggs = "1.3.0"
 miette = "7.6.0"
 rand = "0.10.1"
 rcgen = "0.14.8"

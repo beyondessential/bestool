@@ -1,0 +1,32 @@
+[package]
+name = "bliti-web"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85.0"
+resolver = "2"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Browser client for bliti, the QR-anchored BLE device provisioning protocol"
+keywords = ["bliti", "ble", "provisioning", "wasm", "web-bluetooth"]
+categories = ["wasm", "embedded", "network-programming"]
+repository = "https://github.com/beyondessential/bestool"
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bliti-core = { version = "0.0.0", path = "../bliti-core", default-features = false }
+console_error_panic_hook = "0.1.7"
+futures.workspace = true
+js-sys = "0.3.105"
+serde_json = "1.0.151"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }

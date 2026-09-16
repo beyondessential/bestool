@@ -152,6 +152,69 @@ application, and BlueZ can retain a stale registration until the next `bluetooth
 affect the working runs, but the packaged unit should either handle SIGTERM or accept that the GATT
 state is cleared when `bluetoothd` restarts.
 
+## The web application
+
+Built as two halves, split where the protocol ends and the browser begins.
+
+`crates/bliti-web` compiles to wasm and carries everything with protocol in it: reading a sticker,
+recomputing and matching the advertised handle, the `NNpsk0` handshake, the stream layer, and the
+JSON messages. It is the same `bliti-core` the daemon and the command-line client run, which is the
+whole point of the split — one implementation of the key schedule rather than a Rust one and a
+JavaScript one that must agree forever. It takes the core without default features, so argon2 is not
+in the build at all: a client reads the sticker secret from the payload and only computes the handle.
+
+`www/` is the page: Web Bluetooth, the camera, and the interface, in plain JavaScript. There is no
+bundler and no npm. `wasm-bindgen --target web` emits an ES module the page imports directly, and QR
+capture uses the browser's own `BarcodeDetector` rather than a scanning library, which is available
+on Chrome for Android — the same platform Web Bluetooth needs — and is why no dependency is required
+for it. Where it is absent the camera button does not appear and the rendering can be typed instead.
+
+### What is verified, and how
+
+Without a browser, by running the wasm through node against the prototype's live advertisements:
+
+- The wasm computes the same handle the device does. Three real advertisements captured from the
+  prototype under three different salts all match the sticker, which is BLI-ADV's rotation property
+  demonstrated on real data rather than on a fixture. A payload with a handle that is not this
+  device's does not match, a name that is not a payload at all is passed over, and a payload carrying
+  a version marker this client does not hold is read as exactly that rather than as a non-match.
+- Both sticker-reading paths give the same secret: the URL a code encodes, and the human-readable
+  rendering typed in.
+- The handshake runs in wasm. Opening a channel emits a 48-byte `NNpsk0` first message, chunked to
+  twenty bytes a write and handed to the JavaScript write function, and two channels emit different
+  ephemeral keys. That is the wasm-specific risk cleared: `getrandom`'s browser backend reaches
+  `snow`, and the framing and the transport pump work.
+
+In a browser, the page loads, instantiates the wasm, and runs through: headless Chrome reaches the
+Web Bluetooth check and reports its absence, which is the correct answer there.
+
+What is left is the part that needs a real adapter: the chooser, GATT, notifications, and the channel
+against the device. That is a browser test on hardware, not something the test harness can reach.
+
+### The chooser cannot be narrowed, and BLI-WEB says it can
+
+BLI-WEB says that where the browser offers a chooser rather than the advertisements themselves, the
+application "filters that chooser by the local name, so that the device whose sticker was read is the
+one presented". No browser can do this. Web Bluetooth filters on an exact name or a name prefix, and
+the local name is the handle followed by the salt, both of which change every fifteen minutes and
+neither of which a client can predict before hearing the advertisement it is trying to filter for.
+Reading the advertisements directly would solve it, but `requestLEScan` is behind a flag and is not
+something an operator can be asked to turn on.
+
+What the application does instead is filter the chooser to devices carrying the bliti service UUID,
+and check the device the operator picks against the sticker before anything is sent to it: not this
+device's payload, a version this client does not hold, or a different bliti device are each reported
+as what they are. The spec needs changing to describe that, and it is the one place where the
+implementation knowingly departs from a spec.
+
+### Building it
+
+`crates/bliti-web/build.sh` builds the wasm and its bindings into `www/pkg`, which is generated and
+not committed. It needs the `wasm-bindgen` CLI at the same version as the crate, and the wasm target
+installed. The `.cargo/config.toml` added at the workspace root passes `getrandom`'s backend cfg for
+the wasm target only, which `snow` needs and which the feature alone does not supply. Serving `www/`
+is covered under Development affordances.
+
 ## The prototype's identity, to check against after it is reimaged
 
 Reimaging the prototype is a direct test of the claim the whole design rests on: that a board's
@@ -225,7 +288,10 @@ backends are registered, so they slot in without disturbing the schedule.
 - [x] Address and hostname reporting, including unsolicited sending on change
 - [x] Text echo to standard output (verified over the air: the device prints the client's line to its journal)
 - [x] Advertising resumes after a session ends, and a short advertising interval so discovery is prompt — both verified across nine consecutive connections
-- [ ] Web application: fragment reading, camera capture, scan and match, handshake, and both directions
+- [x] Web application: the wasm client crate and the page — sticker reading by link, typing, and
+      camera, matching, handshake, streams, and both directions. Verified as far as a browser-free
+      harness reaches (see The web application); the channel against a device is still to test on
+      hardware
 - [x] A `scan` subcommand doing the client half of discovery and matching from the command line, so discovery can be exercised without a browser
 - [ ] A packaged systemd unit — must ship the peripheral-only BlueZ config (`[GATT] Client = false`) and should handle SIGTERM for a clean GATT unregister
 
@@ -272,7 +338,7 @@ feature unconditionally rather than leaving it to a build flag.
 
 These serve the first phase and are deliberately absent from the specs, because they do not outlive it.
 
-The web application is served from localhost during development. That is a secure context, so the camera and Bluetooth are available without a certificate. A plain-HTTP origin on a LAN address is not a secure context and will not do, so a phone testing against a development machine reaches it by port-forwarding to its own localhost rather than over the network.
+The web application is served from localhost during development, with `python3 -m http.server 8749 --bind 127.0.0.1` in its `www/` directory or anything equivalent. That is a secure context, so the camera and Bluetooth are available without a certificate. A plain-HTTP origin on a LAN address is not a secure context and will not do, so a phone testing against a development machine reaches it by port-forwarding to its own localhost rather than over the network.
 
 A sticker is not needed to exercise the application. The payload can be pasted from the human-readable rendering, and the camera path tested against a code on screen.
 
