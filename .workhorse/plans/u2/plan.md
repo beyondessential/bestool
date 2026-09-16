@@ -70,7 +70,7 @@ It runs on the first start after imaging and after a board change, not on every 
 
 **BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the original device image and installed by hand; the reimaged prototype has it pre-installed.
 
-**BlueZ must be configured peripheral-only, and this is a deployment prerequisite too.** `[GATT] Client = false` in `/etc/bluetooth/main.conf` is required for the channel to work at all: without it the device does reverse GATT discovery of the central, hits an encryption-gated attribute, tries to pair, is refused, and disconnects mid-session (see "The channel over BLE"). The packaged unit must ship this configuration.
+**BlueZ must be configured peripheral-only, and this is a deployment prerequisite too.** Required for the channel to work at all: without it the device does reverse GATT discovery of the central, hits an encryption-gated attribute, tries to pair, is refused, and disconnects mid-session (see "The channel over BLE"). It is specified in BLI-CHN, "The device is a peripheral only", and shipped as `services/bliti-bluetoothd.conf` and `services/bliti-bluetooth-dropin.conf`.
 
 ## Advertising: settled, and verified on the air
 
@@ -288,6 +288,31 @@ and check the device the operator picks against the sticker before anything is s
 device's payload, a version this client does not hold, or a different bliti device are each reported
 as what they are. The spec needs changing to describe that, and it is the one place where the
 implementation knowingly departs from a spec.
+
+### Configuring BlueZ without touching the distribution's file
+
+The peripheral-only setting is bluetoothd-wide: it turns off the daemon's GATT client role, and that
+daemon serves every application on the host, so there is no per-service or per-application scoping to
+be had. BlueZ also reads no `main.conf.d`, so the obvious drop-in does not exist.
+
+What does exist is `bluetoothd --configfile`, and that is what is shipped. A systemd drop-in on
+`bluetooth.service` overrides `ExecStart` to point the daemon at `/etc/bluetooth/bliti.conf` instead
+of `main.conf`, so both files belong to us and undoing it is deleting two files rather than unpicking
+an edit. `main.conf` is a package conffile, so editing it would mean a prompt on every bluez upgrade
+and a change invisible to anyone reading this repository.
+
+The config file replaces `main.conf` rather than merging with it, which sounds worse than it is:
+a stock `main.conf` ships with every setting commented out, so it contributes nothing but built-in
+defaults. The prototype's had eleven live lines out of 381, all of them section headers. A deployment
+that ever needs a real setting from `main.conf` has to bring it across, and that is the one thing to
+watch.
+
+Verified on the prototype with `main.conf` reverted to pristine: bluetoothd runs with
+`--configfile`, and a client connects, handshakes, and has its text printed exactly as before.
+
+The `ExecStart` override spells out the path to the daemon, which differs between distributions
+(`/usr/libexec` on Debian and Ubuntu, `/usr/lib` elsewhere). If a bluez upgrade moves it,
+`bluetooth.service` fails to start and says so, rather than quietly falling back to `main.conf`.
 
 ### Building it
 

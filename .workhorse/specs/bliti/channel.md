@@ -31,6 +31,19 @@ Messages are framed and reassembled across the negotiated attribute size, so a m
 
 GATT is the transport every client platform can reach, including browsers, which have no other.
 
+## The device is a peripheral only
+
+The device acts only as a GATT server, and never as a GATT client against the client that connects to it.
+
+A Bluetooth stack that resolves the connecting client's attributes in turn will meet one whose read requires an encrypted link, and ask to pair in order to read it.
+No client this protocol serves can pair: a browser cannot drive pairing at all, and the sticker is what stands in for it.
+The pairing attempt is therefore refused, and the device drops the link partway through a session that was otherwise working.
+
+The device likewise never initiates pairing, and the channel never depends on the link being encrypted or the peer being bonded.
+All of the protocol's authentication and secrecy comes from the handshake above.
+
+Where the Bluetooth stack does this by default, turning it off is a prerequisite for running a device, alongside the stack itself.
+
 ## Streams
 
 Above the handshake, either end opens streams, unidirectional or bidirectional, without coordinating identifiers with the other end and without asking permission, and several streams are in flight at once.

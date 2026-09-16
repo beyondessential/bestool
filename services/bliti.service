@@ -4,15 +4,11 @@ After=bluetooth.service
 Requires=bluetooth.service
 
 [Service]
-# bluetoothd must be configured peripheral-only for this to work at all: set
-#   [GATT]
-#   Client = false
-# in /etc/bluetooth/main.conf. Without it bluetoothd resolves the *central's*
-# GATT database in reverse on every connection, hits an attribute whose read
-# demands encryption, asks to pair, is refused (browsers and phones do not pair
-# for this), and drops the link mid-session with an authentication failure. The
-# daemon cannot set this itself, and BlueZ reads no drop-in directory, so it
-# belongs in the device image alongside installing bluez.
+# bluetoothd must be configured peripheral-only for this to work at all, which
+# is BLI-CHN, "The device is a peripheral only". Ship the two files next to this
+# one: bliti-bluetoothd.conf and bliti-bluetooth-dropin.conf. The daemon cannot
+# set this itself and BlueZ has no drop-in config directory, so it belongs in
+# the device image alongside installing bluez.
 #
 # The daemon derives this board's sticker secret on its first start after
 # imaging, and after a board change; every later start reads the cache. The
