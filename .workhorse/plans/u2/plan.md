@@ -115,6 +115,12 @@ help, nor does restarting bluetoothd on the prototype. It worked on the first co
 session and has not since, which points at host or controller state rather than at the GATT
 application, since that is unchanged from the run that worked.
 
+`btmon` and `bluetoothctl` are now installed on the laptop, which they were not while this was being
+chased: `bluez` was present but `bluez-utils` was not, and under `sudo` both failed with "No such
+file or directory". Any earlier conclusion of the form "the scan heard nothing" drawn from those two
+was a tooling failure rather than a result. A trace of a connection that does not resolve is the
+obvious next step, and is now possible.
+
 Fixed along the way, and worth keeping: **the device could not tell when a client went away.** The
 session read until its transport ended, and the transport only ended when the session dropped it, so
 the two waited on each other and the device stayed busy with a client that had left. The daemon now
