@@ -185,6 +185,24 @@ A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast
 - Stickers outlive software. Once a box is in the field its sticker is fixed, so a later change to the constants or the derivation parameters must not orphan it: the payload carries a version, and the advertisement carries it too. See "Versioning the key schedule".
 - A **static** handle makes the device passively trackable — a fixed beacon following the box around. See "Tracking resistance".
 
+#### What the target controller actually supports
+
+Measured on the Pi 5's own controller, which is a Bluetooth 5.0 part from Cypress. Two of its feature bits decide more of this design than any choice we make.
+
+**No extended advertising.** The controller reports no support for it, and none for the 2M or coded PHYs either. So there is one advertising set and one legacy payload of 31 bytes, and the larger extended payloads are not available. The doc's 31-byte assumption was right, and it is a hard floor rather than a conservative starting point. It also means a device cannot advertise several handles as several sets, because there is only one set to register.
+
+**No LL privacy, and a resolving list of size zero.** Controller-assisted private addressing is not present on this hardware at all. The same desktop that does support it still produced no private address under BlueZ, so nothing here changes the decision already taken — but it removes any expectation that the target hardware could do better. Address privacy stays the host's business, and the guarantee stays narrowed to which device rather than same device.
+
+**The 31 bytes are tighter than they look.** A 128-bit service UUID, which iOS needs in order to filter a scan at all, costs 18 of them as an advertising structure, and the flags structure costs another three. That leaves ten bytes in the advertisement itself, which a handle, a salt, and a version marker do not comfortably fit into. The scan response is the way out: a second 31 bytes, returned to an active scanner, which both iOS and Web Bluetooth merge with the advertisement before the application sees it. The service UUID stays in the advertisement, where scan filtering can see it, and the service data carrying handle, salt, and version goes in the scan response.
+
+#### Versioning the key schedule
+
+Everything the sticker depends on is versioned together under one marker, carried in the QR payload and in the advertisement: the derivation constants, the argon2 parameters, the source precedence and its encoding, the pinned Endorsement Key template, and the handle length. Any of those moving is a new version, because any of them moving changes the secret.
+
+The asymmetry is what makes this cheap to adopt and expensive to use. A client holds the sticker, so it reads the version and derives once. A device holds no sticker and cannot know which version was printed for it, so supporting several means deriving under each — 2 GiB and 2.4 seconds apiece, cached — and advertising under each, which the single legacy advertising set above does not allow simultaneously.
+
+So a device advertises one version at a time. Supporting more than one would mean alternating between them, at a cost in discovery latency proportional to how many. That is a workable answer if it is ever needed, and nothing about it has to be built now: reserving the version marker in both payloads is what keeps it available, and reserving it is free today and impossible later.
+
 ### Tracking resistance
 
 A device that advertises is a beacon, and the question is how much a passive observer with no sticker can learn. Four things leak, and they are not independent — the weakest one sets the result, so partial measures buy nothing.
