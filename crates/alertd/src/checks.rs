@@ -161,9 +161,11 @@ pub struct AppCx {
 	/// connections stay warm between ticks; HTTP checks apply per-request
 	/// timeouts via `RequestBuilder::timeout`.
 	pub http: reqwest::Client,
-	/// Shared canopy client, for a check whose judgement is canopy's to make:
-	/// what the application has is read here, what it should have is canopy's
-	/// answer. `None` on a one-shot local sweep with no canopy connectivity.
+	/// Shared canopy client, a parameter of the sweep rather than of the
+	/// application, as [`http`](Self::http) is. It serves a check whose
+	/// judgement is canopy's to make: what the application has is read from the
+	/// application, and what it should have is canopy's answer. `None` on a
+	/// one-shot local sweep with no canopy connectivity.
 	pub canopy: Option<Arc<CanopyClient>>,
 }
 
