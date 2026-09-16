@@ -633,20 +633,12 @@ async fn ensure_free_space(staging: &std::path::Path, needed: Option<i64>) -> Re
 		}
 		bail!(
 			"restoring needs about {} free on {} but only {} is available; free up space and retry",
-			human_bytes(required),
+			space::fmt_bytes(required),
 			volume.display(),
-			human_bytes(available),
+			space::fmt_bytes(available),
 		)
 	})
 	.await
-}
-
-/// A rough human-readable byte size (binary units), for operator-facing messages.
-///
-/// The same rendering the backup path's shortfalls use, so an operator reading a
-/// restore's refusal and a backup's sees one set of units.
-pub(crate) fn human_bytes(bytes: u64) -> String {
-	space::fmt_bytes(bytes)
 }
 
 async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Result<Vec<Snapshot>> {
@@ -711,15 +703,25 @@ fn available_snapshots_hint(snapshots: &[Snapshot]) -> String {
 /// relies on the explicit flag / the clobber guard). One answer covers the
 /// leader and every follower restored with it.
 fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<bool> {
-	if !std::io::stdin().is_terminal() {
-		return Ok(false);
-	}
 	let types = std::iter::once(backup_type)
 		.chain(followers.iter().copied())
 		.map(|t| format!("'{t}'"))
 		.collect::<Vec<_>>()
 		.join(", ");
-	print!("This will OVERWRITE existing data for {types}. Continue? [y/N] ");
+	confirm_destructive(
+		backup_type,
+		&format!("This will OVERWRITE existing data for {types}."),
+	)
+}
+
+/// The two-stage confirmation every destructive restore asks for: agree, then
+/// type the backup type back. One implementation, so a change to the protocol
+/// cannot reach one path and miss the other.
+fn confirm_destructive(backup_type: &str, warning: &str) -> Result<bool> {
+	if !std::io::stdin().is_terminal() {
+		return Ok(false);
+	}
+	print!("{warning} Continue? [y/N] ");
 	std::io::stdout().flush().ok();
 	if !read_line()?.trim().eq_ignore_ascii_case("y") {
 		return Ok(false);
@@ -750,23 +752,15 @@ fn staging_shortfall_hint(backup_type: &str, hold_id: &str) -> String {
 /// the displaced tree aside as `.old` and can be walked back, where this one
 /// cannot, and part-way through leaves data that is neither state.
 fn confirm_clobber_in_place_interactively(backup_type: &str) -> Result<bool> {
-	if !std::io::stdin().is_terminal() {
-		return Ok(false);
-	}
-	println!(
-		"This will restore '{backup_type}' IN PLACE: the live data is overwritten with \n\
-		 no copy of it kept, and until the restore finishes the data is neither its \n\
-		 old state nor the captured one. The hold is left intact, so an interrupted \n\
-		 restore can be resumed by running this again."
-	);
-	print!("Continue? [y/N] ");
-	std::io::stdout().flush().ok();
-	if !read_line()?.trim().eq_ignore_ascii_case("y") {
-		return Ok(false);
-	}
-	print!("Type the backup type '{backup_type}' to confirm: ");
-	std::io::stdout().flush().ok();
-	Ok(read_line()?.trim() == backup_type)
+	confirm_destructive(
+		backup_type,
+		&format!(
+			"This will restore '{backup_type}' IN PLACE: the live data is overwritten \
+			 with no copy of it kept, and until the restore finishes the data is neither \
+			 its old state nor the captured one. The hold is left intact, so an \
+			 interrupted restore can be resumed by running this again."
+		),
+	)
 }
 
 fn read_line() -> Result<String> {
@@ -849,12 +843,6 @@ mod tests {
 		assert!(err.contains("no snapshots"));
 	}
 
-	#[test]
-	fn human_bytes_scales_units() {
-		assert_eq!(human_bytes(512), "512 B");
-		assert_eq!(human_bytes(1024), "1.0 KiB");
-		assert_eq!(human_bytes(8 * 1024 * 1024 * 1024), "8.0 GiB");
-	}
 
 	#[tokio::test]
 	async fn ensure_free_space_skips_unknown_size() {

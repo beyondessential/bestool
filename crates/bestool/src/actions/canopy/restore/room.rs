@@ -25,11 +25,12 @@ use std::path::Path;
 use miette::{Result, bail};
 use tracing::{debug, info, warn};
 
-use super::{human_bytes, sync::Delta};
+use super::sync::Delta;
 use crate::actions::canopy::backup::{
 	hold::{HeldCapture, HoldRecord},
-	// The same question the staged path asks, so the same answer: free space on
-	// the volume backing a path that may not exist yet.
+	// The same questions the staged path asks, so the same answers: free space on
+	// the volume backing a path that may not exist yet, and one rendering of a
+	// byte count across every refusal an operator might see.
 	postgresql::space as pg_space,
 };
 
@@ -117,7 +118,7 @@ pub async fn ensure_room(
 			warn!(
 				"could not read the free space on {}; restoring in place needs about {} there",
 				live.display(),
-				human_bytes(required),
+				pg_space::fmt_bytes(required),
 			);
 			return check_cow_store(store, written);
 		};
@@ -125,9 +126,9 @@ pub async fn ensure_room(
 			bail!(
 				"restoring in place needs about {} free on {} but only {} is available; \
 				 free up space and retry",
-				human_bytes(required),
+				pg_space::fmt_bytes(required),
 				live.display(),
-				human_bytes(available),
+				pg_space::fmt_bytes(available),
 			);
 		}
 		debug!(required, available, "the live filesystem has room for the divergence");
@@ -150,8 +151,8 @@ fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 				"restoring in place writes about {} over blocks the capture still \
 				 references, which {name} has to hold, but only {} of it is free; \
 				 {remedy}",
-				human_bytes(required),
-				human_bytes(*available),
+				pg_space::fmt_bytes(required),
+				pg_space::fmt_bytes(*available),
 			),
 			Some(available) => {
 				debug!(required, available = *available, "{name} has room for the divergence");
@@ -161,7 +162,7 @@ fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 			None => warn!(
 				"could not read how much room is left in {name}; restoring in place \
 				 writes about {} through it, and the capture is lost if it fills",
-				human_bytes(required),
+				pg_space::fmt_bytes(required),
 			),
 		}
 	}

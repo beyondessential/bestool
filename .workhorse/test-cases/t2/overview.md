@@ -16,6 +16,9 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] An entry that changed kind between the two sides is replaced rather than written through
 - [x] A captured directory over a live symlink removes the link, never anything through it
 - [x] A captured directory over a live file does not abort the comparison
+- [x] A skipped file keeps its directory from being removed, so the interlock is not undone
+- [x] A directory with nothing kept in it still goes
+- [x] Ownership is set before the mode, so a captured setgid bit survives the restore
 - [x] The hold's capture is unchanged by the restore (verifies spec: HOLD)
 - [ ] The restored cluster starts and passes its verification, on each backend
 
@@ -33,7 +36,9 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] Paths on the subvolume but outside the restored tree are left out
 - [x] A `find-new` path containing spaces survives intact rather than being truncated
 - [x] A change journal that resolved records but none under the restored tree yields no basis
-- [ ] A btrfs mount above the live tree's own subvolume yields no basis rather than an empty one
+- [x] A btrfs subvolume's own UUID is read, not its parent's or received UUID
+- [x] A btrfs mark recorded without its subvolume still parses, and is refused as a basis
+- [ ] On a real host, a generation from a different subvolume is refused rather than answered
 - [x] A recreated change journal (different id) yields no basis, whatever its numbering looks like
 - [x] A change journal wrapped past the capture yields no basis (verifies spec: HOLD)
 - [x] A position at the journal's very first record is still covered — the boundary is inclusive
@@ -74,6 +79,8 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] The parked `PG_VERSION` and the marker are kept out of the sync, which would otherwise remove them as post-freeze files
 - [x] The skips are named from the root of the tree walked, so a whole-install restore still protects them
 - [x] A data directory outside the tree being replaced is refused rather than silently unprotected
+- [x] A symlink standing in for the marker is not written through
+- [x] A refusal on space leaves the tree untouched and nothing marked
 - [x] A resumed restore keeps the pre-restore `PG_VERSION` parked rather than adopting a partial one
 - [x] Parking an absent `PG_VERSION` is not an error
 - [ ] Postgres refuses to start against a part-restored cluster on a real host

@@ -77,9 +77,18 @@ impl Basis {
 pub async fn resolve(record: &HoldRecord, live: &Path) -> Basis {
 	let basis = match &record.diverged_since {
 		#[cfg(unix)]
-		Some(DivergenceMark::BtrfsGeneration { generation }) => {
-			btrfs::changed_since(*generation, live).await
-		}
+		Some(DivergenceMark::BtrfsGeneration {
+			generation,
+			subvolume,
+		}) => match subvolume {
+			Some(subvolume) => btrfs::changed_since(*generation, subvolume, live).await,
+			// A generation with no subvolume to check it against cannot be told
+			// apart from one counted on a different filesystem, which would answer
+			// cleanly and wrongly.
+			None => Basis::unavailable(
+				"the capture recorded a btrfs generation without the subvolume it was counted on",
+			),
+		},
 		#[cfg(windows)]
 		Some(DivergenceMark::UsnJournal {
 			volume,

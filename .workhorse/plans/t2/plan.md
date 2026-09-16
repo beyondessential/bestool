@@ -120,6 +120,9 @@ These belong with [P2](https://github.com/beyondessential/bestool/pull/898)'s pe
 
 ## Deliberately not done
 
+- **Moving the change-journal reader out from under `backup/postgresql/`.** Review is right that it is NTFS-generic rather than postgres-specific, and that the generic restore engine reaching across for it points the dependency the wrong way. But its other caller is the VSS backend at capture time, which does live there, so moving it under `restore/` inverts the same arrow rather than removing it. A neutral home is a wider reorganisation than this card, and worth doing when a second platform needs one.
+- **A `LayDown` enum unifying `Method::restore` and `Method::restore_in_place`.** Review's stated risk — a new method added to one match and forgotten in the other — does not hold: a new `Method` variant fails to compile in both, because both matches are exhaustive. The genuinely shared part, resolving where the secret key is laid down, is now one function; the rest of each arm differs in ways an enum would only re-encode.
+
 - **Concurrent copies and removals in `apply`.** Review suggested driving both loops through a bounded `buffer_unordered`. Removals cannot: they are ordered children-before-parents, and an unordered pool would try to `rmdir` a directory before its contents. Copies could, but the win is speculative on the single volume this mode exists for, where the writes are already sequential and the copy-on-write store is the bottleneck rather than the scheduler. Folding the whole per-entry operation into one `spawn_blocking` (done) removes the overhead that was actually measurable in the structure. Worth revisiting with a real host and a real delta, not before.
 
 ## Open questions

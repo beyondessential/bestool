@@ -44,6 +44,17 @@ pub enum Decide {
 	Compare,
 }
 
+/// One entry the live tree has and the capture does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+	/// Where it is, relative to the tree roots.
+	pub rel: PathBuf,
+	/// Whether it is a directory in its own right — not a symlink to one, which
+	/// is unlinked rather than descended into. The walk already knows, so laying
+	/// the delta down does not have to ask again.
+	pub is_dir: bool,
+}
+
 /// The difference between a capture and the live tree it rolls back onto.
 #[derive(Debug, Default)]
 pub struct Delta {
@@ -52,7 +63,7 @@ pub struct Delta {
 	/// Entries to copy from the capture.
 	pub copy: Vec<PathBuf>,
 	/// Entries to remove from the live tree, children before parents.
-	pub remove: Vec<PathBuf>,
+	pub remove: Vec<Removal>,
 	/// Bytes the entries in `copy` occupy in the capture.
 	pub copy_bytes: u64,
 	/// Bytes the entries in `remove` occupy in the live tree.
@@ -99,11 +110,12 @@ pub async fn compare(capture: &Path, dest: &Path, skip: &[PathBuf], decide: Deci
 			capture: &capture,
 			dest: &dest,
 			skip: &skip,
-			decide,
 			// Reused across every comparison rather than allocated per file: on a
-			// tree with many same-size entries the allocation would dominate.
-			ours: vec![0u8; COMPARE_CHUNK],
-			theirs: vec![0u8; COMPARE_CHUNK],
+			// tree with many same-size entries the allocation would dominate. Not
+			// allocated at all where a basis answers, since nothing is then read.
+			ours: compare_buffer(&decide),
+			theirs: compare_buffer(&decide),
+			decide,
 			read: 0,
 			delta: Delta::default(),
 		};
@@ -116,6 +128,13 @@ pub async fn compare(capture: &Path, dest: &Path, skip: &[PathBuf], decide: Deci
 	.await
 	.into_diagnostic()
 	.wrap_err("joining the capture comparison")?
+}
+
+fn compare_buffer(decide: &Decide) -> Vec<u8> {
+	match decide {
+		Decide::Compare => vec![0u8; COMPARE_CHUNK],
+		Decide::Named(_) => Vec::new(),
+	}
 }
 
 struct Walk<'a> {
@@ -147,11 +166,12 @@ fn read_side(dir: &Path) -> Result<Option<BTreeMap<std::ffi::OsString, std::fs::
 		let entry = entry
 			.into_diagnostic()
 			.wrap_err_with(|| format!("reading an entry of {}", dir.display()))?;
-		// Symlink metadata throughout: a tablespace link in `pg_tblspc` is part of
-		// the captured state, and following it would compare whatever it points at.
+		// `DirEntry::metadata` does not follow symlinks — a tablespace link in
+		// `pg_tblspc` is part of the captured state, and following it would compare
+		// whatever it points at — and on Windows it is answered from the directory
+		// listing already read, with no further syscall.
 		let meta = entry
-			.path()
-			.symlink_metadata()
+			.metadata()
 			.into_diagnostic()
 			.wrap_err_with(|| format!("stating {}", entry.path().display()))?;
 		out.insert(entry.file_name(), meta);
@@ -187,7 +207,10 @@ impl Walk<'_> {
 					self.delta.mkdir.push(child.clone());
 					if let Some(live) = live_meta {
 						self.delta.remove_bytes = self.delta.remove_bytes.saturating_add(live.len());
-						self.delta.remove.push(child.clone());
+						self.delta.remove.push(Removal {
+							rel: child.clone(),
+							is_dir: false,
+						});
 					}
 					// Deliberately not `descend`: the live side is not a directory, so
 					// reading it would either fail outright (a regular file gives
@@ -224,10 +247,18 @@ impl Walk<'_> {
 			// `is_dir` on symlink metadata, so a symlink to a directory is unlinked
 			// rather than descended into and emptied.
 			if live_meta.is_dir() {
-				self.remove_subtree(&child)?;
+				// A skipped entry underneath keeps its directory: removing a parent
+				// whose child was deliberately left would fail on a non-empty
+				// directory, and taking the child with it would undo the very skip.
+				if self.remove_subtree(&child)? {
+					continue;
+				}
 			}
 			self.delta.remove_bytes = self.delta.remove_bytes.saturating_add(live_meta.len());
-			self.delta.remove.push(child);
+			self.delta.remove.push(Removal {
+				rel: child,
+				is_dir: live_meta.is_dir(),
+			});
 		}
 
 		Ok(())
@@ -270,19 +301,34 @@ impl Walk<'_> {
 
 	/// Every entry under a directory that is going, children before the directory
 	/// itself, so the removal is a plain sequence of unlinks and rmdirs.
-	fn remove_subtree(&mut self, rel: &Path) -> Result<()> {
+	///
+	/// Returns whether anything under it was kept, which is what tells the caller
+	/// the directory itself has to stay. The skip list is honoured here as it is
+	/// everywhere else the walk descends: an interlock file that fell under a
+	/// directory the capture lacks would otherwise be removed, undoing the skip
+	/// that protects it.
+	fn remove_subtree(&mut self, rel: &Path) -> Result<bool> {
 		let Some(entries) = read_side(&self.dest.join(rel))? else {
-			return Ok(());
+			return Ok(false);
 		};
+		let mut kept = false;
 		for (name, meta) in &entries {
 			let child = rel.join(name);
-			if meta.is_dir() {
-				self.remove_subtree(&child)?;
+			if self.skipped(&child) {
+				kept = true;
+				continue;
+			}
+			if meta.is_dir() && self.remove_subtree(&child)? {
+				kept = true;
+				continue;
 			}
 			self.delta.remove_bytes = self.delta.remove_bytes.saturating_add(meta.len());
-			self.delta.remove.push(child);
+			self.delta.remove.push(Removal {
+				rel: child,
+				is_dir: meta.is_dir(),
+			});
 		}
-		Ok(())
+		Ok(kept)
 	}
 
 	/// Whether a same-size entry's contents differ from the capture's.
@@ -410,27 +456,25 @@ fn same_contents(a: &Path, b: &Path, ours: &mut [u8], theirs: &mut [u8]) -> Comp
 /// gives its space back before the copy asks for any.
 pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 	// Children were pushed before their parents, so removing in order unlinks a
-	// directory's contents before the directory.
-	for rel in &delta.remove {
-		let path = dest.join(rel);
-		let meta = match path.symlink_metadata() {
-			Ok(meta) => meta,
-			Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-			Err(err) => {
-				return Err(err)
-					.into_diagnostic()
-					.wrap_err_with(|| format!("stating {} to remove it", path.display()));
-			}
-		};
-		let removed = if meta.is_dir() {
-			tokio::fs::remove_dir(&path).await
-		} else {
-			tokio::fs::remove_file(&path).await
-		};
-		removed
-			.into_diagnostic()
-			.wrap_err_with(|| format!("removing {}", path.display()))?;
-	}
+	// directory's contents before the directory. The whole pass runs on one
+	// blocking thread: a delta with many post-freeze files is otherwise that many
+	// thread-pool round trips for what is a sequence of unlinks.
+	let removals: Vec<(PathBuf, bool)> = delta
+		.remove
+		.iter()
+		.map(|entry| (dest.join(&entry.rel), entry.is_dir))
+		.collect();
+	tokio::task::spawn_blocking(move || {
+		for (path, is_dir) in removals {
+			remove_entry(&path, is_dir)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("removing {}", path.display()))?;
+		}
+		Ok::<_, miette::Report>(())
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the removal pass")??;
 
 	// Parents were pushed before their children.
 	for rel in &delta.mkdir {
@@ -467,17 +511,51 @@ pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 	}
 
 	// A directory's own timestamps change as its contents are written, so they
-	// are set after the copies rather than when the directory is made.
-	for rel in delta.mkdir.iter().rev() {
-		let from = capture.join(rel);
-		let to = dest.join(rel);
-		tokio::task::spawn_blocking(move || carry_metadata(&from, &to))
-			.await
-			.into_diagnostic()
-			.wrap_err("joining the directory metadata copy")?;
-	}
+	// are set after the copies rather than when the directory is made. Deepest
+	// first, so a parent's timestamp is not disturbed by a child being touched
+	// after it.
+	let directories: Vec<(PathBuf, PathBuf)> = delta
+		.mkdir
+		.iter()
+		.rev()
+		.map(|rel| (capture.join(rel), dest.join(rel)))
+		.collect();
+	tokio::task::spawn_blocking(move || {
+		for (from, to) in directories {
+			if let Ok(meta) = from.symlink_metadata() {
+				carry_metadata(&meta, &to);
+			}
+		}
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the directory metadata pass")?;
 
 	Ok(())
+}
+
+/// Remove one entry, given what the walk already established it is.
+///
+/// On Windows a directory symlink or junction — a relocated `pg_wal`, or the
+/// junctions this codebase makes to expose a shadow copy — is removed with
+/// `RemoveDirectoryW` rather than `DeleteFileW`, and the metadata does not say
+/// which kind of link it is. Getting it wrong fails with access denied partway
+/// through, on the platform the VSS path exists for.
+fn remove_entry(path: &Path, is_dir: bool) -> std::io::Result<()> {
+	if is_dir {
+		return std::fs::remove_dir(path);
+	}
+	#[cfg(windows)]
+	{
+		if path.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) {
+			return std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path));
+		}
+	}
+	match std::fs::remove_file(path) {
+		// The walk saw it; something else removing it first is not a failure.
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+		other => other,
+	}
 }
 
 /// Copy one entry from the capture over the live tree's, returning the bytes
@@ -519,8 +597,10 @@ fn copy_entry_blocking(from: &Path, to: &Path, make_parent: bool) -> Result<u64>
 				.wrap_err_with(|| format!("removing {} to replace it", to.display()))?;
 		}
 		Ok(existing) if existing.is_symlink() || meta.is_symlink() => {
-			let _ = existing;
-			std::fs::remove_file(to)
+			// `is_dir` is false for a link, so this goes through the same removal
+			// the delta's own does, which knows a Windows directory link needs
+			// `RemoveDirectoryW`.
+			remove_entry(to, false)
 				.into_diagnostic()
 				.wrap_err_with(|| format!("removing {} to replace it", to.display()))?;
 		}
@@ -538,7 +618,7 @@ fn copy_entry_blocking(from: &Path, to: &Path, make_parent: bool) -> Result<u64>
 		std::fs::create_dir_all(to)
 			.into_diagnostic()
 			.wrap_err_with(|| format!("creating {}", to.display()))?;
-		carry_metadata(from, to);
+		carry_metadata(&meta, to);
 		return Ok(0);
 	}
 	if !meta.is_file() {
@@ -550,7 +630,7 @@ fn copy_entry_blocking(from: &Path, to: &Path, make_parent: bool) -> Result<u64>
 	std::fs::copy(from, to)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("copying {} to {}", from.display(), to.display()))?;
-	carry_metadata(from, to);
+	carry_metadata(&meta, to);
 	Ok(meta.len())
 }
 
@@ -579,13 +659,13 @@ fn symlink(target: &Path, at: &Path) -> Result<()> {
 /// entry written from it, so the restored tree is the captured tree rather than
 /// one wearing the restoring process's umask and clock.
 ///
+/// Takes the capture entry's metadata rather than re-reading it: every caller
+/// has just stat'd the same path.
+///
 /// Best-effort on each attribute: postgres is started as its service account
 /// afterwards and the restore fixes ownership across the whole tree at that
 /// point, so one failure here is not worth abandoning a restore over.
-fn carry_metadata(from: &Path, to: &Path) {
-	let Ok(meta) = from.symlink_metadata() else {
-		return;
-	};
+fn carry_metadata(meta: &std::fs::Metadata, to: &Path) {
 	// A symlink's own metadata is not settable through these APIs, and the target
 	// it points at must not be touched in its place.
 	if meta.is_symlink() {
@@ -594,13 +674,17 @@ fn carry_metadata(from: &Path, to: &Path) {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+		// Ownership first: Linux clears the setuid and setgid bits on `chown`, so
+		// setting the mode before it would silently drop them — on a whole-install
+		// restore that is the captured binaries, and on any tree it is setgid
+		// directories.
+		if let Err(err) = std::os::unix::fs::chown(to, Some(meta.uid()), Some(meta.gid())) {
+			debug!("could not set the owner of {}: {err}", to.display());
+		}
 		if let Err(err) =
 			std::fs::set_permissions(to, std::fs::Permissions::from_mode(meta.permissions().mode()))
 		{
 			debug!("could not set the mode of {}: {err}", to.display());
-		}
-		if let Err(err) = std::os::unix::fs::chown(to, Some(meta.uid()), Some(meta.gid())) {
-			debug!("could not set the owner of {}: {err}", to.display());
 		}
 	}
 	#[cfg(not(unix))]
@@ -654,6 +738,11 @@ mod tests {
 		(tmp, capture, dest, delta)
 	}
 
+	/// The paths a delta removes, in order.
+	fn removed(delta: &Delta) -> Vec<&Path> {
+		delta.remove.iter().map(|entry| entry.rel.as_path()).collect()
+	}
+
 	/// Compare and then lay down, which is what a restore does.
 	async fn roll_back(capture: &Path, dest: &Path, skip: &[PathBuf]) {
 		let delta = compare(capture, dest, skip, Decide::Compare).await.unwrap();
@@ -680,11 +769,12 @@ mod tests {
 			write(dest, "base/1/9999", "written after the capture");
 		})
 		.await;
-		assert!(delta.remove.contains(&PathBuf::from("base/1/9999")));
-		assert!(delta.remove.contains(&PathBuf::from("base")));
+		let removes = removed(&delta);
+		assert!(removes.contains(&Path::new("base/1/9999")));
+		assert!(removes.contains(&Path::new("base")));
 		// Children are removed before their parents.
-		let file = delta.remove.iter().position(|p| p.ends_with("9999")).unwrap();
-		let dir = delta.remove.iter().position(|p| p == Path::new("base")).unwrap();
+		let file = removes.iter().position(|p| p.ends_with("9999")).unwrap();
+		let dir = removes.iter().position(|p| *p == Path::new("base")).unwrap();
 		assert!(file < dir, "children must be removed before their parents");
 	}
 
@@ -697,7 +787,7 @@ mod tests {
 		.await;
 		assert!(delta.copy.contains(&PathBuf::from("base/1/2345")));
 		assert!(delta.mkdir.contains(&PathBuf::from("base")));
-		assert!(delta.remove.contains(&PathBuf::from("PG_VERSION")));
+		assert!(removed(&delta).contains(&Path::new("PG_VERSION")));
 	}
 
 	#[tokio::test]
@@ -750,6 +840,72 @@ mod tests {
 			.unwrap();
 		assert!(delta.copy.contains(&PathBuf::from("data/base/1")));
 		assert!(!delta.copy.contains(&PathBuf::from("data/PG_VERSION")));
+	}
+
+	/// Every other walker honours the skip list, so this one must too: an
+	/// interlock file under a directory the capture lacks would otherwise be
+	/// removed, undoing the skip that protects it — and the parent's `rmdir`
+	/// would then fail on a directory that is not empty after all.
+	#[tokio::test]
+	async fn a_skipped_file_keeps_its_directory_from_being_removed() {
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let dest = tmp.path().join("dest");
+		write(&capture, "PG_VERSION", "16");
+		write(&dest, "PG_VERSION", "16");
+		write(&dest, "gone/keep-me", "protected");
+		write(&dest, "gone/take-me", "post-freeze");
+
+		let skip = vec![PathBuf::from("gone/keep-me")];
+		let delta = compare(&capture, &dest, &skip, Decide::Compare).await.unwrap();
+
+		let removes = removed(&delta);
+		assert!(removes.contains(&Path::new("gone/take-me")));
+		assert!(!removes.contains(&Path::new("gone/keep-me")), "the skip must hold");
+		assert!(
+			!removes.contains(&Path::new("gone")),
+			"a directory with something kept in it cannot be removed"
+		);
+
+		// And it applies cleanly, which it would not if the non-empty parent were
+		// scheduled for removal.
+		apply(&capture, &dest, &delta).await.unwrap();
+		assert!(dest.join("gone/keep-me").exists());
+		assert!(!dest.join("gone/take-me").exists());
+	}
+
+	#[tokio::test]
+	async fn a_directory_with_nothing_kept_in_it_still_goes() {
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let dest = tmp.path().join("dest");
+		write(&capture, "PG_VERSION", "16");
+		write(&dest, "PG_VERSION", "16");
+		write(&dest, "gone/take-me", "post-freeze");
+
+		roll_back(&capture, &dest, &[PathBuf::from("elsewhere")]).await;
+		assert!(!dest.join("gone").exists());
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn ownership_is_set_before_the_mode_so_setgid_survives() {
+		// Linux clears the setuid and setgid bits on `chown`, so setting the mode
+		// first would drop them from the restored tree.
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let dest = tmp.path().join("dest");
+		write(&capture, "setgid-dir/f", "x");
+		std::fs::set_permissions(capture.join("setgid-dir"), std::fs::Permissions::from_mode(0o2755))
+			.unwrap();
+		std::fs::create_dir_all(&dest).unwrap();
+
+		roll_back(&capture, &dest, &[]).await;
+
+		let mode = std::fs::metadata(dest.join("setgid-dir")).unwrap().permissions().mode();
+		assert_eq!(mode & 0o7777, 0o2755, "the setgid bit must come back, got {mode:o}");
 	}
 
 	#[tokio::test]
@@ -905,8 +1061,8 @@ mod tests {
 
 		let delta = compare(&capture, &dest, &[], Decide::Compare).await.unwrap();
 		assert_eq!(
-			delta.remove,
-			vec![PathBuf::from("pg_wal")],
+			removed(&delta),
+			vec![Path::new("pg_wal")],
 			"only the link itself goes, never anything through it"
 		);
 

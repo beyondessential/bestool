@@ -17,13 +17,25 @@ use tracing::debug;
 
 use super::{Basis, super::blockdev};
 
-/// The paths under `live` written since `generation`.
-pub async fn changed_since(generation: u64, live: &Path) -> Basis {
+/// The paths under `live` written since `generation` on subvolume `expected`.
+pub async fn changed_since(generation: u64, expected: &str, live: &Path) -> Basis {
 	// `find-new` reports paths relative to a *subvolume* root, and the live tree
 	// is usually a directory inside one, so its answers have to be re-based.
-	let Some(subvol) = enclosing_subvolume(live).await else {
+	let Some((subvol, uuid)) = enclosing_subvolume(live).await else {
 		return Basis::unavailable("the live tree is not on a btrfs subvolume this can read");
 	};
+
+	// A generation is a count on one subvolume. Asked of another — a cluster
+	// rebuilt since, a `--target` pointing at a different volume, a filesystem
+	// recreated so its generations started again from low numbers — `find-new`
+	// does not fail. It answers, plausibly, about writes that have nothing to do
+	// with this capture, and a named basis is then believed.
+	if uuid != expected {
+		return Basis::unavailable(format!(
+			"the live tree is on btrfs subvolume {uuid}, not the {expected} the capture \
+			 counted its generation on"
+		));
+	}
 	let Ok(rel) = live.strip_prefix(&subvol) else {
 		return Basis::unavailable("the live tree is not under the subvolume btrfs reports");
 	};
@@ -58,8 +70,8 @@ pub async fn changed_since(generation: u64, live: &Path) -> Basis {
 	}
 }
 
-/// The root of the subvolume `path` lives in, but only when the mount exposes
-/// exactly that subvolume.
+/// The root of the subvolume `path` lives in, and its UUID — but only when the
+/// mount exposes exactly that subvolume.
 ///
 /// `findmnt` gives the mount point, which is not always the subvolume root: a
 /// filesystem mounted at its top level (`subvolid=5`) with the cluster in a
@@ -69,7 +81,7 @@ pub async fn changed_since(generation: u64, live: &Path) -> Basis {
 /// keeps its own tree — and an empty answer taken as authoritative leaves every
 /// diverged file in place. So the two are required to be the same subvolume, and
 /// anything else declines.
-async fn enclosing_subvolume(live: &Path) -> Option<std::path::PathBuf> {
+async fn enclosing_subvolume(live: &Path) -> Option<(std::path::PathBuf, String)> {
 	let mount = std::path::PathBuf::from(blockdev::findmnt("TARGET", live).await?);
 	let (Some(at_mount), Some(at_live)) = (rootid(&mount).await, rootid(live).await) else {
 		return None;
@@ -84,7 +96,29 @@ async fn enclosing_subvolume(live: &Path) -> Option<std::path::PathBuf> {
 		);
 		return None;
 	}
-	Some(mount)
+	let uuid = subvolume_uuid(&mount).await?;
+	Some((mount, uuid))
+}
+
+/// The UUID of the subvolume rooted at `path`.
+async fn subvolume_uuid(path: &Path) -> Option<String> {
+	let out = blockdev::capture(
+		"btrfs",
+		&["subvolume", "show", "--", &path.to_string_lossy()],
+	)
+	.await?;
+	parse_subvolume_uuid(&out)
+}
+
+/// The `UUID:` field of `btrfs subvolume show`. Matched on the whole label,
+/// since `Parent UUID` and `Received UUID` also end in it.
+fn parse_subvolume_uuid(output: &str) -> Option<String> {
+	output
+		.lines()
+		.filter_map(|line| line.trim().strip_prefix("UUID:"))
+		.map(str::trim)
+		.find(|uuid| !uuid.is_empty() && *uuid != "-")
+		.map(str::to_owned)
 }
 
 /// The id of the subvolume a path belongs to.
@@ -133,6 +167,29 @@ inode 258 file offset 0 len 4096 disk start 13639680 offset 0 gen 43 flags NONE 
 inode 999 file offset 0 len 4096 disk start 13647872 offset 0 gen 44 flags NONE other/thing
 transid marker was 41
 ";
+
+	const SHOW: &str = "\
+pgsub
+\tName: \t\t\tpgsub
+\tUUID: \t\t\t9960cf5a-4a6d-a641-b986-3a71d4549d03
+\tParent UUID: \t\t-
+\tReceived UUID: \t\t-
+\tGeneration: \t\t10
+";
+
+	#[test]
+	fn reads_the_subvolumes_own_uuid_not_its_parents() {
+		assert_eq!(
+			parse_subvolume_uuid(SHOW).as_deref(),
+			Some("9960cf5a-4a6d-a641-b986-3a71d4549d03")
+		);
+	}
+
+	#[test]
+	fn a_subvolume_with_no_uuid_at_all_is_not_identifiable() {
+		assert_eq!(parse_subvolume_uuid("ERROR: not a subvolume"), None);
+		assert_eq!(parse_subvolume_uuid("\tUUID: \t-\n"), None);
+	}
 
 	#[test]
 	fn reads_the_changed_paths_relative_to_the_restored_tree() {

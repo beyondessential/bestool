@@ -42,14 +42,44 @@ pub struct Summary {
 	pub from_filesystem: bool,
 }
 
-/// Compare, gate on space, and write the divergence.
-pub async fn run(job: Job<'_>) -> Result<Summary> {
+/// A checked plan: what the restore will write, and the room for it confirmed.
+///
+/// Kept separate from laying it down so a caller can find out whether a restore
+/// is possible *before* it makes the data unusable. Everything that can refuse —
+/// an unreadable capture, a filesystem or copy-on-write store without room —
+/// happens here, and nothing here writes.
+pub struct Planned {
+	capture: PathBuf,
+	live: PathBuf,
+	delta: sync::Delta,
+	from_filesystem: bool,
+}
+
+impl Planned {
+	/// Whether there is anything to write or remove.
+	pub fn has_work(&self) -> bool {
+		self.delta.has_work()
+	}
+}
+
+/// Work out what the restore would do, and confirm there is room for it.
+pub async fn plan(job: Job<'_>) -> Result<Planned> {
 	let Job {
 		record,
 		capture,
 		live,
-		skip,
+		mut skip,
 	} = job;
+
+	// The marker is the caller's own bookkeeping rather than captured state, so
+	// the sync must never see it. Added here rather than left to each caller,
+	// because a caller that forgets fails in exactly the way the interlock
+	// exists to prevent: the marker is removed as a post-freeze file, and the
+	// tree stops saying it is mid-restore.
+	let marker = PathBuf::from(Interlock::marker_name());
+	if !skip.contains(&marker) {
+		skip.push(marker);
+	}
 
 	// An unreadable or empty capture would turn a rollback into an erasure, and
 	// unlike a staged restore there is no `.old` to put back.
@@ -72,15 +102,40 @@ pub async fn run(job: Job<'_>) -> Result<Summary> {
 	let from_filesystem = basis.is_named();
 	let delta = sync::compare(capture, live, &skip, basis.into_decision()).await?;
 
+	let planned = Planned {
+		capture: capture.to_path_buf(),
+		live: live.to_path_buf(),
+		delta,
+		from_filesystem,
+	};
+
+	// Nothing to write needs no room, and asking anyway is not free: sizing the
+	// divergence on a thin pool reserves a metadata snapshot across the whole
+	// pool. This is the converged case a resumed restore hits every time.
+	if !planned.has_work() {
+		return Ok(planned);
+	}
+
 	// Where the backend can size the divergence exactly and cheaply, that is a
 	// better number than the walk's — but only for the copy-on-write store. It
 	// is a count of differing *blocks*, which says nothing about how much the
 	// tree grows, and folding it into the delta would raise the filesystem
 	// requirement too and could refuse a restore that fits.
 	let cow_bytes = basis::divergence_bytes(record, live).await;
-
 	let store = room::cow_store(record).await;
-	room::ensure_room(live, &delta, &store, cow_bytes).await?;
+	room::ensure_room(live, &planned.delta, &store, cow_bytes).await?;
+
+	Ok(planned)
+}
+
+/// Write the divergence, which is the point of no return.
+pub async fn lay_down(planned: Planned) -> Result<Summary> {
+	let Planned {
+		capture,
+		live,
+		delta,
+		from_filesystem,
+	} = planned;
 
 	if !delta.has_work() {
 		info!("the live tree already matches the capture; nothing to write");
@@ -96,7 +151,7 @@ pub async fn run(job: Job<'_>) -> Result<Summary> {
 		bytes = delta.copy_bytes,
 		"laying the divergence down over the live tree",
 	);
-	sync::apply(capture, live, &delta).await?;
+	sync::apply(&capture, &live, &delta).await?;
 
 	Ok(Summary {
 		copied: delta.copy.len(),
@@ -135,8 +190,13 @@ impl Interlock {
 	}
 
 	/// Whether a tree is mid-restore.
+	///
+	/// On the link itself, not what it points at: a marker that is a symlink is
+	/// not one this wrote, and following it would report on some other file.
 	pub async fn held_by(live: &Path) -> bool {
-		tokio::fs::metadata(Self::marker_in(live)).await.is_ok()
+		tokio::fs::symlink_metadata(Self::marker_in(live))
+			.await
+			.is_ok_and(|meta| meta.is_file())
 	}
 
 	/// Whether a tree was left part-way through a restore *from this same hold*.
@@ -180,9 +240,7 @@ impl Interlock {
 		if let Some(parent) = marker.parent() {
 			tokio::fs::create_dir_all(parent).await.ok();
 		}
-		tokio::fs::write(&marker, note)
-			.await
-			.map_err(|err| miette::miette!("marking {} as mid-restore: {err}", marker.display()))?;
+		write_marker(&marker, note).await?;
 		if resuming {
 			info!(
 				live = %live.display(),
@@ -217,6 +275,52 @@ impl Interlock {
 	}
 }
 
+/// Write the marker, refusing to follow anything standing where it belongs.
+///
+/// The marker sits inside the data directory, which the service account can
+/// write, while the restore runs elevated. An ordinary write follows a symlink,
+/// so a planted one pointing at a root-owned file would see that file truncated
+/// and overwritten with this note. Anything there that is not a regular file is
+/// removed first, and the open refuses to traverse a link even if one is put
+/// back in between.
+async fn write_marker(marker: &Path, note: String) -> Result<()> {
+	let marker = marker.to_path_buf();
+	tokio::task::spawn_blocking(move || {
+		use std::io::Write as _;
+
+		match marker.symlink_metadata() {
+			Ok(meta) if !meta.is_file() => {
+				let removed = if meta.is_dir() {
+					std::fs::remove_dir_all(&marker)
+				} else {
+					std::fs::remove_file(&marker)
+				};
+				removed.map_err(|err| {
+					miette::miette!("clearing {} to mark it mid-restore: {err}", marker.display())
+				})?;
+			}
+			_ => {}
+		}
+
+		let mut options = std::fs::OpenOptions::new();
+		options.write(true).create(true).truncate(true);
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt as _;
+			// Closes the window between the check above and this open.
+			options.custom_flags(libc::O_NOFOLLOW);
+		}
+		let mut file = options.open(&marker).map_err(|err| {
+			miette::miette!("marking {} as mid-restore: {err}", marker.display())
+		})?;
+		file.write_all(note.as_bytes()).map_err(|err| {
+			miette::miette!("marking {} as mid-restore: {err}", marker.display())
+		})
+	})
+	.await
+	.map_err(|err| miette::miette!("joining the marker write: {err}"))?
+}
+
 /// The hold id a marker names, if it names one.
 ///
 /// The marker is written for a person to read, so this reads the one line that
@@ -232,6 +336,13 @@ fn marked_hold(note: &str) -> Option<&str> {
 mod tests {
 	use super::*;
 	use crate::actions::canopy::backup::hold::HeldCapture;
+
+	/// Plan and lay down in one go. The two are separate in the real callers so
+	/// that a refusal can leave the tree untouched; a test that expects to get
+	/// through both does not care.
+	async fn run(job: Job<'_>) -> Result<Summary> {
+		lay_down(plan(job).await?).await
+	}
 
 	fn record(source: &Path) -> HoldRecord {
 		HoldRecord {
@@ -472,6 +583,34 @@ mod tests {
 
 		assert!(Interlock::held_by(&live).await);
 		assert!(!Interlock::resumes(&live, &record).await);
+	}
+
+	/// The marker lives in a directory the service account can write while the
+	/// restore runs elevated, so a link planted where it belongs must not be
+	/// followed: doing so would truncate and overwrite whatever it points at.
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_symlink_standing_in_for_the_marker_is_not_written_through() {
+		let tmp = tempfile::tempdir().unwrap();
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&live).unwrap();
+		let elsewhere = tmp.path().join("precious");
+		std::fs::write(&elsewhere, "must not be touched").unwrap();
+		std::os::unix::fs::symlink(&elsewhere, Interlock::marker_in(&live)).unwrap();
+
+		let record = record(&live);
+		assert!(!Interlock::held_by(&live).await, "a link is not a marker this wrote");
+
+		let interlock = Interlock::engage(&live, &record).await.unwrap();
+
+		assert_eq!(
+			std::fs::read_to_string(&elsewhere).unwrap(),
+			"must not be touched",
+			"the file the link pointed at must be untouched"
+		);
+		assert!(Interlock::marker_in(&live).symlink_metadata().unwrap().is_file());
+		assert!(Interlock::resumes(&live, &record).await);
+		interlock.release().await.unwrap();
 	}
 
 	#[test]

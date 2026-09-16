@@ -213,6 +213,27 @@ pub async fn restore(
 
 	super::method::ensure_not_clobbering(&plan.dest, opts.clobber)?;
 
+	stop_the_cluster(config, &plan).await?;
+
+	crate::interactive::retry("moving the restored data into place", async || {
+		super::method::replace_dir(&plan.source, &plan.dest).await
+	})
+	.await?;
+
+	start_the_cluster(config, &plan).await?;
+	verify(config, &target.data_dir, &target.version).await;
+	info!("restore complete; run migrations / config sync as needed");
+	Ok(())
+}
+
+/// Bring the cluster down so its data directory can be written.
+///
+/// Shared by the staged and in-place paths: both depend on nothing holding the
+/// files, and on no other installed version starting over the one being
+/// restored. Keeping it in one place is what stops the two drifting.
+async fn stop_the_cluster(config: &PostgresqlConfig, plan: &resolve::RestorePlan) -> Result<()> {
+	let target = &plan.target;
+
 	// A data-only backup carries no binaries; a physical restore only runs under
 	// its own major version. Fail-and-prompt so the operator can install it and
 	// retry (the recheck runs each attempt). A whole-install backup brings its own.
@@ -224,11 +245,11 @@ pub async fn restore(
 		.await?;
 	}
 
-	// Stop the cluster before swapping: on Windows an open handle to the running
+	// Stop the cluster before writing: on Windows an open handle to the running
 	// server's files makes the move fail outright; on Unix it would corrupt a live
-	// cluster. Both this and the swap depend on nothing else holding the files, so
-	// let the operator clear a stubborn holder by hand and retry — each attempt
-	// re-checks, so the stop can't be skipped.
+	// cluster. This depends on nothing else holding the files, so let the operator
+	// clear a stubborn holder by hand and retry — each attempt re-checks, so the
+	// stop can't be skipped.
 	crate::interactive::retry("stopping the postgres cluster", async || {
 		service::stop(target, config).await
 	})
@@ -238,11 +259,12 @@ pub async fn restore(
 	// start) so a differently-versioned server can't hold the port or auto-restart
 	// over the cluster we're restoring. Best-effort.
 	service::quiesce_other_versions(&target.version).await;
+	Ok(())
+}
 
-	crate::interactive::retry("moving the restored data into place", async || {
-		super::method::replace_dir(&plan.source, &plan.dest).await
-	})
-	.await?;
+/// Bring the restored cluster back up, and point the layout's symlinks at it.
+async fn start_the_cluster(config: &PostgresqlConfig, plan: &resolve::RestorePlan) -> Result<()> {
+	let target = &plan.target;
 
 	// The account the server runs as, so its files can be made writable by it
 	// (Windows). Fix the whole restored tree (`dest`): the data dir for a data-only
@@ -273,9 +295,6 @@ pub async fn restore(
 	// restored version so `current`-based consumers follow it (a no-op for a
 	// same-major restore, where they already resolve here by path).
 	repoint_current_symlinks(target).await;
-
-	verify(config, &target.data_dir, &target.version).await;
-	info!("restore complete; run migrations / config sync as needed");
 	Ok(())
 }
 
@@ -676,27 +695,14 @@ pub async fn restore_in_place(
 		super::method::ensure_not_clobbering_in_place(&plan.dest, opts.clobber)?;
 	}
 
-	if !plan.whole_install {
-		let major = plan.data_major.clone();
-		crate::interactive::retry("checking the installed postgres version", async || {
-			resolve::ensure_server_version_available(&major)
-		})
-		.await?;
-	}
+	stop_the_cluster(config, &plan).await?;
 
-	crate::interactive::retry("stopping the postgres cluster", async || {
-		service::stop(target, config).await
-	})
-	.await?;
-	service::quiesce_other_versions(&target.version).await;
-
-	// From here the tree is being written over with no way back to what it was,
-	// so make the cluster unstartable before the first write rather than after.
-	let version_file = target.data_dir.join("PG_VERSION");
-	let parked = super::method::with_extension_suffix(&version_file, PARKED_SUFFIX);
-	let interlock = Interlock::engage(&target.data_dir, record).await?;
-	park_version_file(&version_file, &parked).await?;
-
+	// Everything that can refuse happens while the cluster is merely stopped:
+	// `PG_VERSION` is still in place and no marker is written, so a refusal here
+	// leaves a cluster an operator can simply start again. The comparison has to
+	// come after the stop, though — a delta worked out against a running cluster
+	// would miss whatever it wrote between the walk and the stop.
+	//
 	// One pass over the whole tree being replaced, which on a whole-install
 	// capture is the install directory rather than the data directory alone: its
 	// binaries are part of the captured state and must roll back with the data
@@ -704,7 +710,7 @@ pub async fn restore_in_place(
 	// separately would resolve the basis twice — a second `find-new`, or a second
 	// pass over the change journal — and gate the two halves against free space
 	// independently, which two passes can each fit without the pair fitting.
-	let summary = super::super::restore::inplace::run(Job {
+	let planned = super::super::restore::inplace::plan(Job {
 		record,
 		capture: &plan.source,
 		live: &plan.dest,
@@ -713,17 +719,43 @@ pub async fn restore_in_place(
 	.await
 	.wrap_err_with(|| {
 		format!(
-			"the cluster at {} is part-way through a restore from hold {} and will not \
-			 start; the hold is untouched, so run the same command again to finish it",
+			"nothing was written, and the cluster at {} is stopped but intact; \
+			 start it again, or resolve this and re-run the restore",
 			target.data_dir.display(),
-			record.id,
 		)
 	})?;
 
-	// Last, so the cluster becomes startable only once everything under it is the
-	// captured state.
-	sync_version_file(&resolve::locate_pgdata(capture)?, &version_file, &parked).await?;
-	interlock.release().await?;
+	let summary = if planned.has_work() {
+		// From here the tree is written over with no way back to what it was, so
+		// the cluster is made unstartable before the first write rather than after.
+		let version_file = target.data_dir.join("PG_VERSION");
+		let parked = super::method::with_extension_suffix(&version_file, PARKED_SUFFIX);
+		let interlock = Interlock::engage(&target.data_dir, record).await?;
+		park_version_file(&version_file, &parked).await?;
+
+		let summary = super::super::restore::inplace::lay_down(planned)
+			.await
+			.wrap_err_with(|| {
+				format!(
+					"the cluster at {} is part-way through a restore from hold {} and will \
+					 not start; the hold is untouched, so run the same command again to \
+					 finish it",
+					target.data_dir.display(),
+					record.id,
+				)
+			})?;
+
+		// Last, so the cluster becomes startable only once everything under it is
+		// the captured state.
+		sync_version_file(&resolve::locate_pgdata(capture)?, &version_file, &parked).await?;
+		interlock.release().await?;
+		summary
+	} else {
+		// Nothing diverged, so nothing is written and the cluster was never made
+		// unstartable. A resumed restore that has already converged lands here.
+		super::super::restore::inplace::lay_down(planned).await?
+	};
+
 	info!(
 		copied = summary.copied,
 		removed = summary.removed,
@@ -732,30 +764,11 @@ pub async fn restore_in_place(
 		"the divergence from the held capture is laid down",
 	);
 
-	let service_account = service::service_account(target, config).await;
-	crate::interactive::retry("fixing restored data permissions", async || {
-		fix_ownership(&plan.dest, service_account.as_deref()).await
-	})
-	.await?;
+	// A tree some other attempt left mid-restore must not be started, and this
+	// one released its own interlock above.
+	Interlock::ensure_clear(&target.data_dir).await?;
+	start_the_cluster(config, &plan).await?;
 
-	crate::interactive::retry_or_recover(
-		"starting the postgres cluster",
-		"reset the write-ahead log",
-		"force-reset the WAL so the cluster can start without replaying it — \
-		 destructive: can discard recent transactions or corrupt an \
-		 otherwise-healthy cluster; only sound for a backup that won't start any \
-		 other way",
-		async || {
-			// The interlock is released above, so this only ever refuses a tree some
-			// other attempt left mid-restore.
-			Interlock::ensure_clear(&target.data_dir).await?;
-			service::start(target, config).await
-		},
-		async || pg_resetwal(&target.data_dir, &target.version).await,
-	)
-	.await?;
-
-	repoint_current_symlinks(target).await;
 	verify(config, &target.data_dir, &target.version).await;
 	info!("in-place restore complete; run migrations / config sync as needed");
 	Ok(())

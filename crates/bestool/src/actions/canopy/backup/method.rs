@@ -349,20 +349,27 @@ impl Method {
 					ensure_not_clobbering_in_place(&target, opts.clobber)?;
 				}
 
+				// Everything that can refuse runs before anything is written, so a
+				// refusal leaves the tree exactly as it was and marks nothing.
+				let planned = crate::actions::canopy::restore::inplace::plan(Job {
+					record,
+					capture,
+					live: &target,
+					skip: Vec::new(),
+				})
+				.await?;
+				if !planned.has_work() {
+					crate::actions::canopy::restore::inplace::lay_down(planned).await?;
+					return Ok(());
+				}
+
 				// The same record every in-place restore leaves: part-way through, the
 				// tree is neither the state it was in nor the captured one, and that
 				// has to be legible in the tree itself rather than only in a log. What
 				// the postgres method adds on top is holding its *service* unstartable,
 				// which is its own business.
 				let interlock = Interlock::engage(&target, record).await?;
-				let laid = crate::actions::canopy::restore::inplace::run(Job {
-					record,
-					capture,
-					live: &target,
-					skip: vec![PathBuf::from(Interlock::marker_name())],
-				})
-				.await;
-				match laid {
+				match crate::actions::canopy::restore::inplace::lay_down(planned).await {
 					Ok(_) => interlock.release().await,
 					Err(err) => Err(err).wrap_err_with(|| {
 						format!(
@@ -380,10 +387,7 @@ impl Method {
 			// A key is one small file: there is no second copy to avoid, so in place
 			// and staged are the same operation and this is the one that exists.
 			Method::TamanuSecretKey(config) => {
-				let location = match &opts.target {
-					Some(target) => super::secret_key::classify_target(target)?,
-					None => super::secret_key::location(config).await?,
-				};
+				let location = secret_key_target(config, opts).await?;
 				super::secret_key::lay_down(capture, &location, opts.clobber).await
 			}
 		}
@@ -457,13 +461,23 @@ impl Method {
 			}
 			Method::Postgresql(config) => super::postgresql::restore(config, staging, opts).await,
 			Method::TamanuSecretKey(config) => {
-				let location = match &opts.target {
-					Some(target) => super::secret_key::classify_target(target)?,
-					None => super::secret_key::location(config).await?,
-				};
+				let location = secret_key_target(config, opts).await?;
 				super::secret_key::lay_down(staging, &location, opts.clobber).await
 			}
 		}
+	}
+}
+
+/// Where the secret key is laid back down: the override if one was given, else
+/// wherever this install keeps it. The same answer whether the restore is staged
+/// or in place, so it is worked out in one place.
+async fn secret_key_target(
+	config: &TamanuSecretKeyConfig,
+	opts: &RestoreOpts,
+) -> Result<bestool_tamanu::secret_key::SecretKeyLocation> {
+	match &opts.target {
+		Some(target) => super::secret_key::classify_target(target),
+		None => super::secret_key::location(config).await,
 	}
 }
 

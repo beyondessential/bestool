@@ -644,6 +644,7 @@ dependencies = [
  "junction",
  "leon",
  "leon-macros",
+ "libc",
  "lloggs",
  "merkle_hash",
  "miette",

@@ -60,7 +60,19 @@ pub struct HoldRecord {
 pub enum DivergenceMark {
 	/// The btrfs transaction generation the subvolume stood at when it was
 	/// snapshotted. Everything written to it since carries a higher one.
-	BtrfsGeneration { generation: u64 },
+	///
+	/// A generation only means anything against the subvolume it was counted on:
+	/// another subvolume, or a filesystem since recreated, has its own sequence
+	/// that started again from low numbers, and asking it about this generation
+	/// answers cleanly and wrongly. So the subvolume's UUID is recorded with it,
+	/// and a restore that cannot match it declines — the same guard the change
+	/// journal gets from its journal id. Absent on records written before it was
+	/// kept, which therefore cannot be trusted as a basis.
+	BtrfsGeneration {
+		generation: u64,
+		#[serde(default)]
+		subvolume: Option<String>,
+	},
 	/// The NTFS change journal's identity and position when the shadow was
 	/// taken. The journal is a fixed-size ring, so the id detects it having been
 	/// recreated and the position detects it having wrapped past this point —
@@ -509,13 +521,31 @@ mod tests {
 		assert_eq!(parsed.diverged_since, None);
 	}
 
+	/// A btrfs mark from before the subvolume was recorded still parses; it is
+	/// the restore that refuses to act on one, not the reader.
+	#[test]
+	fn a_btrfs_mark_without_its_subvolume_still_parses() {
+		let json = br#"{"kind":"btrfs-generation","generation":4211}"#;
+		let mark: DivergenceMark = serde_json::from_slice(json).unwrap();
+		assert_eq!(
+			mark,
+			DivergenceMark::BtrfsGeneration {
+				generation: 4_211,
+				subvolume: None
+			}
+		);
+	}
+
 	/// The mark is what lets a later in-place restore ask the filesystem what
 	/// diverged instead of reading both trees, so it has to survive the upgrade
 	/// that sits between taking a hold and restoring from it.
 	#[test]
 	fn every_divergence_mark_round_trips() {
 		let marks = [
-			DivergenceMark::BtrfsGeneration { generation: 4_211 },
+			DivergenceMark::BtrfsGeneration {
+				generation: 4_211,
+				subvolume: Some("9960cf5a-4a6d-a641-b986-3a71d4549d03".into()),
+			},
 			DivergenceMark::UsnJournal {
 				volume: PathBuf::from("C:"),
 				journal_id: 0x01d5_f4e2_c3b1_a098,

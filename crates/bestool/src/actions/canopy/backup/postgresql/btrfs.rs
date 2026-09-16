@@ -58,9 +58,11 @@ pub struct Mounts {
 	/// The postgres-to-kopia id map the kopia mount was made with.
 	idmap: String,
 	/// The transaction generation the subvolume stood at when it was snapshotted,
-	/// where btrfs would say. Everything written since carries a higher one, so
-	/// this is what a later in-place restore asks the filesystem about.
-	generation: Option<u64>,
+	/// where btrfs would say, and the UUID of the subvolume it was counted on.
+	/// Everything written since carries a higher one, so this is what a later
+	/// in-place restore asks the filesystem about — but only once it has
+	/// established it is asking the same subvolume.
+	generation: Option<(u64, String)>,
 }
 
 /// Mount the filesystem's top level (`subvolid=5`) at `at`, creating the
@@ -138,8 +140,13 @@ pub async fn prepare(
 	let taken_at = Timestamp::now();
 	mounts.snapshot_path = snapshot_path.clone();
 	// Ask now, while the snapshot is demonstrably the subvolume's state: this is
-	// the generation a later restore diffs the live subvolume against.
-	mounts.generation = generation_of(&snapshot_path).await;
+	// the generation a later restore diffs the live subvolume against, and the
+	// identity of the subvolume it has to diff.
+	mounts.generation = match (generation_of(&snapshot_path).await, subvolume_uuid(&base_mount).await) {
+		(Some(generation), Some(uuid)) => Some((generation, uuid)),
+		// Without both there is nothing a restore could safely act on.
+		_ => None,
+	};
 
 	sys::mkdir(&kopia_mount).await?;
 	if let Some(parent) = kopia_mount.parent() {
@@ -258,7 +265,11 @@ pub async fn hold(
 	};
 	let mark = mounts
 		.generation
-		.map(|generation| DivergenceMark::BtrfsGeneration { generation });
+		.clone()
+		.map(|(generation, uuid)| DivergenceMark::BtrfsGeneration {
+			generation,
+			subvolume: Some(uuid),
+		});
 
 	sys::mkdir(&held_mount).await?;
 	if let Some(parent) = held_mount.parent() {
@@ -299,6 +310,31 @@ async fn generation_of(subvol: &Path) -> Option<u64> {
 	.inspect_err(|err| warn!("could not read the snapshot's generation: {err}"))
 	.ok()?;
 	parse_transid_marker(&out)
+}
+
+/// The UUID of the subvolume at `path`, which is how a later restore tells it
+/// apart from any other subvolume a generation might be counted on.
+///
+/// Best-effort: without it the generation is not recorded either, and the
+/// restore compares the trees instead.
+async fn subvolume_uuid(path: &Path) -> Option<String> {
+	let out = sys::capture("btrfs", &["subvolume", "show", "--", sys::path(path)])
+		.await
+		.inspect_err(|err| warn!("could not read the subvolume's identity: {err}"))
+		.ok()?;
+	parse_subvolume_uuid(&out)
+}
+
+/// The `UUID:` field of `btrfs subvolume show`, which is the first of several
+/// UUID-suffixed labels (`Parent UUID`, `Received UUID`) and so is matched on
+/// the whole label rather than on containing "UUID".
+fn parse_subvolume_uuid(output: &str) -> Option<String> {
+	output
+		.lines()
+		.filter_map(|line| line.trim().strip_prefix("UUID:"))
+		.map(str::trim)
+		.find(|uuid| !uuid.is_empty() && *uuid != "-")
+		.map(str::to_owned)
 }
 
 /// The generation from `find-new`'s closing `transid marker was N` line.
