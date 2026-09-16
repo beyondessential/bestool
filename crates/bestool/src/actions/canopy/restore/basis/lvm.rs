@@ -24,22 +24,21 @@ use crate::actions::canopy::backup::hold::{HeldCapture, HoldRecord};
 
 /// Bytes that differ between the held snapshot LV and the live LV it rolls back
 /// onto, or `None` where the pool cannot be asked.
-pub async fn diverged_bytes(record: &HoldRecord, live: &Path) -> Option<u64> {
+pub async fn diverged_bytes(
+	record: &HoldRecord,
+	live: &Path,
+	pool: &blockdev::ThinPool,
+) -> Option<u64> {
 	let HeldCapture::Lvm { vg, lv, .. } = &record.capture else {
 		return None;
 	};
 
 	let live_source = blockdev::findmnt("SOURCE", live).await?;
 	let live_lv = blockdev::lvs("lv_name", &live_source, false).await?;
-	let pool = blockdev::lvs("pool_lv", &format!("{vg}/{lv}"), false).await?;
-	if pool.is_empty() {
-		debug!("the held capture's LV is not in a thin pool, so its delta cannot be read");
-		return None;
-	}
 
 	let held_id = blockdev::lvs("thin_id", &format!("{vg}/{lv}"), false).await?;
 	let live_id = blockdev::lvs("thin_id", &format!("{vg}/{live_lv}"), false).await?;
-	let block_size: u64 = blockdev::lvs("chunk_size", &format!("{vg}/{pool}"), true)
+	let block_size: u64 = blockdev::lvs("chunk_size", &pool.qualified(), true)
 		.await?
 		.parse()
 		.ok()?;
@@ -48,7 +47,7 @@ pub async fn diverged_bytes(record: &HoldRecord, live: &Path) -> Option<u64> {
 	// mangling: an unmangled name is not merely unresolvable, it can name a
 	// *different* pool, and a `reserve_metadata_snap` sent to one of those is then
 	// never released.
-	let pool_dm = blockdev::dm_name(vg, &pool);
+	let pool_dm = blockdev::dm_name(&pool.vg, &pool.pool);
 	let metadata = format!("/dev/mapper/{pool_dm}_tmeta");
 
 	blockdev::run("dmsetup", &["message", &pool_dm, "0", "reserve_metadata_snap"]).await?;

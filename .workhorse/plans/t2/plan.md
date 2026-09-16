@@ -118,16 +118,6 @@ Not verified, and needing real storage:
 
 These belong with [P2](https://github.com/beyondessential/bestool/pull/898)'s per-backend hold lifecycle jobs, which already have the hosts.
 
-## Still outstanding
-
-Raised in review, real, and not done here — each is a contained follow-up rather than a correctness gap:
-
-- **Batching the copy loop.** The removal, directory and metadata passes each run in one blocking task; the copy loop still dispatches per entry. Draining it in chunks would amortise the scheduling without changing ordering or copy-on-write behaviour. Distinct from the concurrency question below.
-- **Resolving the thin pool once.** `basis::lvm::diverged_bytes` and `room::thin_pool_store` each resolve `pool_lv` for the same LV, so a thin-LVM plan shells out to `lvs` about twice as often as it needs to. `blockdev`'s module doc already promises this and does not deliver it.
-- **One shell-out layer.** `blockdev` is the third wrapper around `findmnt`/`lvs` in this crate, alongside `postgresql::sys` and `strategy.rs`. The `--` and device-mapper-mangling correctness it centralises is still missing from the two older copies; promoting `sys` to a neutral module both sides use is the fix.
-- **A neutral home for free-space probing and byte formatting.** `room` reaches into `backup::postgresql::space`, which is why `fmt_bytes` had to widen to `pub(crate)`. Neither is a postgres concept.
-- **The whole-tree delta.** When the destination does not exist, the walk puts the capture's entire file list in the delta before anything is written. That is the documented "laid down whole" case and is not what this mode exists for, but it is unbounded.
-
 ## Deliberately not done
 
 - **Moving the change-journal reader out from under `backup/postgresql/`.** Review is right that it is NTFS-generic rather than postgres-specific, and that the generic restore engine reaching across for it points the dependency the wrong way. But its other caller is the VSS backend at capture time, which does live there, so moving it under `restore/` inverts the same arrow rather than removing it. A neutral home is a wider reorganisation than this card, and worth doing when a second platform needs one.
@@ -139,3 +129,9 @@ Raised in review, real, and not done here — each is a contained follow-up rath
 
 - Does `thin_delta` reach the pool metadata without `reserve_metadata_snap` privileges the daemon may not hold? If not, the estimate degrades to the walk's, which is not a failure.
 - The card weighed the fallback walk against "trusting size+mtime alone", but the decided rule *is* that for the skip decision. Settled as: the skip is acceptable **because** it is the fallback, and the mode says when it is in play. If that turns out not to be good enough on a data directory, the change is to hash every same-size entry when no basis is available.
+
+## Where the follow-ups went
+
+The one piece of work this card raised and left for its own change is in the [card breakdown](../../breakdowns/t2/breakdown.md), not here: this plan is deleted when the card merges, and it needs to outlive that.
+
+Everything else review raised and this plan once deferred is now done: the copy pass batches rather than dispatching per entry, the thin pool is resolved once and handed to both the divergence sizing and the space gate, and free-space probing and byte formatting have moved to a neutral module so the restore path no longer reaches into a backup method's internals. The delta's size when the destination is absent is stated where it belongs, in the module that builds it — the staged path is the better tool for that case, and the space it needs says so.

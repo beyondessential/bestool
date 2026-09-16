@@ -125,7 +125,18 @@ pub async fn plan(job: Job<'_>) -> Result<Planned> {
 	// is a count of differing *blocks*, which says nothing about how much the
 	// tree grows, and folding it into the delta would raise the filesystem
 	// requirement too and could refuse a restore that fits.
+	// Resolved once and handed to both: sizing the divergence and reading the
+	// store's headroom want the same answer, and each `lvs` is a process spawn
+	// and a metadata read under LVM's global lock.
+	#[cfg(unix)]
+	let pool = room::thin_pool(record).await;
+	#[cfg(unix)]
+	let cow_bytes = basis::divergence_bytes(record, live, pool.as_ref()).await;
+	#[cfg(unix)]
+	let store = room::cow_store(record, pool.as_ref()).await;
+	#[cfg(not(unix))]
 	let cow_bytes = basis::divergence_bytes(record, live).await;
+	#[cfg(not(unix))]
 	let store = room::cow_store(record).await;
 	room::ensure_room(live, &planned.delta, &store, cow_bytes).await?;
 

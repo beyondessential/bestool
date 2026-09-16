@@ -107,13 +107,13 @@ pub async fn prepare(
 	// The shadow's copy-on-write area needs room on its storage volume; if it's
 	// nearly full the shadow gets dropped mid-backup, so refuse up front.
 	let required = super::space::vss_required_free(need);
-	if let Some(free) = super::space::available(Path::new(&root))
+	if let Some(free) = crate::actions::canopy::space::available(Path::new(&root))
 		&& free < required
 	{
 		bail!(
 			"volume {volume} has only {} free — a VSS shadow of this cluster needs at least {}; free space on {volume} first",
-			super::space::fmt_bytes(free),
-			super::space::fmt_bytes(required),
+			crate::actions::canopy::space::fmt_bytes(free),
+			crate::actions::canopy::space::fmt_bytes(required),
 		);
 	}
 

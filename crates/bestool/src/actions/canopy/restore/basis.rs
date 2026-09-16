@@ -148,14 +148,17 @@ pub async fn resolve(record: &HoldRecord, live: &Path) -> Basis {
 /// way back to the file that owns a block, so it cannot say *which* entries
 /// diverged, but it can say *how much* — which is exactly what the space gate
 /// needs. `None` leaves the gate to the walk's own estimate.
+#[cfg(unix)]
+pub async fn divergence_bytes(
+	record: &HoldRecord,
+	live: &Path,
+	pool: Option<&super::blockdev::ThinPool>,
+) -> Option<u64> {
+	lvm::diverged_bytes(record, live, pool?).await
+}
+
+#[cfg(not(unix))]
 pub async fn divergence_bytes(record: &HoldRecord, live: &Path) -> Option<u64> {
-	#[cfg(unix)]
-	{
-		lvm::diverged_bytes(record, live).await
-	}
-	#[cfg(not(unix))]
-	{
-		let _ = (record, live);
-		None
-	}
+	let _ = (record, live);
+	None
 }

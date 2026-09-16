@@ -76,6 +76,33 @@ pub async fn lvs(field: &str, target: &str, bytes: bool) -> Option<String> {
 	capture("lvs", &args).await.filter(|value| !value.is_empty())
 }
 
+/// The thin pool a logical volume belongs to, where it belongs to one.
+///
+/// Resolved once per restore and handed to everything that needs it: sizing the
+/// divergence and checking the pool's headroom both want the same answer, and
+/// each `lvs` is a process spawn and a metadata read under LVM's global lock.
+#[derive(Debug, Clone)]
+pub struct ThinPool {
+	pub vg: String,
+	pub pool: String,
+}
+
+impl ThinPool {
+	/// How the pool is named to `lvs`.
+	pub fn qualified(&self) -> String {
+		format!("{}/{}", self.vg, self.pool)
+	}
+}
+
+/// The thin pool behind `vg/lv`, or `None` where it is not a thin volume at all.
+pub async fn thin_pool_of(vg: &str, lv: &str) -> Option<ThinPool> {
+	let pool = lvs("pool_lv", &format!("{vg}/{lv}"), false).await?;
+	Some(ThinPool {
+		vg: vg.to_owned(),
+		pool,
+	})
+}
+
 /// Device-mapper escapes a hyphen in a VG or LV name by doubling it, so a name
 /// carrying one does not resolve under its plain spelling — and worse, `vg` +
 /// `data-pool` and `vg-data` + `pool` both spell `vg-data-pool` unmangled, which

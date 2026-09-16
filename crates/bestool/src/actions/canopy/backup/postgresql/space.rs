@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use miette::{Result, bail};
 
 use super::super::method::PostgresqlConfig;
+// Free space, sizes and how to print them are not postgres questions, and the
+// restore path asks them too.
+use crate::actions::canopy::space::{available, dir_size, fmt_bytes};
 
 /// Headroom over the raw estimate: the larger of a fifth of it or 1 GiB. Covers
 /// cluster-global files and the WAL streamed during the backup, plus slack.
@@ -37,20 +40,6 @@ pub fn required_free(need: u64) -> u64 {
 #[cfg(windows)]
 pub fn vss_required_free(need: Option<u64>) -> u64 {
 	need.map_or(VSS_FLOOR, |n| (n / 10).max(VSS_FLOOR))
-}
-
-/// Bytes free on the volume backing `path`, statting the nearest existing
-/// ancestor (the staging root itself usually doesn't exist yet). `None` if it
-/// can't be determined — a stat failure must never block a backup.
-pub fn available(path: &Path) -> Option<u64> {
-	let mut current = Some(path);
-	while let Some(p) = current {
-		if p.exists() {
-			return fs4::available_space(p).ok();
-		}
-		current = p.parent();
-	}
-	None
 }
 
 /// Estimate the base backup's on-disk size: the larger of the server's reported
@@ -88,39 +77,6 @@ async fn db_size_sql(config: &PostgresqlConfig) -> Option<u64> {
 /// path (falling back to `PATH`) is fine when the config doesn't override it.
 fn config_data_dir(config: &PostgresqlConfig) -> PathBuf {
 	config.data_dir.clone().unwrap_or_default()
-}
-
-/// Total on-disk size of the files under `root`, following no symlinks (external
-/// tablespaces are covered by the SQL estimate instead). Best-effort: unreadable
-/// entries are skipped. Returns 0 if nothing could be read.
-pub async fn dir_size(root: &Path) -> u64 {
-	let root = root.to_path_buf();
-	tokio::task::spawn_blocking(move || walk_size(&root))
-		.await
-		.unwrap_or(0)
-}
-
-fn walk_size(root: &Path) -> u64 {
-	let mut total = 0u64;
-	let mut stack = vec![root.to_path_buf()];
-	while let Some(dir) = stack.pop() {
-		let Ok(entries) = std::fs::read_dir(&dir) else {
-			continue;
-		};
-		for entry in entries.flatten() {
-			let Ok(file_type) = entry.file_type() else {
-				continue;
-			};
-			if file_type.is_dir() {
-				stack.push(entry.path());
-			} else if file_type.is_file()
-				&& let Ok(meta) = entry.metadata()
-			{
-				total = total.saturating_add(meta.len());
-			}
-		}
-	}
-	total
 }
 
 /// A place the base backup could be staged, with the free space on its volume.
@@ -257,22 +213,6 @@ fn detected_backup_dirs() -> Vec<PathBuf> {
 	Vec::new()
 }
 
-/// Format a byte count as a human-readable size (binary units).
-pub(crate) fn fmt_bytes(bytes: u64) -> String {
-	const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-	let mut value = bytes as f64;
-	let mut unit = 0;
-	while value >= 1024.0 && unit < UNITS.len() - 1 {
-		value /= 1024.0;
-		unit += 1;
-	}
-	if unit == 0 {
-		format!("{bytes} B")
-	} else {
-		format!("{value:.1} {}", UNITS[unit])
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -352,21 +292,5 @@ mod tests {
 		assert_eq!(root, PathBuf::from("/mnt/backups/bestool/backup-source/pg"));
 	}
 
-	#[test]
-	fn fmt_bytes_scales_units() {
-		assert_eq!(fmt_bytes(512), "512 B");
-		assert_eq!(fmt_bytes(1024), "1.0 KiB");
-		assert_eq!(fmt_bytes(5 * 1024 * 1024), "5.0 MiB");
-		assert_eq!(fmt_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-	}
 
-	#[tokio::test]
-	async fn dir_size_sums_files_recursively() {
-		let tmp = tempfile::tempdir().unwrap();
-		std::fs::write(tmp.path().join("a"), vec![0u8; 100]).unwrap();
-		let sub = tmp.path().join("sub");
-		std::fs::create_dir(&sub).unwrap();
-		std::fs::write(sub.join("b"), vec![0u8; 200]).unwrap();
-		assert_eq!(dir_size(tmp.path()).await, 300);
-	}
 }

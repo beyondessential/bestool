@@ -26,12 +26,12 @@ use miette::{Result, bail};
 use tracing::{debug, info, warn};
 
 use super::sync::Delta;
-use crate::actions::canopy::backup::{
-	hold::{HeldCapture, HoldRecord},
+use crate::actions::canopy::{
+	backup::hold::{HeldCapture, HoldRecord},
 	// The same questions the staged path asks, so the same answers: free space on
 	// the volume backing a path that may not exist yet, and one rendering of a
 	// byte count across every refusal an operator might see.
-	postgresql::space as pg_space,
+	space::{available as free_space, fmt_bytes},
 };
 
 /// Headroom over an estimate, for filesystem overhead, rounding, and the writes
@@ -60,16 +60,59 @@ pub enum CowStore {
 	None,
 }
 
+/// The thin pool behind a held capture, where there is one.
+///
+/// Resolved once by the caller and passed to both the divergence sizing and the
+/// store lookup, which would otherwise each ask for it.
+#[cfg(unix)]
+pub async fn thin_pool(record: &HoldRecord) -> Option<super::blockdev::ThinPool> {
+	match &record.capture {
+		HeldCapture::Lvm { vg, lv, .. } => super::blockdev::thin_pool_of(vg, lv).await,
+		_ => None,
+	}
+}
+
 /// Which store a held capture's writes are charged to.
+///
+/// `pool` is the thin pool resolved once by the caller, where the platform has
+/// such a thing at all.
+#[cfg(unix)]
+pub async fn cow_store(record: &HoldRecord, pool: Option<&super::blockdev::ThinPool>) -> CowStore {
+	cow_store_inner(record, pool).await
+}
+
+/// Which store a held capture's writes are charged to.
+#[cfg(not(unix))]
 pub async fn cow_store(record: &HoldRecord) -> CowStore {
+	cow_store_inner(record, None).await
+}
+
+async fn cow_store_inner(
+	record: &HoldRecord,
+	#[cfg(unix)] pool: Option<&super::blockdev::ThinPool>,
+	#[cfg(not(unix))] pool: Option<&()>,
+) -> CowStore {
 	match &record.capture {
 		// A btrfs snapshot's retained extents come out of the same filesystem the
 		// live tree is on, so there is one pool and one number.
 		HeldCapture::Btrfs { .. } => CowStore::SameFilesystem,
-		#[cfg(unix)]
-		HeldCapture::Lvm { vg, lv, .. } => thin_pool_store(vg, lv).await,
 		#[cfg(not(unix))]
-		HeldCapture::Lvm { .. } => CowStore::SameFilesystem,
+		HeldCapture::Lvm { .. } => {
+			let _ = pool;
+			CowStore::SameFilesystem
+		}
+		#[cfg(unix)]
+		HeldCapture::Lvm { vg, lv, .. } => match pool {
+			Some(pool) => thin_pool_store(pool).await,
+			// Not in a pool, so it is a thick snapshot: the blocks the origin
+			// displaces are copied into the *snapshot's own* fixed allocation, not
+			// into the live filesystem. Charging the writes to the filesystem would
+			// refuse restores that comfortably fit, and would leave unwatched the
+			// store that actually runs out — a thick snapshot that fills is
+			// invalidated outright, which is the capture vanishing partway through
+			// overwriting the destination.
+			None => thick_snapshot_store(vg, lv).await,
+		},
 		#[cfg(windows)]
 		HeldCapture::Vss { .. } => shadow_storage(record).await,
 		#[cfg(not(windows))]
@@ -112,13 +155,13 @@ pub async fn ensure_room(
 
 	if filesystem_need > 0 {
 		let required = with_headroom(filesystem_need);
-		let Some(available) = pg_space::available(live) else {
+		let Some(available) = free_space(live) else {
 			// Not knowing is not a reason to refuse a rollback an operator is
 			// depending on; the write itself reports a full filesystem plainly.
 			warn!(
 				"could not read the free space on {}; restoring in place needs about {} there",
 				live.display(),
-				pg_space::fmt_bytes(required),
+				fmt_bytes(required),
 			);
 			return check_cow_store(store, written);
 		};
@@ -126,9 +169,9 @@ pub async fn ensure_room(
 			bail!(
 				"restoring in place needs about {} free on {} but only {} is available; \
 				 free up space and retry",
-				pg_space::fmt_bytes(required),
+				fmt_bytes(required),
 				live.display(),
-				pg_space::fmt_bytes(available),
+				fmt_bytes(available),
 			);
 		}
 		debug!(required, available, "the live filesystem has room for the divergence");
@@ -151,8 +194,8 @@ fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 				"restoring in place writes about {} over blocks the capture still \
 				 references, which {name} has to hold, but only {} of it is free; \
 				 {remedy}",
-				pg_space::fmt_bytes(required),
-				pg_space::fmt_bytes(*available),
+				fmt_bytes(required),
+				fmt_bytes(*available),
 			),
 			Some(available) => {
 				debug!(required, available = *available, "{name} has room for the divergence");
@@ -162,7 +205,7 @@ fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 			None => warn!(
 				"could not read how much room is left in {name}; restoring in place \
 				 writes about {} through it, and the capture is lost if it fills",
-				pg_space::fmt_bytes(required),
+				fmt_bytes(required),
 			),
 		}
 	}
@@ -200,17 +243,8 @@ async fn thick_snapshot_store(vg: &str, lv: &str) -> CowStore {
 
 /// The thin pool behind a held LVM capture, and what is left in it.
 #[cfg(unix)]
-async fn thin_pool_store(vg: &str, lv: &str) -> CowStore {
-	let Some(pool) = super::blockdev::lvs("pool_lv", &format!("{vg}/{lv}"), false).await else {
-		// Not in a pool, so it is a thick snapshot: the blocks the origin displaces
-		// are copied into the *snapshot's own* fixed allocation, not into the live
-		// filesystem. Charging the writes to the filesystem would refuse restores
-		// that comfortably fit, and would leave unwatched the store that actually
-		// runs out — a thick snapshot that fills is invalidated outright, which is
-		// the capture vanishing partway through overwriting the destination.
-		return thick_snapshot_store(vg, lv).await;
-	};
-	let qualified = format!("{vg}/{pool}");
+async fn thin_pool_store(pool: &super::blockdev::ThinPool) -> CowStore {
+	let qualified = pool.qualified();
 	let size: Option<u64> = super::blockdev::lvs("lv_size", &qualified, true)
 		.await
 		.and_then(|raw| raw.parse().ok());

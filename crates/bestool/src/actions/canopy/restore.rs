@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
-	postgresql::space, progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
+	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
 	transient_config_dir,
 	trim_error,
 };
@@ -481,7 +481,7 @@ async fn restore_from_hold(
 	// displaces is renamed aside on the same filesystem, not copied — but it is a
 	// whole second copy of the cluster, so check for it before starting rather
 	// than failing partway through a restore an operator is depending on.
-	let needed = i64::try_from(space::dir_size(&record.source).await).ok();
+	let needed = i64::try_from(super::space::dir_size(&record.source).await).ok();
 	// Staging is a whole second copy of the capture. Where the volume cannot hold
 	// one, the rollback point is readable and still unusable, so the refusal has
 	// to name the way through rather than only the shortfall.
@@ -643,9 +643,9 @@ async fn ensure_free_space(staging: &std::path::Path, needed: Option<i64>) -> Re
 		}
 		bail!(
 			"restoring needs about {} free on {} but only {} is available; free up space and retry",
-			space::fmt_bytes(required),
+			super::space::fmt_bytes(required),
 			volume.display(),
-			space::fmt_bytes(available),
+			super::space::fmt_bytes(available),
 		)
 	})
 	.await

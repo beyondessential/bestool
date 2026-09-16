@@ -16,6 +16,14 @@
 //! because the backends' change lists do not all report them: `btrfs subvolume
 //! find-new` cannot, since a deleted file leaves no inode carrying a newer
 //! generation.
+//!
+//! The delta holds one path per entry it touches, so its size tracks the
+//! divergence — which is the point, and on a rollback is hours of writes. The
+//! exception is a destination that is not there at all, where every entry in the
+//! capture is a copy and the whole file list is held before anything is written.
+//! That is the "laid down whole" case rather than a rollback, and it is not what
+//! this mode exists for: the space it needs is then the capture's size anyway, so
+//! the staged path is the better tool.
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
@@ -28,6 +36,11 @@ use tracing::{debug, info};
 /// How much of a file is read at a time when comparing it against its captured
 /// self.
 const COMPARE_CHUNK: usize = 1024 * 1024;
+
+/// How many entries are copied per blocking task. Large enough that the
+/// scheduling costs nothing per file, small enough that progress is still
+/// reported while a long sync runs.
+const COPY_BATCH: usize = 256;
 
 /// How the walk settles an entry present in both trees at the same size, which
 /// is the one question metadata cannot answer.
@@ -515,23 +528,48 @@ pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 	.into_diagnostic()
 	.wrap_err("joining the directory pass")??;
 
+	// Copied in batches on one blocking thread each, rather than one dispatch and
+	// one await per entry: a postgres delta is thousands of small segment files,
+	// and the scheduling would be a real share of the time the cluster spends
+	// down. Still strictly sequential within and between batches, so the ordering
+	// and the copy-on-write behaviour are exactly as they were.
 	let total = delta.copy.len();
 	let mut done = 0usize;
 	let mut copied = 0u64;
-	let mut last_parent: Option<&Path> = None;
 	let mut last_report = std::time::Instant::now();
-	for rel in &delta.copy {
-		// The mkdir phase has already made every directory the capture carries, so
-		// a parent only needs creating when the copy list reaches outside the one
-		// before it — and consecutive entries almost always share a parent.
-		let parent = rel.parent();
-		let fresh_parent = parent.is_some() && parent != last_parent;
-		copied =
-			copied.saturating_add(copy_entry(&capture.join(rel), &dest.join(rel), fresh_parent).await?);
-		if fresh_parent {
-			last_parent = parent;
-		}
-		done += 1;
+	for batch in delta.copy.chunks(COPY_BATCH) {
+		let capture = capture.to_path_buf();
+		let dest = dest.to_path_buf();
+		let size = batch.len();
+		let batch: Vec<PathBuf> = batch.to_vec();
+		copied = copied.saturating_add(
+			tokio::task::spawn_blocking(move || {
+				let mut bytes = 0u64;
+				// The directory pass has already made every directory the capture
+				// carries, so a parent only needs creating when the list reaches
+				// outside the one before it — and consecutive entries almost always
+				// share a parent. Reset per batch, which costs one extra check at each
+				// boundary and nothing else.
+				let mut last_parent: Option<&Path> = None;
+				for rel in &batch {
+					let parent = rel.parent();
+					let fresh_parent = parent.is_some() && parent != last_parent;
+					bytes = bytes.saturating_add(copy_entry_blocking(
+						&capture.join(rel),
+						&dest.join(rel),
+						fresh_parent,
+					)?);
+					if fresh_parent {
+						last_parent = parent;
+					}
+				}
+				Ok::<_, miette::Report>(bytes)
+			})
+			.await
+			.into_diagnostic()
+			.wrap_err("joining the copy pass")??,
+		);
+		done += size;
 		// A large sync is otherwise a silent wait, and this one runs against a
 		// cluster that is down.
 		if last_report.elapsed() >= std::time::Duration::from_secs(30) {
@@ -594,10 +632,8 @@ pub(super) fn remove_entry(path: &Path, is_dir: bool) -> std::io::Result<()> {
 /// Copy one entry from the capture over the live tree's, returning the bytes
 /// written.
 ///
-/// The whole operation — stat, replace whatever is there, copy, carry the
-/// permissions and timestamps over — happens on one blocking thread. Splitting
-/// it costs a scheduling round trip and a repeated stat per entry, which on a
-/// delta of many thousands of small files outweighs the bytes moved.
+/// For a caller with a single entry to place — the interlock putting
+/// `PG_VERSION` back — rather than a delta to lay down, which batches instead.
 pub async fn copy_entry(from: &Path, to: &Path, make_parent: bool) -> Result<u64> {
 	let from = from.to_path_buf();
 	let to = to.to_path_buf();
