@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2024"
 default-run = "bestool"
 
@@ -19,12 +19,12 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.1.12", path = "../algae-cli", optional = true }
 axum = { version = "0.8.9", optional = true }
-bestool-alertd = { version = "28.0.0", path = "../alertd", default-features = false, optional = true }
+bestool-alertd = { version = "28.0.1", path = "../alertd", default-features = false, optional = true }
 bestool-canopy = { version = "0.7.12", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.5.4", path = "../kopia", optional = true }
-bestool-postgres = { version = "1.2.2", path = "../postgres", optional = true }
-bestool-psql = { version = "1.7.15", path = "../psql", default-features = false, optional = true }
-bestool-tamanu = { version = "0.19.11", path = "../tamanu", default-features = false, optional = true }
+bestool-postgres = { version = "1.2.3", path = "../postgres", optional = true }
+bestool-psql = { version = "1.7.16", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.19.12", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.45", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
