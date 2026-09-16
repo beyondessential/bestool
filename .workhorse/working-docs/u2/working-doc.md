@@ -80,6 +80,14 @@ A virtual machine with a software TPM inherits whatever seed its image carries, 
 
 Reading it costs a dependency. The operation needed is narrow — create a primary key under the endorsement hierarchy with the standard template, then read its name — but reaching it from Rust means either the established bindings to the TPM software stack, which carry a C library, or speaking the TPM command protocol to the resource manager directly. Either way it belongs behind the board-ID backend interface and out of the core, which has to keep building for wasm.
 
+##### A discrete TPM on Raspberry Pi
+
+The part in view is Infineon's OPTIGA SLB 9672, a TCG-compliant TPM 2.0 reached over SPI. It ships factory-provisioned with Endorsement Keys and matching certificates — three on the FW15 family, four on FW16, the extra one being RSA 3072 — with the certificates held at the standard NV indices and valid for fifteen years from production. RSA 2048 is present across both, which is what makes it safe to pin above.
+
+Linux binds it through the generic TPM SPI driver; the device tree declares the part and falls back to the earlier SLB 9670 binding so the existing driver attaches, and Raspberry Pi OS carries an overlay for it already. Boards following the Pi HAT specification load that overlay themselves. So this is an ordinary `/dev/tpm` device once fitted, and the board-ID backend does not care which kind of TPM it is talking to.
+
+Two things follow that are worth having in mind before it is fitted rather than after. A Pi that gains a TPM gains a source that outranks the serial it was using, which is the orphaning case described above, and matters most for boards already in the field. And the certificates make a stronger claim available than the board ID needs today: they chain the key to the vendor, so a device could later prove it is genuine hardware rather than merely consistent. Nothing in the first milestone uses that, but deriving from the Endorsement Key rather than from something invented keeps it available.
+
 #### Provisioned entropy on Raspberry Pi
 
 Raspberry Pi SoCs carry a customer-programmable one-time-programmable area: eight rows of 32 bits, 256 bits in total, at rows 36–43 on non-BCM2712 parts and rows 77–84 on BCM2712, which is the Pi 5. There is also a 256-bit device-specific private key area at rows 56–63, but it is listed only for non-BCM2712, so the customer rows are the portable choice across the boards we would ship. Writes are irreversible in the usual OTP sense — bits go from 0 to 1 and not back — and row 30 holds bits that can disable OTP programming and reading altogether.
