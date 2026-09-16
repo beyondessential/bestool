@@ -24,9 +24,9 @@ Four cards cleared the way, and between them they built more of this than the or
 
 What is left for this card is the substrate itself: the runtime a check reads an application through, the storage it remembers readings in, the duty vocabulary, and per-service resource usage.
 
-## Open: does `AppCx` split in two?
+## Settled: `AppCx` splits, and the runtime splits with it
 
-`L2` left this deliberately, as a card-shape question rather than a review fix. Its plan recorded that review raised the same smell twice — once for `install_root` and `config`, once for `kind` — and that each round fixed a field rather than the shape.
+`L2` left this deliberately, as a card-shape question rather than a review fix. Its plan recorded that review raised the same smell twice — once for `install_root` and `config`, once for `kind` — and that each round fixed a field rather than the shape. Taking the structural answer.
 
 `AppCx` serves both a Tamanu deployment and a Postgres cluster, and three of its fields are degenerate for a cluster: `version` is the `0.0.0` unresolved marker, `install_root` is always `None`, and `config` is a synthesised stub naming only the cluster's own database. `server_kind()` returning `Option` is the same shape again.
 
@@ -59,22 +59,36 @@ If the contexts split, the trait can split with them along the line that already
 
 This does resemble the capability-traits option considered early in the interview and rejected in favour of one trait. What has changed is that there is now a concrete second context type to hang the split off, rather than a hypothetical one.
 
-## The substrate trait
+### Two judgement calls inside that
+
+**The arms are named for the products they carry today**, not for the capability that distinguishes them. An mSupply application would later either add a fourth arm or rename the Tamanu one; both are mechanical changes to internal types, and naming a capability abstraction from a single instance is the more expensive mistake.
+
+Worth knowing that two cuts coincide here and are not the same cut. `version`, `config` and `install_root` are *installed product* concerns; traffic and certificates are *serves HTTP* concerns. Everything foreseeable falls the same side of both — a managed Postgres is neither, an mSupply is both — so nothing is built to tell them apart until something needs it.
+
+**The two runtimes are two fields, not one supertrait.** A `WebRuntime: ServiceRuntime` would read neatly, but the readings come from genuinely different sources: services from a supervisor and traffic from the front end on a machine, the cluster API and the gateway on Kubernetes. One object implementing both would make every implementer compose two unrelated things for no benefit at the call site.
+
+## The runtime traits
 
 Narrow, per `SUB`: what genuinely differs between environments. A database connection, a config and a version are parameters on the context, not readings.
 
 ```rust
+/// What is running an application. Every application has one.
 #[async_trait]
-pub trait Runtime: Send + Sync {
+pub trait ServiceRuntime: Send + Sync {
     fn compute(&self) -> Compute;                                    // Running | SwitchedOff
     async fn services(&self) -> Result<Vec<Service>, Unavailable>;
     async fn service_facts(&self, id: &ServiceId) -> Result<ServiceFacts, Unavailable>;
+}
+
+/// What reaches an application that serves HTTP, and what fronts it.
+#[async_trait]
+pub trait HttpRuntime: Send + Sync {
     async fn http_counters(&self) -> Result<TrafficCounters, Unavailable>;
     async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable>;
 }
 ```
 
-Whether this stays one trait depends on the question above.
+`PgCx` carries a `ServiceRuntime`; `TamanuCx` carries one of each.
 
 `Unavailable` carries a free-form reason string, which the check turns into its skip. A closed set of causes — not permitted, not reachable, not present — would let canopy grade a permissions problem differently from an outage, and may be worth having later; there is not enough usage yet to know which causes are real, so the string comes first and the set is derived from what actually gets written.
 
@@ -98,8 +112,8 @@ A machine subject has no runtime at all: `MachineCx` carries none, because machi
 
 ## Build steps
 
-- [ ] Settle whether `AppCx` splits into `PgCx` and `TamanuCx`, and whether the runtime trait splits with it
-- [ ] Introduce the runtime trait and the check-storage trait, with own-system implementations resolved per application
+- [ ] Split `AppCx` into `PgCx` and `TamanuCx`, adding the third `Run` arm
+- [ ] Introduce the two runtime traits and the check-storage trait, with own-system implementations resolved per application
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling
 - [ ] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory

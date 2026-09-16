@@ -17,6 +17,15 @@ A connection to a database, an application's configuration, its version and its 
 Machine checks use no substrate at all.
 There is only ever one host to read — the one the checking process runs on — and a process with no machine to report for has no machine subject, so those checks are absent from what it reports rather than reading anything.
 
+## Readings divide by what an application is
+
+Every application is run by something, so every application has services to read.
+Only an application that serves HTTP has traffic reaching it or certificates standing in front of it.
+
+An application that serves none has no such reading to take, rather than a reading that could not be taken.
+A Postgres cluster is not asked for its traffic and does not report it as unavailable, on the same terms as a check that does not apply to a subject being absent from its report rather than skipped ([SUBJ](subjects.md)).
+The two divisions answer the same question at different grains: which checks a subject admits, and which readings its substrate can be asked for.
+
 ## Graded logic stays in the check
 
 A check keeps its own graded logic: its thresholds, its outcomes, and the wording of its summaries and reasons.
@@ -86,6 +95,8 @@ Only where no ceiling is declared does the check fall back to the memory of the 
 With neither a ceiling nor a hosting machine to read, there is nothing to tune against and the check skips.
 
 ## HTTP traffic and certificates
+
+These readings belong to an application that serves HTTP, and are not offered for one that does not.
 
 A check asks the substrate for HTTP traffic statistics for its own application rather than for a particular machine's.
 Where an application fronts its own traffic, this reads that front end's statistics for the whole machine.
