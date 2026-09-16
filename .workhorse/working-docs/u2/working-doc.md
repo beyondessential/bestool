@@ -72,9 +72,9 @@ Verified on the same Dell, against its Intel firmware TPM. Regenerating the Endo
 
 Regenerating rather than reading a persistent handle is the right way to obtain it. The persistent handle is populated by provisioning software and is not guaranteed to exist on a freshly imaged machine, whereas the seed and the template are always there.
 
-Three risks, none of them settled here.
+Three risks, none of them settled here — and the first of them lands almost entirely on the firmware-TPM case rather than the discrete one.
 
-The Endorsement Primary Seed survives the ordinary clear operation, which resets the storage hierarchy, but a platform-authorised command exists to change it outright. What a given firmware does on a BIOS-level TPM reset, on disabling and re-enabling a firmware TPM, or across a firmware update, was not tested and should not be assumed. If the seed changes, the key changes, and the sticker is orphaned.
+The Endorsement Primary Seed survives the ordinary clear operation, which resets the storage hierarchy, but a platform-authorised command exists to change it outright. What a given firmware does on a BIOS-level TPM reset, on disabling and re-enabling a firmware TPM, or across a firmware update, was not tested and should not be assumed. If the seed changes, the key changes, and the sticker is orphaned. A discrete TPM is far better placed here: its seed is fixed at manufacture and attested by a certificate the vendor issues against it, and there is no BIOS operation reaching in to regenerate it. The exposure is therefore concentrated on PC-grade boxes with firmware TPMs, which is also where the fallback is weakest.
 
 A virtual machine with a software TPM inherits whatever seed its image carries, so machines cloned from one image share an Endorsement Key, and would share a board ID and a sticker secret. Any golden-image workflow makes this a correctness problem rather than a theoretical one.
 
