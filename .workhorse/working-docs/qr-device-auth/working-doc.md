@@ -13,13 +13,28 @@ The sticker is the second factor. It replaces the button press or on-screen code
 The chain, as sketched in the kickoff conversation:
 
 1. Read a **board ID** from firmware — the Raspberry Pi board serial, or the SMBIOS system UUID on UEFI machines.
-2. Derive a **sticker secret** from it with a keyed hash. This is what goes in the QR code printed on the sticker stuck to the outside of the enclosure.
-3. Derive an **advertised handle** from the sticker secret with a second hash. This is what the device broadcasts over BLE.
+2. Derive a **sticker secret** from it under a fixed, public constant. This is what goes in the QR code printed on the sticker stuck to the outside of the enclosure.
+3. Derive an **advertised handle** from the sticker secret under a second fixed, public constant. This is what the device broadcasts over BLE.
 4. A phone scans the sticker, recomputes the handle, and looks for that handle in BLE advertisements. Only a scanner that has seen the sticker can tell which advertisement belongs to which box.
 5. Phone and device run a **challenge-response** so that neither a replayed advertisement nor a passive listener gets a session, and so the phone knows it is talking to the device whose sticker it scanned.
 6. On top of that authenticated session sits a **two-way RPC** for provisioning: Wi-Fi, enrolment, reconfiguration, diagnostics.
 
-Threat model, stated plainly: this is presence-plus-possession, not strong security. Anyone who has had physical access to the device, or a photo of the sticker, can impersonate or connect to it. What it must buy us is that a party with neither cannot discover, identify, track, or connect to the device.
+### Threat model
+
+Everything is derived from fixed public constants and the board ID. There is no fleet key and no per-device state: the chain is reproducible from the board alone, at manufacture or any time after. This is a deliberate choice, and it sets what the scheme can and cannot buy.
+
+In scope:
+
+- **Telling N devices in one room apart.** An operator holding a sticker can pick that device out of everything advertising nearby.
+- **Light protection against interception.** A passive listener on the BLE link learns neither the sticker secret nor the session contents, and cannot replay an advertisement into a session.
+- **One-wayness of the sticker.** Reading the QR must not yield the board ID, and that must hold even for someone who knows the derivation constant. The board ID therefore never appears in the QR payload, in the advertisement, or anywhere else a passer-by can reach.
+
+Out of scope, explicitly:
+
+- **An attacker who has had access to the device, or who knows its board ID.** Such a party can derive the sticker secret and impersonate or connect to the device. This is accepted, not defended against.
+- **An attacker holding a photo of the sticker.** Same position: the sticker is the credential.
+
+Sitting between the two, and worth naming because it is neither: because the constants are public, discovering a device needs neither the sticker nor physical access — only a board ID, and board IDs can be searched rather than known. See "Cost of deriving the sticker secret".
 
 ## Behaviour
 
@@ -31,15 +46,31 @@ The device reads a stable, firmware-provided identifier for the board it is runn
 - **UEFI/SMBIOS**: the SMBIOS System UUID (`/sys/class/dmi/id/product_uuid`), 128-bit. Root-only on Linux, which is fine for a daemon that already needs root for NetworkManager and BlueZ. Board serial and product serial are siblings worth considering as fallbacks.
 - **Neither present**: containers and some VMs expose no DMI and no device tree — the environment this doc was drafted in has neither. The behaviour when no board ID can be read has to be defined rather than left to a panic.
 
-The board ID is **not a secret**. Any software on the box can read it, it is printed on shipping manifests, and Pi serials are not uniformly distributed. Nothing in the scheme may depend on it being unguessable.
+The board ID is **not a secret**. Any software on the box can read it and it is printed on shipping manifests. Nothing in the scheme may depend on it staying hidden — only on it being expensive to *search for*, which is a different property and is handled at the derivation step.
 
-Its job is to make the sticker secret *reproducible*: given the board ID and the fleet key, the same sticker can be regenerated — reprinted after damage, or generated in bulk from a manifest — with no per-device database.
+Its job is to make the sticker secret *reproducible*: the same sticker can be regenerated from the board alone — reprinted after damage, or generated in bulk from a manifest of board IDs — with no per-device database and nothing to keep in sync.
+
+How much entropy each source actually carries is a question to settle against the boards we ship rather than assume. The SMBIOS UUID is 128 bits but some vendors ship a constant, a zeroed, or a MAC-derived value. Raspberry Pi serials are 64-bit on Pi 4 and 5, but on earlier boards the high half is zero and the value is effectively a 32-bit OTP word.
 
 ### Sticker secret
 
-The value carried in the QR code. Derived as a keyed hash of the board ID under a **fleet key**.
+The value carried in the QR code, and the only secret in the system. Derived from the board ID under a fixed constant.
 
-Because the board ID is public, the fleet key is the only thing standing between an attacker and every sticker secret in the fleet. Where that key lives is the single most consequential decision in the design — see the first open question.
+The constant is public — it can be compiled into the device, the sticker generator, and the phone app without weakening anything, because a hash does not run backwards. What the constant buys is domain separation, not secrecy.
+
+The board ID does **not** go in the QR alongside it. Putting it there would hand the board ID to anyone who photographs a sticker, which is precisely the property the derivation exists to provide.
+
+Because the secret is per-board and derived, compromising one device yields that device and no other. There is no fleet-wide value to leak.
+
+### Cost of deriving the sticker secret
+
+With a public constant, the only thing stopping someone enumerating the board-ID space offline — computing every sticker secret, every handle, and matching them against advertisements they can hear — is the cost of the derivation. That attack needs neither the sticker nor access to any device, so it is not covered by what the threat model puts out of scope.
+
+A plain hash makes it cheap: 32 bits of board ID against a fast hash is minutes of GPU time, and 64 bits is not a comfortable margin either.
+
+Making the first derivation **memory-hard** — argon2id or scrypt rather than a plain hash — closes this without changing the model. The constant stays public, the derivation stays reproducible from the board alone, and nothing about the operational story moves. The cost lands where it does not hurt: stickers are generated once at manufacture, and the device derives its secret once at boot and holds it. Parameters want tuning against the slowest board we ship.
+
+The second derivation, sticker secret to advertised handle, stays a fast hash. The phone recomputes nothing there, but it compares against every advertisement it hears while scanning, and a memory-hard function in that loop would be felt.
 
 ### Advertised handle
 
@@ -47,6 +78,7 @@ A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast
 
 - The derivation constant here need not be secret. Hashing is one-way, so a listener who hears the handle still cannot recover the sticker secret; a phone app can carry the constant in the clear.
 - The handle must be long enough that collisions across a site are implausible, and short enough to leave room in a 31-byte legacy advertisement. Eight bytes is a comfortable default.
+- Stickers outlive software. Once a box is in the field its sticker is fixed, so a later change to the constants or the derivation parameters must not orphan it: the payload carries a version, and a device has to be able to derive and advertise under every version it still supports — which means the advertisement carries the version too, or the device advertises one handle per supported version.
 - A **static** handle makes the device passively trackable — a fixed beacon following the box around. If that matters, the handle can be rotated without a clock: advertise a short random rotation salt in the clear alongside `H(sticker secret, salt)`, and roll the salt periodically. A scanner recomputes for the observed salt; a passive observer cannot link two advertisements from the same device. This also means the BLE adapter must use resolvable private addresses, or the MAC becomes the tracker regardless.
 
 ### Discovery and matching
@@ -62,9 +94,11 @@ Two platform constraints shape what we can put where:
 
 The phone must prove it holds the sticker secret; the device must prove the same, so that a replayed or spoofed advertisement does not yield a session. Both directions matter, and the session that follows should be encrypted.
 
-The sticker secret is machine-generated and high-entropy, which is the fact that decides the mechanism — see "Implementation options".
+The sticker secret is a full-width value, not a six-digit code a human types, which is the fact that decides the mechanism — see "Implementation options". Its resistance to offline guessing comes from the memory-hard derivation, not from the board ID's own entropy, and that matters here as much as at the sticker: an eavesdropper who records a handshake can otherwise search the board-ID space against the transcript. The same defence covers both.
 
-Verifying the device's *board ID* against a value also carried in the QR is worth doing, but it is an operational integrity check — it catches a sticker on the wrong box — not a security control, since the board ID is not secret.
+A separate value in the QR for the challenge-response is not needed. The handshake already proves possession of the sticker secret in both directions, which is what "this is the box whose sticker I scanned" and "you scanned my sticker" both reduce to. A replayed advertisement buys an attacker nothing, because they cannot complete the handshake behind it.
+
+Verifying the device's board ID directly is not available: it cannot go in the QR, and the derivation does not run backwards. Possession of the sticker secret is the proof, and it is equivalent — deriving it requires the board ID.
 
 ### Session and provisioning
 
@@ -84,19 +118,21 @@ A static page using Web Bluetooth that does the scan-match-authenticate-RPC flow
 
 ## Implementation options
 
-### Where the fleet key lives
+### Choice of derivation function
 
-- **Device derives at runtime.** The device holds the fleet key and computes its own sticker secret from its board ID. Simplest operationally, but one extracted device yields the key, and the key plus a list of board IDs yields the entire fleet. Board IDs are easy to come by.
-- **Derived off-device, installed at imaging time.** Sticker secrets are computed wherever stickers are printed; the device is given only its own secret, as part of the image or first-boot provisioning. The device never holds the fleet key, so compromising a device compromises exactly that device. Reprinting still works from the board ID and the fleet key.
-- **Per-device random, no fleet key.** Generate a random secret at imaging time, store it on the device, record it wherever the sticker is printed. Removes the fleet key entirely, and removes any dependence on board ID entropy — at the cost of needing a record to reprint a sticker.
+Settled in shape — memory-hard for the first step, fast for the second — but not in detail.
 
-The second option looks strongest, and it does not preclude the third: the device's behaviour is identical either way, since it only ever reads a secret it was given.
+- **argon2id** is the current default recommendation for password hashing and has a maintained pure-Rust implementation. Parameters are three-dimensional (memory, time, parallelism) and want tuning against the weakest board, since that board has to run it at every boot.
+- **scrypt** is older, simpler to parameterise, and cheaper to run on a constrained board at equivalent nominal cost — but with a worse memory-hardness margin.
+- For the fast second step, BLAKE3 keyed mode gives domain separation and a truncatable output in one primitive.
+
+Caching the derived secret on disk after first boot would take the cost off the boot path entirely, at the price of introducing the per-device state the design otherwise avoids. Probably not worth it unless the boot cost measures badly.
 
 ### Handshake
 
 - **MAC challenge-response.** Each side sends a nonce; each replies with a MAC over both nonces under the sticker secret, domain-separated by direction. Mutual, replay-resistant, trivially implementable and auditable. No session key worth the name and no forward secrecy — anyone who later learns the sticker secret can decrypt a recorded session.
 - **Noise with a pre-shared key** (`NNpsk0` or `XXpsk0`, via `snow`). The sticker secret is the PSK. Mutual authentication from the PSK, a fresh session key and forward secrecy from the ephemeral DH, an encrypted transport falls out of it, and the pattern is well-analysed. Adding a device static key later lets a phone pin device identity across a sticker reprint.
-- **PAKE (SPAKE2+ / CPace).** What Matter does for exactly this flow. PAKEs earn their complexity when the shared secret is a six-digit PIN a human types. Ours is a machine-generated high-entropy value in a QR code, so the offline-guessing resistance a PAKE buys is not needed, and Rust SPAKE2+ options are thin.
+- **PAKE (SPAKE2+ / CPace).** What Matter does for exactly this flow. A PAKE earns its complexity by making the shared secret unguessable from a transcript no matter how small its space is, which is what lets Matter use a six-digit PIN. Here the memory-hard derivation already buys that, so the PAKE would be paying twice for one property — and Rust SPAKE2+ options are thin. Worth revisiting only if the derivation ends up cheap.
 - **BLE link-layer pairing with OOB data from the QR.** Moves the problem into the Bluetooth stack. BlueZ OOB pairing is awkward, phone support is uneven, and Web Bluetooth cannot drive pairing at all. Treating BLE as a dumb pipe and doing crypto at the application layer keeps every client viable.
 
 Noise-with-PSK looks like the right weight for this.
@@ -129,11 +165,9 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 
 ## Open questions
 
-- [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place.
-- [ ] Does the device hold the fleet key and derive its own sticker secret, or is the secret derived off-device and installed at imaging time?
-- [ ] Where and when are stickers generated and printed, and is there a record of what was printed for which board?
+- [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place. None yet; the doc sits under a provisional directory until there is one.
+- [ ] Is the first derivation memory-hard, and if so argon2id or scrypt, at what parameters?
 - [ ] What is this called? It needs a name before it needs a crate.
-- [ ] Does the QR carry one value or two — a discovery value and a separate challenge secret — and if two, what does the split buy us?
 - [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
 - [ ] Which provisioning operations are in the first milestone, and is Wi-Fi configuration one of them or does Improv-Wi-Fi keep that job?
 - [ ] Does this stay in bestool or become its own project, and does the answer change the crate layout?
@@ -143,6 +177,9 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 
 - The SMBIOS path is the testable one: a UEFI VM or CI runner has a system UUID where a Pi does not, so the whole derivation chain can be exercised without hardware.
 - A board ID override for tests, and a defined behaviour when no board ID source exists at all.
+- Measure the actual entropy of both board ID sources on hardware we ship: how many bits a Pi serial really carries on each model, and whether the SMBIOS UUIDs we see in the field are distinct rather than a vendor constant. The derivation parameters follow from the answer.
+- Time the derivation on the slowest board in scope, since it sits on the boot path.
+- Known-answer tests pinning both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed.
 - Full handshake and RPC exercised over an in-memory duplex transport, with no BLE involved.
 - Negative cases worth pinning down: wrong sticker secret, replayed advertisement, replayed handshake, truncated frames, a peer that authenticates and then sends garbage.
 - Handle collision between two devices in range.
