@@ -27,8 +27,12 @@ use tracing::{info, warn};
 use wmi::{Variant, WMIConnection};
 
 use super::{
-	super::{hold::HeldCapture, method::VolumeCapture},
+	super::{
+		hold::{DivergenceMark, HeldCapture},
+		method::VolumeCapture,
+	},
 	resolve::ResolvedCluster,
+	usn,
 };
 
 /// Teardown state for a prepared shadow copy, released by [`teardown`].
@@ -38,6 +42,10 @@ pub struct Shadow {
 	id: String,
 	/// The junction mounting the shadow, to unmount on teardown.
 	junction: PathBuf,
+	/// Where the volume's change journal stood when the shadow was taken, where
+	/// the volume keeps one. This is what a later in-place restore asks NTFS
+	/// about instead of comparing the two trees itself.
+	journal: Option<(PathBuf, usn::Position)>,
 }
 
 /// The directory the backup captures. On the EDB layout the whole server install
@@ -99,15 +107,24 @@ pub async fn prepare(
 	// The shadow's copy-on-write area needs room on its storage volume; if it's
 	// nearly full the shadow gets dropped mid-backup, so refuse up front.
 	let required = super::space::vss_required_free(need);
-	if let Some(free) = super::space::available(Path::new(&root))
+	if let Some(free) = crate::actions::canopy::space::available(Path::new(&root))
 		&& free < required
 	{
 		bail!(
 			"volume {volume} has only {} free — a VSS shadow of this cluster needs at least {}; free space on {volume} first",
-			super::space::fmt_bytes(free),
-			super::space::fmt_bytes(required),
+			crate::actions::canopy::space::fmt_bytes(free),
+			crate::actions::canopy::space::fmt_bytes(required),
 		);
 	}
+
+	// Read the journal's position *before* the shadow is taken. Erring early is
+	// safe and erring late is not: a position from before the freeze names a few
+	// files that did not need copying, where one from after it misses whatever
+	// was written in between, and a missed write is a file left diverged.
+	let journal_volume = PathBuf::from(&volume);
+	let journal = usn::position(&journal_volume)
+		.await
+		.map(|position| (journal_volume, position));
 
 	info!(%volume, %expose_target, "creating VSS shadow copy via WMI");
 	// WMI/COM is thread-affine and `!Send`, and the junction is blocking fs work,
@@ -133,7 +150,15 @@ pub async fn prepare(
 
 	let source = PathBuf::from(kopia_source(&expose_target, &rel));
 	info!(shadow = %shadow_id, source = %source.display(), "VSS shadow ready");
-	Ok((source, taken_at, Shadow { id: shadow_id, junction }))
+	Ok((
+		source,
+		taken_at,
+		Shadow {
+			id: shadow_id,
+			junction,
+			journal,
+		},
+	))
 }
 
 /// Expose a prepared shadow as a whole-volume capture.
@@ -155,7 +180,7 @@ pub fn volume_capture(shadow: &Shadow, taken_at: Timestamp) -> Option<VolumeCapt
 /// Best-effort — a cleanup failure is warned, not fatal (the backup itself
 /// already succeeded).
 pub async fn teardown(shadow: Shadow) -> Result<()> {
-	let Shadow { id, junction } = shadow;
+	let Shadow { id, junction, .. } = shadow;
 	match tokio::task::spawn_blocking(move || {
 		// Remove the mount point (the junction, not the shadow contents), then the
 		// shadow itself.
@@ -186,7 +211,11 @@ fn held_expose_target_dir(volume: &str, id: &str) -> String {
 /// junctioned at the hold's own folder and the run's junction handed back.
 /// Returns the path the held capture is readable at, and what it takes to release
 /// it.
-pub async fn hold(shadow: Shadow, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+pub async fn hold(
+	shadow: Shadow,
+	id: &str,
+	source: &Path,
+) -> Result<(PathBuf, HeldCapture, Option<DivergenceMark>)> {
 	let rel = source
 		.strip_prefix(&shadow.junction)
 		.map_err(|_| {
@@ -220,12 +249,20 @@ pub async fn hold(shadow: Shadow, id: &str, source: &Path) -> Result<(PathBuf, H
 	let _ = std::fs::remove_dir(&shadow.junction);
 
 	info!(hold = %id, shadow = %shadow.id, junction = %held_junction.display(), "held VSS shadow copy");
+	let mark = shadow
+		.journal
+		.map(|(volume, position)| DivergenceMark::UsnJournal {
+			volume,
+			journal_id: position.journal_id,
+			usn: position.usn,
+		});
 	Ok((
 		held_junction.join(rel),
 		HeldCapture::Vss {
 			shadow_id: shadow.id,
 			junction: held_junction,
 		},
+		mark,
 	))
 }
 
@@ -274,6 +311,8 @@ pub async fn release_held(shadow_id: &str, junction: &Path) -> Result<()> {
 	teardown(Shadow {
 		id: shadow_id.to_owned(),
 		junction: junction.to_path_buf(),
+		// Releasing a capture has no use for where its volume's history stood.
+		journal: None,
 	})
 	.await
 }
@@ -518,6 +557,9 @@ mod tests {
 		let shadow = Shadow {
 			id: created.id.clone(),
 			junction: junction.clone(),
+			// This shadow is built by hand rather than by `prepare`, and the
+			// journal position is only read by a later in-place restore.
+			journal: None,
 		};
 		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
 		assert!(
@@ -601,6 +643,9 @@ mod tests {
 		let shadow = Shadow {
 			id: created.id.clone(),
 			junction: junction.clone(),
+			// This shadow is built by hand rather than by `prepare`, and the
+			// journal position is only read by a later in-place restore.
+			journal: None,
 		};
 		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
 

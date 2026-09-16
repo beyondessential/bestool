@@ -40,6 +40,66 @@ pub struct HoldRecord {
 	pub uploaded: bool,
 	/// What to release when the hold is dropped.
 	pub capture: HeldCapture,
+	/// What the backend noted at the freeze, so a later in-place restore can ask
+	/// the filesystem what has diverged since instead of scanning for it.
+	///
+	/// Absent where the backend has nothing to offer, and on records written
+	/// before it was kept. Never required: a restore without one compares the
+	/// two trees itself.
+	#[serde(default)]
+	pub diverged_since: Option<DivergenceMark>,
+}
+
+/// A point in a filesystem's own change history, recorded when a capture froze.
+///
+/// Reading the divergence from the filesystem's metadata costs nothing like the
+/// full read of both trees that finding it by hand does, so it is worth
+/// recording even though nothing depends on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DivergenceMark {
+	/// The btrfs transaction generation the subvolume stood at when it was
+	/// snapshotted. Everything written to it since carries a higher one.
+	///
+	/// A generation only means anything against the subvolume it was counted on:
+	/// another subvolume, or a filesystem since recreated, has its own sequence
+	/// that started again from low numbers, and asking it about this generation
+	/// answers cleanly and wrongly. So the subvolume's UUID is recorded with it,
+	/// and a restore that cannot match it declines — the same guard the change
+	/// journal gets from its journal id. Absent on records written before it was
+	/// kept, which therefore cannot be trusted as a basis.
+	BtrfsGeneration {
+		generation: u64,
+		#[serde(default)]
+		subvolume: Option<String>,
+	},
+	/// The NTFS change journal's identity and position when the shadow was
+	/// taken. The journal is a fixed-size ring, so the id detects it having been
+	/// recreated and the position detects it having wrapped past this point —
+	/// either of which makes the record no longer an answer.
+	UsnJournal {
+		volume: PathBuf,
+		journal_id: u64,
+		usn: i64,
+	},
+}
+
+/// The subvolume UUID out of `btrfs subvolume show`.
+///
+/// Lives with [`DivergenceMark`] because the capture side records it and the
+/// restore side checks it, and the two must read the field the same way forever:
+/// a divergence between two copies of this would turn the identity guard into a
+/// permanent refusal, or into a wrong match.
+///
+/// Matched on the whole `UUID:` label, since `Parent UUID` and `Received UUID`
+/// also end in it. A snapshot with no UUID of its own reports `-`.
+pub fn parse_subvolume_uuid(output: &str) -> Option<String> {
+	output
+		.lines()
+		.filter_map(|line| line.trim().strip_prefix("UUID:"))
+		.map(str::trim)
+		.find(|uuid| !uuid.is_empty() && *uuid != "-")
+		.map(str::to_owned)
 }
 
 /// The retained capture itself, in the terms its backend needs to release it.
@@ -418,6 +478,7 @@ mod tests {
 			source: PathBuf::from("/var/lib/bestool/held-source/x/16/main"),
 			uploaded: true,
 			capture,
+			diverged_since: None,
 		}
 	}
 
@@ -457,6 +518,88 @@ mod tests {
 			assert_eq!(parsed.source, original.source);
 			assert!(parsed.uploaded);
 			assert_eq!(parsed.capture.backend(), backend);
+		}
+	}
+
+	/// A hold taken before the divergence mark existed is still a rollback point,
+	/// so its record has to keep parsing. Failing to would strand the hold rather
+	/// than report it.
+	#[test]
+	fn a_record_written_before_the_divergence_mark_still_parses() {
+		let json = br#"{
+			"id": "x-20260814T054412Z",
+			"backup_type": "x",
+			"taken_at": "2026-08-14T05:44:12Z",
+			"held_at": "2026-08-14T11:02:00Z",
+			"source": "/var/lib/bestool/held-source/x",
+			"uploaded": true,
+			"capture": { "backend": "base-backup", "root": "/var/lib/bestool/held-source/x" }
+		}"#;
+		let parsed = parse(json).unwrap();
+		assert_eq!(parsed.diverged_since, None);
+	}
+
+	const SHOW: &str = "\
+pgsub
+\tName: \t\t\tpgsub
+\tUUID: \t\t\t9960cf5a-4a6d-a641-b986-3a71d4549d03
+\tParent UUID: \t\t-
+\tReceived UUID: \t\t-
+\tGeneration: \t\t10
+";
+
+	#[test]
+	fn reads_the_subvolumes_own_uuid_not_its_parents() {
+		assert_eq!(
+			parse_subvolume_uuid(SHOW).as_deref(),
+			Some("9960cf5a-4a6d-a641-b986-3a71d4549d03")
+		);
+	}
+
+	#[test]
+	fn a_subvolume_with_no_uuid_at_all_is_not_identifiable() {
+		assert_eq!(parse_subvolume_uuid("ERROR: not a subvolume"), None);
+		assert_eq!(parse_subvolume_uuid("\tUUID: \t-\n"), None);
+	}
+
+	/// A btrfs mark from before the subvolume was recorded still parses; it is
+	/// the restore that refuses to act on one, not the reader.
+	#[test]
+	fn a_btrfs_mark_without_its_subvolume_still_parses() {
+		let json = br#"{"kind":"btrfs-generation","generation":4211}"#;
+		let mark: DivergenceMark = serde_json::from_slice(json).unwrap();
+		assert_eq!(
+			mark,
+			DivergenceMark::BtrfsGeneration {
+				generation: 4_211,
+				subvolume: None
+			}
+		);
+	}
+
+	/// The mark is what lets a later in-place restore ask the filesystem what
+	/// diverged instead of reading both trees, so it has to survive the upgrade
+	/// that sits between taking a hold and restoring from it.
+	#[test]
+	fn every_divergence_mark_round_trips() {
+		let marks = [
+			DivergenceMark::BtrfsGeneration {
+				generation: 4_211,
+				subvolume: Some("9960cf5a-4a6d-a641-b986-3a71d4549d03".into()),
+			},
+			DivergenceMark::UsnJournal {
+				volume: PathBuf::from("C:"),
+				journal_id: 0x01d5_f4e2_c3b1_a098,
+				usn: 0x0012_3456,
+			},
+		];
+		for mark in marks {
+			let mut original = record(HeldCapture::BaseBackup {
+				root: "/var/lib/bestool/held-source/x".into(),
+			});
+			original.diverged_since = Some(mark.clone());
+			let parsed = parse(&serde_json::to_vec(&original).unwrap()).unwrap();
+			assert_eq!(parsed.diverged_since, Some(mark));
 		}
 	}
 

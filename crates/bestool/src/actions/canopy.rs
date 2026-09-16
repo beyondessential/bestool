@@ -11,6 +11,9 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic as _, bail, miette};
 use miette::Result;
 
+#[cfg(any(feature = "canopy-backup", feature = "canopy-restore"))]
+pub mod space;
+
 use super::Context;
 
 /// Interact with Canopy.
