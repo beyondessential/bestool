@@ -74,10 +74,14 @@ backup (`base backup hold / e2e`), VSS (`vss / wmi e2e`).
 - [x] The probe that judges the above answers "present" while the capture is
       still held, so a probe that looked in the wrong place could not let the
       post-drop assertion pass without reading the storage
-- [x] btrfs and thin-LVM: the space comes back. The fixture writes ballast before
-      the capture and overwrites it after, so the capture pins extents the live
-      data no longer shares and a drop that only forgot the record is visible as
-      a store that did not shrink (verifies spec: HOLD)
+- [x] btrfs: the capture holds storage of its own for the drop to return. Quota
+      groups are enabled before anything is written, and the held subvolume's
+      exclusive bytes are read while the hold is still in place — storage nothing
+      else references, which deleting the capture necessarily returns. Read
+      together with the capture being gone afterwards (verifies spec: HOLD)
+- [x] thin-LVM: the pool's usage falls across the release. A thin pool cannot say
+      what one snapshot holds alone, so the pool — which is the fixture's own —
+      is read either side instead (verifies spec: HOLD)
 - [x] VSS and base backup: the space comes back by the capture's absence — a
       deleted shadow copy returns its store, and a removed tree returns its bytes
       — rather than by a byte delta. The VSS store is the machine's system

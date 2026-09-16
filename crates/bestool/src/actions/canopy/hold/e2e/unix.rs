@@ -101,6 +101,11 @@ impl Harness {
 		std::fs::create_dir_all(&mount).unwrap();
 		run("mount", &["-o", "subvol=pgdata", "--", &loopdev, str(&mount)]);
 
+		// Quota groups, so the capture's own storage can be named rather than
+		// inferred from what the filesystem's free space did. Enabled before
+		// anything is written, so the accounting is right without a rescan.
+		run("btrfs", &["quota", "enable", str(&mount)]);
+
 		Self::with_cluster(
 			"hold-e2e-btrfs",
 			"holdbtrfs",
@@ -314,28 +319,34 @@ impl Backend for Harness {
 		}
 	}
 
-	fn measures_store(&self) -> bool {
+	fn needs_ballast(&self) -> bool {
 		// The base backup's capture is a tree on the machine's own disk, which the
 		// rest of the machine is writing to throughout; its absence is the
 		// assertion instead.
 		!matches!(self.storage, Storage::BaseBackup)
 	}
 
+	async fn capture_exclusive_bytes(&self, record: &HoldRecord) -> Option<u64> {
+		let (Storage::Btrfs { mount, .. }, HeldCapture::Btrfs { snapshot_path, .. }) =
+			(&self.storage, &record.capture)
+		else {
+			// Only btrfs accounts per capture here. A thin pool reports what it has
+			// mapped, not what a single snapshot holds alone, so thin-LVM reads the
+			// pool either side of the release instead.
+			return None;
+		};
+		// Quota accounting settles at a commit.
+		try_run("sync", &["-f", str(mount)]);
+		let name = snapshot_path.file_name()?.to_string_lossy();
+		let report = capture_ok("btrfs", &["qgroup", "show", "-re", "--raw", str(mount)])?;
+		qgroup_exclusive(&report, &name)
+	}
+
 	async fn store_in_use(&self) -> Option<f64> {
 		match &self.storage {
-			// The data extents in use, read off the allocator rather than through
-			// statvfs.
-			//
-			// btrfs reports free space net of the chunks it has allocated for
-			// metadata, and a metadata chunk is duplicated on a single device — so
-			// allocating one moves statvfs by hundreds of megabytes that no amount
-			// of freeing data brings back, and a cluster with its restored copy
-			// beside it makes enough metadata to allocate one. That swamps the
-			// ballast. `Data used` counts the extents themselves and is untouched
-			// by it.
-			Storage::Btrfs { mount, .. } => {
-				data_used(&capture_ok("btrfs", &["filesystem", "df", "--raw", str(mount)])?)
-			}
+			// btrfs accounts per capture, so it never reads the filesystem around
+			// one.
+			Storage::Btrfs { .. } => None,
 			// The space is in the pool, not in the filesystem on the volume: an
 			// unmounted snapshot LV holds pool blocks that `df` never sees.
 			Storage::ThinLvm { vg, .. } => {
@@ -390,6 +401,7 @@ impl Backend for Harness {
 		// granularity and metadata moving under the measurement while still being
 		// far more than a drop that returned nothing could produce.
 		match self.storage {
+			// Exclusive bytes, so half the ballast in the unit it is written in.
 			Storage::Btrfs { .. } => BALLAST_BYTES as f64 / 2.0,
 			// The pool reports a percentage, so the ballast's share of it is what
 			// half a ballast comes to.
@@ -529,16 +541,25 @@ fn settle(device: String) -> String {
 	device
 }
 
-/// The `Data ... used=` byte count from `btrfs filesystem df --raw`.
-fn data_used(report: &str) -> Option<f64> {
-	report
-		.lines()
-		.find(|line| line.starts_with("Data"))?
-		.rsplit_once("used=")?
-		.1
-		.trim()
-		.parse()
-		.ok()
+/// A subvolume's exclusive byte count from `btrfs qgroup show -re --raw`, found
+/// by the subvolume's own name in the report's last column.
+///
+/// Exclusive is the number that matters: it counts the extents no other
+/// subvolume references, which are exactly the ones deleting this subvolume
+/// returns. Located by name rather than by resolving the subvolume's id first,
+/// which would mean asking the capture's own mount — idmapped, read-only, and
+/// one more thing to go wrong — for something the report already says.
+fn qgroup_exclusive(report: &str, subvolume: &str) -> Option<u64> {
+	report.lines().find_map(|line| {
+		let fields: Vec<&str> = line.split_whitespace().collect();
+		// id, referenced, exclusive, two limits, path.
+		let [qgroup, _referenced, exclusive, .., path] = fields.as_slice() else {
+			return None;
+		};
+		(*path == subvolume && qgroup.starts_with("0/"))
+			.then(|| exclusive.parse().ok())
+			.flatten()
+	})
 }
 
 fn str(path: &Path) -> &str {
@@ -580,24 +601,30 @@ fn capture_ok(program: &str, args: &[&str]) -> Option<String> {
 mod tests {
 	use super::*;
 
-	/// The allocator's own report, in the shape `btrfs filesystem df --raw` gives
-	/// it. Parsed rather than eyeballed because a misread here would silently make
-	/// the release assertion meaningless.
+	/// A real `btrfs qgroup show -re --raw` report, as a held capture leaves it:
+	/// the cluster's subvolume, and the snapshot holding the ballast alone.
+	/// Parsed rather than eyeballed, since a misread would make the release
+	/// assertion meaningless.
 	#[test]
-	fn data_used_is_read_off_the_allocator_report() {
-		let report = "Data, single: total=8388608, used=67108864\n\
-			System, DUP: total=8388608, used=16384\n\
-			Metadata, DUP: total=268435456, used=147456\n\
-			GlobalReserve, single: total=6029312, used=16384";
-		assert_eq!(data_used(report), Some(67108864.0));
+	fn exclusive_bytes_are_read_off_the_quota_report() {
+		let report = "Qgroupid    Referenced    Exclusive  Max referenced  Max exclusive   Path \n\
+			--------    ----------    ---------  --------------  -------------   ---- \n\
+			0/5              16384        16384            none           none   <toplevel>\n\
+			0/256        161677312    135593984            none           none   pgdata\n\
+			0/257         93257728     67174400            none           none   bestool-held-x";
+		assert_eq!(qgroup_exclusive(report, "bestool-held-x"), Some(67174400));
+		assert_eq!(qgroup_exclusive(report, "pgdata"), Some(135593984));
 	}
 
-	/// Anything else is no reading at all, rather than zero — which would read as
-	/// a store that had emptied.
+	/// A subvolume with no qgroup, or a report that could not be read, is no
+	/// answer — not zero, which would read as a capture holding nothing and fail
+	/// the release assertion for the wrong reason.
 	#[test]
-	fn an_unreadable_report_is_not_an_empty_store() {
-		assert_eq!(data_used(""), None);
-		assert_eq!(data_used("Metadata, DUP: total=1, used=2"), None);
-		assert_eq!(data_used("Data, single: total=8388608"), None);
+	fn a_missing_qgroup_is_not_an_empty_capture() {
+		let report = "0/257  93257728  67174400  none  none  bestool-held-x";
+		assert_eq!(qgroup_exclusive(report, "bestool-held-gone"), None);
+		assert_eq!(qgroup_exclusive("", "bestool-held-x"), None);
+		assert_eq!(qgroup_exclusive("Qgroupid Referenced Exclusive", "Exclusive"), None);
 	}
+
 }

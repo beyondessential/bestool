@@ -110,34 +110,49 @@ trait Backend {
 	/// space behind it.
 	async fn capture_present(&self, record: &HoldRecord) -> bool;
 
-	/// Whether this backend's store can be measured either side of a drop, and so
-	/// whether the capture needs ballast to pin.
+	/// Whether the capture has to hold storage of its own for this backend's
+	/// release assertion to mean anything, and so whether the ballast is written.
 	///
-	/// False where the store is shared with the rest of the machine and a delta
-	/// would be noise rather than evidence. [`Backend::capture_present`] carries
-	/// the assertion alone there.
+	/// False where the store is the machine's rather than the fixture's and
+	/// nothing can be told from its size. [`Backend::capture_present`] carries the
+	/// assertion alone there.
 	///
-	/// Declared separately from taking the reading so that the two cannot be
-	/// confused: a backend that does not measure and a probe that failed would
+	/// Declared separately from the readings below so that the two cannot be
+	/// confused: a backend that measures nothing and a probe that failed would
 	/// otherwise both come back as "no reading", and the second would quietly
 	/// switch off the assertion it was meant to feed.
-	fn measures_store(&self) -> bool {
+	fn needs_ballast(&self) -> bool {
 		false
 	}
 
-	/// How much of the store the capture's space comes out of is in use, in
-	/// whatever unit the backend reports it in: bytes for a filesystem, a
-	/// percentage for a thin pool. Compared only against itself either side of a
-	/// drop.
+	/// How much storage the capture holds that nothing else does, in bytes, for a
+	/// filesystem that can account for it per capture.
 	///
-	/// Only ever called on a backend that measures, and a `None` from one of those
-	/// is a broken probe rather than an answer.
+	/// This is the release claim made directly: storage nothing else references
+	/// is storage that deleting the capture necessarily returns, so asking while
+	/// the hold is still in place and then asserting the capture is gone says
+	/// what a drop returned without ever measuring the filesystem around it —
+	/// which on a copy-on-write filesystem is a number moved by metadata
+	/// allocation, other writers, and when the cleaner last ran.
+	async fn capture_exclusive_bytes(&self, record: &HoldRecord) -> Option<u64> {
+		let _ = record;
+		None
+	}
+
+	/// How much of the store the capture's space comes out of is in use, in
+	/// whatever unit the backend reports it in — a percentage for a thin pool.
+	/// Compared only against itself either side of a drop.
+	///
+	/// For a store that cannot account per capture, where the pool is the
+	/// fixture's alone and a delta across the release is the best available
+	/// reading.
 	async fn store_in_use(&self) -> Option<f64> {
 		None
 	}
 
-	/// The smallest fall in [`Backend::store_in_use`] a real release shows, given
-	/// the ballast the capture pins.
+	/// The least a real release accounts for: exclusive bytes where the capture
+	/// can be accounted for directly, otherwise the smallest fall in
+	/// [`Backend::store_in_use`]. Given by the ballast either way.
 	fn released_margin(&self) -> f64 {
 		0.0
 	}
@@ -163,11 +178,11 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	let data_dir = backend.data_dir().to_path_buf();
 	let backup_type = backend.backup_type().to_owned();
 
-	// Only the backends that read their store have anything to pin extents for.
-	let measures_store = backend.measures_store();
+	// Only the backends whose release assertion reads storage have anything to pin.
+	let needs_ballast = backend.needs_ballast();
 	let ballast_path = data_dir.join(BALLAST);
 	let mut pin = |seed: u64| {
-		if measures_store {
+		if needs_ballast {
 			write_ballast(&ballast_path, seed);
 		}
 	};
@@ -277,12 +292,36 @@ async fn lifecycle<B: Backend>(backend: &B) {
 	// running would mix its allocations into the delta.
 	backend.quiesce_store().await;
 
-	// `bestool canopy hold drop`: the record, and the capture behind it.
-	let before_drop = if measures_store {
-		Some(read_store(backend, "before the drop").await)
-	} else {
-		None
+	// What the drop has to return, established while the capture is still there.
+	//
+	// A filesystem that accounts per capture answers outright, and that answer is
+	// the claim: storage nothing else references is returned by deleting the thing
+	// that holds it. One that cannot is read either side of the release instead.
+	let exclusive = backend.capture_exclusive_bytes(&held).await;
+	let before_drop = match exclusive {
+		Some(_) => None,
+		None => backend.store_in_use().await,
 	};
+	assert!(
+		!needs_ballast || exclusive.is_some() || before_drop.is_some(),
+		"the {} backend pins ballast for a release assertion, but can neither account \
+		 for the capture's own storage nor read the store it comes out of, so nothing \
+		 would have checked that dropping the hold returned anything",
+		backend.expected_backend(),
+	);
+	if let Some(bytes) = exclusive {
+		assert!(
+			bytes as f64 >= backend.released_margin(),
+			"hold {} holds only {bytes} bytes that nothing else does, short of the {} a \
+			 released capture has to account for, so dropping it would return too little \
+			 to tell from nothing.\n{}",
+			held.id,
+			backend.released_margin(),
+			backend.store_diagnostics().await,
+		);
+	}
+
+	// `bestool canopy hold drop`: the record, and the capture behind it.
 	hold(HoldAction::Drop(DropArgs { id: held.id.clone() }))
 		.await
 		.expect("dropping the hold");
@@ -495,14 +534,13 @@ mod tests {
 	}
 }
 
-/// A reading from a backend that measures. A backend that says it measures and
-/// then cannot read its store is broken, not quiet: treating that as "nothing to
-/// assert" would switch off the release check and pass the job having tested the
-/// one thing the ballast exists for not at all.
+/// A reading from a backend that reads its store either side of the release. One
+/// that answered before the drop and not after is broken, not quiet: treating
+/// that as "nothing to assert" would switch the release check off mid-way.
 async fn read_store<B: Backend>(backend: &B, when: &str) -> f64 {
 	backend.store_in_use().await.unwrap_or_else(|| {
 		panic!(
-			"the {} backend measures its store, but could not read it {when}",
+			"the {} backend reads its store, but could not {when}",
 			backend.expected_backend(),
 		)
 	})

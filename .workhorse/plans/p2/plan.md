@@ -90,72 +90,55 @@ every host. The probe also answers while the capture is still held, so a probe
 looking in the wrong place fails loudly instead of letting the check after the
 drop pass without reading the storage.
 
-For the free-space delta, a snapshot of a freshly-created cluster shares all its
-extents with the live data, so dropping it frees nothing measurable. The
-fixtures therefore write a ballast file before the capture and overwrite it
-after, so the capture pins the old extents and dropping it returns them. On
-btrfs and thin-LVM the filesystem is ours alone and the delta is assertable.
+The claim is made on the capture, not on the filesystem around it. A btrfs
+fixture enables quota groups before anything is written, and the assertion reads
+the held subvolume's *exclusive* bytes while the hold is still in place: storage
+nothing else references is storage that deleting the capture necessarily
+returns, so that reading together with the capture being gone afterwards says
+what the drop returned. Nothing about the filesystem's free space enters it.
 
-The ballast has to be rewritten a third time, after the restore, and this is the
-part that is easy to get wrong — the first CI run failed on exactly it. The
-restore copies the capture back into the live tree with `cp`, and on btrfs that
-reflinks: the copy shares the capture's extents rather than allocating its own.
-The capture then pins nothing of its own, and dropping it frees nothing. That is
-the filesystem behaving correctly, not a hold failing to release, so measuring
-across it asserts the opposite of what it appears to. Rewriting the live copy
-breaks the sharing and leaves the capture the only claim on what it froze.
-Measured on a loopback filesystem: 192 MiB in use before the drop, 128 MiB after.
+A snapshot of a freshly-created cluster shares everything with the live data and
+so holds nothing exclusively. The fixtures therefore write a ballast file before
+the capture and rewrite it whenever the two need to stop sharing storage: once
+after the capture, and again after the restore, which copies the capture back
+into the live tree with `cp` and on btrfs reflinks it — the copy shares the
+capture's extents rather than allocating its own, and the capture is left
+holding nothing of its own. Measured on a loopback filesystem carrying a
+cluster-shaped tree of 3000 small files: 64.1 MiB exclusive, against a margin of
+half the ballast.
 
-thin-LVM never had the problem — its snapshot is block-level, so the restore's
-copy allocates fresh pool blocks and the snapshot's stay unique. That is why the
-thin-LVM job passed on the run where btrfs failed.
+thin-LVM cannot account per capture — a thin pool reports what it has mapped,
+not what one snapshot holds alone — so it reads the pool either side of the
+release instead. The pool is the fixture's alone, which is what makes that
+readable at all, and the job has passed on it throughout.
 
-Reclaiming is not synchronous either. btrfs unlinks a deleted subvolume at once
-but frees its extents on the cleaner thread, which took around 30 seconds for a
-capture this size. `btrfs subvolume sync` blocks until that has finished, so the
-measurement waits on it rather than racing a poll against it.
+### Why the filesystem's free space was the wrong instrument
 
-### What the space had to be measured with, and why
+The btrfs assertion went through three CI failures reading free space before it
+was rebased on exclusive accounting, and the wrong readings are worth recording
+because they look right.
 
-The btrfs measurement went through two CI failures before it read the right
-number, and the wrong ones are worth recording because they look right.
-
-It must not be `statvfs`, which is what free space through the ordinary
-interfaces means. btrfs reports free space net of the chunks it has allocated,
-and a metadata chunk on a single device is duplicated — so allocating one moves
-the number by hundreds of megabytes that freeing data never brings back, and a
-cluster sitting beside its own restored copy makes enough metadata to allocate
-one. A 64 MiB signal does not survive that. `btrfs filesystem df --raw` reports
-the data extents themselves and is untouched by it.
+`statvfs` — free space through the ordinary interfaces — is not it. btrfs reports
+free space net of the chunks it has allocated, and a metadata chunk on a single
+device is duplicated, so allocating one moves the number by hundreds of megabytes
+that freeing data never brings back. A cluster sitting beside its own restored
+copy makes enough metadata to allocate one, and a 64 MiB signal does not survive
+that. `btrfs filesystem df --raw` counts the data extents themselves and is
+untouched by it, but it is still a filesystem-wide number, still moved by
+whatever else writes, and still waiting on the cleaner thread to return a deleted
+subvolume's extents.
 
 Ruled out along the way, each reproduced on a real loopback filesystem and each
 behaving correctly: the held-source mount pinning the subvolume past its
-deletion, a live cluster's copy-on-write churn masking the delta, and the
-cleaner being slower on a real disk than on the tmpfs the first reproductions
-accidentally ran on. None of them was it. The reproductions were themselves
-misleading, because a single large ballast file makes almost no metadata, which
-is precisely the variable that mattered.
+deletion, a live cluster's copy-on-write churn masking the delta, and the cleaner
+being slower on a real disk than on the tmpfs the first reproductions
+accidentally ran on. The reproductions were themselves misleading, because a
+single large ballast file makes almost no metadata — which is precisely the
+variable that mattered.
 
-The cluster is stopped before the measurement regardless. What the drop returns
-is the claim being made, and leaving another writer on the filesystem mixes its
-allocations into it.
-
-On VSS the store is the runner's system volume, which other processes are
-writing to throughout, so a byte delta there would be flaky; the shadow's
-absence from WMI is the assertion instead, since that is what returns its store.
-Recorded in the test cases as covered-by-absence rather than left unticked.
-
-The ballast is written only where it is read. On base backup it would be streamed
-through `pg_basebackup`, walked to size the restore, and copied again into
-staging; on VSS it would grow the shadow's store on the runner's system volume.
-Neither measures a delta, so neither pays for it.
-
-The thin pool's size is derived from the ballast rather than fixed, and so are
-both margins. The pool has to hold several ballast-sized allocations at once —
-what the capture pins, the live copy, the restore's staged copy, the tree it
-displaces — and an ext4 volume mounted without `discard` never hands blocks back.
-Left decoupled, raising the ballast or adding a step to the shared driver would
-fill the pool and flip the filesystem read-only instead of failing an assertion.
+The cluster is still stopped before the reading, and a btrfs release still waits
+on `btrfs subvolume sync`, so the capture's absence is asserted against a settled
+filesystem rather than one mid-cleanup.
 
 ## Build steps
 
