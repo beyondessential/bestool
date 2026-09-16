@@ -114,6 +114,8 @@ With a public constant, the only thing stopping someone enumerating the board-ID
 
 A plain hash makes it cheap: 32 bits of board ID against a fast hash is minutes of GPU time, and 64 bits is not a comfortable margin either.
 
+How much this section still has to carry depends on what the board ID turns out to be. It was written assuming the board ID is whatever firmware happens to expose, which is the weak case measured under "Board ID" — around 2^36 on the Dell. Where a TPM Endorsement Key or burnt OTP wins the precedence instead, the board ID carries 256 bits, nothing can enumerate it, and the memory-hard derivation is defence in depth rather than the thing holding the scheme up. The argument below therefore sizes the derivation for the weakest source we are willing to ship, not for the typical one.
+
 Making the first derivation **memory-hard** — argon2id or scrypt rather than a plain hash — closes this without changing the model. The constant stays public and the derivation stays reproducible from the board alone; only the cost of doing so moves. Stickers are generated once at manufacture, so the generator can afford whatever we ask of it.
 
 Parameters should be pushed hard, to seconds of work rather than milliseconds. The useful mental model is that an attacker's cost per guess scales with memory times iterations, and a GPU's parallelism is capped by its VRAM divided by the memory parameter — so memory buys more than time does, since it bounds how many guesses can run at once rather than just how long each takes.
