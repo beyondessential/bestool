@@ -165,12 +165,26 @@ The demonstration that the channel works: the web test page sends a line of text
 
 Messages are JSON. The volumes here are tiny, every client platform reads it without a library, and being able to watch the conversation in plain text is worth more during development than any saving a compact encoding would give.
 
+**The device must be able to send unsolicited messages**, not only answer requests. Status that changes while a client is connected — an address appearing as Wi-Fi comes up, which is precisely what an operator is watching for while provisioning — should arrive as it happens rather than by polling. Designing this in from the start costs nothing; retrofitting it onto a strict request/response shape costs a protocol revision.
+
+### Standing in for the screen
+
+The Iti carries an LCD whose entire purpose is to show an operator standing in front of it a few facts about the device. `services/iti-addresses` polls every sixty seconds and draws the device's `.local` hostname and its IPv4 addresses; `services/iti-lcd-wifi` draws the connected network's name; other units draw local time, battery, and temperature.
+
+Carrying the same facts over the channel makes that hardware optional. The phone becomes the screen, for a device that never needed one — which is a saving on every unit, not just a convenience.
+
+It is also **more private than the screen it replaces**. Anything on an LCD is readable by anyone who walks past it, including the device's addresses and network. Over the channel the same facts require having scanned the sticker.
+
+**Addresses are in the first milestone**, since they are the fact an operator most often wants and they prove the channel carries something real. The screen's shape should not be copied, though: its limits are display limits, not information limits. A 240-pixel panel is why `iti-addresses` stops at three addresses, wraps at twenty-six characters, skips IPv6 entirely, and filters podman interfaces out by name. The channel has none of those constraints, so the device should send every global address it has with the interface each belongs to, and let the client decide what is worth showing. Keeping the `up` and `global` filtering is right — loopback and link-local addresses are noise in any presentation.
+
+The rest of the screen's contents — network name, local time, battery, temperature — follow the same argument and belong with the device description operation.
+
 Wi-Fi configuration is where this is headed, and the reason it does not simply defer to Improv-Wi-Fi is that we want **more** than Improv's model allows — notably putting the device into access-point mode rather than only joining an existing network. Improv's RPC has no vocabulary for that. So Wi-Fi becomes an operation on this channel, and Improv-Wi-Fi keeps its own separate life for whatever still wants to speak Improv.
 
 Candidate operations after the channel exists:
 
 - Configure Wi-Fi, including switching the device to an access point. The `WifiConfigurator` trait and NetworkManager backend in `improv-wifi` are a starting point, though the AP case reaches past what that trait currently expresses.
-- Describe the device: model, board ID, OS image, software versions, current network state.
+- Describe the device: model, board ID, OS image, software versions, and the rest of what the Iti screen shows — network name, local time, battery, temperature.
 - Physically identify: blink an LED, or draw on the LCD where one is fitted, so the operator can confirm which box they are talking to.
 - Set hostname, timezone.
 - Enrol the device with its server.
@@ -250,7 +264,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Milestones
 
-1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and watching the device print it. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other and standing in for the Iti's screen. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
 2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
 3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
 4. **A native app.** Android or iOS, once the protocol has stopped moving. This is also the earliest point a wake beacon can exist, since Web Bluetooth cannot advertise — and therefore the earliest the device can stop advertising continuously.
@@ -274,4 +288,6 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 - Repeated failed handshakes must leave the device reachable by a legitimate operator, and must not be able to fill the disk with logs.
 - Two advertisements from the same device across a salt roll must not be linkable without the sticker secret, and a scanner holding the secret must recognise both.
 - Handle collision between two devices in range.
+- Address reporting on a device with several interfaces, with IPv6, and with none up at all; loopback and link-local must not appear.
+- An address change while a client is connected reaches it without the client asking.
 - BlueZ-level testing against a virtual controller is possible but heavy; the protocol core should not need it.
