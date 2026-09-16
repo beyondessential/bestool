@@ -432,7 +432,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 ## Open questions
 
 - [x] Whether a board with no strong source — no TPM, no burnt OTP, only its platform serials — is shippable at all, or is refused the way non-unique hardware is. **Answered: shippable, because devices already in the field have nothing else.** The derivation is therefore sized against that case, and those boards carry a weaker guarantee that the threat model states rather than hides. See "Boards with only their serial numbers".
-- [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor. Sized for the weakest source we ship, which the answered question above fixes as the platform serials. Reference figures on a 12-core x86 desktop, argon2id with a 32-byte output at four lanes: 512 MiB costs 0.13 s at one pass and 0.30 s at three; 1 GiB costs 0.26 s and 0.60 s; 2 GiB costs 0.67 s and 1.37 s. Argon2 is memory-bandwidth bound, so a Pi 5 on LPDDR4X will be several times slower, and the figure that matters is the Pi one.
+- [x] argon2id parameters, measured on a Pi 5. **Answered: 2 GiB, one pass, two lanes**, costing 2.4 s on that board. Four lanes are slower than two there, and concurrency was verified not to change the digest. See "Measured parameters".
 - [x] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep. **Answered: it is not configurable through `bluer` at all, and lockstep is unavailable — the daemon has no supported way to observe the controller rolling its address.** Address privacy is a documented host requirement; the device rolls the salt and the guarantee narrows to which device rather than same device. See "Tracking resistance".
 - [x] Salt rotation period. **Answered: fifteen minutes.**
 - [x] Does `yamux` build for `wasm32-unknown-unknown`? The web page depends on it, and the answer decides between adopting it and hand-rolling the stream layer. **Answered: yes, and it is adopted.** See "Streams, and why not QUIC".
@@ -453,3 +453,8 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 - Address reporting on a device with several interfaces, with IPv6, and with none up at all; loopback and link-local must not appear.
 - An address change while a client is connected reaches it without the client asking.
 - BlueZ-level testing against a virtual controller is possible but heavy; the protocol core should not need it.
+- Deriving on a board without room for it: the daemon reports that there is not enough memory rather than being killed by the kernel. The failure is a kill by signal with nothing to catch, so a test that only checks the happy path will not see it.
+- The advertisement and scan response together carry the service UUID, handle, salt, and version within the legacy 31-byte limit of each, with a 128-bit service UUID in the advertisement where scan filtering can see it.
+- Both payloads carry the version marker, and a device presented with a version it does not support says so rather than failing to match silently.
+- Precedence picks the same source on the device as it did in the generator, including the case where a source is present but reads as a sentinel and must be skipped.
+- A board that gains a stronger source derives a different secret, and the device reports that its sticker no longer matches rather than advertising a handle nobody can match.
