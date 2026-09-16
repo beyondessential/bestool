@@ -44,10 +44,10 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Device facts
 
-- [ ] Addresses are reported on a device with several interfaces, with addresses of more than one family, and with none up at all (verifies spec: BLI-DEV)
-- [ ] Loopback and link-local addresses do not appear, and each reported address carries its interface (verifies spec: BLI-DEV)
-- [ ] An address changing while a client is connected reaches that client without it asking (verifies spec: BLI-DEV)
-- [ ] Text sent from a client appears on the device's standard output, and in the system log once it runs as a service (verifies spec: BLI-DEV)
+- [ ] Addresses are reported on a device with several interfaces, with addresses of more than one family, and with none up at all
+- [ ] Loopback and link-local addresses do not appear, and each reported address carries its interface
+- [ ] An address changing while a client is connected reaches that client without it asking
+- [ ] Text sent from a client appears on the device's standard output, and in the system log once it runs as a service
 
 ## Sticker
 

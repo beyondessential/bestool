@@ -24,7 +24,6 @@ What is printed on the sticker, and how one is generated, is specified in [BLI-S
 
 A client scans the sticker, recomputes the handle, and matches it against what it hears, as specified in [BLI-ADV](discovery.md).
 Client and device then authenticate to each other and open a channel, as specified in [BLI-CHN](channel.md).
-What a device reports about itself over that channel is specified in [BLI-DEV](device-facts.md).
 
 There is no fleet key and no authoritative per-device record.
 The whole chain is reproducible from the board alone, at manufacture or at any time after, so a sticker can be reprinted from the device itself rather than from a record of what was issued.
