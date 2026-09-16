@@ -54,7 +54,21 @@ How much entropy each source actually carries is a question to settle against th
 
 Measured on a Dell G7 7700, the SMBIOS UUID is `4c4c4544-0042-4710-804d-b3c04f485832` and carries nothing like 128 bits. The leading four bytes are the ASCII marker `LLED`, and six of the seven characters of the service tag `3BGMHX2` appear verbatim as ASCII bytes in the remainder. The UUID is a formatting of the service tag, whose space is about 36^7, or roughly 2^36 — and less than that in practice, since service tags are not uniformly random. The worst case in the paragraph above is not hypothetical: it is the first machine we looked at.
 
-**Decided: the board ID combines every firmware identifier present rather than a single field.** On that same Dell, `board_serial` is `/3BGMHX2/CNPEC0034A0227/`, whose manufacturing code carries entropy the UUID does not; a vendor that wastes one source then does not collapse the whole space. The cost is that the set of sources and the order they are combined in become part of the derivation, fixed as firmly as the constants are — changing either orphans every sticker already printed. So the order is defined once, by source, with absent sources represented rather than skipped, so that a machine that later gains a source does not derive a different secret from the one on its sticker.
+**Decided: the board ID is the strongest source available, under a fixed precedence, rather than a combination of all of them.**
+
+Combining was the earlier answer, on the reasoning that if no single source can be trusted then pooling them is the best available move. A TPM Endorsement Key on UEFI machines and burnt customer OTP on Raspberry Pi both carry 256 bits, and once such a source is in hand, combining a weak one alongside it adds nothing measurable while making that weak source load-bearing. Every source in a combination is a way for the board ID to change, and a board ID that changes orphans a sticker that is already on an enclosure.
+
+The precedence is by **kind of source, not by platform**: TPM Endorsement Key, then provisioned OTP, then the platform's serial numbers. Keying it to the kind rather than the board means a Raspberry Pi that later gains a TPM over SPI needs no new rule — it simply has a stronger source than it had before. It also means the device and the sticker generator reach the same answer without being told which they are, since the precedence is evaluated against what is actually present.
+
+The corollary is the thing to be careful about. Adding a stronger source to a board that already wears a sticker changes which source wins, and so changes the secret: fitting a TPM to a deployed Pi, or burning OTP after the fact, orphans that board's sticker. A hardware change of that kind means a reprint, and the device should be able to say that is what happened rather than leaving an operator to discover it by a scan that never matches.
+
+#### Refusing to derive from hardware that is not unique
+
+bliti targets bare metal. Rather than keeping a record of board IDs already issued — which would reintroduce exactly the per-device state the design exists to avoid — the device refuses to derive when the hardware itself says it is not a unique physical machine.
+
+Three signals are available without any record. The system reports whether it is virtualised at all, and a virtual machine is refused outright, since a software TPM inherits its seed from the image it was cloned from and would hand every clone the same secret. A TPM identifies its manufacturer, and a software implementation says so. And a chosen source that reads as a sentinel — all zeros, all ones, or a known vendor constant — is not an identity, whatever its nominal width; unburnt OTP reads as zeros and must be rejected on exactly this ground rather than hashed as though it were a value.
+
+Refusing loudly is the required behaviour in all three cases. Deriving anyway would produce a sticker secret that some other machine also holds, which is worse than not provisioning at all, and silent about it.
 
 #### The TPM on UEFI machines
 
