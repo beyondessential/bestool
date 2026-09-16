@@ -24,7 +24,11 @@ A human-readable rendering of the payload is printed beneath the QR code, so a s
 
 ## Generation
 
-A sticker is generated from a board ID, either by reading it from the board itself or from a manifest of board IDs.
+A sticker is generated from a board ID, read either from the board in front of the generator or from a list of board IDs gathered beforehand.
+
+Whether such a list can be gathered before the boards are to hand depends on which source won the precedence in [BLI-BID](board-id.md).
+A platform serial number can be known without the board present.
+A board ID taken from a TPM Endorsement Key, or from written one-time-programmable memory, is readable only from the board itself, so stickers for those boards are generated with the board to hand.
 
 The same sticker is produced every time from the same board, so a damaged sticker is replaced by generating it again rather than by consulting a record of what was issued.
 

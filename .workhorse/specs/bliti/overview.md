@@ -27,7 +27,7 @@ Client and device then authenticate to each other and open a channel, as specifi
 What a device reports about itself over that channel is specified in [BLI-DEV](device-facts.md).
 
 There is no fleet key and no authoritative per-device record.
-The whole chain is reproducible from the board alone, at manufacture or at any time after, so a sticker can be reprinted from the device itself and stickers can be generated in bulk from a manifest of board IDs.
+The whole chain is reproducible from the board alone, at manufacture or at any time after, so a sticker can be reprinted from the device itself rather than from a record of what was issued.
 Anything a device stores about its own identity is a cache it can rebuild.
 
 ## What the guarantees are

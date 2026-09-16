@@ -46,9 +46,9 @@ The device reads a stable, firmware-provided identifier for the board it is runn
 - **UEFI/SMBIOS**: the SMBIOS System UUID (`/sys/class/dmi/id/product_uuid`), 128-bit. Root-only on Linux, which is fine for a daemon that already needs root for NetworkManager and BlueZ. Board serial and product serial are siblings worth considering as fallbacks.
 - **Neither present**: containers and some VMs expose no DMI and no device tree — the environment this doc was drafted in has neither. The behaviour when no board ID can be read has to be defined rather than left to a panic.
 
-The board ID is **not a secret**. Any software on the box can read it and it is printed on shipping manifests. Nothing in the scheme may depend on it staying hidden — only on it being expensive to *search for*, which is a different property and is handled at the derivation step.
+The board ID is **not a secret**. Any software on the box can read it. Nothing in the scheme may depend on it staying hidden — only on it being expensive to *search for*, which is a different property and is handled at the derivation step.
 
-Its job is to make the sticker secret *reproducible*: the same sticker can be regenerated from the board alone — reprinted after damage, or generated in bulk from a manifest of board IDs — with no per-device database and nothing to keep in sync.
+Its job is to make the sticker secret *reproducible*: the same sticker can be regenerated from the board alone, reprinted after damage, with no per-device database and nothing to keep in sync. Generating ahead of the boards needs their board IDs gathered first, which is possible for a platform serial number but not for a TPM Endorsement Key or written OTP — those read only off the board.
 
 How much entropy each source actually carries is a question to settle against the boards we ship rather than assume. The SMBIOS UUID is 128 bits but some vendors ship a constant, a zeroed, or a MAC-derived value. Raspberry Pi serials are 64-bit on Pi 4 and 5, but on earlier boards the high half is zero and the value is effectively a 32-bit OTP word.
 
