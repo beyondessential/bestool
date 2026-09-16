@@ -86,6 +86,26 @@ impl StickerPayload {
 			.join("-")
 	}
 
+	/// Read a sticker however it was given: the URL a code encodes, the fragment alone, or the
+	/// rendering printed beneath the code.
+	///
+	/// A sticker that parses but carries a version this build does not support is reported as that,
+	/// not as an unreadable one (BLI-WEB): the forms are tried in turn, and a version complaint from
+	/// any of them outranks the failures of the others, which would otherwise bury it. Reading the
+	/// three forms in one place is also what keeps every client agreeing on what a sticker is.
+	pub fn read(text: &str) -> Result<Self, StickerError> {
+		let text = text.trim();
+		let mut unsupported = None;
+		for form in [Self::from_url, Self::from_fragment, Self::from_human] {
+			match form(text) {
+				Ok(payload) => return Ok(payload),
+				Err(StickerError::UnsupportedVersion(version)) => unsupported = Some(version),
+				Err(StickerError::Malformed) => {}
+			}
+		}
+		Err(unsupported.map_or(StickerError::Malformed, StickerError::UnsupportedVersion))
+	}
+
 	/// Read a payload from raw bytes: the version marker followed by the secret.
 	///
 	/// A version the current build does not support is reported as such, distinctly from a payload
@@ -224,6 +244,41 @@ mod tests {
 		assert_eq!(
 			StickerPayload::from_fragment(&payload.to_fragment()).unwrap(),
 			StickerPayload::from_human(&payload.to_human()).unwrap()
+		);
+	}
+
+	#[test]
+	fn read_takes_every_form_a_sticker_arrives_in() {
+		let payload = sample();
+		for form in [
+			payload.to_url(),
+			payload.to_fragment(),
+			payload.to_human(),
+			format!("  {}  ", payload.to_human()),
+		] {
+			assert_eq!(StickerPayload::read(&form).unwrap(), payload);
+		}
+	}
+
+	#[test]
+	fn read_reports_an_unsupported_version_rather_than_an_unreadable_sticker() {
+		// A sticker at a version this build does not hold parses as one of the forms and fails the
+		// others; the version complaint has to survive that, or a client cannot tell a device it
+		// cannot speak to from a code that is not a sticker at all (BLI-WEB).
+		let mut bytes = sample().to_bytes();
+		bytes[0] = 2;
+		let fragment = BASE32_NOPAD.encode(&bytes);
+		let url = format!("{STICKER_URL_BASE}#{fragment}");
+		for form in [url, fragment] {
+			assert_eq!(
+				StickerPayload::read(&form),
+				Err(StickerError::UnsupportedVersion(2))
+			);
+		}
+		// And something that is not a sticker at all still says so.
+		assert_eq!(
+			StickerPayload::read("not a sticker"),
+			Err(StickerError::Malformed)
 		);
 	}
 

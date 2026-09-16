@@ -173,6 +173,7 @@ async function send() {
 // and re-entering the application for each one.
 async function scan() {
 	const video = $('preview');
+	$('read-error').textContent = '';
 	let stream;
 	try {
 		stream = await navigator.mediaDevices.getUserMedia({
@@ -184,6 +185,7 @@ async function scan() {
 	}
 
 	const detector = new BarcodeDetector({ formats: ['qr_code'] });
+	let rejected = null;
 	video.hidden = false;
 	video.srcObject = stream;
 	await video.play();
@@ -207,8 +209,16 @@ async function scan() {
 				stop();
 				stickerRead(sticker);
 				return;
-			} catch {
-				// A code that is not a bliti sticker: keep looking rather than stopping on it.
+			} catch (error) {
+				// A code that is not a bliti sticker does not stop the camera, because the next thing
+				// in frame may well be one. But it is reported: saying nothing is indistinguishable
+				// from a code the camera cannot read at all, which leaves the operator holding a
+				// sticker up to a camera that looks broken. Reported once per code rather than on
+				// every frame it stays in view.
+				if (code.rawValue !== rejected) {
+					rejected = code.rawValue;
+					$('read-error').textContent = error.message ?? String(error);
+				}
 			}
 		}
 		await new Promise((resolve) => setTimeout(resolve, 200));

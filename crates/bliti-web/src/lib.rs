@@ -74,11 +74,13 @@ impl Sticker {
 	/// payload that parses as none of them is reported as unreadable.
 	#[wasm_bindgen(constructor)]
 	pub fn new(text: &str) -> Result<Sticker, JsError> {
-		let text = text.trim();
-		let payload = StickerPayload::from_url(text)
-			.or_else(|_| StickerPayload::from_fragment(text))
-			.or_else(|_| StickerPayload::from_human(text))
-			.map_err(|err| JsError::new(&format!("this is not a bliti sticker: {err}")))?;
+		use bliti_core::sticker::StickerError;
+		let payload = StickerPayload::read(text).map_err(|err| match err {
+			StickerError::UnsupportedVersion(version) => JsError::new(&format!(
+				"That sticker is bliti version {version}, which this app does not read."
+			)),
+			StickerError::Malformed => JsError::new("That is not a bliti sticker."),
+		})?;
 		Ok(Self { payload })
 	}
 

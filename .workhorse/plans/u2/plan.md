@@ -216,6 +216,21 @@ The fragment is now exactly the rendering printed beneath the code with its grou
 sticker carries one alphabet rather than two, and reading the fragment and reading the rendering are
 the same operation.
 
+**A code the camera read but could not use said nothing at all.** The scanning loop swallowed every
+rejection so that pointing the camera at some other QR code in the room would not stop the scan, and
+the effect was that holding up a sticker the application could not read looked exactly like a camera
+that could not focus. Rejections are now reported, once per code rather than once per frame, and the
+camera keeps looking. The message sits above the preview rather than below it, where a phone screen
+would have pushed it out of view.
+
+Chasing that turned up a second fault behind it. Every client read a sticker by trying the URL, then
+the fragment, then the printed rendering, taking the first that parsed — which meant a sticker
+carrying a version the client does not support was reported as not being a sticker at all, because
+the version complaint from the first form was buried by the parse failures of the other two. BLI-WEB
+requires those two be told apart, and the core was careful to distinguish them; the readers threw it
+away. Reading the three forms now lives in `StickerPayload::read` in the core, where a version
+complaint outranks a parse failure, and both the command-line client and the browser use it.
+
 **Nothing distinguishes the device in the chooser.** It appears under its rotating handle, which is a
 jumble of letters by design, so an operator has no way to tell it is the right one and no reason to
 trust it. The application now says so before the chooser opens: the device appears as a jumble of

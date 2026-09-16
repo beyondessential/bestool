@@ -173,10 +173,7 @@ async fn daemon(cache: &std::path::Path, adapter: Option<&str>) -> Result<()> {
 /// Read a sticker however it was given: the URL a code encodes, its fragment alone, or the
 /// human-readable rendering printed beneath the code. All three carry the same payload.
 fn read_sticker(given: &str) -> Result<bliti_core::sticker::StickerPayload> {
-	use bliti_core::sticker::StickerPayload;
-	StickerPayload::from_url(given)
-		.or_else(|_| StickerPayload::from_fragment(given))
-		.or_else(|_| StickerPayload::from_human(given))
+	bliti_core::sticker::StickerPayload::read(given)
 		.into_diagnostic()
 		.wrap_err("reading the sticker")
 }
