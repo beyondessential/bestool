@@ -6,31 +6,31 @@ An unticked case is coverage still owed, not an optional extra.
 ## Board ID
 
 - [ ] The SMBIOS path derives end to end without Raspberry Pi hardware, on a UEFI machine or CI runner that has a system UUID (verifies spec: BLI-BID)
-- [ ] A board ID override is available for tests, so the chain can be exercised against known inputs (verifies spec: BLI-BID)
-- [ ] Precedence selects the same source on the device as in the generator, for each combination of sources present (verifies spec: BLI-BID)
-- [ ] A source present but reading as all zeros, all ones, or a known vendor constant is skipped, and precedence falls through to the next (verifies spec: BLI-BID)
-- [ ] Unwritten one-time-programmable memory falls through to the serial number rather than deriving from zeros (verifies spec: BLI-BID)
-- [ ] Reaching the end of the precedence with no usable source fails and reports on standard error, rather than deriving from a placeholder (verifies spec: BLI-BID)
+- [x] A board ID override is available for tests, so the chain can be exercised against known inputs (verifies spec: BLI-BID)
+- [x] Precedence selects the same source on the device as in the generator, for each combination of sources present (verifies spec: BLI-BID)
+- [x] A source present but reading as all zeros, all ones, or a known vendor constant is skipped, and precedence falls through to the next (verifies spec: BLI-BID)
+- [x] Unwritten one-time-programmable memory falls through to the serial number rather than deriving from zeros (verifies spec: BLI-BID)
+- [x] Reaching the end of the precedence with no usable source fails, rather than deriving from a placeholder (verifies spec: BLI-BID) — the core returns a no-usable-source failure; surfacing it on standard error is daemon work
 - [ ] The Endorsement Key is regenerated from the seed and the pinned template rather than read from a persistent handle, and gives the same value on a machine where no handle has been persisted (verifies spec: BLI-BID)
-- [ ] Probing for presence reads no source value, so a board carrying a TPM is probed without a key generation inside it (verifies spec: BLI-BID)
+- [x] Probing for presence reads no source value, so a board carrying a TPM is probed without a key generation inside it (verifies spec: BLI-BID)
 
 ## Identity changes
 
-- [ ] A board whose platform serial is unchanged, but whose strongest present source is now stronger than the one it last derived from, reports that its sticker is dead rather than advertising a handle nobody can match (verifies spec: BLI-BID)
-- [ ] A disk moved into another enclosure derives from the board it now sits on, matches the sticker already fixed to that enclosure, and reports nothing (verifies spec: BLI-BID)
-- [ ] A board offering no platform serial reports any change in its board ID (verifies spec: BLI-BID)
+- [x] A board whose platform serial is unchanged, but whose strongest present source is now stronger than the one it last derived from, reports that its sticker is dead rather than advertising a handle nobody can match (verifies spec: BLI-BID)
+- [x] A disk moved into another enclosure derives from the board it now sits on, matches the sticker already fixed to that enclosure, and reports nothing (verifies spec: BLI-BID)
+- [x] A board offering no platform serial reports any change in its board ID (verifies spec: BLI-BID)
 
 ## Key schedule
 
-- [ ] Known-answer tests pin both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed (verifies spec: BLI-KEY)
-- [ ] The derivation input is a source tag byte followed by the raw bytes of the source value, and a serial derived from its characters gives a different secret from the bytes those characters denote (verifies spec: BLI-KEY)
-- [ ] Two sources holding byte-identical values derive different secrets, because their tags differ (verifies spec: BLI-KEY)
+- [x] Known-answer tests pin both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed (verifies spec: BLI-KEY)
+- [x] The derivation input is a source tag byte followed by the raw bytes of the source value, and a serial derived from its characters gives a different secret from the bytes those characters denote (verifies spec: BLI-KEY)
+- [x] Two sources holding byte-identical values derive different secrets, because their tags differ (verifies spec: BLI-KEY)
 - [ ] The sticker secret is identical whether argon2 lanes are computed concurrently or in sequence (verifies spec: BLI-KEY)
-- [ ] The derivation is timed on the slowest board in scope, since it sits on the provisioning path (verifies spec: BLI-KEY)
-- [ ] A device without room for the derivation reports insufficient memory rather than being killed part-way through with nothing reported (verifies spec: BLI-KEY)
-- [ ] A start where the platform serial and the strongest kind of source present both match the cache runs no derivation and reads no source value (verifies spec: BLI-KEY)
-- [ ] The cache is rebuilt where it is absent, and where the comparison against the board fails (verifies spec: BLI-KEY)
-- [ ] The handle is eight bytes (verifies spec: BLI-KEY)
+- [ ] The derivation is timed on the slowest board in scope, since it sits on the provisioning path (verifies spec: BLI-KEY) — measured ~20s single-threaded on a desktop; on-device timing pending the daemon's cross-compiled binary
+- [x] A device without room for the derivation reports insufficient memory rather than being killed part-way through with nothing reported (verifies spec: BLI-KEY)
+- [x] A start where the platform serial and the strongest kind of source present both match the cache runs no derivation and reads no source value (verifies spec: BLI-KEY)
+- [x] The cache is rebuilt where it is absent, and where the comparison against the board fails (verifies spec: BLI-KEY)
+- [x] The handle is eight bytes (verifies spec: BLI-KEY)
 
 ## Entropy of the sources
 
@@ -48,11 +48,11 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Channel
 
-- [ ] The full handshake and a message exchange run over an in-memory duplex transport, with no BLE involved (verifies spec: BLI-CHN)
-- [ ] Streams open from each end, in both directions, concurrently, and while another is mid-transfer (verifies spec: BLI-CHN)
-- [ ] A stream closed by one end leaves the other streams and the connection alive (verifies spec: BLI-CHN)
-- [ ] A message a device does not understand is reported rather than closing the channel (verifies spec: BLI-CHN)
-- [ ] Negative cases are pinned: wrong sticker secret, replayed advertisement, replayed handshake, truncated frames, and a peer that authenticates and then sends garbage (verifies spec: BLI-CHN)
+- [x] The full handshake and a message exchange run over an in-memory transport, with no BLE involved (verifies spec: BLI-CHN)
+- [x] Streams open from each end, in both directions, concurrently, and while another is mid-transfer (verifies spec: BLI-CHN)
+- [x] A stream closed by one end leaves the other streams and the connection alive (verifies spec: BLI-CHN)
+- [x] A message a device does not understand is reported rather than closing the channel (verifies spec: BLI-CHN)
+- [ ] Negative cases are pinned: wrong sticker secret, replayed advertisement, replayed handshake, truncated frames, and a peer that authenticates and then sends garbage (verifies spec: BLI-CHN) — wrong secret, transport-message replay, and tamper are pinned; replayed advertisement and replayed handshake await the daemon
 
 ## Web application
 
@@ -72,10 +72,10 @@ An unticked case is coverage still owed, not an optional extra.
 
 ## Sticker
 
-- [ ] The same board produces the same payload every time (verifies spec: BLI-STK)
-- [ ] A damaged sticker is replaced by reprinting the payload recovered from the code or from the rendering beneath it, with no record of what was issued consulted (verifies spec: BLI-STK)
-- [ ] The QR payload contains the sticker secret and version and does not contain the board ID (verifies spec: BLI-STK)
-- [ ] The human-readable rendering beneath the code reproduces the payload, and is usable when the code itself cannot be scanned (verifies spec: BLI-STK)
+- [x] The same board produces the same payload every time (verifies spec: BLI-STK)
+- [x] A damaged sticker is replaced by reprinting the payload recovered from the code or from the rendering beneath it, with no record of what was issued consulted (verifies spec: BLI-STK)
+- [x] The QR payload contains the sticker secret and version and does not contain the board ID (verifies spec: BLI-STK)
+- [x] The human-readable rendering beneath the code reproduces the payload, and is usable when the code itself cannot be scanned (verifies spec: BLI-STK)
 - [ ] Generation is refused for a board with no usable source (verifies spec: BLI-STK)
 
 ## End to end

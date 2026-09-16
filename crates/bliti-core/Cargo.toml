@@ -1,0 +1,48 @@
+[package]
+name = "bliti-core"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85.0"
+resolver = "2"
+
+authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
+license = "GPL-3.0-or-later"
+description = "Protocol core for bliti, the QR-anchored BLE device provisioning protocol"
+keywords = ["bliti", "ble", "provisioning", "noise", "argon2"]
+categories = ["embedded", "network-programming", "cryptography"]
+repository = "https://github.com/beyondessential/bestool"
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["derive", "backends"]
+# Memory-hard sticker-secret derivation (argon2id). Needed by the device and the
+# sticker generator, never by a client, and deliberately absent from wasm builds.
+derive = ["dep:argon2"]
+# Board-ID backends that read real hardware and firmware. Off for wasm, which has
+# no filesystem and never reads a board ID.
+backends = []
+
+[dependencies]
+argon2 = { version = "0.6.0", optional = true }
+blake3 = { version = "1.8.7", default-features = false }
+data-encoding = "2.11.1"
+futures.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# default-features off to keep snow's `std` feature from pulling in `ring`, which is unused (the
+# pure-Rust resolver is selected below) and does not belong in a wasm build.
+snow = { version = "0.10.0", default-features = false, features = [
+	"default-resolver",
+	"default-resolver-crypto",
+] }
+thiserror.workspace = true
+uuid = { version = "1.26.1", default-features = false }
+yamux = "0.14.0"
+
+[dev-dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "sync"] }
+tokio-util = { workspace = true, features = ["compat"] }

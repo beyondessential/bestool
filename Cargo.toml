@@ -4,6 +4,7 @@ members = [
 	"crates/alertd",
 	"crates/algae-cli",
 	"crates/bestool",
+	"crates/bliti-core",
 	"crates/canopy",
 	"crates/improv-wifi",
 	"crates/kopia",

@@ -85,21 +85,33 @@ Advertising only in a window, and waking a quiet device over the air, are carrie
 
 ## Build order
 
-- [ ] Board ID backends behind a trait: Raspberry Pi serial, SMBIOS, TPM Endorsement Key, one-time-programmable memory, and a test backend
-- [ ] Source precedence, sentinel rejection, and the failure when nothing is usable
-- [ ] Key schedule: both derivations, the version marker, and known-answer tests pinning them
-- [ ] Sticker secret caching: the cached board ID, platform serial and source kind, the cheap comparison against the board at start, and the pre-flight memory check
-- [ ] Sticker generation, QR payload encoding, and the human-readable rendering
-- [ ] Noise `NNpsk0` handshake over an in-memory transport
-- [ ] Framing and reassembly
-- [ ] Stream layer over the framed transport
-- [ ] JSON message types
+Implementation began with the protocol core crate (`crates/bliti-core`): the derivation chain,
+the sticker payload, and the channel. It is pure, unit-tests without hardware or BlueZ, and is the
+layer the daemon and the web application both build on. The concrete TPM and OTP board-ID backends
+are held back until their byte encoding is verified on the hardware to be shipped, because that
+encoding is versioned into every sticker (see Outstanding risks); the framework selects whichever
+backends are registered, so they slot in without disturbing the schedule.
+
+- [x] Board ID trait, the test backend, and the Raspberry Pi serial and SMBIOS backends (RPi read verified against the prototype's device-tree serial)
+- [ ] TPM Endorsement Key and one-time-programmable backends — deferred pending on-hardware verification of their versioned byte encoding; the prototype has no TPM
+- [x] Source precedence, sentinel rejection, and the failure when nothing is usable
+- [x] Key schedule: both derivations, the version marker, and known-answer tests pinning them (handle and sticker-secret wiring always-on; the full 2 GiB production vector pinned as an ignored test)
+- [x] Sticker cache logic: the cached board ID, platform serial and source kind, and the cheap comparison against the board at start (`board_id::evaluate_cache`), plus the pre-flight memory check (`key_schedule::check_memory`). On-disk persistence of the cache is daemon work
+- [x] Sticker payload encoding (fragment and human-readable rendering) and the QR URL. Rendering the QR *image* is daemon work
+- [x] Noise `NNpsk0` handshake, tested with wrong-secret, replay, and tamper cases
+- [x] Framing and reassembly
+- [x] Stream layer over the framed transport: the `NoiseStream` encrypt/frame adapter (any `AsyncRead + AsyncWrite`), yamux multiplexing with a runtime-agnostic driver, and the handshake-over-transport helpers. Tested end to end over an in-memory duplex: bidirectional exchange, streams opened from each end, and one stream closing while others stay alive
+- [x] JSON message types, including the unknown-message reply that keeps the channel open
 - [ ] GATT server and characteristics via `bluer`
 - [ ] Advertisement and scan response construction within the 31-byte budgets, with salt rotation
 - [ ] Daemon tying it together, running as a systemd service; the unit sets no stream directives, so both streams reach the journal by default as in the other units here
 - [ ] Address and hostname reporting, including unsolicited sending on change
 - [ ] Text echo to standard output
 - [ ] Web application: fragment reading, camera capture, scan and match, handshake, and both directions
+
+The core also compiles for `wasm32-unknown-unknown` with `--no-default-features` (verified), which is
+what lets the web application share the key schedule and handshake; a wasm consumer enables
+`getrandom`'s wasm backend, as any wasm crate depending on `snow` does.
 
 ## Development affordances
 
