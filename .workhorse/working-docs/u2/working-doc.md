@@ -62,14 +62,6 @@ The precedence is by **kind of source, not by platform**: TPM Endorsement Key, t
 
 The corollary is the thing to be careful about. Adding a stronger source to a board that already wears a sticker changes which source wins, and so changes the secret: fitting a TPM to a deployed Pi, or burning OTP after the fact, orphans that board's sticker. A hardware change of that kind means a reprint, and the device should be able to say that is what happened rather than leaving an operator to discover it by a scan that never matches.
 
-#### Refusing to derive from hardware that is not unique
-
-bliti targets bare metal. Rather than keeping a record of board IDs already issued — which would reintroduce exactly the per-device state the design exists to avoid — the device refuses to derive when the hardware itself says it is not a unique physical machine.
-
-Three signals are available without any record. The system reports whether it is virtualised at all, and a virtual machine is refused outright, since a software TPM inherits its seed from the image it was cloned from and would hand every clone the same secret. A TPM identifies its manufacturer, and a software implementation says so. And a chosen source that reads as a sentinel — all zeros, all ones, or a known vendor constant — is not an identity, whatever its nominal width; unburnt OTP reads as zeros and must be rejected on exactly this ground rather than hashed as though it were a value.
-
-Refusing loudly is the required behaviour in all three cases. Deriving anyway would produce a sticker secret that some other machine also holds, which is worse than not provisioning at all, and silent about it.
-
 #### The TPM on UEFI machines
 
 A PC-grade box can be assumed to carry a TPM 2.0, and it holds a far better identifier than anything in SMBIOS. The Endorsement Key is generated from the Endorsement Primary Seed under a standard, published template, so it is the same key every time it is asked for. Its *name* — the hash algorithm identifier followed by the SHA-256 digest of the public area — is a compact fixed-length value carrying the full entropy of a real 2048-bit RSA public key, and it is readable without authorisation.
@@ -97,6 +89,14 @@ Two consequences, both about ordering and neither optional.
 Blank OTP reads as zeros, which is a sentinel rather than a value, so an unburnt board must fall through to the next source rather than derive 256 bits of zero. This is the same rule as refusing hardware that is not unique, applied to a source rather than a machine.
 
 And the burn has to happen before the secret is derived and the sticker printed. Burning afterwards promotes OTP above the serial the sticker was derived from, which silently orphans it — and because OTP is irreversible there is no putting it back. The board then wears a sticker that no longer matches it until someone reprints.
+
+#### Refusing to derive from hardware that is not unique
+
+bliti targets bare metal. Rather than keeping a record of board IDs already issued — which would reintroduce exactly the per-device state the design exists to avoid — the device refuses to derive when the hardware itself says it is not a unique physical machine.
+
+Three signals are available without any record. The system reports whether it is virtualised at all, and a virtual machine is refused outright, since a software TPM inherits its seed from the image it was cloned from and would hand every clone the same secret. A TPM identifies its manufacturer, and a software implementation says so. And a chosen source that reads as a sentinel — all zeros, all ones, or a known vendor constant — is not an identity, whatever its nominal width; unburnt OTP reads as zeros and must be rejected on exactly this ground rather than hashed as though it were a value.
+
+Refusing loudly is the required behaviour in all three cases. Deriving anyway would produce a sticker secret that some other machine also holds, which is worse than not provisioning at all, and silent about it.
 
 ### Sticker secret
 
