@@ -8,7 +8,7 @@ The board ID is the firmware-provided identifier that every other value in [BLI]
 Its job is to make the sticker secret reproducible: the same sticker can be regenerated from the board alone, with no per-device database to keep in sync.
 
 The board ID is not a secret.
-Any software on the device can read it, and it appears on shipping manifests.
+Any software on the device can read it.
 Nothing depends on it staying hidden, only on it being expensive to search for, which is a property of its size and of the derivation in [BLI-KEY](key-schedule.md).
 
 ## Choosing a source
