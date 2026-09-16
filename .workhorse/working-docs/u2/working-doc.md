@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # bliti: QR-anchored BLE device provisioning

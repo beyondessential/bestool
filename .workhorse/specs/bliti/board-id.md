@@ -1,0 +1,68 @@
+---
+id: BLI-BID
+---
+
+# Board ID
+
+The board ID is the firmware-provided identifier that every other value in [BLI](overview.md) descends from.
+Its job is to make the sticker secret reproducible: the same sticker can be regenerated from the board alone, with no per-device database to keep in sync.
+
+The board ID is not a secret.
+Any software on the device can read it, and it appears on shipping manifests.
+Nothing depends on it staying hidden, only on it being expensive to search for, which is a property of its size and of the derivation in [BLI-KEY](key-schedule.md).
+
+## Choosing a source
+
+A board offers more than one candidate identifier, and the board ID is the strongest one present rather than a combination of them.
+
+The precedence, strongest first, is the TPM Endorsement Key, then provisioned one-time-programmable memory, then the platform's serial numbers.
+Precedence is evaluated by kind of source rather than by platform, so a board gains a stronger source simply by having the hardware for it, and no rule names a particular model.
+
+The device and the sticker generator evaluate the same precedence against the same board and therefore select the same source, without either being told which kind of machine it is running on.
+
+Combining sources is not done.
+Each source in a combination would be a way for the board ID to change, and a board ID that changes orphans a sticker already fixed to an enclosure.
+
+### TPM Endorsement Key
+
+Where a TPM 2.0 is present, the board ID is the name of its Endorsement Key: the hash algorithm identifier followed by the digest of the key's public area.
+
+The key is the one generated from the endorsement seed under the TCG low-range RSA 2048 template.
+A TPM holds one Endorsement Key per algorithm, so naming the algorithm is part of the derivation rather than an implementation choice, and changing it re-derives every board ID taken under the old one.
+
+The key is regenerated from the seed and the template rather than read from wherever provisioning software may have persisted it, because a persisted copy is not guaranteed to exist on a freshly imaged machine while the seed and the template always are.
+
+This source is available both on machines with a firmware TPM and on boards fitted with a discrete TPM over SPI.
+
+### Provisioned one-time-programmable memory
+
+Where the board carries customer-programmable one-time-programmable memory that has been written, its contents are the board ID.
+
+### Platform serial numbers
+
+Otherwise the board ID is the platform's own serial number: the device-tree serial on Raspberry Pi hardware, or the SMBIOS system UUID on UEFI machines.
+
+## Sources that carry no identity
+
+A source can be present and still hold no identity.
+A value reading as all zeros, as all ones, or as a known vendor constant is a placeholder whatever its nominal width, and deriving from it would give every board in the same position the same secret.
+
+Such a source is skipped and precedence falls through to the next one.
+Unwritten one-time-programmable memory is the ordinary case, reading as zeros on every unprogrammed board, and a board in that state derives from its serial number instead.
+
+Reaching the end of the precedence with no usable source is a failure, and the device reports it rather than deriving from a placeholder.
+
+## When the board ID changes
+
+Fitting hardware that carries a stronger source changes which source wins, and so changes the board ID and every value below it.
+A board that gains a TPM, or has its one-time-programmable memory written after its sticker was printed, no longer matches that sticker.
+
+The device reports that its identity no longer matches the sticker it was issued, rather than advertising a handle that no client can match.
+Recovering from this means printing a new sticker for that board.
+
+Because a board ID derived from a newly written source supersedes one derived from a serial number, writing that source is done before the sticker is derived and printed.
+
+## Hardware in scope
+
+bliti derives a board ID on physical machines.
+Detecting virtualised or cloned machines is not part of the system.
