@@ -104,7 +104,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	};
 
-	with_version(grade(&running, &offered.version), &running)
+	with_version(grade(&running, &offered), &running)
 }
 
 /// What the server's `reporting` schema says about itself.
@@ -117,20 +117,27 @@ pub async fn run(ctx: TamanuCx) -> Check {
 enum Stamp {
 	NoSchema,
 	Unstamped,
-	Version(Version),
+	Applied {
+		version: Version,
+		/// The digest canopy offered for the build that was applied, where the
+		/// schema was applied by this check. A schema built for a version says
+		/// nothing about which build of it this is, and a group gets a new
+		/// build of the version it already runs whenever its reports are fixed.
+		build: Option<String>,
+	},
 }
 
-/// Longest a stamp may be and still be a version. The comment is arbitrary
-/// text that anyone with COMMENT rights on the schema can set, and it is
-/// published to canopy as a status fact, so what is not plausibly a version is
-/// read as no stamp rather than carried.
-const MAX_STAMP_LEN: usize = 64;
+/// Longest a stamp may be and still be one. The comment is arbitrary text that
+/// anyone with COMMENT rights on the schema can set, and it is published to
+/// canopy as a status fact, so what is not plausibly a stamp is read as none
+/// rather than carried. A version and an SRI digest is 60-odd characters.
+const MAX_STAMP_LEN: usize = 128;
 
 /// Read what the server's `reporting` schema stamped on itself.
 async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres::Error> {
 	Ok(match db.query_opt(STAMP_SQL, &[]).await? {
 		Some(row) => match row.get::<_, Option<String>>("stamp").map(stamp_of) {
-			Some(Some(version)) => Stamp::Version(version),
+			Some(Some((version, build))) => Stamp::Applied { version, build },
 			Some(None) | None => Stamp::Unstamped,
 		},
 		// No `reporting` schema at all. Not an error: a server that has never
@@ -139,37 +146,59 @@ async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres
 	})
 }
 
-/// The version a schema comment names, where the comment is one.
+/// The version a schema comment names, and the build it names after it.
 ///
 /// The parsed version is what is kept, not the text: `v2.60.0` and `2.60.0`
 /// name the same schema, and a stamp compared as text would fail a server that
-/// has exactly the right one.
-fn stamp_of(comment: String) -> Option<Version> {
+/// has exactly the right one. The build is kept as written, since it is
+/// canopy's own digest string and is only ever compared with another of those.
+///
+/// A schema the builder stamped and nothing has applied yet carries the version
+/// alone, so the build is optional.
+fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 	let trimmed = comment.trim();
 	if trimmed.is_empty() || trimmed.len() > MAX_STAMP_LEN {
 		return None;
 	}
 
-	Version::parse(trimmed).ok()
+	let (version, build) = match trimmed.split_once(char::is_whitespace) {
+		Some((version, build)) => (version, Some(build.trim())),
+		None => (trimmed, None),
+	};
+
+	Some((
+		Version::parse(version).ok()?,
+		build.filter(|b| !b.is_empty()).map(str::to_owned),
+	))
 }
 
 /// What the stamp on the server says against what canopy offers.
 ///
 /// Separated from the sweep because this is the whole judgement the check
 /// makes, and it is worth being able to state it without a database.
-fn grade(running: &Stamp, offered: &Version) -> Check {
+fn grade(running: &Stamp, offered: &Offered) -> Check {
 	match running {
-		Stamp::Version(stamp) if stamp == offered => {
-			Check::pass(NAME, format!("reporting schema {stamp}"))
+		Stamp::Applied { version, build } if version == &offered.version => {
+			match (build, &offered.digest) {
+				(_, None) => Check::pass(NAME, format!("reporting schema {version}")),
+				(Some(build), Some(digest)) if build == digest => {
+					Check::pass(NAME, format!("reporting schema {version}"))
+				}
+				_ => Check::fail(
+					NAME,
+					format!("reporting schema {version}, a newer build offered"),
+					"the server's reports read from an earlier build of this version's schema",
+				),
+			}
 		}
-		Stamp::Version(stamp) => Check::fail(
+		Stamp::Applied { version, .. } => Check::fail(
 			NAME,
-			format!("reporting schema {stamp}, offered {offered}"),
+			format!("reporting schema {version}, offered {}", offered.version),
 			"the server's reports read from a schema built for a different version",
 		),
 		Stamp::Unstamped => Check::fail(
 			NAME,
-			format!("reporting schema unstamped, offered {offered}"),
+			format!("reporting schema unstamped, offered {}", offered.version),
 			"the server has a reporting schema that names no version, so what its \
 			 reports read from cannot be told apart from any other build",
 		),
@@ -185,7 +214,9 @@ fn grade(running: &Stamp, offered: &Version) -> Check {
 /// schema a server is on without reading into the check's own detail.
 fn with_version(check: Check, running: &Stamp) -> Check {
 	match running {
-		Stamp::Version(version) => {
+		// The version alone: which build of it a server has is this check's to
+		// grade, and canopy shows this fact as the schema a server is on.
+		Stamp::Applied { version, .. } => {
 			check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version.to_string()))
 		}
 		Stamp::NoSchema | Stamp::Unstamped => check,
@@ -198,6 +229,10 @@ struct Offered {
 	version: Version,
 	id: String,
 	download_url: String,
+	/// Canopy's digest of the bytes it holds. A rebuild of a pair re-registers
+	/// under the same artifact id, so this is what tells two builds of one
+	/// version apart.
+	digest: Option<String>,
 }
 
 /// How long an answer from canopy about what is offered is reused for.
@@ -252,6 +287,7 @@ async fn offered_schema(
 		version: version.clone(),
 		id: a.id.to_string(),
 		download_url: a.download_url,
+		digest: a.digest,
 	});
 
 	cache_offer(version, &offered);
@@ -391,7 +427,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	// already been applied and did not leave the stamp it should is not applied
 	// again. Retrying it rebuilds the schema on every backoff step, forever,
 	// with reports broken through each rebuild.
-	if applied_without_stamping(&offered.id) {
+	if applied_without_stamping(&applied_key(&offered)) {
 		tracing::warn!(
 			artifact = %offered.id,
 			"the offered reporting schema has already been applied without stamping its version"
@@ -416,8 +452,10 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	};
 
 	// The schema's own SQL drops and recreates it, so this is not additive and
-	// does not need to be made so here.
-	if let Err(err) = apply.batch_execute(&sql).await {
+	// does not need to be made so here. The build goes on in the same batch: a
+	// schema recorded as a build it is not would be graded as current and never
+	// replaced.
+	if let Err(err) = apply.batch_execute(&stamped(&sql, &offered)).await {
 		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
 		return HealOutcome::Failed;
 	}
@@ -426,7 +464,9 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	// the schema stamped as anything else has to report a failure: otherwise
 	// the schema is dropped and rebuilt on every interval, forever.
 	match read_stamp(&db).await {
-		Ok(Stamp::Version(stamp)) if stamp == offered.version => {
+		Ok(Stamp::Applied { version, build })
+			if version == offered.version && build == offered.digest =>
+		{
 			tracing::info!(version = %offered.version, "applied reporting schema");
 			HealOutcome::Healed
 		}
@@ -436,7 +476,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 				offered = %offered.version,
 				"the applied reporting schema did not stamp the offered version"
 			);
-			note_unstamped(&offered.id);
+			note_unstamped(&applied_key(&offered));
 			HealOutcome::Failed
 		}
 		Err(err) => {
@@ -446,6 +486,39 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 			);
 			HealOutcome::Failed
 		}
+	}
+}
+
+/// The schema's SQL with the build canopy offered stamped on the end.
+///
+/// The builder stamps the version, which is what says the SQL came from the
+/// pipeline at all. Which build of that version it is, canopy alone knows, so
+/// the check records it here and grades against it afterwards.
+fn stamped(sql: &str, offered: &Offered) -> String {
+	let Some(digest) = offered.digest.as_deref() else {
+		return sql.to_owned();
+	};
+
+	format!(
+		"{sql}\nCOMMENT ON SCHEMA reporting IS '{}';",
+		quoted(&format!("{} {digest}", offered.version))
+	)
+}
+
+/// A string as the body of an SQL literal.
+fn quoted(value: &str) -> String {
+	value.replace('\'', "''")
+}
+
+/// What a build is remembered as, where it applied without stamping.
+///
+/// The digest and not the artifact id alone: a rebuild of a pair re-registers
+/// under the id the artifact already has, and a build that failed to stamp says
+/// nothing about the one that replaces it.
+fn applied_key(offered: &Offered) -> String {
+	match offered.digest.as_deref() {
+		Some(digest) => format!("{} {digest}", offered.id),
+		None => offered.id.clone(),
 	}
 }
 
