@@ -120,6 +120,31 @@ session read until its transport ended, and the transport only ended when the se
 the two waited on each other and the device stayed busy with a client that had left. The daemon now
 watches whether the client is still subscribed and ends the session when it is not.
 
+## The prototype's identity, to check against after it is reimaged
+
+Reimaging the prototype is a direct test of the claim the whole design rests on: that a board's
+sticker is reproducible from the board alone, with no per-device record kept. Nothing needs saving
+off the device — the cache is a cache — and the values it should come back with are these, recorded
+before the image was replaced.
+
+| | |
+| --- | --- |
+| winning source | Raspberry Pi serial |
+| device-tree serial | `f3756510f632cfad` |
+| customer OTP | 32 bytes of zeros, so precedence falls through it |
+| sticker secret | `cb89bf939b867ec6e15530a6b92db98a14f170e1f4c9ff218cbd460e2140ccbd` |
+| sticker URL | `https://bliti.tamanu.app/#AcuJv5Obhn7G4VUwprktuYoU8XDh9Mn_IYy9Rg4hQMy9` |
+| printed rendering | `AHFY-TP4T-TODH-5RXB-KUYK-NOJN-XGFB-J4LQ-4H2M-T7ZB-RS6U-MDRB-IDGL-2` |
+| adapter address | `88:A2:9E:CB:28:E1` |
+
+The secret is the same value the production known-answer test pins, because that vector is taken from
+this board's real serial. A reimaged board that derives anything else means the chain is not
+reproducible, and every sticker already printed is in question.
+
+Two things the reimage takes with it, both already known: BlueZ userspace was installed by hand and
+will need installing again, and the binary is deployed to `/tmp`, which does not survive. The image
+it ran on was Ubuntu 26.04 LTS, kernel 7.0.0-1015-raspi, with bluez 5.85.
+
 ## Milestones
 
 1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a stream layer over GATT carrying JSON, plus the web application driving all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other. Everything genuinely novel is here; what follows is operations on a pipe that already works.
