@@ -102,15 +102,21 @@ A device that advertises is a beacon, and the question is how much a passive obs
 
 **The service UUID** identifies the device as one of ours to anyone who knows to look, and it cannot be hidden: iOS can only filter a scan by service UUID, so it has to be there in the clear. This is a fleet-level fact rather than a per-device one — an observer learns "a bliti device is here", not which one. Accept it.
 
-#### Not advertising at all
+#### Rotation period
 
-The strongest measure is the one the protocol's premise appears to rule out. `improv-wifi` stays silent once provisioned and only advertises on a button long-press; bliti exists precisely because these devices have no button.
+The salt rolls on a timer. Rolling it means re-registering the advertisement, which is also the natural moment for the controller to present a fresh address — whether BlueZ actually does that on re-registration is worth verifying rather than assuming, because if the address persists across a salt roll the two are no longer in lockstep and the rotation is undone.
 
-But a device with no button still has a power cable, and a power cycle is a physical-presence signal as good as a button press — it needs someone standing at the box. So the device could advertise for a window after boot and then go quiet, with an operator power-cycling to open a new window. Exposure collapses from continuous to a few minutes per visit, which dominates any amount of payload rotation.
+#### Advertising continuously
 
-Against it: a box that is quiet cannot be reached by someone who has not physically visited it, so it rules out reconfiguring a deployed device remotely-ish; and some devices should not be casually power-cycled. It is also less discoverable in the field — an operator who does not know the rule finds a device that appears dead.
+The device advertises all the time. Rotation of both the salt and the address is what makes that acceptable, and both are in from the start.
 
-The cheap position is to make the wire format carry the rotation salt from the start, whether or not rotation is switched on, since adding it later breaks every deployed device and app. Whether advertising is continuous or windowed, and whether address privacy is configured, can then be decided later without a format change.
+The stronger measure — advertising only for a window after boot, then going quiet — is deliberately deferred. `improv-wifi` does something like it, staying silent once provisioned and waking on a button long-press; bliti has no button, but a device with no button still has a power cable, and a power cycle needs someone standing at the box just as a button press does. That makes it available as a presence signal whenever we want it.
+
+It is deferred rather than dropped because it costs nothing to add later. It is local policy — when the daemon chooses to advertise — with no bearing on the wire format, the handshake, or anything an app has to understand. The only client-side consequence is telling an operator to power-cycle a device that is not answering. So it stacks on top of the protections rather than replacing them, and taking the convenient option now forecloses nothing.
+
+What continuous advertising does cost, beyond exposure: anyone in range can open connections and start handshakes that will fail. That is cheap to absorb — the handshake's key exchange is microseconds — but it shapes two choices. **There must be no lockout after repeated failures**, or someone in range could deny the device to its legitimate operator, which is a worse outcome than the attacks a lockout would prevent. And failed attempts must not be logged so freely that a passer-by can fill the disk.
+
+The wire format carries the rotation salt from the first milestone regardless, since adding it later breaks every deployed device and app.
 
 ### Discovery and matching
 
@@ -226,7 +232,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Milestones
 
-1. **A channel.** Board ID reading, both derivations, sticker generation, advertising the handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and watching the device print it. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works. The advertisement should carry the rotation salt from this milestone even if nothing rotates yet, since adding it later breaks every deployed device.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and watching the device print it. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
 2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
 3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
 4. **A native app.** Android or iOS, once the protocol has stopped moving.
@@ -235,8 +241,8 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 - [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place. None yet; the doc sits under a provisional directory until there is one.
 - [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor.
-- [ ] Does the device advertise continuously, or only for a window after boot with a power cycle as the presence signal?
-- [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it.
+- [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep.
+- [ ] Salt rotation period.
 
 ## Testing notes
 
@@ -247,5 +253,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 - Known-answer tests pinning both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed.
 - Full handshake and RPC exercised over an in-memory duplex transport, with no BLE involved.
 - Negative cases worth pinning down: wrong sticker secret, replayed advertisement, replayed handshake, truncated frames, a peer that authenticates and then sends garbage.
+- Repeated failed handshakes must leave the device reachable by a legitimate operator, and must not be able to fill the disk with logs.
+- Two advertisements from the same device across a salt roll must not be linkable without the sticker secret, and a scanner holding the secret must recognise both.
 - Handle collision between two devices in range.
 - BlueZ-level testing against a virtual controller is possible but heavy; the protocol core should not need it.
