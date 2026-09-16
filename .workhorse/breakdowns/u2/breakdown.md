@@ -1,7 +1,7 @@
 # bliti: deferred from the channel milestone
 
 Work set aside while the channel milestone is built, held here so it survives the plan being cleaned up.
-Neither entry is blocked by an open decision, and the second depends on the first.
+None of these is blocked by an open decision. The second depends on the first; the third stands alone.
 
 ## Advertise only in a window after power-on
 
@@ -16,3 +16,10 @@ Once a device goes quiet, a wake beacon reopens its window without anyone unplug
 The beacon has to be targeted rather than broadcast: a wake that anyone can send and every device in range answers is a presence oracle someone could sweep a building with.
 Deriving the wake signal from the sticker secret under a third constant closes that, and costs nothing in practice, since a client that has scanned a sticker already knows which device it wants.
 This waits on a native application, because browsers cannot advertise at all, and nothing needs reserving in the wire format now.
+
+## Debug mode from a removable volume
+
+A device whose sticker no longer matches it cannot be reached at all, which strands a technician who has no way to print a replacement on the spot.
+A file at a known filename at the root of a removable volume, read when the daemon starts, carries a random value used directly where the derived sticker secret would be, so discovery, matching and the handshake are unchanged and nothing needs reserving in the wire format.
+The channel it opens exposes a restricted toolset: enough to read the real sticker secret for reprinting, plus diagnostics, and not the normal provisioning surface.
+Whether debug mode withholds only normal bliti operation or takes the whole device out of service is decided on this card, since the second reaches outside what a provisioning daemon controls.
