@@ -231,9 +231,19 @@ Prior art for the payload and the flow generally: Matter's commissioning (QR wit
 ### Transport binding
 
 - **GATT characteristics**, as Improv-Wi-Fi does: a write characteristic for commands and a notify characteristic for results, with framing and reassembly over the negotiated ATT MTU. Works on every client including Web Bluetooth. Modest throughput.
-- **L2CAP connection-oriented channels.** A real stream with far better throughput; supported by BlueZ, iOS 11+, and Android API 29+, but not by Web Bluetooth. `bluer` exposes it behind a feature flag, which bears on the peripheral-layer question above.
+- **L2CAP connection-oriented channels.** A real stream with far better throughput; supported by BlueZ, iOS 11+, and Android API 29+. `bluer` exposes it behind a feature flag.
 
-Defining the protocol over an abstract message transport and shipping the GATT binding first keeps the web page working and leaves L2CAP available later for anything bulky.
+**GATT first, L2CAP later**, for three reasons that stack rather than compete.
+
+Web Bluetooth is GATT-only — the API has no L2CAP at all. The web page is the first milestone's only client, so a device speaking L2CAP alone would have nothing to talk to.
+
+L2CAP does not replace GATT in any case. A connection-oriented channel is identified by a PSM, and the client has to learn which one; the usual arrangement is to publish it in a GATT characteristic and open the channel after reading it. GATT remains the way in, and building it now is a prerequisite rather than a detour.
+
+And nothing in the first milestone moves enough data to notice the difference. A line of text and a handful of addresses are not what L2CAP's throughput is for.
+
+Adding it later is cheap in a way the advertisement format is not. A GATT service is discovered by UUID, so a characteristic publishing a PSM can appear whenever it is written: clients that do not know about it ignore it, and clients that do find it. Nothing needs reserving now — unlike the rotation salt, where a fixed advertisement budget parsed by position means late additions break deployed devices.
+
+The end state is both, chosen per client: a native app reads the PSM and upgrades, the web page stays on GATT, and the stack above is identical either way.
 
 ### Streams, and why not QUIC
 
@@ -262,7 +272,7 @@ The layering this settles on:
 | stream multiplexing | either end opens uni- or bidirectional streams |
 | JSON | application messages |
 
-Two things fall out of it. Swapping GATT for L2CAP later changes only the bottom row, leaving everything above untouched. And the first milestone's request/response exchange stops being the protocol and becomes one stream among many, which is the point.
+Two things fall out of it. Swapping GATT for L2CAP later changes only the bottom row, leaving everything above untouched — and since the choice is per client, both can exist at once without the layers above knowing which is underneath. And the first milestone's request/response exchange stops being the protocol and becomes one stream among many, which is the point.
 
 ### Crate layout
 
