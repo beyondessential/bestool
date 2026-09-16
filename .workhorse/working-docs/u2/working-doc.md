@@ -90,15 +90,13 @@ Reading it costs a dependency. The operation needed is narrow — create a prima
 
 Raspberry Pi SoCs carry a customer-programmable one-time-programmable area: eight rows of 32 bits, 256 bits in total, at rows 36–43 on non-BCM2712 parts and rows 77–84 on BCM2712, which is the Pi 5. There is also a 256-bit device-specific private key area at rows 56–63, but it is listed only for non-BCM2712, so the customer rows are the portable choice across the boards we would ship. Writes are irreversible in the usual OTP sense — bits go from 0 to 1 and not back — and row 30 holds bits that can disable OTP programming and reading altogether.
 
-This is a way out of the entropy problem on the Pi side rather than a mitigation of it. If production burns 256 bits of true random into the customer area and the board ID includes it, the Pi path stops depending on a 32-bit OTP word or a 64-bit serial and carries 256 bits that were chosen rather than inherited. It composes with the decision above without changing it: provisioned entropy is simply another source present on the board, and the combination already has to handle sources being present or absent.
+This is a way out of the entropy problem on the Pi side rather than a mitigation of it. If production burns 256 bits of true random into the customer area, the Pi path stops depending on a 32-bit OTP word or a 64-bit serial and carries 256 bits that were chosen rather than inherited. Under the precedence above it sits below a TPM and above the platform serials, so a Pi with burnt OTP and no TPM derives from the OTP, and a Pi with neither falls back to its serial and the weak-source case it implies.
 
-Three consequences, all of them about ordering and none of them optional.
+Two consequences, both about ordering and neither optional.
 
-Blank OTP reads as zeros, so the combination must distinguish *absent* from *present and zero*, or a board with unburnt OTP derives the same secret as one deliberately burnt to zero.
+Blank OTP reads as zeros, which is a sentinel rather than a value, so an unburnt board must fall through to the next source rather than derive 256 bits of zero. This is the same rule as refusing hardware that is not unique, applied to a source rather than a machine.
 
-The burn has to happen before the secret is derived and the sticker printed. Burning afterwards silently orphans the sticker, and because OTP is irreversible there is no putting it back — the board keeps a sticker that no longer matches it.
-
-And it does not relax the derivation cost. UEFI machines have no equivalent area, so the PC-grade path stays at the low-entropy figure measured above, and the memory-hard parameters are sized for the worst source rather than the best. On a board with provisioned entropy the derivation cost is then defence in depth rather than the thing holding the scheme up.
+And the burn has to happen before the secret is derived and the sticker printed. Burning afterwards promotes OTP above the serial the sticker was derived from, which silently orphans it — and because OTP is irreversible there is no putting it back. The board then wears a sticker that no longer matches it until someone reprints.
 
 ### Sticker secret
 
