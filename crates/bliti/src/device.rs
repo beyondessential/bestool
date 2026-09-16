@@ -229,7 +229,21 @@ pub async fn scan(
 			continue;
 		}
 		let device = adapter.device(address).into_diagnostic()?;
+		let name = device.name().await.ok().flatten();
+		let uuids = device.uuids().await.ok().flatten();
+		let carries_bliti = uuids
+			.as_ref()
+			.is_some_and(|uuids| uuids.contains(&SERVICE_UUID));
+		// Reporting what was heard, and not only what matched, is what makes a device that is
+		// advertising the wrong shape distinguishable from one that is not advertising at all.
+		tracing::debug!(%address, ?name, bliti = carries_bliti, "heard");
 		let Ok(Some(service_data)) = device.service_data().await else {
+			if carries_bliti {
+				println!(
+					"{address}  a bliti device advertising no service data (name {})",
+					name.unwrap_or_else(|| "-".to_owned())
+				);
+			}
 			continue;
 		};
 		let Some(raw) = service_data.get(&SERVICE_UUID) else {

@@ -70,7 +70,7 @@ It runs on the first start after imaging and after a board change, not on every 
 
 **BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the device image and was installed on the prototype by hand.
 
-## Blocked: the advertisement does not fit the prototype's controller
+## Blocked on a decision: the advertisement does not fit the prototype's controller
 
 The daemon advertises on a controller that supports extended advertising, and is refused by one that
 does not. The prototype is the latter, so this blocks the demo and needs a decision before the
@@ -103,8 +103,12 @@ change to a versioned wire format:
   refused, because BlueZ does place a local name in the scan response. The service UUID stays in the
   advertisement, so filtering by it still works, and thirteen bytes of handle, salt and version come
   to twenty-one characters in unpadded base32, which fits. It needs no registration from anyone.
-  What is confirmed so far is that BlueZ accepts it; that the bytes reach the air in that shape is
-  still to check with a scanner that reads the name.
+  Confirmed on the air: with the prototype advertising and this laptop scanning in the same room, the
+  laptop heard `88:A2:9E:CB:28:E1` carrying both the bliti service UUID and the name
+  `PFLVUJIFNAXARK4M5YQAC`, which decodes to thirteen bytes — handle `79575a2505682e08`, salt
+  `ab8cee20`, version 1. The daemon had logged its computed handle as `79575a25`, so what reached the
+  air is the real derived handle for that board's sticker, on the controller that refuses service
+  data.
 - **Carry the payload as manufacturer data.** Two bytes of company identifier where a UUID key is
   sixteen, which fits comfortably. But a company identifier comes with Bluetooth SIG membership;
   `0xFFFF` is reserved for internal and interoperability testing and would serve the prototype, but
