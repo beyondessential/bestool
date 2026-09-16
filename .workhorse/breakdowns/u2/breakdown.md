@@ -22,4 +22,4 @@ This waits on a native application, because browsers cannot advertise at all, an
 A device whose sticker no longer matches it cannot be reached at all, which strands a technician who has no way to print a replacement on the spot.
 A file at a known filename at the root of a removable volume, read when the daemon starts, carries a random value used directly where the derived sticker secret would be, so discovery, matching and the handshake are unchanged and nothing needs reserving in the wire format.
 The channel it opens exposes a restricted toolset: enough to read the real sticker secret for reprinting, plus diagnostics, and not the normal provisioning surface.
-Whether debug mode withholds only normal bliti operation or takes the whole device out of service is decided on this card, since the second reaches outside what a provisioning daemon controls.
+Also to consider: take the whole device out of service is decided on this card, since the second reaches outside what a provisioning daemon controls.
