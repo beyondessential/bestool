@@ -299,6 +299,14 @@ mod tests {
 		);
 	}
 
+	/// The canonical version 1 vector. Measured at 2.2 s on a Raspberry Pi 5, the slowest board in
+	/// scope, with the lanes computed concurrently, and 3.1 s with them in sequence.
+	///
+	/// This one value is what pins the whole derivation, and it holds across every way of computing
+	/// it: it is identical on x86-64 and aarch64, and identical whether or not the `parallel` feature
+	/// is on. Running this test under each of those settings is what verifies that the device, the
+	/// sticker generator, and any future implementation agree on a board's secret regardless of the
+	/// machine they run on or how each chooses to compute it.
 	#[cfg(feature = "derive")]
 	#[test]
 	#[ignore = "allocates 2 GiB and runs the full derivation; run explicitly with --ignored"]

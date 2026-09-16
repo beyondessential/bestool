@@ -1,17 +1,28 @@
 //! Board ID backends that read real firmware, gated behind the `backends` feature so a wasm build,
 //! which has no filesystem and never reads a board ID, does not pull them.
 //!
-//! The two platform-serial backends live here. The TPM Endorsement Key and one-time-programmable
-//! backends are deferred: their byte encoding is versioned into every sticker (BLI-KEY,
-//! "Versioning"), and pinning it means verifying it on the hardware to be shipped first (see the
-//! plan's Outstanding risks). The precedence in the parent module selects whichever backends are
-//! registered, so those two slot in without disturbing anything here.
+//! The two platform-serial backends live here; the stronger two have a module each, because each
+//! reaches hardware in its own way. [`OneTimeProgrammableSource`] reads the kernel's nvmem
+//! interface, and [`TpmEndorsementKeySource`] talks to the TPM software stack, which carries a C
+//! library and so sits behind the `tpm` feature.
+//!
+//! Which backends a build registers decides which source wins the precedence, and so which sticker
+//! secret a board derives. A binary that can derive a sticker therefore registers every backend the
+//! platform could offer rather than a subset.
 
 use std::{fs, path::PathBuf};
 
 use uuid::Uuid;
 
 use super::{BoardIdError, BoardIdSource, Presence, SourceKind, is_sentinel};
+
+mod otp;
+pub use otp::OneTimeProgrammableSource;
+
+#[cfg(feature = "tpm")]
+mod tpm;
+#[cfg(feature = "tpm")]
+pub use tpm::TpmEndorsementKeySource;
 
 /// The Raspberry Pi device-tree serial, a 64-bit value the board exposes as sixteen hexadecimal
 /// characters. The board ID is the eight bytes those characters denote, most significant first, not
@@ -160,7 +171,7 @@ impl BoardIdSource for SmbiosSystemUuidSource {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use std::{
 		path::PathBuf,
 		sync::atomic::{AtomicU32, Ordering},
@@ -169,16 +180,20 @@ mod tests {
 	use super::*;
 
 	/// A unique scratch path in the temp dir, cleaned up on drop.
-	struct Fixture(PathBuf);
+	pub(crate) struct Fixture(PathBuf);
 
 	impl Fixture {
-		fn new(contents: &[u8]) -> Self {
+		pub(crate) fn new(contents: &[u8]) -> Self {
 			static COUNTER: AtomicU32 = AtomicU32::new(0);
 			let n = COUNTER.fetch_add(1, Ordering::Relaxed);
 			let path =
 				std::env::temp_dir().join(format!("bliti-fixture-{}-{n}", std::process::id()));
 			fs::write(&path, contents).unwrap();
 			Self(path)
+		}
+
+		pub(crate) fn path(&self) -> &PathBuf {
+			&self.0
 		}
 	}
 
@@ -225,6 +240,51 @@ mod tests {
 				0x00, 0x00
 			]
 		);
+	}
+
+	/// Evaluates the real precedence against the machine this runs on, exercising the backends
+	/// together rather than one at a time, and reports what it found so it doubles as a diagnostic.
+	/// Ignored: reads real hardware and needs privilege for the DMI node and the TPM.
+	#[test]
+	#[ignore = "reads the real board; needs privilege for DMI and the TPM"]
+	fn selects_the_strongest_source_on_this_board() {
+		use crate::board_id::{BoardIdSource, select, strongest_present};
+
+		let otp = OneTimeProgrammableSource::new();
+		let rpi = RaspberryPiSerialSource::new();
+		let smbios = SmbiosSystemUuidSource::new();
+		#[cfg(feature = "tpm")]
+		let tpm = TpmEndorsementKeySource::new();
+
+		#[cfg_attr(
+			not(feature = "tpm"),
+			expect(
+				unused_mut,
+				reason = "the TPM source is pushed only when that feature is on"
+			)
+		)]
+		let mut sources: Vec<&dyn BoardIdSource> = vec![&otp, &rpi, &smbios];
+		#[cfg(feature = "tpm")]
+		sources.push(&tpm);
+
+		for source in &sources {
+			println!(
+				"{:>28}: {:?}",
+				source.kind().to_string(),
+				source.probe().unwrap()
+			);
+		}
+
+		// The cheap probe and the full selection must agree on which source wins, since the cache
+		// check in BLI-KEY relies on the probe alone to decide whether a rederivation is needed.
+		let strongest = strongest_present(&sources).unwrap();
+		let board_id = select(&sources).expect("this board offers a usable source");
+		println!(
+			"selected {} ({} bytes)",
+			board_id.kind(),
+			board_id.raw().len()
+		);
+		assert_eq!(Some(board_id.kind()), strongest);
 	}
 
 	#[test]

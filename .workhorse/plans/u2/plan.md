@@ -68,7 +68,7 @@ What delivers the property is a stream multiplexing layer inside the Noise chann
 
 It runs on the first start after imaging and after a board change, not on every start, so that check sits off the ordinary path.
 
-**BlueZ userspace is not installed on the current device image**, so it is a deployment prerequisite rather than something to assume.
+**BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the device image and was installed on the prototype by hand.
 
 ## Milestones
 
@@ -93,7 +93,7 @@ encoding is versioned into every sticker (see Outstanding risks); the framework 
 backends are registered, so they slot in without disturbing the schedule.
 
 - [x] Board ID trait, the test backend, and the Raspberry Pi serial and SMBIOS backends (RPi read verified against the prototype's device-tree serial)
-- [ ] TPM Endorsement Key and one-time-programmable backends — deferred pending on-hardware verification of their versioned byte encoding; the prototype has no TPM
+- [x] TPM Endorsement Key and one-time-programmable backends, with their byte encodings verified on hardware (see Measured on hardware)
 - [x] Source precedence, sentinel rejection, and the failure when nothing is usable
 - [x] Key schedule: both derivations, the version marker, and known-answer tests pinning them (handle and sticker-secret wiring always-on; the full 2 GiB production vector pinned as an ignored test)
 - [x] Sticker cache logic: the cached board ID, platform serial and source kind, and the cheap comparison against the board at start (`board_id::evaluate_cache`), plus the pre-flight memory check (`key_schedule::check_memory`). On-disk persistence of the cache is daemon work
@@ -111,7 +111,42 @@ backends are registered, so they slot in without disturbing the schedule.
 
 The core also compiles for `wasm32-unknown-unknown` with `--no-default-features` (verified), which is
 what lets the web application share the key schedule and handshake; a wasm consumer enables
-`getrandom`'s wasm backend, as any wasm crate depending on `snow` does.
+`getrandom`'s wasm backend, as any wasm crate depending on `snow` does. `snow` is taken with
+`default-features = false`, because its `std` feature pulls in `ring`, which is unused here and does
+not belong in a wasm build.
+
+## Measured on hardware
+
+Taken on the Raspberry Pi 5 prototype and on an x86-64 UEFI machine with an Intel firmware TPM.
+
+**The Endorsement Key name is the key's name as the TPM computes it**: a two-byte algorithm
+identifier followed by the digest of the public area, 34 bytes under SHA-256. The backend's output
+is byte-identical to what `tpm2_createek` and `tpm2_readpublic` produce, and regenerating the key
+from the seed under the pinned template gives the same name every time. The test takes the expected
+name from the environment, so it pins against an independent implementation without baking one
+machine's Endorsement Key into the repository.
+
+**The derivation is reproducible across architectures and across how it is computed.** One
+known-answer vector holds on x86-64 and aarch64, with the argon2 lanes computed concurrently and in
+sequence. That is what lets a sticker generated on a desktop match the device that derives its own
+secret. On the Pi 5 the derivation costs **2.2 s with the lanes concurrent and 3.1 s in sequence**,
+so `parallel` is on by default; it changes only the speed.
+
+**Precedence behaves as specified on both boards**: the UEFI machine selects its TPM over its SMBIOS
+system UUID, and the Pi selects its device-tree serial after falling through unwritten
+one-time-programmable memory, which reads as 32 bytes of zeros on the prototype.
+
+Two things worth carrying forward. The prototype exposes its serial at
+`/proc/device-tree/serial-number` and its customer OTP at `/sys/bus/nvmem/devices/nvmem_cust0/nvmem`,
+both root-readable only. And the UEFI machine's system UUID begins `4c4c4544`, which is ASCII
+"LLED" — a vendor service tag reformatted as a UUID, exactly the weak case BLI-KEY describes, met on
+the first UEFI machine tried. It is evidence for measuring the entropy of that source before relying
+on it, which the test cases already carry.
+
+**Which backends a build registers decides which source wins**, and so which secret a board derives.
+A build of the daemon or the generator without the `tpm` feature would derive a Pi-style serial
+secret on a machine whose sticker was printed from its TPM. Both binaries therefore depend on that
+feature unconditionally rather than leaving it to a build flag.
 
 ## Development affordances
 

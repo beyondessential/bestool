@@ -9,8 +9,10 @@ use std::fmt;
 
 #[cfg(feature = "backends")]
 mod backends;
+#[cfg(feature = "tpm")]
+pub use backends::TpmEndorsementKeySource;
 #[cfg(feature = "backends")]
-pub use backends::{RaspberryPiSerialSource, SmbiosSystemUuidSource};
+pub use backends::{OneTimeProgrammableSource, RaspberryPiSerialSource, SmbiosSystemUuidSource};
 
 /// The kind of source a board ID was read from.
 ///

@@ -7,11 +7,11 @@ An unticked case is coverage still owed, not an optional extra.
 
 - [ ] The SMBIOS path derives end to end without Raspberry Pi hardware, on a UEFI machine or CI runner that has a system UUID (verifies spec: BLI-BID)
 - [x] A board ID override is available for tests, so the chain can be exercised against known inputs (verifies spec: BLI-BID)
-- [x] Precedence selects the same source on the device as in the generator, for each combination of sources present (verifies spec: BLI-BID)
+- [x] Precedence selects the same source on the device as in the generator, for each combination of sources present (verifies spec: BLI-BID) — also exercised against two real boards: a UEFI machine selects its TPM over its SMBIOS UUID, the prototype its serial over unwritten OTP
 - [x] A source present but reading as all zeros, all ones, or a known vendor constant is skipped, and precedence falls through to the next (verifies spec: BLI-BID)
-- [x] Unwritten one-time-programmable memory falls through to the serial number rather than deriving from zeros (verifies spec: BLI-BID)
+- [x] Unwritten one-time-programmable memory falls through to the serial number rather than deriving from zeros (verifies spec: BLI-BID) — also confirmed on the prototype, whose customer OTP reads as 32 zeros
 - [x] Reaching the end of the precedence with no usable source fails, rather than deriving from a placeholder (verifies spec: BLI-BID) — the core returns a no-usable-source failure; surfacing it on standard error is daemon work
-- [ ] The Endorsement Key is regenerated from the seed and the pinned template rather than read from a persistent handle, and gives the same value on a machine where no handle has been persisted (verifies spec: BLI-BID)
+- [x] The Endorsement Key is regenerated from the seed and the pinned template rather than read from a persistent handle, and gives the same value on a machine where no handle has been persisted (verifies spec: BLI-BID) — matches `tpm2_createek` byte for byte on an Intel firmware TPM
 - [x] Probing for presence reads no source value, so a board carrying a TPM is probed without a key generation inside it (verifies spec: BLI-BID)
 
 ## Identity changes
@@ -25,8 +25,8 @@ An unticked case is coverage still owed, not an optional extra.
 - [x] Known-answer tests pin both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed (verifies spec: BLI-KEY)
 - [x] The derivation input is a source tag byte followed by the raw bytes of the source value, and a serial derived from its characters gives a different secret from the bytes those characters denote (verifies spec: BLI-KEY)
 - [x] Two sources holding byte-identical values derive different secrets, because their tags differ (verifies spec: BLI-KEY)
-- [ ] The sticker secret is identical whether argon2 lanes are computed concurrently or in sequence (verifies spec: BLI-KEY)
-- [ ] The derivation is timed on the slowest board in scope, since it sits on the provisioning path (verifies spec: BLI-KEY) — measured ~20s single-threaded on a desktop; on-device timing pending the daemon's cross-compiled binary
+- [x] The sticker secret is identical whether argon2 lanes are computed concurrently or in sequence (verifies spec: BLI-KEY) — one known-answer vector holds across both settings and across x86-64 and aarch64
+- [x] The derivation is timed on the slowest board in scope, since it sits on the provisioning path (verifies spec: BLI-KEY) — 2.2 s concurrent, 3.1 s sequential, on the Raspberry Pi 5 prototype
 - [x] A device without room for the derivation reports insufficient memory rather than being killed part-way through with nothing reported (verifies spec: BLI-KEY)
 - [x] A start where the platform serial and the strongest kind of source present both match the cache runs no derivation and reads no source value (verifies spec: BLI-KEY)
 - [x] The cache is rebuilt where it is absent, and where the comparison against the board fails (verifies spec: BLI-KEY)

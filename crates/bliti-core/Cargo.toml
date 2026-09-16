@@ -17,13 +17,21 @@ exclude.workspace = true
 workspace = true
 
 [features]
-default = ["derive", "backends"]
+default = ["derive", "backends", "parallel"]
 # Memory-hard sticker-secret derivation (argon2id). Needed by the device and the
 # sticker generator, never by a client, and deliberately absent from wasm builds.
 derive = ["dep:argon2"]
 # Board-ID backends that read real hardware and firmware. Off for wasm, which has
 # no filesystem and never reads a board ID.
 backends = []
+# TPM Endorsement Key board-ID backend. Carries the tpm2-tss C library, so it is off by default
+# and the daemon turns it on unconditionally: which sources a build can see decides which one
+# wins the precedence, and so which sticker secret a board derives.
+tpm = ["backends", "dep:tss-esapi"]
+# Compute the argon2id lanes concurrently. Purely a speed choice: the parameters fix the digest, so
+# a secret derived with this on is identical to one derived with it off (pinned by a known-answer
+# test). Worth having on the device and the generator, both of which sit on a provisioning path.
+parallel = ["argon2?/parallel"]
 
 [dependencies]
 argon2 = { version = "0.6.0", optional = true }
@@ -39,6 +47,7 @@ snow = { version = "0.10.0", default-features = false, features = [
 	"default-resolver-crypto",
 ] }
 thiserror.workspace = true
+tss-esapi = { version = "7.7.0", optional = true }
 uuid = { version = "1.26.1", default-features = false }
 yamux = "0.14.0"
 
