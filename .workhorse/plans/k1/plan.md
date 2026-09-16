@@ -92,6 +92,36 @@ pub trait HttpRuntime: Send + Sync {
 
 `Unavailable` carries a free-form reason string, which the check turns into its skip. A closed set of causes — not permitted, not reachable, not present — would let canopy grade a permissions problem differently from an outage, and may be worth having later; there is not enough usage yet to know which causes are real, so the string comes first and the set is derived from what actually gets written.
 
+## Check storage: the lifetime is declared at the write
+
+```rust
+#[async_trait]
+pub trait CheckStore: Send + Sync {
+    async fn get(&self, key: &str) -> Option<Vec<u8>>;
+    async fn put(&self, key: &str, value: &[u8], lifetime: Lifetime);
+    async fn clear(&self, key: &str);
+}
+
+pub enum Lifetime {
+    /// Read from something that restarts when the application's compute does.
+    UntilCompute,
+    /// Measures something the application's own data holds.
+    Durable,
+}
+```
+
+The store handed to a check is already scoped to its subject, so a check cannot name another subject's state, and the key namespace is its own.
+
+Three places could carry the discard-on-sleep declaration, and the write wins:
+
+- **A field on `CheckEntry`** puts it in the registry beside the scope, where it is greppable, and lets the machinery clear uniformly. But it sits away from the code that stores anything, so a check that starts storing something and does not update its entry has the bug back. It is also a field that means nothing for the forty-odd checks that store nothing.
+- **A field on `Runner`** is the same idea declared once per arm instead of once, which is strictly worse.
+- **The check clearing its own store** on seeing `Compute::SwitchedOff` is a few lines in one check today. The count only grows, and the failure mode is the problem rather than the volume: omit it and a stale baseline produces a plausible delta on waking, with no error and no signal.
+
+Declaring at the write cannot be omitted, because there is no way to store without choosing, and the tag travels with the data so it cannot drift from what wrote it. It costs a parameter at each write site, which is one site in most checks that have any.
+
+Of the three checks that hold state today, `external_users` and `ips` report for the machine, so no application's compute ever switches off under them. Only `http_errors` is in scope, and per-service metrics may add more.
+
 ### One runtime per application, not one per machine
 
 Each application gets its own runtime, resolved when the sweep builds its list of applications. Detection may share work across them — probing for systemd once — but the result is per-application.

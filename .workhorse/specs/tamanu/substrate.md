@@ -113,9 +113,13 @@ A check that compares a reading against an earlier one keeps that history in che
 Check storage is scoped to the subject the check is reporting for.
 Several applications driven from one process therefore never read or write each other's history, and a check's baseline is always a baseline for the application it is grading.
 
-Each check declares whether its stored state survives its application's compute being switched off.
-A check whose readings are cumulative counters kept by processes that stop when the compute does discards its state, because those counters restart from zero on waking and a retained baseline would read the fresh counters as a reset or, worse, as a plausible delta.
-A check whose readings measure something that persists in the application's own data keeps its state, so a quantity that moved while the application slept is still visible as having moved when it wakes.
+Whether something survives its application's compute being switched off is declared as it is stored, rather than separately from it.
+A check cannot record a reading without saying which it is, so state that should not outlive a sleep is never retained by omission, and the declaration cannot drift from the thing it describes.
+
+State read from processes that stop when the compute does is discarded, because those counters restart from zero on waking and a retained baseline would read the fresh counters as a reset or, worse, as a plausible delta.
+State measuring something that persists in the application's own data is kept, so a quantity that moved while the application slept is still visible as having moved when it wakes.
+
+Everything discarded on sleep is dropped when a sweep observes that an application's compute is off, so a check reads no baseline taken before the sleep.
 
 A reading whose source is no longer present is an absence rather than a decrease.
 Where a substrate's readings come from several sources that come and go, history is kept per source and a source that has vanished is dropped, rather than its disappearance being graded as the quantity having fallen.
