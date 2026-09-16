@@ -77,11 +77,7 @@ What delivers the property is a stream multiplexing layer inside the Noise chann
 
 ## Deferred, and free to defer
 
-**Advertising only in a window.** A device with no button still has a power cable, and a power cycle needs someone at the box just as a button press does. This is local policy about when the daemon advertises, with no bearing on the wire format, so taking the convenient option now forecloses nothing. The only client-side consequence is telling an operator to power-cycle a device that is not answering.
-
-**Waking a quiet device over the air.** A quiet device could scan for a wake beacon rather than needing someone to unplug it. It must be targeted rather than broadcast — a wake anyone can send, that every device answers, is a presence oracle someone can sweep a building with. Deriving the wake signal from the sticker secret under a third constant closes that, and is the normal case anyway, since a client that has scanned a sticker knows which device it wants.
-
-This waits on a native application, because browsers cannot advertise at all. Deferring stays free: the wake channel is separate from the device's own advertisement and the third constant is just another constant, so nothing needs reserving now.
+Advertising only in a window, and waking a quiet device over the air, are carried as draft cards in the card breakdown.
 
 **Multiple concurrent versions.** The current device controller supports one advertising set, so a device advertises one version at a time and would have to alternate to support several, at a cost in discovery latency. Nothing needs building now; reserving the version marker in both payloads is what keeps it available, and that is in the first milestone because adding it later breaks every deployed device.
 
