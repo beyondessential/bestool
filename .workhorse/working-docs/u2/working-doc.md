@@ -182,7 +182,7 @@ A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast
 - The derivation constant here need not be secret. Hashing is one-way, so a listener who hears the handle still cannot recover the sticker secret; a phone app can carry the constant in the clear.
 - The handle must be long enough that collisions across a site are implausible, and short enough to leave room in a 31-byte legacy advertisement. Eight bytes is a comfortable default.
 - A scanner matches by recomputing, so the cost is one fast hash per advertisement seen per sticker it holds. Fine for a phone looking for one device; an app holding a few hundred stickers is doing a few hundred hashes per advertisement, which is still cheap but is the reason this step is not memory-hard.
-- Stickers outlive software. Once a box is in the field its sticker is fixed, so a later change to the constants or the derivation parameters must not orphan it: the payload carries a version, and a device has to be able to derive and advertise under every version it still supports — which means the advertisement carries the version too, or the device advertises one handle per supported version.
+- Stickers outlive software. Once a box is in the field its sticker is fixed, so a later change to the constants or the derivation parameters must not orphan it: the payload carries a version, and the advertisement carries it too. See "Versioning the key schedule".
 - A **static** handle makes the device passively trackable — a fixed beacon following the box around. See "Tracking resistance".
 
 ### Tracking resistance
