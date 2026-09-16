@@ -2,7 +2,7 @@
 status: draft
 ---
 
-# improv-device: QR-anchored BLE device provisioning
+# bliti: QR-anchored BLE device provisioning
 
 A companion to Improv-Wi-Fi, but not an Improv protocol: a headless device advertises an opaque handle over BLE, and a phone that has scanned the QR sticker on the device's enclosure — and only such a phone — can recognise it, authenticate to it, and open a two-way channel for provisioning.
 
@@ -21,7 +21,7 @@ The chain, as sketched in the kickoff conversation:
 
 ### Threat model
 
-Everything is derived from fixed public constants and the board ID. There is no fleet key and no per-device state: the chain is reproducible from the board alone, at manufacture or any time after. This is a deliberate choice, and it sets what the scheme can and cannot buy.
+Everything is derived from fixed public constants and the board ID. There is no fleet key and no authoritative per-device state: the chain is reproducible from the board alone, at manufacture or any time after. Anything the device stores is a cache it can rebuild. This is a deliberate choice, and it sets what the scheme can and cannot buy.
 
 In scope:
 
@@ -72,10 +72,11 @@ Making the first derivation **memory-hard** — argon2id or scrypt rather than a
 
 Parameters should be pushed hard, to seconds of work rather than milliseconds. The useful mental model is that an attacker's cost per guess scales with memory times iterations, and a GPU's parallelism is capped by its VRAM divided by the memory parameter — so memory buys more than time does, since it bounds how many guesses can run at once rather than just how long each takes.
 
-**The ceiling is the weakest device, not the generator.** The device needs the secret at runtime to compute its handle and run the handshake, so whatever we choose has to run there. Time is merely slow on a small board; memory is a hard wall, and a parameter larger than the board's RAM cannot run on it at all, ever. Two ways to buy headroom:
+**Where the derivation runs.** The sticker generator runs it at manufacture, on the machine driving the sticker printer, which can be as large as we like. The device also needs the secret at runtime, to compute its handle and run the handshake — so the derivation has to be runnable there too, unless the device is simply handed the result.
 
-- **Cache the derived secret on the device** after first boot. The cost is paid once per imaging rather than every boot, which makes a long derivation tolerable. Memory is still capped by the board's RAM. This keeps the device self-sufficient: the cache is an optimisation, not a source of truth, and rederiving from the board is always available. A cache that does not match the board it is on — an SD card moved between boards — is detectable and simply rederives.
-- **Derive at imaging time on good hardware** and install the result, with the device never deriving at all. This lifts the memory cap entirely. The model is unchanged, because there is still no secret key and the value is still reproducible from the board ID and the public constant by anyone with the compute — but the device can no longer recover its own secret unaided, only with a machine that can run the derivation. Recovery stays possible off-device, since the board ID is public and readable from the board.
+The target is a Raspberry Pi 5 with 8 GB, planning against a 4 GB floor, and that is roomy enough that the two do not conflict. A memory parameter the printer machine finds trivial is still well within a 4 GB board's reach, so the device can derive its own secret and the "rederive from the board, no records needed" property holds everywhere rather than only on big machines. Choosing a parameter larger than the floor would give that up permanently: recovery would then need a machine big enough to run it, with the board ID read off the device first.
+
+Headroom is not the same as free. The derivation should be paid once per imaging and **cached**, not repeated at every boot, and the parameter should leave room for whatever else the board is running rather than claiming most of its RAM. The cache is an optimisation and not a source of truth: if it is absent, or does not match the board it finds itself on — an SD card moved between boards — the device rederives.
 
 The second derivation, sticker secret to advertised handle, stays a fast hash either way. The phone compares against every advertisement it hears while scanning, and a memory-hard function in that loop would be felt.
 
@@ -109,11 +110,17 @@ Verifying the device's board ID directly is not available: it cannot go in the Q
 
 ### Session and provisioning
 
-Once authenticated, a two-way, ordered, reliable message channel carries a small request/response RPC. Candidate operations, roughly in the order we would want them:
+Once authenticated, a two-way, ordered, reliable message channel carries a small request/response RPC.
 
+**The channel itself is the first milestone**, not any particular operation on it. Getting discovery, authentication, and a working bidirectional pipe is the hard and interesting part; the operations are comparatively ordinary once it exists. The demonstration that the channel works: the web test page sends a line of text and the device puts it on `wall`. Trivial to implement, and it proves the whole chain end to end in a way anyone can see. (`wall` writes to attached terminals, so a headless box wants the message logged as well as broadcast, or there is nothing to look at.)
+
+Wi-Fi configuration is where this is headed, and the reason it does not simply defer to Improv-Wi-Fi is that we want **more** than Improv's model allows — notably putting the device into access-point mode rather than only joining an existing network. Improv's RPC has no vocabulary for that. So Wi-Fi becomes an operation on this channel, and Improv-Wi-Fi keeps its own separate life for whatever still wants to speak Improv.
+
+Candidate operations after the channel exists:
+
+- Configure Wi-Fi, including switching the device to an access point. The `WifiConfigurator` trait and NetworkManager backend in `improv-wifi` are a starting point, though the AP case reaches past what that trait currently expresses.
 - Describe the device: model, board ID, OS image, software versions, current network state.
 - Physically identify: blink an LED, or draw on the LCD where one is fitted, so the operator can confirm which box they are talking to.
-- Configure Wi-Fi. The `WifiConfigurator` trait and NetworkManager backend in `improv-wifi` are directly reusable here.
 - Set hostname, timezone.
 - Enrol the device with its server.
 - Fetch recent logs or health output for field diagnosis.
@@ -133,14 +140,16 @@ Settled in shape — memory-hard for the first step, pushed to seconds of work, 
 - **scrypt** is older and simpler to parameterise, with a worse memory-hardness margin.
 - For the fast second step, BLAKE3 keyed mode gives domain separation and a truncatable output in one primitive.
 
-Parameters cannot be chosen until two things are measured: the weakest board's available RAM, which is a hard cap on the memory parameter, and how long a candidate setting actually takes there. Both belong in the first milestone, before anything is printed on a sticker — the constants and parameters are baked into every sticker in the field the moment one ships.
+Parameters want measuring on a Pi 5 before they are fixed, against the 4 GB floor and with the board's other work in mind. This belongs before anything is printed on a sticker — the constants and parameters are baked into every sticker in the field the moment one ships.
 
 ### Handshake
 
 - **MAC challenge-response.** Each side sends a nonce; each replies with a MAC over both nonces under the sticker secret, domain-separated by direction. Mutual, replay-resistant, trivially implementable and auditable. No session key worth the name and no forward secrecy — anyone who later learns the sticker secret can decrypt a recorded session.
-Decided: **Noise with a pre-shared key**. The rest is kept as the record of what was weighed.
+Decided: **Noise with a pre-shared key**, pattern `NNpsk0`. The rest is kept as the record of what was weighed.
 
-- **Noise with a pre-shared key** (`NNpsk0` or `XXpsk0`, via `snow`). The sticker secret is the PSK. Mutual authentication from the PSK, a fresh session key and forward secrecy from the ephemeral DH, an encrypted transport falls out of it, and the pattern is well-analysed. Adding a device static key later lets a phone pin device identity across a sticker reprint.
+`NNpsk0` means both sides bring only ephemeral keys and all authentication comes from the pre-shared sticker secret — which is the whole design, since everything derives from the board ID and there is no other identity in the system. The alternative, `XXpsk0`, would additionally give the device a long-term keypair of its own, so a phone could remember "this device" independently of its sticker. That only earns its keep if a device's sticker secret can change while the device stays the same, and here it cannot: the secret is a function of the board.
+
+- **Noise with a pre-shared key** (`NNpsk0`, via `snow`). The sticker secret is the PSK. Mutual authentication from the PSK, a fresh session key and forward secrecy from the ephemeral DH, an encrypted transport falls out of it, and the pattern is well-analysed. Adding a device static key later lets a phone pin device identity across a sticker reprint.
 - **PAKE (SPAKE2+ / CPace).** What Matter does for exactly this flow. A PAKE earns its complexity by making the shared secret unguessable from a transcript no matter how small its space is, which is what lets Matter use a six-digit PIN. Here the memory-hard derivation already buys that, so the PAKE would be paying twice for one property — and Rust SPAKE2+ options are thin. Worth revisiting only if the derivation ends up cheap.
 - **BLE link-layer pairing with OOB data from the QR.** Moves the problem into the Bluetooth stack. BlueZ OOB pairing is awkward, phone support is uneven, and Web Bluetooth cannot drive pairing at all. Treating BLE as a dumb pipe and doing crypto at the application layer keeps every client viable.
 
@@ -167,43 +176,41 @@ QUIC over BLE was raised as a possibility. It wants a datagram transport we woul
 
 ### Crate layout
 
-Working name for the protocol and its crates: **improv-device**. It lives in this repository but stands alone — its own binary, not a `bestool` subcommand, and nothing in the `bestool` binary depends on it. That keeps the option of moving it to its own repository later without unpicking anything.
+Name for the protocol and its crates: **bliti**, after *Albugo bliti*, the white rust of amaranth. Free on crates.io. Names built around "improv" were considered and dropped: sitting next to our `improv-wifi`, which genuinely does implement that spec, anything similar would read as a second Improv protocol, and this is not one.
 
-Three crates:
+It lives in this repository but stands alone — its own binary, not a `bestool` subcommand, and nothing in the `bestool` binary depends on it. That keeps the option of moving it to its own repository later without unpicking anything.
 
-- **The BlueZ peripheral**, extracted from `improv-wifi`, or replaced by `bluer` — see below. That crate already carries a working advertisement, GATT, and application layer over zbus, currently private to it; generalising it so both protocols can register their own services and advertisements is the same work either way, and doing it once avoids two copies drifting. `bluez-peripheral` and `improv-device` are both free on crates.io.
+**The BlueZ layer comes from `bluer`**, the BlueZ project's own Rust interface, rather than from anything of ours. Nothing is extracted from `improv-wifi` and that crate is left alone: it keeps its hand-rolled zbus layer and keeps working. Building bliti on `bluer` doubles as an evaluation of it — if it proves good, rewriting `improv-wifi` onto it becomes an easy call to make later on evidence rather than now on speculation. If it proves awkward, only bliti wears that, and `improv-wifi` was never disturbed.
+
+That leaves two crates:
+
 - **The protocol core**: board ID reading, the key schedule, the handshake, framing, and RPC types. No BlueZ and no hardware, so it unit-tests anywhere.
-- **The daemon**: the binary that ties the core to the peripheral, plus sticker generation.
+- **The daemon**: the binary that ties the core to `bluer`, plus sticker generation.
 
 Board ID reading sits inside the core as backends behind a trait — Raspberry Pi, SMBIOS, and a test backend — rather than its own crate. It can move out if something else needs it.
 
-The core earns its separation from the daemon for a reason beyond tidiness: the web test page needs the same derivations and the same handshake in the browser. Compiling the core to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown` — `snow`'s pure-Rust resolver does.
+The core earns its separation from the daemon for a reason beyond tidiness: the web test page needs the same derivations and the same handshake in the browser. Compiling the core to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown` — `snow`'s pure-Rust resolver does, and `bluer` stays out of the core precisely so this holds.
 
-### Extract our own BlueZ layer, or adopt bluer?
+### Why bluer, and what it settles
 
-Before extracting anything, the alternative deserves weighing: [`bluer`](https://github.com/bluez/bluer) is the BlueZ project's own Rust interface — BSD-2-Clause, so compatible with our GPL-3.0-or-later, actively maintained, and widely used. It covers peripheral advertising and the GATT server, and it ships **L2CAP behind a feature flag**, which is precisely the transport binding we have pencilled in as the later option for bulk transfer. Adopting it would mean writing and maintaining no BlueZ plumbing at all.
+[`bluer`](https://github.com/bluez/bluer) is the BlueZ project's own Rust interface — BSD-2-Clause, so compatible with our GPL-3.0-or-later, actively maintained, and widely used. It covers peripheral advertising and the GATT server, and ships **L2CAP behind a feature flag**, which is the transport binding pencilled in for bulk transfer. Building on it means no BlueZ plumbing on our maintenance surface at all.
 
-Against that: `improv-wifi`'s hand-rolled layer works today, needs only zbus, and is small. `bluer` is a heavier dependency, and moving a published crate that is running on devices onto it is a larger change than extracting what is already there.
+The alternative — extracting and generalising `improv-wifi`'s hand-rolled zbus layer so both protocols could share it — was the other candidate. It has the advantage of being a refactor of known-good code rather than a rewrite against an unfamiliar API, but it keeps a BlueZ implementation as ours to maintain, and it means touching a published crate that is running on devices today.
 
-The options are not symmetric in risk. Extracting is a refactor of known-good code; adopting `bluer` is a rewrite of the same layer against a different API, but one that deletes the layer from our maintenance surface permanently and comes with L2CAP already solved.
+Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wifi` is untouched, so nothing in the field is at risk, and bliti's experience becomes the evidence for whether `improv-wifi` should follow.
 
-A third shape sits between them: build the new protocol's peripheral on `bluer` and leave `improv-wifi` alone. Two implementations, but the second one is not ours to maintain, and `improv-wifi` keeps working untouched.
+## Milestones
 
-### Sequencing
-
-If we extract, `improv-wifi` is published and running on devices today, so pulling its BlueZ layer out is a refactor of live code rather than greenfield work. Doing it as its own change first — behaviour-preserving, no new protocol in the picture, existing tests as the guard — keeps a regression there from being tangled up with a new protocol's bugs.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising the handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT — plus the web test page that drives all of it. The demonstration is sending a line of text from the browser and seeing it on the device's `wall`. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
+2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
+3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
+4. **A native app.** Android or iOS, once the protocol has stopped moving.
 
 ## Open questions
 
 - [ ] Card identifier for this work, so the working doc, plan, and specs land in the right place. None yet; the doc sits under a provisional directory until there is one.
-- [ ] Which board is the weakest in scope, and how much RAM does it have? This caps the derivation's memory parameter.
-- [ ] Does the device derive its own secret (cached after first boot, memory capped by that board), or is it derived on good hardware at imaging time and installed (no cap, device cannot self-recover unaided)?
-- [ ] argon2id or scrypt, at what parameters?
-- [ ] **improv-device** is the working name, which is fine while it stays here. Before anything is published it wants a second look: Improv Wi-Fi is someone else's protocol, and a crate called `improv-device` sitting next to our `improv-wifi` — which really is an implementation of that spec — would read as another one. This protocol has nothing to do with it.
-- [ ] Extract our own BlueZ peripheral layer, adopt `bluer`, or build only the new protocol on `bluer` and leave `improv-wifi` alone? If we extract, the crate needs a name; `bluez-peripheral` is free.
-- [ ] Which Noise pattern: `NNpsk0` is enough for the sticker secret alone; `XXpsk0` adds a device static key, which would let a phone pin device identity across a sticker reprint. Does that matter?
+- [ ] argon2id or scrypt, at what parameters? Wants measuring on a Pi 5 against the 4 GB floor.
 - [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
-- [ ] Which provisioning operations are in the first milestone, and is Wi-Fi configuration one of them or does Improv-Wi-Fi keep that job?
 - [ ] RPC payload encoding — framing with winnow per house style, but the message bodies could be postcard, CBOR, or hand-rolled.
 
 ## Testing notes
