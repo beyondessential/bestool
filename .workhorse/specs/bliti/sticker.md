@@ -14,7 +14,7 @@ The QR payload carries the sticker secret and the version marker, and nothing el
 The board ID is not carried alongside the secret.
 Putting it there would hand the board ID to anyone who photographs a sticker, which is the property the derivation exists to provide.
 
-The payload is an `https://` URL with its content in the fragment.
+The QR code encodes the URL `https://bliti.tamanu.app/`, with the payload in its fragment.
 A generic phone camera opens the page, so a device is usable without installing anything first, and the fragment is never sent to a server, so the secret stays on the device that scanned it.
 A native application can claim the link, so scanning opens that application where it is installed.
 
