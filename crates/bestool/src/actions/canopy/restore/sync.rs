@@ -60,6 +60,13 @@ pub struct Removal {
 pub struct Delta {
 	/// Directories to create, parents before children.
 	pub mkdir: Vec<PathBuf>,
+	/// Directories present on both sides, whose own permissions, owner and
+	/// timestamp are carried over even when nothing inside them changed.
+	///
+	/// A mode change on a directory is exactly the kind of thing a rollback is
+	/// for — postgres refuses to start a data directory that is not 0700 or
+	/// 0750 — and it leaves no trace in the entries the walk otherwise collects.
+	pub retouch: Vec<PathBuf>,
 	/// Entries to copy from the capture.
 	pub copy: Vec<PathBuf>,
 	/// Entries to remove from the live tree, children before parents.
@@ -230,7 +237,10 @@ impl Walk<'_> {
 						self.delta.copy.push(child);
 					}
 				}
-				None => self.descend(&child)?,
+				None => {
+					self.delta.retouch.push(child.clone());
+					self.descend(&child)?;
+				}
 			}
 		}
 
@@ -476,14 +486,34 @@ pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 	.into_diagnostic()
 	.wrap_err("joining the removal pass")??;
 
-	// Parents were pushed before their children.
-	for rel in &delta.mkdir {
-		let path = dest.join(rel);
-		tokio::fs::create_dir_all(&path)
-			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("creating {}", path.display()))?;
-	}
+	// Parents were pushed before their children, so each one only needs its own
+	// component made — `create_dir_all` would re-stat every ancestor of every
+	// directory. One blocking task for the pass, as the removals are: a restore
+	// onto an absent destination schedules the capture's whole directory tree.
+	let directories: Vec<PathBuf> = delta.mkdir.iter().map(|rel| dest.join(rel)).collect();
+	tokio::task::spawn_blocking(move || {
+		for path in directories {
+			match std::fs::create_dir(&path) {
+				Ok(()) => {}
+				Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+				// A parent can be missing when the destination itself is not there.
+				Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+					std::fs::create_dir_all(&path)
+						.into_diagnostic()
+						.wrap_err_with(|| format!("creating {}", path.display()))?;
+				}
+				Err(err) => {
+					return Err(err)
+						.into_diagnostic()
+						.wrap_err_with(|| format!("creating {}", path.display()));
+				}
+			}
+		}
+		Ok::<_, miette::Report>(())
+	})
+	.await
+	.into_diagnostic()
+	.wrap_err("joining the directory pass")??;
 
 	let total = delta.copy.len();
 	let mut done = 0usize;
@@ -513,10 +543,13 @@ pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 	// A directory's own timestamps change as its contents are written, so they
 	// are set after the copies rather than when the directory is made. Deepest
 	// first, so a parent's timestamp is not disturbed by a child being touched
-	// after it.
+	// after it — and covering the directories that were already there too, whose
+	// mode or owner can have drifted since the capture without anything inside
+	// them changing.
 	let directories: Vec<(PathBuf, PathBuf)> = delta
 		.mkdir
 		.iter()
+		.chain(&delta.retouch)
 		.rev()
 		.map(|rel| (capture.join(rel), dest.join(rel)))
 		.collect();
@@ -541,7 +574,7 @@ pub async fn apply(capture: &Path, dest: &Path, delta: &Delta) -> Result<()> {
 /// `RemoveDirectoryW` rather than `DeleteFileW`, and the metadata does not say
 /// which kind of link it is. Getting it wrong fails with access denied partway
 /// through, on the platform the VSS path exists for.
-fn remove_entry(path: &Path, is_dir: bool) -> std::io::Result<()> {
+pub(super) fn remove_entry(path: &Path, is_dir: bool) -> std::io::Result<()> {
 	if is_dir {
 		return std::fs::remove_dir(path);
 	}
@@ -885,6 +918,29 @@ mod tests {
 
 		roll_back(&capture, &dest, &[PathBuf::from("elsewhere")]).await;
 		assert!(!dest.join("gone").exists());
+	}
+
+	/// A directory that exists on both sides carries no entry of its own in the
+	/// delta, so a mode changed since the capture would otherwise never roll back
+	/// — and postgres refuses to start a data directory that is not 0700 or 0750.
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_directory_whose_mode_drifted_is_put_back() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let dest = tmp.path().join("dest");
+		write(&capture, "data/PG_VERSION", "16");
+		write(&dest, "data/PG_VERSION", "16");
+		std::fs::set_permissions(capture.join("data"), std::fs::Permissions::from_mode(0o700))
+			.unwrap();
+		std::fs::set_permissions(dest.join("data"), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+		roll_back(&capture, &dest, &[]).await;
+
+		let mode = std::fs::metadata(dest.join("data")).unwrap().permissions().mode();
+		assert_eq!(mode & 0o777, 0o700, "got {mode:o}");
 	}
 
 	#[cfg(unix)]

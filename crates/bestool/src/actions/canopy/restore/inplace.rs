@@ -47,7 +47,11 @@ pub struct Summary {
 /// Kept separate from laying it down so a caller can find out whether a restore
 /// is possible *before* it makes the data unusable. Everything that can refuse —
 /// an unreadable capture, a filesystem or copy-on-write store without room —
-/// happens here, and nothing here writes.
+/// happens here, and nothing here touches the tree being restored.
+///
+/// It is not side-effect free, though: sizing the divergence on a thin pool
+/// reserves and releases a pool-wide metadata snapshot, which is why it is not
+/// asked for at all when the walk has already found nothing to write.
 pub struct Planned {
 	capture: PathBuf,
 	live: PathBuf,
@@ -208,7 +212,16 @@ impl Interlock {
 	/// one from an unrelated restore, or one someone dropped there, must not
 	/// stand in for an operator saying yes to overwriting live data.
 	pub async fn resumes(live: &Path, record: &HoldRecord) -> bool {
-		let Ok(note) = tokio::fs::read_to_string(Self::marker_in(live)).await else {
+		// The same file class `held_by` recognises, and read without following a
+		// link: this is the one check that waives the overwrite confirmation, so a
+		// symlink planted at the marker's path must not be able to point it at any
+		// file that happens to contain a matching `hold:` line. Hold ids are
+		// `<type>-<timestamp>` and enumerable from a hold listing, so that is not a
+		// hard thing to arrange for anyone who can write the data directory.
+		if !Self::held_by(live).await {
+			return false;
+		}
+		let Ok(note) = read_regular_file(Self::marker_in(live)).await else {
 			return false;
 		};
 		marked_hold(&note).is_some_and(|held| held == record.id)
@@ -275,6 +288,49 @@ impl Interlock {
 	}
 }
 
+/// Read a file, refusing to traverse a link standing in for it.
+///
+/// Also bounds what is read: the marker is a short note, and a link pointed at
+/// something endless would otherwise be pulled into memory whole.
+async fn read_regular_file(path: PathBuf) -> std::io::Result<String> {
+	/// Generous for a note of a few lines, small enough that a wrong file costs
+	/// nothing to reject.
+	const MOST: u64 = 64 * 1024;
+
+	tokio::task::spawn_blocking(move || {
+		use std::io::Read as _;
+
+		let mut file = open_no_follow(&path, std::fs::OpenOptions::new().read(true))?;
+		let mut text = String::new();
+		file.by_ref().take(MOST).read_to_string(&mut text)?;
+		Ok(text)
+	})
+	.await
+	.map_err(std::io::Error::other)?
+}
+
+/// Open `path` without traversing a symlink or reparse point at the final
+/// component, on either platform.
+fn open_no_follow(path: &Path, options: &mut std::fs::OpenOptions) -> std::io::Result<std::fs::File> {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt as _;
+		options.custom_flags(libc::O_NOFOLLOW);
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt as _;
+		// Opens the reparse point itself rather than what it names, so a junction
+		// or symlink planted here is opened (and then rejected) rather than
+		// followed — the same guarantee `O_NOFOLLOW` gives on Unix. Windows is
+		// where this matters most: the VSS backend is the Windows in-place
+		// backend.
+		const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+		options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+	}
+	options.open(path)
+}
+
 /// Write the marker, refusing to follow anything standing where it belongs.
 ///
 /// The marker sits inside the data directory, which the service account can
@@ -293,7 +349,9 @@ async fn write_marker(marker: &Path, note: String) -> Result<()> {
 				let removed = if meta.is_dir() {
 					std::fs::remove_dir_all(&marker)
 				} else {
-					std::fs::remove_file(&marker)
+					// Not `remove_file`: on Windows a directory link needs
+					// `RemoveDirectoryW`, which is what this works out.
+					super::sync::remove_entry(&marker, false)
 				};
 				removed.map_err(|err| {
 					miette::miette!("clearing {} to mark it mid-restore: {err}", marker.display())
@@ -302,15 +360,11 @@ async fn write_marker(marker: &Path, note: String) -> Result<()> {
 			_ => {}
 		}
 
+		// The open itself refuses to traverse a link, which closes the window
+		// between the check above and here.
 		let mut options = std::fs::OpenOptions::new();
 		options.write(true).create(true).truncate(true);
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt as _;
-			// Closes the window between the check above and this open.
-			options.custom_flags(libc::O_NOFOLLOW);
-		}
-		let mut file = options.open(&marker).map_err(|err| {
+		let mut file = open_no_follow(&marker, &mut options).map_err(|err| {
 			miette::miette!("marking {} as mid-restore: {err}", marker.display())
 		})?;
 		file.write_all(note.as_bytes()).map_err(|err| {
@@ -420,6 +474,39 @@ mod tests {
 		assert_eq!(summary.copied, 0);
 		assert_eq!(summary.removed, 0);
 		assert_eq!(summary.bytes, 0);
+	}
+
+	/// The case that made a resumed restore unrecoverable: an attempt interrupted
+	/// after its last copy leaves nothing for the next walk to find, because the
+	/// interlock's own files are skipped. Deciding what to do on the delta alone
+	/// would then never put the tree back together, on every re-run.
+	#[tokio::test]
+	async fn a_converged_resume_still_has_a_marker_to_clear() {
+		let tmp = tempfile::tempdir().unwrap();
+		let capture = tmp.path().join("capture");
+		let live = tmp.path().join("live");
+		write(&capture, "f", "as at the freeze");
+		write(&live, "f", "as at the freeze");
+		let record = record(&capture);
+
+		// Stand in for an attempt that copied everything and then died.
+		let interlock = Interlock::engage(&live, &record).await.unwrap();
+		drop(interlock);
+
+		let planned = plan(Job {
+			record: &record,
+			capture: &capture,
+			live: &live,
+			skip: Vec::new(),
+		})
+		.await
+		.unwrap();
+
+		assert!(!planned.has_work(), "the tree already matches the capture");
+		assert!(
+			Interlock::resumes(&live, &record).await,
+			"and yet it is still marked mid-restore, which is what has to be acted on"
+		);
 	}
 
 	#[tokio::test]
@@ -583,6 +670,28 @@ mod tests {
 
 		assert!(Interlock::held_by(&live).await);
 		assert!(!Interlock::resumes(&live, &record).await);
+	}
+
+	/// A planted link must not be able to forge the consent that waives the
+	/// overwrite confirmation, whatever it points at.
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_symlink_naming_the_hold_is_not_consent() {
+		let tmp = tempfile::tempdir().unwrap();
+		let live = tmp.path().join("live");
+		std::fs::create_dir_all(&live).unwrap();
+		let record = record(&live);
+
+		// Any file whose contents happen to carry the hold's id would do; the id is
+		// `<type>-<timestamp>` and shows up in a hold listing.
+		let elsewhere = tmp.path().join("bait");
+		std::fs::write(&elsewhere, format!("hold: {}\n", record.id)).unwrap();
+		std::os::unix::fs::symlink(&elsewhere, Interlock::marker_in(&live)).unwrap();
+
+		assert!(
+			!Interlock::resumes(&live, &record).await,
+			"a link is not a marker this wrote, so it cannot stand in for a confirmation"
+		);
 	}
 
 	/// The marker lives in a directory the service account can write while the

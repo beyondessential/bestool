@@ -322,19 +322,7 @@ async fn subvolume_uuid(path: &Path) -> Option<String> {
 		.await
 		.inspect_err(|err| warn!("could not read the subvolume's identity: {err}"))
 		.ok()?;
-	parse_subvolume_uuid(&out)
-}
-
-/// The `UUID:` field of `btrfs subvolume show`, which is the first of several
-/// UUID-suffixed labels (`Parent UUID`, `Received UUID`) and so is matched on
-/// the whole label rather than on containing "UUID".
-fn parse_subvolume_uuid(output: &str) -> Option<String> {
-	output
-		.lines()
-		.filter_map(|line| line.trim().strip_prefix("UUID:"))
-		.map(str::trim)
-		.find(|uuid| !uuid.is_empty() && *uuid != "-")
-		.map(str::to_owned)
+	super::super::hold::parse_subvolume_uuid(&out)
 }
 
 /// The generation from `find-new`'s closing `transid marker was N` line.

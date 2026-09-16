@@ -170,12 +170,45 @@ fn check_cow_store(store: &CowStore, written: u64) -> Result<()> {
 	Ok(())
 }
 
+/// The fixed allocation behind a thick LVM snapshot, and what is left of it.
+#[cfg(unix)]
+async fn thick_snapshot_store(vg: &str, lv: &str) -> CowStore {
+	let qualified = format!("{vg}/{lv}");
+	let size: Option<u64> = super::blockdev::lvs("lv_size", &qualified, true)
+		.await
+		.and_then(|raw| raw.parse().ok());
+	let used: Option<f64> = super::blockdev::lvs("snap_percent", &qualified, false)
+		.await
+		.and_then(|raw| raw.parse().ok());
+	let available = match (size, used) {
+		#[expect(
+			clippy::cast_precision_loss,
+			clippy::cast_possible_truncation,
+			clippy::cast_sign_loss,
+			reason = "a snapshot's fill is reported as a percentage, so the answer is \
+			          approximate by construction and only ever compared against an estimate"
+		)]
+		(Some(size), Some(used)) => Some((size as f64 * (100.0 - used) / 100.0) as u64),
+		_ => None,
+	};
+	CowStore::Separate {
+		name: format!("the snapshot {qualified}'s own allocation"),
+		available,
+		remedy: format!("extend it with `lvextend {qualified}` first"),
+	}
+}
+
 /// The thin pool behind a held LVM capture, and what is left in it.
 #[cfg(unix)]
 async fn thin_pool_store(vg: &str, lv: &str) -> CowStore {
 	let Some(pool) = super::blockdev::lvs("pool_lv", &format!("{vg}/{lv}"), false).await else {
-		// A thick snapshot has its own fixed allocation rather than a shared pool.
-		return CowStore::SameFilesystem;
+		// Not in a pool, so it is a thick snapshot: the blocks the origin displaces
+		// are copied into the *snapshot's own* fixed allocation, not into the live
+		// filesystem. Charging the writes to the filesystem would refuse restores
+		// that comfortably fit, and would leave unwatched the store that actually
+		// runs out — a thick snapshot that fills is invalidated outright, which is
+		// the capture vanishing partway through overwriting the destination.
+		return thick_snapshot_store(vg, lv).await;
 	};
 	let qualified = format!("{vg}/{pool}");
 	let size: Option<u64> = super::blockdev::lvs("lv_size", &qualified, true)
@@ -211,13 +244,33 @@ async fn thin_pool_store(vg: &str, lv: &str) -> CowStore {
 /// fails.
 #[cfg(windows)]
 async fn shadow_storage(record: &HoldRecord) -> CowStore {
-	let volume = record
-		.source
-		.to_str()
-		.and_then(|path| path.get(..2))
-		.unwrap_or("C:")
-		.to_owned();
-	let available = tokio::process::Command::new("vssadmin")
+	// The volume the shadow was taken of, as the capture recorded it. Not guessed
+	// from the capture's path: that is the junction bestool made to expose the
+	// shadow, which need not be on the shadowed volume, and a headroom figure for
+	// the wrong volume is worse than none — this is the number whose whole job is
+	// to stop VSS deleting the capture mid-copy.
+	let Some(volume) = shadowed_volume(record) else {
+		warn!(
+			"could not tell which volume hold {} was shadowed from, so its shadow \
+			 storage headroom is unknown; the capture is lost if that store fills",
+			record.id,
+		);
+		return CowStore::Separate {
+			name: "the volume's shadow copy storage".to_owned(),
+			available: None,
+			remedy: "check it with `vssadmin list shadowstorage`".to_owned(),
+		};
+	};
+
+	// Resolved absolutely rather than by name: this runs elevated, and Windows
+	// searches the application directory (and sometimes the working directory)
+	// before the system one, so a planted `vssadmin.exe` would run as admin.
+	let vssadmin = std::path::PathBuf::from(
+		std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()),
+	)
+	.join("System32")
+	.join("vssadmin.exe");
+	let available = tokio::process::Command::new(vssadmin)
 		.args(["list", "shadowstorage", &format!("/for={volume}")])
 		.stdin(std::process::Stdio::null())
 		.output()
@@ -231,6 +284,21 @@ async fn shadow_storage(record: &HoldRecord) -> CowStore {
 		remedy: format!(
 			"raise the cap with `vssadmin resize shadowstorage /for={volume} /on=<vol> /maxsize=<size>` first"
 		),
+	}
+}
+
+/// Which volume a held shadow copy was taken of.
+///
+/// The capture records it when it notes the change journal's position, which is
+/// read from the shadowed volume itself. Without that there is nothing here
+/// worth guessing from.
+#[cfg(windows)]
+fn shadowed_volume(record: &HoldRecord) -> Option<String> {
+	match &record.diverged_since {
+		Some(crate::actions::canopy::backup::hold::DivergenceMark::UsnJournal { volume, .. }) => {
+			Some(volume.to_str()?.to_owned())
+		}
+		_ => None,
 	}
 }
 

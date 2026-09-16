@@ -345,7 +345,11 @@ impl Method {
 					Some(target) => target.clone(),
 					None => config.path.clone(),
 				};
-				if !Interlock::resumes(&target, record).await {
+				// A marker from an interrupted attempt on this same hold stands in for
+				// a confirmation nobody was asked for — but never for one the operator
+				// was asked for and refused.
+				let resuming = Interlock::resumes(&target, record).await;
+				if !resuming || opts.declined {
 					ensure_not_clobbering_in_place(&target, opts.clobber)?;
 				}
 
@@ -358,8 +362,12 @@ impl Method {
 					skip: Vec::new(),
 				})
 				.await?;
-				if !planned.has_work() {
-					crate::actions::canopy::restore::inplace::lay_down(planned).await?;
+
+				// Nothing to write and nothing left marked: the tree is already the
+				// captured state, so there is no in-flight record to make or clear.
+				if !planned.has_work() && !resuming {
+					let summary = crate::actions::canopy::restore::inplace::lay_down(planned).await?;
+					report(&target, record, &summary);
 					return Ok(());
 				}
 
@@ -368,9 +376,17 @@ impl Method {
 				// has to be legible in the tree itself rather than only in a log. What
 				// the postgres method adds on top is holding its *service* unstartable,
 				// which is its own business.
+				//
+				// Engaged even when the walk found nothing, because a resumed attempt
+				// that has converged still has a marker to clear — and while it is
+				// there it keeps waiving the overwrite confirmation.
 				let interlock = Interlock::engage(&target, record).await?;
 				match crate::actions::canopy::restore::inplace::lay_down(planned).await {
-					Ok(_) => interlock.release().await,
+					Ok(summary) => {
+						interlock.release().await?;
+						report(&target, record, &summary);
+						Ok(())
+					}
 					Err(err) => Err(err).wrap_err_with(|| {
 						format!(
 							"{} is part-way through a restore from hold {} and is not usable; \
@@ -468,6 +484,26 @@ impl Method {
 	}
 }
 
+/// Say what an in-place restore did, including which guarantee it got about what
+/// diverged — the spec has the mode report that, and an operator reading only
+/// "done" cannot tell the authoritative answer from the degraded one.
+#[cfg(feature = "canopy-restore")]
+fn report(
+	target: &Path,
+	record: &super::hold::HoldRecord,
+	summary: &crate::actions::canopy::restore::inplace::Summary,
+) {
+	info!(
+		target = %target.display(),
+		hold = %record.id,
+		copied = summary.copied,
+		removed = summary.removed,
+		bytes = summary.bytes,
+		from_filesystem = summary.from_filesystem,
+		"the divergence from the held capture is laid down",
+	);
+}
+
 /// Where the secret key is laid back down: the override if one was given, else
 /// wherever this install keeps it. The same answer whether the restore is staged
 /// or in place, so it is worked out in one place.
@@ -489,6 +525,13 @@ pub struct RestoreOpts {
 	pub target: Option<PathBuf>,
 	/// Proceed even when the destination already holds data.
 	pub clobber: bool,
+	/// The operator was asked whether to overwrite and said no.
+	///
+	/// Distinct from `!clobber`, which is also what a non-interactive run with no
+	/// flag looks like. An in-place restore lets a marker from an interrupted
+	/// attempt stand in for a confirmation that was never sought; it must not let
+	/// one override a confirmation that was sought and refused.
+	pub declined: bool,
 }
 
 /// Error unless an in-place restore is allowed to write over `target`.
@@ -635,7 +678,7 @@ pub(super) fn with_extension_suffix(path: &Path, suffix: &str) -> PathBuf {
 	path.with_file_name(name)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "canopy-restore"))]
 mod inplace_clobber_tests {
 	use super::*;
 

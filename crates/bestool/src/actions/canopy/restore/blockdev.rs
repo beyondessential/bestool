@@ -32,7 +32,17 @@ pub async fn capture(program: &str, args: &[&str]) -> Option<String> {
 		debug!("{program} {} exited {}", args.join(" "), output.status);
 		return None;
 	}
-	Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+	// Taken rather than copied: `find-new` prints a line per *extent*, so hours of
+	// divergence on a large cluster is hundreds of MB, and borrowing-then-owning
+	// would hold two copies of it at once.
+	let mut text = match String::from_utf8(output.stdout) {
+		Ok(text) => text,
+		Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+	};
+	text.truncate(text.trim_end().len());
+	let lead = text.len() - text.trim_start().len();
+	text.drain(..lead);
+	Some(text)
 }
 
 /// Run a command for its effect alone.

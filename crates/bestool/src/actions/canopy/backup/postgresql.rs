@@ -266,6 +266,13 @@ async fn stop_the_cluster(config: &PostgresqlConfig, plan: &resolve::RestorePlan
 async fn start_the_cluster(config: &PostgresqlConfig, plan: &resolve::RestorePlan) -> Result<()> {
 	let target = &plan.target;
 
+	// A tree some in-place attempt left part-way through is neither state, and
+	// starting it corrupts it. Checked on both paths rather than only the one
+	// that writes markers: a staged restore over a marked tree would otherwise
+	// start it, and the marker's whole purpose is to say do not.
+	#[cfg(feature = "canopy-restore")]
+	crate::actions::canopy::restore::inplace::Interlock::ensure_clear(&target.data_dir).await?;
+
 	// The account the server runs as, so its files can be made writable by it
 	// (Windows). Fix the whole restored tree (`dest`): the data dir for a data-only
 	// restore, or the install root — binaries included — for a whole-install one.
@@ -691,7 +698,11 @@ pub async fn restore_in_place(
 	// the first attempt did not. A marker naming any other hold is not that, and
 	// neither is one someone dropped into the data directory, so it stands in for
 	// consent only when it names the hold being restored.
-	if !Interlock::resumes(&target.data_dir, record).await {
+	//
+	// A confirmation that was *refused* is a different matter: the marker stands
+	// in for one nobody was asked for, never for one the operator said no to.
+	let resuming = Interlock::resumes(&target.data_dir, record).await;
+	if !resuming || opts.declined {
 		super::method::ensure_not_clobbering_in_place(&plan.dest, opts.clobber)?;
 	}
 
@@ -725,11 +736,20 @@ pub async fn restore_in_place(
 		)
 	})?;
 
-	let summary = if planned.has_work() {
+	let version_file = target.data_dir.join("PG_VERSION");
+	let parked = super::method::with_extension_suffix(&version_file, PARKED_SUFFIX);
+
+	// Whether the cluster has to be held unstartable, which is *not* the same
+	// question as whether there is anything to write. All three interlock files
+	// are skipped by the walk, so an attempt interrupted after its last copy but
+	// before `PG_VERSION` was written back leaves nothing for the next walk to
+	// find — and deciding on the delta alone would then skip putting
+	// `PG_VERSION` back and skip releasing the marker, on every re-run, leaving
+	// no way out of a cluster that cannot start.
+	let unfinished = resuming || tokio::fs::symlink_metadata(&parked).await.is_ok();
+	let summary = if planned.has_work() || unfinished {
 		// From here the tree is written over with no way back to what it was, so
 		// the cluster is made unstartable before the first write rather than after.
-		let version_file = target.data_dir.join("PG_VERSION");
-		let parked = super::method::with_extension_suffix(&version_file, PARKED_SUFFIX);
 		let interlock = Interlock::engage(&target.data_dir, record).await?;
 		park_version_file(&version_file, &parked).await?;
 
@@ -746,13 +766,14 @@ pub async fn restore_in_place(
 			})?;
 
 		// Last, so the cluster becomes startable only once everything under it is
-		// the captured state.
+		// the captured state. Reached even when the sync had nothing left to do,
+		// because finishing an interrupted attempt is exactly that case.
 		sync_version_file(&resolve::locate_pgdata(capture)?, &version_file, &parked).await?;
 		interlock.release().await?;
 		summary
 	} else {
-		// Nothing diverged, so nothing is written and the cluster was never made
-		// unstartable. A resumed restore that has already converged lands here.
+		// Nothing diverged and nothing was left unfinished, so the cluster was
+		// never made unstartable and there is nothing to put back.
 		super::super::restore::inplace::lay_down(planned).await?
 	};
 
@@ -764,9 +785,6 @@ pub async fn restore_in_place(
 		"the divergence from the held capture is laid down",
 	);
 
-	// A tree some other attempt left mid-restore must not be started, and this
-	// one released its own interlock above.
-	Interlock::ensure_clear(&target.data_dir).await?;
 	start_the_cluster(config, &plan).await?;
 
 	verify(config, &target.data_dir, &target.version).await;
@@ -820,7 +838,24 @@ async fn park_version_file(version_file: &Path, parked: &Path) -> Result<()> {
 	if tokio::fs::metadata(parked).await.is_ok() {
 		// A previous attempt parked it; keep that copy, which is the pre-restore
 		// one, and discard whatever a partial sync may have left in its place.
-		let _ = tokio::fs::remove_file(version_file).await;
+		//
+		// The removal is the whole safety argument of this mode — postgres will
+		// not start a cluster without `PG_VERSION` — so a failure to remove it is
+		// a failure to hold the cluster down, not a tidying detail. Only its
+		// absence is acceptable.
+		match tokio::fs::remove_file(version_file).await {
+			Ok(()) => {}
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+			Err(err) => {
+				return Err(err).into_diagnostic().wrap_err_with(|| {
+					format!(
+						"{} could not be moved out of the way, so the cluster would stay \
+						 startable while it is being written over",
+						version_file.display()
+					)
+				});
+			}
+		}
 		return Ok(());
 	}
 	match tokio::fs::rename(version_file, parked).await {

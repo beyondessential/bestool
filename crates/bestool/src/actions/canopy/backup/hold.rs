@@ -84,6 +84,24 @@ pub enum DivergenceMark {
 	},
 }
 
+/// The subvolume UUID out of `btrfs subvolume show`.
+///
+/// Lives with [`DivergenceMark`] because the capture side records it and the
+/// restore side checks it, and the two must read the field the same way forever:
+/// a divergence between two copies of this would turn the identity guard into a
+/// permanent refusal, or into a wrong match.
+///
+/// Matched on the whole `UUID:` label, since `Parent UUID` and `Received UUID`
+/// also end in it. A snapshot with no UUID of its own reports `-`.
+pub fn parse_subvolume_uuid(output: &str) -> Option<String> {
+	output
+		.lines()
+		.filter_map(|line| line.trim().strip_prefix("UUID:"))
+		.map(str::trim)
+		.find(|uuid| !uuid.is_empty() && *uuid != "-")
+		.map(str::to_owned)
+}
+
 /// The retained capture itself, in the terms its backend needs to release it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "backend", rename_all = "kebab-case")]
@@ -519,6 +537,29 @@ mod tests {
 		}"#;
 		let parsed = parse(json).unwrap();
 		assert_eq!(parsed.diverged_since, None);
+	}
+
+	const SHOW: &str = "\
+pgsub
+\tName: \t\t\tpgsub
+\tUUID: \t\t\t9960cf5a-4a6d-a641-b986-3a71d4549d03
+\tParent UUID: \t\t-
+\tReceived UUID: \t\t-
+\tGeneration: \t\t10
+";
+
+	#[test]
+	fn reads_the_subvolumes_own_uuid_not_its_parents() {
+		assert_eq!(
+			parse_subvolume_uuid(SHOW).as_deref(),
+			Some("9960cf5a-4a6d-a641-b986-3a71d4549d03")
+		);
+	}
+
+	#[test]
+	fn a_subvolume_with_no_uuid_at_all_is_not_identifiable() {
+		assert_eq!(parse_subvolume_uuid("ERROR: not a subvolume"), None);
+		assert_eq!(parse_subvolume_uuid("\tUUID: \t-\n"), None);
 	}
 
 	/// A btrfs mark from before the subvolume was recorded still parses; it is

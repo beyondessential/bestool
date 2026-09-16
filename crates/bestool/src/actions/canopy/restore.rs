@@ -220,7 +220,8 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			"paired follower snapshot to restore after this one",
 		);
 	}
-	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &follower_types)?;
+	let clobber =
+		args.clobber || confirm_clobber_interactively(&args.backup_type, &follower_types)? == Some(true);
 
 	// Sample the restore's S3 traffic to Canopy while it runs, so a long download
 	// shows progress. A restore has no engine cell and no freeze moment: the bytes
@@ -391,6 +392,8 @@ async fn run_restore(
 	let opts = RestoreOpts {
 		target: target_override.map(Path::to_path_buf),
 		clobber,
+		// Only the in-place path distinguishes a refusal from a silence.
+		declined: false,
 	};
 	lay_down(def, &staging, &opts).await
 }
@@ -449,10 +452,15 @@ async fn restore_from_hold(
 	);
 
 	if args.in_place {
-		let clobber = args.clobber || confirm_clobber_in_place_interactively(&args.backup_type)?;
+		let answer = if args.clobber {
+			Some(true)
+		} else {
+			confirm_clobber_in_place_interactively(&args.backup_type)?
+		};
 		let opts = RestoreOpts {
 			target: args.target.clone(),
-			clobber,
+			clobber: answer == Some(true),
+			declined: answer == Some(false),
 		};
 		super::backup::run_hooks(&def.pre_restore, true).await?;
 		def.method
@@ -483,10 +491,12 @@ async fn restore_from_hold(
 
 	copy_capture(&record.source, &staging).await?;
 
-	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &[])?;
+	let clobber =
+		args.clobber || confirm_clobber_interactively(&args.backup_type, &[])? == Some(true);
 	let opts = RestoreOpts {
 		target: args.target.clone(),
 		clobber,
+		declined: false,
 	};
 	lay_down(def, &staging, &opts).await
 }
@@ -702,7 +712,7 @@ fn available_snapshots_hint(snapshots: &[Snapshot]) -> String {
 /// only when both prompts pass. With no TTY, returns `false` (the caller then
 /// relies on the explicit flag / the clobber guard). One answer covers the
 /// leader and every follower restored with it.
-fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<bool> {
+fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<Option<bool>> {
 	let types = std::iter::once(backup_type)
 		.chain(followers.iter().copied())
 		.map(|t| format!("'{t}'"))
@@ -717,18 +727,22 @@ fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Resul
 /// The two-stage confirmation every destructive restore asks for: agree, then
 /// type the backup type back. One implementation, so a change to the protocol
 /// cannot reach one path and miss the other.
-fn confirm_destructive(backup_type: &str, warning: &str) -> Result<bool> {
+fn confirm_destructive(backup_type: &str, warning: &str) -> Result<Option<bool>> {
+	// `None` rather than `Some(false)`: nobody was asked, which is a different
+	// thing from somebody saying no, and the in-place path treats them
+	// differently — a marker can stand in for a confirmation never sought, but
+	// not for one actively declined.
 	if !std::io::stdin().is_terminal() {
-		return Ok(false);
+		return Ok(None);
 	}
 	print!("{warning} Continue? [y/N] ");
 	std::io::stdout().flush().ok();
 	if !read_line()?.trim().eq_ignore_ascii_case("y") {
-		return Ok(false);
+		return Ok(Some(false));
 	}
 	print!("Type the backup type '{backup_type}' to confirm: ");
 	std::io::stdout().flush().ok();
-	Ok(read_line()?.trim() == backup_type)
+	Ok(Some(read_line()?.trim() == backup_type))
 }
 
 /// What to tell an operator whose volume cannot hold a staged copy of the
@@ -751,7 +765,7 @@ fn staging_shortfall_hint(backup_type: &str, hold_id: &str) -> String {
 /// Worth asking separately from the staged path's confirmation: that one puts
 /// the displaced tree aside as `.old` and can be walked back, where this one
 /// cannot, and part-way through leaves data that is neither state.
-fn confirm_clobber_in_place_interactively(backup_type: &str) -> Result<bool> {
+fn confirm_clobber_in_place_interactively(backup_type: &str) -> Result<Option<bool>> {
 	confirm_destructive(
 		backup_type,
 		&format!(

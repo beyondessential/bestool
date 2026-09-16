@@ -101,24 +101,17 @@ async fn enclosing_subvolume(live: &Path) -> Option<(std::path::PathBuf, String)
 }
 
 /// The UUID of the subvolume rooted at `path`.
+///
+/// Parsed by the same function the capture side records it with: the two have to
+/// agree forever, and a divergence would turn the identity guard into a
+/// permanent refusal, or worse a wrong match.
 async fn subvolume_uuid(path: &Path) -> Option<String> {
 	let out = blockdev::capture(
 		"btrfs",
 		&["subvolume", "show", "--", &path.to_string_lossy()],
 	)
 	.await?;
-	parse_subvolume_uuid(&out)
-}
-
-/// The `UUID:` field of `btrfs subvolume show`. Matched on the whole label,
-/// since `Parent UUID` and `Received UUID` also end in it.
-fn parse_subvolume_uuid(output: &str) -> Option<String> {
-	output
-		.lines()
-		.filter_map(|line| line.trim().strip_prefix("UUID:"))
-		.map(str::trim)
-		.find(|uuid| !uuid.is_empty() && *uuid != "-")
-		.map(str::to_owned)
+	crate::actions::canopy::backup::hold::parse_subvolume_uuid(&out)
 }
 
 /// The id of the subvolume a path belongs to.
@@ -143,15 +136,18 @@ async fn rootid(path: &Path) -> Option<u64> {
 /// N` line is not a file. Anything outside `rel` is on the subvolume but not in
 /// the tree, so it is not this restore's business.
 fn parse_find_new(output: &str, rel: &Path) -> BTreeSet<std::path::PathBuf> {
-	output
+	// Deduplicated while still borrowed: `find-new` emits one line per extent, so
+	// a single large relation appears thousands of times and allocating a path per
+	// line would be proportional to extents rather than to changed files.
+	let unique: BTreeSet<&Path> = output
 		.lines()
 		.filter(|line| line.starts_with("inode "))
 		.filter_map(|line| line.split_once(" flags "))
 		.filter_map(|(_, after)| after.split_once(' '))
 		.map(|(_flags, path)| Path::new(path))
 		.filter_map(|path| path.strip_prefix(rel).ok())
-		.map(Path::to_path_buf)
-		.collect()
+		.collect();
+	unique.into_iter().map(Path::to_path_buf).collect()
 }
 
 #[cfg(test)]
@@ -167,29 +163,6 @@ inode 258 file offset 0 len 4096 disk start 13639680 offset 0 gen 43 flags NONE 
 inode 999 file offset 0 len 4096 disk start 13647872 offset 0 gen 44 flags NONE other/thing
 transid marker was 41
 ";
-
-	const SHOW: &str = "\
-pgsub
-\tName: \t\t\tpgsub
-\tUUID: \t\t\t9960cf5a-4a6d-a641-b986-3a71d4549d03
-\tParent UUID: \t\t-
-\tReceived UUID: \t\t-
-\tGeneration: \t\t10
-";
-
-	#[test]
-	fn reads_the_subvolumes_own_uuid_not_its_parents() {
-		assert_eq!(
-			parse_subvolume_uuid(SHOW).as_deref(),
-			Some("9960cf5a-4a6d-a641-b986-3a71d4549d03")
-		);
-	}
-
-	#[test]
-	fn a_subvolume_with_no_uuid_at_all_is_not_identifiable() {
-		assert_eq!(parse_subvolume_uuid("ERROR: not a subvolume"), None);
-		assert_eq!(parse_subvolume_uuid("\tUUID: \t-\n"), None);
-	}
 
 	#[test]
 	fn reads_the_changed_paths_relative_to_the_restored_tree() {
