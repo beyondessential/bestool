@@ -56,6 +56,22 @@ Measured on a Dell G7 7700, the SMBIOS UUID is `4c4c4544-0042-4710-804d-b3c04f48
 
 **Decided: the board ID combines every firmware identifier present rather than a single field.** On that same Dell, `board_serial` is `/3BGMHX2/CNPEC0034A0227/`, whose manufacturing code carries entropy the UUID does not; a vendor that wastes one source then does not collapse the whole space. The cost is that the set of sources and the order they are combined in become part of the derivation, fixed as firmly as the constants are — changing either orphans every sticker already printed. So the order is defined once, by source, with absent sources represented rather than skipped, so that a machine that later gains a source does not derive a different secret from the one on its sticker.
 
+#### The TPM on UEFI machines
+
+A PC-grade box can be assumed to carry a TPM 2.0, and it holds a far better identifier than anything in SMBIOS. The Endorsement Key is generated from the Endorsement Primary Seed under a standard, published template, so it is the same key every time it is asked for. Its *name* — the hash algorithm identifier followed by the SHA-256 digest of the public area — is a compact fixed-length value carrying the full entropy of a real 2048-bit RSA public key, and it is readable without authorisation.
+
+Verified on the same Dell, against its Intel firmware TPM. Regenerating the Endorsement Key from the standard template twice produced byte-identical names, and both matched the key already persisted at the conventional endorsement handle: `000b4e511a6e9753d54b298cfa8f84bb3aa6f7f900673035b0cec2bc3f5318de126d`. So the value is derivable from the board alone rather than read from somewhere it was stored, which is the property the whole scheme rests on — and it needs no provisioning step at all, unlike the Pi OTP option below.
+
+Regenerating rather than reading a persistent handle is the right way to obtain it. The persistent handle is populated by provisioning software and is not guaranteed to exist on a freshly imaged machine, whereas the seed and the template are always there.
+
+Three risks, none of them settled here.
+
+The Endorsement Primary Seed survives the ordinary clear operation, which resets the storage hierarchy, but a platform-authorised command exists to change it outright. What a given firmware does on a BIOS-level TPM reset, on disabling and re-enabling a firmware TPM, or across a firmware update, was not tested and should not be assumed. If the seed changes, the key changes, and the sticker is orphaned.
+
+A virtual machine with a software TPM inherits whatever seed its image carries, so machines cloned from one image share an Endorsement Key, and would share a board ID and a sticker secret. Any golden-image workflow makes this a correctness problem rather than a theoretical one.
+
+Reading it costs a dependency. The operation needed is narrow — create a primary key under the endorsement hierarchy with the standard template, then read its name — but reaching it from Rust means either the established bindings to the TPM software stack, which carry a C library, or speaking the TPM command protocol to the resource manager directly. Either way it belongs behind the board-ID backend interface and out of the core, which has to keep building for wasm.
+
 #### Provisioned entropy on Raspberry Pi
 
 Raspberry Pi SoCs carry a customer-programmable one-time-programmable area: eight rows of 32 bits, 256 bits in total, at rows 36–43 on non-BCM2712 parts and rows 77–84 on BCM2712, which is the Pi 5. There is also a 256-bit device-specific private key area at rows 56–63, but it is listed only for non-BCM2712, so the customer rows are the portable choice across the boards we would ship. Writes are irreversible in the usual OTP sense — bits go from 0 to 1 and not back — and row 30 holds bits that can disable OTP programming and reading altogether.
