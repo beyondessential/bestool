@@ -16,6 +16,9 @@ use super::{
 	backup::{DaemonError, capture_only, hold, request_daemon_hold},
 };
 
+#[cfg(test)]
+mod e2e;
+
 /// Manage captures held on this device as local rollback points.
 #[derive(Debug, Clone, Parser)]
 pub struct HoldArgs {
