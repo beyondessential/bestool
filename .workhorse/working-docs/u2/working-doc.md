@@ -148,6 +148,33 @@ Headroom is not the same as free. The derivation should be paid once per imaging
 
 The second derivation, sticker secret to advertised handle, stays a fast hash either way. The phone compares against every advertisement it hears while scanning, and a memory-hard function in that loop would be felt.
 
+#### Measured parameters
+
+**Decided: argon2id, 2 GiB of memory, one pass, two lanes.** Measured on a Raspberry Pi 5, which is the slowest board in scope: 2.4 seconds there, and around a second on a desktop-class generator.
+
+Two things came out of the measurement that are not obvious from the parameter space.
+
+Four lanes are slower than two on this hardware — 2.41 s against 2.37 s at this setting, and 5.78 s against 5.62 s at three passes — because four cores saturate the memory bus long before they run out of work. Lanes are part of the parameter set and change the output, so choosing four would have baked in a permanently worse value for nothing.
+
+And memory is the right axis to spend on. At equal or better wall time, 2 GiB with one pass beats 1 GiB with three, because an attacker's parallelism is bounded by memory divided into their card's, while passes only make each guess longer.
+
+Concurrency is not part of the parameter set. The same parameters produce identical digests whether lanes are computed in parallel or in sequence, verified across one, two, and four lanes. So the device, the sticker generator, and any future implementation agree on the value regardless of how each chooses to compute it — the speed knob and the key schedule are separate.
+
+**What the cost actually buys, against each source.** Taking a datacentre GPU at roughly 2 TB/s of memory bandwidth and around 6 GiB of traffic per guess, an attacker gets on the order of hundreds of guesses per second per card. These are order-of-magnitude figures, but the conclusion does not depend on the precision:
+
+| source | space | one card | a hundred cards |
+| --- | --- | --- | --- |
+| pre-Pi-4 serial | 2^32 | months | days |
+| vendor-structured SMBIOS UUID | 2^36 | years | weeks |
+| Pi 4 and 5 serial | 2^64 | infeasible | infeasible |
+| TPM Endorsement Key, burnt OTP | 2^256 | infeasible | infeasible |
+
+So the weak class is narrower than "platform serials" suggests. A Pi 5 serial is 64 bits and genuinely safe — measured on hardware as `f3756510f632cfad`, with the high half populated rather than zero. What is weak is specifically the pre-Pi-4 boards, where the serial collapses to a 32-bit word, and vendor-structured SMBIOS UUIDs of the kind measured on the Dell. No parameters tolerable on a boot path rescue either; the derivation cost raises the price without moving the outcome.
+
+**The derivation does not fail gracefully when memory is short.** Peak resident memory is 2057 MiB, a hair above the parameter. Under a cgroup limit it runs at full speed down to 2100 MiB and is killed outright below that — the kernel overcommits, so the allocation succeeds and the process is killed when it touches the pages. Exit by signal, no error to catch, nothing reported.
+
+That is a requirement rather than a curiosity, and it falls out of choosing 2 GiB against a 4 GB floor. The daemon establishes there is room before it starts, and reports that there is not rather than being killed mid-derivation; or it derives in a child process, so a kill is something it can observe and report instead of the daemon's own death.
+
 ### Advertised handle
 
 A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast in the BLE advertisement.
