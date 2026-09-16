@@ -559,18 +559,16 @@ async fn store_fell_by<B: Backend>(
 	let deadline = std::time::Instant::now() + RECLAIM_WITHIN;
 	let mut readings = 0_u32;
 	let mut lowest = f64::MAX;
-	let mut last = f64::NAN;
 	loop {
 		let now = read_store(backend, "after the drop").await;
 		readings += 1;
 		lowest = lowest.min(now);
-		last = now;
 		if before - now >= margin {
 			return Ok(());
 		}
 		if std::time::Instant::now() >= deadline {
 			return Err(format!(
-				"{readings} readings, lowest {lowest}, last {last}, so it fell by {} at best",
+				"{readings} readings, lowest {lowest}, last {now}, so it fell by {} at best",
 				before - lowest,
 			));
 		}

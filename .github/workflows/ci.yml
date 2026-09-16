@@ -228,9 +228,15 @@ jobs:
           # on the count.
           cat > run-lifecycle <<'RUNNER'
           #!/usr/bin/env bash
-          set -euo pipefail
+          # Deliberately not `set -e`: the output is printed before anything is
+          # judged, so a failing run says why instead of exiting on the spot with
+          # its diagnosis still inside a shell variable.
+          set -uo pipefail
           filter=$1; expected=$2
-          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 2>&1)
+          status=$?
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || { echo "the '$filter' test failed"; exit 1; }
           grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
             echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
           RUNNER
@@ -430,8 +436,14 @@ jobs:
       - name: The hold lifecycle on VSS
         shell: bash
         run: |
-          set -euo pipefail
-          out=$(cargo test -p bestool --lib hold::e2e::windows -- --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          # Deliberately not `set -e`, and no pipeline: the output is printed
+          # before anything is judged. Piping through `tee /dev/stderr` under Git
+          # Bash left a failure with no output at all to diagnose it by.
+          set -uo pipefail
+          out=$(cargo test -p bestool --lib hold::e2e::windows -- --ignored --nocapture --test-threads=1 2>&1)
+          status=$?
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || { echo "the VSS lifecycle tests failed"; exit 1; }
           grep -q "^test result: ok\. 2 passed;" <<<"$out" || {
             echo "expected both VSS lifecycle tests to run and pass"; exit 1; }
 
