@@ -4,6 +4,8 @@ pub use crate::actions::run_with_update_check as run;
 pub use crate::args::get_args as args;
 
 pub(crate) mod actions;
+#[cfg(feature = "alertd")]
+pub(crate) mod alertd;
 pub(crate) mod args;
 #[cfg(all(
 	test,

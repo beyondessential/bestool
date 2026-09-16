@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use owo_colors::OwoColorize;
 
-use bestool_alertd::doctor::check::{CheckOutcome, CheckStatus, OverallResult};
+use bestool_alertd::check::{CheckOutcome, CheckStatus, OverallResult};
 
 use super::{SweepSource, order};
 
@@ -184,7 +184,7 @@ fn colour_broken(use_colours: bool, s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use bestool_alertd::doctor::{check::Check, subject::Subject};
+	use bestool_alertd::{check::Check, subject::Subject};
 
 	use super::*;
 	use crate::actions::tamanu::doctor::order::filter_and_sort;

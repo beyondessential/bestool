@@ -300,7 +300,7 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 	// loopback) and returns the base URL that answered: the daemon binds only
 	// the first address it can, so a hardcoded family can miss it.
 	let (client, base_url) =
-		bestool_alertd::commands::try_connect_daemon(&bestool_alertd::commands::default_server_addrs())
+		crate::alertd::commands::try_connect_daemon(&crate::alertd::commands::default_server_addrs())
 			.await?;
 
 	let mut url = reqwest::Url::parse(&format!("{base_url}/tasks/self-update/update"))
@@ -364,7 +364,7 @@ async fn delegate_to_daemon(args: &SelfUpdateArgs) -> Result<()> {
 async fn fetch_daemon_status(
 	client: &reqwest::Client,
 	base_url: &str,
-) -> Option<bestool_alertd::http_server::StatusResponse> {
+) -> Option<crate::alertd::http_server::StatusResponse> {
 	let response = client
 		.get(format!("{base_url}/status"))
 		.send()
@@ -493,7 +493,7 @@ fn add_self_to_path() -> Result<()> {
 async fn is_alertd_service_running() -> bool {
 	// Probes every default address (v6 and v4 loopback): the daemon binds only
 	// the first address it can, so checking a single family can miss it.
-	bestool_alertd::commands::try_connect_daemon(&bestool_alertd::commands::default_server_addrs())
+	crate::alertd::commands::try_connect_daemon(&crate::alertd::commands::default_server_addrs())
 		.await
 		.is_ok()
 }

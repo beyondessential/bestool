@@ -1,36 +1,26 @@
 # bestool-alertd
 
-A healthcheck daemon: it runs background tasks (the Tamanu doctor sweep) on a
-schedule, posts the results to canopy, and serves task/status/health/metrics
-over a small HTTP API.
+The Tamanu healthchecks: the check registry, the sweep that runs them, the
+self-heal machinery, and the stats each check declares.
 
-This crate is part of [BES tooling][repo]. It is a library embedded by the
-`bestool` umbrella tool, which drives it via `bestool tamanu alertd`.
+This crate is part of [BES tooling][repo]. It carries the checks and the
+machinery they're built from, and nothing that schedules them — so a consumer
+can harvest checks without pulling in an HTTP server or a service registration.
+The daemon that runs them on a schedule, and the `bestool tamanu doctor` command
+that runs them interactively, both live in the `bestool` binary.
 
 [repo]: https://github.com/beyondessential/bestool
 
 ## Use
 
-The daemon is configured and run through `bestool tamanu alertd run`, which
-reads the database and device-key configuration from Tamanu's config files,
-registers the doctor sweep, and starts the daemon.
+`checks::all()` is the registry. `perform_sweep` runs a selection of it against
+a host and its Tamanu deployment, resolving each check to an outcome and
+reporting progress as it goes. `resolve_sweep_tamanu` and
+`discover_sweep_tamanu` work out what deployment, if any, is on the host.
 
-The HTTP control API exposes:
-
-- `GET /` — list of endpoints.
-- `GET /status` — daemon name, version, uptime, pid.
-- `GET /health` — watchdog health (200 if healthy, 530 if stalled).
-- `GET /metrics` — Prometheus metrics.
-- `GET /tasks/{task}/{endpoint}` — endpoints exposed by registered tasks (e.g.
-  the doctor's `latest` and `recompute`).
-
-On Windows, `bestool tamanu alertd install` registers a native service named
-`bestool-alertd`; `uninstall` and `configure-recovery` are also provided.
-
-## Library
-
-The crate exposes a library API (`bestool_alertd::run`, `DaemonConfig`,
-`BackgroundTask`, the `doctor` module, …) so other tools can embed the daemon.
+A check may declare a self-heal action, which the caller attempts while the
+check is failing; the interactive doctor never does, so running it by hand has
+no side effects.
 
 ## License
 

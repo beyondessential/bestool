@@ -146,7 +146,11 @@ pub async fn teardown(root: PathBuf) -> Result<()> {
 /// move out of the staging path the next run of this type reuses (and clears)
 /// into the hold's own. Returns the path the held capture is readable at, and
 /// what it takes to release it.
-pub async fn hold(root: PathBuf, id: &str, source: &Path) -> Result<(PathBuf, HeldCapture)> {
+pub async fn hold(
+	root: PathBuf,
+	id: &str,
+	source: &Path,
+) -> Result<(PathBuf, HeldCapture, Option<super::super::hold::DivergenceMark>)> {
 	let rel = source
 		.strip_prefix(&root)
 		.map_err(|_| {
@@ -177,7 +181,13 @@ pub async fn hold(root: PathBuf, id: &str, source: &Path) -> Result<(PathBuf, He
 		})?;
 
 	info!(hold = %id, root = %held_root.display(), "held base backup");
-	Ok((held_root.join(rel), HeldCapture::BaseBackup { root: held_root }))
+	// A staged copy is written by the backup itself rather than snapshotted from a
+	// filesystem, so there is no change history to record a position in.
+	Ok((
+		held_root.join(rel),
+		HeldCapture::BaseBackup { root: held_root },
+		None,
+	))
 }
 
 /// Delete a staging tree the daemon had handed to postgres/kopia. Reclaim

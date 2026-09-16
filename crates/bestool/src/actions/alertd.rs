@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use miette::Result;
 use tracing::warn;
 
-use bestool_alertd::doctor::DoctorTask;
+use crate::alertd::doctor::DoctorTask;
 
 use crate::actions::Context;
 
@@ -135,51 +135,51 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 	match args.command {
 		Command::Status { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
+				crate::alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			bestool_alertd::commands::get_status(&addrs, Some(env!("CARGO_PKG_VERSION"))).await
+			crate::alertd::commands::get_status(&addrs, Some(env!("CARGO_PKG_VERSION"))).await
 		}
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
+				crate::alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			bestool_alertd::commands::reload(&addrs).await
+			crate::alertd::commands::reload(&addrs).await
 		}
 		Command::Restart { server_addr } => {
 			let addrs = if server_addr.is_empty() {
-				bestool_alertd::commands::default_server_addrs()
+				crate::alertd::commands::default_server_addrs()
 			} else {
 				server_addr
 			};
-			bestool_alertd::commands::restart(&addrs).await
+			crate::alertd::commands::restart(&addrs).await
 		}
 		Command::Run { daemon } => {
 			let daemon_config = build_config(&ctx, daemon).await?;
-			bestool_alertd::run(daemon_config).await
+			crate::alertd::run(daemon_config).await
 		}
 		#[cfg(windows)]
 		Command::Install => {
 			use std::ffi::OsString;
-			bestool_alertd::windows_service::install_service_with_args(&[
+			crate::alertd::windows_service::install_service_with_args(&[
 				OsString::from("alertd"),
 				OsString::from("service"),
 			])
 		}
 		#[cfg(windows)]
-		Command::Uninstall => bestool_alertd::windows_service::uninstall_service(),
+		Command::Uninstall => crate::alertd::windows_service::uninstall_service(),
 		#[cfg(windows)]
-		Command::ConfigureRecovery => bestool_alertd::windows_service::configure_recovery(),
+		Command::ConfigureRecovery => crate::alertd::windows_service::configure_recovery(),
 		#[cfg(windows)]
 		Command::Service { daemon } => {
 			// Check and auto-apply recovery configuration if needed
-			match bestool_alertd::windows_service::is_recovery_configured() {
+			match crate::alertd::windows_service::is_recovery_configured() {
 				Ok(false) => {
 					tracing::info!("failure recovery not configured, applying automatically");
-					if let Err(e) = bestool_alertd::windows_service::configure_recovery() {
+					if let Err(e) = crate::alertd::windows_service::configure_recovery() {
 						tracing::warn!("failed to auto-configure recovery: {e}");
 					}
 				}
@@ -190,7 +190,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			}
 
 			let daemon_config = build_config(&ctx, daemon).await?;
-			bestool_alertd::windows_service::run_service(daemon_config)
+			crate::alertd::windows_service::run_service(daemon_config)
 		}
 	}
 }
@@ -199,16 +199,16 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 /// backup registry once and shares it: the doctor task's canopy-trigger dispatch
 /// and the `backup` task (its `run`/`running` endpoints) drive the same runs.
 fn with_daemon_tasks(
-	config: bestool_alertd::DaemonConfig,
+	config: crate::alertd::DaemonConfig,
 	doctor: DoctorTask,
-) -> bestool_alertd::DaemonConfig {
+) -> crate::alertd::DaemonConfig {
 	#[cfg(feature = "canopy-backup")]
 	let (config, doctor) = {
-		let registry = bestool_alertd::BackupRegistry::new(backup_runner());
+		let registry = crate::alertd::BackupRegistry::new(backup_runner());
 		let doctor = doctor.with_backup_dispatch(backup_dispatch(registry.clone()));
 		let config = config
 			.with_backups(registry.clone())
-			.with_task(Arc::new(bestool_alertd::BackupTask::new(registry.clone())))
+			.with_task(Arc::new(crate::alertd::BackupTask::new(registry.clone())))
 			.with_task(Arc::new(backup::BackupCapabilitiesTask::new(registry)));
 		(config, doctor)
 	};
@@ -231,8 +231,8 @@ fn with_daemon_tasks(
 /// itself.
 #[cfg(feature = "canopy-backup")]
 fn backup_dispatch(
-	registry: Arc<bestool_alertd::BackupRegistry>,
-) -> bestool_alertd::doctor::BackupDispatch {
+	registry: Arc<crate::alertd::BackupRegistry>,
+) -> crate::alertd::doctor::BackupDispatch {
 	use futures::StreamExt as _;
 
 	Arc::new(move |types: Vec<String>| {
@@ -255,7 +255,7 @@ fn backup_dispatch(
 /// [`run_backup`]: crate::actions::canopy::backup::run_backup
 /// [`BackupEvent`]: crate::actions::canopy::backup::BackupEvent
 #[cfg(feature = "canopy-backup")]
-fn backup_runner() -> bestool_alertd::BackupRunner {
+fn backup_runner() -> crate::alertd::BackupRunner {
 	use serde_json::{Value, json};
 	use tokio::sync::mpsc;
 
@@ -342,11 +342,11 @@ mod backup {
 	const REREGISTER_INTERVAL: Duration = Duration::from_secs(3600);
 
 	pub(super) struct BackupCapabilitiesTask {
-		registry: Arc<bestool_alertd::BackupRegistry>,
+		registry: Arc<crate::alertd::BackupRegistry>,
 	}
 
 	impl BackupCapabilitiesTask {
-		pub(super) fn new(registry: Arc<bestool_alertd::BackupRegistry>) -> Self {
+		pub(super) fn new(registry: Arc<crate::alertd::BackupRegistry>) -> Self {
 			Self { registry }
 		}
 	}
@@ -357,8 +357,8 @@ mod backup {
 	/// The configured types are recorded even when there's no canopy client or no
 	/// defs, so the status reflects the host's config regardless of connectivity.
 	async fn register(
-		registry: &bestool_alertd::BackupRegistry,
-		ctx: &bestool_alertd::TaskContext,
+		registry: &crate::alertd::BackupRegistry,
+		ctx: &crate::alertd::TaskContext,
 	) -> Result<()> {
 		let defs = config::load_dir(&config::backups_dir()).await?;
 		let types: Vec<String> = defs.into_iter().map(|d| d.r#type).collect();
@@ -385,8 +385,8 @@ mod backup {
 	/// Re-register, logging the trigger; failures are warned, never fatal.
 	async fn reregister(
 		reason: &str,
-		registry: &bestool_alertd::BackupRegistry,
-		ctx: &bestool_alertd::TaskContext,
+		registry: &crate::alertd::BackupRegistry,
+		ctx: &crate::alertd::TaskContext,
 	) {
 		info!(reason, "registering backup capabilities");
 		if let Err(err) = register(registry, ctx).await {
@@ -482,7 +482,7 @@ mod backup {
 		}
 	}
 
-	impl bestool_alertd::BackgroundTask for BackupCapabilitiesTask {
+	impl crate::alertd::BackgroundTask for BackupCapabilitiesTask {
 		fn name(&self) -> &'static str {
 			"backup-capabilities"
 		}
@@ -492,7 +492,7 @@ mod backup {
 			REREGISTER_INTERVAL
 		}
 
-		fn run<'a>(&'a self, ctx: &'a bestool_alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
+		fn run<'a>(&'a self, ctx: &'a crate::alertd::TaskContext) -> BoxFuture<'a, Result<()>> {
 			Box::pin(async move {
 				reregister("startup", &self.registry, ctx).await;
 
@@ -626,10 +626,10 @@ mod backup {
 /// locations. A host with no Tamanu still runs the daemon, with every
 /// Tamanu-dependent check skipped.
 #[cfg(feature = "alertd-tamanu")]
-async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd::DaemonConfig> {
 	use tracing::debug;
 
-	use bestool_alertd::doctor::discover_sweep_tamanu;
+	use bestool_alertd::discover_sweep_targets;
 	use bestool_tamanu::server_info::fetch_device_key;
 
 	let DaemonArgs {
@@ -658,32 +658,17 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 	// from. The doctor task re-runs it before every sweep (see
 	// `with_tamanu_discovery`), so an upgrade doesn't need a daemon restart to
 	// show up.
-	let tamanu = discover_sweep_tamanu(root.as_deref()).await?;
-	match &tamanu {
+	let targets = discover_sweep_targets(root.as_deref()).await?;
+	match &targets {
 		Some(t) => debug!(
-			has_install = t.has_install,
-			is_tamanu = t.is_tamanu,
-			"resolved database sweep context"
+			has_tamanu = t.tamanu.is_some(),
+			has_install = t.tamanu.as_ref().is_some_and(|t| t.root.is_some()),
+			"resolved the sweep's targets"
 		),
 		None => warn!(
 			"no Tamanu install, no TAMANU_DATABASE_URL, and no DATABASE_URL; Tamanu and database checks will skip"
 		),
 	}
-
-	// A pool error here means postgres is down or unreachable. Don't abort
-	// startup over it: the daemon must still run so the `db_connect` check
-	// (which connects via `database_url`, not this pool) can report it.
-	let pg_pool = match &tamanu {
-		Some(t) => match bestool_postgres::pool::create_pool(&t.database_url, "bestool-alertd").await
-		{
-			Ok(pool) => Some(pool),
-			Err(err) => {
-				warn!(%err, "postgres not reachable at startup; db_connect will report it");
-				None
-			}
-		},
-		None => None,
-	};
 
 	let watchdog = if no_watchdog {
 		None
@@ -693,15 +678,14 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 
 	let device_key_pem = fetch_device_key().await;
 
-	let base = bestool_alertd::DaemonConfig::new(
-		pg_pool.clone(),
-		tamanu.as_ref().map(|t| t.database_url.clone()),
-	)
-	.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
-	.with_no_server(no_server)
-	.with_server_addrs(server_addr)
-	.with_watchdog_timeout(watchdog);
-	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), tamanu)
+	// Startup never touches the database: the doctor task opens the pool on its
+	// first sweep and reopens it when postgres comes back, so postgres being
+	// down can't hold the daemon up or leave it permanently poolless.
+	let base = crate::alertd::DaemonConfig::new()
+		.with_no_server(no_server)
+		.with_server_addrs(server_addr)
+		.with_watchdog_timeout(watchdog);
+	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), targets)
 		.with_tamanu_discovery(root);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 
@@ -716,7 +700,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alert
 /// Tamanu support). The daemon still runs and posts sweeps; every
 /// Tamanu-dependent check is skipped.
 #[cfg(not(feature = "alertd-tamanu"))]
-async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_alertd::DaemonConfig> {
+async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd::DaemonConfig> {
 	let DaemonArgs {
 		glob,
 		no_server,
@@ -743,12 +727,11 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<bestool_aler
 		.flatten()
 		.and_then(|reg| reg.device_key);
 
-	let base = bestool_alertd::DaemonConfig::new(None, None)
-		.with_binary_version(env!("CARGO_PKG_VERSION").to_string())
+	let base = crate::alertd::DaemonConfig::new()
 		.with_no_server(no_server)
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
-	let doctor = DoctorTask::new(env!("CARGO_PKG_VERSION").to_string(), None);
+	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), None);
 	let mut daemon_config = with_daemon_tasks(base, doctor);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);

@@ -13,7 +13,7 @@ use std::{
 };
 
 use jiff::Timestamp;
-use miette::{Result, bail};
+use miette::{Context as _, Result, bail};
 use serde::Deserialize;
 use tracing::{debug, info};
 
@@ -281,12 +281,17 @@ impl Method {
 	///
 	/// Promotes the capture out of the run-owned names and paths the next run of
 	/// this type reuses and reaps, and returns the path it is readable at
-	/// afterwards together with what it takes to release it.
+	/// afterwards, what it takes to release it, and where the filesystem's own
+	/// change history stood at the freeze, where the backend keeps one.
 	pub(super) async fn hold(
 		&self,
 		prepared: Prepared,
 		id: &str,
-	) -> Result<(PathBuf, super::hold::HeldCapture)> {
+	) -> Result<(
+		PathBuf,
+		super::hold::HeldCapture,
+		Option<super::hold::DivergenceMark>,
+	)> {
 		let source = prepared.path;
 		match prepared.teardown {
 			// Unreachable via the commands, which check `supports_hold` before
@@ -311,6 +316,96 @@ impl Method {
 			#[cfg(windows)]
 			Teardown::Vss(shadow) => super::postgresql::vss::hold(shadow, id, &source).await,
 			Teardown::BaseBackup(root) => super::postgresql::basebackup::hold(root, id, &source).await,
+		}
+	}
+
+	/// Lay a held capture (at `capture`) back down over the live tree without
+	/// staging a copy of it first, writing only what diverged from it.
+	///
+	/// Every method can be restored this way. Where a method lays a whole tree
+	/// down, that tree is compared and the difference written; where it lays down
+	/// a single file, the comparison has nothing to save and the file is simply
+	/// written, which is what the staged path does anyway.
+	///
+	/// spec: HOLD#restoring-from-a-held-capture
+	#[cfg(feature = "canopy-restore")]
+	pub async fn restore_in_place(
+		&self,
+		record: &super::hold::HoldRecord,
+		capture: &Path,
+		opts: &RestoreOpts,
+	) -> Result<()> {
+		use crate::actions::canopy::restore::inplace::Job;
+
+		match self {
+			Method::Simple(config) => {
+				use crate::actions::canopy::restore::inplace::Interlock;
+
+				let target = match &opts.target {
+					Some(target) => target.clone(),
+					None => config.path.clone(),
+				};
+				// A marker from an interrupted attempt on this same hold stands in for
+				// a confirmation nobody was asked for — but never for one the operator
+				// was asked for and refused.
+				let resuming = Interlock::resumes(&target, record).await;
+				if !resuming || opts.declined {
+					ensure_not_clobbering_in_place(&target, opts.clobber)?;
+				}
+
+				// Everything that can refuse runs before anything is written, so a
+				// refusal leaves the tree exactly as it was and marks nothing.
+				let planned = crate::actions::canopy::restore::inplace::plan(Job {
+					record,
+					capture,
+					live: &target,
+					skip: Vec::new(),
+				})
+				.await?;
+
+				// Nothing to write and nothing left marked: the tree is already the
+				// captured state, so there is no in-flight record to make or clear.
+				if !planned.has_work() && !resuming {
+					let summary = crate::actions::canopy::restore::inplace::lay_down(planned).await?;
+					report(&target, record, &summary);
+					return Ok(());
+				}
+
+				// The same record every in-place restore leaves: part-way through, the
+				// tree is neither the state it was in nor the captured one, and that
+				// has to be legible in the tree itself rather than only in a log. What
+				// the postgres method adds on top is holding its *service* unstartable,
+				// which is its own business.
+				//
+				// Engaged even when the walk found nothing, because a resumed attempt
+				// that has converged still has a marker to clear — and while it is
+				// there it keeps waiving the overwrite confirmation.
+				let interlock = Interlock::engage(&target, record).await?;
+				match crate::actions::canopy::restore::inplace::lay_down(planned).await {
+					Ok(summary) => {
+						interlock.release().await?;
+						report(&target, record, &summary);
+						Ok(())
+					}
+					Err(err) => Err(err).wrap_err_with(|| {
+						format!(
+							"{} is part-way through a restore from hold {} and is not usable; \
+							 the hold is untouched, so run the same command again to finish it",
+							target.display(),
+							record.id,
+						)
+					}),
+				}
+			}
+			Method::Postgresql(config) => {
+				super::postgresql::restore_in_place(config, record, capture, opts).await
+			}
+			// A key is one small file: there is no second copy to avoid, so in place
+			// and staged are the same operation and this is the one that exists.
+			Method::TamanuSecretKey(config) => {
+				let location = secret_key_target(config, opts).await?;
+				super::secret_key::lay_down(capture, &location, opts.clobber).await
+			}
 		}
 	}
 
@@ -382,13 +477,43 @@ impl Method {
 			}
 			Method::Postgresql(config) => super::postgresql::restore(config, staging, opts).await,
 			Method::TamanuSecretKey(config) => {
-				let location = match &opts.target {
-					Some(target) => super::secret_key::classify_target(target)?,
-					None => super::secret_key::location(config).await?,
-				};
+				let location = secret_key_target(config, opts).await?;
 				super::secret_key::lay_down(staging, &location, opts.clobber).await
 			}
 		}
+	}
+}
+
+/// Say what an in-place restore did, including which guarantee it got about what
+/// diverged — the spec has the mode report that, and an operator reading only
+/// "done" cannot tell the authoritative answer from the degraded one.
+#[cfg(feature = "canopy-restore")]
+fn report(
+	target: &Path,
+	record: &super::hold::HoldRecord,
+	summary: &crate::actions::canopy::restore::inplace::Summary,
+) {
+	info!(
+		target = %target.display(),
+		hold = %record.id,
+		copied = summary.copied,
+		removed = summary.removed,
+		bytes = summary.bytes,
+		from_filesystem = summary.from_filesystem,
+		"the divergence from the held capture is laid down",
+	);
+}
+
+/// Where the secret key is laid back down: the override if one was given, else
+/// wherever this install keeps it. The same answer whether the restore is staged
+/// or in place, so it is worked out in one place.
+async fn secret_key_target(
+	config: &TamanuSecretKeyConfig,
+	opts: &RestoreOpts,
+) -> Result<bestool_tamanu::secret_key::SecretKeyLocation> {
+	match &opts.target {
+		Some(target) => super::secret_key::classify_target(target),
+		None => super::secret_key::location(config).await,
 	}
 }
 
@@ -400,6 +525,32 @@ pub struct RestoreOpts {
 	pub target: Option<PathBuf>,
 	/// Proceed even when the destination already holds data.
 	pub clobber: bool,
+	/// The operator was asked whether to overwrite and said no.
+	///
+	/// Distinct from `!clobber`, which is also what a non-interactive run with no
+	/// flag looks like. An in-place restore lets a marker from an interrupted
+	/// attempt stand in for a confirmation that was never sought; it must not let
+	/// one override a confirmation that was sought and refused.
+	pub declined: bool,
+}
+
+/// Error unless an in-place restore is allowed to write over `target`.
+///
+/// An in-place restore is always over existing data — that is what makes it a
+/// rollback rather than a first restore — so an empty destination cannot stand
+/// in for consent the way it does on the staged path. The confirmation is the
+/// whole check.
+#[cfg(feature = "canopy-restore")]
+pub fn ensure_not_clobbering_in_place(target: &Path, clobber: bool) -> Result<()> {
+	if clobber {
+		return Ok(());
+	}
+	bail!(
+		"restoring in place writes over {} with no copy of it kept, so a failure \
+		 partway leaves the data neither as it was nor as it was captured; \
+		 confirm with --clobber-existing-data-yes-i-am-sure, or interactively",
+		target.display()
+	)
 }
 
 /// Error unless `target` is safe to write (absent or empty) or `clobber` is set.
@@ -525,6 +676,37 @@ pub(super) fn with_extension_suffix(path: &Path, suffix: &str) -> PathBuf {
 	name.push(".");
 	name.push(suffix);
 	path.with_file_name(name)
+}
+
+#[cfg(all(test, feature = "canopy-restore"))]
+mod inplace_clobber_tests {
+	use super::*;
+
+	#[test]
+	fn restoring_in_place_is_refused_without_confirmation() {
+		let tmp = tempfile::tempdir().unwrap();
+		let err = ensure_not_clobbering_in_place(tmp.path(), false)
+			.unwrap_err()
+			.to_string();
+		assert!(err.contains("no copy of it kept"), "got: {err}");
+	}
+
+	#[test]
+	fn an_empty_destination_does_not_stand_in_for_that_confirmation() {
+		// Unlike the staged path, where an empty destination means there is nothing
+		// to lose: in place, the confirmation is about keeping no copy, which an
+		// empty destination says nothing about.
+		let tmp = tempfile::tempdir().unwrap();
+		assert!(!dir_has_entries(tmp.path()));
+		assert!(ensure_not_clobbering(tmp.path(), false).is_ok());
+		assert!(ensure_not_clobbering_in_place(tmp.path(), false).is_err());
+	}
+
+	#[test]
+	fn confirmation_permits_it() {
+		let tmp = tempfile::tempdir().unwrap();
+		ensure_not_clobbering_in_place(tmp.path(), true).unwrap();
+	}
 }
 
 #[cfg(test)]

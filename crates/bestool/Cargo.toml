@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "1.62.2"
+version = "2.1.1"
 edition = "2024"
 default-run = "bestool"
 
@@ -19,12 +19,12 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.1.12", path = "../algae-cli", optional = true }
 axum = { version = "0.8.9", optional = true }
-bestool-alertd = { version = "26.1.2", path = "../alertd", default-features = false, optional = true }
+bestool-alertd = { version = "28.0.1", path = "../alertd", default-features = false, optional = true }
 bestool-canopy = { version = "0.7.12", path = "../canopy", optional = true }
 bestool-kopia = { version = "0.5.4", path = "../kopia", optional = true }
-bestool-postgres = { version = "1.2.1", path = "../postgres", optional = true }
-bestool-psql = { version = "1.7.14", path = "../psql", default-features = false, optional = true }
-bestool-tamanu = { version = "0.19.10", path = "../tamanu", default-features = false, optional = true }
+bestool-postgres = { version = "1.2.3", path = "../postgres", optional = true }
+bestool-psql = { version = "1.7.16", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.19.12", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.45", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
@@ -77,17 +77,31 @@ tempfile = "3.21.0"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-uuid-1"], optional = true }
+tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 tokio-util = { workspace = true, optional = true }
 toml = { version = "1", optional = true }
+tower-http = { version = "0.7.0", features = ["trace"], optional = true }
 tracing = { workspace = true }
 uuid = { version = "1.23.2", features = ["v4"] }
 walkdir = { version = "2.5.0", optional = true }
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport"], optional = true }
 zip = { version = "8.6.0", optional = true, default-features = false, features = ["time"] }
+filetime = { version = "0.2.29", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# `O_NOFOLLOW`, so the in-place restore's marker cannot be written through a
+# symlink planted in the data directory.
+libc = { version = "0.2.189", optional = true }
+# systemd readiness/reload/status notifications (no-op when not under systemd).
+sd-notify = { version = "0.5.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 junction = "2.0.0"
 tauri-winrt-notification = { version = "0.8.1", optional = true }
+# Reads the NTFS change journal, so an in-place restore from a shadow copy can
+# ask the filesystem what diverged instead of comparing both trees.
+usn-journal-rs = { version = "0.4.1", optional = true }
+win32job = { version = "2.0.3", optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.3.0", optional = true }
 windows-service = { version = "0.8.0", optional = true }
@@ -106,7 +120,23 @@ download = ["dep:binstalk-downloader", "dep:detect-targets", "dep:hickory-resolv
 # The daemon always reads the canopy registration (device key + server id), so
 # bestool-canopy is core, not Tamanu-gated. `alertd-tamanu` adds reading config
 # and the device key from Tamanu's DB, plus the Tamanu-specific checks.
-alertd = ["dep:bestool-alertd", "dep:bestool-canopy"]
+alertd = [
+	"dep:bestool-alertd",
+	"dep:bestool-canopy",
+	# The daemon holds the caller's pool, confines its children via pm2, serves
+	# the seedling identity endpoint, and caches canopy tags after a sweep.
+	"dep:bestool-postgres",
+	"dep:bestool-tamanu",
+	"bestool-tamanu/seedling",
+	"bestool-tamanu/canopy-registration",
+	"dep:node-semver",
+	"dep:axum",
+	"dep:tower-http",
+	"dep:tokio-stream",
+	"dep:sd-notify",
+	"dep:win32job",
+	"dep:windows-service",
+]
 caddy = ["download", "dep:windows-service"]
 completions = ["dep:clap_complete", "clap_complete/unstable-dynamic"]
 crypto = ["dep:algae-cli", "dep:blake3", "dep:merkle_hash"]
@@ -198,8 +228,10 @@ canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration"
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
 # method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
-canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
-canopy-restore = ["canopy-backup"]
+canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service", "dep:usn-journal-rs"]
+# Restoring a backup, including in place from a held capture, which preserves the
+# captured timestamps (filetime) and guards its own marker against symlinks (libc).
+canopy-restore = ["canopy-backup", "dep:filetime", "dep:libc"]
 # Erase every trace of a canopy enrolment: the registration, the legacy Tamanu
 # identity files, the cached tags, and the legacy DB rows (when postgres is
 # reachable). Uses Tamanu config to locate the database and elevates to remove

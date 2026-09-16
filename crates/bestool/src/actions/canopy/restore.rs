@@ -9,6 +9,13 @@
 //! `--clobber-existing-data-yes-i-am-sure` or an interactive confirmation is
 //! given.
 
+pub mod basis;
+#[cfg(unix)]
+pub mod blockdev;
+pub mod inplace;
+pub mod room;
+pub mod sync;
+
 use std::{
 	io::{IsTerminal as _, Write as _},
 	path::{Path, PathBuf},
@@ -30,7 +37,7 @@ use uuid::Uuid;
 
 use super::backup::{
 	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
-	postgresql::space, progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
+	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
 	transient_config_dir,
 	trim_error,
 };
@@ -56,6 +63,23 @@ pub struct RestoreArgs {
 	/// Takes a hold id, as shown by `bestool canopy hold list`.
 	#[arg(long, value_name = "HOLD", conflicts_with = "id")]
 	pub from_hold: Option<String>,
+
+	/// Restore over the live data without staging a copy of the capture first.
+	///
+	/// Writes only what has diverged from the capture, so it needs room for the
+	/// difference rather than for a second cluster. This is what makes a rollback
+	/// possible on a host whose volume cannot hold two copies.
+	///
+	/// It gives up the atomic swap: no copy of the displaced data is kept, and
+	/// part-way through, the data is neither its old state nor the captured one.
+	/// The service is held unstartable until the restore finishes. The hold is
+	/// untouched, so running the same command again resumes an interrupted one.
+	///
+	/// Only a held capture is restored this way: a repository restore downloads
+	/// the snapshot before it can lay anything down, so it has already spent the
+	/// room a staged copy needs.
+	#[arg(long, requires = "from_hold", conflicts_with = "id")]
+	pub in_place: bool,
 
 	/// Override the destination (the simple method's path); postgresql always
 	/// targets its configured cluster.
@@ -196,7 +220,8 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			"paired follower snapshot to restore after this one",
 		);
 	}
-	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &follower_types)?;
+	let clobber =
+		args.clobber || confirm_clobber_interactively(&args.backup_type, &follower_types)? == Some(true);
 
 	// Sample the restore's S3 traffic to Canopy while it runs, so a long download
 	// shows progress. A restore has no engine cell and no freeze moment: the bytes
@@ -367,6 +392,8 @@ async fn run_restore(
 	let opts = RestoreOpts {
 		target: target_override.map(Path::to_path_buf),
 		clobber,
+		// Only the in-place path distinguishes a refusal from a silence.
+		declined: false,
 	};
 	lay_down(def, &staging, &opts).await
 }
@@ -405,7 +432,7 @@ async fn restore_from_hold(
 			args.backup_type
 		);
 	}
-	match hold::capture_state(&record.capture).await {
+	match hold::capture_state(&record).await {
 		hold::CaptureState::Present => {}
 		hold::CaptureState::Detached => bail!(
 			"the capture behind hold {hold_id} is not mounted, so it cannot be read; \
@@ -424,6 +451,24 @@ async fn restore_from_hold(
 		"restoring from a held capture",
 	);
 
+	if args.in_place {
+		let answer = if args.clobber {
+			Some(true)
+		} else {
+			confirm_clobber_in_place_interactively(&args.backup_type)?
+		};
+		let opts = RestoreOpts {
+			target: args.target.clone(),
+			clobber: answer == Some(true),
+			declined: answer == Some(false),
+		};
+		super::backup::run_hooks(&def.pre_restore, true).await?;
+		def.method
+			.restore_in_place(&record, &record.source, &opts)
+			.await?;
+		return super::backup::run_hooks(&def.post_restore, true).await;
+	}
+
 	let staging = def
 		.method
 		.staging_dir(args.target.as_deref(), std::process::id())
@@ -436,15 +481,22 @@ async fn restore_from_hold(
 	// displaces is renamed aside on the same filesystem, not copied — but it is a
 	// whole second copy of the cluster, so check for it before starting rather
 	// than failing partway through a restore an operator is depending on.
-	let needed = i64::try_from(space::dir_size(&record.source).await).ok();
-	ensure_free_space(&staging, needed).await?;
+	let needed = i64::try_from(super::space::dir_size(&record.source).await).ok();
+	// Staging is a whole second copy of the capture. Where the volume cannot hold
+	// one, the rollback point is readable and still unusable, so the refusal has
+	// to name the way through rather than only the shortfall.
+	ensure_free_space(&staging, needed)
+		.await
+		.wrap_err_with(|| staging_shortfall_hint(&args.backup_type, hold_id))?;
 
 	copy_capture(&record.source, &staging).await?;
 
-	let clobber = args.clobber || confirm_clobber_interactively(&args.backup_type, &[])?;
+	let clobber =
+		args.clobber || confirm_clobber_interactively(&args.backup_type, &[])? == Some(true);
 	let opts = RestoreOpts {
 		target: args.target.clone(),
 		clobber,
+		declined: false,
 	};
 	lay_down(def, &staging, &opts).await
 }
@@ -591,28 +643,12 @@ async fn ensure_free_space(staging: &std::path::Path, needed: Option<i64>) -> Re
 		}
 		bail!(
 			"restoring needs about {} free on {} but only {} is available; free up space and retry",
-			human_bytes(required),
+			super::space::fmt_bytes(required),
 			volume.display(),
-			human_bytes(available),
+			super::space::fmt_bytes(available),
 		)
 	})
 	.await
-}
-
-/// A rough human-readable byte size (binary units), for operator-facing messages.
-fn human_bytes(bytes: u64) -> String {
-	const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-	let mut value = bytes as f64;
-	let mut unit = 0;
-	while value >= 1024.0 && unit < UNITS.len() - 1 {
-		value /= 1024.0;
-		unit += 1;
-	}
-	if unit == 0 {
-		format!("{bytes} B")
-	} else {
-		format!("{value:.1} {}", UNITS[unit])
-	}
 }
 
 async fn list_snapshots(kopia: &std::path::Path, s3env: &S3KopiaEnv<'_>) -> Result<Vec<Snapshot>> {
@@ -676,23 +712,69 @@ fn available_snapshots_hint(snapshots: &[Snapshot]) -> String {
 /// only when both prompts pass. With no TTY, returns `false` (the caller then
 /// relies on the explicit flag / the clobber guard). One answer covers the
 /// leader and every follower restored with it.
-fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<bool> {
-	if !std::io::stdin().is_terminal() {
-		return Ok(false);
-	}
+fn confirm_clobber_interactively(backup_type: &str, followers: &[&str]) -> Result<Option<bool>> {
 	let types = std::iter::once(backup_type)
 		.chain(followers.iter().copied())
 		.map(|t| format!("'{t}'"))
 		.collect::<Vec<_>>()
 		.join(", ");
-	print!("This will OVERWRITE existing data for {types}. Continue? [y/N] ");
+	confirm_destructive(
+		backup_type,
+		&format!("This will OVERWRITE existing data for {types}."),
+	)
+}
+
+/// The two-stage confirmation every destructive restore asks for: agree, then
+/// type the backup type back. One implementation, so a change to the protocol
+/// cannot reach one path and miss the other.
+fn confirm_destructive(backup_type: &str, warning: &str) -> Result<Option<bool>> {
+	// `None` rather than `Some(false)`: nobody was asked, which is a different
+	// thing from somebody saying no, and the in-place path treats them
+	// differently — a marker can stand in for a confirmation never sought, but
+	// not for one actively declined.
+	if !std::io::stdin().is_terminal() {
+		return Ok(None);
+	}
+	print!("{warning} Continue? [y/N] ");
 	std::io::stdout().flush().ok();
 	if !read_line()?.trim().eq_ignore_ascii_case("y") {
-		return Ok(false);
+		return Ok(Some(false));
 	}
 	print!("Type the backup type '{backup_type}' to confirm: ");
 	std::io::stdout().flush().ok();
-	Ok(read_line()?.trim() == backup_type)
+	Ok(Some(read_line()?.trim() == backup_type))
+}
+
+/// What to tell an operator whose volume cannot hold a staged copy of the
+/// capture.
+///
+/// Worth saying rather than leaving them with the shortfall alone: on the host
+/// this mode was built for, the rollback point exists, is readable, and is
+/// unusable through this path, and the way through is a flag they have no reason
+/// to know about.
+fn staging_shortfall_hint(backup_type: &str, hold_id: &str) -> String {
+	format!(
+		"restoring '{backup_type}' from hold {hold_id} stages a whole second copy of \
+		 the capture first; pass --in-place to write only what has diverged from it \
+		 instead, which needs room for the difference rather than for the whole cluster"
+	)
+}
+
+/// Confirm a restore that keeps no copy of what it overwrites.
+///
+/// Worth asking separately from the staged path's confirmation: that one puts
+/// the displaced tree aside as `.old` and can be walked back, where this one
+/// cannot, and part-way through leaves data that is neither state.
+fn confirm_clobber_in_place_interactively(backup_type: &str) -> Result<Option<bool>> {
+	confirm_destructive(
+		backup_type,
+		&format!(
+			"This will restore '{backup_type}' IN PLACE: the live data is overwritten \
+			 with no copy of it kept, and until the restore finishes the data is neither \
+			 its old state nor the captured one. The hold is left intact, so an \
+			 interrupted restore can be resumed by running this again."
+		),
+	)
 }
 
 fn read_line() -> Result<String> {
@@ -775,12 +857,6 @@ mod tests {
 		assert!(err.contains("no snapshots"));
 	}
 
-	#[test]
-	fn human_bytes_scales_units() {
-		assert_eq!(human_bytes(512), "512 B");
-		assert_eq!(human_bytes(1024), "1.0 KiB");
-		assert_eq!(human_bytes(8 * 1024 * 1024 * 1024), "8.0 GiB");
-	}
 
 	#[tokio::test]
 	async fn ensure_free_space_skips_unknown_size() {
@@ -806,6 +882,13 @@ mod tests {
 			tags: std::collections::BTreeMap::new(),
 			root_entry: None,
 		}
+	}
+
+	#[test]
+	fn a_staging_shortfall_names_the_way_through() {
+		let hint = staging_shortfall_hint("tamanu-postgres", "tamanu-postgres-20260915T052531Z");
+		assert!(hint.contains("--in-place"), "got: {hint}");
+		assert!(hint.contains("tamanu-postgres-20260915T052531Z"), "got: {hint}");
 	}
 
 	#[test]

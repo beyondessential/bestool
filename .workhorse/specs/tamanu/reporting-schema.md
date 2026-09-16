@@ -33,7 +33,7 @@ It fails when they differ, when the server's schema carries no stamp, and when t
 
 It skips when Canopy offers none for this version, since a pair Canopy has not built is Canopy's finding to raise rather than this server's fault.
 It skips when Canopy is unreachable, still reporting the stamp: whether a schema is the right one is Canopy's to answer, and an unreachable Canopy is not this server's failing.
-It skips on a host with no Tamanu, and where the database is unreachable.
+It skips where the database is unreachable. A host with no Tamanu carries no Tamanu application, so the check is absent there rather than skipping.
 
 ## Applying it
 

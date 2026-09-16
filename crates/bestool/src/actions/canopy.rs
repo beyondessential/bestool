@@ -11,6 +11,9 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic as _, bail, miette};
 use miette::Result;
 
+#[cfg(any(feature = "canopy-backup", feature = "canopy-restore"))]
+pub mod space;
+
 use super::Context;
 
 /// Interact with Canopy.
@@ -77,8 +80,8 @@ async fn load_registration(
 	any(feature = "canopy-register", feature = "canopy-unregister")
 ))]
 async fn restart_daemon_for_registration_change() {
-	let addrs = bestool_alertd::commands::default_server_addrs();
-	if let Err(err) = bestool_alertd::commands::restart(&addrs).await {
+	let addrs = crate::alertd::commands::default_server_addrs();
+	if let Err(err) = crate::alertd::commands::restart(&addrs).await {
 		tracing::debug!(%err, "alertd daemon not reachable");
 		println!("(alertd daemon not reachable; it will re-read the registration on next start)");
 	}

@@ -836,7 +836,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 	// no freeze rather than passing that off as one.
 	let id = hold::mint_id(&def.r#type, taken_at.unwrap_or(held_at));
 
-	let (source, capture) = def
+	let (source, capture, diverged_since) = def
 		.method
 		.hold(prepared, &id)
 		.await
@@ -850,6 +850,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 		source,
 		uploaded,
 		capture,
+		diverged_since,
 	};
 	hold::save(&record).await?;
 	info!(
@@ -864,7 +865,7 @@ async fn hold_capture(def: &BackupDef, prepared: method::Prepared, uploaded: boo
 /// Take a capture and keep it, without a repository: no credentials, no
 /// transfer, no report. The definition's hooks and the capture itself are as
 /// they are for an uploading run, so the result is the same artefact.
-async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<()> {
+pub(crate) async fn capture_only(backup_type: &str, backups_dir: Option<&Path>) -> Result<()> {
 	let dir = backups_dir
 		.map(|d| d.to_path_buf())
 		.unwrap_or_else(config::backups_dir);

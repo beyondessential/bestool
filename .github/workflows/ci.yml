@@ -98,6 +98,26 @@ jobs:
       - name: Contract tests against live canopy
         run: cargo test -p bestool --lib canopy_contract -- --ignored
 
+  alertd-alone:
+    name: alertd / builds without Tamanu
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure toolchain
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The daemon is meant to run on hosts with no Tamanu deployment, so the
+      # `alertd` feature has to stand on its own. It pulls several optional
+      # deps that the default build gets via `tamanu`, and nothing else in CI
+      # builds this combination.
+      - name: Check the alertd feature on its own
+        run: cargo check -p bestool --no-default-features --features alertd --all-targets
+
   alertd-no-db:
     name: alertd / graceful without postgres
     runs-on: ubuntu-24.04
@@ -123,9 +143,9 @@ jobs:
           # doctor checks must degrade gracefully (db_connect alerts, DB-backed
           # checks skip) rather than hang or panic. `sudo unshare` runs as real
           # root, sidestepping ubuntu 24.04's restriction on unprivileged user
-          # namespaces. We scope to `doctor::` because the http_server tests need
-          # working loopback HTTP that a bare namespace doesn't provide.
-          sudo unshare --net -- bash -c "ip link set lo up && exec '$bin' doctor::"
+          # namespaces. The crate is checks-only — the daemon and its HTTP server
+          # live in bestool — so the whole lib test binary runs here.
+          sudo unshare --net -- bash -c "ip link set lo up && exec '$bin'"
 
   podman-secret:
     name: secret key / podman e2e
@@ -146,8 +166,8 @@ jobs:
       - name: Podman secret round trip and clobber gate
         run: cargo test -p bestool --lib secret_key::tests -- --ignored --nocapture
 
-  btrfs-hold:
-    name: btrfs hold / e2e
+  hold-test-binary:
+    name: hold e2e / build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -160,16 +180,150 @@ jobs:
           shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - run: sudo apt-get update && sudo apt-get install -y btrfs-progs
-
-      # Mounting and losetup need root, which `cargo test` is not: build first,
-      # then run the one test binary under sudo.
-      - name: Reattach a held btrfs capture
+      # The three storage jobs run this same binary and differ only in the
+      # packages they install and the storage they build, so it is compiled once
+      # here rather than three times over on three runners. They each need root
+      # for the hold's system directories, which `cargo test` is not, so they run
+      # the binary directly and never invoke cargo at all.
+      - name: Build the lib test binary
         run: |
           binary=$(cargo test --no-run -p bestool --lib --message-format=json \
             | jq -r 'select(.profile.test == true) | .executable // empty' | head -n1)
           test -n "$binary"
-          sudo "$binary" btrfs::e2e --ignored --nocapture --test-threads=1
+          cp "$binary" hold-e2e-tests
+          # Debug info is most of the binary and three jobs move it. Test names
+          # and filters live in the harness's own tables, not in it; only the
+          # line numbers on a backtrace are lost, and the panics here carry
+          # their own location.
+          strip hold-e2e-tests
+          ls -l hold-e2e-tests
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hold-e2e-tests
+          path: hold-e2e-tests
+          retention-days: 1
+          # A stripped binary compresses poorly for the time spent on it.
+          compression-level: 1
+
+  btrfs-hold:
+    name: btrfs hold / e2e
+    runs-on: ubuntu-24.04
+    needs: hold-test-binary
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y btrfs-progs postgresql
+
+      # The snapshot backends idmap their read-only mount from the postgres user
+      # to the kopia one, so both accounts have to exist for a capture to be taken.
+      - name: Create the kopia user
+        run: id -u kopia >/dev/null 2>&1 || sudo useradd --system --user-group --no-create-home kopia
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: hold-e2e-tests
+      - name: Ready the test binary
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          # Deliberately not `set -e`: the output is printed before anything is
+          # judged, so a failing run says why instead of exiting on the spot with
+          # its diagnosis still inside a shell variable.
+          set -uo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 2>&1)
+          status=$?
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || { echo "the '$filter' test failed"; exit 1; }
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
+
+      - name: Reattach a held btrfs capture
+        run: sudo ./hold-e2e-tests btrfs::e2e --ignored --nocapture --test-threads=1
+
+      # The sequence an operator runs, against a real cluster on a real btrfs
+      # subvolume: take a capture-only hold, read the listing, restore from it,
+      # reattach it, drop it.
+      - name: The hold lifecycle on btrfs
+        run: ./run-lifecycle hold::e2e::unix::a_btrfs 1
+
+  lvm-hold:
+    name: thin-lvm hold / e2e
+    runs-on: ubuntu-24.04
+    needs: hold-test-binary
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools postgresql
+
+      # The snapshot backends idmap their read-only mount from the postgres user
+      # to the kopia one, so both accounts have to exist for a capture to be taken.
+      - name: Create the kopia user
+        run: id -u kopia >/dev/null 2>&1 || sudo useradd --system --user-group --no-create-home kopia
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: hold-e2e-tests
+      - name: Ready the test binary
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
+
+      # The pool is deliberately small, so the ballast the capture pins is a
+      # legible share of it and a drop that only forgot the record is visible.
+      - name: The hold lifecycle on thin-LVM
+        run: ./run-lifecycle hold::e2e::unix::a_thin_lvm 1
+
+  basebackup-hold:
+    name: base backup hold / e2e
+    runs-on: ubuntu-24.04
+    needs: hold-test-binary
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y postgresql
+
+      # The snapshot backends idmap their read-only mount from the postgres user
+      # to the kopia one, so both accounts have to exist for a capture to be taken.
+      - name: Create the kopia user
+        run: id -u kopia >/dev/null 2>&1 || sudo useradd --system --user-group --no-create-home kopia
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: hold-e2e-tests
+      - name: Ready the test binary
+        run: |
+          chmod +x hold-e2e-tests
+          # libtest exits 0 when a filter matches nothing, so a renamed or moved
+          # test would leave this job green having run no backend at all. Insist
+          # on the count.
+          cat > run-lifecycle <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filter=$1; expected=$2
+          out=$(sudo ./hold-e2e-tests "$filter" --ignored --nocapture --test-threads=1 | tee /dev/stderr)
+          grep -q "^test result: ok\. $expected passed;" <<<"$out" || {
+            echo "expected $expected test(s) to run and pass for '$filter'"; exit 1; }
+          RUNNER
+          chmod +x run-lifecycle
+
+      # No privileged storage is involved in the capture itself, but the hold's
+      # record and held-source directories are system ones, so this still runs as
+      # root rather than in the ordinary test job. It is also the one backend that
+      # exposes nothing separately, so its reattach must refuse rather than no-op.
+      - name: The hold lifecycle on a base backup
+        run: ./run-lifecycle hold::e2e::unix::a_base_backup 1
 
   kopia-proxy:
     name: kopia S3 proxy / e2e
@@ -252,6 +406,47 @@ jobs:
       - name: Secret key follower end-to-end
         run: cargo test -p bestool --lib a_secret_key_follower_reads_its_key_live -- --ignored --nocapture
 
+      # The lifecycle restores into the host's own cluster, so it has to be up
+      # first: the image ships the service stopped and disabled.
+      - name: Start the host postgres cluster
+        shell: pwsh
+        run: |
+          $service = Get-Service postgresql-x64-* | Select-Object -First 1
+          if (-not $service) { throw "no postgres service on this image" }
+          Set-Service -Name $service.Name -StartupType Automatic
+          Start-Service -Name $service.Name
+          # A non-zero native exit is an error by default in these steps, which
+          # would throw on the first attempt and defeat the point of retrying.
+          $PSNativeCommandUseErrorActionPreference = $false
+          # The SCM calls the service started before the postmaster is listening,
+          # so poll rather than asking once.
+          foreach ($attempt in 1..30) {
+            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Start-Sleep -Seconds 2
+          }
+          throw "the postgres service started but never accepted connections"
+
+      # The steps above exercise the pieces of a VSS capture. These exercise the
+      # sequence an operator runs — take a capture-only hold, read the listing,
+      # restore from it, reattach it, drop it — which nothing did, and which is
+      # how a hold that reported detached from the moment it was taken shipped.
+      # The second test covers what a reboot does to a junction, by pointing one
+      # at a device number VSS has not handed out.
+      - name: The hold lifecycle on VSS
+        shell: bash
+        run: |
+          # Deliberately not `set -e`, and no pipeline: the output is printed
+          # before anything is judged. Piping through `tee /dev/stderr` under Git
+          # Bash left a failure with no output at all to diagnose it by.
+          set -uo pipefail
+          out=$(cargo test -p bestool --lib hold::e2e::windows -- --ignored --nocapture --test-threads=1 2>&1)
+          status=$?
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || { echo "the VSS lifecycle tests failed"; exit 1; }
+          grep -q "^test result: ok\. 2 passed;" <<<"$out" || {
+            echo "expected both VSS lifecycle tests to run and pass"; exit 1; }
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -297,7 +492,7 @@ jobs:
   tests-pass:
     if: always()
     name: Tests pass
-    needs: [test, contract, check-docs, alertd-no-db, kopia-proxy, podman-secret, vss-wmi, btrfs-hold]
+    needs: [test, contract, check-docs, alertd-alone, alertd-no-db, kopia-proxy, podman-secret, vss-wmi, hold-test-binary, btrfs-hold, lvm-hold, basebackup-hold]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1

@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "1.62.2"
+version = "2.1.1"
 dependencies = [
  "age",
  "algae-cli",
@@ -630,6 +630,7 @@ dependencies = [
  "dirs",
  "duct",
  "embedded-graphics",
+ "filetime",
  "fs4",
  "futures",
  "glob",
@@ -643,6 +644,7 @@ dependencies = [
  "junction",
  "leon",
  "leon-macros",
+ "libc",
  "lloggs",
  "merkle_hash",
  "miette",
@@ -660,6 +662,7 @@ dependencies = [
  "reqwest",
  "rpi-st7789v2-driver",
  "rppal",
+ "sd-notify",
  "self-replace",
  "semver",
  "serde",
@@ -672,12 +675,16 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-postgres",
+ "tokio-stream",
  "tokio-util",
  "toml 1.1.4+spec-1.1.0",
+ "tower-http 0.7.1",
  "tracing",
  "trycmd",
+ "usn-journal-rs",
  "uuid",
  "walkdir",
+ "win32job",
  "windows-acl",
  "windows-env",
  "windows-service",
@@ -689,11 +696,9 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "26.1.2"
+version = "28.0.1"
 dependencies = [
- "axum",
  "bestool-canopy",
- "bestool-kopia",
  "bestool-postgres",
  "bestool-tamanu",
  "bon",
@@ -708,19 +713,14 @@ dependencies = [
  "reqwest",
  "rustix 1.1.4",
  "rustls",
- "sd-notify",
  "serde",
  "serde_json",
  "sysinfo",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",
- "tokio-stream",
- "tower-http 0.7.1",
  "tracing",
  "url",
- "win32job",
- "windows-service",
  "x509-parser",
 ]
 
@@ -780,10 +780,10 @@ dependencies = [
 
 [[package]]
 name = "bestool-postgres"
-version = "1.2.1"
+version = "1.2.3"
 dependencies = [
  "bytes",
- "fraction",
+ "fraction 0.17.0",
  "hex",
  "jiff",
  "miette",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.7.14"
+version = "1.7.16"
 dependencies = [
  "aegis",
  "bestool-postgres",
@@ -817,7 +817,7 @@ dependencies = [
  "dirs",
  "edit",
  "filetime",
- "fraction",
+ "fraction 0.17.0",
  "fs4",
  "futures",
  "hex",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.10"
+version = "0.19.12"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -2796,10 +2796,20 @@ version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
- "byteorder",
- "bytes",
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fraction"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e246562084dde8ebbcc943b261c406ce4f68e5032ec28029a251a47d6a295500"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "num",
+ "num-bigint",
  "postgres-types",
 ]
 
@@ -3125,6 +3135,17 @@ dependencies = [
  "quinn",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "allocator-api2 0.2.21",
+ "equivalent",
+ "foldhash",
 ]
 
 [[package]]
@@ -3717,7 +3738,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07aa2048142242915a31d35844fb311e0e53fcca590c3a0a40dcf1b841fa09eb"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.17.1",
  "serde",
  "serde_core",
 ]
@@ -4064,7 +4085,7 @@ dependencies = [
  "data-encoding",
  "email_address",
  "fancy-regex 0.19.0",
- "fraction",
+ "fraction 0.15.4",
  "getrandom 0.3.4",
  "idna",
  "itoa",
@@ -4099,7 +4120,7 @@ checksum = "7ec7637f83e510868ae6ed625f7ebfbbde4554ee8ce49854caa5126a8b9b9ecb"
 dependencies = [
  "ahash",
  "bytecount",
- "fraction",
+ "fraction 0.15.4",
  "num-cmp",
  "num-traits",
  "serde_json",
@@ -4347,6 +4368,15 @@ dependencies = [
  "scoped-tls",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "lru"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+dependencies = [
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -4826,9 +4856,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -6128,7 +6158,7 @@ dependencies = [
  "ahash",
  "fluent-uri",
  "getrandom 0.3.4",
- "hashbrown",
+ "hashbrown 0.17.1",
  "itoa",
  "micromap",
  "parking_lot",
@@ -8393,6 +8423,19 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_derive",
+]
+
+[[package]]
+name = "usn-journal-rs"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72ba015a7b763d17681ccf272503fefcfd1f60bffafa781c5734ec4c64cd77c1"
+dependencies = [
+ "chrono",
+ "log",
+ "lru",
+ "thiserror 2.0.20",
+ "windows 0.62.2",
 ]
 
 [[package]]

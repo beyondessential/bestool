@@ -1,6 +1,6 @@
 [package]
 name = "bestool-alertd"
-version = "26.1.2"
+version = "28.0.1"
 edition = "2024"
 authors = ["Félix Saparelli <felix@passcod.name>", "BES Developers <contact@bes.au>"]
 license = "GPL-3.0-or-later"
@@ -12,11 +12,9 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
-axum = "0.8.9"
 bestool-canopy = { version = "0.7.12", path = "../canopy" }
-bestool-kopia = { version = "0.5.4", path = "../kopia" }
-bestool-postgres = { version = "1.2.1", path = "../postgres" }
-bestool-tamanu = { version = "0.19.10", path = "../tamanu", features = ["canopy-registration"] }
+bestool-postgres = { version = "1.2.3", path = "../postgres" }
+bestool-tamanu = { version = "0.19.12", path = "../tamanu", features = ["canopy-registration"] }
 bon = "3.9.3"
 bytes = "1.9.0"
 dirs = "6.0.0"
@@ -34,8 +32,6 @@ sysinfo.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-jiff-0_2", "with-serde_json-1"] }
 tokio-rustls = "0.26.4"
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-tower-http = { version = "0.7.0", features = ["trace"] }
 tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
@@ -44,9 +40,3 @@ x509-parser = "0.18.1"
 # geteuid(), to tell whether we're root without reading /proc (which the
 # daemon's own sandbox can refuse).
 rustix = { version = "1", features = ["process"] }
-# systemd readiness/reload/status notifications (no-op when not under systemd).
-sd-notify = "0.5.0"
-
-[target.'cfg(windows)'.dependencies]
-win32job = "2.0.3"
-windows-service = "0.8.0"
