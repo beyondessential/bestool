@@ -165,7 +165,7 @@ The demonstration that the channel works: the web test page sends a line of text
 
 Messages are JSON. The volumes here are tiny, every client platform reads it without a library, and being able to watch the conversation in plain text is worth more during development than any saving a compact encoding would give.
 
-**The device must be able to send unsolicited messages**, not only answer requests. Status that changes while a client is connected — an address appearing as Wi-Fi comes up, which is precisely what an operator is watching for while provisioning — should arrive as it happens rather than by polling. Designing this in from the start costs nothing; retrofitting it onto a strict request/response shape costs a protocol revision.
+**The device must be able to send unsolicited messages**, not only answer requests. Status that changes while a client is connected — an address appearing as Wi-Fi comes up, which is precisely what an operator is watching for while provisioning — should arrive as it happens rather than by polling. This is what the stream layer under it exists to provide: the device opens a stream of its own rather than waiting to be asked. See "Streams, and why not QUIC".
 
 ### Standing in for the screen
 
@@ -235,7 +235,34 @@ Prior art for the payload and the flow generally: Matter's commissioning (QR wit
 
 Defining the protocol over an abstract message transport and shipping the GATT binding first keeps the web page working and leaves L2CAP available later for anything bulky.
 
-QUIC over BLE was raised as a possibility. It wants a datagram transport we would have to synthesise, and it brings a TLS handshake we do not need once Noise is in play — the cost is not obviously repaid.
+### Streams, and why not QUIC
+
+The property wanted from the transport is QUIC's: once the handshake is done, **either end can open a stream**, unidirectional or bidirectional, without asking permission or coordinating identifiers, and several can be in flight at once. It is a property worth having, and it is the part of the design that is expensive to change later, so it belongs in the first milestone rather than being discovered during the second.
+
+It is also separable from QUIC itself, which is fortunate, because QUIC does not fit here.
+
+- **The datagram floor.** QUIC requires the path to carry datagrams of at least 1200 bytes and will not operate below that. ATT tops out at 517 bytes and negotiates lower in practice. Running QUIC over GATT means building a fragmenting datagram layer underneath it purely to satisfy a minimum the link cannot meet.
+- **TLS does not detach.** QUIC's packet protection keys come out of the TLS 1.3 key schedule; there is no standardised QUIC without it. Certificate validation can be ignored, but the handshake still runs — a full TLS exchange after Noise has already authenticated both ends and produced a session key.
+- **Reliability over reliability.** BLE, whether GATT or an L2CAP channel, is already reliable and ordered. QUIC's streams escape head-of-line blocking only when the layer beneath can deliver out of order; over an ordered pipe the blocking happens underneath regardless. We would get the stream API without the property that motivates it, and pay for loss detection and congestion control duplicating what the link already does.
+- **Browsers cannot send UDP.** Compiling a QUIC stack to wasm does not rescue the web page: there is no datagram path out of a browser, and Web Bluetooth offers a GATT characteristic, not a socket.
+
+What delivers the property instead is a **stream multiplexing layer inside the Noise channel** — which is, in effect, QUIC's stream layer with the transport machinery removed, because the transport machinery is what the link is already doing.
+
+[`yamux`](https://github.com/paritytech/yamux) is exactly this: "multiplexer over reliable, ordered connections", MIT/Apache, maintained, widely used through libp2p, with flow control already solved. It carries no I/O of its own, so it should build for wasm — worth confirming, since the web page depends on it.
+
+Failing that, hand-rolling is a few hundred lines, and QUIC's stream identifier convention is worth copying either way: the low bits of the identifier encode which side opened the stream and whether it is unidirectional, so both ends allocate from disjoint spaces and can never collide without negotiating anything.
+
+The layering this settles on:
+
+| layer | what it gives |
+| --- | --- |
+| BLE GATT, later L2CAP | reliable, ordered bytes |
+| framing and reassembly | message boundaries over the ATT MTU |
+| Noise `NNpsk0` | mutual authentication, encryption, a session key |
+| stream multiplexing | either end opens uni- or bidirectional streams |
+| JSON | application messages |
+
+Two things fall out of it. Swapping GATT for L2CAP later changes only the bottom row, leaving everything above untouched. And the first milestone's request/response exchange stops being the protocol and becomes one stream among many, which is the point.
 
 ### Crate layout
 
@@ -264,7 +291,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Milestones
 
-1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a framed bidirectional pipe over GATT carrying JSON — plus the web test page that drives all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other and standing in for the Iti's screen. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and — the part that must be right first time — a stream layer over GATT where either end opens uni- or bidirectional streams, carrying JSON. Plus the web test page that drives all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other and standing in for the Iti's screen. Everything genuinely novel is in this milestone; what follows is operations on a pipe that already works.
 2. **Wi-Fi, done properly.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all.
 3. **The rest of provisioning.** Device description, hostname, timezone, enrolment, logs, reboot, physical identification.
 4. **A native app.** Android or iOS, once the protocol has stopped moving. This is also the earliest point a wake beacon can exist, since Web Bluetooth cannot advertise — and therefore the earliest the device can stop advertising continuously.
@@ -275,6 +302,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 - [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor.
 - [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep.
 - [ ] Salt rotation period.
+- [ ] Does `yamux` build for `wasm32-unknown-unknown`? The web page depends on it, and the answer decides between adopting it and hand-rolling the stream layer.
 
 ## Testing notes
 
@@ -284,6 +312,7 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 - Time the derivation on the slowest board in scope, since it sits on the boot path.
 - Known-answer tests pinning both derivations, so a change to constants or parameters cannot silently invalidate every sticker already printed.
 - Full handshake and RPC exercised over an in-memory duplex transport, with no BLE involved.
+- Streams opened from each end, in both directions, concurrently, and while another is mid-transfer; a stream closed by one end leaves the others and the connection alive.
 - Negative cases worth pinning down: wrong sticker secret, replayed advertisement, replayed handshake, truncated frames, a peer that authenticates and then sends garbage.
 - Repeated failed handshakes must leave the device reachable by a legitimate operator, and must not be able to fill the disk with logs.
 - Two advertisements from the same device across a salt roll must not be linkable without the sticker secret, and a scanner holding the secret must recognise both.
