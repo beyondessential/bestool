@@ -421,6 +421,9 @@ async fn restore(backup_type: &str, backups_dir: &Path, hold_id: &str) -> Result
 			backup_type: backup_type.to_owned(),
 			id: None,
 			from_hold: Some(hold_id.to_owned()),
+			// The staged path, which is what this lifecycle exercises: it stages a
+			// copy of the capture and swaps it in, leaving the hold behind.
+			in_place: false,
 			target: None,
 			clobber: true,
 			no_followers: true,
