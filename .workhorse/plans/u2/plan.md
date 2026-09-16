@@ -13,7 +13,7 @@ Two crates, both in this repository, standing alone from `bestool` — its own b
 
 Board ID reading sits in the core as backends behind a trait — TPM, one-time-programmable memory, Raspberry Pi serial, SMBIOS, and a test backend — rather than as its own crate. It can move out if something else needs it.
 
-The core earns its separation because the web test page needs the same handshake in the browser. Compiling it to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown`.
+The core earns its separation because the web application needs the same handshake in the browser. Compiling it to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown`.
 
 Note that argon2 never runs in a browser: the client reads the sticker secret from the QR and only computes the handle, which is a fast hash. The memory-hard derivation is needed by the device and the generator only, and is feature-gated so a wasm build does not pull it.
 
@@ -45,7 +45,7 @@ Rejected:
 
 Chosen: GATT now, L2CAP later, for three reasons that stack.
 
-Browsers are GATT-only, and the web page is the first milestone's only client. L2CAP does not replace GATT in any case — a connection-oriented channel is identified by a PSM the client must first read from a characteristic, so GATT remains the way in. And nothing in the first milestone moves enough data to notice the difference.
+Browsers are GATT-only, and the web application is the first milestone's only client. L2CAP does not replace GATT in any case — a connection-oriented channel is identified by a PSM the client must first read from a characteristic, so GATT remains the way in. And nothing in the first milestone moves enough data to notice the difference.
 
 Adding L2CAP later is cheap in a way the advertisement is not: a GATT service is discovered by UUID, so a characteristic publishing a PSM can appear whenever it is written, and clients that do not know about it ignore it. The end state is both, chosen per client, with an identical stack above.
 
@@ -56,7 +56,7 @@ The property wanted is QUIC's — either end opens a stream without coordinating
 - **The datagram floor.** QUIC requires a path carrying 1200-byte datagrams; the attribute protocol tops out well below that and negotiates lower in practice.
 - **TLS does not detach.** QUIC's packet protection comes out of the TLS 1.3 key schedule, so a full TLS exchange would run after Noise has already authenticated both ends and produced a key.
 - **Reliability over reliability.** BLE is already reliable and ordered, so QUIC's streams would not escape head-of-line blocking — the blocking happens underneath regardless — while paying for loss detection and congestion control that duplicate the link.
-- **Browsers cannot send UDP.** Compiling a QUIC stack to wasm does not rescue the web page.
+- **Browsers cannot send UDP.** Compiling a QUIC stack to wasm does not rescue the web application.
 
 What delivers the property is a stream multiplexing layer inside the Noise channel, which is QUIC's stream layer with the transport machinery removed. `yamux` is exactly that. Failing it, hand-rolling is a few hundred lines, and QUIC's identifier convention is worth copying either way: low bits encoding which side opened the stream and whether it is unidirectional, so both ends allocate from disjoint spaces.
 
@@ -66,11 +66,13 @@ What delivers the property is a stream multiplexing layer inside the Noise chann
 
 **The derivation is killed rather than failing** when memory is short, so the pre-flight check or child-process isolation in `BLI-KEY` is required rather than defensive.
 
+It runs on the first start after imaging and after a board change, not on every start, so that check sits off the ordinary path.
+
 **BlueZ userspace is not installed on the current device image**, so it is a deployment prerequisite rather than something to assume.
 
 ## Milestones
 
-1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a stream layer over GATT carrying JSON, plus the web test page driving all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other. Everything genuinely novel is here; what follows is operations on a pipe that already works.
+1. **A channel.** Board ID reading, both derivations, sticker generation, advertising a rotating handle, the `NNpsk0` handshake, and a stream layer over GATT carrying JSON, plus the web application driving all of it. Two things ride on it: a line of text from the browser that the device prints, proving the client-to-device direction, and the device's hostname and addresses, proving the other. Everything genuinely novel is here; what follows is operations on a pipe that already works.
 2. **Wi-Fi.** Joining a network, and putting the device into access-point mode — the case Improv cannot express and the reason this protocol carries Wi-Fi at all. The `WifiConfigurator` trait and NetworkManager backend in `improv-wifi` are a starting point, though the access-point case reaches past what that trait expresses.
 3. **The rest of provisioning.** Device description — model, board ID, OS image, software versions, network name, local time, battery, temperature. Physical identification, by blinking an LED or drawing on a display where one is fitted. Hostname and timezone. Enrolment with a server. Recent logs or health output. Reboot.
 4. **A native application.** Android or iOS, once the protocol has stopped moving.
@@ -86,7 +88,7 @@ Advertising only in a window, and waking a quiet device over the air, are carrie
 - [ ] Board ID backends behind a trait: Raspberry Pi serial, SMBIOS, TPM Endorsement Key, one-time-programmable memory, and a test backend
 - [ ] Source precedence, sentinel rejection, and the failure when nothing is usable
 - [ ] Key schedule: both derivations, the version marker, and known-answer tests pinning them
-- [ ] Sticker secret caching, cache invalidation against the board, and the pre-flight memory check
+- [ ] Sticker secret caching: the cached board ID, platform serial and source kind, the cheap comparison against the board at start, and the pre-flight memory check
 - [ ] Sticker generation, QR payload encoding, and the human-readable rendering
 - [ ] Noise `NNpsk0` handshake over an in-memory transport
 - [ ] Framing and reassembly
@@ -94,7 +96,17 @@ Advertising only in a window, and waking a quiet device over the air, are carrie
 - [ ] JSON message types
 - [ ] GATT server and characteristics via `bluer`
 - [ ] Advertisement and scan response construction within the 31-byte budgets, with salt rotation
-- [ ] Daemon tying it together, running as a service
+- [ ] Daemon tying it together, running as a systemd service; the unit sets no stream directives, so both streams reach the journal by default as in the other units here
 - [ ] Address and hostname reporting, including unsolicited sending on change
 - [ ] Text echo to standard output
-- [ ] Web test page driving scan, match, handshake, and both directions
+- [ ] Web application: fragment reading, camera capture, scan and match, handshake, and both directions
+
+## Development affordances
+
+These serve the first phase and are deliberately absent from the specs, because they do not outlive it.
+
+The web application is served from localhost during development. That is a secure context, so the camera and Bluetooth are available without a certificate. A plain-HTTP origin on a LAN address is not a secure context and will not do, so a phone testing against a development machine reaches it by port-forwarding to its own localhost rather than over the network.
+
+A sticker is not needed to exercise the application. The payload can be pasted from the human-readable rendering, and the camera path tested against a code on screen.
+
+Opening the link from a real code is verified against the deployed origin as a post-deploy step, being the one path that needs the production host live.

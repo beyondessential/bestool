@@ -9,14 +9,20 @@ A client that holds a sticker recomputes the expected handle from it and matches
 
 ## What is advertised
 
-The advertisement carries a service UUID identifying the device as speaking bliti, and service data carrying the advertised handle of [BLI-KEY](key-schedule.md), the current rotation salt, and the version marker.
+The advertisement carries a service UUID identifying the device as speaking bliti, and a local name.
+The scan response carries service data holding the advertised handle of [BLI-KEY](key-schedule.md), the current rotation salt, and the version marker.
 
-The service UUID is a 128-bit UUID and appears in the advertisement itself rather than in the scan response, because filtering a scan by service UUID is the only filtering some client platforms offer and it is applied to the advertisement.
+The service UUID is a 128-bit UUID and appears in the advertisement rather than in the scan response, because filtering a scan by service UUID is the only filtering some client platforms offer and it is applied to the advertisement.
+Client platforms present the advertisement and the scan response to an application as one set of advertised data.
 
-The handle, salt, and version are carried in the scan response.
-A 128-bit service UUID and the mandatory flags consume most of a legacy advertisement's 31 bytes, and the remainder does not hold them; the scan response provides a second 31 bytes, and client platforms present both to an application as one set of advertised data.
+Splitting the content this way is what fits it into the budget.
+A legacy advertisement carries 31 bytes, of which the mandatory flags take three and a 128-bit service UUID takes eighteen, leaving ten.
+The scan response provides a second 31 bytes, of which service data keyed by a 128-bit UUID takes eighteen before any content, leaving thirteen.
 
-The advertised local name carries a rendering of the handle.
+The handle is eight bytes, the salt four, and the version marker one, filling those thirteen exactly.
+
+The local name carries the first four bytes of the handle rendered as eight hexadecimal characters, filling the ten bytes remaining in the advertisement.
+A rendering of the whole handle does not fit.
 This costs nothing, because the handle is not secret, and it gives a client platform that can only filter by name prefix something to filter on, and a human something to match by eye.
 
 ## Matching
@@ -26,6 +32,10 @@ A client scans, recomputes the handle from the sticker it holds together with wh
 Matching is by payload rather than by device address, so a client that is never shown the peer's address can still identify the device, and a device whose address rotates is still recognised.
 
 The cost to a client is one fast hash per advertisement heard per sticker held.
+
+A client reads the advertised version marker before recomputing.
+Where it differs from the version of the sticker the client holds, the client reports a device present at a version it does not support.
+No two versions produce a matching handle, so reading the marker is what separates that from a device the client cannot hear at all.
 
 ## Rotation
 

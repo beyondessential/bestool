@@ -42,6 +42,17 @@ Where the board carries customer-programmable one-time-programmable memory that 
 
 Otherwise the board ID is the platform's own serial number: the device-tree serial on Raspberry Pi hardware, or the SMBIOS system UUID on UEFI machines.
 
+## Probing and reading
+
+Establishing which sources a board has is separate from reading the value one of them holds.
+
+Presence is cheap to establish: a device node exists or it does not, one-time-programmable memory reads as written or as blank, a serial is readable or absent.
+
+Reading a value is not uniformly cheap.
+A TPM Endorsement Key name is obtained by regenerating the key from the endorsement seed under the pinned template, which is a key generation inside the TPM rather than a file read, and it is paid every time the value is wanted.
+
+Evaluating the precedence therefore means probing each source for presence, and reading a value only from the one that wins.
+
 ## Sources that carry no identity
 
 A source can be present and still hold no identity.
@@ -50,15 +61,24 @@ A value reading as all zeros, as all ones, or as a known vendor constant is a pl
 Such a source is skipped and precedence falls through to the next one.
 Unwritten one-time-programmable memory is the ordinary case, reading as zeros on every unprogrammed board, and a board in that state derives from its serial number instead.
 
-Reaching the end of the precedence with no usable source is a failure, and the device reports it rather than deriving from a placeholder.
+Reaching the end of the precedence with no usable source is a failure, reported as specified in [BLI](overview.md) rather than derived past.
 
 ## When the board ID changes
 
 Fitting hardware that carries a stronger source changes which source wins, and so changes the board ID and every value below it.
 A board that gains a TPM, or has its one-time-programmable memory written after its sticker was printed, no longer matches that sticker.
 
-The device reports that its identity no longer matches the sticker it was issued, rather than advertising a handle that no client can match.
-Recovering from this means printing a new sticker for that board.
+The platform serial number identifies the board across such a change.
+Being the last tier of the precedence, it is present on every board in scope, so it is available whichever source wins, and it does not itself change when stronger hardware is fitted.
+
+A board whose platform serial is unchanged, but whose strongest present source is stronger than the one it last derived from, has gained hardware, and the sticker on its enclosure is dead.
+That is reported, rather than the device advertising a handle no client can match.
+Recovering from it means printing a new sticker for that board.
+
+A board whose platform serial differs is a different board, reached by moving a disk from one enclosure into another.
+It derives from the board it now sits on, and matches the sticker already fixed to that enclosure, so this is not a fault and is not reported.
+
+A board that offers no platform serial has no weaker source for a stronger one to supersede, so any change in its board ID is reported.
 
 Because a board ID derived from a newly written source supersedes one derived from a serial number, writing that source is done before the sticker is derived and printed.
 

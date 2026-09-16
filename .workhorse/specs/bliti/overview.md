@@ -24,6 +24,7 @@ What is printed on the sticker, and how one is generated, is specified in [BLI-S
 
 A client scans the sticker, recomputes the handle, and matches it against what it hears, as specified in [BLI-ADV](discovery.md).
 Client and device then authenticate to each other and open a channel, as specified in [BLI-CHN](channel.md).
+The client that does this in a browser is specified in [BLI-WEB](web-app.md).
 
 There is no fleet key and no authoritative per-device record.
 The whole chain is reproducible from the board alone, at manufacture or at any time after, so a sticker can be reprinted from the device itself rather than from a record of what was issued.
@@ -68,3 +69,8 @@ Each layer depends only on the one beneath it carrying bytes reliably and in ord
 | JSON | application messages |
 
 Replacing the bottom layer with another BLE transport changes nothing above it, and the choice can differ per client while the layers above stay identical.
+
+## Reporting
+
+A device reports failures and identity problems on its standard error.
+These conditions leave a device unreachable over the channel, so they surface where the device is rather than to a client.
