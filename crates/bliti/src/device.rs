@@ -49,15 +49,22 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 	tracing::info!(adapter = %adapter.name(), address = %adapter.address().await.into_diagnostic()?, "adapter ready");
 
 	let sink = InboundSink::default();
+	// A legacy controller stops advertising the instant a client connects and does not resume when it
+	// leaves: the advertisement stays registered with BlueZ, so nothing reports an error, but nothing
+	// goes out and the device is undiscoverable to the next client. A session fires this when it ends,
+	// and the loop re-registers the advertisement in response, which is what puts the device back on
+	// the air.
+	let readvertise = Arc::new(tokio::sync::Notify::new());
 	let _application = adapter
-		.serve_gatt_application(application(&sink, secret.clone()))
+		.serve_gatt_application(application(&sink, secret.clone(), readvertise.clone()))
 		.await
 		.into_diagnostic()
 		.wrap_err("registering the GATT application")?;
 
 	// A device advertises whenever it is running, re-registering the advertisement each time the salt
-	// rolls. Anyone in range can connect and begin a handshake that will fail; that is expected, and
-	// there is no lockout, because someone in range could otherwise deny an operator their own device.
+	// rolls and each time a session ends. Anyone in range can connect and begin a handshake that will
+	// fail; that is expected, and there is no lockout, because someone in range could otherwise deny an
+	// operator their own device.
 	let mut rotation = tokio::time::interval(SALT_ROTATION);
 	// An interval yields its first tick immediately; take it here so the first salt lasts a full
 	// period rather than being replaced the instant it is advertised.
@@ -75,6 +82,12 @@ pub async fn run(cache: &Path, adapter_name: Option<&str>) -> Result<()> {
 
 		tokio::select! {
 			_ = rotation.tick() => continue,
+			// A session just ended, so the controller has stopped advertising: drop this advertisement
+			// and register a fresh one, which resumes it. A fresh salt comes with it, which is harmless.
+			_ = readvertise.notified() => {
+				tracing::info!("a session ended; resuming advertising");
+				continue;
+			}
 			result = &mut shutdown => {
 				result.into_diagnostic()?;
 				tracing::info!("stopping");
@@ -114,13 +127,27 @@ fn advertisement(advertised: Advertised) -> Advertisement {
 		service_uuids: [SERVICE_UUID].into_iter().collect(),
 		local_name: Some(advertised.to_local_name()),
 		discoverable: Some(true),
+		// A short interval so a scanning client finds the device quickly and reliably. The default is
+		// over a second, which on a legacy controller leaves a client's scan window catching an
+		// advertisement only now and then, so the first attempt after a device comes on the air often
+		// hears nothing. These are hints the controller rounds to what it supports.
+		min_interval: Some(std::time::Duration::from_millis(100)),
+		max_interval: Some(std::time::Duration::from_millis(150)),
 		..Default::default()
 	}
 }
 
 /// The GATT application: one service with the characteristic a client writes and the one the device
 /// notifies on.
-fn application(sink: &InboundSink, secret: Arc<StickerSecret>) -> Application {
+///
+/// `readvertise` is fired whenever a session ends, so the daemon can resume advertising: a client
+/// connecting stops the controller advertising, and only re-registering the advertisement brings it
+/// back.
+fn application(
+	sink: &InboundSink,
+	secret: Arc<StickerSecret>,
+	readvertise: Arc<tokio::sync::Notify>,
+) -> Application {
 	let write_sink = sink.clone();
 	let notify_sink = sink.clone();
 
@@ -155,6 +182,7 @@ fn application(sink: &InboundSink, secret: Arc<StickerSecret>) -> Application {
 							// the device can send, so it is the point at which a handshake can run.
 							let sink = notify_sink.clone();
 							let secret = secret.clone();
+							let readvertise = readvertise.clone();
 							async move {
 								tracing::info!("client subscribed; opening a session");
 								let (transport, mut outbound) = GattTransport::open(&sink);
@@ -196,6 +224,9 @@ fn application(sink: &InboundSink, secret: Arc<StickerSecret>) -> Application {
 									_ = gone => tracing::info!("client unsubscribed; session ended"),
 								}
 								pump.abort();
+								// The controller stopped advertising when this client connected. Now the
+								// session is over, ask the daemon to put the device back on the air.
+								readvertise.notify_one();
 							}
 							.boxed()
 						})),

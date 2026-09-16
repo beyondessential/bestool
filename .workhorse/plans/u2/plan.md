@@ -68,7 +68,9 @@ What delivers the property is a stream multiplexing layer inside the Noise chann
 
 It runs on the first start after imaging and after a board change, not on every start, so that check sits off the ordinary path.
 
-**BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the device image and was installed on the prototype by hand.
+**BlueZ userspace is a deployment prerequisite** rather than something to assume: it was absent from the original device image and installed by hand; the reimaged prototype has it pre-installed.
+
+**BlueZ must be configured peripheral-only, and this is a deployment prerequisite too.** `[GATT] Client = false` in `/etc/bluetooth/main.conf` is required for the channel to work at all: without it the device does reverse GATT discovery of the central, hits an encryption-gated attribute, tries to pair, is refused, and disconnects mid-session (see "The channel over BLE"). The packaged unit must ship this configuration.
 
 ## Advertising: settled, and verified on the air
 
@@ -94,37 +96,61 @@ sticker reports `MATCHES`, holding a different sticker reports `another bliti de
 nothing matched, and the payload recovered from the human-readable rendering beneath the code matches
 just as the URL does.
 
-## The channel over BLE: reached once, not yet repeatable
+## The channel over BLE: working, repeatable, and end to end
 
-The whole of the first milestone ran end to end on the air, once: the laptop matched the sticker,
-connected, completed the `NNpsk0` handshake, and received the device's hostname and five addresses
-across two interfaces in both families, each with the interface it belongs to, on a stream the device
-opened without being asked. The client then sent a line of text.
+The whole of the first milestone runs on the air, repeatably: the laptop matches the sticker,
+connects, completes the `NNpsk0` handshake, receives the device's hostname and five addresses across
+two interfaces in both families on a stream the device opens without being asked, sends a line of
+text, and the device prints it to its journal. Nine consecutive connections in a row — some with the
+laptop forgetting the device first, some reconnecting without — all completed both directions and the
+device printed every line. Verified between the prototype and a laptop in the same room.
 
-Two things are unfinished, and both are in the daemon and its client rather than in the protocol.
+Three things stood between "reached once" and "repeatable", and all three are now fixed. Two were
+daemon code, one was a device-side BlueZ configuration.
 
-**The device did not print the text.** The line reached the client's side of the channel and the
-client reported sending it, but nothing appeared on the device's standard output or in its journal.
-Whether the writes drained before the client dropped the link, or the device never served the stream,
-is not yet established.
+**The device tore down every connection with an authentication failure, killing the session before
+the text was served.** This was the "connects but never resolves services" blocker, and a `btmon`
+trace on both ends found the cause. On any connection, the device's `bluetoothd` acts as a GATT
+client and resolves the *central's* GATT database in reverse. The laptop exposes an attribute whose
+read requires encryption; the device, wanting to read it, sends an SMP Security Request to pair; the
+laptop refuses (browsers and this client do not pair); the device disconnects with reason
+Authentication Failure. Because the disconnect landed mid-discovery, the laptop never finished
+resolving the device's services. This is not specific to the laptop: a phone central exposes
+encryption-gated attributes too (iOS ANCS among them), so it would fire against the eventual web
+client as well.
 
-**Connections after the first do not resolve services.** The client matches and connects, and then
-the host never reports the peer's attributes as resolved, so there is nothing to look through and no
-session begins — the device logs no client at all. Forgetting the device and reconnecting does not
-help, nor does restarting bluetoothd on the prototype. It worked on the first connection of the
-session and has not since, which points at host or controller state rather than at the GATT
-application, since that is unchanged from the run that worked.
+The fix is device-side and belongs to a peripheral-only appliance: `bluetoothd` is told not to be a
+GATT client. In `/etc/bluetooth/main.conf`, `[GATT] Client = false` (and `ReverseServiceDiscovery =
+false` alongside it) disables the reverse discovery, so the device never reads the central's
+attributes, never escalates to pairing, and never disconnects. **This is a deployment prerequisite,
+like BlueZ userspace itself** — it is not something the binary can set, and it must ship with the
+packaged unit or the device image. A bliti device is peripheral-only, so disabling the GATT client
+costs it nothing.
 
-`btmon` and `bluetoothctl` are now installed on the laptop, which they were not while this was being
-chased: `bluez` was present but `bluez-utils` was not, and under `sudo` both failed with "No such
-file or directory". Any earlier conclusion of the form "the scan heard nothing" drawn from those two
-was a tooling failure rather than a result. A trace of a connection that does not resolve is the
-obvious next step, and is now possible.
+**The device stopped advertising after the first client and never resumed.** A legacy controller
+stops advertising the instant a client connects and does not restart when it leaves; the
+advertisement stays registered with BlueZ (it reports one active instance and no error), but nothing
+goes out, so the next client cannot discover the device. The daemon now fires a signal when a session
+ends and re-registers the advertisement in response, which puts the device back on the air. This was
+most of the earlier "connections after the first" symptom: the device was simply not discoverable
+after the first session, so a reconnect either found nothing or connected to stale state.
 
-Fixed along the way, and worth keeping: **the device could not tell when a client went away.** The
-session read until its transport ended, and the transport only ended when the session dropped it, so
-the two waited on each other and the device stayed busy with a client that had left. The daemon now
-watches whether the client is still subscribed and ends the session when it is not.
+**Discovery was slow and unreliable on the first attempt after a device came on the air.** The
+advertisement used BlueZ's default interval, over a second, so a scanning client's window caught it
+only intermittently and the first attempt often heard nothing. The advertisement now asks for a
+100–150 ms interval. With it, discovery is prompt and every one of the nine test connections found
+the device.
+
+Fixed earlier, and worth keeping: **the device could not tell when a client went away.** The session
+read until its transport ended, and the transport only ended when the session dropped it, so the two
+waited on each other and the device stayed busy with a client that had left. The daemon now watches
+whether the client is still subscribed and ends the session when it is not.
+
+**Left as a known rough edge:** the daemon handles `ctrl_c` (SIGINT) for a clean shutdown but not
+SIGTERM, which is how systemd stops it — so `systemctl stop` kills it without unregistering its GATT
+application, and BlueZ can retain a stale registration until the next `bluetoothd` restart. It did not
+affect the working runs, but the packaged unit should either handle SIGTERM or accept that the GATT
+state is cleared when `bluetoothd` restarts.
 
 ## The prototype's identity, to check against after it is reimaged
 
@@ -152,6 +178,14 @@ will need installing again~~, and the binary is deployed to `/tmp`, which does n
 it ran on was Ubuntu 26.04 LTS, kernel 7.0.0-1015-raspi, with bluez 5.85.
 
 Correction: the new image has bluez pre-installed.
+
+**Reimage confirmed the reproduction.** After the board was reimaged (Ubuntu 26.04 LTS, kernel
+7.0.0-1017-raspi, bluez 5.85), a build with the `tpm` feature off — correct for a board with no TPM,
+and the only way it cross-compiles without a target sysroot for `tss2-sys` — derived the sticker
+fresh with nothing carried over. It came back with the recorded values byte for byte: RPi serial
+winning over placeholder OTP, URL `…#AcuJv5Obhn7G4VUwprktuYoU8XDh9Mn_IYy9Rg4hQMy9`, rendering
+`AHFY-TP4T-…-IDGL-2`. The chain is reproducible from the board alone; the design's central claim holds
+across a full reimage.
 
 ## Milestones
 
@@ -189,10 +223,11 @@ backends are registered, so they slot in without disturbing the schedule.
 - [x] Advertisement and scan response construction within the 31-byte budgets, with salt rotation — the budget arithmetic is implemented and tested, but BlueZ will not pack it as specified on a legacy controller (see Blocked, above)
 - [x] Daemon tying it together, with identity establishment, the cache on disk, and sticker generation. Run on the prototype under `systemd-run`, so both streams reach the journal; a packaged unit is still to write
 - [x] Address and hostname reporting, including unsolicited sending on change
-- [x] Text echo to standard output
+- [x] Text echo to standard output (verified over the air: the device prints the client's line to its journal)
+- [x] Advertising resumes after a session ends, and a short advertising interval so discovery is prompt — both verified across nine consecutive connections
 - [ ] Web application: fragment reading, camera capture, scan and match, handshake, and both directions
 - [x] A `scan` subcommand doing the client half of discovery and matching from the command line, so discovery can be exercised without a browser
-- [ ] A packaged systemd unit
+- [ ] A packaged systemd unit — must ship the peripheral-only BlueZ config (`[GATT] Client = false`) and should handle SIGTERM for a clean GATT unregister
 
 The core also compiles for `wasm32-unknown-unknown` with `--no-default-features` (verified), which is
 what lets the web application share the key schedule and handshake; a wasm consumer enables
