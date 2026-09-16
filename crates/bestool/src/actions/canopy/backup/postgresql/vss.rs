@@ -121,9 +121,10 @@ pub async fn prepare(
 	// safe and erring late is not: a position from before the freeze names a few
 	// files that did not need copying, where one from after it misses whatever
 	// was written in between, and a missed write is a file left diverged.
-	let journal = usn::position(&volume)
+	let journal_volume = PathBuf::from(&volume);
+	let journal = usn::position(&journal_volume)
 		.await
-		.map(|position| (PathBuf::from(&volume), position));
+		.map(|position| (journal_volume, position));
 
 	info!(%volume, %expose_target, "creating VSS shadow copy via WMI");
 	// WMI/COM is thread-affine and `!Send`, and the junction is blocking fs work,

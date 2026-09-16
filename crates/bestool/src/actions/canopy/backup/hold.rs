@@ -68,7 +68,7 @@ pub enum DivergenceMark {
 	UsnJournal {
 		volume: PathBuf,
 		journal_id: u64,
-		usn: u64,
+		usn: i64,
 	},
 }
 

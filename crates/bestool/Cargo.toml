@@ -95,6 +95,9 @@ sd-notify = { version = "0.5.0", optional = true }
 [target.'cfg(windows)'.dependencies]
 junction = "2.0.0"
 tauri-winrt-notification = { version = "0.8.1", optional = true }
+# Reads the NTFS change journal, so an in-place restore from a shadow copy can
+# ask the filesystem what diverged instead of comparing both trees.
+usn-journal-rs = { version = "0.4.1", optional = true }
 win32job = { version = "2.0.3", optional = true }
 windows-acl = { version = "0.3.0", optional = true }
 windows-env = { version = "0.3.0", optional = true }
@@ -222,7 +225,7 @@ canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration"
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`
 # method needs bestool-postgres (CHECKPOINT/verify) but not Tamanu config.
-canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service"]
+canopy-backup = ["__canopy", "bestool-tamanu/canopy-registration", "dep:bestool-kopia", "bestool-kopia/proxy", "dep:bestool-postgres", "dep:axum", "dep:dirs", "dep:toml", "dep:notify", "dep:fs4", "dep:windows-service", "dep:usn-journal-rs"]
 # Restoring a backup, including in place from a held capture, which compares
 # the capture against the live tree (blake3) and preserves timestamps (filetime).
 canopy-restore = ["canopy-backup", "dep:blake3", "dep:filetime"]

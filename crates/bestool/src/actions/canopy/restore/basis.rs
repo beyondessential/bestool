@@ -77,6 +77,7 @@ pub async fn resolve(record: &HoldRecord, live: &Path) -> Basis {
 		Some(DivergenceMark::BtrfsGeneration { generation }) => {
 			btrfs::changed_since(*generation, live).await
 		}
+		#[cfg(windows)]
 		Some(DivergenceMark::UsnJournal {
 			volume,
 			journal_id,
@@ -87,9 +88,7 @@ pub async fn resolve(record: &HoldRecord, live: &Path) -> Basis {
 				usn: *usn,
 			};
 			match crate::actions::canopy::backup::postgresql::usn::changed_since(
-				&volume.to_string_lossy(),
-				position,
-				live,
+				volume, position, live,
 			)
 			.await
 			{
@@ -101,10 +100,15 @@ pub async fn resolve(record: &HoldRecord, live: &Path) -> Basis {
 			}
 		}
 		// A mark for a platform this build cannot read is not an error: the same
-		// hold record is read by whatever bestool runs next on the host.
+		// hold record is read by whatever bestool runs next on the host, and a
+		// mark it cannot use is simply a mark it compares the trees without.
 		#[cfg(not(unix))]
 		Some(DivergenceMark::BtrfsGeneration { .. }) => {
 			Basis::unavailable("the capture's btrfs generation cannot be read here")
+		}
+		#[cfg(not(windows))]
+		Some(DivergenceMark::UsnJournal { .. }) => {
+			Basis::unavailable("the capture's change journal cannot be read here")
 		}
 		None => Basis::unavailable(format!(
 			"the {} capture recorded no position in its filesystem's change history",

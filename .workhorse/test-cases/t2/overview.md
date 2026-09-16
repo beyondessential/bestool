@@ -26,9 +26,10 @@ The unticked ones are coverage this card owes and does not yet have: they need r
 - [x] btrfs `find-new` output is read as the set of changed paths, re-based onto the restored tree
 - [x] btrfs `find-new` reporting nothing changed is an empty set, not an absent basis
 - [x] Paths on the subvolume but outside the restored tree are left out
-- [x] The NTFS change journal's records are read as names under parent directories
-- [x] A recreated change journal (different id) yields no basis
+- [x] A recreated change journal (different id) yields no basis, whatever its numbering looks like
 - [x] A change journal wrapped past the capture yields no basis (verifies spec: HOLD)
+- [x] A position at the journal's very first record is still covered — the boundary is inclusive
+- [x] A volume that is not a drive letter yields no basis rather than a bad lookup
 - [x] `thin_delta` output is summed over every kind of difference and no sameness
 - [ ] On a real btrfs host, the generation recorded at capture names exactly the files written since
 - [ ] On a real Windows host, the journal names exactly the files written since the shadow

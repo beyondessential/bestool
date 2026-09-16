@@ -44,7 +44,7 @@ Hashing every same-size file regardless of mtime would close that gap, at the co
 Each backend can name the diverged set from metadata, without reading contents.
 
 - **btrfs** — `btrfs subvolume find-new <live-subvol> <generation>` lists files written since a transaction generation. File-level, so it drops straight into the table above. The hold record has to carry the generation at capture, which it does not today.
-- **VSS** — the NTFS USN change journal enumerates what changed since a recorded USN. File-level. The journal is a fixed-size **ring**, so a wrap since the capture means the answer is partial; a partial answer is not a basis, so a detected wrap yields no basis and the fallback runs. The record has to carry the journal id and USN at capture. Verify on a real host before relying on it.
+- **VSS** — the NTFS USN change journal enumerates what changed since a recorded USN. File-level. The journal is a fixed-size **ring**, so a wrap since the capture means the answer is partial; a partial answer is not a basis, so a detected wrap yields no basis and the fallback runs. So does a journal that has been deleted and recreated, which restarts its numbering. The record has to carry the journal id and USN at capture. Verify on a real host before relying on it.
 - **thin LVM** — `thin_delta` diffs two thin devices' block mappings. Block-level, and there is no reverse map from a block to the file that owns it, so it **cannot** decide the same-size case. What it can do soundly and cheaply is *size* the divergence for the space gate, and answer "nothing diverged at all" outright. It contributes that and not a path set.
 
 ## Space: two different resources
@@ -113,7 +113,7 @@ Not verified, and needing real storage:
 
 - **btrfs** — that the generation recorded at capture makes `find-new` name exactly the files written since. The parser is tested against representative output; the generation capture and the `find-new` invocation are not.
 - **thin LVM** — `thin_delta` against a real pool. `reserve_metadata_snap` needs privileges and tooling that may be absent, which is why every failure here degrades to the walk's estimate rather than refusing.
-- **VSS** — the whole change-journal path. It is read through `fsutil` rather than `FSCTL_READ_USN_JOURNAL`, because this workspace forbids unsafe code; `fsutil`'s output is human-facing and localised, so an unrecognised shape yields no basis. Treat as an optimisation behind the fallback until a real host confirms it.
+- **VSS** — the whole change-journal path. It is read through `usn-journal-rs`, which wraps the `DeviceIoControl` calls and reconstructs each record's path from its parent's file id; this workspace forbids unsafe code, so a crate that encapsulates it is the way in. Whether the journal is active, whether the recorded position survives the ring, and whether the reconstructed paths land where the restore expects them all need a real host. Treat as an optimisation behind the fallback until one confirms it.
 - **postgres** — that a restored cluster starts and verifies, on each backend. The in-place path reuses the staged path's stop/ownership/start/verify sequence, but the sequence around the interlock is new.
 
 These belong with [P2](https://github.com/beyondessential/bestool/pull/898)'s per-backend hold lifecycle jobs, which already have the hosts.

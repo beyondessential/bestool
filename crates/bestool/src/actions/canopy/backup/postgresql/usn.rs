@@ -10,26 +10,32 @@
 //! discarded to make room, so a journal that has wrapped past the position a
 //! capture recorded no longer holds the whole answer — and a partial answer is
 //! not an answer. That, and the journal having been deleted and recreated since
-//! (which gives it a new id and restarts its numbering), are both detected here
-//! and yield nothing rather than a subset. The caller then compares the trees.
+//! (which gives it a new id and restarts its numbering), are both detected by
+//! [`coverage`], which yields nothing rather than a subset. The caller then
+//! compares the trees.
 //!
-//! Read through `fsutil`, which ships with Windows and is how the rest of this
-//! module talks to the platform. The alternative is `FSCTL_READ_USN_JOURNAL`
-//! directly, which this workspace cannot do: it forbids unsafe code.
+//! The journal is read through `usn-journal-rs`, which wraps the `DeviceIoControl`
+//! calls and reconstructs a record's full path from its parent's file id. This
+//! workspace forbids unsafe code, so the alternative would be driving `fsutil`
+//! and parsing output meant for people.
 //!
-//! Every parse here is best-effort by design. `fsutil`'s output is human-facing
-//! and localised, so an unrecognised shape yields `None` and the restore falls
-//! back to comparing the trees — slower, never wrong. Verify on a real host
-//! before relying on this as more than an optimisation.
+//! Verify on a real host before relying on this as more than an optimisation.
 
-use std::{
-	collections::{BTreeSet, HashMap},
-	path::{Path, PathBuf},
-};
+#[cfg(any(windows, test))]
+use std::path::Path;
+#[cfg(windows)]
+use std::{collections::BTreeSet, path::PathBuf};
 
-use tokio::process::Command;
+#[cfg(windows)]
 use tracing::{debug, warn};
 
+// Only Windows reads a change journal, so the four items below are built there
+// and under test. Deciding whether a recorded position is still answerable is
+// the part that would quietly leave files diverged if it were wrong, so it is
+// worth checking on every platform CI runs rather than only on the one it runs
+// on — hence `test` rather than `windows` alone.
+
+#[cfg(any(windows, test))]
 /// Where a volume's journal stood at a moment, enough to tell later whether it
 /// still covers that moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,26 +45,80 @@ pub struct Position {
 	/// means nothing against the new.
 	pub journal_id: u64,
 	/// The sequence number the next record will be written at.
-	pub usn: u64,
+	pub usn: i64,
+}
+
+#[cfg(any(windows, test))]
+/// Whether the journal as it stands still accounts for a recorded position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+	/// Every change since the position is still in the journal.
+	Covered,
+	/// The journal has been deleted and recreated since, so its numbering has
+	/// nothing to do with the recorded position.
+	Recreated,
+	/// The ring has overwritten the records from the position onwards. What is
+	/// left is a suffix of the changes, and a suffix is not the set.
+	Wrapped,
+}
+
+/// Whether a position recorded at a capture is still answerable.
+///
+/// Kept separate from the reading so it can be reasoned about — and tested —
+/// away from a Windows volume. Getting it wrong in the permissive direction is
+/// the one failure that matters: it would leave files diverged.
+#[cfg(any(windows, test))]
+pub fn coverage(since: Position, journal_id: u64, first_usn: i64) -> Coverage {
+	if journal_id != since.journal_id {
+		Coverage::Recreated
+	} else if since.usn < first_usn {
+		Coverage::Wrapped
+	} else {
+		Coverage::Covered
+	}
+}
+
+#[cfg(any(windows, test))]
+/// The drive letter `volume` names, as the journal API wants it.
+fn drive_letter(volume: &Path) -> Option<char> {
+	volume
+		.to_str()?
+		.chars()
+		.next()
+		.filter(char::is_ascii_alphabetic)
 }
 
 /// Where the volume's journal stands now.
 ///
 /// Called when a capture freezes, so a later restore has something to diff
 /// against. `None` where the volume has no active journal, which is a supported
-/// state rather than an error: a later restore compares the trees itself.
-///
-/// Only a shadow copy records a position, so only Windows calls this; the
-/// parsing beneath it is exercised everywhere.
+/// state rather than an error: a later restore compares the trees itself. The
+/// journal is never created here — it is host-wide configuration that backups
+/// share with everything else on the volume, so turning it on is an operator
+/// decision, as shadow storage sizing is.
 #[cfg(windows)]
-pub async fn position(volume: &str) -> Option<Position> {
-	let output = fsutil(&["usn", "queryjournal", &drive(volume)]).await?;
-	let position = Position {
-		journal_id: field(&output, "Usn Journal ID")?,
-		usn: field(&output, "Next Usn")?,
-	};
-	debug!(volume, ?position, "read the change journal's position");
-	Some(position)
+pub async fn position(volume: &Path) -> Option<Position> {
+	let volume = volume.to_path_buf();
+	tokio::task::spawn_blocking(move || {
+		let letter = drive_letter(&volume)?;
+		let handle = usn_journal_rs::volume::Volume::from_drive_letter(letter)
+			.inspect_err(|err| debug!("no change journal on {letter}: {err}"))
+			.ok()?;
+		let data = handle
+			.journal()
+			.query(false)
+			.inspect_err(|err| debug!("no change journal on {letter}: {err}"))
+			.ok()?;
+		let position = Position {
+			journal_id: data.journal_id,
+			usn: data.next_usn,
+		};
+		debug!(?position, "read {letter}'s change journal position");
+		Some(position)
+	})
+	.await
+	.ok()
+	.flatten()
 }
 
 /// The paths on `volume` that changed since `since`, relative to `root`.
@@ -67,296 +127,135 @@ pub async fn position(volume: &str) -> Option<Position> {
 /// recreated, it has wrapped past the recorded position, or it could not be
 /// read. The caller must then compare the trees rather than read an empty set as
 /// "nothing changed": those are opposite conclusions.
-pub async fn changed_since(volume: &str, since: Position, root: &Path) -> Option<BTreeSet<PathBuf>> {
-	let drive = drive(volume);
-	let current = fsutil(&["usn", "queryjournal", &drive]).await?;
+#[cfg(windows)]
+pub async fn changed_since(
+	volume: &Path,
+	since: Position,
+	root: &Path,
+) -> Option<BTreeSet<PathBuf>> {
+	use usn_journal_rs::{journal::EnumOptions, volume::Volume};
 
-	let journal_id: u64 = field(&current, "Usn Journal ID")?;
-	if journal_id != since.journal_id {
-		warn!(
-			"volume {volume}'s change journal has been recreated since the capture, \
-			 so it no longer says what changed"
-		);
-		return None;
-	}
-	// The ring has overwritten the records from the capture onwards, so what is
-	// left is a suffix of the changes — and a suffix is not the set.
-	let first: u64 = field(&current, "First Usn")?;
-	if since.usn < first {
-		warn!(
-			"volume {volume}'s change journal has wrapped past the capture, so it no \
-			 longer holds every change since"
-		);
-		return None;
-	}
+	let volume = volume.to_path_buf();
+	let root = root.to_path_buf();
+	tokio::task::spawn_blocking(move || {
+		let letter = drive_letter(&volume)?;
+		let handle = Volume::from_drive_letter(letter)
+			.inspect_err(|err| {
+				warn!("{letter} has no readable change journal, so the restore compared the trees: {err}")
+			})
+			.ok()?;
 
-	let records = fsutil(&[
-		"usn",
-		"readjournal",
-		&drive,
-		&format!("startusn={:#x}", since.usn),
-	])
-	.await?;
-
-	let mut paths = BTreeSet::new();
-	let mut directories: HashMap<u64, Option<PathBuf>> = HashMap::new();
-	for (name, parent) in parse_records(&records) {
-		let Some(directory) = resolve_parent(&drive, parent, &mut directories).await else {
-			// A directory that has since been deleted cannot be resolved, and does
-			// not need to be: the walk finds a deletion structurally.
-			continue;
-		};
-		if let Ok(rel) = directory.join(name).strip_prefix(root) {
-			paths.insert(rel.to_path_buf());
-		}
-	}
-
-	debug!(
-		volume,
-		changed = paths.len(),
-		"the change journal named what diverged from the capture"
-	);
-	Some(paths)
-}
-
-/// The drive `fsutil` wants: a bare prefix such as `C:`.
-fn drive(volume: &str) -> String {
-	volume.trim_end_matches(['\\', '/']).to_owned()
-}
-
-async fn fsutil(args: &[&str]) -> Option<String> {
-	let output = Command::new("fsutil")
-		.args(args)
-		.stdin(std::process::Stdio::null())
-		.output()
-		.await
-		.inspect_err(|err| debug!("could not run fsutil {}: {err}", args.join(" ")))
-		.ok()?;
-	if !output.status.success() {
-		debug!("fsutil {} exited {}", args.join(" "), output.status);
-		return None;
-	}
-	Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// A `Label : value` field from `fsutil`'s output, as a number. Values are
-/// printed in hex with an `0x` prefix, decimal without one.
-fn field(output: &str, label: &str) -> Option<u64> {
-	let line = output
-		.lines()
-		.find(|line| line.trim_start().to_ascii_lowercase().starts_with(&label.to_ascii_lowercase()))?;
-	parse_number(line.split_once(':')?.1)
-}
-
-/// A number as `fsutil` prints one, hex or decimal.
-fn parse_number(text: &str) -> Option<u64> {
-	let text = text.trim();
-	match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-		Some(hex) => u64::from_str_radix(hex.trim(), 16).ok(),
-		None => text.parse().ok(),
-	}
-}
-
-/// The `(file name, parent directory id)` of every record in a
-/// `fsutil usn readjournal` dump.
-///
-/// Records are blocks of `Label : value` lines. Only the name and the parent
-/// matter: the reason a file changed is not interesting, because the question is
-/// only whether it might differ, and every reason means it might.
-fn parse_records(output: &str) -> Vec<(String, u64)> {
-	let mut records = Vec::new();
-	let mut name: Option<String> = None;
-	let mut parent: Option<u64> = None;
-	for line in output.lines() {
-		let Some((label, value)) = line.split_once(':') else {
-			continue;
-		};
-		let label = label.trim().to_ascii_lowercase();
-		let value = value.trim();
-		match label.as_str() {
-			"file name" => {
-				// A new name closes the record before it, since the name is the first
-				// field of each block after the USN.
-				if let (Some(name), Some(parent)) = (name.take(), parent.take()) {
-					records.push((name, parent));
-				}
-				name = Some(value.to_owned());
+		let data = handle.journal().query(false).ok()?;
+		match coverage(since, data.journal_id, data.first_usn) {
+			Coverage::Covered => {}
+			Coverage::Recreated => {
+				warn!(
+					"{letter}'s change journal has been recreated since the capture, \
+					 so it no longer says what changed"
+				);
+				return None;
 			}
-			"parent file id" => parent = parse_file_id(value),
-			_ => {}
+			Coverage::Wrapped => {
+				warn!(
+					"{letter}'s change journal has wrapped past the capture, so it no \
+					 longer holds every change since"
+				);
+				return None;
+			}
 		}
-	}
-	if let (Some(name), Some(parent)) = (name, parent) {
-		records.push((name, parent));
-	}
-	records
-}
 
-/// A file id as the journal prints one: 32 hex digits, of which NTFS uses the
-/// low 64 bits as the file reference number.
-fn parse_file_id(text: &str) -> Option<u64> {
-	let text = text.trim().trim_start_matches("0x");
-	if text.is_empty() || !text.chars().all(|c| c.is_ascii_hexdigit()) {
-		return None;
-	}
-	let low = &text[text.len().saturating_sub(16)..];
-	u64::from_str_radix(low, 16).ok()
-}
+		let journal = handle.journal();
+		let entries = journal
+			.iter_with_options(EnumOptions {
+				start_usn: since.usn,
+				// Every reason: the question is only whether a file might differ, and
+				// every reason means it might. An extra path costs one comparison.
+				..EnumOptions::default()
+			})
+			.ok()?;
 
-/// The directory a file id names, cached: a journal covering hours of writes
-/// names the same handful of directories over and over, and each lookup is a
-/// process.
-async fn resolve_parent(
-	drive: &str,
-	id: u64,
-	cache: &mut HashMap<u64, Option<PathBuf>>,
-) -> Option<PathBuf> {
-	if let Some(cached) = cache.get(&id) {
-		return cached.clone();
-	}
-	let resolved = query_name_by_id(drive, id).await;
-	cache.insert(id, resolved.clone());
-	resolved
-}
+		let mut resolver = handle.path_resolver_with_cache();
+		let mut paths = BTreeSet::new();
+		for entry in entries {
+			// A read that fails partway has produced a prefix of the changes, which
+			// is no more an answer than a wrapped journal's suffix.
+			let entry = entry
+				.inspect_err(|err| {
+					warn!(
+						"{letter}'s change journal stopped partway, so the restore \
+						 compared the trees instead: {err}"
+					)
+				})
+				.ok()?;
+			// A file deleted since the capture cannot be resolved, and does not need
+			// to be: the walk finds a deletion structurally.
+			let Some(path) = resolver.resolve_path(&entry) else {
+				continue;
+			};
+			if let Ok(rel) = path.strip_prefix(&root) {
+				paths.insert(rel.to_path_buf());
+			}
+		}
 
-async fn query_name_by_id(drive: &str, id: u64) -> Option<PathBuf> {
-	let output = fsutil(&[
-		"file",
-		"queryfilenamebyid",
-		&format!("{drive}\\"),
-		&format!("{id:#018x}"),
-	])
-	.await?;
-	parse_queried_name(&output, drive)
-}
-
-/// The path out of `fsutil file queryfilenamebyid`, which prints it in brackets
-/// in extended-length form. The rest of the restore works in ordinary paths, and
-/// the two forms do not compare equal.
-fn parse_queried_name(output: &str, drive: &str) -> Option<PathBuf> {
-	let start = output.find('[')? + 1;
-	let rest = &output[start..];
-	let end = rest.find(']')?;
-	let path = rest[..end].trim();
-	let path = path
-		.strip_prefix(r"\\?\")
-		.or_else(|| path.strip_prefix(r"\??\"))
-		.unwrap_or(path);
-	// A path on another volume cannot be part of this capture.
-	path.to_ascii_uppercase()
-		.starts_with(&drive.to_ascii_uppercase())
-		.then(|| PathBuf::from(path))
+		debug!(
+			changed = paths.len(),
+			"{letter}'s change journal named what diverged from the capture"
+		);
+		Some(paths)
+	})
+	.await
+	.ok()
+	.flatten()
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	const QUERY: &str = "\
-Usn Journal ID   : 0x01d5f4e2c3b1a098
-First Usn        : 0x0000000000010000
-Next Usn         : 0x0000000000123456
-Lowest Valid Usn : 0x0000000000010000
-Max Usn          : 0x00000fffffff0000
-Maximum Size     : 0x0000000002000000
-Allocation Delta : 0x0000000000400000
-";
-
-	const RECORDS: &str = "\
-Usn                      : 0x0000000000010020
-File name                : 2345
-File name length         : 8
-Reason                   : 0x00000002: Data extend
-Time stamp               : 9/15/2026 5:26:03
-Source info              : 0x00000000: *NONE*
-Security Id              : 0x00000000
-File attributes          : 0x00000020: Archive
-File ID                  : 00000000000000000000000000012345
-Parent file ID           : 00000000000000000000000000000041
-
-Usn                      : 0x0000000000010080
-File name                : pg_control
-File name length         : 20
-Reason                   : 0x80000002: Data extend | Close
-Time stamp               : 9/15/2026 5:26:09
-Source info              : 0x00000000: *NONE*
-Security Id              : 0x00000000
-File attributes          : 0x00000020: Archive
-File ID                  : 00000000000000000000000000012346
-Parent file ID           : 00000000000000000000000000000042
-";
+	const AT_CAPTURE: Position = Position {
+		journal_id: 0x01d5_f4e2_c3b1_a098,
+		usn: 0x0012_3456,
+	};
 
 	#[test]
-	fn reads_the_journals_identity_and_position() {
-		assert_eq!(field(QUERY, "Usn Journal ID"), Some(0x01d5_f4e2_c3b1_a098));
-		assert_eq!(field(QUERY, "Next Usn"), Some(0x0012_3456));
-		assert_eq!(field(QUERY, "First Usn"), Some(0x0001_0000));
-	}
-
-	#[test]
-	fn a_capture_before_the_first_record_has_been_wrapped_past() {
-		// The check the ring makes necessary: a position older than what the
-		// journal still holds means the answer would be a suffix, not the set.
-		let first = field(QUERY, "First Usn").unwrap();
-		assert!(0x0000_1000 < first, "a position the ring has discarded");
-		assert!(0x0001_0000 >= first, "a position the ring still covers");
-	}
-
-	#[test]
-	fn reads_every_record_as_a_name_under_a_directory() {
-		let records = parse_records(RECORDS);
+	fn a_journal_still_holding_the_capture_can_answer() {
 		assert_eq!(
-			records,
-			vec![("2345".to_owned(), 0x41), ("pg_control".to_owned(), 0x42)]
+			coverage(AT_CAPTURE, AT_CAPTURE.journal_id, 0x0001_0000),
+			Coverage::Covered
 		);
 	}
 
 	#[test]
-	fn an_empty_journal_has_no_records_rather_than_a_malformed_one() {
-		assert!(parse_records("").is_empty());
-	}
-
-	#[test]
-	fn takes_the_low_bits_of_a_128_bit_file_id() {
+	fn a_position_at_the_very_first_record_is_still_covered() {
+		// The boundary is inclusive: the record at `first_usn` has not been
+		// discarded, so a capture recorded there is answerable.
 		assert_eq!(
-			parse_file_id("00000000000000000000000000012345"),
-			Some(0x12345)
-		);
-		assert_eq!(parse_file_id("0x2a"), Some(0x2a));
-		assert_eq!(parse_file_id("not an id"), None);
-	}
-
-	#[test]
-	fn reads_the_path_out_of_a_file_id_query() {
-		let output = "A random link name to this file is [\\\\?\\C:\\Program Files\\PostgreSQL\\16\\data\\base\\1]\r\n";
-		assert_eq!(
-			parse_queried_name(output, "C:"),
-			Some(PathBuf::from(r"C:\Program Files\PostgreSQL\16\data\base\1"))
+			coverage(AT_CAPTURE, AT_CAPTURE.journal_id, AT_CAPTURE.usn),
+			Coverage::Covered
 		);
 	}
 
 	#[test]
-	fn a_path_on_another_volume_is_not_part_of_this_capture() {
-		let output = "A random link name to this file is [\\\\?\\D:\\elsewhere]\r\n";
-		assert_eq!(parse_queried_name(output, "C:"), None);
+	fn a_ring_that_wrapped_past_the_capture_cannot_answer() {
+		assert_eq!(
+			coverage(AT_CAPTURE, AT_CAPTURE.journal_id, AT_CAPTURE.usn + 1),
+			Coverage::Wrapped
+		);
 	}
 
 	#[test]
-	fn unrecognised_output_yields_nothing_rather_than_a_wrong_path() {
-		assert_eq!(parse_queried_name("Error: Access is denied.", "C:"), None);
-		assert_eq!(field("Error: Access is denied.", "Next Usn"), None);
+	fn a_recreated_journal_cannot_answer_however_its_numbering_looks() {
+		// Its sequence numbers restart, so a recorded position can land anywhere
+		// in the new journal's range and mean nothing. The id is what settles it.
+		assert_eq!(coverage(AT_CAPTURE, 999, 0), Coverage::Recreated);
+		assert_eq!(coverage(AT_CAPTURE, 999, i64::MAX), Coverage::Recreated);
 	}
 
 	#[test]
-	fn reads_both_the_hex_and_decimal_forms_fsutil_prints() {
-		assert_eq!(parse_number(" 0x0000000000123456 "), Some(0x0012_3456));
-		assert_eq!(parse_number(" 1193046 "), Some(1_193_046));
-		assert_eq!(parse_number(" UNKNOWN "), None);
-	}
-
-	#[test]
-	fn a_drive_is_taken_without_its_trailing_separator() {
-		assert_eq!(drive("C:\\"), "C:");
-		assert_eq!(drive("C:"), "C:");
+	fn reads_the_drive_letter_the_journal_api_wants() {
+		assert_eq!(drive_letter(Path::new("C:")), Some('C'));
+		assert_eq!(drive_letter(Path::new(r"D:\")), Some('D'));
+		assert_eq!(drive_letter(Path::new(r"\\?\Volume{abc}")), None);
+		assert_eq!(drive_letter(Path::new("")), None);
 	}
 }
