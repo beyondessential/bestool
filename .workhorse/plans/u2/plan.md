@@ -189,10 +189,40 @@ In a browser, driven over the DevTools protocol: the page loads, instantiates th
 payload from the fragment, and renders the sticker's human rendering, which is BLI-WEB's link path
 working end to end in Chrome.
 
-What is left is the part that needs a working adapter: the chooser, GATT, notifications, and the
-channel against the device. That is blocked on the test machine for a reason of its own, below.
+The chooser, GATT, notifications and the channel were then verified on a phone, which is the section
+after next; the laptop could not do it for a reason of its own, in between.
 
-### The browser test is blocked by a bug in the test machine's BlueZ
+### Milestone one is done, on a phone, from a printed sticker
+
+The whole chain ran on an Android phone: the QR printed on paper, read with the application's own
+camera, the device found in the chooser, the channel opened, the device's identity shown, and a line
+of text typed in the browser printed by the device. That is both directions of the first milestone
+over Web Bluetooth, on the platform the application is aimed at, with nothing installed.
+
+Two things came out of doing it, and both are now addressed.
+
+**The code was too dense to read off paper comfortably.** It was 49 modules a side. The payload now
+rides in the fragment as base32 rather than base64url, which sounds backwards — 53 characters instead
+of 44 — but a QR code spends five and a half bits on a digit or an upper-case letter and eight on
+anything else, so the longer upper-case rendering occupies fewer bits and the code comes out at 45
+modules a side at the same error correction. Each module is a fifth larger in area on the same
+sticker, which is what a camera has to resolve. Error correction stays at H.
+
+Upper-casing the scheme and host would take it to 41, because the whole string would then be in the
+dense alphabet, and that was rejected: a native application claims a link by matching the scheme and
+host literally, and BLI-STK carries that property.
+
+The fragment is now exactly the rendering printed beneath the code with its grouping removed, so the
+sticker carries one alphabet rather than two, and reading the fragment and reading the rendering are
+the same operation.
+
+**Nothing distinguishes the device in the chooser.** It appears under its rotating handle, which is a
+jumble of letters by design, so an operator has no way to tell it is the right one and no reason to
+trust it. The application now says so before the chooser opens: the device appears as a jumble of
+letters that changes, pick it, and the application checks it against the sticker. The check was
+always there; what was missing was saying so.
+
+### A bug in the test machine's BlueZ, which cost a day of chasing
 
 The channel has not been driven from a browser yet, and the reason is nothing to do with bliti.
 
@@ -218,10 +248,11 @@ GLib's argument order, so `queue_find` receives the UUID string where it expects
 and calls it. The laptop runs 5.87-2; 5.86 is unaffected, and the prototype's 5.85 never reaches the
 path because a device is a peripheral and does not filter a scan.
 
-So the browser test needs one of: a client machine on 5.86 or a patched 5.87, or an Android phone,
-whose Bluetooth stack is not BlueZ at all and which is the platform the application is actually aimed
-at. Android is the better test of the two, and the camera path needs it regardless, because
-`BarcodeDetector` is not implemented in Chrome for Linux.
+So a browser test needs a client machine on 5.86 or a patched 5.87, or a phone, whose Bluetooth stack
+is not BlueZ at all. The phone is what the milestone was finished on, and the camera path needed it
+regardless, because `BarcodeDetector` is not implemented in Chrome for Linux. This remains worth
+knowing for anyone testing from a Linux desktop, and it is not specific to bliti: any application
+filtering a scan by service UUID crashes `bluetoothd` on that version.
 
 ### The chooser cannot be narrowed, and BLI-WEB says it can
 
@@ -260,7 +291,7 @@ before the image was replaced.
 | device-tree serial | `f3756510f632cfad` |
 | customer OTP | 32 bytes of zeros, so precedence falls through it |
 | sticker secret | `cb89bf939b867ec6e15530a6b92db98a14f170e1f4c9ff218cbd460e2140ccbd` |
-| sticker URL | `https://bliti.tamanu.app/#AcuJv5Obhn7G4VUwprktuYoU8XDh9Mn_IYy9Rg4hQMy9` |
+| sticker URL | `https://bliti.tamanu.app/#AHFYTP4TTODH5RXBKUYKNOJNXGFBJ4LQ4H2MT7ZBRS6UMDRBIDGL2` |
 | printed rendering | `AHFY-TP4T-TODH-5RXB-KUYK-NOJN-XGFB-J4LQ-4H2M-T7ZB-RS6U-MDRB-IDGL-2` |
 | adapter address | `88:A2:9E:CB:28:E1` |
 
@@ -278,7 +309,7 @@ Correction: the new image has bluez pre-installed.
 7.0.0-1017-raspi, bluez 5.85), a build with the `tpm` feature off — correct for a board with no TPM,
 and the only way it cross-compiles without a target sysroot for `tss2-sys` — derived the sticker
 fresh with nothing carried over. It came back with the recorded values byte for byte: RPi serial
-winning over placeholder OTP, URL `…#AcuJv5Obhn7G4VUwprktuYoU8XDh9Mn_IYy9Rg4hQMy9`, rendering
+winning over placeholder OTP, the same secret, and the same rendering
 `AHFY-TP4T-…-IDGL-2`. The chain is reproducible from the board alone; the design's central claim holds
 across a full reimage.
 
@@ -321,9 +352,8 @@ backends are registered, so they slot in without disturbing the schedule.
 - [x] Text echo to standard output (verified over the air: the device prints the client's line to its journal)
 - [x] Advertising resumes after a session ends, and a short advertising interval so discovery is prompt — both verified across nine consecutive connections
 - [x] Web application: the wasm client crate and the page — sticker reading by link, typing, and
-      camera, matching, handshake, streams, and both directions. Verified as far as a browser-free
-      harness reaches (see The web application); the channel against a device is still to test on
-      hardware
+      camera, matching, handshake, streams, and both directions. Verified end to end on an Android
+      phone against the prototype, from a QR printed on paper
 - [x] A `scan` subcommand doing the client half of discovery and matching from the command line, so discovery can be exercised without a browser
 - [ ] A packaged systemd unit — must ship the peripheral-only BlueZ config (`[GATT] Client = false`) and should handle SIGTERM for a clean GATT unregister
 

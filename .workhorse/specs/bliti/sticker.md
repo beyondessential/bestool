@@ -18,6 +18,10 @@ The QR code encodes the URL `https://bliti.tamanu.app/`, with the payload in its
 A generic phone camera opens the page, so a device is usable without installing anything first, and the fragment is never sent to a server, so the secret stays on the device that scanned it.
 A native application can claim the link, so scanning opens that application where it is installed.
 
+The payload is rendered as unpadded base32 in the fragment, in the same characters as the rendering printed beneath the code.
+A QR code spends fewer bits on digits and upper-case letters than on mixed-case text, so the longer base32 rendering produces a coarser code than a shorter mixed-case one would, and a coarser code is what a phone camera reads off an enclosure.
+The URL is lower case, because a native application claims a link by matching the scheme and host literally.
+
 A client that is already open reads the code with its own camera instead of following the link, as specified in [BLI-WEB](web-app.md).
 Both paths yield the same payload: the URL carries it rather than forming part of it.
 

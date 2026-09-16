@@ -5,13 +5,17 @@
 //! putting it here would hand the board ID to anyone who photographs a sticker, which is the
 //! property the derivation exists to provide.
 
-use data_encoding::{BASE32_NOPAD, BASE64URL_NOPAD};
+use data_encoding::BASE32_NOPAD;
 
 use crate::key_schedule::{STICKER_SECRET_LEN, StickerSecret, VERSION};
 
 /// The URL the QR code encodes. The payload rides in the fragment, which a browser never sends to a
 /// server, so the secret stays on the device that scanned it. A generic phone camera opens this
 /// page; a native application can claim the link.
+///
+/// Kept lower case. The scheme and host are case insensitive to a browser, and upper casing them
+/// would shrink the code further, but a native application claims a link by matching the scheme and
+/// host literally, so the saving would cost the property above.
 pub const STICKER_URL_BASE: &str = "https://bliti.tamanu.app/";
 
 /// The number of characters per group in the human-readable rendering.
@@ -51,9 +55,17 @@ impl StickerPayload {
 		bytes
 	}
 
-	/// The fragment the payload rides in: the raw bytes as unpadded base64url.
+	/// The fragment the payload rides in: the raw bytes as unpadded base32, the same characters the
+	/// human-readable rendering carries, ungrouped.
+	///
+	/// Base32 rather than base64url because of what it costs to print. A QR code encodes digits and
+	/// upper-case letters at five and a half bits a character, and anything else at eight, so the
+	/// longer base32 rendering occupies fewer bits than the shorter mixed-case one and the printed
+	/// code comes out measurably coarser: 45 modules a side against 49 at the same error correction,
+	/// which is a fifth more area per module for a camera to resolve. A sticker is read off an
+	/// enclosure by a phone, so that is worth more than a shorter URL.
 	pub fn to_fragment(&self) -> String {
-		BASE64URL_NOPAD.encode(&self.to_bytes())
+		BASE32_NOPAD.encode(&self.to_bytes())
 	}
 
 	/// The full URL the QR code encodes.
@@ -92,13 +104,12 @@ impl StickerPayload {
 		})
 	}
 
-	/// Read a payload from a base64url fragment, as delivered by following the link.
+	/// Read a payload from a fragment, as delivered by following the link.
+	///
+	/// The fragment carries the same characters as the rendering printed beneath the code, so this is
+	/// the same reading: grouping and case are ignored either way.
 	pub fn from_fragment(fragment: &str) -> Result<Self, StickerError> {
-		let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
-		let bytes = BASE64URL_NOPAD
-			.decode(fragment.as_bytes())
-			.map_err(|_| StickerError::Malformed)?;
-		Self::from_bytes(&bytes)
+		Self::from_human(fragment.strip_prefix('#').unwrap_or(fragment))
 	}
 
 	/// Read a payload from a full sticker URL, taking the payload from its fragment. Both this and
@@ -220,7 +231,7 @@ mod tests {
 	fn unsupported_version_is_reported_distinctly() {
 		let mut bytes = sample().to_bytes();
 		bytes[0] = 2;
-		let fragment = BASE64URL_NOPAD.encode(&bytes);
+		let fragment = BASE32_NOPAD.encode(&bytes);
 		assert_eq!(
 			StickerPayload::from_fragment(&fragment),
 			Err(StickerError::UnsupportedVersion(2))
@@ -238,7 +249,7 @@ mod tests {
 			Err(StickerError::Malformed)
 		);
 		// A valid encoding of the wrong length is malformed, not a version error.
-		let short = BASE64URL_NOPAD.encode(&[VERSION, 0, 0]);
+		let short = BASE32_NOPAD.encode(&[VERSION, 0, 0]);
 		assert_eq!(
 			StickerPayload::from_fragment(&short),
 			Err(StickerError::Malformed)
