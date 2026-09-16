@@ -98,6 +98,16 @@ Three signals are available without any record. The system reports whether it is
 
 Refusing loudly is the required behaviour in all three cases. Deriving anyway would produce a sticker secret that some other machine also holds, which is worse than not provisioning at all, and silent about it.
 
+#### Boards with only their serial numbers
+
+**Decided: a board whose strongest source is its platform serial numbers is shippable.** Devices already in the field have neither a TPM nor burnt OTP, and they are in scope — bliti has to work on the hardware we have shipped, not only on hardware we would specify now.
+
+What that costs is worth stating rather than leaving for the derivation to imply. Against a source of around 2^32 to 2^36, a memory-hard derivation raises the price of enumerating the whole space but does not put it beyond someone willing to spend real money on a particular device. Boards in this class therefore carry a materially weaker guarantee than a board with a TPM or burnt OTP, and the threat model should say so. The strong-source boards are not incrementally better; they are in a different class, and the derivation cost cannot flatten that difference however hard the parameters are pushed.
+
+Selecting the strongest source rather than combining them is what leaves the door open to raising the floor later. Under a combination, every board's identity depends on every source it has, so changing the rule changes every board ID at once and orphans the entire field. Under precedence, a board that has a TPM today already derives from it, so declaring weak sources unacceptable tomorrow changes nothing for it.
+
+Where such a floor would apply needs care. Refusing a weak source at sticker generation stops new devices being provisioned from one, which is the intent. Refusing it in the device daemon would strand exactly the devices the floor was introduced to move past, since they derive their handle at runtime from the only source they have. The floor belongs at manufacture; the daemon keeps deriving from whatever the board offers.
+
 ### Sticker secret
 
 The value carried in the QR code, and the only secret in the system. Derived from the board ID under a fixed constant.
