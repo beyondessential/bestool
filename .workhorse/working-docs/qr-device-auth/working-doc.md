@@ -159,7 +159,7 @@ Prior art for the payload and the flow generally: Matter's commissioning (QR wit
 ### Transport binding
 
 - **GATT characteristics**, as Improv-Wi-Fi does: a write characteristic for commands and a notify characteristic for results, with framing and reassembly over the negotiated ATT MTU. Works on every client including Web Bluetooth. Modest throughput.
-- **L2CAP connection-oriented channels.** A real stream with far better throughput; supported by BlueZ, iOS 11+, and Android API 29+, but not by Web Bluetooth.
+- **L2CAP connection-oriented channels.** A real stream with far better throughput; supported by BlueZ, iOS 11+, and Android API 29+, but not by Web Bluetooth. `bluer` exposes it behind a feature flag, which bears on the peripheral-layer question above.
 
 Defining the protocol over an abstract message transport and shipping the GATT binding first keeps the web page working and leaves L2CAP available later for anything bulky.
 
@@ -171,7 +171,7 @@ Working name for the protocol and its crates: **improv-device**. It lives in thi
 
 Three crates:
 
-- **The BlueZ peripheral**, extracted from `improv-wifi`. That crate already carries a working advertisement, GATT, and application layer over zbus, currently private to it; generalising it so both protocols can register their own services and advertisements is the same work either way, and doing it once avoids two copies drifting. Needs a name — nothing obvious is free on crates.io.
+- **The BlueZ peripheral**, extracted from `improv-wifi`, or replaced by `bluer` — see below. That crate already carries a working advertisement, GATT, and application layer over zbus, currently private to it; generalising it so both protocols can register their own services and advertisements is the same work either way, and doing it once avoids two copies drifting. `bluez-peripheral` and `improv-device` are both free on crates.io.
 - **The protocol core**: board ID reading, the key schedule, the handshake, framing, and RPC types. No BlueZ and no hardware, so it unit-tests anywhere.
 - **The daemon**: the binary that ties the core to the peripheral, plus sticker generation.
 
@@ -179,9 +179,19 @@ Board ID reading sits inside the core as backends behind a trait — Raspberry P
 
 The core earns its separation from the daemon for a reason beyond tidiness: the web test page needs the same derivations and the same handshake in the browser. Compiling the core to wasm keeps one implementation of the key schedule rather than a Rust one and a JavaScript one that must agree forever. This constrains the core to stay free of I/O and of anything that will not build for `wasm32-unknown-unknown` — `snow`'s pure-Rust resolver does.
 
-### Sequencing the extraction
+### Extract our own BlueZ layer, or adopt bluer?
 
-`improv-wifi` is published and running on devices today, so pulling its BlueZ layer out is a refactor of live code rather than greenfield work. Doing it as its own change first — behaviour-preserving, no new protocol in the picture, existing tests as the guard — keeps a regression there from being tangled up with a new protocol's bugs.
+Before extracting anything, the alternative deserves weighing: [`bluer`](https://github.com/bluez/bluer) is the BlueZ project's own Rust interface — BSD-2-Clause, so compatible with our GPL-3.0-or-later, actively maintained, and widely used. It covers peripheral advertising and the GATT server, and it ships **L2CAP behind a feature flag**, which is precisely the transport binding we have pencilled in as the later option for bulk transfer. Adopting it would mean writing and maintaining no BlueZ plumbing at all.
+
+Against that: `improv-wifi`'s hand-rolled layer works today, needs only zbus, and is small. `bluer` is a heavier dependency, and moving a published crate that is running on devices onto it is a larger change than extracting what is already there.
+
+The options are not symmetric in risk. Extracting is a refactor of known-good code; adopting `bluer` is a rewrite of the same layer against a different API, but one that deletes the layer from our maintenance surface permanently and comes with L2CAP already solved.
+
+A third shape sits between them: build the new protocol's peripheral on `bluer` and leave `improv-wifi` alone. Two implementations, but the second one is not ours to maintain, and `improv-wifi` keeps working untouched.
+
+### Sequencing
+
+If we extract, `improv-wifi` is published and running on devices today, so pulling its BlueZ layer out is a refactor of live code rather than greenfield work. Doing it as its own change first — behaviour-preserving, no new protocol in the picture, existing tests as the guard — keeps a regression there from being tangled up with a new protocol's bugs.
 
 ## Open questions
 
@@ -190,7 +200,7 @@ The core earns its separation from the daemon for a reason beyond tidiness: the 
 - [ ] Does the device derive its own secret (cached after first boot, memory capped by that board), or is it derived on good hardware at imaging time and installed (no cap, device cannot self-recover unaided)?
 - [ ] argon2id or scrypt, at what parameters?
 - [ ] **improv-device** is the working name, which is fine while it stays here. Before anything is published it wants a second look: Improv Wi-Fi is someone else's protocol, and a crate called `improv-device` sitting next to our `improv-wifi` — which really is an implementation of that spec — would read as another one. This protocol has nothing to do with it.
-- [ ] A name for the extracted BlueZ peripheral crate. `bluez-peripheral` is taken on crates.io.
+- [ ] Extract our own BlueZ peripheral layer, adopt `bluer`, or build only the new protocol on `bluer` and leave `improv-wifi` alone? If we extract, the crate needs a name; `bluez-peripheral` is free.
 - [ ] Which Noise pattern: `NNpsk0` is enough for the sticker secret alone; `XXpsk0` adds a device static key, which would let a phone pin device identity across a sticker reprint. Does that matter?
 - [ ] Is passive-tracking resistance (rotating handle, private addresses) in scope for the first version?
 - [ ] Which provisioning operations are in the first milestone, and is Wi-Fi configuration one of them or does Improv-Wi-Fi keep that job?
