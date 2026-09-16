@@ -579,6 +579,13 @@ Restore a backup from Canopy's repository
    Reads only local data, so it needs no credentials and downloads nothing. The held capture is left in place, so a restore that fails partway can be attempted again from the same rollback point.
 
    Takes a hold id, as shown by `bestool canopy hold list`.
+* `--in-place` — Restore over the live data without staging a copy of the capture first.
+
+   Writes only what has diverged from the capture, so it needs room for the difference rather than for a second cluster. This is what makes a rollback possible on a host whose volume cannot hold two copies.
+
+   It gives up the atomic swap: no copy of the displaced data is kept, and part-way through, the data is neither its old state nor the captured one. The service is held unstartable until the restore finishes. The hold is untouched, so running the same command again resumes an interrupted one.
+
+   Only a held capture is restored this way: a repository restore downloads the snapshot before it can lay anything down, so it has already spent the room a staged copy needs.
 * `--target <PATH>` — Override the destination (the simple method's path); postgresql always targets its configured cluster
 * `--clobber-existing-data-yes-i-am-sure` — Proceed even if the destination already contains data (non-interactive)
 * `--no-followers` — Restore only the named type, skipping the defs that follow it.

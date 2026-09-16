@@ -557,6 +557,9 @@ mod tests {
 		let shadow = Shadow {
 			id: created.id.clone(),
 			junction: junction.clone(),
+			// This shadow is built by hand rather than by `prepare`, and the
+			// journal position is only read by a later in-place restore.
+			journal: None,
 		};
 		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
 		assert!(
@@ -640,6 +643,9 @@ mod tests {
 		let shadow = Shadow {
 			id: created.id.clone(),
 			junction: junction.clone(),
+			// This shadow is built by hand rather than by `prepare`, and the
+			// journal position is only read by a later in-place restore.
+			journal: None,
 		};
 		let capture = volume_capture(&shadow, taken_at).expect("the shadow is a whole-volume capture");
 
