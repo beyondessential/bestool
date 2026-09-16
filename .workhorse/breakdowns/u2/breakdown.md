@@ -19,7 +19,7 @@ This waits on a native application, because browsers cannot advertise at all, an
 
 ## Debug mode from a removable volume
 
-A device whose sticker no longer matches it cannot be reached at all, which strands a technician who has no way to access the device to obtain the replacement QR on the spot.
+A device whose sticker no longer matches it cannot be reached at all, which strands a tool-less technician who has no way to access the device to obtain the replacement QR on the spot.
 A file at a known filename at the root of a removable volume, read when the daemon starts, carries a random value used directly where the derived sticker secret would be, so discovery, matching and the handshake are unchanged and nothing needs reserving in the wire format.
 The channel it opens exposes a restricted toolset: enough to read the real sticker secret for reprinting, plus diagnostics, and not the normal provisioning surface.
 Also to consider: take the whole device out of service,so it can't be accidentally forgotten in this state.
