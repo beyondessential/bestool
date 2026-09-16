@@ -56,6 +56,20 @@ Measured on a Dell G7 7700, the SMBIOS UUID is `4c4c4544-0042-4710-804d-b3c04f48
 
 **Decided: the board ID combines every firmware identifier present rather than a single field.** On that same Dell, `board_serial` is `/3BGMHX2/CNPEC0034A0227/`, whose manufacturing code carries entropy the UUID does not; a vendor that wastes one source then does not collapse the whole space. The cost is that the set of sources and the order they are combined in become part of the derivation, fixed as firmly as the constants are — changing either orphans every sticker already printed. So the order is defined once, by source, with absent sources represented rather than skipped, so that a machine that later gains a source does not derive a different secret from the one on its sticker.
 
+#### Provisioned entropy on Raspberry Pi
+
+Raspberry Pi SoCs carry a customer-programmable one-time-programmable area: eight rows of 32 bits, 256 bits in total, at rows 36–43 on non-BCM2712 parts and rows 77–84 on BCM2712, which is the Pi 5. There is also a 256-bit device-specific private key area at rows 56–63, but it is listed only for non-BCM2712, so the customer rows are the portable choice across the boards we would ship. Writes are irreversible in the usual OTP sense — bits go from 0 to 1 and not back — and row 30 holds bits that can disable OTP programming and reading altogether.
+
+This is a way out of the entropy problem on the Pi side rather than a mitigation of it. If production burns 256 bits of true random into the customer area and the board ID includes it, the Pi path stops depending on a 32-bit OTP word or a 64-bit serial and carries 256 bits that were chosen rather than inherited. It composes with the decision above without changing it: provisioned entropy is simply another source present on the board, and the combination already has to handle sources being present or absent.
+
+Three consequences, all of them about ordering and none of them optional.
+
+Blank OTP reads as zeros, so the combination must distinguish *absent* from *present and zero*, or a board with unburnt OTP derives the same secret as one deliberately burnt to zero.
+
+The burn has to happen before the secret is derived and the sticker printed. Burning afterwards silently orphans the sticker, and because OTP is irreversible there is no putting it back — the board keeps a sticker that no longer matches it.
+
+And it does not relax the derivation cost. UEFI machines have no equivalent area, so the PC-grade path stays at the low-entropy figure measured above, and the memory-hard parameters are sized for the worst source rather than the best. On a board with provisioned entropy the derivation cost is then defence in depth rather than the thing holding the scheme up.
+
 ### Sticker secret
 
 The value carried in the QR code, and the only secret in the system. Derived from the board ID under a fixed constant.
@@ -98,17 +112,27 @@ A one-way hash of the sticker secret, truncated to a handful of bytes, broadcast
 
 A device that advertises is a beacon, and the question is how much a passive observer with no sticker can learn. Four things leak, and they are not independent — the weakest one sets the result, so partial measures buy nothing.
 
-**The BLE address.** If the adapter advertises from its public static address, the device is trackable outright and nothing else matters. The fix is LE Privacy: resolvable private addresses, which the controller rotates on its own. Since matching is by payload rather than by address, no peer needs to resolve them and there is no bonding to arrange. The catch is that this is adapter configuration rather than something the protocol controls, so what BlueZ and `bluer` actually expose here wants checking before it is promised.
+**The BLE address.** If the adapter advertises from its public static address, the device is trackable outright and nothing else matters. The fix is LE Privacy: resolvable private addresses, which the controller rotates on its own. Since matching is by payload rather than by address, no peer needs to resolve them and there is no bonding to arrange. The catch is that this is adapter configuration rather than something the protocol controls, and checking what BlueZ and `bluer` actually expose turned out to matter a great deal — see below.
+
+Checked, on BlueZ 5.87 with a controller that advertises LL privacy support (25-entry resolving list, LE feature bit set). `bluer` exposes no privacy control at all: `AddressType` is a read-only adapter property, and `bluer`'s own documentation for it notes that with privacy enabled it reports the type of the identity address rather than the address in use. Privacy is `Privacy = off|network/on|device|…` under `[General]` in BlueZ's `main.conf`, defaulting to `off`. Setting it to `network/on` and restarting produced no local IRK and no resolvable private address, across both a normal restart and a restart with the adapter powered down, with nothing logged by `bluetoothd`. Whether that is a misconfiguration, a `bluetoothd` fault, or an API gap was not established — seeing the over-air address needs `btmon`.
 
 **The handle.** A fixed handle defeats address rotation by itself. Rotating it needs no clock — which matters, because a device that has never had network has no idea what time it is. Advertise a short random salt in the clear alongside `H(k2, sticker secret, salt)` and roll the salt periodically: a scanner recomputes for whatever salt it observes, and an observer without the sticker secret cannot link two advertisements. Costs a few bytes.
 
-**Rotation has to be in lockstep.** If the address rolls every fifteen minutes and the handle every hour, an observer bridges each address change using the handle, and the address rotation was wasted. Same in reverse. They should roll on the same event.
+**Rotation has to be in lockstep, and cannot be.** If the address rolls every fifteen minutes and the handle every hour, an observer bridges each address change using the handle, and the address rotation was wasted. Same in reverse. They should roll on the same event — and no such event is available to us. `bluer` reports only the identity address; the live private address appears in kernel debugfs, which is an internal interface rather than a contract, so the daemon has no supported way to learn that the controller has rolled.
+
+Matching the *periods* does not substitute for sharing the *event*. With the address rolling at t = 0, 900, 1800 and the salt at t = 450, 1350, an observer links the two salts across t = 450 because the address did not change there, and links the two addresses across t = 900 because the salt did not change there; the chain joins end to end and neither rotation achieved anything. Two independent timers of equal period are as useless as timers of different periods unless they are also phase-aligned, which nothing aligns them.
+
+**Decided: the device rolls the salt, and the address is the host's business.** Address privacy becomes a documented requirement on the adapter rather than something bliti arranges, and the guarantee narrows accordingly. What bliti claims is that an observer without the sticker cannot tell *which* device it is hearing. It does not claim that such an observer cannot tell it is hearing the same device twice, because on a host where privacy is off the static address links everything regardless of what the payload does. Saying so plainly is better than implying a property the stack will not deliver.
+
+The alternative — going below `bluer` to the kernel management socket, setting the adapter's random address explicitly, and rolling it together with the salt as one operation — would buy real lockstep. It was weighed and dropped for milestone one: it puts a BlueZ plumbing layer back on our maintenance surface, which is the thing choosing `bluer` was meant to avoid. It stays available if tracking resistance is ever wanted as a guarantee rather than a best effort.
 
 **The service UUID** identifies the device as one of ours to anyone who knows to look, and it cannot be hidden: iOS can only filter a scan by service UUID, so it has to be there in the clear. This is a fleet-level fact rather than a per-device one — an observer learns "a bliti device is here", not which one. Accept it.
 
 #### Rotation period
 
-The salt rolls on a timer. Rolling it means re-registering the advertisement, which is also the natural moment for the controller to present a fresh address — whether BlueZ actually does that on re-registration is worth verifying rather than assuming, because if the address persists across a salt roll the two are no longer in lockstep and the rotation is undone.
+The salt rolls on a timer. Rolling it means re-registering the advertisement, which costs one round trip and a brief gap in advertising; clients recompute against whatever salt they observe, so a shorter period costs a scanner nothing.
+
+**Decided: fifteen minutes.** It matches the conventional private-address rotation period, so on a host where address privacy is configured the two at least share a period even though nothing can align their phase. With lockstep unavailable the exact figure carries little weight, and a familiar number needs no defending.
 
 #### Advertising continuously
 
@@ -262,7 +286,7 @@ It is also separable from QUIC itself, which is fortunate, because QUIC does not
 
 What delivers the property instead is a **stream multiplexing layer inside the Noise channel** — which is, in effect, QUIC's stream layer with the transport machinery removed, because the transport machinery is what the link is already doing.
 
-[`yamux`](https://github.com/paritytech/yamux) is exactly this: "multiplexer over reliable, ordered connections", MIT/Apache, maintained, widely used through libp2p, with flow control already solved. It carries no I/O of its own, so it should build for wasm — worth confirming, since the web page depends on it.
+[`yamux`](https://github.com/paritytech/yamux) is exactly this: "multiplexer over reliable, ordered connections", MIT/Apache, maintained, widely used through libp2p, with flow control already solved. It carries no I/O of its own, so it should build for wasm — which it does. **Confirmed: `yamux` 0.14 builds for `wasm32-unknown-unknown` with no coaxing**, and depends unconditionally on `web-time`, the shim that makes `Instant` work in a browser, so browser support is deliberate upstream rather than incidental. Adopted; the stream layer is not hand-rolled.
 
 Failing that, hand-rolling is a few hundred lines, and QUIC's stream identifier convention is worth copying either way: the low bits of the identifier encode which side opened the stream and whether it is unidirectional, so both ends allocate from disjoint spaces and can never collide without negotiating anything.
 
@@ -312,10 +336,11 @@ Taking `bluer` for bliti alone sidesteps that trade entirely for now. `improv-wi
 
 ## Open questions
 
-- [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor.
-- [ ] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep.
-- [ ] Salt rotation period.
-- [ ] Does `yamux` build for `wasm32-unknown-unknown`? The web page depends on it, and the answer decides between adopting it and hand-rolling the stream layer.
+- [ ] argon2id parameters, which want measuring on a Pi 5 against the 4 GB floor. Sized for the worst board-ID source, which is the UEFI path, not the Pi one. Reference figures on a 12-core x86 desktop, argon2id with a 32-byte output at four lanes: 512 MiB costs 0.13 s at one pass and 0.30 s at three; 1 GiB costs 0.26 s and 0.60 s; 2 GiB costs 0.67 s and 1.37 s. Argon2 is memory-bandwidth bound, so a Pi 5 on LPDDR4X will be several times slower, and the figure that matters is the Pi one.
+- [ ] Whether production burns 256 bits of true random into Raspberry Pi customer OTP, and whether a Pi with blank OTP is a provisioning error or an accepted lower-entropy case.
+- [x] Whether address privacy is configurable through `bluer`, or needs BlueZ configuration alongside it — and whether re-registering an advertisement presents a fresh address, which is what keeps salt and address rotation in lockstep. **Answered: it is not configurable through `bluer` at all, and lockstep is unavailable — the daemon has no supported way to observe the controller rolling its address.** Address privacy is a documented host requirement; the device rolls the salt and the guarantee narrows to which device rather than same device. See "Tracking resistance".
+- [x] Salt rotation period. **Answered: fifteen minutes.**
+- [x] Does `yamux` build for `wasm32-unknown-unknown`? The web page depends on it, and the answer decides between adopting it and hand-rolling the stream layer. **Answered: yes, and it is adopted.** See "Streams, and why not QUIC".
 
 ## Testing notes
 
