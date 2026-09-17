@@ -56,7 +56,7 @@ The day a machine hosts two workloads, the union over-reaches rather than silent
 
 The union is confined to *asking*. Reporting is per application, because Canopy's entitlement answer says which application declares each name, and a certificate fault has to reach that application's group — two applications on one box can belong to different groups, so a machine-scoped result would reach the wrong people for one of them. `caddy_certs` is already `tamanu_app` on the same reasoning.
 
-Worth knowing when implementing: `caddy_certs` has no equivalent mapping. Caddy's config does not say which application a site belongs to, so on a machine with both a central and a facility each instance grades the whole set. `canopy_certificates` does not inherit that, since Canopy supplies the attribution. Fixing `caddy_certs` is not this card.
+`caddy_certs` has no equivalent mapping — Caddy's config does not say which application a site belongs to — so it stays what it already is: the Tamanu application's check, grading everything the host serves under Tamanu. That is deliberate rather than a gap to close, and it holds while a host fronts one Tamanu. `canopy_certificates` is finer because Canopy supplies the attribution, and the two being uneven is fine: they answer different questions.
 
 ## Build
 

@@ -16,7 +16,8 @@ The check reports for an application, not for the machine, and runs once for eac
 
 Certificates belong to the application they were issued for.
 A grant, a pause, and the domains a name must sit under are each an application's own, and the group that answers for a failing certificate is the application's group: a machine may host two applications belonging to different groups, so a result filed against the machine would reach the wrong people for one of them.
-The `caddy_certs` check ([CHK-CCT](../tamanu/caddy-certs.md)) reports per application for the same reason.
+
+This check attributes each name to the application Canopy says holds it, which is finer than `caddy_certs` manages ([CHK-CCT](../tamanu/caddy-certs.md)): that one grades everything the host serves under Tamanu, Caddy's configuration saying nothing about which application a site belongs to.
 
 Filing per application also keeps the heal attempts and backoff of [CHK](../tamanu/healthchecks.md#self-healing) separate, so one application's stalled collection does not consume another's allowance.
 

@@ -9,8 +9,12 @@ It is one of the doctor's healthchecks; see [DOC](doctor.md) for the framework i
 
 It grades certificates whatever their source, so a host obtaining chains from Canopy ([TLS](../canopy/certificates.md)) and a host issuing for itself are both covered.
 
-The check reports for an application rather than for the machine ([SUBJ](subjects.md)): a certificate is issued for the names an application answers on, and it is that application's group that answers for one running out.
+The check reports for the host's Tamanu application rather than for the machine ([SUBJ](subjects.md)): a certificate is issued for the names an application answers on, and it is that application's group that answers for one running out.
 The software serving it is the machine's, and its version, its resolvers and its configuration marker are graded separately against the machine.
+
+Tamanu is the subject because Caddy's configuration does not say which application a site belongs to, and a host running Tamanu behind Caddy is what this check exists for.
+Every certificate the host serves is therefore graded under Tamanu, including one for a name another piece of software on the host answers on.
+That is a coarser attribution than Canopy's, which names the application each certificate belongs to ([CHK-CCO](../canopy/certificate-collection-check.md)), and it holds while a host fronts one Tamanu.
 
 ## Which certificates it grades
 
