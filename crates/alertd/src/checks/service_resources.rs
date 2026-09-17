@@ -73,16 +73,30 @@ async fn report(runtime: &dyn ServiceRuntime) -> Check {
 		}
 	};
 
-	let mut readings = Vec::with_capacity(services.len());
+	let listed = services.len();
+	let mut readings = Vec::with_capacity(listed);
+	let mut unreadable: Option<String> = None;
 	for service in services {
-		let Ok(facts) = runtime.service_facts(&service.id).await else {
-			continue;
+		let facts = match runtime.service_facts(&service.id).await {
+			Ok(facts) => facts,
+			Err(unavailable) => {
+				unreadable.get_or_insert_with(|| unavailable.reason().to_string());
+				continue;
+			}
 		};
 		readings.push(Reading {
 			duty: service.duty,
 			id: service.id,
 			facts,
 		});
+	}
+
+	// A workload listed but not one of it readable is the substrate saying it
+	// cannot serve the reading, which is a skip carrying that reason. Grading it
+	// would report an application nothing could be read from as one with no
+	// services, which passes.
+	if let Some(reason) = unreadable.filter(|_| listed > 0 && readings.is_empty()) {
+		return Check::skip(NAME, "service usage could not be read", reason);
 	}
 
 	grade(&readings)
@@ -301,5 +315,54 @@ mod tests {
 			.find(|s| s.name == "processor_seconds")
 			.expect("processor time is reported");
 		assert_eq!(stat.kind, crate::StatKind::Counter);
+	}
+
+	/// A runtime that lists its workload but cannot answer for any of it has
+	/// told us nothing, and an empty reading set grades as a pass. The skip
+	/// carries the substrate's own reason.
+	///
+	/// spec: SUB#resource-usage-per-service
+	#[tokio::test]
+	async fn a_workload_whose_usage_cannot_be_read_skips() {
+		use crate::runtime::{Compute, Service, Unavailable};
+
+		struct Unreadable;
+
+		#[async_trait::async_trait]
+		impl ServiceRuntime for Unreadable {
+			async fn compute(&self) -> Compute {
+				Compute::Running
+			}
+			async fn services(&self) -> Result<Vec<Service>, Unavailable> {
+				Ok(vec![Service {
+					id: ServiceId::new("tamanu-api#0"),
+					duty: Duty::Tamanu(TamanuDuty::Api),
+					slot: None,
+					scheduled: true,
+				}])
+			}
+			async fn service_facts(&self, _id: &ServiceId) -> Result<ServiceFacts, Unavailable> {
+				Err(Unavailable::new("couldn't verify any process is alive"))
+			}
+		}
+
+		let check = report(&Unreadable).await;
+		match &check.status {
+			CheckStatus::Skip(reason) => assert!(
+				reason.contains("couldn't verify any process is alive"),
+				"the runtime's own reason should carry through: {reason}"
+			),
+			other => panic!("expected a skip, got {other:?}"),
+		}
+	}
+
+	/// An application that really is running nothing is not the same thing, and
+	/// passes.
+	#[tokio::test]
+	async fn a_workload_with_no_services_passes() {
+		use crate::runtime::fake::FakeRuntime;
+
+		let check = report(&FakeRuntime::empty()).await;
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 }
