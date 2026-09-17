@@ -216,9 +216,22 @@ pub async fn get_or_create_machine_id() -> Result<String> {
 /// `/etc/tamanu`.
 async fn get_or_create_machine_id_at(path: &Path) -> Result<String> {
 	#[cfg(feature = "canopy-registration")]
-	if let Some(reg) = load_registration().await
-		&& let Some(id) = reg.server_id
-	{
+	let registered = load_registration()
+		.await
+		.map(|reg| reg.and_then(|reg| reg.server_id));
+	#[cfg(not(feature = "canopy-registration"))]
+	let registered: Result<Option<String>> = Ok(None);
+
+	machine_id_from(registered, path)
+}
+
+/// Resolve the machine id from what the registration answered, the standard
+/// file, or a freshly minted one.
+///
+/// A registration that is present but unreadable fails here: the machine has an
+/// identity, and the standard file holds the one enrolment replaced.
+fn machine_id_from(registered: Result<Option<String>>, path: &Path) -> Result<String> {
+	if let Some(id) = registered.wrap_err("reading the canopy registration")? {
 		return Ok(id);
 	}
 
@@ -315,29 +328,30 @@ pub fn generate_device_key_pem() -> Result<String> {
 	Ok(pem.to_string())
 }
 
-/// Load this host's canopy registration, logging (and swallowing) errors.
+/// Load this host's canopy registration.
 ///
 /// The registration is the source of truth for the device key and server id;
-/// callers fall back to the standard plaintext file path when it's absent.
+/// callers fall back to the standard plaintext file path when it's absent
+/// (`Ok(None)`). A registration that is present but can't be read or decrypted
+/// is an error, so a caller that must not answer with a superseded identity can
+/// tell the two apart.
 #[cfg(feature = "canopy-registration")]
-async fn load_registration() -> Option<bestool_canopy::registration::Registration> {
-	match bestool_canopy::registration::load().await {
-		Ok(opt) => opt,
-		Err(err) => {
-			warn!(%err, "could not load canopy registration; falling back to legacy paths");
-			None
-		}
-	}
+async fn load_registration() -> Result<Option<bestool_canopy::registration::Registration>> {
+	bestool_canopy::registration::load().await
 }
 
 /// Best-effort device key from the canopy registration or the standard file
 /// path (no DB). Used by callers that degrade cleanly when it's absent.
 pub async fn fetch_device_key() -> Option<String> {
 	#[cfg(feature = "canopy-registration")]
-	if let Some(reg) = load_registration().await
-		&& let Some(key) = reg.device_key
-	{
-		return Some(key);
+	match load_registration().await {
+		Ok(Some(reg)) => {
+			if let Some(key) = reg.device_key {
+				return Some(key);
+			}
+		}
+		Ok(None) => {}
+		Err(err) => warn!(%err, "could not load canopy registration; falling back to legacy paths"),
 	}
 
 	read_device_key_file(&standard_device_key_path())
@@ -649,6 +663,47 @@ mod tests {
 
 		let gid = std::fs::metadata(&path).unwrap().gid();
 		assert_eq!(gid, dir_gid, "expected group {dir_gid}, got {gid}");
+	}
+
+	#[test]
+	fn machine_id_errors_when_the_registration_is_unreadable() {
+		// An enrolled host that can't read its registration must not answer with
+		// the standard file's id: that's the identity enrolment replaced, so
+		// reporting under it files this machine's status against another.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let superseded = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &superseded).unwrap();
+
+		let err = machine_id_from(Err(miette::miette!("permission denied")), &path)
+			.expect_err("unreadable registration → must error");
+		let msg = format!("{err}");
+		assert!(msg.contains("canopy registration"), "{msg}");
+	}
+
+	#[test]
+	fn machine_id_falls_back_when_there_is_no_registration() {
+		// No registration is the migration path, not a failure: a host that
+		// hasn't enrolled keeps resolving from the standard file.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let cached = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &cached).unwrap();
+
+		assert_eq!(machine_id_from(Ok(None), &path).unwrap(), cached);
+	}
+
+	#[test]
+	fn machine_id_prefers_the_registration() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		std::fs::write(&path, uuid::Uuid::new_v4().to_string()).unwrap();
+
+		let enrolled = uuid::Uuid::new_v4().to_string();
+		assert_eq!(
+			machine_id_from(Ok(Some(enrolled.clone())), &path).unwrap(),
+			enrolled
+		);
 	}
 
 	#[test]
