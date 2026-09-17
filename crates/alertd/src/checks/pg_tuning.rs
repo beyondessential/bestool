@@ -844,6 +844,38 @@ mod tests {
 		assert_eq!(source, Denominator::DeclaredCeiling);
 	}
 
+	/// A server the machine hosts and that declares no ceiling of its own is
+	/// tuned against the machine — right for a machine running one unconfined
+	/// server, and the only case the fallback is for.
+	///
+	/// spec: SUB#postgres-tuning
+	#[tokio::test]
+	async fn no_ceiling_on_this_machine_falls_back_to_its_memory() {
+		use std::sync::Arc;
+
+		use bestool_tamanu::config::Database;
+
+		use crate::runtime::fake::FakeRuntime;
+		use crate::store::MemoryStore;
+		use crate::subject::ApplicationRef;
+
+		let url = "postgresql://localhost/db";
+		let ctx = PgCx {
+			app: ApplicationRef::local_postgres(5432),
+			database: Database::from_url(url).unwrap(),
+			database_url: url.into(),
+			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
+		};
+
+		let (budget, source) = memory_budget(&ctx)
+			.await
+			.expect("this machine has memory to read");
+		assert_eq!(source, Denominator::HostingMachine);
+		assert!(budget > 0);
+	}
+
 	/// With no ceiling and no machine to fall back to there is nothing to tune
 	/// against, so the check skips rather than inventing a denominator.
 	///

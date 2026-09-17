@@ -19,6 +19,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use async_trait::async_trait;
+use jiff::Timestamp;
 
 pub mod caddy;
 pub mod pg;
@@ -362,6 +363,44 @@ pub trait ServiceRuntime: Send + Sync {
 	async fn service_facts(&self, id: &ServiceId) -> Result<ServiceFacts, Unavailable>;
 }
 
+/// One TLS certificate in force for an application.
+///
+/// spec: SUB#http-traffic-and-certificates
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Certificate {
+	/// The names this certificate is in force for.
+	pub names: Vec<String>,
+	/// Where the substrate found it, for diagnostics: a path, an issuer
+	/// directory, a secret.
+	pub origin: String,
+	pub not_before: Timestamp,
+	pub not_after: Timestamp,
+	/// This certificate as configured, in DER.
+	pub leaf: Vec<u8>,
+	/// The leaf actually being served for these names, where the substrate
+	/// could look. A leaf differing from `leaf` means the front end has not
+	/// picked up a renewal.
+	///
+	/// `None` where nothing could be asked — a wildcard with no concrete name
+	/// to dial, or a handshake that did not answer — which is not the same as a
+	/// mismatch and must not be graded as one.
+	pub served_leaf: Option<Vec<u8>>,
+}
+
+impl Certificate {
+	/// How long this certificate is valid for in total, in seconds, which is
+	/// what the expiry thresholds scale against. At least one, so a certificate
+	/// with a degenerate validity window cannot divide by zero.
+	pub fn lifetime_seconds(&self) -> i64 {
+		(self.not_after.as_second() - self.not_before.as_second()).max(1)
+	}
+
+	/// Seconds until it stops being valid, negative once it has.
+	pub fn remaining_seconds(&self, now: Timestamp) -> i64 {
+		self.not_after.as_second() - now.as_second()
+	}
+}
+
 /// A runtime for a platform none of the own-system implementations covers.
 ///
 /// Answers every reading as unavailable with the one reason, so a check that
@@ -403,15 +442,16 @@ impl ServiceRuntime for Unsupported {
 /// Kubernetes — so one object implementing both would make every implementer
 /// compose two unrelated things for no benefit at the call site.
 ///
-/// The certificates in force for an application belong here too, and join this
-/// when the check that grades them reads them through a substrate; for now it
-/// reads the front end directly.
 ///
 /// spec: SUB#http-traffic-and-certificates
 #[async_trait]
 pub trait HttpRuntime: Send + Sync {
 	/// Cumulative request counts for this application, per source.
 	async fn http_counters(&self) -> Result<TrafficCounters, Unavailable>;
+
+	/// The certificates in force for this application, whatever issues and
+	/// serves them.
+	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable>;
 }
 
 #[cfg(test)]
@@ -460,9 +500,10 @@ pub mod fake {
 		}
 	}
 
-	/// A traffic runtime that answers with whatever a test scripted.
+	/// An HTTP runtime that answers with whatever a test scripted.
 	pub struct FakeTraffic {
 		pub counters: Result<TrafficCounters, Unavailable>,
+		pub certificates: Result<Vec<Certificate>, Unavailable>,
 	}
 
 	impl FakeTraffic {
@@ -473,10 +514,12 @@ pub mod fake {
 			Self::unavailable("no front end on this host")
 		}
 
-		/// A front end that is there and has served nothing.
+		/// A front end that is there, has served nothing, and fronts nothing
+		/// with a certificate.
 		pub fn quiet() -> Self {
 			Self {
 				counters: Ok(TrafficCounters::default()),
+				certificates: Ok(Vec::new()),
 			}
 		}
 
@@ -492,12 +535,14 @@ pub mod fake {
 							.collect(),
 					}],
 				}),
+				certificates: Ok(Vec::new()),
 			}
 		}
 
 		pub fn unavailable(reason: &str) -> Self {
 			Self {
 				counters: Err(Unavailable::new(reason)),
+				certificates: Err(Unavailable::new(reason)),
 			}
 		}
 	}
@@ -506,6 +551,10 @@ pub mod fake {
 	impl HttpRuntime for FakeTraffic {
 		async fn http_counters(&self) -> Result<TrafficCounters, Unavailable> {
 			self.counters.clone()
+		}
+
+		async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
+			self.certificates.clone()
 		}
 	}
 

@@ -90,12 +90,19 @@ pub trait HttpRuntime: Send + Sync {
 
 `PgCx` carries a `ServiceRuntime`; `TamanuCx` carries one of each.
 
-`HttpRuntime` carries `http_counters` today. `certificates` joins it when
-`caddy_certs` moves: the gathering it needs — the admin config's active
-subjects, the on-disk store, the manually-loaded certs, and a handshake against
-each name — is a substantial move of its own, and a trait method with no
-implementor behind it would be a worse intermediate state than a check that
-still reads its front end directly.
+The certificate reading is the larger of `HttpRuntime`'s two: the admin config's
+active subjects, the on-disk store reduced to the live cert per set of names,
+the manually-loaded certs, and a handshake per concrete name all sit behind
+`certificates`. What is left in the check is the expiry bands and the
+served-against-configured comparison.
+
+Three things the move settled. **Nothing served to compare is not a mismatch** —
+a wildcard names no host to dial, and a handshake that did not answer said
+nothing, so `served_leaf` is `Option` and the check grades only `Some(false)`.
+**The substrate dedups**, because the same certificate is reachable through
+several subjects and sources and a substrate reports each one once. **The check
+keeps the name `caddy_certs`**, which is wire-visible and keyed on by canopy's
+severity map; renaming it is a change to make deliberately, not in passing.
 
 `Unavailable` carries a free-form reason string, which the check turns into its skip. A closed set of causes — not permitted, not reachable, not present — would let canopy grade a permissions problem differently from an outage, and may be worth having later; there is not enough usage yet to know which causes are real, so the string comes first and the set is derived from what actually gets written.
 
@@ -213,7 +220,7 @@ two a re-baseline.
 - [x] Add per-service resource metrics, graded only against a declared ceiling
 - [x] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
 - [x] Implement `HttpRuntime::http_counters` over the local Caddy, and read `http_errors` through it
-- [ ] Add `certificates` to `HttpRuntime`, and read `caddy_certs` through it
+- [x] Add `certificates` to `HttpRuntime`, and read `caddy_certs` through it
 - [x] Move `http_errors`, `external_users` and `ips` onto check storage, retiring the fixed cache paths they share
 
 The last two were not in the original list: `SUB` puts traffic and certificates

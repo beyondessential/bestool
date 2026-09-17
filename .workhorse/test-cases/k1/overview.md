@@ -13,14 +13,14 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 - [x] One check grades identical readings to the same outcome whichever runtime served them (verifies spec: SUB)
 - [x] A reading a runtime cannot serve skips the check, carrying the runtime's reason rather than a generic one (verifies spec: SUB)
-- [ ] A check that does not apply to a subject is absent from its report, and is not confused with a reading that could not be taken (verifies spec: SUB)
+- [x] A check that does not apply to a subject is absent from its report, and is not confused with a reading that could not be taken (verifies spec: SUB)
 - [x] A cluster's context offers no traffic or certificate reading at all, rather than one that answers unavailable (verifies spec: SUB)
 
 ## One runtime per application
 
 - [x] Two applications on one machine each resolve their own runtime (verifies spec: SUB)
 - [ ] A Tamanu under a process supervisor and a Postgres under a native service on one machine each read through their own runtime (verifies spec: SUB) — needs a Windows host
-- [ ] A machine subject resolves no runtime, and machine checks read the host directly (verifies spec: SUB)
+- [x] A machine subject resolves no runtime, and machine checks read the host directly (verifies spec: SUB)
 
 ## Duties
 
@@ -40,9 +40,9 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 ## Postgres tuning
 
-- [ ] The tuning check reports for the Postgres application, not for whatever uses it (verifies spec: SUBJ)
+- [x] The tuning check reports for the Postgres application, not for whatever uses it (verifies spec: SUBJ)
 - [x] Settings are graded against the declared ceiling of the service running the cluster where one exists (verifies spec: SUB)
-- [ ] With no declared ceiling, the denominator is the hosting machine's memory (verifies spec: SUB)
+- [x] With no declared ceiling, the denominator is the hosting machine's memory (verifies spec: SUB)
 - [x] With neither a ceiling nor a hosting machine, the check skips rather than inventing a denominator (verifies spec: SUB)
 
 ## Check storage
