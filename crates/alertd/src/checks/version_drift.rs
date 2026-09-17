@@ -68,8 +68,17 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	let mut running = Vec::new();
 	let mut unreadable: Option<String> = None;
 	for service in services {
-		let Ok(facts) = ctx.runtime.service_facts(&service.id).await else {
-			continue;
+		// A service whose facts could not be read at all says nothing about the
+		// version it is on, which is the same absence as facts that came back
+		// naming none. Discarding the error here would let a runtime that can
+		// list its workload but answer for none of it fall through to "nothing
+		// running", which is a pass.
+		let facts = match ctx.runtime.service_facts(&service.id).await {
+			Ok(facts) => facts,
+			Err(unavailable) => {
+				unreadable.get_or_insert_with(|| unavailable.reason().to_string());
+				continue;
+			}
 		};
 		match facts.version {
 			Ok(Some(version)) => running.push(Running {
@@ -334,5 +343,65 @@ mod tests {
 		let running = [r("tamanu-orphan@1.service", "v1.0.0")];
 		let check = evaluate_drift(&running, &ev("v2.54.7", None), &exps);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+	}
+
+	/// A runtime that lists its workload but cannot answer for any of it has
+	/// told us nothing, and a pass would dress that up as a healthy system. The
+	/// reachable case is pm2's dump fallback on Windows: the listing comes from
+	/// `dump.pm2` while every facts call is refused for want of permission.
+	///
+	/// spec: SUB
+	#[tokio::test]
+	async fn a_workload_whose_facts_cannot_be_read_is_broken_not_passing() {
+		use std::sync::Arc;
+
+		use crate::runtime::{Service, ServiceId, TamanuDuty, Unavailable, fake::FakeRuntime};
+
+		struct Unreadable(Vec<Service>);
+
+		#[async_trait::async_trait]
+		impl crate::runtime::ServiceRuntime for Unreadable {
+			async fn compute(&self) -> crate::runtime::Compute {
+				crate::runtime::Compute::Running
+			}
+			async fn services(&self) -> Result<Vec<Service>, Unavailable> {
+				Ok(self.0.clone())
+			}
+			async fn service_facts(
+				&self,
+				_id: &ServiceId,
+			) -> Result<crate::runtime::ServiceFacts, Unavailable> {
+				Err(Unavailable::new("couldn't verify any process is alive"))
+			}
+		}
+
+		let ctx = TamanuCx {
+			version: "2.54.7".parse().unwrap(),
+			runtime: Arc::new(Unreadable(vec![Service {
+				id: ServiceId::new("tamanu-api#0"),
+				duty: Duty::Tamanu(TamanuDuty::Api),
+				slot: None,
+				scheduled: true,
+			}])),
+			..crate::checks::test_support::facility_ctx()
+		};
+
+		let check = run(ctx).await;
+		match &check.status {
+			CheckStatus::Broken(reason) => assert!(
+				reason.contains("couldn't verify any process is alive"),
+				"the runtime's own reason should carry through: {reason}"
+			),
+			other => panic!("expected broken, got {other:?}"),
+		}
+
+		// The positive control: a runtime that lists nothing really has nothing
+		// running, and that is a pass.
+		let quiet = TamanuCx {
+			version: "2.54.7".parse().unwrap(),
+			runtime: Arc::new(FakeRuntime::empty()),
+			..crate::checks::test_support::facility_ctx()
+		};
+		assert!(matches!(run(quiet).await.status, CheckStatus::Pass));
 	}
 }
