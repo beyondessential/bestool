@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bestool_tamanu::{
+	ApiServerKind,
 	services::parse_systemd_unit,
 	systemd::{self, UnitState},
 	versions,
@@ -29,20 +30,31 @@ const UNIT_PATTERN: &str = "tamanu-*.service";
 /// The listings are read once and shared: a sweep is a snapshot, and two checks
 /// grading the same services must grade the same reading rather than two taken
 /// moments apart.
-#[derive(Default)]
 pub struct SystemdRuntime {
+	/// The role the deployment plays, which is what tells its units from those
+	/// of a deployment of the other role on the same machine. A duty carries no
+	/// role, so without this a leftover `tamanu-facility-api` would be reported
+	/// as a central deployment's API service.
+	kind: ApiServerKind,
 	units: OnceCell<Result<Vec<UnitState>, Unavailable>>,
 	unit_files: OnceCell<HashMap<String, bool>>,
 	/// Unit name to the version of the container image it is running, as
-	/// podman reports it. Empty where podman could not be read at all, which
-	/// leaves a service's version unknown rather than failing the listing —
-	/// the workload is readable from systemd whether or not podman is.
-	versions: OnceCell<HashMap<String, String>>,
+	/// podman reports it.
+	///
+	/// An error here does not fail the listing: the workload is readable from
+	/// systemd whether or not podman is, so only the version reading is
+	/// unavailable and the check that grades drift is the only one that cares.
+	versions: OnceCell<Result<HashMap<String, String>, Unavailable>>,
 }
 
 impl SystemdRuntime {
-	pub fn new() -> Self {
-		Self::default()
+	pub fn new(kind: ApiServerKind) -> Self {
+		Self {
+			kind,
+			units: OnceCell::new(),
+			unit_files: OnceCell::new(),
+			versions: OnceCell::new(),
+		}
 	}
 
 	async fn units(&self) -> Result<&[UnitState], Unavailable> {
@@ -79,19 +91,33 @@ impl SystemdRuntime {
 			.await
 	}
 
-	async fn versions(&self) -> &HashMap<String, String> {
+	async fn versions(&self) -> Result<&HashMap<String, String>, Unavailable> {
 		self.versions
 			.get_or_init(|| async {
-				match versions::running_versions_linux().await {
-					Ok(map) => map,
-					Err(err) => {
-						tracing::debug!(%err, "could not read running container versions");
-						HashMap::new()
-					}
-				}
+				versions::running_versions_linux().await.map_err(|err| {
+					Unavailable::new(format!(
+						"`podman ps` failed, so no container's version could be read: {err}"
+					))
+				})
 			})
 			.await
+			.as_ref()
+			.map_err(Clone::clone)
 	}
+}
+
+/// Whether a unit belongs to a deployment of this role.
+///
+/// A unit carrying the other role's prefix is another application's, and must
+/// not be reported as this one's. Everything else is this deployment's: the
+/// role-neutral units (`tamanu-frontend`, `tamanu-patientportal`) are shared,
+/// and the bare `tamanu-facility` singleton is the leftover both roles forbid.
+fn belongs_to(kind: ApiServerKind, base: &str) -> bool {
+	let other = match kind {
+		ApiServerKind::Central => "tamanu-facility-",
+		ApiServerKind::Facility => "tamanu-central-",
+	};
+	!base.starts_with(other)
 }
 
 /// Whether systemd will bring `unit` up on its own, given the installed unit
@@ -123,6 +149,9 @@ impl ServiceRuntime for SystemdRuntime {
 			let Some((base, slot)) = parse_systemd_unit(&unit.name) else {
 				continue;
 			};
+			if !belongs_to(self.kind, base) {
+				continue;
+			}
 			seen.push(unit.name.clone());
 			out.push(Service {
 				id: ServiceId::new(&unit.name),
@@ -148,6 +177,9 @@ impl ServiceRuntime for SystemdRuntime {
 			let Some((base, slot)) = parse_systemd_unit(name) else {
 				continue;
 			};
+			if !belongs_to(self.kind, base) {
+				continue;
+			}
 			out.push(Service {
 				id: ServiceId::new(name),
 				duty: Duty::from_tamanu_service_name(base),
@@ -175,7 +207,10 @@ impl ServiceRuntime for SystemdRuntime {
 
 		Ok(ServiceFacts {
 			up,
-			version: self.versions().await.get(id.as_str()).cloned(),
+			version: self
+				.versions()
+				.await
+				.map(|versions| versions.get(id.as_str()).cloned()),
 			memory_bytes: resources.memory_bytes,
 			memory_ceiling_bytes: resources.memory_max_bytes,
 			processor_seconds: resources
@@ -238,5 +273,28 @@ mod tests {
 			"tamanu-central-api@1.service",
 			"tamanu-central-api"
 		));
+	}
+
+	/// A duty carries no role, so it is the runtime that must not hand one
+	/// deployment's services to the other's context.
+	///
+	/// spec: SUB#the-workload
+	#[test]
+	fn the_other_role_s_units_are_another_application_s() {
+		assert!(belongs_to(ApiServerKind::Central, "tamanu-central-api"));
+		assert!(!belongs_to(ApiServerKind::Central, "tamanu-facility-api"));
+		assert!(belongs_to(ApiServerKind::Facility, "tamanu-facility-sync"));
+		assert!(!belongs_to(ApiServerKind::Facility, "tamanu-central-tasks"));
+	}
+
+	/// The shared units belong to whichever deployment is asking, and so does
+	/// the bare legacy singleton that both roles forbid.
+	#[test]
+	fn role_neutral_units_belong_to_both() {
+		for kind in [ApiServerKind::Central, ApiServerKind::Facility] {
+			assert!(belongs_to(kind, "tamanu-frontend"));
+			assert!(belongs_to(kind, "tamanu-patientportal"));
+			assert!(belongs_to(kind, "tamanu-facility"));
+		}
 	}
 }

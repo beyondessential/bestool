@@ -13,7 +13,7 @@
 //! spec: SUB
 
 use async_trait::async_trait;
-use bestool_tamanu::pm2::{self, PmProc};
+use bestool_tamanu::pm2::{self, PmProc, Source};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::OnceCell;
 
@@ -23,7 +23,23 @@ use super::{Compute, Duty, Service, ServiceFacts, ServiceId, ServiceRuntime, Una
 pub struct Pm2Runtime {
 	/// The deployment's version, which every one of its processes runs.
 	version: Option<String>,
-	procs: OnceCell<Result<Vec<PmProc>, Unavailable>>,
+	listing: OnceCell<Result<Listing, Unavailable>>,
+}
+
+/// What one pm2 listing produced, and whether its process states can be
+/// believed.
+#[derive(Clone)]
+struct Listing {
+	procs: Vec<PmProc>,
+	/// Why no service's facts can be read from this listing.
+	///
+	/// When the pm2 CLI is unreachable we fall back to reading `dump.pm2`, which
+	/// names the processes but not their state: we then infer each one's from a
+	/// pid file and the OS process table, both of which come back empty for a
+	/// user that cannot see the processes. Nothing alive in that listing is the
+	/// permissions symptom, not an application that is down, and reporting it as
+	/// down would be a reading we did not take.
+	indeterminate: Option<String>,
 }
 
 impl Pm2Runtime {
@@ -33,22 +49,25 @@ impl Pm2Runtime {
 	pub fn new(version: Option<String>) -> Self {
 		Self {
 			version,
-			procs: OnceCell::new(),
+			listing: OnceCell::new(),
 		}
 	}
 
-	async fn procs(&self) -> Result<&[PmProc], Unavailable> {
-		self.procs
+	async fn listing(&self) -> Result<&Listing, Unavailable> {
+		self.listing
 			.get_or_init(|| async {
 				// `pm2::list` shells out to the pm2 Node CLI with a blocking
 				// command, which on Windows (pm2.cmd → cmd.exe → node.exe, each
 				// antivirus-scanned) takes over a second. Off the executor so it
 				// cannot stall the checks sharing it.
 				match tokio::task::spawn_blocking(pm2::list).await {
-					Ok(Ok((procs, _source))) => Ok(procs
-						.into_iter()
-						.filter(|p| p.name.starts_with("tamanu-"))
-						.collect()),
+					Ok(Ok((procs, source))) => Ok(Listing::new(
+						procs
+							.into_iter()
+							.filter(|p| p.name.starts_with("tamanu-"))
+							.collect(),
+						source,
+					)),
 					Ok(Err(err)) => Err(Unavailable::new(format!(
 						"could not list pm2 processes: {err}"
 					))),
@@ -56,8 +75,24 @@ impl Pm2Runtime {
 				}
 			})
 			.await
-			.as_deref()
+			.as_ref()
 			.map_err(Clone::clone)
+	}
+}
+
+impl Listing {
+	fn new(procs: Vec<PmProc>, source: Source) -> Self {
+		let indeterminate = (matches!(source, Source::Dump)
+			&& !procs.is_empty()
+			&& procs.iter().all(|p| !p.running))
+		.then(|| {
+			"read pm2's dump file but couldn't verify any process is alive — likely a permissions issue (try running elevated)"
+				.to_string()
+		});
+		Self {
+			procs,
+			indeterminate,
+		}
 	}
 }
 
@@ -80,8 +115,9 @@ impl ServiceRuntime for Pm2Runtime {
 
 	async fn services(&self) -> Result<Vec<Service>, Unavailable> {
 		Ok(self
-			.procs()
+			.listing()
 			.await?
+			.procs
 			.iter()
 			.map(|proc| Service {
 				id: service_id(proc),
@@ -97,8 +133,11 @@ impl ServiceRuntime for Pm2Runtime {
 	}
 
 	async fn service_facts(&self, id: &ServiceId) -> Result<ServiceFacts, Unavailable> {
-		let procs = self.procs().await?;
-		let Some(proc) = procs.iter().find(|p| service_id(p) == *id) else {
+		let listing = self.listing().await?;
+		if let Some(reason) = listing.indeterminate.as_deref() {
+			return Err(Unavailable::new(reason));
+		}
+		let Some(proc) = listing.procs.iter().find(|p| service_id(p) == *id) else {
 			return Err(Unavailable::new(format!("pm2 has no process {id}")));
 		};
 
@@ -111,7 +150,7 @@ impl ServiceRuntime for Pm2Runtime {
 
 		Ok(ServiceFacts {
 			up: proc.running,
-			version: self.version.clone(),
+			version: Ok(self.version.clone()),
 			memory_bytes: usage.map(|(memory, _)| memory),
 			// pm2 declares no ceiling for a process, so there is no denominator
 			// to grade its memory against and only the metric is reported.
@@ -140,10 +179,14 @@ mod tests {
 	use super::*;
 
 	fn proc(name: &str, pm_id: Option<i64>) -> PmProc {
+		running_proc(name, pm_id, true)
+	}
+
+	fn running_proc(name: &str, pm_id: Option<i64>, running: bool) -> PmProc {
 		PmProc {
 			name: name.into(),
 			pm_id,
-			running: true,
+			running,
 			pid: None,
 		}
 	}
@@ -165,6 +208,46 @@ mod tests {
 			service_id(&proc("tamanu-tasks", None)).as_str(),
 			"tamanu-tasks"
 		);
+	}
+
+	/// Falling back to `dump.pm2` loses the only authority on which processes
+	/// are alive, so nothing verifiably alive there is a permissions symptom
+	/// rather than an application that is down. The facts are unreadable, and
+	/// the check reports that it could not tell rather than a shortfall.
+	#[test]
+	fn a_dump_listing_with_nothing_alive_cannot_be_read() {
+		let listing = Listing::new(
+			vec![
+				running_proc("tamanu-api", Some(0), false),
+				running_proc("tamanu-tasks", Some(1), false),
+			],
+			Source::Dump,
+		);
+		assert!(listing.indeterminate.is_some());
+	}
+
+	/// One process verifiably alive means the listing is being read, so the
+	/// rest really are down.
+	#[test]
+	fn a_dump_listing_with_something_alive_is_believed() {
+		let listing = Listing::new(
+			vec![
+				running_proc("tamanu-api", Some(0), true),
+				running_proc("tamanu-tasks", Some(1), false),
+			],
+			Source::Dump,
+		);
+		assert!(listing.indeterminate.is_none());
+	}
+
+	/// The CLI is authoritative: everything down there is the truth.
+	#[test]
+	fn a_cli_listing_is_always_believed() {
+		let listing = Listing::new(
+			vec![running_proc("tamanu-api", Some(0), false)],
+			Source::Cli,
+		);
+		assert!(listing.indeterminate.is_none());
 	}
 
 	/// pm2 names a service the same job systemd does, so a check grading duties

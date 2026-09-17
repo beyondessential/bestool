@@ -1,16 +1,12 @@
 use serde_json::{Value, json};
 
-use bestool_tamanu::{
-	pm2,
-	services::{
-		Expectation, ExpectedState, Instances, Supervisor, expected, parse_systemd_unit,
-		systemd_patient_portal_instanced,
-	},
-	systemd,
+use bestool_tamanu::services::{
+	Expectation, ExpectedState, Instances, Supervisor, expected, systemd_patient_portal_instanced,
 };
 
 use super::TamanuCx;
 use crate::check::Check;
+use crate::runtime::{Duty, ServiceId};
 
 pub async fn run(ctx: TamanuCx) -> Check {
 	// Which services should be up follows from the role the deployment plays.
@@ -18,6 +14,10 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	// one to grade against.
 	let kind = ctx.server_kind();
 
+	// The expectation set still depends on the deployment's shape — a pm2
+	// deployment has no frontend and no patient portal — and on a machine that
+	// is the shape of its supervisor. What the supervisor no longer decides is
+	// how a discovered service is matched to an expectation: that goes by duty.
 	let Some(supervisor) = Supervisor::current() else {
 		return Check::skip(
 			"tamanu_service",
@@ -49,153 +49,84 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		patient_portal_instanced,
 	);
 
-	let mut pm2_source: Option<pm2::Source> = None;
-	let mut discovered = match supervisor {
-		Supervisor::Systemd => match discover_systemd().await {
-			Ok(d) => d,
-			Err(err) => {
-				return Check::skip("tamanu_service", "systemd unavailable", err)
-					.with_detail("supervisor", "systemd");
-			}
-		},
-		// `discover_pm2` shells out to the pm2 Node CLI with a blocking
-		// `std::process::Command`, which on Windows (pm2.cmd → cmd.exe →
-		// node.exe, each antivirus-scanned) takes over a second. Run it on the
-		// blocking pool so it can't stall other checks sharing the executor and
-		// inflate their `Instant`-across-`.await` latency measurements.
-		Supervisor::Pm2 => match tokio::task::spawn_blocking(discover_pm2).await {
-			Ok(Ok((d, source))) => {
-				pm2_source = Some(source);
-				d
-			}
-			Ok(Err(err)) => {
-				return Check::warning(
-					"tamanu_service",
-					"pm2 status could not be queried",
-					format!(
-						"pm2 unavailable ({err}); services may be running but we can't tell from this user. Run elevated to confirm."
-					),
-				)
-				.with_detail("supervisor", "pm2");
-			}
-			Err(err) => {
-				return Check::warning(
-					"tamanu_service",
-					"pm2 status could not be queried",
-					format!("pm2 discovery task failed: {err}"),
-				)
-				.with_detail("supervisor", "pm2");
-			}
-		},
+	let services = match ctx.runtime.services().await {
+		Ok(services) => services,
+		Err(unavailable) => {
+			return Check::skip(
+				"tamanu_service",
+				"the workload could not be read",
+				unavailable.reason(),
+			)
+			.with_detail("supervisor", supervisor_label(supervisor));
+		}
 	};
 
-	if let Some(check) = pm2_dump_fallback_indeterminate(pm2_source, &discovered) {
-		return check;
-	}
-
-	if matches!(supervisor, Supervisor::Systemd) {
-		let candidates: Vec<String> = expectations
-			.iter()
-			.filter(|e| matches!(e.state, ExpectedState::Down))
-			.map(|e| format!("{}.service", e.name))
-			.collect();
-		let enabled = systemd::collect_enabled(candidates).await;
-		reconcile_down_with_enabled(&expectations, &mut discovered, |unit| {
-			enabled.contains(unit)
+	let mut discovered = Vec::with_capacity(services.len());
+	let mut unreadable: Option<String> = None;
+	for service in services {
+		let facts = ctx.runtime.service_facts(&service.id).await;
+		if let Err(ref unavailable) = facts
+			&& unreadable.is_none()
+		{
+			unreadable = Some(unavailable.reason().to_string());
+		}
+		discovered.push(Discovered {
+			duty: service.duty,
+			slot: service.slot,
+			scheduled: service.scheduled,
+			running: facts.as_ref().map(|f| f.up).unwrap_or(false),
+			readable: facts.is_ok(),
+			id: service.id,
 		});
 	}
 
-	evaluate_with_source(supervisor, &expectations, &discovered, pm2_source)
+	// Every service listed and not one of them readable is the substrate
+	// telling us it cannot see states, not an application that is down.
+	// Reporting a shortfall would be a reading we never took.
+	if let Some(reason) = unreadable
+		.filter(|_| !discovered.is_empty() && discovered.iter().all(|service| !service.readable))
+	{
+		return Check::warning("tamanu_service", "service state indeterminate", reason)
+			.with_detail("supervisor", supervisor_label(supervisor));
+	}
+
+	evaluate(supervisor, &expectations, &discovered)
 }
 
-/// Decide whether we should bail out as "indeterminate" before evaluating
-/// expectations.
-///
-/// When the pm2 CLI is unreachable and we fall back to reading `dump.pm2`,
-/// we lose the only source of truth for *which* processes are actually
-/// running — running=false then just means "we couldn't read that pid file"
-/// or "we couldn't see those processes in the OS table", both of which are
-/// classic permission symptoms on Windows. Reporting FAIL here would lie:
-/// the services are probably fine, we just can't tell. Warn instead so the
-/// operator knows to re-run elevated.
-fn pm2_dump_fallback_indeterminate(
-	pm2_source: Option<pm2::Source>,
-	discovered: &[Discovered],
-) -> Option<Check> {
-	if matches!(pm2_source, Some(pm2::Source::Dump))
-		&& !discovered.is_empty()
-		&& discovered.iter().all(|d| !d.running)
-	{
-		Some(
-			Check::warning(
-				"tamanu_service",
-				"pm2 process state indeterminate",
-				"read pm2's dump file but couldn't verify any process is alive — likely a permissions issue (try running elevated)",
-			)
-			.with_detail("supervisor", "pm2")
-			.with_detail("pm2_source", pm2::Source::Dump.as_str()),
-		)
-	} else {
-		None
+fn supervisor_label(supervisor: Supervisor) -> &'static str {
+	match supervisor {
+		Supervisor::Systemd => "systemd",
+		Supervisor::Pm2 => "pm2",
 	}
 }
 
+/// One service the substrate reported, as the grading needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Discovered {
-	/// Base name without `@instance` or `.service`.
-	name: String,
-	/// Whatever follows `@`, if anything.
-	instance: Option<String>,
-	/// Is the unit/process currently up?
+	/// What job it does, which is what an expectation is matched on. Never the
+	/// unit, process or pod name it was found by.
+	duty: Duty,
+	/// Which slot it occupies within its duty, where the runtime names them.
+	slot: Option<String>,
+	/// Whether the runtime intends to run it, whether or not it is up.
+	scheduled: bool,
 	running: bool,
-	/// Is the unit "present" beyond just running? For systemd this means
-	/// loaded (which includes inactive-but-loaded — typically enabled). For
-	/// pm2 we equate it with "is in the jlist".
-	present: bool,
+	/// Whether the runtime could answer for it at all. A service it could not
+	/// is recorded as not running so the count is not inflated, and the
+	/// distinction is what keeps "we could not tell" from reading as "down".
+	readable: bool,
 	/// Identifier to show in diagnostics (e.g. `tamanu-foo@1.service`).
-	raw: String,
+	id: ServiceId,
 }
 
-async fn discover_systemd() -> Result<Vec<Discovered>, String> {
-	let units = systemd::list_units(&["tamanu-*.service"])
-		.await
-		.map_err(|e| e.to_string())?;
-	let mut out = Vec::new();
-	for u in units {
-		let Some((base, instance)) = parse_systemd_unit(&u.name) else {
-			continue;
-		};
-		out.push(Discovered {
-			name: base.to_string(),
-			instance: instance.map(str::to_string),
-			running: u.running(),
-			present: true,
-			raw: u.name,
-		});
-	}
-	Ok(out)
-}
-
-fn discover_pm2() -> Result<(Vec<Discovered>, pm2::Source), String> {
-	let (procs, source) = pm2::list()?;
-	let mut out = Vec::new();
-	for p in procs {
-		if !p.name.starts_with("tamanu-") {
-			continue;
-		}
-		let raw = match p.pm_id {
-			Some(id) => format!("{}#{id}", p.name),
-			None => p.name.clone(),
-		};
-		out.push(Discovered {
-			name: p.name,
-			instance: None,
-			running: p.running,
-			present: true,
-			raw,
-		});
-	}
-	Ok((out, source))
+/// The duty an expectation is about.
+///
+/// Expectations are still written in the supervisor's names, because the
+/// lifecycle commands that build `systemctl` invocations from them need those.
+/// The grading reads through to the duty, so the same expectation matches
+/// whichever runtime found the service.
+fn duty_of(exp: &Expectation) -> Duty {
+	Duty::from_tamanu_service_name(exp.name)
 }
 
 /// Per-expectation outcome.
@@ -223,65 +154,17 @@ enum Outcome {
 	},
 }
 
-/// Cross-reference Down expectations against `is-enabled` to handle the two
-/// cases `list-units` alone can't disambiguate:
-///
-/// - Unit not in `list-units` but *is* enabled → add it as a stopped+enabled
-///   `Discovered` so it gets flagged FORBIDDEN. Catches the rare
-///   `enabled-but-not-loaded` state (operator enabled the unit but hasn't
-///   started it or rebooted yet).
-/// - Unit in `list-units` (loaded) but stopped *and* disabled → drop it.
-///   Loaded-but-stopped is just systemd memory: after `systemctl stop` the
-///   unit can stay loaded until the next `daemon-reload`. Combined with
-///   `disabled`, it's effectively absent — it won't auto-start, has no
-///   running process, and the operator has clearly indicated they don't want
-///   it. Reporting FORBIDDEN here would be a false positive.
-fn reconcile_down_with_enabled(
-	expectations: &[Expectation],
-	discovered: &mut Vec<Discovered>,
-	is_enabled: impl Fn(&str) -> bool,
-) {
-	for exp in expectations {
-		if !matches!(exp.state, ExpectedState::Down) {
-			continue;
-		}
-		let unit = format!("{}.service", exp.name);
-		let pos = discovered.iter().position(|d| d.name == exp.name);
-		match pos {
-			None => {
-				if is_enabled(&unit) {
-					discovered.push(Discovered {
-						name: exp.name.to_string(),
-						instance: None,
-						running: false,
-						present: true,
-						raw: format!("{}.service (enabled)", exp.name),
-					});
-				}
-			}
-			Some(idx) if !discovered[idx].running => {
-				if !is_enabled(&unit) {
-					discovered.remove(idx);
-				}
-			}
-			Some(_) => {}
-		}
-	}
-}
-
 fn match_expectation(
 	supervisor: Supervisor,
 	exp: &Expectation,
 	discovered: &[Discovered],
 ) -> (Outcome, Vec<usize>) {
+	let duty = duty_of(exp);
 	let matched_idx: Vec<usize> = discovered
 		.iter()
 		.enumerate()
 		.filter(|(_, d)| {
-			d.name == exp.name
-				&& exp
-					.instances
-					.admits_instance(supervisor, d.instance.as_deref())
+			d.duty == duty && exp.instances.admits_instance(supervisor, d.slot.as_deref())
 		})
 		.map(|(i, _)| i)
 		.collect();
@@ -290,17 +173,30 @@ fn match_expectation(
 		ExpectedState::Unknown => {
 			let units: Vec<String> = matched_idx
 				.iter()
-				.map(|i| discovered[*i].raw.clone())
+				.map(|i| discovered[*i].id.to_string())
 				.collect();
 			(Outcome::Indeterminate { discovered: units }, matched_idx)
 		}
 		ExpectedState::Down => {
-			if matched_idx.is_empty() {
+			// A service neither up nor intended to run is effectively absent:
+			// it will not start on its own, nothing is serving from it, and
+			// whoever stopped it has said they do not want it. On systemd that
+			// is a unit left loaded after a stop, which systemd forgets at the
+			// next daemon-reload; flagging it would be a false positive. What
+			// must be flagged is the reverse — nothing running but the runtime
+			// still intending to bring it up — and that is caught here because
+			// the runtime lists such a service in the first place.
+			let present: Vec<usize> = matched_idx
+				.iter()
+				.copied()
+				.filter(|i| discovered[*i].running || discovered[*i].scheduled)
+				.collect();
+			if present.is_empty() {
 				(Outcome::Ok, matched_idx)
 			} else {
-				let units: Vec<String> = matched_idx
+				let units: Vec<String> = present
 					.iter()
-					.map(|i| discovered[*i].raw.clone())
+					.map(|i| discovered[*i].id.to_string())
 					.collect();
 				(Outcome::Forbidden { units }, matched_idx)
 			}
@@ -309,16 +205,15 @@ fn match_expectation(
 			if matched_idx.is_empty() {
 				return (Outcome::Missing, matched_idx);
 			}
-			let running: Vec<&Discovered> = matched_idx
+			let running = matched_idx
 				.iter()
-				.map(|i| &discovered[*i])
-				.filter(|d| d.running)
-				.collect();
+				.filter(|i| discovered[**i].running)
+				.count();
 			let not_running: Vec<String> = matched_idx
 				.iter()
 				.map(|i| &discovered[*i])
 				.filter(|d| !d.running)
-				.map(|d| d.raw.clone())
+				.map(|d| d.id.to_string())
 				.collect();
 
 			let needed = exp.instances.min_count();
@@ -327,8 +222,7 @@ fn match_expectation(
 					.iter()
 					.filter(|n| {
 						!matched_idx.iter().any(|i| {
-							discovered[*i].running
-								&& discovered[*i].instance.as_deref() == Some(**n)
+							discovered[*i].running && discovered[*i].slot.as_deref() == Some(**n)
 						})
 					})
 					.map(|n| format!("{}@{}", exp.name, n))
@@ -336,12 +230,12 @@ fn match_expectation(
 				_ => Vec::new(),
 			};
 
-			if running.len() >= needed && missing_named.is_empty() {
+			if running >= needed && missing_named.is_empty() {
 				(Outcome::Ok, matched_idx)
 			} else {
 				(
 					Outcome::Shortfall {
-						running: running.len(),
+						running,
 						needed,
 						not_running,
 						missing_named,
@@ -425,24 +319,22 @@ fn evaluate(
 		.iter()
 		.zip(matched_any.iter())
 		.filter(|(_, m)| !**m)
-		.map(|(d, _)| d.raw.clone())
+		.map(|(d, _)| d.id.to_string())
 		.collect();
 
-	let supervisor_label = match supervisor {
-		Supervisor::Systemd => "systemd",
-		Supervisor::Pm2 => "pm2",
-	};
+	let supervisor_label = supervisor_label(supervisor);
 
 	let services_json: Value = Value::Array(
 		discovered
 			.iter()
 			.map(|d| {
 				json!({
-					"name": d.name,
-					"instance": d.instance,
+					"duty": d.duty.to_string(),
+					"slot": d.slot,
 					"running": d.running,
-					"present": d.present,
-					"raw": d.raw,
+					"scheduled": d.scheduled,
+					"readable": d.readable,
+					"id": d.id.to_string(),
 				})
 			})
 			.collect(),
@@ -517,19 +409,6 @@ fn actual_for_outcome(exp: &Expectation, outcome: &Outcome) -> (&'static str, Op
 	}
 }
 
-fn evaluate_with_source(
-	supervisor: Supervisor,
-	expectations: &[Expectation],
-	discovered: &[Discovered],
-	pm2_source: Option<pm2::Source>,
-) -> Check {
-	let check = evaluate(supervisor, expectations, discovered);
-	match pm2_source {
-		Some(s) => check.with_detail("pm2_source", s.as_str()),
-		None => check,
-	}
-}
-
 fn instances_to_json(i: &Instances) -> Value {
 	match i {
 		Instances::Single => json!({"kind": "single"}),
@@ -585,17 +464,28 @@ mod tests {
 		serde_json::from_value(json).unwrap()
 	}
 
+	/// A service as a runtime would report it, named the way the supervisor
+	/// under it names one so the tests read as the deployments do.
 	fn d(name: &str, instance: Option<&str>, running: bool) -> Discovered {
-		let raw = match instance {
-			Some(i) => format!("{name}@{i}.service"),
-			None => format!("{name}.service"),
-		};
 		Discovered {
-			name: name.to_string(),
-			instance: instance.map(str::to_string),
+			duty: Duty::from_tamanu_service_name(name),
+			slot: instance.map(str::to_string),
+			scheduled: true,
 			running,
-			present: true,
-			raw,
+			readable: true,
+			id: ServiceId::new(match instance {
+				Some(i) => format!("{name}@{i}.service"),
+				None => format!("{name}.service"),
+			}),
+		}
+	}
+
+	/// A service the runtime lists but does not intend to run: a systemd unit
+	/// left loaded after a stop, with no symlink to bring it back.
+	fn stopped_and_unscheduled(name: &str) -> Discovered {
+		Discovered {
+			scheduled: false,
+			..d(name, None, false)
 		}
 	}
 
@@ -749,61 +639,37 @@ mod tests {
 		}
 	}
 
+	/// A service neither up nor intended to run is effectively absent: on
+	/// systemd that is a unit left loaded after a stop, which flagging would
+	/// make a false positive.
 	#[test]
-	fn reconcile_drops_stopped_and_disabled_down_unit() {
-		// `list-units --all` reported a stopped tamanu-patientportal.service
-		// (loaded but inactive), and the unit is also disabled. That's the
-		// "operator stopped and disabled a service we no longer expect" case
-		// — should be dropped before evaluation so it doesn't trigger
-		// FORBIDDEN.
-		let exps = vec![portal_down_exp()];
-		let mut discovered = vec![d("tamanu-patientportal", None, false)];
-		reconcile_down_with_enabled(&exps, &mut discovered, |_unit| false);
-		assert!(
-			discovered.is_empty(),
-			"stopped+disabled unit should be dropped: {discovered:?}",
-		);
+	fn a_stopped_and_unscheduled_service_is_not_forbidden() {
+		let exps = [portal_down_exp()];
+		let discovered = vec![stopped_and_unscheduled("tamanu-patientportal")];
+		let (outcome, _) = match_expectation(Supervisor::Systemd, &exps[0], &discovered);
+		assert_eq!(outcome, Outcome::Ok, "{outcome:?}");
 	}
 
+	/// Stopped but still intended to run means it comes back at the next boot,
+	/// which is exactly what a `Down` expectation exists to catch.
 	#[test]
-	fn reconcile_keeps_stopped_but_enabled_down_unit() {
-		// Stopped but still enabled = "will auto-start at next boot". That's
-		// the case the check exists to catch — keep it as discovered so the
-		// evaluator marks it FORBIDDEN.
-		let exps = vec![portal_down_exp()];
-		let mut discovered = vec![d("tamanu-patientportal", None, false)];
-		reconcile_down_with_enabled(&exps, &mut discovered, |_unit| true);
-		assert_eq!(discovered.len(), 1);
+	fn a_stopped_but_scheduled_service_is_forbidden() {
+		let exps = [portal_down_exp()];
+		let discovered = vec![d("tamanu-patientportal", None, false)];
+		let (outcome, _) = match_expectation(Supervisor::Systemd, &exps[0], &discovered);
+		assert!(matches!(outcome, Outcome::Forbidden { .. }), "{outcome:?}");
 	}
 
+	/// A running service is unambiguously there, whatever the runtime intends.
 	#[test]
-	fn reconcile_keeps_running_down_unit_regardless_of_is_enabled() {
-		// Running services are unambiguously present; the is-enabled probe
-		// shouldn't even fire for them.
-		let exps = vec![portal_down_exp()];
-		let mut discovered = vec![d("tamanu-patientportal", None, true)];
-		reconcile_down_with_enabled(&exps, &mut discovered, |unit| {
-			panic!("is_enabled should not be called for running unit, got {unit}");
-		});
-		assert_eq!(discovered.len(), 1);
-	}
-
-	#[test]
-	fn reconcile_adds_enabled_but_not_loaded_down_unit() {
-		// Unit isn't in `list-units` output at all, but is-enabled returns
-		// true — synthesise a stopped+enabled Discovered so evaluation flags
-		// FORBIDDEN.
-		let exps = vec![portal_down_exp()];
-		let mut discovered: Vec<Discovered> = Vec::new();
-		reconcile_down_with_enabled(&exps, &mut discovered, |unit| {
-			unit == "tamanu-patientportal.service"
-		});
-		let portal = discovered
-			.iter()
-			.find(|d| d.name == "tamanu-patientportal")
-			.expect("portal should be synthesised");
-		assert!(!portal.running);
-		assert!(portal.raw.contains("enabled"));
+	fn a_running_service_is_forbidden_even_if_unscheduled() {
+		let exps = [portal_down_exp()];
+		let discovered = vec![Discovered {
+			scheduled: false,
+			..d("tamanu-patientportal", None, true)
+		}];
+		let (outcome, _) = match_expectation(Supervisor::Systemd, &exps[0], &discovered);
+		assert!(matches!(outcome, Outcome::Forbidden { .. }), "{outcome:?}");
 	}
 
 	#[test]
@@ -980,94 +846,13 @@ mod tests {
 			false,
 		);
 		let discovered = vec![
-			Discovered {
-				name: "tamanu-tasks".into(),
-				instance: None,
-				running: true,
-				present: true,
-				raw: "tamanu-tasks#0".into(),
-			},
-			Discovered {
-				name: "tamanu-api".into(),
-				instance: None,
-				running: true,
-				present: true,
-				raw: "tamanu-api#1".into(),
-			},
-			Discovered {
-				name: "tamanu-api".into(),
-				instance: None,
-				running: true,
-				present: true,
-				raw: "tamanu-api#2".into(),
-			},
-			Discovered {
-				name: "tamanu-sync".into(),
-				instance: None,
-				running: true,
-				present: true,
-				raw: "tamanu-sync#3".into(),
-			},
+			d("tamanu-tasks", None, true),
+			d("tamanu-api", None, true),
+			d("tamanu-api", None, true),
+			d("tamanu-sync", None, true),
 		];
 		let check = evaluate(Supervisor::Pm2, &exps, &discovered);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
-	}
-
-	#[test]
-	fn pm2_dump_fallback_with_all_not_running_yields_warning() {
-		let discovered = vec![
-			Discovered {
-				name: "tamanu-api".into(),
-				instance: None,
-				running: false,
-				present: true,
-				raw: "tamanu-api".into(),
-			},
-			Discovered {
-				name: "tamanu-tasks".into(),
-				instance: None,
-				running: false,
-				present: true,
-				raw: "tamanu-tasks".into(),
-			},
-		];
-		let check =
-			pm2_dump_fallback_indeterminate(Some(pm2::Source::Dump), &discovered).expect("warn");
-		assert!(matches!(check.status, CheckStatus::Warning(_)));
-	}
-
-	#[test]
-	fn pm2_dump_fallback_with_any_running_does_not_skip() {
-		let discovered = vec![
-			Discovered {
-				name: "tamanu-api".into(),
-				instance: None,
-				running: true,
-				present: true,
-				raw: "tamanu-api".into(),
-			},
-			Discovered {
-				name: "tamanu-tasks".into(),
-				instance: None,
-				running: false,
-				present: true,
-				raw: "tamanu-tasks".into(),
-			},
-		];
-		assert!(pm2_dump_fallback_indeterminate(Some(pm2::Source::Dump), &discovered).is_none());
-	}
-
-	#[test]
-	fn pm2_cli_source_skips_dump_fallback_heuristic() {
-		// CLI is authoritative — even if everything shows down, that's the truth.
-		let discovered = vec![Discovered {
-			name: "tamanu-api".into(),
-			instance: None,
-			running: false,
-			present: true,
-			raw: "tamanu-api".into(),
-		}];
-		assert!(pm2_dump_fallback_indeterminate(Some(pm2::Source::Cli), &discovered).is_none());
 	}
 
 	#[test]

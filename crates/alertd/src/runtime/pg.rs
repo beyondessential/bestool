@@ -145,7 +145,7 @@ impl ServiceRuntime for PgRuntime {
 			// The server version is already the application's `pgVersion` fact,
 			// read by the `version` check from the server itself rather than
 			// from whatever supervises it.
-			version: None,
+			version: Ok(None),
 			memory_bytes: resources.memory_bytes,
 			memory_ceiling_bytes: resources.memory_max_bytes,
 			processor_seconds: resources

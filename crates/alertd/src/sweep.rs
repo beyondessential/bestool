@@ -22,6 +22,7 @@ use tokio_postgres::Client as PgClient;
 use tracing::{debug, warn};
 
 use bestool_tamanu::{
+	ApiServerKind,
 	config::{Database, TamanuConfig},
 	server_info::get_or_create_machine_id,
 	services::Supervisor,
@@ -376,7 +377,7 @@ fn tamanu_context(
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
 		http: http.clone(),
-		runtime: tamanu_runtime(&version),
+		runtime: tamanu_runtime(app, &version),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
 			app.clone(),
 		))),
@@ -393,9 +394,15 @@ fn tamanu_context(
 /// which reads as a substrate that cannot serve the reading — the checks that
 /// need one skip saying so, rather than the sweep having no context to hand
 /// them at all.
-fn tamanu_runtime(version: &Version) -> Arc<dyn runtime::ServiceRuntime> {
+fn tamanu_runtime(app: &ApplicationRef, version: &Version) -> Arc<dyn runtime::ServiceRuntime> {
 	match Supervisor::current() {
-		Some(Supervisor::Systemd) => Arc::new(runtime::systemd::SystemdRuntime::new()),
+		Some(Supervisor::Systemd) => Arc::new(runtime::systemd::SystemdRuntime::new(
+			if app.kind == ApplicationKind::TamanuFacility {
+				ApiServerKind::Facility
+			} else {
+				ApiServerKind::Central
+			},
+		)),
 		Some(Supervisor::Pm2) => Arc::new(runtime::pm2::Pm2Runtime::new(
 			(*version != Version::new(0, 0, 0)).then(|| version.to_string()),
 		)),

@@ -272,15 +272,19 @@ pub struct Service {
 /// What a substrate can answer about one service.
 ///
 /// spec: SUB#service-facts
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServiceFacts {
 	/// Whether the service is up right now.
 	pub up: bool,
 	/// The version it is running, resolved by the substrate from whatever names
 	/// it there — an image tag or label on a container runtime, the install's
-	/// version where every process necessarily shares one. `None` where the
-	/// runtime cannot name a version.
-	pub version: Option<String>,
+	/// version where every process necessarily shares one.
+	///
+	/// Three answers, because a check grading drift has to tell them apart:
+	/// `Ok(Some)` is a version, `Ok(None)` is a runtime that names none, and
+	/// `Err` is one that could not be asked. A check that took the last for the
+	/// middle would report a blind sweep as a clean one.
+	pub version: Result<Option<String>, Unavailable>,
 	/// Memory in use, in bytes.
 	pub memory_bytes: Option<u64>,
 	/// The memory ceiling declared for this service specifically, in bytes: a
@@ -298,6 +302,20 @@ pub struct ServiceFacts {
 	/// and a service that restarts resets to zero rather than reporting a rate
 	/// nothing measured.
 	pub processor_seconds: Option<f64>,
+}
+
+impl Default for ServiceFacts {
+	/// Nothing known about a service, which is what a runtime answers for one
+	/// it can name but not describe.
+	fn default() -> Self {
+		Self {
+			up: false,
+			version: Ok(None),
+			memory_bytes: None,
+			memory_ceiling_bytes: None,
+			processor_seconds: None,
+		}
+	}
 }
 
 /// Cumulative HTTP request counts for an application.
