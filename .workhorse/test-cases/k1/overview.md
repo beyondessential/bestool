@@ -11,39 +11,39 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 ## Reading the runtime
 
-- [ ] One check grades identical readings to the same outcome whichever runtime served them (verifies spec: SUB)
-- [ ] A reading a runtime cannot serve skips the check, carrying the runtime's reason rather than a generic one (verifies spec: SUB)
+- [x] One check grades identical readings to the same outcome whichever runtime served them (verifies spec: SUB)
+- [x] A reading a runtime cannot serve skips the check, carrying the runtime's reason rather than a generic one (verifies spec: SUB)
 - [ ] A check that does not apply to a subject is absent from its report, and is not confused with a reading that could not be taken (verifies spec: SUB)
 - [x] A cluster's context offers no traffic or certificate reading at all, rather than one that answers unavailable (verifies spec: SUB)
 
 ## One runtime per application
 
-- [ ] Two applications on one machine each resolve their own runtime (verifies spec: SUB)
+- [x] Two applications on one machine each resolve their own runtime (verifies spec: SUB)
 - [ ] A Tamanu under a process supervisor and a Postgres under a native service on one machine each read through their own runtime (verifies spec: SUB) — needs a Windows host
 - [ ] A machine subject resolves no runtime, and machine checks read the host directly (verifies spec: SUB)
 
 ## Duties
 
-- [ ] A check reads a service's duty, never its unit, process or pod name (verifies spec: SUB)
+- [x] A check reads a service's duty, never its unit, process or pod name (verifies spec: SUB)
 - [x] The same duty is named identically whichever runtime reported it (verifies spec: SUB)
 - [x] A service whose duty is outside the vocabulary is reported under the name it was found by, rather than dropped (verifies spec: SUB)
-- [ ] A deployment shape that should no longer exist is found as an out-of-vocabulary service and graded as forbidden (verifies spec: SUB)
-- [ ] The service-expectation logic grades a shortfall in running services the same way on every runtime (verifies spec: SUB)
+- [x] A deployment shape that should no longer exist is found as an out-of-vocabulary service and graded as forbidden (verifies spec: SUB)
+- [x] The service-expectation logic grades a shortfall in running services the same way on every runtime (verifies spec: SUB)
 
 ## Resource usage per service
 
-- [ ] Each service's memory and processor usage are reported as metrics, dimensioned by duty and service (verifies spec: SUB)
-- [ ] Usage is reported whether or not anything grades it (verifies spec: SUB)
-- [ ] A service with a declared ceiling is graded against that ceiling (verifies spec: SUB)
-- [ ] A service with no declared ceiling reports usage and skips the grading, rather than being graded against the machine's total (verifies spec: SUB)
+- [x] Each service's memory and processor usage are reported as metrics, dimensioned by duty and service (verifies spec: SUB)
+- [x] Usage is reported whether or not anything grades it (verifies spec: SUB)
+- [x] A service with a declared ceiling is graded against that ceiling (verifies spec: SUB)
+- [x] A service with no declared ceiling reports usage and skips the grading, rather than being graded against the machine's total (verifies spec: SUB)
 - [ ] A ceiling is read from a container limit and from a supervised unit's configured memory bounds alike (verifies spec: SUB)
 
 ## Postgres tuning
 
 - [ ] The tuning check reports for the Postgres application, not for whatever uses it (verifies spec: SUBJ)
-- [ ] Settings are graded against the declared ceiling of the service running the cluster where one exists (verifies spec: SUB)
+- [x] Settings are graded against the declared ceiling of the service running the cluster where one exists (verifies spec: SUB)
 - [ ] With no declared ceiling, the denominator is the hosting machine's memory (verifies spec: SUB)
-- [ ] With neither a ceiling nor a hosting machine, the check skips rather than inventing a denominator (verifies spec: SUB)
+- [x] With neither a ceiling nor a hosting machine, the check skips rather than inventing a denominator (verifies spec: SUB)
 
 ## Check storage
 

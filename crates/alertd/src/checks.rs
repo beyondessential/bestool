@@ -59,6 +59,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod service_resources;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -468,11 +469,11 @@ impl CheckEntry {
 /// skipped, and one filed against a subject it does have is handed that
 /// subject's own parameters.
 macro_rules! entry {
-	($name:literal, $module:ident, $subject:ident $(, $opt:tt)*) => {
+	($name:literal, $run:path, $subject:ident $(, $opt:tt)*) => {
 		CheckEntry {
 			name: $name,
 			on_wire: entry!(@on_wire $($opt),*),
-			run: entry!(@run $module, $subject $(, $opt)*),
+			run: entry!(@run $run, $subject $(, $opt)*),
 		}
 	};
 
@@ -492,33 +493,33 @@ macro_rules! entry {
 		Some(HealAction { run: $heal, min_interval: $interval })
 	};
 
-	(@run $module:ident, machine $(, $opt:tt)*) => {
+	(@run $run:path, machine $(, $opt:tt)*) => {
 		Run::Machine(Runner {
-			run: |ctx| Box::pin($module::run(ctx)),
+			run: |ctx| Box::pin($run(ctx)),
 			heal: entry!(@heal $($opt),*),
 		})
 	};
-	(@run $module:ident, postgres $(, $opt:tt)*) => {
+	(@run $run:path, postgres $(, $opt:tt)*) => {
 		Run::Postgres(Runner {
-			run: |ctx| Box::pin($module::run(ctx)),
+			run: |ctx| Box::pin($run(ctx)),
 			heal: entry!(@heal $($opt),*),
 		})
 	};
-	(@run $module:ident, tamanu_app $(, $opt:tt)*) => {
-		entry!(@tamanu $module, TamanuScope::Any $(, $opt)*)
+	(@run $run:path, tamanu_app $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Any $(, $opt)*)
 	};
-	(@run $module:ident, central $(, $opt:tt)*) => {
-		entry!(@tamanu $module, TamanuScope::Central $(, $opt)*)
+	(@run $run:path, central $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Central $(, $opt)*)
 	};
-	(@run $module:ident, facility $(, $opt:tt)*) => {
-		entry!(@tamanu $module, TamanuScope::Facility $(, $opt)*)
+	(@run $run:path, facility $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Facility $(, $opt)*)
 	};
 
-	(@tamanu $module:ident, $scope:expr $(, $opt:tt)*) => {
+	(@tamanu $run:path, $scope:expr $(, $opt:tt)*) => {
 		Run::Tamanu(
 			$scope,
 			Runner {
-				run: |ctx| Box::pin($module::run(ctx)),
+				run: |ctx| Box::pin($run(ctx)),
 				heal: entry!(@heal $($opt),*),
 			},
 		)
@@ -530,117 +531,132 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("connect", db_connect, postgres),
+		entry!("connect", db_connect::run, postgres),
 		// Reports the postgres version, which is already the application's
 		// `pgVersion` fact — useful in the CLI render, but off the wire.
-		entry!("version", db_version, postgres, off_wire),
-		entry!("migrations", migrations, tamanu_app),
-		entry!("reporting_roles", reporting_roles, tamanu_app),
+		entry!("version", db_version::run, postgres, off_wire),
+		entry!("migrations", migrations::run, tamanu_app),
+		entry!("reporting_roles", reporting_roles::run, tamanu_app),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
-		entry!("tuning", pg_tuning, postgres),
-		entry!("checksums", pg_checksums, postgres),
-		entry!("disk_free", disk_free, machine),
-		entry!("inodes", inodes, machine),
-		entry!("btrfs", btrfs, machine),
+		entry!("tuning", pg_tuning::run, postgres),
+		entry!("checksums", pg_checksums::run, postgres),
+		// Telemetry for the service running the cluster, graded only where that
+		// service declares a ceiling.
+		entry!(
+			"service_resources",
+			service_resources::postgres::run,
+			postgres
+		),
+		entry!("disk_free", disk_free::run, machine),
+		entry!("inodes", inodes::run, machine),
+		entry!("btrfs", btrfs::run, machine),
 		// Filesystem-level snapshots, and what they capture is not confined to any
 		// one application's database, so they are the machine's concern.
-		entry!("held_captures", held_captures, machine),
-		entry!("memory", memory, machine),
-		entry!("load", load, machine),
+		entry!("held_captures", held_captures::run, machine),
+		entry!("memory", memory::run, machine),
+		entry!("load", load::run, machine),
 		// Uptime is already a machine fact; the soft "recently rebooted" warning is
 		// CLI-only, so keep it off the wire.
-		entry!("uptime", uptime, machine, off_wire),
-		entry!("time_sync", time_sync, machine),
+		entry!("uptime", uptime::run, machine, off_wire),
+		entry!("time_sync", time_sync::run, machine),
 		// Needs a reachable Tamanu DB / deployment but not the config files, so it
 		// runs against a `TAMANU_DATABASE_URL`-only host too.
-		entry!("tamanu_http", tamanu_http, tamanu_app),
+		entry!("tamanu_http", tamanu_http::run, tamanu_app),
 		// The front-end software itself is the machine's: these grade what is
 		// installed on the box, not what it serves. They skip gracefully when caddy
 		// isn't present.
-		entry!("caddy_version", caddy_version, machine),
-		entry!("caddy_resolvers", caddy_resolvers, machine),
+		entry!("caddy_version", caddy_version::run, machine),
+		entry!("caddy_resolvers", caddy_resolvers::run, machine),
 		// The certificates, by contrast, are the application's: they are issued for
 		// the names it answers on.
-		entry!("caddy_certs", caddy_certs, tamanu_app),
+		entry!("caddy_certs", caddy_certs::run, tamanu_app),
 		// Grades the machine's Caddyfile version marker, so it reports for the
 		// machine — reading the deployment's version off the machine's context to
 		// tell whether the marker is stale. Windows-only, and self-skips when
 		// there is no Tamanu on the host or caddy isn't present.
-		entry!("caddyfile_version", caddyfile_version, machine),
+		entry!("caddyfile_version", caddyfile_version::run, machine),
 		// The error rates are the application's traffic, however the front end in
 		// front of it happens to be reached.
-		entry!("http_errors", http_errors, tamanu_app),
-		entry!("tailscale", tailscale, machine, off_wire),
-		entry!("tailscale_config", tailscale_config, machine),
+		entry!("http_errors", http_errors::run, tamanu_app),
+		entry!("tailscale", tailscale::run, machine, off_wire),
+		entry!("tailscale_config", tailscale_config::run, machine),
 		// bestool's own Canopy enrolment is the machine's: it reports so Canopy sees
 		// an incomplete registration before it blocks backups.
 		entry!(
 			"canopy_registration",
-			canopy_registration,
+			canopy_registration::run,
 			machine,
 			(|ctx| Box::pin(canopy_registration::heal(ctx))),
 			(heal::DEFAULT_MIN_INTERVAL)
 		),
 		// Reports the machine's LAN and best-guess WAN addresses as facts (off the
 		// wire; carried in the machine's detail, like the timezone).
-		entry!("ips", ips, machine, off_wire),
+		entry!("ips", ips::run, machine, off_wire),
 		// Reports whether munin-node is installed as a machine fact (off the wire,
 		// like `ips`); not a health signal.
-		entry!("munin", munin, machine, off_wire),
+		entry!("munin", munin::run, machine, off_wire),
 		// Read against the machine, so a machine hosting several applications
 		// carries one set of tags rather than one per application.
-		entry!("billing_tags", billing_tags, machine),
+		entry!("billing_tags", billing_tags::run, machine),
 		// The config-derived FHIR expectation degrades to Unknown without config
 		// (see `services::expected`); the rest is DB/host-derived.
-		entry!("tamanu_service", tamanu_service, tamanu_app),
+		entry!("tamanu_service", tamanu_service::run, tamanu_app),
 		// Compares running container tags against the deployment's version, which is
 		// the install's env-file version when present and the DB's recorded
 		// `currentVersion` otherwise. It self-skips if neither is available.
-		entry!("version_drift", version_drift, tamanu_app),
-		entry!("external_users", external_users, machine),
-		entry!("sync_sessions", sync_sessions, tamanu_app),
+		entry!("version_drift", version_drift::run, tamanu_app),
+		// Per-service memory and processor usage, dimensioned by duty and
+		// service. Graded only against a ceiling a service declares for itself,
+		// never against the machine's total.
+		entry!(
+			"service_resources",
+			service_resources::tamanu::run,
+			tamanu_app
+		),
+		entry!("external_users", external_users::run, machine),
+		entry!("sync_sessions", sync_sessions::run, tamanu_app),
 		// Config-derived: the FHIR API and worker toggles must agree.
-		entry!("fhir_config", fhir_config, tamanu_app),
+		entry!("fhir_config", fhir_config::run, tamanu_app),
 		// Restart the FHIR workers when the backlog check fails, capped at one
 		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
 		// The heal is central-only even though the check itself is not.
 		entry!(
 			"fhir_jobs",
-			fhir_jobs,
+			fhir_jobs::run,
 			tamanu_app,
 			(|ctx| Box::pin(fhir_jobs::heal(ctx))),
 			(std::time::Duration::from_secs(60 * 60))
 		),
-		entry!("fhir_workers", fhir_workers, central),
+		entry!("fhir_workers", fhir_workers::run, central),
 		entry!(
 			"certificate_notification_errors",
-			certificate_notification_errors,
+			certificate_notification_errors::run,
 			central
 		),
-		entry!("ips_errors", ips_errors, central),
+		entry!("ips_errors", ips_errors::run, central),
 		entry!(
 			"patient_communication_errors",
-			patient_communication_errors,
+			patient_communication_errors::run,
 			central
 		),
-		entry!("report_errors", report_errors, central),
-		entry!("fhir_job_errors", fhir_job_errors, central),
-		entry!("sync_session_errors", sync_session_errors, central),
-		entry!("sync_facility_stale", sync_facility_stale, central),
-		entry!("sync_snapshot_tables", sync_snapshot_tables, central),
-		entry!("sync_lookup", sync_lookup, central),
-		entry!("sync_restart_loop", sync_restart_loop, central),
+		entry!("report_errors", report_errors::run, central),
+		entry!("fhir_job_errors", fhir_job_errors::run, central),
+		entry!("sync_session_errors", sync_session_errors::run, central),
+		entry!("sync_facility_stale", sync_facility_stale::run, central),
+		entry!("sync_snapshot_tables", sync_snapshot_tables::run, central),
+		entry!("sync_lookup", sync_lookup::run, central),
+		entry!("sync_restart_loop", sync_restart_loop::run, central),
 		entry!(
 			"fhir_service_requests_unresolved",
-			fhir_service_requests_unresolved,
+			fhir_service_requests_unresolved::run,
 			central
 		),
 		// Measures the outcome of materialisation rather than its queue: upstream
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
-		entry!("fhir_materialisation", fhir_materialisation, central),
+		entry!("fhir_materialisation", fhir_materialisation::run, central),
 	]
 }
 

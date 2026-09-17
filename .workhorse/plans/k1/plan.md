@@ -160,6 +160,24 @@ configuration is guesswork, and the mapping from port to data directory is not
 something a supervisor holds. It only works for a cluster on this machine, which
 is the only one with a ceiling to declare anyway.
 
+### What the duty port changed beyond the matching
+
+**A leftover unit of the other role is another application's**, not a service of
+this one. Expectations used to be role-qualified by name, so a
+`tamanu-facility-api` on a central host matched nothing; a duty carries no role,
+so without a filter it would have satisfied the central API expectation. The
+systemd runtime drops units carrying the other role's prefix, which is the right
+answer anyway — a runtime answers with the services making up *its* application.
+
+**The `Down` reconciliation is now two readings rather than a probe.** A service
+is forbidden when it is up or when the runtime intends to run it; one that is
+neither is effectively absent. The enabled-but-not-loaded case, which
+`list-units` cannot see, is covered because the runtime lists installed units
+too. `is-enabled` is no longer called from the check.
+
+**`pm2_source` is gone from the check's details.** Which path pm2's listing came
+from is the runtime's business; what the check reports is that it could not tell.
+
 ## Neighbouring cards
 
 `E2` (discover every Postgres cluster) was waiting on the per-subject context, which `L2` has now landed. Its remaining work is discovery.
@@ -174,9 +192,9 @@ is the only one with a ceiling to declare anyway.
 
 - [x] Split `AppCx` into `PgCx` and `TamanuCx`, adding the third `Run` arm
 - [x] Introduce the two runtime traits, the duty vocabulary and the check-storage trait, with own-system service runtimes resolved per application
-- [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
-- [ ] Add per-service resource metrics, graded only against a declared ceiling
-- [ ] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
+- [x] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
+- [x] Add per-service resource metrics, graded only against a declared ceiling
+- [x] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
 - [ ] Implement `HttpRuntime` over the local Caddy, and read `http_errors` and `caddy_certs` through it
 - [ ] Move `http_errors` and `external_users` onto check storage, retiring the fixed cache path they share
 

@@ -13,10 +13,15 @@
 //! tuning definition, which budgets Windows hosts to a smaller memory ceiling
 //! (Windows postgres degrades with a large shared_buffers), so the same drift
 //! checks apply on both platforms without a per-GUC carve-out; only the
-//! Linux-specific effective_io_concurrency is skipped on Windows. It compares
-//! the live server against *this host's* RAM, so it only runs when postgres is
-//! local; against a remote database it skips, since the local RAM says nothing
-//! about the database host.
+//! Linux-specific effective_io_concurrency is skipped on Windows.
+//!
+//! The denominator is the memory the server may actually use: the ceiling
+//! declared for the service running it wherever one exists, and only otherwise
+//! the memory of the machine hosting it — the reading that is right for a
+//! machine running one unconfined server and wrong for everything else. With
+//! neither, there is nothing to tune against and the check skips.
+//!
+//! spec: SUB#postgres-tuning
 
 use bestool_postgres::pgtune::{self, Budget, HostResources, Platform};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
@@ -300,14 +305,69 @@ fn parse_bottom_up(value: &str) -> Option<bool> {
 	}
 }
 
-pub async fn run(ctx: PgCx) -> Check {
+/// Where the memory this server may use was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Denominator {
+	/// The ceiling declared for the service running the cluster. Right wherever
+	/// one exists, because it bounds this server specifically.
+	DeclaredCeiling,
+	/// The hosting machine's total. Right for a machine running one unconfined
+	/// server, and wrong for everything else, so only taken where the service
+	/// declares no ceiling of its own.
+	HostingMachine,
+}
+
+impl Denominator {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::DeclaredCeiling => "declared_ceiling",
+			Self::HostingMachine => "hosting_machine",
+		}
+	}
+}
+
+/// The ceiling declared for the service running this cluster, where the
+/// substrate can read one.
+async fn declared_ceiling(ctx: &PgCx) -> Option<i64> {
+	let services = ctx.runtime.services().await.ok()?;
+	for service in services {
+		let Ok(facts) = ctx.runtime.service_facts(&service.id).await else {
+			continue;
+		};
+		if let Some(ceiling) = facts.memory_ceiling_bytes {
+			return i64::try_from(ceiling).ok().filter(|bytes| *bytes > 0);
+		}
+	}
+	None
+}
+
+/// The memory this server may actually use, and where that figure came from.
+async fn memory_budget(ctx: &PgCx) -> Option<(i64, Denominator)> {
+	if let Some(ceiling) = declared_ceiling(ctx).await {
+		return Some((ceiling, Denominator::DeclaredCeiling));
+	}
+
+	// No ceiling, so fall back to the machine — but only for a server on it. A
+	// remote one is hosted by a machine we cannot read, and this machine's RAM
+	// says nothing about it.
 	if !crate::sweep::database_is_local(&ctx.database_url) {
+		return None;
+	}
+	let sys = System::new_with_specifics(
+		RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+	);
+	let total = sys.total_memory() as i64;
+	(total > 0).then_some((total, Denominator::HostingMachine))
+}
+
+pub async fn run(ctx: PgCx) -> Check {
+	let Some((total_ram, denominator)) = memory_budget(&ctx).await else {
 		return Check::skip(
 			"tuning",
-			"database is not local",
-			"tuning is compared against this host's RAM, which doesn't describe a remote database",
+			"no memory to tune against",
+			"the service running this cluster declares no memory ceiling, and there is no hosting machine to read instead",
 		);
-	}
+	};
 
 	let Some(client) = ctx.db().await else {
 		return Check::skip(
@@ -339,18 +399,6 @@ pub async fn run(ctx: PgCx) -> Check {
 		server_version_num: row.try_get("server_version_num").unwrap_or(0),
 	};
 
-	let sys = System::new_with_specifics(
-		RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-	);
-	let total_ram = sys.total_memory() as i64;
-	if total_ram <= 0 {
-		return Check::skip(
-			"tuning",
-			"could not read host memory",
-			"sysinfo reported no total memory; can't derive expected tuning",
-		);
-	}
-
 	let pg_major = (settings.server_version_num / 10000).max(0) as u32;
 	let mut findings = assess(&settings, total_ram, Platform::current(), pg_major);
 	findings.extend(bottom_up_aslr_findings().await);
@@ -381,6 +429,7 @@ pub async fn run(ctx: PgCx) -> Check {
 			as i64;
 	check
 		.with_detail("total_ram_bytes", total_ram)
+		.with_detail("memory_budget_source", denominator.as_str())
 		.with_detail("pg_ram_budget_bytes", budget)
 		.with_detail("shared_buffers_bytes", settings.shared_buffers)
 		.with_detail("shared_buffers_expected_bytes", expected_shared)
@@ -729,11 +778,12 @@ mod tests {
 	}
 
 	#[test]
-	fn tuning_only_grades_a_cluster_on_this_machine() {
-		// The denominator is this machine's memory, so tuning a cluster elsewhere
-		// against it would be wrong rather than merely imprecise. Locality comes
-		// from the same helper that keys the subject, so the two cannot disagree
-		// about whether a cluster is local.
+	fn the_machine_fallback_only_applies_to_a_cluster_on_this_machine() {
+		// Where no ceiling is declared the denominator falls back to this
+		// machine's memory, so taking it for a cluster elsewhere would be wrong
+		// rather than merely imprecise. Locality comes from the same helper that
+		// keys the subject, so the two cannot disagree about whether a cluster
+		// is local.
 		use crate::sweep::database_is_local;
 		assert!(database_is_local("postgresql:///db"));
 		assert!(database_is_local("postgresql://u@localhost/db"));
@@ -745,5 +795,79 @@ mod tests {
 		));
 		assert!(!database_is_local("postgresql://u@db.internal.example/db"));
 		assert!(!database_is_local("postgresql://u@10.0.0.5/db"));
+	}
+
+	/// A server bounded by its service's own ceiling is tuned against that,
+	/// wherever the server runs and whatever else shares the machine with it.
+	///
+	/// spec: SUB#postgres-tuning
+	#[tokio::test]
+	async fn a_declared_ceiling_beats_the_machine_s_memory() {
+		use std::sync::Arc;
+
+		use bestool_tamanu::config::Database;
+
+		use crate::runtime::{
+			Duty, PostgresDuty, Service, ServiceFacts, ServiceId, fake::FakeRuntime,
+		};
+		use crate::store::MemoryStore;
+		use crate::subject::ApplicationRef;
+
+		const CEILING: u64 = 4 * 1024 * 1024 * 1024;
+
+		let url = "postgresql://u@10.0.0.5/db";
+		let ctx = PgCx {
+			app: ApplicationRef::remote_postgres("10.0.0.5", 5432),
+			database: Database::from_url(url).unwrap(),
+			database_url: url.into(),
+			pool: None,
+			runtime: Arc::new(FakeRuntime::empty().with(
+				Service {
+					id: ServiceId::new("postgresql@17-main.service"),
+					duty: Duty::Postgres(PostgresDuty::Primary),
+					slot: None,
+					scheduled: true,
+				},
+				ServiceFacts {
+					up: true,
+					memory_ceiling_bytes: Some(CEILING),
+					..Default::default()
+				},
+			)),
+			store: Arc::new(MemoryStore::new()),
+		};
+
+		let (budget, source) = memory_budget(&ctx)
+			.await
+			.expect("a declared ceiling is a denominator wherever the server is");
+		assert_eq!(budget, CEILING as i64);
+		assert_eq!(source, Denominator::DeclaredCeiling);
+	}
+
+	/// With no ceiling and no machine to fall back to there is nothing to tune
+	/// against, so the check skips rather than inventing a denominator.
+	///
+	/// spec: SUB#postgres-tuning
+	#[tokio::test]
+	async fn no_ceiling_and_no_hosting_machine_is_nothing_to_tune_against() {
+		use std::sync::Arc;
+
+		use bestool_tamanu::config::Database;
+
+		use crate::runtime::fake::FakeRuntime;
+		use crate::store::MemoryStore;
+		use crate::subject::ApplicationRef;
+
+		let url = "postgresql://u@10.0.0.5/db";
+		let ctx = PgCx {
+			app: ApplicationRef::remote_postgres("10.0.0.5", 5432),
+			database: Database::from_url(url).unwrap(),
+			database_url: url.into(),
+			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
+		};
+
+		assert!(memory_budget(&ctx).await.is_none());
 	}
 }
