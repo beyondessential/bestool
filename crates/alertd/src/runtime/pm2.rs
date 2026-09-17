@@ -12,6 +12,8 @@
 //!
 //! spec: SUB
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use bestool_tamanu::pm2::{self, PmProc, Source};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -31,6 +33,13 @@ pub struct Pm2Runtime {
 #[derive(Clone)]
 struct Listing {
 	procs: Vec<PmProc>,
+	/// Resident memory in bytes and cumulative processor seconds, by pid.
+	///
+	/// Taken for the whole listing at once. Enumerating processes is slowest on
+	/// exactly the platform pm2 runs on, and three checks walk the workload each
+	/// sweep, so building a `System` per service per check was the worst shape
+	/// available.
+	usage: HashMap<u32, (u64, f64)>,
 	/// Why no service's facts can be read from this listing.
 	///
 	/// When the pm2 CLI is unreachable we fall back to reading `dump.pm2`, which
@@ -58,16 +67,24 @@ impl Pm2Runtime {
 			.get_or_init(|| async {
 				// `pm2::list` shells out to the pm2 Node CLI with a blocking
 				// command, which on Windows (pm2.cmd → cmd.exe → node.exe, each
-				// antivirus-scanned) takes over a second. Off the executor so it
-				// cannot stall the checks sharing it.
-				match tokio::task::spawn_blocking(pm2::list).await {
-					Ok(Ok((procs, source))) => Ok(Listing::new(
-						procs
-							.into_iter()
-							.filter(|p| p.name.starts_with("tamanu-"))
-							.collect(),
-						source,
-					)),
+				// antivirus-scanned) takes over a second, and building the
+				// listing walks the process table after it. Both off the
+				// executor so they cannot stall the checks sharing it.
+				let built = tokio::task::spawn_blocking(|| {
+					pm2::list().map(|(procs, source)| {
+						Listing::new(
+							procs
+								.into_iter()
+								.filter(|p| p.name.starts_with("tamanu-"))
+								.collect(),
+							source,
+						)
+					})
+				})
+				.await;
+
+				match built {
+					Ok(Ok(listing)) => Ok(listing),
 					Ok(Err(err)) => Err(Unavailable::new(format!(
 						"could not list pm2 processes: {err}"
 					))),
@@ -89,11 +106,46 @@ impl Listing {
 			"read pm2's dump file but couldn't verify any process is alive — likely a permissions issue (try running elevated)"
 				.to_string()
 		});
+		let usage = if indeterminate.is_some() {
+			// Nothing will be asked for these; don't walk the process table for
+			// a listing whose facts are refused anyway.
+			HashMap::new()
+		} else {
+			usage_of(procs.iter().filter_map(|proc| proc.pid))
+		};
 		Self {
 			procs,
+			usage,
 			indeterminate,
 		}
 	}
+}
+
+/// Resident memory in bytes and cumulative processor time in seconds, for every
+/// pid given, in one pass over the process table.
+///
+/// A pid gone by the time we look is absent from the result rather than zero.
+fn usage_of(pids: impl IntoIterator<Item = u32>) -> HashMap<u32, (u64, f64)> {
+	let pids: Vec<Pid> = pids.into_iter().map(Pid::from_u32).collect();
+	if pids.is_empty() {
+		return HashMap::new();
+	}
+
+	let mut sys = System::new();
+	sys.refresh_processes_specifics(
+		ProcessesToUpdate::Some(&pids),
+		false,
+		ProcessRefreshKind::nothing().with_memory().with_cpu(),
+	);
+	pids.into_iter()
+		.filter_map(|pid| {
+			let proc = sys.process(pid)?;
+			Some((
+				pid.as_u32(),
+				(proc.memory(), proc.accumulated_cpu_time() as f64 / 1000.0),
+			))
+		})
+		.collect()
 }
 
 /// How one pm2 process is named back to us. The pm2 id distinguishes the
@@ -141,12 +193,7 @@ impl ServiceRuntime for Pm2Runtime {
 			return Err(Unavailable::new(format!("pm2 has no process {id}")));
 		};
 
-		let usage = match proc.pid {
-			Some(pid) => tokio::task::spawn_blocking(move || process_usage(pid))
-				.await
-				.unwrap_or_default(),
-			None => None,
-		};
+		let usage = proc.pid.and_then(|pid| listing.usage.get(&pid)).copied();
 
 		Ok(ServiceFacts {
 			up: proc.running,
@@ -158,20 +205,6 @@ impl ServiceRuntime for Pm2Runtime {
 			processor_seconds: usage.map(|(_, processor)| processor),
 		})
 	}
-}
-
-/// Resident memory in bytes and cumulative processor time in seconds, for one
-/// pid. `None` when the process is gone by the time we look.
-fn process_usage(pid: u32) -> Option<(u64, f64)> {
-	let mut sys = System::new();
-	let pid = Pid::from_u32(pid);
-	sys.refresh_processes_specifics(
-		ProcessesToUpdate::Some(&[pid]),
-		false,
-		ProcessRefreshKind::nothing().with_memory().with_cpu(),
-	);
-	let proc = sys.process(pid)?;
-	Some((proc.memory(), proc.accumulated_cpu_time() as f64 / 1000.0))
 }
 
 #[cfg(test)]
@@ -266,5 +299,45 @@ mod tests {
 			Duty::from_tamanu_service_name("tamanu-sync"),
 			Duty::Tamanu(TamanuDuty::Sync)
 		);
+	}
+
+	/// The process table is walked once for the listing, not once per service
+	/// per check: enumerating processes is slowest on exactly the platform pm2
+	/// runs on.
+	#[test]
+	fn usage_is_taken_for_the_whole_listing_at_once() {
+		// This process is one we know is alive, so it stands in for a supervised
+		// one without needing pm2 on the box.
+		let me = std::process::id();
+		let listing = Listing::new(
+			vec![PmProc {
+				name: "tamanu-api".into(),
+				pm_id: Some(0),
+				running: true,
+				pid: Some(me),
+			}],
+			Source::Cli,
+		);
+		assert!(
+			listing.usage.contains_key(&me),
+			"the listing carries its own usage rather than fetching per service"
+		);
+	}
+
+	/// A listing whose facts are refused anyway is not worth walking the process
+	/// table for.
+	#[test]
+	fn an_indeterminate_listing_walks_nothing() {
+		let listing = Listing::new(
+			vec![PmProc {
+				name: "tamanu-api".into(),
+				pm_id: Some(0),
+				running: false,
+				pid: Some(std::process::id()),
+			}],
+			Source::Dump,
+		);
+		assert!(listing.indeterminate.is_some());
+		assert!(listing.usage.is_empty());
 	}
 }
