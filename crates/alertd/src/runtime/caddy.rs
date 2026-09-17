@@ -26,6 +26,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures::{StreamExt, stream};
 use jiff::Timestamp;
 use serde_json::Value;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
@@ -51,6 +52,14 @@ const SOURCE: &str = "caddy";
 /// so the SNI selects the vhost without the connection leaving the box.
 const TLS_PORT: u16 = 443;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many handshakes to have in flight at once. Enough that a machine with
+/// many hostnames finishes promptly, few enough not to arrive at the local
+/// listener as a burst.
+const HANDSHAKE_CONCURRENCY: usize = 8;
+/// The most the whole set of handshakes may take. Past this the comparison goes
+/// unmade for the certificates not yet reached, which reads as no comparison
+/// rather than as a mismatch.
+const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 
 /// The Caddy serving a deployment on the machine this process is on.
 pub struct CaddyRuntime {
@@ -185,28 +194,64 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 			continue;
 		};
 
-		let served_leaf = match name_to_dial(&cert.sans) {
-			Some(sni) => match served_leaf(sni).await {
-				Ok(der) => Some(der),
-				Err(err) => {
-					debug!(sni, %err, "could not read the served certificate");
-					None
-				}
-			},
-			None => None,
-		};
-
 		out.push(Certificate {
 			names: cert.sans,
 			origin,
 			not_before,
 			not_after,
 			leaf: cert.der,
-			served_leaf,
+			served_leaf: None,
 		});
 	}
 
+	read_served_leaves(&mut out).await;
 	Ok(out)
+}
+
+/// Fill in what is being served for each certificate, by handshaking against
+/// one of its names.
+///
+/// A handshake that did not finish leaves the certificate with nothing served,
+/// which the check reads as no comparison rather than as a mismatch. That is
+/// what makes bounding this safe: a Caddy fronting dozens of hostnames whose
+/// listener has gone slow would otherwise hold the whole sweep for the
+/// handshake timeout times the certificate count, and a sweep that never
+/// returns is the worst outcome for something whose job is to report trouble.
+async fn read_served_leaves(certs: &mut [Certificate]) {
+	// The names are taken first so the handshakes own what they need: they
+	// outlive the borrow of `certs` that filling the results back in wants.
+	let names: Vec<Option<String>> = certs
+		.iter()
+		.map(|cert| name_to_dial(&cert.names).cloned())
+		.collect();
+
+	let handshakes = stream::iter(names.into_iter().map(|sni| async move {
+		let sni = sni?;
+		match served_leaf(&sni).await {
+			Ok(der) => Some(der),
+			Err(err) => {
+				debug!(sni, %err, "could not read the served certificate");
+				None
+			}
+		}
+	}))
+	.buffered(HANDSHAKE_CONCURRENCY)
+	.collect::<Vec<Option<Vec<u8>>>>();
+
+	let served = match tokio::time::timeout(HANDSHAKE_BUDGET, handshakes).await {
+		Ok(served) => served,
+		Err(_) => {
+			debug!(
+				certificates = certs.len(),
+				"gave up reading served certificates within the budget"
+			);
+			return;
+		}
+	};
+
+	for (cert, leaf) in certs.iter_mut().zip(served) {
+		cert.served_leaf = leaf;
+	}
 }
 
 /// Which of a certificate's names to take a handshake against.
@@ -862,5 +907,36 @@ other_metric{foo=\"bar\"} 7
 		assert_eq!(sources.len(), 1);
 		assert_eq!(sources[0].0, "caddy config load_pem[0]");
 		assert!(sources[0].1.starts_with(b"-----BEGIN CERTIFICATE-----"));
+	}
+
+	/// A handshake that did not happen leaves nothing served, which the check
+	/// reads as no comparison rather than as a mismatch. That is what lets the
+	/// handshakes be bounded at all.
+	///
+	/// spec: SUB#http-traffic-and-certificates
+	#[tokio::test]
+	async fn certificates_with_no_name_to_dial_come_back_with_nothing_served() {
+		let now = Timestamp::from_second(1_700_000_000).unwrap();
+		let mut certs = vec![
+			Certificate {
+				names: vec!["*.example.com".to_string()],
+				origin: "/store/wild.crt".into(),
+				not_before: now,
+				not_after: now,
+				leaf: b"leaf".to_vec(),
+				served_leaf: None,
+			},
+			Certificate {
+				names: Vec::new(),
+				origin: "/store/unnamed.crt".into(),
+				not_before: now,
+				not_after: now,
+				leaf: b"other".to_vec(),
+				served_leaf: None,
+			},
+		];
+
+		read_served_leaves(&mut certs).await;
+		assert!(certs.iter().all(|cert| cert.served_leaf.is_none()));
 	}
 }
