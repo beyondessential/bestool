@@ -108,16 +108,43 @@ mod linux {
 
 	static CONNECTION: OnceCell<Connection> = OnceCell::const_new();
 
-	async fn manager() -> Result<ManagerProxy<'static>> {
-		let conn = CONNECTION
+	/// How long any one read off the bus may take.
+	///
+	/// A read that never returns is worse than one that fails: the sweep these
+	/// feed has to finish and report, and a check that hangs takes the whole
+	/// sweep with it — so nothing reaches canopy and the watchdog restarts the
+	/// daemon into the same hang. Every caller already handles a read that
+	/// could not be taken, so a bounded failure degrades into a skip.
+	///
+	/// Generous against a healthy bus, where these answer in milliseconds.
+	const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+	/// Bound a read off the bus, naming it if it runs out of time.
+	async fn bounded<T>(
+		what: &str,
+		read: impl std::future::Future<Output = Result<T>>,
+	) -> Result<T> {
+		match tokio::time::timeout(READ_TIMEOUT, read).await {
+			Ok(result) => result,
+			Err(_) => bail!("systemd {what} did not answer within {READ_TIMEOUT:?}"),
+		}
+	}
+
+	async fn connection() -> Result<&'static Connection> {
+		CONNECTION
 			.get_or_try_init(|| async {
 				Connection::system()
 					.await
 					.into_diagnostic()
 					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
 			})
-			.await?;
-		ManagerProxy::new(conn).await.into_diagnostic()
+			.await
+	}
+
+	async fn manager() -> Result<ManagerProxy<'static>> {
+		ManagerProxy::new(connection().await?)
+			.await
+			.into_diagnostic()
 	}
 
 	/// `systemctl list-units ... <patterns>`. Empty `patterns` returns nothing.
@@ -128,6 +155,10 @@ mod linux {
 		if patterns.is_empty() {
 			return Ok(Vec::new());
 		}
+		bounded("list_units", list_units_inner(patterns)).await
+	}
+
+	async fn list_units_inner(patterns: &[&str]) -> Result<Vec<UnitState>> {
 		let mgr = manager().await?;
 		let raw = mgr
 			.list_units_by_patterns(
@@ -157,6 +188,10 @@ mod linux {
 		if patterns.is_empty() {
 			return Ok(Vec::new());
 		}
+		bounded("list_unit_files", list_unit_files_inner(patterns)).await
+	}
+
+	async fn list_unit_files_inner(patterns: &[&str]) -> Result<Vec<UnitFile>> {
 		let mgr = manager().await?;
 		let raw = mgr
 			.list_unit_files_by_patterns(
@@ -181,14 +216,11 @@ mod linux {
 	/// accounting off) has neither a current nor a usage — so it maps to
 	/// `None` rather than being passed on as a quantity.
 	pub async fn unit_resources(unit: &str) -> Result<UnitResources> {
-		let conn = CONNECTION
-			.get_or_try_init(|| async {
-				Connection::system()
-					.await
-					.into_diagnostic()
-					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
-			})
-			.await?;
+		bounded("unit_resources", unit_resources_inner(unit)).await
+	}
+
+	async fn unit_resources_inner(unit: &str) -> Result<UnitResources> {
+		let conn = connection().await?;
 		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
 		let path = mgr
 			.get_unit(unit.to_string())
@@ -215,14 +247,11 @@ mod linux {
 	/// pid on this machine: a pid from elsewhere resolves against this host's
 	/// process table and would name whatever happens to hold that number.
 	pub async fn unit_for_pid(pid: u32) -> Result<Option<String>> {
-		let conn = CONNECTION
-			.get_or_try_init(|| async {
-				Connection::system()
-					.await
-					.into_diagnostic()
-					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
-			})
-			.await?;
+		bounded("unit_for_pid", unit_for_pid_inner(pid)).await
+	}
+
+	async fn unit_for_pid_inner(pid: u32) -> Result<Option<String>> {
+		let conn = connection().await?;
 		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
 		let path = match mgr.get_unit_by_pid(pid).await {
 			Ok(path) => path,
@@ -244,6 +273,10 @@ mod linux {
 	/// `systemctl is-active --quiet <unit>`. Returns true when the unit is
 	/// currently `active`. Returns false for unknown / not-loaded units.
 	pub async fn is_active(unit: &str) -> Result<bool> {
+		bounded("is_active", is_active_inner(unit)).await
+	}
+
+	async fn is_active_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		let raw = mgr
 			.list_units_by_patterns(Vec::new(), vec![unit.to_string()])
@@ -257,6 +290,10 @@ mod linux {
 	/// existence probes where the enabled/disabled state is irrelevant — e.g.
 	/// "is the template `tamanu-patientportal@.service` installed at all?".
 	pub async fn unit_file_exists(unit: &str) -> Result<bool> {
+		bounded("unit_file_exists", unit_file_exists_inner(unit)).await
+	}
+
+	async fn unit_file_exists_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		match mgr.get_unit_file_state(unit.to_string()).await {
 			Ok(_) => Ok(true),
@@ -278,6 +315,10 @@ mod linux {
 	/// false for `disabled`, `static`, `masked`, `alias`, `linked`, `not-found`,
 	/// and any not-loaded/not-installed errors.
 	pub async fn is_enabled(unit: &str) -> Result<bool> {
+		bounded("is_enabled", is_enabled_inner(unit)).await
+	}
+
+	async fn is_enabled_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		match mgr.get_unit_file_state(unit.to_string()).await {
 			Ok(state) => Ok(state == "enabled" || state == "enabled-runtime"),
