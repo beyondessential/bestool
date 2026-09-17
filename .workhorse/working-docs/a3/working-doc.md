@@ -95,11 +95,30 @@ A certificate whose key must be replaced needs a new key generated first, not ju
 A last error is surfaced rather than spun on.
 While Canopy reports the server paused, it is making no new changes on the server's behalf and requests are refused, so the task waits rather than retrying.
 
+### When the grant is gone
+
+A server that may not obtain certificates stops asking, and stops quietly.
+
+The task draws no distinction between a grant that was withdrawn and one that was never held, and keeps no record that it once had one.
+Withdrawing a grant is a containment action taken while an incident is under way, most likely on a host that is compromised.
+That makes the host the wrong place to reason about it: what it remembers is in an attacker's hands, and what it reports lands on people already working the incident.
+So the task asks entitlements, acts on the answer, and holds no history of its own authorisation.
+
+Chains already collected keep being served.
+A withdrawn grant is not a revocation — Canopy says separately when a certificate must stop being served, and that is the lever which takes a chain out of service.
+
 ### Being watched
 
 Two checks cover this, because a chain that stopped being collected is a failure nothing currently catches.
 
-A new check grades the collection pipeline itself: the names wanted against the chains held, how long until the earliest expires, any last error Canopy reported, and whether the TLS grant is present or the server paused.
+A new check grades the collection pipeline itself: the names wanted against the chains held, how long until the earliest expires, and any last error Canopy reported.
+
+It skips when the server holds no TLS grant, or while Canopy reports it paused, naming the unmet precondition.
+A pause is never escalated however long it lasts: Canopy set it, so reporting it back tells the authority what it already knows.
+Both states stay visible on the task's status endpoint and through the CLI, for whoever is looking at the box.
+A skip neither degrades the sweep nor triggers a heal, and a skipped result closes any issue the check had already opened, so a grant withdrawn mid-incident silences this check rather than adding to the incident.
+The reason a skip carries says only that the server may not obtain certificates, without speculating why.
+
 `caddy_certs` keeps grading what Caddy serves, taught to recognise a chain that came from alertd rather than Caddy's own store so it neither mis-grades it nor ignores it.
 
 ### CLI surface
@@ -171,7 +190,7 @@ A Canopy-issued chain's lifetime is not known to this side ahead of time; `not_a
 
 - [ ] Whether alertd also serves an `on_demand_tls ask` endpoint to stop Caddy attempting its own issuance for arbitrary SNI, and whether on-demand is still reachable once `auto_https disable_certs` is set. Needs confirming against a real Caddy rather than reasoning.
 - [ ] Whether Canopy's authority constrains the key algorithm; P-256 is chosen on this side, and a refusal would be found late.
-- [ ] How long the task waits while Canopy reports the server paused, and how a withdrawn TLS grant reads on the new check — a server that was never granted one and a server that lost one look the same from entitlements alone.
+- [ ] Confirm two calls made by inference rather than decision: that a withdrawn grant leaves the collected chains in service (revocation being the separate lever that takes one out), and that a prolonged pause is never escalated on the host, since Canopy set the pause and already knows about it.
 
 ## Trade-offs
 
@@ -184,6 +203,10 @@ Polling Caddy's active subjects covers the normal case ahead of time, so the han
 
 Driving DNS registration only from an explicit CLI call keeps publishing records a deliberate act.
 Publishing addresses points real traffic at this box, which is not something a poll or a stray handshake should be able to cause.
+
+Treating a withdrawn grant as indistinguishable from one never held gives up the ability to alert on a capability disappearing.
+That is the point: the case it would alert on is one where an operator has already acted, and where this host is a suspect rather than a witness.
+The cost is that a grant withdrawn by mistake goes unremarked here, and has to be noticed from Canopy's side.
 
 Taking the union of a machine's applications rather than mapping each name to one drops the boundary Canopy is drawing between workloads on the same box.
 Nothing on this side currently knows which application a Caddy site belongs to, and every machine is single-application today, so the union costs nothing yet and is the wrong answer the day a machine hosts two workloads with different grants.
@@ -219,6 +242,9 @@ Nothing on this side currently knows which application a Caddy site belongs to, 
 - Entitlements reporting the server paused stops the task making new requests.
 - A `last_error` from Canopy is surfaced rather than retried into silently.
 - A machine answered with an applications list acts on the union of their domains and grants.
+- A server whose TLS grant is withdrawn stops asking, keeps serving the chains it holds, and raises nothing.
+- A grant withdrawn while the check had an issue open closes that issue rather than adding to it.
+- A server that never held a grant and one that has lost it are indistinguishable in what the host records and reports.
 
 ### The delivery endpoint
 
