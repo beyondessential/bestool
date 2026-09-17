@@ -8,13 +8,16 @@
 //!
 //! spec: SUB
 
-use std::collections::HashMap;
+use std::{
+	collections::HashMap,
+	sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use bestool_tamanu::{
 	ApiServerKind,
 	services::parse_systemd_unit,
-	systemd::{self, UnitState},
+	systemd::{self, UnitResources, UnitState},
 	versions,
 };
 use tokio::sync::OnceCell;
@@ -45,6 +48,17 @@ pub struct SystemdRuntime {
 	/// systemd whether or not podman is, so only the version reading is
 	/// unavailable and the check that grades drift is the only one that cares.
 	versions: OnceCell<Result<HashMap<String, String>, Unavailable>>,
+	/// One unit's resource readings, memoised like the listings above.
+	///
+	/// Reading them is a `GetUnit`, a fresh proxy and three property fetches,
+	/// the first of which pulls the whole of systemd's service property set. The
+	/// three checks that walk the workload would otherwise each pay that for
+	/// every unit, and two of them only want the up-ness and version the
+	/// listings above already hold.
+	///
+	/// A cell per unit rather than a map of values, so two checks asking for the
+	/// same unit at once wait on one read instead of both issuing it.
+	resources: Mutex<HashMap<String, Arc<OnceCell<UnitResources>>>>,
 }
 
 impl SystemdRuntime {
@@ -54,7 +68,28 @@ impl SystemdRuntime {
 			units: OnceCell::new(),
 			unit_files: OnceCell::new(),
 			versions: OnceCell::new(),
+			resources: Mutex::new(HashMap::new()),
 		}
+	}
+
+	/// This unit's resource readings, read once for the life of the runtime.
+	///
+	/// A unit systemd would not answer for reads as nothing known rather than
+	/// failing the facts: the up-ness and version beside them come from the
+	/// listings and are still good.
+	async fn resources(&self, unit: &str) -> UnitResources {
+		let cell = {
+			let mut cells = self.resources.lock().expect("unit resources lock");
+			cells.entry(unit.to_string()).or_default().clone()
+		};
+		*cell
+			.get_or_init(|| async {
+				systemd::unit_resources(unit).await.unwrap_or_else(|err| {
+					tracing::debug!(unit, %err, "could not read unit resources");
+					Default::default()
+				})
+			})
+			.await
 	}
 
 	async fn units(&self) -> Result<&[UnitState], Unavailable> {
@@ -198,12 +233,7 @@ impl ServiceRuntime for SystemdRuntime {
 			.find(|u| u.name == id.as_str())
 			.is_some_and(UnitState::running);
 
-		let resources = systemd::unit_resources(id.as_str())
-			.await
-			.unwrap_or_else(|err| {
-				tracing::debug!(unit = id.as_str(), %err, "could not read unit resources");
-				Default::default()
-			});
+		let resources = self.resources(id.as_str()).await;
 
 		Ok(ServiceFacts {
 			up,
@@ -296,5 +326,23 @@ mod tests {
 			assert!(belongs_to(kind, "tamanu-patientportal"));
 			assert!(belongs_to(kind, "tamanu-facility"));
 		}
+	}
+
+	/// Three checks walk the workload each sweep and two of them want only the
+	/// up-ness and version the listings already hold, so a unit's resources are
+	/// read once for the life of the runtime rather than once per ask.
+	#[tokio::test]
+	async fn a_unit_s_resources_are_read_once() {
+		let runtime = SystemdRuntime::new(ApiServerKind::Central);
+		let unit = "tamanu-central-api@1.service";
+
+		// Concurrent asks for the same unit share one cell, so they wait on one
+		// read rather than both issuing it.
+		let (first, second) = tokio::join!(runtime.resources(unit), runtime.resources(unit));
+		assert_eq!(first, second);
+
+		let cells = runtime.resources.lock().expect("unit resources lock");
+		assert_eq!(cells.len(), 1, "one cell for the one unit asked about");
+		assert!(cells[unit].initialized());
 	}
 }
