@@ -352,7 +352,12 @@ mod tests {
 	/// reachable case is pm2's dump fallback on Windows: the listing comes from
 	/// `dump.pm2` while every facts call is refused for want of permission.
 	///
+	/// Gated to the platforms that carry version metadata: elsewhere
+	/// `Supervisor::current()` is none and the check skips before it reads the
+	/// workload at all, so there is no unreadable-facts path to exercise.
+	///
 	/// spec: SUB
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	#[tokio::test]
 	async fn a_workload_whose_facts_cannot_be_read_is_broken_not_passing() {
 		use std::sync::Arc;
