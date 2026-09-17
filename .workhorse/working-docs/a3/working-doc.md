@@ -12,6 +12,10 @@ The flow lives as a background task in the alertd daemon, ticking on its own int
 Caddy gets the chain through `get_certificate http` pointed at an alertd endpoint, so a collected renewal is served without a Caddy reload.
 The task exposes HTTP endpoints for the CLI to force a run and to report status, using the `/tasks/{task}/{endpoint}` mounting the daemon already does.
 
+Canopy does not replace Caddy's own issuance, it takes precedence over it.
+A site keeps its existing issuer, and Caddy asks alertd first: when alertd has a chain it is served and Caddy orders nothing, and when alertd says it has none Caddy issues for itself exactly as it does today.
+So a host can run this before its Route 53 credential is withdrawn, and the credential becomes removable once Canopy is reliably answering rather than as a precondition for trying.
+
 The DNS half is deliberately narrower than the certificate half on this card: publishing addresses is driven only by an explicit CLI call, as a proof of concept, while certificates are automated.
 
 The Caddyfile shape a Canopy-issued host needs is an interface contract this card states, and the deployment applies.
@@ -33,19 +37,17 @@ The task acts on the union of what it is told: the flat fields when that is the 
 A name is actionable if any application on the machine could act on it, and the task does not try to work out which workload a name belongs to.
 
 A name is only acted on when it sits at or beneath one of the domains the group controls.
-This check is what stops an arbitrary SNI arriving from the internet from originating an order.
 
 ### Which names get certified
 
-Three things may originate a certificate order.
-
-Caddy's active subjects are the primary source: the task reads the site addresses Caddy is configured to serve from its admin config and orders ahead of any client arriving.
+Caddy's active subjects are the source of names: the task reads the site addresses Caddy is configured to serve from its admin config and orders for those, ahead of any client arriving.
 The `caddy_certs` check already reads exactly this config and derives its active subject set the same way.
 
-A handshake ask is the second primary source: an ask for a name alertd holds no certificate for records the name and starts an order.
-That handshake cannot be answered, because a first request to Canopy records the order and answers `pending`; later handshakes succeed once the chain has been collected.
+A handshake ask is a backstop between polls rather than a discovery route of its own.
+Caddy asks alertd only for names it is already configured to serve, so an ask never brings news of a name the poll would not also find; what it adds is immediacy, when a name is added to Caddy's config and a client arrives before the next poll.
+An ask for an in-domain name with nothing held records the name so an order follows.
 
-An explicit call is the third, for operator convenience and pre-provisioning only.
+An explicit call is the third way in, for operator convenience and pre-provisioning.
 It is not a pathway the system depends on in normal running.
 
 ### Holding the key
@@ -55,7 +57,7 @@ Canopy signs what it is given: the request carries a CSR only, DER base64, askin
 Each name has its own key and its own CSR, so a certificate whose key Canopy condemns costs only that name a replacement.
 
 The key must survive an alertd restart, since Canopy keys what it holds by name and key, and a lost key turns a collection into a fresh order.
-Keys are ECDSA over P-256, which is what the device mTLS key already uses.
+Keys are ECDSA over P-256, which is what the device mTLS key already uses, and which the authority behind Canopy issues against.
 
 Keys are held in a machine-bound encrypted store, the same shape as the one holding the device mTLS key: the file is keyed by a passphrase derived from the host's machine id, so no private key is at rest in plaintext and a cloned disk cannot reuse what it carries.
 One file holds every name's key.
@@ -74,13 +76,18 @@ A server is expected to hold a certificate before it needs one.
 ### Serving the chain
 
 Caddy asks alertd for a certificate during the handshake, passing the SNI as `server_name` alongside the signature schemes, cipher suites, and the local IP the client reached.
+Caddy asks before consulting anything it holds itself, so a chain alertd answers with is the one served.
 
-An ask for a name alertd holds a usable chain for is answered with the PEM chain and private key together, and Caddy serves it.
-An ask for a name outside the group's domains is answered `204`, which Caddy reads as "not managing a certificate for this handshake" and falls through to its other certificate sources.
-An ask for an in-domain name with nothing collected yet records the name for ordering, and cannot be answered.
+An ask for a name alertd holds a usable chain for is answered with the PEM chain and private key together.
+
+Every other ask is declined, and declining is distinct from failing.
+A decline hands the handshake back to Caddy, which then issues for the name itself as it would if alertd were not configured at all.
+A failure does not: Caddy treats an error from the endpoint as "could have served this and did not", abandons the handshake, and does not fall back to issuing its own.
+So the endpoint declines whenever it has no chain to offer — a name outside the group's domains, a name with nothing collected yet, a chain that has been revoked — and reserves failing for when it genuinely cannot answer.
 
 Every ask is answered from what the daemon already holds in memory.
 The handler reaches no network, unlocks no key store, and touches no disk, because it sits on the TLS handshake path: Caddy's manager issues the request through a client with no timeout, using the provisioning context rather than the per-handshake one, so a handler that blocks stalls the handshake indefinitely.
+Answering from memory is also what keeps a decline cheap enough to be the default answer.
 
 ### Renewal
 
@@ -94,6 +101,8 @@ A revoked certificate is stopped being served and asked for again.
 A certificate whose key must be replaced needs a new key generated first, not just a new request.
 A last error is surfaced rather than spun on.
 While Canopy reports the server paused, it is making no new changes on the server's behalf and requests are refused, so the task waits rather than retrying.
+
+In each of these the endpoint declines rather than fails, so a name Canopy cannot currently serve falls to Caddy's own issuance instead of going dark.
 
 ### When the grant is gone
 
@@ -120,6 +129,7 @@ A skip neither degrades the sweep nor triggers a heal, and a skipped result clos
 The reason a skip carries says only that the server may not obtain certificates, without speculating why.
 
 `caddy_certs` keeps grading what Caddy serves, taught to recognise a chain that came from alertd rather than Caddy's own store so it neither mis-grades it nor ignores it.
+It is also the check that notices a host quietly running on Caddy's own issuance because alertd has been declining every name.
 
 ### CLI surface
 
@@ -155,26 +165,32 @@ On Linux that is `/proc/net/tcp` and `/proc/net/tcp6` to get the socket inode, t
 The permission model follows tailscaled's.
 By default only root may fetch a certificate, and alertd is configured with the name or id of a further user permitted to — the same shape as `TS_PERMIT_CERT_UID=caddy`, which exists because Caddy commonly runs as its own unprivileged user.
 
+A caller that fails this check is refused, and a refusal is a failure rather than a decline, because it is a misconfiguration to be fixed and not a name Caddy should quietly start issuing for itself.
+
 Windows needs its own lookup (`GetExtendedTcpTable`) and its own user model, and may fall back to trusting loopback if that proves disproportionate.
 That decision belongs to the Windows card rather than being inherited by default here.
 
-### Stopping Caddy issuing on its own
+### Running alongside Caddy's own issuance
 
-Configuring `get_certificate` on a site does **not** stop Caddy obtaining its own ACME certificate for that site's names.
-A certificate manager is a connection-policy concern, and the managed set is decided separately in `automaticHTTPSPhase1`, which excludes a name only via `SkipCerts`, `DisableCerts`, a certificate already loaded, a name that does not qualify, or an existing explicit automation policy.
-Nothing there inspects the connection policy for a manager.
-So a site pointed at alertd still places its own order through whatever issuer it is configured with — which is the per-server DNS-01 path this card exists to delete.
+The behaviour was established against Caddy 2.11.4 with a stub certificate endpoint and a stub ACME directory, rather than reasoned from the source.
 
-The consequence is not usually a competing certificate.
-DNS issuance is chosen on these hosts precisely because Caddy cannot complete the other challenges, so once the Route 53 credential is gone Caddy's own attempt fails rather than succeeds.
-What it leaves is a permanently failing issuance loop: retries, log noise, and authority rate limits spent on orders that can never complete.
-Where the HTTP or TLS-ALPN challenges would work, Caddy could still succeed on its own, and then disabling management is what actually keeps issuance on Canopy.
+With a per-site `tls { get_certificate http … }` block and the site's issuer left in place:
 
-Either way the Caddyfile has to disable Caddy's own certificate management as well as point at alertd, most directly with the global `auto_https disable_certs`, which leaves the HTTP-to-HTTPS redirects in place.
+- When the endpoint answers with a chain, Caddy serves it and orders nothing of its own. No ACME traffic at all.
+- When the endpoint declines with `204`, Caddy falls back to its configured issuer and obtains normally.
+- When the endpoint errors or is unreachable, the handshake fails. Caddy does not fall back, even for a name it could have issued for itself.
+- When Caddy independently holds a certificate for the name, from an earlier fallback, it serves that when the endpoint errors.
+- A name the site is not configured for never reaches the endpoint, and triggers no issuance.
 
-Separately, `get_certificate` implies `on_demand` is enabled.
-Answering `204` for an out-of-domain name hands the handshake back to Caddy, and on-demand is the path that reaches issuance for a name not in the config.
-Whether that matters once certificate management is disabled outright needs confirming against a real Caddy; if it does, an `on_demand_tls ask` endpoint constrains it, and alertd is the natural place for that too.
+So the contract is a per-site manager pointed at alertd, with nothing else changed.
+`auto_https disable_certs` is the wrong lever here: it does stop Caddy issuing while leaving the manager working, but it removes the fallback that makes this safe to deploy incrementally.
+
+The third point is the one that shapes the handler: a chain alertd cannot serve must come back as a decline, because an error takes down a name Caddy would otherwise have covered.
+
+A catch-all manager policy is a different configuration and a worse one.
+It does let an unconfigured SNI reach the endpoint, but a decline then falls through to on-demand issuance, and on-demand is not covered by `auto_https disable_certs` — only a refusing `on_demand_tls ask` endpoint stops it.
+Failed on-demand attempts retry every 60 seconds for up to 30 days per name, so an arbitrary SNI becomes a month of pointless orders.
+Sticking to per-site blocks avoids the whole area, and costs only the ability to learn a name Caddy is not configured for, which is a name this card would not certify anyway.
 
 ### Collection interval
 
@@ -188,18 +204,20 @@ A Canopy-issued chain's lifetime is not known to this side ahead of time; `not_a
 
 ## Open questions
 
-- [ ] Whether alertd also serves an `on_demand_tls ask` endpoint to stop Caddy attempting its own issuance for arbitrary SNI, and whether on-demand is still reachable once `auto_https disable_certs` is set. Needs confirming against a real Caddy rather than reasoning.
-- [ ] Whether Canopy's authority constrains the key algorithm; P-256 is chosen on this side, and a refusal would be found late.
-- [ ] Confirm two calls made by inference rather than decision: that a withdrawn grant leaves the collected chains in service (revocation being the separate lever that takes one out), and that a prolonged pause is never escalated on the host, since Canopy set the pause and already knows about it.
+None outstanding.
 
 ## Trade-offs
 
-Serving through `get_certificate` rather than files plus a reload removes the whole install-and-reload step, and buys a handshake-time dependency on alertd in exchange.
-If alertd is down, nothing is served, where a file on disk would keep working.
-That is the cost of never needing a reload.
+Running Canopy in front of Caddy's own issuance rather than instead of it means a host is never worse off than it is today.
+Canopy answering is a strict improvement; Canopy silent leaves the existing path working.
+The cost is that a host can sit quietly on its own issuance, with the Route 53 credential still in use and nobody the wiser, which is why the checks have to notice a host that is declining every name rather than only a host that is failing.
 
-Learning names from handshake asks means a genuinely new name is briefly unserved, since its first ask cannot be answered.
-Polling Caddy's active subjects covers the normal case ahead of time, so the handshake path is the backstop for a name that appears between polls rather than the usual route.
+Serving through `get_certificate` rather than files plus a reload removes the whole install-and-reload step.
+It buys a handshake-time dependency on alertd, and that dependency is sharper than it first looks: an endpoint that errors takes the name down rather than handing it back, so alertd being down is an outage for every name Canopy serves that Caddy holds no certificate of its own for.
+Answering from memory keeps the window to the length of a process restart, but the window is real.
+
+The handshake ask is a backstop, not a discovery route.
+Caddy only asks for names it is configured to serve, which the active-subjects poll already reads from the same admin config, so the ask adds immediacy between polls and nothing else.
 
 Driving DNS registration only from an explicit CLI call keeps publishing records a deliberate act.
 Publishing addresses points real traffic at this box, which is not something a poll or a stray handshake should be able to cause.
@@ -218,6 +236,14 @@ Nothing on this side currently knows which application a Caddy site belongs to, 
 - A server with the TLS grant, on a name inside its group's domains, obtains a certificate from Canopy and Caddy serves it.
 - A server issuing this way needs no DNS credential of its own.
 
+### Precedence and fallback
+
+- With a chain held, Caddy serves Canopy's and places no order of its own.
+- With no chain held, the endpoint declines and Caddy issues for the name itself.
+- A name that falls back and a name served from Canopy can coexist on one host.
+- The endpoint declines rather than errors for every case where it has no chain: out-of-domain, not yet collected, revoked, no grant, paused.
+- A caller that fails the peer check is refused with an error, not a decline.
+
 ### Keys and requests
 
 - The private key was generated on the machine and appears in no request body; the request carries a CSR only.
@@ -231,12 +257,11 @@ Nothing on this side currently knows which application a Caddy site belongs to, 
 - A name sitting in `pending` is retried sooner than the slow tick, and stops being retried once it resolves.
 - A repeated request for a name and key Canopy already holds is answered from what it holds rather than ordering again.
 - A name appearing in Caddy's active subjects is ordered before any client arrives.
-- A handshake for an in-domain name with nothing held records the name and an order follows.
+- A handshake for a configured in-domain name with nothing held records the name and an order follows.
 - A renewal lands without the served chain lapsing, and is served without a Caddy reload.
 
 ### Refusals and awkward states
 
-- An SNI outside the group's domains is answered `204` and originates no order.
 - A revoked certificate stops being served and is asked for again.
 - A certificate reporting that the key must be replaced gets a new key before the next request.
 - Entitlements reporting the server paused stops the task making new requests.
@@ -248,7 +273,6 @@ Nothing on this side currently knows which application a Caddy site belongs to, 
 
 ### The delivery endpoint
 
-- A caller that is not the permitted user is refused a certificate.
 - A held chain is still served while Canopy is unreachable, because the handler answers from memory.
 - The handler does no I/O on the handshake path, so a stalled Canopy call cannot stall a handshake.
 
@@ -260,4 +284,5 @@ Nothing on this side currently knows which application a Caddy site belongs to, 
 ### Being watched
 
 - The new check fails when a name is wanted and no chain has been collected for it.
+- A host serving every name from Caddy's own issuance, because alertd declines them all, is noticed rather than looking healthy.
 - `caddy_certs` neither mis-grades nor ignores a chain that came from alertd rather than Caddy's own store.
