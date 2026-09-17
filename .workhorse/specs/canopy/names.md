@@ -24,10 +24,16 @@ While Canopy reports the server paused it is making no changes on the server's b
 
 ## Machines hosting several applications
 
-Canopy describes a machine hosting a single application in the top-level fields of its answer, and a machine hosting several as a list of applications, each with its own domains, grants and paused state.
+Grants, domains and the paused state belong to an application rather than to the machine, and a machine may host several.
+Canopy describes a machine hosting exactly one application in the top-level fields of its answer, and a machine hosting several, or none, by leaving those fields empty and listing the applications, each with its own domains, grants and paused state.
 
 A server acts on the union of what it is told: the top-level fields when those carry the answer, and every application's domains and grants together when they do not.
-A name is actionable when any application on the machine could act on it.
+A name is treated as actionable when any application on the machine could act on it.
+Nothing on this side knows which application a Caddy site belongs to, so the union is the best the server can do, and it errs towards asking.
+
+Canopy resolves which application a request concerns from the name it asks about, not from the identity presented, because an identity belongs to the machine.
+So a request the union produced can still be refused — for a name no application on the machine holds, or held by an application that lacks the grant or is paused — and that refusal is authoritative.
+A refusal of this kind is reported as it is given rather than retried against a different application, there being no other application to ask as.
 
 ## Registering addresses for a name
 
@@ -37,6 +43,9 @@ A machine needs no access to the DNS zone of its own.
 A registration names one name and the addresses it resolves to, and replaces whatever addresses were registered for that name before.
 The name must sit within a domain the group controls and the server must hold the DNS grant.
 
+A name belongs to one application across the whole fleet, so registering a name another server already holds is refused, and the refusal is reported rather than worked around.
+Two hosts cannot both publish addresses for one name, which is what stops a name being pulled between them.
+
 Canopy publishes what it is told, and does not verify that an address belongs to the server; the grant is the trust boundary.
 
 Publishing happens in the background, so a registration is answered with the addresses Canopy will publish and those it has published so far, rather than waiting for the zone to catch up.
@@ -45,7 +54,7 @@ Registering a name with no addresses withdraws it: the records are taken down an
 
 ## Commands
 
-`bestool canopy dns` registers a name's addresses, withdraws a name, and reports the names Canopy holds registrations for on this server, with the addresses it has published and whether the zone has caught up.
+`bestool canopy dns` registers a name's addresses, withdraws a name, and reports the names Canopy holds registrations for on this server, with the addresses it has published, whether the zone has caught up, and why the last publish failed if one did.
 
 Registration is driven by these commands.
 Publishing addresses directs traffic at a host, so it follows an operator's instruction rather than a periodic reconciliation.

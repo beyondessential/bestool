@@ -11,7 +11,7 @@
 //! identity is needed; the API URL is not required, as a registration without
 //! one uses the default Canopy URL.
 //!
-//! spec: REG
+//! spec: CHK-REG
 
 use bestool_canopy::registration::{self, Registration};
 use tracing::{debug, info, warn};
@@ -35,7 +35,7 @@ pub async fn run(_ctx: MachineCx) -> Check {
 /// Recover a missing server id or device id from Canopy and write it back into
 /// the registration, so a later sweep sees a complete enrolment and passes.
 ///
-/// spec: REG#recovering-a-missing-identity
+/// spec: CHK-REG#recovering-a-missing-identity
 pub async fn heal(ctx: MachineCx) -> HealOutcome {
 	let Some(canopy) = ctx.canopy.as_deref() else {
 		// No canopy connectivity to recover from on this sweep.

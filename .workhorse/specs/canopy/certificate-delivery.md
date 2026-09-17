@@ -16,6 +16,7 @@ The daemon serves a certificate endpoint on its local HTTP interface.
 Caddy requests it during a handshake, passing the name from the client's server name indication along with the signature schemes and cipher suites the client offered and the local address it connected to.
 
 When the daemon holds a chain for the name that can be served, it answers with that chain and its private key together as PEM.
+A chain can be served when Canopy reports it usable: neither revoked nor past its expiry.
 Otherwise it declines.
 
 Every answer comes from state the daemon already holds in memory.
@@ -35,7 +36,11 @@ So a host serves whether or not Canopy is answering, and the DNS credential Cadd
 A decline and a failure are distinct, and the endpoint declines wherever it can.
 
 A decline returns no content, and hands the handshake back to Caddy to issue for the name itself.
-The endpoint declines for a name outside the domains the server's group controls, a name with no chain collected yet, a chain that has been revoked, a server holding no TLS grant, and a server Canopy reports as paused.
+The endpoint declines for a name outside the domains the server's group controls, a name with no chain collected yet, and a chain that is no longer usable because it has been revoked or has expired.
+
+What the endpoint serves turns on the chain in hand rather than on what the server may currently ask for.
+A withdrawn TLS grant and a pause both stop new requests ([TLS](certificates.md)) and neither takes a collected chain out of service, so a grant withdrawn under an incident does not also drop every name the host serves.
+Revocation is what takes a chain out of service, and it is reported separately from both.
 
 A failure ends the handshake.
 Caddy reads it as the daemon having been unable to serve a certificate it was responsible for, and does not fall back to its own issuance, so a failure takes down a name Caddy would otherwise have covered.

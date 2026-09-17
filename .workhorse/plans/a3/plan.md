@@ -1,6 +1,6 @@
 # Ask Canopy for names and certificates
 
-Client side of Canopy-issued DNS and TLS. Behaviour is specified in [TLS](../../specs/canopy/certificates.md), [TLSD](../../specs/canopy/certificate-delivery.md) and [NAM](../../specs/canopy/names.md); this plan holds the design reasoning and the outstanding work.
+Client side of Canopy-issued DNS and TLS. Behaviour is specified in [TLS](../../specs/canopy/certificates.md), [TLSD](../../specs/canopy/certificate-delivery.md) and [NAM](../../specs/canopy/names.md), with the two healthchecks in [CHK-CCO](../../specs/canopy/certificate-collection-check.md) and [CHK-CCT](../../specs/tamanu/caddy-certs.md); this plan holds the design reasoning and the outstanding work.
 
 Linux lands here. The Windows-specific parts are carried by their own card. Hardening the key store's unlock key to a TPM is likewise its own card, since it improves the device mTLS key equally.
 
@@ -50,7 +50,9 @@ A host can sit quietly on Caddy's own issuance, Route 53 credential still in use
 
 An endpoint that errors takes the name down rather than handing it back, so the daemon being down is an outage for every Canopy-served name Caddy holds no certificate of its own for. Answering from memory keeps the window to a process restart, but the window is real.
 
-Taking the union of a machine's applications drops the boundary Canopy draws between workloads on one box. Nothing on this side knows which application a Caddy site belongs to, and every machine is single-application today, so the union costs nothing yet and is wrong the day a machine hosts two workloads with different grants.
+Taking the union of a machine's applications drops the boundary Canopy draws between workloads on one box. Nothing on this side knows which application a Caddy site belongs to, and every machine is single-application today, so the union costs nothing yet.
+
+The day a machine hosts two workloads, the union over-reaches rather than silently misbehaving: Canopy resolves the application from the *name*, refuses a name no application on the machine declares, and applies the declaring application's own grant and pause. So the failure mode is a refusal the agent reports, not a certificate issued under the wrong workload's authority. Two consequences to live with: on a multi-application machine an undeclared name has to be declared by an operator in Canopy before the agent can register or certify it, and a union that reads "entitled" can still be refused per name.
 
 ## Build
 
@@ -59,7 +61,7 @@ Taking the union of a machine's applications drops the boundary Canopy draws bet
 - [ ] Entitlements call, including the union over the applications list, the domain check, and the paused and grant states.
 - [ ] Read Caddy's admin config for active subjects; reuse what `caddy_certs` already does rather than parsing a Caddyfile.
 - [ ] Request/collect against Canopy, holding pending orders and retrying them sooner than the steady tick.
-- [ ] Revocation and forced key replacement handling.
+- [ ] Revocation and forced key replacement handling, including that a revocation pauses the server in Canopy so the replacement request is refused until an operator lifts it.
 - [ ] Background task in the alertd daemon wiring the above, with the fast-tick-and-rate-limit shape.
 - [ ] Certificate endpoint: in-memory answers only, decline by default, chain plus key as PEM on a hit.
 - [ ] Peer identification and the configured permitted user; refusal as a failure.
