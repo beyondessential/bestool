@@ -477,12 +477,10 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Give `path` the group of the directory it sits in, so [`REG_FILE_MODE`]'s
-/// group read reaches the group that owns the config directory rather than
-/// whichever group the writer happened to have.
-///
-/// A setgid directory confers that group already; one without the bit doesn't.
-/// Best-effort: chowning needs ownership of the file, and a reader that can
-/// already open it doesn't need it to have worked.
+/// group read reaches the group owning the config directory. A setgid
+/// directory confers it already; one without the bit does not. Best-effort,
+/// since chowning needs ownership and a reader that can already open the file
+/// does not need it to have worked.
 #[cfg(unix)]
 async fn inherit_dir_group(path: &Path) {
 	let Some(dir) = path.parent() else { return };
