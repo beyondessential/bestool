@@ -62,9 +62,9 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 ## Traffic readings
 
-- [ ] Traffic statistics are asked for per application, not per machine (verifies spec: SUB)
+- [x] Traffic statistics are asked for per application, not per machine (verifies spec: SUB)
 - [ ] Where one reading serves several applications, it is filtered to the application being reported for (verifies spec: SUB)
-- [ ] History is kept per source, and a source that has vanished is dropped rather than graded as the quantity having fallen (verifies spec: SUB)
+- [x] History is kept per source, and a source that has vanished is dropped rather than graded as the quantity having fallen (verifies spec: SUB)
 
 ## Nothing else moved
 

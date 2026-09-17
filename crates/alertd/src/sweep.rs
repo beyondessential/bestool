@@ -378,6 +378,7 @@ fn tamanu_context(
 		pool: pool.clone(),
 		http: http.clone(),
 		runtime: tamanu_runtime(app, &version),
+		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(http.clone())),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
 			app.clone(),
 		))),

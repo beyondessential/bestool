@@ -21,7 +21,7 @@ use bestool_tamanu::{
 
 use super::check::Check;
 use super::heal::{self, HealAction};
-use super::runtime::ServiceRuntime;
+use super::runtime::{HttpRuntime, ServiceRuntime};
 use super::store::CheckStore;
 use super::subject::{ApplicationKind, ApplicationRef, TamanuScope};
 
@@ -175,6 +175,15 @@ pub struct TamanuCx {
 	///
 	/// spec: SUB
 	pub runtime: Arc<dyn ServiceRuntime>,
+	/// What reaches this deployment: how a check reads the traffic served for
+	/// it, whatever fronts it here.
+	///
+	/// A Tamanu serves HTTP, so it has this reading to take. A Postgres cluster
+	/// does not, and has no such field rather than one that would answer
+	/// unavailable for the life of the application.
+	///
+	/// spec: SUB#http-traffic-and-certificates
+	pub traffic: Arc<dyn HttpRuntime>,
 	/// Where this deployment's checks remember readings between sweeps, already
 	/// scoped to this subject.
 	///
@@ -686,7 +695,7 @@ pub mod test_support {
 	use bestool_tamanu::config::{Database, TamanuConfig};
 
 	use super::{PgCx, TamanuCx};
-	use crate::runtime::fake::FakeRuntime;
+	use crate::runtime::fake::{FakeRuntime, FakeTraffic};
 	use crate::store::MemoryStore;
 	use crate::subject::{ApplicationKind, ApplicationRef};
 
@@ -732,6 +741,7 @@ pub mod test_support {
 			pool: Some(pool),
 			http: reqwest::Client::new(),
 			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
 		})
 	}
@@ -748,6 +758,7 @@ pub mod test_support {
 			pool: None,
 			http: reqwest::Client::new(),
 			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
 		}
 	}
@@ -855,6 +866,7 @@ mod tests {
 			pool: None,
 			http: reqwest::Client::new(),
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
+			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
 		}
 	}

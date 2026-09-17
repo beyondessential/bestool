@@ -19,8 +19,8 @@
 use std::{collections::BTreeMap, fmt};
 
 use async_trait::async_trait;
-use jiff::Timestamp;
 
+pub mod caddy;
 pub mod pg;
 pub mod pm2;
 pub mod systemd;
@@ -346,26 +346,6 @@ pub struct TrafficSource {
 	pub by_status: BTreeMap<String, u64>,
 }
 
-/// One TLS certificate in force for an application.
-///
-/// spec: SUB#http-traffic-and-certificates
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Certificate {
-	/// The names this certificate is in force for.
-	pub names: Vec<String>,
-	/// Where the substrate found it, for diagnostics: a path, an issuer
-	/// directory, a secret.
-	pub origin: String,
-	pub not_before: Timestamp,
-	pub not_after: Timestamp,
-	/// The leaf being served for these names, where the substrate could take a
-	/// handshake to see. A leaf differing from this certificate means the front
-	/// end has not picked up a renewal.
-	pub served_leaf: Option<Vec<u8>>,
-	/// This certificate's own leaf, to compare `served_leaf` against.
-	pub leaf: Vec<u8>,
-}
-
 /// What is running an application. Every application has one.
 ///
 /// spec: SUB
@@ -423,15 +403,15 @@ impl ServiceRuntime for Unsupported {
 /// Kubernetes — so one object implementing both would make every implementer
 /// compose two unrelated things for no benefit at the call site.
 ///
+/// The certificates in force for an application belong here too, and join this
+/// when the check that grades them reads them through a substrate; for now it
+/// reads the front end directly.
+///
 /// spec: SUB#http-traffic-and-certificates
 #[async_trait]
 pub trait HttpRuntime: Send + Sync {
 	/// Cumulative request counts for this application, per source.
 	async fn http_counters(&self) -> Result<TrafficCounters, Unavailable>;
-
-	/// The certificates in force for this application, whatever issues and
-	/// serves them.
-	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable>;
 }
 
 #[cfg(test)]
@@ -477,6 +457,55 @@ pub mod fake {
 				.expect("cannot add a service to an unreadable runtime")
 				.push(service);
 			self
+		}
+	}
+
+	/// A traffic runtime that answers with whatever a test scripted.
+	pub struct FakeTraffic {
+		pub counters: Result<TrafficCounters, Unavailable>,
+	}
+
+	impl FakeTraffic {
+		/// A front end that is not there, which is what a host with none gives
+		/// and what most contexts want: the check under test is not the one
+		/// reading traffic.
+		pub fn absent() -> Self {
+			Self::unavailable("no front end on this host")
+		}
+
+		/// A front end that is there and has served nothing.
+		pub fn quiet() -> Self {
+			Self {
+				counters: Ok(TrafficCounters::default()),
+			}
+		}
+
+		/// Counts from one source, as a machine's own front end reports them.
+		pub fn from_one_source(source: &str, by_status: &[(&str, u64)]) -> Self {
+			Self {
+				counters: Ok(TrafficCounters {
+					sources: vec![TrafficSource {
+						source: source.to_string(),
+						by_status: by_status
+							.iter()
+							.map(|(code, n)| ((*code).to_string(), *n))
+							.collect(),
+					}],
+				}),
+			}
+		}
+
+		pub fn unavailable(reason: &str) -> Self {
+			Self {
+				counters: Err(Unavailable::new(reason)),
+			}
+		}
+	}
+
+	#[async_trait]
+	impl HttpRuntime for FakeTraffic {
+		async fn http_counters(&self) -> Result<TrafficCounters, Unavailable> {
+			self.counters.clone()
 		}
 	}
 
