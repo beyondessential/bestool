@@ -15,7 +15,7 @@ use bestool_tamanu::{
 use super::TamanuCx;
 use crate::Stat;
 use crate::check::Check;
-use crate::runtime::{Duty, ServiceId};
+use crate::runtime::{Duty, ServiceId, facts_for};
 
 /// One service as the drift grading needs it: what it runs, and what names it.
 struct Running {
@@ -65,15 +65,17 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 	};
 
+	let all_facts = facts_for(ctx.runtime.as_ref(), &services).await;
+
 	let mut running = Vec::new();
 	let mut unreadable: Option<String> = None;
-	for service in services {
+	for (service, facts) in services.into_iter().zip(all_facts) {
 		// A service whose facts could not be read at all says nothing about the
 		// version it is on, which is the same absence as facts that came back
 		// naming none. Discarding the error here would let a runtime that can
 		// list its workload but answer for none of it fall through to "nothing
 		// running", which is a pass.
-		let facts = match ctx.runtime.service_facts(&service.id).await {
+		let facts = match facts {
 			Ok(facts) => facts,
 			Err(unavailable) => {
 				unreadable.get_or_insert_with(|| unavailable.reason().to_string());

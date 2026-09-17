@@ -13,11 +13,13 @@
 //!
 //! spec: SUB#resource-usage-per-service
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 
 use crate::Stat;
 use crate::check::Check;
-use crate::runtime::{Duty, ServiceFacts, ServiceId, ServiceRuntime};
+use crate::runtime::{Duty, ServiceFacts, ServiceId, ServiceRuntime, facts_for};
 
 const NAME: &str = "service_resources";
 
@@ -34,7 +36,7 @@ pub mod tamanu {
 	use crate::check::Check;
 
 	pub async fn run(ctx: TamanuCx) -> Check {
-		super::report(ctx.runtime.as_ref()).await
+		super::report(ctx.runtime.clone()).await
 	}
 }
 
@@ -44,7 +46,7 @@ pub mod postgres {
 	use crate::check::Check;
 
 	pub async fn run(ctx: PgCx) -> Check {
-		super::report(ctx.runtime.as_ref()).await
+		super::report(ctx.runtime.clone()).await
 	}
 }
 
@@ -65,7 +67,7 @@ impl Reading {
 	}
 }
 
-async fn report(runtime: &dyn ServiceRuntime) -> Check {
+async fn report(runtime: Arc<dyn ServiceRuntime>) -> Check {
 	let services = match runtime.services().await {
 		Ok(services) => services,
 		Err(unavailable) => {
@@ -74,10 +76,12 @@ async fn report(runtime: &dyn ServiceRuntime) -> Check {
 	};
 
 	let listed = services.len();
+	let all_facts = facts_for(runtime.as_ref(), &services).await;
+
 	let mut readings = Vec::with_capacity(listed);
 	let mut unreadable: Option<String> = None;
-	for service in services {
-		let facts = match runtime.service_facts(&service.id).await {
+	for (service, facts) in services.into_iter().zip(all_facts) {
+		let facts = match facts {
 			Ok(facts) => facts,
 			Err(unavailable) => {
 				unreadable.get_or_insert_with(|| unavailable.reason().to_string());
@@ -346,7 +350,7 @@ mod tests {
 			}
 		}
 
-		let check = report(&Unreadable).await;
+		let check = report(Arc::new(Unreadable)).await;
 		match &check.status {
 			CheckStatus::Skip(reason) => assert!(
 				reason.contains("couldn't verify any process is alive"),
@@ -362,7 +366,7 @@ mod tests {
 	async fn a_workload_with_no_services_passes() {
 		use crate::runtime::fake::FakeRuntime;
 
-		let check = report(&FakeRuntime::empty()).await;
+		let check = report(Arc::new(FakeRuntime::empty())).await;
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 	}
 }

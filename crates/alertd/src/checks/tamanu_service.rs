@@ -6,7 +6,7 @@ use bestool_tamanu::services::{
 
 use super::TamanuCx;
 use crate::check::Check;
-use crate::runtime::{Duty, ServiceId};
+use crate::runtime::{Duty, ServiceId, facts_for};
 
 pub async fn run(ctx: TamanuCx) -> Check {
 	// Which services should be up follows from the role the deployment plays.
@@ -61,10 +61,11 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 	};
 
+	let all_facts = facts_for(ctx.runtime.as_ref(), &services).await;
+
 	let mut discovered = Vec::with_capacity(services.len());
 	let mut unreadable: Option<String> = None;
-	for service in services {
-		let facts = ctx.runtime.service_facts(&service.id).await;
+	for (service, facts) in services.into_iter().zip(all_facts) {
 		if let Err(ref unavailable) = facts
 			&& unreadable.is_none()
 		{

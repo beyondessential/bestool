@@ -19,6 +19,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use jiff::Timestamp;
 
 pub mod caddy;
@@ -399,6 +400,39 @@ impl Certificate {
 	pub fn remaining_seconds(&self, now: Timestamp) -> i64 {
 		self.not_after.as_second() - now.as_second()
 	}
+}
+
+/// How many services to read the facts of at once.
+///
+/// The reads are independent, so waiting for each in turn makes a check's
+/// latency the service count times one round trip for nothing. Bounded rather
+/// than unbounded because the round trips land on a shared bus or a process
+/// table, and a deployment's whole workload arriving at once is a burst a
+/// machine hosting the application is also serving from.
+const FACTS_CONCURRENCY: usize = 8;
+
+/// The facts for several services, read together, in the order given.
+///
+/// A service whose facts could not be read keeps its error rather than dropping
+/// out, so a caller can tell a workload it could read nothing of from one with
+/// nothing in it.
+pub async fn facts_for(
+	runtime: &dyn ServiceRuntime,
+	services: &[Service],
+) -> Vec<Result<ServiceFacts, Unavailable>> {
+	// The futures are built before the stream rather than in a closure inside
+	// it: a closure handed each service by reference has to be general over the
+	// lifetime of that reference, which the boxed future an async trait method
+	// returns is not.
+	let reads: Vec<_> = services
+		.iter()
+		.map(|service| runtime.service_facts(&service.id))
+		.collect();
+
+	futures::stream::iter(reads)
+		.buffered(FACTS_CONCURRENCY)
+		.collect()
+		.await
 }
 
 /// A runtime for a platform none of the own-system implementations covers.
