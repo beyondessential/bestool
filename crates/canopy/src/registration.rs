@@ -20,7 +20,7 @@
 //! the machine id, and neither the file format nor any consumer changes.
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::{
 	fmt,
 	path::{Path, PathBuf},
@@ -290,6 +290,8 @@ async fn read_and_decrypt(path: &Path) -> Result<Registration> {
 		let _ =
 			tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(REG_FILE_MODE)).await;
 	}
+	#[cfg(unix)]
+	inherit_dir_group(path).await;
 
 	let bytes = tokio::fs::read(path)
 		.await
@@ -465,11 +467,37 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("setting permissions on {}", tmp.display()))?;
+	#[cfg(unix)]
+	inherit_dir_group(&tmp).await;
 
 	tokio::fs::rename(&tmp, path)
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("renaming into {}", path.display()))
+}
+
+/// Give `path` the group of the directory it sits in, so [`REG_FILE_MODE`]'s
+/// group read reaches the group that owns the config directory rather than
+/// whichever group the writer happened to have.
+///
+/// A setgid directory confers that group already; one without the bit doesn't.
+/// Best-effort: chowning needs ownership of the file, and a reader that can
+/// already open it doesn't need it to have worked.
+#[cfg(unix)]
+async fn inherit_dir_group(path: &Path) {
+	let Some(dir) = path.parent() else { return };
+	let (Ok(file), Ok(dir)) = (
+		tokio::fs::metadata(path).await,
+		tokio::fs::metadata(dir).await,
+	) else {
+		return;
+	};
+
+	if file.gid() != dir.gid()
+		&& let Err(err) = std::os::unix::fs::chown(path, None, Some(dir.gid()))
+	{
+		debug!(path = %path.display(), %err, "could not set the registration's group");
+	}
 }
 
 #[cfg(test)]
@@ -644,6 +672,55 @@ mod tests {
 			mode, REG_FILE_MODE,
 			"expected {REG_FILE_MODE:o}, got {mode:o}"
 		);
+	}
+
+	/// A group this process may chown to, other than `exclude`; `None` when it
+	/// belongs to no other group and so can't set up the mismatch.
+	#[cfg(unix)]
+	fn other_gid(exclude: u32) -> Option<u32> {
+		let out = std::process::Command::new("id").arg("-G").output().ok()?;
+		String::from_utf8(out.stdout)
+			.ok()?
+			.split_whitespace()
+			.filter_map(|gid| gid.parse().ok())
+			.find(|gid| *gid != exclude)
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn store_writes_file_with_the_directory_group() {
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(shared) = other_gid(dir_gid) else {
+			return;
+		};
+		std::os::unix::fs::chown(dir.path(), None, Some(shared)).unwrap();
+
+		store_in(dir.path(), &sample()).await.unwrap();
+
+		let gid = std::fs::metadata(registration_file(dir.path()))
+			.unwrap()
+			.gid();
+		assert_eq!(gid, shared, "expected group {shared}, got {gid}");
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn load_repairs_group_of_files_written_elsewhere() {
+		let dir = tempfile::tempdir().unwrap();
+		store_in(dir.path(), &sample()).await.unwrap();
+		let path = registration_file(dir.path());
+
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(other) = other_gid(dir_gid) else {
+			return;
+		};
+		std::os::unix::fs::chown(&path, None, Some(other)).unwrap();
+
+		load_from(dir.path()).await.unwrap().unwrap();
+
+		let gid = std::fs::metadata(&path).unwrap().gid();
+		assert_eq!(gid, dir_gid, "expected group {dir_gid}, got {gid}");
 	}
 
 	#[cfg(unix)]
