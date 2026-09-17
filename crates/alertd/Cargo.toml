@@ -37,6 +37,9 @@ tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
 
+[dev-dependencies]
+tempfile = "3.21.0"
+
 [target.'cfg(unix)'.dependencies]
 # geteuid(), to tell whether we're root without reading /proc (which the
 # daemon's own sandbox can refuse).

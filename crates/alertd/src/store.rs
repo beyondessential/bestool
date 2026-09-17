@@ -94,9 +94,16 @@ impl FileStore {
 	pub fn for_subject(subject: &Subject) -> Self {
 		Self {
 			root: dirs::cache_dir().map(|dir| {
+				// The subject's key is sanitised the same way a check's key is.
+				// It reads as a tidy `host-postgres-5432` most of the time, but a
+				// cluster reached at an address is keyed by the host from the
+				// connection string, which is whatever that string said —
+				// `remote-a/../../..-5432` is a key this would otherwise join
+				// verbatim, and `discard_until_compute` removes the directory it
+				// names recursively.
 				dir.join("bestool")
 					.join("checks")
-					.join(subject.key().unwrap_or("machine"))
+					.join(safe_name(subject.key().unwrap_or("machine")))
 			}),
 		}
 	}
@@ -106,17 +113,24 @@ impl FileStore {
 	}
 
 	fn path(&self, key: &str, lifetime: Lifetime) -> Option<PathBuf> {
-		Some(self.dir(lifetime)?.join(safe_key(key)))
+		Some(self.dir(lifetime)?.join(safe_name(key)))
 	}
 }
 
-/// A key as a single filesystem name.
+/// One path component as a single filesystem name.
 ///
-/// Check names are plain identifiers, so this only ever has to defend against a
-/// caller that passes something else: anything outside the allowed set becomes
-/// an underscore, which cannot escape the subject's directory.
-fn safe_key(key: &str) -> String {
-	key.chars()
+/// Used for both halves of a stored value's path — the subject's directory and
+/// the check's own key — because neither is a literal this crate controls: a
+/// check name is a plain identifier, but a subject key can carry a hostname
+/// taken from a connection string.
+///
+/// Anything outside the allowed set becomes an underscore, so a separator
+/// cannot introduce a component. A name made only of dots is a directory
+/// reference rather than a name, and `.` and `-` are otherwise wanted (a
+/// hostname has both), so those are prefixed rather than filtered.
+fn safe_name(name: &str) -> String {
+	let mapped: String = name
+		.chars()
 		.map(|c| {
 			if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
 				c
@@ -124,7 +138,13 @@ fn safe_key(key: &str) -> String {
 				'_'
 			}
 		})
-		.collect()
+		.collect();
+
+	if mapped.is_empty() || mapped.chars().all(|c| c == '.') {
+		format!("_{mapped}")
+	} else {
+		mapped
+	}
 }
 
 #[async_trait]
@@ -304,19 +324,20 @@ mod tests {
 
 	fn store(root: &Path, subject: &Subject) -> FileStore {
 		FileStore {
-			root: Some(root.join(subject.key().unwrap_or("machine"))),
+			root: Some(root.join(safe_name(subject.key().unwrap_or("machine")))),
 		}
 	}
 
-	fn tempdir() -> PathBuf {
-		let dir = std::env::temp_dir().join(format!(
-			"bestool-store-test-{}-{:?}",
-			std::process::id(),
-			std::thread::current().id()
-		));
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).expect("a temp dir");
-		dir
+	/// A directory of this test's own.
+	///
+	/// Created rather than named: a path derived from the pid is one another
+	/// user on the machine can pre-create, and these tests then `remove_dir_all`
+	/// it.
+	fn tempdir() -> tempfile::TempDir {
+		tempfile::Builder::new()
+			.prefix("bestool-store-test-")
+			.tempdir()
+			.expect("a temp dir")
 	}
 
 	/// Two applications driven from one process must never read each other's
@@ -326,28 +347,27 @@ mod tests {
 	/// spec: SUB#check-state
 	#[tokio::test]
 	async fn one_subject_cannot_read_another_s_state() {
-		let root = tempdir();
+		let dir = tempdir();
+		let root = dir.path();
 		let central = Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral));
 		let facility =
 			Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuFacility));
 
-		store(&root, &central)
+		store(root, &central)
 			.put("http_errors", b"central", Lifetime::UntilCompute)
 			.await;
-		store(&root, &facility)
+		store(root, &facility)
 			.put("http_errors", b"facility", Lifetime::UntilCompute)
 			.await;
 
 		assert_eq!(
-			store(&root, &central).get("http_errors").await.as_deref(),
+			store(root, &central).get("http_errors").await.as_deref(),
 			Some(&b"central"[..])
 		);
 		assert_eq!(
-			store(&root, &facility).get("http_errors").await.as_deref(),
+			store(root, &facility).get("http_errors").await.as_deref(),
 			Some(&b"facility"[..])
 		);
-
-		let _ = std::fs::remove_dir_all(&root);
 	}
 
 	/// The machine's own state sits apart from every application's, so a check
@@ -355,16 +375,15 @@ mod tests {
 	/// application that happens to share its name.
 	#[tokio::test]
 	async fn the_machine_has_its_own_state() {
-		let root = tempdir();
+		let dir = tempdir();
+		let root = dir.path();
 		let machine = Subject::Machine;
 		let app = Subject::Application(ApplicationRef::local_postgres(5432));
 
-		store(&root, &machine)
+		store(root, &machine)
 			.put("ips", b"machine", Lifetime::Durable)
 			.await;
-		assert!(store(&root, &app).get("ips").await.is_none());
-
-		let _ = std::fs::remove_dir_all(&root);
+		assert!(store(root, &app).get("ips").await.is_none());
 	}
 
 	/// State read from something that restarts with the compute goes when the
@@ -374,9 +393,10 @@ mod tests {
 	/// spec: SUB#check-state
 	#[tokio::test]
 	async fn a_sleep_drops_only_what_the_compute_carried() {
-		let root = tempdir();
+		let dir = tempdir();
+		let root = dir.path();
 		let subject = Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral));
-		let store = store(&root, &subject);
+		let store = store(root, &subject);
 
 		store
 			.put("http_errors", b"counters", Lifetime::UntilCompute)
@@ -387,17 +407,16 @@ mod tests {
 
 		assert!(store.get("http_errors").await.is_none());
 		assert_eq!(store.get("fhir_jobs").await.as_deref(), Some(&b"queue"[..]));
-
-		let _ = std::fs::remove_dir_all(&root);
 	}
 
 	/// A check that changes its mind about a reading's lifetime must not leave
 	/// the old copy behind for the next read to find.
 	#[tokio::test]
 	async fn rewriting_under_a_new_lifetime_moves_the_value() {
-		let root = tempdir();
+		let dir = tempdir();
+		let root = dir.path();
 		let subject = Subject::Application(ApplicationRef::tamanu(ApplicationKind::TamanuCentral));
-		let store = store(&root, &subject);
+		let store = store(root, &subject);
 
 		store.put("thing", b"old", Lifetime::Durable).await;
 		store.put("thing", b"new", Lifetime::UntilCompute).await;
@@ -405,8 +424,6 @@ mod tests {
 
 		store.discard_until_compute().await;
 		assert!(store.get("thing").await.is_none());
-
-		let _ = std::fs::remove_dir_all(&root);
 	}
 
 	/// A store with nowhere to write remembers nothing rather than failing: a
@@ -421,8 +438,47 @@ mod tests {
 	}
 
 	#[test]
-	fn a_key_cannot_escape_its_subject_s_directory() {
-		assert_eq!(safe_key("../../etc/passwd"), ".._.._etc_passwd");
-		assert_eq!(safe_key("http_errors"), "http_errors");
+	fn a_name_cannot_escape_the_directory_it_sits_in() {
+		assert_eq!(safe_name("../../etc/passwd"), ".._.._etc_passwd");
+		assert_eq!(safe_name("http_errors"), "http_errors");
+		// A name made only of dots is a directory reference, not a name.
+		assert_eq!(safe_name(".."), "_..");
+		assert_eq!(safe_name("."), "_.");
+		assert_eq!(safe_name(""), "_");
+		// What a hostname needs is kept.
+		assert_eq!(
+			safe_name("remote-db.example.com-5432"),
+			"remote-db.example.com-5432"
+		);
+	}
+
+	/// A cluster reached at an address is keyed by the host from the connection
+	/// string, which is whatever that string said. The store must stay under its
+	/// root whatever that key contains, because `discard_until_compute` removes
+	/// the directory it names recursively.
+	///
+	/// spec: SUB#check-state
+	#[tokio::test]
+	async fn a_subject_key_cannot_escape_the_store_root() {
+		let dir = tempdir();
+		let root = dir.path();
+		let checks = root.join("checks");
+		let escaping = Subject::Application(ApplicationRef::remote_postgres("a/../../..", 5432));
+
+		let store = FileStore {
+			root: Some(checks.join(safe_name(escaping.key().expect("an application has a key")))),
+		};
+		store.put("thing", b"value", Lifetime::UntilCompute).await;
+		store.discard_until_compute().await;
+
+		let written = store.root.as_ref().expect("a root").clone();
+		assert!(
+			written.starts_with(&checks),
+			"{} escaped {}",
+			written.display(),
+			checks.display()
+		);
+		// Nothing was created beside the store root either.
+		assert!(root.join("checks").is_dir() || !written.exists());
 	}
 }
