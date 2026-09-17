@@ -24,21 +24,20 @@
 //! check reads the config to tell an idle server from an uninstrumented one,
 //! skipping rather than reporting health it never measured.
 
-use std::{
-	collections::BTreeMap,
-	path::{Path, PathBuf},
-	time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::task::spawn_blocking;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::{TamanuCx, fmt_chain};
 use crate::Stat;
 use crate::check::Check;
+use crate::store::{CheckStore, CheckStoreJson, Lifetime};
+
+/// What this check remembers between sweeps, within its own subject's store.
+const STATE_KEY: &str = "http_errors";
 
 const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
 const CADDY_CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
@@ -81,15 +80,8 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		counts: current_counts,
 	};
 
-	let state = state_path();
-	// Reading and later writing the small history cache file is blocking I/O;
-	// keep it off the executor so it can't stall other checks sharing the thread.
-	let mut history = match state.clone() {
-		Some(path) => spawn_blocking(move || load_history(&path))
-			.await
-			.unwrap_or_default(),
-		None => Vec::new(),
-	};
+	let store = ctx.store.as_ref();
+	let mut history: Vec<Snapshot> = store.get_json(STATE_KEY).await.unwrap_or_default();
 	prune_history(&mut history, current.taken_at);
 
 	let (baseline, source) = match pick_baseline(&history, &current) {
@@ -107,12 +99,12 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			// `current` was taken first; second was taken IN_RUN_SAMPLE later.
 			// Re-assign so `current` is the newer one for the delta math below.
 			let baseline = current.clone();
-			append_and_save(&state, &mut history, second.clone()).await;
+			append_and_save(store, &mut history, second.clone()).await;
 			return build_check(&baseline, &second, BaselineSource::InRunSample);
 		}
 	};
 
-	append_and_save(&state, &mut history, current.clone()).await;
+	append_and_save(store, &mut history, current.clone()).await;
 	build_check(&baseline, &current, source)
 }
 
@@ -385,27 +377,6 @@ fn humanise_window(d: Duration) -> String {
 	}
 }
 
-fn state_path() -> Option<PathBuf> {
-	dirs::cache_dir().map(|d| d.join("bestool").join("doctor-http-errors.json"))
-}
-
-fn load_history(path: &Path) -> Vec<Snapshot> {
-	match std::fs::read(path) {
-		Ok(bytes) => match serde_json::from_slice::<Vec<Snapshot>>(&bytes) {
-			Ok(v) => v,
-			Err(err) => {
-				debug!(%err, ?path, "ignoring unparseable doctor http_errors history");
-				Vec::new()
-			}
-		},
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-		Err(err) => {
-			debug!(%err, ?path, "could not read doctor http_errors history");
-			Vec::new()
-		}
-	}
-}
-
 fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
 	let cutoff = WINDOW + PRUNE_GRACE;
 	history.retain(|s| {
@@ -414,39 +385,16 @@ fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
 	});
 }
 
-async fn append_and_save(path: &Option<PathBuf>, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
+/// Keep the new snapshot, and write the pruned history back.
+///
+/// Stored as lasting only until the compute restarts: these are a front end's
+/// counters, which start again from zero when it does, so a baseline retained
+/// across that would read the fresh counters as a reset or as a plausible delta.
+async fn append_and_save(store: &dyn CheckStore, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
 	history.push(snapshot);
-	let Some(path) = path.clone() else { return };
-	let history = history.clone();
-	if let Err(err) = spawn_blocking(move || write_history(&path, &history)).await {
-		warn!(%err, "doctor http_errors history task did not complete");
-	}
-}
-
-/// Serialise the snapshot history to `path` via a temp file and atomic rename.
-/// Blocking I/O, so it runs under `spawn_blocking`.
-fn write_history(path: &Path, history: &[Snapshot]) {
-	if let Some(parent) = path.parent()
-		&& let Err(err) = std::fs::create_dir_all(parent)
-	{
-		warn!(%err, ?parent, "could not create doctor http_errors cache dir");
-		return;
-	}
-	let json = match serde_json::to_vec(history) {
-		Ok(b) => b,
-		Err(err) => {
-			warn!(%err, "could not serialise doctor http_errors history");
-			return;
-		}
-	};
-	let tmp = path.with_extension("json.tmp");
-	if let Err(err) = std::fs::write(&tmp, &json) {
-		warn!(%err, ?tmp, "could not write doctor http_errors history");
-		return;
-	}
-	if let Err(err) = std::fs::rename(&tmp, path) {
-		warn!(%err, ?path, "could not rename doctor http_errors history");
-	}
+	store
+		.put_json(STATE_KEY, &*history, Lifetime::UntilCompute)
+		.await;
 }
 
 /// Parse `caddy_http_request_duration_seconds_count{code="NNN",...} <count>` lines.

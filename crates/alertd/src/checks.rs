@@ -97,6 +97,15 @@ pub struct MachineCx {
 	pub canopy: Option<Arc<CanopyClient>>,
 	/// The Tamanu installed on this machine, where there is one.
 	pub tamanu: Option<MachineTamanu>,
+	/// Where this machine's checks remember readings between sweeps, already
+	/// scoped to the machine subject.
+	///
+	/// Apart from every application's, so a machine check and an application
+	/// check of the same name never meet. Nothing switches a machine's compute
+	/// off under it, so what it stores is durable.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 }
 
 /// What a machine check may know about the Tamanu installed on its subject.

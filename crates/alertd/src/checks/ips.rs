@@ -13,11 +13,7 @@
 //! payload (like `osTimezone`), not a health signal, so the check is always a
 //! pass and carries them in `payload_extras`.
 
-use std::{
-	net::IpAddr,
-	path::{Path, PathBuf},
-	time::Duration,
-};
+use std::{net::IpAddr, time::Duration};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -26,6 +22,10 @@ use sysinfo::Networks;
 
 use super::MachineCx;
 use crate::check::Check;
+use crate::store::{CheckStore, CheckStoreJson, Lifetime};
+
+/// What this check remembers between sweeps, within the machine's own store.
+const STATE_KEY: &str = "ips_wan";
 
 const NAME: &str = "ips";
 
@@ -57,7 +57,7 @@ enum Family {
 
 pub async fn run(ctx: MachineCx) -> Check {
 	let lan = lan_addresses();
-	let wan = wan_addresses(&ctx.http).await;
+	let wan = wan_addresses(&ctx.http, ctx.store.as_ref()).await;
 
 	let mut check = Check::pass(NAME, summarise(&lan, &wan)).with_payload_extra(
 		"lanIps",
@@ -155,9 +155,8 @@ struct WanAddresses {
 /// The best-guess public IPs, from the cache when fresh, else re-queried (racing
 /// the external services per family) and re-cached. A failed refresh keeps the
 /// last known value rather than dropping it.
-async fn wan_addresses(client: &reqwest::Client) -> WanAddresses {
-	let path = cache_path();
-	let cache = read_cache(&path).await;
+async fn wan_addresses(client: &reqwest::Client, store: &dyn CheckStore) -> WanAddresses {
+	let cache: WanCache = store.get_json(STATE_KEY).await.unwrap_or_default();
 
 	if cache.checked_at.is_some_and(is_fresh) {
 		return WanAddresses {
@@ -173,15 +172,19 @@ async fn wan_addresses(client: &reqwest::Client) -> WanAddresses {
 		.await
 		.or_else(|| parse_ip(cache.ipv6.as_deref()));
 
-	write_cache(
-		&path,
-		&WanCache {
-			checked_at: Some(Timestamp::now()),
-			ipv4: v4.map(|ip| ip.to_string()),
-			ipv6: v6.map(|ip| ip.to_string()),
-		},
-	)
-	.await;
+	// Durable: the machine's own address as last seen from outside, and nothing
+	// switches a machine's compute off under this check.
+	store
+		.put_json(
+			STATE_KEY,
+			&WanCache {
+				checked_at: Some(Timestamp::now()),
+				ipv4: v4.map(|ip| ip.to_string()),
+				ipv6: v6.map(|ip| ip.to_string()),
+			},
+			Lifetime::Durable,
+		)
+		.await;
 
 	WanAddresses { v4, v6 }
 }
@@ -231,29 +234,6 @@ fn is_fresh(checked_at: Timestamp) -> bool {
 
 fn parse_ip(s: Option<&str>) -> Option<IpAddr> {
 	s.and_then(|s| s.parse().ok())
-}
-
-fn cache_path() -> PathBuf {
-	dirs::cache_dir()
-		.unwrap_or_else(std::env::temp_dir)
-		.join("bestool")
-		.join("wan-ip.json")
-}
-
-async fn read_cache(path: &Path) -> WanCache {
-	match tokio::fs::read(path).await {
-		Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-		Err(_) => WanCache::default(),
-	}
-}
-
-async fn write_cache(path: &Path, cache: &WanCache) {
-	if let Some(parent) = path.parent() {
-		let _ = tokio::fs::create_dir_all(parent).await;
-	}
-	if let Ok(bytes) = serde_json::to_vec(cache) {
-		let _ = tokio::fs::write(path, bytes).await;
-	}
 }
 
 fn summarise(lan: &[IpAddr], wan: &WanAddresses) -> String {

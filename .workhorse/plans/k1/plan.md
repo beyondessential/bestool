@@ -178,6 +178,16 @@ too. `is-enabled` is no longer called from the check.
 **`pm2_source` is gone from the check's details.** Which path pm2's listing came
 from is the runtime's business; what the check reports is that it could not tell.
 
+### Check storage took `ips` with it
+
+The card names `http_errors` and `external_users`, but `ips` kept its own cache
+file on the same fixed path, and leaving one check on a bespoke path would have
+half-done the move. All three now go through the store; the old
+`doctor-http-errors.json`, `doctor-external-users.json` and `wan-ip.json` are no
+longer read or written, and are left on disk rather than deleted. Each check
+cold-starts once, which for `http_errors` is one in-run sample and for the other
+two a re-baseline.
+
 ## Neighbouring cards
 
 `E2` (discover every Postgres cluster) was waiting on the per-subject context, which `L2` has now landed. Its remaining work is discovery.
@@ -196,7 +206,7 @@ from is the runtime's business; what the check reports is that it could not tell
 - [x] Add per-service resource metrics, graded only against a declared ceiling
 - [x] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
 - [ ] Implement `HttpRuntime` over the local Caddy, and read `http_errors` and `caddy_certs` through it
-- [ ] Move `http_errors` and `external_users` onto check storage, retiring the fixed cache path they share
+- [x] Move `http_errors`, `external_users` and `ips` onto check storage, retiring the fixed cache paths they share
 
 The last two were not in the original list: `SUB` puts traffic and certificates
 in the substrate, so the checks reading them have to move too, and moving the

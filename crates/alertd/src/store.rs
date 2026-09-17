@@ -203,6 +203,52 @@ impl CheckStore for FileStore {
 	}
 }
 
+/// Reading and writing a check's state as JSON, which is the shape every check
+/// that has any keeps it in.
+///
+/// Separate from [`CheckStore`] so that trait stays dyn-compatible: a store is
+/// handed over as `dyn CheckStore`, and these are resolved against it
+/// statically.
+pub trait CheckStoreJson: CheckStore {
+	/// Read a stored value back as whatever type wrote it.
+	///
+	/// A value that no longer parses is nothing remembered: the shape a check
+	/// stores changes with the check, and an older sweep's state is not worth
+	/// failing over when the cold-start path is right there.
+	fn get_json<T: serde::de::DeserializeOwned>(
+		&self,
+		key: &str,
+	) -> impl Future<Output = Option<T>> + Send {
+		async move {
+			let bytes = self.get(key).await?;
+			match serde_json::from_slice(&bytes) {
+				Ok(value) => Some(value),
+				Err(err) => {
+					debug!(%err, key, "ignoring unparseable check state");
+					None
+				}
+			}
+		}
+	}
+
+	/// Store a value, saying whether it survives the compute being switched off.
+	fn put_json<T: serde::Serialize + Sync>(
+		&self,
+		key: &str,
+		value: &T,
+		lifetime: Lifetime,
+	) -> impl Future<Output = ()> + Send {
+		async move {
+			match serde_json::to_vec(value) {
+				Ok(bytes) => self.put(key, &bytes, lifetime).await,
+				Err(err) => debug!(%err, key, "could not serialise check state"),
+			}
+		}
+	}
+}
+
+impl<T: CheckStore + ?Sized> CheckStoreJson for T {}
+
 /// A store that remembers nothing past the process that wrote it.
 ///
 /// For a consumer with no business leaving anything behind — a one-shot sweep

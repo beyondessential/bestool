@@ -384,6 +384,24 @@ fn tamanu_context(
 	}
 }
 
+/// Drop an application's state that does not outlive its compute, where this
+/// sweep observes the compute to be off.
+///
+/// Done once for the application rather than by each check, because the
+/// condition is the application's: a check that had to notice it for itself
+/// could omit the clearing, and a stale baseline then produces a plausible
+/// delta on waking with no error and no signal.
+///
+/// spec: SUB#check-state
+async fn discard_state_held_until_compute(
+	runtime: &dyn runtime::ServiceRuntime,
+	store: &dyn store::CheckStore,
+) {
+	if runtime.compute().await.is_switched_off() {
+		store.discard_until_compute().await;
+	}
+}
+
 /// What is running a Tamanu deployment on this machine.
 ///
 /// Resolved per application rather than per machine: the same box can run this
@@ -854,6 +872,7 @@ pub async fn perform_sweep(
 			version: t.version.clone(),
 			root: t.root.clone(),
 		}))
+		.store(Arc::new(store::FileStore::for_subject(&Subject::Machine)))
 		.build();
 
 	// One context per application, built for that application alone, so a check
@@ -874,12 +893,13 @@ pub async fn perform_sweep(
 	if let Some(targets) = targets.as_ref() {
 		for app in &applications {
 			if app.kind == ApplicationKind::Postgres {
-				pg_cxs.insert(app.clone(), pg_context(app, targets, &check_pool));
+				let cx = pg_context(app, targets, &check_pool);
+				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
+				pg_cxs.insert(app.clone(), cx);
 			} else {
-				tamanu_cxs.insert(
-					app.clone(),
-					tamanu_context(app, targets, &tamanu, &check_pool, &http_client),
-				);
+				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &http_client);
+				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
+				tamanu_cxs.insert(app.clone(), cx);
 			}
 		}
 	}
@@ -1385,6 +1405,7 @@ mod tests {
 
 		let ctx = checks::MachineCx::builder()
 			.http(reqwest::Client::new())
+			.store(Arc::new(store::MemoryStore::new()))
 			.build();
 		let prepared = vec![
 			PreparedCheck {
@@ -2162,6 +2183,50 @@ mod tests {
 			subjects_for(&machine_run(), &applications),
 			vec![Subject::Machine]
 		);
+	}
+
+	/// A sweep that observes an application's compute to be off drops the state
+	/// that does not outlive it, and keeps the state that does. Doing it here
+	/// rather than in each check is what makes it impossible to forget.
+	///
+	/// spec: SUB#check-state
+	#[tokio::test]
+	async fn a_sweep_drops_state_the_compute_carried() {
+		use crate::runtime::{Compute, fake::FakeRuntime};
+		use crate::store::{CheckStore, CheckStoreJson, Lifetime, MemoryStore};
+
+		let store = MemoryStore::new();
+		store
+			.put("counters", b"before", Lifetime::UntilCompute)
+			.await;
+		store.put("queue", b"before", Lifetime::Durable).await;
+
+		let asleep = FakeRuntime {
+			compute: Some(Compute::SwitchedOff),
+			..FakeRuntime::empty()
+		};
+		discard_state_held_until_compute(&asleep, &store).await;
+
+		assert!(store.get("counters").await.is_none());
+		assert_eq!(store.get("queue").await.as_deref(), Some(&b"before"[..]));
+		// The extension trait is in scope for the store the checks are handed.
+		let _: Option<u8> = store.get_json("counters").await;
+	}
+
+	/// An application whose compute is on keeps everything: nothing observed the
+	/// sleep the discard exists for.
+	#[tokio::test]
+	async fn a_running_application_keeps_its_state() {
+		use crate::runtime::fake::FakeRuntime;
+		use crate::store::{CheckStore, Lifetime, MemoryStore};
+
+		let store = MemoryStore::new();
+		store
+			.put("counters", b"before", Lifetime::UntilCompute)
+			.await;
+
+		discard_state_held_until_compute(&FakeRuntime::empty(), &store).await;
+		assert_eq!(store.get("counters").await.as_deref(), Some(&b"before"[..]));
 	}
 
 	#[test]

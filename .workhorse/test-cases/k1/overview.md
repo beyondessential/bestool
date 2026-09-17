@@ -48,8 +48,8 @@ Scenarios verifying that a check reads its application's runtime through a subst
 ## Check storage
 
 - [x] A check's store is scoped to its subject, so two applications' histories never meet (verifies spec: SUB)
-- [ ] Two applications running one stateful check each read back only what they themselves wrote (verifies spec: SUB)
-- [ ] The fixed cache path `http_errors` and `external_users` shared is gone (verifies spec: SUB)
+- [x] Two applications running one stateful check each read back only what they themselves wrote (verifies spec: SUB)
+- [x] The fixed cache path `http_errors` and `external_users` shared is gone (verifies spec: SUB)
 - [x] State written as lasting only until the compute restarts is dropped when a sweep observes the compute off (verifies spec: SUB)
 - [x] State written as durable survives that same sweep (verifies spec: SUB)
 - [ ] A check waking after a sleep computes no delta against a baseline taken before it (verifies spec: SUB)

@@ -51,7 +51,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn emits_memory_stats() {
-		let ctx = MachineCx::builder().http(reqwest::Client::new()).build();
+		let ctx = MachineCx::builder()
+			.http(reqwest::Client::new())
+			.store(std::sync::Arc::new(crate::store::MemoryStore::new()))
+			.build();
 		let check = run(ctx).await;
 		let names: Vec<&str> = check.stats.iter().map(|s| s.name).collect();
 		assert!(names.contains(&"used_bytes"));
