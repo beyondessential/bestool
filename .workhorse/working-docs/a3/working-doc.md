@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # Ask Canopy for names and certificates
