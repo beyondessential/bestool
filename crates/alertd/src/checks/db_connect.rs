@@ -53,8 +53,12 @@ pub async fn run(ctx: PgCx) -> Check {
 mod tests {
 	use bestool_tamanu::config::Database;
 
+	use std::sync::Arc;
+
 	use super::*;
-	use crate::{check::CheckStatus, subject::ApplicationRef};
+	use crate::{
+		check::CheckStatus, runtime::fake::FakeRuntime, store::MemoryStore, subject::ApplicationRef,
+	};
 
 	/// An unreachable postgres must surface as a FAIL (an alert), never a crash
 	/// or hang — this is what lets the daemon flag a down database. Port 1 has
@@ -67,6 +71,8 @@ mod tests {
 			database: Database::from_url(url).unwrap(),
 			database_url: url.into(),
 			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		};
 		let check = run(ctx).await;
 		assert!(
@@ -95,6 +101,8 @@ mod tests {
 			database: Database::from_url(url).unwrap(),
 			database_url: url.into(),
 			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		};
 		let check = run(ctx).await;
 		match check.status {

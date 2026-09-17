@@ -14,7 +14,7 @@ Scenarios verifying that a check reads its application's runtime through a subst
 - [ ] One check grades identical readings to the same outcome whichever runtime served them (verifies spec: SUB)
 - [ ] A reading a runtime cannot serve skips the check, carrying the runtime's reason rather than a generic one (verifies spec: SUB)
 - [ ] A check that does not apply to a subject is absent from its report, and is not confused with a reading that could not be taken (verifies spec: SUB)
-- [ ] A cluster's context offers no traffic or certificate reading at all, rather than one that answers unavailable (verifies spec: SUB)
+- [x] A cluster's context offers no traffic or certificate reading at all, rather than one that answers unavailable (verifies spec: SUB)
 
 ## One runtime per application
 
@@ -25,8 +25,8 @@ Scenarios verifying that a check reads its application's runtime through a subst
 ## Duties
 
 - [ ] A check reads a service's duty, never its unit, process or pod name (verifies spec: SUB)
-- [ ] The same duty is named identically whichever runtime reported it (verifies spec: SUB)
-- [ ] A service whose duty is outside the vocabulary is reported under the name it was found by, rather than dropped (verifies spec: SUB)
+- [x] The same duty is named identically whichever runtime reported it (verifies spec: SUB)
+- [x] A service whose duty is outside the vocabulary is reported under the name it was found by, rather than dropped (verifies spec: SUB)
 - [ ] A deployment shape that should no longer exist is found as an out-of-vocabulary service and graded as forbidden (verifies spec: SUB)
 - [ ] The service-expectation logic grades a shortfall in running services the same way on every runtime (verifies spec: SUB)
 
@@ -47,11 +47,11 @@ Scenarios verifying that a check reads its application's runtime through a subst
 
 ## Check storage
 
-- [ ] A check's store is scoped to its subject, so two applications' histories never meet (verifies spec: SUB)
+- [x] A check's store is scoped to its subject, so two applications' histories never meet (verifies spec: SUB)
 - [ ] Two applications running one stateful check each read back only what they themselves wrote (verifies spec: SUB)
 - [ ] The fixed cache path `http_errors` and `external_users` shared is gone (verifies spec: SUB)
-- [ ] State written as lasting only until the compute restarts is dropped when a sweep observes the compute off (verifies spec: SUB)
-- [ ] State written as durable survives that same sweep (verifies spec: SUB)
+- [x] State written as lasting only until the compute restarts is dropped when a sweep observes the compute off (verifies spec: SUB)
+- [x] State written as durable survives that same sweep (verifies spec: SUB)
 - [ ] A check waking after a sleep computes no delta against a baseline taken before it (verifies spec: SUB)
 
 ## Compute switched off

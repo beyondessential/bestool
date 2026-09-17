@@ -37,6 +37,44 @@ impl UnitState {
 	}
 }
 
+/// One entry from `ListUnitFilesByPatterns`: a unit that is installed on the
+/// host, whether or not it is currently loaded.
+///
+/// Distinct from [`UnitState`], which only covers units systemd has loaded. A
+/// unit can be installed and enabled without being loaded — the state an
+/// operator leaves behind by enabling a unit they have not started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitFile {
+	/// The unit name, e.g. `tamanu-central-api@1.service`. The D-Bus method
+	/// answers with the unit file's path; this is its basename.
+	pub name: String,
+	/// `enabled`, `disabled`, `static`, `masked`, …
+	pub state: String,
+}
+
+impl UnitFile {
+	/// Whether systemd will start this unit of its own accord at boot.
+	pub fn enabled(&self) -> bool {
+		self.state == "enabled" || self.state == "enabled-runtime"
+	}
+}
+
+/// The resource readings systemd holds for one service unit.
+///
+/// Every field is optional because systemd answers `u64::MAX` for a reading it
+/// does not have — an unset `MemoryMax` is infinity, and a unit with no cgroup
+/// has no `MemoryCurrent` — and infinity is not a number a caller should ever
+/// see as a quantity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnitResources {
+	/// `MemoryCurrent`, in bytes.
+	pub memory_bytes: Option<u64>,
+	/// `MemoryMax`, in bytes: the ceiling declared for this unit specifically.
+	pub memory_max_bytes: Option<u64>,
+	/// `CPUUsageNSec`: processor time consumed since the unit started.
+	pub processor_nanos: Option<u64>,
+}
+
 /// Probe `is_enabled` for many unit names in one go and return the subset
 /// that came back `enabled` or `enabled-runtime`. Errors on individual probes
 /// are treated as "not enabled" — matches the previous best-effort semantics.
@@ -62,11 +100,11 @@ mod linux {
 	use tokio::sync::OnceCell;
 	use tracing::debug;
 	use zbus_systemd::{
-		systemd1::{JobRemovedStream, ManagerProxy},
+		systemd1::{JobRemovedStream, ManagerProxy, ServiceProxy, UnitProxy},
 		zbus::{self, Connection, zvariant::OwnedObjectPath},
 	};
 
-	use super::UnitState;
+	use super::{UnitFile, UnitResources, UnitState};
 
 	static CONNECTION: OnceCell<Connection> = OnceCell::const_new();
 
@@ -108,6 +146,99 @@ mod linux {
 				sub_state: u.4,
 			})
 			.collect())
+	}
+
+	/// `systemctl list-unit-files <patterns>`. Empty `patterns` returns nothing.
+	///
+	/// Covers units that are installed but not loaded, which
+	/// [`list_units`] cannot see. The D-Bus method answers with each unit
+	/// file's path; the name is its basename.
+	pub async fn list_unit_files(patterns: &[&str]) -> Result<Vec<UnitFile>> {
+		if patterns.is_empty() {
+			return Ok(Vec::new());
+		}
+		let mgr = manager().await?;
+		let raw = mgr
+			.list_unit_files_by_patterns(
+				Vec::new(),
+				patterns.iter().map(|s| (*s).to_string()).collect(),
+			)
+			.await
+			.into_diagnostic()?;
+		Ok(raw
+			.into_iter()
+			.map(|(path, state)| UnitFile {
+				name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+				state,
+			})
+			.collect())
+	}
+
+	/// Read `MemoryCurrent`, `MemoryMax` and `CPUUsageNSec` for a service unit.
+	///
+	/// `u64::MAX` is systemd's "no value" for each of these — an unset
+	/// `MemoryMax` is infinity, and a unit with no cgroup (not running, or
+	/// accounting off) has neither a current nor a usage — so it maps to
+	/// `None` rather than being passed on as a quantity.
+	pub async fn unit_resources(unit: &str) -> Result<UnitResources> {
+		let conn = CONNECTION
+			.get_or_try_init(|| async {
+				Connection::system()
+					.await
+					.into_diagnostic()
+					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
+			})
+			.await?;
+		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
+		let path = mgr
+			.get_unit(unit.to_string())
+			.await
+			.map_err(|e| miette!("systemd get_unit({unit}) failed: {e}"))?;
+		let service = ServiceProxy::builder(conn)
+			.path(path)
+			.into_diagnostic()?
+			.build()
+			.await
+			.into_diagnostic()?;
+
+		let finite = |v: Result<u64, zbus::Error>| v.ok().filter(|n| *n != u64::MAX);
+		Ok(UnitResources {
+			memory_bytes: finite(service.memory_current().await),
+			memory_max_bytes: finite(service.memory_max().await),
+			processor_nanos: finite(service.cpu_usage_n_sec().await),
+		})
+	}
+
+	/// The service unit a process belongs to, by pid.
+	///
+	/// `None` when the pid is in no unit systemd owns. Only meaningful for a
+	/// pid on this machine: a pid from elsewhere resolves against this host's
+	/// process table and would name whatever happens to hold that number.
+	pub async fn unit_for_pid(pid: u32) -> Result<Option<String>> {
+		let conn = CONNECTION
+			.get_or_try_init(|| async {
+				Connection::system()
+					.await
+					.into_diagnostic()
+					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
+			})
+			.await?;
+		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
+		let path = match mgr.get_unit_by_pid(pid).await {
+			Ok(path) => path,
+			Err(zbus::Error::MethodError(..)) => return Ok(None),
+			Err(e) => return Err(miette!("systemd get_unit_by_pid({pid}) failed: {e}")),
+		};
+		let unit = UnitProxy::builder(conn)
+			.path(path)
+			.into_diagnostic()?
+			.build()
+			.await
+			.into_diagnostic()?;
+		unit.id()
+			.await
+			.map(Some)
+			.map_err(|e| miette!("reading the unit id for pid {pid} failed: {e}"))
 	}
 
 	/// `systemctl is-active --quiet <unit>`. Returns true when the unit is
@@ -293,12 +424,21 @@ mod linux {
 mod stub {
 	use miette::{Result, bail};
 
-	use super::UnitState;
+	use super::{UnitFile, UnitResources, UnitState};
 
 	const UNSUPPORTED: &str = "systemd is only available on Linux";
 
 	pub async fn list_units(_: &[&str]) -> Result<Vec<UnitState>> {
 		Ok(Vec::new())
+	}
+	pub async fn list_unit_files(_: &[&str]) -> Result<Vec<UnitFile>> {
+		Ok(Vec::new())
+	}
+	pub async fn unit_resources(_: &str) -> Result<UnitResources> {
+		Ok(UnitResources::default())
+	}
+	pub async fn unit_for_pid(_: u32) -> Result<Option<String>> {
+		Ok(None)
 	}
 	pub async fn is_active(_: &str) -> Result<bool> {
 		Ok(false)

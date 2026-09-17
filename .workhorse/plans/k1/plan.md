@@ -130,6 +130,36 @@ This is required rather than tidier. A Windows machine runs Tamanu under PM2 and
 
 A machine subject has no runtime at all: `MachineCx` carries none, because machine checks read the host directly.
 
+## Settled while building the traits
+
+**The vocabulary lives in `bestool-alertd`, not in `bestool-tamanu`.** One
+function maps a service name to a duty, and both sides use it: the substrate
+when it discovers a service, and the check when it works out which duty an
+expectation is about. `bestool-tamanu`'s `Expectation` keeps naming units,
+because the lifecycle commands that build `systemctl` invocations from it
+legitimately work in unit names. Adding a duty field there would have put
+alertd's `Duty` — which covers Postgres too — inside the Tamanu crate.
+
+**A service carries whether the runtime intends to run it**, alongside its
+identifier, duty and slot. Without it, the two states a `Down` expectation has
+to tell apart collapse: a unit enabled but not started (which must be flagged)
+reads the same as one left loaded after a stop (which must not). The concept
+travels — a Kubernetes workload asking for a replica is the same thing — where
+`is-enabled` does not.
+
+**Processor usage is cumulative seconds, not a rate.** systemd answers
+`CPUUsageNSec` and pm2 answers an instantaneous percentage; taking the
+cumulative reading from the OS on both makes them the same reading, and a
+counter is what the metrics surface already renders. A service that restarts
+resets to zero rather than reporting a rate nothing measured.
+
+**Which service runs a Postgres cluster is answered by the server itself.**
+Asking it for the pid of the backend serving us, then asking systemd which unit
+holds that pid, is exact. Matching a port against each candidate unit's
+configuration is guesswork, and the mapping from port to data directory is not
+something a supervisor holds. It only works for a cluster on this machine, which
+is the only one with a ceiling to declare anyway.
+
 ## Neighbouring cards
 
 `E2` (discover every Postgres cluster) was waiting on the per-subject context, which `L2` has now landed. Its remaining work is discovery.
@@ -143,8 +173,15 @@ A machine subject has no runtime at all: `MachineCx` carries none, because machi
 ## Build steps
 
 - [x] Split `AppCx` into `PgCx` and `TamanuCx`, adding the third `Run` arm
-- [ ] Introduce the two runtime traits and the check-storage trait, with own-system implementations resolved per application
+- [x] Introduce the two runtime traits, the duty vocabulary and the check-storage trait, with own-system service runtimes resolved per application
 - [ ] Port the duty vocabulary, replacing supervisor unit-name matching in `tamanu_service` and `version_drift`
 - [ ] Add per-service resource metrics, graded only against a declared ceiling
 - [ ] Take the Postgres tuning check's denominator from the running service's declared ceiling, falling back to the hosting machine's memory
-- [ ] Scope check storage per subject, retiring the fixed cache path `http_errors` and `external_users` share
+- [ ] Implement `HttpRuntime` over the local Caddy, and read `http_errors` and `caddy_certs` through it
+- [ ] Move `http_errors` and `external_users` onto check storage, retiring the fixed cache path they share
+
+The last two were not in the original list: `SUB` puts traffic and certificates
+in the substrate, so the checks reading them have to move too, and moving the
+storage is a separate change from scoping it. `HttpRuntime` is declared with the
+other trait but lands with its Caddy implementation, so the contract and its
+only implementor arrive together rather than the trait sitting unimplemented.

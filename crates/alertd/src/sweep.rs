@@ -24,13 +24,16 @@ use tracing::{debug, warn};
 use bestool_tamanu::{
 	config::{Database, TamanuConfig},
 	server_info::get_or_create_machine_id,
+	services::Supervisor,
 };
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
 	checks, heal,
 	progress::{DoctorEvent, ProgressSender},
-	server_info::{self, ServerFacts},
+	runtime, server_info,
+	server_info::ServerFacts,
+	store,
 	subject::{ApplicationKind, ApplicationRef, Subject},
 };
 
@@ -339,6 +342,14 @@ fn pg_context(
 			.unwrap_or_else(|_| targets.config.db.clone()),
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
+		runtime: Arc::new(runtime::pg::PgRuntime::new(
+			&app.key,
+			pool.clone(),
+			database_is_local(&targets.database_url),
+		)),
+		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
+			app.clone(),
+		))),
 	}
 }
 
@@ -354,16 +365,43 @@ fn tamanu_context(
 	http: &reqwest::Client,
 ) -> checks::TamanuCx {
 	let tamanu = tamanu.as_ref();
+	// `0.0.0` is the sweep's marker for a version it could not resolve, which
+	// `version_drift` reads as "nothing to compare against".
+	let version = tamanu.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone());
 	checks::TamanuCx {
 		app: app.clone(),
-		// `0.0.0` is the sweep's marker for a version it could not resolve, which
-		// `version_drift` reads as "nothing to compare against".
-		version: tamanu.map_or_else(|| Version::new(0, 0, 0), |t| t.version.clone()),
+		version: version.clone(),
 		config: targets.config.clone(),
 		install_root: tamanu.and_then(|t| t.root.clone()),
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
 		http: http.clone(),
+		runtime: tamanu_runtime(&version),
+		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
+			app.clone(),
+		))),
+	}
+}
+
+/// What is running a Tamanu deployment on this machine.
+///
+/// Resolved per application rather than per machine: the same box can run this
+/// deployment under one supervisor and a Postgres cluster under another, so
+/// there is no one answer for the host.
+///
+/// A platform with neither supervisor gets a runtime that can list nothing,
+/// which reads as a substrate that cannot serve the reading — the checks that
+/// need one skip saying so, rather than the sweep having no context to hand
+/// them at all.
+fn tamanu_runtime(version: &Version) -> Arc<dyn runtime::ServiceRuntime> {
+	match Supervisor::current() {
+		Some(Supervisor::Systemd) => Arc::new(runtime::systemd::SystemdRuntime::new()),
+		Some(Supervisor::Pm2) => Arc::new(runtime::pm2::Pm2Runtime::new(
+			(*version != Version::new(0, 0, 0)).then(|| version.to_string()),
+		)),
+		None => Arc::new(runtime::Unsupported::new(
+			"no supported service supervisor on this platform",
+		)),
 	}
 }
 

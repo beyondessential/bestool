@@ -21,6 +21,8 @@ use bestool_tamanu::{
 
 use super::check::Check;
 use super::heal::{self, HealAction};
+use super::runtime::ServiceRuntime;
+use super::store::CheckStore;
 use super::subject::{ApplicationKind, ApplicationRef, TamanuScope};
 
 pub mod util;
@@ -154,6 +156,20 @@ pub struct TamanuCx {
 	/// connections stay warm between ticks; HTTP checks apply per-request
 	/// timeouts via `RequestBuilder::timeout`.
 	pub http: reqwest::Client,
+	/// What is running this deployment: how a check reads its services and
+	/// their facts, whatever is running them here.
+	///
+	/// One per application rather than one per machine — a Windows machine runs
+	/// Tamanu under pm2 and Postgres as a native Windows service, so no single
+	/// machine-wide supervisor describes both.
+	///
+	/// spec: SUB
+	pub runtime: Arc<dyn ServiceRuntime>,
+	/// Where this deployment's checks remember readings between sweeps, already
+	/// scoped to this subject.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 }
 
 /// What a Postgres check is handed: the cluster it reports for, and how to
@@ -184,6 +200,20 @@ pub struct PgCx {
 	/// The pool this cluster's checks draw from, when it could be reached at
 	/// all. Take a connection with [`PgCx::db`].
 	pub pool: Option<PgPool>,
+	/// What is running this cluster: how a check reads the service serving it
+	/// and the ceiling declared for that service.
+	///
+	/// A cluster serves no HTTP, so there is no traffic runtime beside this one
+	/// — it has no such reading to take, rather than a reading it would report
+	/// as unavailable.
+	///
+	/// spec: SUB
+	pub runtime: Arc<dyn ServiceRuntime>,
+	/// Where this cluster's checks remember readings between sweeps, already
+	/// scoped to this subject.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 }
 
 /// How the sweep's pool is sized.
@@ -631,6 +661,8 @@ pub mod test_support {
 	use bestool_tamanu::config::{Database, TamanuConfig};
 
 	use super::{PgCx, TamanuCx};
+	use crate::runtime::fake::FakeRuntime;
+	use crate::store::MemoryStore;
 	use crate::subject::{ApplicationKind, ApplicationRef};
 
 	fn central_config() -> TamanuConfig {
@@ -674,6 +706,8 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
 			http: reqwest::Client::new(),
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		})
 	}
 
@@ -688,6 +722,8 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		}
 	}
 
@@ -700,6 +736,8 @@ pub mod test_support {
 			database: Database::from_url(url).expect("a literal URL parses"),
 			database_url: url.into(),
 			pool: Some(connect("tamanu-central").await?),
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		})
 	}
 
@@ -712,6 +750,8 @@ pub mod test_support {
 			database: Database::from_url(url).expect("a literal URL parses"),
 			database_url: url.into(),
 			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		}
 	}
 }
@@ -789,6 +829,8 @@ mod tests {
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
+			store: Arc::new(crate::store::MemoryStore::new()),
 		}
 	}
 
@@ -803,6 +845,8 @@ mod tests {
 			database: Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap(),
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
+			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
+			store: Arc::new(crate::store::MemoryStore::new()),
 		}
 	}
 

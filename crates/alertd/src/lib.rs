@@ -5,12 +5,16 @@ pub mod check;
 pub mod checks;
 pub mod heal;
 pub mod progress;
+pub mod runtime;
 pub mod server_info;
 pub mod stat;
+pub mod store;
 pub mod subject;
 pub mod sweep;
 
+pub use runtime::{Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
+pub use store::{CheckStore, Lifetime};
 pub use subject::{ApplicationKind, Subject, TamanuScope};
 pub use sweep::{
 	SweepResult, SweepTamanu, SweepTargets, discover_sweep_targets, overall_from_payload,

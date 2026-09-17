@@ -12,6 +12,7 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = "0.1.89"
 bestool-canopy = { version = "0.7.12", path = "../canopy" }
 bestool-postgres = { version = "1.2.2", path = "../postgres" }
 bestool-tamanu = { version = "0.19.11", path = "../tamanu", features = ["canopy-registration"] }

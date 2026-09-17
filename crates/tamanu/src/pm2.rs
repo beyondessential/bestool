@@ -87,6 +87,14 @@ pub struct PmProc {
 	pub name: String,
 	pub pm_id: Option<i64>,
 	pub running: bool,
+	/// The OS process id, where pm2 knows one. `None` for a stopped process,
+	/// and for one whose pid file could not be read on the dump fallback.
+	///
+	/// Carried so a caller can read the process's own resource usage from the
+	/// OS rather than from pm2's `monit` block, which reports an instantaneous
+	/// CPU percentage where the OS reports the cumulative time a rate can be
+	/// derived from.
+	pub pid: Option<u32>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -375,6 +383,7 @@ fn list_via_cli() -> Result<Vec<PmProc>, String> {
 			name: name.to_string(),
 			pm_id,
 			running: state == "online",
+			pid: p["pid"].as_u64().and_then(|p| u32::try_from(p).ok()),
 		});
 	}
 	Ok(out)
@@ -443,6 +452,7 @@ fn list_via_dump_at(home: &Path) -> Result<Vec<PmProc>, String> {
 			name: entry.name,
 			pm_id: entry.pm_id,
 			running,
+			pid: running.then_some(pid).flatten(),
 		});
 	}
 	Ok(out)
