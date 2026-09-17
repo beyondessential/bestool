@@ -202,6 +202,21 @@ longer read or written, and are left on disk rather than deleted. Each check
 cold-starts once, which for `http_errors` is one in-run sample and for the other
 two a re-baseline.
 
+## What still reads its runtime directly, and why
+
+A sweep of the checks for direct supervisor, container-runtime and admin-API
+access leaves three, none of them a gap in this card:
+
+- **Machine checks** (`munin`, `tailscale_config`) ask systemd whether a
+  machine-level unit is installed or enabled. Machine checks read the host
+  directly and use no substrate, per `SUB`.
+- **`ips`** names `podman0` as an interface to exclude from the machine's LAN
+  addresses. A string, not a reading.
+- **`fhir_jobs`'s heal** restarts services through the supervisor. A substrate
+  covers readings; restarting is an action, and neither `SUB` nor this card's
+  "done when" asks for one. A relay driving applications it does not host would
+  need it, and that is the card to write when something needs it.
+
 ## Neighbouring cards
 
 `E2` (discover every Postgres cluster) was waiting on the per-subject context, which `L2` has now landed. Its remaining work is discovery.
