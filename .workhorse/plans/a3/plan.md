@@ -54,6 +54,10 @@ Taking the union of a machine's applications drops the boundary Canopy draws bet
 
 The day a machine hosts two workloads, the union over-reaches rather than silently misbehaving: Canopy resolves the application from the *name*, refuses a name no application on the machine declares, and applies the declaring application's own grant and pause. So the failure mode is a refusal the agent reports, not a certificate issued under the wrong workload's authority. Two consequences to live with: on a multi-application machine an undeclared name has to be declared by an operator in Canopy before the agent can register or certify it, and a union that reads "entitled" can still be refused per name.
 
+The union is confined to *asking*. Reporting is per application, because Canopy's entitlement answer says which application declares each name, and a certificate fault has to reach that application's group — two applications on one box can belong to different groups, so a machine-scoped result would reach the wrong people for one of them. `caddy_certs` is already `tamanu_app` on the same reasoning.
+
+Worth knowing when implementing: `caddy_certs` has no equivalent mapping. Caddy's config does not say which application a site belongs to, so on a machine with both a central and a facility each instance grades the whole set. `canopy_certificates` does not inherit that, since Canopy supplies the attribution. Fixing `caddy_certs` is not this card.
+
 ## Build
 
 - [ ] Key store: generate P-256 keys, one per name, in a machine-bound encrypted file beside the registration; chains as plain files alongside.
@@ -68,6 +72,6 @@ The day a machine hosts two workloads, the union over-reaches rather than silent
 - [ ] Task HTTP endpoints for status and for forcing a collection.
 - [ ] `bestool canopy certs`: list, request, collect.
 - [ ] `bestool canopy dns`: register, withdraw, show.
-- [ ] `canopy_certificates` healthcheck, including its skip conditions.
+- [ ] `canopy_certificates` healthcheck, application-scoped (`tamanu_app`, as `caddy_certs` already is), including its skip conditions. Match a Canopy entitlement entry to the application by type slug, which is what `ApplicationKind::type_slug()` already produces.
 - [ ] Teach `caddy_certs` about a chain served by the daemon.
 - [ ] Document the required Caddyfile shape for the deployment to apply.

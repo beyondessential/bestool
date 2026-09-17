@@ -10,10 +10,28 @@ It is one of the doctor's healthchecks; see [DOC](../tamanu/doctor.md) for the f
 What it grades is the collection: that a name the server ought to have a chain for has one, and that the chain is not running down.
 Obtaining and serving the chains themselves is described in [TLS](certificates.md), and the entitlement the check reads is described in [NAM](names.md).
 
+## Which subject it reports for
+
+The check reports for an application, not for the machine, and runs once for each application on the host ([SUBJ](../tamanu/subjects.md)).
+
+Certificates belong to the application they were issued for.
+A grant, a pause, and the domains a name must sit under are each an application's own, and the group that answers for a failing certificate is the application's group: a machine may host two applications belonging to different groups, so a result filed against the machine would reach the wrong people for one of them.
+The `caddy_certs` check ([CHK-CCT](../tamanu/caddy-certs.md)) reports per application for the same reason.
+
+Filing per application also keeps the heal attempts and backoff of [CHK](../tamanu/healthchecks.md#self-healing) separate, so one application's stalled collection does not consume another's allowance.
+
 ## Which names it grades
 
-The check grades the names [TLS](certificates.md#which-names-are-certified) says are certified: a site address Caddy serves that the server's entitlement also covers.
-A name Caddy serves that the entitlement does not cover is not this check's business, because nothing should be collecting a chain for it.
+The check grades the names [TLS](certificates.md#which-names-are-certified) says are certified for *its own* application: a site address Caddy serves that this application's entitlement covers.
+
+Canopy's entitlement answer says which application declares each name, so a name is attributed from what Canopy reports rather than guessed at from the host.
+An application's entry is matched to the application the check is running for by the application type, which is what Canopy puts on the wire for a reporter to correlate against; on a machine hosting a single application Canopy gives that entry as the answer itself.
+
+A name Caddy serves that no application's entitlement covers is not this check's business, because nothing should be collecting a chain for it.
+That includes a name no application declares on a machine hosting several, which Canopy refuses to act on until an operator declares it.
+
+The daemon requests across every application's entitlement together ([NAM](names.md#machines-hosting-several-applications)), because nothing on the host ties a Caddy site to an application.
+What it collected is still attributable, since Canopy answers per application, so the agent asking as the machine and reporting per application are not in tension.
 
 ## Outcomes
 
@@ -29,13 +47,15 @@ The check reports the reason Canopy gave for a name whose order is failing, so a
 
 ## When it skips
 
-The check skips when the server holds no TLS grant, and while Canopy reports the server paused, naming the unmet precondition.
-The reason a skip carries states only that the server is not obtaining certificates.
+The check skips when its application holds no TLS grant, and while Canopy reports that application paused, naming the unmet precondition.
+The reason a skip carries states only that the application is not obtaining certificates.
+
+A grant or a pause is an application's own, so one application skipping leaves the others on the machine graded as they were.
 
 A skip closes an issue the check had already opened, so a grant withdrawn during an incident quietens this check rather than adding to the incident.
 A pause is not escalated however long it lasts, Canopy being where it was set, and Canopy is what reports a pause old enough to have let something lapse.
 
-A revoked certificate pauses the server in Canopy ([TLS](certificates.md#revocation-and-key-replacement)), so a revocation quietens this check by the same route.
+A revoked certificate pauses its application in Canopy ([TLS](certificates.md#revocation-and-key-replacement)), so a revocation quietens this check for that application by the same route, and leaves the others on the machine reporting.
 That is the intent: the operator who revoked the certificate is acting on the host already, and does not need this check telling them the chain they just revoked is missing.
 
 ## Alongside Caddy's own certificates

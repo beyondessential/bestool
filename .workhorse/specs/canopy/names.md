@@ -35,6 +35,10 @@ Canopy resolves which application a request concerns from the name it asks about
 So a request the union produced can still be refused — for a name no application on the machine holds, or held by an application that lacks the grant or is paused — and that refusal is authoritative.
 A refusal of this kind is reported as it is given rather than retried against a different application, there being no other application to ask as.
 
+The union governs only what the server asks for.
+What it holds is still attributed per application, because Canopy's answer says which application declares each name, and that is what the certificate healthcheck reports against ([CHK-CCO](certificate-collection-check.md)).
+So asking as the machine and reporting per application sit together rather than in tension.
+
 ## Registering addresses for a name
 
 A server publishes the addresses a name resolves to by registering them with Canopy, which publishes an A record for each IPv4 address and an AAAA record for each IPv6 address.

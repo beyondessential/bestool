@@ -76,12 +76,15 @@ Coverage owed by this card. An unticked case is a scenario not yet covered, not 
 
 ## Healthchecks
 
+- [ ] The check reports for an application rather than the machine, running once per application on the host (verifies spec: CHK-CCO#which-subject-it-reports-for).
+- [ ] On a machine hosting two applications, a name is graded under the application Canopy says declares it, and each application's result is filed separately (verifies spec: CHK-CCO#which-names-it-grades).
+- [ ] One application skipping for a withdrawn grant or a pause leaves the others on the machine graded (verifies spec: CHK-CCO#when-it-skips).
 - [ ] The check fails when a name it grades has no chain collected for it (verifies spec: CHK-CCO#outcomes).
 - [ ] The check fails when a collected chain is nearer expiry than renewal should have allowed, the threshold scaling with that chain's own lifetime (verifies spec: CHK-CCO#outcomes).
 - [ ] A name holding a usable chain passes while a renewal is under way behind it (verifies spec: CHK-CCO#outcomes).
 - [ ] A Caddy subject the entitlement does not cover is not graded (verifies spec: CHK-CCO#which-names-it-grades).
 - [ ] The check skips, naming the precondition, with no TLS grant and while paused (verifies spec: CHK-CCO#when-it-skips).
-- [ ] A revocation quietens the check, by way of the pause it causes (verifies spec: CHK-CCO#when-it-skips).
+- [ ] A revocation quietens the check for its own application, by way of the pause it causes, and leaves the others reporting (verifies spec: CHK-CCO#when-it-skips).
 - [ ] A skip closes an issue the check had already opened (verifies spec: CHK-CCO#when-it-skips).
 - [ ] A host serving every name from Caddy's own issuance is distinguishable from one Canopy is serving (verifies spec: CHK-CCT#certificates-from-canopy).
 

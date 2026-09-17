@@ -9,6 +9,9 @@ It is one of the doctor's healthchecks; see [DOC](doctor.md) for the framework i
 
 It grades certificates whatever their source, so a host obtaining chains from Canopy ([TLS](../canopy/certificates.md)) and a host issuing for itself are both covered.
 
+The check reports for an application rather than for the machine ([SUBJ](subjects.md)): a certificate is issued for the names an application answers on, and it is that application's group that answers for one running out.
+The software serving it is the machine's, and its version, its resolvers and its configuration marker are graded separately against the machine.
+
 ## Which certificates it grades
 
 The certificates that matter are those Caddy's live configuration references: the managed certificates whose names are still served, and any certificate the configuration loads by hand.
