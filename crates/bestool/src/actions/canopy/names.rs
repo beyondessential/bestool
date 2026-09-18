@@ -10,18 +10,34 @@
 use std::net::SocketAddr;
 
 use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
+use reqwest::Method;
 use serde_json::Value;
 
 use crate::alertd::{certificates::TASK_NAME, commands};
 
-/// Call one of the task's endpoints on a running daemon.
+/// Report from one of the task's endpoints on a running daemon.
 ///
 /// A daemon that isn't running is reported as such rather than as a bare
 /// connection error: it is the thing the operator has to start.
-pub async fn ask(
+pub async fn ask(addrs: &[SocketAddr], endpoint: &str, query: &[(&str, String)]) -> Result<Value> {
+	call(addrs, Method::GET, endpoint, query).await
+}
+
+/// Ask a running daemon to change something.
+///
+/// A POST, because the endpoints that change state take only that — and they
+/// identify their caller, so this has to run as root.
+///
+/// spec: NAM#commands
+pub async fn tell(addrs: &[SocketAddr], endpoint: &str, query: &[(&str, String)]) -> Result<Value> {
+	call(addrs, Method::POST, endpoint, query).await
+}
+
+async fn call(
 	addrs: &[SocketAddr],
+	method: Method,
 	endpoint: &str,
-    query: &[(&str, String)],
+	query: &[(&str, String)],
 ) -> Result<Value> {
 	let addrs = if addrs.is_empty() {
 		commands::default_server_addrs()
@@ -33,7 +49,7 @@ pub async fn ask(
 	)?;
 
 	let response = client
-		.get(format!("{base}/tasks/{TASK_NAME}/{endpoint}"))
+		.request(method, format!("{base}/tasks/{TASK_NAME}/{endpoint}"))
 		.query(query)
 		.send()
 		.await
@@ -42,6 +58,12 @@ pub async fn ask(
 
 	let status = response.status();
 	let body = response.text().await.into_diagnostic()?;
+	if status == reqwest::StatusCode::FORBIDDEN {
+		return Err(miette!(
+			"the daemon refused: {} (this command changes what canopy publishes, so run it as root)",
+			body.trim()
+		));
+	}
 	if !status.is_success() {
 		return Err(miette!("the daemon refused: {}", body.trim()));
 	}

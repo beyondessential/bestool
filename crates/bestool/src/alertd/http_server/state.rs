@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 
-use crate::alertd::{context::InternalContext, daemon::DaemonControl, tasks::TaskEndpointHandler};
+use crate::alertd::{context::InternalContext, daemon::DaemonControl, tasks::TaskEndpoint};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -13,10 +13,12 @@ pub struct ServerState {
 	pub binary_version: String,
 	pub internal_context: Arc<InternalContext>,
 	pub watchdog_timeout: Option<Duration>,
-	/// Endpoint handlers exposed by registered background tasks. Keyed by
+	/// Endpoints exposed by registered background tasks. Keyed by
 	/// `(task_name, endpoint_name)` so the `/tasks/:task/:endpoint` route can
-	/// dispatch in O(1) without walking the task registry per request.
-	pub task_endpoints: Arc<HashMap<(String, String), TaskEndpointHandler>>,
+	/// dispatch in O(1) without walking the task registry per request. The whole
+	/// endpoint rather than its handler alone, because the route also has to
+	/// know whether it is guarded.
+	pub task_endpoints: Arc<HashMap<(String, String), TaskEndpoint>>,
 	/// Drives the daemon's `/reload` and `/restart` control endpoints.
 	pub control: DaemonControl,
 	/// Backup run registry, when backups are compiled in; lets `/status` list

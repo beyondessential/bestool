@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use miette::Result;
 use serde_json::Value;
 
-use super::names::{ask, joined, list, text};
+use super::names::{ask, joined, list, tell, text};
 use crate::actions::Context;
 
 /// The TLS certificates canopy holds for this server.
@@ -58,7 +58,13 @@ pub async fn run(args: CertsArgs, _ctx: Context) -> Result<()> {
 		Command::Request { name } => ("request", vec![("name", name)]),
 	};
 
-	let answer = ask(&args.server_addr, endpoint, &query).await?;
+	// Requesting and collecting spend orders at the authority, so they go as a
+	// POST the daemon only accepts from root.
+	let answer = if endpoint == "status" {
+		ask(&args.server_addr, endpoint, &query).await?
+	} else {
+		tell(&args.server_addr, endpoint, &query).await?
+	};
 	if args.json {
 		println!("{}", serde_json::to_string_pretty(&answer).unwrap_or_default());
 		return Ok(());

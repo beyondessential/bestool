@@ -51,6 +51,7 @@ A name belongs to one application across the whole fleet, so registering a name 
 Two hosts cannot both publish addresses for one name, which is what stops a name being pulled between them.
 
 Canopy publishes what it is told, and does not verify that an address belongs to the server; the grant is the trust boundary.
+An address that is not an IP address is refused, naming the offending value, before Canopy is asked: the server holding the DNS grant is where an address is checked, whatever asked it to register one.
 
 Publishing happens in the background, so a registration is answered with the addresses Canopy will publish and those it has published so far, rather than waiting for the zone to catch up.
 
@@ -62,3 +63,6 @@ Registering a name with no addresses withdraws it: the records are taken down an
 
 Registration is driven by these commands.
 Publishing addresses directs traffic at a host, so it follows an operator's instruction rather than a periodic reconciliation.
+
+Registering and withdrawing change what the world resolves for a production deployment, so they are refused unless run by the superuser, and a refusal says so.
+The daemon's interface is reachable by every process on the host, and a command that only reports is not: reading what this server holds needs no privilege.

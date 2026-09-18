@@ -89,7 +89,9 @@ pub async fn handle_certificate(
 	// permitted is refused, and that refusal is a failure rather than a decline:
 	// it is a misconfiguration to correct, not a name for Caddy to begin issuing
 	// for itself.
-	if let Err(err) = peer::caller_permitted(certificates.permitted(), ends.remote, ends.local) {
+	if let Err(err) =
+		peer::caller_permitted(certificates.permitted(), ends.remote, ends.local).await
+	{
 		warn!(peer = %ends.remote, %err, "refused a certificate request");
 		return (StatusCode::FORBIDDEN, format!("{err}")).into_response();
 	}

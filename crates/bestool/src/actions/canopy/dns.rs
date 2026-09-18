@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use miette::Result;
 use serde_json::Value;
 
-use super::names::{ask, joined, list, text};
+use super::names::{ask, joined, list, tell, text};
 use crate::actions::Context;
 
 /// The DNS records canopy publishes for this server.
@@ -77,7 +77,13 @@ pub async fn run(args: DnsArgs, _ctx: Context) -> Result<()> {
 		),
 	};
 
-	let answer = ask(&args.server_addr, endpoint, &query).await?;
+	// Registering and withdrawing change what the world resolves for this
+	// server, so they go as a POST the daemon only accepts from root.
+	let answer = if endpoint == "status" {
+		ask(&args.server_addr, endpoint, &query).await?
+	} else {
+		tell(&args.server_addr, endpoint, &query).await?
+	};
 	if args.json {
 		println!(
 			"{}",

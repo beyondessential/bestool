@@ -34,6 +34,7 @@ use tracing::debug;
 
 use crate::machine_store::{
 	decrypt_bytes, encrypt_bytes, machine_passphrase, remove_if_present, write_atomic,
+	write_atomic_private,
 };
 
 /// The key type this module generates and hands back.
@@ -186,8 +187,11 @@ pub async fn load_keys(dir: &Path) -> Result<KeyStore> {
 		return Ok(KeyStore::default());
 	}
 
+	// Narrowed rather than widened: nothing unprivileged reads this store, and
+	// the passphrase that unlocks it is derived from the machine id, so group
+	// read on the ciphertext would be group access to every key in it.
 	#[cfg(unix)]
-	crate::machine_store::repair_mode(&path).await;
+	crate::machine_store::repair_mode_private(&path).await;
 
 	let bytes = tokio::fs::read(&path)
 		.await
@@ -211,7 +215,10 @@ pub async fn store_keys(dir: &Path, keys: &KeyStore) -> Result<()> {
 		.into_diagnostic()
 		.wrap_err("serialising the certificate key store")?;
 	let ciphertext = encrypt_bytes(&plaintext, machine_passphrase()?)?;
-	write_atomic(&key_store_file(dir), &ciphertext).await
+	// Owner only, and not carrying the config directory's group: the collected
+	// chains beside it are read by an unprivileged `bestool tamanu doctor`, but
+	// the keys they cover are the root daemon's alone.
+	write_atomic_private(&key_store_file(dir), &ciphertext).await
 }
 
 /// The file a name's collected chain is kept in.
@@ -500,6 +507,38 @@ mod tests {
 				.any(|w| w == b"PRIVATE KEY"),
 			"the key store must be encrypted at rest"
 		);
+	}
+
+	/// The passphrase unlocking the store is derived from the machine id, which
+	/// is world-readable on Linux, so group read on the ciphertext would hand
+	/// every key in it to anyone sharing the config directory's group. The
+	/// chains beside it are group-readable for an unprivileged
+	/// `bestool tamanu doctor`; the keys are not.
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn the_key_store_is_readable_only_by_its_owner() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let mut store = KeyStore::default();
+		store.replace("app.example.com", &generate_key().unwrap());
+		store_keys(dir.path(), &store).await.unwrap();
+
+		let path = key_store_file(dir.path());
+		let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+		assert_eq!(
+			mode,
+			crate::machine_store::PRIVATE_FILE_MODE,
+			"expected {:o}, got {mode:o}",
+			crate::machine_store::PRIVATE_FILE_MODE
+		);
+
+		// A store written before group read was taken away is narrowed on the
+		// next read rather than left as it was found.
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+		load_keys(dir.path()).await.unwrap();
+		let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+		assert_eq!(mode, crate::machine_store::PRIVATE_FILE_MODE);
 	}
 
 	#[tokio::test]

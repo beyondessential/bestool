@@ -201,9 +201,13 @@ impl CertificateState {
 
 		let held = self.held.read().await;
 		let chain = held.get(&name)?;
-		chain
-			.usable
-			.then(|| (chain.chain.clone(), chain.key_pem.clone()))
+		// `usable` is what canopy last said, or what the chain's own dates said
+		// when it was loaded; neither is re-evaluated as time passes. So the
+		// expiry is tested here too: where collection has stopped — canopy
+		// unreachable, or a pass standing down — the cached flag would otherwise
+		// have the daemon hand Caddy an expired chain indefinitely.
+		let live = chain.usable && chain.not_after.is_none_or(|at| at > Timestamp::now());
+		live.then(|| (chain.chain.clone(), chain.key_pem.clone()))
 	}
 
 	/// Record a name a handshake asked for and nothing was held for, so an order
@@ -383,7 +387,17 @@ impl CertificateState {
 				debug!(%err, "could not read Caddy's active subjects");
 				BTreeSet::new()
 			});
-		names.extend(self.wanted.lock().await.iter().cloned());
+		// A name is recorded during a handshake before any entitlement has been
+		// asked for, so the test is applied here rather than there — and a name
+		// this entitlement will never order for is dropped from the record as
+		// well as from the list. Left there it would keep `pass_due` true on
+		// every tick, which spends a full entitlement request a minute on a name
+		// that can never be ordered for.
+		{
+			let mut wanted = self.wanted.lock().await;
+			wanted.retain(|name| entitlement.may_certify(name));
+			names.extend(wanted.iter().cloned());
+		}
 
 		names
 			.into_iter()
@@ -613,6 +627,21 @@ impl CertificateState {
 		addresses: Vec<String>,
 	) -> Result<RegisteredName> {
 		certs::plausible_name(name)?;
+		// The daemon is the component holding the DNS grant, so it is where an
+		// address is tested rather than at whichever client happened to call:
+		// canopy publishes what it is given, and the CLI is not the only way
+		// here. Parsed and re-rendered, so what is published is one canonical
+		// spelling of the address rather than whatever form arrived.
+		let addresses = addresses
+			.iter()
+			.map(|address| {
+				address
+					.parse::<std::net::IpAddr>()
+					.map(|parsed| parsed.to_string())
+					.map_err(|_| miette!("{address:?} is not an IP address"))
+			})
+			.collect::<Result<Vec<String>>>()?;
+
 		let client = ctx
 			.canopy_client
 			.as_ref()
@@ -728,23 +757,33 @@ impl BackgroundTask for CanopyNames {
 			endpoint("status", self.state.clone(), |state, _ctx| {
 				Box::pin(async move { Ok(state.report().await) })
 			}),
-			endpoint("collect", self.state.clone(), |state, ctx| {
+			guarded_endpoint("collect", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
 					state.pass(&ctx, true).await?;
 					*state.last_pass.write().await = Some(Timestamp::now());
 					Ok(state.report().await)
 				})
 			}),
-			endpoint("request", self.state.clone(), |state, ctx| {
+			guarded_endpoint("request", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
 					let name = required(&ctx, "name")?;
 					certs::plausible_name(&name)?;
-					state.wanted.lock().await.insert(name.to_ascii_lowercase());
+					let name = name.to_ascii_lowercase();
+					// A name outside the group's domains is refused rather than
+					// recorded: a pass would drop it, and the operator needs to
+					// be told that rather than handed a report that looks like
+					// the ask was taken.
+					if !state.entitlement(&ctx).await?.covers(&name) {
+						return Err(miette!(
+							"{name} is not within a domain this server's group controls"
+						));
+					}
+					state.wanted.lock().await.insert(name);
 					state.pass(&ctx, false).await?;
 					Ok(state.report().await)
 				})
 			}),
-			endpoint("dns-register", self.state.clone(), |state, ctx| {
+			guarded_endpoint("dns-register", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
 					let name = required(&ctx, "name")?;
 					let addresses = ctx
@@ -762,7 +801,7 @@ impl BackgroundTask for CanopyNames {
 					Ok(registered(&answer))
 				})
 			}),
-			endpoint("dns-withdraw", self.state.clone(), |state, ctx| {
+			guarded_endpoint("dns-withdraw", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
 					let name = required(&ctx, "name")?;
 					// An empty address list is what withdraws a name: the
@@ -802,7 +841,29 @@ fn endpoint(
 	state: Arc<CertificateState>,
 	run: fn(Arc<CertificateState>, TaskContext) -> BoxFuture<'static, Result<Value>>,
 ) -> TaskEndpoint {
-	let handler: TaskEndpointHandler = Arc::new(move |ctx: TaskContext| {
+	TaskEndpoint::open(name, wrap(state, run))
+}
+
+/// [`endpoint`], for one that changes state: the superuser only, over POST.
+///
+/// Publishing or withdrawing a name changes what the world resolves for a
+/// production deployment, and a request costs the authority an order — neither
+/// is something any process that can reach loopback may ask for.
+///
+/// spec: NAM#commands
+fn guarded_endpoint(
+	name: &'static str,
+	state: Arc<CertificateState>,
+	run: fn(Arc<CertificateState>, TaskContext) -> BoxFuture<'static, Result<Value>>,
+) -> TaskEndpoint {
+	TaskEndpoint::guarded(name, wrap(state, run))
+}
+
+fn wrap(
+	state: Arc<CertificateState>,
+	run: fn(Arc<CertificateState>, TaskContext) -> BoxFuture<'static, Result<Value>>,
+) -> TaskEndpointHandler {
+	Arc::new(move |ctx: TaskContext| {
 		let state = state.clone();
 		Box::pin(async move {
 			match run(state, ctx).await {
@@ -813,8 +874,7 @@ fn endpoint(
 				},
 			}
 		})
-	});
-	TaskEndpoint { name, handler }
+	})
 }
 
 #[cfg(test)]
@@ -854,12 +914,21 @@ mod tests {
 	}
 
 	async fn hold(state: &CertificateState, name: &str, usable: bool) {
+		hold_until(state, name, usable, None).await;
+	}
+
+	async fn hold_until(
+		state: &CertificateState,
+		name: &str,
+		usable: bool,
+		not_after: Option<Timestamp>,
+	) {
 		state.held.write().await.insert(
 			name.to_owned(),
 			Held {
 				chain: format!("chain for {name}"),
 				key_pem: format!("key for {name}"),
-				not_after: None,
+				not_after,
 				usable,
 				revoked: !usable,
 			},
@@ -930,6 +999,63 @@ mod tests {
 		assert_eq!(state.wanted.lock().await.len(), 1);
 	}
 
+	/// `usable` is what canopy last said, and nothing re-evaluates it as time
+	/// passes. A chain that has since expired is a decline — which hands the
+	/// name back to Caddy's own issuance — rather than an expired certificate
+	/// served forever because collection stopped.
+	///
+	/// spec: TLSD#declining-and-failing
+	#[tokio::test]
+	async fn a_chain_that_has_expired_since_it_was_collected_is_declined() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+
+		let hour = jiff::SignedDuration::from_hours(1);
+		hold_until(
+			&state,
+			"app.example.com",
+			true,
+			Some(Timestamp::now() + hour),
+		)
+		.await;
+		assert!(state.serve("app.example.com").await.is_some());
+
+		hold_until(
+			&state,
+			"app.example.com",
+			true,
+			Some(Timestamp::now() - hour),
+		)
+		.await;
+		assert!(state.serve("app.example.com").await.is_none());
+	}
+
+	/// A name recorded during a handshake that the entitlement turns out not to
+	/// cover leaves the record as well as the target list: kept, it would make a
+	/// pass due on every tick and spend an entitlement request each time on a
+	/// name that can never be ordered for.
+	#[tokio::test]
+	async fn a_name_the_entitlement_does_not_cover_is_dropped_from_the_record() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		state.note_wanted("app.elsewhere.test").await;
+		assert!(state.pass_due().await);
+
+		let entitlement = state.entitlement.read().await.clone().unwrap();
+		assert!(
+			state
+				.target_names(&detached_ctx(), &entitlement)
+				.await
+				.is_empty()
+		);
+
+		// Nothing is waiting on a pass any more, so the steady interval governs
+		// again rather than every tick making one due.
+		assert!(state.wanted.lock().await.is_empty());
+		*state.last_pass.write().await = Some(Timestamp::now());
+		assert!(!state.pass_due().await);
+	}
+
 	#[tokio::test]
 	async fn a_recorded_name_is_still_subject_to_the_entitlement() {
 		// A handshake cannot conjure an order for a name outside the server's
@@ -942,6 +1068,39 @@ mod tests {
 		let entitlement = state.entitlement.read().await.clone().unwrap();
 		let names = state.target_names(&detached_ctx(), &entitlement).await;
 		assert_eq!(names, vec!["app.example.com".to_string()]);
+	}
+
+	/// Canopy publishes what it is handed, so an address that is not one is
+	/// refused here rather than at whichever client happened to call: the daemon
+	/// is the component holding the DNS grant.
+	///
+	/// spec: NAM#registering-addresses-for-a-name
+	#[tokio::test]
+	async fn an_address_that_is_not_an_ip_is_refused_before_canopy_sees_it() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+
+		let err = state
+			.register_name(
+				&detached_ctx(),
+				"app.example.com",
+				vec!["203.0.113.5".into(), "not-an-address".into()],
+			)
+			.await
+			.unwrap_err();
+		assert!(
+			why(&err).contains("not-an-address"),
+			"the offending value must be named: {}",
+			why(&err)
+		);
+
+		// Well-formed addresses get past the parse and fail for the reason they
+		// should: this host has no DNS grant and no canopy client.
+		let err = state
+			.register_name(&detached_ctx(), "app.example.com", vec!["::1".into()])
+			.await
+			.unwrap_err();
+		assert!(!why(&err).contains("is not an IP address"), "{}", why(&err));
 	}
 
 	/// A grant withdrawn under an incident, and a pause, both stop new requests

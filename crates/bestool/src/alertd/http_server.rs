@@ -13,7 +13,7 @@ use tracing::{Level, error, info, warn};
 use crate::alertd::{
 	context::InternalContext,
 	daemon::DaemonControl,
-	tasks::{BackgroundTask, TaskEndpointHandler},
+	tasks::{BackgroundTask, TaskEndpoint},
 };
 
 mod endpoints;
@@ -68,7 +68,13 @@ pub async fn start_server(
 		.route("/seedling", get(handle_seedling))
 		.route("/reload", post(handle_reload))
 		.route("/restart", post(handle_restart))
-		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))
+		// Both methods reach the same dispatch, which refuses a GET to a guarded
+		// endpoint: an endpoint that changes state must not be triggerable by a
+		// cross-origin `<img src>`, which can only issue a GET.
+		.route(
+			"/tasks/{task}/{endpoint}",
+			get(handle_task_endpoint).post(handle_task_endpoint),
+		)
 		// Caddy asks this during a TLS handshake, so it sits at the root rather
 		// than under /tasks: the path goes in a Caddyfile an operator writes.
 		.route(
@@ -162,7 +168,7 @@ pub async fn start_server(
 
 fn collect_task_endpoints(
 	tasks: &[Arc<dyn BackgroundTask>],
-) -> HashMap<(String, String), TaskEndpointHandler> {
+) -> HashMap<(String, String), TaskEndpoint> {
 	let mut map = HashMap::new();
 	for task in tasks {
 		let task_name = task.name();
@@ -179,9 +185,10 @@ fn collect_task_endpoints(
 				task = task_name,
 				endpoint = endpoint.name,
 				path = %format!("/tasks/{task_name}/{}", endpoint.name),
+				guarded = endpoint.guarded,
 				"mounting task endpoint"
 			);
-			map.insert(key, endpoint.handler);
+			map.insert(key, endpoint);
 		}
 	}
 	map

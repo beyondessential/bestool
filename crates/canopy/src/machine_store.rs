@@ -43,6 +43,17 @@ const KDF_CONTEXT: &str = "bestool canopy-registration v1 (machine-id)";
 #[cfg(unix)]
 pub const FILE_MODE: u32 = 0o640;
 
+/// Unix mode for a machine-bound file nothing unprivileged reads.
+///
+/// [`FILE_MODE`]'s group read is granted for state an unprivileged run needs to
+/// see. A file holding private keys is not that: the passphrase unlocking it is
+/// derived from the machine id, which is world-readable on Linux, so group read
+/// on the ciphertext is group access to the keys themselves. Owner only, and no
+/// group inheritance either — the group the config directory carries is the one
+/// being kept out.
+#[cfg(unix)]
+pub const PRIVATE_FILE_MODE: u32 = 0o600;
+
 /// scrypt work factor (`N = 2^WORK_FACTOR`).
 ///
 /// The machine passphrase is a 256-bit blake3-derived key, so scrypt's
@@ -131,6 +142,42 @@ pub fn scrypt_work_factor(ciphertext: &[u8]) -> Option<u8> {
 /// never sees a half-written file and a failed write leaves the previous
 /// contents intact.
 pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+	write_atomic_with_mode(path, bytes, Sharing::WithDirGroup).await
+}
+
+/// [`write_atomic`], for a file only its owner may read.
+///
+/// Written [`PRIVATE_FILE_MODE`] and left with the group it was created under,
+/// rather than the config directory's.
+pub async fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
+	write_atomic_with_mode(path, bytes, Sharing::OwnerOnly).await
+}
+
+/// Who a machine-bound file is readable by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sharing {
+	/// [`FILE_MODE`], carrying the config directory's group.
+	WithDirGroup,
+	/// [`PRIVATE_FILE_MODE`], with no group inheritance.
+	OwnerOnly,
+}
+
+impl Sharing {
+	#[cfg(unix)]
+	fn mode(self) -> u32 {
+		match self {
+			Self::WithDirGroup => FILE_MODE,
+			Self::OwnerOnly => PRIVATE_FILE_MODE,
+		}
+	}
+}
+
+async fn write_atomic_with_mode(path: &Path, bytes: &[u8], sharing: Sharing) -> Result<()> {
+	// A mode is a unix concern; on Windows what a file is readable by is the
+	// directory's ACL inheritance, which this does not set either way.
+	#[cfg(not(unix))]
+	let _ = sharing;
+
 	let tmp = path.with_extension("tmp");
 	let mut opts = tokio::fs::OpenOptions::new();
 	opts.write(true).create(true).truncate(true);
@@ -141,7 +188,7 @@ pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 	}
 	#[cfg(unix)]
 	{
-		opts.mode(FILE_MODE);
+		opts.mode(sharing.mode());
 	}
 	let mut f = opts
 		.open(&tmp)
@@ -157,12 +204,14 @@ pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 	// the permissions explicitly to cover pre-existing tmp files and
 	// restrictive service umasks.
 	#[cfg(unix)]
-	tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(FILE_MODE))
+	tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(sharing.mode()))
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("setting permissions on {}", tmp.display()))?;
 	#[cfg(unix)]
-	inherit_dir_group(&tmp).await;
+	if sharing == Sharing::WithDirGroup {
+		inherit_dir_group(&tmp).await;
+	}
 
 	tokio::fs::rename(&tmp, path)
 		.await
@@ -188,12 +237,29 @@ pub async fn remove_if_present(path: &Path) -> Result<bool> {
 /// far don't need to.
 #[cfg(unix)]
 pub async fn repair_mode(path: &Path) {
-	if let Ok(meta) = tokio::fs::metadata(path).await
-		&& meta.permissions().mode() & 0o777 != FILE_MODE
-	{
-		let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(FILE_MODE)).await;
-	}
+	set_mode(path, FILE_MODE).await;
 	inherit_dir_group(path).await;
+}
+
+/// Bring a private machine-bound file's mode back to [`PRIVATE_FILE_MODE`], for
+/// one written before group read was taken away from it.
+///
+/// Narrows where [`repair_mode`] widens, and leaves the group alone: the point
+/// is to take the shared group's read back off a file holding keys.
+#[cfg(unix)]
+pub async fn repair_mode_private(path: &Path) {
+	set_mode(path, PRIVATE_FILE_MODE).await;
+}
+
+/// Best-effort: only the owner can chmod, and unprivileged readers that get this
+/// far don't need to.
+#[cfg(unix)]
+async fn set_mode(path: &Path, mode: u32) {
+	if let Ok(meta) = tokio::fs::metadata(path).await
+		&& meta.permissions().mode() & 0o777 != mode
+	{
+		let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await;
+	}
 }
 
 /// Give a directory the group of the one above it, for state kept in a

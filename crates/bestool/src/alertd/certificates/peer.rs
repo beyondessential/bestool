@@ -80,8 +80,20 @@ pub fn resolve_user(spec: &str) -> Result<u32> {
 /// the end it accepted on: together they name the caller's socket in the
 /// kernel's table.
 #[cfg(target_os = "linux")]
-pub fn caller_permitted(permitted: Permitted, peer: SocketAddr, local: SocketAddr) -> Result<()> {
-	let uid = socket_owner(peer, local)?;
+pub async fn caller_permitted(
+	permitted: Permitted,
+	peer: SocketAddr,
+	local: SocketAddr,
+) -> Result<()> {
+	// Reading the kernel's table is synchronous I/O, and the table is generated
+	// on read by walking the host's socket hash buckets — so on a Caddy fronting
+	// thousands of connections it is both large and slow to produce. This sits
+	// on the TLS handshake path, which Caddy applies no timeout to: doing it on
+	// an executor thread would have one handshake stall every other task sharing
+	// it, and a burst of handshakes multiplies that.
+	let uid = tokio::task::spawn_blocking(move || socket_owner(peer, local))
+		.await
+		.map_err(|err| miette!("looking up the caller's socket did not complete: {err}"))??;
 	if permitted.admits(uid) {
 		Ok(())
 	} else {
@@ -92,7 +104,7 @@ pub fn caller_permitted(permitted: Permitted, peer: SocketAddr, local: SocketAdd
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn caller_permitted(
+pub async fn caller_permitted(
 	_permitted: Permitted,
 	_peer: SocketAddr,
 	_local: SocketAddr,
@@ -128,10 +140,20 @@ fn socket_owner(peer: SocketAddr, local: SocketAddr) -> Result<u32> {
 /// socket with `local_address` and `rem_address` as hex `ADDRESS:PORT`, and the
 /// owner's uid in the eighth field.
 fn find_owner(table: &str, want_local: SocketAddr, want_remote: SocketAddr) -> Option<u32> {
+	// The caller's port is what tells its row from every other socket on the
+	// host, and the table prints ports as four upper-case hex digits — so the
+	// test is a string compare against the cell's tail. Addresses are parsed
+	// only for the rows that clear it, which keeps the scan off the addresses of
+	// the thousands of connections a busy front end holds.
+	let port_tag = format!(":{:04X}", want_local.port());
 	table.lines().skip(1).find_map(|line| {
 		let mut fields = line.split_whitespace();
 		let _slot = fields.next()?;
-		let local = parse_address(fields.next()?)?;
+		let local_cell = fields.next()?;
+		if !local_cell.ends_with(&port_tag) {
+			return None;
+		}
+		let local = parse_address(local_cell)?;
 		let remote = parse_address(fields.next()?)?;
 		// st, tx:rx, tr:tm, retrnsmt, then uid.
 		let uid = fields.nth(4)?.parse::<u32>().ok()?;
@@ -166,21 +188,22 @@ fn parse_address(cell: &str) -> Option<SocketAddr> {
 	let (addr, port) = cell.rsplit_once(':')?;
 	let port = u16::from_str_radix(port, 16).ok()?;
 
-	let words: Vec<u32> = addr
-		.as_bytes()
-		.chunks(8)
-		.map(|chunk| u32::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok())
-		.collect::<Option<Vec<u32>>>()?;
-
-	let ip = match words.len() {
-		1 => std::net::IpAddr::from(words[0].to_le_bytes()),
-		4 => {
-			let mut bytes = [0u8; 16];
-			for (i, word) in words.iter().enumerate() {
-				bytes[i * 4..(i + 1) * 4].copy_from_slice(&word.to_le_bytes());
-			}
-			std::net::IpAddr::from(bytes)
+	// One stack buffer rather than a heap allocation, because this runs against
+	// rows of a table as long as the host's socket count.
+	let mut bytes = [0u8; 16];
+	let mut filled = 0;
+	for chunk in addr.as_bytes().chunks(8) {
+		if chunk.len() != 8 || filled == bytes.len() {
+			return None;
 		}
+		let word = u32::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+		bytes[filled..filled + 4].copy_from_slice(&word.to_le_bytes());
+		filled += 4;
+	}
+
+	let ip = match filled {
+		4 => std::net::IpAddr::from([bytes[0], bytes[1], bytes[2], bytes[3]]),
+		16 => std::net::IpAddr::from(bytes),
 		_ => return None,
 	};
 	Some(SocketAddr::new(ip, port))

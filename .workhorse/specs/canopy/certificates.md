@@ -37,7 +37,9 @@ Canopy refuses a request whose signing request carries any other name rather tha
 
 Keys are held in a machine-bound encrypted store alongside the device identity, keyed by a passphrase derived from the host's machine id, so no private key is at rest in plaintext and the store cannot be read on a different machine.
 One store holds every name's key.
+The store is readable only by its owner, because the passphrase that unlocks it is derived from the machine id and the machine id is readable by anyone on the host: read access to the file is read access to every key in it.
 Collected chains are held beside it in the clear, a chain being public, so a collection that lands rewrites a plain file rather than the encrypted store.
+The chains are readable by the group owning the configuration directory, so an unprivileged check grades them; the key store is not.
 
 Keys outlive a daemon restart, so a restart collects an order already placed rather than placing a new one.
 
@@ -93,3 +95,6 @@ A pause is Canopy's to lift and no length of pause is escalated from here, so a 
 
 `bestool canopy certs` reaches the running daemon over its HTTP interface.
 It reports the certificates Canopy holds for this server, requests a name, and runs a collection without waiting for the schedule.
+
+Requesting a name and running a collection spend orders at the authority, so they are refused unless run by the superuser; reporting what this server holds needs no privilege.
+Requesting a name outside the domains the group controls is refused rather than reported as taken, because a pass would drop it.
