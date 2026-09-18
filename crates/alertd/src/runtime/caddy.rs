@@ -33,8 +33,10 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::debug;
 use x509_parser::prelude::*;
 
-use super::{Certificate, HttpRuntime, TrafficCounters, TrafficSource, Unavailable};
-use crate::checks::fmt_chain;
+use super::{
+	Certificate, CertificateSource, HttpRuntime, TrafficCounters, TrafficSource, Unavailable,
+};
+use crate::{checks::fmt_chain, sweep_cache::SweepCache};
 
 const METRICS_URL: &str = "http://localhost:2019/metrics";
 const CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
@@ -65,11 +67,15 @@ const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 pub struct CaddyRuntime {
 	/// Shared with the checks so TCP connections stay warm between ticks.
 	http: reqwest::Client,
+	/// The sweep's shared readings. Caddy's configuration and the collected
+	/// chains are the machine's, and one of these exists per application, so
+	/// without this a two-application host fetches and parses both twice.
+	sweep: Arc<SweepCache>,
 }
 
 impl CaddyRuntime {
-	pub fn new(http: reqwest::Client) -> Self {
-		Self { http }
+	pub fn new(http: reqwest::Client, sweep: Arc<SweepCache>) -> Self {
+		Self { http, sweep }
 	}
 
 	/// Caddy's own view of whether it counts requests.
@@ -145,7 +151,7 @@ impl HttpRuntime for CaddyRuntime {
 	}
 
 	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-		read_certificates(&self.http).await
+		read_certificates(&self.http, &self.sweep).await
 	}
 }
 
@@ -156,8 +162,11 @@ impl HttpRuntime for CaddyRuntime {
 /// those would have a check alert on something nothing serves. So the config is
 /// read first, then only managed certificates whose subjects are still active,
 /// plus any the config loads by hand.
-async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>, Unavailable> {
-	let Some(config) = fetch_admin_config(client).await else {
+async fn read_certificates(
+	client: &reqwest::Client,
+	sweep: &SweepCache,
+) -> Result<Vec<Certificate>, Unavailable> {
+	let Some(config) = sweep.caddy_config(client).await else {
 		return Err(Unavailable::new(
 			"could not read the caddy admin API at localhost:2019",
 		));
@@ -168,16 +177,29 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 	// cert) and any manually-loaded cert files is blocking I/O — on Windows each
 	// read is antivirus-scanned. Run it on the blocking pool so it can't stall
 	// other checks sharing the executor.
-	let found = tokio::task::spawn_blocking(move || gather_certs(&active, &config))
+	let scan_active = active.clone();
+	let scan_config = Arc::clone(&config);
+	let found = tokio::task::spawn_blocking(move || gather_certs(&scan_active, &scan_config))
 		.await
 		.unwrap_or_else(|err| {
 			debug!(%err, "caddy certificate scan task did not complete");
 			Vec::new()
-		});
+		})
+		.into_iter()
+		.map(|(origin, cert)| (origin, CertificateSource::FrontEnd, cert))
+		.collect::<Vec<_>>();
+
+	// The chains canopy issued are in force too, and Caddy's store holds none
+	// of them: it is handed each one during the handshake rather than keeping
+	// it. Without them a canopy-served host would grade as having no certificate
+	// at all for the names it actually answers on.
+	//
+	// spec: CHK-CCT#certificates-from-canopy
+	let collected = canopy_chains(sweep, &active).await;
 
 	let mut out: Vec<Certificate> = Vec::new();
 	let mut seen: HashSet<Vec<u8>> = HashSet::new();
-	for (origin, cert) in found {
+	for (origin, source, cert) in found.into_iter().chain(collected) {
 		// The same certificate is reachable through several subjects and
 		// sources; a substrate reports each one once.
 		if !seen.insert(cert.der.clone()) {
@@ -195,6 +217,7 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 		};
 
 		out.push(Certificate {
+			source,
 			names: cert.sans,
 			origin,
 			not_before,
@@ -366,6 +389,40 @@ fn gather_certs(active: &BTreeSet<String>, config: &Value) -> Vec<(String, DiskC
 	certs
 }
 
+/// The chains the daemon collected from canopy, for the names still active in
+/// Caddy's configuration.
+///
+/// Read from the chain store on disk rather than asked of the running daemon, so
+/// a one-shot `bestool tamanu doctor` grades them too — and so a daemon that has
+/// stopped collecting does not also stop them being graded.
+///
+/// spec: CHK-CCT#certificates-from-canopy
+async fn canopy_chains(
+	sweep: &SweepCache,
+	active: &BTreeSet<String>,
+) -> Vec<(String, CertificateSource, DiskCert)> {
+	// Read and parsed once for the sweep, on the blocking pool: reading a
+	// directory of certificates and parsing X.509 is the same kind of work the
+	// Caddy store scan above is deliberately kept off the executor for.
+	sweep
+		.parsed_canopy_chains()
+		.await
+		.iter()
+		.filter(|(_, cert)| {
+			// A chain for a name Caddy no longer serves is not in force, the
+			// same reasoning that keeps Caddy's own store from being the list.
+			cert.covers_any(active)
+		})
+		.map(|(name, cert)| {
+			(
+				format!("canopy: {name}"),
+				CertificateSource::Canopy,
+				cert.clone(),
+			)
+		})
+		.collect()
+}
+
 /// caddy's `certificates/` store, probed at the well-known data-dir locations
 /// (the data dir belongs to the caddy service user, not ours, so we can't just
 /// ask `dirs`). caddy's layout is `<data_dir>/certificates`, and `<data_dir>`
@@ -417,7 +474,8 @@ fn collect_crt_files(dir: &Path, out: &mut Vec<PathBuf>) {
 	}
 }
 
-struct DiskCert {
+#[derive(Clone)]
+pub struct DiskCert {
 	sans: Vec<String>,
 	not_before: i64,
 	not_after: i64,
@@ -427,7 +485,7 @@ struct DiskCert {
 impl DiskCert {
 	/// Whether any of this cert's SANs is one of the active subjects, treating
 	/// wildcard SANs (and wildcard subjects) appropriately.
-	fn covers_any(&self, active: &BTreeSet<String>) -> bool {
+	pub(crate) fn covers_any(&self, active: &BTreeSet<String>) -> bool {
 		self.sans
 			.iter()
 			.any(|san| active.iter().any(|subj| name_matches(san, subj)))
@@ -490,7 +548,7 @@ fn keep_live_certs(certs: Vec<(String, DiskCert)>) -> Vec<(String, DiskCert)> {
 }
 
 /// Parse a leaf certificate from PEM bytes (the first cert block).
-fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
+pub(crate) fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
 	let (_, pem) = parse_x509_pem(pem).ok()?;
 	let cert = pem.parse_x509().ok()?;
 	let sans = cert
@@ -519,7 +577,7 @@ fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
 /// Fetch caddy's live config from the local admin API. `None` on any error
 /// (admin API disabled, unreachable, or non-2xx) — the caller then skips, since
 /// without the config it can't tell which certs are still in use.
-async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Value> {
+pub(crate) async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Value> {
 	let resp = client
 		.get("http://localhost:2019/config/")
 		.timeout(Duration::from_secs(3))
@@ -535,7 +593,7 @@ async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Valu
 /// Every hostname caddy considers active, gathered from the config: route
 /// `host` matchers (anywhere, including subroutes), plus TLS `automate` and
 /// automation-policy `subjects`. Lower-cased for case-insensitive matching.
-fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
+pub(crate) fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
 	fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
 		match value {
 			serde_json::Value::Object(map) => {
@@ -919,6 +977,7 @@ other_metric{foo=\"bar\"} 7
 		let now = Timestamp::from_second(1_700_000_000).unwrap();
 		let mut certs = vec![
 			Certificate {
+				source: CertificateSource::FrontEnd,
 				names: vec!["*.example.com".to_string()],
 				origin: "/store/wild.crt".into(),
 				not_before: now,
@@ -927,6 +986,7 @@ other_metric{foo=\"bar\"} 7
 				served_leaf: None,
 			},
 			Certificate {
+				source: CertificateSource::FrontEnd,
 				names: Vec::new(),
 				origin: "/store/unnamed.crt".into(),
 				not_before: now,

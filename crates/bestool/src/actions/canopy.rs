@@ -14,6 +14,9 @@ use miette::Result;
 #[cfg(any(feature = "canopy-backup", feature = "canopy-restore"))]
 pub mod space;
 
+#[cfg(feature = "canopy-names")]
+mod names;
+
 use super::Context;
 
 /// Interact with Canopy.
@@ -37,6 +40,10 @@ super::subcommands! {
 	export => Export(ExportArgs),
 	#[cfg(feature = "canopy-import")]
 	import => Import(ImportArgs),
+	#[cfg(feature = "canopy-names")]
+	certs => Certs(CertsArgs),
+	#[cfg(feature = "canopy-names")]
+	dns => Dns(DnsArgs),
 	#[cfg(feature = "canopy-tags")]
 	tags => Tags(TagsArgs),
 	#[cfg(feature = "canopy-backup")]

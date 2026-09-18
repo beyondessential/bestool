@@ -216,6 +216,7 @@ canopy = [ # enable all canopy subcommands
 	"canopy-register",
 	"canopy-export",
 	"canopy-import",
+	"canopy-names",
 	"canopy-tags",
 	"canopy-backup",
 	"canopy-restore",
@@ -224,6 +225,10 @@ canopy = [ # enable all canopy subcommands
 canopy-register = ["__canopy", "tamanu-config", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:bestool-postgres", "dep:p256", "dep:privilege"]
 canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
+# Asking canopy for DNS records and TLS certificates. The daemon holds the
+# entitlement, the keys and the collected chains, so these commands reach it
+# over its HTTP interface rather than opening a canopy client of their own.
+canopy-names = ["__canopy", "alertd"]
 canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration", "dep:comfy-table", "dep:owo-colors"]
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`

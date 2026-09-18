@@ -1,0 +1,94 @@
+# Ask Canopy for names and certificates — test cases
+
+Coverage owed by this card. An unticked case is a scenario not yet covered, not one decided against.
+
+## End to end
+
+- [ ] A server with the TLS grant, on a name inside its group's domains, obtains a certificate from Canopy and Caddy serves it (verifies spec: TLS).
+- [ ] A server issuing this way makes no DNS-zone access of its own (verifies spec: TLS).
+
+## Precedence and fallback
+
+- [ ] With a chain held for a name, Caddy serves Canopy's and places no order of its own (verifies spec: TLSD#precedence-over-caddys-own-issuance).
+- [ ] With no chain held, the endpoint declines and Caddy issues for the name itself (verifies spec: TLSD#precedence-over-caddys-own-issuance).
+- [ ] A name served from Canopy and a name that fell back to Caddy coexist on one host (verifies spec: TLSD).
+- [x] The endpoint declines rather than errors for each case it cannot serve: name out of domain, nothing collected yet, chain revoked, chain expired (verifies spec: TLSD#declining-and-failing).
+- [x] A held chain keeps being served after the TLS grant is withdrawn, and while Canopy reports the server paused (verifies spec: TLSD#declining-and-failing).
+- [ ] A name no site is configured for never reaches the endpoint (verifies spec: TLSD#caddy-configuration).
+
+## Keys and requests
+
+- [x] The private key is generated on the machine and appears in no request body; the request carries a signing request only (verifies spec: TLS#keys).
+- [ ] A signing request naming more than the one name is refused rather than trimmed (verifies spec: TLS#keys).
+- [x] Each name has its own key, so replacing one name's key leaves the other names' certificates untouched (verifies spec: TLS#keys).
+- [x] Keys survive a daemon restart: a restart collects an order already placed rather than placing a new one (verifies spec: TLS#keys).
+- [ ] The key store cannot be read on a different machine (verifies spec: TLS#keys).
+
+## Ordering and collection
+
+- [ ] A first request answers pending and a later collection lands the chain (verifies spec: TLS#requesting-and-collecting).
+- [x] A name whose order is pending is retried sooner than the steady-state schedule, and stops being retried once it resolves (verifies spec: TLS#requesting-and-collecting).
+- [ ] A repeated request for a name and key Canopy already holds is answered from what it holds rather than ordering again (verifies spec: TLS#requesting-and-collecting).
+- [ ] A name appearing in Caddy's active subjects is ordered before any client arrives (verifies spec: TLS#which-names-are-certified).
+- [x] A Caddy subject the entitlement does not cover is not ordered for, and a name the entitlement covers that Caddy does not serve is not ordered for either (verifies spec: TLS#which-names-are-certified).
+- [x] A handshake for a configured in-domain name with nothing held records the name and an order follows (verifies spec: TLS#which-names-are-certified).
+- [x] A handshake for a configured name outside the entitlement records no order (verifies spec: TLS#which-names-are-certified).
+- [ ] A renewal replaces the chain without the served certificate lapsing, and without a Caddy reload (verifies spec: TLS#renewal).
+- [ ] Collection keeps up with the shortest lifetime Canopy issues under, and expiry judgements scale with each chain's own lifetime rather than a fixed duration (verifies spec: TLS#renewal).
+
+## Entitlement
+
+- [x] A name outside the group's domains is not acted on (verifies spec: NAM#entitlement).
+- [x] A machine answered with an applications list acts on the union of their domains and grants (verifies spec: NAM#machines-hosting-several-applications).
+- [ ] A request the union produced that Canopy refuses — no application holds the name, or the holding one lacks the grant or is paused — is reported as given rather than retried (verifies spec: NAM#machines-hosting-several-applications).
+- [x] A server Canopy reports as paused makes no requests until the pause lifts (verifies spec: NAM#entitlement).
+- [x] A server with no grants receives an empty answer rather than an error (verifies spec: NAM#entitlement).
+
+## Revocation, key replacement, withdrawal
+
+- [ ] A revoked certificate stops being served at once and a replacement is requested (verifies spec: TLS#revocation-and-key-replacement).
+- [ ] Revocation pauses the server, so the replacement request is refused; the server keeps asking under the ordinary schedule rather than treating the refusal as a fault, and other names stay served (verifies spec: TLS#revocation-and-key-replacement).
+- [ ] A certificate requiring its key replaced gets a new key pair before the next request, without waiting on an operator (verifies spec: TLS#revocation-and-key-replacement).
+- [x] A server whose TLS grant is withdrawn stops requesting, keeps serving the chains it holds, and reports nothing (verifies spec: TLS#when-the-grant-is-absent-or-the-server-is-paused).
+- [x] A paused server stops requesting and keeps serving the chains it holds (verifies spec: TLS#when-the-grant-is-absent-or-the-server-is-paused).
+- [ ] A server that never held a grant and one that has lost it keep and report the same thing (verifies spec: TLS#when-the-grant-is-absent-or-the-server-is-paused).
+- [ ] A reported error from Canopy is surfaced rather than retried into (verifies spec: TLS#requesting-and-collecting).
+
+## The delivery endpoint
+
+- [x] A held chain is served while Canopy is unreachable, the answer coming from memory (verifies spec: TLSD#the-certificate-endpoint).
+- [ ] A stalled Canopy call does not stall a handshake (verifies spec: TLSD#the-certificate-endpoint).
+- [x] A caller that is not the superuser or the configured permitted user is refused, and the refusal is a failure rather than a decline (verifies spec: TLSD#who-may-fetch-a-certificate).
+
+## DNS
+
+- [ ] Registering a name publishes an A record per IPv4 address and an AAAA record per IPv6 address (verifies spec: NAM#registering-addresses-for-a-name).
+- [ ] Re-registering a name replaces the addresses registered before (verifies spec: NAM#registering-addresses-for-a-name).
+- [ ] Registering a name with no addresses withdraws it (verifies spec: NAM#registering-addresses-for-a-name).
+- [ ] A registration is answered before the zone has caught up, reporting what has been published so far (verifies spec: NAM#registering-addresses-for-a-name).
+- [ ] Registering a name another server already holds is refused, and the refusal is reported (verifies spec: NAM#registering-addresses-for-a-name).
+
+## Commands
+
+- [ ] `bestool canopy certs` reports what Canopy holds, requests a name, and runs a collection off-schedule (verifies spec: TLS#commands).
+- [ ] `bestool canopy dns` registers, withdraws, and reports registrations with their published state (verifies spec: NAM#commands).
+- [x] Both reach a running daemon, and report usefully when none is running.
+
+## Healthchecks
+
+- [ ] The check reports for an application rather than the machine, running once per application on the host (verifies spec: CHK-CCO#which-subject-it-reports-for).
+- [ ] On a machine hosting two applications, a name is graded under the application Canopy says declares it, and each application's result is filed separately (verifies spec: CHK-CCO#which-names-it-grades).
+- [ ] One application skipping for a withdrawn grant or a pause leaves the others on the machine graded (verifies spec: CHK-CCO#when-it-skips).
+- [x] The check fails when a name it grades has no chain collected for it (verifies spec: CHK-CCO#outcomes).
+- [x] The check fails when a collected chain is nearer expiry than renewal should have allowed, the threshold scaling with that chain's own lifetime (verifies spec: CHK-CCO#outcomes).
+- [x] A name holding a usable chain passes while a renewal is under way behind it (verifies spec: CHK-CCO#outcomes).
+- [x] A Caddy subject the entitlement does not cover is not graded (verifies spec: CHK-CCO#which-names-it-grades).
+- [ ] The check skips, naming the precondition, with no TLS grant and while paused (verifies spec: CHK-CCO#when-it-skips).
+- [ ] A revocation quietens the check for its own application, by way of the pause it causes, and leaves the others reporting (verifies spec: CHK-CCO#when-it-skips).
+- [ ] A skip closes an issue the check had already opened (verifies spec: CHK-CCO#when-it-skips).
+- [x] A host serving every name from Caddy's own issuance is distinguishable from one Canopy is serving (verifies spec: CHK-CCT#certificates-from-canopy).
+
+## Operational
+
+- [ ] Deploying the Caddyfile shape on a host that still holds its DNS credential leaves the host working throughout.
+- [ ] Withdrawing the DNS credential afterwards leaves Canopy-served names working.
