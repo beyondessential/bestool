@@ -553,7 +553,7 @@ mod tests {
 	/// stop.
 	#[cfg(unix)]
 	#[tokio::test]
-	async fn a_collected_chain_carries_the_config_directorys_group() {
+	async fn a_collected_chain_carries_the_config_directory_group() {
 		use std::os::unix::fs::MetadataExt as _;
 
 		let dir = tempfile::tempdir().unwrap();
