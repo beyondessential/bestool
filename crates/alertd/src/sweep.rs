@@ -364,6 +364,7 @@ fn tamanu_context(
 	tamanu: &Option<ResolvedTamanu>,
 	pool: &Option<bestool_postgres::pool::PgPool>,
 	http: &reqwest::Client,
+	canopy: &Option<Arc<CanopyClient>>,
 ) -> checks::TamanuCx {
 	let tamanu = tamanu.as_ref();
 	// `0.0.0` is the sweep's marker for a version it could not resolve, which
@@ -377,6 +378,7 @@ fn tamanu_context(
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
 		http: http.clone(),
+		canopy: canopy.clone(),
 		runtime: tamanu_runtime(app, &version),
 		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(http.clone())),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
@@ -868,7 +870,7 @@ pub async fn perform_sweep(
 	// a machine fact — and nothing scoped to an application.
 	let machine_cx = checks::MachineCx::builder()
 		.http(http_client.clone())
-		.maybe_canopy(canopy)
+		.maybe_canopy(canopy.clone())
 		.maybe_tamanu(tamanu.as_ref().map(|t| checks::MachineTamanu {
 			version: t.version.clone(),
 			root: t.root.clone(),
@@ -898,7 +900,7 @@ pub async fn perform_sweep(
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				pg_cxs.insert(app.clone(), cx);
 			} else {
-				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &http_client);
+				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &http_client, &canopy);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				tamanu_cxs.insert(app.clone(), cx);
 			}
@@ -1600,6 +1602,7 @@ mod tests {
 			&tamanu,
 			&None,
 			&http,
+			&None,
 		);
 		assert_eq!(deployment.install_root, Some(PathBuf::from("/opt/tamanu")));
 		assert!(deployment.installed_config().is_some());

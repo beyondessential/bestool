@@ -59,6 +59,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod reporting_schema;
 pub mod service_resources;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
@@ -189,6 +190,12 @@ pub struct TamanuCx {
 	///
 	/// spec: SUB#check-state
 	pub store: Arc<dyn CheckStore>,
+	/// Shared canopy client, a parameter of the sweep rather than of the
+	/// application, as [`http`](Self::http) is. It serves a check whose
+	/// judgement is canopy's to make: what the application has is read from the
+	/// application, and what it should have is canopy's answer. `None` on a
+	/// one-shot local sweep with no canopy connectivity.
+	pub canopy: Option<Arc<CanopyClient>>,
 }
 
 /// What a Postgres check is handed: the cluster it reports for, and how to
@@ -555,6 +562,15 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version::run, postgres, off_wire),
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
+		// Its heal applies the schema canopy offers, the one write any check makes
+		// to Tamanu's database.
+		entry!(
+			"reporting_schema",
+			reporting_schema::run,
+			tamanu_app,
+			(|ctx| Box::pin(reporting_schema::heal(ctx))),
+			(heal::DEFAULT_MIN_INTERVAL)
+		),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
@@ -743,6 +759,7 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
+			canopy: None,
 		})
 	}
 
@@ -760,6 +777,7 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
+			canopy: None,
 		}
 	}
 
@@ -868,6 +886,7 @@ mod tests {
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
 			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
+			canopy: None,
 		}
 	}
 

@@ -132,6 +132,10 @@ async fn status_request_matches_spec() {
 		],
 		"hostname": "test-host",
 		"pg_version": "16.4",
+		// Canopy reads this one to say which reporting schema a server is on.
+		// It rides the free-form extras, so this guards against canopy
+		// tightening `additionalProperties` under us.
+		"reportingSchemaVersion": "2.60.0",
 	});
 	assert_valid(
 		spec,
