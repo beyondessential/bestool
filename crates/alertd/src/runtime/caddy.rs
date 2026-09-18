@@ -36,7 +36,7 @@ use x509_parser::prelude::*;
 use super::{
 	Certificate, CertificateSource, HttpRuntime, TrafficCounters, TrafficSource, Unavailable,
 };
-use crate::checks::fmt_chain;
+use crate::{checks::fmt_chain, sweep_cache::SweepCache};
 
 const METRICS_URL: &str = "http://localhost:2019/metrics";
 const CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
@@ -67,11 +67,15 @@ const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 pub struct CaddyRuntime {
 	/// Shared with the checks so TCP connections stay warm between ticks.
 	http: reqwest::Client,
+	/// The sweep's shared readings. Caddy's configuration and the collected
+	/// chains are the machine's, and one of these exists per application, so
+	/// without this a two-application host fetches and parses both twice.
+	sweep: Arc<SweepCache>,
 }
 
 impl CaddyRuntime {
-	pub fn new(http: reqwest::Client) -> Self {
-		Self { http }
+	pub fn new(http: reqwest::Client, sweep: Arc<SweepCache>) -> Self {
+		Self { http, sweep }
 	}
 
 	/// Caddy's own view of whether it counts requests.
@@ -147,7 +151,7 @@ impl HttpRuntime for CaddyRuntime {
 	}
 
 	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-		read_certificates(&self.http).await
+		read_certificates(&self.http, &self.sweep).await
 	}
 }
 
@@ -158,8 +162,11 @@ impl HttpRuntime for CaddyRuntime {
 /// those would have a check alert on something nothing serves. So the config is
 /// read first, then only managed certificates whose subjects are still active,
 /// plus any the config loads by hand.
-async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>, Unavailable> {
-	let Some(config) = fetch_admin_config(client).await else {
+async fn read_certificates(
+	client: &reqwest::Client,
+	sweep: &SweepCache,
+) -> Result<Vec<Certificate>, Unavailable> {
+	let Some(config) = sweep.caddy_config(client).await else {
 		return Err(Unavailable::new(
 			"could not read the caddy admin API at localhost:2019",
 		));
@@ -171,7 +178,8 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 	// read is antivirus-scanned. Run it on the blocking pool so it can't stall
 	// other checks sharing the executor.
 	let scan_active = active.clone();
-	let found = tokio::task::spawn_blocking(move || gather_certs(&scan_active, &config))
+	let scan_config = Arc::clone(&config);
+	let found = tokio::task::spawn_blocking(move || gather_certs(&scan_active, &scan_config))
 		.await
 		.unwrap_or_else(|err| {
 			debug!(%err, "caddy certificate scan task did not complete");
@@ -187,7 +195,7 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 	// at all for the names it actually answers on.
 	//
 	// spec: CHK-CCT#certificates-from-canopy
-	let collected = canopy_chains(&active).await;
+	let collected = canopy_chains(sweep, &active).await;
 
 	let mut out: Vec<Certificate> = Vec::new();
 	let mut seen: HashSet<Vec<u8>> = HashSet::new();
@@ -389,24 +397,28 @@ fn gather_certs(active: &BTreeSet<String>, config: &Value) -> Vec<(String, DiskC
 /// stopped collecting does not also stop them being graded.
 ///
 /// spec: CHK-CCT#certificates-from-canopy
-async fn canopy_chains(active: &BTreeSet<String>) -> Vec<(String, CertificateSource, DiskCert)> {
-	let dir = bestool_canopy::certificates::default_dir();
-	let chains = match bestool_canopy::certificates::load_chains(&dir).await {
-		Ok(chains) => chains,
-		Err(err) => {
-			debug!(%err, "could not read the canopy chain store");
-			return Vec::new();
-		}
-	};
-
-	chains
-		.into_iter()
-		.filter_map(|(name, chain)| {
-			let cert = parse_cert(chain.as_bytes())?;
+async fn canopy_chains(
+	sweep: &SweepCache,
+	active: &BTreeSet<String>,
+) -> Vec<(String, CertificateSource, DiskCert)> {
+	// Read and parsed once for the sweep, on the blocking pool: reading a
+	// directory of certificates and parsing X.509 is the same kind of work the
+	// Caddy store scan above is deliberately kept off the executor for.
+	sweep
+		.parsed_canopy_chains()
+		.await
+		.iter()
+		.filter(|(_, cert)| {
 			// A chain for a name Caddy no longer serves is not in force, the
 			// same reasoning that keeps Caddy's own store from being the list.
 			cert.covers_any(active)
-				.then(|| (format!("canopy: {name}"), CertificateSource::Canopy, cert))
+		})
+		.map(|(name, cert)| {
+			(
+				format!("canopy: {name}"),
+				CertificateSource::Canopy,
+				cert.clone(),
+			)
 		})
 		.collect()
 }
@@ -462,7 +474,8 @@ fn collect_crt_files(dir: &Path, out: &mut Vec<PathBuf>) {
 	}
 }
 
-struct DiskCert {
+#[derive(Clone)]
+pub struct DiskCert {
 	sans: Vec<String>,
 	not_before: i64,
 	not_after: i64,
@@ -472,7 +485,7 @@ struct DiskCert {
 impl DiskCert {
 	/// Whether any of this cert's SANs is one of the active subjects, treating
 	/// wildcard SANs (and wildcard subjects) appropriately.
-	fn covers_any(&self, active: &BTreeSet<String>) -> bool {
+	pub(crate) fn covers_any(&self, active: &BTreeSet<String>) -> bool {
 		self.sans
 			.iter()
 			.any(|san| active.iter().any(|subj| name_matches(san, subj)))
@@ -535,7 +548,7 @@ fn keep_live_certs(certs: Vec<(String, DiskCert)>) -> Vec<(String, DiskCert)> {
 }
 
 /// Parse a leaf certificate from PEM bytes (the first cert block).
-fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
+pub(crate) fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
 	let (_, pem) = parse_x509_pem(pem).ok()?;
 	let cert = pem.parse_x509().ok()?;
 	let sans = cert
@@ -564,7 +577,7 @@ fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
 /// Fetch caddy's live config from the local admin API. `None` on any error
 /// (admin API disabled, unreachable, or non-2xx) — the caller then skips, since
 /// without the config it can't tell which certs are still in use.
-async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Value> {
+pub(crate) async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Value> {
 	let resp = client
 		.get("http://localhost:2019/config/")
 		.timeout(Duration::from_secs(3))
@@ -577,25 +590,10 @@ async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Valu
 	resp.json().await.ok()
 }
 
-/// The site addresses caddy is configured to serve, read from its live admin
-/// configuration.
-///
-/// `None` where the configuration could not be read at all, which is how a host
-/// not running caddy is passed over. Exposed because more than the certificate
-/// reading needs it: which names the host answers on is also what says which
-/// names a collection owes a chain for.
-///
-/// spec: CHK-CCO#which-names-it-grades
-pub async fn read_active_subjects(client: &reqwest::Client) -> Option<BTreeSet<String>> {
-	fetch_admin_config(client)
-		.await
-		.map(|config| active_subjects(&config))
-}
-
 /// Every hostname caddy considers active, gathered from the config: route
 /// `host` matchers (anywhere, including subroutes), plus TLS `automate` and
 /// automation-policy `subjects`. Lower-cased for case-insensitive matching.
-fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
+pub(crate) fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
 	fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
 		match value {
 			serde_json::Value::Object(map) => {

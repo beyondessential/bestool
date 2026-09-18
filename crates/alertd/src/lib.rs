@@ -11,6 +11,7 @@ pub mod stat;
 pub mod store;
 pub mod subject;
 pub mod sweep;
+pub mod sweep_cache;
 
 pub use runtime::{CertificateSource, Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};

@@ -23,13 +23,13 @@
 
 use std::collections::BTreeSet;
 
-use bestool_canopy::{certificates as certs, names::AppEntitlement, names::Entitlement};
+use bestool_canopy::{certificates as certs, names::AppEntitlement};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use tracing::debug;
 
 use super::TamanuCx;
-use crate::{Stat, check::Check, runtime::caddy};
+use crate::{Stat, check::Check};
 
 const NAME: &str = "canopy_certificates";
 
@@ -55,14 +55,12 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	};
 
-	let entitlement = match canopy.names_entitlements().await {
-		Ok(wire) => Entitlement::from_wire(&wire),
+	// Asked once for the machine and shared: the answer covers every application
+	// on it, and this check runs once per application.
+	let entitlement = match ctx.sweep.entitlement(canopy).await {
+		Ok(entitlement) => entitlement,
 		Err(err) => {
-			return Check::broken(
-				NAME,
-				"could not ask canopy what this server may do",
-				super::fmt_chain(&err),
-			);
+			return Check::broken(NAME, "could not ask canopy what this server may do", err);
 		}
 	};
 
@@ -98,7 +96,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	}
 
-	let subjects = match caddy::read_active_subjects(&ctx.http).await {
+	let subjects = match ctx.sweep.caddy_subjects(&ctx.http).await {
 		Some(subjects) => subjects,
 		None => {
 			return Check::skip(
@@ -109,14 +107,10 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 	};
 
-	let chains = match certs::load_chains(&certs::default_dir()).await {
+	let chains = match ctx.sweep.canopy_chains().await {
 		Ok(chains) => chains,
 		Err(err) => {
-			return Check::broken(
-				NAME,
-				"could not read the collected chains",
-				format!("{err}"),
-			);
+			return Check::broken(NAME, "could not read the collected chains", err);
 		}
 	};
 

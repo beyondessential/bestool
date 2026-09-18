@@ -34,6 +34,9 @@ That includes a name no application declares on a machine hosting several, which
 The daemon requests across every application's entitlement together ([NAM](names.md#machines-hosting-several-applications)), because nothing on the host ties a Caddy site to an application.
 What it collected is still attributable, since Canopy answers per application, so the agent asking as the machine and reporting per application are not in tension.
 
+The entitlement, Caddy's configuration, and the collected chains are each one answer for the machine, so a sweep takes each once and every application's run of the check reads the same one.
+Two checks in a sweep cannot disagree about what the host serves or holds, and a machine carrying several applications costs one reading rather than one per application.
+
 ## Outcomes
 
 The check fails when a name it grades has no chain collected for it.

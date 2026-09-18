@@ -179,6 +179,12 @@ pub struct TamanuCx {
 	/// machine-wide supervisor describes both.
 	///
 	/// spec: SUB
+	/// Readings this sweep takes once for the machine and shares with every
+	/// application's checks: Canopy's entitlement answer, Caddy's live
+	/// configuration, and the chains the daemon collected. Each is one answer
+	/// for the host, so a check registered per application would otherwise ask
+	/// for it once per application.
+	pub sweep: Arc<crate::sweep_cache::SweepCache>,
 	pub runtime: Arc<dyn ServiceRuntime>,
 	/// What reaches this deployment: how a check reads the traffic served for
 	/// it, whatever fronts it here.
@@ -751,6 +757,7 @@ pub mod test_support {
 			pool: Some(pool),
 			http: reqwest::Client::new(),
 			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -769,6 +776,7 @@ pub mod test_support {
 			pool: None,
 			http: reqwest::Client::new(),
 			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -878,6 +886,7 @@ mod tests {
 			pool: None,
 			http: reqwest::Client::new(),
 			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
 			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
