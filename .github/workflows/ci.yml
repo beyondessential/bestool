@@ -81,6 +81,12 @@ jobs:
       - run: cargo test
         env:
           DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
+      # bestool-tamanu has no default features, so a plain `cargo test` skips
+      # everything behind canopy-registration.
+      - name: bestool-tamanu with canopy-registration
+        run: cargo test -p bestool-tamanu --features canopy-registration
+        env:
+          DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
 
   contract:
     name: Canopy contract

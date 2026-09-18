@@ -157,9 +157,32 @@ fn save_cached_tags_at(path: &Path, tags: &BTreeMap<String, String>) -> Result<(
 	std::fs::write(&tmp, &json)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("writing tags cache tempfile at {}", tmp.display()))?;
+	#[cfg(unix)]
+	inherit_dir_group(&tmp);
 	std::fs::rename(&tmp, path)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))
+}
+
+/// Give `path` the group of the directory it sits in, so the group owning the
+/// config directory can read what the root daemon writes there. A setgid
+/// directory confers it already; one without the bit does not, and a leftover
+/// tempfile keeps the group it was created with. Best-effort, since chowning
+/// needs ownership of the file.
+#[cfg(all(unix, feature = "canopy-registration"))]
+fn inherit_dir_group(path: &Path) {
+	use std::os::unix::fs::MetadataExt as _;
+
+	let Some(dir) = path.parent() else { return };
+	let (Ok(file), Ok(dir)) = (std::fs::metadata(path), std::fs::metadata(dir)) else {
+		return;
+	};
+
+	if file.gid() != dir.gid()
+		&& let Err(err) = std::os::unix::fs::chown(path, None, Some(dir.gid()))
+	{
+		debug!(path = %path.display(), %err, "could not set the tags cache's group");
+	}
 }
 
 /// Resolve this machine's Canopy identity.
@@ -573,6 +596,59 @@ mod tests {
 			.expect_err("unwritable path → must error");
 		let msg = format!("{err}");
 		assert!(msg.contains("machine id"), "{msg}");
+	}
+
+	/// A group this process may chown to, other than `exclude`; `None` when it
+	/// belongs to no other group and so can't set up the mismatch.
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	fn other_gid(exclude: u32) -> Option<u32> {
+		let out = std::process::Command::new("id").arg("-G").output().ok()?;
+		String::from_utf8(out.stdout)
+			.ok()?
+			.split_whitespace()
+			.filter_map(|gid| gid.parse().ok())
+			.find(|gid| *gid != exclude)
+	}
+
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	#[test]
+	fn tags_cache_takes_the_directory_group() {
+		use std::os::unix::fs::MetadataExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(shared) = other_gid(dir_gid) else {
+			return;
+		};
+		std::os::unix::fs::chown(dir.path(), None, Some(shared)).unwrap();
+
+		let path = dir.path().join("tags.json");
+		save_cached_tags_at(&path, &BTreeMap::new()).unwrap();
+
+		let gid = std::fs::metadata(&path).unwrap().gid();
+		assert_eq!(gid, shared, "expected group {shared}, got {gid}");
+	}
+
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	#[test]
+	fn tags_cache_regroups_a_leftover_tempfile() {
+		use std::os::unix::fs::MetadataExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(other) = other_gid(dir_gid) else {
+			return;
+		};
+
+		let path = dir.path().join("tags.json");
+		let tmp = path.with_extension("json.tmp");
+		std::fs::write(&tmp, b"{}").unwrap();
+		std::os::unix::fs::chown(&tmp, None, Some(other)).unwrap();
+
+		save_cached_tags_at(&path, &BTreeMap::new()).unwrap();
+
+		let gid = std::fs::metadata(&path).unwrap().gid();
+		assert_eq!(gid, dir_gid, "expected group {dir_gid}, got {gid}");
 	}
 
 	#[test]
